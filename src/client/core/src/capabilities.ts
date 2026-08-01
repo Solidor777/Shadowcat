@@ -44,7 +44,7 @@ function roleFloor(role: string): string[] {
  * the server's `resolve_access_world`: the DocRole floor widened by the
  * document's additive grants and the world-default grants. This function does
  * not itself branch on GM/admin status — the sole production caller
- * (`worldSession.canEdit`, `worldSession.svelte.ts:153`) returns early for
+ * (`worldSession.canEdit`, `worldSession.svelte.ts:207`) returns early for
  * `role === "gm"` before calling in, so `resolveCaps` only ever computes the
  * non-GM floor in practice.
  * @param perms The document's `permissions` block.
@@ -163,7 +163,7 @@ function pathsOverlap(a: string, b: string): boolean {
  * `Some(None)`, `GmOnly` → `Some(Observer)`), not a bound on where it can
  * live. The bound here rests solely on `isGm: true` having no production
  * caller today: `worldSession.canEdit` resolves the GM case itself and always
- * passes `isGm: false` (`worldSession.svelte.ts:153`, `:161` — see
+ * passes `isGm: false` (`worldSession.svelte.ts:207`, `:215` — see
  * `resolveCaps`'s doc above); that gate is equally unaware of `gm_role` and is
  * out of scope here (`shell` package).
  * @param path A JSON pointer identifying the field being written.

@@ -57,6 +57,18 @@ export interface WorldSessionOpts {
   onEvicted?: () => void;
 }
 
+/**
+ * Per-world session controller: owns the WS connection, the authoritative
+ * `DocumentStore` + optimistic view, first-party and external module
+ * activation, and the scene/chat/move/search request delegates the shell
+ * exposes through `AppContext`. One instance per entered world; `enter(worldId)`
+ * opens the connection and `leave()` tears it down.
+ * @example
+ * ```
+ * const session = new WorldSession({ selfId, connect, modules: [layoutModule] });
+ * await session.enter(worldId);
+ * ```
+ */
 export class WorldSession {
   readonly store = new DocumentStore();
   readonly contributions = new ContributionRegistry();
@@ -102,12 +114,14 @@ export class WorldSession {
   #offlineQueue: { intentId: string; ops: WireOperation[] }[] = [];
   /** The optimistic (predicted) document view — the canvas render source, so a placed
    * or dragged document shows immediately. `store` stays the authoritative rollback base
-   * (panels that want confirmed-only state read it). */
+   * (panels that want confirmed-only state read it).
+   * @returns The optimistic client for this session. */
   get documents(): OptimisticClient {
     return this.#optimistic;
   }
 
-  /** The current user's id (ownership checks). */
+  /** The current user's id (ownership checks).
+   * @returns This client's own user id. */
   get selfId(): string {
     return this.opts.selfId;
   }
@@ -115,13 +129,20 @@ export class WorldSession {
   /** The scene THIS client renders + subscribes to (M12d). A GM's local roam
    * (`#gmViewedScene`) overrides; otherwise follows `world-settings.activeScene`, else the first
    * scene. Reads the optimistic view + `#gmViewedScene` $state, so Svelte deriveds that read it
-   * (bridged through `documents.subscribe`) react to both scene-doc changes and roam changes. */
+   * (bridged through `documents.subscribe`) react to both scene-doc changes and roam changes.
+   * @returns The scene id this client renders/subscribes to, or `null` when the world has no scene yet. */
   get viewedSceneId(): string | null {
     return resolveViewedScene(this.#optimistic, { gmViewedScene: this.role === "gm" ? this.#gmViewedScene : null });
   }
 
   /** GM local roam (M12d): view any scene without moving players. Ignored (warned) for a non-GM —
-   * players have no local override. `null` clears the roam (follow `activeScene`). */
+   * players have no local override. `null` clears the roam (follow `activeScene`).
+   * @param id The scene to roam to, or `null` to resume following `activeScene`.
+   * @example
+   * ```
+   * session.setGmViewedScene(otherSceneId); // GM only; no-op+warns for a player
+   * ```
+   */
   setGmViewedScene(id: string | null): void {
     if (this.role !== "gm") {
       this.#logger.warn("setGmViewedScene ignored: caller is not a GM");
@@ -132,7 +153,20 @@ export class WorldSession {
 
   /** Live full-text search over documents (M6c subscription seam). Ephemeral: NOT re-established
    * across reconnects (unlike `subscribeScene`) — the caller re-subscribes on the next query.
-   * Rejects immediately when there is no live transport. */
+   * Rejects immediately when there is no live transport.
+   * @param query The FTS query string.
+   * @param opts Subscription options.
+   * @param opts.limit Maximum number of hits to return.
+   * @param opts.timeoutMs Timeout for the initial subscribe round-trip.
+   * @param onUpdate Called with the current hit set whenever the live results change.
+   * @returns A handle that resolves once the subscription is established; call
+   * `unsubscribe()` on it to stop receiving updates.
+   * @example
+   * ```
+   * const handle = await session.searchDocuments("goblin", { limit: 20 }, (hits) => render(hits));
+   * handle.unsubscribe();
+   * ```
+   */
   searchDocuments(
     query: string,
     opts: { limit?: number; timeoutMs?: number },
@@ -144,11 +178,31 @@ export class WorldSession {
 
   /** Advisory client-side mirror of the server's Update-path check, for showing/hiding write
    * controls. GM bypasses; the server remains authoritative and rejects a bypass at apply_intent.
-   * Caveat: `#requirements` (from the Welcome union) mixes GM-authored world_cap_requirements
+   *
+   * Caveat (`#requirements`): the Welcome union mixes GM-authored world_cap_requirements
    * with module-declared manifest requirements. For GM-authored entries this mirror matches
    * server enforcement exactly. Module-published entries are advisory UX only — the server
    * does NOT reject a write solely because a module declared a requirement on that path, so
-   * this gate can be stricter here than the server actually is for module-only requirements. */
+   * this gate can be stricter here than the server actually is for module-only requirements.
+   *
+   * Caveat (`gm_role`): the `role === "gm"` short-circuit immediately below returns `true`
+   * unconditionally and never consults `doc.permissions.gm_role`. The server's GM bypass is
+   * conditional — a document carrying `gm_role: Some(role)` floors even a GM to an ordinary
+   * `DocRole` resolution instead of the unconditional grant (`data/permission.rs`'s
+   * `effective_role`/`resolve_access`) — so this gate's write affordances can over-permit on a
+   * `gm_role`-capped document. Advisory-only, not a live bug today: `apply_intent` re-checks
+   * independently, and separately rejects every ordinary client Update to a `message` doc
+   * outright regardless of role (`data/sqlite.rs`) — `gm_role` is currently set only by
+   * chat-message construction (`chat/mod.rs`), the one doc_type this over-permit could apply to.
+   *
+   * @param doc The document being edited.
+   * @param path The JSON-pointer path within `doc` the caller wants to write.
+   * @returns Whether write controls for `path` should be shown to this user.
+   * @example
+   * ```
+   * if (session.canEdit(doc, "/system/hp")) showHpInput();
+   * ```
+   */
   canEdit(doc: WireDocument, path: string): boolean {
     if (this.role === "gm") return true;
     if (!this.role) return false;
@@ -174,6 +228,14 @@ export class WorldSession {
   #modulesAdded = false;
   #activated = false;
 
+  /** Construct a session bound to one connection factory + default module set; call
+   * `enter(worldId)` to open the world connection.
+   * @param opts Connection factory, default modules, and diagnostics/eviction callbacks.
+   * @example
+   * ```
+   * const session = new WorldSession({ selfId, connect, modules: [layoutModule] });
+   * ```
+   */
   constructor(private readonly opts: WorldSessionOpts) {
     this.#logger = opts.logger ?? consoleLogger();
     this.#optimistic = new OptimisticClient(opts.selfId, this.#logger);
@@ -194,7 +256,15 @@ export class WorldSession {
    * every offline intent queues, so optimistic FIFO order equals the eventual send
    * order and the confirm-correlation contract holds. A flush happens after resync
    * (the optimistic view rebases onto authoritative state first). When stopped, drop
-   * without an orphaned pending entry. */
+   * without an orphaned pending entry.
+   * @param ops The operations to predict + transmit as one intent.
+   * @example
+   * ```
+   * session.dispatchIntent([
+   *   { op: "update", doc_id: docId, changes: [{ path: "/system/hp", old: 8, new: 10 }] },
+   * ]);
+   * ```
+   */
   dispatchIntent(ops: WireOperation[]): void {
     const intentId = crypto.randomUUID();
     if (this.#ws?.connected) {
@@ -215,7 +285,13 @@ export class WorldSession {
 
   /** Transmit intents queued while offline, in FIFO order. Called after a resync
    * completes (authoritative state is current and the optimistic view has rebased),
-   * so the already-predicted intents converge as their echoes confirm them. */
+   * so the already-predicted intents converge as their echoes confirm them.
+   * @example
+   * ```
+   * // called from onResyncComplete; not part of the public API
+   * this.#flushOfflineQueue();
+   * ```
+   */
   #flushOfflineQueue(): void {
     if (!this.#ws?.connected || this.#offlineQueue.length === 0) return;
     const queued = this.#offlineQueue;
@@ -226,13 +302,29 @@ export class WorldSession {
     }
   }
 
-  /** Subscribe to asset replace/delete notices; returns an unsubscribe. */
+  /** Subscribe to asset replace/delete notices; returns an unsubscribe.
+   * @param cb Called with the changed asset's id and the change kind.
+   * @returns A function that removes this listener.
+   * @example
+   * ```
+   * const off = session.onAssetChanged(({ uuid, op }) => resolver.invalidate(uuid, op));
+   * off();
+   * ```
+   */
   onAssetChanged(cb: (msg: { uuid: string; op: "replaced" | "deleted" }) => void): () => void {
     this.#assetListeners.add(cb);
     return () => this.#assetListeners.delete(cb);
   }
 
-  /** Subscribe to relayed location pings (incl. our own echo); returns an unsubscribe. */
+  /** Subscribe to relayed location pings (incl. our own echo); returns an unsubscribe.
+   * @param cb Called with the scene, coordinates, and originating user of each ping.
+   * @returns A function that removes this listener.
+   * @example
+   * ```
+   * const off = session.onPing(({ scene, x, y, user }) => renderPing(scene, x, y, user));
+   * off();
+   * ```
+   */
   onPing(cb: (msg: { scene: string; x: number; y: number; user: string }) => void): () => void {
     this.#pingListeners.add(cb);
     return () => this.#pingListeners.delete(cb);
@@ -240,7 +332,14 @@ export class WorldSession {
 
   /** Broadcast a transient location ping at scene coords on the currently-viewed scene
    * (`viewedSceneId`: a GM's local roam override, else the followed `activeScene`). No-op when
-   * disconnected or no scene exists; the server relays it back to all members (incl. us). */
+   * disconnected or no scene exists; the server relays it back to all members (incl. us).
+   * @param x Scene-space x coordinate to ping.
+   * @param y Scene-space y coordinate to ping.
+   * @example
+   * ```
+   * session.sendPing(cellX, cellY);
+   * ```
+   */
   sendPing(x: number, y: number): void {
     const sceneId = this.viewedSceneId;
     if (!sceneId) return;
@@ -248,7 +347,22 @@ export class WorldSession {
   }
 
   /** Request a grid A* path on the server. Thin delegate to `WsClient.pathfind`;
-   * rejects immediately when there is no live transport. */
+   * rejects immediately when there is no live transport.
+   * @param scene The scene to path on.
+   * @param start The mover's current position.
+   * @param waypoints Ordered points the path must visit, in order.
+   * @param footprintRadius Hypothetical mover footprint radius; ignored server-side when
+   * `token` is given (the server derives the footprint from the token instead).
+   * @param token Optional token id the route is for; when present, overrides `footprintRadius`.
+   * @returns The computed path.
+   * @example
+   * ```
+   * // hypothetical preview (no token): footprintRadius is honored
+   * const preview = await session.pathfind(sceneId, [0, 0], [[5, 5]], 0.5);
+   * // for a real token: the server derives the footprint from it; footprintRadius is ignored
+   * const forToken = await session.pathfind(sceneId, [0, 0], [[5, 5]], 0.5, tokenId);
+   * ```
+   */
   pathfind(
     scene: string,
     start: [number, number],
@@ -263,7 +377,17 @@ export class WorldSession {
   /** Request server-authoritative move execution for `tokenId` along `path` on
    * `scene`. Resolves with the broadcast `MoveStream` when the server confirms;
    * rejects immediately when there is no live transport. Animation is broadcast-driven
-   * via `onMoveStream` for all scene viewers; the resolve value signals success only. */
+   * via `onMoveStream` for all scene viewers; the resolve value signals success only.
+   * @param scene The scene the token moves on.
+   * @param tokenId The token to move.
+   * @param path The requested waypoints, in order.
+   * @returns The broadcast `MoveStream` confirming the move (see `onMoveOutcome` for a
+   * derived executed/truncated/rejected signal).
+   * @example
+   * ```
+   * const stream = await session.moveRequest(sceneId, tokenId, [[1, 1], [2, 2]]);
+   * ```
+   */
   moveRequest(
     scene: string,
     tokenId: string,
@@ -303,14 +427,33 @@ export class WorldSession {
 
   /** Subscribe to THIS client's own `moveRequest` outcomes (executed/truncated/rejected) —
    * a read-only observability signal, not a broadcast of every scene viewer's moves (that's
-   * `onMoveStream`, consumed internally for animation). Returns an unsubscribe. */
+   * `onMoveStream`, consumed internally for animation). Returns an unsubscribe.
+   * @param cb Called with the moved token and its derived outcome.
+   * @returns A function that removes this listener.
+   * @example
+   * ```
+   * const off = session.onMoveOutcome(({ tokenId, outcome }) => log(tokenId, outcome));
+   * off();
+   * ```
+   */
   onMoveOutcome(cb: (msg: { tokenId: string; outcome: "executed" | "truncated" | "rejected" }) => void): () => void {
     this.#moveOutcomeListeners.add(cb);
     return () => this.#moveOutcomeListeners.delete(cb);
   }
 
   /** Send a chat message. Resolves/rejects with the correlated outcome; rejects
-   * immediately when there is no live transport (the caller surfaces it). */
+   * immediately when there is no live transport (the caller surfaces it).
+   * @param opts The message to send.
+   * @param opts.channel The channel to post to.
+   * @param opts.content The raw (unsanitized) message text.
+   * @param opts.actorOwner Optional actor to speak as, for name/avatar attribution.
+   * @param opts.audience Optional restricted audience (whisper/GM-only); defaults to public.
+   * @returns Resolves once the server confirms the send.
+   * @example
+   * ```
+   * await session.sendChatMessage({ channel: "main", content: "Hello!" });
+   * ```
+   */
   sendChatMessage(opts: {
     channel: string;
     content: string;
@@ -321,13 +464,28 @@ export class WorldSession {
     return this.#ws.sendChatMessage(opts);
   }
 
-  /** Edit an existing chat message. Resolves/rejects with the correlated outcome. */
+  /** Edit an existing chat message. Resolves/rejects with the correlated outcome.
+   * @param messageId The message to edit.
+   * @param content The new raw (unsanitized) message text.
+   * @returns Resolves once the server confirms the edit.
+   * @example
+   * ```
+   * await session.editChatMessage(messageId, "Updated text");
+   * ```
+   */
   editChatMessage(messageId: string, content: string): Promise<void> {
     if (!this.#ws) return Promise.reject(new Error("not connected"));
     return this.#ws.editChatMessage(messageId, content);
   }
 
-  /** Delete an existing chat message. Resolves/rejects with the correlated outcome. */
+  /** Delete an existing chat message. Resolves/rejects with the correlated outcome.
+   * @param messageId The message to delete.
+   * @returns Resolves once the server confirms the delete.
+   * @example
+   * ```
+   * await session.deleteChatMessage(messageId);
+   * ```
+   */
   deleteChatMessage(messageId: string): Promise<void> {
     if (!this.#ws) return Promise.reject(new Error("not connected"));
     return this.#ws.deleteChatMessage(messageId);
@@ -335,7 +493,18 @@ export class WorldSession {
 
   /** Subscribe to a SceneDerived channel. Returns a synchronous handle; the
    * underlying WS subscription is (re)established on every Welcome so derived state
-   * survives a reconnect. */
+   * survives a reconnect.
+   * @param channel The SceneDerived channel name (e.g. a vision/lighting derivation).
+   * @param onUpdate Called with each new frame on that channel.
+   * @param opts Subscription options.
+   * @param opts.asUser GM-only see-as: resolve the channel as if for this user instead of self.
+   * @returns A synchronous handle; call `unsubscribe()` on it to stop receiving frames.
+   * @example
+   * ```
+   * const sub = session.subscribeScene("vision", (frame) => render(frame.payload));
+   * sub.unsubscribe();
+   * ```
+   */
   subscribeScene(
     channel: string,
     onUpdate: (f: SceneFrame) => void,
@@ -355,6 +524,23 @@ export class WorldSession {
     };
   }
 
+  /** Establish (or re-establish) the live WS subscription for one `subscribeScene` record.
+   * Called on first subscribe and again on every (re)connect Welcome. Generation-guarded:
+   * a superseded attempt (unsubscribed, or a newer establish for the same record) self-disposes
+   * its resolved handle instead of leaking a duplicate server subscription.
+   * @param id The record's key in `#sceneSubs`.
+   * @param rec The subscription record to (re)establish.
+   * @param rec.channel The SceneDerived channel name.
+   * @param rec.onUpdate Called with each new frame on that channel.
+   * @param rec.asUser GM-only see-as override, if this subscription used one.
+   * @param rec.handle The currently-live handle, if any (replaced once the new one resolves).
+   * @param rec.gen This record's generation counter; bumped to invalidate a superseded attempt.
+   * @example
+   * ```
+   * // called from subscribeScene and from #onWelcome; not part of the public API
+   * this.#establishScene(id, rec);
+   * ```
+   */
   #establishScene(
     id: string,
     rec: { channel: string; onUpdate: (f: SceneFrame) => void; asUser?: string; handle: SceneSubscription | null; gen: number },
@@ -376,6 +562,18 @@ export class WorldSession {
       });
   }
 
+  /** Open the WS connection to `worldId` and wire the broadcast-driven move/ping animation
+   * listeners. Resolves once the underlying transport opens (`WsClient.start`'s own
+   * contract) — the server's Welcome, module activation, member fetch, and external-module
+   * loading all happen asynchronously afterward inside `#onWelcome` and are NOT awaited by
+   * this call.
+   * @param worldId The world to connect to.
+   * @example
+   * ```
+   * const session = new WorldSession({ selfId, connect, modules: [layoutModule] });
+   * await session.enter(worldId);
+   * ```
+   */
   async enter(worldId: string): Promise<void> {
     this.world = worldId;
     this.state = "connecting";
@@ -439,6 +637,22 @@ export class WorldSession {
     this.state = "open";
   }
 
+  /** Handle a `welcome` frame (first connect or a reconnect): sets `role`/`#worldGrants`/
+   * `#requirements`, activates modules exactly once per session (see `#modulesAdded`/
+   * `#activated`), loads external modules, fetches member usernames, reconciles contract
+   * topology, re-establishes scene subscriptions, and (GM only) seeds the world's first
+   * scene. The member fetch has its own inner try/catch: a failure there is logged as a
+   * warning and does not block the remaining steps. Module activation's inner catch instead
+   * reverts `#activated` (so the next Welcome retries it) and RE-throws, which skips every
+   * later step in this call; the whole method is wrapped in one outer try/catch that logs and
+   * swallows that (or any other) failure, so this promise never rejects.
+   * @param w The Welcome frame.
+   * @example
+   * ```
+   * // wired as handlers.onWelcome in enter(); not part of the public API
+   * void this.#onWelcome(w);
+   * ```
+   */
   async #onWelcome(w: WireWelcome): Promise<void> {
     try {
       this.role = w.user_role;
@@ -534,7 +748,16 @@ export class WorldSession {
    * WS reconnect. A discovery-level failure (network, malformed response)
    * degrades to a logged warning; the session still enters the world with
    * only its first-party modules active — a broken pipeline must never brick
-   * a world (invariant 4). */
+   * a world (invariant 4).
+   * @param world The world id to load enabled external modules for.
+   * @param serverVersion The connected server's version, passed through to `loadModules`'
+   * engine-compat gate.
+   * @example
+   * ```
+   * // called from #onWelcome after a successful module activation; not part of the public API
+   * await this.#loadExternalModules(w.world, w.server_version);
+   * ```
+   */
   async #loadExternalModules(world: string, serverVersion: string): Promise<void> {
     try {
       const [enabledIds, installed] = await Promise.all([
@@ -577,6 +800,16 @@ export class WorldSession {
     }
   }
 
+  /** Tear down the current world connection: stops and drops the `WsClient`, resets
+   * `state`/`role`/`world`/`#gmViewedScene`. Does not clear `store`/`documents`, module
+   * registrations, or the `#activated`/`#modulesAdded` latches — the shell's own usage
+   * (`App.svelte`'s `leaveWorld`) discards this instance and constructs a fresh
+   * `WorldSession` for the next `enter()` rather than reusing this one.
+   * @example
+   * ```
+   * session.leave();
+   * ```
+   */
   leave(): void {
     this.#ws?.stop();
     this.#ws = null;
