@@ -31,6 +31,9 @@ import "../panels.scss";
  * and namespaced under a different prefix. */
 const STAGE_GROUP_ID = "sc-stage-group";
 
+/** The three dock zones this engine reconciles, in the fixed order `apply()`
+ * walks them — an iteration order, not a priority; every zone is always
+ * present (see `ExpandedLayout`'s own doc comment in `tree.ts`). */
 const ZONE_IDS: readonly ZoneId[] = ["right", "bottom", "left"];
 
 /** The edge direction `addGroup` splits off the stage group in, for the
@@ -417,15 +420,27 @@ class PanelTabRenderer implements ITabRenderer {
  * `dockviewComponent.js:3636-3638`) is consequently never reached for a
  * completed same-instance drag: the tree is canonical, and the controller's
  * `apply()` — driven by the op this class just emitted — is the one
- * sanctioned mutation path back into dockview. `onDidDrop` (fired only when
- * a drop's `PanelTransfer.viewId` does not match this instance's own
- * `accessor.id` — i.e. a drag whose data never originated from THIS
- * `DockviewApi`, `dockviewGroupPanelModel.js:1386-1445`) has no wiring here:
- * this codebase creates exactly one `DockviewApi` per `PanelHost`, and a
- * popped-out group still shares that same instance/`accessor.id` (pop-out
- * moves a panel between groups of ONE api, it never spins up a second one),
- * so no drag reaching this class can ever satisfy that mismatch — the event
- * is unreachable for a real user gesture, not merely unhandled. */
+ * sanctioned mutation path back into dockview. `onDidDrop` fires in
+ * `handleDropEvent`'s `else` branch (`dockviewGroupPanelModel.js:1386-1445`),
+ * taken when the drop's data is either ABSENT entirely (a drag whose payload
+ * carries no `PanelTransfer` at all — e.g. an external/OS drag) or present
+ * with a `viewId` that doesn't match `this.accessor.id` — not only the
+ * viewId-mismatch case. It has no wiring here regardless of which of those
+ * two shapes a drop takes, because `#handleWillDrop` (and its
+ * `#handleGroupWillDrop` delegate) `preventDefault()`s on EVERY path it can
+ * take — including when `#toDropSite` resolves no subject at all (`!id`,
+ * `dockview.ts:1158`) — which trips `handleDropEvent`'s own
+ * `if (willDropEvent.defaultPrevented) return;`
+ * (`dockviewGroupPanelModel.js:1382-1384`) before the model ever reaches the
+ * data/viewId branch quoted above. So `onDidDrop` is unreachable here not
+ * because a mismatched `viewId` can't occur, but because this class's
+ * veto-or-redispatch contract never lets `handleDropEvent` get that far.
+ * (Separately, every `PanelTransfer` is stamped with its constructing
+ * accessor's own id and consumed identically wherever dockview reads one, so
+ * a PANEL drag actually originating in THIS codebase's one `DockviewApi`
+ * per `PanelHost` could never present a mismatched `viewId` in the first
+ * place, even if this class's own veto did not already foreclose the
+ * question.) */
 export class DockviewEngine implements EngineAdapter {
   #api: DockviewApi | null = null;
   #opListeners = new Set<(op: LayoutOp) => void>();
@@ -542,8 +557,13 @@ export class DockviewEngine implements EngineAdapter {
 
   /** Builds an engine instance with no dockview API yet (that is created by
    * `init()`, which a `PanelHost` calls once at mount). `popoutDriver` is a
-   * seam for unit tests, not a production configuration point — a real
-   * `PanelHost` always constructs this with zero arguments.
+   * seam for unit tests, not a production configuration point. `PanelHost`
+   * itself never constructs a `DockviewEngine` — it receives `engine` as an
+   * optional prop, defaulting to `new FakeEngine()` when absent
+   * (`PanelHost.svelte:11-22,141`); the real production construction is the
+   * panels module's `register()`, with ONE argument
+   * (`props: { engine: new DockviewEngine(consoleLogger()) }`, this package's
+   * own `index.ts`, line 58).
    * @param logger Diagnostic sink for vetoed gestures and recoverable
    * failures (defaults to `consoleLogger()`).
    * @param popoutDriver Replaces dockview's native `addPopoutGroup` call for
@@ -952,6 +972,10 @@ export class DockviewEngine implements EngineAdapter {
     for (const id of ids) this.#poppedOutOriginGroups.delete(id);
     if (this.#applying) return;
     for (const id of ids) {
+      // STAGE_ID veto, belt-and-suspenders alongside every other STAGE_ID guard
+      // in this class: the stage never enters `poppedOut` (W1), so this only
+      // ever matters for the `event.group.model.panels` fallback above — skip
+      // it rather than emit a `popIn` for an id that was never a valid subject.
       if (id === STAGE_ID) continue;
       for (const cb of this.#opListeners) cb({ op: "popIn", id });
     }
@@ -1540,11 +1564,16 @@ export class DockviewEngine implements EngineAdapter {
     return this.#poppedOutOriginGroups;
   }
 
-  /** `EngineAdapter.onOp`: subscribes to every `LayoutOp` this engine emits,
-   * whether from a drag gesture (`#handleWillDrop`/`#handleGroupWillDrop`), a
-   * menu command (`#handleMenuCommand`), a resize (`#handleGroupDimensionsChange`/
-   * `#handleFloatingLayoutChange`), or a popout window closing
-   * (`#handleRemovePopoutGroup`).
+  /** `EngineAdapter.onOp`: subscribes to every `LayoutOp` this engine emits.
+   * Seven sources, all funneled through this same `#opListeners` channel: a
+   * drag gesture (`#handleWillDrop`/`#handleGroupWillDrop`); a menu command
+   * (`#handleMenuCommand`, including `#requestPopOut`'s async continuation);
+   * a resize (`#handleGroupDimensionsChange`/`#handleFloatingLayoutChange`);
+   * a popout window closing (`#handleRemovePopoutGroup`); a panel removal
+   * (`#handleDidRemovePanel`, a `close` op); a floating dialog's own
+   * Escape keydown handler (wired in `#wireFloatingA11y`, also a `close` op);
+   * and a user-driven tab activation (`#handleActivePanelChange`, an
+   * `activeTab` op).
    * @param cb Called once per emitted op.
    * @returns An unsubscribe function.
    * @example
