@@ -562,8 +562,8 @@ export class DockviewEngine implements EngineAdapter {
    * optional prop, defaulting to `new FakeEngine()` when absent
    * (`PanelHost.svelte:11-22,141`); the real production construction is the
    * panels module's `register()`, with ONE argument
-   * (`props: { engine: new DockviewEngine(consoleLogger()) }`, this package's
-   * own `index.ts`, line 58).
+   * (`props: { engine: new DockviewEngine(consoleLogger()) }`,
+   * `src/modules/panels/src/index.ts:58`).
    * @param logger Diagnostic sink for vetoed gestures and recoverable
    * failures (defaults to `consoleLogger()`).
    * @param popoutDriver Replaces dockview's native `addPopoutGroup` call for
