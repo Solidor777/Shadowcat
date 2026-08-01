@@ -84,9 +84,22 @@ const ZONE_DEFAULT_SIZE: Record<ZoneId, number> = { right: 320, bottom: 240, lef
 // shared import, so the two modules stay decoupled) — the same logical operation
 // (reload -> float a persisted popout) must land at the same screen position
 // regardless of which of the two call sites handles a given panel's registration timing.
+// Nothing in either file's types enforces this pairing; the two constants can drift
+// silently unless something exercises both call sites and compares their output. That
+// enforcement is `controller.test.ts:390-394`'s parity test, not a runtime assertion here.
 const SHEET_CASCADE_BASE: Rect = { x: 96, y: 96, w: 420, h: 520 };
 const SHEET_CASCADE_STEP = 28;
 
+/** Builds the zones sub-tree for a brand-new `PanelLayoutV1` — every zone
+ * present with no groups, at its `ZONE_DEFAULT_SIZE` px basis.
+ * @returns A fresh `right`/`bottom`/`left` record of empty `ZoneNode`s.
+ * @example
+ * ```
+ * // private function; not part of the public API — used only by
+ * // defaultLayout's initial-layout construction
+ * emptyZones();
+ * ```
+ */
 function emptyZones(): Record<ZoneId, ZoneNode> {
   return {
     right: { groups: [], size: ZONE_DEFAULT_SIZE.right },
@@ -96,7 +109,18 @@ function emptyZones(): Record<ZoneId, ZoneNode> {
 }
 
 /** Equal-share renormalization of a zone's groups after a structural insert/remove.
- * Manual `resizeGroup` calls are NOT renormalized — only insert/remove touches sizes. */
+ * Manual `resizeGroup` calls are NOT renormalized — only insert/remove touches sizes.
+ * @param groups The zone's groups AFTER the structural insert/remove, in their final
+ * membership.
+ * @returns `groups` itself when every member's `size` already equals `1 / groups.length`;
+ * otherwise a new array with each group's `size` set to that even share.
+ * @example
+ * ```
+ * // private function; not part of the public API — called only by detach,
+ * // placeByPlacement, dock, and prune after a group is added or removed
+ * renormalize([{ tabs: ["chat"], active: "chat", size: 1 }]);
+ * ```
+ */
 function renormalize(groups: GroupNode[]): GroupNode[] {
   if (groups.length === 0) return groups;
   const size = 1 / groups.length;
@@ -104,7 +128,19 @@ function renormalize(groups: GroupNode[]): GroupNode[] {
 }
 
 /** Reassigns floating z to a contiguous 0..n-1 range (ascending by current z), bounding
- * growth — repeated `open`/`float` focus-bumps never inflate z without limit. */
+ * growth — repeated `open`/`float` focus-bumps never inflate z without limit.
+ * @param floating The floating entries to reassign z for, in any order.
+ * @returns A copy sorted ascending by z with each entry's z rewritten to its position in
+ * that sort; an entry already at its correct z is reused untouched (not a whole-array
+ * same-reference contract — the returned array is always a new one when reordering, but
+ * unaffected entries keep their own object reference).
+ * @example
+ * ```
+ * // private function; not part of the public API — called after every op that adds,
+ * // removes, or re-orders a floating panel
+ * compactZ([{ id: "chat", rect: { x: 0, y: 0, w: 1, h: 1 }, z: 3 }]);
+ * ```
+ */
 function compactZ(
   floating: ExpandedLayout["floating"],
 ): ExpandedLayout["floating"] {
@@ -113,6 +149,21 @@ function compactZ(
     .map((f, i) => (f.z === i ? f : { ...f, z: i }));
 }
 
+/** Finds `id`'s current location in `l`. Every mutating op that relocates a panel calls
+ * this first, then passes the result to `detach`.
+ * @param l The layout to search.
+ * @param id The panel id to locate.
+ * @returns `id`'s location: `docked` (zone/group index/tabIndex), `floating` (index into
+ * `expanded.floating`), `minimized`, `popped-out`, or `closed` when `id` is absent from
+ * every one of those.
+ * @example
+ * ```ts
+ * import { locate, defaultLayout } from "@shadowcat/module-panels";
+ *
+ * const layout = defaultLayout([]);
+ * locate(layout, "chat"); // { where: "closed" }
+ * ```
+ */
 export function locate(l: PanelLayoutV1, id: string): PanelLocation {
   for (const zone of ZONE_IDS) {
     const groups = l.expanded.zones[zone].groups;
@@ -130,7 +181,19 @@ export function locate(l: PanelLayoutV1, id: string): PanelLocation {
 
 /** Removes `id` from wherever it currently lives (INVARIANT: at most one location holds
  * it, so this is exhaustive). Used by every mutating op that relocates a panel; total —
- * a "closed" location is a no-op that returns the SAME reference. */
+ * a "closed" location is a no-op that returns the SAME reference.
+ * @param l The layout to detach `id` from.
+ * @param id The panel id to detach.
+ * @returns A tuple of the resulting layout (`l` itself if `id` was already closed) and the
+ * `PanelLocation` `id` was detached FROM, which callers use to decide where to re-place it.
+ * @example
+ * ```
+ * // private function; not part of the public API — called by every op in applyOp
+ * // that relocates a panel (open, dock, float, minimize, popOut, popIn)
+ * declare const layout: import("./tree").PanelLayoutV1;
+ * detach(layout, "chat");
+ * ```
+ */
 function detach(l: PanelLayoutV1, id: string): [PanelLayoutV1, PanelLocation] {
   const loc = locate(l, id);
   switch (loc.where) {
@@ -171,7 +234,21 @@ function detach(l: PanelLayoutV1, id: string): [PanelLayoutV1, PanelLocation] {
  * where the caller is actively surfacing the panel (unlike `defaultLayout`, where an
  * absent `PanelMeta.defaultPlacement` means launcher-only/closed).
  * `DefaultPlacement.order` is not consumed here: callers pass registrations pre-sorted
- * by contribution order; a docked default always opens its own group. */
+ * by contribution order; a docked default always opens its own group.
+ * @param l The layout to place `id` into. Caller guarantees `id` is already detached (not
+ * present in any zone/floating/minimized/popped-out location).
+ * @param id The panel id to place.
+ * @param placement The explicit or defaulted placement; `undefined` falls back to a new
+ * docked group in zone "right".
+ * @returns The resulting layout, with `id` placed per `placement`.
+ * @example
+ * ```
+ * // private function; not part of the public API — called by applyOp's "open"/"restore"/
+ * // "popIn" cases after detach, and by placeNewRegistrations for a new registration
+ * declare const layout: import("./tree").PanelLayoutV1;
+ * placeByPlacement(layout, "chat", { kind: "docked", zone: "right" });
+ * ```
+ */
 function placeByPlacement(l: PanelLayoutV1, id: string, placement?: DefaultPlacement): PanelLayoutV1 {
   if (placement?.kind === "floating") {
     const n = l.expanded.floating.length;
@@ -190,6 +267,24 @@ function placeByPlacement(l: PanelLayoutV1, id: string, placement?: DefaultPlace
   return { ...l, expanded: { ...l.expanded, zones: { ...l.expanded.zones, [zone]: { ...zoneNode, groups } } } };
 }
 
+/** The sole mutator of `PanelLayoutV1` — every panel-manager state change is a `LayoutOp`
+ * dispatched through this reducer. SAME-REFERENCE NO-OP CONTRACT: when `o` would produce no
+ * observable change to `l`, this returns `l` itself (not a structurally-equal copy) — see
+ * each case's own guard above for what counts as a no-op there. `dock` is the one case with
+ * no no-op path: it always reconstructs its target zone, even when detach found nothing to
+ * move. Callers (persistence debounce, tests) rely on `toBe`, not deep equality, to detect
+ * whether anything changed.
+ * @param l The layout to apply `o` to.
+ * @param o The op to apply.
+ * @returns The resulting layout, or `l` itself when `o` changes nothing.
+ * @example
+ * ```ts
+ * import { applyOp, defaultLayout } from "@shadowcat/module-panels";
+ *
+ * const layout = defaultLayout([]);
+ * const next = applyOp(layout, { op: "open", id: "chat" });
+ * ```
+ */
 export function applyOp(l: PanelLayoutV1, o: LayoutOp): PanelLayoutV1 {
   switch (o.op) {
     case "open": {
@@ -384,7 +479,18 @@ export function applyOp(l: PanelLayoutV1, o: LayoutOp): PanelLayoutV1 {
  * this returns `l` itself (not a structurally-equal copy) — every zone/group/floating-
  * entry/compact-order reference is reused untouched. Callers (e.g. `PanelsController`)
  * rely on this to decide whether a prune pass actually changed anything worth persisting,
- * exactly like every no-op branch of `applyOp` above. */
+ * exactly like every no-op branch of `applyOp` above.
+ * @param l The layout to prune.
+ * @param known The set of panel ids still registered; anything else is dropped.
+ * @returns The pruned layout, or `l` itself when nothing needed dropping or repairing.
+ * @example
+ * ```ts
+ * import { prune, defaultLayout } from "@shadowcat/module-panels";
+ *
+ * const layout = defaultLayout([{ id: "chat" }]);
+ * prune(layout, new Set(["chat"])); // no-op: chat is still known
+ * ```
+ */
 export function prune(l: PanelLayoutV1, known: ReadonlySet<string>): PanelLayoutV1 {
   let changed = false;
   const zones = {} as Record<ZoneId, ZoneNode>;
@@ -459,7 +565,22 @@ export function prune(l: PanelLayoutV1, known: ReadonlySet<string>): PanelLayout
  * ids actually present — and inherits the persisted `active` tab when it is among them;
  * otherwise a fresh single-tab group opens for `id` alone, ready for later persisted
  * groupmates to join by this same rule (order-of-registration independent). Caller
- * guarantees `loc.where !== "closed"` — a closed-in-source id has nothing to place. */
+ * guarantees `loc.where !== "closed"` — a closed-in-source id has nothing to place.
+ * @param l The layout to place `id` into. Caller guarantees `id` is already detached.
+ * @param id The panel id to place.
+ * @param source The persisted (pre-prune) layout `loc` was located in — see
+ * `decodeLayout`'s `source` field.
+ * @param loc `id`'s location in `source`, as returned by `locate(source, id)`.
+ * @returns The resulting layout, with `id` placed to reconstruct its persisted location.
+ * @example
+ * ```
+ * // private function; not part of the public API — called only by
+ * // placeNewRegistrations for a registration `locate` finds in `persistedSource`
+ * declare const layout: import("./tree").PanelLayoutV1;
+ * declare const source: import("./tree").PanelLayoutV1;
+ * placeFromPersistedLocation(layout, "chat", source, { where: "minimized" });
+ * ```
+ */
 function placeFromPersistedLocation(l: PanelLayoutV1, id: string, source: PanelLayoutV1, loc: PanelLocation): PanelLayoutV1 {
   switch (loc.where) {
     case "minimized":
@@ -517,7 +638,20 @@ function placeFromPersistedLocation(l: PanelLayoutV1, id: string, source: PanelL
  * already in `order` that also appears in `persistedSource.compact.order` — i.e. among ids
  * `persistedSource` has an opinion on, the final order converges to the persisted order
  * regardless of registration arrival order. An id absent from `persistedSource` (or with no
- * `persistedSource` at all) is simply appended, matching pre-persistence-aware behavior. */
+ * `persistedSource` at all) is simply appended, matching pre-persistence-aware behavior.
+ * @param order The current `compact.order` array, not yet containing `id`.
+ * @param id The panel id to insert.
+ * @param persistedSource The persisted (pre-prune) layout to source a relative order from,
+ * or `null` when there is none (a fresh layout).
+ * @returns A new array with `id` inserted at the position `persistedSource` implies, or
+ * appended when `persistedSource` is `null` or has no opinion on `id`.
+ * @example
+ * ```
+ * // private function; not part of the public API — called only by
+ * // placeNewRegistrations for every newly-seen registration
+ * insertPersistedOrder(["chat"], "assets", null); // ["chat", "assets"]
+ * ```
+ */
 function insertPersistedOrder(order: string[], id: string, persistedSource: PanelLayoutV1 | null): string[] {
   const srcOrder = persistedSource?.compact.order;
   if (!srcOrder || !srcOrder.includes(id)) return [...order, id];
@@ -558,7 +692,20 @@ function insertPersistedOrder(order: string[], id: string, persistedSource: Pane
  * `compact.order` — a registration once placed here is never re-defaulted/re-persisted-over
  * even if the user later closes/moves it, since this only catches ids this layout has NEVER
  * recorded.
- * PRECONDITION: `regs` ids are unique (registry-guaranteed). */
+ * PRECONDITION: `regs` ids are unique (registry-guaranteed).
+ * @param l The layout to place new registrations into.
+ * @param regs The panel registrations to check for and place, in contribution order.
+ * @param persistedSource The persisted (pre-prune) layout to reconstruct positions from, or
+ * `null` for a fresh layout with no persisted history.
+ * @returns The resulting layout, or `l` itself when every `regs` id is already known.
+ * @example
+ * ```ts
+ * import { placeNewRegistrations, defaultLayout } from "@shadowcat/module-panels";
+ *
+ * const layout = defaultLayout([{ id: "chat" }]);
+ * placeNewRegistrations(layout, [{ id: "chat" }, { id: "assets" }]);
+ * ```
+ */
 export function placeNewRegistrations(
   l: PanelLayoutV1,
   regs: { id: string; placement?: DefaultPlacement }[],
@@ -592,7 +739,16 @@ export function placeNewRegistrations(
 
 /** Builds the initial layout for a module set at first launch — every `regs` entry is
  * "new" against an empty layout, so this is `placeNewRegistrations` applied to the empty
- * starting tree. */
+ * starting tree.
+ * @param regs The panel registrations to seed the fresh layout with.
+ * @returns A new `PanelLayoutV1` with every one of `regs` placed per its `placement`.
+ * @example
+ * ```ts
+ * import { defaultLayout } from "@shadowcat/module-panels";
+ *
+ * defaultLayout([{ id: "chat", placement: { kind: "docked", zone: "right" } }]);
+ * ```
+ */
 export function defaultLayout(regs: { id: string; placement?: DefaultPlacement }[]): PanelLayoutV1 {
   const empty: PanelLayoutV1 = {
     version: 1,
