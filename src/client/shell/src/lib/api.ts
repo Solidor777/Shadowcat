@@ -11,10 +11,24 @@ export interface Me {
  * SPA on its current route forever (the boot chain has no other timeout). */
 const FETCH_TIMEOUT_MS = 15_000;
 
-/** Bounded retry for the boot chain: transient backend blips (restart, single
- * 5xx) must not permanently strand the SPA on the login/worlds route — the
- * pre-fix behavior degraded on the FIRST failure with no retry and no error
- * surface. Delays are flat values, not a policy knob (YAGNI). */
+/** Bounded retry for the boot chain (`withRetry`'s only caller is
+ * `App.svelte`'s `boot()`): a transient backend blip (restart, single 5xx)
+ * must not permanently strand the SPA on the login/worlds route with no
+ * retry and no error surface. Delays are flat values, not a policy knob
+ * (YAGNI). Rethrows the last error if every attempt fails.
+ * @param fn - The operation to retry; invoked again from scratch each
+ *   attempt.
+ * @param attempts - Maximum number of calls to `fn`.
+ * @param delays - Flat delay in ms before each retry, indexed by attempt
+ *   number and clamped to the last entry once attempts exceed the array
+ *   length (default: 500ms after the first failure, 1500ms after the
+ *   second).
+ * @returns The resolved value of the first successful call to `fn`.
+ * @example
+ * ```
+ * await withRetry(() => fetch("/api/me"));
+ * ```
+ */
 export async function withRetry<T>(
   fn: () => Promise<T>,
   attempts = 3,
@@ -32,6 +46,15 @@ export async function withRetry<T>(
   throw lastErr;
 }
 
+/** Fetches `url` as JSON, aborting after `FETCH_TIMEOUT_MS`. Throws on a
+ * non-2xx response.
+ * @param url - Request URL.
+ * @returns The parsed JSON response body, typed as `T`.
+ * @example
+ * ```
+ * await getJson<Me>("/api/me");
+ * ```
+ */
 async function getJson<T>(url: string): Promise<T> {
   const res = await fetch(url, {
     headers: { accept: "application/json" },
@@ -41,6 +64,17 @@ async function getJson<T>(url: string): Promise<T> {
   return (await res.json()) as T;
 }
 
+/** POSTs `body` as JSON to `url`, aborting after `FETCH_TIMEOUT_MS`. Returns
+ * the raw `Response` — unlike `getJson`, it does not check `res.ok` or parse
+ * the body; callers that care about the outcome do so themselves.
+ * @param url - Request URL.
+ * @param body - Request body, JSON-serialized.
+ * @returns The raw fetch `Response`.
+ * @example
+ * ```
+ * await postJson("/api/logout", {});
+ * ```
+ */
 async function postJson(url: string, body: unknown): Promise<Response> {
   return fetch(url, {
     method: "POST",
@@ -50,6 +84,15 @@ async function postJson(url: string, body: unknown): Promise<Response> {
   });
 }
 
+/** Fetches the caller's identity. Distinguishes "not logged in" from a
+ * request failure: a 401 resolves to `null`, any other non-2xx status
+ * throws.
+ * @returns The caller's `Me` record, or `null` if unauthenticated.
+ * @example
+ * ```
+ * const me = await getMe();
+ * ```
+ */
 export async function getMe(): Promise<Me | null> {
   const res = await fetch("/api/me", {
     headers: { accept: "application/json" },
@@ -60,10 +103,25 @@ export async function getMe(): Promise<Me | null> {
   return (await res.json()) as Me;
 }
 
+/** Logs the caller out server-side. Awaits the request but does not inspect
+ * its response status (see `postJson`) — a failed logout is not surfaced to
+ * the caller.
+ * @example
+ * ```
+ * await logout();
+ * ```
+ */
 export async function logout(): Promise<void> {
   await postJson("/api/logout", {});
 }
 
+/** Lists the worlds the caller's account can currently access.
+ * @returns Each accessible world, with the caller's effective role in it.
+ * @example
+ * ```
+ * const worlds = await listWorlds();
+ * ```
+ */
 export function listWorlds(): Promise<WorldEntry[]> {
   return getJson<WorldEntry[]>("/api/worlds");
 }
@@ -75,6 +133,15 @@ export interface WorldMember {
   role: "gm" | "player" | "spectator";
 }
 
+/** Lists a world's member roster. Visible to every member of that world —
+ * the endpoint is not GM-restricted.
+ * @param world - World id.
+ * @returns Each member's user id, username, and world role.
+ * @example
+ * ```
+ * const members = await listWorldMembers("w1");
+ * ```
+ */
 export function listWorldMembers(world: string): Promise<WorldMember[]> {
   return getJson<WorldMember[]>(`/api/worlds/${world}/members`);
 }
@@ -90,10 +157,28 @@ export interface UiState {
   worlds: Record<string, { panelLayout?: unknown; chatRead?: unknown }>;
 }
 
+/** The `UiState` shape for an account with no persisted blob yet.
+ * @returns A fresh `UiState`: locale `"en"`, no `lastWorld`, no per-world
+ *   entries.
+ * @example
+ * ```
+ * const empty = defaultUiState();
+ * ```
+ */
 function defaultUiState(): UiState {
   return { global: { locale: "en", lastWorld: null }, worlds: {} };
 }
 
+/** Fetches the caller's UI-state blob, filling in defaults for any field the
+ * server omits (a brand-new account, or a blob written before a field
+ * existed).
+ * @returns The caller's `UiState`, with `global` defaults applied field-by-
+ *   field and `worlds` defaulted to `{}` if absent.
+ * @example
+ * ```
+ * const ui = await getUiState();
+ * ```
+ */
 export async function getUiState(): Promise<UiState> {
   const raw = await getJson<Partial<UiState>>("/api/me/ui-state");
   const def = defaultUiState();
@@ -122,6 +207,18 @@ export interface UiStatePatch {
   worlds?: Record<string, Partial<UiState["worlds"][string]>>;
 }
 
+/** Writes a partial UI-state patch (see `UiStatePatch` for the merge rule).
+ * Throws on a non-2xx response.
+ * @param patch - The leaf fields/keys to write; anything absent is untouched
+ *   server-side.
+ * @param opts - Write options.
+ * @param opts.keepalive - When true, sets `fetch`'s `keepalive` flag so the
+ *   request can outlive a page unload — used by `flushOnUnload`.
+ * @example
+ * ```
+ * await putUiState({ global: { locale: "fr" } });
+ * ```
+ */
 export async function putUiState(
   patch: UiStatePatch,
   opts: { keepalive?: boolean } = {},

@@ -5,6 +5,15 @@ export type Route =
   | { name: "world"; id: string }
   | { name: "unknown" };
 
+/** Parses a `location.hash` string into a `Route`. An unrecognized path
+ * (including an empty hash) resolves to `{ name: "unknown" }`.
+ * @param hash - The raw hash, including the leading `#` if present.
+ * @returns The parsed route.
+ * @example
+ * ```
+ * parseHash("#/world/w1"); // => { name: "world", id: "w1" }
+ * ```
+ */
 export function parseHash(hash: string): Route {
   const path = hash.replace(/^#/, "");
   if (path === "/setup") return { name: "setup" };
@@ -15,6 +24,17 @@ export function parseHash(hash: string): Route {
   return { name: "unknown" };
 }
 
+/** Serializes a `Route` back into a `location.hash` string. Not a strict
+ * inverse of `parseHash`: an `"unknown"` route serializes to `#/login`, not
+ * the original invalid hash — `Route` carries no memory of the string that
+ * produced it.
+ * @param route - The route to serialize.
+ * @returns The hash string, including the leading `#`.
+ * @example
+ * ```
+ * routeToHash({ name: "world", id: "w1" }); // => "#/world/w1"
+ * ```
+ */
 export function routeToHash(route: Route): string {
   switch (route.name) {
     case "world":
@@ -26,6 +46,14 @@ export function routeToHash(route: Route): string {
   }
 }
 
+/** Navigates by setting `location.hash`, which fires the `hashchange`
+ * listener that updates `currentRoute()`'s reactive state.
+ * @param route - The route to navigate to.
+ * @example
+ * ```
+ * navigate({ name: "worlds" });
+ * ```
+ */
 export function navigate(route: Route): void {
   location.hash = routeToHash(route);
 }
@@ -37,6 +65,15 @@ if (typeof window !== "undefined") {
   });
 }
 
+/** The current route, reactive: reading it in a rune context (`$derived`,
+ * `$effect`) re-runs when `location.hash` changes, via the module-level
+ * `$state` this function reads.
+ * @returns The current route.
+ * @example
+ * ```
+ * const route = $derived(currentRoute());
+ * ```
+ */
 export function currentRoute(): Route {
   return route;
 }

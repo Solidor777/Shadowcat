@@ -31,6 +31,19 @@
   let booted = $state(false);
   let session = $state<WorldSession | null>(null);
 
+  /** Resolves the app's initial route on load: fetches identity, applies the
+   * saved locale, and — only when the URL or a persisted `lastWorld` could
+   * resolve to a world — fetches the worlds list and re-enters via
+   * `resolveBootWorld`. Falls back to the login/worlds route on any failure
+   * (a hung/failing backend must not wedge the SPA on "Loading…" forever)
+   * and always sets `booted = true` on exit.
+   * @returns Resolves once the initial route has been decided; never
+   *   rejects — failures degrade to the login route instead of throwing.
+   * @example
+   * ```
+   * boot();
+   * ```
+   */
   async function boot() {
     try {
       me = await withRetry(() => getMe());
@@ -76,10 +89,16 @@
     });
   }
 
-  // Entry authenticated the user; fetch identity + apply saved session state
-  // (locale) before entry advances to world-select — the pre-split boot order.
-  // Returns whether identity is in hand: a failed fetch sends entry back to login
-  // (the old afterAuth `me ? "worlds" : "login"` recovery branch).
+  /** Called by `<Entry>` once its own login flow succeeds. Fetches identity
+   * and applies the saved session state (locale) so both are in hand before
+   * `<Entry>` advances to world-select.
+   * @returns Whether identity was fetched successfully. `<Entry>` returns to
+   *   login when this resolves `false`.
+   * @example
+   * ```
+   * const ok = await onAuthenticated();
+   * ```
+   */
   async function onAuthenticated(): Promise<boolean> {
     try {
       me = await getMe();
@@ -90,6 +109,15 @@
     return me !== null;
   }
 
+  /** Enters a world: opens its WebSocket session, persists it as
+   * `lastWorld`, and navigates to `#/world/<id>`. A no-op if identity has
+   * not been established yet (`me` is `null`).
+   * @param worldId - The world to enter.
+   * @example
+   * ```
+   * enterWorld("w1");
+   * ```
+   */
   function enterWorld(worldId: string) {
     if (!me) return;
     const wsUrl =
@@ -102,6 +130,13 @@
     navigate({ name: "world", id: worldId });
   }
 
+  /** Leaves the current world: tears down the session, clears `lastWorld`,
+   * and navigates back to the worlds list.
+   * @example
+   * ```
+   * leaveWorld();
+   * ```
+   */
   function leaveWorld() {
     session?.leave();
     session = null;

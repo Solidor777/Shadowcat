@@ -15,7 +15,19 @@ export interface BootResolution {
  * to a different, still-valid world. `lastWorld` seeds ONLY a bare/non-world
  * load. A route world absent from `worlds` (deleted/revoked) falls back to
  * the worlds list, clearing `lastWorld` only when it is ALSO stale — a dead
- * deep link must never wipe an otherwise-valid `lastWorld` reference. */
+ * deep link must never wipe an otherwise-valid `lastWorld` reference.
+ * @param route - The current hash route.
+ * @param lastWorld - The persisted `ui_state.global.lastWorld`, or `null`.
+ * @param worlds - The worlds the caller's account can currently access (from
+ *   `listWorlds()`).
+ * @returns Which world id to enter, if any, and whether `lastWorld` must be
+ *   cleared.
+ * @example
+ * ```
+ * resolveBootWorld({ name: "world", id: "w1" }, null, [{ id: "w1", name: "W", role: "gm" }]);
+ * // => { enterWorldId: "w1", clearLastWorld: false }
+ * ```
+ */
 export function resolveBootWorld(
   route: Route,
   lastWorld: string | null,

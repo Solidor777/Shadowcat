@@ -36,6 +36,15 @@ type DirtySnapshot = {
   worlds: Map<string, Set<WorldKey>>;
 };
 
+/** Deep-copies the live `dirty` tracking into new `Set`/`Map` instances, not
+ * references, so a subsequent `clearDirty()` cannot mutate the copy out from
+ * under an in-flight persist attempt.
+ * @returns A structural copy of `dirty`.
+ * @example
+ * ```
+ * const snap = snapshotDirty();
+ * ```
+ */
 function snapshotDirty(): DirtySnapshot {
   return {
     global: new Set(dirty.global),
@@ -43,6 +52,12 @@ function snapshotDirty(): DirtySnapshot {
   };
 }
 
+/** Clears all dirty tracking: the global field set and every world's key set.
+ * @example
+ * ```
+ * clearDirty();
+ * ```
+ */
 function clearDirty(): void {
   dirty.global.clear();
   dirty.worlds.clear();
@@ -50,7 +65,13 @@ function clearDirty(): void {
 
 /** Re-adds every field/key from `snap` into the live dirty tracking (deep
  * re-add) — used when a persist attempt fails, so the next one retries
- * exactly what was lost, merged with anything marked in the meantime. */
+ * exactly what was lost, merged with anything marked in the meantime.
+ * @param snap - A `snapshotDirty` snapshot to merge back into `dirty`.
+ * @example
+ * ```
+ * remarkDirty(snap);
+ * ```
+ */
 function remarkDirty(snap: DirtySnapshot): void {
   for (const field of snap.global) dirty.global.add(field);
   for (const [id, keys] of snap.worlds) {
@@ -60,12 +81,30 @@ function remarkDirty(snap: DirtySnapshot): void {
   }
 }
 
+/** Marks a single per-world key dirty, creating that world's key set on
+ * first use.
+ * @param world - World id.
+ * @param key - The `UiState.worlds[string]` key that changed
+ *   (`"panelLayout"` or `"chatRead"`).
+ * @example
+ * ```
+ * markWorldDirty("w1", "panelLayout");
+ * ```
+ */
 function markWorldDirty(world: string, key: WorldKey): void {
   const set = dirty.worlds.get(world) ?? new Set<WorldKey>();
   set.add(key);
   dirty.worlds.set(world, set);
 }
 
+/** Builds the `global` slice of a `UiStatePatch` from the currently dirty
+ * global fields, reading current values from `state.global`.
+ * @returns The dirty fields only, or `undefined` if no global field is dirty.
+ * @example
+ * ```
+ * const patch = buildGlobalPatch();
+ * ```
+ */
 function buildGlobalPatch(): Partial<UiState["global"]> | undefined {
   if (dirty.global.size === 0) return undefined;
   const patch: Partial<UiState["global"]> = {};
@@ -74,6 +113,17 @@ function buildGlobalPatch(): Partial<UiState["global"]> | undefined {
   return patch;
 }
 
+/** Builds one world's slice of a `UiStatePatch` from a set of dirty keys,
+ * reading current values from `state.worlds[id]`.
+ * @param id - World id.
+ * @param keys - The dirty keys for this world.
+ * @returns The dirty keys only, or `undefined` if the world has no entry in
+ *   `state` or no key is dirty.
+ * @example
+ * ```
+ * const slice = buildWorldPatch("w1", new Set(["panelLayout"]));
+ * ```
+ */
 function buildWorldPatch(
   id: string,
   keys: Set<WorldKey>,
@@ -86,6 +136,17 @@ function buildWorldPatch(
   return slice;
 }
 
+/** Builds a full `UiStatePatch` from the current `dirty` tracking: a
+ * `global` slice via `buildGlobalPatch`, plus one `worlds[id]` slice per
+ * world whose dirty keys still resolve through `buildWorldPatch`. Omits
+ * `global`/`worlds` entirely when there is nothing to send on that side.
+ * @returns The patch to PUT — may have neither `global` nor `worlds` set if
+ *   nothing is dirty.
+ * @example
+ * ```
+ * const patch = buildPatch();
+ * ```
+ */
 function buildPatch(): UiStatePatch {
   const patch: UiStatePatch = {};
   const global = buildGlobalPatch();
@@ -101,6 +162,17 @@ function buildPatch(): UiStatePatch {
   return patch;
 }
 
+/** Builds a patch from the currently dirty fields/keys, clears the dirty
+ * tracking, and PUTs it. On failure, re-marks exactly the fields/keys this
+ * attempt captured — merged with anything marked since, via `remarkDirty` —
+ * so the next scheduled persist retries them; on success the clear is
+ * permanent. A no-op (no PUT; dirty tracking stays cleared) when the current
+ * dirty state builds an empty patch.
+ * @example
+ * ```
+ * await persist();
+ * ```
+ */
 async function persist(): Promise<void> {
   const snap = snapshotDirty();
   const patch = buildPatch();
@@ -115,6 +187,17 @@ async function persist(): Promise<void> {
   }
 }
 
+/** Leading-edge debounced trigger for `persist()`: the first call after
+ * `loaded` becomes true persists immediately and starts a `COOLDOWN_MS`
+ * cooldown; calls arriving during the cooldown only set
+ * `pendingDuringCooldown`. On cooldown expiry, a pending call re-triggers
+ * `schedulePersist()` — persisting again immediately and starting a fresh
+ * cooldown — exactly once, rather than resetting the cooldown on every call.
+ * @example
+ * ```
+ * schedulePersist();
+ * ```
+ */
 function schedulePersist(): void {
   if (!loaded) return; // don't write back during the initial restore
   if (timer === null) {
@@ -131,7 +214,18 @@ function schedulePersist(): void {
   }
 }
 
-/** Fetch the blob, apply the saved locale, and start observing locale changes. */
+/** Fetches the UI-state blob, applies its saved locale, marks the module
+ * loaded, and — once per process lifetime — starts observing future locale
+ * changes to persist them. Clears any dirty tracking left over from a prior
+ * session first, so a stale marker from a previous account never bleeds into
+ * the freshly loaded state. Safe to call again on re-login: the `observing`
+ * latch stops a second call from stacking a second locale-change listener.
+ * @returns The freshly loaded `UiState`.
+ * @example
+ * ```
+ * const ui = await loadSessionState();
+ * ```
+ */
 export async function loadSessionState(): Promise<UiState> {
   // Re-login hygiene: a stale dirty marker from a previous session/account
   // must never bleed into the freshly loaded one.
@@ -156,10 +250,28 @@ export async function loadSessionState(): Promise<UiState> {
   return state;
 }
 
+/** The in-memory `UiState`, as last loaded/mutated. Not reactive — `state`
+ * is a plain module variable, not a rune — so a caller that needs to react
+ * to a change re-reads after the mutating call (`setLastWorld`,
+ * `setPanelLayout`, `setChatRead`) returns.
+ * @returns The current session state.
+ * @example
+ * ```
+ * const ui = getSessionState();
+ * ```
+ */
 export function getSessionState(): UiState {
   return state;
 }
 
+/** Sets `global.lastWorld`, marks it dirty, and schedules a persist. A no-op
+ * (no dirty mark, no persist) if `id` already equals the current value.
+ * @param id - The world id to remember, or `null` to clear it.
+ * @example
+ * ```
+ * setLastWorld("w1");
+ * ```
+ */
 export function setLastWorld(id: string | null): void {
   if (state.global.lastWorld === id) return;
   state.global.lastWorld = id;
@@ -167,10 +279,29 @@ export function setLastWorld(id: string | null): void {
   schedulePersist();
 }
 
+/** Reads a world's persisted panel-layout blob. The shell never inspects its
+ * shape — ownership belongs to `@shadowcat/module-panels`' persistence codec.
+ * @param world - World id.
+ * @returns The stored blob, or `null` if the world has none.
+ * @example
+ * ```
+ * const layout = getPanelLayout("w1");
+ * ```
+ */
 export function getPanelLayout(world: string): unknown | null {
   return state.worlds[world]?.panelLayout ?? null;
 }
 
+/** Stores a world's panel-layout blob, marks it dirty, and schedules a
+ * persist. Creates the world's entry in `state.worlds` if it does not exist
+ * yet.
+ * @param world - World id.
+ * @param blob - The opaque layout blob (see `getPanelLayout`).
+ * @example
+ * ```
+ * setPanelLayout("w1", encodedLayout);
+ * ```
+ */
 export function setPanelLayout(world: string, blob: unknown): void {
   const w = (state.worlds[world] ??= {});
   w.panelLayout = blob;
@@ -178,10 +309,29 @@ export function setPanelLayout(world: string, blob: unknown): void {
   schedulePersist();
 }
 
+/** Reads a world's persisted chat last-read-marker blob. The shell never
+ * inspects its shape — ownership belongs to the chat module.
+ * @param world - World id.
+ * @returns The stored blob, or `null` if the world has none.
+ * @example
+ * ```
+ * const read = getChatRead("w1");
+ * ```
+ */
 export function getChatRead(world: string): unknown | null {
   return state.worlds[world]?.chatRead ?? null;
 }
 
+/** Stores a world's chat last-read-marker blob, marks it dirty, and
+ * schedules a persist. Creates the world's entry in `state.worlds` if it
+ * does not exist yet.
+ * @param world - World id.
+ * @param blob - The opaque last-read-marker blob (see `getChatRead`).
+ * @example
+ * ```
+ * setChatRead("w1", marker);
+ * ```
+ */
 export function setChatRead(world: string, blob: unknown): void {
   const w = (state.worlds[world] ??= {});
   w.chatRead = blob;
@@ -189,7 +339,14 @@ export function setChatRead(world: string, blob: unknown): void {
   schedulePersist();
 }
 
-/** Force any pending persist to run now (test/teardown helper). */
+/** Force any pending persist to run now (test/teardown helper). Cancels the
+ * cooldown timer and the pending-during-cooldown flag, then calls
+ * `persist()` directly — whatever is dirty at call time is sent immediately.
+ * @example
+ * ```
+ * await flushSessionState();
+ * ```
+ */
 export async function flushSessionState(): Promise<void> {
   if (timer) {
     clearTimeout(timer);
@@ -204,7 +361,12 @@ export async function flushSessionState(): Promise<void> {
  * closes first. `keepalive` lets the PUT survive the unload. Uses the same
  * snapshot/clear/re-mark-on-failure shape as `persist()` — a rejected
  * keepalive PUT (the request can still fail even though the tab is closing,
- * e.g. mid-navigation) must not silently drop the fields/keys it carried. */
+ * e.g. mid-navigation) must not silently drop the fields/keys it carried.
+ * @example
+ * ```
+ * window.addEventListener("pagehide", flushOnUnload);
+ * ```
+ */
 export function flushOnUnload(): void {
   if (!loaded || (dirty.global.size === 0 && dirty.worlds.size === 0)) return;
   const snap = snapshotDirty();
