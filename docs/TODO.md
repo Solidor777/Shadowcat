@@ -238,3 +238,24 @@ Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one de
   D-alpha's final whole-branch review.)
 
 
+
+## Actionable now — duplicated `listWorldMembers` (docs sweep 9 Task 2 backlog)
+- TODO: `listWorldMembers`/`WorldMember` exist TWICE — `src/client/shell/src/lib/api.ts` and
+  `src/client/core/src/user-rest.ts` (the latter re-exported from `@shadowcat/core`'s `index.ts`,
+  i.e. public API). They have already diverged, and **neither is a superset of the other**:
+  - `core`'s version `encodeURIComponent`s the world id and surfaces the server's error text via
+    `restError`, but issues the `fetch` with **no timeout**.
+  - `shell`'s version goes through `getJson`, which **does** apply
+    `AbortSignal.timeout(FETCH_TIMEOUT_MS)`, but does not encode the id and throws
+    `` `${url} → ${res.status}` `` — a status code, discarding the server's message.
+  Both are correct today only because world ids are UUIDs (nothing to encode). This is the
+  never-fork-a-decision class: two implementations of one request that must agree, already
+  disagreeing on three axes.
+  Fix direction: ONE implementation, combining all three properties (encode + server error text +
+  timeout), with the other deleted and its caller re-pointed. The shell copy has exactly one
+  production caller (`worldSession.svelte.ts:707`); `core`'s is public API with its own tests, so
+  `core` is the natural home — but note this is a real merge, not a swap: adopting `core`'s version
+  as-is would silently drop the request timeout. Needs a runtime change plus tests, so it is out of
+  scope for a docs-only sweep. (Surfaced by the client-shell doc sweep, Task 2; the bidirectional
+  nature confirmed by the dispatcher — the task's own report characterized only `core` as the
+  stronger version.)
