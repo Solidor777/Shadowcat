@@ -2,7 +2,7 @@ import { test, expect, vi } from "vitest";
 import { ContributionRegistry, PANEL_CONTRACT, silentLogger } from "@shadowcat/core";
 import type { PanelsApi } from "@shadowcat/ui-kit";
 import { PanelsController, regsForRole, type PanelsBridgeLike } from "./controller.svelte";
-import { applyOp, defaultLayout, locate } from "./layout/tree";
+import { applyOp, defaultLayout, locate, type Rect } from "./layout/tree";
 import { encodeLayout } from "./layout/persist";
 
 function registry(): ContributionRegistry {
@@ -340,6 +340,59 @@ test("rehydratePoppedOut: two persisted popped-out ids cascade to distinct float
   expect(rects[0]).not.toEqual(rects[1]);
   expect(setPanelLayout).toHaveBeenCalledWith(encodeLayout(ctrl.layout));
 });
+
+// Anti-drift gate for a deliberately-forked constant pair. `tree.ts`'s
+// SHEET_CASCADE_BASE/STEP and `controller.svelte.ts`'s REHYDRATE_FLOAT_BASE/STEP
+// are intentionally NOT a shared import (the pure layout tree stays decoupled
+// from the controller), so nothing structural stops one from drifting; both
+// comments promise only that they stay numerically identical. Every other
+// cascade test — here, in tree.test.ts, and in fake.test.ts — asserts only that
+// a given side's own offsets differ FROM EACH OTHER, which stays green if
+// either pair changes. This is the one test that fails on divergence: it drives
+// both call sites to the same floating index and demands the identical rect.
+// n=0 pins BASE, n=1 pins STEP, n=7 pins the shared `% 6` wrap.
+function rectViaPlacement(alreadyFloating: number): Rect {
+  let l = defaultLayout([]);
+  for (let i = 0; i < alreadyFloating; i++) {
+    l = applyOp(l, { op: "open", id: `pre${i}`, placement: { kind: "floating" } });
+  }
+  l = applyOp(l, { op: "open", id: "probe", placement: { kind: "floating" } });
+  return l.expanded.floating.find((f) => f.id === "probe")!.rect;
+}
+
+function rectViaRehydration(alreadyFloating: number): Rect {
+  const ids = Array.from({ length: alreadyFloating }, (_, i) => `pre${i}`);
+  const contributions = new ContributionRegistry();
+  for (const id of [...ids, "probe"]) {
+    contributions.contribute({
+      id,
+      contract: PANEL_CONTRACT,
+      component: {},
+      panel: { icon: id, labelKey: `${id}.tab` },
+    });
+  }
+  let saved = defaultLayout([]);
+  for (const id of ids) saved = applyOp(saved, { op: "open", id, placement: { kind: "floating" } });
+  saved = applyOp(saved, { op: "open", id: "probe", placement: { kind: "docked", zone: "right" } });
+  saved = applyOp(saved, { op: "popOut", id: "probe" });
+
+  const ctrl = new PanelsController({
+    contributions,
+    role: "gm",
+    getPanelLayout: () => saved,
+    setPanelLayout: () => {},
+    bridge: fakeBridge(),
+    logger: silentLogger,
+  });
+  return ctrl.layout.expanded.floating.find((f) => f.id === "probe")!.rect;
+}
+
+test.each([0, 1, 7])(
+  "cascade parity at index %i: a floating placement and a rehydrated popout land on the identical rect",
+  (alreadyFloating) => {
+    expect(rectViaRehydration(alreadyFloating)).toEqual(rectViaPlacement(alreadyFloating));
+  },
+);
 
 test("the controller binds itself into the supplied bridge at construction", () => {
   const bridge = fakeBridge();
