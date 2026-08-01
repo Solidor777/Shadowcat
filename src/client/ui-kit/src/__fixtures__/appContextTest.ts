@@ -7,8 +7,24 @@ import { TokenSelection } from "../tokenSelection.svelte";
 import { PanelsBridge } from "../panelsBridge.svelte";
 import { SceneSelection } from "../sceneSelection.svelte";
 
-/** Build a Map for @testing-library/svelte's `context` option holding a minimal
- * AppContext (overridable per field), seeded under the real private key. */
+/**
+ * Build a Map for @testing-library/svelte's `context` option holding a minimal
+ * AppContext (overridable per field), seeded under the real private key.
+ *
+ * Fidelity gap: in production, `documents` (the optimistic view) is a distinct
+ * `OptimisticClient` wrapping `store` (the authoritative `DocumentStore`) — see
+ * `worldSession.svelte.ts`. Here, `documents` defaults to `over.documents ?? over.store
+ * ?? new DocumentStore()`: if a test overrides only `store`, `documents` is that SAME
+ * plain `DocumentStore` instance, not an `OptimisticClient` over it. Optimistic-specific
+ * behavior (predicted-op overlay, rollback on reject) is therefore NOT emulated unless
+ * the test supplies its own `documents` override — reads through `documents` in the
+ * default case are plain authoritative-store reads.
+ * @param over - Per-field overrides; every field not given falls back to a
+ * harmless no-op/empty default (see the field list in the body).
+ * @returns A context Map suitable for @testing-library/svelte's `context` render option.
+ * @example
+ * render(MyPanel, { context: setAppContextForTest({ role: "gm" }) });
+ */
 export function setAppContextForTest(over: Partial<AppContext> = {}): Map<unknown, unknown> {
   const ctx: AppContext = {
     contributions: over.contributions ?? new ContributionRegistry(),

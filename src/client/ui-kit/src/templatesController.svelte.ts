@@ -26,43 +26,92 @@ export interface PendingSession {
   resolve: (theirsByGroup: Map<string, Set<string>>) => void;
 }
 
+/**
+ * Template pull/push/revert/stamp orchestration (M13e), backing `AppContext.templates`. Thin
+ * glue: pure core merge functions → the conflict modal → `dispatchIntent`. Holds a reactive
+ * `pending` conflict session that `TemplateModalHost` renders. Constructed by the shell
+ * alongside `SheetsController`; imports no module.
+ */
 export class TemplatesController {
   #deps: TemplatesControllerDeps;
   pending = $state<PendingSession | null>(null);
 
+  /** Build a controller wired to its collaborators.
+   * @param deps - The controller's collaborators (store/documents/dispatch/role/canEdit/logger).
+   * @example new TemplatesController({ store, documents, dispatchIntent, role, selfId, canEdit, logger });
+   */
   constructor(deps: TemplatesControllerDeps) {
     this.#deps = deps;
   }
 
+  /** Look up a document by id in the optimistic view.
+   * @param id - The document id to resolve.
+   * @returns The document, or `undefined` if not in the store.
+   * @example this.#get(childId);
+   */
   #get(id: string): WireDocument | undefined {
     return this.#deps.documents.get(id);
   }
 
+  /** Resolve `child`'s template document via its `source` reference.
+   * @param child - The instance document.
+   * @returns The template document, or `undefined` if `child` has no `source` or the
+   * template is not currently in the store.
+   * @example this.#templateOf(child);
+   */
   #templateOf(child: WireDocument): WireDocument | undefined {
     return child.source ? this.#get(child.source.id) : undefined;
   }
 
+  /** Whether the current user is a GM or the EFFECTIVE owner of `doc` (core `effectiveOwner`:
+   * per-doc override, else the linked actor's owner) — the same rule the server enforces at
+   * egress; a literal `doc.owner` read here forks it.
+   * @param doc - The document to check ownership of.
+   * @returns Whether the current user is a GM or `doc`'s effective owner.
+   * @example this.#isOwnerOrGm(doc);
+   */
   #isOwnerOrGm(doc: WireDocument): boolean {
-    // Ownership is EFFECTIVE (core effectiveOwner: per-doc override, else the
-    // linked actor's owner) — the same rule the server now enforces at egress;
-    // a literal doc.owner read here forks it.
     return this.#deps.role === "gm" || effectiveOwner(doc, this.#deps.documents) === this.#deps.selfId;
   }
 
+  /** Deep-clone `source` into a new stamped instance (pure core function; the caller
+   * dispatches the resulting Create).
+   * @param source - The template document to stamp from.
+   * @param opts - Where the new instance lands (world/owner/parent/permissions).
+   * @returns The stamped instance document, not yet dispatched.
+   * @example templates.stampInstance(templateDoc, { worldId, ownerId: null, parentId: null });
+   */
   stampInstance(source: WireDocument, opts: StampOpts): WireDocument {
     return stampInstance(source, opts);
   }
 
+  /** In-store instances stamped from `templateId` (same-world only; see the core
+   * `findInstances` doc comment for the exact scoping rule).
+   * @param templateId - The template document's id.
+   * @returns Every in-store instance whose `source.id` is `templateId`.
+   * @example templates.findInstances(templateId);
+   */
   findInstances(templateId: string): WireDocument[] {
     return findInstances(templateId, this.#deps.store.snapshot());
   }
 
+  /** Provenance/sync state for the sheet badge: how `childId` compares to its template.
+   * @param childId - The instance document's id.
+   * @returns `"none"` if `childId` is not in the store; otherwise the core `syncState`
+   * result comparing the child to its resolved template (or lack thereof).
+   * @example templates.syncState(childId);
+   */
   syncState(childId: string): SyncState {
     const child = this.#get(childId);
     if (!child) return "none";
     return syncState(child, this.#templateOf(child));
   }
 
+  /** Whether the current user may pull/revert `childId` (owner-or-GM + write caps).
+   * @param childId - The instance document's id.
+   * @returns Whether pull/revert is currently permitted.
+   * @example templates.canPull(childId);
+   */
   canPull(childId: string): boolean {
     const child = this.#get(childId);
     if (!child || !this.#templateOf(child)) return false;
@@ -79,10 +128,16 @@ export class TemplatesController {
     );
   }
 
+  /** Whether the current user may push `templateId` (owner-or-GM + write caps; see
+   * `canPull`'s comment for the same advisory cap-union mirror, checked against the
+   * template doc). `false` when the template has no in-store instances to push to.
+   * @param templateId - The template document's id.
+   * @returns Whether push is currently permitted.
+   * @example templates.canPush(templateId);
+   */
   canPush(templateId: string): boolean {
     const tmpl = this.#get(templateId);
     if (!tmpl) return false;
-    // See `canPull`'s comment: same advisory cap-union mirror, checked against the template doc.
     return (
       this.#isOwnerOrGm(tmpl) &&
       this.#deps.canEdit(tmpl, "/embedded") &&
@@ -90,6 +145,12 @@ export class TemplatesController {
     );
   }
 
+  /** Merge the template into `childId`. Dispatches directly when the merge is
+   * conflict-free; otherwise opens a single-group conflict session for the modal.
+   * A no-op (with a logged warning) if `childId` is unresolvable or has no template.
+   * @param childId - The instance document's id to pull into.
+   * @example templates.pull(childId);
+   */
   pull(childId: string): void {
     const child = this.#get(childId);
     if (!child) return;
@@ -106,6 +167,13 @@ export class TemplatesController {
     this.#openSession([{ key: childId, label: null, conflicts: plan.conflicts }], new Map([[childId, { child, template, plan }]]));
   }
 
+  /** Reset `childId`'s mergeable bands to the template (keeping placement) and dispatch
+   * immediately — reverting never opens the conflict modal (the child's own changes are
+   * discarded outright, so there is nothing to reconcile). A no-op (with a logged warning)
+   * if `childId` is unresolvable or has no template.
+   * @param childId - The instance document's id to revert.
+   * @example templates.revert(childId);
+   */
   revert(childId: string): void {
     const child = this.#get(childId);
     if (!child) return;
@@ -117,16 +185,22 @@ export class TemplatesController {
     this.#deps.dispatchIntent([computeRevert(child, template)]);
   }
 
+  /** Push `templateId` to every in-store instance the pusher can see + write. Write-scope
+   * filter: `findInstances` is same-world only (see the core `findInstances` doc comment);
+   * it says nothing about per-instance write authorization, which can differ from the
+   * template's own ownership (an instance may belong to a different player) — this excludes
+   * any instance the pusher cannot write before splitting conflict-free (dispatched
+   * immediately) from conflicted (grouped into one conflict session for the modal).
+   * A no-op (with a logged warning) if `templateId` is unresolvable.
+   * @param templateId - The template document's id to push.
+   * @example templates.push(templateId);
+   */
   push(templateId: string): void {
     const template = this.#get(templateId);
     if (!template) {
       this.#deps.logger.warn(`templates.push: template ${templateId} not in store; push unavailable`);
       return;
     }
-    // Write-scope filter: `findInstances` is same-world only (see @shadowcat/core doc comment);
-    // it says nothing about per-instance write authorization, which can differ from the
-    // template's own ownership (an instance may belong to a different player). Exclude any
-    // instance the pusher cannot write before splitting into dispatch-now vs. conflict-modal.
     const instances = this.findInstances(templateId).filter(
       (inst) => this.#deps.canEdit(inst, "/base") && this.#deps.canEdit(inst, "/system"),
     );
@@ -144,10 +218,21 @@ export class TemplatesController {
     if (groups.length > 0) this.#openSession(groups, conflicted);
   }
 
+  /** Dismiss the open conflict session without applying anything.
+   * @example templates.cancel();
+   */
   cancel(): void {
     this.pending = null;
   }
 
+  /** Open a conflict-resolution session: publish `pending` for `TemplateModalHost` to
+   * render, and wire its `resolve` to apply each group's chosen theirs-paths and dispatch
+   * the resulting Update, then clear `pending`. A group absent from the resolver's map
+   * (nothing chosen "theirs") resolves with an empty theirs-set — everything stays "mine".
+   * @param groups - The conflict groups to present, one per instance.
+   * @param byKey - Each group's child/template/plan, keyed by the same key used in `groups`.
+   * @example this.#openSession(groups, byKey);
+   */
   #openSession(
     groups: ConflictGroup[],
     byKey: Map<string, { child: WireDocument; template: WireDocument; plan: MergePlan }>,

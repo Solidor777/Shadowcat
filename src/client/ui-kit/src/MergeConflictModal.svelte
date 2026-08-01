@@ -33,10 +33,23 @@
     return () => window.removeEventListener("keydown", onKeydown);
   });
 
+  /**
+   * Render a conflict side's value for display: an absent (`undefined`) side shows the
+   * localized "deleted" label, a string renders verbatim, anything else is JSON-stringified.
+   * @param v - The conflict side's value (`c.base`, `c.parent`, or `c.child`).
+   * @returns The display string for `v`.
+   * @example display(undefined); // t("templates.conflict.deleted")
+   */
   function display(v: unknown): string {
     return v === undefined ? t("templates.conflict.deleted") : typeof v === "string" ? v : JSON.stringify(v);
   }
 
+  /**
+   * Build the theirs-selection map from the current radio choices and invoke `onApply`.
+   * Only paths explicitly chosen `"theirs"` are included per group; a group with no
+   * `"theirs"` choices is omitted entirely (its conflicts all resolve to "mine" implicitly).
+   * @example apply();
+   */
   function apply(): void {
     const out = new Map<string, Set<string>>();
     for (const g of groups) {

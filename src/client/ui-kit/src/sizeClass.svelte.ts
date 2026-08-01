@@ -21,7 +21,12 @@ const subscribe = mql
   : null;
 
 /** Reactive current size class: reading it in a rune context re-runs when the
- * `(min-width: 48rem)` media query flips. */
+ * `(min-width: 48rem)` media query flips. Under jsdom (no `matchMedia`), always
+ * returns `"expanded"` — treated as an always-matching query, never throwing.
+ * @returns `"expanded"` when the query matches (or `matchMedia` is unavailable),
+ * else `"compact"`.
+ * @example sizeClass(); // "expanded"
+ */
 export function sizeClass(): SizeClass {
   subscribe?.();
   return (mql?.matches ?? true) ? "expanded" : "compact";

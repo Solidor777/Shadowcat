@@ -24,6 +24,11 @@ export interface PanelsChipsView {
   restore(id: string): void;
 }
 
+/**
+ * Late-binding {@link PanelsApi}/{@link PanelsChipsView} implementation: every call/read
+ * delegates to the bound host once {@link PanelsBridge.bind} runs, and no-ops (with a
+ * one-time logged warning, not a silent forever no-op) before that.
+ */
 export class PanelsBridge implements PanelsApi, PanelsChipsView {
   // `$state`: a reader that evaluates `minimized`/`metaMap` inside a Svelte
   // `$derived`/template BEFORE `bind()` runs (the panel host mounts later
@@ -34,34 +39,65 @@ export class PanelsBridge implements PanelsApi, PanelsChipsView {
   #impl = $state<(PanelsApi & PanelsChipsView) | null>(null);
   #warned = false;
 
+  /** Build an unbound bridge; every call/read no-ops until {@link PanelsBridge.bind} runs.
+   * @param logger - Used to emit the one-time "used before bind()" warning.
+   * @example new PanelsBridge(logger);
+   */
   constructor(private readonly logger: Logger) {}
 
-  /** Bind the real panel-host implementation; subsequent calls delegate. */
+  /** Bind the real panel-host implementation; subsequent calls delegate.
+   * @param impl - The panel-manager module's controller, implementing both interfaces.
+   * @example panelsBridge.bind(panelsController);
+   */
   bind(impl: PanelsApi & PanelsChipsView): void {
     this.#impl = impl;
   }
 
+  /** Log the "used before bind()" warning exactly once per instance; subsequent calls no-op.
+   * @example this.#warnOnce();
+   */
   #warnOnce(): void {
     if (this.#warned) return;
     this.#warned = true;
     this.logger.warn("PanelsBridge used before bind(); calls are no-ops until the panel host binds");
   }
 
+  /** Forward to the bound host; warns once (see {@link PanelsBridge.#warnOnce}) and no-ops
+   * before `bind()`.
+   * @param id - The panel id to open.
+   * @returns Nothing.
+   * @example panelsBridge.open("chat:panel");
+   */
   open(id: string): void {
     if (!this.#impl) return this.#warnOnce();
     this.#impl.open(id);
   }
 
+  /** Forward to the bound host; warns once and no-ops before `bind()`.
+   * @param id - The panel id to close.
+   * @returns Nothing.
+   * @example panelsBridge.close("chat:panel");
+   */
   close(id: string): void {
     if (!this.#impl) return this.#warnOnce();
     this.#impl.close(id);
   }
 
+  /** Forward to the bound host; warns once and no-ops before `bind()`.
+   * @param id - The panel id to focus.
+   * @returns Nothing.
+   * @example panelsBridge.focus("chat:panel");
+   */
   focus(id: string): void {
     if (!this.#impl) return this.#warnOnce();
     this.#impl.focus(id);
   }
 
+  /** Forward to the bound host; warns once and no-ops before `bind()`.
+   * @param id - The panel id to toggle open/closed.
+   * @returns Nothing.
+   * @example panelsBridge.toggle("chat:panel");
+   */
   toggle(id: string): void {
     if (!this.#impl) return this.#warnOnce();
     this.#impl.toggle(id);
@@ -70,17 +106,26 @@ export class PanelsBridge implements PanelsApi, PanelsChipsView {
   /** Live minimized-panel ids; reads through to the bound controller's `$state`
    * so a caller reading this inside a Svelte `$derived`/template establishes a
    * reactive dependency on layout changes made after `bind()`, from any
-   * surface. Empty until bound. */
+   * surface. Empty until bound.
+   * @returns The bound host's minimized-panel ids, or `[]` if unbound.
+   */
   get minimized(): readonly string[] {
     return this.#impl?.minimized ?? [];
   }
 
   /** Live panel metadata map (icon/labelKey), gmOnly-filtered by the bound
-   * controller. Empty until bound. */
+   * controller. Empty until bound.
+   * @returns The bound host's panel metadata map, or an empty map if unbound.
+   */
   get metaMap(): ReadonlyMap<string, PanelMeta> {
     return this.#impl?.metaMap ?? new Map();
   }
 
+  /** Forward to the bound host; warns once and no-ops before `bind()`.
+   * @param id - The minimized panel id to restore.
+   * @returns Nothing.
+   * @example panelsBridge.restore("chat:panel");
+   */
   restore(id: string): void {
     if (!this.#impl) return this.#warnOnce();
     this.#impl.restore(id);

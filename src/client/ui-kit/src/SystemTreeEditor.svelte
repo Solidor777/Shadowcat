@@ -23,10 +23,16 @@
     return [];
   });
 
+  /**
+   * Classify `v` for rendering: which input control (or recursive editor) a tree node gets.
+   * `undefined` collapses to the same "null" kind as a real null: JSON never produces
+   * `undefined`, so this branch is defensive-only, but without it a stray undefined would
+   * fall through to "string" and render as an uneditable empty text input.
+   * @param v - The value to classify.
+   * @returns The rendering kind for `v`.
+   * @example kindOf(42); // "number"
+   */
   function kindOf(v: unknown): "string" | "number" | "boolean" | "object" | "array" | "null" {
-    // `undefined` collapses to the same "null" kind as a real null: JSON never produces
-    // `undefined`, so this branch is defensive-only, but without it a stray undefined would
-    // fall through to "string" and render as an uneditable empty text input.
     if (v === null || typeof v === "undefined") return "null";
     if (Array.isArray(v)) return "array";
     const tp = typeof v;
@@ -36,42 +42,60 @@
     return "string";
   }
 
+  /**
+   * Dispatch a leaf-value edit at `basePath + "/" + key`, reading the REAL current value
+   * as the OCC pre-image (see the component-level invariant above).
+   * @param key - The child key or array index within `root` being edited.
+   * @param value - The new leaf value.
+   * @example editLeaf("hp", 12);
+   */
   function editLeaf(key: string, value: unknown): void {
     const path = `${basePath}/${key}`;
     setField(ctx, doc.id, path, getPointer(doc, path), value);
   }
 
+  /**
+   * Add a new object field seeded as an empty string. Array grow is not supported here
+   * (`set_pointer` cannot extend arrays — the sheet writes the WHOLE array to grow it,
+   * see {@link addArrayItem}). Generates a random key, retrying until it does not already
+   * exist in `root` — always terminates in practice since `root` has finitely many keys.
+   * @example addField();
+   */
   function addField(): void {
-    // A new object field seeds an empty string; array grow is not supported (set_pointer
-    // cannot extend arrays — the sheet writes the WHOLE array to grow it, below).
-    // Loop until the generated key is not already present in `root` — always terminates in
-    // practice since `root` has finitely many keys.
     const existing = root !== null && typeof root === "object" && !Array.isArray(root) ? (root as Record<string, unknown>) : {};
     let key = crypto.randomUUID().slice(0, 8);
     while (key in existing) key = crypto.randomUUID().slice(0, 8);
     editLeaf(key, "");
   }
 
+  /**
+   * Remove `key` from `root`. Array-element removal stays whole-array replacement (neither
+   * `set_pointer` nor `remove_pointer` can resize an array), rewriting the WHOLE array via
+   * `setField`. Object-key removal is a narrow-OCC leaf remove (server `remove_pointer`):
+   * only THIS key's pre-image is checked, so a concurrent edit to a sibling key does not
+   * spuriously conflict as whole-container replacement would.
+   * @param key - The child key (object) or index (array) to remove.
+   * @example removeField("hp");
+   */
   function removeField(key: string): void {
     if (Array.isArray(root)) {
-      // Array-element removal stays whole-array replacement: neither set_pointer nor
-      // remove_pointer can resize an array, so the WHOLE array is rewritten without it.
       const next = (root as unknown[]).filter((_, i) => i !== Number(key));
       setField(ctx, doc.id, basePath, getPointer(doc, basePath), next);
     } else if (root !== null && typeof root === "object") {
-      // Object-key removal is a narrow-OCC leaf remove (server `remove_pointer`): only
-      // THIS key's pre-image is checked, so a concurrent edit to a sibling key does not
-      // spuriously conflict as whole-container replacement would.
       const path = `${basePath}/${key}`;
       unsetField(ctx, doc.id, path, getPointer(doc, path));
     }
   }
 
+  /**
+   * Append one element to the array at `root`, seeded matching the LAST existing element's
+   * kind (an empty array defaults to string). `system` is opaque JSON with no schema layer
+   * downstream to catch a heterogeneous array, so an always-string seed would permanently
+   * type-pollute e.g. a `number[]` with a stray `""` that has no UI path back to a numeric
+   * type. Rewrites the WHOLE array via `setField` (arrays cannot grow via `set_pointer`).
+   * @example addArrayItem();
+   */
   function addArrayItem(): void {
-    // Seeds the new element matching the LAST existing element's kind (empty array defaults
-    // to string). `system` is opaque JSON with no schema layer downstream to catch a
-    // heterogeneous array, so an always-string seed would permanently type-pollute e.g. a
-    // number[] with a stray "" that has no UI path back to a numeric type.
     const arr = root as unknown[];
     const lastKind = arr.length > 0 ? kindOf(arr[arr.length - 1]) : "string";
     const seed: unknown =

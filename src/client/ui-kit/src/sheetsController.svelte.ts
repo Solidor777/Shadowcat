@@ -15,18 +15,33 @@ export interface SheetsControllerDeps {
   logger: Logger;
 }
 
+/**
+ * Owns the lifecycle of document (sheet) panels (M12c), backing `AppContext.openDocument`.
+ * Each open document is a runtime `Contribution` under `shadowcat.panel` with id
+ * `sheet:<docId>` — the panel host mounts it via `{#each visibleRegs}` and the layout
+ * reducer floats/docks/minimizes it like any panel. This controller is generic host glue
+ * (constructed by the shell alongside `PanelsBridge`); it imports no module. Dedup + disposer
+ * tracking live here; placement, cascade, focus, and prune live in the panel manager.
+ */
 export class SheetsController {
   #deps: SheetsControllerDeps;
   /** panelId -> the contribution disposer, for every sheet this controller has registered. */
   #open = new Map<string, () => void>();
 
+  /** Build a controller wired to its collaborators; starts with no sheets open.
+   * @param deps - The controller's collaborators (contributions/documents/panels/logger).
+   * @example new SheetsController({ contributions, documents, panels, logger });
+   */
   constructor(deps: SheetsControllerDeps) {
     this.#deps = deps;
   }
 
   /** Resolve `ref` -> doc + write-site (fail-closed), pick the sheet component, and
    * register+float `sheet:<docId>`. A re-open of an already-registered document focuses
-   * the existing panel (never a duplicate — keep-mounted state survives). */
+   * the existing panel (never a duplicate — keep-mounted state survives).
+   * @param ref - The document (optionally embedded-path/token) reference to open.
+   * @example sheetsController.openDocument({ docId });
+   */
   openDocument(ref: SheetRef): void {
     const target = resolveDocRef(ref, this.#deps.documents);
     if (!target) {
@@ -47,7 +62,10 @@ export class SheetsController {
   }
 
   /** Full disposal: removes the panel from the layout AND drops the contribution (the
-   * sheet component unmounts). The header Close control routes here. */
+   * sheet component unmounts). The header Close control routes here.
+   * @param panelId - The `sheet:<docId>`-shaped panel id to close.
+   * @example sheetsController.closeDocument("sheet:doc1");
+   */
   closeDocument(panelId: string): void {
     this.#deps.panels.close(panelId);
     const dispose = this.#open.get(panelId);
@@ -62,7 +80,10 @@ export class SheetsController {
    * late-registration path (`placeNewRegistrations` -> `placeFromPersistedLocation`) then
    * restores each to its persisted floating/minimized spot, so this NEVER calls `open()`
    * (which would re-cascade). Idempotent (dedup via `#open`) + generic (scans for the
-   * `sheet:` id shape, not the blob's exact schema). An unresolvable id is left pruned. */
+   * `sheet:` id shape, not the blob's exact schema). An unresolvable id is left pruned.
+   * @param blob - The opaque persisted panel-layout blob to scan for `sheet:*` ids.
+   * @example sheetsController.restoreFromPersisted(panelLayoutBlob);
+   */
   restoreFromPersisted(blob: unknown): void {
     for (const panelId of collectSheetIds(blob)) {
       if (this.#open.has(panelId)) continue;
@@ -77,6 +98,14 @@ export class SheetsController {
     }
   }
 
+  /** Register `panelId` as a `shadowcat.panel` contribution wrapping `component` in
+   * `SheetHost`, and track its disposer in `#open` for later `closeDocument`.
+   * @param panelId - The `sheet:<docId>`-shaped panel id to register.
+   * @param component - The resolved sheet component (from `pickSheet`) to host.
+   * @param docId - The write-target document id `SheetHost` passes through to `component`.
+   * @param systemPrefix - The write-target's system-body prefix `SheetHost` passes through.
+   * @example this.#register(panelId, component, docId, "/system");
+   */
   #register(panelId: string, component: unknown, docId: string, systemPrefix: string): void {
     const dispose = this.#deps.contributions.contribute(
       {
@@ -93,7 +122,11 @@ export class SheetsController {
 }
 
 /** Every distinct `sheet:*` string anywhere in `blob` (deep walk — robust to the panel
- * persistence schema evolving; it only assumes sheet ids are strings prefixed `sheet:`). */
+ * persistence schema evolving; it only assumes sheet ids are strings prefixed `sheet:`).
+ * @param blob - The opaque persisted panel-layout blob to walk.
+ * @returns Every distinct `sheet:*`-prefixed string found, in first-encountered order.
+ * @example collectSheetIds({ floating: ["sheet:d1"] }); // ["sheet:d1"]
+ */
 function collectSheetIds(blob: unknown): string[] {
   const found = new Set<string>();
   const walk = (v: unknown): void => {

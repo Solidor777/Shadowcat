@@ -7,11 +7,6 @@ import type { TokenSelection } from "./tokenSelection.svelte";
 import type { PanelsApi, PanelsChipsView } from "./panelsBridge.svelte";
 import type { SceneSelection } from "./sceneSelection.svelte";
 
-/**
- * Ambient app state contributed components read via Svelte context. Carries the
- * contribution registry the host renders plus the in-world session essentials
- * (document store, world id, user role). M7d adds the i18n `t`.
- */
 /** Translate function shape (framework-neutral; the Svelte adapter supplies a
  * reactive implementation). */
 export type TFunc = (key: string, params?: Record<string, string | number>) => string;
@@ -52,6 +47,11 @@ export interface TemplatesApi {
   canPush(templateId: string): boolean;
 }
 
+/**
+ * Ambient app state contributed components read via Svelte context. Carries the
+ * contribution registry the host renders plus the in-world session essentials
+ * (document store, world id, user role). M7d adds the i18n `t`.
+ */
 export interface AppContext {
   contributions: ContributionRegistry;
   /** Authoritative (confirmed-only) document mirror — the rollback base. */
@@ -185,10 +185,22 @@ export interface AppContext {
 /** Context key; exported only so test fixtures can seed an AppContext. */
 export const __APP_CONTEXT_KEY__ = Symbol("shadowcat.appContext");
 
+/** Publish `ctx` under {@link __APP_CONTEXT_KEY__} for descendants to read via
+ * {@link getAppContext}. Call once, from a component that wraps the whole app tree.
+ * @param ctx - The AppContext instance to publish.
+ * @example setAppContext(buildAppContext(session));
+ */
 export function setAppContext(ctx: AppContext): void {
   setContext(__APP_CONTEXT_KEY__, ctx);
 }
 
+/** Read the {@link AppContext} set by an ancestor via {@link setAppContext}.
+ * @returns The published AppContext.
+ * @throws {Error} if no ancestor called `setAppContext` — every contribution renders
+ * inside a provider, so a thrown error here means the component tree is misassembled,
+ * not a normal absence to handle.
+ * @example const ctx = getAppContext();
+ */
 export function getAppContext(): AppContext {
   const ctx = getContext<AppContext | undefined>(__APP_CONTEXT_KEY__);
   if (!ctx) {
