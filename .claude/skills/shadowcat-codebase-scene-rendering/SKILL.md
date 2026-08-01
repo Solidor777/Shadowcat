@@ -551,7 +551,10 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
     measured at ~0.94 MiB against the 60 MiB CI ceiling — no bloat concern.
 - `src/client/render/src/` — engine-owned PixiJS layer: `backend.ts` + `pixi-backend.ts`
   (renderer host), `engine.ts`, `reconciler.ts` (doc→scene reconcile), `compositor.ts`,
-  `layers.ts` (CORE_LAYERS z-order; index 7 = `lighting`, between `templates` (6) and `mask` (8)),
+  `layers.ts` (CORE_LAYERS z-order, 0-based: `background` 0, `grid` 1, `tiles` 2, `regions` 3,
+  `drawings` 4, `walls` 5, `tokens` 6, `templates` 7, `lighting` 8, `mask` 9, `overlays` 10 —
+  read the array, not this list, before placing a module layer: a module's fractional `order` is
+  relative to these indices, so an off-by-one lands it under the wrong neighbour),
   `camera.ts`, `grid.ts`, `token-view.ts` + `token-animator.ts` (tween),
   `wall-view.ts`, `drawing-view.ts`, `template-view.ts`, `ping-view.ts`. Modules draw through the
   render-layer API; the canvas host is not replaceable.
