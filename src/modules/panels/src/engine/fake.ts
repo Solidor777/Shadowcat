@@ -13,10 +13,15 @@ type Zone = (typeof ZONE_IDS)[number];
 
 /** In-memory `EngineAdapter`: plain divs per zone/group/floating panel,
  * reconciled by `apply` via real `appendChild` adoption — no dockview
- * dependency. Doubles as the production bespoke-fallback engine (any
- * `PanelHost` constructed without an `engine` prop) and as the test double for
- * `PanelHost`'s own tests (`emitOp` simulates a user gesture through the same
- * `onOp` channel a real engine uses).
+ * dependency. Serves two roles: the test double for `PanelHost`'s own tests
+ * (`emitOp` simulates a user gesture through the same `onOp` channel a real
+ * engine uses), and the fallback engine `PanelHost` mounts by default when
+ * constructed WITHOUT an `engine` prop (`PanelHost.svelte`'s own `engine ??
+ * new FakeEngine()`) — a seam any bespoke host could rely on, but no
+ * production path in THIS codebase reaches it: the shipped `panels` module's
+ * `register()` always supplies a `DockviewEngine` instance (`index.ts`), so
+ * that default branch is taken only by a caller that mounts `PanelHost`
+ * directly without an `engine` prop — today, only the test suite does.
  * @example
  * ```ts
  * import { FakeEngine } from "@shadowcat/module-panels";
@@ -259,9 +264,10 @@ export class FakeEngine implements EngineAdapter {
     }
   }
 
-  /** `EngineAdapter.onOp`: subscribes to ops this engine emits — in
-   * production, only ever `emitOp`'s test/simulation channel (this
-   * bespoke-fallback engine has no real drag/resize gestures of its own).
+  /** `EngineAdapter.onOp`: subscribes to ops this engine emits. The only
+   * emission source is `emitOp` — this engine has no real drag/resize
+   * gestures of its own to translate (see the class doc comment for which
+   * callers actually reach this engine).
    * @param cb Called once per emitted op.
    * @returns An unsubscribe function.
    * @example
