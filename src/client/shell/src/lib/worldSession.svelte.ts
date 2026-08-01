@@ -254,10 +254,10 @@ export class WorldSession {
 
   /** Predict `ops` optimistically and transmit them as one correlated Intent. The
    * single `intent_id` ties the local prediction to the server echo/reject (FIFO
-   * confirm). ORDERING (other packages' docs cite this): `applyIntent` runs BEFORE
-   * `ws.send` on every path that predicts at all — the optimistic view is updated
-   * first, so a synchronous reader observing the send has already seen the
-   * prediction, and a send that throws cannot leave a transmitted-but-unpredicted op. While reconnecting (transport down but `running`), predict AND queue:
+   * confirm). ORDERING: `applyIntent` runs BEFORE `ws.send` on every path that
+   * predicts at all — the optimistic view is updated first, so a synchronous reader
+   * observing the send has already seen the prediction, and a send that throws cannot
+   * leave a transmitted-but-unpredicted op. While reconnecting (transport down but `running`), predict AND queue:
    * every offline intent queues, so optimistic FIFO order equals the eventual send
    * order and the confirm-correlation contract holds. A flush happens after resync
    * (the optimistic view rebases onto authoritative state first). When stopped, drop

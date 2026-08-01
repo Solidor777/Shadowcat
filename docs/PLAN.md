@@ -1600,10 +1600,12 @@ Trusted local modding hardening → freeze the module API on evidence (≥1 exte
   ALREADY-SHIPPED work.** A doc block placed above another doc block rather than a declaration binds
   to nothing, since TypeDoc, editor hover, and jsdoc lint all take the NEAREST preceding block —
   `lint:docs` cannot see this class by construction. Widening the scan past sweep 9's own packages
-  found three survivors in the ratcheted `core`/`render` packages — a NEARER doc block already
-  satisfied the rule at each anchor, which is the whole mechanism; do not narrow the scan by anchor
-  kind, since two of the three sit on `export function` declarations that `require-jsdoc` DOES
-  demand docs for and that carry them. The real one: `chat-docs.ts`'s
+  found three survivors in the ratcheted `core`/`render` packages. `lint:docs` is blind to all of
+  them, but for TWO DIFFERENT REASONS — which is exactly why the scan must not be narrowed by anchor
+  kind: two sit on `export function` declarations that `require-jsdoc` DOES gate and that already
+  carry their own nearer doc, so the rule is satisfied; the third sits on a `const`
+  (`ConstTermSchema`), where the rule demands nothing in the first place. Either way the orphaned
+  block above binds to nothing. The real one: `chat-docs.ts`'s
   `RollOutcome` block — carrying the i64 PRECISION caveat and a TODO — documented nothing while
   `RollOutcomeSchema` itself had none. **Run this scan repo-wide, not sweep-scoped.**
   Every fix round this sweep was again triggered by a FALSE sentence, never a missing one, and the

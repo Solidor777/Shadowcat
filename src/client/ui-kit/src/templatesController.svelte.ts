@@ -134,11 +134,14 @@ export class TemplatesController {
    * has no in-store instances to push to.
    *
    * This gate covers the TEMPLATE only. Per-instance write authorization is filtered
-   * separately inside `push`, on `/base` + `/system` — note that `planToUpdate` also emits
-   * `/embedded/<coll>` changes, which that filter does not check, so an instance the pusher
-   * can write base/system but not `/embedded` on is included and has its `/embedded` change
-   * rejected server-side at `apply_intent`. Each instance is dispatched as its own intent, so
-   * that rejection is contained to the one instance. Tracked in `docs/TODO.md`.
+   * separately inside `push`, on `/base` + `/system` — but `planToUpdate` emits paths that
+   * filter never checks, notably `/embedded/<coll>` (a different capability). An instance the
+   * pusher can write base/system but not `/embedded` on is therefore included, and its ENTIRE
+   * Update is refused: `apply_intent` returns `Forbidden` at the first uncapped path and aborts
+   * the whole intent (`data/sqlite.rs`), so that instance receives none of the push — not even
+   * the `/name`/`/system` merge — and its `/base` never refreshes, leaving it permanently
+   * `diverged`. Each instance is its own intent, so this is contained to that one instance.
+   * Tracked in `docs/TODO.md`.
    * @param templateId - The template document's id.
    * @returns Whether push is currently permitted.
    * @example templates.canPush(templateId);

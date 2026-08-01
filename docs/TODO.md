@@ -288,11 +288,14 @@ Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one de
   then builds — `planToUpdate` (`src/client/core/src/templates.ts`) — also emits
   `/embedded/<coll>` changes whenever a collection differs. `/embedded` is gated by a DIFFERENT
   capability (`MANAGE_EMBEDDED`) than the WRITE_FIELDS bands, so an instance the pusher can write
-  base/system but not `/embedded` on passes the client filter and has its `/embedded` change
-  rejected server-side at `apply_intent`.
-  **Not a security hole and not a whole-push failure:** the server re-checks independently, and
-  `push` dispatches one intent PER INSTANCE, so the rejection is contained to that instance while
-  the others apply. It is an affordance mismatch — the UI offers a push it knows will partly fail.
+  base/system but not `/embedded` on passes the client filter and is then refused server-side.
+  **Not a security hole and not a whole-push failure, but worse for the affected instance than a
+  dropped band:** `apply_intent` returns `Forbidden` at the FIRST uncapped path and aborts the whole
+  intent, so that instance receives NONE of the push — not even the `/name`/`/system` merge — and
+  its `/base` is never refreshed, leaving it permanently `diverged` rather than partially updated.
+  `push` dispatches one intent PER INSTANCE, so the damage is contained to that instance while the
+  others apply. It is an affordance mismatch — the UI offers a push it knows will fail for some
+  targets, and gives no signal about which.
   **Fix requires a design decision, which is why this is logged rather than fixed inline:**
   - (a) Add `canEdit(inst, "/embedded")` to the filter. Consistent with how `/base`+`/system`
     already work (exclude the instance wholesale) and with `canPull`'s documented preference for

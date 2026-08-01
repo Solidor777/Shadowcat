@@ -116,10 +116,13 @@ interprets or merges anything itself.
   `canEdit(inst, "/base")`/`canEdit(inst, "/system")`, additionally filtering `findInstances`'
   same-world result before splitting into dispatch-now (no conflicts) vs. conflict-modal groups
   (E9: same-world see+write, not just same-world see). **That per-instance filter has a known gap:
-  `planToUpdate` also emits `/embedded/<coll>` changes, which the filter does not check, so an
-  instance the pusher can write base/system but not `/embedded` on is included and has that change
-  rejected server-side. Contained to the one instance (`push` dispatches one intent PER instance),
-  and logged in `docs/TODO.md` with two candidate fixes.**
+  `planToUpdate` emits paths the filter never checks — notably `/embedded/<coll>`, which needs a
+  DIFFERENT capability — so an instance the pusher can write base/system but not `/embedded` on is
+  included, and its ENTIRE Update is then refused: `apply_intent` returns `Forbidden` at the FIRST
+  uncapped path and aborts the whole intent (`data/sqlite.rs`). That instance receives none of the
+  push — not even the `/name`/`/system` merge — and its `/base` is never refreshed, so it stays
+  permanently `diverged`. Contained to the one instance (`push` dispatches one intent PER
+  instance), and logged in `docs/TODO.md` with two candidate fixes.**
 - `src/client/ui-kit/src/MergeConflictModal.svelte` (+ `TemplateModalHost.svelte`) — the
   field-level conflict resolution UI (E5/§6.2): renders one `ConflictGroup` per pending child
   (`{ key, label, conflicts: Conflict[] }`; the type lives in

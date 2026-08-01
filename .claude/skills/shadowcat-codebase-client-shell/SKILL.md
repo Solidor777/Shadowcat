@@ -210,7 +210,7 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
   SUCCESS is the asymmetric case — the broadcast Event echo carries no `request_id`, so nothing
   acknowledges an accepted op and the 15s timer RESOLVES on silence. Exactly three settle paths:
   that timer, a `chat_error` reject, and a `failPending` reject — reached from BOTH a disconnect
-  and an explicit `stop()`, which is what `WorldSession.leave()` calls. Details →
+  and an explicit `stop()` (`WorldSession.leave()`, and the `evicted` frame handler). Details →
   [[shadowcat-codebase-chat]]). `members` is now populated for EVERY role (chat name resolution; the
   roster endpoint was widened from GM-only), not just GM.
 - `src/modules/{entry,core-ui,panels,stage,topbar,statusbar,settings,game-settings,scene-browser,

@@ -124,8 +124,8 @@ source of truth. The ones agents break most:
   and at `error` for ratcheted packages. **Ratcheted today: `@shadowcat/core`, `@shadowcat/render`,
   `@shadowcat/shell`, `@shadowcat/ui-kit`, `@shadowcat/formula` — a missing doc comment in any of
   them fails the command**; everything else — the module packages, `src/types`, `examples` — is
-  still advisory. A sweep flips its package only after reaching zero. **A package WITH COMPONENTS is
-  ratcheted in TWO blocks, not one** (`formula` is pure TS and needs only the first): `.ts` and
+  still advisory. A sweep flips its package only after reaching zero. **A package WITH COMPONENTS
+  is ratcheted in TWO blocks, not one** (`formula` is pure TS and needs only the first): `.ts` and
   `.svelte` need
   different parsers and one flat-config block cannot carry both, so a package with components has a
   `.ts` entry AND a separate `svelteParser` block — ratcheting only the first silently leaves every
