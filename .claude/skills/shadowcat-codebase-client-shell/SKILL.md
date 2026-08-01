@@ -132,6 +132,21 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
   arriving mid-activation see `#activated === false` and call `activate()` again, double-
   activating. Any future change to this seam must keep the synchronous pre-await set — do not
   "simplify" it to an after-await assignment.
+  **`leave()` is a PARTIAL teardown, and the latches are what makes that dangerous.** It stops and
+  drops the `WsClient` and resets `state`/`role`/`world`/`#gmViewedScene`, but does NOT clear
+  `store`/`documents`, module registrations, or EITHER latch. That is correct only because
+  `App.svelte`'s `leaveWorld` discards the instance and constructs a fresh `WorldSession`. Reuse one
+  across `leave()` → `enter()` and both latches are still set, so the next Welcome skips activation
+  entirely and every Surface renders empty — precisely the failure this split exists to prevent.
+  Treat `WorldSession` as single-use per world entry.
+  **Two more boundaries worth knowing before relying on `enter()`:** it resolves when the TRANSPORT
+  OPENS, not when the world is usable — Welcome, module activation, the member fetch, and external
+  module loading all happen afterward and are not awaited. And `#onWelcome` contains its failures
+  asymmetrically: the member fetch has its own inner catch (logged, non-blocking), whereas an
+  activation throw reverts `#activated` and RE-throws, skipping topology reconcile, scene
+  re-establishment, and the GM first-scene seed FOR THAT WELCOME — so a failed activation also
+  costs that Welcome's scene re-subscription, not just its modules. An outer catch means the
+  method itself never rejects, so neither failure surfaces to a caller.
 - `src/client/shell/src/` — `App.svelte`, `main.ts`, `lib/` (hash router, api client, session,
   WorldSession controller, default-module wiring). `sessionState.svelte.ts` owns the
   `ui_state` blob: `getPanelLayout(world)`/`setPanelLayout(world, blob)` (M12a, replaced
@@ -183,9 +198,13 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
   constructs ONE `PanelsBridge` (`ui-kit/src/panelsBridge.svelte.ts`, `$state`-backed so
   pre-bind readers unfreeze at bind; details → [[shadowcat-codebase-panels]]) — and
   `chat: ChatApi {send, edit, delete}`
-  (fire-and-forget over `WsClient.sendChatMessage`/`editChatMessage`/`deleteChatMessage` —
-  these frames carry no correlation id; rejections are server-logged only, so composers
-  pre-validate). `members` is now populated for EVERY role (chat name resolution; the
+  (over `WsClient.sendChatMessage`/`editChatMessage`/`deleteChatMessage`. These frames DO carry a
+  `request_id` and `chatPending` is keyed by it: a `chat_error` correlates back and REJECTS the
+  caller's promise with the server's player-presentable reason, which the composer surfaces.
+  SUCCESS is the asymmetric case — the broadcast Event echo carries no `request_id`, so nothing
+  acknowledges an accepted op and the 15s timer RESOLVES on silence. Exactly three settle paths:
+  that timer, a `chat_error` reject, a disconnect reject. Details →
+  [[shadowcat-codebase-chat]]). `members` is now populated for EVERY role (chat name resolution; the
   roster endpoint was widened from GM-only), not just GM.
 - `src/modules/{entry,core-ui,panels,stage,topbar,statusbar,settings,game-settings,scene-browser,
   chat,chat-composer,chat-card}/` — entry = `@shadowcat/module-entry` (login + world mgmt, behind
@@ -239,6 +258,16 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
 
 - **i18n MUST stay framework-neutral** — the core `I18n` is Svelte-free; the Svelte `t`/`locale`
   adapter wraps it via `createSubscriber`. Don't pull a Svelte i18n lib into core.
+  **There is NO cross-locale fallback:** a key missing from the ACTIVE locale's catalog renders as
+  the raw key string, even when another loaded locale defines it. A partial translation therefore
+  ships visible key text rather than English, so a new key must land in every shipped catalog.
+- **`setAppContextForTest` does not emulate optimistic behavior** (`ui-kit/src/__fixtures__/
+  appContextTest.ts`) — `documents` defaults to `over.documents ?? over.store ?? new
+  DocumentStore()`, so a test overriding only `store` gets that SAME plain store as `documents`.
+  Predicted-op overlay and rollback-on-reject are absent; reads through `documents` are plain
+  authoritative reads. In production the two are INDEPENDENT siblings fed the same `applyCommand`.
+  A test asserting optimistic semantics must supply its own `documents`, or it is asserting
+  nothing. (Same fixture-fidelity class as the nightfox `t: (k) => k` gotcha.)
 - **`WorldSession.canEdit` is an affordance mirror, and it diverges from server authz in BOTH
   directions** (`worldSession.svelte.ts`) — treat it as "which controls to show", never as the
   authority. It can over-permit: the `role === "gm"` short-circuit returns `true` unconditionally and
@@ -255,8 +284,10 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
   bypasses it, which no wire message can name). It arms if `gm_role` is ever set on another
   doc_type. The over-restrict is NOT neutralized by that re-check at all — hiding a control means
   the user never reaches `apply_intent` — it is merely unobservable while no enabled installed
-  module declares `requirements`, since the Welcome union then equals the GM-authored record. It
-  arms on module enablement, with no `gm_role` involvement whatsoever
+  module declares `requirements`, since the Welcome union then contributes nothing beyond the
+  GM-authored record. It arms when an ENABLED, ENGINE-COMPATIBLE module declares a non-empty
+  `requirements` — compatibility is re-checked on every Welcome, not just at enable time, so a
+  module that has gone stale stops publishing — with no `gm_role` involvement whatsoever
   (`ws/conn.rs`'s `welcome_capability_requirements`, whose own doc marks the union ADVISORY ONLY,
   vs. `data/sqlite.rs`'s enforcement reading only `world_cap_requirements`).
 - **`listWorldMembers` is FORKED — two implementations of one endpoint, already diverged.** The

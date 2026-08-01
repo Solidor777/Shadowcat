@@ -260,6 +260,16 @@ not the only, expected caller):
   callback's return value through these before trusting it as a `FormulaValue`.
 - `src/index.ts` — the only public entry point: types + caps + `parseFormula` + `evaluate` +
   `resolveAll` + `resolveNotationTemplate` + `NOTATION_KEYWORDS`.
+- **Arithmetic semantics that surprise formula AUTHORS** (all in `evaluate.ts`/`lexer.ts`): `/` is
+  float division and `%` is JS TRUNCATED remainder, so `-7 % 2` is `-1`, not the floored `1` — and
+  neither implicitly rounds, so a stat requiring an integer needs an explicit `floor`/`round`.
+  Both `x / 0` and `x % 0` are `"div-zero"`, never `Infinity`/`NaN`; every arithmetic result is
+  gated through `finite()`, so an overflow surfaces as `"non-finite"` rather than leaking
+  `Infinity` downstream. **`.5` is not a numeric literal** — the lexer requires a leading digit and
+  emits a bare `.` operator, so a leading-dot decimal is a parse error; write `0.5`. And
+  `checkArity` runs at PARSE time only (`parser.ts`), so an `Expr` hand-constructed against the
+  public API bypasses arity checking entirely and degrades through `finite()` instead of erroring
+  cleanly — build expressions with `parseFormula`, not by hand.
 
 ## Hard invariants
 

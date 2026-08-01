@@ -396,8 +396,13 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   since they all go through the same `AppContext.scene` bridge. Snap gating is independent of grid
   RENDERING — a snap-off scene may still display its reference grid; `setSnapEnabled` never
   touches `redrawGrid`/grid-line drawing. **Wiring:** `SceneInteractionBridge.setSnapEnabled`
-  (`src/client/ui-kit/src/sceneInteraction.ts`) forwards to the host (no-op when detached,
-  mirroring every other bridge method). `Stage.svelte` pushes the resolved `snapToGrid` into the
+  (`src/client/ui-kit/src/sceneInteraction.ts`) forwards to the host, and no-ops when detached.
+  **Detached behavior is NOT uniform across the bridge, despite every method being "safe" when
+  unbound:** the void commands genuinely no-op, but the two QUERIES return plausible wrong VALUES
+  — `snap` returns the point unchanged (identity) and `gridDistance` returns `0`. A caller that
+  runs before bind gets an unsnapped position or a zero distance and cannot distinguish either
+  from a real answer. The test double carries the same shape (`__fixtures__/fakeSceneHost.ts`:
+  identity `snap`, `gridDistance: () => 0`), so a test never sees the difference either. `Stage.svelte` pushes the resolved `snapToGrid` into the
   engine unconditionally on every `onDocs` pass (`e.setSnapEnabled(settings.snapToGrid)`), placed
   OUTSIDE the `lastGridKey` change-detection gate that exists for `setGrid`'s more expensive
   Grid-object rebuild — a cheap flag write doesn't need that gate, and gating it behind

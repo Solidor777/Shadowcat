@@ -121,9 +121,15 @@ source of truth. The ones agents break most:
   `pnpm docs:serve` (view; file:// unsupported), `pnpm docs:check-examples` (`@example` ```ts
   blocks must typecheck — CI-blocking in the web job), `pnpm lint:docs` (doc-coverage gate;
   `eslint.docs.config.js` holds one rule set via `rulesAt(severity)`, applied at `warn` repo-wide
-  and at `error` for ratcheted packages. **`@shadowcat/core` and `@shadowcat/render` are ratcheted
-  — a missing doc comment in either fails the command**; every other package is still advisory. A
-  sweep flips its package only after reaching zero.)
+  and at `error` for ratcheted packages. **Ratcheted today: `@shadowcat/core`, `@shadowcat/render`,
+  `@shadowcat/shell`, `@shadowcat/ui-kit`, `@shadowcat/formula` — a missing doc comment in any of
+  them fails the command**; the module packages are still advisory. A sweep flips its package only
+  after reaching zero. **A package is ratcheted in TWO blocks, not one:** `.ts` and `.svelte` need
+  different parsers and one flat-config block cannot carry both, so a package with components has a
+  `.ts` entry AND a separate `svelteParser` block — ratcheting only the first silently leaves every
+  component advisory. Both `.ts` ignore lists must also stay byte-identical; they exempt test files
+  under BOTH runners' conventions (`**/*.test.ts` and `**/*.spec.ts`), while a test HELPER MODULE
+  that is not itself a test file stays covered.)
 - **A green `pnpm lint:docs` is NOT evidence the docs are correct.** The `jsdoc/require-*` rules
   gate on tag PRESENCE only: they cannot see a vacuous tag (`@returns The result.`), a false
   statement, or a second doc block appended below an existing one. That last case actively
