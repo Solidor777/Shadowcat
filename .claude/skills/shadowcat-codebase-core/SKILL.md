@@ -122,9 +122,9 @@ source of truth. The ones agents break most:
   blocks must typecheck — CI-blocking in the web job), `pnpm lint:docs` (doc-coverage gate;
   `eslint.docs.config.js` holds one rule set via `rulesAt(severity)`, applied at `warn` repo-wide
   and at `error` for ratcheted packages. **Ratcheted today: `@shadowcat/core`, `@shadowcat/render`,
-  `@shadowcat/shell`, `@shadowcat/ui-kit`, `@shadowcat/formula` — a missing doc comment in any of
-  them fails the command**; everything else — the module packages, `src/types`, `examples` — is
-  still advisory. A sweep flips its package only after reaching zero. **A package WITH COMPONENTS
+  `@shadowcat/shell`, `@shadowcat/ui-kit`, `@shadowcat/formula`, `@shadowcat/module-panels` — a
+  missing doc comment in any of them fails the command**; everything else — the remaining module
+  packages, `src/types`, `examples` — is still advisory. A sweep flips its package only after reaching zero. **A package WITH COMPONENTS
   is ratcheted in TWO blocks, not one** (`formula` is pure TS and needs only the first): `.ts` and
   `.svelte` need
   different parsers and one flat-config block cannot carry both, so a package with components has a
@@ -132,6 +132,14 @@ source of truth. The ones agents break most:
   component advisory. Both `.ts` ignore lists must also stay byte-identical; they exempt test files
   under BOTH runners' conventions (`**/*.test.ts` and `**/*.spec.ts`), while a test HELPER MODULE
   that is not itself a test file stays covered.)
+- **An `@example` that imports a workspace package by name compiles that package's own source.**
+  `scripts/extract-ts-examples.mjs` builds one scratch program over `src/types`, `src/client`,
+  `src/modules`, `examples`; a tagged ```ts fence naming a package pulls that package's internals
+  into the compiled graph, so `docs:check-examples` can fail at a line the author never touched.
+  This is why the generated `*.svelte` ambient shim types default exports `any`, not `unknown`: a
+  package whose source passes one of its own `.svelte` imports to Svelte's `mount()` needs the shim
+  freely assignable, and `unknown` is not. Expect the first example to name a not-yet-exercised
+  package to surface latent breakage of this shape.
 - **A green `pnpm lint:docs` is NOT evidence the docs are correct.** The `jsdoc/require-*` rules
   gate on tag PRESENCE only: they cannot see a vacuous tag (`@returns The result.`), a false
   statement, or a second doc block appended below an existing one. That last case actively

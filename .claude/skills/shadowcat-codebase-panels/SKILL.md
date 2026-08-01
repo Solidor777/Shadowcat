@@ -30,7 +30,12 @@ the reducer (intercept-and-redispatch), so the engine never owns state.
   identical to `controller.svelte.ts`'s `REHYDRATE_FLOAT_BASE`/`STEP` (below) — two separate
   constants by design (no cross-file import, to avoid coupling the two call sites), but the
   SAME logical operation (persisted popped-out id → floating on reload) must land at the same
-  position regardless of which registration-timing path runs.
+  position regardless of which registration-timing path runs. **Nothing in either file's types
+  enforces that pairing — the anti-drift gate is `controller.test.ts`'s parity test**, which drives
+  both call sites to the same floating index and demands the identical rect at n=0 (pins BASE), n=1
+  (pins STEP) and n=7 (pins the shared `% 6` wrap). Each side's OTHER cascade tests assert only that
+  one side's own offsets differ from each other, which stays green when either pair drifts; only the
+  parity test fails on divergence.
 - `src/modules/panels/src/layout/persist.ts` — `encodeLayout`/`decodeLayout` (structural
   validation, unknown-id prune, reset-to-default on garbage). `decodeLayout` also returns the
   pre-prune `source` layout so late registrations restore their persisted spot (below).
@@ -158,8 +163,19 @@ the reducer (intercept-and-redispatch), so the engine never owns state.
 ## Gotchas
 
 - `register()` runs once per world entry (fresh ModuleRegistry per WorldSession) — one
-  DockviewEngine per session, not app-wide; FakeEngine only reaches production via the
-  explicit no-`engine`-prop bespoke-fallback seam.
+  DockviewEngine per session, not app-wide. **FakeEngine reaches NO production path**: it is the
+  default only when a caller mounts `PanelHost` WITHOUT an `engine` prop
+  (`PanelHost.svelte`'s `engine ?? new FakeEngine()`), and the shipped module's `register()` always
+  supplies a `DockviewEngine` — so that branch is taken today only by the test suite. It remains a
+  real fallback SEAM any bespoke host could use; it is not dead code, and it is not production code.
+- **`EngineAdapter.focus` has no production caller at all.** Both engines implement it and nothing
+  invokes either: `PanelsController.focus(id)` is `this.open(id)` (a `LayoutOp`, so the tab activates
+  and floating z bumps in the TREE), and `PanelHost` calls `init`/`apply`/`onOp`/`onNotice`/`destroy`
+  but never `eng.focus`. The reachable chain is `sheetsController` → `PanelsBridge` →
+  `PanelsController.focus` and stops there. Consequence to know before wiring it up:
+  `DockviewEngine.focus` early-returns on `STAGE_ID` (W2 stage-well defense-in-depth) and
+  `FakeEngine.focus` has NO such guard — a never-fork-a-decision violation that is inert only
+  because the seam is uncalled. Logged in `docs/TODO.md`.
 - Panel modules `requires` `PANEL_CONTRACT`, which topologically activates `panels` FIRST —
   late panel registration is the ROUTINE order, not an edge case.
 - dockview's `onDidRemovePanel` fires synchronously inside `removePanel` — transition guards
