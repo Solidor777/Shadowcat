@@ -83,9 +83,11 @@ function readAlphaPrefix(src: string, i: number): string {
  * or a `FormulaError`. Raised here: `"resolver-error"` (the resolver threw, or returned a
  * value that is neither a number nor a well-formed error), `"type"` (a non-integer resolved
  * value — roll templates require integers), and `"cap"` (magnitude exceeds `i32::MAX`). NOT
- * an exhaustive list of what can come back: a well-formed `FormulaError` returned BY the
- * resolver passes through verbatim, so any `FormulaErrorKind` the consumer produces
- * (`"unknown-ref"`, `"cycle"`, …) can surface here unchanged.
+ * an exhaustive list of what can come back, by two separate routes: a well-formed `FormulaError`
+ * returned BY the resolver passes through verbatim (so any `FormulaErrorKind` the consumer
+ * produces — `"unknown-ref"`, `"cycle"`, … — can surface here unchanged), and a resolver
+ * returning a non-finite NUMBER (type-legal: `FormulaValue = number | FormulaError`) is converted
+ * to `"non-finite"` by `validateResolverOutput`'s `finite()` check rather than passed through.
  * @example
  * ```
  * // not part of the public `@shadowcat/formula` surface — this helper is not exported;

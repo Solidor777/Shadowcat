@@ -74,7 +74,9 @@ class NeedsDependency {
  * dependency graph" and "present in this map" are not the same set. Resolution
  * is also bounded: once `MAX_GRAPH_VISITS` first-attempt visits are charged,
  * each further key is memoized as `{ error: "cap" }` rather than resolved, so a
- * sufficiently large graph yields cap errors for its tail instead of throwing.
+ * sufficiently large graph yields cap errors for the keys past the cap instead of
+ * throwing. (Which keys those are is traversal-dependent; the order-independence
+ * invariant above holds for graphs that stay under the cap.)
  * @example
  * ```ts
  * import { resolveAll } from "@shadowcat/formula";

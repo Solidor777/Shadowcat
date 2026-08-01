@@ -129,11 +129,16 @@ export class TemplatesController {
   }
 
   /** Whether the current user may push `templateId`: owner-or-GM plus `MANAGE_EMBEDDED`
-   * (`/embedded`) on the TEMPLATE doc — ONE leg of `canPull`'s union, not the same check.
-   * `canPull` additionally requires `/base` + `/system` (WRITE_FIELDS) because pulling writes
-   * those bands on the instance; pushing only READS them from the template, and per-instance
-   * write authorization is filtered inside `push` itself rather than gated here. `false` when
-   * the template has no in-store instances to push to.
+   * (`/embedded`) on the TEMPLATE doc — ONE leg of `canPull`'s union, not the same check
+   * (`canPull` also requires `/base` + `/system` on the instance). `false` when the template
+   * has no in-store instances to push to.
+   *
+   * This gate covers the TEMPLATE only. Per-instance write authorization is filtered
+   * separately inside `push`, on `/base` + `/system` — note that `planToUpdate` also emits
+   * `/embedded/<coll>` changes, which that filter does not check, so an instance the pusher
+   * can write base/system but not `/embedded` on is included and has its `/embedded` change
+   * rejected server-side at `apply_intent`. Each instance is dispatched as its own intent, so
+   * that rejection is contained to the one instance. Tracked in `docs/TODO.md`.
    * @param templateId - The template document's id.
    * @returns Whether push is currently permitted.
    * @example templates.canPush(templateId);
