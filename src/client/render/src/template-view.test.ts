@@ -63,3 +63,23 @@ test("a deleted template removes its node", () => {
   view.reconcile();
   expect(backend.shapes.has("t1")).toBe(false);
 });
+
+// Pins template-view to the same non-finite rejection its three sibling views enforce. A
+// non-finite `direction` is the case unique to this file: it becomes NaN through cos/sin even
+// when x/y/size are perfectly finite, so guarding only the authored inputs would miss it.
+test("a template with a non-finite coordinate does not render", () => {
+  const store = new DocumentStore();
+  const backend = new MockBackend();
+  store.applyCommand(cmd(1, [{ op: "create", doc: tmplDoc("t-inf", { kind: "circle", x: Infinity, y: 0, size: 10, direction: 0 }) }]));
+  new TemplateView(store, backend).reconcile();
+  expect(backend.shapes.has("t-inf")).toBe(false);
+});
+
+test("a template with a non-finite direction does not render", () => {
+  const store = new DocumentStore();
+  const backend = new MockBackend();
+  // x/y/size are finite; only `direction` is not — cos/sin turn it into NaN points.
+  store.applyCommand(cmd(1, [{ op: "create", doc: tmplDoc("t-dir", { kind: "cone", x: 0, y: 0, size: 10, direction: Number.NaN }) }]));
+  new TemplateView(store, backend).reconcile();
+  expect(backend.shapes.has("t-dir")).toBe(false);
+});

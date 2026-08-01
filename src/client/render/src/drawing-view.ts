@@ -72,9 +72,11 @@ export class DrawingView {
  * the first two, closed for `polygon`); `rect`/`ellipse` read exactly 4 bbox-corner
  * coordinates and tessellate via `rectPoints`/`ellipsePoints`. Returns `null` for a
  * missing `engine.shape`, an unrecognized `kind`, or a `rect`/`ellipse` with fewer than 4
- * points — a malformed doc simply doesn't render. Unlike `region-view.ts`'s and
- * `wall-view.ts`'s `toSpec`, this does not check `points` for `Number.isFinite` before
- * returning a spec.
+ * points — a malformed doc simply doesn't render. Non-finite coordinates also yield `null`:
+ * JSON has no NaN/Infinity literal, but an oversized magnitude (`1e400`) parses to `Infinity`,
+ * which would otherwise reach Pixi as NaN geometry. Checked on the TESSELLATED output, so a
+ * non-finite input caught via `rectPoints`/`ellipsePoints` is rejected too. Matches
+ * `region-view.ts` and `wall-view.ts`.
  * @param doc The `drawing` document to convert.
  * @returns A `ShapeNodeSpec` for the `drawings` layer, or `null` if it can't be rendered.
  * @example
@@ -109,6 +111,9 @@ function toSpec(doc: WireDocument): ShapeNodeSpec | null {
     default:
       return null;
   }
+  // Checked post-tessellation: a non-finite input propagates through rectPoints/ellipsePoints,
+  // so the output covers both authored and derived coordinates in one guard.
+  if (!pts.every((n) => Number.isFinite(n))) return null;
   return {
     layer: "drawings",
     points: pts,

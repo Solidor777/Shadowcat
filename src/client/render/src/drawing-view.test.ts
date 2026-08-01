@@ -47,3 +47,25 @@ test("a deleted drawing removes its shape node", () => {
   view.reconcile();
   expect(backend.shapes.has("d1")).toBe(false);
 });
+
+// The four *-view.ts siblings are near-identical in shape, and two of them (region, wall)
+// guarded non-finite coordinates while drawing and template did not. JSON has no NaN/Infinity
+// literal, but an oversized magnitude parses to Infinity — `JSON.parse('{"x":1e400}').x` is
+// Infinity — which reaches Pixi as NaN geometry. This pins all four to the same behavior so the
+// divergence cannot silently return.
+test("a drawing with a non-finite coordinate does not render", () => {
+  const store = new DocumentStore();
+  const backend = new MockBackend();
+  store.applyCommand(cmd(1, [{ op: "create", doc: drawingDoc("d-inf", "freehand", [0, 0, Infinity, 5]) }]));
+  new DrawingView(store, backend).reconcile();
+  expect(backend.shapes.has("d-inf")).toBe(false);
+});
+
+test("a drawing whose tessellated output goes non-finite does not render", () => {
+  const store = new DocumentStore();
+  const backend = new MockBackend();
+  // Finite-looking bbox corners whose rect tessellation carries the non-finite through.
+  store.applyCommand(cmd(1, [{ op: "create", doc: drawingDoc("d-rect", "rect", [0, 0, Number.NaN, 10]) }]));
+  new DrawingView(store, backend).reconcile();
+  expect(backend.shapes.has("d-rect")).toBe(false);
+});

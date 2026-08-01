@@ -78,9 +78,11 @@ export class TemplateView {
  * between two authored corners (the `"rect"` string means different geometry in each
  * file). `line` builds a 2-point open segment from `(x,y)` at `direction` degrees, length
  * `size`, and is the only kind that returns `closed:false` (and therefore no `fill`).
- * Returns `null` for a missing `engine.shape` or an unrecognized `kind`. Like
- * `drawing-view.ts`'s `toSpec`, this does not check the resolved coordinates for
- * `Number.isFinite`.
+ * Returns `null` for a missing `engine.shape` or an unrecognized `kind`, and for non-finite
+ * resolved coordinates: JSON has no NaN/Infinity literal, but an oversized magnitude (`1e400`)
+ * parses to `Infinity`, and a non-finite `direction` additionally yields NaN through
+ * `cos`/`sin`. Checked on the RESOLVED points, so both authored and trigonometry-derived
+ * coordinates are covered. Matches `drawing-view.ts`, `region-view.ts`, and `wall-view.ts`.
  * @param doc The `template` document to convert.
  * @returns A `ShapeNodeSpec` for the `templates` layer, or `null` if it can't be rendered.
  * @example
@@ -114,6 +116,9 @@ function toSpec(doc: WireDocument): ShapeNodeSpec | null {
     default:
       return null;
   }
+  // Checked post-resolution: a non-finite x/y/size propagates through the point builders, and a
+  // non-finite `direction` becomes NaN via cos/sin — one guard on the output covers both.
+  if (!points.every((n) => Number.isFinite(n))) return null;
   const color = parseColor(s.color);
   return {
     layer: "templates",
