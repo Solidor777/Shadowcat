@@ -176,10 +176,12 @@ export class WsClient {
     { resolve: (s: SceneSubscription) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }
   >();
   /** In-flight chat ops (send/edit/delete), keyed by request_id. Chat is
-   * asymmetric: ONLY a rejection replies (a `chat_error` frame); a successful
-   * op is confirmed by the broadcast Event echo, with no direct reply. So the
-   * timer RESOLVES (success-assumed) and cleans the entry up when no error
-   * arrives within the window. */
+   * asymmetric: ONLY a rejection replies (a `chat_error` frame). A successful op
+   * gets no reply at all — the broadcast Event echo carries no `request_id`, so
+   * nothing correlates it back to an entry here. The timer therefore RESOLVES
+   * (success-ASSUMED from silence, never acknowledged) and cleans the entry up
+   * when no error arrives within the window. The three settle paths are exactly:
+   * that timer, a `chat_error` reject, and a disconnect reject. */
   private chatPending = new Map<
     string,
     { resolve: () => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }
@@ -1038,10 +1040,14 @@ export class WsClient {
   }
 
   /**
-   * Send a chat message. Resolves when the send is accepted (confirmed by the
-   * broadcast Event echo; assumed after `CHAT_ERROR_WINDOW_MS` with no error),
-   * rejects with the server's player-presentable reason on a correlated
-   * `chat_error`. The composer surfaces the rejection instead of it vanishing.
+   * Send a chat message. Resolution is SILENCE-BASED, not acknowledged: `trackChatOp`
+   * resolves when `CHAT_ERROR_WINDOW_MS` elapses with no correlated `chat_error`. There is
+   * no ack frame, and the broadcast Event echo carries no `request_id` correlating it back
+   * to this promise — the only settle paths are that timer, a `chat_error` reject, and a
+   * disconnect reject (an op sent on a socket that will not answer has an unknown fate, so
+   * it rejects rather than resolving silently). Rejects with the server's
+   * player-presentable reason on a correlated `chat_error`; the composer surfaces the
+   * rejection instead of it vanishing.
    * @param opts Send options.
    * @param opts.channel The chat channel to post into.
    * @param opts.content The message body (server-sanitized; see `shadowcat-codebase-chat`).

@@ -448,7 +448,11 @@ export class WorldSession {
    * @param opts.content The raw (unsanitized) message text.
    * @param opts.actorOwner Optional actor to speak as, for name/avatar attribution.
    * @param opts.audience Optional restricted audience (whisper/GM-only); defaults to public.
-   * @returns Resolves once the server confirms the send.
+   * @returns Resolves when `CHAT_ERROR_WINDOW_MS` elapses with no correlated `chat_error` —
+   * success is ASSUMED from silence, not acknowledged: the server sends no ack frame and the
+   * broadcast Event carries no correlation back to this promise. Rejects with the server's
+   * player-presentable reason on a correlated `chat_error`, or on disconnect (the op's fate is
+   * unknown, so it rejects rather than resolving silently).
    * @example
    * ```
    * await session.sendChatMessage({ channel: "main", content: "Hello!" });
@@ -467,7 +471,8 @@ export class WorldSession {
   /** Edit an existing chat message. Resolves/rejects with the correlated outcome.
    * @param messageId The message to edit.
    * @param content The new raw (unsanitized) message text.
-   * @returns Resolves once the server confirms the edit.
+   * @returns Same silence-based resolution as `sendChatMessage` — resolves when the error window
+   * elapses with no correlated `chat_error`, rejects on one or on disconnect.
    * @example
    * ```
    * await session.editChatMessage(messageId, "Updated text");
@@ -480,7 +485,8 @@ export class WorldSession {
 
   /** Delete an existing chat message. Resolves/rejects with the correlated outcome.
    * @param messageId The message to delete.
-   * @returns Resolves once the server confirms the delete.
+   * @returns Same silence-based resolution as `sendChatMessage` — resolves when the error window
+   * elapses with no correlated `chat_error`, rejects on one or on disconnect.
    * @example
    * ```
    * await session.deleteChatMessage(messageId);
