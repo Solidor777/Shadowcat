@@ -4,6 +4,12 @@
 // unchanged-input calls return the SAME reference so a host can cheaply skip a re-render.
 import type { ZoneId, DefaultPlacement } from "@shadowcat/core";
 
+/** A floating panel's position and size, in CSS px relative to the panel host's own
+ * container (not the viewport). Carried on `floating` entries and on the `float`/
+ * `resizeFloating` ops; the reducer never reads a viewport, so these stay whatever the
+ * caller supplied. `x`/`y` may be negative (a panel legitimately dragged partway
+ * off-screen); `w`/`h` are never negative (see `persist.ts`'s `isRect`, which enforces
+ * this on decode). */
 export interface Rect {
   x: number;
   y: number;
@@ -24,6 +30,10 @@ export interface ZoneNode {
   size: number;
 }
 
+/** The "expanded" (non-compact) view's full layout state: the three dock zones, floating
+ * panels, minimized panels, and popped-out ids. `locate` treats these four locations plus
+ * "closed" as mutually exclusive and exhaustive for a given panel id (see `detach`'s own doc
+ * comment). */
 export interface ExpandedLayout {
   // All three ZoneId keys are always present, even with empty groups — callers never
   // guard a missing zone.
@@ -38,17 +48,27 @@ export interface ExpandedLayout {
   poppedOut: string[];
 }
 
+/** The narrow-viewport (<48rem) view's layout state: a single-column `order` of panel ids
+ * and which one is currently shown. Independent of `ExpandedLayout` — a panel's docked/
+ * floating/minimized/popped-out location does not change when the host switches views. */
 export interface CompactLayout {
   activeView: string | null;
   order: string[];
 }
 
+/** The persisted root: a fixed schema `version` tag (for future migrations) plus the
+ * expanded and compact views' independent state. The sole value type every reducer
+ * function (`applyOp`, `prune`, `placeNewRegistrations`) and the persistence codec
+ * (`persist.ts`) operate on. */
 export interface PanelLayoutV1 {
   version: 1;
   expanded: ExpandedLayout;
   compact: CompactLayout;
 }
 
+/** Every state change `applyOp` can make. A host never mutates `PanelLayoutV1` directly —
+ * it translates a gesture (engine event, menu command, persisted rehydration) into one of
+ * these and dispatches it through `applyOp`. */
 export type LayoutOp =
   | { op: "open"; id: string; placement?: DefaultPlacement }
   | { op: "close"; id: string }
@@ -64,6 +84,9 @@ export type LayoutOp =
   | { op: "popOut"; id: string }
   | { op: "popIn"; id: string };
 
+/** Where a single panel id currently lives, as returned by `locate`. Mutually exclusive
+ * and exhaustive: a panel is in exactly one of these five states at any time (see
+ * `detach`'s own doc comment for the invariant this relies on). */
 export type PanelLocation =
   | { where: "docked"; zone: ZoneId; group: number; tabIndex: number }
   | { where: "floating"; index: number }
@@ -71,6 +94,10 @@ export type PanelLocation =
   | { where: "popped-out" }
   | { where: "closed" };
 
+// The fixed dock-zone set every `ExpandedLayout.zones` record always has an entry for
+// (see `ExpandedLayout`'s own doc comment) — an iteration order for the loops in this file,
+// not a priority. Mirrored (not shared) by `dockview.ts`'s own `ZONE_IDS`, which walks the
+// same three zones for its dockview-side reconciliation.
 const ZONE_IDS: readonly ZoneId[] = ["right", "bottom", "left"];
 
 // Px-basis defaults for a fresh zone. Arbitrary but stable; a host persists real sizes
