@@ -12,12 +12,46 @@ const STROKE_WIDTH = 2;
 export class TemplateView {
   private readonly ids = new Set<string>();
 
+  /**
+   * Constructs a view bound to `store`/`backend`; call `reconcile()` once to populate it.
+   * @param store The document store to read `template` docs from.
+   * @param backend The display backend to push resolved shape nodes to.
+   * @param viewedSceneId Resolves the currently-viewed scene id; `reconcile()` scopes its
+   * query to this scene (falls back to unscoped — every `template` doc in the store —
+   * when it resolves to `null`). Defaults to always-`null` (legacy/test callers that
+   * never pass one).
+   * @example
+   * ```ts
+   * import { TemplateView, MockBackend } from "@shadowcat/render";
+   * import type { ReadableDocuments } from "@shadowcat/core";
+   *
+   * declare const store: ReadableDocuments;
+   * const view = new TemplateView(store, new MockBackend());
+   * ```
+   */
   constructor(
     private readonly store: ReadableDocuments,
     private readonly backend: DisplayBackend,
     private readonly viewedSceneId: () => string | null = () => null,
   ) {}
 
+  /**
+   * Diffs the store's `template` docs (scoped to `viewedSceneId`) against the ids tracked
+   * in `ids`: every current doc gets a fresh spec and an upsert via `backend.setShape`,
+   * and every tracked id no longer present is torn down via `backend.removeShape`. A doc
+   * whose `toSpec` resolves to `null` (a missing `engine.shape` or an unrecognized
+   * `shape.kind`) is treated as absent — never added to `seen`, so it is torn down on
+   * this same pass if it was tracked.
+   * @example
+   * ```ts
+   * import { TemplateView, MockBackend } from "@shadowcat/render";
+   * import type { ReadableDocuments } from "@shadowcat/core";
+   *
+   * declare const store: ReadableDocuments;
+   * const view = new TemplateView(store, new MockBackend());
+   * view.reconcile();
+   * ```
+   */
   reconcile(): void {
     const seen = new Set<string>();
     for (const doc of sceneScopedDocs(this.store, "template", this.viewedSceneId)) {
@@ -35,6 +69,26 @@ export class TemplateView {
   }
 }
 
+/**
+ * Tessellates a `template` doc's `engine.shape` into a flat-point `ShapeNodeSpec`. `x,y`
+ * is always the anchor and `size` a radius/length (never a second corner): `circle` and
+ * `cone` tessellate via `circlePoints`/`conePoints`; `rect` tessellates via `squarePoints`
+ * — an axis-**rotated** square of side `2*size` centered at `(x,y)`, unlike
+ * `drawing-view.ts`'s and `region-view.ts`'s `"rect"` kind, which is an axis-aligned bbox
+ * between two authored corners (the `"rect"` string means different geometry in each
+ * file). `line` builds a 2-point open segment from `(x,y)` at `direction` degrees, length
+ * `size`, and is the only kind that returns `closed:false` (and therefore no `fill`).
+ * Returns `null` for a missing `engine.shape` or an unrecognized `kind`. Like
+ * `drawing-view.ts`'s `toSpec`, this does not check the resolved coordinates for
+ * `Number.isFinite`.
+ * @param doc The `template` document to convert.
+ * @returns A `ShapeNodeSpec` for the `templates` layer, or `null` if it can't be rendered.
+ * @example
+ * ```
+ * // not exported from @shadowcat/render's index.ts; internal to TemplateView.reconcile
+ * const spec = toSpec(doc); // null if doc.engine.shape is absent or malformed
+ * ```
+ */
 function toSpec(doc: WireDocument): ShapeNodeSpec | null {
   const s = doc.engine as TemplateEngine | undefined;
   if (!s?.shape) return null;
