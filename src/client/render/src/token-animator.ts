@@ -181,7 +181,10 @@ export class TokenAnimator {
    * Cancels any competing ease-to-stop Anim entry for this id: handles the typical server ordering
    * where the authoritative position Event (→ setTarget) arrives before the MoveStream broadcast.
    * Catch-up: if the server clock (serverNow) is ahead of startServerMs, playback begins from the
-   * matching elapsed offset.
+   * matching elapsed offset. REPLACES, never queues or blends: a second call for an id already
+   * mid-playback overwrites the `samplesAnim` entry outright, discarding the prior playback's
+   * `elapsed`/progress — the token restarts from this call's own catch-up offset against the new
+   * `samples`, not from wherever the discarded playback had reached.
    * @param id The token id to animate.
    * @param samples The (already server-clipped) position samples to play back.
    * @param durationMs Total playback duration in ms.
@@ -276,14 +279,21 @@ export class TokenAnimator {
     this.startAnim(id, c, [[c.x, c.y], [t.x, t.y]], t.rotation, false);
   }
 
-  /** Drive a smooth local walk of `id` along `path`'s scene-coord waypoints, holding `rotation`
-   * fixed for the whole walk (a route move does not rotate the token; a later `setTarget` call
-   * supplies the settle rotation once the authoritative commit arrives). A brand-new id (no prior
-   * rendered transform) snaps to the path's final point instead of tweening. Consecutive coincident
-   * points are deduped and the walk is anchored at the token's live current position (not
-   * `path[0]`), so a mid-tween re-issue continues smoothly rather than jumping back to the route's
-   * nominal start. A path that dedups down to fewer than 2 points delegates to `setTarget` (no
-   * distance to walk).
+  /** Has no production caller today (`src/modules`/`src/client/shell` drive route playback
+   * exclusively through `animateSamples`, per `controller.svelte.ts`'s own "Animation is
+   * broadcast-driven via onMoveStream ... no local animation from the moveRequest resolve value"
+   * comment); exercised only by tests and this package's `TokenView`/`RenderEngine`
+   * passthroughs. The mechanism below is the contract it honors if called.
+   *
+   * Drive a smooth local walk of `id` along `path`'s scene-coord waypoints, TARGETING `rotation`
+   * as the walk's settle value (`startAnim`'s `finalRot`) — the rendered rotation eases from
+   * whatever it was at call time toward `rotation` over the walk's duration, held constant only
+   * when the two already match at call time (the common case, since nothing else rotates a token
+   * mid-walk). A brand-new id (no prior rendered transform) snaps to the path's final point
+   * instead of tweening. Consecutive coincident points are deduped and the walk is anchored at the
+   * token's live current position (not `path[0]`), so a mid-tween re-issue continues smoothly
+   * rather than jumping back to the route's nominal start. A path that dedups down to fewer than 2
+   * points delegates to `setTarget` (no distance to walk).
    * @param id The token id to animate.
    * @param path The route's scene-coord waypoints, in order.
    * @param rotation The rotation to hold for the whole walk.

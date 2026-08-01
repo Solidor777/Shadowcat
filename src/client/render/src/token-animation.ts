@@ -16,7 +16,7 @@
  * @example
  * ```
  * // not exported from @shadowcat/render's index.ts; internal to TokenView/PixiBackend
- * computeAnimatedFrame(250, 8, 4, true); // 2 (2 frames/sec into an 8fps loop of 4 frames)
+ * computeAnimatedFrame(250, 8, 4, true); // 2 (0.25s × 8fps = 2 frames elapsed, into a 4-frame loop)
  * computeAnimatedFrame(10000, 8, 4, false); // 3 (clamped: the one-shot sequence has completed)
  * ```
  */

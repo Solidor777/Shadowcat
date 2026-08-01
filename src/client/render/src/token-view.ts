@@ -118,9 +118,16 @@ export class TokenView {
     this.animator.setConfig({ speedCellsPerSec: this.animSpeed, easing: this.animEasing, cellSize: this.cellSize });
   }
 
-  /** Drive a smooth local walk along a route's scene-coord waypoints. Rotation is held (a route
-   * move does not rotate the token). The prompt authoritative commit catches up via reconcile()'s
-   * setTarget, which the animator recognizes as expected progress.
+  /** Has no production caller today (`src/modules`/`src/client/shell` drive route playback
+   * exclusively through `animateSamples`, per `controller.svelte.ts`'s own "Animation is
+   * broadcast-driven via onMoveStream ... no local animation from the moveRequest resolve value"
+   * comment); exercised only by tests and this passthrough's own caller (`RenderEngine`'s
+   * `SceneToolHost` seam). The mechanism below is the contract it honors if called.
+   *
+   * Drive a smooth local walk along a route's scene-coord waypoints (forwards to
+   * `TokenAnimator.animateAlongPath`, which targets — not permanently holds — `rotation`; see its
+   * own doc for the exact easing behavior). A later authoritative commit catches up via
+   * reconcile()'s setTarget, which the animator recognizes as expected progress.
    * @param id The token id to animate.
    * @param path The route's scene-coord waypoints, in order.
    * @example

@@ -792,9 +792,15 @@ export class RenderEngine implements SceneToolHost {
     this.tokens.setAnimationConfig(cfg);
   }
 
-  /** Drive a smooth local walk of token `id` along scene-coord waypoints (SceneToolHost seam).
-   * Forwards to TokenView which anchors the walk at the live current position and
-   * ignores authoritative setTarget calls for each waypoint as the commit burst arrives.
+  /** Has no production caller today (`src/modules`/`src/client/shell` drive route playback
+   * exclusively through `animateSamples`, per `controller.svelte.ts`'s own "Animation is
+   * broadcast-driven via onMoveStream ... no local animation from the moveRequest resolve value"
+   * comment); this `SceneToolHost` seam is exercised only by tests. The mechanism below is the
+   * contract it honors if called.
+   *
+   * Drive a smooth local walk of token `id` along scene-coord waypoints. Forwards to TokenView
+   * which anchors the walk at the live current position and ignores authoritative setTarget calls
+   * for each waypoint as the commit burst arrives.
    * @param id The token document id to animate.
    * @param path Scene-coord `[x,y]` waypoints, in walk order.
    * @example
