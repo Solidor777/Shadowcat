@@ -3,13 +3,30 @@
 **Hand this file to every doc-sweep implementer and reviewer** (by path — do not paste the rules
 into a brief, or they drift between dispatches).
 
-Every rule traces to a specific defect the `client/core` sweep (620 warnings) shipped and caught,
-ordered by measured yield. That sweep needed **eight fix rounds across six tasks, and every single
-one was triggered by a doc sentence asserting something FALSE** — never by a missing comment. Plan
-review effort accordingly: the risk in a documentation sweep is not absent prose, it is confident
-prose that a future agent will trust and build on.
+Every rule traces to a specific defect the `client/core` (620 warnings) and `client/render` (339)
+sweeps shipped and caught, ordered by measured yield. Across both, **every fix round was triggered
+by a doc sentence asserting something FALSE** — never by a missing comment. Plan review effort
+accordingly: the risk in a documentation sweep is not absent prose, it is confident prose that a
+future agent will trust and build on.
 
-Scorecards referenced below are cumulative over that sweep and worth continuing to track.
+**The `client/render` sweep found more defects outside the docs than in them** — a real rendering
+bug, two defects in the docs gate itself, a runtime divergence between sibling files, and drift in
+a codebase skill — every one surfaced by trying to *verify* a claim rather than write one. That is
+the strongest available argument for these rules: a documented property is a falsifiable one, and
+nobody tests "does it draw every hex" until a comment claims it does.
+
+**A cautionary case, because it is the most repeated failure here.** One guard's justification was
+written three times. Attempt 1: "an oversized magnitude reaches the client as `Infinity`." Attempt
+2, correcting it: "it arrives as `null`, because the server's round-trip nulls non-finite floats."
+Both false — `serde_json`'s lexer rejects an overflowing literal at tokenization, so neither value
+ever exists. Attempt 2 cited a real crate, a real function, and a real behavior of that function,
+and was still wrong because nobody checked whether that function is *reached* on the path. The
+guard was correct all three times; only the story about *why* kept being invented, and each version
+was more detailed and equally unverified. The fix was Rule 4: delete the mechanism rather than
+attempt a third. **A plausible causal story is the single easiest thing to get wrong, and detail is
+not evidence.**
+
+Scorecards referenced below are cumulative over both sweeps and worth continuing to track.
 
 ## RULE 1 — a citation must support THE CLAIM AS WORDED, not an adjacent fact
 

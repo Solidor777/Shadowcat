@@ -1541,16 +1541,41 @@ Trusted local modding hardening → freeze the module API on evidence (≥1 exte
   `assets.rs`'s upload/replace/delete were documented "GM/owner-gated" but are GM-only via
   `require_gm` with no owner exception.
   Plan: `docs/superpowers/plans/2026-07-30-docs-sweep7-client-core.md`.
-- **Sweeps 8–N — doc-comment sweeps: UPCOMING.** Remaining client packages, then modules:
-  client/render (339), shell+ui-kit+formula (281), module packages (~530, 3–4 groups). Every symbol
-  gets description+params+example; each completed area flips its lints to deny (Rust: per-file inner
+- **Sweep 8 — client/render: COMPLETE (2026-08-01).** 339-item backlog → 0 across 6 tasks
+  (engine 79; pixi-backend+backend.mock 81; geometry+grid+camera 56; token-view+animator+animation
+  54; lighting+fog-blend+compositor+layers 40; the remaining 8 small files 29). `client/render`
+  joins `client/core` in the ratcheted `error` block; mutation-verified, and the package swept for
+  orphaned doc blocks (the class the gate cannot see).
+  **This sweep found more defects outside the docs than in them**, all by taking claims seriously
+  enough to verify them:
+  - A real **rendering bug**: `Grid.hexLines` scanned too narrow a `q` range, leaving hexes centred
+    *inside* the viewport undrawn (50 at 1920×1080/size 50). Surfaced by trying to verify a new
+    "draws every hex" completeness claim. Fixed + regression-tested + mutation-proven; the old test
+    asserted only `lines.length > 0` and structurally could not catch it.
+  - Two **docs-gate integrity defects**: the example extractor never purged its scratch dir (stale
+    examples kept being typechecked, a deleted `@example` still counted as covered), and its fence
+    regex required `\n` after ` ```ts `, so a CRLF working copy silently dropped every example in
+    that file while the gate reported green. Both fixed + mutation-proven.
+  - A **sibling divergence** closed: `drawing-view`/`template-view` accepted non-numeric coordinates
+    while `region-view`/`wall-view` rejected them. All four now guard identically, on the raw fields
+    before tessellation (placement matters: JS coerces `null` to 0, so a post-tessellation guard
+    sees plausible geometry and never fires).
+  - **Codebase-skill drift**: `shadowcat-codebase-scene-rendering`'s CORE_LAYERS indices were each
+    off by one, which matters because module authors place layers at a fractional order relative to
+    them. **Nothing routinely checks skills against code** — this was caught incidentally.
+  Plan: `docs/superpowers/plans/2026-07-31-docs-sweep8-client-render.md`.
+- **Sweeps 9–N — doc-comment sweeps: UPCOMING.** Remaining client packages, then modules:
+  shell+ui-kit+formula (281), module packages (~530, 3–4 groups). Every symbol gets
+  description+params+example; each completed area flips its lints to deny (Rust: per-file inner
   deny attributes as in Sweep 1; TS: per-package severity flip in `eslint.docs.config.js`).
-  Server-wide informational count at Sweep-1 start: 1,059.
+  Server-wide informational count at Sweep-1 start: 1,059. Whole-repo `lint:docs` after Sweep 8:
+  827 warnings, 0 errors.
   **Required reading for every implementer and reviewer:**
-  `docs/design/doc-sweep-truthfulness-rules.md` — nine rules derived empirically from Sweep 7,
-  where all eight fix rounds were triggered by doc sentences asserting something FALSE, never by a
+  `docs/design/doc-sweep-truthfulness-rules.md` — eleven rules derived empirically from Sweeps 7–8,
+  where every fix round was triggered by a doc sentence asserting something FALSE, never by a
   missing comment. Note especially that a green `lint:docs` proves tag presence, not correctness or
   placement, so the ratchet does not reduce the need for review.
+  Sweep 9 must also document `worldSession.canEdit`'s `gm_role` caveat — see `docs/TODO.md`.
 - **Buddy-check convergence — after the last sweep (user directive 2026-07-30).** The completed
   first-pass documentation is buddy-checked (superpowers two-reviewer cross-check debate)
   **crate by crate**: the `shadowcat` server crate, then each TS workspace package. Any problems
