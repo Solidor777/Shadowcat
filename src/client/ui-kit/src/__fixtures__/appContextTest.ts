@@ -11,9 +11,10 @@ import { SceneSelection } from "../sceneSelection.svelte";
  * Build a Map for @testing-library/svelte's `context` option holding a minimal
  * AppContext (overridable per field), seeded under the real private key.
  *
- * Fidelity gap: in production, `documents` (the optimistic view) is a distinct
- * `OptimisticClient` wrapping `store` (the authoritative `DocumentStore`) — see
- * `worldSession.svelte.ts`. Here, `documents` defaults to `over.documents ?? over.store
+ * Fidelity gap: in production, `documents` (the optimistic view) and `store` (the authoritative
+ * `DocumentStore`) are INDEPENDENT siblings — `OptimisticClient` is constructed from
+ * `(selfId, logger)` and never receives `store`; each is fed the same `applyCommand` separately
+ * (see `worldSession.svelte.ts`). Here, `documents` defaults to `over.documents ?? over.store
  * ?? new DocumentStore()`: if a test overrides only `store`, `documents` is that SAME
  * plain `DocumentStore` instance, not an `OptimisticClient` over it. Optimistic-specific
  * behavior (predicted-op overlay, rollback on reject) is therefore NOT emulated unless

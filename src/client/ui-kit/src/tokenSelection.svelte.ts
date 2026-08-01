@@ -33,10 +33,13 @@ export class TokenSelection {
 
   /**
    * Replace the whole selection with `ids`. Unlike `ActorSelection.select`/`SceneSelection.select`,
-   * this is NOT a no-op when the new set is identical to the current one: it always clears then
-   * re-adds (`SvelteSet.clear`/`.add`), which increments the set's internal version on every call
-   * that starts non-empty — so a caller passing back the same ids still re-triggers every reader
-   * (effect/derived) subscribed to `.ids`/`.has`/`.size`.
+   * this is NOT a no-op when the new set is identical to the current one — with one exception. It
+   * always clears then re-adds (`SvelteSet.clear`/`.add`), and `clear()` increments the set's
+   * internal version whenever it actually removes something, so a caller passing back the same ids
+   * still re-triggers every reader (effect/derived) subscribed to `.ids`/`.has`/`.size`.
+   * The exception is empty→empty: `SvelteSet.clear()` early-returns without bumping the version
+   * when the set is already empty, and the re-add loop then adds nothing — zero increments, so
+   * that one case genuinely IS a no-op.
    * @param ids - The token ids to select; replaces the previous selection entirely.
    * @example tokenSelection.set(["tok1", "tok2"]);
    */

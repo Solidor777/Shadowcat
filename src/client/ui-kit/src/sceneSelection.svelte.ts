@@ -9,7 +9,7 @@
  * likewise does not prune when the referenced scene is later deleted — `GameSettingsPanel` must
  * handle a `configureSceneId` that no longer resolves. Shares `ActorSelection.select`'s
  * repeat-selection behavior (a no-op for reactivity, `$state`'s default `===` equality), NOT
- * `TokenSelection.set`'s always-re-triggers behavior.
+ * `TokenSelection.set`'s behavior of re-triggering on any call that starts non-empty.
  */
 export class SceneSelection {
   #id = $state<string | null>(null);

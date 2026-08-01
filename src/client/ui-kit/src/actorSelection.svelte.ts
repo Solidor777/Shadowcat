@@ -4,11 +4,15 @@
  * highlight the selection; mutated in place — never reassigned — so the AppContext-captured
  * reference stays valid (the stable-ref rule).
  *
- * Sibling set: this class, {@link TokenSelection}, and `SceneSelection` share the same shape
- * (single stable instance, `$state`-backed, mutated in place, no pruning when the selected
- * document is deleted — see {@link ActorSelection.selectedId}). Where they diverge:
- * `TokenSelection.set` always re-triggers reactivity even when reselecting an identical set;
- * `select` here does not (see {@link ActorSelection.select}).
+ * Sibling set: this class, {@link TokenSelection}, and `SceneSelection` share a shape at the API
+ * level (single stable instance, mutated in place, no pruning when the selected document is
+ * deleted — see {@link ActorSelection.selectedId}) but NOT a reactivity mechanism. This class and
+ * `SceneSelection` hold a `$state` scalar, gated by its default `===` equality; `TokenSelection`
+ * holds a `SvelteSet`, which tracks per-element sources plus an internal version counter. That
+ * difference is what produces the divergence below, not a shared backing.
+ * Where they diverge: `TokenSelection.set` re-triggers reactivity on any call that starts from a
+ * non-empty selection, even when the new ids are identical; `select` here does not (see
+ * {@link ActorSelection.select}).
  */
 export class ActorSelection {
   #id = $state<string | null>(null);
