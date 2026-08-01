@@ -112,8 +112,10 @@ function emptyZones(): Record<ZoneId, ZoneNode> {
  * Manual `resizeGroup` calls are NOT renormalized — only insert/remove touches sizes.
  * @param groups The zone's groups AFTER the structural insert/remove, in their final
  * membership.
- * @returns `groups` itself when every member's `size` already equals `1 / groups.length`;
- * otherwise a new array with each group's `size` set to that even share.
+ * @returns `groups` itself (the same reference) only for an empty input; for any non-empty
+ * `groups`, `Array.prototype.map` always allocates a new array here, even when every member's
+ * `size` already equals `1 / groups.length` — in that case only the individual `GroupNode`
+ * elements are reused (`g.size === size ? g : ...`), not the outer array.
  * @example
  * ```
  * // private function; not part of the public API — called only by detach,
