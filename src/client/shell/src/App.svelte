@@ -37,8 +37,11 @@
    * `resolveBootWorld`. Falls back to the login/worlds route on any failure
    * (a hung/failing backend must not wedge the SPA on "Loading…" forever)
    * and always sets `booted = true` on exit.
-   * @returns Resolves once the initial route has been decided; never
-   *   rejects — failures degrade to the login route instead of throwing.
+   * @returns Resolves once the initial route has been decided; never rejects. Which route a
+   *   failure degrades to depends on where it happened: a `getMe`/`loadSessionState` failure
+   *   (outer catch) goes to `login`, while a `listWorlds` failure once `me` is known falls
+   *   through to `navigate({ name: me ? "worlds" : "login" })` — i.e. `worlds`, since `me` is
+   *   truthy on that path.
    * @example
    * ```
    * boot();
