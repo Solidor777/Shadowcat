@@ -350,7 +350,7 @@ test("group-onto-group: a whole-group transfer targeting an existing group's con
   // flagged: `DockviewApi.onWillDrop` (subscribed once in `init()`) NEVER
   // fires for a drop targeting an existing group — the component only
   // forwards a group model's own `onWillDrop` through the permanently-unwired
-  // `_advancedDnDService` optional chain (`dockviewComponent.ts:4592-4594`).
+  // `_advancedDnDService` optional chain (`dockviewComponent.js:3652-3654`).
   // This exercises the mechanism that actually closes the gap: a per-group
   // subscription to `group.model.onWillDrop` (`#groupWillDropSubs`, wired in
   // `apply()`), fired here via the group model's own private `_onWillDrop`
@@ -1279,7 +1279,7 @@ test("Finding 1: onDidRemovePopoutGroup skips a group whose sole (fallback-resol
 
   const api = engine.debugApi!;
   // The stage's own group id (not exported by `dockview.ts`; mirrors the
-  // literal already asserted against at dockview.test.ts:782). The stage's
+  // literal already asserted against at dockview.test.ts:309). The stage's
   // group is never tracked in `#poppedOutGroupPanels` (the stage is never
   // poppable), so this also exercises the fallback lookup — resolving to
   // `[STAGE_ID]` — which the loop's `id === STAGE_ID` guard must then skip

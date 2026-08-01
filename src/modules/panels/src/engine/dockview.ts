@@ -560,7 +560,7 @@ export class DockviewEngine implements EngineAdapter {
    * seam for unit tests, not a production configuration point. `PanelHost`
    * itself never constructs a `DockviewEngine` — it receives `engine` as an
    * optional prop, defaulting to `new FakeEngine()` when absent
-   * (`PanelHost.svelte:11-22,141`); the real production construction is the
+   * (`src/modules/panels/src/PanelHost.svelte:11-22,151`); the real production construction is the
    * panels module's `register()`, with ONE argument
    * (`props: { engine: new DockviewEngine(consoleLogger()) }`,
    * `src/modules/panels/src/index.ts:58`).
@@ -996,7 +996,7 @@ export class DockviewEngine implements EngineAdapter {
    * a payload `#toDropSite`/`#handleGroupWillDrop` cannot resolve into a
    * `DropSite` are vetoed outright rather than let through unpoliced. A
    * whole-GROUP transfer (`PanelTransfer.panelId` null for a titlebar drag of
-   * an entire group, per `groupDragSource.ts`) is translated into one `dock`
+   * an entire group, per `groupDragSource.js`) is translated into one `dock`
    * op per tab of the dragged group (`#handleGroupWillDrop`), classified
    * against the group's FIRST tab as a representative subject — the same
    * `classifyDrop` rules apply, so a whole-group drop targeting the
@@ -1004,7 +1004,7 @@ export class DockviewEngine implements EngineAdapter {
    * as a single-tab edge drop would.
    *
    * Two independent wires feed this SAME method: `init()`'s `api.onWillDrop`
-   * (fires only for root/edge drops — `dockviewComponent.ts`'s
+   * (fires only for root/edge drops — `dockviewComponent.js`'s
    * `rootDropTarget.onWillShowOverlay`/`onDrop` wiring is the only path that
    * calls `this._onWillDrop.fire(...)` directly) and, per managed group,
    * `group.model.onWillDrop` (subscribed in `apply()` — see
@@ -1055,7 +1055,7 @@ export class DockviewEngine implements EngineAdapter {
   }
 
   /** Translates a whole-group transfer (`PanelTransfer.panelId === null`,
-   * `groupId` = the SOURCE group's own dockview id, per `groupDragSource.ts`/
+   * `groupId` = the SOURCE group's own dockview id, per `groupDragSource.js`/
    * `tabGroups.js`) into one `dock` `LayoutOp` per tab of the dragged group,
    * preserving their relative order, with a SINGLE `preventDefault()` for the
    * whole transfer. Classifies against the group's FIRST tab as a

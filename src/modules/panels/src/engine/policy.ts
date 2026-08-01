@@ -37,7 +37,7 @@ export interface DropSite {
    * notion of the stage at all, so this can't be derived from `layout`
    * alone. Defense-in-depth: dockview's `locked: 'no-drop-target'` on that
    * group already stops these drops from firing in practice (M12a-0 spike
-   * report, dockviewGroupPanelModel.ts `handleDropEvent` — the model
+   * report, dockviewGroupPanelModel.js `handleDropEvent` — the model
    * returns before constructing/firing the drop event at all when
    * `locked === 'no-drop-target'`), so this branch is a second, independent
    * layer rather than the sole guard. */
