@@ -22,7 +22,18 @@ export class LayerRegistry {
   );
   private modules: ModuleLayer[] = [];
 
-  /** All layer ids in ascending z-order (core indices + module fractional orders). */
+  /** All layer ids in ascending z-order (core indices + module fractional orders).
+   * @returns Layer ids sorted by ascending `order`. `RenderEngine.start()` is the sole
+   * production caller — it always requests exactly {@link CORE_LAYERS} today, since no module
+   * layer is ever `register()`-ed in production (see that method's doc).
+   * @example
+   * ```ts
+   * import { LayerRegistry, CORE_LAYERS } from "@shadowcat/render";
+   *
+   * const registry = new LayerRegistry();
+   * registry.orderedIds(); // [...CORE_LAYERS] — no module layers registered yet
+   * ```
+   */
   orderedIds(): string[] {
     const all: { id: string; order: number }[] = [
       ...CORE_LAYERS.map((id, i) => ({ id, order: i })),
@@ -32,7 +43,26 @@ export class LayerRegistry {
     return all.map((l) => l.id);
   }
 
-  /** Register a module layer; returns a dispose removing exactly it. */
+  /** Register a module layer at a fractional `order` relative to the core indices (e.g. `6.5`
+   * splices between `tokens`(6) and `templates`(7)). Throws if `id` collides with a reserved
+   * core layer id or an already-registered module layer id. **No production caller today:**
+   * `RenderEngine` constructs a private `LayerRegistry` but never calls `register` on it — every
+   * `start()` requests exactly {@link CORE_LAYERS} via `orderedIds()` — so no module can splice a
+   * layer into the engine z-order through `RenderEngine`'s public API as it stands; this method
+   * is exercised only by this package's own tests.
+   * @param id The new layer's id; must not collide with a core id or an already-registered one.
+   * @param order The layer's position in z-order, relative to the core indices in
+   * {@link CORE_LAYERS} (fractional values splice between two core layers).
+   * @returns A dispose function that removes exactly this layer when called.
+   * @example
+   * ```ts
+   * import { LayerRegistry } from "@shadowcat/render";
+   *
+   * const registry = new LayerRegistry();
+   * const dispose = registry.register("fx", 6.5); // between tokens(6) and templates(7)
+   * dispose(); // removes "fx"
+   * ```
+   */
   register(id: string, order: number): () => void {
     if (this.core.has(id)) {
       throw new Error(`layer id "${id}" is a reserved core layer`);
