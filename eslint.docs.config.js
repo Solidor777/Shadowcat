@@ -44,7 +44,14 @@ export default [
   {
     files: ["src/types/**/*.ts", "src/client/**/*.ts", "src/modules/**/*.ts", "examples/**/*.ts"],
     ignores: [
-      "**/node_modules/**", "**/dist/**", "**/*.test.ts", "**/vitest.setup.ts",
+      // `*.test.ts` (vitest) and `*.spec.ts` (Playwright) name the SAME category —
+      // a test file, whose local helpers are described by the test that uses them.
+      // Both conventions must appear or the exemption depends on which runner owns
+      // the file: `nodeConnect` in core's `capabilities.e2e.test.ts` is exempt while
+      // an identical `login` in shell's `world-delete.spec.ts` is not. A test HELPER
+      // MODULE that is not itself a test file (core's `e2e/server-process.ts`) stays
+      // covered and is documented like any other module.
+      "**/node_modules/**", "**/dist/**", "**/*.test.ts", "**/*.spec.ts", "**/vitest.setup.ts",
       // Generated: doc comments originate in the Rust source types (ts-rs).
       "src/types/generated/**",
     ],
@@ -57,12 +64,15 @@ export default [
   // Ratcheted packages: doc coverage is a hard gate, not advisory. A package
   // joins this list only once it is at zero under the warn tier.
   {
-    files: ["src/client/core/**/*.ts", "src/client/render/**/*.ts"],
+    files: [
+      "src/client/core/**/*.ts", "src/client/render/**/*.ts",
+      "src/client/shell/**/*.ts", "src/client/ui-kit/**/*.ts", "src/client/formula/**/*.ts",
+    ],
     // Kept identical to the warn block's ignores, including `src/types/generated`
     // (inert against today's `files` glob). The two blocks must stay symmetric:
     // the next package added here inherits whatever asymmetry is left behind.
     ignores: [
-      "**/node_modules/**", "**/dist/**", "**/*.test.ts", "**/vitest.setup.ts",
+      "**/node_modules/**", "**/dist/**", "**/*.test.ts", "**/*.spec.ts", "**/vitest.setup.ts",
       "src/types/generated/**",
     ],
     languageOptions: { parser: tseslint.parser },
@@ -87,5 +97,22 @@ export default [
     },
     plugins: { jsdoc },
     rules: RULES,
+  },
+  // Ratcheted .svelte. Separate from the ratcheted .ts block because a `.svelte`
+  // file needs svelteParser — one block cannot carry both parsers — so a package
+  // reaching zero is ratcheted in two places, not one. The rules themselves are
+  // the same `rulesAt` set, and they DO reach functions declared in a `<script>`
+  // block (mutation-checked: an undocumented function added to a ratcheted
+  // component reports, so a green run here is a real zero rather than a parser
+  // that silently visits nothing).
+  {
+    files: ["src/client/shell/**/*.svelte", "src/client/ui-kit/**/*.svelte"],
+    ignores: ["**/node_modules/**", "**/dist/**"],
+    languageOptions: {
+      parser: svelteParser,
+      parserOptions: { parser: tseslint.parser },
+    },
+    plugins: { jsdoc },
+    rules: RULES_RATCHETED,
   },
 ];
