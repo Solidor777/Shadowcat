@@ -413,13 +413,14 @@ class PanelTabRenderer implements ITabRenderer {
  * action) or, for an ALLOWED classification, ALSO `preventDefault()`s and
  * instead emits the classified `LayoutOp` to `#opListeners`. dockview's own
  * internal move machinery (`_onMove` → `DockviewComponent#moveGroupOrPanel`,
- * `dockviewGroupPanelModel.ts:1804`) is consequently never reached for a
+ * `dockviewComponent.js:2932`, reached from the `onMove` subscription at
+ * `dockviewComponent.js:3636-3638`) is consequently never reached for a
  * completed same-instance drag: the tree is canonical, and the controller's
  * `apply()` — driven by the op this class just emitted — is the one
  * sanctioned mutation path back into dockview. `onDidDrop` (fired only when
  * a drop's `PanelTransfer.viewId` does not match this instance's own
  * `accessor.id` — i.e. a drag whose data never originated from THIS
- * `DockviewApi`, `dockviewGroupPanelModel.ts:1747-1821`) has no wiring here:
+ * `DockviewApi`, `dockviewGroupPanelModel.js:1386-1445`) has no wiring here:
  * this codebase creates exactly one `DockviewApi` per `PanelHost`, and a
  * popped-out group still shares that same instance/`accessor.id` (pop-out
  * moves a panel between groups of ONE api, it never spins up a second one),
@@ -454,17 +455,18 @@ export class DockviewEngine implements EngineAdapter {
   // because `DockviewApi.onWillDrop` (subscribed once in `init()`, below)
   // NEVER fires for a drop targeting an existing group: the component only
   // forwards a group model's `onWillDrop` through `_advancedDnDService?.
-  // dispatchWillDrop(event)` (`dockviewComponent.ts:4592-4594`), and this
-  // codebase ships no `advancedDnDService` module (`allModules.ts:16-24`), so
+  // dispatchWillDrop(event)` (`dockviewComponent.js:3652-3654`), and this
+  // codebase ships no `advancedDnDService` module (`allModules.js:17-25`), so
   // that optional chain is a permanent no-op — `#handleWillDrop` is
   // otherwise unreachable for any group-target drop (header, tab, or
   // content). `IDockviewGroupPanelModel.onWillDrop` (`dockviewGroupPanelModel.
-  // ts:186` interface, emitter at `:274-275`) is a public event on the SAME
-  // `group.model` this class already reaches via `api.getGroup(groupId)`,
-  // fires with the identical `DockviewWillDropEvent` shape as the
-  // component-level event (`dockviewGroupPanelModel.ts:1731-1741`), and gates
-  // `_onMove`/`_onDidDrop` on `defaultPrevented` exactly like the root path
-  // (`handleDropEvent`, `dockviewGroupPanelModel.ts:1741-1811`) — so binding
+  // d.ts:184` interface, emitter at `dockviewGroupPanelModel.js:162-163`) is a
+  // public event on the SAME `group.model` this class already reaches via
+  // `api.getGroup(groupId)`, fires with the identical `DockviewWillDropEvent`
+  // shape as the component-level event (`dockviewGroupPanelModel.js:1370-1381`,
+  // where `handleDropEvent` constructs the event), and gates `_onMove`/
+  // `_onDidDrop` on `defaultPrevented` exactly like the root path
+  // (`handleDropEvent`, `dockviewGroupPanelModel.js:1359-1445`) — so binding
   // `#handleWillDrop` to it directly closes the group-onto-group veto bypass
   // AND lets an ALLOWED group-target drop be intercepted-and-redispatched the
   // same way as a root/edge drop, no new method needed.
