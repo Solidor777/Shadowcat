@@ -1571,11 +1571,37 @@ Trusted local modding hardening → freeze the module API on evidence (≥1 exte
   Server-wide informational count at Sweep-1 start: 1,059. Whole-repo `lint:docs` after Sweep 8:
   827 warnings, 0 errors.
   **Required reading for every implementer and reviewer:**
-  `docs/design/doc-sweep-truthfulness-rules.md` — eleven rules derived empirically from Sweeps 7–8,
+  `docs/design/doc-sweep-truthfulness-rules.md` — twelve rules derived empirically from Sweeps 7–9,
   where every fix round was triggered by a doc sentence asserting something FALSE, never by a
   missing comment. Note especially that a green `lint:docs` proves tag presence, not correctness or
   placement, so the ratchet does not reduce the need for review.
-  Sweep 9 must also document `worldSession.canEdit`'s `gm_role` caveat — see `docs/TODO.md`.
+  Sweep 9 documented `worldSession.canEdit`'s `gm_role` caveat and removed that `docs/TODO.md`
+  entry in the same commit (`f24836e`).
+- **Sweep 9 — client/shell + ui-kit + formula: COMPLETE (2026-07-31).** 276-item backlog → 0 across
+  4 tasks (worldSession 72; shell remainder 50; ui-kit's 16 files 93; formula's 7 files 61). All
+  three packages join the ratcheted `error` block. Whole-repo `lint:docs` after Sweep 9: 528
+  warnings, 0 errors — the remainder is the module packages (Sweeps 10–11).
+  **`.svelte` is now ratcheted too, in its own block.** A `.svelte` file needs `svelteParser` and a
+  single flat-config block cannot carry two parsers, so a package reaching zero ratchets in TWO
+  places, not one. Verified the block is a real gate rather than a parser that silently visits
+  nothing: an undocumented function injected into a ratcheted component's `<script>` reports.
+  `**/*.spec.ts` joined `**/*.test.ts` in both ignore lists — the same category (a test file, whose
+  local helpers the test itself describes) was being exempted or not purely by which runner's naming
+  convention the file used. The distinction the list actually draws — test file vs. helper MODULE —
+  is unchanged: `core/src/e2e/server-process.ts` stays covered and documented.
+  **The orphaned-doc-block scan was the sweep's highest-yield check, and it found defects in
+  ALREADY-SHIPPED work.** A doc block placed above another doc block rather than a declaration binds
+  to nothing, since TypeDoc, editor hover, and jsdoc lint all take the NEAREST preceding block —
+  `lint:docs` cannot see this class by construction. Widening the scan past sweep 9's own packages
+  found three survivors in the ratcheted `core`/`render` packages, because their anchors are `const`
+  declarations that `require-jsdoc` never demands a doc for. The real one: `chat-docs.ts`'s
+  `RollOutcome` block — carrying the i64 PRECISION caveat and a TODO — documented nothing while
+  `RollOutcomeSchema` itself had none. **Run this scan repo-wide, not sweep-scoped.**
+  Every fix round this sweep was again triggered by a FALSE sentence, never a missing one, and the
+  recurring shape was SCOPE WIDENING during relay: a narrow true finding restated one level broader
+  becomes false. Four instances, including one in a `docs/TODO.md` entry written by this sweep
+  ("no test covers a negative substitution" — `template.test.ts:32-35` covers exactly that).
+  Plan: `docs/superpowers/plans/2026-08-01-docs-sweep9-shell-uikit-formula.md`.
 - **Buddy-check convergence — after the last sweep (user directive 2026-07-30).** The completed
   first-pass documentation is buddy-checked (superpowers two-reviewer cross-check debate)
   **crate by crate**: the `shadowcat` server crate, then each TS workspace package. Any problems

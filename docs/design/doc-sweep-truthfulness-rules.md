@@ -3,11 +3,11 @@
 **Hand this file to every doc-sweep implementer and reviewer** (by path — do not paste the rules
 into a brief, or they drift between dispatches).
 
-Every rule traces to a specific defect the `client/core` (620 warnings) and `client/render` (339)
-sweeps shipped and caught, ordered by measured yield. Across both, **every fix round was triggered
-by a doc sentence asserting something FALSE** — never by a missing comment. Plan review effort
-accordingly: the risk in a documentation sweep is not absent prose, it is confident prose that a
-future agent will trust and build on.
+Every rule traces to a specific defect the `client/core` (620 warnings), `client/render` (339), and
+`client/shell`+`ui-kit`+`formula` (276) sweeps shipped and caught, ordered by measured yield. Across
+all three, **every fix round was triggered by a doc sentence asserting something FALSE** — never by a
+missing comment. Plan review effort accordingly: the risk in a documentation sweep is not absent
+prose, it is confident prose that a future agent will trust and build on.
 
 **The `client/render` sweep found more defects outside the docs than in them** — a real rendering
 bug, two defects in the docs gate itself, a runtime divergence between sibling files, and drift in
@@ -26,7 +26,13 @@ was more detailed and equally unverified. The fix was Rule 4: delete the mechani
 attempt a third. **A plausible causal story is the single easiest thing to get wrong, and detail is
 not evidence.**
 
-Scorecards referenced below are cumulative over both sweeps and worth continuing to track.
+**The `client/shell` sweep's own contribution is Rule 12, and it is about this document's blind spot.**
+Rules 1–11 govern prose written *from code*. Sweep 9's four fix rounds were all triggered instead by
+prose written *from another agent's finding* — a reviewer's, an implementer's, or an earlier summary
+of my own — where the source was true and the restatement was not. That path has no claims-table row
+and feels like reporting rather than claiming, which is exactly why it went unchecked four times.
+
+Scorecards referenced below are cumulative over all three sweeps and worth continuing to track.
 
 ## RULE 1 — a citation must support THE CLAIM AS WORDED, not an adjacent fact
 
@@ -172,6 +178,30 @@ don't reuse the list in the brief — the guessed list in this case omitted the 
 11th), bound each finding's reachability so it can ship as a contract caveat rather than a bug report,
 and **report the negative result too**: a pass that lists only hits is indistinguishable from a pass
 that stopped early. The explicit "these 17 agree" list is what makes a completeness claim credible.
+
+## RULE 12 — a relayed finding is an uncited claim, and it fails by getting WIDER
+
+Sweep 9's four fix rounds were all triggered by a claim that was true at its source and false as
+restated. Nobody fabricated anything; each relay dropped a qualifier:
+
+| Source claim (TRUE) | Relayed as (FALSE) |
+|---|---|
+| no test exercises the CANCELLATION scenario (`mod` preceded by `+`, not `-`) | "no existing test covers a negative substitution" — `template.test.ts:32-35` covers exactly that |
+| `TokenSelection.set` re-triggers when the set starts non-empty | "`TokenSelection.set` always re-triggers" — `SvelteSet.clear()` early-returns on empty, so empty→empty is a genuine no-op |
+| the mock's `addLayerFilter` dispose is STRICTER (removes by identity) | "the mock is more permissive" — inverted |
+| `RenderEngine` exposes viewport control | "`RenderEngine.resize`" — no such method; it is `setViewport` |
+
+The relay is where the qualifier dies, because a qualifier reads like hedging when you are compressing
+someone else's finding into one line. The generalized version is always cleaner prose and always a
+weaker claim's replacement by a stronger one.
+
+**How to apply.** Treat a finding from a reviewer, an implementer's report, or your own earlier summary
+exactly like prose you are about to ship: it needs its own `file:line`, verified now. This costs one
+`grep` — three of the four above were disproven by opening the cited file. Watch specifically for
+absolutes appearing during compression ("always", "never", "no test", "only") that were not in the
+source: RULE 5 says absolutes concentrate the errors, and a relay is where they get INTRODUCED. When
+the source scoped a claim to a specific condition, the restatement keeps that condition or drops the
+claim.
 
 ## Report contract
 
