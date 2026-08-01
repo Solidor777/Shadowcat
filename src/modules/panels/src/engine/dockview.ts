@@ -54,6 +54,21 @@ class AdoptingContentRenderer implements IContentRenderer {
   readonly element: HTMLElement;
   #adopted: HTMLElement | null = null;
 
+  /** Stashes `resolve` for `init()` to call (never invoked here — see the class
+   * doc comment) and builds this renderer's own wrapper `element`, tagged with
+   * `className` so `panels.scss` can style the stage's content container
+   * distinctly from an ordinary panel's.
+   * @param resolve Lazily resolves the element to adopt — a panel slot, or the
+   * shared stage element. Called exactly once, from `init()`.
+   * @param className CSS class applied to this renderer's own wrapper element
+   * (`sc-dockview-panel-content` or `sc-dockview-stage-content`).
+   * @example
+   * ```
+   * // private class; not part of the public API — constructed only by
+   * // DockviewEngine's own `createComponent` factory
+   * new AdoptingContentRenderer(() => stageEl, "sc-dockview-stage-content");
+   * ```
+   */
   constructor(
     private readonly resolve: () => HTMLElement,
     className: string,
@@ -63,19 +78,76 @@ class AdoptingContentRenderer implements IContentRenderer {
     this.element.style.height = "100%";
   }
 
+  /** Dockview's first (and only meaningful) render call for this content: pulls
+   * the element `resolve()` returns and adopts it via `appendChild`. Guarded by
+   * `#adopted` so a defensive repeat call is a no-op — dockview does not itself
+   * call `init()` twice for the same renderer.
+   * @example
+   * ```
+   * // private method; not part of the public API — invoked only by
+   * // dockview-core's own render lifecycle (IContentRenderer.init)
+   * renderer.init();
+   * ```
+   */
   init(): void {
     if (this.#adopted) return;
     this.#adopted = this.resolve();
     this.element.appendChild(this.#adopted);
   }
 
+  /** No-op: the adopted element's own CSS (`height: 100%` on `element`, set at
+   * construction) sizes it, not dockview's grid layout pass.
+   * @example
+   * ```
+   * // private method; not part of the public API
+   * renderer.layout();
+   * ```
+   */
   layout(): void {}
+
+  /** No-op: this renderer forwards no per-update params of its own — the
+   * adopted element's content is owned and re-rendered by whatever mounted it,
+   * never by dockview's `IPanel.update` callback.
+   * @example
+   * ```
+   * // private method; not part of the public API
+   * renderer.update();
+   * ```
+   */
   update(): void {}
+
+  /** No serializable state of its own to contribute to dockview's layout JSON.
+   * @returns An empty object.
+   * @example
+   * ```
+   * // private method; not part of the public API
+   * renderer.toJSON();
+   * ```
+   */
   toJSON(): object {
     return {};
   }
+
+  /** No-op: DOM focus for the adopted element is directed by its own owner
+   * (PanelHost's staging container, or the stage), never by dockview's
+   * tab-activation focus callback.
+   * @example
+   * ```
+   * // private method; not part of the public API
+   * renderer.focus();
+   * ```
+   */
   focus(): void {}
 
+  /** Detaches (never destroys) the adopted element, returning it to its
+   * original owner — see the class doc comment's ownership contract.
+   * @example
+   * ```
+   * // private method; not part of the public API — invoked only by
+   * // dockview-core when this content renderer is torn down
+   * renderer.dispose();
+   * ```
+   */
   dispose(): void {
     if (this.#adopted && this.#adopted.parentElement === this.element) {
       this.element.removeChild(this.#adopted);
@@ -91,7 +163,20 @@ class AdoptingContentRenderer implements IContentRenderer {
  * resolves a target group's identity before `detach` runs for the same
  * reason). A reordered or emptied-then-refilled group gets a fresh id and
  * is recreated — accepted as a minor churn cost; a finer content-independent
- * diff is future work. */
+ * diff is future work.
+ * @param zone The dock zone the group belongs to.
+ * @param index The group's positional index within `zone`, used only as a
+ * fallback suffix when `tabs` is empty.
+ * @param tabs The group's current tab ids, in order; `tabs[0]` is the id this
+ * function keys on.
+ * @returns A stable dockview group id for this content, or an index-suffixed
+ * fallback id when the group has no tabs yet.
+ * @example
+ * ```
+ * // private function; not part of the public API
+ * groupIdFor("right", 0, ["chat"]); // "sc-group:chat"
+ * ```
+ */
 function groupIdFor(zone: ZoneId, index: number, tabs: readonly string[]): string {
   return `sc-group:${tabs[0] ?? `${zone}:${index}:empty`}`;
 }
@@ -100,7 +185,20 @@ function groupIdFor(zone: ZoneId, index: number, tabs: readonly string[]): strin
  * menu button); returns a `close()` that unmounts it and restores focus to
  * `anchor`. A pointerdown outside the popover, or the menu's own `onClose`
  * (Escape/Tab), closes it — the two paths share this single teardown so
- * neither can leave the other's listener/DOM behind. */
+ * neither can leave the other's listener/DOM behind.
+ * @param anchor The tab's own menu button; the popover is positioned under it
+ * and, on close, refocused (unless a Tab-driven close asked to skip that).
+ * @param onCommand Called with the chosen `MenuCommand` once, right before the
+ * popover closes itself.
+ * @returns A `close(returnFocus?)` teardown: unmounts the popover and, unless
+ * `returnFocus` is explicitly `false`, returns DOM focus to `anchor`.
+ * @example
+ * ```
+ * // private function; not part of the public API
+ * const close = mountPanelMenu(menuButton, (cmd) => handleCommand(cmd));
+ * close(); // later, or from the menu's own onClose/pointerdown-outside paths
+ * ```
+ */
 function mountPanelMenu(
   anchor: HTMLElement,
   onCommand: (cmd: MenuCommand) => void,
@@ -162,6 +260,24 @@ class PanelTabRenderer implements ITabRenderer {
   #unsubBadge: (() => void) | null = null;
   #closeMenu: (() => void) | null = null;
 
+  /** Builds this tab's chrome (icon/label/badge/menu-button elements) and wires
+   * its live subscriptions (`i18n.subscribe` for locale changes, the panel's
+   * own `PanelMeta.badge` for count changes) — see the class doc comment for
+   * why label/icon stay live through `getMeta()` while the badge subscription
+   * is bound once here.
+   * @param id This tab's panel id — used as the label fallback when `getMeta()`
+   * resolves to nothing, and passed back through `onCommand`.
+   * @param getMeta Resolves this tab's current `PanelMeta` (icon/label/badge),
+   * read live on every render rather than snapshotted at construction.
+   * @param onCommand Called with `(id, cmd, invoker)` when this tab's menu
+   * button chooses a command — `invoker` is always this tab's own menu button.
+   * @example
+   * ```
+   * // private class; not part of the public API — constructed only by
+   * // DockviewEngine's own `createTabComponent` factory
+   * new PanelTabRenderer("chat", () => meta, (id, cmd, invoker) => {});
+   * ```
+   */
   constructor(
     private readonly id: string,
     private readonly getMeta: () => PanelMeta | undefined,
@@ -196,10 +312,28 @@ class PanelTabRenderer implements ITabRenderer {
     });
   }
 
-  // No per-panel state to read from dockview's own init parameters — label/
-  // icon come entirely from `getMeta()`, never `params.title`.
+  /** No-op: no per-panel state to read from dockview's own init parameters —
+   * label/icon come entirely from `getMeta()`, never `params.title`.
+   * @param _params Dockview's tab-part init parameters; unused.
+   * @example
+   * ```
+   * // private method; not part of the public API — invoked only by
+   * // dockview-core's own render lifecycle (ITabRenderer.init)
+   * renderer.init(params);
+   * ```
+   */
   init(_params: TabPartInitParameters): void {}
 
+  /** Re-renders the icon/label from a fresh `getMeta()` read, and the menu
+   * button's `aria-label`. Called at construction and again on every
+   * `i18n.subscribe` locale-change notification, so a live locale switch
+   * relabels every open tab without a remount.
+   * @example
+   * ```
+   * // private method; not part of the public API
+   * this.#renderLabels();
+   * ```
+   */
   #renderLabels(): void {
     const meta = this.getMeta();
     this.#iconEl.textContent = meta?.icon ?? "";
@@ -207,6 +341,15 @@ class PanelTabRenderer implements ITabRenderer {
     this.#menuBtn.setAttribute("aria-label", i18n.t("panels.menu"));
   }
 
+  /** Re-renders the badge count from `PanelMeta.badge`, hiding the badge
+   * element entirely at a count of `0` rather than rendering a visible "0".
+   * Called at construction and again on every `#unsubBadge` notification.
+   * @example
+   * ```
+   * // private method; not part of the public API
+   * this.#renderBadge();
+   * ```
+   */
   #renderBadge(): void {
     const count = this.getMeta()?.badge?.get() ?? 0;
     if (count > 0) {
@@ -218,6 +361,18 @@ class PanelTabRenderer implements ITabRenderer {
     }
   }
 
+  /** Opens the command popover on a closed menu, or closes it via the SAME
+   * `#closeMenu` teardown `mountPanelMenu` returned on the alternate call —
+   * mirrors the popover's own pointerdown-outside/Escape close paths, so no
+   * path can leave the other's listener/DOM behind (see `mountPanelMenu`'s
+   * doc comment).
+   * @example
+   * ```
+   * // private method; not part of the public API — invoked only by this
+   * // tab's own menu-button click handler
+   * this.#toggleMenu();
+   * ```
+   */
   #toggleMenu(): void {
     if (this.#closeMenu) {
       this.#closeMenu();
@@ -235,6 +390,15 @@ class PanelTabRenderer implements ITabRenderer {
     };
   }
 
+  /** Tears down every live subscription this tab holds: an open menu popover
+   * (if any), the locale subscription, and the badge subscription.
+   * @example
+   * ```
+   * // private method; not part of the public API — invoked only by
+   * // dockview-core when this tab renderer is torn down
+   * renderer.dispose();
+   * ```
+   */
   dispose(): void {
     this.#closeMenu?.();
     this.#unsubLocale();
@@ -374,6 +538,23 @@ export class DockviewEngine implements EngineAdapter {
   // op translation without a real `window.open` (jsdom has none).
   #popoutDriver: (panel: IDockviewPanel) => Promise<boolean>;
 
+  /** Builds an engine instance with no dockview API yet (that is created by
+   * `init()`, which a `PanelHost` calls once at mount). `popoutDriver` is a
+   * seam for unit tests, not a production configuration point — a real
+   * `PanelHost` always constructs this with zero arguments.
+   * @param logger Diagnostic sink for vetoed gestures and recoverable
+   * failures (defaults to `consoleLogger()`).
+   * @param popoutDriver Replaces dockview's native `addPopoutGroup` call for
+   * pop-out requests; defaults to the real driver. Injectable so a test can
+   * exercise the async-result → op translation without a real `window.open`
+   * (jsdom has none).
+   * @example
+   * ```ts
+   * import { DockviewEngine } from "@shadowcat/module-panels";
+   *
+   * const engine = new DockviewEngine();
+   * ```
+   */
   constructor(logger?: Logger, popoutDriver?: (panel: IDockviewPanel) => Promise<boolean>) {
     this.#logger = logger ?? consoleLogger();
     // `/popout.html` is the same-origin loader document dockview's popout
@@ -384,6 +565,31 @@ export class DockviewEngine implements EngineAdapter {
     this.#popoutDriver = popoutDriver ?? ((panel) => this.#api!.addPopoutGroup(panel, { popoutUrl: "/popout.html" }));
   }
 
+  /** `EngineAdapter.init`: creates the underlying `DockviewApi` against `host`,
+   * registers the content/tab component factories (`createComponent`,
+   * `createTabComponent` — branching on `options.name`/`options.id` per the
+   * inline comments below), mounts the stage (W1, `#mountStage`), and
+   * subscribes every component-level event this class translates into ops or
+   * DOM/focus teardown (`onWillDrop`, `onDidRemovePanel`,
+   * `onDidActivePanelChange`, `onDidRemovePopoutGroup`, `onDidLayoutChange`).
+   * Called exactly once, at `PanelHost` mount.
+   * @param host The dockview root element; classed `sc-dockview-root` and
+   * handed to `createDockview` unmodified otherwise.
+   * @param slotFor Resolves a panel id to its persistent, already-mounted slot
+   * element — adopted, never re-created, by this engine's content renderers.
+   * @param stageEl The shared canvas/stage element, adopted into its own
+   * dedicated headerless group (W1).
+   * @example
+   * ```ts
+   * import { DockviewEngine } from "@shadowcat/module-panels";
+   *
+   * const engine = new DockviewEngine();
+   * declare const host: HTMLElement;
+   * declare const stageEl: HTMLElement;
+   * declare const slots: Map<string, HTMLElement>;
+   * engine.init(host, (id) => slots.get(id)!, stageEl);
+   * ```
+   */
   init(host: HTMLElement, slotFor: (id: string) => HTMLElement, stageEl: HTMLElement): void {
     host.classList.add("sc-dockview-root");
 
@@ -440,7 +646,18 @@ export class DockviewEngine implements EngineAdapter {
    * belt-and-suspenders alongside `createTabComponent`'s `STAGE_ID` branch
    * (`init()`) and W1's headerless stage group, which never gives the stage
    * a `PanelTabRenderer`/menu button to invoke this with in the first place;
-   * neither guard here is the sole line of defense. */
+   * neither guard here is the sole line of defense.
+   * @param id The panel id the command targets.
+   * @param cmd The chosen `MenuCommand`.
+   * @param invoker The tab's own menu button — recorded as the focus-return
+   * target for a `"float"` command (see `#floatInvokers`).
+   * @example
+   * ```
+   * // private method; not part of the public API — invoked only by
+   * // PanelTabRenderer's own menu-command callback
+   * this.#handleMenuCommand("chat", "float", menuButton);
+   * ```
+   */
   #handleMenuCommand(id: string, cmd: MenuCommand, invoker: HTMLElement): void {
     if (id === STAGE_ID) return;
     const result = opForMenuCommand(cmd, id);
@@ -466,7 +683,15 @@ export class DockviewEngine implements EngineAdapter {
    * synchronously (preserving the user gesture), then translates the async
    * result into a tree op. Success ⇒ `popOut` (records the id + its live popout
    * group for close-translation). Block/throw ⇒ spec §10 fallback: `float` +
-   * a `panels.popoutBlocked` notice. */
+   * a `panels.popoutBlocked` notice.
+   * @param id The panel id to pop out.
+   * @example
+   * ```
+   * // private method; not part of the public API — invoked only from
+   * // #handleMenuCommand's "popOut" branch
+   * this.#requestPopOut("chat");
+   * ```
+   */
   #requestPopOut(id: string): void {
     const api = this.#api;
     if (!api) return;
@@ -513,7 +738,17 @@ export class DockviewEngine implements EngineAdapter {
    * element's `display: none`) and locked to `'no-drop-target'` (the
    * model's own drop handler returns before a drop event is even
    * constructed against a group locked this way). Also used by
-   * `#restoreStage` (W3) to remount after an unexpected removal. */
+   * `#restoreStage` (W3) to remount after an unexpected removal.
+   * @param api The live `DockviewApi` to mount the stage group/panel into.
+   * @returns The stage's dedicated dockview group (created, or the existing
+   * one re-locked, on a repeat call).
+   * @example
+   * ```
+   * // private method; not part of the public API — invoked only from
+   * // init() and #restoreStage()
+   * this.#mountStage(api);
+   * ```
+   */
   #mountStage(api: DockviewApi): IDockviewGroupPanel {
     let stageGroup = api.getGroup(STAGE_GROUP_ID);
     if (!stageGroup) {
@@ -541,7 +776,14 @@ export class DockviewEngine implements EngineAdapter {
   /** W3: fail-safe invariant guard. If the stage panel ever leaves the
    * model (a bug elsewhere, a dockview behaviour change, or a wrapper-API
    * gap), remount it immediately and log — the stage must never simply
-   * vanish. */
+   * vanish.
+   * @example
+   * ```
+   * // private method; not part of the public API — invoked only from
+   * // #handleDidRemovePanel when the stage panel itself was removed
+   * this.#restoreStage();
+   * ```
+   */
   #restoreStage(): void {
     if (this.#restoringStage) return;
     const api = this.#api;
@@ -555,6 +797,20 @@ export class DockviewEngine implements EngineAdapter {
     }
   }
 
+  /** `DockviewApi.onDidRemovePanel` handler: runs floating-a11y teardown and
+   * the W3 stage-restore guard for EVERY panel removal regardless of cause,
+   * then — unless the removal is our own `apply()` reconciliation, or the
+   * transient docked→floating transition `#floatTransitionIds` brackets —
+   * redispatches it as a `close` `LayoutOp`. See the inline comments below for
+   * each branch's reasoning.
+   * @param panel The panel dockview just removed.
+   * @example
+   * ```
+   * // private method; not part of the public API — invoked only by
+   * // dockview-core's own onDidRemovePanel event
+   * this.#handleDidRemovePanel(panel);
+   * ```
+   */
   #handleDidRemovePanel(panel: IDockviewPanel): void {
     // Always runs, even for an `#applying`-driven removal (e.g. a floating
     // panel docked or closed via the reducer) — this is a DOM/focus
@@ -587,7 +843,17 @@ export class DockviewEngine implements EngineAdapter {
    * gesture uses. Called once per floating-panel CREATION (`apply()`'s
    * floating loop) — `panel.group.element` is a descendant of the dialog's
    * `Overlay#_element`, so `.closest()` finds it without reaching into any
-   * dockview-internal field. */
+   * dockview-internal field.
+   * @param id The panel id that just became a floating group.
+   * @param meta The panel's `PanelMeta`, for the dialog's `aria-label` — a
+   * missing meta leaves the label unset rather than throwing.
+   * @example
+   * ```
+   * // private method; not part of the public API — invoked only from
+   * // apply()'s floating loop, once per newly-created floating panel
+   * this.#wireFloatingA11y("chat", meta);
+   * ```
+   */
   #wireFloatingA11y(id: string, meta: PanelMeta | undefined): void {
     const panel = this.#api?.getPanel(id);
     if (!panel) return;
@@ -610,7 +876,15 @@ export class DockviewEngine implements EngineAdapter {
    * when that element is still attached. A no-op (safe, idempotent) for any
    * id that was never floating. Called from `#handleDidRemovePanel`, which
    * fires for every panel removal regardless of cause (menu close, Escape,
-   * or a dock transition moving the panel out of its floating window). */
+   * or a dock transition moving the panel out of its floating window).
+   * @param id The panel id to tear down floating a11y state for.
+   * @example
+   * ```
+   * // private method; not part of the public API — invoked only from
+   * // #handleDidRemovePanel
+   * this.#teardownFloatingA11y("chat");
+   * ```
+   */
   #teardownFloatingA11y(id: string): void {
     this.#floatingEscapeSubs.get(id)?.();
     this.#floatingEscapeSubs.delete(id);
@@ -620,6 +894,21 @@ export class DockviewEngine implements EngineAdapter {
     if (invoker && document.contains(invoker)) invoker.focus();
   }
 
+  /** `DockviewApi.onDidActivePanelChange` handler: redispatches a USER-driven
+   * tab activation (`event.origin === "user"` — an `'api'` origin is this
+   * class's own `setActive()` call from `apply()`/`focus()`) as an `activeTab`
+   * `LayoutOp`, resolving the panel's zone/group from `#zoneOfGroup`. No-ops
+   * for the stage panel, an unresolvable group, or during `#applying` (our own
+   * reconciliation, not a user gesture).
+   * @param event The active-panel-change event; `event.panel` is `undefined`
+   * when the active group becomes empty.
+   * @example
+   * ```
+   * // private method; not part of the public API — invoked only by
+   * // dockview-core's own onDidActivePanelChange event
+   * this.#handleActivePanelChange(event);
+   * ```
+   */
   #handleActivePanelChange(event: DockviewActivePanelChangeEvent): void {
     if (this.#applying) return;
     if (event.origin !== "user") return; // 'api' origin = our own `setActive()` calls (apply/focus)
@@ -638,7 +927,19 @@ export class DockviewEngine implements EngineAdapter {
    * The map cleanup runs unconditionally; the `popIn` redispatch is suppressed
    * during `#applying` — that removal is our own reconciliation of a tree the
    * reducer already updated (identical reasoning to `#handleDidRemovePanel`/
-   * `#handleActivePanelChange`), so re-emitting would replay a stale op. */
+   * `#handleActivePanelChange`), so re-emitting would replay a stale op.
+   * @param event The popout-group-removed event.
+   * @param event.id The dockview id of the popout group that was removed.
+   * @param event.group The removed group itself, whose `model.panels` is the
+   * fallback panel-id source when `#poppedOutGroupPanels` has no entry for
+   * `event.id`.
+   * @example
+   * ```
+   * // private method; not part of the public API — invoked only by
+   * // dockview-core's own onDidRemovePopoutGroup event
+   * this.#handleRemovePopoutGroup(event);
+   * ```
+   */
   #handleRemovePopoutGroup(event: { id: string; group: IDockviewGroupPanel }): void {
     const ids = this.#poppedOutGroupPanels.get(event.id) ?? event.group.model.panels.map((p) => p.id);
     this.#poppedOutGroupPanels.delete(event.id);
@@ -686,7 +987,17 @@ export class DockviewEngine implements EngineAdapter {
    * drop this engine can receive: container-edge drops via the component
    * path, group-onto-group drops via the per-group path — and since BOTH
    * now `preventDefault()` every allowed drop too, dockview's own `_onMove`/
-   * internal move machinery is never reached from either wire. */
+   * internal move machinery is never reached from either wire.
+   * @param event The will-drop event, from either of the two wires described
+   * above.
+   * @example
+   * ```
+   * // private method; not part of the public API — invoked by both
+   * // dockview-core's component-level onWillDrop and, per group, the
+   * // group model's own onWillDrop
+   * this.#handleWillDrop(event);
+   * ```
+   */
   #handleWillDrop(event: DockviewWillDropEvent): void {
     const layout = this.#expanded;
     if (!layout) {
@@ -728,7 +1039,18 @@ export class DockviewEngine implements EngineAdapter {
    * out per-tab). Fails closed (veto, single `preventDefault()`) when the
    * source group can't be resolved (empty tab list — e.g. a stale/foreign
    * group id) or the representative classification itself vetoes, exactly
-   * like the single-tab path in `#handleWillDrop`. */
+   * like the single-tab path in `#handleWillDrop`.
+   * @param event The will-drop event carrying the whole-group transfer.
+   * @param sourceGroupId The dragged group's own dockview id.
+   * @param layout The tree `classifyDrop` classifies the representative tab
+   * against.
+   * @example
+   * ```
+   * // private method; not part of the public API — invoked only from
+   * // #handleWillDrop when a drop's transfer data has a null panelId
+   * this.#handleGroupWillDrop(event, "sc-group:chat", layout);
+   * ```
+   */
   #handleGroupWillDrop(event: DockviewWillDropEvent, sourceGroupId: string, layout: ExpandedLayout): void {
     const tabs = this.#api
       ?.getGroup(sourceGroupId)
@@ -778,7 +1100,22 @@ export class DockviewEngine implements EngineAdapter {
    * number already) instead reuses that same numeric index for every tab,
    * inserting each at a consecutive `tabIndex` starting from the
    * representative op's own resolved position (or the target group's current
-   * tab count, when the drop was a "content" drop with no explicit index). */
+   * tab count, when the drop was a "content" drop with no explicit index).
+   * @param op The single representative `dock` op `classifyDrop` returned for
+   * the dragged group's first tab.
+   * @param tabs The dragged group's tab ids, in their original relative order.
+   * @param event The will-drop event, for its `event.group` fallback tab count
+   * on an existing-group "content" drop.
+   * @param layout The tree the target zone's current group count is read from
+   * (only consulted for a `group: "new"` op).
+   * @returns One `dock` `LayoutOp` per entry in `tabs`.
+   * @example
+   * ```
+   * // private method; not part of the public API — invoked only from
+   * // #handleGroupWillDrop
+   * this.#expandGroupDockOp(op, tabs, event, layout);
+   * ```
+   */
   #expandGroupDockOp(
     op: Extract<LayoutOp, { op: "dock" }>,
     tabs: readonly string[],
@@ -803,7 +1140,18 @@ export class DockviewEngine implements EngineAdapter {
    * dragged group's representative first tab for `#handleGroupWillDrop`).
    * `onDidDrop` is unwired (see the class doc comment), so `kind` is always
    * the real value dockview supplies on the will-drop event — no
-   * approximation branch is needed here anymore. */
+   * approximation branch is needed here anymore.
+   * @param event The will-drop event to translate.
+   * @param id The drop's subject panel id, or `null`/`undefined` for a payload
+   * this translation cannot classify.
+   * @returns The translated `DropSite`, or `null` when `id` is absent.
+   * @example
+   * ```
+   * // private method; not part of the public API — invoked only from
+   * // #handleWillDrop and #handleGroupWillDrop
+   * this.#toDropSite(event, "chat");
+   * ```
+   */
   #toDropSite(event: DockviewWillDropEvent, id: string | null | undefined): DropSite | null {
     if (!id) return null;
     const targetGroupId = event.group?.id;
@@ -838,6 +1186,29 @@ export class DockviewEngine implements EngineAdapter {
     };
   }
 
+  /** `EngineAdapter.apply`: reconciles dockview's live widget tree to match
+   * `expanded` — walks every zone's groups/tabs (creating/moving dockview
+   * groups and panels as needed, subscribing each new group's resize/drop
+   * events), then every floating entry (creating or repositioning as needed,
+   * wiring floating a11y for a newly-created one), then removes any dockview
+   * panel/group the tree no longer names. Popped-out ids and their origin
+   * groups are seeded into the "seen" sets first so this pass leaves a live
+   * popout untouched (see the inline comments below for why). A no-op before
+   * `init()` has run (`this.#api` still `null`).
+   * @param expanded The docked-zone + floating layout to reconcile onto.
+   * @param meta Per-panel icon/label/badge metadata, read by
+   * `PanelTabRenderer`'s tabs and `#wireFloatingA11y`'s dialog label.
+   * @example
+   * ```ts
+   * import { DockviewEngine, type ExpandedLayout } from "@shadowcat/module-panels";
+   * import type { PanelMeta } from "@shadowcat/core";
+   *
+   * const engine = new DockviewEngine();
+   * declare const expanded: ExpandedLayout;
+   * declare const meta: ReadonlyMap<string, PanelMeta>;
+   * engine.apply(expanded, meta);
+   * ```
+   */
   apply(expanded: ExpandedLayout, meta: ReadonlyMap<string, PanelMeta>): void {
     const api = this.#api;
     if (!api) return;
@@ -1010,7 +1381,15 @@ export class DockviewEngine implements EngineAdapter {
    * zone's facing dimension is its stacked groups' total HEIGHT (the axis
    * the stack grows along). Both read the group/zone dimensions live off
    * the engine — `#zoneOfGroup` only tracks which zone/index each group
-   * belongs to, not stale size snapshots. */
+   * belongs to, not stale size snapshots.
+   * @param groupId The dockview group id whose dimensions just changed.
+   * @example
+   * ```
+   * // private method; not part of the public API — invoked only by the
+   * // per-group onDidDimensionsChange subscription apply() creates
+   * this.#handleGroupDimensionsChange("sc-group:chat");
+   * ```
+   */
   #handleGroupDimensionsChange(groupId: string): void {
     if (this.#applying) return;
     const api = this.#api;
@@ -1069,7 +1448,14 @@ export class DockviewEngine implements EngineAdapter {
    * `resizeFloating` op's round trip back through the reducer and into a later
    * `apply()` call re-snapshots the identical rect, so this handler's diff
    * against that same value reads as unchanged and emits nothing, with no
-   * dependency on `apply()`'s synchronous window at all. */
+   * dependency on `apply()`'s synchronous window at all.
+   * @example
+   * ```
+   * // private method; not part of the public API — invoked only by
+   * // dockview-core's own onDidLayoutChange event
+   * this.#handleFloatingLayoutChange();
+   * ```
+   */
   #handleFloatingLayoutChange(): void {
     const api = this.#api;
     const expanded = this.#expanded;
@@ -1104,7 +1490,16 @@ export class DockviewEngine implements EngineAdapter {
    * internals directly (e.g. the W3 guard test calls `debugApi.removePanel`
    * on the stage panel the way an external bug or a future dockview version
    * might). Never used by production callers — the `EngineAdapter` seam
-   * above never reaches for it. */
+   * above never reaches for it.
+   * @returns The live `DockviewApi`, or `null` before `init()` has run.
+   * @example
+   * ```ts
+   * import { DockviewEngine } from "@shadowcat/module-panels";
+   *
+   * const engine = new DockviewEngine();
+   * const api = engine.debugApi; // test-only; production code never reads this
+   * ```
+   */
   get debugApi(): DockviewApi | null {
     return this.#api;
   }
@@ -1112,36 +1507,120 @@ export class DockviewEngine implements EngineAdapter {
   /** Test helper: read-only view of `#poppedOutGroupPanels`, so a test can
    * assert `#handleRemovePopoutGroup` actually clears the tracked entry for a
    * closed popout group rather than merely inferring it from emitted ops.
-   * Never used by production callers. */
+   * Never used by production callers.
+   * @returns A read-only map of popout dockview group id to the panel ids it
+   * hosts.
+   * @example
+   * ```ts
+   * import { DockviewEngine } from "@shadowcat/module-panels";
+   *
+   * const engine = new DockviewEngine();
+   * const map = engine.debugPoppedOutGroupPanels; // test-only
+   * ```
+   */
   get debugPoppedOutGroupPanels(): ReadonlyMap<string, string[]> {
     return this.#poppedOutGroupPanels;
   }
 
   /** Test helper: read-only view of `#poppedOutOriginGroups`, mirroring
-   * `debugPoppedOutGroupPanels` above. Never used by production callers. */
+   * `debugPoppedOutGroupPanels` above.
+   * @returns A read-only map of popped-out panel id to its pre-pop-out origin
+   * dockview group id.
+   * @example
+   * ```ts
+   * import { DockviewEngine } from "@shadowcat/module-panels";
+   *
+   * const engine = new DockviewEngine();
+   * const map = engine.debugPoppedOutOriginGroups; // test-only
+   * ```
+   */
   get debugPoppedOutOriginGroups(): ReadonlyMap<string, string> {
     return this.#poppedOutOriginGroups;
   }
 
+  /** `EngineAdapter.onOp`: subscribes to every `LayoutOp` this engine emits,
+   * whether from a drag gesture (`#handleWillDrop`/`#handleGroupWillDrop`), a
+   * menu command (`#handleMenuCommand`), a resize (`#handleGroupDimensionsChange`/
+   * `#handleFloatingLayoutChange`), or a popout window closing
+   * (`#handleRemovePopoutGroup`).
+   * @param cb Called once per emitted op.
+   * @returns An unsubscribe function.
+   * @example
+   * ```ts
+   * import { DockviewEngine, type LayoutOp } from "@shadowcat/module-panels";
+   *
+   * const engine = new DockviewEngine();
+   * const unsubscribe = engine.onOp((op: LayoutOp) => console.log(op));
+   * unsubscribe();
+   * ```
+   */
   onOp(cb: (op: LayoutOp) => void): () => void {
     this.#opListeners.add(cb);
     return () => this.#opListeners.delete(cb);
   }
 
+  /** `EngineAdapter.onNotice`: subscribes to this engine's user-facing notice
+   * keys — today, only `"panels.popoutBlocked"`, emitted from `#requestPopOut`
+   * when a pop-out request is blocked or fails.
+   * @param cb Called once per emitted notice key.
+   * @returns An unsubscribe function.
+   * @example
+   * ```ts
+   * import { DockviewEngine } from "@shadowcat/module-panels";
+   *
+   * const engine = new DockviewEngine();
+   * const unsubscribe = engine.onNotice((key: string) => console.log(key));
+   * unsubscribe();
+   * ```
+   */
   onNotice(cb: (key: string) => void): () => void {
     this.#noticeListeners.add(cb);
     return () => this.#noticeListeners.delete(cb);
   }
 
+  /** Notifies every `onNotice` subscriber with `key`.
+   * @param key The notice's stable i18n key.
+   * @example
+   * ```
+   * // private method; not part of the public API — invoked only from
+   * // #requestPopOut's blocked/failed branches
+   * this.#emitNotice("panels.popoutBlocked");
+   * ```
+   */
   #emitNotice(key: string): void {
     for (const cb of this.#noticeListeners) cb(key);
   }
 
+  /** `EngineAdapter.focus`: brings `id`'s dockview group/window to the
+   * foreground via `setActive()`. No-ops for the stage id (W2 defense-in-depth
+   * — the stage is never a normal focus subject) or an id with no live panel.
+   * @param id The panel id to focus.
+   * @example
+   * ```ts
+   * import { DockviewEngine } from "@shadowcat/module-panels";
+   *
+   * const engine = new DockviewEngine();
+   * engine.focus("chat");
+   * ```
+   */
   focus(id: string): void {
     if (id === STAGE_ID) return; // W2 defense-in-depth: never a normal focus subject
     this.#api?.getPanel(id)?.api.setActive();
   }
 
+  /** `EngineAdapter.destroy`: disposes every subscription this engine created
+   * (component-level, per-group resize/drop, per-floating-panel Escape),
+   * clears every internal tracking map, and disposes the underlying
+   * `DockviewApi` itself. Slot elements are NOT destroyed — ownership returns
+   * to `PanelHost`'s staging container, per the `EngineAdapter` contract.
+   * @example
+   * ```ts
+   * import { DockviewEngine } from "@shadowcat/module-panels";
+   *
+   * const engine = new DockviewEngine();
+   * engine.destroy();
+   * ```
+   */
   destroy(): void {
     for (const d of this.#disposables) d.dispose();
     this.#disposables = [];
