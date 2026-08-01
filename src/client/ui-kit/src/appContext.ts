@@ -69,7 +69,13 @@ export interface AppContext {
   /** The current user's id (ownership checks). */
   selfId: string;
   /** Advisory client-side edit gate (mirrors the server's Update-path check) for showing/hiding
-   * write controls. The server remains authoritative. GM ⇒ always true. */
+   * write controls. The server remains authoritative and re-checks independently at
+   * `apply_intent`. **GM ⇒ always true, unconditionally** — the implementation
+   * (`worldSession.canEdit`) short-circuits on `role === "gm"` without consulting
+   * `doc.permissions.gm_role`, while the server's GM bypass IS conditional on it. So this can
+   * over-permit a GM's write affordances on a `gm_role`-capped document; see the caveat on the
+   * implementation for the reachability bound. Advisory-only — never treat a `true` here as
+   * authorization. */
   canEdit(doc: WireDocument, path: string): boolean;
   /** Open (or focus) a document as a floating sheet panel. `docId` targets a top-level
    * document (optionally one embedded child via `embeddedPath`); `tokenId` resolves to the
