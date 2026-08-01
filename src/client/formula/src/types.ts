@@ -35,6 +35,25 @@ export interface FormulaError {
 
 export type FormulaValue = number | FormulaError;
 
+/**
+ * Type-guard distinguishing a `FormulaError` from a successful numeric result.
+ * A type-only check (`typeof v !== "number"`) — it trusts that `v` already
+ * conforms to `FormulaValue`'s shape; it does not verify a malformed object
+ * is a well-formed `FormulaError` (that stronger check is `internal.ts`'s
+ * `isWellFormedError`, used at consumer-callback trust boundaries).
+ * @param v A value returned by `evaluate`, `resolveAll`, or `resolveNotationTemplate`.
+ * @returns `true` when `v` is a `FormulaError` (not a finite number).
+ * @example
+ * ```ts
+ * import { evaluate, isFormulaError, parseFormula } from "@shadowcat/formula";
+ *
+ * const expr = parseFormula("1 / 0");
+ * if (!("error" in expr)) {
+ *   const result = evaluate(expr, () => 0);
+ *   if (isFormulaError(result)) console.log(result.error); // "div-zero"
+ * }
+ * ```
+ */
 export function isFormulaError(v: FormulaValue): v is FormulaError {
   return typeof v !== "number";
 }

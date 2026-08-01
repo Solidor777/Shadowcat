@@ -6,6 +6,17 @@ import { validateResolverOutput } from "./internal";
  * Caught only by the iterative driver in `resolveKey`; NOT a `FormulaValue`
  * error and never stored in `memo`. */
 class NeedsDependency {
+  /**
+   * Carries the single dependency key that blocked the in-flight `evalNode` call.
+   * @param key The dependency key that `get` needs resolved before the
+   * in-flight `evalNode` call can be retried.
+   * @example
+   * ```
+   * // not part of the public `@shadowcat/formula` surface (index.ts does not
+   * // re-export this module) — thrown only inside resolveAll's `get` closure.
+   * throw new NeedsDependency("hp.max");
+   * ```
+   */
   constructor(readonly key: string) {}
 }
 
@@ -49,7 +60,25 @@ class NeedsDependency {
  * zero, cycles, unresolvable references, and all other evaluation faults
  * are returned through `get`'s normal return value as `FormulaValue` errors,
  * not thrown. Only this one internal control-flow signal must never be
- * intercepted. */
+ * intercepted.
+ * @param keys The full set of node keys to resolve. Order does not affect
+ * the result (see the order-independence invariant above); a key needed
+ * only as a transitive dependency of another need not be listed here.
+ * @param evalNode Consumer callback computing one node's value from its
+ * dependencies (fetched via the injected `get`). MUST NOT wrap its own
+ * call(s) to `get` in try/catch — see the try/catch invariant above.
+ * @returns A map from every key reachable from `keys` (the keys themselves
+ * plus every transitive dependency) to its resolved `FormulaValue`.
+ * @example
+ * ```ts
+ * import { resolveAll } from "@shadowcat/formula";
+ *
+ * const base: Record<string, number> = { "hp.base": 10 };
+ * resolveAll(["hp.base"], (key, _get) =>
+ *   key in base ? base[key] : { error: "unknown-ref", detail: key },
+ * );
+ * ```
+ */
 export function resolveAll(
   keys: readonly string[],
   evalNode: (key: string, get: (dep: string) => FormulaValue) => FormulaValue,

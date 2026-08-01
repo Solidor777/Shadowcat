@@ -11,21 +11,68 @@ export type Tok =
 
 const OPS = new Set<string>(["+", "-", "*", "/", "%", "(", ")", ",", "."]);
 
+/**
+ * True for an ASCII decimal digit. Only used to START a numeric literal
+ * (see `tokenize`'s digit branch) — a leading `.` is NOT in this set, so
+ * a formula like `.5` is not recognized as a number (it lexes `.` as a
+ * bare operator token instead; write `0.5`).
+ * @param ch A single character.
+ * @returns `true` when `ch` is `'0'`–`'9'`.
+ * @example
+ * ```
+ * isDigit("7"); // true
+ * isDigit("."); // false
+ * ```
+ */
 function isDigit(ch: string): boolean {
   return ch >= "0" && ch <= "9";
 }
 
+/**
+ * True for a character that may START an identifier: ASCII letter or `_`.
+ * @param ch A single character.
+ * @returns `true` when `ch` may begin a `word` token.
+ * @example
+ * ```
+ * isWordStart("_"); // true
+ * isWordStart("1"); // false
+ * ```
+ */
 function isWordStart(ch: string): boolean {
   return (ch >= "a" && ch <= "z") || (ch >= "A" && ch <= "Z") || ch === "_";
 }
 
+/**
+ * True for a character that may CONTINUE an identifier already begun by
+ * `isWordStart` — letters, digits, and `_` (digits are legal mid-identifier,
+ * just not as the first character).
+ * @param ch A single character.
+ * @returns `true` when `ch` may continue a `word` token.
+ * @example
+ * ```
+ * isWordChar("3"); // true — legal after the first character
+ * isWordChar("."); // false — dots separate ref segments, not part of a word
+ * ```
+ */
 function isWordChar(ch: string): boolean {
   return isWordStart(ch) || isDigit(ch);
 }
 
 /** Single left-to-right scan into tokens. Identifiers are lowercased on read
  * (spec §3.1 case-insensitive identifiers). Never throws — unrecognized
- * input returns a `FormulaError` value instead. */
+ * input returns a `FormulaError` value instead.
+ * @param src Formula source text.
+ * @returns The token stream on success, or a `FormulaError` — `"cap"` for a
+ * source longer than `MAX_FORMULA_LENGTH` or an overflowing numeric literal,
+ * `"parse"` for a malformed number (e.g. two `.` in one literal, or a
+ * trailing `.` with no following digit) or an unrecognized character.
+ * @example
+ * ```
+ * // not part of the public `@shadowcat/formula` surface (index.ts does not
+ * // re-export this module) — internal to parser.ts.
+ * tokenize("1 + hp.max"); // [{kind:"num",...}, {kind:"op",value:"+",...}, {kind:"word",value:"hp",...}, {kind:"op",value:".",...}, {kind:"word",value:"max",...}]
+ * ```
+ */
 export function tokenize(src: string): Tok[] | FormulaError {
   if (src.length > MAX_FORMULA_LENGTH) {
     return { error: "cap", detail: "formula exceeds 512 characters" };

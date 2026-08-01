@@ -10,7 +10,22 @@ import { finite, validateResolverOutput } from "./internal";
  * multiplicative chain (e.g. `a + b + c + ...`) builds one `evaluate` stack
  * frame per node while the parser's own depth counter — which only advances
  * at structural nesting boundaries (parens, calls, unary-minus) — never
- * increments across that chain, so `MAX_PARSE_DEPTH` does not bound it. */
+ * increments across that chain, so `MAX_PARSE_DEPTH` does not bound it.
+ * @param expr An AST produced by `parseFormula`.
+ * @param resolve Consumer callback resolving a dotted ref path (e.g.
+ * `["hp","max"]`) to a `FormulaValue`. May throw; a thrown value is caught
+ * and converted to a `"resolver-error"` rather than propagating.
+ * @returns The evaluated number, or the first `FormulaError` encountered.
+ * @example
+ * ```ts
+ * import { evaluate, parseFormula } from "@shadowcat/formula";
+ *
+ * const expr = parseFormula("1 + hp.max");
+ * if (!("error" in expr)) {
+ *   evaluate(expr, (path) => (path.join(".") === "hp.max" ? 10 : { error: "unknown-ref", detail: path.join(".") }));
+ * }
+ * ```
+ */
 export function evaluate(
   expr: Expr,
   resolve: (path: string[]) => FormulaValue,
@@ -54,6 +69,25 @@ export function evaluate(
   }
 }
 
+/**
+ * Applies one already-evaluated binary operator. `/` is float division and
+ * `%` is JS's truncated remainder (`-7 % 2 === -1`, not floored modulo) —
+ * neither implicitly rounds. `x / 0` and `x % 0` are both `"div-zero"`
+ * regardless of the sign or finiteness of `x`; every other result passes
+ * through `finite()`, so an overflow (e.g. two huge operands multiplied)
+ * becomes `"non-finite"` rather than `Infinity`.
+ * @param op One of `+ - * / %`.
+ * @param left Left operand, already evaluated to a finite number.
+ * @param right Right operand, already evaluated to a finite number.
+ * @returns The arithmetic result, or a `"div-zero"`/`"non-finite"` error.
+ * @example
+ * ```
+ * // not part of the public `@shadowcat/formula` surface (index.ts does not
+ * // re-export this module).
+ * evalBin("%", -7, 2); // -1 (truncated, not floored)
+ * evalBin("/", 1, 0);  // { error: "div-zero", detail: "..." }
+ * ```
+ */
 function evalBin(
   op: "+" | "-" | "*" | "/" | "%",
   left: number,
@@ -90,7 +124,23 @@ function evalBin(
  * `evaluate` are public API, so a hand-constructed `Expr` (bypassing the
  * parser) with the wrong argument count is not defended against in this
  * function — `vals[0]` would read `undefined` for a no-arg `floor`/`ceil`/
- * `round`, which `finite()` then rejects as non-finite rather than crashing. */
+ * `round`, which `finite()` then rejects as non-finite rather than crashing.
+ * Likewise a hand-constructed zero-arg `min`/`max` call spreads an empty
+ * array into `Math.min()`/`Math.max()`, which JS defines as `Infinity`/
+ * `-Infinity` respectively — also caught by `finite()`, not a crash.
+ * @param fn One of `min max floor ceil round`.
+ * @param args Argument expressions, evaluated left-to-right before the call
+ * (so an error in an earlier argument is returned before a later one is evaluated).
+ * @param resolve Consumer callback forwarded to each argument's `evaluate`.
+ * @returns The call's numeric result, or the first error among its
+ * arguments, or a `"non-finite"` error (see the arity note above).
+ * @example
+ * ```
+ * // not part of the public `@shadowcat/formula` surface (index.ts does not
+ * // re-export this module) — reachable only through `evaluate`'s "call" case.
+ * evalCall("round", [{ kind: "num", value: -2.5 }], () => 0); // -2 (ties toward +Infinity)
+ * ```
+ */
 function evalCall(
   fn: "min" | "max" | "floor" | "ceil" | "round",
   args: Expr[],

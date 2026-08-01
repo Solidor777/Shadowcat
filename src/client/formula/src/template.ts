@@ -9,19 +9,65 @@ export const NOTATION_KEYWORDS: readonly string[] =
 
 const I32_MAX = 2147483647;
 
+/**
+ * True for a character that may START a notation keyword or identifier:
+ * a letter or `_`. Distinct from `lexer.ts`'s `isWordStart` (a separate
+ * scanner over a separate grammar — this module rewrites dice-notation
+ * template text, not formula source).
+ * @param ch A single character.
+ * @returns `true` when `ch` matches `[a-z_]` case-insensitively.
+ * @example
+ * ```
+ * // not part of the public `@shadowcat/formula` surface — this helper is not exported.
+ * isAlpha("_"); // true
+ * ```
+ */
 function isAlpha(ch: string): boolean {
   return /[a-z_]/i.test(ch);
 }
 
+/**
+ * True for a character that may CONTINUE an identifier or keyword already
+ * begun by `isAlpha` — letters, digits, and `_`.
+ * @param ch A single character.
+ * @returns `true` when `ch` matches `[a-z0-9_]` case-insensitively.
+ * @example
+ * ```
+ * // not part of the public `@shadowcat/formula` surface — this helper is not exported.
+ * isWordChar("3"); // true
+ * ```
+ */
 function isWordChar(ch: string): boolean {
   return /[a-z0-9_]/i.test(ch);
 }
 
+/**
+ * True for an ASCII decimal digit — used to scan a literal count/sides run
+ * in the surrounding dice-notation text (e.g. the `20` in `1d20`), which
+ * this module passes through unchanged rather than resolving.
+ * @param ch A single character.
+ * @returns `true` when `ch` is `'0'`–`'9'`.
+ * @example
+ * ```
+ * // not part of the public `@shadowcat/formula` surface — this helper is not exported.
+ * isDigit("7"); // true
+ * ```
+ */
 function isDigit(ch: string): boolean {
   return ch >= "0" && ch <= "9";
 }
 
-/** Reads the maximal `[a-z_]+` prefix (case-insensitive) starting at `i`. */
+/** Reads the maximal `[a-z_]+` prefix (case-insensitive) starting at `i`.
+ * @param src The template source text.
+ * @param i Index to start scanning from (must point at an `isAlpha` character).
+ * @returns The longest run of `isAlpha` characters starting at `i` (never empty
+ * when `src[i]` is itself alphabetic).
+ * @example
+ * ```
+ * // not part of the public `@shadowcat/formula` surface — this helper is not exported.
+ * readAlphaPrefix("kh3", 0); // "kh"
+ * ```
+ */
 function readAlphaPrefix(src: string, i: number): string {
   let j = i;
   while (j < src.length && isAlpha(src[j])) j++;
@@ -29,7 +75,21 @@ function readAlphaPrefix(src: string, i: number): string {
 }
 
 /** Resolves a `.`-joined identifier path (e.g. "hp.max") to a labeled substitution.
- * INVARIANT: never throws — resolver faults propagate as ref-error/type/cap FormulaErrors. */
+ * INVARIANT: never throws — resolver faults propagate as ref-error/type/cap FormulaErrors.
+ * @param originalText The dotted identifier as it appeared in the template (e.g. `"hp.max"`).
+ * @param resolve Consumer callback resolving the dotted path to a `FormulaValue`. May throw;
+ * a thrown value is caught and converted to `"resolver-error"` rather than propagating.
+ * @returns The labeled substitution text on success (see the negative-value note below),
+ * or a `FormulaError` — `"resolver-error"` (thrown/malformed resolver output), `"type"`
+ * (a non-integer resolved value — roll templates require integers), or `"cap"` (magnitude
+ * exceeds `i32::MAX`).
+ * @example
+ * ```
+ * // not part of the public `@shadowcat/formula` surface — this helper is not exported;
+ * // reachable only through `resolveNotationTemplate`.
+ * substituteIdentifier("hp.max", () => 10); // "10[hp.max]"
+ * ```
+ */
 function substituteIdentifier(
   originalText: string,
   resolve: (path: string[]) => FormulaValue,
@@ -58,13 +118,41 @@ function substituteIdentifier(
   if (Math.abs(value) > I32_MAX) {
     return { error: "cap", detail: `'${originalText}' = ${value}: out of i32 range` };
   }
+  // A negative value is emitted as a parenthesized subtraction, never a
+  // leading '-' (and unlabeled, unlike the positive branch below): the
+  // dice-notation lexer (src/server/src/dice/notation/lexer.rs) tokenizes
+  // each '-' independently — it never merges "--" into any other token —
+  // and the grammar's `factor := '-' factor | ...` (parser.rs) accepts
+  // arbitrarily many stacked unary-minus. So if this substitution's own
+  // output started with '-' and the template text immediately preceding
+  // this identifier ALSO ends in a literal '-' (e.g. the template
+  // "atk-str" with `str` resolving to -5), the composed notation
+  // "atk--5[str]" would parse as `atk - -(5)`, silently CANCELLING the
+  // negative sign. Opening with '(' instead is unambiguous in any
+  // preceding context (it never combines with an adjacent '-'), so the
+  // sign survives regardless of what character the template placed
+  // immediately before this identifier.
   if (value < 0) return `(0 - ${-value})`;
   return `${value}[${originalText}]`;
 }
 
 /** Rewrites a dice-notation template: identifiers resolve to labeled constants, existing
  * dice-notation atoms (and `[label]` spans) pass through untouched. Spec §3 template mode.
- * INVARIANT: never throws; every failure path returns a FormulaError. */
+ * INVARIANT: never throws; every failure path returns a FormulaError.
+ * @param src Template text, e.g. `"1d20 + str"` — a mix of dice-notation atoms
+ * (numbers, the `d` operator, `NOTATION_KEYWORDS` modifiers, `[label]` spans)
+ * and dotted identifier references.
+ * @param resolve Consumer callback resolving a dotted ref path to a `FormulaValue`.
+ * @returns The rewritten notation string on success, or a `FormulaError` —
+ * `"cap"` (template exceeds `MAX_FORMULA_LENGTH`), `"parse"` (unterminated
+ * `[` label), or any error `substituteIdentifier` returns for a referenced identifier.
+ * @example
+ * ```ts
+ * import { resolveNotationTemplate } from "@shadowcat/formula";
+ *
+ * resolveNotationTemplate("1d20 + str", () => 3); // { notation: "1d20 + 3[str]" }
+ * ```
+ */
 export function resolveNotationTemplate(
   src: string,
   resolve: (path: string[]) => FormulaValue,
