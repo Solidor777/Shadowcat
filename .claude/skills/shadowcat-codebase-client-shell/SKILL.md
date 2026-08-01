@@ -39,7 +39,10 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
   `ActorSelection`, `TokenSelection`, `SceneSelection` are stable instances mutated in place (never
   reassigned) so the AppContext-captured reference stays valid, and none of them PRUNE an id whose
   document is later deleted — a stale id stays selected until something clears it, so every consumer
-  resolves against the current store and handles a miss itself. They diverge on what re-selecting the
+  MUST resolve against the current store and handle the miss itself. That is an obligation, not an
+  observation: today's consumers all check, but not uniformly — scene-tools' place tool aborts on a
+  miss while its measure tool substitutes defaults (`eng?.x ?? 0`, a 0.4 footprint), which is a
+  silently-wrong measurement rather than a no-op. They diverge on what re-selecting the
   CURRENT value does: `ActorSelection`/`SceneSelection` are `$state`-backed scalars, so `select(same)`
   is a no-op for reactivity (`$state`'s default `===`), while `TokenSelection` is `SvelteSet`-backed
   and `set()` clears-then-re-adds, so passing back an identical id list still re-triggers every
@@ -244,10 +247,26 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
   (`data/permission.rs`'s `effective_role`/`resolve_access`). It can also over-restrict: the Welcome
   union mixes GM-authored `world_cap_requirements` with module-declared manifest requirements, and
   the server does NOT reject a write merely because a module declared a requirement on that path.
-  Neither is a live bug today — `apply_intent` re-checks independently, and `gm_role` is currently
-  set only by chat-message construction (`chat/mod.rs`), whose `message` doc_type the server rejects
-  ordinary client Updates to outright regardless of role. Both become live the moment `gm_role`
-  is set on any other doc_type, so re-check this before extending it.
+  **The two halves are unobservable today for UNRELATED reasons, and arm on unrelated triggers —
+  do not give them a shared bound.** The over-permit is neutralized by the server: `apply_intent`
+  re-checks independently, and `gm_role` is currently written only by chat-message construction
+  (`chat/mod.rs`), whose `message` doc_type the server rejects ordinary client Updates to outright
+  regardless of role (`data/sqlite.rs`; only the server-set `WriteOrigin::ServerMessageRevision`
+  bypasses it, which no wire message can name). It arms if `gm_role` is ever set on another
+  doc_type. The over-restrict is NOT neutralized by that re-check at all — hiding a control means
+  the user never reaches `apply_intent` — it is merely unobservable while no enabled installed
+  module declares `requirements`, since the Welcome union then equals the GM-authored record. It
+  arms on module enablement, with no `gm_role` involvement whatsoever
+  (`ws/conn.rs`'s `welcome_capability_requirements`, whose own doc marks the union ADVISORY ONLY,
+  vs. `data/sqlite.rs`'s enforcement reading only `world_cap_requirements`).
+- **`listWorldMembers` is FORKED — two implementations of one endpoint, already diverged.** The
+  shell's (`shell/src/lib/api.ts`) goes through `getJson`: it has a request timeout, does NOT
+  `encodeURIComponent` the world id, and raises status-only errors. Core's public
+  (`core/src/user-rest.ts`, exported from `index.ts`) encodes the id and surfaces the server's error
+  text, but has no timeout. The shell's `members` seam calls its own copy
+  (`worldSession.svelte.ts`), so the two can drift further with nothing failing. This is the
+  never-fork-a-decision class from `shadowcat-codebase-core`; do not add a third caller to either
+  copy without collapsing them. Fix logged in `docs/TODO.md`.
 - **Refactors across a callback boundary must preserve decision branches, not just await ordering**
   [[refactor-preserve-decision-branches]].
 - UI packaging target: swappable entry package + per-element packages + thin shell
