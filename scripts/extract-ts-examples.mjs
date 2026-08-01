@@ -129,10 +129,17 @@ if (isMain) {
   }
   // Workspace sources pulled in via paths import .svelte files; the scratch
   // program has no svelte ambient types, so a default-export shim stands in
-  // (component types are irrelevant to example typechecking).
+  // (component types are irrelevant to example typechecking). Typed `any`,
+  // not `unknown`: a workspace package whose real source INTERNALLY consumes
+  // one of its own .svelte imports as a value (e.g. passing it to Svelte's
+  // `mount()`) needs the shim to be freely assignable everywhere a real
+  // component type would be — `unknown` fails that the moment such a call
+  // site is pulled into the compiled graph by an unrelated example importing
+  // that package by name, even though the example itself never touches the
+  // component.
   writeFileSync(
     join(outDir, "_svelte-shim.d.ts"),
-    'declare module "*.svelte" {\n  const component: unknown;\n  export default component;\n}\n',
+    'declare module "*.svelte" {\n  const component: any;\n  export default component;\n}\n',
   );
   const template = JSON.parse(readFileSync(join(repo, "scripts", "ts-examples-tsconfig.template.json"), "utf8"));
   const pkgDirs = workspacePackageDirs(repo);
