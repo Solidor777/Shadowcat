@@ -68,7 +68,7 @@ pub struct RegionShape {
 }
 
 /// A region document's engine body: a vector-shaped zone that weights,
-/// blocks, or arrests grid movement (scene-docs.ts:565-570 `RegionSystem`).
+/// blocks, or arrests grid movement. Client mirror: `RegionEngine` (`@shadowcat/core`).
 /// `cost` is a multiplier (>=1, clamped read-side) meaningful only for
 /// `behavior:"terrain"`. `enabled` lets a GM toggle a region off without
 /// deleting it (disabled regions are dropped entirely at read time).
@@ -125,7 +125,7 @@ pub struct Fill {
     pub alpha: Option<f64>,
 }
 
-/// A drawing document's engine body (`drawing-view.ts:9-13` `DrawingSystem`).
+/// A drawing document's engine body. Client mirror: `DrawingEngine` (`@shadowcat/core`).
 /// `stroke`/`fill` are each a required-but-nullable field on the wire
 /// (`{...} | null`, not optional) — `Option<T>` without a serde default
 /// mirrors that exactly (the key must be present, either an object or
@@ -143,8 +143,8 @@ pub struct DrawingEngine {
 }
 
 /// A template's area anchored at `(x,y)` with a `size` and `direction`
-/// (degrees), tessellated per `kind` (`template-view.ts:9-11`
-/// `TemplateSystem`).
+/// (degrees), tessellated per `kind`. Client mirror: `TemplateEngine`
+/// (`@shadowcat/core`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
