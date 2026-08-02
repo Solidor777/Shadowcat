@@ -19,6 +19,20 @@ Currently open, confirmed-real defects. Deferrals belong in `TODO.md`, not here.
   `Default` with `default: DocRole::None` (`src/server/src/data/document.rs:415,418-420` —
   fail-closed), re-deserialization does not panic; it silently substitutes the fail-closed default
   `PermissionSet` for the real one.
+  - **A NESTED `/permissions/...` key is worse: it PANICS the request.** `PermissionSet`'s `default`,
+    `users` and `property_overrides` fields carry **no** `#[serde(default)]` — only `capabilities`
+    and `gm_role` do (`src/server/src/data/document.rs:417-439`). So an override naming
+    `/permissions/default`, `/permissions/users` or `/permissions/property_overrides` strips a
+    REQUIRED field while the enclosing `permissions` object survives, leaving a value that cannot
+    deserialize as `PermissionSet` — and the tail of `filter_properties` is
+    `serde_json::from_value(whole).expect("filtered document deserializes")`
+    (`src/server/src/data/permission.rs:755`). The `expect` is not a cold-path assertion:
+    `filter_properties` runs per-recipient on the WS broadcast egress path (`filter_command`,
+    `src/server/src/data/permission.rs:833-851`), on FTS search hits
+    (`src/server/src/data/sqlite.rs:2785`), and on the HTTP get-document routes
+    (`src/server/src/http/routes.rs:975,1026`). Any recipient who cannot see the offending tier
+    crashes the request handling their read — i.e. a denial-of-service against every such reader of
+    that document, authorable by one holder of `cap::EDIT_PERMISSIONS`.
   - **Reachability:** requires `cap::EDIT_PERMISSIONS` on the document's `doc_type` — every GM has
     this; a non-GM could hold it only via an explicit `by_role`/`users` capability grant. No UI path
     in this codebase constructs a `property_overrides` key outside `/system`, `/engine`, `/name`,
@@ -32,3 +46,6 @@ Currently open, confirmed-real defects. Deferrals belong in `TODO.md`, not here.
   - No fix shape decided — restricting legal override targets to a whitelist, null-in-place (like
     the four special-cased fields) instead of stripping, and rejecting only self-referential keys
     each have different consequences for any document already carrying an unusual override path.
+    Note that an ingress-only fix does not reach documents already stored, and that the `expect`
+    at `permission.rs:755` is a second, independent hardening target: any future gap between what
+    ingress admits and what egress can re-deserialize lands on that same panic.
