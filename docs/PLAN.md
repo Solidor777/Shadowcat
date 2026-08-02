@@ -1589,8 +1589,11 @@ Trusted local modding hardening → freeze the module API on evidence (≥1 exte
   Findings that outlived the sweep:
   - **`shadowcat-codebase-scene-rendering`'s `snapToGrid` gotcha was stale.** It said the raw-old-
     value bug was "found but NOT fixed" in `GameSettingsPanel`/`FactionsPanel`/`ConditionsPanel`; all
-    three now read the raw stored value correctly. Fixed in the same task-6 gate that closed this
-    sweep — see the skill-update note below.
+    three now read the raw stored value correctly. The CODE was fixed earlier and elsewhere —
+    `GameSettingsPanel` in M11d's game-settings review, `FactionsPanel`/`ConditionsPanel` on the
+    Phase-1 bugs/TODO sweep (see the entry at the M11d and Phase-1 sweep sections above). This
+    sweep is comment-only and changed none of it; what task 6 fixed was the stale PASSAGE, not the
+    bug — see the skill-update note below.
   - **`ConditionsPanel`'s registry seed doesn't use a deterministic id** unlike its
     `seedFactionRegistryIfAbsent` sibling — harmless today (the doc_type is in the server's
     `SINGLETON_DOC_TYPES` singleton gate, so the outcome converges regardless), logged to
