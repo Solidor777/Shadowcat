@@ -28,6 +28,20 @@
     seedFactionRegistryIfAbsent(ctx.documents, ctx.world, ctx.dispatchIntent);
   });
 
+  /** GM registry editor: patches one or more fields of a faction entry, dispatching one
+   * `update` op per changed field. `old` reads the RAW currently-stored value (never a
+   * resolved/defaulted one) — the server's field-level optimistic-concurrency check
+   * (`apply_intent`) rejects an `Update` whose `old` doesn't match the actual stored value,
+   * so a hardcoded `old: null` would only be valid for the field's first write.
+   * @param id The faction's registry key.
+   * @param patch The fields to change (name, color, and/or stance).
+   * @example
+   * ```
+   * // private function; not part of the public API — invoked from the GM editor row's
+   * // name/color/stance inputs
+   * update("hostile", { name: "Hostile" });
+   * ```
+   */
   function update(id: string, patch: Partial<Faction>): void {
     if (!registry) return;
     // `old` must be the field's REAL current stored value (or null when genuinely absent): the
@@ -41,12 +55,28 @@
       ctx.dispatchIntent([{ op: "update", doc_id: registry.id, changes: [{ path: `/engine/factions/${id}/${k}`, old, new: v }] }]);
     }
   }
+  /** GM registry editor: appends a new faction entry under a fresh random id, with a
+   * placeholder name/color and neutral stance for the GM to rename in place.
+   * @example
+   * ```
+   * // private function; not part of the public API — invoked from the "Add" button
+   * add();
+   * ```
+   */
   function add(): void {
     if (!registry) return;
     const id = crypto.randomUUID();
     const f: Faction = { name: "New faction", color: "#9e9e9e", stance: "neutral" };
     ctx.dispatchIntent([{ op: "update", doc_id: registry.id, changes: [{ path: `/engine/factions/${id}`, old: null, new: f }] }]);
   }
+  /** GM registry editor: deletes a faction entry from the registry map.
+   * @param id The faction's registry key to remove.
+   * @example
+   * ```
+   * // private function; not part of the public API — invoked from each row's remove button
+   * remove("hostile");
+   * ```
+   */
   function remove(id: string): void {
     const sys = registry?.engine as FactionRegistryEngine | undefined;
     if (!registry || !sys) return;
@@ -54,6 +84,18 @@
     delete next[id];
     ctx.dispatchIntent([{ op: "update", doc_id: registry.id, changes: [{ path: "/engine/factions", old: sys.factions, new: next }] }]);
   }
+  /** GM registry editor: replaces the current token selection with every scene token whose
+   * effective actor (`resolveTokenActor`) is assigned to `factionId` — a read-only selection
+   * change, no document write, so it needs no `canEdit`/GM gate of its own beyond the
+   * surrounding `{#if ctx.role === "gm"}` template block this button lives in.
+   * @param factionId The faction's registry key to select tokens by.
+   * @example
+   * ```
+   * // private function; not part of the public API — invoked from each row's "select tokens"
+   * // button
+   * selectTokens("hostile");
+   * ```
+   */
   function selectTokens(factionId: string): void {
     const ids = ctx.documents.query("token").filter((tok) => resolveTokenActor(tok, ctx.documents)?.faction === factionId).map((tok) => tok.id);
     ctx.tokenSelection.set(ids);

@@ -35,6 +35,19 @@
    * members source — labeled by short id for now). */
   let playerOptions = $state<string[]>([]);
 
+  /** Applies the current `gmView` selection to the live engine. `"all"` and `"fog"` are
+   * client-only — `"fog"` layers a local full-fog preview overlay, no server round-trip —
+   * while `"as:<userId>"` re-subscribes the vision channel as that user and is a
+   * server-gated operation: `ws/conn.rs`'s `SceneSubscribe` handler rejects an `as_user`
+   * from a non-GM connection outright. Called again after an `$effect` re-run (below,
+   * `if (gmView !== "all") applyGmView()`) so a non-default view survives teardown/re-init.
+   * @example
+   * ```
+   * // private function; not part of the public API — invoked from the GM-view <select>'s
+   * // onchange handler and from the mount $effect
+   * applyGmView();
+   * ```
+   */
   function applyGmView(): void {
     const v = gmView;
     if (v.startsWith("as:")) {
@@ -48,9 +61,24 @@
     host.dataset.gmView = v;
   }
 
-  /** Resolve a CSS custom property (which may be a `var()` alias) to a 0xRRGGBB
-   * number by reading the computed `color` off a throwaway probe — getPropertyValue
-   * returns the unresolved `var(...)` string for aliased custom properties. */
+  /** Resolves a CSS custom property NAME (a design token — e.g. `--surface-base`,
+   * `--grid-line` — not a game/dice token) to a 0xRRGGBB number, by reading the computed
+   * `color` off a throwaway probe span rather than calling `getPropertyValue` directly:
+   * `getPropertyValue` returns the unresolved `var(...)` string for an ALIASED custom
+   * property, and resolving through the computed style is the only way to get the final
+   * color — that indirection is the entire reason this function exists. Falls back to
+   * `fallback` in two independent cases: no `getComputedStyle` function or no `host`
+   * element yet (SSR / not yet mounted); or a computed `color` string that doesn't parse
+   * as `rgb()`/`rgba()`.
+   * @param token The CSS custom property name to resolve, e.g. `"--grid-line"`.
+   * @param fallback The 0xRRGGBB value returned when resolution fails.
+   * @returns The resolved 0xRRGGBB color, or `fallback`.
+   * @example
+   * ```
+   * // private function; not part of the public API
+   * readColor("--grid-line", 0x363645);
+   * ```
+   */
   function readColor(token: string, fallback: number): number {
     if (typeof getComputedStyle !== "function" || !host) return fallback;
     const probe = document.createElement("span");
@@ -220,7 +248,16 @@
 
   /** Pointer/wheel gestures → the engine's tool-aware dispatcher (active tool first,
    * camera pan as the no-tool fallback). Unified pointer events (#10); listeners are
-   * bound to `signal` so teardown removes them all in one `abort()`. */
+   * bound to `signal` so teardown removes them all in one `abort()`.
+   * @param engine The live render engine to dispatch pointer/wheel gestures into.
+   * @param signal Aborted on `$effect` teardown/re-run; removes every listener this
+   * function registers in one `abort()` call.
+   * @example
+   * ```
+   * // private function; not part of the public API — invoked once per mount $effect run
+   * wirePointer(engine, controller.signal);
+   * ```
+   */
   function wirePointer(engine: RenderEngine, signal: AbortSignal): void {
     const local = (e: PointerEvent): Point => {
       const r = canvas.getBoundingClientRect();

@@ -20,7 +20,19 @@ export const SEED: Record<string, Faction> = {
  * `OptimisticClient.reject`), and the winner's doc later arrives under the same deterministic
  * id via the normal event/resync stream. No explicit conflict-catching is needed or possible
  * here: `dispatchIntent` is fire-and-forget (AppContext exposes no per-call reject signal to
- * modules) by design (see `ChatApi`'s identical fire-and-forget contract). */
+ * modules) by design (see `ChatApi`'s identical fire-and-forget contract).
+ * @param store Read access, to check whether the registry already exists.
+ * @param worldId The owning world's id — the deterministic id's namespace input.
+ * @param dispatchIntent The fire-and-forget intent dispatcher to send the Create through.
+ * @example
+ * ```
+ * // module-internal helper; not part of the public API — invoked from FactionsPanel's
+ * // GM-only seed $effect
+ * declare const store: import("@shadowcat/core").ReadableDocuments;
+ * declare const dispatchIntent: (ops: import("@shadowcat/core").WireOperation[]) => void;
+ * seedFactionRegistryIfAbsent(store, "world-1", dispatchIntent);
+ * ```
+ */
 export function seedFactionRegistryIfAbsent(
   store: ReadableDocuments,
   worldId: string,
