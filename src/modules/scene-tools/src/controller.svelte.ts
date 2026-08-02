@@ -64,8 +64,25 @@ export interface ToolContext {
   viewedSceneId?: () => string | null;
 }
 
-/** The active scene (the viewed scene, M12d) + its grid cell size (default 100) and
- * distance scale (default 5 ft/cell, matching `resolveSceneSettings` defaults). */
+/** The active scene (the viewed scene, M12d) + its grid cell size (default 100 when
+ * `grid.size` is absent) and distance scale (default `{ perCell: 5, unit: "ft" }` when
+ * `grid.distance` is absent, matching `resolveSceneSettings`'s own default,
+ * `src/client/core/src/scene-docs.ts:444`). These are tool-local display/pathfind-arg
+ * defaults only; no parity claim is made with the server beyond this: `scene_grid_sizes`
+ * (`src/server/src/scene/mod.rs:1189`) is the server's sole intentional cell-size defaulting
+ * source and also falls back to 100, but the movement gates themselves REFUSE rather than
+ * default when a scene has no live document (`src/server/src/scene/mod.rs:1319-1322`,
+ * `:1360-1362`).
+ * @param ctx The tool context; reads `viewedSceneId()` (falling back to the first scene) and
+ * `documents`.
+ * @returns The resolved scene id + grid size + distance scale, or `null` when no scene is
+ * viewed and none exists.
+ * @example
+ * ```
+ * const scene = activeScene(ctx);
+ * if (scene) place(scene.id, scene.size);
+ * ```
+ */
 function activeScene(ctx: ToolContext): { id: string; size: number; perCell: number; unit: string } | null {
   const vsid = ctx.viewedSceneId?.() ?? ctx.documents.query("scene")[0]?.id ?? null;
   const scene = vsid ? ctx.documents.get(vsid) : undefined;
@@ -79,8 +96,25 @@ function activeScene(ctx: ToolContext): { id: string; size: number; perCell: num
 /** Per-token footprint radius in cells (pathfind clearance), resolved from the token's
  * linked/embedded actor; falls back to 0.4 sub-cell units when unresolved. Module-level (not
  * closed over a single tool) so the measure tool's single-selection `resolveFootprint` and the
- * select/move tool's per-token drag commit share one source — preview and commit cannot derive
- * different sizes. */
+ * select/move tool's per-token drag commit (both still call this function) share one source —
+ * preview and commit cannot derive different sizes.
+ *
+ * Every call site in this file that invokes this function also passes that same token id as
+ * `Pathfind`'s `token` field; when `token` is present the server AUTHORIZES it and DERIVES the
+ * footprint from the token's own document, IGNORING the wire `footprint_radius` value entirely
+ * (`src/server/src/ws/protocol.rs:113-117`, `src/server/src/ws/conn.rs:681-700`). So the value
+ * computed here influences no production outcome today. It is not dead code: the wire value IS
+ * honored whenever `token` is absent, which in this file happens only when zero or multiple
+ * tokens are selected — and in that branch this function is never called either (the caller
+ * short-circuits to a hardcoded `0.4` instead).
+ * @param ctx The tool context; reads `ctx.documents`.
+ * @param id The token document id.
+ * @returns The footprint radius in grid cells.
+ * @example
+ * ```
+ * const radius = footprintFor(ctx, tokenId);
+ * ```
+ */
 function footprintFor(ctx: ToolContext, id: string): number {
   const doc = ctx.documents.get(id);
   const eff = doc ? resolveTokenActor(doc, ctx.documents) : null;
@@ -119,6 +153,14 @@ export class ToolController {
   regionSecret = $state<boolean>(false);
   readonly #tools: Record<ToolId, SceneTool>;
 
+  /** Builds each tool factory once, closing over `ctx` (and `this` for the factories that read
+   * shared controller state: `selectedAsset`, draw/template mode, region shape/behavior/cost).
+   * @param ctx The tool context every factory closes over.
+   * @example
+   * ```
+   * const controller = new ToolController(ctx);
+   * ```
+   */
   constructor(private readonly ctx: ToolContext) {
     this.#tools = {
       select: makeSelectMoveTool(ctx),
@@ -134,7 +176,13 @@ export class ToolController {
 
   /** Toggle a tool: re-selecting the active one clears it (back to camera).
    * Fires `onDeactivate` on the outgoing tool (if any) so tools with live
-   * overlays can tear down before the new tool activates (mid-gesture-clear invariant). */
+   * overlays can tear down before the new tool activates (mid-gesture-clear invariant).
+   * @param id The tool to activate (or clear, when it is already the active one).
+   * @example
+   * ```
+   * controller.toggle("wall");
+   * ```
+   */
   toggle(id: ToolId): void {
     // Deactivate the outgoing tool before updating `active` so it can still read state.
     if (this.active) this.#tools[this.active].onDeactivate?.();
@@ -145,7 +193,18 @@ export class ToolController {
 
 /** Click stamps a token at the snapped cell of the active scene. A selected actor takes
  * precedence (instanced if its `prototype` is set, else linked); otherwise the selected raw
- * asset is stamped. No scene, or neither an actor nor an asset selected → unhandled (camera pans). */
+ * asset is stamped. No scene, or neither an actor nor an asset selected → unhandled (camera
+ * pans). A placed linked actor deselects itself by default (see the inline comment below) so
+ * repeated clicks don't stamp duplicate live-views of the same actor; an instanced actor always
+ * stays selected, since placing several is the expected use.
+ * @param ctx The tool context; reads actor/asset selection, dispatches the create intent.
+ * @param controller Supplies `selectedAsset`, the raw-asset stamp fallback.
+ * @returns A `SceneTool` implementing only `onPointerDown` (placement is a single click).
+ * @example
+ * ```
+ * const tool = makePlaceTool(ctx, controller);
+ * ```
+ */
 export function makePlaceTool(ctx: ToolContext, controller: ToolController): SceneTool {
   return {
     onPointerDown(p: Point): boolean {
@@ -181,7 +240,17 @@ export function makePlaceTool(ctx: ToolContext, controller: ToolController): Sce
 
 /** A draw gesture has visible extent: a freehand path of ≥2 points, or a two-corner
  * shape whose corners are ≥1 unit apart. A pure click has none — persisting it would
- * write an invisible junk drawing to the scene + event log. */
+ * write an invisible junk drawing to the scene + event log.
+ * @param mode The active draw mode; only `"freehand"` consults `freehand`.
+ * @param a The drag start point (scene coords, post-snap).
+ * @param b The current/drag-end point (scene coords, post-snap).
+ * @param freehand The accumulated freehand path, as a flat `[x0,y0,x1,y1,...]` array.
+ * @returns `true` when the gesture has visible extent and should persist.
+ * @example
+ * ```
+ * if (hasExtent("rect", anchor, b, [])) commitDrawing();
+ * ```
+ */
 function hasExtent(mode: DrawMode, a: Point, b: Point, freehand: number[]): boolean {
   if (mode === "freehand") return freehand.length >= 4;
   return Math.hypot(b.x - a.x, b.y - a.y) >= 1;
@@ -191,9 +260,17 @@ function hasExtent(mode: DrawMode, a: Point, b: Point, freehand: number[]): bool
 const WALL_COLOR = 0xd06060;
 
 /** Drag to draw a wall segment (snapped endpoints); release persists a `wall` doc
- * (`blocksSight`+`blocksMove`). The server's collision check reads the same `seg`. GM-gated
- * (all AUTHORING rail tools are; select/move, measure and ping are player-reachable).
- * No active scene → unhandled. */
+ * (`blocksSight`+`blocksMove`+`blocksLight`, all three). The server's collision check reads the
+ * same `seg`. The tool rail hides this tool from non-GMs (`ToolRail.svelte`'s `visibleTools`
+ * filter) — that is a UI-only visibility gate, not a permission this factory itself checks or
+ * enforces. No active scene → unhandled.
+ * @param ctx The tool context; reads the active scene, snaps points, dispatches the create.
+ * @returns A `SceneTool` implementing the drag-to-draw gesture.
+ * @example
+ * ```
+ * const tool = makeWallTool(ctx);
+ * ```
+ */
 export function makeWallTool(ctx: ToolContext): SceneTool {
   let anchor: Point | null = null;
   return {
@@ -237,10 +314,21 @@ const REGION_PREVIEW_COLOR = 0xd0a030;
 /** Author a vector-shaped region: rect/circle drag two opposite corners; polygon is a freehand
  * drag whose traced path becomes the closed boundary (mirrors `makeDrawTool`'s freehand capture).
  * Release persists a `region` doc with the controller's configured behavior/cost/secrecy.
- * Create-only (no edit UI) — mirrors `makeWallTool`'s precedent: editing behavior/cost/visibility
- * on an already-placed region has no dedicated UI; a GM re-authors by delete+recreate, or toggles
- * `enabled` server-side. GM-gated (all AUTHORING rail tools are; select/move, measure and ping
- * are player-reachable). */
+ * Create-only (no edit UI) — mirrors `makeWallTool`'s precedent, still accurate: `makeWallTool`
+ * likewise has no update path, only create-on-release. Editing behavior/cost/visibility on an
+ * already-placed region has no dedicated UI; a GM re-authors by delete+recreate, or toggles
+ * `enabled` server-side. The tool rail hides this tool from non-GMs (`ToolRail.svelte`'s
+ * `visibleTools` filter) — a UI-only visibility gate, not a permission this factory itself
+ * checks or enforces.
+ * @param ctx The tool context; reads the active scene, snaps points, dispatches the create.
+ * @param controller Supplies the configured `regionShapeMode`/`regionBehavior`/`regionCost`/
+ * `regionSecret`.
+ * @returns A `SceneTool` implementing the drag-to-author gesture.
+ * @example
+ * ```
+ * const tool = makeRegionTool(ctx, controller);
+ * ```
+ */
 export function makeRegionTool(ctx: ToolContext, controller: ToolController): SceneTool {
   let anchor: Point | null = null;
   let freehand: number[] = [];
@@ -285,7 +373,20 @@ export function makeRegionTool(ctx: ToolContext, controller: ToolController): Sc
 }
 
 /** Preview points for the in-progress region drag (closed for all three shape kinds — a region
- * is always an area, unlike walls/lines). */
+ * is always an area, unlike walls/lines). For `"circle"` this is a tessellated polygon ring
+ * (`circlePoints`), suitable for an overlay stroke — NOT the same shape as
+ * `regionShapeGeometry`'s persisted `[cx, cy, r]` triple for the same mode; the two functions
+ * are not interchangeable.
+ * @param mode The region shape kind being authored.
+ * @param a The drag anchor (scene coords, post-snap).
+ * @param b The current drag point (scene coords, post-snap).
+ * @param freehand The accumulated polygon path (consulted only for `"polygon"`).
+ * @returns The preview polyline plus whether it should render closed.
+ * @example
+ * ```
+ * const { points, closed } = regionShapePath("circle", anchor, b, []);
+ * ```
+ */
 function regionShapePath(mode: RegionShapeMode, a: Point, b: Point, freehand: number[]): { points: number[]; closed: boolean } {
   switch (mode) {
     case "rect":
@@ -298,7 +399,21 @@ function regionShapePath(mode: RegionShapeMode, a: Point, b: Point, freehand: nu
 }
 
 /** The persisted `engine.shape.points` layout for `mode`: rect=[x0,y0,x1,y1], circle=[cx,cy,r],
- * polygon=[x0,y0,x1,y1,...] — matches the server's region shape parser expectations. */
+ * polygon=[x0,y0,x1,y1,...] — matches `parse_region_shape`'s own dispatch on point count
+ * (`src/server/src/scene/regions.rs:314-330`: `"rect"` requires exactly 4 points, `"circle"`
+ * exactly 3, `"polygon"` an even count ≥6). For `"circle"` this is the raw `[cx, cy, r]` triple,
+ * NOT `regionShapePath`'s tessellated preview ring — the two are deliberately different shapes
+ * for the same mode and are not interchangeable.
+ * @param mode The region shape kind being authored.
+ * @param a The drag anchor (scene coords, post-snap).
+ * @param b The current drag point (scene coords, post-snap).
+ * @param freehand The accumulated polygon path (consulted only for `"polygon"`).
+ * @returns The flat points array to persist as `engine.shape.points`.
+ * @example
+ * ```
+ * const points = regionShapeGeometry("rect", anchor, b, []);
+ * ```
+ */
 function regionShapeGeometry(mode: RegionShapeMode, a: Point, b: Point, freehand: number[]): number[] {
   switch (mode) {
     case "rect":
@@ -312,7 +427,14 @@ function regionShapeGeometry(mode: RegionShapeMode, a: Point, b: Point, freehand
 
 /** Click to ping a location: broadcasts a transient marker. The server relays it back to
  * all members (incl. us), so the local ring arrives via the ping listener like any other —
- * no separate local echo. */
+ * this is why there is no separate local-render path here.
+ * @param ctx The tool context; only `sendPing` is used.
+ * @returns A `SceneTool` implementing the click-to-ping gesture.
+ * @example
+ * ```
+ * const tool = makePingTool(ctx);
+ * ```
+ */
 export function makePingTool(ctx: ToolContext): SceneTool {
   return {
     onPointerDown(p: Point): boolean {
