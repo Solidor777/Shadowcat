@@ -43,9 +43,41 @@ Currently open, confirmed-real defects. Deferrals belong in `TODO.md`, not here.
     misreport). **Not an authorization bypass**: write authorization always re-resolves server-side
     against the stored row, never against a redacted client-facing copy, and the substituted default
     is strictly more restrictive than the real value, never less.
-  - No fix shape decided — restricting legal override targets to a whitelist, null-in-place (like
-    the four special-cased fields) instead of stripping, and rejecting only self-referential keys
-    each have different consequences for any document already carrying an unusual override path.
-    Note that an ingress-only fix does not reach documents already stored, and that the `expect`
-    at `permission.rs:755` is a second, independent hardening target: any future gap between what
-    ingress admits and what egress can re-deserialize lands on that same panic.
+  - **Fix shape DECIDED (user-directed, 2026-08-01): redaction operates on content bands, never on
+    the envelope.** `Document`'s fields split into four CONTENT bands — `name`, `engine`, `system`,
+    `base`, already the exact set `filter_properties` special-cases
+    (`src/server/src/data/permission.rs:747`) and the exact set `required_cap_for_path` maps to
+    `cap::WRITE_FIELDS` — and the STRUCTURAL remainder (`id`, `scope`, `doc_type`,
+    `schema_version`, `source`, `owner`, `permissions`, `parent_id`, `embedded`, `created_at`,
+    `updated_at`), which nothing may redact. Three parts:
+    1. **One shared classifier** in `permission.rs` — `REDACTABLE_BANDS: [&str; 4]` plus
+       `redaction_target(pointer) -> Option<RedactionTarget>` returning `Band` (null in place —
+       today's four-arm match) or `Within` (`strip_pointer`, now provably landing inside an
+       untyped `serde_json::Value` or an `Option`, never a required field). Ingress and egress
+       currently duplicate the judgement of what a pointer means; this panic is what that fork
+       looks like when it drifts, so the two paths must read ONE symbol, not agree by inspection.
+       `collect_hidden` uses it too, so the change-delta path cannot diverge from whole-document
+       egress.
+    2. **Ingress rejects an unclassifiable pointer.** `validate_property_overrides`
+       (`src/server/src/data/validation.rs:332`) keeps its well-formedness checks and adds the
+       classifier, at both existing call sites (`src/server/src/data/sqlite.rs:2041` Create,
+       `:2409` Update). `/permissions`, `/permissions/default`, `/owner`, `/id`,
+       `/embedded/items/0` all become `DataError::BadPath`.
+    3. **`filter_properties` returns `Result<Document, RedactionError>`**, deleting both
+       `.expect()`s. Callers fail CLOSED: `filter_command` drops delivery to that recipient;
+       `get_document`/`search` error rather than ship a half-redacted document. The whitelist
+       alone closes the reachable bug; the `Result` covers what a whitelist structurally cannot —
+       a band added to `Document` without updating the classifier, or a future nested pointer
+       landing in a required field. A secrecy gate that meets an input it cannot classify must
+       withhold, never panic and never guess (same posture as the fog invariant).
+    **No migration and no compatibility shim**: no worlds or users exist yet, and every
+    `property_overrides` key constructed anywhere in the repo — server, client, and tests — is
+    already inside the whitelist (`/name`, `/engine`, `/engine/vision`, `/system/*`; verified by
+    repo-wide grep 2026-08-01).
+    **Tests required:** per-pointer ingress rejection for each envelope field; acceptance for the
+    four bands and their nested forms; a regression test that the exact `/permissions/default`
+    input returns `BadPath` instead of panicking; and a mutation check that removing a band from
+    `REDACTABLE_BANDS` fails the suite — a parity test that passes because both paths are wrong
+    the same way proves nothing.
+    **Scheduling:** own branch, after Sweep 11 merges — a server fix does not belong batched into
+    a docs sweep.
