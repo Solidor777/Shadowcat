@@ -129,9 +129,14 @@ const DOUBLE_CLICK_MS = 350;
  * (generous: post-snap, a double-click lands on the same cell center). */
 const COMMIT_RADIUS = 12;
 /** Leading-edge debounce window for route-preview pathfind requests: the first move in a
- * burst fires immediately, then at most one request per window (mirrors DRAG_THROTTLE_MS's
- * leading-edge-coalescing shape). Arming only on an actual fire — never re-armed per event —
- * is what keeps this from starving under continuous pointer movement. */
+ * burst fires immediately, then a move arriving within the window is suppressed — but NOT
+ * "at most one request per window": `schedulePendingRouteFire`/`firePendingRoute` add one
+ * deferred TRAILING fire once the window closes, whenever a move was suppressed near its end
+ * (so a hover-only stop, with no further `onPointerMove`, doesn't freeze the preview on a stale
+ * goal). This does NOT mirror `DRAG_THROTTLE_MS`'s shape — that constant is pure leading-edge
+ * with no trailing fire at all (the drag's final position is flushed on release instead).
+ * Arming the leading edge only on an actual fire — never re-armed per event — is what keeps
+ * this from starving under continuous pointer movement. */
 const ROUTE_PREVIEW_DEBOUNCE_MS = 100;
 
 /** Owns the active-tool + selected-asset UI state and routes activation to the engine
@@ -894,7 +899,23 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
   };
 }
 
-/** Preview/persist points for a two-corner shape (or the freehand path). */
+/** Preview/persist points for a two-corner drag shape (or the freehand path): `"freehand"`
+ * returns the accumulated path open (`closed: false`); `"line"` returns the two corners open;
+ * `"rect"`/`"ellipse"` return a closed, axis-aligned bbox between the two corners
+ * (`rectPoints`/`ellipsePoints`). Contrast `templatePath` below: its `"rect"` is a ROTATED
+ * SQUARE centered on the anchor, not this axis-aligned two-corner bbox — same mode name,
+ * deliberately different geometry per tool (mirrors the render layer's own `drawing-view.ts`
+ * vs `template-view.ts` divergence, not a bug).
+ * @param mode The active draw mode; only `"freehand"` consults `freehand`.
+ * @param a The drag start point (scene coords, post-snap).
+ * @param b The current/drag-end point (scene coords, post-snap).
+ * @param freehand The accumulated freehand path, as a flat `[x0,y0,x1,y1,...]` array.
+ * @returns The preview/persist points plus whether the shape should render/persist closed.
+ * @example
+ * ```
+ * const { points, closed } = shapePath("rect", anchor, b, []);
+ * ```
+ */
 function shapePath(mode: DrawMode, a: Point, b: Point, freehand: number[]): { points: number[]; closed: boolean } {
   switch (mode) {
     case "freehand":
@@ -908,9 +929,21 @@ function shapePath(mode: DrawMode, a: Point, b: Point, freehand: number[]): { po
   }
 }
 
-/** Drag to draw: freehand collects the path; rect/ellipse/line span two corners. A live
- * preview overlays while dragging; release persists a `drawing` doc (optimistic). No active
- * scene → unhandled (camera pans). */
+/** Drag to draw: freehand collects the path; rect/ellipse/line span two corners. Points are
+ * used RAW (unsnapped) — unlike `makeWallTool`/`makeRegionTool`/`makeTemplateTool`/`makePlaceTool`,
+ * this tool never calls `ctx.scene.snap`, so a drawing can land anywhere, not just grid-aligned.
+ * A live preview overlays while dragging; release persists a `drawing` doc (optimistic) only
+ * when `hasExtent` confirms the gesture has visible extent — a pure click is skipped so no
+ * invisible drawing is written to the scene + event log. No active scene → unhandled (camera
+ * pans).
+ * @param ctx The tool context; reads the active scene, dispatches the create.
+ * @param controller Supplies the configured `drawMode`/`strokeColor`.
+ * @returns A `SceneTool` implementing the drag-to-draw gesture.
+ * @example
+ * ```
+ * const tool = makeDrawTool(ctx, controller);
+ * ```
+ */
 export function makeDrawTool(ctx: ToolContext, controller: ToolController): SceneTool {
   let anchor: Point | null = null;
   let freehand: number[] = [];
@@ -953,7 +986,23 @@ export function makeDrawTool(ctx: ToolContext, controller: ToolController): Scen
   };
 }
 
-/** Template area from an anchor + size + direction (degrees). */
+/** Template area from an anchor + size + direction (degrees): `"circle"`/`"cone"` are
+ * tessellated rings (`circlePoints`/`conePoints`), closed; `"rect"` is a ROTATED SQUARE
+ * centered on the anchor (`squarePoints`, side `2*size`) — NOT the axis-aligned two-corner
+ * bbox `shapePath`'s `"rect"` produces, despite the same mode-name string (deliberate; mirrors
+ * the render layer's `template-view.ts` vs `drawing-view.ts` divergence); `"line"` is the two
+ * endpoints computed from `direction`/`size`, open.
+ * @param mode The active template shape mode.
+ * @param ax The anchor x (scene coords, post-snap).
+ * @param ay The anchor y (scene coords, post-snap).
+ * @param size The template's size (radius for circle/cone, half-side for rect, length for line).
+ * @param direction The facing angle in degrees (unused by `"circle"`).
+ * @returns The preview/persist points plus whether the shape should render/persist closed.
+ * @example
+ * ```
+ * const { points, closed } = templatePath("cone", anchor.x, anchor.y, size, direction);
+ * ```
+ */
 function templatePath(mode: TemplateMode, ax: number, ay: number, size: number, direction: number): { points: number[]; closed: boolean } {
   switch (mode) {
     case "circle":
@@ -970,7 +1019,17 @@ function templatePath(mode: TemplateMode, ax: number, ay: number, size: number, 
 }
 
 /** Drag from the anchor sets the template's size (distance) + direction (angle). A near-zero
- * drag falls back to one grid cell so a click places a default template. */
+ * drag (`< 1` scene unit) falls back to one grid cell (`cell`) at `direction: 0`, so a click
+ * (no visible drag) still places a default-sized template rather than a degenerate zero-size one.
+ * @param a The drag anchor (scene coords, post-snap).
+ * @param b The current/drag-end point (scene coords, post-snap).
+ * @param cell The active scene's grid cell size (the near-zero-drag fallback size).
+ * @returns The resolved size (scene units) and direction (degrees).
+ * @example
+ * ```
+ * const { size, direction } = sizeDir(anchor, b, scene.size);
+ * ```
+ */
 function sizeDir(a: Point, b: Point, cell: number): { size: number; direction: number } {
   const dx = b.x - a.x;
   const dy = b.y - a.y;
@@ -980,7 +1039,19 @@ function sizeDir(a: Point, b: Point, cell: number): { size: number; direction: n
 }
 
 /** Drag to place a template area (circle/cone/rect/line) anchored at the snapped cell; the
- * drag sets size + direction. Live preview; release persists a `template` doc (optimistic). */
+ * drag sets size + direction via `sizeDir`. Live preview; release ALWAYS persists a `template`
+ * doc (optimistic) — unlike `makeDrawTool`/`makeWallTool`/`makeRegionTool`, there is no
+ * has-extent skip here: a pure click (no drag) still creates a template, because `sizeDir`'s
+ * near-zero-drag fallback already resolves to a real default-sized shape (one grid cell) rather
+ * than a degenerate zero-size one, so there is nothing "invisible" to guard against.
+ * @param ctx The tool context; reads the active scene, snaps the anchor, dispatches the create.
+ * @param controller Supplies the configured `templateMode`/`templateColor`.
+ * @returns A `SceneTool` implementing the drag-to-place gesture.
+ * @example
+ * ```
+ * const tool = makeTemplateTool(ctx, controller);
+ * ```
+ */
 export function makeTemplateTool(ctx: ToolContext, controller: ToolController): SceneTool {
   let anchor: Point | null = null;
   let cell = 100;
@@ -1028,9 +1099,20 @@ const DRAG_THROTTLE_MS = 50;
 
 /** Pick a token on pointerdown and drag the whole selection. Clicking an unselected token
  * replaces the selection with just it; Shift toggles it in/out. Dragging moves every selected
- * token by the same snapped delta, preserving relative offsets; intents stream coalesced with
- * the final position flushed on release. Empty space clears the selection and yields the gesture
- * to the camera. A ring overlay marks the selection. */
+ * token by the same delta (each token's own target independently snapped via `ctx.scene.snap`),
+ * preserving relative offsets; intents stream coalesced (`DRAG_THROTTLE_MS`, leading-edge, no
+ * trailing fire — unlike the measure tool's `ROUTE_PREVIEW_DEBOUNCE_MS`) with the exact final
+ * position flushed on release regardless of the throttle window. Empty space clears the
+ * selection and yields the gesture to the camera. A ring overlay marks the selection
+ * (`drawSelection`).
+ * @param ctx The tool context; reads token selection, snaps points, dispatches
+ * intents/pathfind/moveRequest depending on role.
+ * @returns A `SceneTool` implementing the drag-to-move-selection gesture.
+ * @example
+ * ```
+ * const tool = makeSelectMoveTool(ctx);
+ * ```
+ */
 export function makeSelectMoveTool(ctx: ToolContext): SceneTool {
   const now = ctx.now ?? ((): number => Date.now());
   const sel = ctx.tokenSelection;
@@ -1040,13 +1122,33 @@ export function makeSelectMoveTool(ctx: ToolContext): SceneTool {
   let moved = false;
   let lastSentAt = -Infinity;
 
+  /** Center of token `id`, defaulting to `(0, 0)` when the document or its `engine.x`/`engine.y`
+   * is missing (never throws) — the same fallback-to-origin convention as the measure tool's
+   * `tokenCenter`.
+   * @param id The token document id.
+   * @returns The token's center in scene coords.
+   * @example
+   * ```
+   * const c = centerOf(tokenId);
+   * ```
+   */
   const centerOf = (id: string): Point => {
     const e = ctx.documents.get(id)?.engine as { x?: number; y?: number } | undefined;
     return { x: e?.x ?? 0, y: e?.y ?? 0 };
   };
 
   /** A closed ring per selected token into the tool overlay (cleared when empty). Circle
-   * tokens receive an ellipse ring so the ring, hit-test, and faction border agree on shape. */
+   * tokens receive an ellipse ring, square tokens an axis-aligned box — both keyed off
+   * `resolveTokenBox(...).shape`, the SAME field `topTokenAt`'s hit-test
+   * (`src/modules/scene-tools/src/hit-test.ts:28-37`) and the render layer's faction border
+   * (`PixiBackend.updateTokenBorder`, `src/client/render/src/pixi-backend.ts:555-561`) also
+   * read — so the ring, hit-test, and faction border agree on shape structurally (one shared
+   * source), not by three independent implementations happening to match.
+   * @example
+   * ```
+   * drawSelection();
+   * ```
+   */
   const drawSelection = (): void => {
     if (!sel) return;
     const rings = [...sel.ids].map((id) => {
@@ -1069,7 +1171,13 @@ export function makeSelectMoveTool(ctx: ToolContext): SceneTool {
   /** Drag feedback only — never a document write and never a move request. A player's token
    * must not appear to move until the server executes it (no optimistic prediction for a gated
    * move), so this is the sole per-move overlay for both roles: a route line per selected token
-   * from its grab origin to the snapped provisional target. */
+   * from its grab origin to the snapped provisional target.
+   * @param delta The drag offset from grab origin (scene coords, unsnapped).
+   * @example
+   * ```
+   * previewMoves({ x: 10, y: 0 });
+   * ```
+   */
   const previewMoves = (delta: Point): void => {
     const pts: number[] = [];
     for (const [, o] of origins) {
@@ -1081,12 +1189,19 @@ export function makeSelectMoveTool(ctx: ToolContext): SceneTool {
     );
   };
 
-  /** Commit the gesture, exactly once, on release. A GM writes the position directly (a GM
-   * places a token where they choose, walls included). A player's move is request-only: each
-   * selected token gets its own pathfind + moveRequest, and its rendered position advances only
-   * when the resulting MoveStream arrives. Per-token rather than batched: moveRequest is
-   * per-token on the wire and the server gates each token independently, so one token arresting
-   * while another completes is correct. */
+  /** Commit the gesture, exactly once, on release. A GM writes the position directly via
+   * `dispatchIntent` (a GM places a token wherever they choose — no wall/mask gate applies to a
+   * GM's own write). A player's move is request-only: each selected token gets its own
+   * `pathfind` + `moveRequest`, and its rendered position advances only when the resulting
+   * `MoveStream` arrives (never from this function's own return). Per-token rather than batched:
+   * `moveRequest` is per-token on the wire and the server gates each token independently, so one
+   * token arresting while another completes is correct.
+   * @param delta The drag offset from grab origin (scene coords, unsnapped) to commit.
+   * @example
+   * ```
+   * commitMoves({ x: 10, y: 0 });
+   * ```
+   */
   const commitMoves = (delta: Point): void => {
     if (ctx.role === "gm") {
       const ops: WireOperation[] = [];
