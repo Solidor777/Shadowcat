@@ -71,8 +71,8 @@ export interface ToolContext {
  * defaults only; no parity claim is made with the server beyond this: `scene_grid_sizes`
  * (`src/server/src/scene/mod.rs:1189`) is the server's sole intentional cell-size defaulting
  * source and also falls back to 100, but the movement gates themselves REFUSE rather than
- * default when a scene has no live document (`src/server/src/scene/mod.rs:1319-1322`,
- * `:1360-1362`).
+ * default when a scene has no live document (`src/server/src/ws/room.rs:333-334`,
+ * `:577-580`).
  * @param ctx The tool context; reads `viewedSceneId()` (falling back to the first scene) and
  * `documents`.
  * @returns The resolved scene id + grid size + distance scale, or `null` when no scene is
