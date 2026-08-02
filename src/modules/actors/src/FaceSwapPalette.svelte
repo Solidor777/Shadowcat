@@ -31,11 +31,33 @@
 
   /** Reads the RAW currently-stored face (never a resolved/defaulted value) — this is the
    * required `old` for the `/engine/face` Update below; the server's field-level optimistic-
-   * concurrency check rejects any Update whose `old` doesn't match the actual stored value. */
+   * concurrency check rejects any Update whose `old` doesn't match the actual stored value.
+   * @param tok The selected TOKEN document (not an actor) to read the raw `engine.face`
+   * override from.
+   * @returns The token's raw stored face name, or `null` if none is set.
+   * @example
+   * ```
+   * // private helper; not part of the public API
+   * currentFace(tok); // tok.engine.face ?? null
+   * ```
+   */
   function currentFace(tok: WireDocument): string | null {
     return (tok.engine as { face?: string } | undefined)?.face ?? null;
   }
 
+  /**
+   * Dispatches a `/engine/face` Update on the selected token to switch its active face, gated by
+   * `ctx.canEdit` — the advisory client-side mirror of the server's Update-path capability
+   * check; the server remains authoritative and re-checks independently. A no-op if there is no
+   * selected token or the gate refuses.
+   * @param faceName The face name to switch to — one of `selectedFaceNames`.
+   * @returns Nothing; dispatches an intent as a side effect.
+   * @example
+   * ```
+   * // private helper; not part of the public API — invoked from a face button's `onclick` below
+   * swapFace("front");
+   * ```
+   */
   function swapFace(faceName: string): void {
     const tok = selectedFaceToken;
     if (!tok || !ctx.canEdit(tok, "/engine/face")) return;

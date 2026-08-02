@@ -79,11 +79,26 @@
     return Object.entries(reg?.factions ?? {});
   });
 
-  // Optional chaining: a live-search hit's document (WireSearchHit.document) carries id/doc_type/
-  // system only, not the full permissions envelope — the GM per-row controls below must tolerate
-  // a search-sourced row, not just a store-resolved one.
+  // A search-hit's document (WireSearchHit.document) is a full `Document`/`WireDocument` clone —
+  // `filter_properties` (server, src/server/src/data/permission.rs:701) redacts hidden PROPERTY
+  // VALUES inside `engine`/`system`/`name`/`base`, never the `permissions` field itself — so
+  // `a.permissions` is always present for both a search-sourced and a store-resolved row. The
+  // optional chaining below is defensive style, not required by any known gap between the two.
   const isHidden = (a: WireDocument): boolean => a.permissions?.property_overrides["/name"] === "owner_or_gm";
 
+  /**
+   * Toggles the `OwnerOrGm` visibility override on `/permissions/property_overrides["/name"]` —
+   * the same redaction mechanism `setNameHidden` (`@shadowcat/core`) applies at create time,
+   * applied here as a targeted property-override Update instead of a whole-doc rebuild. `old`
+   * carries the full pre-image object, matching the server's field-level OCC check.
+   * @param a The actor document to toggle name-hiding on.
+   * @returns Nothing; dispatches an intent as a side effect.
+   * @example
+   * ```
+   * // private helper; not part of the public API — invoked from the per-row "hide name" button
+   * toggleHidden(actorDoc);
+   * ```
+   */
   function toggleHidden(a: WireDocument): void {
     const cur = a.permissions.property_overrides;
     const next = { ...cur };
@@ -92,6 +107,18 @@
     ctx.dispatchIntent([{ op: "update", doc_id: a.id, changes: [{ path: "/permissions/property_overrides", old: cur, new: next }] }]);
   }
 
+  /**
+   * Creates a new actor from the form's current fields plus the visual editor's last built
+   * `pendingVisual` — a no-op if either the name or the visual is missing, mirroring the submit
+   * button's own `disabled` condition. Resets every form field on success, including the visual
+   * editor via its exposed `reset()`.
+   * @returns Nothing; dispatches a create intent and resets local form state as side effects.
+   * @example
+   * ```
+   * // private helper; not part of the public API — invoked from the form's `onsubmit`
+   * create();
+   * ```
+   */
   function create(): void {
     const visual = pendingVisual;
     if (!name || !visual) return;

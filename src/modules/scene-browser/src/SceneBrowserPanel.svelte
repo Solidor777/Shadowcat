@@ -29,34 +29,99 @@
   });
   const roaming = $derived(viewedSceneId !== null && viewedSceneId !== activeSceneId);
 
+  /**
+   * The scene's background asset id, if any — feeds the list row's thumbnail `<img>` src.
+   * @param scene The scene document to read `engine.background` from.
+   * @returns The background asset id, or `null` if the scene has none.
+   * @example
+   * ```
+   * // private helper; not part of the public API
+   * bgOf(sceneDoc);
+   * ```
+   */
   function bgOf(scene: WireDocument): string | null {
     return (scene.engine as SceneEngine | undefined)?.background ?? null;
   }
 
-  /** Set the scene players render. OCC pre-image is the REAL current activeScene (or null when
-   * genuinely absent) — never a defaulted value. Silent no-op if world-settings is absent
-   * (game-settings seeds it on the same GM Welcome, so this is a narrow startup race, not a
-   * steady-state condition). */
+  /**
+   * **Activate** — sets the scene every player (and any non-roaming GM) renders, by updating the
+   * world-settings document's `engine.activeScene`. Scope: EVERY connected client, not just this
+   * one — distinct from `view` below, which is local to this client only. OCC pre-image is the
+   * REAL current activeScene (or `null` when genuinely absent) — never a defaulted value. Silent
+   * no-op if world-settings is absent (game-settings seeds it on the same GM Welcome, so this is
+   * a narrow startup race, not a steady-state condition).
+   * @param sceneId The scene document id to activate.
+   * @returns Nothing; dispatches an intent as a side effect.
+   * @example
+   * ```
+   * // private helper; not part of the public API — invoked from a scene row's "activate" button
+   * activate(sceneId);
+   * ```
+   */
   function activate(sceneId: string): void {
     if (!ws) return;
     const old = (ws.engine as WorldSettingsEngine | undefined)?.activeScene ?? null;
     ctx.dispatchIntent([{ op: "update", doc_id: ws.id, changes: [{ path: "/engine/activeScene", old, new: sceneId }] }]);
   }
 
-  /** GM local roam (no effect on players). */
+  /**
+   * **Local view** (GM roam) — changes only THIS client's viewed scene, via
+   * `ctx.setGmViewedScene`; every other player keeps rendering the world's `activeScene`,
+   * unaffected. Distinct from `activate` above, which is world-wide.
+   * @param sceneId The scene document id to view locally.
+   * @returns Nothing; delegates to `ctx.setGmViewedScene`.
+   * @example
+   * ```
+   * // private helper; not part of the public API — invoked from a scene row's "view" button
+   * view(sceneId);
+   * ```
+   */
   function view(sceneId: string): void {
     ctx.setGmViewedScene(sceneId);
   }
+  /**
+   * Stops local roaming and resumes following the world's `activeScene`, by clearing the GM's
+   * viewed-scene override (`ctx.setGmViewedScene(null)`). Scope: this client only, same as
+   * `view` above — the inverse of entering roam.
+   * @returns Nothing; delegates to `ctx.setGmViewedScene`.
+   * @example
+   * ```
+   * // private helper; not part of the public API — invoked from the roaming banner's button
+   * followActive();
+   * ```
+   */
   function followActive(): void {
     ctx.setGmViewedScene(null);
   }
 
-  /** Deep-link the game-settings per-scene section to this scene. */
+  /**
+   * **Configure** — deep-links the game-settings panel to this scene's per-scene section.
+   * Changes no document and no other client's view, unlike `activate`/`view` above: it only
+   * selects the scene in `ctx.sceneSelection` (read by the game-settings panel to choose its
+   * section) and opens that panel.
+   * @param sceneId The scene document id to deep-link to.
+   * @returns Nothing; side effects only (selection + panel open).
+   * @example
+   * ```
+   * // private helper; not part of the public API — invoked from a scene row's "configure" button
+   * configure(sceneId);
+   * ```
+   */
   function configure(sceneId: string): void {
     ctx.sceneSelection.select(sceneId);
     ctx.panels.open("game-settings:panel");
   }
 
+  /**
+   * Creates a new, empty scene document in the current world. Does not activate or view it — a
+   * GM must separately `activate`/`view` the new scene once it appears in the list.
+   * @returns Nothing; dispatches a create intent as a side effect.
+   * @example
+   * ```
+   * // private helper; not part of the public API — invoked from the "create" button
+   * create();
+   * ```
+   */
   function create(): void {
     ctx.dispatchIntent([{ op: "create", doc: buildSceneDoc(ctx.world) }]);
   }

@@ -35,11 +35,38 @@
 
   const memberEntries = $derived([...ctx.members.entries()]);
 
+  /**
+   * Display label for a user id — the member's username if known, else the raw id (e.g. a
+   * since-removed member) or the "nobody" placeholder for `null`.
+   * @param userId The user id to label, or `null` for no owner.
+   * @returns The label to render.
+   * @example
+   * ```
+   * // private helper; not part of the public API
+   * label(null); // t("actors.ownerNobody")
+   * ```
+   */
   function label(userId: string | null): string {
     if (!userId) return t("actors.ownerNobody");
     return ctx.members.get(userId) ?? userId;
   }
 
+  /**
+   * Dispatches a `/owner` Update on the selected token, setting (or clearing, via `null`) the
+   * per-token ownership OVERRIDE. This writes the override only — it never touches the linked
+   * actor's own `owner` — and does not itself decide who may write `/owner`: that is
+   * `cap::EDIT_PERMISSIONS` server-side (`src/server/src/data/permission.rs:197-204`), which the
+   * `DocRole::Owner` floor deliberately excludes, so an effective owner (this control's own
+   * `resolved` value) can never grant themselves the write. A no-op if no token is selected.
+   * @param next The user id to set as the override, or `null` to clear it (falling back to the
+   * linked actor's owner).
+   * @returns Nothing; dispatches an intent as a side effect.
+   * @example
+   * ```
+   * // private helper; not part of the public API — invoked from the owner `<select>`'s `onchange`
+   * setOverride("user-1");
+   * ```
+   */
   function setOverride(next: string | null): void {
     const tok = token;
     if (!tok) return;
