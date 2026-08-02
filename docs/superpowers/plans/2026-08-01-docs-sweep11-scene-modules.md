@@ -40,6 +40,14 @@ files across the other five packages; then ratchet-and-ship. Same shape as Sweep
   findings back with SendMessage."** Omitting (b) makes a reviewer go idle having produced nothing
   recoverable — it happened on Task 1 despite the lesson already being in memory, which is why it
   is written down here where the next task boundary will surface it.
+- **The Rule 7 re-scan covers EVERY comment in range, not just the JSDoc blocks.** Found on Task 2:
+  the re-scan lists had been implicitly scoped to `/** */` blocks — the things `lint:docs` counts —
+  while standalone inline `//` comments inside function bodies went un-enumerated. Those carry some
+  of the load-bearing claims in this package (`requestRoute`'s arrest-marker and budget-rounding
+  notes, `commitRoute`'s "no `movementModel` branch anywhere" claim, the `committing` field
+  comment). Three spot-checks came back true, so nothing false is known to be hiding — but "none
+  found" is worthless over a set nobody enumerated. **Inventory the inline comments explicitly and
+  list them.** Same failure shape as Task 1's `regionShapePath` omission, one level down.
 - **Report contract:** a CLAIMS TABLE (claim → enforcing `file:line`, **path-qualified**, Rule 13),
   an explicit list of what the pre-existing-prose re-scan covered ("none found" only with a list),
   and any bug found with its reachability bounded.
@@ -327,6 +335,14 @@ Four files, 24 warnings: `Stage.svelte` (8), `ConditionsPanel.svelte` (8),
 - [ ] **Manual scan for orphaned doc blocks** (`*/` immediately followed by `/**`) — **repo-wide, not
   sweep-scoped.** `lint:docs` cannot detect this. Sweep 9's scoped scan found 1; widening it found 4,
   three of them inside already-ratcheted packages.
+- [ ] **Inline-comment inventory pass over the six swept packages.** Every sweep so far has scoped
+  its Rule 7 re-scan to `/** */` blocks, because those are what `lint:docs` counts — so standalone
+  `//` comments inside function bodies have never been systematically re-verified in ANY sweep,
+  including the nine already merged. Enumerate them here and check the load-bearing ones.
+- [ ] **Promote the above to RULE 14** in `docs/design/doc-sweep-truthfulness-rules.md`: a green
+  `lint:docs` scopes the eye to what it counts, and the re-scan inherits that scope silently. State
+  it as its own rule rather than leaving it as this plan's footnote — Sweeps 12+ need it, and the
+  nine merged sweeps are all exposed to it.
 - [ ] **Citation audit, repo-scoped over the sweep's packages** — print every `file:line` citation in
   the branch's claims tables beside the line it actually lands on (Rule 13). Sweep 10's tool scanned
   ONE file and declared it clean while three bad citations survived in siblings: **a verification
