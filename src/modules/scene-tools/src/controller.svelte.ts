@@ -904,8 +904,10 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
  * `"rect"`/`"ellipse"` return a closed, axis-aligned bbox between the two corners
  * (`rectPoints`/`ellipsePoints`). Contrast `templatePath` below: its `"rect"` is a ROTATED
  * SQUARE centered on the anchor, not this axis-aligned two-corner bbox — same mode name,
- * deliberately different geometry per tool (mirrors the render layer's own `drawing-view.ts`
- * vs `template-view.ts` divergence, not a bug).
+ * different geometry per tool. Each tool is internally consistent across its OWN modes (this
+ * one never mixes bbox and rotated-square); no design doc names the cross-tool split itself as
+ * a decision, so treat it as consistent-by-construction rather than a documented tradeoff — it
+ * mirrors the render layer's own `drawing-view.ts` vs `template-view.ts` split, not a bug.
  * @param mode The active draw mode; only `"freehand"` consults `freehand`.
  * @param a The drag start point (scene coords, post-snap).
  * @param b The current/drag-end point (scene coords, post-snap).
@@ -989,8 +991,10 @@ export function makeDrawTool(ctx: ToolContext, controller: ToolController): Scen
 /** Template area from an anchor + size + direction (degrees): `"circle"`/`"cone"` are
  * tessellated rings (`circlePoints`/`conePoints`), closed; `"rect"` is a ROTATED SQUARE
  * centered on the anchor (`squarePoints`, side `2*size`) — NOT the axis-aligned two-corner
- * bbox `shapePath`'s `"rect"` produces, despite the same mode-name string (deliberate; mirrors
- * the render layer's `template-view.ts` vs `drawing-view.ts` divergence); `"line"` is the two
+ * bbox `shapePath`'s `"rect"` produces, despite the same mode-name string. This tool is
+ * internally consistent across its own modes (always the rotated square for `"rect"`); the
+ * cross-tool split with `shapePath` is consistent-by-construction, not a documented tradeoff —
+ * it mirrors the render layer's `template-view.ts` vs `drawing-view.ts` split; `"line"` is the two
  * endpoints computed from `direction`/`size`, open.
  * @param mode The active template shape mode.
  * @param ax The anchor x (scene coords, post-snap).
@@ -1092,18 +1096,25 @@ export function makeTemplateTool(ctx: ToolContext, controller: ToolController): 
   };
 }
 
-/** Leading-edge coalescing window for drag-move intents: the first move sends
- * immediately, then at most one per window, with the final position flushed on release.
- * Caps optimistic-pending churn during a drag without starving the remote view. */
+/** Leading-edge throttle for the drag's PREVIEW-OVERLAY redraw only (`previewMoves`): the
+ * first move in a drag redraws immediately, then at most one redraw per window. Nothing crosses
+ * the wire during the drag — `previewMoves` calls only `ctx.scene.previewOverlay`, never
+ * `dispatchIntent`/`pathfind`/`moveRequest` — so there is no optimistic write and no remote view
+ * being fed while dragging. The actual move commits exactly once, on release, via `commitMoves`,
+ * independent of this window. */
 const DRAG_THROTTLE_MS = 50;
 
 /** Pick a token on pointerdown and drag the whole selection. Clicking an unselected token
  * replaces the selection with just it; Shift toggles it in/out. Dragging moves every selected
  * token by the same delta (each token's own target independently snapped via `ctx.scene.snap`),
- * preserving relative offsets; intents stream coalesced (`DRAG_THROTTLE_MS`, leading-edge, no
- * trailing fire — unlike the measure tool's `ROUTE_PREVIEW_DEBOUNCE_MS`) with the exact final
- * position flushed on release regardless of the throttle window. Empty space clears the
- * selection and yields the gesture to the camera. A ring overlay marks the selection
+ * preserving relative offsets — but nothing crosses the wire during the drag itself:
+ * `DRAG_THROTTLE_MS` throttles only the local preview-overlay redraw (leading-edge, no trailing
+ * fire, unlike the measure tool's `ROUTE_PREVIEW_DEBOUNCE_MS`). The real move commits exactly
+ * once, on release, via `commitMoves`: a GM's commit writes the exact snapped drop point; a
+ * non-GM's is request-only (`pathfind`/`moveRequest`), so the landed position is
+ * SERVER-DETERMINED and may differ from the drop point (a wall/mask refusal or an arrest
+ * truncation can land the token short of, or not at, where it was released). Empty space clears
+ * the selection and yields the gesture to the camera. A ring overlay marks the selection
  * (`drawSelection`).
  * @param ctx The tool context; reads token selection, snaps points, dispatches
  * intents/pathfind/moveRequest depending on role.
