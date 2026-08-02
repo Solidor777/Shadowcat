@@ -449,18 +449,31 @@ export function makePingTool(ctx: ToolContext): SceneTool {
 /** Drag to measure: a client-local segment + whole-cell distance label. Never persists a
  * document or broadcasts — purely an overlay on the dragging client.
  *
- * Route mode activates when ALL of:
+ * Route mode (`inRouteMode`) requires:
  *   1. `ctx.tokenSelection` has exactly ONE token id, AND
- *   2. `ctx.pathfind` is defined (i.e. the host provides the seam), AND
- *   3. There is an active scene.
- * In route mode each `onPointerMove` issues an A* pathfind request from the selected
- * token's center through any accumulated waypoints to the provisional goal; on resolve
- * `previewOverlay` renders the routed polyline and `drawMeasure` shows the movement
- * budget (cost × perCell + unit). `onPointerDown` snaps a waypoint onto the list.
- * `onPointerUp` / tool deactivation clears all overlays (mid-gesture-clear invariant).
+ *   2. `ctx.pathfind` is defined (i.e. the host provides the seam).
+ * An active scene is NOT part of `inRouteMode`'s own predicate — it is a third condition
+ * checked separately by each pointer handler, and the three handlers do not treat its
+ * absence uniformly: `onPointerDown` falls back to the plain anchor-point measure when no
+ * scene is active; `onPointerMove` silently no-ops (no route request, no fallback measure);
+ * `onPointerUp` doesn't check for a scene at all and always calls `clearRoute()` while in
+ * route mode. When route mode and an active scene both hold, `onPointerDown` snaps a
+ * waypoint onto the list, each `onPointerMove` issues an A* pathfind request
+ * (`requestRoute`) from the selected token's center through any accumulated waypoints to
+ * the provisional goal, and on resolve `previewOverlay` renders the routed polyline while
+ * `drawMeasure` shows the movement budget (cost × perCell + unit). `onPointerUp` / tool
+ * deactivation clears all overlays (mid-gesture-clear invariant).
  *
  * With 0 or >1 tokens selected, or no `ctx.pathfind`: falls back to the original
- * anchor→point gridDistance measure so plain measurement is always available. */
+ * anchor→point gridDistance measure so plain measurement is always available.
+ * @param ctx The tool context; reads token selection/pathfind/moveRequest, snaps points,
+ * dispatches pathfind/moveRequest calls.
+ * @returns A `SceneTool` implementing the drag-to-measure gesture (plain or routed).
+ * @example
+ * ```
+ * const tool = makeMeasureTool(ctx);
+ * ```
+ */
 export function makeMeasureTool(ctx: ToolContext): SceneTool {
   // Plain-measure state.
   let anchor: Point | null = null;
@@ -503,7 +516,17 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
   let pendingRouteGoal: Point | null = null;
   let pendingRouteTimer: unknown | null = null;
 
-  /** True when the measure tool should operate in route mode (see above). */
+  /** True when the measure tool's pointer handlers should attempt route mode: exactly one
+   * token selected (`ctx.tokenSelection`) AND `ctx.pathfind` provided. Deliberately does NOT
+   * check for an active scene — that is clause 3 of the factory doc's list above, enforced
+   * per-handler instead (each handler resolves `activeScene(ctx)` itself and reacts
+   * differently to its absence; see the factory doc).
+   * @returns `true` when both conditions hold.
+   * @example
+   * ```
+   * if (inRouteMode()) waypoints.push([snapped.x, snapped.y]);
+   * ```
+   */
   function inRouteMode(): boolean {
     return (
       ctx.pathfind !== undefined &&
@@ -512,7 +535,17 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
     );
   }
 
-  /** Center of the single selected token, or null if unavailable. */
+  /** Center of the single selected token, or `null` when zero or multiple tokens are
+   * selected. When exactly one is selected but its document (or `engine.x`/`engine.y`) is
+   * missing, this does NOT return `null` — it falls back to `[0, 0]` (scene origin), since
+   * this function only gates on SELECTION COUNT, not document/field presence.
+   * @returns The token center `[x, y]` in scene coords, or `null` when the selection isn't
+   * exactly one token.
+   * @example
+   * ```
+   * const start = tokenCenter();
+   * ```
+   */
   function tokenCenter(): [number, number] | null {
     const sel = ctx.tokenSelection;
     if (!sel || sel.ids.size !== 1) return null;
@@ -521,8 +554,22 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
     return [eng?.x ?? 0, eng?.y ?? 0];
   }
 
-  /** Footprint radius of the single selected token (for pathfind clearance). Falls
-   * back to 0.4 grid units (sub-cell) when the actor cannot be resolved. */
+  /** Footprint radius in grid cells for the current pathfind request (`requestRoute`,
+   * `commitRoute`), via `footprintFor` on the single selected token's actor; falls back to
+   * 0.4 sub-cell units when zero/multiple tokens are selected or the actor is unresolved.
+   *
+   * Both call sites in this file also pass `selectedTokenId()` as `Pathfind`'s `token`
+   * field, and both are reached only when exactly one token is selected — so `token` is
+   * never `undefined` there and the server always DERIVES the authoritative footprint from
+   * that token document instead, ignoring this value entirely
+   * (`src/server/src/ws/conn.rs:681-700`; mirrors `footprintFor`'s own framing above). It is
+   * not dead code: a future call site passing no `token` would fall back to this value.
+   * @returns The footprint radius in grid cells.
+   * @example
+   * ```
+   * const fp = resolveFootprint();
+   * ```
+   */
   function resolveFootprint(): number {
     const sel = ctx.tokenSelection;
     if (!sel || sel.ids.size !== 1) return 0.4;
@@ -532,7 +579,13 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
 
   /** The single selected token's id, or `undefined` when zero or multiple are selected. Passed
    * as `pathfind`'s `token` so the server derives the AUTHORITATIVE footprint instead of trusting
-   * this file's own `resolveFootprint` estimate. */
+   * this file's own `resolveFootprint` estimate.
+   * @returns The selected token id, or `undefined`.
+   * @example
+   * ```
+   * const token = selectedTokenId();
+   * ```
+   */
   function selectedTokenId(): string | undefined {
     const sel = ctx.tokenSelection;
     if (!sel || sel.ids.size !== 1) return undefined;
@@ -540,9 +593,23 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
     return id;
   }
 
-  /** Issue a pathfind request for the current waypoints + provisional goal `p`.
-   * Ignores the response if a newer request has since been issued. The final element
-   * of `allWaypoints` IS the goal (server contract: goal = waypoints.last(), spec §3.2). */
+  /** Issue a pathfind request for the current waypoints + provisional goal `goal`, from
+   * `start`. Bumps `pendingSeq` and ignores the response once a newer request has since been
+   * issued — last-write-wins coalescing of stale RESPONSES, a separate mechanism from the
+   * leading-edge debounce above it (which only throttles REQUEST volume; see the
+   * `pendingSeq`/`lastRouteRequestAt` field comments). The final element of `allWaypoints` IS
+   * the goal (server contract: goal = waypoints.last(), spec §3.2).
+   * @param scene The active scene.
+   * @param scene.id The scene document id.
+   * @param scene.perCell The distance-per-cell scale used for the budget label.
+   * @param scene.unit The distance unit label (e.g. `"ft"`) used for the budget label.
+   * @param start The route start, in scene coords (the selected token's center).
+   * @param goal The provisional goal, in scene coords (post-snap).
+   * @example
+   * ```
+   * requestRoute(scene, start, goal);
+   * ```
+   */
   function requestRoute(scene: { id: string; perCell: number; unit: string }, start: [number, number], goal: Point): void {
     if (!ctx.pathfind) return;
     const seq = ++pendingSeq;
@@ -578,7 +645,12 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
 
   /** Cancel any pending deferred-fire timer and discard its goal. Must run whenever route
    * mode ends or a fresh request already supersedes it — a leaked timer firing after the
-   * tool has moved on (teardown, tool swap, route clear) would be its own bug. */
+   * tool has moved on (teardown, tool swap, route clear) would be its own bug.
+   * @example
+   * ```
+   * clearPendingRouteTimer();
+   * ```
+   */
   function clearPendingRouteTimer(): void {
     if (pendingRouteTimer !== null) {
       clearScheduledTimeout(pendingRouteTimer);
@@ -591,7 +663,15 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
    * `committing` (mirrors onPointerMove's guard: firing here would otherwise bump
    * `pendingSeq` mid-commit via `requestRoute` and invalidate the in-flight commit's seq
    * guard) and re-resolves scene/start fresh rather than trusting values captured at
-   * suppression time. */
+   * suppression time. This is the deferred TRAILING fire that follows the leading-edge
+   * request `requestRoute` itself produces — see the field comments on
+   * `lastRouteRequestAt`/`pendingRouteGoal`/`pendingRouteTimer` above for why a
+   * hover-only stop (no further `onPointerMove`) needs one.
+   * @example
+   * ```
+   * schedulePendingRouteFire(goal); // eventually invokes firePendingRoute
+   * ```
+   */
   function firePendingRoute(): void {
     pendingRouteTimer = null;
     const goal = pendingRouteGoal;
@@ -605,7 +685,18 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
   }
 
   /** (Re)schedule the deferred fire for the remaining cooldown time, cancelling any prior
-   * pending timer first — only the LATEST suppressed goal must ever fire. */
+   * pending timer first — only the LATEST suppressed goal must ever fire. Together with
+   * `firePendingRoute`, this is what makes `ROUTE_PREVIEW_DEBOUNCE_MS` a leading-edge debounce
+   * PLUS one deferred trailing fire per suppressed hover-stop, not a strict "at most one
+   * request per window": a move suppressed near the end of a window still reaches the server
+   * once the cooldown elapses, so a hover that stops moving doesn't leave the preview frozen
+   * on a stale goal.
+   * @param goal The suppressed goal to fire once the cooldown elapses.
+   * @example
+   * ```
+   * schedulePendingRouteFire(goal);
+   * ```
+   */
   function schedulePendingRouteFire(goal: Point): void {
     if (pendingRouteTimer !== null) clearScheduledTimeout(pendingRouteTimer);
     pendingRouteGoal = goal;
@@ -613,7 +704,15 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
     pendingRouteTimer = scheduleTimeout(firePendingRoute, remaining);
   }
 
-  /** Clear all route-mode overlays and reset waypoints (mid-gesture-clear invariant). */
+  /** Clear all route-mode overlays and reset waypoints (mid-gesture-clear invariant).
+   * Also invalidates any in-flight pathfind request (`pendingSeq++`) and resets the
+   * leading-edge debounce clock (`lastRouteRequestAt = -Infinity`) so the next gesture's
+   * first move always fires immediately rather than inheriting a stale cooldown.
+   * @example
+   * ```
+   * clearRoute();
+   * ```
+   */
   function clearRoute(): void {
     pendingSeq++; // invalidate any in-flight request
     clearPendingRouteTimer();
@@ -624,19 +723,30 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
     lastRouteRequestAt = -Infinity; // next gesture's first move fires leading-edge
   }
 
-  /** Commit a route from the selected token's center to `goal`: send a MoveRequest to
-   * the server and animate along the returned render-path on resolve. The authoritative
-   * position arrives via the normal store Event (token → stop); the animator's any-ahead
-   * rule recognizes it. On reject, clear the route overlay (no move).
+  /** Commit a route from the selected token's center to `goal`: sends a `moveRequest` to the
+   * server. Does NOT animate from that call's resolve value — animation is broadcast-driven
+   * via `MoveStream`/`onMoveStream` for all scene viewers (see the `sendRequest` inline
+   * comment below). The authoritative position instead arrives separately via the normal
+   * store Event (token → stop); `TokenAnimator.setTarget`'s ahead-vertex ignore-scan
+   * (`src/client/render/src/token-animator.ts:228-236`) recognizes it as expected progress
+   * on the in-progress path-driven tween rather than restarting a new one. On reject, clears
+   * the route overlay (no move).
    *
-   * Simpler path: reuse the last previewed PathResult.path when already computed for the
-   * same goal; if none is cached, do one pathfind then send the moveRequest.
+   * Reuses the last-previewed `PathResult.path` (`lastPreviewedPath`) when already computed
+   * for this route, avoiding a redundant pathfind round-trip; when none is cached, issues one
+   * pathfind then sends the moveRequest with its result.
    *
    * Invariant: `committing` is set TRUE before `seq` is captured, and cleared ONLY by
-   * `finish()` on resolve, by the reject handler, or by `onDeactivate` (abort path).
-   * This ensures pointer-up (which calls clearRoute in non-committing paths) cannot bump
-   * `pendingSeq` between commit start and the async resolve — keeping `seq === pendingSeq`
-   * true so the commit proceeds. */
+   * `finish()` — invoked on every resolve, reject, and short-circuit branch of the commit —
+   * or by `onDeactivate` (abort path). This ensures pointer-up (which calls `clearRoute` in
+   * non-committing paths) cannot bump `pendingSeq` between commit start and the async
+   * resolve, keeping `seq === pendingSeq` true so the commit proceeds.
+   * @param goal The commit target, in scene coords (post-snap).
+   * @example
+   * ```
+   * commitRoute(goal);
+   * ```
+   */
   function commitRoute(goal: Point): void {
     if (!ctx.pathfind || !ctx.moveRequest || !ctx.tokenSelection || ctx.tokenSelection.ids.size !== 1) return;
     // Continuous-scene execution is wired end-to-end (M10f-3): the server move-execution path
@@ -768,9 +878,11 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
       anchor = null;
     },
     onDeactivate(): void {
-      // Tool-swap teardown: abort any in-flight commit and clear all overlays.
-      // Setting committing=false before clearRoute lets clearRoute bump pendingSeq,
-      // which causes any in-flight commit's seq guard to fail (seq !== pendingSeq).
+      // Tool-swap teardown: abort any in-flight commit and clear all overlays. clearRoute()
+      // unconditionally bumps pendingSeq, invalidating any in-flight commit's captured seq —
+      // its resolve/reject handler then bails (seq !== pendingSeq) instead of re-entering
+      // finish(). committing is cleared directly here (rather than via finish()) since
+      // finish() is never reached on this abort path.
       committing = false;
       clearRoute();
       // Also clear any in-progress plain-measure anchor.
