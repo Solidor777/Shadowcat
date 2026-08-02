@@ -223,6 +223,23 @@ token/actor name from non-owners via the `OwnerOrGm` visibility tier. Conditions
 
 ## Gotchas
 
+- **`ConditionsPanel`'s registry seed does NOT follow the deterministic-id reference pattern
+  `seedFactionRegistryIfAbsent` establishes above (docs sweep 11).** Its inline seed `$effect`
+  calls `buildConditionRegistryDoc(ctx.world, SEED)` with no explicit `id`, so two racing GMs
+  compute two DIFFERENT random ids instead of converging on one. Harmless today only because
+  `CONDITION_REGISTRY_DOC_TYPE` is in the server's doc_type-scoped `SINGLETON_DOC_TYPES` list
+  (`data/sqlite.rs`) — the loser's Create is rejected regardless of id, same rollback path as the
+  faction registry, just without the same-id convergence property. Logged to `docs/TODO.md`
+  (consistency/testability, not a bug); don't copy this shape into a new registry seeder — copy
+  the faction one instead.
+- **`ConditionsPanel`'s `isActive`/`toggle` count different token sets (docs sweep 11).**
+  `isActive(conditionId)` does NOT filter by `ctx.canEdit` (only excludes tokens with no
+  resolvable `conditionTarget`); `toggle(conditionId)` mutates only the `canEdit`-passing subset
+  but decides ADD-vs-REMOVE from `isActive`'s broader verdict — so a non-editable token in the
+  selection can make the palette chip's active/mixed display, and the click's no-op-or-not
+  outcome, diverge from what the editable tokens alone would show. Client-side UX inconsistency
+  only (every write still goes through `canEdit` then the server's independent re-check); logged
+  to `docs/TODO.md`, not fixed.
 - **Docs-ratchet is live on `data/engine/token.rs` (docs sweep 2b):** it carries
   `#![deny(missing_docs)]` + the private-items twin — a new undocumented field/variant on
   `TokenEngine`/`ActorEngine`/`TokenVisual`/`AnimatedSource` fails the 3-OS CI clippy step, and

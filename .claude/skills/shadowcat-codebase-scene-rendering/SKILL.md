@@ -420,9 +420,9 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   successful write, since the server's field-level optimistic-concurrency check
   (`Repository::apply_intent`) rejects any subsequent `Update` whose `old` doesn't match the
   actual current stored value. This was a Critical bug caught and fixed during M10f-3 Task 5's
-  review; the SAME pre-existing bug shape was found but NOT fixed (logged to `docs/TODO.md`
-  instead, out of scope) in `GameSettingsPanel`/`FactionsPanel`/`ConditionsPanel` — always read the
-  raw stored value for `old`, never the resolved/defaulted one, in any future editor of this shape.
+  review; the SAME pre-existing bug shape was later found AND fixed in
+  `GameSettingsPanel`/`FactionsPanel`/`ConditionsPanel` too (docs sweep 11) — always read the raw
+  stored value for `old`, never the resolved/defaulted one, in any future editor of this shape.
 - **Regions on the continuous engine (M10f-4, final M10f checkpoint).** `SceneEcs::pathfind`'s
   `Continuous` branch (`mod.rs`) computes the per-requester `region_field` once (same call the
   `GridStepped` branch already made — the `GridStepped` branch itself is completely untouched by

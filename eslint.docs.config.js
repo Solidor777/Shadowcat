@@ -68,6 +68,9 @@ export default [
       "src/client/core/**/*.ts", "src/client/render/**/*.ts",
       "src/client/shell/**/*.ts", "src/client/ui-kit/**/*.ts", "src/client/formula/**/*.ts",
       "src/modules/panels/**/*.ts",
+      "src/modules/scene-tools/**/*.ts", "src/modules/actors/**/*.ts",
+      "src/modules/scene-browser/**/*.ts", "src/modules/stage/**/*.ts",
+      "src/modules/conditions/**/*.ts", "src/modules/factions/**/*.ts",
     ],
     // Kept identical to the warn block's ignores, including `src/types/generated`
     // (inert against today's `files` glob). The two blocks must stay symmetric:
@@ -110,6 +113,9 @@ export default [
     files: [
       "src/client/shell/**/*.svelte", "src/client/ui-kit/**/*.svelte",
       "src/modules/panels/**/*.svelte",
+      "src/modules/scene-tools/**/*.svelte", "src/modules/actors/**/*.svelte",
+      "src/modules/scene-browser/**/*.svelte", "src/modules/stage/**/*.svelte",
+      "src/modules/conditions/**/*.svelte", "src/modules/factions/**/*.svelte",
     ],
     ignores: ["**/node_modules/**", "**/dist/**"],
     languageOptions: {

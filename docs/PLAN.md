@@ -1564,24 +1564,55 @@ Trusted local modding hardening → freeze the module API on evidence (≥1 exte
     off by one, which matters because module authors place layers at a fractional order relative to
     them. **Nothing routinely checks skills against code** — this was caught incidentally.
   Plan: `docs/superpowers/plans/2026-07-31-docs-sweep8-client-render.md`.
-- **Sweeps 11–N — doc-comment sweeps: UPCOMING.** Remaining area: the rest of the module packages
-  (292 warnings). Sweep 10 closed `panels` (217, the largest single module). Suggested split:
-  scene-adjacent modules (scene-tools 107, actors 17, scene-browser 9, conditions 8, factions 8,
-  stage 8) then chat/entry/settings/sheets/topbar/assets (chat 51, chat-card 23, entry 22,
-  settings 13, chat-composer 4, assets 4, topbar 7, game-settings 3, sheet-actor 5, sheet-item 3).
-  Client packages are done (Sweep 9 closed shell+ui-kit+formula; its
-  actual backlog measured 276, not the 281 estimated here). Every symbol gets
+- **Sweeps 12–N — doc-comment sweeps: UPCOMING.** Remaining area: the rest of the module packages
+  (135 warnings). Sweep 11 closed the scene-adjacent modules (scene-tools 107, actors 17,
+  scene-browser 9, stage 8, conditions 8, factions 8). Suggested split for what remains:
+  chat/entry/settings/sheets/topbar/assets (chat 51, chat-card 23, entry 22, settings 13, topbar 7,
+  sheet-actor 5, assets 4, chat-composer 4, game-settings 3, sheet-item 3). Every symbol gets
   description+params+example; each completed area flips its lints to deny (Rust: per-file inner
   deny attributes as in Sweep 1; TS: per-package severity flip in `eslint.docs.config.js`).
   Server-wide informational count at Sweep-1 start: 1,059. Whole-repo `lint:docs` after Sweep 8:
   827 warnings, 0 errors.
   **Required reading for every implementer and reviewer:**
-  `docs/design/doc-sweep-truthfulness-rules.md` — thirteen rules derived empirically from Sweeps 7–10,
-  where every fix round was triggered by a doc sentence asserting something FALSE, never by a
+  `docs/design/doc-sweep-truthfulness-rules.md` — fourteen rules derived empirically from Sweeps
+  7–11, where every fix round was triggered by a doc sentence asserting something FALSE, never by a
   missing comment. Note especially that a green `lint:docs` proves tag presence, not correctness or
-  placement, so the ratchet does not reduce the need for review.
+  placement — and per Rule 14, it counts `/** */` tag presence only, so a Rule 7 re-scan that
+  limits itself to what the gate counts silently skips every standalone `//` comment.
   Sweep 9 documented `worldSession.canEdit`'s `gm_role` caveat and removed that `docs/TODO.md`
   entry in the same commit (`f24836e`).
+- **Sweep 11 — scene-adjacent modules: COMPLETE (2026-08-01).** 157-item backlog → 0 across 5
+  content tasks (scene-tools' `controller.svelte.ts` in 3 parts + `hit-test.ts` + `ToolRail.svelte`
+  107; actors 17 + scene-browser 9; stage 8 + conditions 8 + factions 8), then a two-block ratchet
+  across all six packages. Whole-repo `lint:docs` after Sweep 11: 154 warnings, 0 errors. Doc
+  examples unchanged at 332 (no new `@example` fences added new compiled-graph surface this sweep).
+  Findings that outlived the sweep:
+  - **`shadowcat-codebase-scene-rendering`'s `snapToGrid` gotcha was stale.** It said the raw-old-
+    value bug was "found but NOT fixed" in `GameSettingsPanel`/`FactionsPanel`/`ConditionsPanel`; all
+    three now read the raw stored value correctly. Fixed in the same task-6 gate that closed this
+    sweep — see the skill-update note below.
+  - **`ConditionsPanel`'s registry seed doesn't use a deterministic id** unlike its
+    `seedFactionRegistryIfAbsent` sibling — harmless today (the doc_type is in the server's
+    `SINGLETON_DOC_TYPES` singleton gate, so the outcome converges regardless), logged to
+    `docs/TODO.md` as a consistency/testability item, not a bug.
+  - **`ConditionsPanel`'s `isActive`/`toggle` disagree on which selected tokens count** toward the
+    palette chip's active/mixed state vs. the mutation set — a client-side UX papercut (no document
+    is ever mutated incorrectly; the server independently re-checks every `Update`), logged to
+    `docs/TODO.md` alongside the seed-id item rather than `OPEN_BUGS.md`.
+  - **Rule 14 promoted**: two of the sweep's best findings (`ROUTE_PREVIEW_DEBOUNCE_MS`,
+    `DRAG_THROTTLE_MS`) were false comments on `const` declarations, which `require-jsdoc` never
+    gates — evidence that every prior sweep's Rule 7 re-scan silently inherited the gate's own
+    blind spot by re-checking only `/** */` blocks. A repo-wide orphaned-doc-block scan and a
+    223-comment inline-`//` inventory across the six packages (task 6) found 0 orphans and verified
+    every load-bearing claim true.
+  - **Ratchet mutation-proven per block:** dropping `footprintFor`'s doc comment
+    (`src/modules/scene-tools/src/controller.svelte.ts`) fails at line 96 (`.ts` block); dropping
+    `toggleSnap`'s (`src/modules/scene-tools/src/ToolRail.svelte`) fails at line 49 (`.svelte`
+    block). All twelve globs (six packages × two blocks) verified individually at `error` severity.
+  - **Carried forward, not fixed here:** the dead `sendMoves` shorthand still appears in two SERVER
+    test comments, `src/server/src/ws/room.rs:3441` and `:3471` — different crate, different gate,
+    left alone deliberately.
+  Plan: `.superpowers/sdd/2026-08-01-docs-sweep11-scene-modules/`.
 - **Sweep 10 — `@shadowcat/module-panels`: COMPLETE (2026-08-01).** 217-item backlog → 0 across 3
   content tasks (dockview engine 73; layout tree+persist 71; controller+policy+fake+3 components 73),
   then a two-block ratchet. **First sweep into `src/modules/`.** Whole-repo `lint:docs` after Sweep

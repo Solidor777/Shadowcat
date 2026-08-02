@@ -208,12 +208,6 @@ source: RULE 5 says absolutes concentrate the errors, and a relay is where they 
 the source scoped a claim to a specific condition, the restatement keeps that condition or drops the
 claim.
 
-## Report contract
-
-The implementer's report must carry a claims table (claim → verifying `file:line`), and corrections in a
-fix round carry the same burden as new claims. State explicitly what the pre-existing-prose re-scan
-covered. Report a discovered divergence rather than smoothing it over — but bound its reachability.
-
 ## RULE 13 — cite PATH-QUALIFIED locations, and verify the table mechanically
 
 Sweep 10's contribution, and the only rule here that instruction alone could not fix. Three
@@ -250,3 +244,32 @@ Two calibration failures are worth repeating, because both made a checker worse 
 The claims table's whole function is letting a reviewer confirm a claim by opening one location.
 Wrong pointers convert it into decoration that still reads as diligence — worse than an absent table,
 which at least advertises that nothing was verified.
+
+## RULE 14 — a green `lint:docs` scopes the eye to what it counts, and Rule 7's re-scan inherits that scope
+
+The gate counts `/** */` blocks with the right tags present. It has no opinion on a `const` declaration
+(`require-jsdoc`'s `ArrowFunctionExpression`/`FunctionExpression` requirements are off — see
+`eslint.docs.config.js`'s `rulesAt`), and none at all on a standalone `//` comment anywhere. Every prior
+sweep's Rule 7 re-scan silently inherited the gate's own blind spot by re-checking only `/** */` blocks,
+which is not what Rule 7 promised.
+
+Evidence, all from Sweep 11:
+- Two of the sweep's best findings were false comments on `const` declarations, which `require-jsdoc`
+  never gates — `ROUTE_PREVIEW_DEBOUNCE_MS`'s "at most one request per window" (falsified by its own
+  trailing fire) and `DRAG_THROTTLE_MS`'s entire pre-D9 vocabulary.
+- Task 2's spec review found inline `//` comments un-enumerated campaign-wide — no sweep, including the
+  nine already merged, had ever systematically walked them.
+- Task 4's spec review found three comments never inspected, one of them stale — and diagnosed the cause
+  as a **miscounted enumeration**, not a short list: the re-scanner believed it had covered the file.
+
+**How to apply.** A green `lint:docs` for a file or package is evidence its JSDoc *tags* are present, not
+that its comments — of any kind — are true. When Rule 7 requires a re-scan, that re-scan's surface is
+every comment in the touched files (`/** */` blocks AND standalone `//` lines), not the subset the gate
+happens to count. State the enumeration as a number, not an impression, the same way Rule 11 asks for an
+explicit member list.
+
+## Report contract
+
+The implementer's report must carry a claims table (claim → verifying `file:line`), and corrections in a
+fix round carry the same burden as new claims. State explicitly what the pre-existing-prose re-scan
+covered. Report a discovered divergence rather than smoothing it over — but bound its reachability.
