@@ -81,3 +81,28 @@ Currently open, confirmed-real defects. Deferrals belong in `TODO.md`, not here.
     the same way proves nothing.
     **Scheduling:** own branch, after Sweep 11 merges — a server fix does not belong batched into
     a docs sweep.
+
+- **`makeTemplateTool`'s near-zero-drag fallback cannot fire in a snapping scene, so a plain click
+  places an arbitrarily-sized template instead of the intended one-cell default.**
+  `onPointerDown` snaps the anchor (`src/modules/scene-tools/src/controller.svelte.ts:1067`,
+  `anchor = ctx.scene.snap(p)`) but `onPointerMove`/`onPointerUp` pass the RAW pointer point to
+  `sizeDir` (`:1073`, `:1082`). `sizeDir`'s fallback is `if (d < 1) return { size: cell,
+  direction: 0 }` (`:1041`), with `d` the distance between those two points — so it fires only
+  when the click lands within one scene unit of the snapped anchor. With snapping on and a
+  100-unit cell, an ordinary click elsewhere in the cell takes the normal branch and yields
+  `size = d`: a template of a few units, near-invisible and unintended.
+  - **This is a defect, not a missing feature.** The `d < 1` branch exists precisely to turn a
+    click into a real default-sized template rather than a degenerate one; it was written assuming
+    both points share a coordinate frame. Mixing a snapped anchor with a raw pointer defeats its
+    own stated purpose.
+  - **Sibling divergence:** `makeTemplateTool` is the only one of the four authoring tools with no
+    extent guard on persist. `makeDrawTool` gates on `hasExtent` (`:971`), `makeWallTool` on a
+    `>= 1` length check (`:296`), `makeRegionTool` at `:360-361`.
+  - **Reachability/impact:** GM-only (the `template` tool is `gmOnly`), non-destructive, and the
+    resulting document is deletable through normal scene-entity tooling. Cost is scene and
+    event-log clutter plus a confusing authoring experience — no data loss and no authz effect.
+  - **Fix shape:** make the two `sizeDir` call sites agree on a frame — either snap the pointer
+    point alongside the anchor, or compare the raw pointer against the raw pointer-down point.
+    Then add the extent guard its three siblings already carry. Belongs on the runtime follow-up
+    branch with the `property_overrides` fix above; found by the Sweep 11 whole-branch review,
+    which is comment-only and cannot carry a behavior change.

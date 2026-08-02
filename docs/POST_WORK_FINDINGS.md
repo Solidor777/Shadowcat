@@ -493,3 +493,20 @@ are observations awaiting triage, not committed work.
   underlying this forensic closeout also failed `hex-movement.spec.ts` (trace kept, not separately
   analyzed at the time); it did not recur across the three post-fix full-suite runs (16/16 each,
   Task 4 verification) and needs no further action.
+
+- Title: `TokenAnimator`'s two Event-vs-MoveStream ordering comments contradict each
+  other. Summary: `src/client/render/src/token-animator.ts:216-217` (inside
+  `animateSamples`) states "the authoritative position Event arrives before the
+  MoveStream broadcast (normal server ordering), so reconcile() -> setTarget already
+  registered an ease entry", while `setTarget`'s own JSDoc at `:228-231` and its inline
+  guard comment at `:250-251` both state the opposite — "handles the typical
+  MoveStream-before-Event server ordering". Each cites the other as its rationale. Both
+  guards are defensive and order-independent (`animateSamples` deletes any competing ease
+  Anim at `:218`; `setTarget` returns early on `if (this.samplesAnim.has(id))` at `:252`),
+  so playback is correct whichever order actually holds — but exactly one of the two
+  comments is wrong about the server, and a maintainer reasoning from the wrong one could
+  remove the guard that is in fact load-bearing. Determining the real ordering requires
+  reading the server's Event/MoveStream emission sequence, not the client. Found by the
+  Sweep 11 whole-branch code review; out of scope there (different package, and Sweep 11
+  is comment-only in `src/modules`). Status: Needs Review — resolve when a sweep reaches
+  `src/client/render`, or sooner if movement playback is touched.
