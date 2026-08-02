@@ -34,6 +34,12 @@ files across the other five packages; then ratchet-and-ship. Same shape as Sweep
   had not; both reviewers lost their claims-table audit and that task's citation metrics are
   unrecoverable.
 - **Staging:** stage only the files you edited, by explicit path. Never `git add -A`.
+- **Reviewer dispatch contract (dispatcher-side, every task):** reviewers run read-only —
+  Read/Grep/Glob/Skill, **no Write and no Bash** by standing user directive. So (a) pre-generate the
+  diff to a file and hand over the path, and (b) **name the delivery channel explicitly: "send your
+  findings back with SendMessage."** Omitting (b) makes a reviewer go idle having produced nothing
+  recoverable — it happened on Task 1 despite the lesson already being in memory, which is why it
+  is written down here where the next task boundary will surface it.
 - **Report contract:** a CLAIMS TABLE (claim → enforcing `file:line`, **path-qualified**, Rule 13),
   an explicit list of what the pre-existing-prose re-scan covered ("none found" only with a list),
   and any bug found with its reachability bounded.
@@ -134,9 +140,14 @@ Lines 1–325: `activeScene`, `footprintFor`, the `ToolController` class (constr
 - `activeScene`'s `?? 100` cell-size and `?? {perCell: 5, unit: "ft"}` distance defaults
   (`:74-75`). If you make ANY parity claim about the server, the only correct one is that
   `scene_grid_sizes` (`src/server/src/scene/mod.rs:1189`) is the server's **sole intentional
-  defaulting source** and also defaults to 100. Do **not** claim the movement gates default —
-  they refuse (`scene/mod.rs:1319-1322`, `:1360-1362` return/`let-else` on a missing entry). The
-  safest doc makes no parity claim at all; an uncited one is where the false claims live (Rule 2).
+  defaulting source** and also defaults to 100. Do **not** claim the movement gates default — they
+  refuse. **Cite the gates themselves:** `Room::publish`'s Create-placement scene-existence refusal
+  (`src/server/src/ws/room.rs:333`) and `Room::execute_move`'s (`src/server/src/ws/room.rs:577-580`),
+  both `DataError::Forbidden`. `scene/mod.rs:1319-1322` (`navmesh_for`) and `:1360-1362`
+  (`pathfind`) are the **router**, not the gates — `scene/mod.rs:1355-1357` says so in as many
+  words, so citing them for a claim about "the movement gates" is a Rule 1 adjacency defect on an
+  otherwise true claim. The safest doc makes no parity claim at all; an uncited one is where the
+  false claims live (Rule 2).
 - `footprintFor` (`:84-88`) — the server-override fact above. Its existing comment's claim that
   module-level placement makes preview and commit "share one source" is true; verify it still is
   (both `makeMeasureTool` and `makeSelectMoveTool` must call it) before restating.
