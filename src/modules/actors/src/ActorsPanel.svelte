@@ -65,7 +65,9 @@
     return Object.entries(reg?.conditions ?? {});
   });
 
-  /** The single selected token's id, if any — drives the per-token face-swap palette below. */
+  /** The single selected token's id, if any — drives both per-token controls below: the
+   * face-swap palette (`FaceSwapPalette`) and the ownership override control
+   * (`TokenOwnerControl`). */
   const selectedTokenId = $derived.by((): string | null => {
     subscribe();
     const ids = ctx.tokenSelection.ids;
