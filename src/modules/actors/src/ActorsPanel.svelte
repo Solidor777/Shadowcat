@@ -80,9 +80,13 @@
   });
 
   // A search-hit's document (WireSearchHit.document) is a full `Document`/`WireDocument` clone —
-  // `filter_properties` (server, src/server/src/data/permission.rs:701) redacts hidden PROPERTY
-  // VALUES inside `engine`/`system`/`name`/`base`, never the `permissions` field itself — so
-  // `a.permissions` is always present for both a search-sourced and a store-resolved row. The
+  // `filter_properties` (server, src/server/src/data/permission.rs:701) special-cases only
+  // `/system`, `/engine`, `/name`, `/base` (nulled in place); every other hidden property_overrides
+  // pointer falls through to a generic strip. No current UI path (here or elsewhere) ever sets an
+  // override key outside those four, so in practice `a.permissions` is always present for both a
+  // search-sourced and a store-resolved row — but ingress only checks a property_overrides key's
+  // JSON-pointer SHAPE (`validation::validate_property_overrides`), not which field it targets, so
+  // this is a today-true observation, not a structural guarantee; see docs/OPEN_BUGS.md. The
   // optional chaining below is defensive style, not required by any known gap between the two.
   const isHidden = (a: WireDocument): boolean => a.permissions?.property_overrides["/name"] === "owner_or_gm";
 
