@@ -183,7 +183,7 @@ concurrency logic in the sweep.
 - `commitRoute`'s `committing` ordering invariant (above), the `lastPreviewedPath` reuse path
   (avoids a second round-trip) versus the fallback pathfind, and the fact that **animation is
   broadcast-driven via `MoveStream` for all viewers — never animated from the `moveRequest` resolve
-  value** (`:543-546`). The last is a correctness claim someone will get backwards.
+  value** (`:546-547`). The last is a correctness claim someone will get backwards.
 - `scheduleTimeout`/`clearScheduledTimeout` injection: the existing `ToolContext` comment
   (`:36-42`) explains that a test faking `now` must also fake the timer or it arms a REAL timer that
   can fire during an unrelated later test. That is a hard-won constraint — preserve it verbatim in
@@ -268,11 +268,22 @@ Four files, 24 warnings: `Stage.svelte` (8), `ConditionsPanel.svelte` (8),
 
 **Hot spots:**
 
-- `Stage.svelte` hosts the engine-owned PixiJS surface — the lifecycle is the doc. The site at
-  `Stage.svelte:221` takes `(engine, signal)`: an `AbortSignal`-cancelled async setup is a teardown
-  contract, so say what is aborted and what happens if the signal fires mid-await
-  ([[refactor-async-contribution-paint-timing]] is the failure mode). The `(token, fallback)` helper
-  at `:51` resolves a per-token value — name the fallback's trigger precisely.
+- `Stage.svelte` hosts the engine-owned PixiJS surface — the lifecycle is the doc. `wirePointer`
+  (`:221`) takes `(engine, signal)`: the `AbortController` created in the `$effect` (`:79`) aborts
+  every pointer/wheel listener on teardown *and on any `$effect` re-run*, so a stale listener set
+  can never call into a destroyed engine. Say that, and say what the `disposed` flag at `:69`/`:83`
+  guards — teardown racing the async backend init is a real, handled case
+  ([[refactor-async-contribution-paint-timing]] is the adjacent failure mode).
+- **`readColor(token, fallback)` (`:54`) takes a CSS CUSTOM PROPERTY name, not a game token.**
+  `token` here means design token (`--surface-base`, `--grid-line`). It reads the computed `color`
+  off a throwaway probe span because `getPropertyValue` returns the unresolved `var(...)` string for
+  aliased custom properties — that indirection IS the reason the function exists. Name the two
+  fallback triggers precisely: no `getComputedStyle`/no `host` (`:55`), and an unparseable
+  `rgb()` result (`:63`).
+- `applyGmView` (`:38`) covers three modes — `"all"`, `"fog"` (client-only full-fog preview) and
+  `"as:<userId>"` (see-as-player, **server-gated to GMs**). The fog preview is client-only; the
+  see-as re-subscription is the server-gated one. Do not describe them as the same kind of switch,
+  and note it is re-applied after an `$effect` re-run (`:103`) so a non-default view survives.
 - `seed.ts` carries the sweep's best pre-existing comment (`:3-8`, `:15-23`): the deterministic-id
   race between two GMs seeding one world, why the loser needs no conflict handling, and why
   `dispatchIntent` is fire-and-forget by design. **Verify each clause** — particularly
