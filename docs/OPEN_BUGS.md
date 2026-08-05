@@ -92,8 +92,8 @@ Currently open, confirmed-real defects. Deferrals belong in `TODO.md`, not here.
   CENTER on BOTH grid kinds (`src/client/render/src/grid.ts:61-69`), so an ordinary click sits
   some arbitrary distance from the anchor — for a click that presses and releases within one
   cell, bounded by that cell's circumradius, which is the half-diagonal on a square grid and on a
-  hex grid `GridSpec.size` itself, the outer radius (`grid.ts:13`); enough pointer jitter to
-  cross a cell boundary exceeds it. It takes the normal branch and yields `size = d`, an
+  hex grid `GridSpec.size` itself, the outer radius (`grid.ts:13`); a release outside the press
+  cell is not bounded by it at all. It takes the normal branch and yields `size = d`, an
   arbitrary template rather
   than the intended one-cell default. The fallback is reachable only by a click landing almost
   exactly on the snap point.
