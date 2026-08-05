@@ -364,10 +364,10 @@
     if (!grew || !container) return;
     // untrack: read atBottom's CURRENT value without subscribing this effect to
     // it — onscroll-driven atBottom writes must never re-run this effect on
-    // their own; only a genuine message-count change (above) may. Read once and
-    // reuse for both the hidden and visible branches below, so a hidden reader
-    // who had scrolled up keeps that position (and gets the pill) on reveal
-    // instead of being force-scrolled to the bottom, mirroring the visible path.
+    // their own (untrack is what guarantees that). Read once and reuse for
+    // both the hidden and visible branches below, so a hidden reader who had
+    // scrolled up keeps that position (and gets the pill) on reveal instead of
+    // being force-scrolled to the bottom, mirroring the visible path.
     const wasAtBottom = untrack(() => atBottom);
     if (!isVisible(container)) {
       // Do not measure or write scrollTop while hidden — scrollHeight/
