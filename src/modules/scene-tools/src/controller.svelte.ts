@@ -100,10 +100,11 @@ function activeScene(ctx: ToolContext): { id: string; size: number; perCell: num
  * preview and commit cannot derive different sizes.
  *
  * Every call site in this file that invokes this function also passes that same token id as
- * `Pathfind`'s `token` field; when `token` is present the server AUTHORIZES it and DERIVES the
- * footprint from the token's own document, IGNORING the wire `footprint_radius` value entirely
- * (`src/server/src/ws/protocol.rs:113-117`, `src/server/src/ws/conn.rs:681-700`). So the value
- * computed here influences no production outcome today. It is not dead code: the wire value IS
+ * `Pathfind`'s `token` field (wire shape declared at `src/server/src/ws/protocol.rs:113-117`);
+ * when `token` is present the server AUTHORIZES it and DERIVES the footprint from the token's
+ * own document, IGNORING the wire `footprint_radius` value entirely (enforced at
+ * `src/server/src/ws/conn.rs:681-700`). So the value computed here influences no production
+ * outcome today. It is not dead code: the wire value IS
  * honored whenever `token` is absent, which in this file happens only when zero or multiple
  * tokens are selected — and in that branch this function is never called either (the caller
  * short-circuits to a hardcoded `0.4` instead).
@@ -247,8 +248,10 @@ export function makePlaceTool(ctx: ToolContext, controller: ToolController): Sce
  * shape whose corners are ≥1 unit apart. A pure click has none — persisting it would
  * write an invisible junk drawing to the scene + event log.
  * @param mode The active draw mode; only `"freehand"` consults `freehand`.
- * @param a The drag start point (scene coords, post-snap).
- * @param b The current/drag-end point (scene coords, post-snap).
+ * @param a The drag start point (raw pointer scene coords; the sole caller, `makeDrawTool`,
+ * never snaps).
+ * @param b The current/drag-end point (raw pointer scene coords; the sole caller,
+ * `makeDrawTool`, never snaps).
  * @param freehand The accumulated freehand path, as a flat `[x0,y0,x1,y1,...]` array.
  * @returns `true` when the gesture has visible extent and should persist.
  * @example
@@ -461,8 +464,11 @@ export function makePingTool(ctx: ToolContext): SceneTool {
  * checked separately by each pointer handler, and the three handlers do not treat its
  * absence uniformly: `onPointerDown` falls back to the plain anchor-point measure when no
  * scene is active; `onPointerMove` silently no-ops (no route request, no fallback measure);
- * `onPointerUp` doesn't check for a scene at all and always calls `clearRoute()` while in
- * route mode. When route mode and an active scene both hold, `onPointerDown` snaps a
+ * `onPointerUp` doesn't check for a scene at all, and calls `clearRoute()` while in route mode
+ * UNLESS a commit is in flight (`committing`), in which case it returns without touching
+ * `clearRoute`/`pendingSeq` — the in-flight commit owns its own teardown via `finish()`, and
+ * calling `clearRoute()` here would bump `pendingSeq` and abort it. When route mode and an
+ * active scene both hold, `onPointerDown` snaps a
  * waypoint onto the list, each `onPointerMove` issues an A* pathfind request
  * (`requestRoute`) from the selected token's center through any accumulated waypoints to
  * the provisional goal, and on resolve `previewOverlay` renders the routed polyline while
@@ -732,20 +738,29 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
    * server. Does NOT animate from that call's resolve value — animation is broadcast-driven
    * via `MoveStream`/`onMoveStream` for all scene viewers (see the `sendRequest` inline
    * comment below). The authoritative position instead arrives separately via the normal
-   * store Event (token → stop); `TokenAnimator.setTarget`'s ahead-vertex ignore-scan
-   * (`src/client/render/src/token-animator.ts:228-236`) recognizes it as expected progress
-   * on the in-progress path-driven tween rather than restarting a new one. On reject, clears
-   * the route overlay (no move).
+   * store Event (token → stop). Sample-driven playback wins regardless of which of the two
+   * arrives first, and this doc deliberately asserts no ordering between them: if
+   * `animateSamples` registered first, `TokenAnimator.setTarget`'s `samplesAnim` guard
+   * (`src/client/render/src/token-animator.ts:252`) makes the Event a no-op; if the Event
+   * landed first, the ease tween it started is deleted when `animateSamples` registers
+   * (`token-animator.ts:218`). Either way the broadcast trajectory owns the token's motion.
+   * On reject, clears the route overlay (no move).
    *
    * Reuses the last-previewed `PathResult.path` (`lastPreviewedPath`) when already computed
    * for this route, avoiding a redundant pathfind round-trip; when none is cached, issues one
    * pathfind then sends the moveRequest with its result.
    *
-   * Invariant: `committing` is set TRUE before `seq` is captured, and cleared ONLY by
-   * `finish()` — invoked on every resolve, reject, and short-circuit branch of the commit —
-   * or by `onDeactivate` (abort path). This ensures pointer-up (which calls `clearRoute` in
-   * non-committing paths) cannot bump `pendingSeq` between commit start and the async
-   * resolve, keeping `seq === pendingSeq` true so the commit proceeds.
+   * Invariant: `committing` is set TRUE before `seq` is captured. It is cleared by `finish()`
+   * on the resolve/reject branch that still owns this commit (`seq === pendingSeq`) or by
+   * `onDeactivate` (abort path) — but deliberately NOT on a STALE resolve/reject (`seq !==
+   * pendingSeq`, re-checked on all four settle branches: `sendRequest`'s resolve and reject,
+   * and the pathfind's resolve and reject): a stale branch means a newer commit, or
+   * `onDeactivate`, already bumped
+   * `pendingSeq` and now owns `committing` + teardown, so calling `finish()` here would clear
+   * a LIVE commit's flag out from under it and let a stray pointer-up abort it. This ensures
+   * pointer-up (which calls `clearRoute` in non-committing paths) cannot bump `pendingSeq`
+   * between commit start and the async resolve, keeping `seq === pendingSeq` true so the
+   * commit proceeds.
    * @param goal The commit target, in scene coords (post-snap).
    * @example
    * ```
@@ -909,8 +924,10 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
  * a decision, so treat it as consistent-by-construction rather than a documented tradeoff — it
  * mirrors the render layer's own `drawing-view.ts` vs `template-view.ts` split, not a bug.
  * @param mode The active draw mode; only `"freehand"` consults `freehand`.
- * @param a The drag start point (scene coords, post-snap).
- * @param b The current/drag-end point (scene coords, post-snap).
+ * @param a The drag start point (raw pointer scene coords; the sole caller, `makeDrawTool`,
+ * never snaps).
+ * @param b The current/drag-end point (raw pointer scene coords; the sole caller,
+ * `makeDrawTool`, never snaps).
  * @param freehand The accumulated freehand path, as a flat `[x0,y0,x1,y1,...]` array.
  * @returns The preview/persist points plus whether the shape should render/persist closed.
  * @example
@@ -1026,7 +1043,8 @@ function templatePath(mode: TemplateMode, ax: number, ay: number, size: number, 
  * drag (`< 1` scene unit) falls back to one grid cell (`cell`) at `direction: 0`, so a click
  * (no visible drag) still places a default-sized template rather than a degenerate zero-size one.
  * @param a The drag anchor (scene coords, post-snap).
- * @param b The current/drag-end point (scene coords, post-snap).
+ * @param b The current/drag-end point (raw pointer scene coords, never snapped — see
+ * `onPointerMove`/`onPointerUp` below).
  * @param cell The active scene's grid cell size (the near-zero-drag fallback size).
  * @returns The resolved size (scene units) and direction (degrees).
  * @example
@@ -1045,9 +1063,14 @@ function sizeDir(a: Point, b: Point, cell: number): { size: number; direction: n
 /** Drag to place a template area (circle/cone/rect/line) anchored at the snapped cell; the
  * drag sets size + direction via `sizeDir`. Live preview; release ALWAYS persists a `template`
  * doc (optimistic) — unlike `makeDrawTool`/`makeWallTool`/`makeRegionTool`, there is no
- * has-extent skip here: a pure click (no drag) still creates a template, because `sizeDir`'s
- * near-zero-drag fallback already resolves to a real default-sized shape (one grid cell) rather
- * than a degenerate zero-size one, so there is nothing "invisible" to guard against.
+ * has-extent skip here. This is NOT because `sizeDir`'s near-zero-drag fallback reliably
+ * substitutes for one: `onPointerDown` snaps the anchor but `onPointerMove`/`onPointerUp` pass
+ * `sizeDir` the RAW pointer point, so the fallback (`d < 1`) only fires when the drag-end lands
+ * within one scene unit of the SNAPPED anchor — in a snapping scene an ordinary click lands
+ * some arbitrary fraction of a cell away from that anchor, so it takes the normal branch and
+ * produces a small, effectively arbitrary template instead of the intended one-cell default. Known, logged defect:
+ * `docs/OPEN_BUGS.md`, "`makeTemplateTool`'s near-zero-drag fallback cannot fire in a snapping
+ * scene". Comment-only note; the behavior itself is unchanged here.
  * @param ctx The tool context; reads the active scene, snaps the anchor, dispatches the create.
  * @param controller Supplies the configured `templateMode`/`templateColor`.
  * @returns A `SceneTool` implementing the drag-to-place gesture.
