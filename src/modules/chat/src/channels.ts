@@ -1,26 +1,75 @@
 // Pure chat view model: which channel/GM view is active, filtering, sort, post
 // target derivation. No Svelte/store dependency — ChatPanel wires this to reactive
-// queries. `channel` itself is a purely client-side label (chat skill: the server
-// enforces only `audience`, never `channel`); "All" and per-channel views both read
-// EVERY message regardless of audience, while the GM view filters on `audience`.
+// queries. `channel` is a purely client-side display label; the server enforces
+// only `audience`, never `channel` (`build_message_doc`,
+// src/server/src/chat/mod.rs:288-311). "All" and per-channel views both read every
+// message already present in this client's store regardless of audience; the GM
+// view further filters on `audience.kind === "gm_only"`. This filtering is NOT a
+// secrecy boundary — a player's store never held a `gm_only` message it wasn't a
+// recipient of in the first place, because redaction is per-recipient and
+// server-side, applied before broadcast.
 import { parseMessageEngine, type ChatMessageEngine, type WireAudience, type WireDocument } from "@shadowcat/core";
 
 export type ChatView = { kind: "all" } | { kind: "channel"; id: string } | { kind: "gm" };
 
-/** Post target for a view: All → the default channel; GM → gm_only audience. */
+/**
+ * The `{channel, audience}` a message send from `view` should use: a channel
+ * view posts to that channel as `public`; the GM view posts to the default
+ * channel as `gm_only` (the server's `PermissionSet` mapping is what makes it
+ * GM-only, not this label — see the module header); "All" posts to the
+ * default channel as `public`, same as a plain channel post.
+ * @param view The chat view currently active in the panel.
+ * @returns The channel name and audience a send from `view` should carry.
+ * @example
+ * ```
+ * // private module; not reachable as a workspace import — call shape:
+ * postTarget({ kind: "gm" }); // → { channel: "general", audience: { kind: "gm_only" } }
+ * ```
+ */
 export function postTarget(view: ChatView): { channel: string; audience: WireAudience } {
   if (view.kind === "channel") return { channel: view.id, audience: { kind: "public" } };
   if (view.kind === "gm") return { channel: "general", audience: { kind: "gm_only" } };
   return { channel: "general", audience: { kind: "public" } };
 }
 
+/**
+ * Whether a message with parsed body `sys` belongs in `view`. "All" and a
+ * per-channel view read every message regardless of `audience`; the GM view
+ * is the one case that checks `audience` instead of `channel`. This is a
+ * display filter over documents this client already has, not a security
+ * check — the server, via the `PermissionSet` `build_message_doc` attaches
+ * to the doc (src/server/src/chat/mod.rs:299-311) and the generic
+ * per-recipient redaction path that enforces it, is what keeps a `gm_only`
+ * or `whisper` message out of a non-recipient's store to begin with.
+ * @param view The chat view being rendered.
+ * @param sys The message's parsed engine body.
+ * @returns `true` if `sys` should be shown in `view`.
+ * @example
+ * ```
+ * // private module; not reachable as a workspace import — call shape:
+ * inView({ kind: "gm" }, sys); // → sys.audience.kind === "gm_only"
+ * ```
+ */
 export function inView(view: ChatView, sys: ChatMessageEngine): boolean {
   if (view.kind === "all") return true;
   if (view.kind === "gm") return sys.audience.kind === "gm_only";
   return sys.channel === view.id;
 }
 
-/** Sort by envelope created_at then id (server-set; stable under edits). */
+/**
+ * Comparator: orders by envelope `created_at` ascending, then `id` ascending
+ * as a tie-break (both server-set; neither changes on edit). `unread.ts`'s
+ * `isAfter` (src/modules/chat/src/unread.ts:36) applies the identical
+ * ordering rule when testing a document against a read-frontier marker.
+ * @param a A document to compare.
+ * @param b The other document to compare.
+ * @returns Negative if `a` sorts before `b`, positive if after, 0 if equal.
+ * @example
+ * ```
+ * // private module; not reachable as a workspace import — call shape:
+ * [doc1, doc2].sort(byCreation);
+ * ```
+ */
 export function byCreation(a: WireDocument, b: WireDocument): number {
   return a.created_at - b.created_at || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 }
@@ -29,12 +78,14 @@ export const RENDER_CAP = 200;
 
 /**
  * Incremental view-membership + sort-order cache for one active chat view.
- * A message's `channel`/`audience` are frozen at creation (chat skill: both
- * are always copied verbatim from the stored doc on edit, never re-derived),
- * so an id's view membership and sorted position never need recomputing once
- * known — only a genuinely new id costs a parse + insertion; an edit to a
- * known id only refreshes its stored reference. Reset (a fresh cache) on
- * view change.
+ * A message's `channel` and `audience` are frozen at creation and copied
+ * verbatim by both revision paths, neither of which ever reassigns
+ * `sys.channel`/`sys.audience` before re-serializing: `handle_edit_message`
+ * (src/server/src/chat/mod.rs:955-963) and `handle_delete_message`
+ * (src/server/src/chat/mod.rs:1023-1029). So an id's view membership and
+ * sorted position never need recomputing once known — only a genuinely new
+ * id costs a parse + insertion; an edit to a known id only refreshes its
+ * stored reference. Reset (a fresh cache) on view change.
  */
 export type ChatDerivationCache = {
   /** Ids currently in view, sorted by byCreation. */
@@ -45,19 +96,63 @@ export type ChatDerivationCache = {
   members: Map<string, boolean>;
 };
 
+/**
+ * A fresh, empty `ChatDerivationCache` — call once per view (see
+ * `ChatDerivationCache`'s doc comment) and replace on view change.
+ * @returns A new cache with no cached ids.
+ * @example
+ * ```
+ * // private module; not reachable as a workspace import — call shape:
+ * let cache = createChatDerivationCache();
+ * ```
+ */
 export function createChatDerivationCache(): ChatDerivationCache {
   return { order: [], refs: new Map(), members: new Map() };
 }
 
+// Counts every `parseMessageEngine` call `deriveVisibleDocs` makes below.
+// Always incremented in production — there is no test-only gate on the
+// counter itself. It is the two accessors below that are test-only:
+// `ChatPanel.test.ts` is their sole caller in this package (verified: no
+// non-test import of either exists here).
 let parseCallCount = 0;
-/** Test-only instrumentation: counts parseMessageEngine calls made by deriveVisibleDocs. */
+/**
+ * Test-only accessor over the always-live `parseCallCount` counter.
+ * @returns The number of `parseMessageEngine` calls made so far.
+ * @example
+ * ```
+ * // private module; not reachable as a workspace import — call shape:
+ * getParseCallCount(); // → 0 before any deriveVisibleDocs call
+ * ```
+ */
 export function getParseCallCount(): number {
   return parseCallCount;
 }
+/**
+ * Test-only accessor: resets the always-live `parseCallCount` counter to 0.
+ * @example
+ * ```
+ * // private module; not reachable as a workspace import — call shape:
+ * resetParseCallCount();
+ * ```
+ */
 export function resetParseCallCount(): void {
   parseCallCount = 0;
 }
 
+/**
+ * Binary-searches `cache.order` (already sorted by `byCreation`) for the
+ * insertion point of `doc`, reading each candidate's cached `refs`
+ * reference rather than re-parsing.
+ * @param cache The cache whose `order`/`refs` back the search.
+ * @param doc The document to find an insertion point for.
+ * @returns The index in `cache.order` at which `doc.id` belongs.
+ * @example
+ * ```
+ * // private function; not reachable as a workspace import — call shape:
+ * insertionIndex(cache, doc);
+ * ```
+ */
 function insertionIndex(cache: ChatDerivationCache, doc: WireDocument): number {
   let lo = 0;
   let hi = cache.order.length;
@@ -79,6 +174,16 @@ function insertionIndex(cache: ChatDerivationCache, doc: WireDocument): number {
  * membership and sort position are both fixed at creation. Only a genuinely
  * new id costs a parse plus an O(log n) binary-search insertion; the full
  * history is never re-sorted.
+ * @param cache The view's derivation cache, mutated in place.
+ * @param allMessages Every `message` doc currently in the store, unfiltered.
+ * @param view The active chat view to derive membership for.
+ * @param cap The maximum number of matching docs to return.
+ * @returns The last `cap` matching docs, sorted by `byCreation`.
+ * @example
+ * ```
+ * // private module; not reachable as a workspace import — call shape:
+ * deriveVisibleDocs(cache, allMessages, { kind: "all" }, RENDER_CAP);
+ * ```
  */
 export function deriveVisibleDocs(cache: ChatDerivationCache, allMessages: WireDocument[], view: ChatView, cap: number): WireDocument[] {
   const seen = new Set<string>();
@@ -95,12 +200,26 @@ export function deriveVisibleDocs(cache: ChatDerivationCache, allMessages: WireD
       if (member) cache.order.splice(insertionIndex(cache, doc), 0, doc.id);
     }
   }
-  // Removal never happens in practice (messages are soft-tombstoned in
-  // place, never hard-deleted from the store); skip the scan unless the
-  // store's message count actually shrank. Reconciles against `cache.refs`'s
-  // own key set, not just `cache.order` — a non-member id (member === false)
-  // is cached in `refs`/`members` but never enters `order`, so scanning only
-  // `order` would leave its entry behind forever once the doc disappears.
+  // A live message doc is never removed from this client's store by a
+  // per-doc delete: `ops_target_message` rejects a client-authored
+  // Create/Delete targeting a `message` doc_type at both ingress points
+  // (src/server/src/chat/mod.rs:78-83, guarding the WS `Intent` arm at
+  // src/server/src/ws/conn.rs:313 and the HTTP `write_ops` mirror at
+  // src/server/src/http/routes.rs:467), and a message's `parent_id` is
+  // always `None` (`build_message_doc`, src/server/src/chat/mod.rs:343), so
+  // it can never be swept up as a descendant of some other doc's cascading
+  // delete either — `handle_delete_message` only ever produces a
+  // soft-tombstoning `Operation::Update`. A world switch tears down this
+  // whole cache and store rather than removing ids from a live one (a new
+  // `WorldSession`/`DocumentStore` per `enterWorld` call,
+  // src/client/shell/src/App.svelte:124-134), so it is not a "removal" in
+  // the sense checked here either. The scan below still runs correctly if
+  // any of that ever changes; skipping it is only a fast path taken when
+  // the store's message count didn't shrink. Reconciles against
+  // `cache.refs`'s own key set, not just `cache.order` — a non-member id
+  // (member === false) is cached in `refs`/`members` but never enters
+  // `order`, so scanning only `order` would leave its entry behind forever
+  // once the doc disappears.
   if (seen.size !== cache.refs.size) {
     for (const id of cache.refs.keys()) {
       if (!seen.has(id)) {
@@ -115,18 +234,36 @@ export function deriveVisibleDocs(cache: ChatDerivationCache, allMessages: WireD
   return windowIds.map((id) => cache.refs.get(id)!);
 }
 
-/** Overscan rows kept mounted beyond the measured visible range, each side. */
+/** Overscan rows kept mounted beyond the estimated visible range, each side. */
 export const VIRTUALIZE_OVERSCAN = 8;
 
 /**
  * Ratio-based windowing: maps the scroll container's fractional scroll
- * position onto an index range within `totalCount`, rather than dividing by
- * an assumed fixed row height — chat rows have variable (text-wrap-dependent)
- * height, so a pixel/row-height approach would drift from the real layout.
- * Falls back to the full range when the container has no measured layout
- * (`clientHeight <= 0`) or content doesn't overflow it — never mounts fewer
- * rows than fit, and matches unwindowed behavior when scroll metrics are
- * unavailable (e.g. jsdom without a layout engine).
+ * position onto an index range within `totalCount`, using the OVERALL
+ * average row density (`clientHeight / scrollHeight`) rather than dividing
+ * by a single assumed row height — chat rows have variable
+ * (text-wrap-dependent) height, so no one row height exists to divide by.
+ * That makes `visibleCount` an ESTIMATE, not a guarantee: if the rows
+ * currently in view happen to be shorter than the dataset's average, more
+ * of them fit in `clientHeight` than the average-density estimate assumes,
+ * and `overscan` (a fixed row count, not a pixel budget) is not guaranteed
+ * to cover the gap. The one case that IS guaranteed to mount every row that
+ * fits is the fallback taken when the container has no measured layout
+ * (`clientHeight <= 0`) or content doesn't overflow it (`scrollHeight <=
+ * clientHeight`) — that branch returns the full, unwindowed range, matching
+ * unwindowed behavior when scroll metrics are unavailable (e.g. jsdom
+ * without a layout engine).
+ * @param scrollTop Current scroll offset of the messages container, in pixels.
+ * @param clientHeight Visible height of the messages container, in pixels.
+ * @param scrollHeight Total scrollable height of the messages container, in pixels.
+ * @param totalCount Number of rows being windowed.
+ * @param overscan Extra rows kept mounted beyond the estimated visible range, each side.
+ * @returns A `{start, end}` index range (end-exclusive) into the `totalCount` rows.
+ * @example
+ * ```
+ * // private module; not reachable as a workspace import — call shape:
+ * computeVisibleWindow(scrollTop, clientHeight, scrollHeight, totalCount);
+ * ```
  */
 export function computeVisibleWindow(
   scrollTop: number,
