@@ -754,12 +754,16 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
    * on whichever SETTLE branch still owns this commit (`seq === pendingSeq`) or by
    * `onDeactivate` (abort path). The pathfind's resolve with a usable path is not a settle — it
    * hands the commit off to `sendRequest`, which settles later. Clearing is deliberately NOT
-   * done on a STALE resolve/reject (`seq !== pendingSeq`, re-checked on all four settle
-   * branches: `sendRequest`'s resolve and reject, and the pathfind's resolve and reject): a
+   * done on a STALE resolve/reject (`seq !== pendingSeq`, re-checked on all four async
+   * continuations: `sendRequest`'s resolve and reject, and the pathfind's resolve and reject): a
    * stale branch means a newer commit, or `onDeactivate`, already bumped `pendingSeq` and now
-   * owns `committing` + teardown, so calling `finish()` here would invalidate that LIVE commit
-   * outright — `finish()` calls `clearRoute()`, which does `pendingSeq++`, so the newer
-   * commit's captured `seq` stops matching and its own settle silently becomes a no-op. This ensures
+   * owns `committing` + teardown, so calling `finish()` here would release that LIVE commit's
+   * guard and teardown out from under it — `finish()` calls `clearRoute()`, which does
+   * `pendingSeq++`, so the newer commit's captured `seq` stops matching and its own settle
+   * silently becomes a no-op. Its `moveRequest` is already in flight and still executes
+   * server-side; what is lost is client-side ownership — `committing` drops while the request is
+   * outstanding, so `onPointerDown`'s `committing` guard no longer blocks a second
+   * `commitRoute`, and the overlay and waypoints are torn down early. This ensures
    * pointer-up (which calls `clearRoute` in non-committing paths) cannot bump `pendingSeq`
    * between commit start and the async resolve, keeping `seq === pendingSeq` true so the
    * commit proceeds.
@@ -1070,9 +1074,10 @@ function sizeDir(a: Point, b: Point, cell: number): { size: number; direction: n
  * `sizeDir` the RAW pointer point, so the fallback (`d < 1`) only fires when the drag-end lands
  * within one scene unit of the SNAPPED anchor — in a snapping scene an ordinary click lands
  * some arbitrary fraction of a cell away from that anchor, so it takes the normal branch and
- * produces a small, effectively arbitrary template instead of the intended one-cell default. Known, logged defect:
- * `docs/OPEN_BUGS.md`, "`makeTemplateTool`'s near-zero-drag fallback cannot fire in a snapping
- * scene". Comment-only note; the behavior itself is unchanged here.
+ * produces a small, effectively arbitrary template instead of the intended one-cell default.
+ * Known, logged defect: see the `makeTemplateTool` near-zero-drag entry in `docs/OPEN_BUGS.md`
+ * (referenced by tool name, not by title, so a retitle cannot orphan this pointer).
+ * Comment-only note; the behavior itself is unchanged here.
  * @param ctx The tool context; reads the active scene, snaps the anchor, dispatches the create.
  * @param controller Supplies the configured `templateMode`/`templateColor`.
  * @returns A `SceneTool` implementing the drag-to-place gesture.

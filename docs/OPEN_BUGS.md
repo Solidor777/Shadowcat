@@ -84,10 +84,10 @@ Currently open, confirmed-real defects. Deferrals belong in `TODO.md`, not here.
 
 - **`makeTemplateTool`'s near-zero-drag fallback effectively never fires in a snapping scene, so a
   plain click places an arbitrarily-sized template instead of the intended one-cell default.**
-  `onPointerDown` snaps the anchor (`src/modules/scene-tools/src/controller.svelte.ts:1092`,
+  `onPointerDown` snaps the anchor (`src/modules/scene-tools/src/controller.svelte.ts:1097`,
   `anchor = ctx.scene.snap(p)`) but `onPointerMove`/`onPointerUp` pass the RAW pointer point to
-  `sizeDir` (`:1098`, `:1107`). `sizeDir`'s fallback is `if (d < 1) return { size: cell,
-  direction: 0 }` (`:1061`), with `d` the distance between those two points — so it fires only
+  `sizeDir` (`:1103`, `:1112`). `sizeDir`'s fallback is `if (d < 1) return { size: cell,
+  direction: 0 }` (`:1065`), with `d` the distance between those two points — so it fires only
   when the click lands within one scene unit of the snapped anchor. `Grid.snap` returns the cell
   CENTER on BOTH grid kinds (`src/client/render/src/grid.ts:61-69`), so an ordinary click sits
   some arbitrary distance from the anchor, bounded by the cell's circumradius — the half-diagonal
@@ -100,19 +100,24 @@ Currently open, confirmed-real defects. Deferrals belong in `TODO.md`, not here.
     both points share a coordinate frame. Mixing a snapped anchor with a raw pointer defeats its
     own stated purpose.
   - **Sibling divergence:** `makeTemplateTool` is the only one of the four authoring tools with no
-    extent guard on persist. `makeDrawTool` gates on `hasExtent` (`:990`), `makeWallTool` on a
+    extent guard on persist. `makeDrawTool` gates on `hasExtent` (`:994`), `makeWallTool` on a
     `>= 1` length check (`:299`), `makeRegionTool` at `:363-365`.
   - **Reachability/impact:** GM-only (the `template` tool is `gmOnly`) and non-destructive — no
     data loss and no authz effect. Impact is nonetheless persistent: **no client code anywhere
-    constructs an `Operation` with `op: "delete"`.** Outside tests that variant appears in the
-    client only on the RECEIVE side — the Zod wire schema (`src/client/core/src/wire.ts:192`) and
-    `applyOperation`'s `case "delete"` (`src/client/core/src/store.ts:178-180`) — with no
-    dispatch-side counterpart. (Neighbouring `delete` names sit on other axes and are not
-    counterexamples: `merge.ts`'s `kind: "delete"` is a template-merge field op, and
-    `deleteAsset`/`deleteUser` are REST calls against assets and users, not documents.) So no
-    scene-entity delete UI exists to remove the junk template; it persists until such a UI ships
-    or a raw protocol Delete is sent. Cost is accumulating scene and event-log clutter plus a
-    confusing authoring experience.
+    constructs an `Operation` with `op: "delete"`.** Outside tests that variant appears only in
+    the SHARED wire type and schema (`src/types/generated/Operation.ts:12`,
+    `src/client/core/src/wire.ts:192`) and in `applyOperation`'s receive-side `case "delete"`
+    (`src/client/core/src/store.ts:178-180`). The schema is emphatically not receive-only — the
+    client's own outbound `intent` frame is typed `ops: WireOperation[]` (`wire.ts:359`) and the
+    server executes a client-sent Delete (`src/server/src/data/sqlite.rs:1867,1909,2147`), which
+    is exactly what makes the raw-protocol escape below real. The gap is that nothing in the
+    client ever CONSTRUCTS one. (Neighbouring `delete` names sit on other axes and are not
+    counterexamples: `merge.ts`'s `kind: "delete"` is a template-merge field op;
+    `deleteAsset`/`deleteUser` are REST calls against assets and users; and chat deletion sends a
+    dedicated `delete_message` frame the server applies as an `Operation::Update` tombstone, not
+    a document Delete.) So no scene-entity delete UI exists to remove the junk template; it
+    persists until such a UI ships or a raw protocol Delete is sent. Cost is accumulating scene
+    and event-log clutter plus a confusing authoring experience.
   - **Fix shape:** make the two `sizeDir` call sites agree on a frame — either snap the pointer
     point alongside the anchor, or compare the raw pointer against the raw pointer-down point.
     Then add the extent guard its three siblings already carry. Belongs on the runtime follow-up
