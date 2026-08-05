@@ -89,10 +89,12 @@ Currently open, confirmed-real defects. Deferrals belong in `TODO.md`, not here.
   `sizeDir` (`:1098`, `:1107`). `sizeDir`'s fallback is `if (d < 1) return { size: cell,
   direction: 0 }` (`:1061`), with `d` the distance between those two points — so it fires only
   when the click lands within one scene unit of the snapped anchor. `Grid.snap` returns the cell
-  CENTER (`src/client/render/src/grid.ts:61-66`), so an ordinary click sits some arbitrary
-  distance from the anchor, bounded by the cell's half-diagonal; it takes the normal branch and
-  yields `size = d`, an arbitrary template rather than the intended one-cell default. The
-  fallback is reachable only by a click landing almost exactly on the snap point.
+  CENTER on BOTH grid kinds (`src/client/render/src/grid.ts:61-69`), so an ordinary click sits
+  some arbitrary distance from the anchor, bounded by the cell's circumradius — the half-diagonal
+  on a square grid, and on a hex grid `GridSpec.size` itself, which IS the outer radius
+  (`grid.ts:13`). It takes the normal branch and yields `size = d`, an arbitrary template rather
+  than the intended one-cell default. The fallback is reachable only by a click landing almost
+  exactly on the snap point.
   - **This is a defect, not a missing feature.** The `d < 1` branch exists precisely to turn a
     click into a real default-sized template rather than a degenerate one; it was written assuming
     both points share a coordinate frame. Mixing a snapped anchor with a raw pointer defeats its
@@ -101,11 +103,16 @@ Currently open, confirmed-real defects. Deferrals belong in `TODO.md`, not here.
     extent guard on persist. `makeDrawTool` gates on `hasExtent` (`:990`), `makeWallTool` on a
     `>= 1` length check (`:299`), `makeRegionTool` at `:363-365`.
   - **Reachability/impact:** GM-only (the `template` tool is `gmOnly`) and non-destructive — no
-    data loss and no authz effect. Impact is nonetheless persistent: no client code anywhere
-    constructs a `delete` operation (repo-wide, `op: "delete"` outside tests exists only in the
-    receive-side wire schema and store applier), so no scene-entity delete UI exists to remove
-    the junk template. It persists until such a UI ships or a raw protocol Delete is sent. Cost
-    is accumulating scene and event-log clutter plus a confusing authoring experience.
+    data loss and no authz effect. Impact is nonetheless persistent: **no client code anywhere
+    constructs an `Operation` with `op: "delete"`.** Outside tests that variant appears in the
+    client only on the RECEIVE side — the Zod wire schema (`src/client/core/src/wire.ts:192`) and
+    `applyOperation`'s `case "delete"` (`src/client/core/src/store.ts:178-180`) — with no
+    dispatch-side counterpart. (Neighbouring `delete` names sit on other axes and are not
+    counterexamples: `merge.ts`'s `kind: "delete"` is a template-merge field op, and
+    `deleteAsset`/`deleteUser` are REST calls against assets and users, not documents.) So no
+    scene-entity delete UI exists to remove the junk template; it persists until such a UI ships
+    or a raw protocol Delete is sent. Cost is accumulating scene and event-log clutter plus a
+    confusing authoring experience.
   - **Fix shape:** make the two `sizeDir` call sites agree on a frame — either snap the pointer
     point alongside the anchor, or compare the raw pointer against the raw pointer-down point.
     Then add the extent guard its three siblings already carry. Belongs on the runtime follow-up
