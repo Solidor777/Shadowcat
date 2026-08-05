@@ -104,13 +104,13 @@
 
   /** The clickable href for a `link_preview` card, or `undefined` to render it non-clickable.
    * The server only ever stores an `http`/`https` preview URL: `validate_url`
-   * (src/server/src/chat/link_preview.rs:705-728, re-run on every redirect hop) rejects any
-   * other scheme before a `LinkPreview` is ever constructed (`:684-691`). This function does
+   * (src/server/src/chat/link_preview.rs:705-728) rejects any other scheme, and is called on
+   * both the initial URL (`:627`) and every redirect hop's resolved `Location` (`:648`), before
+   * a `LinkPreview` is ever constructed (`:684-691`). This function does
    * not trust that invariant across the wire boundary and independently re-checks the scheme —
    * a stored `javascript:`/`data:` URL (from a future path bypassing `fetch_preview`, or a
-   * serialization bug) must never become a live anchor: Svelte escapes an interpolated
-   * attribute VALUE (preventing quote/attribute breakout) but performs no scheme filtering on a
-   * dynamic `href` at runtime, so this check is the only thing standing between a bad stored
+   * serialization bug) must never become a live anchor: Svelte performs no scheme filtering on
+   * a dynamic `href` at runtime, so this check is the only thing standing between a bad stored
    * URL and a live link.
    * @param url The stored preview URL.
    * @returns `url` when its scheme is `http:`/`https:`, else `undefined`.
@@ -168,7 +168,8 @@
   // The two explicit roll-command prefixes `chat::parse_command` accepts via its
   // `for tok in ["/roll ", "/r "]` loop (src/server/src/chat/commands.rs:39-46) — exact,
   // case-sensitive match, same trailing space on each. The server ALSO accepts a bare `/NdM`
-  // shorthand as a separate roll-triggering form (commands.rs:48-56, matched via
+  // shorthand as a separate roll-triggering form (src/server/src/chat/commands.rs:48-56,
+  // matched via
   // `strip_prefix('/')` + `is_dice_shorthand`, not this loop) — omitted here on purpose, so a
   // bare `/NdM` matches neither entry and `rollFormula` below displays it verbatim (leading
   // slash included) rather than stripping a prefix. This is a display-scope statement about
