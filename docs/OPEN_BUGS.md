@@ -114,7 +114,7 @@ Currently open, confirmed-real defects. Deferrals belong in `TODO.md`, not here.
     server executes a client-sent Delete, which is exactly what makes the raw-protocol escape
     below real. That path is `Room::publish` → `apply_intent` (`src/server/src/ws/room.rs:426`),
     whose `Operation::Delete` arm authorizes against the stored doc under `cap::DELETE`
-    (`src/server/src/data/sqlite.rs:2147-2167`) and then executes via `delete_document_tx`
+    (`src/server/src/data/sqlite.rs:2147-2168`) and then executes via `delete_document_tx`
     (`:2382`). Do NOT cite `apply_command`'s Delete arms for this: no client frame reaches
     `apply_command`, which is the trusted undo/replay substrate and deliberately does not
     capability-check descendants (`sqlite.rs:1859-1863`). The gap is that nothing in the
