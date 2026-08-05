@@ -510,3 +510,32 @@ are observations awaiting triage, not committed work.
   Sweep 11 whole-branch code review; out of scope there (different package, and Sweep 11
   is comment-only in `src/modules`). Status: Needs Review — resolve when a sweep reaches
   `src/client/render`, or sooner if movement playback is touched.
+
+- Title: `redeem` has no network-exception path, unlike its three sibling handlers.
+  Summary: `src/modules/entry/src/views/WorldSelect.svelte`'s `refresh`, `create` and
+  `confirmDelete` each wrap their work in a bare `catch {}`, which absorbs BOTH an HTTP
+  rejection and a network-level `fetch` failure. `redeem` has no `try`/`catch` at all: it
+  relies on `acceptInvite` collapsing every HTTP rejection to `null`
+  (`src/modules/entry/src/entryApi.ts`), which is correct and deliberate for the no-oracle
+  property. But `postJson` (`entryApi.ts:33-39`) does not catch its own `fetch`, and
+  `acceptInvite` does not catch either — so an offline/DNS failure rejects and propagates
+  out of the submit handler as an unhandled rejection, showing the user nothing, where the
+  other three would have shown their generic error. Reachability: any invite redemption
+  attempted while the network is down. Pre-existing; not introduced by Docs Sweep 12, which
+  is comment-only. The doc comment now states the gap explicitly rather than implying
+  `redeem` is exception-safe. Status: Needs Review — a runtime fix (wrap `redeem`, or catch
+  inside `acceptInvite`) belongs on the runtime follow-up branch, not in a docs sweep.
+
+- Title: Client and server enumerate the invite-rejection cases as five vs six.
+  Summary: `src/modules/entry/src/entryApi.ts`'s `acceptInvite` doc lists five rejection
+  categories ("unknown, malformed, expired, revoked, already used"); the server's own doc at
+  `src/server/src/http/routes.rs:829-830` lists six, treating "wrong secret" (a known invite
+  id with a non-matching secret) as distinct from "unknown" (no such invite id). Not a false
+  claim: both are caller-indistinguishable, so "unknown" is a defensible abstraction rather
+  than an omission — and the code makes that stronger than the prose does, since
+  `record.filter(|_| verified)` (`routes.rs:884`) collapses BOTH conditions into a single
+  `AppError::NotFound` branch, so no separate path exists that could leak the difference.
+  Found by the Task 4 spec review, which noted the report's verification step quoted the
+  server's six-item list and never reconciled it against the five-item client prose it had
+  decided to leave verbatim. Status: No action needed — recorded so the asymmetry is not
+  rediscovered as a defect.

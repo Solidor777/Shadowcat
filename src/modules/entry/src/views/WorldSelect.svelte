@@ -108,13 +108,17 @@
 
   /**
    * Handle the invite-redemption form submit. Unlike `refresh`/`create`/
-   * `confirmDelete`, this has no `try`/`catch` — there is no thrown message
-   * to discard, because `acceptInvite` already collapses every rejection
-   * (unknown, malformed, expired, revoked, already used) to `null` one layer
-   * down (`../entryApi.ts`; that function's doc comment is the statement of
-   * record for the no-oracle rationale). The generic error shown here
-   * (`worlds.errorRedeem`) reflects that collapse — it is not a choice this
+   * `confirmDelete`, this has no `try`/`catch`: `acceptInvite` collapses every
+   * HTTP-level rejection to `null` one layer down, so there is no thrown
+   * message to discard. See `../entryApi.ts`'s `acceptInvite` doc — the
+   * statement of record for the no-oracle rationale, and the only place that
+   * enumerates the rejection cases. The generic error shown here
+   * (`worlds.errorRedeem`) reflects that collapse; it is not a choice this
    * function makes.
+   *
+   * A network-level `fetch` rejection is NOT covered: neither `postJson` nor
+   * `acceptInvite` catches one, so it propagates out of this handler as an
+   * unhandled rejection — where the three `catch` paths above would absorb it.
    * @param e The form's submit event.
    * @example
    * ```

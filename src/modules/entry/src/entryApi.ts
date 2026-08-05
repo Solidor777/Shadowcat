@@ -90,8 +90,10 @@ export async function login(username: string, password: string): Promise<boolean
 /**
  * Bootstrap the very first admin account. Only reachable while the server is
  * uninitialized; `token` is required only when the server's setup-token
- * policy demands one (not the case on a loopback-only bind), and is omitted
- * from the request body entirely when not supplied.
+ * policy demands one, and is omitted from the request body entirely when not
+ * supplied. Under the DEFAULT `auto` policy a loopback-only bind needs no
+ * token, but `setup_token: "required"` demands one on every bind including
+ * loopback (`src/server/src/config.rs:349-361`, `setup_token_policy`).
  * @param username The new admin account's username.
  * @param password The new admin account's password.
  * @param token The setup token, when the server requires one.
@@ -102,7 +104,7 @@ export async function login(username: string, password: string): Promise<boolean
  * @example
  * ```
  * // module-private; not part of the public API
- * const { ok, status } = await setup("admin", "hunter2");
+ * const { ok, status } = await setup("MOCK_ADMIN", "MOCK_PASSWORD");
  * ```
  */
 export async function setup(
@@ -174,6 +176,12 @@ export async function createWorld(name: string): Promise<WorldEntry> {
  * one indistinguishable 404 by design, so the caller learns nothing about a
  * world they hold no valid code for. Callers must surface a single generic
  * failure rather than trying to explain which case it was.
+ *
+ * Server proof: both rejection paths return `AppError::NotFound`
+ * (`src/server/src/http/routes.rs:884-885` and `:897-898`), which maps to 404
+ * at `src/server/src/http/error.rs:73`. The first of those collapses "no such
+ * invite" and "wrong secret" into ONE branch (`record.filter(|_| verified)`),
+ * so the two are indistinguishable by construction, not by discipline.
  * @param code The invite's bearer code.
  * @returns The redeemed world on success, or `null` on any rejection
  * (collapsed at this layer — see the description above).
