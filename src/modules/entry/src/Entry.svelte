@@ -17,6 +17,18 @@
   type Step = "loading" | "setup" | "login" | "worlds";
   let step = $state<Step>("loading");
 
+  /**
+   * Decide which entry step to render on load: `setup` when the server has
+   * no admin yet, `worlds` when an identity probe finds an authenticated
+   * session, else `login`. A transient probe failure (network error, or a
+   * non-2xx other than 401) falls to `login` rather than leaving the view on
+   * `loading`.
+   * @example
+   * ```
+   * // module-private; not part of the public API — invoked once at mount
+   * decideStart();
+   * ```
+   */
   async function decideStart() {
     try {
       const cfg = await getConfig();
@@ -33,11 +45,19 @@
   }
   decideStart();
 
+  /**
+   * Advance out of `login` once the shell has confirmed the session: `worlds`
+   * on success, back to `login` on a failed identity fetch — a transient
+   * failure must not strand the caller on a world-select it can't use.
+   * @example
+   * ```
+   * // module-private; not part of the public API — passed to <Login onAuthed>
+   * afterLogin();
+   * ```
+   */
   async function afterLogin() {
-    // Let the shell fetch identity + apply saved session state (locale) before
-    // world-select renders, mirroring the pre-split boot order. A failed identity
-    // fetch returns to login (the old afterAuth `me ? "worlds" : "login"` recovery),
-    // so a transient failure can't strand the user on a world-select they can't use.
+    // Awaiting onAuthenticated lets the shell fetch identity and apply saved
+    // session state (locale) before world-select renders.
     step = (await onAuthenticated()) ? "worlds" : "login";
   }
 </script>

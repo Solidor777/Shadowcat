@@ -9,6 +9,17 @@
   let error = $state("");
   let busy = $state(false);
 
+  /**
+   * Handle the setup form submit: bootstrap the first admin account, then
+   * advance on success or show an inline error on failure — a 403 (bad or
+   * missing setup token) gets a distinct message from any other failure.
+   * @param e The form's submit event.
+   * @example
+   * ```
+   * // module-private; not part of the public API — bound to <form onsubmit>
+   * submit(event);
+   * ```
+   */
   async function submit(e: SubmitEvent) {
     e.preventDefault();
     busy = true;

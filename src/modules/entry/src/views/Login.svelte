@@ -8,6 +8,16 @@
   let error = $state(false);
   let busy = $state(false);
 
+  /**
+   * Handle the login form submit: authenticate, then notify the parent on
+   * success or show an inline error on failure.
+   * @param e The form's submit event.
+   * @example
+   * ```
+   * // module-private; not part of the public API — bound to <form onsubmit>
+   * submit(event);
+   * ```
+   */
   async function submit(e: SubmitEvent) {
     e.preventDefault();
     busy = true;

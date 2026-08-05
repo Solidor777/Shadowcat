@@ -12,12 +12,39 @@
   let deleteName = $state("");
   let deleting = $state(false);
 
+  /**
+   * Toggle `id`'s type-the-exact-name delete-confirmation row: disarms it if
+   * already armed, otherwise arms it (replacing any other world's armed row —
+   * only one confirmation row is open at a time). Clears the typed name and
+   * any error either way.
+   * @param id The world id whose delete-confirmation row is being toggled.
+   * @example
+   * ```
+   * // module-private; not part of the public API — bound to the delete button
+   * armDelete(world.id);
+   * ```
+   */
   function armDelete(id: string) {
     confirmingDelete = confirmingDelete === id ? null : id;
     deleteName = "";
     error = "";
   }
 
+  /**
+   * Delete `world`, guarded by two independent legs: the typed name must
+   * match `world.name` exactly (`deleteName`, armed by `armDelete`), AND
+   * `deleting` re-entrancy-guards against a second submit while the request
+   * is in flight. Either leg failing is a silent no-op — this is the only
+   * confirmation guard in the delete path; `deleteWorld` itself performs
+   * none. On failure, the thrown message is discarded in favor of a generic
+   * error (`worlds.errorDelete`).
+   * @param world The world to delete, matched against the typed confirmation.
+   * @example
+   * ```
+   * // module-private; not part of the public API — bound to the confirm form
+   * confirmDelete(world);
+   * ```
+   */
   async function confirmDelete(world: WorldEntry) {
     if (deleteName !== world.name || deleting) return;
     deleting = true;
@@ -34,6 +61,17 @@
     }
   }
 
+  /**
+   * (Re)load the world list. On failure, the thrown message is discarded in
+   * favor of a generic error (`worlds.errorLoad`); `worlds` is left at its
+   * previous value.
+   * @example
+   * ```
+   * // module-private; not part of the public API — called on mount and after
+   * // create/delete/redeem
+   * refresh();
+   * ```
+   */
   async function refresh() {
     try {
       worlds = await listWorlds();
@@ -43,6 +81,17 @@
   }
   refresh();
 
+  /**
+   * Handle the create-world form submit: create the world, refresh the list,
+   * then enter it. On failure, the thrown message is discarded in favor of a
+   * generic error (`worlds.errorCreate`).
+   * @param e The form's submit event.
+   * @example
+   * ```
+   * // module-private; not part of the public API — bound to <form onsubmit>
+   * create(event);
+   * ```
+   */
   async function create(e: SubmitEvent) {
     e.preventDefault();
     if (!newName.trim()) return;
@@ -57,9 +106,22 @@
     }
   }
 
-  // Redeeming seats the caller in the invite's world. The server answers every
-  // unusable code identically, so this reports one generic failure — inferring
-  // a reason would re-create the oracle the invite flow exists to remove.
+  /**
+   * Handle the invite-redemption form submit. Unlike `refresh`/`create`/
+   * `confirmDelete`, this has no `try`/`catch` — there is no thrown message
+   * to discard, because `acceptInvite` already collapses every rejection
+   * (unknown, malformed, expired, revoked, already used) to `null` one layer
+   * down (`../entryApi.ts`; that function's doc comment is the statement of
+   * record for the no-oracle rationale). The generic error shown here
+   * (`worlds.errorRedeem`) reflects that collapse — it is not a choice this
+   * function makes.
+   * @param e The form's submit event.
+   * @example
+   * ```
+   * // module-private; not part of the public API — bound to <form onsubmit>
+   * redeem(event);
+   * ```
+   */
   async function redeem(e: SubmitEvent) {
     e.preventDefault();
     if (!inviteCode.trim()) return;
