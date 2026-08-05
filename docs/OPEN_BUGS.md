@@ -84,15 +84,17 @@ Currently open, confirmed-real defects. Deferrals belong in `TODO.md`, not here.
 
 - **`makeTemplateTool`'s near-zero-drag fallback effectively never fires in a snapping scene, so a
   plain click places an arbitrarily-sized template instead of the intended one-cell default.**
-  `onPointerDown` snaps the anchor (`src/modules/scene-tools/src/controller.svelte.ts:1097`,
+  `onPointerDown` snaps the anchor (`src/modules/scene-tools/src/controller.svelte.ts:1100`,
   `anchor = ctx.scene.snap(p)`) but `onPointerMove`/`onPointerUp` pass the RAW pointer point to
-  `sizeDir` (`:1103`, `:1112`). `sizeDir`'s fallback is `if (d < 1) return { size: cell,
-  direction: 0 }` (`:1065`), with `d` the distance between those two points — so it fires only
+  `sizeDir` (`:1106`, `:1115`). `sizeDir`'s fallback is `if (d < 1) return { size: cell,
+  direction: 0 }` (`:1068`), with `d` the distance between those two points — so it fires only
   when the click lands within one scene unit of the snapped anchor. `Grid.snap` returns the cell
   CENTER on BOTH grid kinds (`src/client/render/src/grid.ts:61-69`), so an ordinary click sits
-  some arbitrary distance from the anchor, bounded by the cell's circumradius — the half-diagonal
-  on a square grid, and on a hex grid `GridSpec.size` itself, which IS the outer radius
-  (`grid.ts:13`). It takes the normal branch and yields `size = d`, an arbitrary template rather
+  some arbitrary distance from the anchor — for a click that presses and releases within one
+  cell, bounded by that cell's circumradius, which is the half-diagonal on a square grid and on a
+  hex grid `GridSpec.size` itself, the outer radius (`grid.ts:13`); enough pointer jitter to
+  cross a cell boundary exceeds it. It takes the normal branch and yields `size = d`, an
+  arbitrary template rather
   than the intended one-cell default. The fallback is reachable only by a click landing almost
   exactly on the snap point.
   - **This is a defect, not a missing feature.** The `d < 1` branch exists precisely to turn a
@@ -100,7 +102,7 @@ Currently open, confirmed-real defects. Deferrals belong in `TODO.md`, not here.
     both points share a coordinate frame. Mixing a snapped anchor with a raw pointer defeats its
     own stated purpose.
   - **Sibling divergence:** `makeTemplateTool` is the only one of the four authoring tools with no
-    extent guard on persist. `makeDrawTool` gates on `hasExtent` (`:994`), `makeWallTool` on a
+    extent guard on persist. `makeDrawTool` gates on `hasExtent` (`:997`), `makeWallTool` on a
     `>= 1` length check (`:299`), `makeRegionTool` at `:363-365`.
   - **Reachability/impact:** GM-only (the `template` tool is `gmOnly`) and non-destructive — no
     data loss and no authz effect. Impact is nonetheless persistent: **no client code anywhere
@@ -112,10 +114,15 @@ Currently open, confirmed-real defects. Deferrals belong in `TODO.md`, not here.
     server executes a client-sent Delete (`src/server/src/data/sqlite.rs:1867,1909,2147`), which
     is exactly what makes the raw-protocol escape below real. The gap is that nothing in the
     client ever CONSTRUCTS one. (Neighbouring `delete` names sit on other axes and are not
-    counterexamples: `merge.ts`'s `kind: "delete"` is a template-merge field op;
-    `deleteAsset`/`deleteUser` are REST calls against assets and users; and chat deletion sends a
-    dedicated `delete_message` frame the server applies as an `Operation::Update` tombstone, not
-    a document Delete.) So no scene-entity delete UI exists to remove the junk template; it
+    counterexamples. Nearest first: chat's Delete button is the one user-facing document delete
+    in the client, and it sends a dedicated `delete_message` frame the server applies as an
+    `Operation::Update` tombstone, explicitly not a hard `Operation::Delete`
+    (`src/server/src/chat/mod.rs:986-988`); `sheetEdit.ts:36` dispatches `{ op: "update", …,
+    remove: true }`, a `FieldChange`-axis key removal, not a document Delete;
+    `deleteAsset`/`deleteUser`/`deleteWorld` are REST calls against assets, users and worlds;
+    `merge.ts`'s `kind: "delete"` is a template-merge field op; and `deletePointer`/
+    `removePointer` are pure JSON-pointer helpers.) So no scene-entity delete UI exists to
+    remove the junk template; it
     persists until such a UI ships or a raw protocol Delete is sent. Cost is accumulating scene
     and event-log clutter plus a confusing authoring experience.
   - **Fix shape:** make the two `sizeDir` call sites agree on a frame — either snap the pointer

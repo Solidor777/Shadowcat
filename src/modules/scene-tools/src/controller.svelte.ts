@@ -760,10 +760,13 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
    * owns `committing` + teardown, so calling `finish()` here would release that LIVE commit's
    * guard and teardown out from under it — `finish()` calls `clearRoute()`, which does
    * `pendingSeq++`, so the newer commit's captured `seq` stops matching and its own settle
-   * silently becomes a no-op. Its `moveRequest` is already in flight and still executes
-   * server-side; what is lost is client-side ownership — `committing` drops while the request is
-   * outstanding, so `onPointerDown`'s `committing` guard no longer blocks a second
-   * `commitRoute`, and the overlay and waypoints are torn down early. This ensures
+   * silently becomes a no-op. What that costs the newer commit depends on the phase it was in:
+   * if it had already reached `sendRequest`, its `moveRequest` stays in flight and still
+   * executes server-side; if it was still mid-pathfind, its own resolve returns early at the
+   * same staleness check, BEFORE `sendRequest`, so no `moveRequest` is ever sent and the move
+   * simply does not happen. Either way the client loses ownership — `committing` drops while a
+   * request may still be outstanding, so `onPointerDown`'s `committing` guard no longer blocks a
+   * second `commitRoute`, and the overlay and waypoints are torn down early. This ensures
    * pointer-up (which calls `clearRoute` in non-committing paths) cannot bump `pendingSeq`
    * between commit start and the async resolve, keeping `seq === pendingSeq` true so the
    * commit proceeds.
