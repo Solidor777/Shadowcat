@@ -15,7 +15,7 @@ export type ChatReadState = Record<string, ReadMarker>;
 /**
  * True when `doc` is strictly newer than `marker` (or there is no marker at
  * all): the same created_at-then-id ordering rule as `channels.ts`'s
- * `byCreation` (src/modules/chat/src/channels.ts:73) — verified condition by
+ * `byCreation` (src/modules/chat/src/channels.ts:75) — verified condition by
  * condition, `doc.created_at > marker.createdAt`, or on a tie
  * `doc.id > marker.id`, is exactly the "greater than zero" reading of
  * `byCreation`'s tuple comparison. The two differ only in shape:
@@ -44,10 +44,11 @@ function isAfter(doc: WireDocument, marker: ReadMarker | undefined): boolean {
  * message the store currently holds — NOT scoped to whichever channel view
  * is on screen, since the tab-level badge represents "unread anywhere in
  * chat", independent of the panel's own internal view switch. Excludes the
- * reading user's own posts (never "unread" to their author); `markAllRead`
- * below does not apply this exclusion, since a channel's read frontier only
- * needs to be the newest KNOWN message, not the newest one authored by
- * someone else.
+ * reading user's own posts (never "unread" to their author,
+ * src/modules/chat/src/unread.ts:66); `markAllRead` below
+ * (src/modules/chat/src/unread.ts:84-93) does not apply this exclusion,
+ * since a channel's read frontier only needs to be the newest KNOWN
+ * message, not the newest one authored by someone else.
  * @param messages Every message doc the store currently holds.
  * @param read The current per-channel read frontier.
  * @param selfId The reading user's id, to exclude their own posts.

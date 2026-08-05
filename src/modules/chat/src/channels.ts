@@ -6,8 +6,10 @@
 // message already present in this client's store regardless of audience; the GM
 // view further filters on `audience.kind === "gm_only"`. This filtering is NOT a
 // secrecy boundary — a player's store never held a `gm_only` message it wasn't a
-// recipient of in the first place, because redaction is per-recipient and
-// server-side, applied before broadcast.
+// recipient of in the first place: redaction is per-recipient, filtering each
+// connection's outgoing frame individually rather than in one shared pre-fan-out
+// pass (`send_filtered`, src/server/src/ws/conn.rs:160-162; the general rule,
+// docs/design/ARCHITECTURE.md:27).
 import { parseMessageEngine, type ChatMessageEngine, type WireAudience, type WireDocument } from "@shadowcat/core";
 
 export type ChatView = { kind: "all" } | { kind: "channel"; id: string } | { kind: "gm" };
@@ -38,9 +40,9 @@ export function postTarget(view: ChatView): { channel: string; audience: WireAud
  * is the one case that checks `audience` instead of `channel`. This is a
  * display filter over documents this client already has, not a security
  * check — the server, via the `PermissionSet` `build_message_doc` attaches
- * to the doc (src/server/src/chat/mod.rs:299-311) and the generic
- * per-recipient redaction path that enforces it, is what keeps a `gm_only`
- * or `whisper` message out of a non-recipient's store to begin with.
+ * to the doc (src/server/src/chat/mod.rs:299-311), is what keeps a
+ * `gm_only` or `whisper` message out of a non-recipient's store to begin
+ * with.
  * @param view The chat view being rendered.
  * @param sys The message's parsed engine body.
  * @returns `true` if `sys` should be shown in `view`.

@@ -71,14 +71,15 @@ export class ChatUnreadBadge implements PanelBadge {
 
 /**
  * Module-singleton: `index.ts` contributes it as the chat panel's
- * `PanelMeta.badge`; `ChatPanel.svelte` (same module, :63) is the only
+ * `PanelMeta.badge`; `src/modules/chat/src/ChatPanel.svelte:63` is the only
  * production writer (verified: `.set(` has no other call site in this
  * package outside test files). Its subscribers are whichever
  * `PanelTabRenderer`s are currently mounted for this tab
  * (src/modules/panels/src/engine/dockview.ts:308); each disposes its own
- * subscription in its own `dispose()` (dockview.ts:405-408), so a tab
- * close/reopen does not accumulate listeners here as long as dockview-core
- * calls that lifecycle hook on every teardown — a third-party guarantee this
- * file does not itself enforce or verify.
+ * subscription in its own `dispose()`
+ * (src/modules/panels/src/engine/dockview.ts:405-408), so a tab close/reopen
+ * does not accumulate listeners here as long as dockview-core calls that
+ * lifecycle hook on every teardown — a third-party guarantee this file does
+ * not itself enforce or verify.
  */
 export const chatUnreadBadge = new ChatUnreadBadge();
