@@ -94,9 +94,8 @@ Currently open, confirmed-real defects. Deferrals belong in `TODO.md`, not here.
   cell, bounded by that cell's circumradius, which is the half-diagonal on a square grid and on a
   hex grid `GridSpec.size` itself, the outer radius (`grid.ts:13`); a release outside the press
   cell is not bounded by it at all. It takes the normal branch and yields `size = d`, an
-  arbitrary template rather
-  than the intended one-cell default. The fallback is reachable only by a click landing almost
-  exactly on the snap point.
+  arbitrary template rather than the intended one-cell default. The fallback is reachable only
+  by a click landing almost exactly on the snap point.
   - **This is a defect, not a missing feature.** The `d < 1` branch exists precisely to turn a
     click into a real default-sized template rather than a degenerate one; it was written assuming
     both points share a coordinate frame. Mixing a snapped anchor with a raw pointer defeats its
