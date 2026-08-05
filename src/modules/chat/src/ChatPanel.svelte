@@ -62,16 +62,31 @@
   $effect(() => {
     chatUnreadBadge.set(unreadCount);
   });
-  /** Snapshots every message the store currently holds as read, and persists
+  /**
+   * Snapshots every message the store currently holds as read, and persists
    * it. Called whenever the panel is confirmed visible — both on a message
    * arriving while already visible and on a hidden→visible reveal (the
    * IntersectionObserver effect below), so a reader actively looking at the
-   * tab never accumulates a stale unread count. */
+   * tab never accumulates a stale unread count.
+   * @example
+   * ```
+   * // private function; not part of the public API — invoked from the
+   * // visibility $effect below and the IntersectionObserver reveal handler
+   * markRead();
+   * ```
+   */
   function markRead(): void {
     const next = markAllRead(ctx.documents.query("message"));
     readState = next;
     ctx.uiState.setChatRead(next);
   }
+  // This effect never READS `readState` — it only calls `markRead()`, which
+  // writes it — so Svelte's dependency tracking (re-runs only on values read
+  // during the callback: `subscribe()`, `ctx.documents.query("message")`,
+  // `container`, `isVisible(container)`) never re-triggers this same effect
+  // from its own write. `unreadCount` DOES read `readState` and recomputes
+  // when `markRead()` runs, but `unreadCount` is a separate `$derived`, not a
+  // dependency of this effect, so no cycle forms.
   $effect(() => {
     subscribe();
     ctx.documents.query("message");
@@ -91,10 +106,21 @@
     return Object.entries(sys?.channels ?? {}).filter((e): e is [string, { name: string }] => e[1] != null);
   });
 
-  // Composer placeholder contract is the CHANNEL's display name ("Message
-  // #General"), never the sender's own username — look the post-target channel
-  // id up in the registry, falling back to the raw id when unregistered (e.g.
-  // "general" before the GM has ever opened the editor, or a legacy channel).
+  /**
+   * Composer placeholder contract is the CHANNEL's display name ("Message
+   * #General"), never the sender's own username — look the post-target
+   * channel id up in the registry, falling back to the raw id when
+   * unregistered (e.g. "general" before the GM has ever opened the editor,
+   * or a legacy channel).
+   * @param channelId The post-target channel id (see `postTarget` in `./channels`).
+   * @returns The channel's registered display name, or `channelId` itself when unregistered.
+   * @example
+   * ```
+   * // private function; not part of the public API — invoked from the
+   * // composer slot below
+   * channelDisplayName("general");
+   * ```
+   */
   function channelDisplayName(channelId: string): string {
     return channelEntries.find(([id]) => id === channelId)?.[1].name ?? channelId;
   }
@@ -102,6 +128,10 @@
   // GM registry seed (FactionsPanel idiom): reactive subscribe() inside the
   // $effect so a panel mounted before resync populates the store still seeds
   // exactly once, whether the store was empty at mount or fills in later.
+  // `seeded` is set true BEFORE dispatchIntent runs in both branches below,
+  // so the seed is once-only per mount even if the dispatch fails — a failed
+  // seed is not retried within this mount (only on a fresh mount, when
+  // `seeded` re-initializes to false).
   let seeded = false;
   $effect(() => {
     if (ctx.role !== "gm" || seeded) return;
@@ -116,6 +146,17 @@
 
   let editing = $state(false);
   let newChannelName = $state("");
+  /**
+   * GM channel editor: appends a new channel entry under a fresh random id,
+   * named from the trimmed `newChannelName` input (or a placeholder name if
+   * left empty), then clears the input.
+   * @example
+   * ```
+   * // private function; not part of the public API — invoked from the
+   * // editor's "Add" button
+   * addChannel();
+   * ```
+   */
   function addChannel(): void {
     if (!registry) return;
     const id = crypto.randomUUID();
@@ -123,6 +164,18 @@
     ctx.dispatchIntent([{ op: "update", doc_id: registry.id, changes: [{ path: `/engine/channels/${id}`, old: null, new: { name } }] }]);
     newChannelName = "";
   }
+  /**
+   * GM channel editor: renames one channel entry in place, patching only
+   * `name` and preserving the rest of the entry (`cur`) unchanged.
+   * @param id The channel's registry key to rename.
+   * @param name The new display name.
+   * @example
+   * ```
+   * // private function; not part of the public API — invoked from each
+   * // editor row's name input
+   * renameChannel("general", "General");
+   * ```
+   */
   function renameChannel(id: string, name: string): void {
     if (!registry) return;
     const sys = registry.engine as ChannelRegistryEngine;
@@ -130,15 +183,34 @@
     if (!cur) return;
     ctx.dispatchIntent([{ op: "update", doc_id: registry.id, changes: [{ path: `/engine/channels/${id}`, old: cur, new: { ...cur, name } }] }]);
   }
+  /**
+   * GM channel editor: removes a channel entry from the registry, and — if
+   * that channel was the active view — falls back to the "All" view so the
+   * panel doesn't keep pointing at a channel that no longer exists.
+   * @param id The channel's registry key to remove.
+   * @example
+   * ```
+   * // private function; not part of the public API — invoked from each
+   * // editor row's remove button
+   * removeChannel("general");
+   * ```
+   */
   function removeChannel(id: string): void {
     if (!registry) return;
     const sys = registry.engine as ChannelRegistryEngine;
     const cur = sys.channels[id];
     if (!cur) return;
     if (view.kind === "channel" && view.id === id) view = { kind: "all" };
-    // Whole-field replace (FactionsPanel idiom): set_pointer cannot delete an
-    // object key, so genuine removal means dispatching the full map minus the
-    // removed key as one update on the parent path, OCC pre-image included.
+    // Whole-field replace (FactionsPanel idiom, see FactionsPanel.svelte's
+    // own `remove`): set_pointer cannot delete an object key
+    // (src/server/src/data/command.rs:277-332, `set_pointer` only ever
+    // inserts/replaces a key, never removes one), so this dispatches the
+    // full channel map minus the removed key as one update on the parent
+    // path, OCC pre-image included. A single-key remove is also available
+    // server-side (`FieldChange.remove` + `remove_pointer`,
+    // src/server/src/data/command.rs:363) via the client dispatcher
+    // `unsetField` (src/client/ui-kit/src/sheetEdit.ts:35) — not what this
+    // function uses.
     const next = { ...sys.channels };
     delete next[id];
     ctx.dispatchIntent([{ op: "update", doc_id: registry.id, changes: [{ path: "/engine/channels", old: sys.channels, new: next }] }]);
@@ -179,6 +251,18 @@
   let scrollTop = $state(0);
   let clientHeight = $state(0);
   let scrollHeight = $state(0);
+  /**
+   * Re-measures the messages container's scroll geometry into
+   * `scrollTop`/`clientHeight`/`scrollHeight` — the only writer of those
+   * three `$state` values (see the comment above them) — so the virtualized
+   * window below stays derived from real, current measurements.
+   * @example
+   * ```
+   * // private function; not part of the public API — invoked from
+   * // checkAtBottom, scrollToBottom, and the mount/visibility effects below
+   * syncScrollState();
+   * ```
+   */
   function syncScrollState(): void {
     if (!container) return;
     scrollTop = container.scrollTop;
@@ -191,15 +275,40 @@
   // narrows what's actually placed in the DOM within that bound.
   const windowed = $derived.by(() => computeVisibleWindow(scrollTop, clientHeight, scrollHeight, visibleDocs.length));
   const windowedDocs = $derived.by(() => visibleDocs.slice(windowed.start, windowed.end));
-  // Spacer heights approximate real row height from the measured scrollHeight
-  // so the scrollbar's proportion/position stays stable as the window moves.
+  // Circular by construction, not a real average: scrollHeight includes the
+  // spacers THIS value sizes (below), so avgRowHeight measures the window's
+  // own current layout, not row content. Used only to keep the scrollbar's
+  // proportion/position stable as the window moves.
   const avgRowHeight = $derived.by(() => (visibleDocs.length > 0 && scrollHeight > 0 ? scrollHeight / visibleDocs.length : 0));
 
+  /**
+   * Recomputes `atBottom` from the container's current scroll geometry (a
+   * 4px slack tolerance for sub-pixel/rounding scroll positions) and
+   * refreshes scroll state via `syncScrollState`. Bound to the messages
+   * container's `onscroll` handler.
+   * @example
+   * ```
+   * // private function; not part of the public API — invoked from the
+   * // messages container's onscroll handler
+   * checkAtBottom();
+   * ```
+   */
   function checkAtBottom(): void {
     if (!container) return;
     syncScrollState();
     atBottom = container.scrollTop + container.clientHeight >= container.scrollHeight - 4;
   }
+  /**
+   * Scrolls the messages container to its current maximum `scrollTop`,
+   * re-syncs scroll state from that new position, marks `atBottom`, and
+   * clears the "new messages" pill and any pending deferred scroll.
+   * @example
+   * ```
+   * // private function; not part of the public API — invoked from the new
+   * // messages pill's click handler and the IntersectionObserver reveal
+   * scrollToBottom();
+   * ```
+   */
   function scrollToBottom(): void {
     if (!container) return;
     container.scrollTop = container.scrollHeight;
@@ -208,10 +317,30 @@
     showNewMessagesPill = false;
     pendingScrollToBottom = false;
   }
-  // Cheap display:none check: the panel host hides an inactive/compact-mode
-  // panel via `display: none` on an ancestor (never `{#if}`), which forces
-  // every descendant's offsetParent to null — the standard proxy for "this
-  // chat panel is not currently visible."
+  /**
+   * Cheap display:none check: the panel host hides an inactive or
+   * compact-mode-inactive panel via `display: none` on an ancestor — the
+   * `.staging` container a released slot returns to
+   * (`src/modules/panels/src/PanelHost.svelte:212-213,337,417-419`) — rather
+   * than unmounting it with `{#if}`; checked both `PanelHost.svelte` and
+   * `CompactSwitcher.svelte`, neither ever `{#if}`-removes a mounted panel
+   * slot. This forces every descendant's `offsetParent` to `null`, the proxy
+   * this function relies on. `offsetParent` is also `null` for a
+   * `position: fixed` element; neither `src/modules/panels`'s own styles nor
+   * the vendored `dockview-core` stylesheet declare `position: fixed`
+   * anywhere (checked both), so that alternate cause isn't reachable here
+   * today.
+   * @param el The element to test.
+   * @returns `true` if `el` is laid out (has an `offsetParent`), `false` if
+   * hidden via `display: none` on an ancestor.
+   * @example
+   * ```
+   * // private function; not part of the public API — invoked from the
+   * // visibility $effect (which gates markRead) and the message-count/
+   * // IntersectionObserver effects below
+   * isVisible(container);
+   * ```
+   */
   function isVisible(el: HTMLElement): boolean {
     return el.offsetParent !== null;
   }
