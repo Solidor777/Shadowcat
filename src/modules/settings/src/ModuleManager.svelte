@@ -52,14 +52,21 @@
    * (`installed.length === 0` in the markup below) a genuinely empty world
    * would show, distinguished only by that separate error line.
    *
-   * FINDING (reachability bounded; not fixed — this is a comment-only task):
-   * this shares the affordance-loss shape `InviteManager.refresh`'s
-   * `Promise.allSettled` choice documents guarding against — a GM who could
-   * still see and toggle modules from a successful `listInstalledModules()`
-   * loses that list because the unrelated `getEnabledModules(world)` read
-   * failed, or vice versa. Both are ordinary independent network calls and
-   * can fail without one implying the other did. Unlike `InviteManager`,
-   * nothing here applies the succeeding half.
+   * `Promise.all` is deliberate here, and must NOT be "harmonized" to
+   * `InviteManager.refresh`'s `Promise.allSettled`. The two reads are
+   * independent network calls but NOT independent state: `enabled` is the
+   * payload `save()` sends as a whole-set replace
+   * (`setEnabledModules(world, [...enabled])`, below). Applying a successful
+   * `listInstalledModules()` while `getEnabledModules(world)` failed would
+   * render every checkbox UNCHECKED beside a live Save button — and one click
+   * would persist that empty set, disabling every module in the world. Failing
+   * both together is what keeps a half-known state off the screen; losing the
+   * affordance is the cheaper half of that trade.
+   *
+   * `allSettled` is right in `InviteManager` for the opposite reason: its two
+   * reads feed two INDEPENDENT displays, so a surviving half is honestly
+   * renderable on its own. The difference is whether a partial result can be
+   * shown without asserting something false.
    * @returns Resolves once `installed`/`enabled`/`error`/`loaded` reflect
    *   the outcome; never rejects.
    * @example

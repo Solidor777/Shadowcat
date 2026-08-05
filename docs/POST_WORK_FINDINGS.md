@@ -539,3 +539,22 @@ are observations awaiting triage, not committed work.
   server's six-item list and never reconciled it against the five-item client prose it had
   decided to leave verbatim. Status: No action needed — recorded so the asymmetry is not
   rediscovered as a defect.
+
+- Title: `ModuleManager`'s `Promise.all` is correct — do not "harmonize" it to `Promise.allSettled`.
+  Summary: Docs Sweep 12 Task 5's Rule 11 pass compared failure handling across the three settings
+  panels and reported `src/modules/settings/src/ModuleManager.svelte`'s `load()` as sharing the
+  affordance-loss shape `InviteManager.refresh()`'s `Promise.allSettled` guards against. On
+  verification that conclusion is wrong, and the naive fix is destructive. The two reads
+  (`listInstalledModules()`, `getEnabledModules(world)`) are independent network calls but NOT
+  independent state: `enabled` is the payload `save()` sends as a whole-set replace
+  (`setEnabledModules(world, [...enabled])`). Under `Promise.all`, a failure of either leaves
+  `installed` empty, so the markup takes its `installed.length === 0` branch — no checkboxes, no
+  Save button, plus a visible error paragraph. Under `allSettled` with `listInstalledModules()`
+  succeeding and `getEnabledModules()` failing, the list would render with EVERY checkbox unchecked
+  beside a live Save button, and one click would persist the empty set, disabling every module in
+  the world. `InviteManager`'s `allSettled` is right for the opposite reason: its two reads feed two
+  independent displays, so a surviving half is honestly renderable alone. The distinguishing
+  question is whether a partial result can be shown without asserting something false — not whether
+  the two calls can fail independently. This closes the campaign's outstanding "ModuleManager
+  Promise.all, pending Task 5 confirmation" runtime follow-up item: confirmed NOT a defect, and the
+  code comment now carries the rationale so it is not re-litigated. Status: RESOLVED — no action.
