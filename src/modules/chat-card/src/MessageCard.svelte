@@ -20,8 +20,9 @@
   const ctx = getAppContext();
   const t = ctx.t;
 
-  // Fail-closed body parse (chat skill): a malformed/foreign-shaped `system` body renders
-  // nothing rather than a partially-broken card.
+  // Fail-closed body parse: `parseMessageEngine` (src/client/core/src/chat-docs.ts:164-168)
+  // returns null on a wrong doc_type or ANY schema-mismatched `engine` body, so a
+  // malformed/foreign-shaped body renders nothing rather than a partially-broken card.
   const sys = $derived(parseMessageEngine(message));
 
   const authorName = $derived(sys ? (ctx.members.get(sys.user_owner) ?? sys.user_owner.slice(0, 8)) : "");
@@ -29,18 +30,28 @@
   // Actor attribution: wraps the ActorOwnerRef in the same read-through every other
   // actor/token consumer uses (resolveTokenActor + actorDisplayName), so the OwnerOrGm
   // name-redaction and dangling-reference fail-closed behavior are inherited, not
-  // reimplemented here. `actor_owner.kind === "actor"` has no token to read, so a synthetic
-  // link-mode wrapper stands in for one; `token_instance` resolves the real placed token.
+  // reimplemented here — true for BOTH branches: `actor_owner.kind === "actor"` has no token
+  // to read, so a synthetic link-mode wrapper stands in for one (its `overrides: {}` is a
+  // verified no-op — `resolveTokenActor`/`project`, src/client/core/src/actor.ts:93-103 and
+  // :36-50, read only `engine.actor_id`/`engine.overrides` off the wrapper, and every
+  // `overrides?.X` on an empty object falls through to the real actor's own field); a
+  // `token_instance` ref resolves the real placed token through the identical function,
+  // unmodified.
   const actorName = $derived.by((): string | null => {
     const owner = sys?.actor_owner;
     if (!owner) return null;
     return resolveActorOwnerName(owner);
   });
 
-  // §5.4: the actor name becomes an openDocument link when the referenced document is
-  // present in the per-recipient optimistic store (⇒ this recipient has READ — server-side
-  // redaction withholds it otherwise). A `token_instance` ref opens the token (its embedded
-  // actor); an `actor` ref opens the actor doc. Absent ⇒ plain text, no link.
+  // The actor name becomes an openDocument link when the referenced document is present in
+  // the per-recipient OPTIMISTIC store (`ctx.documents` is the OptimisticClient view —
+  // src/client/core/src/optimistic.ts — base confirmed by the server, plus this client's own
+  // pending intents): normally presence implies READ, since server-side redaction withholds
+  // an unauthorized doc from `base` entirely, EXCEPT a doc present only via this client's own
+  // not-yet-confirmed `applyIntent` prediction (e.g. an actor this user just tried to create)
+  // hasn't cleared that check yet — the link briefly reflects the local guess until the
+  // confirm/reject echo settles. A `token_instance` ref opens the token (its embedded actor);
+  // an `actor` ref opens the actor doc. Absent ⇒ plain text, no link.
   const actorOpenRef = $derived.by((): { tokenId: string } | { docId: string } | null => {
     const owner = sys?.actor_owner;
     if (!owner) return null;
@@ -48,6 +59,17 @@
     return ctx.documents.get(owner.token_id) ? { tokenId: owner.token_id } : null;
   });
 
+  /** Resolves an `ActorOwnerRef` to its display name via the shared
+   * `resolveTokenActor`/`actorDisplayName` read-through (see `actorName` above for why both
+   * branches inherit the same redaction/fail-closed behavior).
+   * @param owner The message's `actor_owner` reference.
+   * @returns The resolved display name, or `null` for a dangling/unresolvable reference.
+   * @example
+   * ```
+   * // internal; call sites use the `actorName` derived above
+   * resolveActorOwnerName({ kind: "actor", actor_id: "00000000-0000-0000-0000-000000000001" });
+   * ```
+   */
   function resolveActorOwnerName(owner: WireActorOwnerRef): string | null {
     if (owner.kind === "actor") {
       const synthetic = { engine: { actor_id: owner.actor_id, overrides: {} } } as unknown as WireDocument;
@@ -63,7 +85,15 @@
   /** Host caption for a `link_preview` card. Never throws on a malformed `url` — a preview is
    * server-fetched and validated at ingest, but the client mirror trusts nothing about the
    * stored string's shape, so a bad URL degrades to showing the raw string instead of crashing
-   * the card. */
+   * the card.
+   * @param url The stored preview URL.
+   * @returns The URL's host, or the raw `url` string when it fails to parse.
+   * @example
+   * ```
+   * hostOf("https://example.test/x"); // "example.test"
+   * hostOf("not a url"); // "not a url"
+   * ```
+   */
   function hostOf(url: string): string {
     try {
       return new URL(url).host;
@@ -73,11 +103,23 @@
   }
 
   /** The clickable href for a `link_preview` card, or `undefined` to render it non-clickable.
-   * The server only ever stores an `http`/`https` preview URL (fetch_preview's scheme guard),
-   * but the card independently re-checks the scheme rather than trust that invariant across the
-   * boundary — a stored `javascript:`/`data:` URL (from any future path bypassing fetch_preview,
-   * or a serialization bug) must never become a live anchor, since Svelte escapes attribute
-   * VALUES but does not filter URL schemes. */
+   * The server only ever stores an `http`/`https` preview URL: `validate_url`
+   * (src/server/src/chat/link_preview.rs:705-728, re-run on every redirect hop) rejects any
+   * other scheme before a `LinkPreview` is ever constructed (`:684-691`). This function does
+   * not trust that invariant across the wire boundary and independently re-checks the scheme —
+   * a stored `javascript:`/`data:` URL (from a future path bypassing `fetch_preview`, or a
+   * serialization bug) must never become a live anchor: Svelte escapes an interpolated
+   * attribute VALUE (preventing quote/attribute breakout) but performs no scheme filtering on a
+   * dynamic `href` at runtime, so this check is the only thing standing between a bad stored
+   * URL and a live link.
+   * @param url The stored preview URL.
+   * @returns `url` when its scheme is `http:`/`https:`, else `undefined`.
+   * @example
+   * ```
+   * safeHref("https://example.test/x"); // "https://example.test/x"
+   * safeHref("javascript:alert(1)"); // undefined
+   * ```
+   */
   function safeHref(url: string): string | undefined {
     try {
       const scheme = new URL(url).protocol;
@@ -87,6 +129,18 @@
     }
   }
 
+  /** `HH:MM` in the VIEWER's local timezone (`Date.getHours`/`getMinutes` read local time,
+   * not UTC) — a reader comparing this against a server-side UTC timestamp elsewhere must
+   * account for the offset. `timeTitle` below renders the same instant via `toLocaleString`,
+   * which also defaults to local time, so the two never disagree on timezone, only on format
+   * verbosity.
+   * @param ms The message's `created_at` epoch milliseconds.
+   * @returns A zero-padded `HH:MM` string.
+   * @example
+   * ```
+   * formatTime(0); // "00:00" in UTC; the viewer's local offset shifts this
+   * ```
+   */
   function formatTime(ms: number): string {
     const d = new Date(ms);
     return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
@@ -99,14 +153,26 @@
     return sys.audience.recipients.map((r: string) => ctx.members.get(r) ?? r.slice(0, 8)).join(", ");
   });
 
-  /** Concatenates `text` segments only — the edit-prefill + roll-shell source of truth. */
+  /** Concatenates `text` segments only — the edit-prefill + roll-shell source of truth.
+   * @param content The message's segment list (raw, including any unknown segments).
+   * @returns The concatenated text of every known `text` segment, in order.
+   * @example
+   * ```
+   * textOf([{ kind: "text", text: "hi" }]); // "hi"
+   * ```
+   */
   function textOf(content: (ChatSegment | UnknownSegment)[]): string {
     return content.filter(isKnownSegment).filter((s) => s.kind === "text").map((s) => (s as Extract<ChatSegment, { kind: "text" }>).text).join("");
   }
 
-  // The command tokens `chat::parse_command` accepts (src/server/src/chat/commands.rs) —
-  // exact, case-sensitive match. A bare `/NdM` shorthand matches neither prefix and is
-  // displayed verbatim (leading slash included).
+  // The two explicit roll-command prefixes `chat::parse_command` accepts via its
+  // `for tok in ["/roll ", "/r "]` loop (src/server/src/chat/commands.rs:39-46) — exact,
+  // case-sensitive match, same trailing space on each. The server ALSO accepts a bare `/NdM`
+  // shorthand as a separate roll-triggering form (commands.rs:48-56, matched via
+  // `strip_prefix('/')` + `is_dice_shorthand`, not this loop) — omitted here on purpose, so a
+  // bare `/NdM` matches neither entry and `rollFormula` below displays it verbatim (leading
+  // slash included) rather than stripping a prefix. This is a display-scope statement about
+  // THIS client's formula rendering, not a claim that the server ignores `/NdM` — it does not.
   const ROLL_COMMAND_PREFIXES = ["/roll ", "/r "];
 
   /** Roll-pending display formula. `source` holds the FULL raw author input (including any
@@ -122,8 +188,9 @@
   });
 
   // Block form only when the WHOLE RAW content is exactly one segment and that segment is a
-  // roll_embed (server invariant, chat spec §7: a roll message's content is exactly one
-  // RollEmbed). The length check runs against `sys.content` (raw, pre-filter) rather than the
+  // roll_embed (server invariant: a successful roll's content is built as exactly one
+  // RollEmbed — src/server/src/chat/mod.rs:651-654 constructs it, pinned by the test at
+  // :3499-3513). The length check runs against `sys.content` (raw, pre-filter) rather than the
   // known-segment-filtered list — filtering first would let an extra UNKNOWN segment silently
   // vanish and the lone roll_embed still render as a block, contradicting this guard's own
   // "additional/other segments fall back to the pending shell" intent.
@@ -135,30 +202,77 @@
     return null;
   });
 
-  /** Roll-button click: a fresh, public, sender-attributed `/roll` on the carrying
-   * message's channel — never re-executes the carrying message's own roll (spec §2/§7). */
+  /** Roll-button click: a fresh, public, sender-attributed `/roll` on the carrying message's
+   * channel — never re-executes the carrying message's own roll
+   * (docs/superpowers/specs/2026-07-13-m11d-2-dice-chat-wire-design.md §2 item 3, §7).
+   * @param s The clicked `roll_button` segment.
+   * @example
+   * ```
+   * sendRollButton({ kind: "roll_button", formula: "1d20", label: null });
+   * ```
+   */
   function sendRollButton(s: RollButtonSegment): void {
     if (!sys) return;
     ctx.chat.send({ channel: sys.channel, content: `/roll ${s.formula}` });
   }
 
+  // Advisory only — the server independently re-authorizes every edit/delete against its own
+  // owner-or-GM check (src/server/src/chat/mod.rs:860-863 for edit, :1018-1020 for delete);
+  // this gate only decides whether to SHOW the actions, never whether one succeeds.
   const canModerate = $derived(!!sys && (sys.user_owner === ctx.selfId || ctx.role === "gm"));
 
   let editing = $state(false);
   let draft = $state("");
 
+  /** Enters edit mode, prefilling the draft from the raw author input (falling back to the
+   * rendered text when `source` is absent).
+   * @example
+   * ```
+   * // internal; called from the edit action button
+   * startEdit();
+   * ```
+   */
   function startEdit(): void {
     if (!sys) return;
     draft = sys.source ?? textOf(sys.content);
     editing = true;
   }
+  /** Submits the edit draft via `ctx.chat.edit` and exits edit mode optimistically; a server
+   * rejection surfaces separately through chat's shared `ChatError` seam, not through this
+   * function.
+   * @example
+   * ```
+   * // internal; called from the edit box's Save button
+   * saveEdit();
+   * ```
+   */
   function saveEdit(): void {
     ctx.chat.edit(message.id, draft);
     editing = false;
   }
+  /** Discards the draft and exits edit mode without sending anything.
+   * @example
+   * ```
+   * // internal; called from the edit box's Cancel button
+   * cancelEdit();
+   * ```
+   */
   function cancelEdit(): void {
     editing = false;
   }
+  /** Sends chat's dedicated delete frame (`ctx.chat.delete`) after a native confirm dialog.
+   * The server applies this as a soft-tombstoning `Operation::Update` on `/engine`
+   * (src/server/src/chat/mod.rs:1033), published under `WriteOrigin::ServerMessageRevision`
+   * (`:1042`) — never a hard `Operation::Delete`; the doc stays in the sequenced log at its
+   * original seq. A client-authored hard delete of a `message` doc is independently rejected
+   * at both transport ingress points (`ops_target_message`, src/server/src/chat/mod.rs:78-83),
+   * so this frame is the only way a message is ever removed.
+   * @example
+   * ```
+   * // internal; called from the delete action button
+   * doDelete();
+   * ```
+   */
   function doDelete(): void {
     if (window.confirm(t("chat.deleteConfirm"))) ctx.chat.delete(message.id);
   }

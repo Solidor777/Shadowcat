@@ -10,17 +10,21 @@
 
   const subscribe = createSubscriber((update) => ctx.documents.subscribe(update));
 
-  // "Speak as" options: the default (no attribution) plus every actor doc the current
-  // user may speak as — own actors only for a Player, ALL actors for a GM (spec §8).
-  // Reactive to actor creation/ownership changes via the store subscriber bridge.
+  // "Speak as" options: the default (no attribution) plus every actor doc the current user
+  // may OFFER to speak as — own actors for a Player, all actors for a GM. This list is a
+  // client affordance only: the server independently re-authorizes the actual choice at send
+  // (src/server/src/chat/mod.rs:538-561 — a Player must own the named actor; a GM may name
+  // any actor in the world), so an offer this list gets wrong can only be rejected, never
+  // silently accepted. Reactive to actor creation/ownership changes via the store subscriber
+  // bridge.
   const speakableActors = $derived.by((): WireDocument[] => {
     subscribe();
     const all = ctx.documents.query("actor");
     return ctx.role === "gm" ? all : all.filter((doc) => doc.owner === ctx.selfId);
   });
 
-  // Sticky per session (component-local `$state`, not persisted) — spec §8. Empty string
-  // is the sentinel for "Myself" (the default, no-attribution option).
+  // Sticky per session (component-local `$state`, not persisted). Empty string is the
+  // sentinel for "Myself" (the default, no-attribution option).
   let selectedActorId = $state("");
 
   // Prunes a dangling selection: if the selected actor leaves `speakableActors`
@@ -35,7 +39,8 @@
   });
 
   // Counter shows only when the author is nearing the server cap (MAX_MESSAGE_CHARS,
-  // chat/mod.rs) — not on every keystroke, to avoid a permanently-visible chrome element.
+  // src/server/src/chat/mod.rs:386) — not on every keystroke, to avoid a permanently-visible
+  // chrome element.
   const COUNTER_THRESHOLD = MAX_MESSAGE_CHARS - 200;
 
   let value = $state("");
@@ -46,30 +51,49 @@
   let errorMsg = $state<string | null>(null);
 
   const trimmed = $derived(value.trim());
-  // Cap/counter/send-gating derive from the TRIMMED length, matching what send()
-  // actually transmits and what the server validates (chat/mod.rs MAX_MESSAGE_CHARS).
-  // Known, fail-safe divergence: JS .length counts UTF-16 code units while the server
-  // counts Unicode scalar values (chars().count()) — the client can only over-block
-  // near the cap, never under-block, so this asymmetry is safe.
+  // Cap/counter/send-gating derive from the TRIMMED length, matching what send() actually
+  // transmits and what the server validates (src/server/src/chat/mod.rs:516,
+  // MAX_MESSAGE_CHARS). Known, fail-safe divergence: JS .length counts UTF-16 code units
+  // while the server counts Unicode scalar values (chars().count()) — a surrogate-pair
+  // (astral-plane) character counts as 2 toward the client's length but 1 toward the
+  // server's, so the client can only over-block near the cap, never under-block; this
+  // asymmetry is safe.
   const overLimit = $derived(trimmed.length > MAX_MESSAGE_CHARS);
   const showCounter = $derived(trimmed.length > COUNTER_THRESHOLD);
   const canSend = $derived(trimmed.length > 0 && !overLimit);
 
   const placeholder = $derived(audience.kind === "gm_only" ? t("chat.composer.placeholderGm") : t("chat.composer.placeholder", { name: placeholderName }));
 
-  // Auto-grow: reset height before measuring scrollHeight, or the textarea can
-  // never shrink back down after a multi-line message is cleared.
+  /** Auto-grow: reset height before measuring scrollHeight, or the textarea can never shrink
+   * back down after a multi-line message is cleared.
+   * @example
+   * ```
+   * // internal; called after every input and after a successful send
+   * autoGrow();
+   * ```
+   */
   function autoGrow(): void {
     if (!textarea) return;
     textarea.style.height = "auto";
     textarea.style.height = `${textarea.scrollHeight}px`;
   }
 
+  /** Sends the trimmed draft, clears the input optimistically, and surfaces a server
+   * rejection inline via `errorMsg` instead of the message vanishing.
+   * @example
+   * ```
+   * // internal; wired to the send button and Enter (see onKeydown)
+   * send();
+   * ```
+   */
   function send(): void {
     if (!canSend) return;
     errorMsg = null;
-    // /-commands (e.g. "/roll 1d6") ride verbatim — the server (chat::parse_command)
-    // is the sole parser; the composer never inspects or branches on content shape.
+    // /-commands (e.g. "/roll 1d6") ride verbatim — the server (chat::parse_command) is the
+    // sole parser that decides what a command MEANS (MessageKind, whisper targets); this
+    // composer never inspects or branches on content shape before sending. (MessageCard's
+    // own ROLL_COMMAND_PREFIXES strips a prefix purely for DISPLAY of an already-server-
+    // classified roll message — a separate, read-only concern from parsing at send time.)
     const actorOwner: WireActorOwnerRef | undefined = selectedActorId ? { kind: "actor", actor_id: selectedActorId } : undefined;
     // Clear the input optimistically; a server rejection surfaces inline via `errorMsg`
     // (correlated by request_id under the seam) instead of the message vanishing.
@@ -82,12 +106,28 @@
     queueMicrotask(autoGrow);
   }
 
-  // Clear a stale rejection notice as soon as the author starts a fresh message.
+  /** Clears a stale rejection notice as soon as the author starts a fresh message, and
+   * re-measures the textarea's height.
+   * @example
+   * ```
+   * // internal; wired to oninput
+   * onInput();
+   * ```
+   */
   function onInput(): void {
     errorMsg = null;
     autoGrow();
   }
 
+  /** Enter sends (unless an IME composition is in progress or Shift is held, in which case
+   * Shift+Enter falls through to the textarea's default newline insertion).
+   * @param e The keyboard event.
+   * @example
+   * ```
+   * // internal; wired to onkeydown
+   * onKeydown(new KeyboardEvent("keydown", { key: "Enter" }));
+   * ```
+   */
   function onKeydown(e: KeyboardEvent): void {
     // Ignore Enter while an IME composition is in progress (CJK/Japanese/Korean input) —
     // the Enter here commits the composed candidate, it must not also send the message.

@@ -7,17 +7,33 @@
   const ctx = getAppContext();
   const t = ctx.t;
 
-  // Stable per-instance id (same convention as LauncherMenu.svelte's menuId): a message
-  // can carry multiple inline rolls and many MessageCards mount simultaneously, so a
-  // hardcoded id would collide across on-screen instances.
+  // Stable per-instance id: a message can carry multiple inline rolls and many MessageCards
+  // mount simultaneously, so a hardcoded id would collide across on-screen instances. Same
+  // `$props.id()` idiom src/modules/topbar/src/LauncherMenu.svelte:9 uses for its own
+  // per-instance id — see that file for its (different) ARIA rationale; this file's own
+  // reason is the collision above.
   const uid = $props.id();
   const popoverId = `roll-tooltip-popover-${uid}`;
 
   let open = $state(false);
 
+  /** Opens the popover (hover/focus enter).
+   * @example
+   * ```
+   * // internal; wired to onfocus/onmouseenter
+   * show();
+   * ```
+   */
   function show(): void {
     open = true;
   }
+  /** Closes the popover (hover/focus leave/Escape).
+   * @example
+   * ```
+   * // internal; wired to onblur/onmouseleave/Escape handling
+   * hide();
+   * ```
+   */
   function hide(): void {
     open = false;
   }
@@ -25,14 +41,28 @@
   /** iOS Safari moves neither focus nor mouseenter on tap, so hover/focus alone leave the
    * popover unreachable on touch. Hover-capable (mouse) devices already get open/close from
    * hover/focus; toggling here too would immediately re-close a hover-just-opened popover
-   * (mouseenter fires before click). Gated on `(hover: hover)`, the same media query already
-   * used for touch-affordance decisions elsewhere in this module family. */
+   * (mouseenter fires before click). Gated on `(hover: hover)`, the same media query
+   * `MessageCard.svelte` already uses for its own touch-affordance decision
+   * (src/modules/chat-card/src/MessageCard.svelte:464, the hover/focus action reveal).
+   * @example
+   * ```
+   * // internal; wired to onclick
+   * onClick();
+   * ```
+   */
   function onClick(): void {
     if (window.matchMedia("(hover: hover)").matches) return;
     open = !open;
   }
 
-  /** WAI-ARIA `tooltip` pattern: Escape dismisses without moving focus off the trigger. */
+  /** WAI-ARIA `tooltip` pattern: Escape dismisses without moving focus off the trigger.
+   * @param event The keyboard event.
+   * @example
+   * ```
+   * // internal; wired to onkeydown
+   * onKeydown(new KeyboardEvent("keydown", { key: "Escape" }));
+   * ```
+   */
   function onKeydown(event: KeyboardEvent): void {
     if (event.key === "Escape") {
       event.stopPropagation();
@@ -46,6 +76,15 @@
   // which additionally stops propagation).
   $effect(() => {
     if (!open) return;
+    /** Escape handler for the open-but-not-focused (hover-opened) case; the enclosing
+     * effect's comment explains why this listener is needed alongside `onKeydown` above.
+     * @param event The keyboard event.
+     * @example
+     * ```
+     * // internal; registered only while the popover is open
+     * onDocKeydown(new KeyboardEvent("keydown", { key: "Escape" }));
+     * ```
+     */
     function onDocKeydown(event: KeyboardEvent): void {
       if (event.key === "Escape") hide();
     }
