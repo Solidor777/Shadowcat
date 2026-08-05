@@ -333,9 +333,9 @@
    * `position: fixed` via inline JS style in two places —
    * `dnd/pointer/pointerGhost.js:14` (a drag ghost) and
    * `dockview/components/titlebar/tabGroups.js:142` (a drag-clone wrapper) —
-   * but both create a fresh element appended to `document.body` or the
-   * dockview root, never the live panel-content element this function's
-   * `el` is drawn from; re-check this on any `dockview-core` version bump.
+   * but both style a transient drag-ghost/drag-clone element, never the live
+   * panel-content element this function's `el` is drawn from; re-check this
+   * on any `dockview-core` version bump.
    * @param el The element to test.
    * @returns `true` if `el` is laid out (has an `offsetParent`), `false` if
    * hidden via `display: none` on an ancestor.
