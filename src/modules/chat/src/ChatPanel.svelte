@@ -128,10 +128,11 @@
   // GM registry seed (FactionsPanel idiom): reactive subscribe() inside the
   // $effect so a panel mounted before resync populates the store still seeds
   // exactly once, whether the store was empty at mount or fills in later.
-  // `seeded` is set true BEFORE dispatchIntent runs in both branches below,
-  // so the seed is once-only per mount even if the dispatch fails — a failed
-  // seed is not retried within this mount (only on a fresh mount, when
-  // `seeded` re-initializes to false).
+  // `seeded` is set true in BOTH branches below — the early-return branch
+  // (registry already exists, no dispatch) and the seed branch (before
+  // dispatchIntent runs there) — so the seed is once-only per mount even if
+  // the dispatch itself fails; a failed seed is not retried within this
+  // mount (only on a fresh mount, when `seeded` re-initializes to false).
   let seeded = false;
   $effect(() => {
     if (ctx.role !== "gm" || seeded) return;
@@ -326,10 +327,15 @@
    * `CompactSwitcher.svelte`, neither ever `{#if}`-removes a mounted panel
    * slot. This forces every descendant's `offsetParent` to `null`, the proxy
    * this function relies on. `offsetParent` is also `null` for a
-   * `position: fixed` element; neither `src/modules/panels`'s own styles nor
-   * the vendored `dockview-core` stylesheet declare `position: fixed`
-   * anywhere (checked both), so that alternate cause isn't reachable here
-   * today.
+   * `position: fixed` element; no CSS rule in `src/modules/panels`'s own
+   * styles or the vendored `dockview-core` stylesheet sets `position: fixed`
+   * (checked both — CSS only). The pinned `dockview-core@7.0.2` DOES apply
+   * `position: fixed` via inline JS style in two places —
+   * `dnd/pointer/pointerGhost.js:14` (a drag ghost) and
+   * `dockview/components/titlebar/tabGroups.js:142` (a drag-clone wrapper) —
+   * but both create a fresh element appended to `document.body` or the
+   * dockview root, never the live panel-content element this function's
+   * `el` is drawn from; re-check this on any `dockview-core` version bump.
    * @param el The element to test.
    * @returns `true` if `el` is laid out (has an `offsetParent`), `false` if
    * hidden via `display: none` on an ancestor.
@@ -346,7 +352,12 @@
   }
 
   $effect(() => {
-    // The ONLY dependency this effect subscribes to: rendered-message count.
+    // `visibleDocs.length` is read unconditionally every run, so it is
+    // always a dependency. `container` (read here and via
+    // isVisible(container) below) is read only when `grew` is true, because
+    // of the `!grew || !container` short-circuit below — so it is NOT a
+    // dependency on a run where the message count didn't grow, but IS one on
+    // a run where it did.
     const count = visibleDocs.length;
     const grew = count > prevMessageCount;
     prevMessageCount = count;
@@ -370,7 +381,9 @@
       return;
     }
     if (wasAtBottom) {
-      // Wait for the DOM to paint the new message before measuring scrollHeight.
+      // queueMicrotask, not a synchronous call — a microtask runs BEFORE the
+      // next paint, not after one. Deferred so scrollToBottom's scrollHeight
+      // read happens on the next microtask turn rather than inline here.
       queueMicrotask(scrollToBottom);
     } else {
       showNewMessagesPill = true;
