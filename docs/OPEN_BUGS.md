@@ -111,8 +111,13 @@ Currently open, confirmed-real defects. Deferrals belong in `TODO.md`, not here.
     `src/client/core/src/wire.ts:192`) and in `applyOperation`'s receive-side `case "delete"`
     (`src/client/core/src/store.ts:178-180`). The schema is emphatically not receive-only — the
     client's own outbound `intent` frame is typed `ops: WireOperation[]` (`wire.ts:359`) and the
-    server executes a client-sent Delete (`src/server/src/data/sqlite.rs:1867,1909,2147`), which
-    is exactly what makes the raw-protocol escape below real. The gap is that nothing in the
+    server executes a client-sent Delete, which is exactly what makes the raw-protocol escape
+    below real. That path is `Room::publish` → `apply_intent` (`src/server/src/ws/room.rs:426`),
+    whose `Operation::Delete` arm authorizes against the stored doc under `cap::DELETE`
+    (`src/server/src/data/sqlite.rs:2147-2167`) and then executes via `delete_document_tx`
+    (`:2382`). Do NOT cite `apply_command`'s Delete arms for this: no client frame reaches
+    `apply_command`, which is the trusted undo/replay substrate and deliberately does not
+    capability-check descendants (`sqlite.rs:1859-1863`). The gap is that nothing in the
     client ever CONSTRUCTS one. (Neighbouring `delete` names sit on other axes and are not
     counterexamples. Nearest first: chat's Delete button is the one user-facing document delete
     in the client, and it sends a dedicated `delete_message` frame the server applies as an
