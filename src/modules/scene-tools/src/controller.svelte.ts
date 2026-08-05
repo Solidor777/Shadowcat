@@ -751,13 +751,15 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
    * pathfind then sends the moveRequest with its result.
    *
    * Invariant: `committing` is set TRUE before `seq` is captured. It is cleared by `finish()`
-   * on the resolve/reject branch that still owns this commit (`seq === pendingSeq`) or by
-   * `onDeactivate` (abort path) — but deliberately NOT on a STALE resolve/reject (`seq !==
-   * pendingSeq`, re-checked on all four settle branches: `sendRequest`'s resolve and reject,
-   * and the pathfind's resolve and reject): a stale branch means a newer commit, or
-   * `onDeactivate`, already bumped
-   * `pendingSeq` and now owns `committing` + teardown, so calling `finish()` here would clear
-   * a LIVE commit's flag out from under it and let a stray pointer-up abort it. This ensures
+   * on whichever SETTLE branch still owns this commit (`seq === pendingSeq`) or by
+   * `onDeactivate` (abort path). The pathfind's resolve with a usable path is not a settle — it
+   * hands the commit off to `sendRequest`, which settles later. Clearing is deliberately NOT
+   * done on a STALE resolve/reject (`seq !== pendingSeq`, re-checked on all four settle
+   * branches: `sendRequest`'s resolve and reject, and the pathfind's resolve and reject): a
+   * stale branch means a newer commit, or `onDeactivate`, already bumped `pendingSeq` and now
+   * owns `committing` + teardown, so calling `finish()` here would invalidate that LIVE commit
+   * outright — `finish()` calls `clearRoute()`, which does `pendingSeq++`, so the newer
+   * commit's captured `seq` stops matching and its own settle silently becomes a no-op. This ensures
    * pointer-up (which calls `clearRoute` in non-committing paths) cannot bump `pendingSeq`
    * between commit start and the async resolve, keeping `seq === pendingSeq` true so the
    * commit proceeds.
