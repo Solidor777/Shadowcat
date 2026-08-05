@@ -600,7 +600,10 @@
     display: flex;
     gap: var(--space-1);
   }
-  // Images size to the card (max-width) and sit on their own line (display: block).
+  // Images size to the card and sit on their own line —
+  // docs/superpowers/specs/2026-07-03-m11-chat-system-design.md §5 :165 ("forced to a new line,
+  // sized to the card"). `max-width` caps the width; `display: block` forces the break an inline
+  // <img> would not take.
   .seg-html :global(img) {
     max-width: 100%;
     display: block;
