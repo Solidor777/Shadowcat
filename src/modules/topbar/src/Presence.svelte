@@ -4,10 +4,27 @@
   const ctx = getAppContext();
   const t = ctx.t;
 
-  // `members` is a reactive SvelteMap (userId -> username), populated for every
-  // role (M11d-1). Reading it here tracks join/leave updates in place.
+  // A reactive SvelteMap (userId -> username), populated for every role
+  // (M11d-1). `WorldSession` refreshes it only on a WS (re)connect Welcome
+  // (src/client/shell/src/lib/worldSession.svelte.ts:706-720), not on each
+  // individual join/leave — a member seated mid-session does not appear here
+  // until the next reconnect. Reading it via $derived does track whatever
+  // updates DO land (the map is mutated in place, never reassigned), so this
+  // badge list repaints once a reconnect's fetch resolves; it does not
+  // repaint the instant a seat is actually granted.
   const roster = $derived([...ctx.members.entries()].map(([id, name]) => ({ id, name })));
 
+  /**
+   * Single-character badge glyph for a member name: the trimmed name's first
+   * character, uppercased, or `"?"` for an empty/whitespace-only name.
+   * @param name The member's display name.
+   * @returns A one-character (or `"?"`) badge glyph.
+   * @example
+   * ```
+   * // private function; not part of the public API — used to render each presence badge
+   * initial("Zara");
+   * ```
+   */
   function initial(name: string): string {
     return name.trim().charAt(0).toUpperCase() || "?";
   }

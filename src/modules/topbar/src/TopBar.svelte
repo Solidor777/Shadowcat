@@ -10,6 +10,18 @@
   // The settings panel is a registered panel; the topbar's settings entry is a
   // stable, standard-location toggle for it (no new seam).
   const SETTINGS_PANEL_ID = "settings:panel";
+  /**
+   * Toggles the settings panel via `AppContext.panels` — the same seam
+   * `LauncherMenu.activate` uses, making this button an alternate,
+   * always-visible entry point to the SAME registered panel rather than a
+   * second mechanism.
+   * @returns Nothing; toggles the settings panel as a side effect.
+   * @example
+   * ```
+   * // private function; not part of the public API — wired to the settings-entry button
+   * toggleSettings();
+   * ```
+   */
   function toggleSettings(): void {
     ctx.panels.toggle(SETTINGS_PANEL_ID);
   }

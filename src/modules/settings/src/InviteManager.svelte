@@ -30,15 +30,33 @@
   // is unrecoverable after this render.
   let minted = $state<string | null>(null);
 
-  // Both lists are re-read from the server on every state change this surface
-  // causes. The roster in particular must NOT come from AppContext's `members`
-  // map: that is a session-start snapshot, so a seat added during the session
-  // would never appear.
-  //
-  // Settled, not `Promise.all`: the two reads are independent, and letting a
-  // failed roster read reject the pair would blank the invite list and with it
-  // the revoke buttons — losing the ability to act on a live code because an
-  // unrelated request failed.
+  /**
+   * Re-reads this GM's invite list and the world roster from the server. Not
+   * `Promise.all`: `listWorldInvites`/`listWorldMembers` are independent
+   * reads, and letting a failed roster read reject the pair would blank the
+   * invite list along with it — losing the revoke buttons (an AFFORDANCE, not
+   * just data) because an unrelated request failed. `Promise.allSettled`
+   * applies each result independently — `invites`/`members` update only for
+   * whichever read actually succeeded — and still reports the first
+   * rejection via `error`, so a partial failure neither hides the surviving
+   * half nor goes unreported.
+   *
+   * The roster must come from here, not from `AppContext.members`
+   * (`ctx.members`): that `SvelteMap` is refreshed only on a WS (re)connect
+   * Welcome (`src/client/shell/src/lib/worldSession.svelte.ts:706-720`), not
+   * on each individual join — a seat added while this session's connection
+   * stays open does not reach it until the next reconnect, and minting or
+   * redeeming an invite does not itself trigger one. This surface needs the
+   * live count on demand, not the last-reconnect snapshot.
+   * @returns Resolves once `invites`/`members`/`error` reflect the outcome;
+   *   never rejects.
+   * @example
+   * ```
+   * // private function; not part of the public API — invoked after mint/revoke
+   * // and from the manual "refresh" button
+   * await refresh();
+   * ```
+   */
   async function refresh(): Promise<void> {
     const [gotInvites, gotMembers] = await Promise.allSettled([
       listWorldInvites(world),
@@ -54,6 +72,20 @@
   }
   if (role === "gm") void refresh();
 
+  /**
+   * Mints a single-use invite for `worldRole`, then refreshes the invite
+   * list. `minted` is set from the response's `code` — the only point in
+   * this component's life the plaintext code exists (see the `minted`
+   * declaration above: only its hash is persisted).
+   * @param e The form's submit event; only `preventDefault` is used.
+   * @returns Resolves once `minted`/`error`/`invites` reflect the outcome;
+   *   never rejects.
+   * @example
+   * ```
+   * // private function; not part of the public API — wired to the mint form's onsubmit
+   * await mint(submitEvent);
+   * ```
+   */
   async function mint(e: SubmitEvent): Promise<void> {
     e.preventDefault();
     busy = true;
@@ -69,6 +101,19 @@
     }
   }
 
+  /**
+   * Revokes invite `id`, then refreshes the invite list so its revoke button
+   * disappears (`spent()` becomes `true` for it).
+   * @param id The invite's `id` — not its code, which is never sent back to
+   *   the server after minting.
+   * @returns Resolves once `invites`/`error` reflect the outcome; never
+   *   rejects.
+   * @example
+   * ```
+   * // private function; not part of the public API — wired to each invite row's revoke button
+   * await revoke(inviteId);
+   * ```
+   */
   async function revoke(id: string): Promise<void> {
     error = null;
     try {
@@ -79,6 +124,30 @@
     }
   }
 
+  /**
+   * This invite's display status. Precedence — consumed, then revoked, then
+   * expired, then active — matches the only order a real invite's fields can
+   * be set in (a consumed or revoked row cannot un-consume/un-revoke).
+   * Expiry here is a CLIENT-CLOCK GUESS (`Date.now()` against `expires_at`):
+   * the server is the actual authority at redemption time, checking
+   * `expires_at` against its OWN clock in one guarded UPDATE
+   * (`src/server/src/data/sqlite.rs:1398-1401`), so a clock-skewed client can
+   * label a row "active" moments before the server would refuse it, or
+   * "expired" moments before the server would still accept it.
+   *
+   * Deliberately disagrees with `spent()` about what "expired" means: an
+   * expired-but-unspent row is `"expired"` here yet `spent(i) === false`, so
+   * its revoke button still renders in the template below
+   * (`{#if !spent(invite)}`) — revoking an already-unusable code is harmless
+   * and lets the GM prune it rather than wait on the server's own clock.
+   * @param i The invite entry to describe.
+   * @returns An i18n key naming this invite's current status.
+   * @example
+   * ```
+   * // private function; not part of the public API — invoked from the invite list's status span
+   * status(invite);
+   * ```
+   */
   function status(i: InviteEntry): string {
     if (i.consumed_at !== null) return t("settings.invites.consumed");
     if (i.revoked_at !== null) return t("settings.invites.revoked");
@@ -86,6 +155,21 @@
     return t("settings.invites.active");
   }
 
+  /**
+   * Whether invite `i` can no longer be redeemed BY DESIGN — consumed or
+   * revoked. Deliberately does NOT count expiry (see `status()`): the
+   * template still renders a revoke button for an expired-but-unspent row,
+   * letting a GM explicitly clear it instead of waiting on a redemption
+   * attempt the server would reject anyway.
+   * @param i The invite entry to check.
+   * @returns `true` once consumed or revoked; `false` otherwise, including
+   *   when merely expired.
+   * @example
+   * ```
+   * // private function; not part of the public API — gates the revoke button in the invite list
+   * spent(invite);
+   * ```
+   */
   function spent(i: InviteEntry): boolean {
     return i.consumed_at !== null || i.revoked_at !== null;
   }
