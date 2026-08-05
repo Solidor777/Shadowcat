@@ -543,7 +543,8 @@
     color: var(--danger, crimson);
   }
   .roll-btn {
-    // Touch floor: matches .actions button (spec §7 — 44px target).
+    // Touch floor: matches `.actions button` below. The 44px target for a roll_button is
+    // specified in docs/superpowers/specs/2026-07-13-m11d-2-dice-chat-wire-design.md §7.
     min-height: 44px;
     min-width: 44px;
     padding: 0 var(--space-1);
@@ -599,12 +600,13 @@
     display: flex;
     gap: var(--space-1);
   }
-  // Spec §5: images size to the card and sit on their own line.
+  // Images size to the card (max-width) and sit on their own line (display: block).
   .seg-html :global(img) {
     max-width: 100%;
     display: block;
   }
-  // Link-preview card (spec §7, M11d-3). No <img> — server-fetched title/description/host
+  // Link-preview card (docs/superpowers/specs/2026-07-13-m11d-3-link-previews-design.md §7,
+  // "Card rendering"). No <img> — server-fetched title/description/host
   // only, all escaped text; the whole card is the link (44px touch floor on the anchor itself).
   .link-preview {
     display: flex;

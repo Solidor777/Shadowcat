@@ -43,7 +43,7 @@
    * hover/focus; toggling here too would immediately re-close a hover-just-opened popover
    * (mouseenter fires before click). Gated on `(hover: hover)`, the same media query
    * `MessageCard.svelte` already uses for its own touch-affordance decision
-   * (src/modules/chat-card/src/MessageCard.svelte:579, the hover/focus action reveal).
+   * (src/modules/chat-card/src/MessageCard.svelte:580, the hover/focus action reveal).
    * @example
    * ```
    * // internal; wired to onclick
