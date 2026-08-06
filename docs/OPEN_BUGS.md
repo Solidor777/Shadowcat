@@ -6,7 +6,7 @@ Currently open, confirmed-real defects. Deferrals belong in `TODO.md`, not here.
   self-targeting `/permissions` key silently substitutes the fail-closed default permissions
   object for a redacted viewer.** `validate_property_overrides`
   (`src/server/src/data/validation.rs:332-337`, gated on both Create and Update ingress —
-  `src/server/src/data/sqlite.rs:2041,2409`) checks only that a key is a well-formed non-empty JSON
+  `src/server/src/data/sqlite.rs:2041,2414`) checks only that a key is a well-formed non-empty JSON
   pointer (starts with `/`, no trailing `/`) — nothing restricts which top-level `Document` field it
   names. `filter_properties` (`src/server/src/data/permission.rs:701-756`) special-cases only
   `/system`, `/engine`, `/name`, `/base` (nulled in place, lines 746-751); any other hidden
@@ -29,7 +29,7 @@ Currently open, confirmed-real defects. Deferrals belong in `TODO.md`, not here.
     (`src/server/src/data/permission.rs:755`). The `expect` is not a cold-path assertion:
     `filter_properties` runs per-recipient on the WS broadcast egress path (`filter_command`,
     `src/server/src/data/permission.rs:833-851`), on FTS search hits
-    (`src/server/src/data/sqlite.rs:2785`), and on the HTTP get-document routes
+    (`src/server/src/data/sqlite.rs:2790`), and on the HTTP get-document routes
     (`src/server/src/http/routes.rs:975,1026`). Any recipient who cannot see the offending tier
     crashes the request handling their read — i.e. a denial-of-service against every such reader of
     that document, authorable by one holder of `cap::EDIT_PERMISSIONS`.
@@ -61,7 +61,7 @@ Currently open, confirmed-real defects. Deferrals belong in `TODO.md`, not here.
     2. **Ingress rejects an unclassifiable pointer.** `validate_property_overrides`
        (`src/server/src/data/validation.rs:332`) keeps its well-formedness checks and adds the
        classifier, at both existing call sites (`src/server/src/data/sqlite.rs:2041` Create,
-       `:2409` Update). `/permissions`, `/permissions/default`, `/owner`, `/id`,
+       `:2414` Update). `/permissions`, `/permissions/default`, `/owner`, `/id`,
        `/embedded/items/0` all become `DataError::BadPath`.
     3. **`filter_properties` returns `Result<Document, RedactionError>`**, deleting both
        `.expect()`s. Callers fail CLOSED: `filter_command` drops delivery to that recipient;
@@ -107,9 +107,9 @@ Currently open, confirmed-real defects. Deferrals belong in `TODO.md`, not here.
     data loss and no authz effect. Impact is nonetheless persistent: **no client code anywhere
     constructs an `Operation` with `op: "delete"`.** Outside tests that variant appears only in
     the SHARED wire type and schema (`src/types/generated/Operation.ts:12`,
-    `src/client/core/src/wire.ts:192`) and in `applyOperation`'s receive-side `case "delete"`
+    `src/client/core/src/wire.ts:234`) and in `applyOperation`'s receive-side `case "delete"`
     (`src/client/core/src/store.ts:178-180`). The schema is emphatically not receive-only — the
-    client's own outbound `intent` frame is typed `ops: WireOperation[]` (`wire.ts:359`) and the
+    client's own outbound `intent` frame is typed `ops: WireOperation[]` (`wire.ts:424`) and the
     server executes a client-sent Delete, which is exactly what makes the raw-protocol escape
     below real. That path is `Room::publish` → `apply_intent` (`src/server/src/ws/room.rs:426`),
     whose `Operation::Delete` arm authorizes against the stored doc under `cap::DELETE`
@@ -152,8 +152,8 @@ Currently open, confirmed-real defects. Deferrals belong in `TODO.md`, not here.
     tiers — which never held the aux frame. The connection is NOT torn down, so the client's
     `AssetResolver` survives with its counter unbumped.
   - **Why nothing recovers it.** `AssetResolver.revs` is a client-local map incremented only by
-    `onAssetChanged` (`src/client/core/src/assets.ts:59-68`); `url()` appends it as `?v={rev}`
-    (`:41-45`) and reads the asset's server-side `version` nowhere. A missed frame therefore
+    `onAssetChanged` (`src/client/core/src/assets.ts:76-90`); `url()` appends it as `?v={rev}`
+    (`:58`) and reads the asset's server-side `version` nowhere. A missed frame therefore
     leaves the serve URL byte-identical, so no new request is issued at all, so the
     `"{id}-{version}"` ETag built in `serve` (`src/server/src/http/assets.rs:269`) is never
     revalidated, and the unchanged URL may additionally be served from cache (`serve` sends no
@@ -192,7 +192,7 @@ Currently open, confirmed-real defects. Deferrals belong in `TODO.md`, not here.
     omitting it therefore reach the same stored state, and no path leaves a `false` there for the
     checkbox's pre-image to match.
   - **Why the server rejects it.** `apply_intent`'s field-level OCC check
-    (`src/server/src/data/sqlite.rs:2285-2298`) computes
+    (`src/server/src/data/sqlite.rs:2290-2303`) computes
     `actual = whole.pointer(&ch.path).cloned().unwrap_or(Value::Null)` and compares it to `ch.old`
     through `values_semantically_eq` (`:1778-1834`). That helper special-cases only Object/Object,
     Array/Array and Number/Number; a `Null` vs `Bool(false)` mismatch falls through to the catch-all
