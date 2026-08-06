@@ -605,3 +605,23 @@ are observations awaiting triage, not committed work.
   undiagnosable purely for lack of captured evidence. The next occurrence must be diagnosed from
   the trace's network log rather than re-reasoned from the console log. Do not treat the green
   re-run as evidence the underlying cause is gone.
+
+- Title: `Table.svelte` captures `session`'s sub-objects at construction —
+  `state_referenced_locally`. Summary: repo-wide `pnpm -r typecheck` reports two
+  svelte-check warnings (the only warnings in 28 projects), both in `Table.svelte`,
+  where `SheetsController` is constructed with `session.contributions` and
+  `session.documents` read directly from a `$props()` value. svelte-check's point is
+  that these capture the INITIAL value rather than tracking reassignment. Whether that
+  is a defect depends on whether a `Table` instance can ever outlive the `WorldSession`
+  it was built from: `App.leaveWorld` discards the session and constructs a fresh one,
+  so if `Table` remounts per world entry the capture is correct and the warning is a
+  false positive — and `WorldSession` is documented as single-use per entry. NOT
+  verified either way; the remount path was not traced. Flagged because this codebase
+  has shipped real bugs of exactly this shape (a reactive bridge missing its
+  subscription, and a contribution seed that had to be made reactive because it mounted
+  before resync), and because a stale `contributions` reference is the documented
+  failure mode for session reuse — it renders the PREVIOUS world's contributions, which
+  is the harder failure to notice. Surfaced while verifying gates for docs sweep 13
+  Task 6; the file is untouched by that task and the warnings are pre-existing.
+  Status: Needs Review — trace whether `Table` is keyed/remounted per world entry
+  before deciding whether to fix or suppress.
