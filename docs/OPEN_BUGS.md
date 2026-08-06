@@ -216,3 +216,18 @@ Currently open, confirmed-real defects. Deferrals belong in `TODO.md`, not here.
     seeding `hyperlinks: null`. Runtime change; belongs on the follow-up branch with
     `property_overrides` and `makeTemplateTool`. Found during Sweep 12 Task 6 by the dispatcher and
     independently confirmed by both reviewers, from writing the doc comment that sits above it.
+
+- [Type incompleteness] `ClientMsg`'s `scene_subscribe` variant omits the `as_user` field the client
+  actually sends. `src/client/core/src/ws-client.ts:998` sends
+  `{ type: "scene_subscribe", request_id, channel, ...(opts.asUser ? { as_user: opts.asUser } : {}) }`,
+  but the variant in `src/client/core/src/wire.ts:462-468` declares only `type`, `request_id` and
+  `channel`. The spread bypasses TypeScript's excess-property check, so this compiles and there is
+  **no current runtime misbehaviour** — the server accepts and gates the field
+  (`src/server/src/ws/conn.rs:386` destructures `as_user` on `ClientMsg::SceneSubscribe`, and
+  `conn.rs:1309-1313` resolves it as the GM-only see-as-player override). The defect is that
+  `wire.ts` is the client's statement of record for the protocol and currently under-describes it:
+  a reader cannot see that `scene_subscribe` carries `as_user`, and any call site constructing the
+  message without a spread would be rejected by the compiler for sending a field the protocol does
+  support. Fix is type-only (add `as_user?: string;` to that variant) with zero runtime effect.
+  Found during docs sweep 13 Task 2; deliberately NOT fixed in that task, which is comment-only and
+  whose diff was under review at the time.
