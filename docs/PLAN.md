@@ -1590,10 +1590,11 @@ Trusted local modding hardening → freeze the module API on evidence (≥1 exte
   documented."
   Plan: `docs/superpowers/plans/2026-08-05-docs-sweep12-chat-entry-settings.md`. Successor:
   **Sweep 13 — property, type and full-coverage documentation pass**
-  (`docs/superpowers/plans/2026-08-06-docs-sweep13-property-coverage.md`), which extends `rulesAt`
-  with property/type/named-arrow contexts inside a new, separate `eslint.props.config.js` (its own
-  warn/ratcheted staging pair, run as `lint:props`, so it can neither shadow nor be shadowed by
-  `eslint.docs.config.js`), burns down the ~1,329-site backlog, and — as its final task —
+  (`docs/superpowers/plans/2026-08-05-docs-sweep13-property-coverage.md`), which adds the
+  property/type/named-arrow contexts to a NEW, separate `eslint.props.config.js` — **not** to this
+  file's `rulesAt`, where they would land at `error` repo-wide on day one — giving them their own
+  warn/ratcheted staging pair run as `lint:props`, so the two configs can neither shadow nor be
+  shadowed by each other. It then burns down the ~1,329-site backlog and, as its final task,
   consolidates both configs into `eslint.config.js`.
   **Required reading for every implementer and reviewer:**
   `docs/design/doc-sweep-truthfulness-rules.md` — fourteen rules derived empirically from Sweeps

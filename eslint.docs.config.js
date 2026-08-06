@@ -73,9 +73,9 @@ export default [
   // context there sets both tiers' severity at once, and with the globs now
   // identical the ratcheted block's `error` is what every file sees. Sweep 13
   // stages new (property/type) contexts through a SEPARATE config file
-  // instead — see `docs/superpowers/plans/2026-08-06-docs-sweep13-property-
-  // coverage.md` — precisely because this shadowing makes in-place staging
-  // impossible once a block's globs match its warn-tier sibling's.
+  // instead, precisely because this shadowing makes in-place staging
+  // impossible once a block's globs match its warn-tier sibling's. Plan:
+  // docs/superpowers/plans/2026-08-05-docs-sweep13-property-coverage.md
   {
     files: ["src/types/**/*.ts", "src/client/**/*.ts", "src/modules/**/*.ts", "examples/**/*.ts"],
     // Kept identical to the warn block's ignores. `src/types/generated/**` is
