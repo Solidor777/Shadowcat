@@ -108,22 +108,41 @@ source of truth. The ones agents break most:
   finds. Carve-outs: config/build files (no symbols to cite), filenames used as *values*, and dated
   records under `docs/superpowers/`. Full rule: `docs/design/doc-sweep-truthfulness-rules.md`
   RULE 15. [[cite-symbols-not-file-lines]]
-- **A code comment may talk about THE CODE and nothing else (user directive 2026-08-06).** Banned in
-  `.ts`/`.rs`/`.svelte` comments: milestone/task/phase ids (`M13-0`, `M11d-3`, `T1/T3`), repo
-  document pointers (`` `docs/TODO.md` ``, `` `docs/OPEN_BUGS.md` ``, `ARCHITECTURE §2 invariant 4`),
-  dated plan/spec files, sweep or fix-round names, and `POST_WORK:` markers. **These are one class:
-  each names something outside the code whose identity is assigned by a process** — milestones get
-  renumbered, doc sections renumbered, bug entries move `OPEN_BUGS` → `CLOSED_BUGS`, specs get
-  superseded. The comment then points at nothing, and unlike a stale claim *about code*, **no reader
-  and no tool can tell**, because the referent's disappearance is invisible from the code.
-  The conversion is always **state the CONSTRAINT, drop the POINTER** — the pointer was a shortcut
-  to information that belongs inline. `TODO:` itself stays (it is a code marker); what goes is the
-  "see `TODO.md`" tail. **Direction of dependency: doc → code, never code → doc** — the backlog or
-  bug entry cites the SYMBOL (RULE 15) and points inward, so closing it cannot rot a comment.
-  This is stronger than RULE 15 and wins where they touch: RULE 15 says how to cite, this says what
-  may be referred to at all. Markdown docs, skills and `.superpowers/` artifacts are exempt — they
-  may cite documents by path + section anchor. Full rule:
-  `docs/design/doc-sweep-truthfulness-rules.md` RULE 16.
+- **As far as code is concerned, ephemeral documents, plans, dates, history and tasks DO NOT EXIST**
+  (user directive, iron-clad; RULE 16). This is an ontology, not a style preference: the test is
+  never "is this reference useful?" but "is this thing visible from the code?" Every exception
+  argues from usefulness, and usefulness was never the test — so there are none.
+  **Banned in `.ts`/`.rs`/`.svelte` comments**, and in code-facing strings (`assert!` messages, test
+  names — ruled in scope by the user; program data like a fixture's world name is untouched):
+  - milestone/task ids in ANY form — `M13-0`, `M11d-3`, `T1/T3`, and the bare `M8`
+  - phase, workstream and numbered-invariant ids — `post-D9`, `W1`, `I4` — **including local
+    numbering defined only in a sibling comment**, ruled in scope by the user: a number no
+    compiler, test or tool binds to anything still forces the reader to go find it
+  - repo document pointers — `` `docs/TODO.md` ``, `ARCHITECTURE §2 invariant 4`, bare `invariant 6`
+  - dated plan/spec files, and unnamed spec references (`per spec §3.2`, `the spec'd default`)
+  - sweep / fix-round / `buddy-check finding N` markers, `POST_WORK:`, and date stamps
+  - **history narration** — `previously`, `formerly`, `before the fix`, "used to return X"
+
+  **These are one class: each names something outside the code whose identity a process assigns** —
+  milestones get renumbered, bug entries move `OPEN_BUGS` → `CLOSED_BUGS`, specs get superseded,
+  a past version stops being anyone's reference point. The comment then points at nothing, and
+  unlike a stale claim *about code*, **no reader and no tool can tell**, because the referent's
+  disappearance is invisible from the code.
+  The conversion is always **state the CONSTRAINT, drop the POINTER** — and where the pointer
+  carried nothing (`(M13e)` appended to a true sentence), **delete the token and change nothing
+  else**; RULE 4 prefers deletion, and inventing a plausible replacement constraint is the single
+  worst outcome available. `TODO:` itself stays (a code marker); what goes is the "see `TODO.md`"
+  tail. **Direction of dependency: doc → code, never code → doc** — the backlog or bug entry cites
+  the SYMBOL (RULE 15) and points inward, so closing it cannot rot a comment.
+  Stronger than RULE 15 and wins where they touch: RULE 15 says how to cite, this says what may be
+  referred to at all. Markdown docs, skills and `.superpowers/` artifacts are exempt — they may
+  cite documents by path + section anchor.
+  **Enforced retroactively with no grandfathering** (user directive) by
+  `node scripts/check-comment-refs.mjs` — no baseline, no allowlist, every legacy hit fails. But
+  **a green detector is not a satisfied rule**: history narration is only partly detectable (`no
+  longer` usually describes runtime data, not the code's past), so it is a review obligation.
+  Rewording to evade a pattern while still speaking of something outside the code violates RULE 0.
+  Full rule: `docs/design/doc-sweep-truthfulness-rules.md` RULE 16.
 - **`CLAUDE.md` is git-ignored** — it is local-only; durable rules live in `ARCHITECTURE.md` §2,
   the real source of truth. [[claude-md-is-git-ignored]]
 - **ts-rs types are generated** — change the Rust enum/struct, regenerate, then mirror in the

@@ -465,11 +465,21 @@ covered. Report a discovered divergence rather than smoothing it over — but bo
 
 ## RULE 16 — code comments are durable commentary about THE CODE, and nothing else
 
-User directive, iron-clad:
+User directive, iron-clad, in its governing form:
+
+> as far as code is concerned, ephemeral documents, plans, dates, history, and tasks, do not exist.
+
+and, stated earlier in its original form:
 
 > task names, task ids, plans, dates, and repo documents should never be referenced in code comments
 > because they are ephemeral. code comments should be durable commentary about the code and only the
 > code.
+
+**Read the governing form as an ontology, not a style preference.** The question is never "is this
+reference useful?" — it is "does this thing exist, from inside the code?" A plan, a task id, a
+review round, a date, a previous version of this function: none of them are visible from the code,
+so a comment may not speak of them at all. This is why the rule admits no case-by-case exceptions:
+every exception argues from usefulness, and usefulness was never the test.
 
 RULE 15 said *how* to cite; this says *what a code comment may talk about at all*. It is the
 stronger constraint and it wins wherever the two touch.
@@ -478,11 +488,25 @@ stronger constraint and it wins wherever the two touch.
 
 | Banned | Example found in this repo |
 |---|---|
-| Milestone / task / phase ids | `Kept minimal for M8c-1`, `re-rooted from `system`, M13-0`, `M13-1 T1/T3`, `M13-0 S1/S3` |
-| Repo document pointers | `` see `docs/TODO.md` ``, `` (`docs/OPEN_BUGS.md`, the AssetChanged entry) ``, `ARCHITECTURE §2 invariant 4` |
+| Milestone / task ids, in any form | `Kept minimal for M8c-1`, `M13-1 T1/T3`, and the bare `no engine consumer in M8` |
+| Phase, workstream and numbered-invariant ids | `post-D9`, `W1's headerless stage group`, `break I4` |
+| Repo document pointers | `` see `docs/TODO.md` ``, `` (`docs/OPEN_BUGS.md`, the AssetChanged entry) ``, `ARCHITECTURE §2 invariant 4`, bare `invariant 6` |
 | Dated plan/spec files | `docs/superpowers/specs/2026-07-13-m11d-2-dice-chat-wire-design.md §7` |
-| Sweep / campaign / round names | `sweep 13`, `fix round 1` |
+| Unnamed spec references | `per spec §3.2`, `this mirrors the spec literally`, `the spec'd default` |
+| Sweep / campaign / round / review markers | `sweep 13`, `fix round 1`, `buddy-check finding 4` |
+| Dates stamped on a comment | `(2026-07-13)`, `as of August 2026` |
+| History narration | `previously an Array`, `formerly client-owned`, `before the fix` |
 | Process markers | `POST_WORK: replace with …` |
+
+**Local numbering is not an exception.** An `I4` whose definition lives in a sibling comment of the
+same subsystem still forces the reader to resolve a number that no compiler, test or tool binds to
+anything. Ruled in scope by the user. The conversion states the invariant where it is load-bearing —
+tersely, and without pasting the same paragraph at five sites, which RULE 3 forbids.
+
+**The rule extends to code-facing string literals.** An `assert!` message and a test name are read
+by a developer at failure time exactly as a comment is, and go stale the same undetectable way.
+Ruled in scope by the user. A string that is *program data* — a fixture's world name, a document key
+— names something inside the program and is untouched.
 
 **Why these are one class, not five.** Each names something *outside the code* whose identity is
 assigned by a process: a milestone gets renumbered, a doc section gets renumbered, a bug entry moves
@@ -519,7 +543,22 @@ SYMBOL (Rule 15) and points inward at the code. The dependency runs doc → code
 so renaming or closing the doc entry cannot rot a comment. A defect worth warning a reader about is
 worth stating as a present constraint in the comment itself.
 
-**Scope.** Code comments only. Markdown documents, skills and `.superpowers/` artifacts may
+**No grandfathering — the rule applies retroactively.** User directive: *"this is retroactively
+applied. do not grandfather in existing cases."* `scripts/check-comment-refs.mjs` therefore carries
+no baseline and no allowlist: every hit fails, legacy included. The reason a baseline is not
+available here is structural — a grandfathered site is indistinguishable from a new one to every
+future reader, so exempting the backlog would preserve exactly the defect the rule removes.
+
+**What the detector can and cannot see.** The patterns cover the id-shaped and pointer-shaped forms
+at high precision. History narration is only partly detectable: `previously`/`formerly` match, but
+`no longer` overwhelmingly describes *runtime data* ("an id that no longer names a scene is
+ignored") rather than the code's past, and flagging it would train writers to dodge the word instead
+of dropping the narration. **A green detector is therefore not a satisfied rule** — history
+narration is a review obligation. Reword to evade a pattern while still speaking of something
+outside the code and you have violated RULE 0, not fixed anything.
+
+**Scope.** Code comments and code-facing strings. Markdown documents, skills and `.superpowers/`
+artifacts may
 reference other documents by path + section anchor — prose has no symbols, and those artifacts are
 read as documents. Do not carry this rule's prohibition into them, and do not carry their allowance
 back into code.

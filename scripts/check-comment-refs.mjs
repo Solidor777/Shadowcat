@@ -23,15 +23,57 @@ const EXTS = [".ts", ".rs", ".svelte"];
 const COMMENT = /^\s*(\/\/|\*|\/\/\/|\/\/!)/;
 
 const BANNED = [
-  { name: "milestone/task id", re: /\bM\d+[a-z]?-\d+\b|\bM\d+[a-z]\b/ },
+  // `M8`, `M8c`, `M8c-1` are one id shape: the bare form carries no less process identity than
+  // the suffixed one, and a pattern requiring the suffix reads a plain `M8` as clean.
+  { name: "milestone/task id", re: /\bM\d+[a-z]?(?:-\d+)?\b/ },
+  // Phase checkpoints (`D9`), workstreams (`W1`) and numbered invariants (`I4`) are ids a
+  // process assigns, resolvable only by a reader who has the process artifact.
+  { name: "phase / workstream / invariant id", re: /\b[DIW]\d+\b/ },
   {
     name: "repo document pointer",
-    re: /docs\/[\w./-]+\.md|\b(?:TODO|OPEN_BUGS|CLOSED_BUGS|POST_WORK_FINDINGS|ARCHITECTURE|PLAN)\.md|ARCHITECTURE\s*§/,
+    re: /docs\/[\w./-]+\.md|\b(?:TODO|OPEN_BUGS|CLOSED_BUGS|POST_WORK_FINDINGS|ARCHITECTURE|PLAN)\.md|ARCHITECTURE\s*[§#]|\binvariant\s*#?\s*\d+/i,
   },
   { name: "dated plan/spec file", re: /\b20\d\d-\d\d-\d\d[\w-]*\.md/ },
-  { name: "sweep / round name", re: /\b[Ss]weep \d+|\bfix round \d+/ },
+  // A date stamps a comment with when someone wrote it, which is not behaviour. Bare dates
+  // inside example data (`backups/2026-07-30`) are program illustration, so a match requires a
+  // parenthesised or "as of" form.
+  {
+    name: "date stamp",
+    re: /\(\s*20\d\d-\d\d-\d\d\s*\)|\bas of \d|\bas of (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)/i,
+  },
+  // Prose describing a superseded state of the code. Only high-precision forms match: "no
+  // longer" overwhelmingly describes runtime data ("an id that no longer names a scene"), and
+  // flagging it would train writers to dodge the word rather than drop the narration. The
+  // general prohibition is a review rule, not a pattern.
+  {
+    name: "history narration",
+    re: /\bpreviously\b|\bformerly\b|\bhistorically\b|\b(?:before|after) the (?:fix|refactor|change|rewrite)\b/i,
+  },
+  // An unnamed "the spec" is the same defect as a named one and is strictly worse to resolve:
+  // the reader cannot even tell which document went stale.
+  // Matches a reference to a spec DOCUMENT, not the word: `spec` is also a parameter name
+  // (`setBackground(spec)`) and the e2e test-file suffix, and neither points outside the code.
+  {
+    name: "unnamed spec reference",
+    re: /\bspec\s*§|\b(?:the|this|design|parent|wire|per)\s+spec\b|\bspec'?d\b|\bspec\s*:/i,
+  },
+  {
+    name: "sweep / round / review marker",
+    re: /\b[Ss]weep \d+|\bfix[- ]round|\bbuddy-check|\bfinding \d+/i,
+  },
   { name: "process marker", re: /POST_WORK:/ },
 ];
+
+// RULE 16 extends to code-facing string literals (assert! messages, test names): a developer
+// reads an assertion message at failure time exactly as they read a comment, and it goes stale
+// the same undetectable way. Ruled in scope by the user.
+const STRING_LITERAL = /"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`/g;
+
+// Only strings a developer READS as explanation qualify — assertion/panic messages and test
+// names. A string that is program data (a fixture's world name, a document key) names something
+// inside the program, so an id-shaped collision there is not a reference to anything.
+const EXPLANATORY_STRING =
+  /\bassert(?:_eq|_ne)?!|\bpanic!|\.expect\(|\bexpect\(|^\s*(?:async\s+)?(?:test|it|describe)\s*(?:\.\w+)?\s*\(/;
 
 /** Recursively collects source paths under `dir`. */
 function sources(dir) {
@@ -49,8 +91,15 @@ const hits = [];
 for (const path of sources("src")) {
   const lines = readFileSync(path, "utf8").split("\n");
   lines.forEach((line, i) => {
-    if (!COMMENT.test(line)) return;
-    const hit = BANNED.find((b) => b.re.test(line));
+    // A comment line is checked whole; a code line is checked only inside its string literals,
+    // so identifiers and paths that are part of the program are never flagged.
+    const subject = COMMENT.test(line)
+      ? line
+      : EXPLANATORY_STRING.test(line)
+        ? (line.match(STRING_LITERAL) ?? []).join(" ")
+        : "";
+    if (subject === "") return;
+    const hit = BANNED.find((b) => b.re.test(subject));
     if (hit) hits.push({ path, line: i + 1, kind: hit.name, text: line.trim() });
   });
 }
