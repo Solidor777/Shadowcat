@@ -77,13 +77,26 @@
   });
   const chatsys = $derived.by((): ChatSettingsEngine | undefined => chatDoc?.engine as ChatSettingsEngine | undefined);
 
-  // Single-field JSON-pointer update against a config doc.
-  // INVARIANT: doc must be defined; callers guard with the {#if} block.
-  // `old` must be the field's REAL current value (or null when genuinely absent): the server's
-  // apply_intent enforces field-level OCC (actual != change.old -> Conflict), so a hardcoded
-  // `old: null` is only valid once and is rejected+rolled-back on every subsequent edit once the
-  // field holds a non-null value. Callers pass the value read from the panel's reactive derived
-  // system object (`sys.field ?? null`), mirroring scene-tools' snap-toggle fix.
+  /**
+   * Single-field JSON-pointer update against a config doc.
+   * INVARIANT: doc must be defined; callers guard with the {#if} block.
+   * `old` must be the field's REAL current value (or null when genuinely absent): the server's
+   * apply_intent enforces field-level OCC (actual != change.old -> Conflict), so a hardcoded
+   * `old: null` is only valid once and is rejected+rolled-back on every subsequent edit once the
+   * field holds a non-null value. Callers pass the value read from the panel's reactive derived
+   * system object (`sys.field ?? null`), mirroring scene-tools' snap-toggle fix.
+   * @param docId The config document's id to update.
+   * @param path The field's JSON-pointer path within the document.
+   * @param old The field's real current value (OCC pre-image), or `null`/`undefined` when
+   * genuinely absent.
+   * @param value The new value to write.
+   * @example
+   * ```
+   * // private function; not part of the public API — wired to each control's
+   * // onchange below
+   * set(ws.id, "/engine/scene/movementRestriction", wsys.scene.movementRestriction, "visible");
+   * ```
+   */
   function set(docId: string, path: string, old: unknown, value: unknown): void {
     ctx.dispatchIntent([{ op: "update", doc_id: docId, changes: [{ path, old: old ?? null, new: value }] }]);
   }
@@ -119,17 +132,40 @@
     scenes.find((s) => s.id === (selectedSceneId ?? scenes[0]?.id)));
   const ssys = $derived.by((): SceneEngine | undefined => scene?.engine as SceneEngine | undefined);
 
-  // Single-field JSON-pointer update against the SELECTED scene doc.
-  // INVARIANT: scene must be defined; callers guard with the {#if} block.
-  // `old` must be the field's real current value (see `set` above for the OCC rationale).
+  /**
+   * Single-field JSON-pointer update against the SELECTED scene doc.
+   * INVARIANT: scene must be defined; callers guard with the {#if} block.
+   * `old` must be the field's real current value (see `set` above for the OCC rationale).
+   * @param path The field's JSON-pointer path within the selected scene document.
+   * @param old The field's real current value (OCC pre-image), or `null`/`undefined` when
+   * genuinely absent.
+   * @param value The new value to write.
+   * @example
+   * ```
+   * // private function; not part of the public API — wired to each per-scene
+   * // control's onchange below
+   * setScene("/engine/grid/kind", ssys.grid?.kind ?? "square", "hex");
+   * ```
+   */
   function setScene(path: string, old: unknown, value: unknown): void {
     if (!scene) return;
     ctx.dispatchIntent([{ op: "update", doc_id: scene.id, changes: [{ path, old: old ?? null, new: value }] }]);
   }
 
-  // Whole-object write: set_pointer cannot create a missing /system/bounds parent from a
-  // sub-path, so we always dispatch the full { width, height } (mirrors the environment editor).
-  // The unedited axis falls back to the current authored value, else DEFAULT_SCENE_BOUNDS.
+  /**
+   * Whole-object write: set_pointer cannot create a missing /engine/bounds parent from a
+   * sub-path, so we always dispatch the full { width, height } (mirrors the environment editor).
+   * The unedited axis falls back to the current authored value, else DEFAULT_SCENE_BOUNDS.
+   * @param axis Which bounds axis this edit changes; the other axis is carried
+   * forward unchanged.
+   * @param value The new value for `axis`.
+   * @example
+   * ```
+   * // private function; not part of the public API — wired to the bounds
+   * // width/height inputs below
+   * setBounds("width", 4000);
+   * ```
+   */
   function setBounds(axis: "width" | "height", value: number): void {
     const cur = ssys?.bounds ?? DEFAULT_SCENE_BOUNDS;
     setScene("/engine/bounds", ssys?.bounds ?? null, { ...cur, [axis]: value });
@@ -196,7 +232,7 @@
 
   {#if ctx.role === "gm" && lgsys && lgDoc}
     <!-- Gradation band editors: one numeric threshold input per seeded band.
-         JSON-pointer path: /system/bands/<i>/minIllumination -->
+         JSON-pointer path: /engine/bands/<i>/minIllumination -->
     <fieldset>
       <legend>{ctx.t("gameSettings.gradation")}</legend>
       {#each lgsys.bands as band, i (band.name)}
@@ -215,7 +251,7 @@
 
   {#if ctx.role === "gm" && vmsys && vmDoc}
     <!-- Vision-mode editors: one row per mode — illumination floor select + default range number.
-         JSON-pointer paths: /system/modes/<id>/illuminationFloor, /system/modes/<id>/defaultRange -->
+         JSON-pointer paths: /engine/modes/<id>/illuminationFloor, /engine/modes/<id>/defaultRange -->
     <fieldset>
       <legend>{ctx.t("gameSettings.visionModes")}</legend>
       {#each Object.values(vmsys.modes) as mode (mode.id)}
@@ -277,11 +313,15 @@
   {#if ctx.role === "gm" && chatsys && chatDoc}
     <!-- Chat content policy: hyperlinks toggle + link-preview tri-state.
          JSON-pointer paths: /engine/hyperlinks, /engine/link_previews.
-         Matches the server body shape (chat/settings.rs ChatContentPolicy, a type
-         alias onto data/engine/registries.rs ChatSettingsEngine) exactly:
-         hyperlinks is a plain bool (default false); link_previews is TRI-STATE
-         (absent/null = default-on-when-hyperlinks-on, true/false = explicit override) —
-         the "" option writes null, mirroring the scene-override inherit pattern above. -->
+         Both fields are `boolean | null` on the wire (ChatSettingsEngine,
+         data/engine/registries.rs:108-122, aliased as chat/settings.rs's
+         ChatContentPolicy) — but they differ in what null MEANS. hyperlinks
+         has no inherit concept: this panel exposes it as a plain two-state
+         checkbox, coalescing null to false (its spec'd default). link_previews
+         is genuinely TRI-STATE (absent/null = default-on-when-hyperlinks-on,
+         true/false = explicit override), so it gets a three-option select
+         instead — the "" option writes null, mirroring the scene-override
+         inherit pattern above. -->
     <fieldset>
       <legend>{ctx.t("gameSettings.chat.title")}</legend>
       <label>
@@ -426,7 +466,7 @@
       </label>
 
       <!-- Environment lighting override: a tri-state select gates the color+intensity inputs.
-           Selecting "inherit" writes null to /system/lighting/environment so the nullish-coalesce
+           Selecting "inherit" writes null to /engine/lighting/environment so the nullish-coalesce
            in resolveSceneSettings falls back to the world default (null ?? d.scene.environment).
            Selecting "override" seeds with DEFAULT_WORLD_SETTINGS.scene.environment so the initial
            write has a meaningful value, not #000000/0. The object is cloned (not passed by ref)

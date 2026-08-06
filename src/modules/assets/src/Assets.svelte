@@ -9,6 +9,21 @@
   let selectedId = $state<string | null>(null);
   let error = $state<string | null>(null);
 
+  /** Repopulates `items` from the server — the source of truth for the asset
+   * grid (assets are plain REST resources, not `ctx.documents` entries, so no
+   * store subscription applies here). Called on mount, whenever an
+   * `AssetChanged` broadcast lands (see the effect below), and by
+   * `onUpload`/`onDelete` for an immediate refresh that doesn't wait on a
+   * broadcast round-trip.
+   * @returns Resolves once `items` holds the fresh list, or `error` is set on
+   * a fetch failure.
+   * @example
+   * ```
+   * // private function; not part of the public API — invoked from the mount
+   * // effect below and from the mutation handlers that need an immediate refresh
+   * void reload();
+   * ```
+   */
   async function reload(): Promise<void> {
     try {
       items = await listAssets(world);
@@ -20,12 +35,29 @@
 
   // Load on mount; reload whenever another client (or our own replace/delete)
   // broadcasts an AssetChanged. The resolver was already cache-busted by
-  // WorldSession before this fires, so re-rendered <img> tags pull fresh bytes.
+  // WorldSession before this fires (its onAssetChanged handler bumps
+  // `this.assets` BEFORE notifying listeners like this effect —
+  // src/client/shell/src/lib/worldSession.svelte.ts:611-614), so re-rendered
+  // <img> tags pull fresh bytes.
   $effect(() => {
     void reload();
     return onAssetChanged(() => void reload());
   });
 
+  /** Uploads the selected file as a brand-new asset, then explicitly reloads
+   * the grid. `upload` never broadcasts `AssetChanged` (only `replace`/`delete`
+   * do — `src/server/src/http/assets.rs:172-252` has no broadcast call, versus
+   * `:364`/`:411`), so a freshly-created asset has no broadcast round-trip to
+   * react to; this component must refresh itself.
+   * @param e The `<input type="file">` change event; the input's value is
+   * reset so choosing the same filename again still fires `onchange`.
+   * @example
+   * ```
+   * // private function; not part of the public API — wired to the upload
+   * // input's onchange below
+   * void onUpload(event);
+   * ```
+   */
   async function onUpload(e: Event): Promise<void> {
     const input = e.currentTarget as HTMLInputElement;
     const file = input.files?.[0];
@@ -39,6 +71,29 @@
     }
   }
 
+  /** Replaces the asset's bytes behind its stable `uuid`, without an explicit
+   * reload. Refresh here is driven entirely by the server's out-of-band
+   * `asset_changed{replaced}` broadcast (`Room::broadcast_aux`,
+   * `src/server/src/ws/room.rs:243-249` — best-effort, dropped if there are no
+   * receivers, and never replayed on resync): the `onAssetChanged` effect
+   * above both reloads `items` and lets `resolver` bump its cache-busting
+   * revision so the `<img>` tag re-requests fresh bytes. If that one broadcast
+   * is lost — e.g. a receiver briefly disconnected when it fires — nothing
+   * else in this component notices: `resolver.url()` only cache-busts in
+   * response to `onAssetChanged` (`src/client/core/src/assets.ts:41-45`), not
+   * from the asset's server-side `version`, so the tile keeps its pre-replace
+   * URL and may go on being served from the browser cache until some
+   * unrelated reload happens.
+   * @param uuid The asset's stable id (unchanged by a replace).
+   * @param e The `<input type="file">` change event; the input's value is
+   * reset so choosing the same filename again still fires `onchange`.
+   * @example
+   * ```
+   * // private function; not part of the public API — wired to each tile's
+   * // replace input's onchange below
+   * void onReplace(uuid, event);
+   * ```
+   */
   async function onReplace(uuid: string, e: Event): Promise<void> {
     const input = e.currentTarget as HTMLInputElement;
     const file = input.files?.[0];
@@ -52,6 +107,16 @@
     }
   }
 
+  /** Deletes the asset and immediately reloads the grid (see the inline
+   * comment below for why the explicit reload doesn't wait on the broadcast).
+   * @param uuid The asset's stable id.
+   * @example
+   * ```
+   * // private function; not part of the public API — wired to each tile's
+   * // delete button's onclick below
+   * void onDelete(uuid);
+   * ```
+   */
   async function onDelete(uuid: string): Promise<void> {
     try {
       await deleteAsset(uuid);

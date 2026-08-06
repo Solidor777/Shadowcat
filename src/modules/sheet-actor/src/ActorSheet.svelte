@@ -55,14 +55,31 @@
     }));
   });
 
-  /** Update an engine-owned field (`/engine/<field>`). */
+  /** Update an engine-owned field (`/engine/<field>`).
+   * @param field The field name under `/engine` to write (e.g. `"displayName"`).
+   * @param value The new value for that field.
+   * @example
+   * ```
+   * // private function; not part of the public API — wired to each field
+   * // control's onchange below
+   * setEngine("displayName", "Ancient Red Dragon");
+   * ```
+   */
   function setEngine(field: string, value: unknown): void {
     if (!doc) return;
     const path = `${enginePrefix}/${field}`;
     setField(ctx, docId, path, getPointer(doc, path), value);
   }
 
-  /** Update the envelope `name` field. */
+  /** Update the envelope `name` field.
+   * @param value The new name.
+   * @example
+   * ```
+   * // private function; not part of the public API — wired to the name
+   * // input's onchange above
+   * setName("Ancient Red Dragon");
+   * ```
+   */
   function setName(value: string): void {
     if (!doc) return;
     setField(ctx, docId, namePrefix, name, value);

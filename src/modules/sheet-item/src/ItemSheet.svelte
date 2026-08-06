@@ -48,12 +48,39 @@
 
   /** Update the `name` field at `namePrefix` (the sibling of `systemPrefix`, correctly
    * embedded-aware — distinct from the opaque `system` tree, which the `SystemTreeEditor`
-   * below edits directly via its own setField calls). */
+   * below edits directly via its own setField calls).
+   * @param value The new name.
+   * @example
+   * ```
+   * // private function; not part of the public API — wired to the name
+   * // input's onchange above
+   * setName("Longsword +1");
+   * ```
+   */
   function setName(value: string): void {
     if (!doc) return;
     setField(ctx, docId, namePrefix, name, value);
   }
 
+  /** Posts `formula` to chat as a `/roll` command on the hardcoded `"general"`
+   * channel. `channel` is a purely client-chosen display label the server
+   * never validates or derives audience from (`Audience`'s doc comment,
+   * `src/server/src/chat/mod.rs:105-111`; `handle_send_message`'s channel checks,
+   * `src/server/src/chat/mod.rs:519-524`, only check non-empty/length). Posting
+   * to `"general"` before a GM has ever added it to the channel registry is
+   * harmless: the message still sends, and any UI resolving the channel's
+   * display name falls back to the raw id for an unregistered one (mirrors
+   * `ChatPanel.svelte`'s `channelDisplayName`,
+   * `src/modules/chat/src/ChatPanel.svelte:111-126`).
+   * @param formula The dice-notation string to roll (already filtered through
+   * `isDiceNotation`; see `rollable` above).
+   * @example
+   * ```
+   * // private function; not part of the public API — wired to each
+   * // rollable button's onclick below
+   * roll("2d6+3");
+   * ```
+   */
   function roll(formula: string): void {
     ctx.chat.send({ channel: "general", content: `/roll ${formula}` });
   }
