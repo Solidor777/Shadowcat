@@ -63,14 +63,27 @@ export default [
   },
   // Ratcheted, repo-wide (sweep 12): every package under these globs reached
   // zero under the warn tier, so the ratcheted block now takes the SAME globs
-  // as the warn block above rather than an enumerated package list — the warn
-  // block matches nothing today but stays as sweep 13's staging tier for
-  // property-level rules (still to be added to `rulesAt`, not yet gated here).
+  // as the warn block above rather than an enumerated package list. Because
+  // flat config gives the LATER block precedence per rule key, and this block
+  // now has `files` byte-identical to the warn block above, this block fully
+  // SHADOWS it: every rule key in `rulesAt` resolves to this block's `error`
+  // severity here, for every matched file, unconditionally. The warn block is
+  // not "empty" — it is superseded. It also cannot stage a future rule on its
+  // own: `rulesAt` is one function feeding both tiers (`:10-12`), so adding a
+  // context there sets both tiers' severity at once, and with the globs now
+  // identical the ratcheted block's `error` is what every file sees. Sweep 13
+  // stages new (property/type) contexts through a SEPARATE config file
+  // instead — see `docs/superpowers/plans/2026-08-06-docs-sweep13-property-
+  // coverage.md` — precisely because this shadowing makes in-place staging
+  // impossible once a block's globs match its warn-tier sibling's.
   {
     files: ["src/types/**/*.ts", "src/client/**/*.ts", "src/modules/**/*.ts", "examples/**/*.ts"],
-    // Kept identical to the warn block's ignores, including `src/types/generated`
-    // (inert against today's `files` glob). The two blocks must stay symmetric:
-    // the next package added here inherits whatever asymmetry is left behind.
+    // Kept identical to the warn block's ignores. `src/types/generated/**` is
+    // load-bearing here (unlike when this block held an enumerated package
+    // list): this block's `files` now includes `src/types/**/*.ts`, which DOES
+    // match `src/types/generated/**` — removing this ignore would gate every
+    // ts-rs-generated file at `error`. The two blocks must stay symmetric: the
+    // next edit here inherits whatever asymmetry is left behind.
     ignores: [
       "**/node_modules/**", "**/dist/**", "**/*.test.ts", "**/*.spec.ts", "**/vitest.setup.ts",
       "src/types/generated/**",

@@ -5,7 +5,7 @@ properties, types and named-arrow gaps that gate leaves entirely unmeasured.
 
 ## Why this plan exists
 
-User directives, 2026-08-06, verbatim:
+User directives, 2026-08-05, verbatim:
 
 > "complete the full documentation and documentation verification pass via sdd. as per before, every
 > documentation pass gets buddy checked until no problems are found. **continue until every function
@@ -20,24 +20,25 @@ exports. Sweep 12 finishing at 0 is therefore necessary but not sufficient.
 
 ## Measured scope
 
-Measured 2026-08-06 with throwaway eslint configs that reuse the shipped `files`/`ignores` globs and
+Measured 2026-08-05 with throwaway eslint configs that reuse the shipped `files`/`ignores` globs and
 swap only `jsdoc/require-jsdoc`'s `contexts`. **Those probe files are git-ignored scratch and are not
-branch content** — the `contexts` column below is the reproduction recipe; Task 1 lands them in
-`rulesAt` for real, at which point these numbers become reproducible from the tree alone.
+branch content** — the `contexts` column below is the reproduction recipe; Task 1 lands them for
+real in a new, separate property-gate config (not `eslint.docs.config.js`'s `rulesAt` — see Task 1
+below for why), at which point these numbers become reproducible from the tree alone.
 
 | Gap | Contexts | Sites | Probe |
 |---|---|---|---|
 | Properties | `PropertyDefinition`, `TSPropertySignature`, `TSMethodSignature`, `TSEnumMember` | **1222** | `eslint.probe3.config.js` |
 | Named arrow / fn expressions | exported + module-level `VariableDeclarator > ArrowFunctionExpression\|FunctionExpression` | **6** | `eslint.probe2.config.js` |
 | **Gate total** | | **1228** | |
+| Type declarations | `TSInterfaceDeclaration`, `TSTypeAliasDeclaration`, `TSEnumDeclaration` | **101** | `eslint.probe.config.js` (1324 combined) |
+| **TS gate total** | | **1329** | |
 
 Each probe's raw output is one higher than the real site count: both report the same "unused
 eslint-disable directive" at `core/src/hooks.ts:25`, which is a `linterOptions` artifact of the
 probe configs (they omit the shipped config's `reportUnusedDisableDirectives: false` block for that
 one file, `eslint.docs.config.js:91-94`) and not a missing doc. The real config keeps that block, so
-the artifact disappears once the contexts land in `rulesAt`.
-| Type declarations | `TSInterfaceDeclaration`, `TSTypeAliasDeclaration`, `TSEnumDeclaration` | **101** | `eslint.probe.config.js` (1324 combined) |
-| **TS gate total** | | **1329** | |
+the artifact disappears once the contexts land in the new property-gate config (see Task 1 below).
 
 ### Type declarations ARE in scope — and the `z.infer` idiom must be handled, not dodged
 
@@ -72,7 +73,7 @@ The settings surface spans both languages: `world-settings`, `chat-settings`, `d
 (`src/server/src/data/engine/registries.rs`) and a TS mirror. **eslint cannot see the Rust half at
 all**, so the TS gate reaching 0 says nothing about it.
 
-Measured 2026-08-06, and the measurement itself needs care:
+Measured 2026-08-05, and the measurement itself needs care:
 
 - `cargo clippy -- -W missing_docs` reported **1** — misleading. `missing_docs` only fires on items
   public at the crate boundary, and `shadowcat` is a bin crate, so nearly everything is invisible to
@@ -107,9 +108,23 @@ gates itself and audits citations → `shadowcat-spec-reviewer` + `shadowcat-cod
 high) as the two-reviewer pair → fix rounds, five-round breaker → per-crate buddy-check convergence
 before the ratchet.
 
+**Task 1's config lives in a NEW, separate file, not `eslint.docs.config.js`.** That file's
+ratcheted `.ts`/`.svelte` blocks now carry `files` globs byte-identical to their warn-tier
+siblings (Sweep 12 Task 8), so flat config's later-block-wins-per-rule-key semantics mean the warn
+tier is fully shadowed there — it cannot stage anything, because `rulesAt` is one function feeding
+both tiers (`eslint.docs.config.js:10-12`) and a shadowed warn block never gets a chance to be
+"the still-warn one" for a newly added rule. Adding a property context to that file's `rulesAt`
+would land at `error`, repo-wide, immediately, with ~1,222 sites failing on day one. Task 1
+therefore creates `eslint.props.config.js`: its own `rulesAt`-shaped severity function, its own
+warn/ratcheted block pair (globs starting empty/narrow and widened per completed package, mirroring
+how `eslint.docs.config.js` itself was built up sweep-by-sweep before Sweep 12), and its own
+`lint:props` package-json script. It stays a fully independent ESLint invocation from
+`eslint.docs.config.js` for the whole of this sweep, so neither can shadow or interfere with the
+other. Task 15 merges both into `eslint.config.js` once `lint:props` also reaches 0.
+
 | # | Scope | Sites |
 |---|---|---|
-| 1 | **Config + measurement task.** Add the 4 property contexts, the 3 type-declaration contexts, and the 4 arrow contexts to `rulesAt`. Mutation-prove each of the 11 fires. Then prove the Rust side: confirm `clippy::missing_docs_in_private_items` genuinely runs (not cached) and genuinely fires (mutation), and report the true Rust number. No ratchet, no doc writing. | — |
+| 1 | **Config + measurement task.** Create `eslint.props.config.js` (see above) with a `rulesAt`-shaped severity function gating the 4 property contexts, the 3 type-declaration contexts, and the 4 arrow contexts, at `warn` repo-wide to start. Add a `lint:props` script. Mutation-prove each of the 11 fires at `warn`. Then prove the Rust side: confirm `clippy::missing_docs_in_private_items` genuinely runs (not cached) and genuinely fires (mutation), and report the true Rust number. No ratchet yet, no doc writing. | — |
 | 2 | `core/wire.ts` + `core/ws-client.ts` | 157 |
 | 3 | `core/modules.ts` + `core/merge.ts` + `core/contributions.ts` + `core/manifest.ts` | 127 |
 | 4 | `core/actor.ts` + `core/hooks.ts` + `core/user-rest.ts` + `core/scene-docs.ts` + `core/mock-server.ts` | 106 |
@@ -124,7 +139,7 @@ before the ratchet.
 | 13 | tail: `chat-card`, `entry`, `sheet-actor`, `stage`, `sheet-item`, `chat-composer`, `assets`, `sheet-fallback`, `settings`, both `examples/` | 53 |
 | 14 | the 6 named arrow/fn-expression sites | 6 |
 | 14b | whatever Task 1's Rust proof surfaces (0 if the 0 holds; otherwise scoped then) | ? |
-| 15 | **Ship task.** Ratchet every package to `error` in all four config blocks; consolidate `eslint.docs.config.js` into `eslint.config.js`; mutation-prove both tiers; full gate matrix; docs sync; reviewed skill-update gate; skills documentation-reference pass. | — |
+| 15 | **Ship task.** Ratchet `eslint.props.config.js` to `error` for every package in both its blocks; consolidate `eslint.docs.config.js` AND `eslint.props.config.js` into `eslint.config.js`; mutation-prove all tiers; full gate matrix; docs sync; reviewed skill-update gate; skills documentation-reference pass. | — |
 
 **The per-task site counts above are the PROPERTY gap only.** The 101 type-declaration sites live in
 the same files and are absorbed by whichever task owns each file — `wire.ts` (Task 2) carries the
@@ -147,7 +162,7 @@ commit the reviewer read.
 4. **A citation that RESOLVES is not one that SUPPORTS the claim** — the campaign's dominant defect.
 5. **Scope every absolute.** "never/always/only/sole" must be enumerable from code.
 6. **Rule 3 — no third copy.** A property whose semantics are stated by its enclosing type's doc
-   points at it; it does not restate it. This matters far more here than in sweep 12: 1223 adjacent
+   points at it; it does not restate it. This matters far more here than in sweep 12: 1222 adjacent
    sites is the highest-pressure environment for copy-drift the campaign has faced.
 7. **Rule 14 re-scan** — inventory every comment, including `//` and `const`, and report the count
    as a number.
@@ -157,7 +172,7 @@ commit the reviewer read.
 
 ## The property-doc quality bar
 
-A property doc that says `/** The user id. */` above `user_id: string` is worthless and 1223 of them
+A property doc that says `/** The user id. */` above `user_id: string` is worthless and 1222 of them
 would be actively harmful — noise that buries the real invariants. The bar per site:
 
 - **State the invariant or the coupling, not the name.** `/** Server-assigned; stable across a
@@ -171,8 +186,11 @@ would be actively harmful — noise that buries the real invariants. The bar per
 
 ## Exit criteria
 
-- `pnpm lint:docs` **0** repo-wide with every package ratcheted to `error` in all four blocks.
-- Both tiers mutation-proven: an undocumented function AND an undocumented property each report.
+- `pnpm lint:docs` **0** repo-wide (already true entering this sweep) and `pnpm lint:props` **0**
+  repo-wide with every package ratcheted to `error` in all of `eslint.props.config.js`'s blocks,
+  then both configs merged into `eslint.config.js` at Task 15.
+- Both gates mutation-proven: an undocumented function (`eslint.docs.config.js`) AND an undocumented
+  property (`eslint.props.config.js`) each report.
 - `docs:check-examples` green at its final value.
 - Full local gate matrix: `pnpm -r typecheck`, `pnpm -r test`, `pnpm lint`, `cargo fmt --check`,
   `cargo clippy --all-targets`, `cargo test`, Playwright e2e.

@@ -1571,8 +1571,13 @@ Trusted local modding hardening → freeze the module API on evidence (≥1 exte
   and `.svelte` blocks in `eslint.docs.config.js` now take the SAME four globs as the warn-tier
   blocks (`src/types/**`, `src/client/**`, `src/modules/**`, `examples/**`) instead of an enumerated
   package list, so every package under those globs is gated — not just the twelve named packages
-  Sweep 11 left ratcheted. The warn-tier blocks are kept, not deleted: they now match nothing under
-  function-level rules, but are the staging tier Sweep 13 stages property-level rules through.
+  Sweep 11 left ratcheted. The warn-tier blocks are kept, not deleted, but flat config gives the
+  LATER block precedence per rule key: with the ratcheted block's `files` now byte-identical to its
+  warn-tier sibling's, the warn tier is fully SHADOWED (every file resolves to the ratcheted block's
+  `error` severity) rather than staging anything on its own — `rulesAt` is one function feeding both
+  tiers, so it cannot hold function rules at `error` and a future property rule at `warn`
+  simultaneously once the globs match. Sweep 13 therefore stages its new contexts through a
+  **separate** config file instead of this warn tier (see the Successor note below).
   Whole-repo `lint:docs` after Sweep 12: **0 warnings, 0 errors.** Doc examples 332 → 333.
   Ratchet mutation-proven in all four required ways (undocumented function in a ratcheted `.ts`
   file; undocumented function in a ratcheted `.svelte` `<script>`; a deleted `@param` in a `.ts`
@@ -1583,12 +1588,13 @@ Trusted local modding hardening → freeze the module API on evidence (≥1 exte
   are off, and there is no rule for plain property/type declarations at all) — **~1,329 such sites
   remain ungated**, per the Sweep 13 plan. Do not read "Sweep 12 complete" as "the codebase is fully
   documented."
-  Plan: `.superpowers/sdd/2026-08-05-docs-sweep12-chat-entry-settings/`. Successor:
+  Plan: `docs/superpowers/plans/2026-08-05-docs-sweep12-chat-entry-settings.md`. Successor:
   **Sweep 13 — property, type and full-coverage documentation pass**
   (`docs/superpowers/plans/2026-08-06-docs-sweep13-property-coverage.md`), which extends `rulesAt`
-  with property/type/named-arrow contexts, stages them through the still-live warn tier, burns down
-  the ~1,329-site backlog, and — as its final task — consolidates `eslint.docs.config.js` into
-  `eslint.config.js` (deferred out of Sweep 12 for exactly this reason).
+  with property/type/named-arrow contexts inside a new, separate `eslint.props.config.js` (its own
+  warn/ratcheted staging pair, run as `lint:props`, so it can neither shadow nor be shadowed by
+  `eslint.docs.config.js`), burns down the ~1,329-site backlog, and — as its final task —
+  consolidates both configs into `eslint.config.js`.
   **Required reading for every implementer and reviewer:**
   `docs/design/doc-sweep-truthfulness-rules.md` — fourteen rules derived empirically from Sweeps
   7–11, where every fix round was triggered by a doc sentence asserting something FALSE, never by a
@@ -1631,7 +1637,7 @@ Trusted local modding hardening → freeze the module API on evidence (≥1 exte
   - **Carried forward, not fixed here:** the dead `sendMoves` shorthand still appears in two SERVER
     test comments, `src/server/src/ws/room.rs:3441` and `:3471` — different crate, different gate,
     left alone deliberately.
-  Plan: `.superpowers/sdd/2026-08-01-docs-sweep11-scene-modules/`.
+  Plan: `docs/superpowers/plans/2026-08-01-docs-sweep11-scene-modules.md`.
 - **Sweep 10 — `@shadowcat/module-panels`: COMPLETE (2026-08-01).** 217-item backlog → 0 across 3
   content tasks (dockview engine 73; layout tree+persist 71; controller+policy+fake+3 components 73),
   then a two-block ratchet. **First sweep into `src/modules/`.** Whole-repo `lint:docs` after Sweep
