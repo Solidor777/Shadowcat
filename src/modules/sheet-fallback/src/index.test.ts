@@ -5,8 +5,8 @@ import { sheetFallback } from "./index";
 describe("module-sheet-fallback", () => {
   it("registers the generic fallback sheet at -Infinity priority under the fallback contract", () => {
     const contributions = new ContributionRegistry();
-    // Mirrors the real ModuleContext.contributions wrapper (modules.ts `activate`):
-    // a 1-arg `contribute(c)` closure that auto-injects the module id — index.ts
+    // Mirrors the real ModuleContext.contributions wrapper (`ModuleRegistry.activate`):
+    // a 1-arg `contribute(c)` closure that auto-injects the module id — the module entry
     // never self-declares it, matching every other first-party module.
     sheetFallback.register({
       contributions: { contribute: (c: Parameters<typeof contributions.contribute>[0]) => contributions.contribute(c, { module: "sheet-fallback" }) },

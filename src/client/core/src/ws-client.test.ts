@@ -217,7 +217,7 @@ describe("WsClient", () => {
       const id = ++opens;
       return Promise.resolve({
         send: () => {},
-        // A real Transport's close() fires onClose (see transport.ts); the mock
+        // A real Transport's close() fires onClose (see `webSocketConnect`); the mock
         // mirrors that so the watchdog's close() actually engages reconnect.
         close: () => {
           closes.push(id);

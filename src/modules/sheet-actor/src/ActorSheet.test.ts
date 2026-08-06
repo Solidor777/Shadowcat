@@ -33,8 +33,8 @@ function storeWithEmbeddedActor(fields: Record<string, unknown>) {
 describe("module-sheet-actor registration", () => {
   it("registers ActorSheet under shadowcat.sheet:actor at priority 0", () => {
     const contributions = new ContributionRegistry();
-    // Mirrors the real ModuleContext.contributions wrapper (modules.ts activate): a
-    // 1-arg contribute(c) closure that auto-injects the module id — index.ts never
+    // Mirrors the real ModuleContext.contributions wrapper (`ModuleRegistry.activate`): a
+    // 1-arg contribute(c) closure that auto-injects the module id — the module entry never
     // self-declares it, matching every other first-party module.
     sheetActor.register({
       contributions: { contribute: (c: Parameters<typeof contributions.contribute>[0]) => contributions.contribute(c, { module: "sheet-actor" }) },

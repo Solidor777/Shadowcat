@@ -3,7 +3,7 @@
 // rest of the app instead of dockview's shipped themes. A full stage-well
 // skin (drop overlays, tab-group chips, floating titlebar) is future work;
 // this file only wires the two token systems together. Imported once, as a
-// side effect, from `engine/dockview.ts` — never paid for by `FakeEngine`-only
+// side effect, from the `dockview` module — never paid for by `FakeEngine`-only
 // hosts.
 // Referenced by relative path (not a bare "pkg/..." specifier) — dart-sass's
 // CLI/Vite compiler resolves plain npm-package specifiers only via the
