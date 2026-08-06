@@ -465,6 +465,19 @@ export type ClientMsg =
       request_id: string;
       /** Channel name (e.g. "vision"). */
       channel: string;
+      /**
+       * GM-only see-as-player override: a member's user id, so the channel is
+       * derived from THAT user's view instead of the caller's. Omit for the
+       * caller's own view. Authorized entirely server-side
+       * (`src/server/src/ws/conn.rs:1313-1329`): a non-GM caller gets
+       * `scene_error` "not authorized to view as another user", and a target
+       * who is not a member of the world gets `scene_error` "target user is
+       * not a member of this world". The target's role is resolved from the
+       * server's own membership record — a client-supplied role or scope is
+       * never trusted, which is what makes this the player-to-player access
+       * boundary.
+       */
+      as_user?: string;
     }
   | {
       /** Cancel a derived subscription by request id. */
