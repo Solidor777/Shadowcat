@@ -61,17 +61,13 @@ export default [
     plugins: { jsdoc, "@typescript-eslint": tseslint.plugin },
     rules: RULES,
   },
-  // Ratcheted packages: doc coverage is a hard gate, not advisory. A package
-  // joins this list only once it is at zero under the warn tier.
+  // Ratcheted, repo-wide (sweep 12): every package under these globs reached
+  // zero under the warn tier, so the ratcheted block now takes the SAME globs
+  // as the warn block above rather than an enumerated package list — the warn
+  // block matches nothing today but stays as sweep 13's staging tier for
+  // property-level rules (still to be added to `rulesAt`, not yet gated here).
   {
-    files: [
-      "src/client/core/**/*.ts", "src/client/render/**/*.ts",
-      "src/client/shell/**/*.ts", "src/client/ui-kit/**/*.ts", "src/client/formula/**/*.ts",
-      "src/modules/panels/**/*.ts",
-      "src/modules/scene-tools/**/*.ts", "src/modules/actors/**/*.ts",
-      "src/modules/scene-browser/**/*.ts", "src/modules/stage/**/*.ts",
-      "src/modules/conditions/**/*.ts", "src/modules/factions/**/*.ts",
-    ],
+    files: ["src/types/**/*.ts", "src/client/**/*.ts", "src/modules/**/*.ts", "examples/**/*.ts"],
     // Kept identical to the warn block's ignores, including `src/types/generated`
     // (inert against today's `files` glob). The two blocks must stay symmetric:
     // the next package added here inherits whatever asymmetry is left behind.
@@ -102,21 +98,16 @@ export default [
     plugins: { jsdoc },
     rules: RULES,
   },
-  // Ratcheted .svelte. Separate from the ratcheted .ts block because a `.svelte`
-  // file needs svelteParser — one block cannot carry both parsers — so a package
-  // reaching zero is ratcheted in two places, not one. The rules themselves are
-  // the same `rulesAt` set, and they DO reach functions declared in a `<script>`
-  // block (mutation-checked: an undocumented function added to a ratcheted
-  // component reports, so a green run here is a real zero rather than a parser
-  // that silently visits nothing).
+  // Ratcheted .svelte, repo-wide (sweep 12). Separate from the ratcheted .ts
+  // block because a `.svelte` file needs svelteParser — one block cannot carry
+  // both parsers — so gating a package means adding it to BOTH blocks; here it
+  // means both blocks take the same broad globs. The rules themselves are the
+  // same `rulesAt` set, and they DO reach functions declared in a `<script>`
+  // block (mutation-checked again this sweep: an undocumented function added to
+  // a ratcheted component reports, so a green run here is a real zero rather
+  // than a parser that silently visits nothing).
   {
-    files: [
-      "src/client/shell/**/*.svelte", "src/client/ui-kit/**/*.svelte",
-      "src/modules/panels/**/*.svelte",
-      "src/modules/scene-tools/**/*.svelte", "src/modules/actors/**/*.svelte",
-      "src/modules/scene-browser/**/*.svelte", "src/modules/stage/**/*.svelte",
-      "src/modules/conditions/**/*.svelte", "src/modules/factions/**/*.svelte",
-    ],
+    files: ["src/client/**/*.svelte", "src/modules/**/*.svelte", "examples/**/*.svelte"],
     ignores: ["**/node_modules/**", "**/dist/**"],
     languageOptions: {
       parser: svelteParser,
