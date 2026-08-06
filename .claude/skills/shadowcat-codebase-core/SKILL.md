@@ -108,6 +108,22 @@ source of truth. The ones agents break most:
   finds. Carve-outs: config/build files (no symbols to cite), filenames used as *values*, and dated
   records under `docs/superpowers/`. Full rule: `docs/design/doc-sweep-truthfulness-rules.md`
   RULE 15. [[cite-symbols-not-file-lines]]
+- **A code comment may talk about THE CODE and nothing else (user directive 2026-08-06).** Banned in
+  `.ts`/`.rs`/`.svelte` comments: milestone/task/phase ids (`M13-0`, `M11d-3`, `T1/T3`), repo
+  document pointers (`` `docs/TODO.md` ``, `` `docs/OPEN_BUGS.md` ``, `ARCHITECTURE §2 invariant 4`),
+  dated plan/spec files, sweep or fix-round names, and `POST_WORK:` markers. **These are one class:
+  each names something outside the code whose identity is assigned by a process** — milestones get
+  renumbered, doc sections renumbered, bug entries move `OPEN_BUGS` → `CLOSED_BUGS`, specs get
+  superseded. The comment then points at nothing, and unlike a stale claim *about code*, **no reader
+  and no tool can tell**, because the referent's disappearance is invisible from the code.
+  The conversion is always **state the CONSTRAINT, drop the POINTER** — the pointer was a shortcut
+  to information that belongs inline. `TODO:` itself stays (it is a code marker); what goes is the
+  "see `TODO.md`" tail. **Direction of dependency: doc → code, never code → doc** — the backlog or
+  bug entry cites the SYMBOL (RULE 15) and points inward, so closing it cannot rot a comment.
+  This is stronger than RULE 15 and wins where they touch: RULE 15 says how to cite, this says what
+  may be referred to at all. Markdown docs, skills and `.superpowers/` artifacts are exempt — they
+  may cite documents by path + section anchor. Full rule:
+  `docs/design/doc-sweep-truthfulness-rules.md` RULE 16.
 - **`CLAUDE.md` is git-ignored** — it is local-only; durable rules live in `ARCHITECTURE.md` §2,
   the real source of truth. [[claude-md-is-git-ignored]]
 - **ts-rs types are generated** — change the Rust enum/struct, regenerate, then mirror in the

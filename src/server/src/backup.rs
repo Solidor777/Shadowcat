@@ -353,8 +353,8 @@ mod tests {
     use sqlx::Row;
 
     /// A minimal seeded db: one table, one known row — deliberately independent
-    /// of the application schema/migrations, since `backup.rs` must work with
-    /// any SQLite file content.
+    /// of the application schema/migrations, since `create_backup`'s `VACUUM INTO`
+    /// and `restore_backup` must work with any SQLite file content.
     async fn seed_db(path: &Path) {
         let url = format!("sqlite://{}?mode=rwc", path.to_string_lossy());
         let pool = SqlitePoolOptions::new()

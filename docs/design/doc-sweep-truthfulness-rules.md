@@ -462,3 +462,64 @@ The implementer's report must carry a claims table (claim → verifying **symbol
 symbol column is mandatory because it is what the shipped prose must cite under Rule 15). Corrections
 in a fix round carry the same burden as new claims. State explicitly what the pre-existing-prose re-scan
 covered. Report a discovered divergence rather than smoothing it over — but bound its reachability.
+
+## RULE 16 — code comments are durable commentary about THE CODE, and nothing else
+
+User directive, iron-clad:
+
+> task names, task ids, plans, dates, and repo documents should never be referenced in code comments
+> because they are ephemeral. code comments should be durable commentary about the code and only the
+> code.
+
+RULE 15 said *how* to cite; this says *what a code comment may talk about at all*. It is the
+stronger constraint and it wins wherever the two touch.
+
+**Banned in `.ts` / `.rs` / `.svelte` comments — every form:**
+
+| Banned | Example found in this repo |
+|---|---|
+| Milestone / task / phase ids | `Kept minimal for M8c-1`, `re-rooted from `system`, M13-0`, `M13-1 T1/T3`, `M13-0 S1/S3` |
+| Repo document pointers | `` see `docs/TODO.md` ``, `` (`docs/OPEN_BUGS.md`, the AssetChanged entry) ``, `ARCHITECTURE §2 invariant 4` |
+| Dated plan/spec files | `docs/superpowers/specs/2026-07-13-m11d-2-dice-chat-wire-design.md §7` |
+| Sweep / campaign / round names | `sweep 13`, `fix round 1` |
+| Process markers | `POST_WORK: replace with …` |
+
+**Why these are one class, not five.** Each names something *outside the code* whose identity is
+assigned by a process: a milestone gets renumbered, a doc section gets renumbered, a bug entry moves
+from `OPEN_BUGS` to `CLOSED_BUGS`, a spec is superseded, a sweep ends. The comment then points at
+nothing — and unlike a stale claim about code, **no reader and no tool can tell it went stale**,
+because the referent's disappearance is invisible from the code. This is RULE 13's
+"unverifiable by construction" defect, one level out.
+
+**A milestone id feels different and is not.** `M13-0` reads like a fact about when something was
+built. It is a fact about a plan, and the plan is finished — so the id survives as a token whose
+meaning now lives only in a document the reader does not have.
+
+**The conversion is always the same move: state the CONSTRAINT, drop the POINTER.** The pointer was
+never the information; it was a shortcut to information that belongs inline.
+
+```
+BAD    // Kept minimal for M8c-1 (background + grid + camera); M8d generalizes to a node model.
+GOOD   // Minimal by construction: background + grid + camera only. Adding a node kind requires
+       // a matching `DisplayBackend` member and an implementation in every backend.
+
+BAD    // KNOWN DEFECT (`docs/OPEN_BUGS.md`, the AssetChanged entry): `revs` is not bumped.
+GOOD   // `revs` is NOT bumped by `onAssetChanged`, so a re-uploaded asset keeps its cached URL
+       // until the next full resync. Callers needing freshness must re-fetch explicitly.
+
+BAD    // Richer mismatch detection is deferred to module management (see TODO.md).
+GOOD   // TODO: Detect version mismatches beyond exact-equality.
+```
+
+Note the third: `TODO:` is a *code* marker and stays. What gets deleted is the pointer to where the
+deferral is tracked, per this repo's commenting rules ("No Process Meta").
+
+**Where the tracking reference belongs instead.** The backlog entry, bug record or plan cites the
+SYMBOL (Rule 15) and points inward at the code. The dependency runs doc → code, never code → doc,
+so renaming or closing the doc entry cannot rot a comment. A defect worth warning a reader about is
+worth stating as a present constraint in the comment itself.
+
+**Scope.** Code comments only. Markdown documents, skills and `.superpowers/` artifacts may
+reference other documents by path + section anchor — prose has no symbols, and those artifacts are
+read as documents. Do not carry this rule's prohibition into them, and do not carry their allowance
+back into code.
