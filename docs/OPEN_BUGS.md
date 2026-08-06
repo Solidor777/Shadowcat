@@ -183,7 +183,12 @@ Currently open, confirmed-real defects. Deferrals belong in `TODO.md`, not here.
   - **Why it fires on a fresh world.** The GM-seed effect (`GameSettingsPanel.svelte:36-43`) creates
     the `chat-settings` doc with an explicit JSON `hyperlinks: null` — a literal stored null, not an
     absent key. So the first value ever at `/engine/hyperlinks` is `null`, while the checkbox sends
-    `old: false`.
+    `old: false`. **The null is guaranteed, not incidental:** ingress normalization re-serializes
+    the typed struct, so an absent optional field is stored as an explicit null rather than a
+    missing key — `normalize_engine_opt` (`src/server/src/data/engine/mod.rs:125`), whose own
+    doctest asserts exactly that for a `{}` chat-settings body (`:120-123`). Seeding the field or
+    omitting it therefore reach the same stored state, and no path leaves a `false` there for the
+    checkbox's pre-image to match.
   - **Why the server rejects it.** `apply_intent`'s field-level OCC check
     (`src/server/src/data/sqlite.rs:2285-2298`) computes
     `actual = whole.pointer(&ch.path).cloned().unwrap_or(Value::Null)` and compares it to `ch.old`
