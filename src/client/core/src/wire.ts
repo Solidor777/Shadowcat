@@ -31,6 +31,7 @@ export const ActorOwnerRefSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("actor"), actor_id: z.string() }),
   z.object({ kind: z.literal("token_instance"), token_id: z.string() }),
 ]);
+/** The inferred TS shape of `ActorOwnerRefSchema` above. */
 export type WireActorOwnerRef = z.infer<typeof ActorOwnerRefSchema>;
 
 /** Mirrors `crate::chat::Audience` (chat message readership). */
@@ -39,6 +40,7 @@ export const AudienceSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("whisper"), recipients: z.array(z.string()) }),
   z.object({ kind: z.literal("gm_only") }),
 ]);
+/** The inferred TS shape of `AudienceSchema` above. */
 export type WireAudience = z.infer<typeof AudienceSchema>;
 
 export const ScopeSchema = z.discriminatedUnion("kind", [
@@ -61,6 +63,7 @@ export const CapabilityRequirementSchema = z.object({
   path_prefix: z.string(),
   caps: z.array(z.string()),
 });
+/** The inferred TS shape of `CapabilityRequirementSchema` above. */
 export type WireCapabilityRequirement = z.infer<typeof CapabilityRequirementSchema>;
 
 export const CardinalitySchema = z.enum(["singleton", "multi"]);
@@ -76,6 +79,7 @@ export const ContractDeclarationSchema = z.object({
   provides: z.array(ContractProvideSchema),
   requires: z.array(z.string()),
 });
+/** The inferred TS shape of `ContractDeclarationSchema` above. */
 export type WireContractDeclaration = z.infer<typeof ContractDeclarationSchema>;
 
 export const SchemaTypeSchema = z.enum([
@@ -87,15 +91,22 @@ export const SchemaTypeSchema = z.enum([
   "null",
 ]);
 
-// Recursive structural type-tree (M13f tier-2). `additionalProperties` is
-// `boolean | Schema`; absent fields are optional (server omits None via
-// skip_serializing_if). Shape only — never a value rule.
+/** Recursive structural type-tree (M13f tier-2). Absent fields are optional (the server
+ * omits a `None` via `skip_serializing_if`). Shape only — never a value rule; the grammar
+ * has no `enum`, numeric/string bounds, `pattern`, or `anyOf`/`oneOf` combinator. */
 export type WireSchema = {
+  /** The primitive/container kind this node matches; absent = unconstrained. */
   type?: z.infer<typeof SchemaTypeSchema>;
+  /** Child schemas keyed by property name; meaningful only when `type` is `"object"`. */
   properties?: Record<string, WireSchema>;
+  /** Property names that must be present; meaningful only when `type` is `"object"`. */
   required?: string[];
+  /** Whether (or how) properties beyond `properties` are permitted. Absent behaves as `false`
+   * (closed) — this grammar has no combinator, `pattern`, or value-range form, only shape. */
   additionalProperties?: boolean | WireSchema;
+  /** The element schema; meaningful only when `type` is `"array"`. */
   items?: WireSchema;
+  /** Whether `null` is also a valid value for the declared `type`. */
   nullable?: boolean;
 };
 
@@ -118,6 +129,7 @@ export const SchemaDeclarationSchema = z.object({
   subtree_pointer: z.string(),
   schema: SchemaSchema,
 });
+/** The inferred TS shape of `SchemaDeclarationSchema` above. */
 export type WireSchemaDeclaration = z.infer<typeof SchemaDeclarationSchema>;
 
 export const PermissionSetSchema = z.object({
@@ -130,29 +142,59 @@ export const PermissionSetSchema = z.object({
 
 /** The validated document shape (`bigint` i64 fields modeled as `number`). */
 export type WireDocument = {
+  /** Document id (UUID). Client-generated at Create — this is what lets the client apply the
+   * doc optimistically under the same id the server will later confirm — and immutable
+   * thereafter (no field-path Update reaches `/id`). */
   id: string;
+  /** Placement: `{kind:"world", world_id}` or `{kind:"compendium", pack}`. See `world_of`
+   * (`data/document.rs`) for the world-scope extraction authz keys off of. */
   scope: z.infer<typeof ScopeSchema>;
+  /** Unconstrained wire string naming the document's kind (e.g. `actor`, `scene`, `message`).
+   * Real server-side structural authority applies only to the 17 engine-defined types
+   * (`is_engine_doc_type`, `data/engine/mod.rs`); any other value is a legitimate
+   * client-only doc_type (e.g. `item`, `scene-docs.ts`). */
   doc_type: string;
+  /** Per-document schema-migration marker (`migrate.rs`'s `CURRENT_SCHEMA_VERSION`, currently
+   * 1). The dispatch machinery exists but has no real migration steps yet. */
   schema_version: number;
-  // Universal display name. Redacts to `null` under a `/name` override.
+  /** Universal display name. Redacts to `null` (never a stripped key) under a `/name`
+   * property-visibility override. */
   name: string | null;
+  /** Template/instance provenance (source template id, its compendium pack if any, and its
+   * content version at stamp time), or `null` for a document with no source. Mirrors
+   * `crate::data::document::Source`. */
   source: z.infer<typeof SourceSchema> | null;
-  // Opaque mergeable-content snapshot at last sync (`MergeBase`, `./merge`). Present only on
-  // stamped children; absent/undefined otherwise. Server-opaque; the client owns the shape.
+  /** Opaque mergeable-content snapshot at last sync (`MergeBase`, `./merge`). Present on any
+   * document stamped from a template (top-level or embedded, per `source`) — not restricted
+   * to embedded children; absent/undefined on a document that was never stamped. */
   base?: unknown;
+  /** This document's OWN `/owner` field, or `null` if unowned. Gated by `EDIT_PERMISSIONS`
+   * server-side (not the bare `Owner` role), so an owner can never reassign it. A linked
+   * token's EFFECTIVE owner (used for authz) can differ from this raw value — see
+   * `effective_owner` (`data/permission.rs`). */
   owner: string | null;
+  /** The document's access-control set: default role, per-user role overrides, per-property
+   * visibility overrides, capability grants, and an optional per-document GM-role cap. */
   permissions: z.infer<typeof PermissionSetSchema>;
+  /** Child documents keyed by `doc_type` (e.g. an actor's inventory `item`s). Each embedded
+   * doc is itself a full `WireDocument`, recursively. */
   embedded: Record<string, WireDocument[]>;
-  // Scene-entity link: the parent scene's id (or other parent); null for top-level
-  // docs (actors, compendium entries, scenes). Immutable via field-path Update.
+  /** Scene-entity link: the parent scene's id (or other parent); `null` for top-level docs
+   * (actors, compendium entries, scenes). No capability path reaches `/parent_id`
+   * (`required_cap_for_path` returns `None` for it) — immutable via field-path Update. */
   parent_id: string | null;
-  // Engine band: present iff `doc_type` is engine-defined; validated + typed via the
-  // generated `*Engine` structs (`@shadowcat/types`). `z.unknown()` infers an optional
-  // property, so an absent/non-engine doc_type's `engine` key is simply undefined.
+  /** Engine band: present iff `doc_type` is engine-defined; validated + typed via the
+   * generated `*Engine` structs (`@shadowcat/types`). `z.unknown()` infers an optional
+   * property, so an absent/non-engine doc_type's `engine` key is simply undefined. */
   engine?: unknown;
-  // `z.unknown()` infers an optional property; the value is the opaque system body.
+  /** Opaque `system` body; `z.unknown()` infers an optional property. The server enforces
+   * only structural rules on it (size cap, JSON validity, optional tier-2 shape schema) —
+   * it never interprets the value semantically. */
   system?: unknown;
+  /** Server-set creation timestamp (ms since epoch). */
   created_at: number;
+  /** Server-set last-modification timestamp (ms since epoch); advances on every applied
+   * field change. */
   updated_at: number;
 };
 
@@ -210,6 +252,7 @@ export const SearchHitSchema = z.object({
   score: z.number(),
   snippet: z.string(),
 });
+/** The inferred TS shape of `SearchHitSchema` above. */
 export type WireSearchHit = z.infer<typeof SearchHitSchema>;
 
 export const ServerMsgSchema = z.discriminatedUnion("type", [
@@ -347,57 +390,177 @@ export const ServerMsgSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("evicted"), user: z.string().nullable() }),
 ]);
 
+/** The inferred TS shape of `ScopeSchema` above. */
 export type WireScope = z.infer<typeof ScopeSchema>;
+/** The inferred TS shape of `FieldChangeSchema` above. */
 export type WireFieldChange = z.infer<typeof FieldChangeSchema>;
+/** The inferred TS shape of `OperationSchema` above. */
 export type WireOperation = z.infer<typeof OperationSchema>;
+/** The inferred TS shape of `CommandSchema` above. */
 export type WireCommand = z.infer<typeof CommandSchema>;
+/** The inferred TS shape of `ServerMsgSchema` above (the full discriminated union of inbound
+ * server frames). */
 export type ServerMsg = z.infer<typeof ServerMsgSchema>;
 
-/** Client -> server frames. Plain objects (numbers, JSON.stringify-friendly). */
+/** Client -> server frames. Plain objects (numbers, JSON.stringify-friendly). Mirrors
+ * `ws::protocol::ClientMsg` (`src/server/src/ws/protocol.rs`) variant-by-variant; each
+ * variant's per-field doc below cites that Rust doc as the source of truth. */
 export type ClientMsg =
-  | { type: "hello"; world: string; last_seq: number | null }
-  | { type: "intent"; intent_id: string; ops: WireOperation[] }
-  | { type: "resync_request"; from_seq: number }
-  | { type: "time_ping"; client_t0: number }
-  | { type: "pong" }
   | {
+      /** First frame after upgrade: names the world and the client's last known seq. */
+      type: "hello";
+      /** The world to join. */
+      world: string;
+      /** Highest seq the client has applied; `null` = cold start (full sync). */
+      last_seq: number | null;
+    }
+  | {
+      /** A proposed write: a client-chosen `intent_id` plus the ops, applied all-or-nothing
+       * through the one write path. Success broadcasts an `event`; failure returns `reject`. */
+      type: "intent";
+      /** Client-chosen correlation token echoed on `event`/`reject`. */
+      intent_id: string;
+      /** The proposed operations, applied all-or-nothing. */
+      ops: WireOperation[];
+    }
+  | {
+      /** Explicit gap recovery from the client's sequence guard. */
+      type: "resync_request";
+      /** The first seq to replay, INCLUSIVE — the next seq the client has not yet applied. */
+      from_seq: number;
+    }
+  | {
+      /** Time calibration ping carrying the client's send timestamp. */
+      type: "time_ping";
+      /** Client send timestamp, echoed back in `time_pong`. */
+      client_t0: number;
+    }
+  | { /** Heartbeat reply. */ type: "pong" }
+  | {
+      /** A full-text search request, correlated by `request_id`. When `subscribe` is true, the
+       * initial `search_result` is followed by `search_update`s on change. */
       type: "search";
+      /** Correlation token for the result/update/error frames. */
       request_id: string;
+      /** Raw query text (sanitized server-side into an FTS MATCH). */
       query: string;
+      /** Maximum hits per page. */
       limit: number;
+      /** Opaque page token from a prior `search_result`; absent = first page. */
       cursor?: string;
+      /** True = keep a live top-N subscription pushing `search_update`s. */
       subscribe: boolean;
     }
-  | { type: "unsubscribe"; request_id: string }
-  | { type: "scene_subscribe"; request_id: string; channel: string }
-  | { type: "scene_unsubscribe"; request_id: string }
-  | { type: "scene_ping"; scene: string; x: number; y: number }
   | {
-      type: "pathfind";
+      /** Cancel a live search subscription (idempotent; unknown id ignored). */
+      type: "unsubscribe";
+      /** The live search to cancel. */
       request_id: string;
+    }
+  | {
+      /** Subscribe to a derived scene channel (e.g. "vision"); unknown channels yield
+       * `scene_error`. */
+      type: "scene_subscribe";
+      /** Correlation token for the derived pushes/errors. */
+      request_id: string;
+      /** Channel name (e.g. "vision"). */
+      channel: string;
+    }
+  | {
+      /** Cancel a derived subscription by request id. */
+      type: "scene_unsubscribe";
+      /** The derived subscription to cancel. */
+      request_id: string;
+    }
+  | {
+      /** A transient location ping at scene coords, relayed out-of-band with the sender
+       * stamped server-side; never sequenced, logged, or a document. Coordinates are not
+       * validated; the scene must exist in this world and grant the sender READ (silent
+       * drop otherwise), and the frame is rate-limited per connection. */
+      type: "scene_ping";
+      /** Scene the ping lands on (must grant the sender READ). */
       scene: string;
+      /** Scene-coordinate x. */
+      x: number;
+      /** Scene-coordinate y. */
+      y: number;
+    }
+  | {
+      /** A one-shot grid pathfinding request, correlated by `request_id`. When `token` is
+       * given, the server derives the footprint from that token's document and IGNORES
+       * `footprint_radius` — so a route preview and the authoritative move gate cannot
+       * disagree about the mover's size; the client-supplied radius is honored only when
+       * `token` is omitted, as an explicitly hypothetical preview. */
+      type: "pathfind";
+      /** Correlation token for `path_result`/`path_error`. */
+      request_id: string;
+      /** Scene to route on. */
+      scene: string;
+      /** Route origin, scene coords. */
       start: [number, number];
+      /** Intermediate points; the LAST element is the goal, scene coords. */
       waypoints: [number, number][];
+      /** Mover radius in grid units; ignored server-side when `token` is given. */
       footprint_radius: number;
+      /** The token the route is for; when present, also the source of the authoritative
+       * footprint (see the variant doc). */
       token?: string;
     }
   | {
+      /** A server-authoritative move request for a token the caller controls. `scene` is
+       * checked only for agreement — the server DERIVES the acting scene from the token
+       * itself and refuses on mismatch, so this field selects nothing on its own (see the
+       * derive-from-token invariant, `shadowcat-codebase-realtime-sync`). Success broadcasts
+       * `move_stream` to the scene; failure replies `move_error` to the requester only. */
       type: "move_request";
+      /** Correlation token for `move_error` (success echoes via the broadcast `move_stream`). */
       request_id: string;
+      /** The scene the token is expected to be on; checked, not selected — see the variant
+       * doc. */
       scene: string;
+      /** The token to move (must be effectively owned by the requester). */
       token_id: string;
+      /** Ordered cell-center scene points: start … goal (inclusive). */
       path: [number, number][];
     }
   | {
+      /** Author a chat message. The server sanitizes `content` and constructs the stored
+       * message doc itself — this is the sole message-authoring path; a client `Create` of
+       * a `message` doc is rejected. Success is confirmed only by the broadcast `event`
+       * echo (no ack frame); a rejection replies `chat_error` correlated by `request_id`. */
       type: "send_message";
+      /** Correlation token for a `chat_error` rejection. */
       request_id: string;
+      /** Target channel id. */
       channel: string;
+      /** Raw message text (sanitized server-side). */
       content: string;
+      /** Optional in-character attribution; authz-checked server-side. */
       actor_owner: WireActorOwnerRef | null;
+      /** Visibility policy (public / gm-only / whisper). */
       audience: WireAudience;
     }
-  | { type: "edit_message"; request_id: string; message_id: string; content: string }
-  | { type: "delete_message"; request_id: string; message_id: string };
+  | {
+      /** Edit an existing message the requester owns (or any, if GM); channel/audience are
+       * frozen. Same asymmetric reply protocol as `send_message`. */
+      type: "edit_message";
+      /** Correlation token for a `chat_error` rejection. */
+      request_id: string;
+      /** The message to edit. */
+      message_id: string;
+      /** Replacement text (re-sanitized server-side). */
+      content: string;
+    }
+  | {
+      /** Soft-delete a message the requester owns (or any, if GM): the doc stays in the
+       * sequenced log as a tombstone (content cleared, `deleted_at` set). Same asymmetric
+       * reply protocol as `send_message`. */
+      type: "delete_message";
+      /** Correlation token for a `chat_error` rejection. */
+      request_id: string;
+      /** The message to tombstone. */
+      message_id: string;
+    };
 
 /**
  * Standalone Zod mirror of the `send_message` `ClientMsg` variant. `ClientMsg`

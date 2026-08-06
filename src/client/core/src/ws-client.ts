@@ -16,27 +16,37 @@ import {
 
 /** A resolved page of search results (Core.search). */
 export interface SearchPage {
+  /** The page's hits, in server-ranked order. */
   hits: WireSearchHit[];
+  /** Opaque pagination token for the next page; absent when this is the last page. */
   nextCursor?: string;
 }
 
 /** A resolved pathfind result (WsClient.pathfind). `arrested` is true when the route was cut
  * short by a visible arrest region (spec §5). */
 export interface PathResult {
+  /** Ordered `[x, y]` scene-coordinate waypoints of the computed route. */
   path: [number, number][];
+  /** Terrain-weighted movement cost of the route. */
   cost: number;
+  /** True when the route was cut short by a visible arrest region rather than reaching the
+   * requested goal. */
   arrested: boolean;
 }
 
 /** A single position sample in a MoveStream, with elapsed-ms origin at startServerMs. */
 export interface MoveSample {
+  /** Elapsed ms since the move's `startServerMs`. */
   tMs: number;
+  /** Scene-coordinate `[x, y]` position at this sample. */
   pos: [number, number];
 }
 
 /** A vision-polygon sample paired with a MoveSample by tMs (mover-only; null for observers). */
 export interface MoveVisionSample {
+  /** Elapsed ms since the move's `startServerMs`; pairs with a `MoveSample` at the same value. */
   tMs: number;
+  /** Visible-area polygons at this sample, as rings of `[x, y]` scene coordinates. */
   polygons: [number, number][][];
 }
 
@@ -44,14 +54,26 @@ export interface MoveVisionSample {
  * Wire snake_case fields are mapped to camelCase. Mover receives the full trajectory +
  * moverVision; observers receive server-clipped position samples, moverVision=null. */
 export interface MoveStream {
+  /** Correlation id of the mover's original `move_request` (observers receive it too, but it
+   * only resolves the MOVER's pending promise). */
   requestId: string;
+  /** The token that moved. */
   tokenId: string;
+  /** The user id of the requester who moved the token. */
   mover: string;
+  /** The scene the move happened on — server-derived from the token, per the
+   * derive-from-token invariant, never the client's requested value. */
   scene: string;
+  /** Server clock time (ms) the move began, for elapsed-time playback. */
   startServerMs: number;
+  /** Total duration of the move, ms. */
   durationMs: number;
+  /** Final `[x, y]` scene-coordinate position of the move. */
   stop: [number, number];
+  /** Time-tagged position samples driving playback (full trajectory for the mover; clipped
+   * to the recipient's own vision for an observer). */
   samples: MoveSample[];
+  /** Time-tagged vision-polygon samples for the mover; always `null` for an observer. */
   moverVision: MoveVisionSample[] | null;
   /** Total terrain-weighted movement cost for this move (M10g). Informational.
    * Null for a clipped observer (mirrors moverVision) — the authoritative cost may reflect
@@ -64,52 +86,98 @@ export type PendingResult = SearchPage | PathResult | MoveStream;
 
 /** Handle to an active live search subscription (Core.subscribeSearch). */
 export interface SubscriptionHandle {
+  /** Stop receiving `search_update`s and tell the server to drop the subscription. */
   unsubscribe(): void;
 }
 
 /** A SceneDerived frame delivered to a scene subscription. */
 export interface SceneFrame {
+  /** The channel-specific derived payload; shape depends on the subscribed channel. */
   payload: unknown;
+  /** The authoritative seq this frame was computed against. */
   computedAtSeq: number;
 }
 
 /** Handle to an active SceneDerived subscription. */
 export interface SceneSubscription {
+  /** Drop the channel and tell the server to stop pushing frames. */
   unsubscribe(): void;
 }
 
 /** The `Welcome` server frame (capability fields included). */
-export type WireWelcome = Extract<ServerMsg, { type: "welcome" }>;
+export type WireWelcome = Extract<
+  ServerMsg,
+  { /** Discriminant literal selecting the `welcome` variant of `ServerMsg`. */ type: "welcome" }
+>;
 import type { Connect, Transport } from "./transport";
 
+/** The handler set a `WsClient` dispatches inbound frames to; every member is a callback the
+ * client invokes, never one it calls itself. */
 export interface WsClientHandlers {
-  /** An in-order, sequence-guarded authoritative command (live or replayed). */
+  /** An in-order, sequence-guarded authoritative command (live or replayed).
+   * @param cmd The applied command (`seq`/`world_id`/`author`/`ts`/`ops`). */
   onCommand(cmd: WireCommand): void;
-  /** An intent the server refused. */
+  /** An intent the server refused.
+   * @param intentId The rejected intent's correlation id.
+   * @param reason The server's rejection category. */
   onReject?(intentId: string, reason: RejectReason): void;
+  /** The `welcome` frame following a (re)connect; carries capability/role/current-seq state.
+   * @param welcome The parsed `welcome` frame. */
   onWelcome?(welcome: WireWelcome): void;
   /** Fires once per (re)connect after any resync replay is fully applied (or
    * immediately when no replay is needed). The seam for replaying actions queued
    * while offline, after the optimistic view has rebased onto authoritative state. */
   onResyncComplete?(): void;
   /** A command that failed to apply (e.g. schema drift). Surfaced, never thrown
-   * into the socket loop. */
+   * into the socket loop.
+   * @param error The thrown value from the failed `onCommand` apply. */
   onError?(error: unknown): void;
-  /** An out-of-band asset mutation notice (replace/delete); carries no seq. */
-  onAssetChanged?(msg: { uuid: string; op: "replaced" | "deleted" }): void;
-  /** An out-of-band relayed location ping (carries no seq). */
-  onScenePing?(msg: { scene: string; x: number; y: number; user: string }): void;
+  /** An out-of-band asset mutation notice (replace/delete); carries no seq.
+   * @param msg The changed asset's id and whether it was replaced or deleted.
+   * @param msg.uuid The changed asset's uuid.
+   * @param msg.op Whether the asset's bytes were replaced or the asset was deleted. */
+  onAssetChanged?(msg: {
+    /** The changed asset's uuid. */
+    uuid: string;
+    /** Whether the asset's bytes were replaced or the asset was deleted. */
+    op: "replaced" | "deleted";
+  }): void;
+  /** An out-of-band relayed location ping (carries no seq).
+   * @param msg The ping's scene, coordinates, and sending user.
+   * @param msg.scene The scene the ping landed on.
+   * @param msg.x Scene-coordinate x.
+   * @param msg.y Scene-coordinate y.
+   * @param msg.user The user id who sent the ping (server-stamped, not client-asserted). */
+  onScenePing?(msg: {
+    /** The scene the ping landed on. */
+    scene: string;
+    /** Scene-coordinate x. */
+    x: number;
+    /** Scene-coordinate y. */
+    y: number;
+    /** The user id who sent the ping (server-stamped, not client-asserted). */
+    user: string;
+  }): void;
   /** Terminal eviction (world/account deleted). The client has already
    * stopped (no reconnect) when this fires; route the user out of the world. */
   onEvicted?: () => void;
 }
 
+/** Construction options for `WsClient`: the connection factory, handler set, and the
+ * timing/backoff knobs that default per-field below. */
 export interface WsClientOptions {
+  /** Factory that opens the underlying transport; called once per connection attempt. */
   connect: Connect;
+  /** The callback set inbound frames are dispatched to. */
   handlers: WsClientHandlers;
+  /** Clock source for timestamps and backoff timing; defaults to `Date.now`. */
   now?: () => number;
+  /** Delay primitive used between reconnect attempts; defaults to a `setTimeout` wrapper. */
   sleep?: (ms: number) => Promise<void>;
+  /** Base delay (ms) for the exponential-with-full-jitter reconnect backoff; defaults to 250. */
   backoffBaseMs?: number;
+  /** Ceiling (ms) the exponential backoff delay is clamped to before jitter; defaults to
+   * 10_000. */
   backoffMaxMs?: number;
   /** Ms to wait for the server's Welcome after a transport opens before the
    * connection is treated as dead (closed → normal reconnect/backoff). The
@@ -120,6 +188,14 @@ export interface WsClientOptions {
   welcomeTimeoutMs?: number;
 }
 
+/** Default `WsClientOptions.sleep`: a bare `setTimeout` wrapped as a promise.
+ * @param ms Delay in milliseconds before the promise resolves.
+ * @returns Resolves (void) after `ms` milliseconds.
+ * @example
+ * ```
+ * await defaultSleep(100);
+ * ```
+ */
 const defaultSleep = (ms: number): Promise<void> =>
   new Promise((r) => setTimeout(r, ms));
 
@@ -147,19 +223,27 @@ const CHAT_ERROR_WINDOW_MS = 15_000;
  * ```
  */
 export class WsClient {
+  /** The live transport, or `null` when disconnected. */
   private transport: Transport | null = null;
+  /** True between `start()` and `stop()`; see the `running` getter. */
   private running_ = false;
+  /** Count of reconnect attempts since the last successful Welcome; resets only on Welcome,
+   * never on socket `open`. */
   private reconnectAttempt = 0;
   /** Next seq to apply; the client-side ordering watermark. Persists across
    * reconnects so resync resumes from where application left off. */
   private nextExpected = 1;
+  /** Estimated server-clock offset from `this.now()`; refreshed on `welcome`/`time_pong`. */
   private serverOffsetMs = 0;
   /** In-flight correlated requests (search, pathfind, moveRequest), keyed by request_id. */
   private pending = new Map<
     string,
     {
+      /** Resolves the caller's promise with the correlated frame's mapped result. */
       resolve: (result: PendingResult) => void;
+      /** Rejects the caller's promise (timeout or disconnect). */
       reject: (e: Error) => void;
+      /** Timeout handle that rejects if no correlated reply arrives in time. */
       timer: ReturnType<typeof setTimeout>;
     }
   >();
@@ -173,7 +257,14 @@ export class WsClient {
   /** In-flight scene-subscribe initial promises, keyed by request_id. */
   private scenePending = new Map<
     string,
-    { resolve: (s: SceneSubscription) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }
+    {
+      /** Resolves with the subscription handle once the first frame arrives. */
+      resolve: (s: SceneSubscription) => void;
+      /** Rejects (timeout, `scene_error`, or disconnect). */
+      reject: (e: Error) => void;
+      /** Timeout handle that rejects if no initial frame arrives in time. */
+      timer: ReturnType<typeof setTimeout>;
+    }
   >();
   /** In-flight chat ops (send/edit/delete), keyed by request_id. Chat is
    * asymmetric: ONLY a rejection replies (a `chat_error` frame). A successful op
@@ -184,14 +275,27 @@ export class WsClient {
    * that timer, a `chat_error` reject, and a disconnect reject. */
   private chatPending = new Map<
     string,
-    { resolve: () => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }
+    {
+      /** Resolves (void) once the silence window elapses with no `chat_error`. */
+      resolve: () => void;
+      /** Rejects with the server's reason on a correlated `chat_error`, or on disconnect. */
+      reject: (e: Error) => void;
+      /** The silence-window timeout handle that resolves success-assumed. */
+      timer: ReturnType<typeof setTimeout>;
+    }
   >();
 
+  /** Resolved `WsClientOptions.now`. */
   private readonly now: () => number;
+  /** Resolved `WsClientOptions.sleep`. */
   private readonly sleep: (ms: number) => Promise<void>;
+  /** Resolved `WsClientOptions.backoffBaseMs`. */
   private readonly backoffBaseMs: number;
+  /** Resolved `WsClientOptions.backoffMaxMs`. */
   private readonly backoffMaxMs: number;
+  /** Resolved `WsClientOptions.welcomeTimeoutMs`. */
   private readonly welcomeTimeoutMs: number;
+  /** Handle for the armed Welcome watchdog, or `null` when none is armed. */
   private welcomeTimer: ReturnType<typeof setTimeout> | null = null;
   /** Bumped on every `open()` attempt; each connection's `onMessage` closure
    * captures its own value. A frame delivered after the client has already
@@ -735,7 +839,14 @@ export class WsClient {
    */
   search(
     query: string,
-    opts: { limit?: number; cursor?: string; timeoutMs?: number } = {},
+    opts: {
+      /** Max hits per page; see the method doc for the wire default. */
+      limit?: number;
+      /** Opaque pagination cursor from a prior `SearchPage.nextCursor`. */
+      cursor?: string;
+      /** Timeout before rejecting; see the method doc for the default. */
+      timeoutMs?: number;
+    } = {},
   ): Promise<SearchPage> {
     const request_id = crypto.randomUUID();
     const timeoutMs = opts.timeoutMs ?? 10_000;
@@ -789,7 +900,12 @@ export class WsClient {
    */
   subscribeSearch(
     query: string,
-    opts: { limit?: number; timeoutMs?: number },
+    opts: {
+      /** Max hits tracked; see the method doc for the wire default. */
+      limit?: number;
+      /** Timeout before rejecting the initial result; see the method doc for the default. */
+      timeoutMs?: number;
+    },
     onUpdate: (hits: WireSearchHit[]) => void,
   ): Promise<SubscriptionHandle> {
     const request_id = crypto.randomUUID();
@@ -857,7 +973,12 @@ export class WsClient {
   subscribeScene(
     channel: string,
     onUpdate: (frame: SceneFrame) => void,
-    opts: { timeoutMs?: number; asUser?: string } = {},
+    opts: {
+      /** Timeout before rejecting; see the method doc for the default. */
+      timeoutMs?: number;
+      /** GM-only see-as-player target; see the method doc. */
+      asUser?: string;
+    } = {},
   ): Promise<SceneSubscription> {
     const request_id = crypto.randomUUID();
     const timeoutMs = opts.timeoutMs ?? 10_000;
@@ -915,7 +1036,10 @@ export class WsClient {
     waypoints: [number, number][],
     footprintRadius: number,
     token?: string,
-    opts: { timeoutMs?: number } = {},
+    opts: {
+      /** Timeout before rejecting; see the method doc for the default. */
+      timeoutMs?: number;
+    } = {},
   ): Promise<PathResult> {
     const request_id = crypto.randomUUID();
     const timeoutMs = opts.timeoutMs ?? 10_000;
@@ -969,7 +1093,10 @@ export class WsClient {
     scene: string,
     tokenId: string,
     path: [number, number][],
-    opts: { timeoutMs?: number } = {},
+    opts: {
+      /** Timeout before rejecting; see the method doc for the default. */
+      timeoutMs?: number;
+    } = {},
   ): Promise<MoveStream> {
     const request_id = crypto.randomUUID();
     const timeoutMs = opts.timeoutMs ?? 10_000;
@@ -1034,7 +1161,14 @@ export class WsClient {
         this.chatPending.delete(request_id);
         resolve();
       }, CHAT_ERROR_WINDOW_MS);
-      (timer as unknown as { unref?: () => void }).unref?.();
+      // Node exposes `unref` on its Timeout objects; browsers don't. The cast + optional
+      // call reaches it where present without a `@types/node` dependency in this file.
+      (
+        timer as unknown as {
+          /** Node-only: detach the timer from keeping the event loop alive. */
+          unref?: () => void;
+        }
+      ).unref?.();
       this.chatPending.set(request_id, { resolve, reject, timer });
     });
   }
@@ -1068,9 +1202,13 @@ export class WsClient {
    * ```
    */
   sendChatMessage(opts: {
+    /** The chat channel to post into. */
     channel: string;
+    /** The message body (server-sanitized). */
     content: string;
+    /** Optional actor attribution; sent as `null` when omitted. */
     actorOwner?: WireActorOwnerRef | null;
+    /** Recipient scoping; defaults to `{ kind: "public" }`. */
     audience?: WireAudience;
   }): Promise<void> {
     const request_id = crypto.randomUUID();
