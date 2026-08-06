@@ -1,6 +1,6 @@
-//! Movement-segment rasterization for the M10e-4 movement-restriction gate. Pure, clean-room,
+//! Movement-segment rasterization for the movement-restriction gate. Pure, clean-room,
 //! headless. INVARIANT: `supercover_cells` is the SAME cell set the gate tests against the
-//! visibility mask, so the authoritative move gate and (M10e-6) path preview agree.
+//! visibility mask, so the authoritative move gate and path preview agree.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
@@ -87,8 +87,8 @@ pub fn supercover_cells(a0: (f64, f64), a1: (f64, f64), cell: f64) -> Option<BTr
     };
 
     // Per-axis step BUDGET: the exact number of grid-line crossings still needed on each axis to
-    // reach (ei,ej). Root-cause fix for the corner-crossing drift bug (docs/OPEN_BUGS.md /
-    // formerly "Server / move-execution"): the tMax tie test alone cannot distinguish a genuine
+    // reach (ei,ej). Root-cause fix for the corner-crossing drift bug: the tMax tie test alone
+    // cannot distinguish a genuine
     // mid-path corner crossing (more path beyond, both axes still owe a step) from a tie that
     // merely COINCIDES with an axis that has already arrived at its target coordinate (e.g. the
     // segment's own endpoint sits exactly on a lattice intersection, or an earlier forced
@@ -237,7 +237,7 @@ mod tests {
 
     #[test]
     fn diagonal_leg_with_both_endpoints_on_lattice_corners_succeeds() {
-        // Regression (docs/OPEN_BUGS.md "Server / move-execution"): a diagonal king-step whose
+        // Regression test: a diagonal king-step whose
         // BOTH endpoints sit exactly on 4-way grid-line intersections used to spuriously
         // fail-closed. Root cause: the corner-crossing branch stepped BOTH axes on every tMax
         // tie without checking whether one axis had already reached its target cell — once a

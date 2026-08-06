@@ -268,7 +268,7 @@ impl GridShape for HexGrid {
     }
 
     /// Uniform 1-per-step cost, 6 axial neighbors — hex has no diagonal-rule analog, so `parity`
-    /// is passed through unchanged (per the design doc's H4/H5 decisions).
+    /// is passed through unchanged.
     fn neighbors_with_cost(&self, c: Cell, parity: u8) -> Vec<(Cell, f64, u8)> {
         const AXIAL_DIRS: [(i32, i32); 6] = [(1, 0), (1, -1), (0, -1), (-1, 0), (-1, 1), (0, 1)];
         AXIAL_DIRS
@@ -280,7 +280,7 @@ impl GridShape for HexGrid {
     /// Hex equivalent of `movement::supercover_cells`, and conservative in the same direction:
     /// over-inclusion can only over-restrict a move, omission would let a move graze an unseen hex.
     ///
-    /// Method (public-domain computational geometry, ARCHITECTURE §7; Red Blob Games cube
+    /// Method (public-domain computational geometry; Red Blob Games cube
     /// coordinates for the axial↔cube map). `cell_of` is cube-rounding, i.e. nearest-center
     /// assignment, so a hex is the Voronoi cell of its center: the intersection of the six
     /// perpendicular-bisector half-planes against its six neighbors. Writing the fractional cube
@@ -505,8 +505,8 @@ impl GridShape for HexGrid {
     }
 
     /// Admissible axial (cube) hex distance `(|dq| + |dr| + |dq+dr|)/2` — the exact minimum number
-    /// of uniform 1-cost steps (`neighbors_with_cost`) between two hexes (Red Blob Games; ARCHITECTURE
-    /// §7 public-source computational geometry), so it never overestimates the true path cost and A*
+    /// of uniform 1-cost steps (`neighbors_with_cost`) between two hexes (Red Blob Games;
+    /// public-source computational geometry), so it never overestimates the true path cost and A*
     /// stays optimal. Deltas widen to `i64` before the sum so a large-coordinate pair can't overflow
     /// `i32`. The square `DiagonalRule` distance the pre-trait code used here OVERESTIMATES this for
     /// opposite-sign deltas (e.g. Manhattan is 2× on the `(1,-1)` axial line), which is what made the

@@ -1,8 +1,10 @@
-//! M10f-1 continuous (navmesh) pathfinding adapter. Pure geometry: builds a footprint-inflated
+//! Continuous (navmesh) pathfinding adapter. Pure geometry: builds a footprint-inflated
 //! `polyanya::Mesh` from a scene's bounds + `blocksMove` wall segments, and queries any-angle
-//! routes over it. Engine-owned geometry (ARCHITECTURE §6 exception), mirroring the grid A*
-//! router's fail-closed discipline (`pathfinding::find`) — this checkpoint carries WALLS ONLY;
-//! impassable/terrain regions land in M10f-4 (parent spec §7/§10).
+//! routes over it. Engine-owned geometry, mirroring the grid A*
+//! router's fail-closed discipline (`pathfinding::find`) — the mesh itself carries WALLS ONLY;
+//! impassable/terrain region weighting is handled separately, via `SceneEcs::pathfind`'s dispatch
+//! to the weighted grid A* plus this module's `los_smooth`/`truncate_at_arrest`, never baked into
+//! the mesh.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
@@ -296,9 +298,9 @@ pub(crate) fn navmesh_find(
 /// previous retained sample) either (a) touches a cell outside `mask` (footprint disc ∪ the
 /// step's line traversal) or (b) crosses a `blocksMove` wall. `mask: None` skips check (a) — this
 /// reuses the same `footprint_cells` ∪ `line_traversal` union `pathfinding::cell_enterable`'s
-/// mask check applies (component #2), adapted to a continuous sample position rather than a grid
+/// mask check applies, adapted to a continuous sample position rather than a grid
 /// cell center; no forked visibility decision, so a continuous preview is fog-safe and
-/// `route ⊆ gate-allowed` holds across both engines (parent spec §6.3). Every cell index here is
+/// `route ⊆ gate-allowed` holds across both engines. Every cell index here is
 /// produced by `grid` (`cell_of`/`footprint_cells`/`line_traversal`), NEVER by square
 /// `floor(p/cell)` math: `mask` is built in the scene's own `GridShape` coordinate space, and
 /// grid kind and movement model are independent axes, so a hex + continuous scene tested with
@@ -413,7 +415,7 @@ pub(crate) fn clip_to_visible_mask(
     }
 }
 
-/// Line-of-sight smoothing (string-pull) for a WEIGHTED continuous route (M10f-4). Input is the
+/// Line-of-sight smoothing (string-pull) for a WEIGHTED continuous route. Input is the
 /// cell-center polyline `pathfinding::find` produced over the region field; output restores
 /// any-angle geometry by straightening spans that pass ONLY through plain, visible, unobstructed
 /// cells. A span `path[i]..path[j]` (j >= i+2) is straightened only when every cell its chord
@@ -425,8 +427,8 @@ pub(crate) fn clip_to_visible_mask(
 /// `path[i] -> path[i+1]` is ALWAYS kept unconditionally (it already passed `find`'s per-cell
 /// gate), so progress to the goal is guaranteed and cells adjacent to special terrain stay
 /// grid-stepped. `cost` and `arrested` are carried through unchanged (the grid weighted cost is a
-/// valid, slightly-conservative budget for the straighter geometry — same preview-vs-execution
-/// divergence class already logged for the grid engine in `docs/TODO.md`). "Entered cells" = the
+/// valid, slightly-conservative budget for the straighter geometry — the same preview-vs-execution
+/// divergence already present on the grid engine's own route cost). "Entered cells" = the
 /// destination footprint disc ∪ the step line traversal, the SAME union
 /// `pathfinding::cell_enterable` and `clip_to_visible_mask` apply, indexed through `grid` — which
 /// MUST be the shape both `mask` and `field` were built with (`resolve_grid_shape`), since the
@@ -528,7 +530,7 @@ pub(crate) fn los_smooth(
 }
 
 /// Truncate a continuous (polyanya) route at the first VISIBLE arrest cell TRANSITION, mirroring
-/// `pathfinding::find`'s arrest truncation (spec §5, "arrest is honest in preview") for the
+/// `pathfinding::find`'s arrest truncation ("arrest is honest in preview") for the
 /// walls-only continuous path — which does not go through `find`. Arc-length-samples the route
 /// (`move_stream::sample_path`'s `SAMPLES_PER_CELL` density puts several consecutive samples in
 /// the same cell) and cuts at the first sample whose cell differs from the last distinct cell seen

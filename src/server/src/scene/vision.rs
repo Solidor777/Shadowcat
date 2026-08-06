@@ -1,5 +1,5 @@
-//! Clean-room 2D visibility-polygon raycaster (M9b). Engine-owned geometry (#6 exception),
-//! server-authoritative (#3). No proprietary VTT/engine source consulted.
+//! Clean-room 2D visibility-polygon raycaster. Engine-owned geometry, server-authoritative.
+//! No proprietary VTT/engine source consulted.
 //!
 //! Algorithm: the "ray casting to endpoints" angular sweep — for a viewpoint and a set of
 //! occluding segments, cast rays toward every segment endpoint (and ±epsilon, to slip past

@@ -1,10 +1,10 @@
-//! Per-(scene, player) explored fog memory (M9c): a sparse set of visited grid cells,
-//! accumulated monotonically from each vision recompute. Engine-owned geometry (#6),
+//! Per-(scene, player) explored fog memory: a sparse set of visited grid cells,
+//! accumulated monotonically from each vision recompute. Engine-owned geometry,
 //! headless + pure (the DB round-trip lives in the repository). Clean-room.
 //!
 //! A cell `(i, j)` covers world rect `[i*size, (i+1)*size) × [j*size, (j+1)*size)`. A vision
 //! recompute marks every cell whose CENTER lies inside any `visible` polygon (resolution = one
-//! grid cell — sufficient for the dimmed "explored memory" layer per spec §7). Accumulation is a
+//! grid cell — sufficient for the dimmed "explored memory" layer). Accumulation is a
 //! set union, so revisiting marks nothing new (bounded by O(explored area), no growth on revisit).
 
 #![deny(missing_docs)]

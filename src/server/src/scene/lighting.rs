@@ -1,5 +1,5 @@
-//! Illumination field + gradation banding (M10e-2). Pure, engine-owned (ARCHITECTURE #6),
-//! server-authoritative (#3). Clean-room: standard radial light falloff plus threshold banding of a
+//! Illumination field + gradation banding. Pure, engine-owned, server-authoritative.
+//! Clean-room: standard radial light falloff plus threshold banding of a
 //! continuous [0,1] illumination field. No proprietary VTT/engine source consulted.
 //!
 //! Mirrors the client `light-gradation`/`light`/`vision-modes` shapes in the `scene-docs` module; the server
@@ -26,7 +26,7 @@ pub enum Falloff {
     /// Smooth quadratic taper (faster than linear).
     Quadratic,
     /// No gradient: a flat dim-band step (`0.5 × intensity`) — bright/dim radii feed the gradation
-    /// bands directly (spec §5.4). With the default gradation this lands a unit-intensity light's
+    /// bands directly. With the default gradation this lands a unit-intensity light's
     /// dim band at 0.5 ∈ [dim 0.34, bright 0.67).
     None,
 }
@@ -236,7 +236,7 @@ fn env_lit(env_polys: &[Vec<P>], center: P) -> bool {
 }
 
 /// Compose illumination at a cell center from a boundary-projected environment ambient plus each
-/// light, taking the MAX contributor (no over-brightening, spec §6); `tint` follows the dominant
+/// light, taking the MAX contributor (no over-brightening); `tint` follows the dominant
 /// contributor.
 /// `lit_polys[k]` is `lights[k]`'s `blocksLight` visibility polygon — a light contributes only if the
 /// cell center lies inside it (an EMPTY polygon means "no occluder computed" → never occludes).

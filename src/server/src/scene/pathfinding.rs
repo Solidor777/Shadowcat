@@ -1,10 +1,10 @@
-//! Server-authoritative grid A* pathfinder (M10e-6). Pure + headless: callers pass parsed inputs
+//! Server-authoritative grid A* pathfinder. Pure + headless: callers pass parsed inputs
 //! (walls, mask, cell size, grid shape, footprint); this module owns no I/O and borrows no ECS. The
 //! `GridShape` (square/hex) is the single source of the diagonal rule — it owns both the step-cost
 //! and the admissible heuristic, so `find` takes no separate rule argument.
-//! Engine-owned geometry (ARCHITECTURE §6 exception); clean-room A* (Hart, Nilsson & Raphael 1968).
+//! Engine-owned geometry; clean-room A* (Hart, Nilsson & Raphael 1968).
 //!
-//! INVARIANT (spec §13): the per-cell mask test consumes the SAME `visible_cells` set the M10e-4
+//! INVARIANT: the per-cell mask test consumes the SAME `visible_cells` set the
 //! movement gate uses — the route can never thread the unknown nor leak hidden geometry.
 
 #![deny(missing_docs)]
@@ -90,12 +90,12 @@ pub(crate) fn footprint_cells(anchor: Cell, ctr: vision::P, r_scene: f64, cell: 
     out
 }
 
-/// Whether a token may step from `from` into `to`. INVARIANT (spec §4.3, M3 spec §3): full
+/// Whether a token may step from `from` into `to`. INVARIANT: full
 /// geometric footprint clearance — (1) the footprint disc at `to` clears every `blocksMove` wall,
 /// (2) every footprint-overlapped cell AND every cell the center-to-center step's supercover
 /// crosses (including diagonal corner-flankers) is in the mask (non-GM), (3) the center step
 /// `from→to` crosses no wall, (4) no footprint-overlapped cell is `impassable` in the region field
-/// (M10g; arrest/terrain apply elsewhere — see the region-gate comment inline below).
+/// (arrest/terrain apply elsewhere — see the region-gate comment inline below).
 pub(crate) fn cell_enterable(grid: &PathGrid, from: Cell, to: Cell) -> bool {
     let (i0, j0, i1, j1) = grid.window;
     if to.0 < i0 || to.0 > i1 || to.1 < j0 || to.1 > j1 {
@@ -114,13 +114,13 @@ pub(crate) fn cell_enterable(grid: &PathGrid, from: Cell, to: Cell) -> bool {
     // (2) Mask: every footprint-overlapped cell, AND every cell the center-to-center step's
     // supercover crosses, must be visible/revealed (non-GM).
     //
-    // INVARIANT (spec §13 / M3 design §3): `GridShape::line_traversal` is the SAME primitive
-    // the M1 move executor (`move_exec::execute_move`) and the M10e-4 `Room::publish` gate check per
-    // step — resolved from the scene's shape, never the free square `movement::supercover_cells`
-    // (that is `SquareGrid`'s own internal; calling it here is square-on-hex). The router's mask predicate must be a superset of the gate's, or a route this A*
-    // search approves can be rejected at execution time (buddy-check P1: for a sub-0.5-cell
+    // INVARIANT: `GridShape::line_traversal` is the SAME primitive the sole move executor
+    // (`move_exec::execute_move`) uses per step — resolved from the scene's shape, never the free
+    // square `movement::supercover_cells` (that is `SquareGrid`'s own internal; calling it here is
+    // square-on-hex). The router's mask predicate must be a superset of the gate's, or a route this A*
+    // search approves can be rejected at execution time: for a sub-0.5-cell
     // footprint, the destination footprint disc alone never reaches a diagonal step's corner
-    // flanker cells). `None` (degenerate/over-cap span) fails closed: not enterable, mirroring
+    // flanker cells. `None` (degenerate/over-cap span) fails closed: not enterable, mirroring
     // the gate's `None ⇒ Forbidden`.
     if let Some(mask) = grid.mask {
         for c in grid.shape.footprint_cells(to, ctr, r_scene, grid.cell) {
@@ -137,7 +137,7 @@ pub(crate) fn cell_enterable(grid: &PathGrid, from: Cell, to: Cell) -> bool {
             None => return false,
         }
     }
-    // (3) Center-to-center step clears every wall (reuses the M9 segment-cross predicate).
+    // (3) Center-to-center step clears every wall (reuses the segment-cross predicate).
     for w in grid.walls {
         if crate::scene::segments_cross(a, ctr, w.a, w.b) {
             return false;
@@ -450,9 +450,9 @@ impl PartialOrd for QNode {
     }
 }
 
-/// ADMISSIBILITY WITH TERRAIN (M10g): `astar_leg`'s actual step cost is `step_cost(...) *
+/// ADMISSIBILITY WITH TERRAIN: `astar_leg`'s actual step cost is `step_cost(...) *
 /// terrain_multiplier(next)`, and every multiplier is >= 1.0 (validated where `RegionField` is
-/// built, `SceneEcs::region_field`/spec §3). This heuristic already lower-bounds the UNWEIGHTED
+/// built, `SceneEcs::region_field`). This heuristic already lower-bounds the UNWEIGHTED
 /// step cost, so it remains a valid (never-overestimating) lower bound on the weighted cost too —
 /// terrain can only make the real path more expensive, never cheaper than this heuristic assumes.
 /// Consistent (not merely admissible) heuristic from `c` to `goal` under `rule`. Consistency
@@ -563,7 +563,7 @@ const WINDOW_MARGIN: i32 = 8;
 /// The result of a `find()` route: scene points — `path[0]` is the mover's LITERAL start
 /// position, every later point a cell center through the goal (or truncated at an arrest
 /// cell) — the total weighted cost in cells, and whether an arrest region cut the route
-/// short (spec §5: "arrest is honest in preview" — the player-facing router must never show a
+/// short ("arrest is honest in preview" — the player-facing router must never show a
 /// route past a hazard it knows about).
 #[derive(Debug, Clone, PartialEq)]
 pub struct PathOutcome {
@@ -573,7 +573,7 @@ pub struct PathOutcome {
     pub path: Vec<vision::P>,
     /// Total weighted cost in cells.
     pub cost: f64,
-    /// An arrest region truncated the route (spec §5 honest-preview rule).
+    /// An arrest region truncated the route (honest-preview rule).
     pub arrested: bool,
 }
 
@@ -657,7 +657,7 @@ pub fn find(
     // next leg is per-leg-greedy and NOT guaranteed to minimize TOTAL multi-leg cost — a costlier
     // end-parity on one leg could enable a cheaper next leg. This affects 5-10-5 cost display at
     // waypoint boundaries only; the route remains valid, footprint-clear, mask-bounded, and
-    // gate-passable, and spec §4.2 requires only that parity carry (no reset), which it does.
+    // gate-passable — only that parity carry across legs (no reset) is required, which it does.
     let mut cells: Vec<Cell> = Vec::new();
     let mut total = 0.0;
     let mut parity = 0u8;
@@ -700,7 +700,7 @@ pub fn find(
         from = goal;
     }
 
-    // Arrest truncation (spec §5): the route is cut at the FIRST visible arrest cell after the
+    // Arrest truncation: the route is cut at the FIRST visible arrest cell after the
     // start (a token already standing in a cell is not "entering" it). Recompute the truncated
     // cost by replaying the per-step cost across the surviving prefix via `grid.shape` — parity
     // threading is purely sequential (order-dependent, not leg-boundary-dependent), so replaying
@@ -1181,7 +1181,7 @@ mod tests {
             "overlapped neighbor cells not in mask"
         );
 
-        // A point-sized footprint overlaps only (1,0) at the destination — but the M3 fix also
+        // A point-sized footprint overlaps only (1,0) at the destination — but the mask check also
         // requires the FROM cell in the mask (supercover_cells always includes both endpoint
         // cells). Add (1,1) to represent a realistic case where both the mover's current cell
         // and its destination are visible.
