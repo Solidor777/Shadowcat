@@ -89,12 +89,15 @@ export interface SheetMeta {
 
 /** One piece of UI a module contributes into a named surface contract. */
 export interface Contribution {
-  /** Unique id for this contribution. The registry itself never reads it — `contribute`'s
-   * returned dispose closes over the `Entry` object and removes it by identity
-   * (`this.entries.indexOf(entry)`), not by `id` lookup. Consumers address a contribution by
-   * `id` directly: `PanelsController` keys its persisted layout tree, `open(id)`/`close(id)`,
-   * and `metaMap` off it (`src/modules/panels/src/controller.svelte.ts`), `PanelHost.svelte`
-   * keys its rendered slots (`{#each ... (c.id)}`) and crash/reload testids off it, and
+  /** An id the contributing module/host is responsible for keeping unique across whatever
+   * contract it registers under; the registry neither checks nor enforces this — `contribute`
+   * pushes the entry unconditionally and its returned dispose closes over the `Entry` object,
+   * removing it by identity (`this.entries.indexOf(entry)`), never by `id` lookup, so a
+   * duplicate would register successfully and dispose correctly. The risk is downstream:
+   * consumers that key off `id` assume uniqueness and were not verified against a collision —
+   * `PanelsController` keys its persisted layout tree, `open(id)`/`close(id)`, and `metaMap` off
+   * it (`src/modules/panels/src/controller.svelte.ts`), `PanelHost.svelte` keys its rendered
+   * slots (`{#each ... (c.id)}`) and crash/reload testids off it, and
    * `sheets.ts`'s deterministic ordering falls back to `contribution.id` as the tie-break when
    * `module` is absent (a host-registered contribution, `sheets.ts:164`). */
   id: string;
