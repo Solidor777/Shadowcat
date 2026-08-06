@@ -1,17 +1,16 @@
-import type { DisplayBackend } from "./backend";
+import type { DisplayBackend, BackgroundSpec } from "./backend";
 import type { LineSeg, CameraTransform, VisibilityInput, TokenNodeSpec, ShapeNodeSpec, Point } from "./types";
 import type { LightingFrame } from "./lighting";
+import type { PingRing } from "./ping-view";
 
 /** A recording DisplayBackend for unit tests — never touches Pixi/GL. */
 export class MockBackend implements DisplayBackend {
   /** Last `ensureLayers` z-order, recorded verbatim — see `ensureLayers`'s doc for the
    * shrinking-set divergence from `PixiBackend`. */
   layers: string[] = [];
-  /** Last `setBackground` spec, recorded verbatim. */
-  background: {
-    /** Background image serve URL. */
-    url: string;
-  } | null = null;
+  /** Last `setBackground` spec, recorded verbatim; `null` before the first call, or after a
+   * clear (`setBackground(null)`). */
+  background: BackgroundSpec | null = null;
   /** Count of lines passed to the last `drawGrid` call — the geometry itself is discarded. */
   gridLineCount = 0;
   /** Color passed to the last `drawGrid` call, `0xRRGGBB`. */
@@ -19,23 +18,24 @@ export class MockBackend implements DisplayBackend {
   /** Last `setCameraTransform` value, recorded verbatim. */
   camera: CameraTransform | null = null;
   /** Last applied visibility mask — either the last `setVisibility` input, or the
-   * snapped-to endpoint of the last `setVisibilityBlend` call. */
+   * snapped-to endpoint of the last `setVisibilityBlend` call; `null` before either has ever
+   * been called (the fog layer has no default mask to fall back on). */
   visibility: VisibilityInput | null = null;
   /** Last `setVisibilityBlend` call recorded verbatim (from/to/factor), for asserting the
    * M2 §T7 cross-fade advances 0→1 across a sample interval. */
   visibilityBlend: {
-    /** The outgoing (older) vision sample. */
+    /** See `DisplayBackend.setVisibilityBlend`'s `from` param. */
     from: VisibilityInput;
-    /** The incoming (newer) vision sample. */
+    /** See `DisplayBackend.setVisibilityBlend`'s `to` param. */
     to: VisibilityInput;
-    /** Blend position in `[0,1]` at the time of the call. */
+    /** See `DisplayBackend.setVisibilityBlend`'s `factor` param. */
     factor: number;
   } | null = null;
   /** Last `resize` call, recorded verbatim. */
   size: {
-    /** Viewport width, in CSS pixels. */
+    /** See `DisplayBackend.resize`'s `width` param. */
     width: number;
-    /** Viewport height, in CSS pixels. */
+    /** See `DisplayBackend.resize`'s `height` param. */
     height: number;
   } | null = null;
   /** Every `addLayerFilter` registration not yet disposed, in call order. */
@@ -53,24 +53,15 @@ export class MockBackend implements DisplayBackend {
   overlay: Omit<ShapeNodeSpec, "layer">[] = [];
   /** Last `drawMeasure` call, recorded verbatim (`null` after `clearMeasure`). */
   measure: {
-    /** The segment's start point, in scene coordinates. */
+    /** See `DisplayBackend.drawMeasure`'s `from` param. */
     from: Point;
-    /** The segment's end point, in scene coordinates. */
+    /** See `DisplayBackend.drawMeasure`'s `to` param. */
     to: Point;
-    /** The distance label text. */
+    /** See `DisplayBackend.drawMeasure`'s `label` param. */
     label: string;
   } | null = null;
   /** Last `drawPings` rings, recorded verbatim. */
-  pings: {
-    /** Ring center's scene x-coordinate. */
-    x: number;
-    /** Ring center's scene y-coordinate. */
-    y: number;
-    /** Ring radius, in scene (px) units. */
-    radius: number;
-    /** Ring opacity, `[0,1]`. */
-    alpha: number;
-  }[] = [];
+  pings: PingRing[] = [];
   /** Last `setLighting` frame, recorded verbatim. */
   lighting: LightingFrame | null = null;
   /** The callback recorded by `startTicker`, driven manually via `runTicker` — see
@@ -116,10 +107,7 @@ export class MockBackend implements DisplayBackend {
    * backend.background; // { url: "https://example.test/map.png" }
    * ```
    */
-  setBackground(spec: {
-    /** Background image serve URL. */
-    url: string;
-  } | null): void {
+  setBackground(spec: BackgroundSpec | null): void {
     this.background = spec;
   }
   /** `DisplayBackend.drawGrid`: records only `lines.length` (as `gridLineCount`) and `color` — NOT
@@ -379,16 +367,7 @@ export class MockBackend implements DisplayBackend {
    * backend.drawPings([{ x: 0, y: 0, radius: 20, alpha: 0.8 }]);
    * ```
    */
-  drawPings(rings: {
-    /** Ring center's scene x-coordinate. */
-    x: number;
-    /** Ring center's scene y-coordinate. */
-    y: number;
-    /** Ring radius, in scene (px) units. */
-    radius: number;
-    /** Ring opacity, `[0,1]`. */
-    alpha: number;
-  }[]): void {
+  drawPings(rings: PingRing[]): void {
     this.pings = rings;
   }
   /** `DisplayBackend.setLighting`: records `frame` verbatim into `this.lighting`.

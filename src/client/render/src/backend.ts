@@ -1,5 +1,14 @@
 import type { LineSeg, CameraTransform, VisibilityInput, TokenNodeSpec, ShapeNodeSpec, Point } from "./types";
 import type { LightingFrame } from "./lighting";
+import type { PingRing } from "./ping-view";
+
+/** The background-layer sprite spec — the statement of record for this shape; every
+ * implementation/recording site (`PixiBackend`, `MockBackend`) references this type rather
+ * than restating its field. */
+export interface BackgroundSpec {
+  /** Background image serve URL. */
+  url: string;
+}
 
 /** The narrow GL abstraction the render model drives. The real implementation is
  * `PixiBackend` (Playwright-covered); `MockBackend` covers it in unit tests.
@@ -11,10 +20,7 @@ export interface DisplayBackend {
   ensureLayers(orderedIds: string[]): void;
   /** Set or clear the background-layer sprite.
    * @param spec The background image, or `null` to clear it. */
-  setBackground(spec: {
-    /** Background image serve URL. */
-    url: string;
-  } | null): void;
+  setBackground(spec: BackgroundSpec | null): void;
   /** Replace the grid-layer line set (scene coords) with the given color (0xRRGGBB).
    * @param lines The grid line segments to draw, in scene coordinates.
    * @param color Line color, `0xRRGGBB`. */
@@ -73,17 +79,8 @@ export interface DisplayBackend {
   /** Clear the measurement overlay. */
   clearMeasure(): void;
   /** Redraw the transient ping rings (expanding/fading outline circles).
-   * @param rings The ping rings to draw. */
-  drawPings(rings: {
-    /** Ring center's scene x-coordinate. */
-    x: number;
-    /** Ring center's scene y-coordinate. */
-    y: number;
-    /** Ring radius, in scene (px) units. */
-    radius: number;
-    /** Ring opacity, `[0,1]`. */
-    alpha: number;
-  }[]): void;
+   * @param rings The ping rings to draw — see `PingRing`. */
+  drawPings(rings: PingRing[]): void;
   /** Paint the lighting overlay (the `lighting` layer): per-cell darkening + tint + desaturate hint.
    * @param frame The resolved lighting overlay to paint. */
   setLighting(frame: LightingFrame): void;

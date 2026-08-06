@@ -1,9 +1,10 @@
 import { Application, BlurFilter, Container, Graphics, RenderTexture, Sprite, AnimatedSprite, Texture, Rectangle, Text, Assets, type Filter } from "pixi.js";
-import type { DisplayBackend } from "./backend";
+import type { DisplayBackend, BackgroundSpec } from "./backend";
 import type { LightingFrame } from "./lighting";
 import type { LineSeg, CameraTransform, VisibilityInput, TokenNodeSpec, ShapeNodeSpec, Point, ResolvedAnimatedSource } from "./types";
 import { computeAnimatedFrame } from "./token-animation";
 import { fogBlendRtStale } from "./fog-blend";
+import type { PingRing } from "./ping-view";
 
 /** Per-token render state (M10h). `container` is the outer, non-rotating node (position = token
  * center; badges are its direct children, so they stay upright); `visualContainer` rotates with
@@ -228,10 +229,7 @@ export class PixiBackend implements DisplayBackend {
    * backend.setBackground(null); // clear
    * ```
    */
-  setBackground(spec: {
-    /** Background image serve URL. */
-    url: string;
-  } | null): void {
+  setBackground(spec: BackgroundSpec | null): void {
     if (spec === null) {
       this.loadSeq++; // invalidate any in-flight load
       this.background?.destroy();
@@ -818,16 +816,7 @@ export class PixiBackend implements DisplayBackend {
    * backend.drawPings([{ x: 0, y: 0, radius: 20, alpha: 0.8 }]);
    * ```
    */
-  drawPings(rings: {
-    /** Ring center's scene x-coordinate. */
-    x: number;
-    /** Ring center's scene y-coordinate. */
-    y: number;
-    /** Ring radius, in scene (px) units. */
-    radius: number;
-    /** Ring opacity, `[0,1]`. */
-    alpha: number;
-  }[]): void {
+  drawPings(rings: PingRing[]): void {
     this.pingGraphics.clear();
     for (const r of rings) {
       this.pingGraphics.circle(r.x, r.y, r.radius).stroke({ width: 3, color: 0xffd400, alpha: r.alpha });
