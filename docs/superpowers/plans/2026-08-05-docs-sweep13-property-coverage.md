@@ -133,9 +133,37 @@ how `eslint.docs.config.js` itself was built up sweep-by-sweep before Sweep 12),
 `eslint.docs.config.js` for the whole of this sweep, so neither can shadow or interfere with the
 other. Task 15 merges both into `eslint.config.js` once `lint:props` also reaches 0.
 
+**Three corrections from Task 1's implementation — this section's drafting assumptions were wrong:**
+
+1. **A ratchet block cannot start "empty".** Flat config rejects `files: []` outright
+   (`TypeError: Key "files": Expected value to be a non-empty array`). The ratcheted blocks start on
+   a placeholder glob matching no real path. Tasks widening the ratchet REPLACE the placeholder;
+   they never delete the key. And the ratchet glob must never be widened to equal the warn glob —
+   that is precisely the shadowing this file exists to avoid. The endgame is Task 15's merge and
+   this file's deletion, not a wide-glob steady state here.
+
+2. **`require-jsdoc` alone gates only comment EXISTENCE.** The other five rules
+   (`require-description`, `require-param`, `require-param-description`, `require-returns`,
+   `require-example`) carry `contextDefaults: true` in eslint-plugin-jsdoc: with no explicit
+   `contexts` option they silently fall back to `ArrowFunctionExpression`, `FunctionDeclaration`,
+   `FunctionExpression`, `TSDeclareFunction` and NOTHING ELSE. As first written, an empty `/** */`
+   satisfied the gate on 1324 of 1330 sites. Fixed in Task 1 fix round 1 by giving the content
+   rules explicit contexts: `require-description` everywhere; `require-param`/
+   `require-param-description`/`require-returns` on `TSMethodSignature` + the arrow selectors only;
+   `require-example` deliberately NOT extended to properties/types (an `@example` per interface
+   property is noise and would balloon `docs:check-examples`). **Any future rule added to either
+   config must state which contexts it actually visits — a rule listed in `rulesAt` is not thereby
+   enforced on the contexts in `require-jsdoc`'s list.**
+
+3. **Scope boundary, decided and deliberate.** `TSIndexSignature` IS in scope (declared type
+   surface; 1 live site, `src/client/core/src/scene-docs.ts:522`). Object-literal properties
+   (`ObjectExpression > Property`) are OUT — 3447 sites repo-wide, all value positions in inline
+   config objects and option bags rather than declared API surface. Do not add that context without
+   an explicit instruction.
+
 | # | Scope | Sites |
 |---|---|---|
-| 1 | **Config + measurement task.** Create `eslint.props.config.js` (see above) with a `rulesAt`-shaped severity function gating the 4 property contexts, the 3 type-declaration contexts, and the 4 arrow contexts, at `warn` repo-wide to start. Add a `lint:props` script. Mutation-prove each of the 11 fires at `warn`. Then prove the Rust side: confirm `clippy::missing_docs_in_private_items` genuinely runs (not cached) and genuinely fires (mutation), and report the true Rust number. No ratchet yet, no doc writing. | — |
+| 1 | **Config + measurement task. DONE.** Created `eslint.props.config.js` (see above) with a `rulesAt`-shaped severity function gating the property contexts, the 3 type-declaration contexts, `TSIndexSignature`, and the 4 arrow contexts, at `warn` repo-wide. Added a `lint:props` script. Every context mutation-proved individually. Rust side proved: `clippy::missing_docs_in_private_items` is already `deny`-enforced at crate root (`src/server/src/main.rs:15-16`), forced to genuinely recompile, and mutation-proved to reach struct fields and enum variants. | — |
 | 2 | `core/wire.ts` + `core/ws-client.ts` | 157 |
 | 3 | `core/modules.ts` + `core/merge.ts` + `core/contributions.ts` + `core/manifest.ts` | 127 |
 | 4 | `core/actor.ts` + `core/hooks.ts` + `core/user-rest.ts` + `core/scene-docs.ts` + `core/mock-server.ts` | 106 |
@@ -150,7 +178,17 @@ other. Task 15 merges both into `eslint.config.js` once `lint:props` also reache
 | 13 | tail: `chat-card`, `entry`, `sheet-actor`, `stage`, `sheet-item`, `chat-composer`, `assets`, `sheet-fallback`, `settings`, both `examples/` | 53 |
 | 14 | the 6 named arrow/fn-expression sites | 6 |
 | 14b | whatever Task 1's Rust proof surfaces (0 if the 0 holds; otherwise scoped then) | ? |
-| 15 | **Ship task.** Ratchet `eslint.props.config.js` to `error` for every package in both its blocks; consolidate `eslint.docs.config.js` AND `eslint.props.config.js` into `eslint.config.js`; mutation-prove all tiers; full gate matrix; docs sync; reviewed skill-update gate; skills documentation-reference pass. | — |
+| 15 | **Ship task.** Ratchet `eslint.props.config.js` to `error` for every package in both its blocks; consolidate `eslint.docs.config.js` AND `eslint.props.config.js` into `eslint.config.js`; mutation-prove all tiers; full gate matrix; docs sync; reviewed skill-update gate; skills documentation-reference pass. **Also close the `ClassDeclaration` content gap** — see below. | — |
+
+**`ClassDeclaration` content is unchecked by the shipped function gate, at zero current cost.** The
+same `contextDefaults` mechanism described above means `eslint.docs.config.js` never content-checks a
+`ClassDeclaration`: a class carrying an empty `/** */` passes `lint:docs`. Measured repo-wide during
+Task 1: **0 live instances** — every documented class already carries a real description, so sweep
+12's 154 → 0 stands and this is not a defect in shipped work. It is a hole in the instrument, not in
+the docs. Task 15 closes it when it merges the configs, by giving `require-description` an explicit
+context list that includes `ClassDeclaration`. Do NOT "fix" `MethodDefinition` alongside it —
+methods are already fully content-checked, because a method's value node is a `FunctionExpression`,
+which IS in the plugin's default list. That was verified by probe after being reported as a defect.
 
 **The per-task site counts above are the PROPERTY gap only.** The 102 type-declaration sites live in
 the same files and are absorbed by whichever task owns each file — `wire.ts` (Task 2) carries the
