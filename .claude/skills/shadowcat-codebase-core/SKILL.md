@@ -49,12 +49,12 @@ source of truth. The ones agents break most:
   instances found in one branch (the 2026-07-22 hex-grid campaign), across four subsystems:
   | Forked on | Where | Consequence |
   |---|---|---|
-  | Cell indexing | `ws/room.rs`, `navmesh.rs` | square indices tested against a hex-axial mask |
+  | Cell indexing | `Room::publish`, `clip_to_visible_mask` | square indices tested against a hex-axial mask |
   | Contract completeness in a SHARED primitive (not a fork — included because it is the same *consequence* from the opposite cause) | `HexGrid::line_traversal` | a thin line, not a supercover — ~55% of segments omitted a crossed hex the gate then never checked; see `scene-rendering`'s "a fixed-count cube lerp is a THIN LINE" gotcha |
   | Input admissibility | `Room::publish` vs `gate_walk` | one bounded coordinate magnitude, the other did not |
   | **Scene identity** | `MoveRequest` vs `Room::publish` | one took the scene from the client, the other derived it from the token ⇒ total movement-gate bypass |
   | **`remove` semantics** | `SceneEcs::apply_op` vs `apply_intent` | ECS ignored `FieldChange.remove` while the DB honoured it ⇒ vision widened where write authz refused |
-  | Fail-open defaults | `execute_move` vs `publish` vs `pathfind` | a `unwrap_or(100.0)` cell size removed from ONE gate, left in the other two — created by the commit that fixed the row above. **Now removed from all three gates AND all six non-gate siblings** (`navmesh_for`, `region_field`, `player_lit_mask`, `visible_cells`, `visible_cells_cached` in `scene/mod.rs` — an absent `scene_grid_sizes()` entry now returns `None`/empty instead of synthesizing a 100-unit grid; `region_field`'s signature changed to `-> Option<RegionField>`, its three callers (`pathfind`'s two branches, `move_exec::execute_move`) refuse via `let-else` on `None`, and `MoveReject` gained a `SceneUnknown` variant mirroring `Degenerate`; `enrich_vision_explored` (`ws/conn.rs`) now `continue`s past a scene absent from either its `grid` or `grid_shapes` map, never synthesizing a fallback `SquareGrid`). The fail-open default is now removed at ALL sites — `scene_grid_sizes` remains the sole intentional defaulting SOURCE, not a survivor. |
+  | Fail-open defaults | `execute_move` vs `publish` vs `pathfind` | a `unwrap_or(100.0)` cell size removed from ONE gate, left in the other two — created by the commit that fixed the row above. **Now removed from all three gates AND all six non-gate siblings** (`SceneEcs::navmesh_for`, `SceneEcs::region_field`, `SceneEcs::player_lit_mask`, `SceneEcs::visible_cells`, `SceneEcs::visible_cells_cached` — an absent `scene_grid_sizes()` entry now returns `None`/empty instead of synthesizing a 100-unit grid; `region_field`'s signature changed to `-> Option<RegionField>`, its three callers (`pathfind`'s two branches, `move_exec::execute_move`) refuse via `let-else` on `None`, and `MoveReject` gained a `SceneUnknown` variant mirroring `Degenerate`; `conn::enrich_vision_explored` now `continue`s past a scene absent from either its `grid` or `grid_shapes` map, never synthesizing a fallback `SquareGrid`). The fail-open default is now removed at ALL sites — `scene_grid_sizes` remains the sole intentional defaulting SOURCE, not a survivor. |
   **How to apply.** (1) When you find two paths that must agree, do not verify they agree today —
   make one *derive* from the other, or have both read one shared symbol, so agreement is structural.
   (2) When you fix one instance, grep for the other copies **in the same commit**; the last row
@@ -85,7 +85,7 @@ source of truth. The ones agents break most:
 - **No data migrations pre-customers (user directive 2026-07-30).** Until a PLAN.md milestone
   explicitly marks live customer databases, there is no upgrade path to preserve: SQL schema
   changes EDIT `src/server/migrations/0001_init.sql` (the single baseline) in place — never add
-  an incremental migration file — and document-schema changes keep `data/migrate.rs` step-free
+  an incremental migration file — and document-schema changes keep `data::migrate` step-free
   (`CURRENT_SCHEMA_VERSION` machinery only). The sqlx/`migrate()` machinery itself MUST stay, so
   real migrations can begin at that milestone. A dev DB predating a baseline edit fails the sqlx
   checksum — delete the dev DB file and restart. Any migration files that accumulate anyway are
@@ -162,8 +162,8 @@ source of truth. The ones agents break most:
   gate on tag PRESENCE only: they cannot see a vacuous tag (`@returns The result.`), a false
   statement, or a second doc block appended below an existing one. That last case actively
   misleads — jsdoc, TypeDoc, and editor hover all bind to the NEAREST preceding block, so an
-  appended block satisfies the linter while ORPHANING the richer one above it (found in
-  `transport.ts` during the client/core sweep, at 0 warnings the whole time). Detecting it needs a
+  appended block satisfies the linter while ORPHANING the richer one above it (found on
+  `webSocketConnect` during the client/core sweep, at 0 warnings the whole time). Detecting it needs a
   manual scan for a `*/` line immediately followed by `/**`. Truthfulness and placement are review
   concerns, not gate concerns: `docs/design/doc-sweep-truthfulness-rules.md`.
 - CI builds the client **before** `cargo` (embed ordering) across the three-OS matrix.

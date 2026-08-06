@@ -1,6 +1,6 @@
 ---
 name: shadowcat-codebase-dice
-description: "Use when touching Shadowcat's dice engine: RollSpec/Expr AST, the seeded-noise RNG, roll/evaluate/recalculate, the per-group reroll/explode/keep-drop pipeline, group_index-based Total folding, SuccessCount aggregation, group_spans-based recalculation, the shared classify/crit layers, the dice notation lexer/parser, or the chat wire boundary that executes untrusted notation (caps/entropy/validate in chat/rolls.rs — co-owned with shadowcat-codebase-chat). Covers src/server/src/dice/. Invoke shadowcat-codebase-core first."
+description: "Use when touching Shadowcat's dice engine: RollSpec/Expr AST, the seeded-noise RNG, roll/evaluate/recalculate, the per-group reroll/explode/keep-drop pipeline, group_index-based Total folding, SuccessCount aggregation, group_spans-based recalculation, the shared classify/crit layers, the dice notation lexer/parser, or the chat wire boundary that executes untrusted notation (caps/entropy/validate in chat::rolls — co-owned with shadowcat-codebase-chat). Covers src/server/src/dice/. Invoke shadowcat-codebase-core first."
 ---
 
 # Shadowcat — Dice Engine
@@ -13,7 +13,7 @@ classification layer, crit events, and unified `t<N>` notation. **M11b-2 shipped
 expertise-point DP allocator (buddy-checked, differential-oracle-verified) and `e<N>` notation.
 **M11b-3 shipped** labeled dice, custom-face (symbolic) dice, the `is_ordered` pipeline gate,
 `SuccessRule`/`CritTrigger` as enums, `symbol_counts`, and Numeric-only expertise — **M11b
-fully DONE**. **M11d-2 shipped the transport boundary**: `chat/rolls.rs` (OUTSIDE this crate —
+fully DONE**. **M11d-2 shipped the transport boundary**: `chat::rolls` (OUTSIDE this crate —
 see `shadowcat-codebase-chat`) executes untrusted notation at chat ingest behind caps
 (`MAX_ROLL_DICE=100`, `MAX_ROLL_RECORDS=1000`, `MAX_EXPERTISE=100` — true DP worst case is
 records-bounded, ~1000·100² ≈ 1e7 ops — `MAX_DIE_SIDES=10_000`, `MAX_INLINE_ROLLS=8`),
@@ -26,7 +26,7 @@ and player-presentable `Display` for `ParseError`/`Token` (surfaced via chat Sys
 The recursive-descent parser has NO depth counter — callers rely on their input-length cap
 (documented on `struct P`; chat's `MAX_MESSAGE_CHARS=4096` ≈ 2k nesting levels, safe on all
 three target OSes' default stacks). Ambient `ParseContext` for chat rolls comes from the
-world's `dice-settings` config doc (`chat/settings.rs::resolve_dice_context`, fail-closed
+world's `dice-settings` config doc (`chat::settings::resolve_dice_context`, fail-closed
 Total/HighWins, GM-authored in `module-game-settings`'s Dice section).
 
 ## Purpose
@@ -42,7 +42,7 @@ on.
 
 ## Key files & seams
 
-- `src/server/src/dice/rng.rs` — `noise(seed, n) -> u64` (hand-rolled SplitMix64 finalizer, **no
+- `dice::rng` — `noise(seed, n) -> u64` (hand-rolled SplitMix64 finalizer, **no
   `rand` dependency** — a deliberate user preference for determinism-by-construction).
   `RngSource` trait (`next_u32`) + `NoiseRng` (stateful sequential generator). `roll_uniform`
   (unbiased inclusive-range draw via rejection sampling) is the **only** place raw entropy becomes
@@ -51,13 +51,13 @@ on.
   function with **no correspondence to a sequential `next_u32()` walk once any rejection has
   occurred** — do not use it to "replay the k-th die" of a real roll; currently unused by any
   consumer.
-- `src/server/src/dice/spec.rs` — the canonical AST: `DieKind::Numeric{min,max}` |
+- `dice::spec` — the canonical AST: `DieKind::Numeric{min,max}` |
   `Faces{faces: Vec<Face>}` (M11b-3, custom/symbolic dice). `Face{value: Option<i32>, symbols:
   Vec<Symbol>}` (`Symbol = String`, an opaque system-assigned tag, e.g. Genesys "triumph");
   `value: None` means the face has no numeric meaning, only symbols. `DieKind::validate() ->
   Result<(), DieKindError>` rejects `Faces{faces: []}` (`DieKindError::EmptyFaces`) — called in
-  production by `chat/rolls.rs::validate_pre_roll` on every parsed group (M11d-2).
-  `recalc::RecalcOp::ReplaceDie` onto a `Faces` die is bounds-checked at `recalc.rs` (Phase A): an
+  production by `chat::rolls::validate_pre_roll` on every parsed group (M11d-2).
+  `recalc::RecalcOp::ReplaceDie` onto a `Faces` die is bounds-checked in `dice::recalc` (Phase A): an
   out-of-range `natural` (negative or `>= faces.len()`) is silently ignored rather than written,
   matching an unknown `id`'s existing no-op semantics — closes the index-out-of-bounds panic
   surface `face_value_and_symbols` would otherwise hit. `DieKind::is_ordered()`: `Numeric` always
@@ -93,7 +93,7 @@ on.
   per-roll expertise-point budget (0 = disabled). `Mode` is **data-carrying**:
   `Total(TotalConfig) | SuccessCount(SuccessConfig)` (replaces M11a's unit `Mode::Sum |
   Mode::SuccessCount`). `RollSpec{expr, direction: Direction, mode: Mode}`.
-- `src/server/src/dice/outcome.rs` — `RawDie`, `RawRoll` (`dice`, `records`, `next_id`,
+- `dice::outcome` — `RawDie`, `RawRoll` (`dice`, `records`, `next_id`,
   `group_spans`), `DieRecord` (`id`, `group_index`, `natural`, `value`, `kept`, `exploded`,
   `rerolled_from`, `crit_success: bool`, `crit_fail: bool`, `expertise: i32`, `label:
   Option<String>`, `symbols: Vec<Symbol>`, `ordered: bool`). `expertise` is the audit trail of
@@ -116,8 +116,8 @@ on.
   reachable in the expression, Total-mode only; `#[serde(default)]` so pre-M13d stored messages
   still deserialize; `evaluate_success` always sets this to `Vec::new()` since SuccessCount
   ignores all AST arithmetic; display-only — NOT read by `by_label`/`compare_labels`; the
-  chat wire mirror (`chat-docs.ts` Zod schema) and `MessageCard.svelte` render a labeled const's
-  displayed `value` as collected by `collect_labeled_consts` (`dice/eval/sum.rs`), which threads
+  chat wire mirror (the `chat-docs` module's Zod schema) and `MessageCard` render a labeled const's
+  displayed `value` as collected by `eval::sum::collect_labeled_consts`, which threads
   an effective additive sign through the AST: `Neg` flips it, and `Sub`'s RHS flips it (so
   `-3[dex]` and `1d20 - 3[dex]` both display `-3`); `Mul`/`Div` do NOT scale or flip it — a
   labeled const under multiplication/division still displays its literal value, since the sign
@@ -131,7 +131,7 @@ on.
   ordered+unordered pool under one label also has no well-defined sum) — an all-dropped-but-
   ordered label still yields `Some(0)`, since the sum-of-kept is simply empty, not missing.
   `RollResult`.
-- `src/server/src/dice/eval/groups.rs` — `resolve_group(group, group_index, naturals, rng, raws)
+- `dice::eval::groups` — `resolve_group(group, group_index, naturals, rng, raws)
   -> Vec<DieRecord>`: the per-group pipeline (reroll → explode → keep/drop, in modifier-Vec
   order). `face_value_and_symbols(kind, natural) -> (i32, Vec<Symbol>)` derives a die's
   `(value, symbols)`: `Numeric` passes `natural` straight through; `Faces` treats `natural` as a
@@ -152,18 +152,18 @@ on.
   arm, always `true`); the inlined Standard-explode/Faces-fallback arm (reached only inside the
   `!ordered { continue }`-gated modifier loop, so always `true` too) constructs its own `DieRecord`
   directly. `CHAIN_CAP = 100` bounds chained explosions/rerolls per die.
-- `src/server/src/dice/eval/mod.rs` — `roll(spec, rng) -> RawRoll` (walks `Expr` left-to-right,
+- `dice::eval` — `roll(spec, rng) -> RawRoll` (walks `Expr` left-to-right,
   the ONLY randomness entry point) and `evaluate(spec, raws) -> RollOutcome` (dispatches
   `Mode::Total(cfg)` → `sum::evaluate_total`, `Mode::SuccessCount(cfg)` →
   `success::evaluate_success`).
-- `src/server/src/dice/eval/classify.rs` — the shared classification layer used by BOTH modes.
+- `dice::eval::classify` — the shared classification layer used by BOTH modes.
   `oriented_margin(direction, scalar, reference) -> i64` flips a margin so "better" is always more
   positive (`HighWins: scalar - reference`; `LowWins: reference - scalar`) — used ONLY by Total
   mode. `classify(margin: i64, tiers: &[Tier]) -> Classification{pass, tier_label, tier_value}`:
   empty `tiers` => default 2-rung pass/fail at `margin >= 0`; non-empty => the highest rung with
   `margin_offset <= margin`, fail-closed to the lowest rung if below every offset (order-
   independent, no sorted precondition).
-- `src/server/src/dice/eval/crit.rs` — `DieCrit{is_success, is_fail, extra_successes, lost,
+- `dice::eval::crit` — `DieCrit{is_success, is_fail, extra_successes, lost,
   positive_counter, negative_counter}` + `score_die(direction, value, symbols: &[Symbol], cfg:
   &SuccessConfig) -> DieCrit`: scores one kept die against `cfg.crit_success`/`cfg.crit_fail`
   independently via the shared `reaches(direction, value, symbols, trigger, is_success_event)`
@@ -176,12 +176,12 @@ on.
   `DieScore{base_success: bool, crit: DieCrit}` + `.net() -> i32` (M11b-3, `eval::crit::
   score_die_net`) is the CENTRALIZED per-die net-success formula (`base + extra_successes −
   lost`): `score_die_net(direction, cfg, value, symbols) -> DieScore` computes both `cfg.success`'s
-  base-success test AND `score_die`'s crit result together — shared by `success.rs`'s main pooling
-  loop, `expertise.rs`'s `allocate` (the `fixed` term, see below), and `expertise.rs`'s test-only
-  `score_pool` helper. `expertise.rs`'s `die_values` deliberately still inlines its own narrower
+  base-success test AND `score_die`'s crit result together — shared by `eval::success`'s main pooling
+  loop, `eval::expertise::allocate` (the `fixed` term, see below), and `eval::expertise`'s test-only
+  `score_pool` helper. `eval::expertise`'s `die_values` deliberately still inlines its own narrower
   version (a different shape — scoring a synthetic single-step candidate mid-DP, symbols always
   empty since expertise only ever adjusts Numeric dice).
-- `src/server/src/dice/eval/expertise.rs` — the value-mutating pre-pass `allocate(direction,
+- `dice::eval::expertise` — the value-mutating pre-pass `allocate(direction,
   cfg: &SuccessConfig, raws: &RawRoll, records: &mut [DieRecord])`, called by
   `eval::success::evaluate_success` only when `cfg.expertise > 0`, BEFORE base-success counting
   (b-1's counting logic itself is unmodified/sealed). `adjust(direction, value, min, max, k)`
@@ -211,13 +211,13 @@ on.
   a different question than `evaluate_success` will actually score. `fixed` is a constant additive
   shift across every candidate allocation, so it never changes either DP pass's own argmax — only
   the pass-choice threshold needs it.
-- `src/server/src/dice/eval/sum.rs` — `evaluate_total(spec, cfg: &TotalConfig, raws) ->
+- `dice::eval::sum` — `evaluate_total(spec, cfg: &TotalConfig, raws) ->
   RollOutcome`: folds the AST to a total by matching `DieRecord.group_index` against an AST-order
   cursor (`fold`); **the group-boundary reconstruction is the correctness core** — a wrong
   boundary silently mis-sums a multi-group roll. If `cfg.difficulty` is set, classifies via
   `oriented_margin` + `classify::classify`; otherwise reports a bare total (`pass`/`margin`/
   `tier_*` all `None`).
-- `src/server/src/dice/eval/success.rs` — `evaluate_success(spec, cfg: &SuccessConfig, raws) ->
+- `dice::eval::success` — `evaluate_success(spec, cfg: &SuccessConfig, raws) ->
   RollOutcome`: if `cfg.expertise > 0`, first runs `eval::expertise::allocate` over a cloned
   `records` to mutate chosen dice's `value`/`expertise`, THEN pools **all kept records across
   every group** (ignores `group_index`/AST
@@ -235,15 +235,15 @@ on.
   subtraction) is load-bearing — a future change that "fixes" SuccessCount to also call
   `oriented_margin` would double-apply direction and silently invert every LowWins SuccessCount
   roll's pass/tier result.
-- `src/server/src/dice/recalc.rs` — `recalculate(spec, raws, ops, rng) -> (RawRoll, RollOutcome)`
+- `dice::recalc` — `recalculate(spec, raws, ops, rng) -> (RawRoll, RollOutcome)`
   + `RecalcOp{RerollDice, ReplaceDie, RemoveDice}`. Reconstructs each group's **base naturals only**
   from `RawRoll.group_spans` (excludes explosion/penetrate children by design), applies ops, then
   `rederive`s by re-running `resolve_group` over the mutated naturals in AST order. `RecalcOp::
   RerollDice`'s redraw formula is `DieKind`-dispatched (M11b-3): a fresh numeric face for
   `Numeric`, a fresh face INDEX via `roll_uniform(rng, 0, faces.len()-1)` for `Faces` — mirrors the
-  same formula used at `groups.rs`'s two other draw sites. `ReplaceDie`/`RemoveDice` needed no
+  same formula used at `eval::groups`'s two other draw sites. `ReplaceDie`/`RemoveDice` needed no
   `Faces` change (both are `DieKind`-agnostic, operating only on `natural`/id).
-- `src/server/src/dice/notation/{mod.rs,lexer.rs,parser.rs}` — `lex`/`Token`/`ParseError` +
+- `dice::notation` (its `lexer` and `parser` submodules) — `lex`/`Token`/`ParseError` +
   `parse(input: &str, ctx: ParseContext) -> Result<RollSpec, ParseError>` (recursive descent:
   `expr := term (('+'|'-') term)*`; `term := factor (('*'|'/') factor)*`; `factor := '(' expr ')'
   | '-' factor | dice | int`). `ParseContext{mode: ModeKind, direction: Direction}` is caller-
@@ -283,14 +283,15 @@ on.
   identifier as a labeled constant (`value[name]`) even with no dice roll present, and the
   parser previously rejected any such label not immediately adjacent to a dice group.
   **Exception — a NEGATIVE substitution carries no label at all**: `substituteIdentifier`
-  (`src/client/formula/src/template.ts`) emits `(0 - N)`, an unlabeled parenthesized subtraction,
+  emits `(0 - N)`, an unlabeled parenthesized subtraction,
   and only the non-negative branch emits `N[name]`. The totals are identical either way, but
   `collect_labeled_consts` emits a `ConstTerm` only for a `Const` CARRYING a label — and it
   recurses through `Expr::Neg`, so a labeled `-N[name]` would still contribute a signed chip while
   this form's two unlabeled `Const`s contribute none. A negative stat therefore shows no `[label]`
-  chip in the breakdown. `template.test.ts:32-35` pins the notation output (deliberately, naming
-  the absent label), so the client shape is a choice; what is untested and undecided is that
-  downstream breakdown consequence — see `docs/TODO.md`. Do not restate the substitution rule
+  chip in the breakdown. `template.test`'s "negative values emit parenthesized zero-minus form
+  (no label)" test pins the notation output (deliberately, naming the absent label), so the
+  client shape is a choice; what is untested and undecided is that
+  downstream breakdown consequence — see TODO's dice section. Do not restate the substitution rule
   without this exception.
 
 ## Hard invariants
@@ -301,7 +302,7 @@ on.
 - **`oriented_margin` applies to Total mode ONLY; SuccessCount's margin is a plain subtraction,
   NEVER direction-flipped.** SuccessCount's per-die direction sensitivity is already baked in by
   `crit::score_die`/the success-rule comparator resolved at parse time; flipping the pooled margin
-  again would double-apply direction. Any future change touching `success.rs`'s margin
+  again would double-apply direction. Any future change touching `dice::eval::success`'s margin
   computation must preserve this asymmetry.
 - **A `RollOutcome` reports EITHER `pass` (default 2-rung classification) OR a `tier`
   (`tier_label`/`tier_value`, custom ladder), never both** — `classify::classify` enforces this at
@@ -356,8 +357,8 @@ on.
   modifier**: `rederive` re-triggers the full modifier pipeline fresh against (possibly-unchanged)
   base naturals, so an UNTARGETED sibling die in the same group can get a brand-new explosion/
   reroll tail across a recalc call even though its own `natural` never changed. This is
-  intentional/plan-approved (not a bug) — see `recalc.rs`'s doc comment and the pinning tests in
-  `recalc.rs`'s test module (`explosion_tail_for_untouched_sibling_changes_across_recalc` et al.)
+  intentional/plan-approved (not a bug) — see `dice::recalc`'s doc comment and the pinning tests in
+  `dice::recalc`'s test module (`explosion_tail_for_untouched_sibling_changes_across_recalc` et al.)
   for the exact proven behavior. Base-die `natural` values ARE stable across recalc; derived
   records for exploding/rerolling dice are NOT.
 - **Every `DieKind::Numeric` construction from untrusted/parsed input must validate `sides >= 1`
@@ -367,9 +368,9 @@ on.
 - **Pure library — `dice` must never depend on `ws`/`data`/`http`/`scene`.** Still NO wire
   frames and NO `#[derive(TS)]`/ts-rs bindings even after M11d-2: roll outcomes ride the
   opaque chat `system` body (`Segment::RollEmbed{formula, outcome}`) and the client mirrors
-  them by hand in `chat-docs.ts` Zod (`RollOutcomeSchema`/`DieRecordSchema`) — a shape change
+  them by hand in the `chat-docs` module's Zod (`RollOutcomeSchema`/`DieRecordSchema`) — a shape change
   to `RollOutcome`/`DieRecord` MUST update that mirror, not regenerate a binding. All
-  transport policy (caps, entropy, settings, error surfacing) lives in `chat/rolls.rs`, never
+  transport policy (caps, entropy, settings, error surfacing) lives in `chat::rolls`, never
   here.
 - **Expertise optimizes the CLAMPED (visible) net successes, with a counter-max fallback in the
   all-failed region.** `eval::expertise::allocate` maximizes raw lexicographic `(net, counter)`
@@ -383,7 +384,7 @@ on.
   better-end bound.
 - **The expertise DP allocation is deterministic and oracle-verified.** `run_dp`'s tie-break
   (smallest `k` wins per die, backtrack from the last die) is pinned against a brute-force
-  reference (`oracle` in `expertise.rs`'s test module) over a 4000-case deterministic pseudo-random
+  reference (`oracle` in `dice::eval::expertise`'s test module) over a 4000-case deterministic pseudo-random
   corpus varying direction/target/crit config/`allow_negative`/e/n — both the objective value AND
   the exact per-die allocation must match. Any future change to the tie-break or the DP recurrence
   must re-run this oracle test, not just check the objective value.
@@ -401,10 +402,10 @@ on.
 - **The crate's OWN types stay uncapped by design — the caps live at the transport boundary**
   (M11d-2): `DiceGroup.count` is still an unbounded `u32` inside the pure library; anything
   reaching `roll()`/`evaluate()` from untrusted input MUST come through
-  `chat/rolls.rs::execute_roll`/`validate_formula` (the cap walk + `DieKind::validate()`
+  `chat::rolls::execute_roll`/`validate_formula` (the cap walk + `DieKind::validate()`
   caller). A future second transport must reuse or replicate that boundary, never call
   `notation::parse` + `roll` bare. Overflow is defense-in-depth-guarded crate-side
-  (`RawRoll::push` checked id increment; saturating folds in `eval/sum.rs` incl. every
+  (`RawRoll::push` checked id increment; saturating folds in `dice::eval::sum` incl. every
   `Expr::Bin` arm).
 - **`ParseError`/`Token` implement player-presentable `Display`** (M11d-2) — chat System
   notices surface them directly; a new variant MUST get a clean `Display` arm (pinned by the
@@ -416,8 +417,8 @@ on.
   only by authoring a `RollSpec`/`SuccessConfig` directly — no notation syntax exposes them yet.
 - **Expertise DP (M11b-2) was the highest-risk piece of the whole engine** — it shipped only after
   buddy-check + differential-oracle verification against a brute-force reference (see the Hard
-  invariants entry above). Treat any future change to `eval/expertise.rs` as buddy-check-worthy by
-  default, same tier as `eval/groups.rs`/`eval/sum.rs`/`eval/success.rs` below.
+  invariants entry above). Treat any future change to `dice::eval::expertise` as buddy-check-worthy by
+  default, same tier as `dice::eval::groups`/`dice::eval::sum`/`dice::eval::success` below.
 - **`e<N>` is roll-level and silently discarded under Total mode.** Mirrors the existing `t<N>`-
   vs-mode gotcha: `e<N>` sets the parser's internal `struct P.expertise` scratch field, but that
   value is only ever read into `SuccessConfig.expertise` when the resolved `Mode` is
@@ -427,27 +428,27 @@ on.
 - **Buddy-check track record in this module**: all three of M11a's plan's pre-approved
   buddy-check tasks (group pipeline, group_index fold, recalculate) found and fixed real
   Critical/Important bugs — this is dense, easy-to-get-subtly-wrong pipeline logic; treat any
-  future change to `eval/groups.rs`, `eval/sum.rs`, `eval/success.rs`, `eval/classify.rs`,
-  `eval/crit.rs`, `eval/expertise.rs`, or `recalc.rs` as buddy-check-worthy by default. M11b-3's
+  future change to `dice::eval::groups`, `dice::eval::sum`, `dice::eval::success`, `dice::eval::classify`,
+  `dice::eval::crit`, `dice::eval::expertise`, or `dice::recalc` as buddy-check-worthy by default. M11b-3's
   own pre-approved buddy-check (Task 9, reopening the sealed crit-scoring path for `CritTrigger`)
   and the independent Task 11 review (expertise's Numeric-only restriction) each found and fixed
   a real bug too — see the `fixed`-term and derived-value-retrigger Hard invariants above.
 - **`DieKind::validate()` is enforced at the wire boundary, not inside `roll()`** (M11d-2):
-  `chat/rolls.rs::validate_pre_roll` calls it per parsed group before any rolling, so an
+  `chat::rolls::validate_pre_roll` calls it per parsed group before any rolling, so an
   empty-`faces` die can no longer arrive via chat (notation still can't construct `Faces`
   anyway). The crate itself remains unvalidated by design — any future non-chat caller that
   hand-builds a `RollSpec` must run the same validation. `ReplaceDie`-onto-`Faces` is separately
-  bounds-checked inside `recalc.rs` itself (Phase A, see the `spec.rs` entry above), so it needed
-  no wire-boundary gate.
-- **`validate_tiers` (`chat/rolls.rs`, Phase A) guards `SuccessConfig`/`TotalConfig.tiers`
+  bounds-checked inside `dice::recalc` itself (Phase A, see the `dice::spec` entry above), so it
+  needed no wire-boundary gate.
+- **`validate_tiers` (`chat::rolls`, Phase A) guards `SuccessConfig`/`TotalConfig.tiers`
   uniqueness at the wire boundary**, ahead of any untrusted construction path existing —
   `classify::classify`'s `max_by_key`/`min_by_key` tie on a duplicate `margin_offset` is
-  caller-order-dependent (documented on `classify.rs`), so a malformed ladder with a repeated
-  offset would otherwise resolve nondeterministically. `validate_pre_roll` calls it on every
-  parsed spec's tiers; `RollError::DuplicateTierOffset(i32)` is the player-presentable rejection.
-  Notation still cannot author a non-empty ladder today (`parser.rs` emits `tiers: vec![]`), so
-  this guard arms the boundary before the construction path exists, mirroring the
-  `DieKind::validate()` precedent above.
+  caller-order-dependent (documented on `dice::eval::classify`), so a malformed ladder with a
+  repeated offset would otherwise resolve nondeterministically. `validate_pre_roll` calls it on
+  every parsed spec's tiers; `RollError::DuplicateTierOffset(i32)` is the player-presentable
+  rejection. Notation still cannot author a non-empty ladder today (`dice::notation::parser`
+  emits `tiers: vec![]`), so this guard arms the boundary before the construction path exists,
+  mirroring the `DieKind::validate()` precedent above.
 - **`compare_labels` returns `Some(0)`, not `None`, for an all-dropped-but-ordered label.** `None`
   means the label has ZERO matching records at all, OR at least one matching record is unordered
   (see the Hard invariants entry above); a label whose records all exist, are all ordered, but are
@@ -464,7 +465,7 @@ on.
   plan); `docs/superpowers/plans/2026-07-07-m11b-3-labeled-custom-face-dice.md` (M11b-3 plan,
   including its buddy-check directive for Task 9); `docs/superpowers/plans/2026-07-03-m11a-dice-engine-core.md`
   (M11a implementation plan + Buddy-check/Model-effort directives).
-- Deferred work: `docs/TODO.md` "Server / dice (M11a)" section (dice-count cap, serde-defaults,
+- Deferred work: TODO's "Server / dice (M11a)" section (dice-count cap, serde-defaults,
   `Token` Display impl — several already marked RESOLVED as later tasks closed them), a dedicated
   `SuccessConfig.expertise` bounding entry (M11b-2, unbounded `E` is an `O(N·E²)` DoS/wrap-around
   vector), and the `DieKind::Faces` empty-face-list panic-surface gap (M11b-3) — all three deferred

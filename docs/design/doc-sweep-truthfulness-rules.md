@@ -30,6 +30,25 @@ Three shapes, all of which present as compliance:
   gate, `@returns The result.`, a test that asserts nothing, a cast that hides a real mismatch.
 - **Reading a rule narrowly to shrink the work** — also a descope, separately forbidden.
 
+**Never cut scope or coverage to resolve a hard case.** A second standing user directive — *"never
+ever make descoping decisions without consulting me first"* — binds the same way, and surfacing a cut
+after making it does not count as consulting. Exempting a category from a rule, narrowing a file's
+scope, skipping a walk because someone checked part of it, or downgrading a full re-derivation to a
+spot-check are all cuts. If you believe something is out of scope, that is a **finding for your
+report**, not a decision you get to make.
+
+**It arrives as a tie-break, not as a shortcut.** Two passes disagree, or two sections of one file
+follow different conventions, and picking one feels like adjudication rather than a scope decision.
+It isn't: *"which of these is in scope"* **is** scope. The dispatcher made exactly this error twice
+in one hour of the Rule 15 pass — exempting a whole category to settle a disagreement between two
+forks, and reducing a required walk to a spot-check — and both felt like unblocking rather than
+cutting. Unblock by holding: tell the agent to leave the case untouched and list it, then ask.
+
+**Local consistency is not authority.** A convention observed inside one file is evidence about that
+file, not about this campaign. When two conventions collide, the rule's own text decides — not
+whichever one is nearer to the line being edited. Two sections can disagree because one is already
+wrong.
+
 **How to apply.** Difficulty satisfying a rule is the signal to ask what it is FOR, never to find the
 minimum edit that clears it. If a rule's intent cannot be followed, or is genuinely ambiguous,
 **surface it to the dispatcher, who takes it to the user** — never resolve it silently in the

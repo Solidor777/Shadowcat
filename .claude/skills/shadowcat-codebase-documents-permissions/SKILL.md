@@ -52,9 +52,10 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
     world a command is being applied to), it asserts `doc.scope` is `Scope::World` for that
     SAME id, rejecting any other scope — a guard inside `apply_intent`/`apply_command`, not a
     `world_of`-style derivation, so it does not duplicate `world_of` itself.
-- `src/server/src/data/engine/` (M13-0) — the typed `engine`-band structs + the ingress-validation
-  registry, one module per doc-type family (`token.rs`, `scene.rs`, `geometry.rs`,
-  `registries.rs`) plus `mod.rs`: `is_engine_doc_type(doc_type) -> bool` (the 17-entry registry:
+- `data::engine` (M13-0) — the typed `engine`-band structs + the ingress-validation
+  registry, one submodule per doc-type family (`data::engine::token`, `data::engine::scene`,
+  `data::engine::geometry`, `data::engine::registries`) plus the `data::engine` module itself:
+  `is_engine_doc_type(doc_type) -> bool` (the 17-entry registry:
   `token`/`scene`/`wall`/`region`/`light`/`drawing`/`template`/`actor`/`message`/
   `world-settings`/`vision-modes`/`light-gradation`/`chat-settings`/`dice-settings`/
   `channel-registry`/`faction-registry`/`condition-registry`), `validate_engine(doc_type, engine)
@@ -360,10 +361,10 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
 
 ## Gotchas
 
-- **Docs-ratchet covers the ENTIRE `data/` tree (docs sweeps 2a+2b):** every file —
-  `data/{mod,document,command,permission,repository,membership,validation,search,asset,sqlite}.rs`
-  AND `data/engine/{mod,geometry,registries,scene,token}.rs` — carries `#![deny(missing_docs)]` +
-  `#![deny(clippy::missing_docs_in_private_items)]` (`data/mod.rs`'s inner attrs cascade to all
+- **Docs-ratchet covers the ENTIRE `data` module tree (docs sweeps 2a+2b):** every module —
+  `data::{document,command,permission,repository,membership,validation,search,asset,sqlite}`
+  AND `data::engine::{geometry,registries,scene,token}` — carries `#![deny(missing_docs)]` +
+  `#![deny(clippy::missing_docs_in_private_items)]` (the `data` module's inner attrs cascade to all
   children, all now swept; its former item-scoped exception is retired). A new undocumented item
   fails the 3-OS CI clippy step. Doc comments on ts-rs types flow into `src/types/generated` —
   editing them means regenerating (`cargo test`) and committing the bindings, and doc claims about

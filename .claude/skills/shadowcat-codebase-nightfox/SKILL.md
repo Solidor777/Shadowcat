@@ -1,6 +1,6 @@
 ---
 name: shadowcat-codebase-nightfox
-description: "Use when touching `@shadowcat/formula` (the framework-neutral expression library: lexer/parser/evaluator, dependency-graph resolution, dice-notation-template mode), the Nightfox rules engine it feeds (`nightfox-docs.ts`/`contributions.ts`/`resolve.ts`), or the Nightfox sheets layer (`src/sheets/*` — sheet-model.ts, StatRow/StatTable/ModifiersEditor, ActorSheet/ItemSheet/EffectSheet, nf-i18n.ts), external repo `C:\\Dev\\Nightfox`, nested for dev at `src/modules/nightfox/`. Covers src/client/formula/ (in-repo) and the Nightfox repo's src/ (out-of-repo, M13b+). Invoke shadowcat-codebase-core first."
+description: "Use when touching `@shadowcat/formula` (the framework-neutral expression library: lexer/parser/evaluator, dependency-graph resolution, dice-notation-template mode), the Nightfox rules engine it feeds (the `nightfox-docs`/`contributions`/`resolve` modules), or the Nightfox sheets layer (`src/sheets/*` — the `sheet-model` module, StatRow/StatTable/ModifiersEditor, ActorSheet/ItemSheet/EffectSheet, the `nf-i18n` module), external repo `C:\\Dev\\Nightfox`, nested for dev at `src/modules/nightfox/`. Covers src/client/formula/ (in-repo) and the Nightfox repo's src/ (out-of-repo, M13b+). Invoke shadowcat-codebase-core first."
 ---
 
 # Shadowcat — Nightfox / `@shadowcat/formula`
@@ -40,7 +40,7 @@ tier-1 validation) + a one-dependency-graph resolver + typed commutative modifie
 6); zero Svelte/store dependency — sheets (M13c) call these functions with docs they already
 have.
 
-- **`src/nightfox-docs.ts`** (Nightfox repo) — the stat/mechanics data model and its fail-closed
+- **The `nightfox-docs` module** (Nightfox repo) — the stat/mechanics data model and its fail-closed
   boundary. `Stat` is a discriminated union on `type`: `number` (`base` + optional `formula`/
   `roll`), `resource` (`current` + `maxBase`/`maxFormula`, `clampToMax` default `true`), `text`
   (`value: string`), `boolean` (`value: boolean`) — only `number`/`resource` are
@@ -56,7 +56,7 @@ have.
   `d20`/`kh3` are rejected, `damage`/`total` are not. Caps: `MAX_STATS`/`MAX_MODIFIERS = 128` per
   doc, `label` ≤ 64 chars, `text.value` ≤ 1024 chars, formula strings ≤ `@shadowcat/formula`'s
   `MAX_FORMULA_LENGTH`.
-- **`src/contributions.ts`** (Nightfox repo) — `collectNightfox(host)` walks the embed tree
+- **The `contributions` module** (Nightfox repo) — `collectNightfox(host)` walks the embed tree
   exactly (host → `embedded.item` → each item's `embedded.effect`, plus host's own
   `embedded.effect`) and produces `ModifierContribution`s (`{ modId, carrierId, targetId,
   modifier }`) plus warnings. Targeting per spec §5.3: an item's modifiers target the owning
@@ -68,7 +68,7 @@ have.
   actor host is inert (`host-modifiers-inert` warning); on a standalone item/effect host
   (sheet-preview context) it's `dangling-modifiers`. A doc that fails `parseNightfox` is skipped
   entirely — it contributes nothing and does not appear in `Collected.docs`.
-- **`src/resolve.ts`** (Nightfox repo) — `resolveNightfox(host)` is **one** `@shadowcat/formula`
+- **The `resolve` module** (Nightfox repo) — `resolveNightfox(host)` is **one** `@shadowcat/formula`
   `resolveAll` call over node keys `f:<docId>#<key>` (final value) and `c:<docId>#<key>`
   (resource `effectiveCurrent`), not three passes. Per stat: `base` → `derived` (the stat's own
   `formula`, else `base`/`maxBase`) → `final` (derived pushed through the bucket pipeline `final
@@ -94,7 +94,7 @@ have.
   courtesy, not a general one. An errored magnitude poisons its target stat's final value rather
   than being silently dropped. `statRefResolver` exposes the same reference rules over an
   already-resolved doc for roll-template previews (M13d) and sheet formula previews.
-- **`src/index.ts`** (Nightfox repo) — the module's public barrel, re-exporting the full pure
+- **Nightfox's `index` module** (Nightfox repo) — the module's public barrel, re-exporting the full pure
   API surface above alongside the M13-1-scaffolded manifest/`register()` (superseded by real
   sheet registration in M13c, not touched by M13b).
 
@@ -104,7 +104,7 @@ have.
 (`shadowcat.sheet:<doc_type>` contract, see `shadowcat-codebase-sheets`), all client-side, no
 new wire frames.
 
-- **`sheet-model.ts`** — the read/write model shared by every sheet. `sheetView(top,
+- **The `sheet-model` module** — the read/write model shared by every sheet. `sheetView(top,
   systemPrefix)` ALWAYS resolves `resolveNightfox` from the TOP-LEVEL host document, then
   extracts the self doc's slice by id — resolving an embedded item/effect in isolation would
   drop transfer/`parent.*` flow (§5.3). The self doc is located by stripping the trailing
@@ -144,40 +144,40 @@ new wire frames.
   independently); `ItemSheet` inherits the identical pattern (`effectReadOnly`) for its own
   embedded effects. `EffectSheet` has no embeds of its own (effects are leaf documents in this
   checkpoint) and needs no such split — its `readOnly` alone is correct and complete.
-- **`nfT`/`NF_MESSAGES` (`nf-i18n.ts`)** — chrome-translation helper: prefers the shell's `t`,
+- **`nfT`/`NF_MESSAGES`** — chrome-translation helper: prefers the shell's `t`,
   falls back to a built-in English map when `t` echoes the key unchanged (the i18next/test
   "missing key" signal). **Test-context gotcha:** `setAppContextForTest`'s default `t: (k) => k`
   identity-echo means `nfT` under test ALWAYS resolves through `NF_MESSAGES`, never through a
   real translation — a test asserting a raw i18n key can never pass against a correctly
   i18n-routed component; assert against `NF_MESSAGES["..."]` instead. User-authored stat
   labels/keys/values are DATA and never routed through `nfT`.
-- **Registration (`index.ts`)** — `EFFECT_DOC_TYPE = "effect"` (D9; no engine home yet, filed as
+- **Registration** (Nightfox's `index` module) — `EFFECT_DOC_TYPE = "effect"` (D9; no engine home yet, filed as
   friction in `docs/POST_WORK_FINDINGS.md`); all three sheets contribute at `sheet: { priority:
   10 }`, above the generic sheets (0 / `-Infinity`) so a community sheet module can still outbid
   by priority (D10).
-- Component files: `StatRow.svelte`/`StatTable.svelte`/`ModifiersEditor.svelte` (shared
+- Component files: `StatRow`/`StatTable`/`ModifiersEditor` (shared
   editors — per-instance datalist ids via `$props.id()` to avoid collision across simultaneous
-  instances), `ActorSheet.svelte`/`ItemSheet.svelte`/`EffectSheet.svelte` (per-doc-type sheets),
-  `format.ts` (value display + live formula-validation + warning chips, sharing `resolve.ts`'s
+  instances), `ActorSheet`/`ItemSheet`/`EffectSheet` (per-doc-type sheets),
+  the `format` module (value display + live formula-validation + warning chips, sharing `resolve`'s
   `isParseError`).
 
 ### The permutation invariant (D3/D12) — a tested property, not a hope
 
-`src/permutation.test.ts` (Nightfox repo) is a 100-seed exact-equality battery over three
+`permutation.test` (Nightfox repo) is a 100-seed exact-equality battery over three
 independently-toggled shuffle axes — embed-array order, record key insertion order (`stats` and
 `modifiers` records together, one flag), and `order` field values — tested via four comparison
 variants against the natural-order baseline: one per individual axis plus one with all three
 axes combined. `resolveNightfox` output must deep-equal across all of them. This is the concrete test the
-canonical-fold-order fix exists for; a failure here is a Task-4/`resolve.ts` bug, never a test to
+canonical-fold-order fix exists for; a failure here is a Task-4/`resolve` bug, never a test to
 loosen (`[[tests-yield-to-correct-code]]`).
 
 ## The roll wire (M13d)
 
-`src/roll.ts` (Nightfox repo) — `buildStatRollContent(resolved: Map<string, ResolvedStat>, block:
+The `roll` module (Nightfox repo) — `buildStatRollContent(resolved: Map<string, ResolvedStat>, block:
 NightfoxBlock, key: string): { content: string } | FormulaError` is the pure builder that turns a
 resolved stat into chat content, posted verbatim through the existing chat seam
 (`WsClient.sendChatMessage`/`SendMessage`). Zero new wire frames, zero server change — the M11d-2
-ingest boundary (`chat/rolls.rs` caps/entropy/validation, see `shadowcat-codebase-chat`/
+ingest boundary (`chat::rolls` caps/entropy/validation, see `shadowcat-codebase-chat`/
 `shadowcat-codebase-dice`) remains the only security boundary; this builder is untrusted-input
 producer, not consumer.
 
@@ -195,8 +195,8 @@ producer, not consumer.
   `d20`). A non-integer resolved value (e.g. a `formula` evaluating to `7 / 2`) is a `type` error
   from the builder rather than a silently-rounded roll — explicit rounding is required upstream.
 - **One-embed-per-message constraint:** the builder emits exactly ONE inline `[[…]]` roll embed per
-  message by construction, trivially satisfying the server's `MAX_INLINE_ROLLS=8` (`chat/rolls.rs`).
-  `MAX_MESSAGE_CHARS=4096` (`chat/mod.rs`) is NOT structurally guaranteed: `resolveNotationTemplate`
+  message by construction, trivially satisfying the server's `MAX_INLINE_ROLLS=8` (`chat::rolls`).
+  `MAX_MESSAGE_CHARS=4096` (the `chat` module) is NOT structurally guaranteed: `resolveNotationTemplate`
   caps only the pre-substitution template at `@shadowcat/formula`'s `MAX_FORMULA_LENGTH=512`, but
   each substituted identifier reference expands to `${value}[${originalText}]` with `value`
   unclamped up to `i32::MAX` — a pathological template packing many large-valued short-named
@@ -214,18 +214,18 @@ producer, not consumer.
   breakdown even though the total is unaffected. See `shadowcat-codebase-dice`'s
   `ConstTerm`/`labeled_consts` entries for the full mechanism — this skill only needs the
   one-sentence dependency plus that exception, not a duplicate description.
-- **Differential proof, not just a unit test:** `e2e/roll-wire.e2e.test.ts` (Nightfox repo,
+- **Differential proof, not just a unit test:** `roll-wire.e2e.test` (Nightfox repo,
   `test:e2e:roll-wire` script) spawns the REAL Rust `test_server` and sends every
   `buildStatRollContent` output shape through a real `WsClient`, asserting each survives the
   server's actual chat-ingest pipeline as an accepted `roll_embed` message with zero whispered
   `System` rejection notices, plus a sanity inversion (a deliberately-broken `[[1d]]` notation)
   proving the harness can actually detect a real rejection. This is what caught the parser gap
-  above — a pure-unit test against `roll.ts` alone would never have exercised the server's actual
+  above — a pure-unit test against the `roll` module alone would never have exercised the server's actual
   grammar.
 
-## The `@shadowcat/formula` graph-resolver contract (`src/graph.ts`, in this repo)
+## The `@shadowcat/formula` graph-resolver contract (the `graph` module, in this repo)
 
-Load-bearing for anyone writing a new `evalNode` consumer (Nightfox's `resolve.ts` is the first,
+Load-bearing for anyone writing a new `evalNode` consumer (Nightfox's `resolve` module is the first,
 not the only, expected caller):
 
 - **`resolveAll` is a pure function of the key set** — sorted-root traversal means the same set
@@ -240,7 +240,7 @@ not the only, expected caller):
   try/catch.** `resolveAll` drives evaluation via a restart-based trampoline keyed on an internal
   `NeedsDependency` signal thrown by `get`; swallowing it in a consumer's own try/catch breaks
   the trampoline and silently memoizes a wrong (partial) result. This is why Nightfox's
-  `resolve.ts` evaluator prefetches every reference path unwrapped before calling `evaluate()` —
+  `resolve` evaluator prefetches every reference path unwrapped before calling `evaluate()` —
   `evaluate`'s own `ref` case has a try/catch around a *different* concern (turning a malformed
   resolver return into a `FormulaError`) and must not be reused to catch the trampoline signal.
   The visiting/stack pairing invariant that makes this safe fails loudly (not silently) on
@@ -248,19 +248,19 @@ not the only, expected caller):
 
 ## Key files & seams (`@shadowcat/formula`, in this repo)
 
-- `src/types.ts` — `FormulaError`/`FormulaErrorKind`/`FormulaValue`, `isFormulaError`, the four
+- The `types` module — `FormulaError`/`FormulaErrorKind`/`FormulaValue`, `isFormulaError`, the four
   cap constants. Everything else imports from here.
-- `src/lexer.ts` → `src/parser.ts` (`parseFormula` → `Expr` AST) → `src/evaluate.ts`
-  (`evaluate(expr, resolve)`) → `src/graph.ts` (`resolveAll(keys, evalNode)`) →
-  `src/template.ts` (`resolveNotationTemplate`, `NOTATION_KEYWORDS`) — the five-stage pipeline in
+- The `lexer` module → the `parser` module (`parseFormula` → `Expr` AST) → the `evaluate` module
+  (`evaluate(expr, resolve)`) → the `graph` module (`resolveAll(keys, evalNode)`) →
+  the `template` module (`resolveNotationTemplate`, `NOTATION_KEYWORDS`) — the five-stage pipeline in
   spec order.
-- `src/internal.ts` — shared trust-boundary helpers (`isWellFormedError`, `validateResolverOutput`,
-  `finite`). **Not re-exported from `index.ts`** — every injected-callback boundary (evaluate's
+- The `internal` module — shared trust-boundary helpers (`isWellFormedError`, `validateResolverOutput`,
+  `finite`). **Not re-exported from `@shadowcat/formula`'s `index` module** — every injected-callback boundary (evaluate's
   `ref` case, graph's `evalNode` call, template's identifier resolver) validates a consumer
   callback's return value through these before trusting it as a `FormulaValue`.
-- `src/index.ts` — the only public entry point: types + caps + `parseFormula` + `evaluate` +
+- `@shadowcat/formula`'s `index` module — the only public entry point: types + caps + `parseFormula` + `evaluate` +
   `resolveAll` + `resolveNotationTemplate` + `NOTATION_KEYWORDS`.
-- **Arithmetic semantics that surprise formula AUTHORS** (all in `evaluate.ts`/`lexer.ts`): `/` is
+- **Arithmetic semantics that surprise formula AUTHORS** (all in the `evaluate`/`lexer` modules): `/` is
   float division and `%` is JS TRUNCATED remainder, so `-7 % 2` is `-1`, not the floored `1` — and
   neither implicitly rounds, so a stat requiring an integer needs an explicit `floor`/`round` —
   and `round` is JS-native, meaning ties go toward +Infinity, NOT away from zero
@@ -269,18 +269,18 @@ not the only, expected caller):
   gated through `finite()`, so an overflow surfaces as `"non-finite"` rather than leaking
   `Infinity` downstream. **`.5` is not a numeric literal** — the lexer requires a leading digit and
   emits a bare `.` operator, so a leading-dot decimal is a parse error; write `0.5`. And
-  `checkArity` runs at PARSE time only (`parser.ts`), so an `Expr` hand-constructed against the
+  `checkArity` runs at PARSE time only (the `parser` module), so an `Expr` hand-constructed against the
   public API bypasses arity checking entirely and degrades through `finite()` instead of erroring
   cleanly — build expressions with `parseFormula`, not by hand.
 
 ## Hard invariants
 
 - **Error-value-only, fail-closed.** No function in this package ever throws on ANY input, and
-  arithmetic never leaks `NaN`/`Infinity` — both become a `FormulaError` (`internal.ts`'s
+  arithmetic never leaks `NaN`/`Infinity` — both become a `FormulaError` (`internal`'s
   `finite`). A consumer callback (`resolve`/`evalNode`) IS allowed to throw or return a malformed
   value; the library's own boundary code (`validateResolverOutput`) converts that into a
   `"resolver-error"` rather than propagating it. `FormulaErrorKind` is mirrored by hand in
-  `FORMULA_ERROR_KINDS` (types.ts) for runtime validation — adding a kind means updating BOTH the
+  `FORMULA_ERROR_KINDS` (the `types` module) for runtime validation — adding a kind means updating BOTH the
   union and the array, with nothing else enforcing they stay in sync.
 - **DoS caps, exact values (spec §3.2):** `MAX_FORMULA_LENGTH=512`, `MAX_AST_NODES=256`,
   `MAX_PARSE_DEPTH=32` (counts true structural-nesting boundaries — parens, call args,
@@ -291,7 +291,7 @@ not the only, expected caller):
   recursing, so graph depth never grows the call stack — required for constrained-stack mobile
   engines (project cross-platform invariant). Consumer `evalNode` bodies must NEVER wrap their own
   call(s) to the injected `get` in try/catch — that would swallow the internal signal driving the
-  trampoline and silently memoize a wrong result. Documented in `graph.ts`'s own JSDoc; treat any
+  trampoline and silently memoize a wrong result. Documented in `graph`'s own JSDoc; treat any
   PR touching `resolveAll` or its consumers as needing that invariant re-verified.
 - **Zero Nightfox vocabulary in this package.** If a change introduces a Nightfox-specific concept
   (stat, bucket, effect, etc.) into `src/client/formula/`, that is a layering violation — it
@@ -301,28 +301,28 @@ not the only, expected caller):
   planning; do not "fix" the lexer to accept exponents without a spec change.
 - **Identifiers are case-insensitive, normalized to lowercase; the library reserves no identifier
   names** (reserved-word/tier-1 validation is Nightfox's concern — shipped in
-  `nightfox-docs.ts`'s `RESERVED_STAT_KEYS`, M13b) — every consumer-facing guard belongs in the
+  `nightfox-docs`'s `RESERVED_STAT_KEYS`, M13b) — every consumer-facing guard belongs in the
   consumer, not here.
 
 ## Gotchas
 
-- `internal.ts`'s three helpers are the ONLY sanctioned way to cross a consumer-callback boundary.
+- `internal`'s three helpers are the ONLY sanctioned way to cross a consumer-callback boundary.
   A prior task (buddy-check-caught) skipped this pattern at one boundary and reopened a bug
   already fixed twice elsewhere in the pipeline — treat any new injected-callback seam as
   needing the same validation, not a bespoke check.
 - Arithmetic semantics (`/`, `%`, rounding, `finite()` gating, `.5`) → see the
   `@shadowcat/formula` arithmetic bullet under **Key files & seams** — stated once there, so the
   two copies cannot drift apart.
-- Property/fuzz tests (`property.test.ts` in this repo; `permutation.test.ts` in the Nightfox
+- Property/fuzz tests (`property.test` in this repo; `permutation.test` in the Nightfox
   repo) use a hand-rolled seeded PRNG — do not add `fast-check` or any other new dependency to
   either package (Global Constraint).
-- **Item-in-item nesting silently drops modifiers.** `contributions.ts`'s embed walk is exactly
+- **Item-in-item nesting silently drops modifiers.** `contributions`'s embed walk is exactly
   host → items → each item's effects (+ host's own effects) — an item embedded inside another
   item is never visited, so its modifiers vanish with no warning. Not yet a spec-covered case;
   treat any fix here as a scope change, not a bugfix, and check whether the walk needs
   generalizing to arbitrary nesting depth or whether item-in-item stays disallowed.
 - **`mechanics.active` is read doc_type-agnostically** on whatever document hosts it — the
-  active-gating logic in `contributions.ts` has no special case per `doc_type` (`item` vs
+  active-gating logic in `contributions` has no special case per `doc_type` (`item` vs
   `effect`), it just reads the field. Any future doc_type that reuses `system.mechanics` inherits
   active-gating for free; verify that's actually wanted before adding a new mechanics consumer.
 - **`resolveNightfox` re-parses every doc on every call — there is no cross-call cache.** Fine at
@@ -367,7 +367,7 @@ not the only, expected caller):
   into; read it alongside this skill for any sheet-registration work.
 - `docs/POST_WORK_FINDINGS.md` — the external-module i18n-registration-seam gap and the
   `effect`-doc_type-has-no-engine-home gap, both filed at M13c.
-- M13d (the roll wire — `src/roll.ts`, the differential `e2e/roll-wire.e2e.test.ts`) shipped in
+- M13d (the roll wire — the `roll` module, the differential `roll-wire.e2e.test`) shipped in
   place in this skill's "The roll wire (M13d)" section above, per the same in-place-extension
   convention prior checkpoints established — this skill is scoped to the whole Nightfox surface
   (in-repo library + out-of-repo rules engine + sheets + rolls), not just the formula library. Any

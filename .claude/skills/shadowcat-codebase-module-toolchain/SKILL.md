@@ -1,6 +1,6 @@
 ---
 name: shadowcat-codebase-module-toolchain
-description: "Use when touching the external/community module toolchain: server-side installed-module discovery + path-traversal-guarded static serving + per-world enablement (src/server/src/modules.rs, http/module_routes.rs, config.rs modules_dir), the engine-compat semver gate, the Welcome server_version + capability-requirements union, or the client consumption path (core loader.ts/modules.ts/module-rest.ts/manifest.ts engines, shell import-map single-instance build + worldSession external-module loading, settings ModuleManager UI). Covers out-of-tree modules (the Nightfox reference repo), the authoring guide docs/site/guides/creating-a-module.md (docs/design/module-authoring.md is a pointer stub), and the examples/* scaffold packages. Invoke shadowcat-codebase-core first; for the shell/AppContext seams invoke shadowcat-codebase-client-shell."
+description: "Use when touching the external/community module toolchain: server-side installed-module discovery + path-traversal-guarded static serving + per-world enablement (`scan_installed_modules`, `http::module_routes`, `Config.modules_dir`), the engine-compat semver gate, the Welcome server_version + capability-requirements union, or the client consumption path (the `loader`/`modules`/`module-rest`/`manifest` modules' engine checks, shell import-map single-instance build + `WorldSession.#loadExternalModules`, `ModuleManager` UI). Covers out-of-tree modules (the Nightfox reference repo), the authoring guide docs/site/guides/creating-a-module.md (docs/design/module-authoring.md is a pointer stub), and the examples/* scaffold packages. Invoke shadowcat-codebase-core first; for the shell/AppContext seams invoke shadowcat-codebase-client-shell."
 ---
 
 # Shadowcat — External Module Toolchain
@@ -62,18 +62,17 @@ existing M6b `ModuleRegistry`.
   caret-0.x fix mirror of the server.
 
 **Client shell:**
-- `src/client/shell/vite.config.ts` — `RUNTIME_ENTRIES` multi-entry (svelte, svelte/internal/client,
+- **`RUNTIME_ENTRIES`** — the client shell's multi-entry export list (svelte, svelte/internal/client,
   svelte/internal/disclose-version, svelte/reactivity, @shadowcat/{core,ui-kit,formula,types}) →
   stable `runtime/<name>.js` chunks + **`preserveEntrySignatures: "strict"`**; `index.html` import
-  map maps each bare specifier to its chunk. `RUNTIME_ENTRIES` is exported (not duplicated) for the
-  CI guard below.
-- `scripts/check-svelte-runtime-entries.mjs` — a build-time CI guard scanning all client/module
+  map maps each bare specifier to its chunk.
+- The `check-svelte-runtime-entries` script — a build-time CI guard scanning all client/module
   source for `svelte/*` bare-specifier imports, failing if any resolve to a subpath NOT present in
-  `vite.config.ts`'s (exported) `RUNTIME_ENTRIES` — catches the "import map serves a FIXED
-  svelte-subpath set" gotcha below at build time instead of a runtime `SyntaxError`. Wired into
-  `.github/workflows/ci.yml`'s web job + `package.json`'s `check:svelte-runtime` script. Its
-  CLI-entry-point detection uses `pathToFileURL(...).href` (not a raw `file://${argv[1]}` string
-  compare, which never matches on Windows — wrong scheme/separator/drive-letter handling).
+  `RUNTIME_ENTRIES` — catches the "import map serves a FIXED svelte-subpath set" gotcha below at
+  build time instead of a runtime `SyntaxError`. Wired into `.github/workflows/ci.yml`'s web job +
+  `package.json`'s `check:svelte-runtime` script. Its CLI-entry-point detection uses
+  `pathToFileURL(...).href` (not a raw `file://${argv[1]}` string compare, which never matches on
+  Windows — wrong scheme/separator/drive-letter handling).
 - The shell `worldSession` module — `#loadExternalModules(world, serverVersion)`
   sourced from `w.server_version`; fetch enabled set → `loadModules` → activate; keyed on `info.id`.
 - **`ModuleManager`** (`@shadowcat/module-settings`) — GM installed-module management UI; toggle/save
@@ -114,7 +113,7 @@ job's example-build step keep them green; the guides code-import their sources r
   not serve (`svelte/store`, `svelte/transition`, …) hard-fails with a runtime `SyntaxError`; adding
   one is a host change (`RUNTIME_ENTRIES` + import map), not a module change. See the
   creating-a-module guide (`docs/site/guides/creating-a-module.md`).
-  `scripts/check-svelte-runtime-entries.mjs` (above) catches an unserved subpath import at CI time.
+  The `check-svelte-runtime-entries` script (above) catches an unserved subpath import at CI time.
 - **`loadModules`'s contract CHANGED** from `Promise<void>` throw-on-first-failure to the contained
   `ModuleLoadResult`; any doc describing the old throw behavior is stale.
 - **Adding a required field to `Welcome`** (e.g. `server_version`) breaks untyped frame fixtures in

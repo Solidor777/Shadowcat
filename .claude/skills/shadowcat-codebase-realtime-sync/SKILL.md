@@ -50,8 +50,8 @@ optimistically and roll back on divergence.
     expiry (no timer); absent or expired entry allows the move. Updated after each successful commit
     (still inside `publish_guard`). In-memory only — cleared on server restart (move state is derived,
     not durable).
-- `src/server/src/ws/protocol.rs` — client/server message frames; `ServerMsg`, `event_seq()`.
-- `src/server/src/ws/conn.rs` — per-connection loop + egress; `ws/time.rs` — server time source +
+- `ws::protocol` — client/server message frames; `ServerMsg`, `event_seq()`.
+- `ws::conn` — per-connection loop + egress; `ws::time` — server time source +
   client offset calibration (exists before its consumer, per ARCHITECTURE §2 invariant 2).
   `send_filtered` (Phase C: now takes `room: &Room`, not just `repo`/`ctx`) is where per-recipient
   redaction actually happens: only the `Event` branch carries document data, so only it is
@@ -65,14 +65,14 @@ optimistically and roll back on divergence.
   `shadowcat-codebase-documents-permissions` for `filter_command`'s own internals and the other two
   owner-join sources (`list_documents`'s batched prefetch, `effective_owner_of` on single-doc
   routes/search).
-- `src/server/src/http/{routes.rs,mod.rs}` — HTTP routes (login, assets, embed).
-- `src/server/src/auth/session.rs` — `SqlxSqliteStore` (DB-backed sessions), `spawn_session_sweep`
+- `http::routes` (+ the `http` module root) — HTTP routes (login, assets, embed).
+- `auth::session` — `SqlxSqliteStore` (DB-backed sessions), `spawn_session_sweep`
   (also GCs `world_invites` rows via `DELETE FROM world_invites WHERE expires_at <= ?`, bound to
   `now_ms - INVITE_GC_GRACE_MS` (30-day grace, not the raw expiry) — an expired-but-recent invite
   survives a while post-expiry for audit/support lookup before GC actually removes it; same timer
   as session sweep, no dedicated invite timer),
-  `SessionUser`/`AuthUser`/`AdminUser`; `auth/{password,role}.rs`.
-- `src/server/src/http/throttle.rs` (Phase A) — `AuthThrottle` (`check(key, now_ms, per_min) ->
+  `SessionUser`/`AuthUser`/`AdminUser`; `auth::password`, `auth::role`.
+- `http::throttle` (Phase A) — `AuthThrottle` (`check(key, now_ms, per_min) ->
   bool`, sliding 60s window, `Mutex<HashMap<String, Vec<i64>>>`), shared by the two
   Argon2-verifying endpoints (`/api/login`, `POST /api/invites/accept`). **INVARIANT (no
   enumeration oracle):** identity keys (`login:u:<username>`, `invite:u:<uuid>`) count attempts
@@ -98,7 +98,7 @@ optimistically and roll back on divergence.
   directly and, being an extractor, rejects BEFORE body deserialization. `create_user_unique` is a
   single guarded `NOCASE` INSERT (clean 409, never a 500 or a check-then-act pair), and the ASCII
   username policy is applied at every insertion path including `/api/setup`/`bootstrap_admin`.
-- **`src/server/src/auth/invite.rs` + the world-invite repository methods** — a GM mints an invite
+- **`auth::invite` + the world-invite repository methods** — a GM mints an invite
   for their own world; the invitee redeems it from their OWN session (`POST /api/invites/accept`
   with the code in the BODY, never the URL — a path-borne credential reaches the tower-http trace
   span, browser history, `Referer`, and proxy logs). Two invariants: **(1) redemption failures are
@@ -132,12 +132,12 @@ optimistically and roll back on divergence.
   deleted account fully authenticated until cookie expiry. Client side: `WsClient` treats
   `evicted` as terminal (`stop()` — no reconnect) and surfaces `onEvicted`, which the shell routes
   to `leaveWorld()`.
-- `src/client/core/src/ws-client.ts` — client WS connection + resync. **Welcome watchdog +
+- `WsClient` — client WS connection + resync. **Welcome watchdog +
   connection-generation guard (silent-hang-startup fix):** `open()` arms a `welcomeTimeoutMs`
   watchdog (default 10s, `opts.welcomeTimeoutMs`) once `opts.connect` resolves; an open-but-
   unwelcomed transport is closed into the normal `scheduleReconnect` path instead of hanging on
   "Connecting…" forever (the browser's socket `open` fires at HTTP 101, BEFORE the server's
-  Welcome preamble — see `ws/conn.rs`'s per-connect DB round trips + blocking
+  Welcome preamble — see `handle_socket`'s per-connect DB round trips + blocking
   `scan_installed_modules` scan). Every `open()` attempt is tagged with a monotonically
   increasing `connGeneration`; `handleFrame` ignores a `"welcome"` OR `"resync_end"` frame whose
   generation doesn't match the CURRENT connection before acting (clearing the watchdog, setting
@@ -155,9 +155,9 @@ optimistically and roll back on divergence.
   (`scheduleReconnect`'s exponential-with-full-jitter delay) on every watchdog-close/reconnect
   cycle instead of retrying at the base delay forever, which would amplify load against exactly the
   degraded server the watchdog exists to escape.
-- `src/client/core/src/transport.ts` — `webSocketConnect(url, connectTimeoutMs = 10_000)`: bounds
+- `webSocketConnect(url, connectTimeoutMs = 10_000)`: bounds
   the handshake so an accepted-but-never-upgraded socket settles (rejects + closes) instead of
-  leaving `ws-client.ts`'s reconnect path unreachable behind an unsettled connect promise. A single
+  leaving `WsClient`'s `scheduleReconnect` path unreachable behind an unsettled connect promise. A single
   shared `settled` flag (distinct from `opened`) guards ALL THREE settling paths (timeout, error,
   open) — a `connectTimeoutMs` expiry and an already-queued `open` event landing in the same tick
   no longer lets `opened` flip true AFTER the promise already rejected, which would otherwise let a
@@ -165,9 +165,9 @@ optimistically and roll back on divergence.
   promise-rejection path, and the orphan transport's own close nulling `WsClient.transport` out
   from under the live one). The `open` listener discards the socket (`ws.close()`, no resolve) when
   `settled` is already true instead of completing the handshake.
-- `src/client/core/src/store.ts` — `DocumentStore implements ReadableDocuments` (authoritative,
+- `DocumentStore implements ReadableDocuments` (authoritative,
   rollback base).
-- `src/client/core/src/optimistic.ts` — `OptimisticClient implements ReadableDocuments` (the
+- `OptimisticClient implements ReadableDocuments` (the
   optimistic view the UI/canvas render).
 
 ## Hard invariants
@@ -194,9 +194,9 @@ optimistically and roll back on divergence.
 - **Docs-ratchet is live on the whole `ws/` tree (docs sweep 3) AND the `http/` + `auth/` trees
   (docs sweep 4):** every file in all three trees carries `#![deny(missing_docs)]` +
   `#![deny(clippy::missing_docs_in_private_items)]` — a new undocumented item fails the 3-OS CI
-  clippy step, and protocol.rs doc comments flow into the generated `ServerMsg`/`ClientMsg` TS
+  clippy step, and `ws::protocol` doc comments flow into the generated `ServerMsg`/`ClientMsg` TS
   types (regenerate + commit bindings with any change; the docs site's protocol page links these
-  types). Route-handler docs in `http/routes.rs` cite their authz gate (`require_gm`/`AuthUser`/
+  types). Route-handler docs in `http::routes` cite their authz gate (`require_gm`/`AuthUser`/
   `AdminUser`/`permission_context`) and the 404-uniform existence-hiding contract — keep those
   citations true when changing a route's gating.
 
@@ -207,12 +207,12 @@ optimistically and roll back on divergence.
 - **One-shot correlated request pairs** (`Search`→`SearchResult`/`SearchError`;
   `Pathfind`→`PathResult`/`PathError`) route replies to the requesting connection only (never
   broadcast); correlated by `request_id` via the `pending` map in `WsClient`. See
-  `src/client/core/src/ws-client.ts` and `src/server/src/ws/protocol.rs`. **Chat ops
+  `WsClient` and `ws::protocol`. **Chat ops
   (`SendMessage`/`EditMessage`/`DeleteMessage`) also carry `request_id` but are ASYMMETRIC**: only
   a REJECTION replies (`ServerMsg::ChatError`, sender-only), while success is confirmed by the
   broadcast `Event` echo. They use a separate `chatPending` map whose timer resolves
   (success-assumed) rather than rejects on timeout — see `shadowcat-codebase-chat`.
-- **`ScenePing` is gated by `scene_ping_permitted` (Phase A, `ws/conn.rs`), not by scene
+- **`ScenePing` is gated by `scene_ping_permitted` (Phase A), not by scene
   selection.** Unlike `MoveRequest`/`handle_pathfind` (which SELECT server state and so must
   derive-from-token, per the never-fork table in `shadowcat-codebase-core`), `ScenePing` relays
   only the client-supplied `scene`/`x`/`y` to the room via `broadcast_aux` — there is no server
@@ -235,8 +235,8 @@ optimistically and roll back on divergence.
   entirely — zero frames — when the recipient's vision admits none of the move) is where the
   leak-free secrecy boundary lives (`egress_loop`'s dedicated `MoveStream` branch, detailed in
   `shadowcat-codebase-scene-rendering`). `MoveError` remains mover-only, always generic (no path
-  geometry / vision state disclosed — no-geometry-leak invariant). `conn.rs`
-  `handle_move_request` dispatches `execute_move`, then broadcasts `MoveStream` to the scene.
+  geometry / vision state disclosed — no-geometry-leak invariant).
+  `handle_move_request` dispatches `Room::execute_move`, then broadcasts `MoveStream` to the scene.
   Client animation is driven by `TokenAnimator.animateSamples` (time-tagged playback, catch-up on
   late arrival, gap/occlusion detection: gap threshold = `minConsecutiveDelta × 1.5` where
   `minConsecutiveDelta` is the minimum positive inter-sample interval across all consecutive pairs;

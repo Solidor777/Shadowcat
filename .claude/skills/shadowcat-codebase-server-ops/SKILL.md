@@ -1,6 +1,6 @@
 ---
 name: shadowcat-codebase-server-ops
-description: "Use when touching Shadowcat's server bootstrap/config/CLI/deployment surface: `src/server/src/main.rs` (entry point, early one-shot CLI branches), `src/server/src/config.rs` (`Cli`/`Config` layering: CLI flag > SHADOWCAT_* env > TOML > default), `src/server/src/db.rs` (single-connection SqlitePool open), or `src/server/src/backup.rs` (whole-server VACUUM-INTO backup/restore, M12.5). Covers the single-binary deployment story, not any one data/document subsystem. Invoke shadowcat-codebase-core first."
+description: "Use when touching Shadowcat's server bootstrap/config/CLI/deployment surface: the `main` module (entry point, early one-shot CLI branches), the `config` module (`Cli`/`Config` layering: CLI flag > SHADOWCAT_* env > TOML > default), the `db` module (single-connection SqlitePool open), or the `backup` module (whole-server VACUUM-INTO backup/restore, M12.5). Covers the single-binary deployment story, not any one data/document subsystem. Invoke shadowcat-codebase-core first."
 ---
 
 # Shadowcat — Server Bootstrap, Config, and Backup/Restore
@@ -92,13 +92,13 @@ and restore as a deployment-operator tool, not an in-app feature.
 
 ## Gotchas
 
-- **Docs-ratchet is live in this subsystem (docs sweep 1):** `config.rs`, `db.rs`, `backup.rs`,
-  `modules.rs`, `main.rs`, and `bin/test_server.rs` all carry `#![deny(missing_docs)]` +
+- **Docs-ratchet is live in this subsystem (docs sweep 1):** the `config`, `db`, `backup`,
+  `modules`, `main`, and `bin::test_server` modules all carry `#![deny(missing_docs)]` +
   `#![deny(clippy::missing_docs_in_private_items)]` — a new item without a doc comment fails the
   3-OS CI clippy step. Every lib function also carries a `# Examples` doctest (`no_run` for
   infra-bound; bins use ` ```text ` — rustdoc runs no doctests for bin targets). Doctest policy +
-  flip mechanics: `docs/superpowers/plans/2026-07-30-docs-sweep1-server-ops.md`. `lib.rs` has NO
-  deny attr (crate-root inner attr would flip the whole crate early — that's the final ratchet).
+  flip mechanics: `docs/superpowers/plans/2026-07-30-docs-sweep1-server-ops.md`. The crate root has
+  NO deny attr (a crate-root inner attr would flip the whole crate early — that's the final ratchet).
 - `backup::copy_dir_recursive` silently skips symlinks (documented on the function itself)
   — the assets tree is server-managed and never contains one today, so this avoids following into
   an unexpected target rather than guessing at semantics. Revisit if `assets_dir` is ever pointed

@@ -1,6 +1,6 @@
 ---
 name: shadowcat-codebase-actors-tokens
-description: "Use when touching Shadowcat actors, tokens (linked vs instanced), token visual resolution, the factions/conditions registries, name privacy, the actor browser's live FTS search/open-sheet, or the actors/factions/conditions UI modules. Covers src/client/core/{actor.ts,scene-docs.ts} + src/modules/{actors,factions,conditions}. Invoke shadowcat-codebase-core first."
+description: "Use when touching Shadowcat actors, tokens (linked vs instanced), token visual resolution, the factions/conditions registries, name privacy, the actor browser's live FTS search/open-sheet, or the actors/factions/conditions UI modules. Covers the `actor`/`scene-docs` modules (src/client/core) + src/modules/{actors,factions,conditions}. Invoke shadowcat-codebase-core first."
 ---
 
 # Shadowcat — Actors & Tokens
@@ -19,7 +19,7 @@ token/actor name from non-owners via the `OwnerOrGm` visibility tier. Conditions
 
 ## Key files & seams
 
-- `src/client/core/src/scene-docs.ts` — builders + types (all re-exported from `core/index.ts`):
+- The `scene-docs` module — builders + types (all re-exported from `@shadowcat/core`):
   M13-0 re-rooted every builder/accessor below onto the envelope `name` + typed `engine` band;
   `ActorSystem`/`TokenSystem`/`FactionRegistrySystem`/`ConditionRegistrySystem` are renamed to
   `ActorEngine`/`TokenEngine`/`FactionRegistryEngine`/`ConditionRegistryEngine` (no back-compat
@@ -43,7 +43,8 @@ token/actor name from non-owners via the `OwnerOrGm` visibility tier. Conditions
     no `{kind:"faces"}` inside a face; an animated face falls out of the same boundary with no
     separate mechanism). `TokenVisual = RenderVisual | {kind:"faces", faces: Record<string,
     FaceVisual>, default: string, faceMap?: Record<string,string>}` — `default` is REQUIRED (no
-    `?`), per `scene-docs.ts:181`; `VisualKindEditor.svelte`'s `buildVisual()` always supplies it
+    `?`), per the Rust source `TokenVisual::Faces`'s `default` field (`data::engine::token`, ts-rs
+    generates the TS union from it); `VisualKindEditor`'s `buildVisual()` always supplies it
     and nulls the whole visual if unset. `ActorEngine.visual` and
     `TokenOverrides.visual` both carry `TokenVisual` (a token can override the actor's whole visual,
     faces-union included). `TokenEngine.face?: string` — the per-token ACTIVE face selection; only
@@ -61,7 +62,7 @@ token/actor name from non-owners via the `OwnerOrGm` visibility tier. Conditions
   - `Condition { name, icon }`, `ConditionRegistryEngine`, `buildConditionRegistryDoc(worldId,
     conditions, id?)` (param `conditions: Record<string, Condition>`) — same parentless
     config-document shape as factions; `icon` is an emoji glyph rendered as a token badge.
-- `src/client/core/src/actor.ts` — `resolveTokenActor(token, store) -> EffectiveActor | null`
+- The `actor` module — `resolveTokenActor(token, store) -> EffectiveActor | null`
   (the one read-through), `EffectiveActor`, `actorDisplayName(a, fallback)` (safe name with a
   redaction-aware fallback), `TokenOverrides` projection. Conditions: `resolveConditions(token,
   store)` (effective condition ids → `{id,name,icon}` via the registry, fail-closed) +
@@ -72,7 +73,7 @@ token/actor name from non-owners via the `OwnerOrGm` visibility tier. Conditions
   scene-pixel footprint read-through: actor-backed size = `EffectiveActor.size × parent-scene grid
   cell` (default 100 px); raw/dangling token → `token.engine.w/h` + `"square"`; fail-closed (never
   throws); optional pre-resolved `eff` avoids a double `resolveTokenActor` call. `TokenBox` is
-  exported from `core/index.ts`. `footprintRadius(eff) -> number` — grid-unit bounding-disc radius
+  exported from `@shadowcat/core`. `footprintRadius(eff) -> number` — grid-unit bounding-disc radius
   for the M10e+ pathfinder: circle = `max(w,h)/2`, square = half-diagonal (`√(w²+h²)/2`); both in
   grid-cell units. `EffectiveActor.visionModes: VisionAssignment[]` — projected by `project()` as
   `overrides?.vision ?? base.vision ?? []` (per-token override **replaces** actor base, not merged).
@@ -93,18 +94,18 @@ token/actor name from non-owners via the `OwnerOrGm` visibility tier. Conditions
   a second `resolveTokenActor` call, mirroring `resolveTokenBox`'s convention.
   `selectedFaceNamesFor(token, store) -> string[]` — the effective face-name list for a
   `"faces"`-union visual (`[]` if the effective visual isn't `"faces"`); shares `resolveTokenActor`'s
-  projection with `resolveTokenVisual`, so the face-swap palette (`FaceSwapPalette.svelte`, below)
+  projection with `resolveTokenVisual`, so the face-swap palette (`FaceSwapPalette`, below)
   can't diverge from what actually renders.
-- `src/modules/actors/{ActorsPanel.svelte,VisualKindEditor.svelte,FaceSwapPalette.svelte,index.ts}`
+- The `actors` module (`ActorsPanel`, `VisualKindEditor`, `FaceSwapPalette`)
   — `ActorsPanel`: create/list/pick actors; hide-name control; faction assignment; shape
   (`square`/`circle`) + size (fractional grid-cells) editing in the create form and in the per-row
   GM inline editor; darkvision range authoring (create + per-row), writing `engine.vision: [{
   mode: "darkvision", range }]` (M13-0 re-root, was `system.vision`; omitted when range 0).
-  **Visual authoring (M10h; extracted into `VisualKindEditor.svelte`, a pure intra-module split
+  **Visual authoring (M10h; extracted into `VisualKindEditor`, a pure intra-module split
   with no behavior change):** a visual-kind editor (image / faces / animated) in the
   actor-creation form, mounted by `ActorsPanel` and driven by an `onBuild` callback prop
   (`ActorsPanel` still owns `conditionOptions` and the aggregate create-form reset, calling the
-  child's exposed `reset()`). `buildVisual()` (in `VisualKindEditor.svelte`) validates per-kind
+  child's exposed `reset()`). `buildVisual()` (in `VisualKindEditor`) validates per-kind
   completeness for EVERY face row (an image row needs `asset`; an animated row needs non-empty
   `frames` or a chosen `sheetAsset` — a failing row nulls the WHOLE `faces` visual, disabling
   submit) via the shared `animSourceComplete(anim)` helper (also backs the top-level animated-kind
@@ -112,14 +113,14 @@ token/actor name from non-owners via the `OwnerOrGm` visibility tier. Conditions
   copies), face-row name uniqueness (a duplicate name nulls the visual), and that `defaultFace`
   names an existing row (else nulls the visual); a stale `faceMapRows` entry referencing a
   since-renamed/removed face is silently DROPPED rather than failing the whole visual.
-  **Per-TOKEN face-swap palette (extracted into `FaceSwapPalette.svelte`, prop `{ tokenId: string
+  **Per-TOKEN face-swap palette (extracted into `FaceSwapPalette`, prop `{ tokenId: string
   | null }`, mounted by `ActorsPanel` as `<FaceSwapPalette tokenId={selectedTokenId} />`):**
   distinct from the per-actor creation-form editor; shows only when the selected token's effective
-  visual is `"faces"`, resolved via `selectedFaceNamesFor(token, store)` in `actor.ts` — a thin
+  visual is `"faces"`, resolved via `selectedFaceNamesFor(token, store)` — a thin
   wrapper over `resolveTokenActor` that reads the SAME override-projected `EffectiveActor` that
   `resolveTokenVisual` independently resolves through `resolveTokenActor` too, so a token's
   `overrides.visual` faces-union can never diverge between what renders and what the palette
-  offers to swap to (pinned by an `actor.test.ts` case combining an `overrides.visual` faces-union
+  offers to swap to (pinned by an `actor.test` case combining an `overrides.visual` faces-union
   with an active `token.engine.face`). Clicking a face name dispatches a `/engine/face` (M13-0
   re-root, was `/system/face`) update on the TOKEN doc.
   **Load-bearing convention: the dispatched update's `old` reads the RAW stored `token.engine.face`**
@@ -139,14 +140,14 @@ token/actor name from non-owners via the `OwnerOrGm` visibility tier. Conditions
   so an abandoned query's late first page can otherwise overwrite a newer query's results (found
   during M12d Task 7 review, traced against the real `WsClient` dispatch order). Each row also
   gets an "Open sheet" button (`ctx.openDocument({docId: a.id})`, [[shadowcat-codebase-sheets]]).
-- `src/modules/factions/{FactionsPanel.svelte,seed.ts,index.ts}` — GM editor + idempotent seed of
-  the faction registry (extracted into `seed.ts`'s `seedFactionRegistryIfAbsent(store, worldId,
+- The `factions` module (`FactionsPanel`) — GM editor + idempotent seed of
+  the faction registry (extracted into `seedFactionRegistryIfAbsent(store, worldId,
   dispatchIntent)` for testability); faction-colored token border + select-by-faction.
   **Deterministic singleton-seed id (reference implementation for other config-doc seeders):**
   the seed doc's id is `deterministicId(worldId, "faction-registry")`
-  (`scene-docs.ts`, re-exported from `@shadowcat/core`) — a synchronous UUID-v5-SHAPED hash (four
-  seeded FNV-1a 32-bit mixes, not true SHA-1 UUIDv5, because every doc builder in `scene-docs.ts`
-  is synchronous and Web Crypto's SHA-1 is async) rather than `crypto.randomUUID()`. Two GMs
+  (re-exported from `@shadowcat/core`) — a synchronous UUID-v5-SHAPED hash (four
+  seeded FNV-1a 32-bit mixes, not true SHA-1 UUIDv5, because every doc builder in the `scene-docs`
+  module is synchronous and Web Crypto's SHA-1 is async) rather than `crypto.randomUUID()`. Two GMs
   racing to seed a brand-new world compute the SAME id — the load-bearing property is SAME ID,
   NOT byte-identical content: `envelope()`'s `created_at`/`updated_at` stamp via `Date.now()` per
   call, so the two racers' Creates genuinely differ there. The server's singleton create-gate
@@ -157,7 +158,7 @@ token/actor name from non-owners via the `OwnerOrGm` visibility tier. Conditions
   lands under that same store key — no explicit conflict-catching code is needed (or possible:
   `AppContext.dispatchIntent` is fire-and-forget with no per-call reject signal exposed to
   modules). `seedFactionRegistryIfAbsent` short-circuits via `store.get(id)` before dispatching.
-- `src/modules/conditions/{ConditionsPanel.svelte,index.ts}` — GM editor + idempotent emoji seed
+- The `conditions` module (`ConditionsPanel`) — GM editor + idempotent emoji seed
   of the condition registry + a token-selection-driven toggle palette; render via
   `TokenNodeSpec.badges` (upright glyph chips). Toggle gated by `AppContext.canEdit(doc, path)`
   (GM or token owner).
@@ -166,8 +167,9 @@ token/actor name from non-owners via the `OwnerOrGm` visibility tier. Conditions
 
 - **Token ownership is EFFECTIVE, resolved server-side at authz time — never stamped at create
   (Task 14i, `[sec]`).** `effective_owner(token) = the token's own `/owner`, else the LINKED
-  actor's owner` (`data/permission.rs`; server join in `sqlite.rs`'s `load_effective_owner`, ECS
-  side in `SceneEcs::token_effective_owner`, client mirror `actor.ts`'s `effectiveOwner`). A GM sets
+  actor's owner` (`data::permission::effective_owner`; server join in
+  `SqliteRepository::load_effective_owner`, ECS
+  side in `SceneEcs::token_effective_owner`, client mirror `effectiveOwner`). A GM sets
   the per-token override; actor ownership is assigned on the actor, so re-assigning an actor moves
   authority over **every** linked token with no re-stamp — which is the whole point of resolving
   rather than copying. **State the precedence rule exactly ONCE**: an earlier version short-circuited
@@ -212,12 +214,12 @@ token/actor name from non-owners via the `OwnerOrGm` visibility tier. Conditions
   envelope field — M13-0 re-root, was `/system/name`) to `OwnerOrGm`; the owner still sees it,
   others get the `actorDisplayName` fallback. Enforcement is server-side and fail-closed (see
   `shadowcat-codebase-documents-permissions`).
-- **`TokenEngine::validate` (`data/engine/token.rs`) shares ONE coordinate bound with the
+- **`TokenEngine::validate` shares ONE coordinate bound with the
   movement gate, structurally.** Every numeric field must be finite, and `x`/`y` must fall
   within `scene::move_exec::MAX_GATE_WALK_COORD` — the same symbol the server-authoritative
   move gate reads (`shadowcat-codebase-scene-rendering`'s `Room::publish`/`gate_walk`), not a
   copied literal. Runs on every GM-write/Create ingress of a `token` doc via
-  `normalize_engine`'s `"token"` arm (`data/engine/mod.rs`), so a token can never be CREATED
+  `data::engine::normalize_engine`'s `"token"` arm, so a token can never be CREATED
   outside the range the move gate would later refuse to walk it into. An anti-drift test
   (`ingress_bound_equals_gate_walks_exactly`) pins parity with the gate's own bound test.
 
@@ -227,8 +229,8 @@ token/actor name from non-owners via the `OwnerOrGm` visibility tier. Conditions
   `seedFactionRegistryIfAbsent` establishes above (docs sweep 11).** Its inline seed `$effect`
   calls `buildConditionRegistryDoc(ctx.world, SEED)` with no explicit `id`, so two racing GMs
   compute two DIFFERENT random ids instead of converging on one. Harmless today only because
-  `CONDITION_REGISTRY_DOC_TYPE` is in the server's doc_type-scoped `SINGLETON_DOC_TYPES` list
-  (`data/sqlite.rs`) — the loser's Create is rejected regardless of id, same rollback path as the
+  `CONDITION_REGISTRY_DOC_TYPE` is in the server's doc_type-scoped `data::sqlite::SINGLETON_DOC_TYPES`
+  list — the loser's Create is rejected regardless of id, same rollback path as the
   faction registry, just without the same-id convergence property. Logged to `docs/TODO.md`
   (consistency/testability, not a bug); don't copy this shape into a new registry seeder — copy
   the faction one instead.
@@ -240,7 +242,7 @@ token/actor name from non-owners via the `OwnerOrGm` visibility tier. Conditions
   outcome, diverge from what the editable tokens alone would show. Client-side UX inconsistency
   only (every write still goes through `canEdit` then the server's independent re-check); logged
   to `docs/TODO.md`, not fixed.
-- **Docs-ratchet is live on `data/engine/token.rs` (docs sweep 2b):** it carries
+- **Docs-ratchet is live on `data::engine::token` (docs sweep 2b):** it carries
   `#![deny(missing_docs)]` + the private-items twin — a new undocumented field/variant on
   `TokenEngine`/`ActorEngine`/`TokenVisual`/`AnimatedSource` fails the 3-OS CI clippy step, and
   doc comments flow into the ts-rs bindings (regenerate + commit them with the change).
@@ -255,7 +257,7 @@ token/actor name from non-owners via the `OwnerOrGm` visibility tier. Conditions
   `resolveTokenVisual`, never read `actor.visual`/`token.system.visual` directly.
 - **Token on-scene placement is excluded from template merge (M13e):** `/engine/x`, `/engine/y`,
   `/engine/rotation` are always instance-owned — never pulled, pushed, reverted, or flagged
-  `template_changed` by the merge engine (`placementExclusions("token")` in `merge.ts`). See
+  `template_changed` by the merge engine (`placementExclusions("token")`). See
   `shadowcat-codebase-templates`.
 
 ## Pointers
