@@ -69,8 +69,10 @@ const initiativeTracker: Module = {
       // labelKey falls back to its literal value for keys absent from the host
       // catalog (src/client/core/src/i18n.ts:80, src/client/ui-kit/src/i18n.svelte.ts:13-14)
       // — community modules have no i18n registration seam today: the host's
-      // catalogs are fixed at construction (src/client/ui-kit/src/i18n.svelte.ts:6)
-      // with no exposed method to add one (src/client/core/src/i18n.ts:13-31).
+      // catalogs are fixed at construction (src/client/ui-kit/src/i18n.svelte.ts:6),
+      // and no method on the `I18n` class (src/client/core/src/i18n.ts:13-100 — the
+      // whole class, not just its constructor: `setLocale` :59, `t` :79, `subscribe`
+      // :96 — none of them touch `#catalogs`) exposes a way to add or extend one.
       panel: { icon: "⚔️", labelKey: "Initiative", gmOnly: true },
     });
   },

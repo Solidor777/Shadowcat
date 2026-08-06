@@ -25,11 +25,15 @@ export function abilityMod(score: number): number {
  * dotted references (`attributes.str`) as paths into it. Returns null (never
  * throws) on parse or evaluation failure — degenerate sheet data must not crash
  * the sheet. This function itself has no `try`; the guarantee is inherited from
- * `@shadowcat/formula`: neither `parseFormula`
- * (src/client/formula/src/parser.ts:388) nor `evaluate`
- * (src/client/formula/src/evaluate.ts:5-7) ever throws, and `evaluate` also
- * catches a throwing resolver callback itself rather than propagating
- * (src/client/formula/src/evaluate.ts:39-49) — which covers the resolver below.
+ * `@shadowcat/formula`. Verified against the source `parseFormula` and
+ * `evaluate` reach: `parseFormula`'s own module (src/client/formula/src/parser.ts)
+ * and its lexer (src/client/formula/src/lexer.ts) contain no `throw` statement
+ * anywhere, nor does `evaluate`'s module (src/client/formula/src/evaluate.ts),
+ * which additionally catches a throwing resolver callback itself rather than
+ * propagating it (src/client/formula/src/evaluate.ts:39-49) — covering the
+ * resolver below. This does NOT extend to `@shadowcat/formula`'s
+ * dependency-graph module (src/client/formula/src/graph.ts:122,128, which DO
+ * throw) — `evalFormula` never calls into it.
  * @param formula - The formula source text (e.g. `"attributes.str + 2"`).
  * @param system - The opaque `system` body to resolve dotted references against.
  * @returns The evaluated number, or `null` on any parse/evaluation failure.
