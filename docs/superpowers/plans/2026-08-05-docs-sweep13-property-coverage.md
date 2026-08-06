@@ -221,6 +221,29 @@ Tasks 2–14 are file-disjoint from each other, but **only one implementer runs 
 sweep-12 rule stands: never commit while a review is outstanding, because a verdict is pinned to the
 commit the reviewer read.
 
+## ⚠ This sweep ROTS doc→code citations. Every task must repair its own.
+
+Adding doc comments shifts the code beneath them. Every citation pointing **from** a Markdown doc
+**into** a file this sweep touches silently goes stale, and **no gate catches it** — neither
+`lint:docs` nor `lint:props` parses Markdown, so a rotted pointer survives a fully green run.
+
+Discovered at Task 5, by which point **eight** citations in `docs/OPEN_BUGS.md` had already rotted:
+four from the sweep itself (`wire.ts` 192→234 and 359→424 in Task 2; `assets.ts` 59-68→76-90 and
+41-45→58 in Task 5) and four from a single unrelated +5-line comment fix in `sqlite.rs`. Repaired in
+`8fb44f2`.
+
+**Every task from 6 onward must, before reporting:** grep the tracked docs
+(`docs/*.md`, `docs/design/*.md`) for citations into the files it touched, verify each still lands
+on the construct its prose claims, and repair those that do not. Report the count checked and the
+count repaired — "none found" is only meaningful as the result of a search.
+
+Two traps inside this check:
+- **A citation that still RESOLVES may no longer SUPPORT.** After a shift, `wire.ts:192` landed on a
+  JSDoc line — a real line, entirely the wrong one. Read what is there, do not just confirm the file
+  is long enough.
+- **An insertion cannot move a line ABOVE it.** Citations above the shift point are correct and must
+  be left alone. "Correcting" them is how a good citation becomes a bad one.
+
 ## Global constraints (bind every task)
 
 1. **Comment-only.** No runtime change. Report a real defect with reachability bounded rather than
