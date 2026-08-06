@@ -74,7 +74,7 @@
   /** Replaces the asset's bytes behind its stable `uuid`, without an explicit
    * reload. Refresh here is driven entirely by the server's out-of-band
    * `asset_changed{replaced}` broadcast (`Room::broadcast_aux`,
-   * `src/server/src/ws/room.rs:243-249` — best-effort, dropped if there are no
+   * `src/server/src/ws/room.rs:243-250` — best-effort, dropped if there are no
    * receivers, and never replayed on resync): the `onAssetChanged` effect
    * above both reloads `items` and lets `resolver` bump its cache-busting
    * revision so the `<img>` tag re-requests fresh bytes. If that one broadcast

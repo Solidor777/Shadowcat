@@ -154,10 +154,12 @@ Currently open, confirmed-real defects. Deferrals belong in `TODO.md`, not here.
   - **Why nothing recovers it.** `AssetResolver.revs` is a client-local map incremented only by
     `onAssetChanged` (`src/client/core/src/assets.ts:59-68`); `url()` appends it as `?v={rev}`
     (`:41-45`) and reads the asset's server-side `version` nowhere. A missed frame therefore
-    leaves the serve URL byte-identical, so no new request is issued, so the `"{id}-{version}"`
-    ETag built in `serve` (`src/server/src/http/assets.rs:269`) is never revalidated. `serve`
-    sends no `Cache-Control`, so the browser applies heuristic freshness to the unchanged URL.
-    The same lost frame also skips the `items` reload and the render re-reconcile that
+    leaves the serve URL byte-identical, so no new request is issued at all, so the
+    `"{id}-{version}"` ETag built in `serve` (`src/server/src/http/assets.rs:269`) is never
+    revalidated, and the unchanged URL may additionally be served from cache (`serve` sends no
+    `Cache-Control` or `Last-Modified`, so browser behavior here is heuristic and not itself
+    load-bearing to this bug). The same lost frame also skips the `items` reload and the render
+    re-reconcile that
     `RenderEngine` documents as required for out-of-band notices
     (`src/client/render/src/engine.ts:1084-1097`).
   - **Reachability/impact:** routine, not load-dependent. The lag path needs a receiver to fall

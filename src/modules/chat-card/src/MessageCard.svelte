@@ -267,7 +267,9 @@
    * (`:1042`) — never a hard `Operation::Delete`; the doc stays in the sequenced log at its
    * original seq. A client-authored hard delete of a `message` doc is independently rejected
    * at both transport ingress points (`ops_target_message`, src/server/src/chat/mod.rs:78-83),
-   * so this frame is the only way a message is ever removed.
+   * so this frame is the only client-reachable way a STORED message doc's content is ever
+   * removed — it does not cover a world delete, which removes message docs wholesale outside
+   * this path entirely.
    * @example
    * ```
    * // internal; called from the delete action button
