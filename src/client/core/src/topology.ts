@@ -5,7 +5,10 @@
 import type { Logger } from "./logger";
 import type { ContractDeclaration } from "./manifest";
 
+/** The minimal shape `reconcileTopology` needs from a remote declaration —
+ * looser than `ContractDeclaration` since only presence-by-id is compared. */
 interface WireLike {
+  /** The declaring module's id, the sole field `reconcileTopology` compares. */
   module_id: string;
 }
 

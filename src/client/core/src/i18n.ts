@@ -1,8 +1,11 @@
 // Framework-neutral i18n primitive: subscribe/snapshot like DocumentStore and
 // ContributionRegistry, so any framework (Svelte via createSubscriber, Vue, …)
 // can read t() reactively. Minimal {name} interpolation; ICU/plural deferred.
+/** One locale's flat key→message catalog. */
 export type Messages = Record<string, string>;
+/** Interpolation values for a `t()` call's `{name}` placeholders. */
 export type I18nParams = Record<string, string | number>;
+/** A `subscribe()` callback, invoked with no arguments on locale change. */
 export type Listener = () => void;
 
 /** The framework-neutral i18n primitive: current locale, per-locale message
@@ -11,8 +14,11 @@ export type Listener = () => void;
  * …) can read `t()` reactively. Minimal `{name}` interpolation only — ICU/plural
  * support is deferred. */
 export class I18n {
+  /** The active locale key. */
   #locale: string;
+  /** Every loaded catalog, keyed by locale. */
   #catalogs: Record<string, Messages>;
+  /** Subscribers notified on a locale change that actually took effect. */
   #listeners = new Set<Listener>();
 
   /** Builds an `I18n` instance already loaded with every catalog.

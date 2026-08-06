@@ -193,6 +193,7 @@ export function applyOperation(
   }
 }
 
+/** A `subscribe()` callback, invoked with no arguments on every change. */
 export type Listener = () => void;
 
 /** Read-only document source the render engine consumes. Satisfied by both the
@@ -201,15 +202,30 @@ export type Listener = () => void;
  * the authoritative store remains the rollback base. `appliedSeq` (confirmed-seq on
  * both) backs the derived-frame watermark. */
 export interface ReadableDocuments {
+  /** Returns every currently-known document of `docType`.
+   * @param docType The `doc_type` to filter by.
+   * @returns Every matching document.
+   */
   query(docType: string): WireDocument[];
+  /** Looks up a document by id.
+   * @param id The document's id.
+   * @returns The document, or `undefined` if unknown.
+   */
   get(id: string): WireDocument | undefined;
+  /** Registers a change listener.
+   * @param listener Called on every applied change.
+   * @returns An unsubscribe function.
+   */
   subscribe(listener: Listener): () => void;
+  /** The highest confirmed-seq applied so far. */
   readonly appliedSeq: number;
 }
 
 /** Authoritative mirror of one world's documents. */
 export class DocumentStore implements ReadableDocuments {
+  /** The authoritative document set, keyed by id. */
   private docs = new Map<string, WireDocument>();
+  /** Registered change subscribers. */
   private listeners = new Set<Listener>();
   /** Highest authoritative seq applied. */
   appliedSeq = 0;

@@ -30,16 +30,30 @@ export function sheetContract(docType: string): string {
  * one embedded child via `embeddedPath` (`/embedded/<collection>/<index>`, ONE level —
  * an actor's inventory item, etc.). `tokenId` targets a placed token, resolved to its
  * linked actor or its embedded actor copy per §5.2. */
-export type SheetRef = { docId: string; embeddedPath?: string } | { tokenId: string };
+export type SheetRef =
+  | {
+      /** The top-level document's id. */
+      docId: string;
+      /** A `/embedded/<collection>/<index>` pointer to one embedded child of `docId`, one level deep. */
+      embeddedPath?: string;
+    }
+  | {
+      /** The placed token's document id. */
+      tokenId: string;
+    };
 
 /** The resolved open target: the panel id (dedups re-opens), the document to READ for
  * display + registry doc_type pick, and the write site every field-path Update is
  * addressed to (`writeDocId` + `writePrefix` — always the TOP-LEVEL doc + the JSON
  * pointer of its writable `system` body). */
 export interface SheetTarget {
+  /** The panel id `SheetsController` registers/dedups the sheet contribution under. */
   panelId: string;
+  /** The document to read for display and for `pickSheet`'s doc_type lookup. */
   doc: WireDocument;
+  /** The top-level document id every field-path Update from this sheet is addressed to. */
   writeDocId: string;
+  /** The JSON pointer prefix (into `writeDocId`) of the writable `system` body. */
   writePrefix: string;
 }
 
@@ -89,7 +103,10 @@ export function resolveDocRef(ref: SheetRef, store: ReadableDocuments): SheetTar
     if (!token) return null;
     // `actor_id` is engine-owned (TokenEngine); the sheet itself still reads/writes the
     // actor's `/system` (game-system data — untouched by the three-band re-root).
-    const eng = token.engine as { actor_id?: string | null } | undefined;
+    const eng = token.engine as {
+      /** The linked actor's id, if this token links rather than embeds one. */
+      actor_id?: string | null;
+    } | undefined;
     // Linked: write the SHARED actor doc's /system (mirrors conditionTarget). A dangling
     // link (actor gone) fails closed — never a phantom sheet over a missing doc.
     if (eng?.actor_id) {

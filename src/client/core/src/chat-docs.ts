@@ -17,6 +17,7 @@ export const CHANNEL_REGISTRY_DOC_TYPE = "channel-registry";
 export const MAX_MESSAGE_CHARS = 4096;
 
 export const MessageKindSchema = z.enum(["normal", "emote", "roll", "system"]);
+/** The inferred TS shape of `MessageKindSchema`. */
 export type MessageKind = z.infer<typeof MessageKindSchema>;
 
 /** Mirror of dice::outcome::DieRecord (M11d-2). Only the fields the roll card
@@ -37,6 +38,7 @@ export const DieRecordSchema = z
     symbols: z.array(z.string()),
   })
   .passthrough();
+/** The inferred TS shape of `DieRecordSchema`. */
 export type DieRecord = z.infer<typeof DieRecordSchema>;
 
 /** Mirror of dice::spec::ConstTerm — a labeled bare constant. Display/
@@ -46,6 +48,7 @@ export const ConstTermSchema = z.object({
   value: z.number(),
   label: z.string().nullish(),
 });
+/** The inferred TS shape of `ConstTermSchema`. */
 export type ConstTerm = z.infer<typeof ConstTermSchema>;
 
 /** Mirror of dice::outcome::RollOutcome (M11d-2). `successes`/`pass`/`margin`/
@@ -74,6 +77,7 @@ export const RollOutcomeSchema = z.object({
    * persisted before this field existed. */
   labeled_consts: z.array(ConstTermSchema).default([]),
 });
+/** The inferred TS shape of `RollOutcomeSchema`. */
 export type RollOutcome = z.infer<typeof RollOutcomeSchema>;
 
 /** Known segment kinds. `html.sanitized_html` is innerHTML-safe ONLY because the
@@ -92,6 +96,7 @@ export const ChatSegmentSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("roll_button"), formula: z.string(), label: z.string().nullish() }),
   z.object({ kind: z.literal("link_preview"), url: z.string(), title: z.string(), description: z.string() }),
 ]);
+/** The inferred TS shape of `ChatSegmentSchema` — one of the five known segment kinds. */
 export type ChatSegment = z.infer<typeof ChatSegmentSchema>;
 /** Forward-compat: a segment kind this client doesn't know (e.g. a future server's
  * DocLink) parses as opaque and renders as nothing — the message still shows.
@@ -110,6 +115,7 @@ const UnknownSegmentSchema = z
       s.kind !== "roll_button" &&
       s.kind !== "link_preview",
   );
+/** The inferred TS shape of `UnknownSegmentSchema` — a forward-compat, not-yet-known segment kind. */
 export type UnknownSegment = z.infer<typeof UnknownSegmentSchema>;
 const SegmentListSchema = z.array(z.union([ChatSegmentSchema, UnknownSegmentSchema]));
 
@@ -147,6 +153,7 @@ export const ChatMessageEngineSchema = z.object({
   edited_at: z.number().nullish(),
   deleted_at: z.number().nullish(),
 });
+/** The inferred TS shape of `ChatMessageEngineSchema` — a message document's `engine` body. */
 export type ChatMessageEngine = z.infer<typeof ChatMessageEngineSchema>;
 
 /** Fail-closed body parse: null unless `doc` is a message with a valid `engine` body.

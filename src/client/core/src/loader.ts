@@ -9,26 +9,44 @@ import { ModuleRegistry, type Module } from "./modules";
 import { parseManifest, type ModuleManifest } from "./manifest";
 import { satisfies } from "./semver";
 
-export type ImportFn = (entry: string) => Promise<{ default: Module } | Module>;
+/** The environment's dynamic import, resolving either a bare `Module` or an ESM
+ * `{ default: Module }` shape (see `normalize`). */
+export type ImportFn = (entry: string) => Promise<{
+  /** The module, when the imported entry uses a default export. */
+  default: Module;
+} | Module>;
 
+/** One discovered (manifest, entry) pair `loadModules` will attempt to load. */
 export interface ModuleEntry {
+  /** The entry's discovered manifest, re-validated by `loadModules` before import. */
   manifest: ModuleManifest;
+  /** The importable specifier/URL passed to `ImportFn`. */
   entry: string;
 }
 
 /** One entry that failed to load, with its declared id and the failure reason. */
 export interface ModuleLoadFailure {
+  /** The failing entry's declared manifest id. */
   id: string;
+  /** The failing entry's importable specifier/URL. */
   entry: string;
+  /** The failure reason (an `Error`'s message, or `String(e)` for a non-`Error` throw). */
   error: string;
 }
 
+/** The per-batch outcome of `loadModules` — every entry is contained; a batch never throws. */
 export interface ModuleLoadResult {
   /** Module ids successfully imported and added to the registry. */
   loaded: string[];
   /** Entries that failed at any stage (manifest parse, engine compat, import, id mismatch). */
   failed: ModuleLoadFailure[];
 }
+
+/** The ESM default-export shape `normalize` unwraps. */
+type DefaultExport = {
+  /** The module, when the imported entry uses a default export. */
+  default: Module;
+};
 
 /** Unwraps a default-exported module from a `ModuleEntry`'s raw import result.
  * @param imported The value resolved by `ImportFn` — either a `Module` or an `{ default: Module }` ESM shape.
@@ -38,9 +56,9 @@ export interface ModuleLoadResult {
  * normalize({ default: { manifest: { id: "example", version: "1.0.0", dependencies: {} }, register() {} } });
  * ```
  */
-function normalize(imported: { default: Module } | Module): Module {
-  return "default" in imported && (imported as { default: Module }).default
-    ? (imported as { default: Module }).default
+function normalize(imported: DefaultExport | Module): Module {
+  return "default" in imported && (imported as DefaultExport).default
+    ? (imported as DefaultExport).default
     : (imported as Module);
 }
 
@@ -109,8 +127,11 @@ function checkEngineCompat(manifest: ModuleManifest, shadowcatVersion: string): 
  * ```
  */
 export async function loadModules(opts: {
+  /** The discovered manifest/entry pairs to load, in order. */
   entries: ModuleEntry[];
+  /** The environment's dynamic import. */
   importFn: ImportFn;
+  /** The registry successful imports are added to. */
   registry: ModuleRegistry;
   /** When provided, each entry's `engines.shadowcat` (if declared) is checked
    * against this version before import (T6 load-time gate). */

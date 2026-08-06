@@ -9,8 +9,11 @@ import {
 
 /** Where a stamped instance lands: the initiator's world/owner/parent (never the template's). */
 export interface StampOpts {
+  /** The world the stamped instance is created in. */
   worldId: string;
+  /** The stamped instance's owner, or `null` for none. */
   ownerId: string | null;
+  /** The stamped instance's parent document id, or `null` for a top-level document. */
   parentId: string | null;
   /** The initiator's own permissions for the new doc; a deny-all default when omitted. */
   permissions?: WireDocument["permissions"];
@@ -57,9 +60,10 @@ function snapshotEmbedded(embedded: Record<string, WireDocument[]>): Record<stri
   return out;
 }
 
-/** The opaque `base` snapshot of a document's current mergeable content. Works for both a stamped
- * instance (children keyed by their `source.id`) and a template (children key on `source.id ?? id`,
- * which for a template child is its own id — the same correlation key its instances point to).
+/** Builds the value stored at `WireDocument.base` — see `wire.ts:167-170` for what that field
+ * means and when it's present. Works for both a stamped instance (children keyed by their
+ * `source.id`) and a template (children key on `source.id ?? id`, which for a template child is
+ * its own id — the same correlation key its instances point to).
  * @param doc The document to snapshot.
  * @returns A deep-cloned `MergeBase` of `doc`'s `name`/`engine`/`system`/`embedded` bands.
  * @example
@@ -250,7 +254,16 @@ export function applyResolutions(mergedBands: MergeBands, conflicts: Conflict[],
   return { name: root.name, engine: root.engine, system: root.system, embedded: root.embedded };
 }
 
-type Bands = { name: string | null; engine?: unknown; system?: unknown };
+/** The subset of a document's mergeable bands `revertBands`/`revertChild` operate on —
+ * `embedded` is handled by the separate `revertEmbedded` algorithm, not this type. */
+type Bands = {
+  /** The band's display name. */
+  name: string | null;
+  /** The band's engine body, if any. */
+  engine?: unknown;
+  /** The band's opaque system body, if any. */
+  system?: unknown;
+};
 
 /** Reset one node's own bands to the template's current value, keeping placement (E8). Reuses
  * `merge3Tree` with the child as its OWN base (so `childDiff` is always empty and every parent

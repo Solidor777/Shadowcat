@@ -12,7 +12,14 @@
 import type { WorldRole } from "@shadowcat/types";
 import type { WireDocument, WireCapabilityRequirement } from "./wire";
 
-type Grants = { by_role: Record<string, string[]>; by_user: Record<string, string[]> };
+/** A world's declarative additive-capability grants, keyed by `DocRole` and by user id. */
+type Grants = {
+  /** Capabilities granted to every holder of a given `DocRole` string. */
+  by_role: Record<string, string[]>;
+  /** Capabilities granted to a specific user id, additive to `by_role`. */
+  by_user: Record<string, string[]>;
+};
+/** The `permissions` block shape lifted off `WireDocument`, so this module needs no separate import. */
 type Perms = WireDocument["permissions"];
 
 /** The built-in capability floor for a `DocRole`, mirroring the server's `role_floor`

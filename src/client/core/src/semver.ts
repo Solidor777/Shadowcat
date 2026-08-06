@@ -1,6 +1,7 @@
 // Internal semver matcher for module dependency ranges and hook versions.
 // Deliberately tiny (exact / ^ / ~ / *) to avoid a runtime dependency; swap for
 // the `semver` package only if richer ranges become a real requirement.
+/** A parsed `[major, minor, patch]` version triple. */
 type V = [number, number, number];
 
 /** Parses a strict `major.minor.patch` version string (no pre-release/build metadata).

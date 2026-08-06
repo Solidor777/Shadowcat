@@ -16,8 +16,11 @@ import { applyOperation, type Listener, type ReadableDocuments } from "./store";
 import type { WireCommand, WireDocument, WireOperation } from "./wire";
 import { silentLogger, type Logger } from "./logger";
 
+/** One unconfirmed local prediction, queued FIFO awaiting its authored echo or a reject. */
 interface Pending {
+  /** The id the matching Intent frame was sent under. */
   intentId: string;
+  /** The predicted operations, applied in order to build the view. */
   ops: WireOperation[];
 }
 
@@ -38,10 +41,15 @@ interface Pending {
  * ```
  */
 export class OptimisticClient implements ReadableDocuments {
+  /** Documents built from confirmed authoritative commands only. */
   private base = new Map<string, WireDocument>();
+  /** `base` with every remaining `pending` intent applied, in order — what callers read. */
   private view = new Map<string, WireDocument>();
+  /** Unconfirmed local predictions, oldest first. */
   private pending: Pending[] = [];
+  /** Registered view-change subscribers. */
   private listeners = new Set<Listener>();
+  /** The highest confirmed-seq applied to `base`; never advanced by a pending prediction. */
   appliedSeq = 0;
 
   /** `self` is the actor id used to recognize our own authored echoes.
