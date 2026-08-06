@@ -423,6 +423,28 @@ forms appear as entries instead of being silently absent. **Deliberately over-ma
 review**: over-broad plus manual exclusion is falsifiable, narrow plus a count is not. False positives
 are cheap (`sequenced.ts` is a Rust field access) and are the price of seeing `ws/conn.rs`.
 
+**The same failure recurs in the FILTER and in the VERIFICATION, not just the pattern.** Two more
+instances, both of which reported clean:
+
+- **An exclusion applied to `path:line:content` matches the PATH.** Piping a sweep through
+  `grep -vE '…\.test\.ts…'` to drop a carve-out silently dropped **every citation inside every test
+  file in the repo** — likewise `config.ts`, `panels.scss`, `build.rs`. A carve-out written for
+  individual lines was excluding whole files. Split the prefix off and filter the **content field
+  only**.
+- **A verification that can pass for the wrong reason verifies nothing.** A `sed` requiring backticks
+  the source lacked matched nothing; the grep used to confirm it matched an unrelated import
+  elsewhere in the same file, and the conversion was reported as landed. **Check the edited LINE**
+  (`sed -n '<line>p'`), never the file.
+
+**The unifying root of all of it:** each is a check that can succeed for a reason unrelated to what
+it claims to check. Of any check here, ask not "did it pass?" but **"what else could make this
+pass?"**
+
+**Scope gaps are not pattern gaps.** `src/server/tests/`, `examples/` and `Cargo.toml` comments held
+citations because no agent was ever assigned them — `examples/` still carried the original
+`file:line` form plus bare `:NNN` after the whole campaign had reported complete. No pattern fixes
+that. Enumerate containers — every directory, every file type — exhaustively, never from search hits.
+
 Three consequences bind every task:
 
 1. **State the first number as a floor, in writing** — "N under pattern P; unrecognised forms
