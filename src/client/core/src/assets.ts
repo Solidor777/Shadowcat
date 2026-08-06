@@ -10,11 +10,10 @@ export type AssetOp = "replaced" | "deleted";
  * KNOWN DEFECT (`docs/OPEN_BUGS.md`, the AssetChanged entry): `revs` is
  * client-local and bumped only by `onAssetChanged` — it never reads the
  * asset's server-side `version`. A connection that misses an
- * `AssetChanged{replaced}` frame (an ordinary reconnect suffices, since
- * `Room::subscribe` returns a receiver at the channel's current tail and the
- * frame is never in the resync ring) keeps a byte-identical `url()` result
- * forever; no new request is ever issued, so nothing self-heals until a page
- * reload.
+ * `AssetChanged{replaced}` frame — an ordinary reconnect is sufficient to
+ * cause this, see the linked entry for the mechanism — keeps a
+ * byte-identical `url()` result forever; no new request is ever issued, so
+ * nothing self-heals until a page reload.
  */
 export class AssetResolver {
   /** Per-uuid cache-busting revision, incremented only by `onAssetChanged` —
