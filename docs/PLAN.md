@@ -1564,15 +1564,31 @@ Trusted local modding hardening → freeze the module API on evidence (≥1 exte
     off by one, which matters because module authors place layers at a fractional order relative to
     them. **Nothing routinely checks skills against code** — this was caught incidentally.
   Plan: `docs/superpowers/plans/2026-07-31-docs-sweep8-client-render.md`.
-- **Sweeps 12–N — doc-comment sweeps: UPCOMING.** Remaining area: the rest of the module packages
-  (135 warnings). Sweep 11 closed the scene-adjacent modules (scene-tools 107, actors 17,
-  scene-browser 9, stage 8, conditions 8, factions 8). Suggested split for what remains:
-  chat/entry/settings/sheets/topbar/assets (chat 51, chat-card 23, entry 22, settings 13, topbar 7,
-  sheet-actor 5, assets 4, chat-composer 4, game-settings 3, sheet-item 3). Every symbol gets
-  description+params+example; each completed area flips its lints to deny (Rust: per-file inner
-  deny attributes as in Sweep 1; TS: per-package severity flip in `eslint.docs.config.js`).
-  Server-wide informational count at Sweep-1 start: 1,059. Whole-repo `lint:docs` after Sweep 8:
-  827 warnings, 0 errors.
+- **Sweep 12 — chat/entry/settings/sheets/topbar/assets, then the repo-wide ratchet: COMPLETE
+  (2026-08-05).** 154-item backlog → 0 across 7 content tasks (chat + chat-card + chat-composer;
+  entry; settings + topbar; sheet-actor + sheet-item + game-settings + assets; a `docs:check-examples`
+  fix pass), then Task 8 converted every remaining warn-tier package to `error`: the ratcheted `.ts`
+  and `.svelte` blocks in `eslint.docs.config.js` now take the SAME four globs as the warn-tier
+  blocks (`src/types/**`, `src/client/**`, `src/modules/**`, `examples/**`) instead of an enumerated
+  package list, so every package under those globs is gated — not just the twelve named packages
+  Sweep 11 left ratcheted. The warn-tier blocks are kept, not deleted: they now match nothing under
+  function-level rules, but are the staging tier Sweep 13 stages property-level rules through.
+  Whole-repo `lint:docs` after Sweep 12: **0 warnings, 0 errors.** Doc examples 332 → 333.
+  Ratchet mutation-proven in all four required ways (undocumented function in a ratcheted `.ts`
+  file; undocumented function in a ratcheted `.svelte` `<script>`; a deleted `@param` in a `.ts`
+  file; a deleted `@example` in a `.svelte` file) — each independently fails at `error` and the
+  tree returns to green after reverting.
+  **This closes function-level doc coverage only.** Property/type coverage is explicitly NOT part
+  of this gate (`jsdoc/require-jsdoc`'s `ArrowFunctionExpression`/`FunctionExpression` requirements
+  are off, and there is no rule for plain property/type declarations at all) — **~1,329 such sites
+  remain ungated**, per the Sweep 13 plan. Do not read "Sweep 12 complete" as "the codebase is fully
+  documented."
+  Plan: `.superpowers/sdd/2026-08-05-docs-sweep12-chat-entry-settings/`. Successor:
+  **Sweep 13 — property, type and full-coverage documentation pass**
+  (`docs/superpowers/plans/2026-08-06-docs-sweep13-property-coverage.md`), which extends `rulesAt`
+  with property/type/named-arrow contexts, stages them through the still-live warn tier, burns down
+  the ~1,329-site backlog, and — as its final task — consolidates `eslint.docs.config.js` into
+  `eslint.config.js` (deferred out of Sweep 12 for exactly this reason).
   **Required reading for every implementer and reviewer:**
   `docs/design/doc-sweep-truthfulness-rules.md` — fourteen rules derived empirically from Sweeps
   7–11, where every fix round was triggered by a doc sentence asserting something FALSE, never by a
