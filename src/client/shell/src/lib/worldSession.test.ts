@@ -528,7 +528,7 @@ test("subscribeScene sends scene_subscribe and re-establishes on a reconnect Wel
   );
 });
 
-// Minimal SceneToolHost fake (mirrors @shadowcat/ui-kit's __fixtures__/fakeSceneHost.ts, not
+// Minimal SceneToolHost fake (mirrors @shadowcat/ui-kit's `fakeSceneHost` fixture, not
 // exported from the ui-kit barrel — this package only needs the one method under test here).
 function fakeMoveHost(): import("@shadowcat/render").SceneToolHost & {
   calls: Array<{ id: string; moverVision: unknown }>;

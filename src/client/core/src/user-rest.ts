@@ -1,6 +1,6 @@
 import type { WorldRole } from "@shadowcat/types";
 
-// Account + membership REST, beside module-rest.ts. Framework-neutral (no
+// Account + membership REST, beside the `module-rest` module. Framework-neutral (no
 // Svelte in core's closure, invariant #7) so the settings module's admin
 // user-management and GM member-add surfaces can both consume it.
 //
@@ -111,7 +111,7 @@ export async function createUser(opts: {
 /** Delete a user account (server-admin only). The server refuses self-
  * deletion and deleting the last administrator with a 409 whose message is
  * client-actionable — surface it verbatim. An unknown `id` gets a plain 404
- * (`DataError::NotFound`, `data/sqlite.rs::delete_user`). The account's
+ * (`DataError::NotFound`, `SqliteRepository::delete_user`). The account's
  * sessions are revoked inside the delete transaction, so a reconnect fails
  * authentication; after that commit, the deleted account's live connections
  * are separately evicted from every room.

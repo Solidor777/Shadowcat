@@ -55,7 +55,7 @@ const lerp = (a: number, b: number, t: number): number => a + (b - a) * t;
  * `Infinity` when fewer than 3 samples are present (gap detection disabled).
  * @example
  * ```
- * // module-private; not exported from @shadowcat/render's index.ts
+ * // module-private; not exported from @shadowcat/render
  * computeGapThreshold([{ tMs: 0, pos: [0, 0] }, { tMs: 100, pos: [1, 0] }, { tMs: 200, pos: [2, 0] }]); // 150
  * ```
  */

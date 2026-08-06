@@ -301,9 +301,12 @@ re-aiming was never sustainable:
 1. **Comment-only.** No runtime change. Report a real defect with reachability bounded rather than
    fixing it; log it to `docs/OPEN_BUGS.md`. Correcting a **stale** comment is not a runtime change
    and IS in scope (Rule 7).
-2. `docs/design/doc-sweep-truthfulness-rules.md` — all 15 rules, required reading per task.
+2. `docs/design/doc-sweep-truthfulness-rules.md` — **RULE 0 (governing) plus all 15 rules**, required
+   reading per task. RULE 0: never work around a rule — follow its intent, ask when the intent is
+   unclear, and never cut scope or verification coverage to resolve a hard case. An honestly reported
+   "I could not comply" outranks a clean count.
 3. **RULE 15 — cite SYMBOLS, never file names or line numbers.** Shipped prose names the type and
-   member (`AssetResolver.url`, `Conn::handle_scene_subscribe`), qualified by its **owner** rather
+   member (`AssetResolver.url`, `egress_loop`'s `SceneSubscribe` arm), qualified by its **owner** rather
    than its location. A `file:line` in a committed comment is now a defect in its own right,
    independent of whether it currently resolves. This supersedes the former path-qualification
    constraint, and it retires the line-delta problem at the root rather than policing it per task.

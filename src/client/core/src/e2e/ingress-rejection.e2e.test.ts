@@ -1,6 +1,6 @@
 // Node<->Rust end-to-end: the real client's Create intents against the real
 // server's strict `engine` ingress gate (M13-0 S1/S3). The gate runs ahead of
-// the create-authorization check (data/sqlite.rs Phase 1), so any
+// the create-authorization check (Phase 1 of `SqliteRepository::apply_intent`), so any
 // authenticated connection sees the same rejection; the GM login is used only
 // to keep the fixture free of unrelated core:create floor considerations.
 import { afterAll, beforeAll, expect, test } from "vitest";

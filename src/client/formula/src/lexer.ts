@@ -70,8 +70,8 @@ function isWordChar(ch: string): boolean {
  * trailing `.` with no following digit) or an unrecognized character.
  * @example
  * ```
- * // not part of the public `@shadowcat/formula` surface (index.ts does not
- * // re-export this module) — internal to parser.ts.
+ * // not part of the public `@shadowcat/formula` surface (this module is not
+ * // re-exported) — internal to the `parser` module.
  * tokenize("1 + hp.max"); // [{kind:"num",...}, {kind:"op",value:"+",...}, {kind:"word",value:"hp",...}, {kind:"op",value:".",...}, {kind:"word",value:"max",...}]
  * ```
  */

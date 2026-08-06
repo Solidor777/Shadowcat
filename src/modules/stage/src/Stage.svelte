@@ -38,7 +38,7 @@
   /** Applies the current `gmView` selection to the live engine. `"all"` and `"fog"` are
    * client-only — `"fog"` layers a local full-fog preview overlay, no server round-trip —
    * while `"as:<userId>"` re-subscribes the vision channel as that user and is a
-   * server-gated operation: `ws/conn.rs`'s `SceneSubscribe` handler rejects an `as_user`
+   * server-gated operation: `egress_loop`'s `SceneSubscribe` arm rejects an `as_user`
    * from a non-GM connection outright. Called again after an `$effect` re-run (below,
    * `if (gmView !== "all") applyGmView()`) so a non-default view survives teardown/re-init.
    * @example

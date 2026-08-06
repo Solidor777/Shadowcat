@@ -25,7 +25,7 @@
   /** Roll for one actor: track it locally, then persist the score onto the
    * actor's opaque `system` band ONLY if `ctx.canEdit` allows it — a denied
    * write stays local-only, with no error. Persisting uses `setField`'s OCC
-   * contract — see src/client/ui-kit/src/sheetEdit.ts:4-10 for the pre-image
+   * contract — see `setField` for the pre-image
    * invariant this call must satisfy; not restated here to avoid a second,
    * driftable copy.
    * @param actor - The actor document to roll initiative for.

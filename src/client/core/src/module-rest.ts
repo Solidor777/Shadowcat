@@ -1,6 +1,6 @@
 import type { InstalledModuleInfo } from "@shadowcat/types";
 
-// Client-side module-toolchain REST, beside asset-rest.ts: the installed-module
+// Client-side module-toolchain REST, beside the `asset-rest` module: the installed-module
 // discovery + per-world enablement contract with the server. Framework-neutral
 // (no Svelte in core's closure, invariant #7) — shared by the settings module's
 // GM management UI and the world session's external-module load path.

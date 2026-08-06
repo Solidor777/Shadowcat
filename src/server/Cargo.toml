@@ -34,7 +34,7 @@ base64 = "0.22"
 subtle = "2"
 ammonia = "4.1.3"
 pulldown-cmark = { version = "0.13.4", default-features = false, features = ["html"] }
-# Server's first outbound HTTP (chat/link_preview.rs, SSRF-guarded). rustls-tls
+# Server's first outbound HTTP (`chat::link_preview`, SSRF-guarded). rustls-tls
 # keeps TLS pure-Rust (no OpenSSL system dep, cross-platform CI invariant);
 # Production preview fetcher needs only `rustls-tls` (pure-Rust TLS, no OpenSSL —
 # cross-platform) + `stream` (`bytes_stream()` for the size-capped body read); the

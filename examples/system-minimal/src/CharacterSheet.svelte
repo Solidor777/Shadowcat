@@ -39,7 +39,7 @@
 
   // #region sheet-write
   /** Writes one attribute via `setField`'s OCC contract — see
-   * src/client/ui-kit/src/sheetEdit.ts:4-10 for the pre-image invariant this
+   * `setField` for the pre-image invariant this
    * call must satisfy; not restated here to avoid a second, driftable copy.
    * @param attr - The attribute key (e.g. `"str"`).
    * @param value - The new numeric score to write.

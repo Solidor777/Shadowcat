@@ -2,7 +2,7 @@
 //! server-authoritative (#3). Clean-room: standard radial light falloff plus threshold banding of a
 //! continuous [0,1] illumination field. No proprietary VTT/engine source consulted.
 //!
-//! Mirrors the client `light-gradation`/`light`/`vision-modes` shapes in scene-docs.ts; the server
+//! Mirrors the client `light-gradation`/`light`/`vision-modes` shapes in the `scene-docs` module; the server
 //! stays structural-only (callers parse documents and pass these plain structs).
 
 #![deny(missing_docs)]
@@ -90,7 +90,7 @@ pub struct Band {
     pub min_illumination: f64,
 }
 
-/// Built-in three-band gradation (bright → dim → dark). Mirrors `DEFAULT_GRADATION` in scene-docs.ts.
+/// Built-in three-band gradation (bright → dim → dark). Mirrors `DEFAULT_GRADATION` in the `scene-docs` module.
 pub fn default_bands() -> Vec<Band> {
     vec![
         Band {

@@ -24,7 +24,7 @@ import { PingView } from "./ping-view";
  * @returns One 4-point rect polygon per `(i,j)` pair, in input order.
  * @example
  * ```
- * // module-private helper; not exported from @shadowcat/render's index.ts
+ * // module-private helper; not exported from @shadowcat/render
  * cellsToRects([0, 0, 1, 0], 5); // 2 rects: [0,0]-[5,5] and [5,0]-[10,5]
  * ```
  */

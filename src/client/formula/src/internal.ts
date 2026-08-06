@@ -19,8 +19,8 @@ const FORMULA_ERROR_KIND_SET: ReadonlySet<string> = new Set(FORMULA_ERROR_KINDS)
  * and a string `detail` field.
  * @example
  * ```
- * // not part of the public `@shadowcat/formula` surface (index.ts does not
- * // re-export this module).
+ * // not part of the public `@shadowcat/formula` surface (this module is not
+ * // re-exported).
  * isWellFormedError({ error: "cap", detail: "too big" }); // true
  * isWellFormedError({ error: "nonsense", detail: "x" });  // false — not a FormulaErrorKind
  * ```
@@ -42,8 +42,8 @@ export function isWellFormedError(v: unknown): v is FormulaError {
  * @returns `n` itself when finite, else a `"non-finite"` `FormulaError`.
  * @example
  * ```
- * // not part of the public `@shadowcat/formula` surface (index.ts does not
- * // re-export this module).
+ * // not part of the public `@shadowcat/formula` surface (this module is not
+ * // re-exported).
  * finite(1 / 3);  // 0.333...
  * finite(1 / 0);  // { error: "non-finite", detail: "..." } — Infinity never leaks
  * ```
@@ -67,8 +67,8 @@ export function finite(n: number): FormulaValue {
  * `FormulaError` unchanged, or a synthetic `"resolver-error"` for anything else.
  * @example
  * ```
- * // not part of the public `@shadowcat/formula` surface (index.ts does not
- * // re-export this module).
+ * // not part of the public `@shadowcat/formula` surface (this module is not
+ * // re-exported).
  * validateResolverOutput(5);           // 5
  * validateResolverOutput("oops");      // { error: "resolver-error", detail: "..." }
  * ```

@@ -184,7 +184,7 @@ pub enum RollError {
     /// Two ladder rungs share one `margin_offset` -- `classify`'s
     /// max_by_key/min_by_key tie is caller-order-dependent, so which rung wins
     /// would be nondeterministic. Refused at construction so every downstream
-    /// ladder is unambiguous (classify.rs's doc comment documents the tie).
+    /// ladder is unambiguous (`dice::eval::classify`'s doc comment documents the tie).
     DuplicateTierOffset(i32),
 }
 
@@ -298,7 +298,7 @@ fn validate_pre_roll(spec: &RollSpec) -> Result<(), RollError> {
 }
 
 /// Uniqueness guard over a classification ladder's `margin_offset`s. Notation
-/// cannot author a non-empty ladder today (parser.rs emits `tiers: vec![]`),
+/// cannot author a non-empty ladder today (`dice::notation::parser` emits `tiers: vec![]`),
 /// so this arms the boundary for the tier-ladder syntax before it exists --
 /// the guard predates the untrusted path by construction.
 fn validate_tiers(tiers: &[crate::dice::spec::Tier]) -> Result<(), RollError> {

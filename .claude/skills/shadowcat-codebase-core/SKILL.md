@@ -101,7 +101,7 @@ source of truth. The ones agents break most:
   [[never-descope-without-consulting-user]]). A rule that is genuinely wrong gets raised and
   changed, never quietly routed around. [[never-work-around-a-rule-follow-its-intent]]
 - **Comments cite SYMBOLS, never file names or line numbers (user directive 2026-08-05).** Write
-  ``see `Conn::handle_scene_subscribe` ``, never ``see conn.rs:1313`` and never ``the handler in
+  ``see `egress_loop`'s `SceneSubscribe` arm ``, never ``see conn.rs:1313`` and never ``the handler in
   `conn.rs` ``. Qualify by owner (`AssetResolver.url`, `chat::broadcast`), not location. Applies to
   all committed prose — doc comments and the live tracking docs. A line number is invalidated by any
   insertion above it and **no gate catches the rot**; a symbol breaks only on rename, which a grep

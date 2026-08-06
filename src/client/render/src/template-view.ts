@@ -90,7 +90,7 @@ export class TemplateView {
  * @returns A `ShapeNodeSpec` for the `templates` layer, or `null` if it can't be rendered.
  * @example
  * ```
- * // not exported from @shadowcat/render's index.ts; internal to TemplateView.reconcile
+ * // not exported from @shadowcat/render; internal to TemplateView.reconcile
  * const spec = toSpec(doc); // null if doc.engine.shape is absent or malformed
  * ```
  */

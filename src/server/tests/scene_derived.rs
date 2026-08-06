@@ -112,7 +112,7 @@ async fn vision_frame_includes_lit_mask_after_room_hydration() {
     // get_or_create cold-start hydration — the room already exists when the GM publishes,
     // so the config-docs arrive via apply_op, not via the DB query_documents path.
     // Cold-start hydration (get_or_create reading from a pre-populated DB) is covered by
-    // the `get_or_create_hydrates_config_and_actors_from_db` unit test in ws/room.rs.
+    // the `get_or_create_hydrates_config_and_actors_from_db` unit test in `ws::room`.
     let h = spawn().await;
     let (player, player_cookie) = h.add_player("litplayer").await;
 

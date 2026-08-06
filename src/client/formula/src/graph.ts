@@ -12,8 +12,8 @@ class NeedsDependency {
    * in-flight `evalNode` call can be retried.
    * @example
    * ```
-   * // not part of the public `@shadowcat/formula` surface (index.ts does not
-   * // re-export this module) — thrown only inside resolveAll's `get` closure.
+   * // not part of the public `@shadowcat/formula` surface (this module is not
+   * // re-exported) — thrown only inside resolveAll's `get` closure.
    * throw new NeedsDependency("hp.max");
    * ```
    */

@@ -82,8 +82,8 @@ export function evaluate(
  * @returns The arithmetic result, or a `"div-zero"`/`"non-finite"` error.
  * @example
  * ```
- * // not part of the public `@shadowcat/formula` surface (index.ts does not
- * // re-export this module).
+ * // not part of the public `@shadowcat/formula` surface (this module is not
+ * // re-exported).
  * evalBin("%", -7, 2); // -1 (truncated, not floored)
  * evalBin("/", 1, 0);  // { error: "div-zero", detail: "..." }
  * ```
@@ -136,8 +136,8 @@ function evalBin(
  * arguments, or a `"non-finite"` error (see the arity note above).
  * @example
  * ```
- * // not part of the public `@shadowcat/formula` surface (index.ts does not
- * // re-export this module) — reachable only through `evaluate`'s "call" case.
+ * // not part of the public `@shadowcat/formula` surface (this module is not
+ * // re-exported) — reachable only through `evaluate`'s "call" case.
  * evalCall("round", [{ kind: "num", value: -2.5 }], () => 0); // -2 (ties toward +Infinity)
  * ```
  */

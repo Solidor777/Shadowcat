@@ -10,7 +10,7 @@ export type EasingMode = "easeInOut" | "linear";
  * @returns The eased progress, in `[0,1]` for `t` in `[0,1]`.
  * @example
  * ```
- * // not exported from @shadowcat/render's index.ts; internal to applyEasing
+ * // not exported from @shadowcat/render; internal to applyEasing
  * easeInOutQuad(0.5); // 0.5 (symmetric at the midpoint)
  * easeInOutQuad(0.25); // < 0.25 (slow start)
  * ```
@@ -28,7 +28,7 @@ function easeInOutQuad(t: number): number {
  * @returns The eased progress, in `[0,1]`.
  * @example
  * ```
- * // `applyEasing` itself is not exported from @shadowcat/render's index.ts (only the
+ * // `applyEasing` itself is not exported from @shadowcat/render (only the
  * // `EasingMode` type is); internal to TokenAnimator.
  * applyEasing("linear", 0.5); // 0.5
  * applyEasing("easeInOut", 0.25); // < 0.25

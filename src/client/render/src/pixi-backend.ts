@@ -28,7 +28,7 @@ interface TokenNode {
  * collides across kinds.
  * @example
  * ```
- * // module-private helper; not exported from @shadowcat/render's index.ts
+ * // module-private helper; not exported from @shadowcat/render
  * visualSourceKey({ kind: "image", url: "https://example.test/token.png" });
  * ```
  */
@@ -928,7 +928,7 @@ export class PixiBackend implements DisplayBackend {
  * `closed`/`fill`/`stroke`.
  * @example
  * ```
- * // module-private helper; not exported from @shadowcat/render's index.ts
+ * // module-private helper; not exported from @shadowcat/render
  * import { Graphics } from "pixi.js";
  * const g = new Graphics();
  * paintShape(g, { points: [0, 0, 10, 0, 10, 10, 0, 10], closed: true, stroke: null, fill: null });
@@ -957,7 +957,7 @@ function paintShape(g: Graphics, spec: Omit<ShapeNodeSpec, "layer">): void {
  * @param input The visibility sample to paint; `mode:"all"` is a no-op (caller handles no-fog).
  * @example
  * ```
- * // module-private helper; not exported from @shadowcat/render's index.ts
+ * // module-private helper; not exported from @shadowcat/render
  * import { Graphics } from "pixi.js";
  * const dark = new Graphics(), dim = new Graphics(), eh = new Graphics(), vh = new Graphics();
  * paintFogSheets(dark, dim, eh, vh, { mode: "all", visible: [], explored: [] });

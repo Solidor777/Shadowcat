@@ -17,7 +17,7 @@
  * @returns The blend factor in `[0,1]`, or `1` on a degenerate/non-finite input.
  * @example
  * ```
- * // not exported from @shadowcat/render's index.ts; internal to PixiBackend's fog cross-fade
+ * // not exported from @shadowcat/render; internal to PixiBackend's fog cross-fade
  * computeFogBlendFactor(150, 100, 200); // 0.5 — halfway between the two samples
  * computeFogBlendFactor(500, 100, 200); // 1 — past tNext, clamped
  * computeFogBlendFactor(50, 100, 100); // 1 — degenerate span (tNext <= tCur), fail-safe to newer
@@ -44,7 +44,7 @@ export function computeFogBlendFactor(clock: number, tCur: number, tNext: number
  * DPR change), `false` if the existing texture can be reused in place.
  * @example
  * ```
- * // not exported from @shadowcat/render's index.ts; internal to PixiBackend.setVisibilityBlend
+ * // not exported from @shadowcat/render; internal to PixiBackend.setVisibilityBlend
  * fogBlendRtStale(null, 800, 600, 1); // true — nothing captured yet
  * fogBlendRtStale({ width: 800, height: 600, resolution: 1 }, 800, 600, 1); // false — reusable
  * fogBlendRtStale({ width: 800, height: 600, resolution: 1 }, 1024, 768, 1); // true — resized

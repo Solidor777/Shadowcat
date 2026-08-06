@@ -828,7 +828,7 @@ impl SqliteRepository {
     /// FTS AFTER DELETE triggers fire under cascade (pinned by test).
     /// `explored_fog` and the per-world `settings` blobs have no FK and are
     /// purged explicitly. Files on disk are the caller's concern — delete
-    /// ordering is rows-first, files-second (http/assets.rs delete convention).
+    /// ordering is rows-first, files-second (`http::assets` delete convention).
     pub async fn delete_world(&self, world: Uuid) -> Result<(), DataError> {
         let mut tx = self.pool.begin().await?;
         let res = sqlx::query("DELETE FROM worlds WHERE id = ?")

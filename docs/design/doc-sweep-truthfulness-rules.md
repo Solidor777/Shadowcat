@@ -341,7 +341,7 @@ file) — cite the **type name and member**, never a path and never a line numbe
 BAD    see src/server/src/ws/conn.rs:1313-1329
 BAD    see conn.rs (the scene_subscribe arm)
 BAD    `revs` is bumped only by onAssetChanged — see assets.ts:41-45
-GOOD   see `Conn::handle_scene_subscribe`
+GOOD   see `egress_loop`'s `SceneSubscribe` arm
 GOOD   `AssetResolver.revs` is bumped only by `AssetResolver.onAssetChanged`
 ```
 
@@ -364,7 +364,7 @@ for the old name finds it.**
 
 **Disambiguation without paths.** Rule 13's motivating problem was real: this repo has two
 `controller.svelte.ts` and 26 `index.ts`. Symbols solve it better than paths did. Qualify with the
-**owner**, not the location — `AssetResolver.url`, `Conn::handle_scene_subscribe`,
+**owner**, not the location — `AssetResolver.url`, `egress_loop`'s `SceneSubscribe` arm,
 `EngineAdapter.dispose`. For a bare function with a common name, name the module that exports it
 (`chat/mod.rs`'s `broadcast` → `chat::broadcast`). If a symbol is genuinely ambiguous after
 owner-qualification, that ambiguity is a naming defect worth reporting, not a reason to reach for a
@@ -393,6 +393,45 @@ the rule's meaning.
 precision they never claimed. Likewise, where this file quotes a *past* citation as evidence of a past
 defect (Rules 1 and 12), the quoted `file:line` stays: it is a record of what someone wrote, not a
 pointer this document is asking you to follow.
+
+### Measuring the surface — anchor on the INVARIANT, never the delimiter
+
+The Rule 15 pass undercounted its own scope **eight times**, and once more *after* being committed and
+reported clean. Every miss had one cause: the pattern encoded the punctuation **around** a citation
+instead of the citation's invariant.
+
+| Pattern anchored on | What it could not see |
+|---|---|
+| `` `file.ts` `` backtick-delimited | unbackticked prose — `see mock-server.ts` |
+| character class `[A-Za-z0-9_.-]` (no `/`) | backticked **paths** — `` `ws/conn.rs` ``, `` `data/sqlite.rs` `` |
+| `` ` `` followed immediately by `)` | `` (`a.rs`, `b`) `` — 17 real sites reported as 7 |
+| `file.ts:NNN` | `data/sqlite.rs::delete_user`, `(data/sqlite.rs Phase 1)` |
+
+The invariant is the **filename token** — `\S+\.(ts|rs|svelte|…)`. Backticks, parentheses, colons and
+possessives are punctuation the author chose freely; anchoring a measurement on freely-chosen
+punctuation guarantees an undercount that reports as precision.
+
+**Measure the vocabulary, never the count:**
+
+```
+grep -rhoE '[A-Za-z0-9_/.-]+\.(ts|rs|svelte|mjs|scss)\b' <paths> | sort | uniq -c | sort -rn
+```
+
+`-o` emits the matched token rather than the line, so the output is *the list of distinct things that
+exist in the tree* — a fact, not a confirmation of the hypothesis that built the pattern. Unexpected
+forms appear as entries instead of being silently absent. **Deliberately over-match, then subtract by
+review**: over-broad plus manual exclusion is falsifiable, narrow plus a count is not. False positives
+are cheap (`sequenced.ts` is a Rust field access) and are the price of seeing `ws/conn.rs`.
+
+Three consequences bind every task:
+
+1. **State the first number as a floor, in writing** — "N under pattern P; unrecognised forms
+   unmeasured", never "the surface is N".
+2. **Close with a different method than the one that scoped it.** A residual sweep reusing the scoping
+   pattern re-confirms the original blind spot and returns a clean zero.
+3. **Ask implementers for their own count before revealing yours**, and treat any delta as a finding.
+   An implementer inside the files sees forms the dispatcher's pattern cannot; stating the expected
+   number first anchors them to it.
 
 ## Report contract
 

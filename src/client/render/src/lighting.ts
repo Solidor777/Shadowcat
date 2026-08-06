@@ -25,7 +25,7 @@ const lerp = (a: number, b: number, t: number): number => a + (b - a) * t;
  * @returns The interpolated packed 0xRRGGBB color.
  * @example
  * ```
- * // not exported from @shadowcat/render's index.ts; internal to Lighting's day/night fade
+ * // not exported from @shadowcat/render; internal to Lighting's day/night fade
  * lerpRgb(0xff0000, 0x0000ff, 0.5); // ~0x800080
  * ```
  */
@@ -185,7 +185,7 @@ export class Lighting {
  * @returns A `LightingFrame` with one `LitDrawCell` per input cell, in the same order.
  * @example
  * ```
- * // not exported from @shadowcat/render's index.ts; internal to Lighting.setTarget
+ * // not exported from @shadowcat/render; internal to Lighting.setTarget
  * resolve({ cell: 100, bands: [{ name: "bright", min: 0.67 }, { name: "dark", min: 0 }],
  *   hints: ["desaturate"], cells: [{ i: 0, j: 0, band: 1, tint: 0, hint: 0 }] });
  * // { cell: 100, cells: [{ i: 0, j: 0, alpha: 0.6, tint: 0, tintAlpha: 0, desaturate: true }] }

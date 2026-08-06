@@ -75,7 +75,7 @@ export const MENU_FLOAT_RECT: Rect = { x: 96, y: 96, w: 360, h: 280 };
  * @returns The `LayoutOp` to dispatch, or a veto with its reason.
  * @example
  * ```
- * // not exported from the package's index.ts — internal to
+ * // not exported from the package entry — internal to
  * // `DockviewEngine.#handleMenuCommand`, which translates a PanelMenu command into a LayoutOp
  * opForMenuCommand("dockRight", "chat");
  * ```

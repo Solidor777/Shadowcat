@@ -17,7 +17,7 @@ import type { ReadableDocuments, WireDocument } from "@shadowcat/core";
  * yet, identical to legacy single-scene behavior), returns every `docType` doc unscoped.
  * @example
  * ```
- * // not exported from @shadowcat/render's index.ts; internal to the render-layer views
+ * // not exported from @shadowcat/render; internal to the render-layer views
  * sceneScopedDocs(store, "token", () => "scene-a"); // only scene-a's tokens
  * sceneScopedDocs(store, "token", () => null); // every token doc in the store
  * ```

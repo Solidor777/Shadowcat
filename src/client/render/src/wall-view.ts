@@ -78,7 +78,7 @@ export class WallView {
  * @returns A `ShapeNodeSpec` for the `walls` layer, or `null` if it can't be rendered.
  * @example
  * ```
- * // not exported from @shadowcat/render's index.ts; internal to WallView.reconcile
+ * // not exported from @shadowcat/render; internal to WallView.reconcile
  * const spec = toSpec(doc); // null if doc.engine.seg is absent or non-finite
  * ```
  */

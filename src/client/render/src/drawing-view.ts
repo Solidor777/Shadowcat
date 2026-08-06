@@ -83,7 +83,7 @@ export class DrawingView {
  * @returns A `ShapeNodeSpec` for the `drawings` layer, or `null` if it can't be rendered.
  * @example
  * ```
- * // not exported from @shadowcat/render's index.ts; internal to DrawingView.reconcile
+ * // not exported from @shadowcat/render; internal to DrawingView.reconcile
  * const spec = toSpec(doc); // null if doc.engine.shape is absent or malformed
  * ```
  */

@@ -1,6 +1,6 @@
 // Transport abstraction so the WS client is testable without a real socket.
 // Production supplies a `WebSocket`-backed connector; tests supply an in-memory
-// paired connector (see mock-server.ts).
+// paired connector (see `MockServer`).
 
 /** The connector surface `WsClient` sends/closes through, independent of the
  * backing implementation (real `WebSocket` or an in-memory test pair). */
