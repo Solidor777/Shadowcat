@@ -13,7 +13,7 @@ use crate::dice::spec::{
 /// there is no explicit depth counter or recursion-depth cap in this parser.
 /// A caller exposing `parse` to untrusted input relies entirely on its own
 /// length cap to keep worst-case nesting (and therefore stack usage) bounded.
-/// Chat's `MAX_MESSAGE_CHARS = 4096` (`chat/mod.rs`) caps a single formula at
+/// Chat's `chat::MAX_MESSAGE_CHARS = 4096` caps a single formula at
 /// well under that, so worst-case nesting is roughly ~2k levels (each `(` or
 /// unary `-` costs at least 2 input chars) -- a few thousand light recursive-
 /// descent frames, safe on all three target OSes' default thread stacks.

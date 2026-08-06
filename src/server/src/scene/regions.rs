@@ -1,5 +1,5 @@
 //! Region primitive (M10g): vector-shaped zones that weight, block, or arrest grid movement.
-//! Pure geometry — no ECS, no I/O (mirrors `scene/movement.rs`'s module invariant). Consumed by
+//! Pure geometry — no ECS, no I/O (mirrors the `scene::movement` module's invariant). Consumed by
 //! `SceneEcs::region_field` (hydration + visibility filtering) and `scene::pathfinding` /
 //! `scene::move_exec` (the two enforcement points, spec §5/§6).
 

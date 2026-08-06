@@ -9,7 +9,7 @@
 //! that belongs here, not in `dice/`.
 //!
 //! `execute_roll`/`validate_formula`/`BodyChunk`/`scan_body` are called from
-//! `handle_send_message`'s roll stage (`chat/mod.rs`) — the sole ingest path
+//! `handle_send_message`'s roll stage — the sole ingest path
 //! that may execute untrusted dice notation.
 
 #![deny(missing_docs)]

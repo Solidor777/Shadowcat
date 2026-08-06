@@ -465,8 +465,8 @@ impl SqliteRepository {
     /// `users`, so a surviving row keeps a deleted account authenticated until
     /// cookie expiry. Refuses to delete the last administrator.
     /// Implicit coupling: `tower_sessions` is created by `SqlxSqliteStore::
-    /// migrate` at boot (main.rs), before any route can reach this; repo-level
-    /// tests must run that migrate themselves.
+    /// migrate`, called from `session_layer` at boot, before any route can reach this;
+    /// repo-level tests must run that migrate themselves.
     pub async fn delete_user(&self, target: Uuid) -> Result<(), DataError> {
         let mut tx = self.pool.begin().await?;
         if Self::is_last_admin(&mut tx, target).await? {
@@ -1756,8 +1756,8 @@ fn check_command_scope(doc: &Document, world_id: Uuid) -> Result<(), DataError> 
 /// falling back to `as f64` would silently equate genuinely different values.
 const MAX_EXACT_F64_INT: i128 = 1i128 << 53;
 
-/// Structural equality used ONLY at the `apply_intent` Phase-1 OCC pre-image
-/// comparison (`data/sqlite.rs`, `actual != ch.old`). `serde_json::Value::Number`
+/// Structural equality used ONLY at `SqliteRepository::apply_intent`'s Phase-1 OCC pre-image
+/// comparison (`actual != ch.old`). `serde_json::Value::Number`
 /// splits whole numbers into `PosInt`/`NegInt` and non-whole numbers into `Float`;
 /// an engine field stored as a whole-number `f64` (e.g. `100.0`) serializes to
 /// `Float(100.0)`, but a JS client cannot preserve "this was a float" through
@@ -1920,7 +1920,7 @@ impl Repository for SqliteRepository {
                     let mut value: serde_json::Value =
                         serde_json::from_str(row.get::<String, _>("json").as_str())?;
                     for ch in changes {
-                        // THE store-equal mutation rule (data/command.rs). Never
+                        // THE `apply_field_change` mutation rule. Never
                         // re-derive the remove/set branch here: the derived scene ECS
                         // mirrors these same changes and must land the same value.
                         apply_field_change(&mut value, ch)?;
@@ -2258,7 +2258,7 @@ impl Repository for SqliteRepository {
                     for ch in changes {
                         validation::validate_field_change(ch)?;
                         // Each field path requires its capability
-                        // (`data/permission.rs`'s `required_cap_for_path`): an
+                        // (`permission::required_cap_for_path`): an
                         // immutable envelope field (id, scope, source, ...) maps
                         // to no capability and is rejected for everyone.
                         // /system, /engine, /name, /base -> write_fields;
@@ -2396,7 +2396,7 @@ impl Repository for SqliteRepository {
                     let mut value: serde_json::Value =
                         serde_json::from_str(row.get::<String, _>("json").as_str())?;
                     for ch in changes {
-                        // THE store-equal mutation rule (data/command.rs). Never
+                        // THE `apply_field_change` mutation rule. Never
                         // re-derive the remove/set branch here: the derived scene ECS
                         // mirrors these same changes and must land the same value.
                         apply_field_change(&mut value, ch)?;

@@ -244,7 +244,7 @@ impl Room {
     /// `publish`, it does NOT push to the ring or bump `current_seq`, so a
     /// lagging receiver that resyncs from the ring/log never replays it, and it
     /// also drops when there are no receivers. DELIVERY IS NOT GUARANTEED and an
-    /// AssetChanged loss is NOT self-healing — see `Assets.svelte`'s `onReplace`.
+    /// AssetChanged loss is NOT self-healing — see `Assets`'s `onReplace`.
     pub fn broadcast_aux(&self, msg: ServerMsg) {
         let _ = self.tx.send(std::sync::Arc::new(msg));
     }
@@ -308,7 +308,7 @@ impl Room {
                         // A created token's position is authorized against the SAME mask
                         // accessor the movement gate used. Placement was ungated on the
                         // reasoning that `core:create` is privileged, but a world can grant
-                        // it to Player (data/document.rs:531), and placing a token in an
+                        // it to Player via `WorldCapDefaults::role_has`, and placing a token in an
                         // unseen cell reveals that area through the new token's own vision —
                         // a strictly larger capability than the movement refused above.
                         // Center-cell only: a placement is a point, not a traversal.

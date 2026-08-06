@@ -1,6 +1,6 @@
 // Pure drop-veto + zone-classification policy for the M12a stage well. NO
-// dockview import here (that boundary is `dockview.ts`'s alone) — dockview's
-// drop events are translated into `DropSite` INSIDE `dockview.ts`; this file
+// dockview import here (that boundary is the `dockview` module's alone) — dockview's
+// drop events are translated into `DropSite` INSIDE the `dockview` module; this file
 // only ever sees our own vocabulary, so it is directly unit-testable and
 // carries zero DOM/engine dependency.
 import type { ExpandedLayout, LayoutOp, Rect } from "../layout/tree";
@@ -37,7 +37,7 @@ export interface DropSite {
    * notion of the stage at all, so this can't be derived from `layout`
    * alone. Defense-in-depth: dockview's `locked: 'no-drop-target'` on that
    * group already stops these drops from firing in practice (M12a-0 spike
-   * report, dockviewGroupPanelModel.js `handleDropEvent` — the model
+   * report, `DockviewGroupPanelModel.handleDropEvent` — the model
    * returns before constructing/firing the drop event at all when
    * `locked === 'no-drop-target'`), so this branch is a second, independent
    * layer rather than the sole guard. */
@@ -61,7 +61,7 @@ export const MENU_FLOAT_RECT: Rect = { x: 96, y: 96, w: 360, h: 280 };
  * mirror an edge drop's `{op:"dock", zone, group:"new"}`; `minimize`/`close`
  * are already 1:1 with their own `LayoutOp`. `float` has no drag rect to
  * mirror (see `MENU_FLOAT_RECT`) — parity there is by construction, not by
- * equality with a drag result. Kept here (not in `dockview.ts`) so this
+ * equality with a drag result. Kept here (not in the `dockview` module) so this
  * mapping — and its parity with `classifyDrop` — is testable with zero
  * dockview dependency.
  *

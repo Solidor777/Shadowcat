@@ -642,7 +642,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn headless_bootstrap_closes_setup_and_allows_login() {
-        // Mirror main.rs: bootstrap seeds the admin, then the gate is open.
+        // Mirror `auth::setup::bootstrap_admin`: bootstrap seeds the admin, then the gate is open.
         let state = test_state().await;
         let cfg = crate::config::Config {
             admin_user: Some("ops".into()),

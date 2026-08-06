@@ -1,7 +1,7 @@
 //! M10f-1 continuous (navmesh) pathfinding adapter. Pure geometry: builds a footprint-inflated
 //! `polyanya::Mesh` from a scene's bounds + `blocksMove` wall segments, and queries any-angle
 //! routes over it. Engine-owned geometry (ARCHITECTURE §6 exception), mirroring the grid A*
-//! router's fail-closed discipline (`scene/pathfinding.rs`) — this checkpoint carries WALLS ONLY;
+//! router's fail-closed discipline (`pathfinding::find`) — this checkpoint carries WALLS ONLY;
 //! impassable/terrain regions land in M10f-4 (parent spec §7/§10).
 
 #![deny(missing_docs)]

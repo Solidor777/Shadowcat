@@ -1,6 +1,6 @@
 // The ONLY file in this codebase permitted to import `dockview-core`. Every
 // dockview type/event crosses out of this module already translated into our
-// own vocabulary (`LayoutOp`, `DropSite`) — `policy.ts` and everything above
+// own vocabulary (`LayoutOp`, `DropSite`) — the `policy` module and everything above
 // the `EngineAdapter` seam stays engine-free.
 import { createDockview } from "dockview-core";
 import type {
@@ -241,7 +241,7 @@ function mountPanelMenu(
 
 /** Renders a tab's visible chrome — icon, `i18n.t(labelKey)` label, and a
  * command-menu button — as the CONTENT of dockview's own tab wrapper
- * (`Tab#_element` in `tab.js`, `role="tab"`), which already implements APG
+ * (`Tab#_element`, `role="tab"`), which already implements APG
  * roving tabindex (arrow keys move that wrapper's focus without activating;
  * Enter/Space activates) and is not reimplemented here. `getMeta` is read
  * lazily (not snapshotted at construction) so a later `apply()` call's meta
@@ -415,13 +415,13 @@ class PanelTabRenderer implements ITabRenderer {
  * — see `#groupWillDropSubs`) either vetoes (`preventDefault()`, no further
  * action) or, for an ALLOWED classification, ALSO `preventDefault()`s and
  * instead emits the classified `LayoutOp` to `#opListeners`. dockview's own
- * internal move machinery (`_onMove` → `DockviewComponent#moveGroupOrPanel`,
- * `dockviewComponent.js:2932`, reached from the `onMove` subscription at
- * `dockviewComponent.js:3636-3638`) is consequently never reached for a
+ * internal move machinery (`_onMove` → `DockviewComponent.moveGroupOrPanel`,
+ * reached from the `onMove` subscription in `DockviewComponent.createGroup`)
+ * is consequently never reached for a
  * completed same-instance drag: the tree is canonical, and the controller's
  * `apply()` — driven by the op this class just emitted — is the one
  * sanctioned mutation path back into dockview. `onDidDrop` fires in
- * `handleDropEvent`'s `else` branch (`dockviewGroupPanelModel.js:1386-1445`),
+ * `DockviewGroupPanelModel.handleDropEvent`'s `else` branch,
  * taken when the drop's data is either ABSENT entirely (a drag whose payload
  * carries no `PanelTransfer` at all — e.g. an external/OS drag) or present
  * with a `viewId` that doesn't match `this.accessor.id` — not only the
@@ -431,7 +431,7 @@ class PanelTabRenderer implements ITabRenderer {
  * take — including when `#toDropSite` resolves no subject at all (`!id`)
  * — which trips `handleDropEvent`'s own
  * `if (willDropEvent.defaultPrevented) return;`
- * (`dockviewGroupPanelModel.js:1382-1384`) before the model ever reaches the
+ * before the model ever reaches the
  * data/viewId branch quoted above. So `onDidDrop` is unreachable here not
  * because a mismatched `viewId` can't occur, but because this class's
  * veto-or-redispatch contract never lets `handleDropEvent` get that far.
@@ -470,17 +470,18 @@ export class DockviewEngine implements EngineAdapter {
   // because `DockviewApi.onWillDrop` (subscribed once in `init()`, below)
   // NEVER fires for a drop targeting an existing group: the component only
   // forwards a group model's `onWillDrop` through `_advancedDnDService?.
-  // dispatchWillDrop(event)` (`dockviewComponent.js:3652-3654`), and this
-  // codebase ships no `advancedDnDService` module (`allModules.js:17-25`), so
+  // dispatchWillDrop(event)` (in `DockviewComponent.createGroup`'s
+  // `onWillDrop` wiring), and this
+  // codebase ships no `advancedDnDService` module (`AllModules` lists none), so
   // that optional chain is a permanent no-op — `#handleWillDrop` is
   // otherwise unreachable for any group-target drop (header, tab, or
   // content). `IDockviewGroupPanelModel.onWillDrop` is a
   // public event on the SAME `group.model` this class already reaches via
   // `api.getGroup(groupId)`, fires with the identical `DockviewWillDropEvent`
-  // shape as the component-level event (`dockviewGroupPanelModel.js:1370-1381`,
-  // where `handleDropEvent` constructs the event), and gates `_onMove`/
+  // shape as the component-level event (where `handleDropEvent` constructs
+  // the event), and gates `_onMove`/
   // `_onDidDrop` on `defaultPrevented` exactly like the root path
-  // (`handleDropEvent`, `dockviewGroupPanelModel.js:1359-1445`) — so binding
+  // (`DockviewGroupPanelModel.handleDropEvent`) — so binding
   // `#handleWillDrop` to it directly closes the group-onto-group veto bypass
   // AND lets an ALLOWED group-target drop be intercepted-and-redispatched the
   // same way as a root/edge drop, no new method needed.
@@ -550,7 +551,7 @@ export class DockviewEngine implements EngineAdapter {
   #poppedOutOriginGroups = new Map<string, string>();
   // Gesture-time popout invoker. Defaults to dockview's native popout (verified
   // same-heap, content re-parented, stylesheets cloned — M12a-0 spike +
-  // popoutWindow.js:136). Injectable so unit tests exercise the async-result →
+  // `PopoutWindow.open`). Injectable so unit tests exercise the async-result →
   // op translation without a real `window.open` (jsdom has none).
   #popoutDriver: (panel: IDockviewPanel) => Promise<boolean>;
 
@@ -580,7 +581,7 @@ export class DockviewEngine implements EngineAdapter {
     // `/popout.html` is the same-origin loader document dockview's popout
     // window navigates to; passed explicitly to document the dependency
     // rather than relying on dockview's own default drifting.
-    // `assertSameOriginPopoutUrl` (popoutWindow.js) rejects
+    // `assertSameOriginPopoutUrl` rejects
     // `about:blank`/cross-origin, so this URL is load-bearing.
     this.#popoutDriver = popoutDriver ?? ((panel) => this.#api!.addPopoutGroup(panel, { popoutUrl: "/popout.html" }));
   }
@@ -618,7 +619,7 @@ export class DockviewEngine implements EngineAdapter {
         options.name === "sc-stage"
           ? new AdoptingContentRenderer(() => stageEl, "sc-dockview-stage-content")
           : new AdoptingContentRenderer(() => slotFor(options.id), "sc-dockview-panel-content"),
-      // `DockviewPanelModel.createTabComponent` (dockviewPanelModel.js) only
+      // `DockviewPanelModel.createTabComponent` only
       // calls `options.createTabComponent` at all when `componentName ??
       // defaultTabComponent` is truthy — no per-panel `tabComponent` is ever
       // set on `addPanel`, so this MUST be a truthy string or `createTabComponent`
@@ -855,7 +856,7 @@ export class DockviewEngine implements EngineAdapter {
   }
 
   /** W1/D4: floating groups are non-modal dialogs (dockview's own `Overlay`
-   * sets `role="dialog"`/`aria-modal="false"` — see `overlay.js`); this adds
+   * sets `role="dialog"`/`aria-modal="false"` — see `Overlay`'s constructor); this adds
    * the label + focus management the brief requires that dockview doesn't
    * supply itself: `aria-label` = the panel's own label, DOM focus moves
    * into the dialog the moment it appears, and Escape (bubbled from
@@ -994,7 +995,7 @@ export class DockviewEngine implements EngineAdapter {
    * a payload `#toDropSite`/`#handleGroupWillDrop` cannot resolve into a
    * `DropSite` are vetoed outright rather than let through unpoliced. A
    * whole-GROUP transfer (`PanelTransfer.panelId` null for a titlebar drag of
-   * an entire group, per `groupDragSource.js`) is translated into one `dock`
+   * an entire group, per `GroupDragSource`) is translated into one `dock`
    * op per tab of the dragged group (`#handleGroupWillDrop`), classified
    * against the group's FIRST tab as a representative subject — the same
    * `classifyDrop` rules apply, so a whole-group drop targeting the
@@ -1002,7 +1003,7 @@ export class DockviewEngine implements EngineAdapter {
    * as a single-tab edge drop would.
    *
    * Two independent wires feed this SAME method: `init()`'s `api.onWillDrop`
-   * (fires only for root/edge drops — `dockviewComponent.js`'s
+   * (fires only for root/edge drops — `DockviewComponent`'s constructor's
    * `rootDropTarget.onWillShowOverlay`/`onDrop` wiring is the only path that
    * calls `this._onWillDrop.fire(...)` directly) and, per managed group,
    * `group.model.onWillDrop` (subscribed in `apply()` — see
@@ -1053,8 +1054,8 @@ export class DockviewEngine implements EngineAdapter {
   }
 
   /** Translates a whole-group transfer (`PanelTransfer.panelId === null`,
-   * `groupId` = the SOURCE group's own dockview id, per `groupDragSource.js`/
-   * `tabGroups.js`) into one `dock` `LayoutOp` per tab of the dragged group,
+   * `groupId` = the SOURCE group's own dockview id, per `GroupDragSource`/
+   * `TabGroupManager`) into one `dock` `LayoutOp` per tab of the dragged group,
    * preserving their relative order, with a SINGLE `preventDefault()` for the
    * whole transfer. Classifies against the group's FIRST tab as a
    * representative subject — every tab in the dragged group moves to the
@@ -1452,17 +1453,17 @@ export class DockviewEngine implements EngineAdapter {
    * into a `resizeFloating` op, mirroring `#handleGroupDimensionsChange`'s role
    * for docked zones. Bound to `DockviewApi.onDidLayoutChange` rather than a
    * per-panel `onDidDimensionsChange` subscription, for two reasons found by
-   * tracing the vendored source (`overlay.js`, `floatingGroupService.js`):
+   * tracing the vendored source (`Overlay`, `FloatingGroupService.add`):
    * a floating group's `onDidDimensionsChange` only ever carries width/height
-   * (`panelApi.js`'s `_onDidDimensionChange`), so a pure re-POSITION drag with
+   * (`PanelApiImpl`'s `_onDidDimensionChange`), so a pure re-POSITION drag with
    * no size change never fires it at all; `onDidLayoutChange` is what
    * `Overlay#onDidChangeEnd` (fired once per completed drag OR resize gesture,
-   * not per pointermove) actually feeds, via `floatingGroupService.js`'s
+   * not per pointermove) actually feeds, via `FloatingGroupService.add`'s
    * `overlay.onDidChangeEnd(() => host.fireLayoutChange())`.
    *
    * Deliberately NOT gated by `#applying`, unlike every other handler in this
-   * class: `DockviewApi.onDidLayoutChange` is dockview's own `AsapEvent`
-   * (`events.js`), which defers every listener to the NEXT microtask via
+   * class: `DockviewApi.onDidLayoutChange` is dockview's own `AsapEvent`,
+   * which defers every listener to the NEXT microtask via
    * `queueMicrotask` — by the time this fires, `apply()`'s synchronous
    * `finally { this.#applying = false }` has already run, so `#applying` would
    * always read `false` here regardless of cause and provide no real

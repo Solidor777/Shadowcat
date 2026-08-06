@@ -159,7 +159,7 @@ pub enum Segment {
         text: String,
     },
     /// A run of ammonia-sanitized HTML (safe by construction; the client renders
-    /// it via innerHTML). Produced only by `sanitize` (chat/sanitize.rs).
+    /// it via innerHTML). Produced only by `chat::sanitize::sanitize`.
     Html {
         /// The ammonia-sanitized run (safe for innerHTML by construction).
         sanitized_html: String,

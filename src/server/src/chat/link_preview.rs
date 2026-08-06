@@ -548,8 +548,8 @@ pub fn build_client_allow_loopback() -> reqwest::Client {
 /// permitted) — the seam ingest-stage tests use to point an ordinary DOMAIN
 /// hostname (e.g. `stub.test`, never an IP literal, which `validate_url`
 /// blocks unconditionally) at a real stub server's loopback address. Exposed
-/// beyond `link_preview`'s own `#[cfg(test)] mod tests` so `chat::mod.rs`'s
-/// ingest-integration tests can build an equivalent client without
+/// beyond `link_preview`'s own `#[cfg(test)] mod tests` so `chat::link_preview_ingest_tests`
+/// can build an equivalent client without
 /// duplicating `GuardedResolver`/`build_client_with_timeouts` wiring.
 #[cfg(test)]
 pub fn build_client_with_resolve_fn(

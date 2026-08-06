@@ -101,7 +101,7 @@ fn checked_add_saturating(acc: i64, next: i64) -> i64 {
 /// `checked_add_saturating` above (whose overflow is unreachable given the
 /// chat boundary's per-group record cap), a pure-`Const` arithmetic chain
 /// (`2000000000*2000000000*3`) has NO dice groups at all -- `walk_groups`
-/// counts zero, so `chat/rolls.rs`'s `MAX_ROLL_DICE`/`MAX_ROLL_RECORDS` caps
+/// counts zero, so `chat::rolls::MAX_ROLL_DICE`/`chat::rolls::MAX_ROLL_RECORDS` caps
 /// never see it -- and a chain of `Mul`-combined dice groups (`1d10000 *
 /// 1d10000 * ...`) can overflow `i64` even within those caps. Overflow here
 /// is genuinely reachable, so these saturate silently (no `debug_assert!`).

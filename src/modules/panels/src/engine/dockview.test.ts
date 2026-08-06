@@ -350,7 +350,8 @@ test("group-onto-group: a whole-group transfer targeting an existing group's con
   // flagged: `DockviewApi.onWillDrop` (subscribed once in `init()`) NEVER
   // fires for a drop targeting an existing group — the component only
   // forwards a group model's own `onWillDrop` through the permanently-unwired
-  // `_advancedDnDService` optional chain (`dockviewComponent.js:3652-3654`).
+  // `_advancedDnDService` optional chain (in `DockviewComponent.createGroup`'s
+  // `onWillDrop` wiring).
   // This exercises the mechanism that actually closes the gap: a per-group
   // subscription to `group.model.onWillDrop` (`#groupWillDropSubs`, wired in
   // `apply()`), fired here via the group model's own private `_onWillDrop`
@@ -1213,9 +1214,9 @@ test("a successful pop-out seeds its origin group so the next apply() does not o
  * no real `window.open`/popout-window lifecycle to drive this event from a
  * genuine drag-out-a-window gesture, so — mirroring the existing
  * `component.removePanel(...)` reach-in used above for the origin-group-seed
- * test — this drives the SAME event shape (`{id, group, window}`,
- * `dockviewComponent.js:444-448`) dockview's `popoutWindowService.onDidRemove`
- * would fire, directly at `DockviewEngine#handleRemovePopoutGroup`. */
+ * test — this drives the SAME event shape (`{id, group, window}`, built by
+ * `DockviewComponent`'s constructor's `popoutWindowService.onDidRemove`
+ * wiring) that wiring itself would fire, directly at `DockviewEngine#handleRemovePopoutGroup`. */
 function fireRemovePopoutGroup(api: DockviewApi, id: string, group: IDockviewGroupPanel): void {
   (
     api as unknown as {
@@ -1278,7 +1279,7 @@ test("Finding 1: onDidRemovePopoutGroup skips a group whose sole (fallback-resol
   engine.onOp((op) => ops.push(op));
 
   const api = engine.debugApi!;
-  // The stage's own group id (not exported by `dockview.ts`; mirrors the
+  // The stage's own group id (`STAGE_GROUP_ID`, not exported by the `dockview` module; mirrors the
   // literal already asserted against in "Finding 4: a tree naming the stage id in a
   // zone group applies without throwing, and the real stage stays alive in its own
   // locked group"). The stage's
