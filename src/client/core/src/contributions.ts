@@ -81,8 +81,14 @@ export interface SheetMeta {
 
 /** One piece of UI a module contributes into a named surface contract. */
 export interface Contribution {
-  /** Unique id for this contribution, used by `contribute`'s returned dispose to remove exactly
-   * this entry. */
+  /** Unique id for this contribution. The registry itself never reads it — `contribute`'s
+   * returned dispose closes over the `Entry` object and removes it by identity
+   * (`this.entries.indexOf(entry)`), not by `id` lookup. Consumers address a contribution by
+   * `id` directly: `PanelsController` keys its persisted layout tree, `open(id)`/`close(id)`,
+   * and `metaMap` off it (`src/modules/panels/src/controller.svelte.ts`), `PanelHost.svelte`
+   * keys its rendered slots (`{#each ... (c.id)}`) and crash/reload testids off it, and
+   * `sheets.ts`'s deterministic ordering falls back to `contribution.id` as the tie-break when
+   * `module` is absent (a host-registered contribution, `sheets.ts:164`). */
   id: string;
   /** The surface contract this contribution targets (e.g. `"shadowcat.panel"`). */
   contract: string;

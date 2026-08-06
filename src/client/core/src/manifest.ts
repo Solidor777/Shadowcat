@@ -7,8 +7,11 @@ import type { HookKind } from "./hooks";
 import type { Cardinality } from "./contributions";
 
 /** One declarative path→capability requirement a module publishes; the GM's aggregate of these
- * (unioned with the world's own policy) reaches the server as advisory metadata only — see
- * `worldSession.svelte.ts`'s `welcome_capability_requirements`, which is NOT server-enforced. */
+ * (unioned with the world's own policy) reaches the client as advisory metadata only — see
+ * `welcome_capability_requirements` (`src/server/src/ws/conn.rs:1112`), which is NOT the
+ * server-side write-enforcement input (`apply_intent` in `data/sqlite.rs` consults only the
+ * GM-authored `world_cap_requirements` record). The client stores the already-unioned result
+ * verbatim (`worldSession.svelte.ts:672`); it performs no union logic of its own. */
 export interface CapRequirement {
   /** Document-pointer path prefix this requirement applies to, e.g. `"/system"`. Validated by
    * `CapRequirementSchema` to start with `/`. */
