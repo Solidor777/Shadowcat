@@ -2257,11 +2257,16 @@ impl Repository for SqliteRepository {
                     let whole = serde_json::to_value(&cur)?;
                     for ch in changes {
                         validation::validate_field_change(ch)?;
-                        // Each field path requires its capability; an immutable
-                        // envelope field (id, scope, owner, source, ...) maps to
-                        // no capability and is rejected for everyone. /system ->
-                        // write_fields, /embedded -> manage_embedded,
-                        // /permissions -> edit_permissions.
+                        // Each field path requires its capability
+                        // (`data/permission.rs`'s `required_cap_for_path`): an
+                        // immutable envelope field (id, scope, source, ...) maps
+                        // to no capability and is rejected for everyone.
+                        // /system, /engine, /name, /base -> write_fields;
+                        // /embedded -> manage_embedded; /permissions AND /owner
+                        // -> edit_permissions. /owner is NOT immutable — it is
+                        // an access-control field, writable by a GM (or an
+                        // explicit edit_permissions grant) but never by an owner,
+                        // since the DocRole::Owner floor excludes that cap.
                         let need = required_cap_for_path(&ch.path).ok_or(DataError::Forbidden)?;
                         if !access.has(need) {
                             tracing::debug!(
