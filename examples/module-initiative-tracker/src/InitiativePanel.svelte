@@ -23,7 +23,17 @@
 
   // #region write-initiative
   /** Roll for one actor: track it locally and persist the score onto the
-   * actor's opaque `system` band (OCC: `old` is the raw current stored value). */
+   * actor's opaque `system` band via `setField`'s OCC contract — see
+   * src/client/ui-kit/src/sheetEdit.ts:4-10 for the pre-image invariant this
+   * call must satisfy; not restated here to avoid a second, driftable copy.
+   * @param actor - The actor document to roll initiative for.
+   * @example
+   * ```
+   * // private function; not part of the public API — invoked only from this
+   * // component's "Roll" button onclick handler below
+   * roll(actor);
+   * ```
+   */
   function roll(actor: WireDocument): void {
     const initiative = rollInitiative(() => Math.random());
     entries = sortEntries([
@@ -38,7 +48,14 @@
   }
   // #endregion write-initiative
 
-  /** Advance the turn pointer, wrapping at the end of the round. */
+  /** Advance the turn pointer, wrapping at the end of the round.
+   * @example
+   * ```
+   * // private function; not part of the public API — invoked only from this
+   * // component's "Next turn" button onclick handler below
+   * next();
+   * ```
+   */
   function next(): void {
     if (entries.length > 0) turn = (turn + 1) % entries.length;
   }

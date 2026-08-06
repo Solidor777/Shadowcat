@@ -15,7 +15,17 @@
     return ctx.documents.get(docId);
   });
   const ATTRS = ["str", "dex", "con"] as const;
-  /** Current attribute score from the opaque system band (default 10). */
+  /** Current attribute score from the opaque system band (default 10 when
+   * unset or non-numeric — degenerate sheet data must not crash the sheet).
+   * @param attr - The attribute key (e.g. `"str"`).
+   * @returns The stored numeric score, or `10` if unset or non-numeric.
+   * @example
+   * ```
+   * // private function; not part of the public API — invoked from this
+   * // component's template and the `power` derived below
+   * score("str");
+   * ```
+   */
   function score(attr: string): number {
     const v = doc ? getPointer(doc, `${systemPrefix}/attributes/${attr}`) : undefined;
     return typeof v === "number" ? v : 10;
@@ -28,7 +38,18 @@
   // #endregion sheet-read
 
   // #region sheet-write
-  /** Writes one attribute with its OCC pre-image (raw current stored value). */
+  /** Writes one attribute via `setField`'s OCC contract — see
+   * src/client/ui-kit/src/sheetEdit.ts:4-10 for the pre-image invariant this
+   * call must satisfy; not restated here to avoid a second, driftable copy.
+   * @param attr - The attribute key (e.g. `"str"`).
+   * @param value - The new numeric score to write.
+   * @example
+   * ```
+   * // private function; not part of the public API — invoked only from this
+   * // component's number-input onchange handler below
+   * setScore("str", 14);
+   * ```
+   */
   function setScore(attr: string, value: number): void {
     if (!doc) return;
     const path = `${systemPrefix}/attributes/${attr}`;
