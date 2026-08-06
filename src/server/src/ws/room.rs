@@ -242,9 +242,9 @@ impl Room {
 
     /// Broadcast a non-sequenced, out-of-band frame (e.g. AssetChanged). Unlike
     /// `publish`, it does NOT push to the ring or bump `current_seq`, so a
-    /// lagging receiver that resyncs from the ring/log never replays it — by
-    /// design, since the frame's source of truth (the asset `version`) is
-    /// re-read on any access. Best-effort: drops if there are no receivers.
+    /// lagging receiver that resyncs from the ring/log never replays it, and it
+    /// also drops when there are no receivers. DELIVERY IS NOT GUARANTEED and an
+    /// AssetChanged loss is NOT self-healing — see `Assets.svelte`'s `onReplace`.
     pub fn broadcast_aux(&self, msg: ServerMsg) {
         let _ = self.tx.send(std::sync::Arc::new(msg));
     }

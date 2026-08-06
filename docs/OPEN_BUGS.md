@@ -134,3 +134,30 @@ Currently open, confirmed-real defects. Deferrals belong in `TODO.md`, not here.
     Then add the extent guard its three siblings already carry. Belongs on the runtime follow-up
     branch with the `property_overrides` fix above; found by the Sweep 11 whole-branch review,
     which is comment-only and cannot carry a behavior change.
+
+- **A lagging WS receiver permanently misses an `AssetChanged{replaced}` frame, leaving a stale
+  image with no self-healing path.** `Room::broadcast_aux`
+  (`src/server/src/ws/room.rs:243-250`) sends AssetChanged out-of-band: it does not push to the
+  ring or bump `current_seq`. When a connection falls behind, the egress loop's
+  `Err(RecvError::Lagged(n))` arm (`src/server/src/ws/conn.rs:1458-1464`) resyncs by calling
+  `replay` against the ring/log tiers — which never held the aux frame. The connection is NOT
+  torn down, so the client's `AssetResolver` survives with its counter unbumped.
+  - **Why nothing recovers it.** `AssetResolver.revs` is a client-local map incremented only by
+    `onAssetChanged` (`src/client/core/src/assets.ts:59-68`); `url()` appends it as `?v={rev}`
+    (`:41-45`) and reads the asset's server-side `version` nowhere. A missed frame therefore
+    leaves the serve URL byte-identical, so no new request is issued, so the `"{id}-{version}"`
+    ETag built in `serve` (`src/server/src/http/assets.rs:269`) is never revalidated. `serve`
+    sends no `Cache-Control`, so the browser applies heuristic freshness to the unchanged URL.
+    The same lost frame also skips the `items` reload and the render re-reconcile that
+    `RenderEngine` documents as required for out-of-band notices
+    (`src/client/render/src/engine.ts:1084-1097`).
+  - **Reachability/impact:** requires a receiver to lag past the broadcast channel's capacity
+    while a GM replaces asset bytes — the same window `lagged_drops` already counts. No data
+    loss, no authz effect: the stale view is strictly the pre-replace image, which that client
+    was already entitled to see. It persists for that connection until a page reload.
+  - **Fix shape:** make the cache-bust derive from the asset's authoritative `version` rather
+    than a local counter — e.g. carry `version` in the AssetChanged frame and have `url()` fall
+    back to the version last seen in a document/asset listing, so a resync repairs it. Sending
+    AssetChanged through `publish` instead would also fix it but costs a world seq per byte-swap,
+    which the replace path is deliberately exempt from (`http/assets.rs:296-298`). Found by the
+    Sweep 12 Task 6 Rule 11 dimension pass, which is comment-only and cannot carry the change.
