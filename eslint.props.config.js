@@ -20,8 +20,16 @@ const PROPERTY_CONTEXTS = [
   "TSMethodSignature",
   "TSEnumMember",
 ];
-// Type declarations (3).
-const TYPE_CONTEXTS = ["TSInterfaceDeclaration", "TSTypeAliasDeclaration", "TSEnumDeclaration"];
+// Type declarations (3), plus an index signature (1) — declared interface
+// contract shape, not a value-bearing property or a param/return-bearing
+// signature, so it joins jsdoc/require-jsdoc's and require-description's
+// context lists but not require-param/require-returns's.
+const TYPE_CONTEXTS = [
+  "TSInterfaceDeclaration",
+  "TSTypeAliasDeclaration",
+  "TSEnumDeclaration",
+  "TSIndexSignature",
+];
 // Named arrow/function expressions (4): deliberately narrow to exported or
 // module-level `const`/`let` bindings, never a bare
 // ArrowFunctionExpression/FunctionExpression selector — that would also match
@@ -37,15 +45,16 @@ const ARROW_CONTEXTS = [
 ];
 const ALL_CONTEXTS = [...PROPERTY_CONTEXTS, ...TYPE_CONTEXTS, ...ARROW_CONTEXTS];
 // TSMethodSignature plus the four arrow/function-expression selectors: the
-// only contexts among the eleven that have parameters or a return value to
-// document. A plain property, an interface/type-alias/enum declaration, or
-// an enum member has neither — attaching require-param/require-returns there
-// would demand tags that describe nothing.
+// only contexts among the twelve that have parameters or a return value to
+// document. A plain property, an index signature, or an
+// interface/type-alias/enum declaration or member has neither — attaching
+// require-param/require-returns there would demand tags that describe
+// nothing.
 const PARAM_RETURN_CONTEXTS = ["TSMethodSignature", ...ARROW_CONTEXTS];
 
 // Every `require:` entry the function-doc gate covers
 // (FunctionDeclaration/ClassDeclaration/MethodDefinition) is explicitly
-// `false` here — this config gates only the eleven contexts above, so the two
+// `false` here — this config gates only the twelve contexts above, so the two
 // configs never both assert requirements about the same construct. Declining
 // `ArrowFunctionExpression`/`FunctionExpression` mirrors eslint.docs.config.js's
 // own choice to leave them unrequired there too (`eslint.docs.config.js:19-20`)
@@ -66,14 +75,14 @@ const rulesAt = (sev) => ({
   // `contexts` REPLACES the plugin's default list for a rule, not adds to it.
   // Its default (`ArrowFunctionExpression`/`FunctionDeclaration`/
   // `FunctionExpression`/`TSDeclareFunction`) is a function-shaped list that
-  // would keep these three rules blind to all eleven contexts above if left
+  // would keep these three rules blind to all twelve contexts above if left
   // implicit — losing that default's function coverage inside THIS config is
   // fine, because eslint.docs.config.js already enforces it at `error`.
   "jsdoc/require-description": [sev, { contexts: ALL_CONTEXTS }],
   "jsdoc/require-param": [sev, { contexts: PARAM_RETURN_CONTEXTS }],
   "jsdoc/require-param-description": [sev, { contexts: PARAM_RETURN_CONTEXTS }],
   "jsdoc/require-returns": [sev, { contexts: PARAM_RETURN_CONTEXTS }],
-  // Deliberately NOT extended to any of the eleven contexts: an `@example` on
+  // Deliberately NOT extended to any of the twelve contexts: an `@example` on
   // each of ~1222 interface properties is noise, not documentation, and would
   // inflate `docs:check-examples`'s compiled-example count for no reader
   // value. Stays on the plugin's function-shaped default list only.
@@ -84,7 +93,7 @@ const RULES = rulesAt("warn");
 
 // Same caveat as eslint.docs.config.js: these rules gate on tag PRESENCE
 // only. They cannot detect a vacuous tag, an orphaned second block, or a
-// property doc that restates the field name. With 1435 property/type/arrow
+// property doc that restates the field name. With 1436 property/type/arrow
 // warnings measured under this config (`pnpm lint:props`), a restated-name
 // doc is the dominant risk, not a footnote — a clean run here is evidence
 // the tags exist, never that the docs are good.
