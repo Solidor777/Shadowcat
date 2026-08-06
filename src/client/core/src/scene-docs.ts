@@ -112,6 +112,11 @@ export type FaceVisual = RenderVisual;
  * callers may cast to; the generated fields are plain `string` (asserted by the server's
  * unit battery, not enforced by a Rust enum). */
 export type RegionShapeKind = "rect" | "circle" | "polygon";
+/** Server-enforced movement meaning composed by `src/server/src/scene/regions.rs`'s
+ * `RegionBehavior`/`RegionEffect`: `"impassable"` blocks the router and the move gate
+ * (`is_impassable`, `src/server/src/scene/regions.rs:237`); `"arrest"` truncates a route at that
+ * cell (`is_arrest`, `src/server/src/scene/regions.rs:242`) without blocking it; `"terrain"` only
+ * weights pathfinding cost and never blocks or truncates a route. */
 export type RegionBehavior = "terrain" | "impassable" | "arrest";
 
 /** Recursively `Object.freeze`s `obj` and every nested plain object reachable from it, so a
@@ -165,22 +170,46 @@ export const DEFAULT_WORLD_SETTINGS: WorldSettingsEngine = deepFreeze({
 
 /** The fully resolved per-scene settings after merging built-ins → world defaults → scene overrides. */
 export interface ResolvedSceneSettings {
+  /** Whether line-of-sight gates visibility on this scene; scene `vision` override, else the
+   * world default. */
   losRestriction: boolean;
+  /** Whether fog-of-war hides unexplored areas on this scene; scene `vision` override, else the
+   * world default. */
   fog: boolean;
+  /** Whether a player also sees through their observed tokens' own vision (M10 observer mode);
+   * scene `vision` override, else the world default. */
   observerVision: boolean;
+  /** How movement is gated by visibility on this scene; scene `vision` override, else the world
+   * default. */
   movementRestriction: MovementRestriction;
+  /** The movement/routing engine this scene uses (grid vs continuous); scene `vision` override,
+   * else the world default. */
   movementModel: MovementModel;
   /** Effective snap-to-grid axis (M10f-3 §4.1): an explicit scene value overrides in either
    * direction (including `false`); absent falls back to a derived default keyed off the
    * RESOLVED `movementModel` (false for continuous, true otherwise). */
   snapToGrid: boolean;
+  /** Whether dynamic lighting is active on this scene; scene `lighting` override, else the world
+   * default. */
   lightingEnabled: boolean;
+  /** Which lighting mode this scene uses; scene `lighting` override, else the world default. */
   lightMode: LightMode;
+  /** The ambient/environment light this scene uses; scene `lighting` override, else the world
+   * default. */
   environment: EnvironmentLight;
+  /** Whether the grid pathfinder tolerates partial-cell overlap; world-settings only — no
+   * per-scene override exists. */
   partialCellLeniency: boolean;
+  /** The grid pathfinder's diagonal-movement rule; world-settings only — no per-scene override
+   * exists. */
   diagonalRule: DiagonalRule;
-  animation: { speedCellsPerSec: number; easing: EasingMode };
+  /** Token movement animation timing; world-settings only — no per-scene override exists. */
+  animation: { /** Animated movement speed, grid cells per second. */ speedCellsPerSec: number; /** The easing curve applied to the animation. */ easing: EasingMode };
+  /** The scene's grid-to-real-world distance mapping; scene `grid.distance`, else a built-in
+   * `{ perCell: 5, unit: "ft" }` default (5e scale). */
   gridDistance: GridDistance;
+  /** The scene's playable-area dimensions in grid units; scene `bounds`, else
+   * `DEFAULT_SCENE_BOUNDS`. */
   bounds: SceneDimensions;
 }
 
@@ -467,7 +496,7 @@ export function resolveSceneSettings(scene: WireDocument | undefined, store: Rea
  */
 export function resolveViewedScene(
   store: ReadableDocuments,
-  opts: { gmViewedScene?: string | null } = {},
+  opts: { /** The GM's local-roam scene id override, or `undefined`/`null` for a player. */ gmViewedScene?: string | null } = {},
 ): string | null {
   const scenes = store.query("scene");
   if (scenes.length === 0) return null;
@@ -518,7 +547,17 @@ export function buildActorDoc(worldId: string, name: string | null, engine: Acto
  * editor. */
 export const ITEM_DOC_TYPE = "item";
 
+/** An item's opaque body — the game-system-owned `system` band, editable via the tree editor.
+ * Any key may legitimately appear; the client's tree editor writes whatever the user enters, and
+ * a game-system module may add its own fields freely (no engine-side schema constrains shape).
+ * Nothing validates individual field semantics — the server only enforces two structural checks
+ * unconditionally on the whole body: an overall size cap (`validate_system_size`,
+ * `src/server/src/data/validation.rs:25`) and, if a module has registered one, a tier-2 JSON
+ * Schema for `doc_type: "item"` (`validate_system_schema_tree`,
+ * `src/server/src/data/validation.rs:259`). */
 export interface ItemSystem {
+  /** An arbitrary field written by the tree editor or a module-registered schema; see the
+   * interface doc above for what does (and does not) validate the value at this key. */
   [key: string]: unknown;
 }
 
@@ -571,7 +610,7 @@ export function buildTokenFromActor(
   sceneId: string,
   actor: WireDocument,
   mode: "link" | "instance",
-  pos: { x: number; y: number },
+  pos: { /** Initial x coordinate, scene units. */ x: number; /** Initial y coordinate, scene units. */ y: number },
   cellSize: number,
   id?: string,
 ): WireDocument {

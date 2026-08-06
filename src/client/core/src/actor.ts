@@ -8,13 +8,25 @@ import type { WireDocument } from "./wire";
 import type { ReadableDocuments } from "./store";
 import type { ActorEngine, TokenEngine, TokenVisual, TokenOverrides, ConditionRegistryEngine, SceneEngine, VisionAssignment, RenderVisual, FaceVisual } from "./scene-docs";
 
+/** The projected, display-ready shape every token-decoration consumer reads: a per-token
+ * `TokenOverrides` whitelist folded onto its actor's `ActorEngine` base (see `project`). */
 export interface EffectiveActor {
+  /** The actor's real, privacy-gateable name (envelope field); `null` when unset or redacted by
+   * the server for this recipient (the `OwnerOrGm` tier — see `setNameHidden`). */
   name: string | null;
+  /** The actor's non-secret fallback name, always visible regardless of `name`'s redaction. */
   displayName: string;
+  /** The effective render visual; `null` when neither the token override nor the actor base sets
+   * one (resolve further via `resolveTokenVisual`, which also handles the `"faces"` union). */
   visual: TokenVisual | null;
-  size: { w: number; h: number };
+  /** Footprint size in grid units (not pixels — see `resolveTokenBox` for the pixel conversion). */
+  size: { /** Width, grid units. */ w: number; /** Height, grid units. */ h: number };
+  /** The footprint shape used for rendering, hit-testing, and the pathfinder's clearance radius. */
   shape: "square" | "circle";
+  /** The assigned faction's id, or `null` for no faction. Resolve the `Faction` record itself via
+   * the world's `FactionRegistryEngine`. */
   faction: string | null;
+  /** Raw effective condition ids (not display entries); resolve badges via `resolveConditions`. */
   conditions: string[];
   /** Effective vision modes for this actor/token. Per-token override replaces actor base entirely;
    * defaults to [] when neither specifies vision. */
@@ -67,7 +79,7 @@ function project(actorDoc: WireDocument, base: ActorEngine, overrides?: TokenOve
  * actorDisplayName({ name: null, displayName: "" }); // "Unknown Creature"
  * ```
  */
-export function actorDisplayName(a: { name?: string | null; displayName?: string }, fallback = "Unknown Creature"): string {
+export function actorDisplayName(a: { /** The real name, or `null`/absent when unset or redacted. */ name?: string | null; /** The non-secret fallback name. */ displayName?: string }, fallback = "Unknown Creature"): string {
   return a.name || a.displayName || fallback;
 }
 
@@ -172,6 +184,17 @@ export function ownerFloorApplies(doc: WireDocument, userId: string, store: Read
   return effectiveOwner(doc, store) === userId;
 }
 
+/** A condition badge ready for display: the registry-resolved `name`/`icon` alongside the raw
+ * `id` (kept for stable keying in a list, since `name`/`icon` alone are not guaranteed unique). */
+interface ConditionDisplayEntry {
+  /** The effective condition id (matches a key in the world's `ConditionRegistryEngine.conditions`). */
+  id: string;
+  /** The registry's display name for `id` at resolution time. */
+  name: string;
+  /** The registry's emoji glyph for `id` at resolution time. */
+  icon: string;
+}
+
 /** Resolve a token's effective conditions to display entries (id preserved for keying), via the
  * world registry. Ids absent from the registry are dropped — a stale/garbled id yields no badge,
  * never a render error (fail-closed). The single read-through every condition consumer uses.
@@ -189,12 +212,12 @@ export function ownerFloorApplies(doc: WireDocument, userId: string, store: Read
  * resolveConditions(token, store); // [{ id: "prone", name: "Prone", icon: "..." }, ...]
  * ```
  */
-export function resolveConditions(token: WireDocument, store: ReadableDocuments): { id: string; name: string; icon: string }[] {
+export function resolveConditions(token: WireDocument, store: ReadableDocuments): ConditionDisplayEntry[] {
   const eff = resolveTokenActor(token, store);
   if (!eff) return [];
   const reg = store.query("condition-registry")[0]?.engine as ConditionRegistryEngine | undefined;
   const map = reg?.conditions ?? {};
-  const out: { id: string; name: string; icon: string }[] = [];
+  const out: ConditionDisplayEntry[] = [];
   for (const id of eff.conditions) {
     const c = map[id];
     if (c) out.push({ id, name: c.name, icon: c.icon });
@@ -208,8 +231,12 @@ export function resolveConditions(token: WireDocument, store: ReadableDocuments)
  * the write via `AppContext.canEdit(doc, path)` — the embedded path requires `core:manage_embedded`,
  * the actor path `core:write_fields`, so the capability model decides owner eligibility per mode. */
 export interface ConditionTarget {
+  /** The document to write conditions to: the linked actor, or the token itself (instanced). */
   doc: WireDocument;
+  /** The JSON-pointer path to the conditions array on `doc` — either `/engine/conditions` or
+   * `/embedded/actor/0/engine/conditions` per the linked-vs-instanced split above. */
   path: string;
+  /** The current effective condition ids at `path`, read at resolution time. */
   conditions: string[];
 }
 
@@ -250,10 +277,15 @@ export function conditionTarget(token: WireDocument, store: ReadableDocuments): 
  * resolution; omit (or pass `undefined`) to resolve internally. Pass `null` explicitly for a
  * known actorless token to skip resolution and fall back to the raw engine dimensions. */
 export interface TokenBox {
+  /** Scene-pixel x coordinate of the token's center. */
   x: number;
+  /** Scene-pixel y coordinate of the token's center. */
   y: number;
+  /** Scene-pixel width of the footprint. */
   w: number;
+  /** Scene-pixel height of the footprint. */
   h: number;
+  /** The footprint shape used for hit-testing and the selection ring. */
   shape: "square" | "circle";
 }
 
@@ -356,7 +388,7 @@ export function selectedFaceNamesFor(token: WireDocument, store: ReadableDocumen
  * ```
  */
 function resolveFace(
-  visual: Extract<TokenVisual, { kind: "faces" }>,
+  visual: Extract<TokenVisual, { /** Narrows `TokenVisual` to its `"faces"` union member. */ kind: "faces" }>,
   manualFace: string | null | undefined,
   conditions: string[],
 ): FaceVisual | null {
@@ -384,7 +416,7 @@ function resolveFace(
  * isValidAnimated({ kind: "animated", source: { type: "frames", frames: ["a.png"] }, fps: 4, loop: true });
  * ```
  */
-function isValidAnimated(v: Extract<RenderVisual, { kind: "animated" }>): boolean {
+function isValidAnimated(v: Extract<RenderVisual, { /** Narrows `RenderVisual` to its `"animated"` union member. */ kind: "animated" }>): boolean {
   if (!Number.isFinite(v.fps) || v.fps <= 0) return false;
   if (v.source.type === "frames") return v.source.frames.length > 0;
   return Number.isInteger(v.source.rows) && v.source.rows > 0 && Number.isInteger(v.source.cols) && v.source.cols > 0;

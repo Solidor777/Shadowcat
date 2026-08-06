@@ -12,8 +12,11 @@ import type { WorldRole } from "@shadowcat/types";
 /** A server account as the admin surface sees it. Carries no credential
  * material: the server never selects or serializes the password hash. */
 export interface ServerUser {
+  /** The account's server-assigned id. */
   id: string;
+  /** The account's login name, unique case-insensitively across the server. */
   username: string;
+  /** Server-wide tier: `"admin"` may call the admin-only user-management routes; `"user"` may not. */
   server_role: "admin" | "user";
 }
 
@@ -35,8 +38,11 @@ export async function listUsers(): Promise<ServerUser[]> {
 
 /** A world member. Visible to every member of that world. */
 export interface WorldMember {
+  /** The member's account id (`ServerUser.id`). */
   user: string;
+  /** The member's account username, as of this roster read. */
   username: string;
+  /** The member's role within this world (distinct from `ServerUser.server_role`). */
   role: WorldRole;
 }
 
@@ -82,8 +88,11 @@ export async function listWorldMembers(world: string): Promise<WorldMember[]> {
  * ```
  */
 export async function createUser(opts: {
+  /** The new account's username (server validates length/charset/uniqueness). */
   username: string;
+  /** The new account's plaintext password, sent once. */
   password: string;
+  /** The new account's server tier; omitted means a plain user. */
   serverRole?: "admin" | "user";
 }): Promise<ServerUser> {
   const res = await fetch("/api/users", {
@@ -122,19 +131,30 @@ export async function deleteUser(id: string): Promise<void> {
 /** A minted invite. `code` is a bearer credential the server keeps only as a
  * hash — it is returned once, at mint, and is unrecoverable afterwards. */
 export interface MintedInvite {
+  /** The invite's id, used to list/revoke it (never used to redeem it — that needs `code`). */
   id: string;
+  /** The bearer redemption credential, returned only here — the server keeps just its hash. */
   code: string;
+  /** The `WorldRole` a redeemer is seated at; cannot express a server tier. */
   role: WorldRole;
+  /** Unix-ms timestamp after which redemption fails. */
   expires_at: number;
 }
 
 /** An invite in a GM's listing. Carries no credential material. */
 export interface InviteEntry {
+  /** The invite's id, used to revoke it (not a redemption credential — see `MintedInvite.code`). */
   id: string;
+  /** The `WorldRole` a redeemer will be seated at. */
   role: WorldRole;
+  /** Unix-ms timestamp the invite was minted at. */
   created_at: number;
+  /** Unix-ms timestamp after which redemption fails, regardless of `revoked_at`/`consumed_at`. */
   expires_at: number;
+  /** Unix-ms timestamp the GM revoked it at, or `null` if never revoked. */
   revoked_at: number | null;
+  /** Unix-ms timestamp it was redeemed at, or `null` if unredeemed (single-use: a non-null value
+   * means the code can no longer be redeemed). */
   consumed_at: number | null;
 }
 
@@ -228,7 +248,7 @@ export async function revokeWorldInvite(world: string, codeId: string): Promise<
  */
 async function restError(res: Response, fallback: string): Promise<string> {
   try {
-    const body = (await res.json()) as { error?: unknown };
+    const body = (await res.json()) as { /** The server's client-actionable error message, if the body is JSON and carries one. */ error?: unknown };
     if (typeof body.error === "string" && body.error) return body.error;
   } catch {
     // Non-JSON body — fall through to the status-only message.

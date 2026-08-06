@@ -7,21 +7,36 @@ import type { RejectReason } from "@shadowcat/types";
 import type { Connect, Transport, TransportHandlers } from "./transport";
 import type { ClientMsg, ServerMsg, WireCommand, WireOperation } from "./wire";
 
+/** One simulated connection, as tracked internally (not exported). Unlike a real server
+ * connection, `author` is supplied by the caller at `connector()` time rather than derived from
+ * an authenticated session — the mock does not authenticate. */
 interface Conn {
+  /** Locally-assigned connection id (`MockServer.nextId`), scoped to this `MockServer` instance. */
   id: number;
+  /** The author id this connection sends commands as; not authenticated, unlike a real login. */
   author: string;
+  /** The `WsClient`-supplied callbacks this connection delivers frames to. */
   handlers: TransportHandlers;
+  /** Whether this connection is still open; `sendTo` is a no-op once `false`. */
   open: boolean;
 }
 
+/** An intent as passed to a `MockServerOptions.rejectRule`. */
 export interface IntentContext {
+  /** The client-generated intent id (used only for the reject frame if rejected). */
   intentId: string;
+  /** The intent's operations. */
   ops: WireOperation[];
+  /** The author id of the connection that sent the intent. */
   author: string;
 }
 
+/** Configuration for a `MockServer` instance. */
 export interface MockServerOptions {
+  /** The simulated world id every connection shares; defaults to `"test-world"`. */
   world?: string;
+  /** Clock override for `server_time`/`ts`/`expires_at`-style fields; defaults to a fixed `1000`,
+   * unlike a real server's wall-clock `now()` — tests wanting elapsed time must supply this. */
   now?: () => number;
   /** Return a reason to reject an intent, or null to accept it. */
   rejectRule?: (ctx: IntentContext) => RejectReason | null;
@@ -34,11 +49,18 @@ export interface MockServerOptions {
  * supports a scripted reject rule. NOT production code — a test double, not a
  * protocol-conformance reference. */
 export class MockServer {
+  /** The server's current authoritative sequence number; incremented once per accepted intent. */
   private seq = 0;
+  /** The full resync log, in `seq` order, replayed from an arbitrary `fromSeq` by `handleResync`.
+   * Unlike a real server, this is an unbounded in-memory list with no persistence or truncation. */
   private log: WireCommand[] = [];
+  /** Currently open connections, keyed by `Conn.id`. */
   private conns = new Map<number, Conn>();
+  /** Next `Conn.id` to assign; monotonic, never reused even after a connection drops. */
   private nextId = 1;
+  /** The simulated world id every connection shares (`MockServerOptions.world`, defaulted). */
   private readonly world: string;
+  /** The clock every timestamped frame reads (`MockServerOptions.now`, defaulted). */
   private readonly now: () => number;
 
   /** Builds a mock server. Each `connector()`/`connect()` call it drives yields

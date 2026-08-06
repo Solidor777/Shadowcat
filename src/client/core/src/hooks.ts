@@ -8,27 +8,47 @@
 import type { Logger } from "./logger";
 import { satisfies } from "./semver";
 
+/** The three dispatch contracts a hook name declares one of: `"info"` awaits every listener and
+ * discards return values; `"mutate"` threads a payload through listeners as a chained transform;
+ * `"cancel"` halts remaining dispatch when a listener returns `false`/`STOP`. */
 export type HookKind = "info" | "mutate" | "cancel";
+/** A hook name's declared contract, recorded once via `HookBus.defineHook`. */
 export interface HookDefinition {
+  /** Semver version of the hook's payload contract; a mismatched re-declaration throws. */
   version: string;
+  /** Which of the three dispatch kinds this hook name uses. */
   kind: HookKind;
 }
+/** Options for `HookBus.on`. */
 export interface OnOptions {
+  /** The registering module's id, recorded so `removeModule` can find and drop this listener. */
   module?: string;
+  /** Dispatch order among listeners on the same hook; higher runs first. Defaults to 0. */
   priority?: number;
+  /** A semver range the hook's currently-declared version must satisfy, checked once at
+   * registration time (never re-checked on a later version bump). */
   requires?: string;
 }
+/** Sentinel a `"cancel"`-kind handler returns to halt dispatch, distinct from `false` so a
+ * handler can cancel without its return value being misread as an ordinary falsy payload. */
 export const STOP: unique symbol = Symbol("hook.stop");
+/** A hook listener. Its return value is ignored for `"info"`, becomes the next listener's input
+ * for `"mutate"`, and is checked against `false`/`STOP` for `"cancel"`. */
 export type Handler<P> = (payload: P) => unknown | Promise<unknown>;
 
 /** Declaration-merge `name -> payload` here to type a first-party hook. */
 // eslint-disable-next-line @typescript-eslint/no-empty-object-type
 export interface CoreHooks {}
 
+/** A registered listener, as stored internally per hook name (not exported). */
 interface Listener {
+  /** The registered callback. */
   handler: Handler<unknown>;
+  /** The registering module's id, if any (set from `OnOptions.module`). */
   module?: string;
+  /** Dispatch order among listeners on the same hook; higher runs first. */
   priority: number;
+  /** Registration-order tiebreaker among listeners sharing a `priority` (lower registered first). */
   seq: number;
 }
 
@@ -39,8 +59,12 @@ interface Listener {
  * remaining listeners or corrupts a mutate chain (the prior payload carries
  * forward). */
 export class HookBus {
+  /** Every declared hook name's contract, set via `defineHook`. */
   private defs = new Map<string, HookDefinition>();
+  /** Every hook name's listeners, already priority/registration sorted by `on`. Populated for a
+   * name as soon as `defineHook` runs, even before any listener registers. */
   private listeners = new Map<string, Listener[]>();
+  /** Monotonic counter stamped onto each `Listener.seq` at registration time. */
   private seqCounter = 0;
 
   /** Builds a hook bus that logs handler failures and undefined-hook emits to `logger`.
@@ -304,7 +328,7 @@ export class HookBus {
   async emitCancel(
     name: string,
     payload: unknown,
-  ): Promise<{ cancelled: boolean; by?: string }> {
+  ): Promise<{ /** Whether a listener returned `false`/`STOP` and halted dispatch. */ cancelled: boolean; /** The halting listener's `module`, if it registered one. */ by?: string }> {
     if (!this.expectKind(name, "cancel")) return { cancelled: false };
     for (const l of this.ordered(name)) {
       try {
