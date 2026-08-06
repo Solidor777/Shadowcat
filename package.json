@@ -9,6 +9,7 @@
     "test": "pnpm -r test",
     "lint": "eslint .",
     "lint:docs": "eslint --config eslint.docs.config.js --no-error-on-unmatched-pattern src examples scripts",
+    "lint:props": "eslint --config eslint.props.config.js --no-error-on-unmatched-pattern src examples scripts",
     "build": "pnpm --filter @shadowcat/shell build",
     "docs:api:rust": "cargo doc --manifest-path src/server/Cargo.toml --document-private-items --no-deps",
     "docs:api:ts": "typedoc",
