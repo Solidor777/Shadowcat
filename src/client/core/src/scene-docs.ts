@@ -548,16 +548,18 @@ export function buildActorDoc(worldId: string, name: string | null, engine: Acto
 export const ITEM_DOC_TYPE = "item";
 
 /** An item's opaque body — the game-system-owned `system` band, editable via the tree editor.
- * Any key may legitimately appear; the client's tree editor writes whatever the user enters, and
- * a game-system module may add its own fields freely (no engine-side schema constrains shape).
- * Nothing validates individual field semantics — the server only enforces two structural checks
- * unconditionally on the whole body: an overall size cap (`validate_system_size`,
- * `src/server/src/data/validation.rs:25`) and, if a module has registered one, a tier-2 JSON
- * Schema for `doc_type: "item"` (`validate_system_schema_tree`,
- * `src/server/src/data/validation.rs:259`). */
+ * Any key may legitimately appear; the client's tree editor writes whatever the user enters.
+ * The server enforces an overall size cap unconditionally (`validate_system_size`,
+ * `src/server/src/data/validation.rs:25`). A game-system module may ADDITIONALLY register a
+ * tier-2 JSON Schema for `doc_type: "item"`; when one is registered, `validate_system_schema_tree`
+ * (`src/server/src/data/validation.rs:259`) validates the shape of the subtree it names — but a
+ * subtree it names and this document omits is not a violation (the schema governs shape only when
+ * the field is present; it never compels a field to exist). With no schema registered for
+ * `"item"`, nothing validates any individual field's shape or semantics — only the size cap
+ * applies. */
 export interface ItemSystem {
-  /** An arbitrary field written by the tree editor or a module-registered schema; see the
-   * interface doc above for what does (and does not) validate the value at this key. */
+  /** An arbitrary field written by the tree editor; a module-registered schema may validate its
+   * shape if present, but never requires it — see the interface doc above. */
   [key: string]: unknown;
 }
 
