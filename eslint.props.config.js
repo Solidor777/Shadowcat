@@ -13,11 +13,45 @@ import jsdoc from "eslint-plugin-jsdoc";
 import tseslint from "typescript-eslint";
 import svelteParser from "svelte-eslint-parser";
 
-// Every `require:` entry the function-doc gate already covers
-// (FunctionDeclaration/MethodDefinition/ClassDeclaration/ArrowFunctionExpression/
-// FunctionExpression) is explicitly `false` here — this config gates only the
-// eleven contexts below, so the two configs never both assert requirements
-// about the same construct.
+// Properties (4): object/class fields, interface members, enum members.
+const PROPERTY_CONTEXTS = [
+  "PropertyDefinition",
+  "TSPropertySignature",
+  "TSMethodSignature",
+  "TSEnumMember",
+];
+// Type declarations (3).
+const TYPE_CONTEXTS = ["TSInterfaceDeclaration", "TSTypeAliasDeclaration", "TSEnumDeclaration"];
+// Named arrow/function expressions (4): deliberately narrow to exported or
+// module-level `const`/`let` bindings, never a bare
+// ArrowFunctionExpression/FunctionExpression selector — that would also match
+// an inline callback argument, which the function-doc gate's own
+// `ArrowFunctionExpression: false` rationale (over-firing on inline
+// callbacks) already rejects. These selectors cannot match an inline
+// callback because an argument position is never a VariableDeclarator.
+const ARROW_CONTEXTS = [
+  "ExportNamedDeclaration > VariableDeclaration > VariableDeclarator > ArrowFunctionExpression",
+  "ExportNamedDeclaration > VariableDeclaration > VariableDeclarator > FunctionExpression",
+  "Program > VariableDeclaration > VariableDeclarator > ArrowFunctionExpression",
+  "Program > VariableDeclaration > VariableDeclarator > FunctionExpression",
+];
+const ALL_CONTEXTS = [...PROPERTY_CONTEXTS, ...TYPE_CONTEXTS, ...ARROW_CONTEXTS];
+// TSMethodSignature plus the four arrow/function-expression selectors: the
+// only contexts among the eleven that have parameters or a return value to
+// document. A plain property, an interface/type-alias/enum declaration, or
+// an enum member has neither — attaching require-param/require-returns there
+// would demand tags that describe nothing.
+const PARAM_RETURN_CONTEXTS = ["TSMethodSignature", ...ARROW_CONTEXTS];
+
+// Every `require:` entry the function-doc gate covers
+// (FunctionDeclaration/ClassDeclaration/MethodDefinition) is explicitly
+// `false` here — this config gates only the eleven contexts above, so the two
+// configs never both assert requirements about the same construct. Declining
+// `ArrowFunctionExpression`/`FunctionExpression` mirrors eslint.docs.config.js's
+// own choice to leave them unrequired there too (`eslint.docs.config.js:19-20`)
+// rather than duplicating a requirement that file already enforces — this
+// config introduces no requirement on the bare selectors either way; its
+// ARROW_CONTEXTS entries reach only the four narrow, named-binding paths.
 const rulesAt = (sev) => ({
   "jsdoc/require-jsdoc": [sev, {
     require: {
@@ -27,33 +61,22 @@ const rulesAt = (sev) => ({
       ArrowFunctionExpression: false,
       FunctionExpression: false,
     },
-    contexts: [
-      // Properties (4): object/class fields, interface members, enum members.
-      "PropertyDefinition",
-      "TSPropertySignature",
-      "TSMethodSignature",
-      "TSEnumMember",
-      // Type declarations (3).
-      "TSInterfaceDeclaration",
-      "TSTypeAliasDeclaration",
-      "TSEnumDeclaration",
-      // Named arrow/function expressions (4): deliberately narrow to exported
-      // or module-level `const`/`let` bindings, never a bare
-      // ArrowFunctionExpression/FunctionExpression selector — that would also
-      // match an inline callback argument, which the function-doc gate's own
-      // `ArrowFunctionExpression: false` rationale (over-firing on inline
-      // callbacks) already rejects. These selectors cannot match an inline
-      // callback because an argument position is never a VariableDeclarator.
-      "ExportNamedDeclaration > VariableDeclaration > VariableDeclarator > ArrowFunctionExpression",
-      "ExportNamedDeclaration > VariableDeclaration > VariableDeclarator > FunctionExpression",
-      "Program > VariableDeclaration > VariableDeclarator > ArrowFunctionExpression",
-      "Program > VariableDeclaration > VariableDeclarator > FunctionExpression",
-    ],
+    contexts: ALL_CONTEXTS,
   }],
-  "jsdoc/require-description": sev,
-  "jsdoc/require-param": sev,
-  "jsdoc/require-param-description": sev,
-  "jsdoc/require-returns": sev,
+  // `contexts` REPLACES the plugin's default list for a rule, not adds to it.
+  // Its default (`ArrowFunctionExpression`/`FunctionDeclaration`/
+  // `FunctionExpression`/`TSDeclareFunction`) is a function-shaped list that
+  // would keep these three rules blind to all eleven contexts above if left
+  // implicit — losing that default's function coverage inside THIS config is
+  // fine, because eslint.docs.config.js already enforces it at `error`.
+  "jsdoc/require-description": [sev, { contexts: ALL_CONTEXTS }],
+  "jsdoc/require-param": [sev, { contexts: PARAM_RETURN_CONTEXTS }],
+  "jsdoc/require-param-description": [sev, { contexts: PARAM_RETURN_CONTEXTS }],
+  "jsdoc/require-returns": [sev, { contexts: PARAM_RETURN_CONTEXTS }],
+  // Deliberately NOT extended to any of the eleven contexts: an `@example` on
+  // each of ~1222 interface properties is noise, not documentation, and would
+  // inflate `docs:check-examples`'s compiled-example count for no reader
+  // value. Stays on the plugin's function-shaped default list only.
   "jsdoc/require-example": [sev, { exemptNoArguments: false }],
 });
 
@@ -61,9 +84,10 @@ const RULES = rulesAt("warn");
 
 // Same caveat as eslint.docs.config.js: these rules gate on tag PRESENCE
 // only. They cannot detect a vacuous tag, an orphaned second block, or a
-// property doc that restates the field name. With ~1329 property/type/arrow
-// sites in scope, a restated-name doc is the dominant risk, not a footnote —
-// a clean run here is evidence the tags exist, never that the docs are good.
+// property doc that restates the field name. With 1435 property/type/arrow
+// warnings measured under this config (`pnpm lint:props`), a restated-name
+// doc is the dominant risk, not a footnote — a clean run here is evidence
+// the tags exist, never that the docs are good.
 const RULES_RATCHETED = rulesAt("error");
 
 export default [
@@ -83,11 +107,12 @@ export default [
   // Ratcheted `.ts`: starts with a glob matching NO real file (flat config
   // rejects an empty `files` array outright). A later burn-down replaces this
   // placeholder with each package's real glob as it reaches zero under the
-  // warn tier above. Unlike eslint.docs.config.js's ratchet, this block's
-  // `files` is NOT yet identical to the warn block's — that identity is
-  // precisely what causes the shadowing this file exists to avoid, so this
-  // list stays an enumerated subset until every package is proven clean, at
-  // which point widening it to match the warn block becomes safe.
+  // warn tier above. This block's `files` must stay an enumerated subset,
+  // NEVER widened to match the warn block's broad glob — that byte-identical
+  // widening is exactly what shadows eslint.docs.config.js's own warn tier
+  // (see the top-of-file comment). This file's contexts are meant to end up
+  // merged into eslint.docs.config.js and this file deleted, once every
+  // package is clean — not to reach that same widened-glob state on its own.
   {
     files: ["__sweep13_ratchet_placeholder__/**/*.ts"],
     ignores: [
@@ -116,7 +141,8 @@ export default [
     plugins: { jsdoc },
     rules: RULES,
   },
-  // Ratcheted `.svelte`: same placeholder rationale as the `.ts` ratchet
+  // Ratcheted `.svelte`: same placeholder rationale, and the same
+  // never-widen-to-match-the-warn-glob constraint, as the `.ts` ratchet
   // above. A package with components needs BOTH this block and the `.ts`
   // ratchet updated together, or its components stay silently advisory.
   {
