@@ -155,11 +155,32 @@ other. Task 15 merges both into `eslint.config.js` once `lint:props` also reache
    config must state which contexts it actually visits — a rule listed in `rulesAt` is not thereby
    enforced on the contexts in `require-jsdoc`'s list.**
 
-3. **Scope boundary, decided and deliberate.** `TSIndexSignature` IS in scope (declared type
-   surface; 1 live site, `src/client/core/src/scene-docs.ts:522`). Object-literal properties
-   (`ObjectExpression > Property`) are OUT — 3447 sites repo-wide, all value positions in inline
-   config objects and option bags rather than declared API surface. Do not add that context without
-   an explicit instruction.
+3. **Scope boundary — USER-RATIFIED 2026-08-06, not a dispatcher judgment call.**
+   `TSIndexSignature` IS in scope (declared type surface; 1 live site,
+   `src/client/core/src/scene-docs.ts:522`). Object-literal properties (`ObjectExpression >
+   Property`) are OUT — 3447 sites repo-wide. Do not add that context without an explicit
+   instruction from the user.
+
+   The first stated rationale — "all value positions rather than declared API surface" — is **too
+   coarse and is wrong for one file.** `src/client/core/src/wire.ts` declares ZERO interfaces: the
+   wire protocol's fields are Zod schema properties (`z.object({ kind: z.literal("actor"),
+   actor_id: z.string() })`), which ARE object-literal properties and ARE declared API surface. 176
+   of the 3447 live there. Only three files import zod (`wire.ts`, `manifest.ts`, `chat-docs.ts`),
+   so scoping them in would be a bounded add, not the full 3447.
+
+   **The rationale that actually holds is Rule 3 — no third copy.** Those fields' statement of
+   record is the Rust server type; the client schema already points at it
+   (`/** Mirrors `crate::chat::ActorOwnerRef` … */`). Per-field client docs would be a second copy
+   of the server's semantics, in another language in another file, which the gate cannot detect
+   drifting — it only checks a comment EXISTS, never that it is still true. The bulk of the 3447 is
+   separately unfit for gating: the largest single contributor is the i18n catalog
+   (`client/ui-kit/src/locales/en.ts`, 300 sites, entries like `"login.error": "Invalid username or
+   password."`).
+
+   **Process note, standing:** this exclusion was originally decided AND written into this plan
+   before the user was asked. That was wrong — see the user directive of 2026-08-06: never make a
+   descoping decision without consulting first; surfacing a cut after the fact is not consulting.
+   Any future narrowing of this campaign's scope goes to the user BEFORE it reaches an artifact.
 
 | # | Scope | Sites |
 |---|---|---|
