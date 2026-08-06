@@ -87,8 +87,25 @@ function sources(dir) {
   return out;
 }
 
+// Query interface. It exists so no caller has to re-derive a subset by grepping this script's
+// own output: an ad-hoc pattern is a fresh, unvalidated instrument every time it is written, it
+// cannot be compared against a number a DIFFERENT ad-hoc pattern produced earlier, and one keyed
+// on `path:line` silently goes stale the moment an edit shifts a line. Ask this script instead.
+//   --scope <prefix>   restrict to paths under a prefix (repeatable); forward slashes always
+//   --by-area          per-directory table instead of the per-site list
+//   --json             machine-readable {total, byKind, byArea, hits}
+const argv = process.argv.slice(2);
+const scopes = argv.flatMap((a, i) => (a === "--scope" ? [argv[i + 1]] : [])).filter(Boolean);
+const wantArea = argv.includes("--by-area");
+const wantJson = argv.includes("--json");
+
+/** Repo-relative path with forward slashes, so a scope reads the same on every platform. */
+const norm = (p) => p.split("\\").join("/");
+const inScope = (p) => scopes.length === 0 || scopes.some((s) => p.startsWith(norm(s)));
+
+const scanned = sources("src").map(norm).filter(inScope);
 const hits = [];
-for (const path of sources("src")) {
+for (const path of scanned) {
   const lines = readFileSync(path, "utf8").split("\n");
   lines.forEach((line, i) => {
     // A comment line is checked whole; a code line is checked only inside its string literals,
@@ -104,18 +121,53 @@ for (const path of sources("src")) {
   });
 }
 
+// A scope that matches no files and a scope that is genuinely clean both produce zero hits, and
+// telling them apart by eye is impossible — a mistyped prefix reads as success. Refuse to report
+// the ambiguous zero: a scope matching no files is an error, never a pass.
+if (scopes.length > 0 && scanned.length === 0) {
+  console.error(`--scope matched 0 files: ${scopes.join(", ")}`);
+  console.error("Nothing was examined, so this is not a clean result. Check the prefix.");
+  process.exit(2);
+}
+
+/** Groups by the first three path segments (`src/server/src`, `src/modules/panels`). */
+const tally = (keyOf) => {
+  const m = new Map();
+  for (const h of hits) m.set(keyOf(h), (m.get(keyOf(h)) ?? 0) + 1);
+  return [...m].sort((a, b) => b[1] - a[1]);
+};
+const byKind = tally((h) => h.kind);
+const byArea = tally((h) => h.path.split("/").slice(0, 3).join("/"));
+const files = new Set(hits.map((h) => h.path)).size;
+
+if (wantJson) {
+  console.log(
+    JSON.stringify(
+      { total: hits.length, filesScanned: scanned.length, filesWithHits: files, byKind, byArea, hits },
+      null,
+      2,
+    ),
+  );
+  process.exit(hits.length > 0 ? 1 : 0);
+}
+
+if (wantArea) {
+  const scopeNote = scopes.length > 0 ? ` under ${scopes.join(", ")}` : "";
+  console.log(`${hits.length} site(s) in ${files} file(s)${scopeNote}; ${scanned.length} scanned.`);
+  for (const [area, n] of byArea) console.log(`${String(n).padStart(5)}  ${area}`);
+  process.exit(hits.length > 0 ? 1 : 0);
+}
+
 if (hits.length > 0) {
   console.error(`RULE 16: ${hits.length} ephemeral reference(s) in code comments.`);
   console.error("A code comment must be durable commentary about the code and only the code.");
   console.error("Fix by stating the CONSTRAINT inline and dropping the POINTER.\n");
-  const byKind = new Map();
-  for (const h of hits) byKind.set(h.kind, (byKind.get(h.kind) ?? 0) + 1);
-  for (const [kind, n] of [...byKind].sort((a, b) => b[1] - a[1])) {
-    console.error(`  ${String(n).padStart(4)}  ${kind}`);
-  }
+  for (const [kind, n] of byKind) console.error(`  ${String(n).padStart(4)}  ${kind}`);
+  console.error("");
+  for (const [area, n] of byArea) console.error(`  ${String(n).padStart(4)}  ${area}`);
   console.error("");
   for (const h of hits) console.error(`  ${h.path}:${h.line}  [${h.kind}]  ${h.text}`);
   process.exit(1);
 }
 
-console.log("RULE 16: no ephemeral references in code comments.");
+console.log(`RULE 16: no ephemeral references in ${scanned.length} scanned file(s).`);
