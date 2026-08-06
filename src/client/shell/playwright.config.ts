@@ -49,5 +49,10 @@ export default defineConfig({
       SHADOWCAT_INVITE_PER_MIN_PER_IP: "10000",
     },
   },
-  use: { baseURL: "http://127.0.0.1:31999" },
+  // `trace` is the only forensic channel for a CI-only failure: the suite runs
+  // against a real binary on a runner nobody can attach to, so without a
+  // retained trace a red `ui-e2e` is diagnosable only by hypothesis. Scoped to
+  // failures so passing runs write nothing. The CI job uploads `test-results/`
+  // on failure — dropping that upload step silently re-blinds this setting.
+  use: { baseURL: "http://127.0.0.1:31999", trace: "retain-on-failure" },
 });
