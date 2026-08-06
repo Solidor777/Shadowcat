@@ -10,7 +10,10 @@ import { sceneScopedDocs } from "./scene-scope";
 /** Renders `doc_type:"token"` docs as backend token nodes, tweening transforms via a
  * TokenAnimator. The visual (size + image) applies immediately; the transform tweens. */
 export class TokenView {
+  /** Drives every tracked token's tween/sample-playback transform. */
   private readonly animator = new TokenAnimator();
+  /** Last resolved `TokenNodeSpec` per token id, from `toSpec` — the visual/size/border/badges
+   * `push` applies immediately, distinct from the tweened transform `animator` owns. */
   private readonly specs = new Map<string, TokenNodeSpec>();
   /** Tracks tokens that were hidden on the previous push call, to detect visible↔hidden
    * transitions and call removeToken only once per gap entry (not every tick). */
@@ -20,8 +23,11 @@ export class TokenView {
   private dragging: string | null = null;
 
   // Animation config fields; kept in sync with the animator via pushAnimConfig().
+  /** Active grid's pixel-per-cell size — see `setCellSize`. */
   private cellSize = 100;
+  /** Tween speed, in grid cells per second — see `setAnimationConfig`. */
   private animSpeed = 6;
+  /** Easing curve applied to polyline tweens — see `setAnimationConfig`. */
   private animEasing: EasingMode = "easeInOut";
 
   /** Constructs a view bound to `store`/`assets`/`backend`; call `reconcile()` once to populate it.
@@ -99,7 +105,12 @@ export class TokenView {
    * view.setAnimationConfig({ speedCellsPerSec: 6, easing: "easeInOut" });
    * ```
    */
-  setAnimationConfig(cfg: { speedCellsPerSec: number; easing: EasingMode }): void {
+  setAnimationConfig(cfg: {
+    /** Tween speed, in grid cells per second. */
+    speedCellsPerSec: number;
+    /** The easing curve applied to polyline tweens. */
+    easing: EasingMode;
+  }): void {
     this.animSpeed = cfg.speedCellsPerSec;
     this.animEasing = cfg.easing;
     this.pushAnimConfig();

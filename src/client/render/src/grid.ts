@@ -1,5 +1,6 @@
 import type { Point, LineSeg } from "./types";
 
+/** The two supported grid geometries; a `Grid` instance is fixed to one for its lifetime. */
 export type GridKind = "square" | "hex";
 
 /** Cost rule for diagonal movement on square grids. Mirrors the client `DiagonalRule` type
@@ -9,19 +10,26 @@ export type GridKind = "square" | "hex";
  * above what this client-side distance reports). */
 export type DiagonalRule = "chebyshev" | "manhattan" | "euclidean" | "alternating";
 
+/** A grid's fixed geometry: kind, cell size, and (square-only) diagonal-cost rule. */
 export interface GridSpec {
   /** "square": `size` = edge length. "hex": `size` = outer radius. */
   kind: GridKind;
+  /** Cell edge length (square) or outer radius/circumradius (hex), in scene (px) units. */
   size: number;
   /** Square grids only. Diagonal cost rule for `distance()`. Defaults to `"chebyshev"`.
    * Source: the world-settings `pathfinding.diagonalRule` resolved via `resolveSceneSettings`. */
   diagonalRule?: DiagonalRule;
 }
 
+/** A scene-coordinate rectangle (e.g. the visible viewport) to cover with grid lines. */
 interface SceneRect {
+  /** Left edge, scene x-coordinate. */
   x: number;
+  /** Top edge, scene y-coordinate. */
   y: number;
+  /** Width, in scene (px) units. */
   w: number;
+  /** Height, in scene (px) units. */
   h: number;
 }
 
@@ -138,7 +146,12 @@ export class Grid {
    * grid.cellOf({ x: 12, y: 34 }); // { col: 0, row: 0 }
    * ```
    */
-  cellOf(p: Point): { col: number; row: number } {
+  cellOf(p: Point): {
+    /** Square column index, or hex axial q. */
+    col: number;
+    /** Square row index, or hex axial r. */
+    row: number;
+  } {
     if (this.spec.kind === "square") {
       return {
         col: Math.floor(p.x / this.spec.size),
@@ -212,7 +225,12 @@ export class Grid {
    * // private — not constructible/callable outside Grid.
    * ```
    */
-  private pixelToAxial(p: Point): { q: number; r: number } {
+  private pixelToAxial(p: Point): {
+    /** Fractional axial q. */
+    q: number;
+    /** Fractional axial r. */
+    r: number;
+  } {
     const size = this.spec.size;
     const q = ((Math.sqrt(3) / 3) * p.x - (1 / 3) * p.y) / size;
     const r = ((2 / 3) * p.y) / size;
@@ -254,7 +272,17 @@ export class Grid {
    * // private — not constructible/callable outside Grid.
    * ```
    */
-  private axialRound(a: { q: number; r: number }): { q: number; r: number } {
+  private axialRound(a: {
+    /** Fractional axial q. */
+    q: number;
+    /** Fractional axial r. */
+    r: number;
+  }): {
+    /** Nearest integer axial q. */
+    q: number;
+    /** Nearest integer axial r. */
+    r: number;
+  } {
     // Round in cube space then fix the largest-drift component.
     let rx = Math.round(a.q);
     let ry = Math.round(-a.q - a.r);

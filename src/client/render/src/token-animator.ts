@@ -6,16 +6,20 @@ const EPSILON = 0.01;
 
 /** A server-sampled position entry: elapsed ms from startServerMs + scene-coord position. */
 export interface MoveSample {
+  /** Elapsed ms from the playback's `startServerMs` this sample applies at. */
   tMs: number;
+  /** Scene-coord `[x,y]` position at this sample. */
   pos: [number, number];
 }
 
 /** State for a sample-driven playback (animateSamples). Separate from the polyline Anim so
  * the two modes can coexist independently (e.g. a route-commit walk alongside a broadcast play). */
 interface SamplesAnim {
+  /** The (already server-clipped) position samples being played back. */
   samples: MoveSample[];
   /** Accumulated elapsed time (ms) from the start of the animation; pre-seeded for catch-up. */
   elapsed: number;
+  /** Total playback duration, in ms. */
   durationMs: number;
   /** Gap threshold: consecutive tMs gaps exceeding this are treated as occlusion spans.
    * Computed as minConsecutiveDelta × 1.5 (nominal-interval-based); Infinity when fewer than
@@ -25,12 +29,26 @@ interface SamplesAnim {
 
 /** Animation tuning resolved from `world-settings.animation` + the active grid. */
 export interface AnimationConfig {
+  /** Tween speed, in grid cells per second. */
   speedCellsPerSec: number;
+  /** Easing curve applied to polyline tweens (`startAnim`) — sample-driven playback
+   * (`animateSamples`) always linearly interpolates and ignores this. */
   easing: EasingMode;
   /** Pixels per grid cell (grid.size); converts pixel distance to cells for duration. */
   cellSize: number;
 }
 
+/** Linear interpolation between `a` and `b` at position `t`.
+ * @param a The value at `t=0`.
+ * @param b The value at `t=1`.
+ * @param t Interpolation position (typically `[0,1]`, unclamped).
+ * @returns `a + (b - a) * t`.
+ * @example
+ * ```
+ * // module-private helper; not exported from @shadowcat/render
+ * lerp(0, 10, 0.5); // 5
+ * ```
+ */
 const lerp = (a: number, b: number, t: number): number => a + (b - a) * t;
 
 /** Compute the gap detection threshold for occlusion spans from a sample list.
@@ -71,15 +89,24 @@ function computeGapThreshold(samples: MoveSample[]): number {
   return minDelta * 1.5;
 }
 
+/** A polyline ease-to-stop tween, driven by `startAnim`/advanced by `tick`. */
 interface Anim {
   /** Polyline in scene px; `poly[0]` is the start captured at (re)target time. */
   poly: [number, number][];
+  /** Per-segment lengths (px), parallel to `poly` (one shorter — `poly.length - 1` entries). */
   segLen: number[];
+  /** Sum of `segLen`; the eased distance target at `tRaw=1`. */
   total: number;
+  /** Accumulated elapsed time (ms) since this tween started. */
   elapsed: number;
+  /** Total tween duration, in ms — `(total / cfg.cellSize / cfg.speedCellsPerSec) * 1000` at
+   * the config active when `startAnim` ran. */
   duration: number;
+  /** Rendered rotation at tween start (`t=0`). */
   startRot: number;
+  /** Rotation to settle at once the tween completes (`t=1`). */
   finalRot: number;
+  /** Easing curve applied to `elapsed/duration` before mapping onto `total`. */
   easing: EasingMode;
   /** True for an explicit route walk; gates the optimistic-vertex ignore rule. */
   pathDriven: boolean;
@@ -91,11 +118,15 @@ interface Anim {
  * target along an eased polyline. Duration = pathDistanceCells / speedCellsPerSec.
  * New tokens snap; moves tween; a newer authoritative position retargets in place. */
 export class TokenAnimator {
+  /** Each tracked token's current rendered transform (interpolated mid-tween). */
   private cur = new Map<string, TokenTransform>();
+  /** Live polyline ease-to-stop tweens, keyed by token id. */
   private anim = new Map<string, Anim>();
+  /** Live sample-driven (broadcast MoveStream) playbacks, keyed by token id. */
   private samplesAnim = new Map<string, SamplesAnim>();
   /** Token ids currently in an occlusion gap (server-clipped visibility span). */
   private hidden = new Set<string>();
+  /** Tween-duration tuning applied to newly-started animations — see `setConfig`. */
   private cfg: AnimationConfig = { speedCellsPerSec: 6, easing: "easeInOut", cellSize: 100 };
 
   /** Replace the tween-duration tuning (speed/easing/cellSize). Affects only FUTURE tweens started

@@ -11,14 +11,38 @@ import { fogBlendRtStale } from "./fog-blend";
  * tweening token's ~60x/s re-push with an unchanged visual. `anim` is present only while `visual`
  * is an AnimatedSprite. */
 interface TokenNode {
+  /** Outer, non-rotating node — its position is the token center; `badges` are its direct
+   * children so they stay upright regardless of `visualContainer`'s rotation. */
   container: Container;
+  /** Inner node that rotates with the token (`.angle = spec.rotation`); holds `visual` +
+   * `border`. */
   visualContainer: Container;
+  /** The art sprite — a plain `Sprite` for an image visual, an `AnimatedSprite` while
+   * `spec.visual.kind === "animated"`. */
   visual: Sprite | AnimatedSprite;
+  /** Faction-border outline, redrawn by `updateTokenBorder`; cleared (no stroke) when
+   * `spec.borderColor` is `null`. */
   border: Graphics;
+  /** Condition-marker glyph chips, one `Text` per `spec.badges` entry, in order. */
   badges: Text[];
+  /** `spec.badges.join("")`, memoized by `updateTokenBadges` to skip a full badge-set rebuild
+   * when the badge list is unchanged. */
   badgeKey: string;
+  /** `visualSourceKey(spec.visual)` of the last-applied visual, or `null` before the first
+   * `setToken` call — an unchanged key short-circuits `updateTokenVisual`'s reload. */
   sourceKey: string | null;
-  anim: { fps: number; loop: boolean; frameCount: number; elapsedMs: number } | null;
+  /** Tick-driven animation state, or `null` while `visual` is a plain (non-animated) `Sprite`. */
+  anim: {
+    /** Playback rate, in frames per second. */
+    fps: number;
+    /** `true` wraps at the end of the sequence; `false` holds the final frame. */
+    loop: boolean;
+    /** Total frame count in the resolved source; `1` while the async load is still pending. */
+    frameCount: number;
+    /** Accumulated elapsed time, in ms, since this visual was assigned — advanced by
+     * `tickTokenAnimations`. */
+    elapsedMs: number;
+  } | null;
 }
 
 /** Identity key for a `TokenNodeSpec.visual` — equal specs must produce an equal key so a
@@ -40,36 +64,58 @@ function visualSourceKey(v: TokenNodeSpec["visual"]): string {
  * of unit tests; covered by Playwright). Layer containers parent under one `world`
  * container so a single camera transform pans/zooms the whole scene. */
 export class PixiBackend implements DisplayBackend {
+  /** Container every layer/the camera transform is parented under (`setCameraTransform` moves
+   * this, not the stage). */
   private readonly world = new Container();
+  /** Core layer id → its Container, populated by `ensureLayers`. */
   private readonly layers = new Map<string, Container>();
+  /** The `grid`-layer line strokes, redrawn wholesale by `drawGrid`. */
   private readonly grid = new Graphics();
   /** Three-state fog (M9c): two stacked black sheets in the `mask` layer. `fogDark` (near-opaque)
    * shows only on UNEXPLORED area — inverse-masked by `exploredHoles` (explored ∪ visible).
    * `fogDim` (semi-transparent) shows on unexplored + explored — inverse-masked by `visibleHoles`.
    * Net: unexplored = both sheets (darkest), explored = dim only, visible = clear. */
   private readonly fogDark = new Graphics();
+  /** Semi-transparent "explored memory" sheet — see `fogDark`'s doc for the two-sheet fog
+   * model. */
   private readonly fogDim = new Graphics();
   /** Inverse-mask shapes (not rendered directly): explored∪visible cut from `fogDark`, visible
    * cut from `fogDim`. */
   private readonly exploredHoles = new Graphics();
+  /** Visible-only inverse-mask shape cut from `fogDim` — see `exploredHoles`'s doc. */
   private readonly visibleHoles = new Graphics();
   /** Cross-fade sprites: stage-level (screen-space, untransformed) overlays showing two
    * rasterized fog snapshots at complementary alpha while a vision sweep is mid-interval.
    * Hidden (and `fogDark`/`fogDim` shown) outside a blend. */
   private readonly fogBlendFrom = new Sprite();
+  /** The incoming (newer) cross-fade sprite — see `fogBlendFrom`'s doc. */
   private readonly fogBlendTo = new Sprite();
+  /** `fogBlendFrom`'s captured texture, reused across calls until `fogBlendRtStale` finds it
+   * mismatched (`null` before the first cross-fade, or right after a stale-size discard). */
   private fogBlendFromRT: RenderTexture | null = null;
+  /** `fogBlendTo`'s captured texture — see `fogBlendFromRT`'s doc. */
   private fogBlendToRT: RenderTexture | null = null;
+  /** The `overlays`-layer tool-preview Graphics, redrawn by `drawOverlay`/`clearOverlay`. */
   private readonly toolOverlay = new Graphics();
+  /** The measurement segment stroke, redrawn by `drawMeasure`/`clearMeasure`. */
   private readonly measureGraphics = new Graphics();
+  /** The measurement distance label, positioned at the segment midpoint by `drawMeasure`;
+   * hidden (not destroyed) by `clearMeasure`. */
   private readonly measureText = new Text({ text: "", style: { fill: 0xffffff, fontSize: 14, fontFamily: "sans-serif" } });
+  /** The ping-ring overlay, redrawn wholesale by `drawPings`. */
   private readonly pingGraphics = new Graphics();
   /** Per-cell darkening + tint quads for the lighting layer (M10e-3). Parented under the
    * `lighting` container, which carries a BlurFilter to soften band/edge boundaries. */
   private readonly lightingGraphics = new Graphics();
+  /** Shape document id → its Graphics, populated by `setShape`. */
   private readonly shapes = new Map<string, Graphics>();
+  /** Token document id → its render node, populated by `createTokenNode`. */
   private readonly tokens = new Map<string, TokenNode>();
+  /** The current background sprite, or `null` before the first `setBackground` call/after a
+   * clear. */
   private background: Sprite | null = null;
+  /** `backgroundUrl` of the currently-displayed sprite — used to skip a redundant reload when
+   * `setBackground` is called with an unchanged `url`. */
   private backgroundUrl: string | null = null;
   /** Monotonic counter disambiguating concurrent background loads. */
   private loadSeq = 0;
@@ -182,7 +228,10 @@ export class PixiBackend implements DisplayBackend {
    * backend.setBackground(null); // clear
    * ```
    */
-  setBackground(spec: { url: string } | null): void {
+  setBackground(spec: {
+    /** Background image serve URL. */
+    url: string;
+  } | null): void {
     if (spec === null) {
       this.loadSeq++; // invalidate any in-flight load
       this.background?.destroy();
@@ -769,7 +818,16 @@ export class PixiBackend implements DisplayBackend {
    * backend.drawPings([{ x: 0, y: 0, radius: 20, alpha: 0.8 }]);
    * ```
    */
-  drawPings(rings: { x: number; y: number; radius: number; alpha: number }[]): void {
+  drawPings(rings: {
+    /** Ring center's scene x-coordinate. */
+    x: number;
+    /** Ring center's scene y-coordinate. */
+    y: number;
+    /** Ring radius, in scene (px) units. */
+    radius: number;
+    /** Ring opacity, `[0,1]`. */
+    alpha: number;
+  }[]): void {
     this.pingGraphics.clear();
     for (const r of rings) {
       this.pingGraphics.circle(r.x, r.y, r.radius).stroke({ width: 3, color: 0xffd400, alpha: r.alpha });
@@ -998,7 +1056,10 @@ function paintFogSheets(dark: Graphics, dim: Graphics, exploredHoles: Graphics, 
  */
 export async function createPixiBackend(
   canvas: HTMLCanvasElement,
-  opts: { background: number },
+  opts: {
+    /** The initial background clear color, packed `0xRRGGBB`. */
+    background: number;
+  },
 ): Promise<PixiBackend> {
   const app = new Application();
   await app.init({

@@ -1,8 +1,19 @@
 import type { Point, CameraTransform } from "./types";
 
+/** Minimum allowed zoom scale — `zoomAt` clamps to this floor. */
 const MIN_SCALE = 0.1;
+/** Maximum allowed zoom scale — `zoomAt` clamps to this ceiling. */
 const MAX_SCALE = 10;
 
+/** Clamp a scale value to `[MIN_SCALE, MAX_SCALE]`.
+ * @param s The raw (unclamped) scale value.
+ * @returns `s` clamped to `[MIN_SCALE, MAX_SCALE]`.
+ * @example
+ * ```
+ * // module-private helper; not exported from @shadowcat/render
+ * clampScale(50); // 10 — clamped to MAX_SCALE
+ * ```
+ */
 const clampScale = (s: number): number =>
   Math.min(MAX_SCALE, Math.max(MIN_SCALE, s));
 
@@ -10,7 +21,9 @@ const clampScale = (s: number): number =>
  * neither axis is inverted (scene y and screen y both increase downward). The engine
  * applies `transform()` to the Pixi world container and feeds it pointer gestures. */
 export class Camera {
+  /** World-container translation, screen-space px — see `transform`. */
   private offset = { x: 0, y: 0 };
+  /** Uniform zoom scale, clamped to `[MIN_SCALE, MAX_SCALE]` — see `transform`. */
   private scale = 1;
 
   /**

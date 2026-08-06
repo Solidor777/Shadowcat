@@ -10,6 +10,7 @@ const WALL_WIDTH = 4;
 
 /** Reconciles `doc_type:"wall"` documents into the `walls` layer as line segments. */
 export class WallView {
+  /** Document ids currently tracked in the backend, refreshed each `reconcile()`. */
   private readonly ids = new Set<string>();
 
   /**

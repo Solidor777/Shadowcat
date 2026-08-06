@@ -10,6 +10,7 @@ const STROKE_WIDTH = 2;
 
 /** Reconciles `doc_type:"template"` documents into the `templates` layer. */
 export class TemplateView {
+  /** Document ids currently tracked in the backend, refreshed each `reconcile()`. */
   private readonly ids = new Set<string>();
 
   /**

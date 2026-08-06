@@ -4,24 +4,80 @@ import type { LightingFrame } from "./lighting";
 
 /** A recording DisplayBackend for unit tests — never touches Pixi/GL. */
 export class MockBackend implements DisplayBackend {
+  /** Last `ensureLayers` z-order, recorded verbatim — see `ensureLayers`'s doc for the
+   * shrinking-set divergence from `PixiBackend`. */
   layers: string[] = [];
-  background: { url: string } | null = null;
+  /** Last `setBackground` spec, recorded verbatim. */
+  background: {
+    /** Background image serve URL. */
+    url: string;
+  } | null = null;
+  /** Count of lines passed to the last `drawGrid` call — the geometry itself is discarded. */
   gridLineCount = 0;
+  /** Color passed to the last `drawGrid` call, `0xRRGGBB`. */
   gridColor: number | null = null;
+  /** Last `setCameraTransform` value, recorded verbatim. */
   camera: CameraTransform | null = null;
+  /** Last applied visibility mask — either the last `setVisibility` input, or the
+   * snapped-to endpoint of the last `setVisibilityBlend` call. */
   visibility: VisibilityInput | null = null;
   /** Last `setVisibilityBlend` call recorded verbatim (from/to/factor), for asserting the
    * M2 §T7 cross-fade advances 0→1 across a sample interval. */
-  visibilityBlend: { from: VisibilityInput; to: VisibilityInput; factor: number } | null = null;
-  size: { width: number; height: number } | null = null;
-  filters: Array<{ layerId: string; filter: unknown }> = [];
+  visibilityBlend: {
+    /** The outgoing (older) vision sample. */
+    from: VisibilityInput;
+    /** The incoming (newer) vision sample. */
+    to: VisibilityInput;
+    /** Blend position in `[0,1]` at the time of the call. */
+    factor: number;
+  } | null = null;
+  /** Last `resize` call, recorded verbatim. */
+  size: {
+    /** Viewport width, in CSS pixels. */
+    width: number;
+    /** Viewport height, in CSS pixels. */
+    height: number;
+  } | null = null;
+  /** Every `addLayerFilter` registration not yet disposed, in call order. */
+  filters: Array<{
+    /** Target core-layer id, as given (not validated). */
+    layerId: string;
+    /** The opaque filter value passed to `addLayerFilter`. */
+    filter: unknown;
+  }> = [];
+  /** Every token render node, keyed by document id, reflecting the last `setToken` spec. */
   tokens = new Map<string, TokenNodeSpec>();
+  /** Every shape render node, keyed by document id, reflecting the last `setShape` spec. */
   shapes = new Map<string, ShapeNodeSpec>();
+  /** Last `drawOverlay` shapes, recorded verbatim (empty after `clearOverlay`). */
   overlay: Omit<ShapeNodeSpec, "layer">[] = [];
-  measure: { from: Point; to: Point; label: string } | null = null;
-  pings: { x: number; y: number; radius: number; alpha: number }[] = [];
+  /** Last `drawMeasure` call, recorded verbatim (`null` after `clearMeasure`). */
+  measure: {
+    /** The segment's start point, in scene coordinates. */
+    from: Point;
+    /** The segment's end point, in scene coordinates. */
+    to: Point;
+    /** The distance label text. */
+    label: string;
+  } | null = null;
+  /** Last `drawPings` rings, recorded verbatim. */
+  pings: {
+    /** Ring center's scene x-coordinate. */
+    x: number;
+    /** Ring center's scene y-coordinate. */
+    y: number;
+    /** Ring radius, in scene (px) units. */
+    radius: number;
+    /** Ring opacity, `[0,1]`. */
+    alpha: number;
+  }[] = [];
+  /** Last `setLighting` frame, recorded verbatim. */
   lighting: LightingFrame | null = null;
+  /** The callback recorded by `startTicker`, driven manually via `runTicker` — see
+   * `startTicker`'s doc for the overwrite-on-repeat-call divergence from `PixiBackend`. */
   tick: ((dtMs: number) => void) | undefined;
+  /** Set `true` by `destroy` — see `destroy`'s doc for the idempotent-vs-throwing divergence
+   * from `PixiBackend`. */
   destroyed = false;
 
   /** `DisplayBackend.ensureLayers`: records the requested z-order verbatim into `this.layers`,
@@ -60,7 +116,10 @@ export class MockBackend implements DisplayBackend {
    * backend.background; // { url: "https://example.test/map.png" }
    * ```
    */
-  setBackground(spec: { url: string } | null): void {
+  setBackground(spec: {
+    /** Background image serve URL. */
+    url: string;
+  } | null): void {
     this.background = spec;
   }
   /** `DisplayBackend.drawGrid`: records only `lines.length` (as `gridLineCount`) and `color` — NOT
@@ -320,7 +379,16 @@ export class MockBackend implements DisplayBackend {
    * backend.drawPings([{ x: 0, y: 0, radius: 20, alpha: 0.8 }]);
    * ```
    */
-  drawPings(rings: { x: number; y: number; radius: number; alpha: number }[]): void {
+  drawPings(rings: {
+    /** Ring center's scene x-coordinate. */
+    x: number;
+    /** Ring center's scene y-coordinate. */
+    y: number;
+    /** Ring radius, in scene (px) units. */
+    radius: number;
+    /** Ring opacity, `[0,1]`. */
+    alpha: number;
+  }[]): void {
     this.pings = rings;
   }
   /** `DisplayBackend.setLighting`: records `frame` verbatim into `this.lighting`.

@@ -6,6 +6,7 @@ import { sceneScopedDocs } from "./scene-scope";
 
 /** Reconciles `doc_type:"drawing"` documents into the `drawings` layer as shape nodes. */
 export class DrawingView {
+  /** Document ids currently tracked in the backend, refreshed each `reconcile()`. */
   private readonly ids = new Set<string>();
 
   /**

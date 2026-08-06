@@ -50,7 +50,14 @@ export function computeFogBlendFactor(clock: number, tCur: number, tNext: number
  * fogBlendRtStale({ width: 800, height: 600, resolution: 1 }, 1024, 768, 1); // true — resized
  * ```
  */
-export function fogBlendRtStale(existing: { width: number; height: number; resolution: number } | null, width: number, height: number, resolution: number): boolean {
+export function fogBlendRtStale(existing: {
+  /** The currently-captured texture's width, in CSS pixels. */
+  width: number;
+  /** The currently-captured texture's height, in CSS pixels. */
+  height: number;
+  /** The currently-captured texture's device-pixel-ratio resolution. */
+  resolution: number;
+} | null, width: number, height: number, resolution: number): boolean {
   if (!existing) return true;
   return existing.width !== width || existing.height !== height || existing.resolution !== resolution;
 }

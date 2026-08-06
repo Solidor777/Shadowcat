@@ -6,6 +6,7 @@ import type { VisibilityInput } from "./types";
  * plus a `last`-applied cache so `current()` can answer without a
  * backend round-trip. This class has no fog-drawing logic of its own. */
 export class Compositor {
+  /** The most recently applied visibility mask — see `current()`. */
   private last: VisibilityInput = { mode: "all", visible: [], explored: [] };
 
   /**

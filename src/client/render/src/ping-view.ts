@@ -1,14 +1,20 @@
 /** Transient location-ping animation. Each ping expands an outline ring from 0 to
  * `PING_RADIUS` and fades from opaque to transparent over `PING_MS`, then drops. Pure +
  * headless-testable; the engine ticker drives `tick` and feeds the result to the backend. */
+/** Total ping lifetime, in ms — a ping is dropped once its age reaches this. */
 const PING_MS = 2000;
+/** Outline radius, in scene (px) units, at full expansion (`age === PING_MS`). */
 const PING_RADIUS = 60;
 
 /** One ping's current draw state: scene-coord center, current outline radius, and alpha. */
 export interface PingRing {
+  /** Ping center's scene x-coordinate. */
   x: number;
+  /** Ping center's scene y-coordinate. */
   y: number;
+  /** Current outline radius, in scene (px) units — `0` at spawn, `PING_RADIUS` at expiry. */
   radius: number;
+  /** Current opacity, `[0,1]` — `1` at spawn, `0` at expiry. */
   alpha: number;
 }
 
@@ -27,7 +33,15 @@ export interface PingRing {
  * ```
  */
 export class PingView {
-  private pings: { x: number; y: number; age: number }[] = [];
+  /** Every in-flight (unexpired) ping, oldest first. */
+  private pings: {
+    /** Ping center's scene x-coordinate. */
+    x: number;
+    /** Ping center's scene y-coordinate. */
+    y: number;
+    /** Accumulated elapsed time, in ms, since this ping was added. */
+    age: number;
+  }[] = [];
 
   /**
    * Spawns a ping at scene `(x,y)`, age 0.
