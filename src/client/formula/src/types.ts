@@ -39,7 +39,7 @@ export type FormulaValue = number | FormulaError;
  * Type-guard distinguishing a `FormulaError` from a successful numeric result.
  * A type-only check (`typeof v !== "number"`) — it trusts that `v` already
  * conforms to `FormulaValue`'s shape; it does not verify a malformed object
- * is a well-formed `FormulaError` (that stronger check is `internal.ts`'s
+ * is a well-formed `FormulaError` (that stronger check is
  * `isWellFormedError`, used at consumer-callback trust boundaries).
  * @param v A value returned by `evaluate`, `resolveAll`, or `resolveNotationTemplate`.
  * @returns `true` when `v` is a `FormulaError` (not a finite number).

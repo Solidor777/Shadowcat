@@ -8,18 +8,18 @@ labeled "Actionable now": these are NOT blocked on anything — the underlying
 capability already exists — but are deferred as out-of-scope-for-now work.
 
 ## Blocked on a reverse-proxy deployment story
-- TODO: `ClientIp` (`http/throttle.rs`) resolves solely from `ConnectInfo<SocketAddr>` — the real
+- TODO: `ClientIp` resolves solely from `ConnectInfo<SocketAddr>` — the real
   peer address of the accepted TCP connection — with no `X-Forwarded-For`/`Forwarded` handling.
   Behind a reverse proxy that does not preserve the original client address, every request
   resolves to the proxy's own address, so the per-IP throttle bucket (`login:ip:<>`/
   `invite:ip:<>`) degrades to a single shared bucket across every real client — throttling still
   functions per-identity, just not per-real-IP. No reverse-proxy deployment story exists or is
-  scoped today (verified: `docs/design/` and `config.rs` have no proxy/trusted-header handling);
+  scoped today (verified: `docs/design/` and the `config` module have no proxy/trusted-header handling);
   resolve alongside whatever design adds one (a naive trust-any-`X-Forwarded-For` fix would be
   its own spoofing vulnerability without a configured trusted-proxy list).
 
 ## Blocked on a per-turn movement-budget system (Phase-2 combat)
-- TODO: `move_exec.rs`'s `MoveOutcome.cost` accumulates only the entered cell's terrain multiplier per step (`cost += regions.terrain_multiplier(region_cell)`); `pathfinding.rs`'s router cost also multiplies by the diagonal-rule `step_cost` (`sc * mult`, where `sc` is 1.0/2.0/√2/alternating depending on `world-settings.pathfinding.diagonalRule`). The two "cost" values are not numerically comparable once diagonal movement is involved under any non-Chebyshev rule — they coincide only because Chebyshev's diagonal step cost is 1.0. This is a deliberate M10g Task 7 scoping decision (move_exec's center-cell, terrain-only accounting model), not an oversight, and nothing currently consumes or compares the two values. Resolve before any per-turn movement-budget system consumes `MoveOutcome.cost`/`MoveStream.cost`: decide whether move_exec should thread the diagonal rule + per-step parity to match the router's preview cost, or whether route-preview cost and execution cost are intentionally distinct quantities. (Surfaced by the M10g Task 7 buddy check.)
+- TODO: `move_exec::execute_move`'s `MoveOutcome.cost` accumulates only the entered cell's terrain multiplier per step (`cost += regions.terrain_multiplier(region_cell)`); the `pathfinding` module's router cost also multiplies by the diagonal-rule `step_cost` (`sc * mult`, where `sc` is 1.0/2.0/√2/alternating depending on `world-settings.pathfinding.diagonalRule`). The two "cost" values are not numerically comparable once diagonal movement is involved under any non-Chebyshev rule — they coincide only because Chebyshev's diagonal step cost is 1.0. This is a deliberate M10g Task 7 scoping decision (`move_exec`'s center-cell, terrain-only accounting model), not an oversight, and nothing currently consumes or compares the two values. Resolve before any per-turn movement-budget system consumes `MoveOutcome.cost`/`MoveStream.cost`: decide whether `move_exec` should thread the diagonal rule + per-step parity to match the router's preview cost, or whether route-preview cost and execution cost are intentionally distinct quantities. (Surfaced by the M10g Task 7 buddy check.)
 - TODO: `navmesh::los_smooth` (M10f-4) reports the smoothed continuous route's `cost` as the PRE-smoothing weighted grid cost, unchanged — it does not recompute an exact per-span cost for the straightened any-angle chords, only guarantees the reported value is a conservative (never cheaper) budget preview. Same preview-vs-execution divergence class as the `MoveOutcome.cost`/router-cost split logged above: a per-cell-exact smoothed continuous cost is deferred, not implemented. Resolve alongside the item above if a per-turn movement-budget system ever needs an exact continuous-engine cost.
 
 ## Blocked on rotation authoring
@@ -77,7 +77,7 @@ capability already exists — but are deferred as out-of-scope-for-now work.
 - TODO: Live cross-animation concurrency for streamed move vision (`MoveStream`). M2 precomputes each move's per-recipient vision clip at *its* execute time, so two tokens moving simultaneously do NOT reveal each other mid-walk when a watcher's vision opens after the clip — it reconciles at the stop + next `vision` rebroadcast. Wanted eventually. Needs real-time per-recipient streaming (a per-move server loop recomputing each recipient's visibility of every concurrently-moving token as positions advance) instead of execute-time precompute. No correctness/secrecy impact today — only a missed transient reveal. (Design `2026-06-25-m2-streamed-continuous-vision-design.md` §8; user wants it as a follow-up.)
 
 ## Blocked on `@shadowcat/formula` gaining more consumer-callback resolver boundaries
-- TODO: `evaluate.ts`'s `ref` case and `template.ts`'s `substituteIdentifier` both wrap a consumer resolver call in a near-identical try/catch → `resolver-error` FormulaError. `graph.ts`'s equivalent catch is entangled with the internal `NeedsDependency` trampoline signal and can't share a naive helper without leaking that control-flow type across `internal.ts`'s validation-only boundary — so only `evaluate.ts`/`template.ts` are realistically unifiable. Factor a small shared helper for those two call sites if `@shadowcat/formula` grows more consumer-callback boundaries. (Surfaced by the M13a whole-branch buddy-check fix-confirmation review.)
+- TODO: `evaluate`'s `ref` case and `substituteIdentifier` both wrap a consumer resolver call in a near-identical try/catch → `resolver-error` FormulaError. `resolveAll`'s equivalent catch is entangled with the internal `NeedsDependency` trampoline signal and can't share a naive helper without leaking that control-flow type across the `internal` module's validation-only boundary — so only `evaluate`/`substituteIdentifier` are realistically unifiable. Factor a small shared helper for those two call sites if `@shadowcat/formula` grows more consumer-callback boundaries. (Surfaced by the M13a whole-branch buddy-check fix-confirmation review.)
 
 ## Blocked on real-world need (low-priority polish, inert until it matters in practice)
 - Stored `explored_fog` blobs (`ExploredSet::to_bytes`, `(i32,i32)` per cell) carry no grid-kind tag. A blob is indexed in the scene's grid kind at write time (square `(i,j)` or hex axial `(q,r)`); reads (`ExploredSet::contains`/`iter`) are pure set membership, so a fixed-grid-kind scene has one consistent interpretation and needs no migration. A GM switching a LIVE scene square<->hex would reinterpret an existing blob under the new kind's coordinate system (stale explored cells until re-fogged) — an accepted edge, not corruption. Add a grid-kind tag to the blob header + a re-index-or-clear-on-switch step only if live grid-kind switching of populated scenes becomes a real workflow.
@@ -115,8 +115,8 @@ Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one de
    no first-party producer) — build the composer/token-context UX and lift the rejection together.
 
 ## Actionable now — `setGmViewedScene` leaves a stale cross-scene token selection
-- TODO: `setGmViewedScene` (`src/client/shell/src/lib/worldSession.svelte.ts`) does not scene-scope
-  or clear `tokenSelection`, while `commitRoute` (`src/modules/scene-tools/src/controller.svelte.ts`)
+- TODO: `WorldSession`'s `setGmViewedScene` does not scene-scope
+  or clear `tokenSelection`, while `commitRoute`
   sends `activeScene(ctx).id`. So a GM who selects a token in scene A, roams to scene B, then
   commits a measured route sends `scene: B` with a token that lives in A and gets a silent
   `MoveError`. **The rejection is CORRECT and must not be relaxed** — before Task 14j that exact
@@ -136,51 +136,51 @@ Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one de
   `null`-removes-entry/key semantics to the merge rule (mirroring `FieldChange.remove` elsewhere in
   the data layer) plus client-side pruning (e.g. dropping a `worlds.<id>` entry for a world no
   longer in the caller's membership list) so an over-cap blob is recoverable.
-- TODO: `put_ui_state` (`http/routes.rs`) opens the single-connection tx via `merge_ui_state`
+- TODO: `put_ui_state` opens the single-connection tx via `merge_ui_state`
   before the merged-size check runs (the check happens inside the tx, after the read). A cheap
   route-level pre-check (e.g. rejecting a patch whose own serialized size already exceeds
   `MAX_UI_STATE_BYTES`, before touching the pool) would reject an obviously-oversized patch
   without holding the single-writer connection for the read+merge+serialize round trip.
-- TODO: `sessionState.svelte.ts` has no in-flight-PUT ordering guard — `schedulePersist`'s leading
+- TODO: the `sessionState` module has no in-flight-PUT ordering guard — `schedulePersist`'s leading
   edge can fire a second `persist()` while an earlier one's `putUiState` is still unresolved (e.g.
   a slow network on the first write, a new mutation arriving before it settles), so two writes for
   the same account can be in flight concurrently with no ordering guarantee on which lands last at
   the server. Defer the leading edge while a persist is unresolved (a simple in-flight flag,
   scheduling the deferred attempt for when the current one settles) instead of the current
   fire-and-forget leading edge.
-- TODO: `sessionState.svelte.ts`'s `loaded` flag is never reset to `false` on logout, so a
+- TODO: the `sessionState` module's `loaded` flag is never reset to `false` on logout, so a
   mutation landing inside a re-login `loadSessionState()`'s `await getUiState()` window passes the
   `loaded` guard and can persist a pre-login `state` value under the new session's cookie.
   `clearDirty()` at load start covers only the marker half of re-login hygiene; reset `loaded`
   (and cancel the cooldown timer) at logout so the write guard is structural.
-- TODO: `buildGlobalPatch`/`buildWorldPatch` (`sessionState.svelte.ts`) enumerate the leaf keys by
+- TODO: `buildGlobalPatch`/`buildWorldPatch` enumerate the leaf keys by
   hand — adding a third key to `UiState["worlds"][string]` (or a new `global` field) widens the
   type but silently drops the new key from every patch, with no compile error. Drive the copy from
   an exhaustive `Record<WorldKey, …>`/switch so a widened union becomes a type error.
 
 ## Actionable now — render-ready audit backlog (2026-07-31, non-defect items)
-- TODO: `ws/conn.rs`'s Welcome preamble runs `spawn_blocking(scan_installed_modules)` — a full
+- TODO: `welcome_capability_requirements`'s Welcome preamble runs `spawn_blocking(scan_installed_modules)` — a full
   filesystem scan — on EVERY WS connect. Cache the scan result (invalidate on module
   install/uninstall) so reconnect storms and multi-client entry don't re-walk the modules dir.
-- TODO: tower-sessions shares the single-connection SQLite pool (`auth/session.rs` builds
+- TODO: tower-sessions shares the single-connection SQLite pool (`session_layer` builds
   `SqlxSqliteStore` over `repo.pool()`), so every authenticated request queues the session read
   behind app writes on `max_connections(1)`. Give the session store its own connection (or a read
   pool) — the write path's deliberate single-writer serialization stays untouched.
-- TODO: `Stage.svelte`'s backend-init failure path sets `data-render-error="true"` silently. Route
+- TODO: `Stage`'s backend-init failure path sets `data-render-error="true"` silently. Route
   it through the project logger so a real WebGL/backend init failure is distinguishable from a
   timeout in e2e output and user bug reports.
-- TODO: `WsClient.open()` (`ws-client.ts`) adopts a resolving transport (`this.transport =
+- TODO: `WsClient.open()` adopts a resolving transport (`this.transport =
   await this.opts.connect(...)`) without re-checking `running_` after the await — a `stop()`
   call during a pending connect leaves an adopted-but-unwatched socket assigned to
   `this.transport`. Re-check `running_` immediately after the connect await and close/discard the
   transport if the client was stopped in the meantime.
-- TODO: `App.svelte`'s `boot()` captures `currentRoute()` once, BEFORE the `listWorlds` await (and
+- TODO: `App`'s `boot()` captures `currentRoute()` once, BEFORE the `listWorlds` await (and
   the `withRetry` delays widening that window further) — a hash change that lands during that
   await (e.g. a user clicking a different deep link while "Loading…" is showing) is silently
   ignored; `resolveBootWorld` resolves against the STALE route captured before the await, not the
   URL the page now shows. Re-read `currentRoute()` immediately before calling `resolveBootWorld`,
   or detect and re-resolve on a hash change observed during boot.
-- TODO: `WorldSession#onWelcome`'s activation `catch` (`worldSession.svelte.ts`) rethrows out of
+- TODO: `WorldSession#onWelcome`'s activation `catch` rethrows out of
   the inner `try` around `#modules.activate()`, which is caught by the OUTER per-Welcome `try` that
   wraps the entire handler body — so while activation keeps failing (e.g. a persistent contract
   cycle), EVERY subsequent step (the member-username fetch, `reconcileTopology`, scene
@@ -191,7 +191,7 @@ Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one de
   `#logger.error` in the outer catch) and continue running the rest of the handler instead of
   letting the rethrow short-circuit it — activation failure should degrade Surfaces, not silently
   skip member names/topology/scene resubscription too.
-- TODO: `App.svelte`'s `boot()` worst case is roughly 2.4 minutes stuck on "Loading…": three
+- TODO: `App`'s `boot()` worst case is roughly 2.4 minutes stuck on "Loading…": three
   sequential `withRetry`-wrapped awaits (`getMe`, `loadSessionState`'s `getUiState`, `listWorlds`),
   each up to 3 attempts at the 15s `FETCH_TIMEOUT_MS` plus `withRetry`'s flat `[500, 1500]`ms
   inter-attempt delays — and unlike the WS client's full-jitter backoff (`scheduleReconnect`),
@@ -199,9 +199,9 @@ Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one de
   struggling backend. Fix direction: an overall boot deadline (fail to the login/worlds route
   sooner than three full retry cycles), a visible "still trying…" state instead of a bare
   "Loading…" spinner, and jittered retry delays matching the WS backoff's convention.
-- TODO: `actor.ts`'s `effectiveOwner` mirrors the server's `effective_owner` PRECEDENCE (token's
+- TODO: `effectiveOwner` mirrors the server's `effective_owner` PRECEDENCE (token's
   own `/owner`, else the linked actor's owner) but omits the server's `actor.scope === doc.scope`
-  guard (`data/permission.rs`'s `effective_owner` rejects a resolved actor whose `scope` differs
+  guard (`effective_owner` rejects a resolved actor whose `scope` differs
   from the token's; `store.get(actorId)` in the client is a plain id lookup with no scope filter).
   Add the same `actor.scope === doc.scope` check to the client so the parity is STRUCTURAL rather
   than dependent on an unstated invariant. This is defense-in-depth, not a live bug: the client's
@@ -211,12 +211,12 @@ Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one de
   transaction). Needs its own runtime-change test + review, not a docs-only edit.
 
 ## Actionable now — Phase D-alpha (movement authority & secrecy) backlog
-- TODO: `src/server/src/ws/room.rs`'s `Room::execute_move` re-derives `is_gm` via its own
+- TODO: `Room::execute_move` re-derives `is_gm` via its own
   `ctx.world_role == WorldRole::Gm` comparison a second time, instead of reusing the `is_gm`
   binding already in scope from earlier in the same function. Harmless (both read the same
   field), but two spellings of one role decision in one function is exactly the kind of thing
   that drifts. (Surfaced by Phase D-alpha's final whole-branch review.)
-- TODO: `SceneEcs::blocks_move` (`src/server/src/scene/mod.rs`) lost its last production caller
+- TODO: `SceneEcs::blocks_move` lost its last production caller
   when Task 9 (Phase D-alpha) moved the wall-crossing check onto `crate::scene::segments_cross`
   directly — only test callers remain. It is deliberately retained (one home for wall-crossing
   semantics) rather than deleted. It is `pub`, not `pub(crate)`, so `clippy -D warnings`'
@@ -240,8 +240,8 @@ Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one de
 
 
 ## Actionable now — duplicated `listWorldMembers` (docs sweep 9 Task 2 backlog)
-- TODO: `listWorldMembers`/`WorldMember` exist TWICE — `src/client/shell/src/lib/api.ts` and
-  `src/client/core/src/user-rest.ts` (the latter re-exported from `@shadowcat/core`'s `index.ts`,
+- TODO: `listWorldMembers`/`WorldMember` exist TWICE — `@shadowcat/shell`'s `api` module and
+  `@shadowcat/core`'s `user-rest` module (the latter re-exported from `@shadowcat/core`'s barrel,
   i.e. public API). They have already diverged, and **neither is a superset of the other**:
   - `core`'s version `encodeURIComponent`s the world id and surfaces the server's error text via
     `restError`, but issues the `fetch` with **no timeout**.
@@ -253,7 +253,7 @@ Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one de
   disagreeing on three axes.
   Fix direction: ONE implementation, combining all three properties (encode + server error text +
   timeout), with the other deleted and its caller re-pointed. The shell copy has exactly one
-  production caller (`worldSession.svelte.ts:707`); `core`'s is public API with its own tests, so
+  production caller (`WorldSession`'s `#onWelcome`); `core`'s is public API with its own tests, so
   `core` is the natural home — but note this is a real merge, not a swap: adopting `core`'s version
   as-is would silently drop the request timeout. Needs a runtime change plus tests, so it is out of
   scope for a docs-only sweep. (Surfaced by the client-shell doc sweep, Task 2; the bidirectional
@@ -261,18 +261,18 @@ Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one de
   stronger version.)
 
 ## Actionable now — negative template substitutions lose their breakdown label (docs sweep 9 Task 4)
-- TODO: `template.ts`'s `substituteIdentifier` emits a negative resolved value as an UNLABELED
+- TODO: `substituteIdentifier` emits a negative resolved value as an UNLABELED
   `(0 - N)` while a positive one becomes a labeled `N[originalText]`. The totals are identical
   either way, but the roll BREAKDOWN differs: `collect_labeled_consts`
-  (`src/server/src/dice/eval/sum.rs`) emits a `ConstTerm` only for a `Const` carrying a label, and
+  emits a `ConstTerm` only for a `Const` carrying a label, and
   it recurses through `Expr::Neg` — so a labeled `-N[label]` would contribute a correctly-signed
   chip, whereas the current form's two unlabeled `Const`s contribute none. **A negative modifier
   therefore vanishes from the breakdown UI** while a positive one is attributed.
   Decide whether that is intended. If the chip is wanted, emitting `-N[originalText]` restores it
   and is arithmetically identical (verified: `x - Neg(N)` and `x - (0 - N)` both fold to `x + N`).
   **The notation output IS already tested and the absent label is deliberate at that layer** —
-  `template.test.ts:32-35` asserts `"d20 + mod"` with `mod: -2` produces `"1d20 + (0 - 2)"`, under a
-  test named "negative values emit parenthesized zero-minus form (no label)". So the client-side
+  the test "negative values emit parenthesized zero-minus form (no label)" asserts `"d20 + mod"`
+  with `mod: -2` produces `"1d20 + (0 - 2)"`. So the client-side
   shape was a choice, not an accident. What is NOT established is whether its DOWNSTREAM effect was
   considered: nothing connects that output to the server-side breakdown, and no test covers the
   missing chip (that would need a Rust test around `collect_labeled_consts`, or the `roll-wire`
@@ -283,9 +283,9 @@ Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one de
   consequence, and it was unmentioned. The comment now states the verified behavior.
 
 ## Actionable now — `push`'s per-instance filter omits `/embedded` (docs sweep 9 Task 5 backlog)
-- TODO: `TemplatesController.push` (`src/client/ui-kit/src/templatesController.svelte.ts`) filters
+- TODO: `TemplatesController.push` filters
   candidate instances on `canEdit(inst, "/base") && canEdit(inst, "/system")`, but the Update it
-  then builds — `planToUpdate` (`src/client/core/src/templates.ts`) — also emits
+  then builds — `planToUpdate` — also emits
   `/embedded/<coll>` changes whenever a collection differs. `/embedded` is gated by a DIFFERENT
   capability (`MANAGE_EMBEDDED`) than the WRITE_FIELDS bands, so an instance the pusher can write
   base/system but not `/embedded` on passes the client filter and is then refused server-side.
@@ -315,10 +315,10 @@ Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one de
 ## Actionable now — `EngineAdapter.focus` has no production caller (docs sweep 10 Task 3 backlog)
 - TODO: decide whether the panel host should perform imperative DOM-level focus, then either wire
   `EngineAdapter.focus` up or delete the seam. Today it is defined on the adapter interface
-  (`src/modules/panels/src/engine/adapter.ts`) and implemented by BOTH engines
+  and implemented by BOTH engines
   (`DockviewEngine.focus` → `api.getPanel(id)?.api.setActive()`; `FakeEngine.focus` → records
   `#focused`), and **nothing in production calls either one.** The reachable chain
-  (`src/client/ui-kit/src/sheetsController.svelte.ts:52` → `PanelsBridge.focus` →
+  (`SheetsController.openDocument` → `PanelsBridge.focus` →
   `PanelsController.focus`) terminates in `this.open(id)`, i.e. a `LayoutOp` that activates the
   panel's tab and bumps a floating panel's z-order in the tree — never touching the engine's
   `focus`. Only `PanelHost.test.ts` and `dockview.test.ts` call the engines' `focus` directly.
@@ -337,25 +337,26 @@ Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one de
 
 ## Actionable now — `ConditionsPanel`'s registry seed doesn't use a deterministic id (docs sweep 11 Task 5 backlog)
 - TODO: give the condition-registry seed the same `deterministicId(worldId, ...)` convergence
-  property its sibling `seedFactionRegistryIfAbsent` (`src/modules/factions/src/seed.ts`) already
-  has. `ConditionsPanel.svelte`'s inline seed `$effect` calls
+  property its sibling `seedFactionRegistryIfAbsent` already
+  has. `ConditionsPanel`'s inline seed `$effect` calls
   `buildConditionRegistryDoc(ctx.world, SEED)` with no explicit `id`, even though
-  `buildConditionRegistryDoc`'s own doc comment (`scene-docs.ts`) says to pass `deterministicId`
+  `buildConditionRegistryDoc`'s own doc comment says to pass `deterministicId`
   for exactly this "singleton seed" case. Two GMs racing to seed a brand-new world therefore
   compute two DIFFERENT random ids, unlike the faction-registry seed's same-id convergence.
   **Not a correctness bug today:** `CONDITION_REGISTRY_DOC_TYPE` is in the server's doc_type-scoped
-  `SINGLETON_DOC_TYPES` list (`data/sqlite.rs`), so the loser's Create is rejected regardless of
+  `SINGLETON_DOC_TYPES` list, so the loser's Create is rejected regardless of
   id, and `OptimisticClient.reject` rolls the local prediction back the normal way — the outcome
   converges correctly either way. Fix is a one-line fold of `seedConditionRegistryIfAbsent` into
-  `./seed.ts` (mirroring `factions/src/seed.ts`) for consistency and testability; out of scope for
+  the `conditions` module's own `seed` module (mirroring the `factions` module's `seed` module)
+  for consistency and testability; out of scope for
   a comment-only docs sweep. (Surfaced by sweep 11 Task 5's Rule-11 sibling audit of
   `FactionsPanel` vs `ConditionsPanel`.)
 
 ## Actionable now — `ConditionsPanel`'s `isActive`/`toggle` disagree on which selected tokens count (docs sweep 11 Task 5 backlog)
-- TODO: `isActive(conditionId)` (`src/modules/conditions/src/ConditionsPanel.svelte:136`) reports
+- TODO: `ConditionsPanel`'s `isActive(conditionId)` reports
   whether EVERY selected token resolving a conditions target has the condition, counting a
   non-editable selected token (one `ctx.canEdit` would refuse) the same as an editable one.
-  `toggle(conditionId)` (`:157`) mutates only the editable subset, but decides ADD-vs-REMOVE from
+  `ConditionsPanel`'s `toggle(conditionId)` mutates only the editable subset, but decides ADD-vs-REMOVE from
   `isActive`'s broader verdict. Net effect, reachable whenever a selection mixes an editable and a
   non-editable token (scene token selection is not restricted to owned tokens): the palette chip's
   active/mixed display can be governed by a token the click cannot affect, and in the case where

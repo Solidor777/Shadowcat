@@ -2,16 +2,16 @@ import { FORMULA_ERROR_KINDS, type FormulaError, type FormulaValue } from "./typ
 
 const FORMULA_ERROR_KIND_SET: ReadonlySet<string> = new Set(FORMULA_ERROR_KINDS);
 
-// Not part of the package's public surface (`index.ts` does not re-export this
-// module) — shared trust-boundary helpers for `evaluate.ts` and `graph.ts`, both
-// of which validate a consumer-supplied callback's return value against the
-// `FormulaValue` contract.
+// Not part of the package's public surface — `@shadowcat/formula`'s public
+// exports omit this module — shared trust-boundary helpers for `evaluate` and
+// `resolveAll`, both of which validate a consumer-supplied callback's return
+// value against the `FormulaValue` contract.
 // A `//` header, not a `/** */` block: a doc block here would precede another doc
 // block rather than a declaration, and every consumer of doc blocks (TypeDoc,
 // editor hover, jsdoc lint) binds to the NEAREST preceding one — so it would
 // attach to nothing while still reading as attached.
 
-/** True shape check for a `FormulaError` — mirrors parser.ts's `isErr`, not
+/** True shape check for a `FormulaError` — mirrors `isErr`, not
  * the type-only `isFormulaError` (which merely asserts `typeof v !== "number"`
  * and cannot detect a malformed non-number).
  * @param v An untrusted value, typically a consumer callback's return value.
@@ -56,8 +56,8 @@ export function finite(n: number): FormulaValue {
 }
 
 /** Validates a consumer-supplied callback's return value at the trust
- * boundary: neither a resolver (`evaluate.ts`) nor an `evalNode` (`graph.ts`)
- * is guaranteed to honor `FormulaValue`'s contract. A finite number passes
+ * boundary: neither a resolver (`evaluate`'s `ref` case) nor an `evalNode`
+ * callback is guaranteed to honor `FormulaValue`'s contract. A finite number passes
  * through `finite()` (overflow still rejected); a well-formed `FormulaError`
  * propagates unchanged; anything else (wrong shape, `undefined`, a raw
  * string, etc.) becomes a synthetic `resolver-error` rather than being

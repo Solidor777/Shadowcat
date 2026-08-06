@@ -390,7 +390,7 @@ impl Room {
                     }
                 };
                 // Invariant: `visible` may be corner-sampled (lenient) while `explored` is
-                // center-sampled by construction (explored.rs). The asymmetry only ever ENLARGES
+                // center-sampled by construction (`ExploredSet::mark_polygons`). The asymmetry only ever ENLARGES
                 // `visible ∪ explored`, so it is fail-safe — it never over-permits beyond cells
                 // the player currently sees or has genuinely explored.
                 if !move_cells
@@ -2267,7 +2267,7 @@ mod room_tests {
 
     #[tokio::test]
     async fn non_gm_token_create_in_explored_but_unlit_cell_succeeds() {
-        // Guards the Create gate's Revealed branch (room.rs's `revealed_pending` consumption
+        // Guards the Create gate's Revealed branch (the `revealed_pending` consumption
         // loop): a cell that is explored-but-not-currently-visible must still admit a player
         // Create, mirroring `execute_move_revealed_union_allows_explored_cell`'s movement-side
         // assertion of the same `visible ∪ explored` contract.

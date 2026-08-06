@@ -5,7 +5,7 @@
 //!
 //! INVARIANT: the DB snapshot (`VACUUM INTO`) always completes before the assets
 //! copy starts. Asset uploads write bytes to disk BEFORE inserting the
-//! referencing DB row (`http/assets.rs`), and asset files are never deleted
+//! referencing DB row (`http::assets::upload`), and asset files are never deleted
 //! except by explicit delete — so db-snapshot-then-assets-copy guarantees every
 //! asset the snapshot's rows reference is already present in the assets copy.
 
@@ -141,7 +141,7 @@ fn copy_dir_recursive<'a>(
 /// `out_dir` if absent. Does not check `out_dir` for prior contents — callers
 /// that need the refuse-non-empty-without-force gate call
 /// [`dir_is_empty_or_absent`] first (the CLI layer owns that decision; see
-/// `main.rs::run_backup`).
+/// `main::run_backup`).
 ///
 /// # Examples
 ///

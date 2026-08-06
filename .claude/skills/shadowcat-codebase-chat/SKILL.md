@@ -1,6 +1,6 @@
 ---
 name: shadowcat-codebase-chat
-description: "Use when touching Shadowcat's chat system: the message Document model (incl. source/edited/deleted markers), SendMessage/EditMessage/DeleteMessage ingest, the ops_target_message ingress guard, the WriteOrigin-gated Update exemption, the content sanitizer + shortcode pre-pass, the chat/dice settings policies, the command parser, the roll wire boundary (chat/rolls.rs caps/entropy/span-scanner, RollEmbed/RollButton segments, System error notices, roll immutability, attribution authz), the SSRF-guarded link-preview fetcher (chat/link_preview.rs GuardedResolver/IP-blocklist/redirects, preview_cache.rs, the LinkPreview segment + ingest enrich + previews_enabled toggle), the client body mirror (chat-docs.ts), or the chat UI modules (chat, chat-composer, chat-card — the {@html} boundary + roll/preview rendering). Covers src/server/src/chat/ + src/client/core/src/chat-docs.ts + src/modules/chat*. Invoke shadowcat-codebase-core first."
+description: "Use when touching Shadowcat's chat system: the message Document model (incl. source/edited/deleted markers), SendMessage/EditMessage/DeleteMessage ingest, the ops_target_message ingress guard, the WriteOrigin-gated Update exemption, the content sanitizer + shortcode pre-pass, the chat/dice settings policies, the command parser, the roll wire boundary (chat::rolls's caps/entropy/span-scanner, RollEmbed/RollButton segments, System error notices, roll immutability, attribution authz), the SSRF-guarded link-preview fetcher (chat::link_preview's GuardedResolver/IP-blocklist/redirects, chat::preview_cache, the LinkPreview segment + ingest enrich + previews_enabled toggle), the client body mirror (the chat-docs module), or the chat UI modules (chat, chat-composer, chat-card — the {@html} boundary + roll/preview rendering). Covers src/server/src/chat/ + src/client/core/src/chat-docs.ts + src/modules/chat*. Invoke shadowcat-codebase-core first."
 ---
 
 # Shadowcat — Chat Core
@@ -19,10 +19,10 @@ path and a soft-tombstone delete path, gated by a new `WriteOrigin` marker. **M1
 (the client display layer + three server enablers): `MessageEngine.source` (M13-0 renamed from
 `MessageSystem`; edit-prefill raw
 input), an always-on `:shortcode:` → emoji pre-pass in `sanitize`, a member-visible world
-roster, the client Zod mirror (`chat-docs.ts`), and the chat UI as three replaceable modules
+roster, the client Zod mirror (the `chat-docs` module), and the chat UI as three replaceable modules
 (`module-chat` host / `module-chat-composer` / `module-chat-card`) mounted in the tabbed
 sidebar. **M11d-2 shipped the dice wire**: rolls execute server-side at chat ingest
-(`chat/rolls.rs` — the ONLY untrusted-notation execution path, behind caps + per-roll OS
+(`chat::rolls` — the ONLY untrusted-notation execution path, behind caps + per-roll OS
 entropy), outcomes ride the body as `Segment::RollEmbed`/`RollButton`, roll errors surface as
 the first `MessageKind::System` producer (whispered server notices), rolls are edit-immutable,
 attribution is ownership-validated at ingest, and the card/composer render/author it all.
@@ -31,10 +31,10 @@ outbound HTTP, behind a validating DNS resolver + IP blocklist, fetched synchron
 stored as a `Segment::LinkPreview`, rendered client-side (never fetched by the client). **M11 is
 now complete.**
 
-## Link previews (M11d-3) — `src/server/src/chat/link_preview.rs` + `preview_cache.rs`
+## Link previews (M11d-3) — `chat::link_preview` + `chat::preview_cache`
 
 The server's only outbound HTTP. `reqwest` is now a PRODUCTION dep (rustls-tls; ~1.1 MiB binary
-delta, far under budget). Load-bearing security surface — treat any change to `link_preview.rs`
+delta, far under budget). Load-bearing security surface — treat any change to `chat::link_preview`
 as buddy-check-worthy by default (its own buddy-check found a Critical: a literal-IP URL
 `http://169.254.169.254/` bypassed the resolver via hyper's IP-literal DNS short-circuit).
 
@@ -54,7 +54,7 @@ as buddy-check-worthy by default (its own buddy-check found a Critical: a litera
   `build_client_with_resolve_fn` are `#[cfg(test)]`-only — production literally cannot build a
   loopback-permitting client. **No preview image in v1** (an `<img src>` would make the client
   fetch → leak the viewer's IP; title+desc only).
-- **Ingest (`enrich` in `link_preview.rs`, called from `handle_send_message`/`handle_edit_message`):**
+- **Ingest (`chat::link_preview::enrich`, called from `handle_send_message`/`handle_edit_message`):**
   extracts hrefs from GENUINE `<a>` tags in the sanitized `Segment::Html` runs (NOT a raw
   `href=` substring scan — inert body text `see href="http://x"` would otherwise trigger a real
   outbound fetch, a per-task-review-caught gap), dedups, caps `MAX_PREVIEWS_PER_MESSAGE=3`, fetches
@@ -71,14 +71,14 @@ as buddy-check-worthy by default (its own buddy-check found a Critical: a litera
   `Some(false)`/`Some(true)` = GM override), authored in `module-game-settings`' new chat-settings
   section. Singleton `chat-settings`/`dice-settings` resolution is deterministic-by-lowest-UUID
   (`query_documents ORDER BY id`); construction-time uniqueness is a logged TODO.
-- **Client:** `chat-docs.ts` mirrors `link_preview` (fail-closed refine); the card renders a
+- **Client:** the `chat-docs` module mirrors `link_preview` (fail-closed refine); the card renders a
   bordered escaped-text card (title/description/host), the whole card an `<a rel="noopener
   noreferrer nofollow">` whose href is gated by a `safeHref` scheme re-check (http/https only —
   a stored non-http url renders non-clickable, defense-in-depth). No `<img>`, no `{@html}`.
 
-## Dice wire (M11d-2) — `src/server/src/chat/rolls.rs` + the ingest roll stage
+## Dice wire (M11d-2) — `chat::rolls` + the ingest roll stage
 
-- `rolls.rs`: caps (`MAX_ROLL_DICE=100` summed over the parsed `Expr`; `MAX_ROLL_RECORDS=1000`
+- `chat::rolls`: caps (`MAX_ROLL_DICE=100` summed over the parsed `Expr`; `MAX_ROLL_RECORDS=1000`
   post-roll; `MAX_EXPERTISE=100`; `MAX_DIE_SIDES=10_000`; `MAX_INLINE_ROLLS=8`),
   `DieKind::validate()` per group, `entropy_seed()` (fresh `Uuid::new_v4` fold per roll —
   nothing persists the seed; a stored outcome's naturals reproduce it), `scan_body` (BALANCED
@@ -110,11 +110,11 @@ as buddy-check-worthy by default (its own buddy-check found a Critical: a litera
   actor in that world). An actor doc from another world is refused (`ActorNotSpeakable`) even for
   its owner — ownership alone no longer crosses world scope. `TokenInstance` refs are REJECTED
   until speak-as-token ships (same error, nothing persisted). Edits copy `actor_owner` verbatim
-  from the stored doc, so this ingest gate is the only one needed. `world_of` (`data/document.rs`,
-  `pub(crate)`) is the SAME helper `ws/conn.rs`'s `scene_ping_permitted` uses for its own
+  from the stored doc, so this ingest gate is the only one needed. `world_of` (`data::document`,
+  `pub(crate)`) is the SAME helper `ws::conn::scene_ping_permitted` uses for its own
   cross-world scene pin — one idiom for "does this doc belong to world X," not two independent
   `Scope` matches.
-- Client: `chat-docs.ts` mirrors `roll_embed`/`roll_button` (`RollOutcomeSchema`/
+- Client: the `chat-docs` module mirrors `roll_embed`/`roll_button` (`RollOutcomeSchema`/
   `DieRecordSchema`, records `.passthrough()` for server-only audit fields; the
   unknown-segment fallback REFUSES both new kinds — fail-closed; i64 `total`/`margin` can
   saturate past 2^53, a documented display-precision tradeoff). The card renders the block
@@ -135,7 +135,7 @@ with zero message-specific plumbing in any of those subsystems.
 
 ## Key files & seams
 
-- `src/server/src/chat/mod.rs` — the domain home:
+- The `chat` module — the domain home:
   - `MESSAGE_DOC_TYPE = "message"`.
   - `ActorOwnerRef` (`Actor{actor_id}` | `TokenInstance{token_id}`) — the ONLY chat type with
     `#[derive(TS)]` (ts-rs export); carried on the `SendMessage` wire frame.
@@ -251,7 +251,7 @@ with zero message-specific plumbing in any of those subsystems.
     per-recipient redaction continue to apply unmodified. Rate-limited (without a budget, a single
     owner/GM could repeatedly re-delete the same message, each call consuming a real seq number
     and re-writing the FTS index — an unbounded write/broadcast amplification from one frame).
-- `src/server/src/chat/shortcodes.rs` (M11d-1) — `replace_shortcodes(raw) -> Cow<str>`: an
+- `chat::shortcodes` (M11d-1) — `replace_shortcodes(raw) -> Cow<str>`: an
   always-on `:name:` → unicode-emoji pre-pass (`[a-z0-9_+-]+` names, sorted static table +
   binary search, O(n), UTF-8-boundary-safe, no policy toggle — typing sugar, zero security
   surface since output is plain unicode). Runs as the FIRST line of `sanitize()`, so it applies
@@ -259,7 +259,7 @@ with zero message-specific plumbing in any of those subsystems.
   is captured BEFORE it runs, so shortcodes stay literal in edit-prefill. v1 limitation
   (documented): pre-parse replacement also fires inside markdown code spans. Table sortedness
   is pinned by a test (`binary_search_by_key` silently breaks on a mis-sorted row).
-- `src/server/src/chat/sanitize.rs` — `sanitize(raw: &str, policy: &ChatContentPolicy) ->
+- `chat::sanitize` — `sanitize(raw: &str, policy: &ChatContentPolicy) ->
   Vec<Segment>`, the c-3 content-security boundary. `!policy.markdown && !policy.html` short-
   circuits to a single `Segment::Text` (identical to c-1's `plain_text_content`, the fail-closed
   baseline). Otherwise: `pulldown-cmark` renders Markdown to an HTML string (when `markdown` is
@@ -281,7 +281,7 @@ with zero message-specific plumbing in any of those subsystems.
   (`//evil.example/pixel.gif`) through unfiltered — invisible to the `url_schemes` allowlist,
   which only inspects URLs that HAVE a scheme — and would otherwise let a smuggled tracking pixel
   fire for every recipient of a whispered/GM-only message.
-- `src/server/src/chat/settings.rs` — `ChatContentPolicy{markdown, html, images, hyperlinks,
+- `chat::settings` — `ChatContentPolicy{markdown, html, images, hyperlinks,
   emails: bool}`, all `#[serde(default)]` = `false`, stored as the `system` body of the single
   per-world `chat-settings` config `Document` (`CHAT_SETTINGS_DOC_TYPE`). `resolve_content_policy
   (repo, world_id) -> ChatContentPolicy` is FAIL-CLOSED on every failure mode: a query error, an
@@ -289,7 +289,7 @@ with zero message-specific plumbing in any of those subsystems.
   `ChatContentPolicy::default()` (every toggle off, plain text) — never a partial/best-effort
   parse that could widen enrichment on malformed input. Every toggle can only WIDEN from that
   safe baseline, so degrading to `default()` is always the safe direction.
-- `src/server/src/chat/commands.rs` — `parse_command(raw: &str) -> ParsedCommand{kind,
+- `chat::commands` — `parse_command(raw: &str) -> ParsedCommand{kind,
   whisper_to: Option<Vec<String>>, body}`, pure (no repo/async — the async caller resolves
   `whisper_to` usernames and re-validates). Only a LEADING token counts; the same text mid-message
   is literal. `/me `/`/em `/`/emote ` → `MessageKind::Emote`. `/roll `/`/r `, or bare `/NdM`
@@ -301,7 +301,7 @@ with zero message-specific plumbing in any of those subsystems.
   parse path** — proven by an exhaustive test over every command token, not just the default
   fallthrough — `System` is reserved for a future server-authored-notice producer that does not
   go through this parser at all.
-- `src/server/src/ws/protocol.rs` — `ClientMsg::SendMessage { request_id, channel, content,
+- `ws::protocol` — `ClientMsg::SendMessage { request_id, channel, content,
   actor_owner: Option<ActorOwnerRef>, audience: Audience }` (ts-rs exported; `audience` is
   `#[serde(default)]`, so an omitted field parses as `Audience::Public`).
   `ClientMsg::EditMessage { request_id, message_id, content }` and
@@ -314,9 +314,9 @@ with zero message-specific plumbing in any of those subsystems.
   `SendMessageError`'s `Display`, which is `[sec]`-classified: validation-class variants surface a
   specific reason, but authorization/existence/internal-class variants (`ActorNotSpeakable`,
   `Forbidden`, `NotFound`, `Data`) collapse to a fixed generic string — `NotFound`==`Forbidden`
-  (no existence oracle), `Data` never leaks its inner detail. See the `Display` impl at the
-  `SendMessageError` enum (`chat/mod.rs`).
-- `src/server/src/ws/conn.rs` — three chat dispatch points plus the `Intent` guard:
+  (no existence oracle), `Data` never leaks its inner detail. See the `Display` impl on
+  `chat::SendMessageError`.
+- `ws::conn` — three chat dispatch points plus the `Intent` guard:
   - `ClientMsg::Intent { ops, .. }` arm: calls `chat::ops_target_message(&ops)` BEFORE
     `room.publish`; if true, sends `ServerMsg::Reject{reason: Forbidden}` and `continue`s without
     ever reaching `apply_intent`.
@@ -327,12 +327,12 @@ with zero message-specific plumbing in any of those subsystems.
     pattern as `Intent`), not a direct reply; a failure is `tracing::debug!`-logged AND emits a
     `ServerMsg::ChatError { request_id, message: e.to_string() }` to the SENDER's connection only
     (`etx`, never broadcast) so the rejection is surfaced instead of vanishing.
-- `src/server/src/http/routes.rs` (`write_ops`, around line 242) — mirrors the WS ingress guard:
+- `http::routes::write_ops` — mirrors the WS ingress guard:
   `if chat::ops_target_message(&ops) { return Err(AppError::Forbidden); }` before the room/repo
   write path. Both transports must independently apply this guard. (`EditMessage`/`DeleteMessage`
   have no HTTP equivalent — they are WS-only frames, same as `SendMessage`.)
-- `src/server/src/data/sqlite.rs` (`apply_intent`) — takes a `WriteOrigin` (`Client` |
-  `ServerMessageRevision`, `src/server/src/data/command.rs`) parameter, threaded from
+- `data::sqlite::apply_intent` — takes a `WriteOrigin` (`Client` |
+  `ServerMessageRevision`, from `data::command`) parameter, threaded from
   `Room::publish` through ~60+ call sites (every existing caller passes `WriteOrigin::Client`;
   ONLY `handle_edit_message`/`handle_delete_message` ever construct
   `WriteOrigin::ServerMessageRevision`, and only after their own owner-or-GM check has already
@@ -407,7 +407,7 @@ with zero message-specific plumbing in any of those subsystems.
   soft-deleted doc.
 - **Content model is opaque and NOT ts-rs-exported** (`MessageKind`, `Segment`, `MessageEngine`)
   — only `ActorOwnerRef` and `Audience` (both on the wire `SendMessage` frame) are. The client
-  mirror NOW EXISTS: `src/client/core/src/chat-docs.ts` (M11d-1) — Zod schemas +
+  mirror NOW EXISTS: the `chat-docs` module (M11d-1) — Zod schemas +
   `parseMessageEngine(doc) -> ChatMessageEngine | null` (M13-0 renamed from
   `parseMessageSystem`/`ChatMessageSystem`, parses `doc.engine` not `doc.system`; fail-closed:
   wrong doc_type or ANY
@@ -473,7 +473,7 @@ with zero message-specific plumbing in any of those subsystems.
 - **`chat-settings` fail-closed means a missing or malformed policy doc silently degrades to plain
   text**, not an error surfaced anywhere — a GM who intends to enable Markdown but leaves the
   `chat-settings` doc absent, or types a field with the wrong JSON type, gets ordinary c-1-style
-  plain text with no diagnostic. This is deliberate (see `settings.rs`'s module doc) but easy to
+  plain text with no diagnostic. This is deliberate (see `chat::settings`'s module doc) but easy to
   mistake for a bug when testing enrichment toggles.
 - **`MAX_MESSAGE_CHARS = 4096` and the per-minute flood budget are enforced only inside
   `handle_send_message`/`handle_edit_message`/`handle_delete_message`** — they do not apply to any
@@ -494,15 +494,15 @@ with zero message-specific plumbing in any of those subsystems.
 
 Three independently replaceable modules (UI-is-modules; swap any one without the others):
 
-- **`src/modules/chat`** (`@shadowcat/module-chat`, the host) — contributes the sidebar tab
+- **`@shadowcat/module-chat`** (the host) — contributes the sidebar tab
   (order 0 = the default tab; `settings` was moved to order 6 to keep 0 unique) and DECLARES
   the singleton surfaces `shadowcat.surface:chat.composer` / `chat.message`. **Unread badge
   (Phase-1 cleanup):** the chat tab is dockview-rendered imperatively via `PanelTabRenderer`, not a
   Svelte component, so the badge is a new `PanelBadge` subscribe/get LIVE-BINDING seam on
   `PanelMeta` (a plain static count field would go stale, since `DockviewEngine.apply()` reassigns
   the whole `#meta` map to a fresh `Map` on every rebuild while `PanelMeta` object references
-  themselves stay stable — see `shadowcat-codebase-panels`). Unread tracking is a pure `unread.ts`
-  module: a per-channel `ReadMarker{createdAt,id}` frontier matching `channels.ts`'s `byCreation`
+  themselves stay stable — see `shadowcat-codebase-panels`). Unread tracking is a pure `unread`
+  module: a per-channel `ReadMarker{createdAt,id}` frontier matching `channels`'s `byCreation`
   tie-break (no per-message seq field exists on `WireDocument` for the client to key off), spanning
   ALL channels combined into one tab-level pip (not per-channel sub-badges), excluding the reader's
   own posts. Persisted via `ctx.uiState.getChatRead`/`setChatRead`, an opaque sibling key to the
@@ -519,7 +519,7 @@ Three independently replaceable modules (UI-is-modules; swap any one without the
   add/rename are single-key updates but **remove is a WHOLE-FIELD replace of
   `/engine/channels`** (M13-0 re-root, was `/system/channels`) with the key deleted — `set_pointer` cannot delete keys; a null
   tombstone was reviewed and rejected). Render cap: last 200 per view, derived incrementally via
-  `channels.ts`'s `ChatDerivationCache` (`deriveVisibleDocs`) — `channel`/`audience` are frozen at
+  `channels`'s `ChatDerivationCache` (`deriveVisibleDocs`) — `channel`/`audience` are frozen at
   creation (see `handle_edit_message` above), so an id's view membership and sorted position are
   parsed/computed once and never revisited; a subsequent edit (a new WireDocument reference for a
   known id) only refreshes the cached reference, an O(log n) binary-search insertion handles a
@@ -535,15 +535,15 @@ Three independently replaceable modules (UI-is-modules; swap any one without the
   re-syncs on visibility — panels stay mounted in the tabbed sidebar). Both `scrollToBottom` and
   the visibility-reveal path must call the same scroll-state sync used by the `onscroll` handler,
   or the virtualized window silently goes stale after a programmatic (non-event-firing) scroll.
-- **`src/modules/chat-composer`** — Enter sends / Shift+Enter newline / `e.isComposing` IME
+- **`@shadowcat/module-chat-composer`** — Enter sends / Shift+Enter newline / `e.isComposing` IME
   guard; validation on the TRIMMED length (what's actually sent); NO client command parsing
   (`/`-commands ride verbatim — the server parses); the "Speak as" picker (M11d-2) sends
   `actor_owner` `Actor` refs, server-ownership-validated at ingest (see Dice wire above).
-- **`src/modules/chat-card`** — fail-closed render (`parseMessageEngine` null ⇒ nothing).
-  **`RollTooltip.svelte` (Phase-1 cleanup):** an accessible focus/hover-triggered popover
+- **`@shadowcat/module-chat-card`** — fail-closed render (`parseMessageEngine` null ⇒ nothing).
+  **`RollTooltip` (Phase-1 cleanup):** an accessible focus/hover-triggered popover
   replacing the earlier native `title` tooltip on a roll segment, showing the full
   `outcome.records[]` table with dropped dice distinguished. Popover `id` is derived per-instance
-  (`$props.id()`, the `LauncherMenu.svelte` convention) — never hardcoded, since a message can
+  (`$props.id()`, the `LauncherMenu` convention) — never hardcoded, since a message can
   contain multiple inline rolls and many `MessageCard`s render simultaneously in the chat log.
   Touch affordance: `onclick` toggle gated on `matchMedia("(hover: hover)")` so a tap opens it on
   touch devices without a hover-just-opened tooltip re-closing on a desktop click (a hover-capable

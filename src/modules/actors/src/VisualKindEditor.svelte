@@ -45,8 +45,7 @@
   /**
    * Projects the editor's flat `AnimSourceState` into the wire `AnimatedSource` union — the two
    * branches are mutually exclusive (a `"frames"` result carries no sheet fields, a `"sheet"`
-   * result carries no `frames` array), mirroring `AnimatedSource`'s tagged-enum shape server-side
-   * (`src/server/src/data/engine/token.rs:259`).
+   * result carries no `frames` array), mirroring `AnimatedSource`'s tagged-enum shape server-side.
    * @param s The editor's animated-source state to project.
    * @returns The `AnimatedSource` value to embed in a `RenderVisual`/`FaceVisual`.
    * @example
@@ -83,8 +82,8 @@
    * built `faces` map — the face-row-scoped mirror of `buildVisual`'s image/animated branches.
    * An `"image"` row's `anim` state and an `"animated"` row's `asset` field are never read here
    * (only `f.kind` decides which literal is built), so switching a row's own `kind` can never
-   * leak a sibling field into the emitted value: `FaceVisual` is `RenderVisual`
-   * (`src/server/src/data/engine/token.rs:236`), a Rust internally-tagged enum whose variants
+   * leak a sibling field into the emitted value: `FaceVisual` is `RenderVisual`,
+   * a Rust internally-tagged enum whose variants
    * cannot carry each other's fields.
    * @param f The face-row editor state to project.
    * @returns The `FaceVisual` to store under this row's name.
@@ -131,7 +130,7 @@
    * the PREVIOUS kind in the emitted value: an `"image"` result has no `faces`/`source` field to
    * go stale, an `"animated"` result has no `asset`/`faces` field, and a `"faces"` result's own
    * per-face entries have the same one-literal-per-kind property. This mirrors `TokenVisual`'s
-   * wire shape — a Rust internally-tagged enum (`src/server/src/data/engine/token.rs:200`) whose
+   * wire shape — a Rust internally-tagged enum whose
    * variants cannot carry each other's fields, so there is no representable "stale sibling" state
    * on either side of the wire.
    * - `"image"`: `assetId` alone; `null` if nothing is picked.
@@ -193,7 +192,7 @@
 
   /**
    * Instance export: the host resets the editor after a successful create, via
-   * `bind:this={visualEditor}` in `ActorsPanel.svelte` (`visualEditor?.reset()`).
+   * `bind:this={visualEditor}` in `ActorsPanel` (`visualEditor?.reset()`).
    * @returns Nothing; delegates to `resetVisualEditor`.
    * @example
    * ```

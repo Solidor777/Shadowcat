@@ -37,7 +37,7 @@
 //! lock, so this executor is pure and imposes no lock ordering.
 //!
 //! Coupling: `token_position` is the ECS committed-position seam; any rename
-//! must update both this caller and `token_move` in `scene/mod.rs`.
+//! must update both this caller and `SceneEcs::token_move`.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
@@ -150,7 +150,7 @@ pub(crate) fn gate_walk(path: &[(f64, f64)], cell: f64) -> Option<Vec<GateSample
         let (px, py) = path[i - 1];
         let (nx, ny) = path[i];
         let cheby = (nx - px).abs().max((ny - py).abs());
-        // Magnitude-relative tolerance (mirrors `movement.rs`'s `supercover_cells` corner-test
+        // Magnitude-relative tolerance (mirrors `movement::supercover_cells`'s corner-test
         // convention, `(a.abs() + b.abs() + 1.0) * f64::EPSILON * K`): a genuine single-cell
         // step's `cheby` is computed as `(nx-px).abs().max((ny-py).abs())` — two subtractions
         // whose rounding error scales with the magnitude of their OPERANDS (`px`/`nx`/`py`/`ny`),
@@ -363,7 +363,7 @@ pub(crate) fn execute_move(
     let gate_walls = ecs.move_walls(scene, None);
 
     // Constant for the whole walk: the footprint disc radius in scene units, mirroring
-    // `cell_enterable`'s `r_scene` (`pathfinding.rs:88`).
+    // `cell_enterable`'s `r_scene`.
     let r_scene = footprint_radius_cells.max(0.0) * cell;
 
     // Region-cell lookup goes through the SAME resolved grid shape as rasterization
@@ -387,8 +387,8 @@ pub(crate) fn execute_move(
         let next = walk[i].pos;
         let next_cell = to_cell(next);
         // The footprint disc's anchor for every CELL-MEMBERSHIP test below (mask, impassable):
-        // the cell's own center, exactly mirroring `cell_enterable`'s `ctr = cell_center(to)`
-        // (`pathfinding.rs:89`). This is NOT optional polish — anchoring at the raw dense-walk
+        // the cell's own center, exactly mirroring `cell_enterable`'s `ctr = cell_center(to)`.
+        // This is NOT optional polish — anchoring at the raw dense-walk
         // point `next` instead is degenerate whenever `next` lands exactly on a cell boundary
         // (common: any axis-aligned continuous step subdivides into boundary-exact samples),
         // where `footprint_cells`'s zero-distance-to-AABB test spuriously admits every cell
@@ -396,7 +396,7 @@ pub(crate) fn execute_move(
         let fp_ctr = grid.cell_center(next_cell);
 
         // Step 1: wall gate — every dense sub-segment, exempt for a GM (M9 §5). TWO checks,
-        // both from `cell_enterable` (`pathfinding.rs:92-97,131-136`): the footprint disc at
+        // both from `cell_enterable`: the footprint disc at
         // `next` must clear every wall, AND the center-to-center step segment must cross none.
         // The disc alone is insufficient — at a 0.4-cell footprint a wall midway between
         // adjacent cell centers sits 0.5 cell away and would pass, making walls permeable on
@@ -415,8 +415,8 @@ pub(crate) fn execute_move(
         }
 
         // Step 2: vision-mask gate — every dense sub-segment, over the FOOTPRINT, not the
-        // center — the same `footprint_cells ∪ line_traversal` union `cell_enterable` requires
-        // (`pathfinding.rs:109-123`). This density is exactly why gate_walk exists: line_traversal
+        // center — the same `footprint_cells ∪ line_traversal` union `cell_enterable` requires.
+        // This density is exactly why gate_walk exists: line_traversal
         // is well-defined and dense enough to cover the swept footprint for an any-angle
         // segment, not just a king step.
         if check_mask {
@@ -436,7 +436,7 @@ pub(crate) fn execute_move(
         // is evaluated exactly once for that cell, matching the pre-refactor accrual count
         // for grid input (where every authored step already crossed into a distinct new
         // cell). Center-cell only, mirroring the pre-existing documented asymmetry against
-        // the router's footprint-aware check (see pathfinding.rs's `cell_enterable` docs).
+        // the router's footprint-aware check (see `cell_enterable`'s docs).
         //
         // This transition-dedup relies on the router never emitting two consecutive dense
         // samples that map to the SAME cell: true for grid A* (`pathfinding::find`) and true
@@ -447,7 +447,7 @@ pub(crate) fn execute_move(
         // instead of rejecting (see `gate_walk`), so a duplicate-cell transition would silently
         // fall through this dedup rather than being caught by a separate check.
         if next_cell != last_region_cell {
-            // Impassable IS footprint-gated (`cell_enterable`'s check 4, `pathfinding.rs:139-145`):
+            // Impassable IS footprint-gated (`cell_enterable`'s check 4):
             // a wide body cannot fit past impassable terrain any more than past a wall.
             if check_regions {
                 let fp_cells = grid.footprint_cells(next_cell, fp_ctr, r_scene, cell);
@@ -459,7 +459,7 @@ pub(crate) fn execute_move(
             // Cost accrues regardless of the exemption: it is information, not a gate.
             cost += regions.terrain_multiplier(next_cell);
             // Arrest and terrain stay CENTER-CELL only, mirroring `cell_enterable`'s documented
-            // asymmetry (`pathfinding.rs:133-136`): they act on the mover's own position rather
+            // asymmetry: they act on the mover's own position rather
             // than solid geometry it must clear. Footprint-gating arrest here would make the gate
             // stricter than the router and break I4.
             if check_regions && regions.is_arrest(next_cell) {
@@ -512,7 +512,7 @@ mod tests {
     use crate::scene::MovementModel;
     use serde_json::json;
 
-    // --- Fixture helpers (mirrors scene/mod.rs test helpers verbatim) ---
+    // --- Fixture helpers (mirrors `scene::mod`'s test `doc` helper verbatim) ---
 
     fn doc(id: u128, parent: Option<u128>, ty: &str) -> crate::data::document::Document {
         let mut d = crate::data::document::tests::world_scoped_doc(
@@ -2118,8 +2118,8 @@ mod tests {
 
     #[test]
     fn gate_walk_is_identity_on_non_round_cell_size_under_floating_point_noise() {
-        // Non-round cell (a perfectly normal GM-configured value; `scene/mod.rs` puts no
-        // round-number constraint on `cell`). A zero-tolerance `cheby <= cell` comparison
+        // Non-round cell (a perfectly normal GM-configured value; `Grid.size` carries no
+        // round-number constraint). A zero-tolerance `cheby <= cell` comparison
         // spuriously subdivides some fraction of genuine single-cell steps here due to
         // independent floating-point rounding in the two coordinate subtractions.
         let cell = 33.33_f64;
@@ -2805,7 +2805,7 @@ mod tests {
 
     #[test]
     fn arrest_stays_center_cell_matching_the_router() {
-        // `cell_enterable` does NOT footprint-gate arrest (`pathfinding.rs:133-136`). A wide
+        // `cell_enterable` does NOT footprint-gate arrest. A wide
         // token whose FOOTPRINT touches an arrest cell but whose CENTER does not must not be
         // arrested, or the gate becomes stricter than the router and I4 breaks.
         let (ecs, scene, token, user) = scene_with_arrest_cell_beside_the_path_and_wide_token();

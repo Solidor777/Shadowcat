@@ -3,7 +3,7 @@ import { render, screen } from "@testing-library/svelte";
 
 // jsdom's default test environment provides no `matchMedia`; verify the
 // fail-open default before the (single, file-scoped) dynamic import below
-// evaluates `sizeClass.svelte.ts`'s module-load-time guard.
+// evaluates `sizeClass()`'s module-load-time `matchMedia` guard.
 vi.stubGlobal("matchMedia", undefined);
 const { default: Probe } = await import("./__fixtures__/SizeClassProbe.svelte");
 

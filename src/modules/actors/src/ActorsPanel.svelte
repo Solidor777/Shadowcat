@@ -9,7 +9,7 @@
   const ctx = getAppContext();
   const t = ctx.t;
 
-  // Reactive read of the document store (same bridge as Surface.svelte): reading
+  // Reactive read of the document store (same bridge as Surface): reading
   // `subscribe()` inside the derived registers a dependency so the list re-renders on create.
   const subscribe = createSubscriber((update) => ctx.documents.subscribe(update));
   const actorDocs = $derived.by(() => {
@@ -82,7 +82,7 @@
   });
 
   // A search-hit's document (WireSearchHit.document) is a full `Document`/`WireDocument` clone —
-  // `filter_properties` (server, src/server/src/data/permission.rs:701) special-cases only
+  // `filter_properties` (server) special-cases only
   // `/system`, `/engine`, `/name`, `/base` (nulled in place); every other hidden property_overrides
   // pointer falls through to a generic strip. No current UI path (here or elsewhere) ever sets an
   // override key outside those four, so in practice `a.permissions` is always present for both a

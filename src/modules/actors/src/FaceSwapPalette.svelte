@@ -8,7 +8,7 @@
 
   let { tokenId }: { tokenId: string | null } = $props();
 
-  // Reactive read of the document store (same bridge as Surface.svelte): reading
+  // Reactive read of the document store (same bridge as Surface): reading
   // `subscribe()` inside the derived registers a dependency so the palette re-renders on swap.
   const subscribe = createSubscriber((update) => ctx.documents.subscribe(update));
 

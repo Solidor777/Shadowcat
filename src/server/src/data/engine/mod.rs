@@ -786,8 +786,7 @@ mod tests {
     }
 
     /// Drift guard: `WorldSettingsEngine::default()` must serialize to the
-    /// SAME values as the client's `DEFAULT_WORLD_SETTINGS`
-    /// (scene-docs.ts:104-119), field-by-field.
+    /// SAME values as the client's `DEFAULT_WORLD_SETTINGS`, field-by-field.
     #[test]
     fn world_settings_default_matches_client_default() {
         let v = serde_json::to_value(WorldSettingsEngine::default()).unwrap();

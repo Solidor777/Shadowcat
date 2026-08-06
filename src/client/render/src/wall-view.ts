@@ -86,8 +86,8 @@ function toSpec(doc: WireDocument): ShapeNodeSpec | null {
   const s = doc.engine as WallEngine | undefined;
   if (!s?.seg) return null;
   const { x1, y1, x2, y2 } = s.seg;
-  // `WallEngine` is round-tripped through serde on ingress (`data/engine/mod.rs`'s
-  // `normalize_engine`) but never passed through a `.validate()` call (unlike the
+  // `WallEngine` is round-tripped through serde on ingress (`normalize_engine`) but never
+  // passed through a `.validate()` call (unlike the
   // "token" doc_type), so a non-finite endpoint isn't ruled out server-side; guard here
   // instead (a malformed wall just doesn't render rather than pushing NaN into the
   // geometry).

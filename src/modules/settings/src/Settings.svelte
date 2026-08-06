@@ -9,9 +9,9 @@
   /**
    * Logs the current user out entirely — distinct from `leaveWorld` (the
    * button above this one): that only tears down the WS session and
-   * navigates back to the worlds list (`src/client/shell/src/App.svelte:143-148`),
+   * navigates back to the worlds list (`leaveWorld`),
    * without touching the HTTP session, while `logout()` posts to
-   * `/api/logout` (`src/client/shell/src/lib/api.ts:114-116`) to end it.
+   * `/api/logout` to end it.
    * @returns Resolves once `logout()`'s own request completes; it does not
    *   surface a failed request to this caller (see `logout()`'s own doc).
    * @example

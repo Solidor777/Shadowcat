@@ -3,7 +3,7 @@
   import type { MenuCommand } from "./engine/policy";
 
   /** The per-tab/floating-header command menu. Framework-only: no dockview
-   * import here — `dockview.ts` mounts this component imperatively via
+   * import here — `mountPanelMenu` mounts this component imperatively via
    * Svelte's `mount()` and translates its `onCommand` callback into a
    * `LayoutOp` via `opForMenuCommand` on its own side, so this component
    * never needs to know an engine exists at all. */
@@ -33,8 +33,8 @@
   // DOM focus directly — no separate "activate" step, since a menuitem's own
   // activation IS selecting it via Enter/Space/click. Escape here closes the
   // MENU POPUP only — distinct from a floating PANEL's own Escape-to-close
-  // (wired in `dockview.ts` against the floating dialog element, unrelated to
-  // this popup).
+  // (wired in `DockviewEngine.#wireFloatingA11y` against the floating dialog
+  // element, unrelated to this popup).
   const menuKeyboard = createMenuKeyboard(() => itemEls, (returnFocus) => onClose(returnFocus));
   /** Forwards a menu item's keydown to the shared APG menu-keyboard handler.
    * @param event The keydown event.

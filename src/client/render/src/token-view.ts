@@ -119,7 +119,7 @@ export class TokenView {
   }
 
   /** Has no production caller today (`src/modules`/`src/client/shell` drive route playback
-   * exclusively through `animateSamples`, per `controller.svelte.ts`'s own "Animation is
+   * exclusively through `animateSamples`, per `commitRoute`'s own "Animation is
    * broadcast-driven via onMoveStream ... no local animation from the moveRequest resolve value"
    * comment); exercised only by tests and this passthrough's own caller (`RenderEngine`'s
    * `SceneToolHost` seam). The mechanism below is the contract it honors if called.
@@ -218,7 +218,7 @@ export class TokenView {
   /** Advance both independent per-frame facilities: `animator.tick` (transform tweens — polyline
    * walks and sample playback) pushes each changed id's latest transform to the backend, and
    * `backend.tickTokenAnimations` (frame-index playback for a token's `kind:"animated"` visual —
-   * see `computeAnimatedFrame` in `token-animation.ts`) advances independently of any transform
+   * see `computeAnimatedFrame`) advances independently of any transform
    * tween, so an animated-sprite token still cycles frames while stationary.
    * @param dtMs Elapsed render-frame time in ms since the last tick.
    * @example

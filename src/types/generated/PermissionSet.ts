@@ -15,7 +15,7 @@ export type PermissionSet = {
 default: DocRole, 
 /**
  * Per-user role that REPLACES `default` for that user — it can demote as
- * well as promote (`effective_role`, permission.rs).
+ * well as promote (`effective_role`).
  */
 users: { [key in string]: DocRole }, 
 /**

@@ -2,7 +2,7 @@ import { MAX_FORMULA_LENGTH, type FormulaError, type FormulaValue, isFormulaErro
 import { validateResolverOutput } from "./internal";
 
 /** Identifier words whose leading-alpha prefix means dice notation, not a stat.
- * Mirrors src/server/src/dice/notation/parser.rs keyword match (kh/kl/dh/dl/r/ro/cs/cf/t/e)
+ * Mirrors `P::modifiers`'s keyword match (kh/kl/dh/dl/r/ro/cs/cf/t/e)
  * plus the 'd' dice operator. M13b's authoring validation imports this list. */
 export const NOTATION_KEYWORDS: readonly string[] =
   ["d", "kh", "kl", "dh", "dl", "r", "ro", "cs", "cf", "t", "e"];
@@ -11,7 +11,7 @@ const I32_MAX = 2147483647;
 
 /**
  * True for a character that may START a notation keyword or identifier:
- * a letter or `_`. Distinct from `lexer.ts`'s `isWordStart` (a separate
+ * a letter or `_`. Distinct from `isWordStart` (a separate
  * scanner over a separate grammar — this module rewrites dice-notation
  * template text, not formula source).
  * @param ch A single character.
@@ -107,8 +107,8 @@ function substituteIdentifier(
     return { error: "resolver-error", detail: `resolver threw for '${originalText}'` };
   }
   // Trust-boundary validation: `resolve` is a consumer-supplied callback and is not
-  // guaranteed to honor the `FormulaValue` contract (same boundary evaluate.ts's `ref`
-  // case and graph.ts's `evalNode` call already cross via this shared helper).
+  // guaranteed to honor the `FormulaValue` contract (same boundary `evaluate`'s `ref`
+  // case and the `evalNode` callback already cross via this shared helper).
   const value = validateResolverOutput(rawValue);
   if (isFormulaError(value)) return value;
   if (!Number.isInteger(value)) {
@@ -131,7 +131,7 @@ function substituteIdentifier(
   // `x + N`.
   //
   // It does have one observable consequence, in the roll breakdown rather than
-  // the total: `collect_labeled_consts` (src/server/src/dice/eval/sum.rs) emits
+  // the total: `collect_labeled_consts` emits
   // a ConstTerm only for a `Const` carrying a label, and it RECURSES through
   // `Expr::Neg` — so a labeled `-N[label]` would still contribute a signed chip,
   // while this form's two unlabeled `Const`s contribute none. A negative

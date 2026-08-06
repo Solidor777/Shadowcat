@@ -4,18 +4,18 @@ import type { TokenVisual } from "./TokenVisual";
 import type { VisionAssignment } from "./VisionAssignment";
 
 /**
- * An actor's engine-owned body (scene-docs.ts:197-209 `ActorSystem`, minus
- * `name` which moves to the envelope). Every other field of `ActorSystem`
+ * An actor's engine-owned body (mirrors the client's `ActorEngine`, minus
+ * `name` which moves to the envelope). Every other field of `ActorEngine`
  * (inventory, stats, …) lives in `system` — this is a SPLIT type.
  */
 export type ActorEngine = { 
 /**
- * scene-docs.ts:199 `displayName: string` — required, non-nullable.
+ * The client's `ActorEngine.displayName: string` — required, non-nullable.
  */
 displayName: string, 
 /**
  * The actor's visual, inherited by linked tokens (raw-token/override
- * visuals take precedence per the resolution order in `actor.ts`).
+ * visuals take precedence per `resolveTokenVisual`'s resolution order).
  */
 visual: TokenVisual, 
 /**
@@ -27,7 +27,7 @@ size: Size,
  */
 shape: string, 
 /**
- * scene-docs.ts:203 `faction: string | null`. INVARIANT: `Option<T>`
+ * The client's `ActorEngine.faction: string | null`. INVARIANT: `Option<T>`
  * always accepts a missing key as `None` (serde special-cases `Option`
  * regardless of `#[serde(default)]`) — absent and explicit `null` are
  * ingress-equivalent here, not distinguishable. The re-serialized,
@@ -37,7 +37,7 @@ shape: string,
  */
 faction: string | null, 
 /**
- * scene-docs.ts:204 `conditions: string[]` — the key is required.
+ * The client's `ActorEngine.conditions: string[]` — the key is required.
  */
 conditions: Array<string>, 
 /**

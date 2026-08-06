@@ -166,8 +166,8 @@ export function resolveAll(
         // evalNode threw something other than our internal signal: a
         // consumer-callback fault, never allowed to propagate past the
         // library boundary (never throw, per spec §3.2). Never interpolate
-        // the caught exception's message: `detail` is player-presentable
-        // (types.ts), and a consumer evalNode's thrown message is an
+        // the caught exception's message: `FormulaError.detail` is player-presentable,
+        // and a consumer evalNode's thrown message is an
         // internal implementation detail, not for players.
         memo.set(key, {
           error: "resolver-error",

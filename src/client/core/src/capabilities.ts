@@ -22,8 +22,8 @@ type Grants = {
 /** The `permissions` block shape lifted off `WireDocument`, so this module needs no separate import. */
 type Perms = WireDocument["permissions"];
 
-/** The built-in capability floor for a `DocRole`, mirroring the server's `role_floor`
- * (`data/permission.rs`): `owner` → read + write_fields, `observer` → read, anything
+/** The built-in capability floor for a `DocRole`, mirroring the server's
+ * `data::permission::role_floor`: `owner` → read + write_fields, `observer` → read, anything
  * else (including `"none"`) → no capabilities — fail-closed by construction, since an
  * unrecognized/unknown role string falls through to the empty set rather than a grant.
  * Not exported — folded into `resolveCaps`'s public surface.
@@ -51,7 +51,7 @@ function roleFloor(role: string): string[] {
  * the server's `resolve_access_world`: the DocRole floor widened by the
  * document's additive grants and the world-default grants. This function does
  * not itself branch on GM/admin status — the sole production caller
- * (`worldSession.canEdit`, `worldSession.svelte.ts:207`) returns early for
+ * (`WorldSession.canEdit`) returns early for
  * `role === "gm"` before calling in, so `resolveCaps` only ever computes the
  * non-GM floor in practice.
  * @param perms The document's `permissions` block.
@@ -63,9 +63,9 @@ function roleFloor(role: string): string[] {
  * @param worldGrants The world's default per-role/per-user capability grants.
  * @param isEffectiveOwner Whether `userId` is the effective owner of a TOKEN document
  * (see `effectiveOwner` in `./actor`); floors the resolved role at `"owner"`. Defaults
- * to `false` — pass `true` only for `doc_type === "token"`, mirroring the server's
- * `owner_floor` gate (`data/permission.rs`), which applies this floor to no other
- * `doc_type`.
+ * to `false` — pass `true` only for `doc_type === "token"`, mirroring the `owner_floor`
+ * local inside the server's `data::permission::effective_role`, which applies this floor
+ * to no other `doc_type`.
  * @returns The resolved capability set (e.g. `"core:read"`, `"core:write_fields"`).
  * @example
  * ```ts
@@ -99,7 +99,7 @@ export function resolveCaps(
 }
 
 /** The structural base capability for a field path (mirrors the server's
- * `required_cap_for_path`, `data/permission.rs`). `/name` is a leaf (a display string,
+ * `data::permission::required_cap_for_path`). `/name` is a leaf (a display string,
  * not a container): `/name/...` does NOT match — there is no sub-path to write.
  * Not exported — folded into `canWritePath`'s public surface.
  * @param path A JSON pointer into the document (e.g. `/system/hp`).
@@ -153,24 +153,25 @@ function pathsOverlap(a: string, b: string): boolean {
  * cap must be held, plus every declared cap for any requirement whose prefix
  * overlaps the path (ancestor or descendant). Passing `isGm: true` bypasses
  * every check below. Advisory only — the server enforces the real capability
- * check independently at `apply_intent` (`resolve_access_world` +
- * `required_cap_for_path`, `sqlite.rs:2247-2276`), so nothing here is a security
+ * check independently inside `data::sqlite::SqliteRepository::apply_intent` (via
+ * `resolve_access_world` + `required_cap_for_path`), so nothing here is a security
  * boundary.
  *
  * SCOPE NOTE on `isGm: true`: this function has no `permissions.gm_role` input,
  * so it cannot represent the server's `gm_role: Some(role)` cap — when set,
  * `gm_role` floors even a GM's write caps to an ordinary `DocRole` resolution
- * instead of an unconditional grant (`effective_role`/`resolve_access`,
- * `permission.rs:489-498`,`551-557`). Calling this with `isGm: true` against a
+ * instead of an unconditional grant (`data::permission::effective_role`/
+ * `data::permission::resolve_access`).
+ * Calling this with `isGm: true` against a
  * `gm_role`-capped document would over-permit. `gm_role` is an ordinary field
- * on every document's `permissions` block (`PermissionSet.gm_role`,
- * `data/document.rs:439`), not a chat-specific one — do NOT assume it is rare
- * or actor/token-exempt; `chat/mod.rs:299-341` is only where the SERVER
+ * on every document's `permissions` block (`PermissionSet.gm_role`), not a
+ * chat-specific one — do NOT assume it is rare
+ * or actor/token-exempt; `chat::build_message_doc` is only where the SERVER
  * constructs it for chat audiences (`Public` → `None`, `Whisper` →
  * `Some(None)`, `GmOnly` → `Some(Observer)`), not a bound on where it can
  * live. The bound here rests solely on `isGm: true` having no production
- * caller today: `worldSession.canEdit` resolves the GM case itself and always
- * passes `isGm: false` (`worldSession.svelte.ts:207`, `:215` — see
+ * caller today: `WorldSession.canEdit` resolves the GM case itself and always
+ * passes `isGm: false` (see
  * `resolveCaps`'s doc above); that gate is equally unaware of `gm_role` and is
  * out of scope here (`shell` package).
  * @param path A JSON pointer identifying the field being written.

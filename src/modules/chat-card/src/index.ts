@@ -3,7 +3,7 @@ import MessageCard from "./MessageCard.svelte";
 
 /** The default message-card renderer: fills the singleton `chat.message` surface `chat`
  * declares. Fail-closed body parse + the sole `{@html}` boundary in the client for chat
- * content live in `MessageCard.svelte`. Replaceable — a game-system module can supply its
+ * content live in `MessageCard`. Replaceable — a game-system module can supply its
  * own renderer by contributing to the same contract. */
 export const chatCard: Module = {
   manifest: {

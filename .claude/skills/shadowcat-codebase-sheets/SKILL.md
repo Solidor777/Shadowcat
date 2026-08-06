@@ -21,7 +21,7 @@ the sheet, and opens/focuses the panel. This is the seam mods use to add their o
 
 ## Key files & seams
 
-- `src/client/core/src/sheets.ts` — pure, no Svelte/panel-manager import:
+- The client `sheets` module — pure, no Svelte/panel-manager import:
   - `SHEET_CONTRACT_PREFIX`/`SHEET_FALLBACK_CONTRACT`/`sheetContract(docType)`.
   - `SheetRef = { docId: string; embeddedPath?: string } | { tokenId: string }` — `embeddedPath`
     is a ONE-level `/embedded/<coll>/<idx>` extension beyond the base docId/tokenId union, added to
@@ -44,10 +44,10 @@ the sheet, and opens/focuses the panel. This is the seam mods use to add their o
     contracts).
   - `isDiceNotation(s)` — client-only heuristic (`NdM[+-K]`) gating the roll-to-chat affordance;
     the server owns real parsing.
-- `src/client/core/src/contributions.ts` — `Contribution.sheet?: SheetMeta { priority; match? }`;
+- The client `contributions` module — `Contribution.sheet?: SheetMeta { priority; match? }`;
   `ContributionRegistry.entriesFor(contract)` (module-tagged, `pickSheet`'s data source);
   `DefaultPlacement` gained `{ kind: "floating" }` (M12c) alongside `docked`/`minimized`.
-- `src/client/ui-kit/src/sheetsController.svelte.ts` — `SheetsController` (shell-constructed like
+- The ui-kit `sheetsController` module — `SheetsController` (shell-constructed like
   `PanelsBridge`; imports no module): `openDocument(ref)` (resolve → dedup via internal panelId
   map → `pickSheet` → register `Contribution` → `panels.open`, or `panels.focus` if already
   registered), `closeDocument(panelId)` (disposes the contribution AND closes the panel —
@@ -65,19 +65,19 @@ the sheet, and opens/focuses the panel. This is the seam mods use to add their o
     EVERY sheet — first-party or mod-provided — gets template chrome for free without opting in.
     Any future sheet-registration change must preserve this wrapper; do not re-register the
     picked component directly, or every doc_type silently loses its template controls.
-- `src/client/ui-kit/src/appContext.ts` — `AppContext.openDocument(ref: SheetRef): void`, wired in
-  `Table.svelte` via a shell-constructed `SheetsController`, called reactively inside a
+- The ui-kit `appContext` module — `AppContext.openDocument(ref: SheetRef): void`, wired in
+  `Table` via a shell-constructed `SheetsController`, called reactively inside a
   `createSubscriber`-backed `$effect` on boot (panels mount before resync fills the store —
   [[contribution-seed-reactive-before-resync]]-class hazard).
-- `src/client/ui-kit/src/sheetEdit.ts` — `setField(ctx, docId, path, old, value)`: the ONE
+- The ui-kit `sheetEdit` module — `setField(ctx, docId, path, old, value)`: the ONE
   field-path Update dispatch every sheet uses. `old ?? null` collapses ONLY a genuinely-absent
   (`undefined`) pre-image — `0`/`false`/`""` pass through verbatim (see Hard Invariants).
-- `src/client/ui-kit/src/SystemTreeEditor.svelte` — recursive type-aware editor over the opaque
+- **`SystemTreeEditor`** — recursive type-aware editor over the opaque
   `system` body (string/number/boolean/null/object/array; add/remove fields; array-item add seeds
   a value MATCHING the array's existing element kind, not a hardcoded `""`). Self-recurses via
   `import Self from "./SystemTreeEditor.svelte"`; every level computes its OWN `old` at its own
   `basePath` via a fresh `getPointer(doc, path)` read.
-- `src/modules/sheet-{fallback,actor,item}/` — the three generic sheets, each `sheetContract`
+- `@shadowcat/module-sheet-fallback`/`-actor`/`-item` — the three generic sheets, each `sheetContract`
   registered (fallback at `-Infinity`, actor/item at `0`). `sheet-item` introduces the client-only
   `item` doc_type ([[shadowcat-codebase-documents-permissions]]) and the roll-to-chat affordance
   (`ctx.chat.send({channel:"general", content:"/roll <formula>"})`, gated by `isDiceNotation`).
@@ -103,7 +103,7 @@ the sheet, and opens/focuses the panel. This is the seam mods use to add their o
   derive `namePrefix`/`enginePrefix` from ITS OWN `systemPrefix`, never read `/name`/`/engine` as
   a hardcoded top-level path — treat any new envelope-band access in a sheet as
   buddy-check-worthy by default.
-- `src/modules/chat-card/src/MessageCard.svelte` — actor names on chat cards become
+- **`MessageCard`** (`@shadowcat/module-chat-card`) — actor names on chat cards become
   `ctx.openDocument` links, permission-gated by PRESENCE in the recipient's per-recipient
   optimistic store (a doc absent from `ctx.documents` means the recipient lacks READ — server-side
   redaction is the sole gate; no client-side permission check duplicates it).
@@ -116,7 +116,7 @@ the sheet, and opens/focuses the panel. This is the seam mods use to add their o
   rejects the sheet's own edits or (worse) can overwrite a concurrent edit. This is the M11d-2
   `GameSettingsPanel` Critical, generalized into a hard rule for every sheet.
 - **Every sheet component's `doc`/`system`-derived `$derived` MUST bridge `ctx.documents` reactivity
-  via `createSubscriber`/`subscribe()`** (mirrors `GameSettingsPanel.svelte`). `ctx.documents`
+  via `createSubscriber`/`subscribe()`** (mirrors `GameSettingsPanel`). `ctx.documents`
   (`OptimisticClient`) is a plain-callback store, not a Svelte rune — a `$derived.by(() =>
   ctx.documents.get(docId))` with no `subscribe()` call freezes at the component's FIRST read and
   never re-derives, including in response to the sheet's OWN prior edits in the same session. This
@@ -148,7 +148,7 @@ the sheet, and opens/focuses the panel. This is the seam mods use to add their o
 ## Gotchas
 
 - `ctx.contributions.contribute(c)` is a **1-arg** call — the real `ModuleContext.contributions`
-  wrapper (`modules.ts` `activate()`) auto-injects the module id; passing a second `{module}` arg
+  wrapper (the `modules` module's `activate()`) auto-injects the module id; passing a second `{module}` arg
   is a `svelte-check` error. (Every first-party module already does this; a stale 2-arg snippet
   will not compile.)
 - A sheet's root element must be `<div role="dialog">`, not `<section role="dialog">` — Svelte's

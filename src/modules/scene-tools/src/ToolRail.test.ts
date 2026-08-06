@@ -63,7 +63,7 @@ test("the measure and ping tools are available and activate", async () => {
 });
 
 // Regression: AppContext.moveRequest exists (setAppContextForTest defaults it, and
-// commitRoute's own unit tests in measure-tool.test.ts prove the commit logic works when
+// commitRoute's own unit tests in `measure-tool.test` prove the commit logic works when
 // wired) but ToolRail's `new ToolController({...})` call omitted the field, so the
 // double-click route-commit was permanently unreachable through the real UI — silently
 // falling back to `commitRoute`'s "moveRequest absent" no-op every time, regardless of
@@ -105,7 +105,7 @@ test("the measure tool's double-click route-commit reaches AppContext.moveReques
   await fireEvent.click(screen.getByTestId("tool-measure"));
   const tool = tools.at(-1)!;
 
-  // Double-click commit gesture (mirrors measure-tool.test.ts's own commit tests).
+  // Double-click commit gesture (mirrors `measure-tool.test`'s own commit tests).
   const ev = {} as PointerEvent;
   tool.onPointerDown({ x: 100, y: 100 }, ev);
   tool.onPointerUp({ x: 100, y: 100 }, ev);

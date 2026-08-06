@@ -115,7 +115,7 @@ pub(crate) fn cell_enterable(grid: &PathGrid, from: Cell, to: Cell) -> bool {
     // supercover crosses, must be visible/revealed (non-GM).
     //
     // INVARIANT (spec §13 / M3 design §3): `GridShape::line_traversal` is the SAME primitive
-    // the M1 move executor (`move_exec.rs`) and the M10e-4 `ws/room.rs::publish` gate check per
+    // the M1 move executor (`move_exec::execute_move`) and the M10e-4 `Room::publish` gate check per
     // step — resolved from the scene's shape, never the free square `movement::supercover_cells`
     // (that is `SquareGrid`'s own internal; calling it here is square-on-hex). The router's mask predicate must be a superset of the gate's, or a route this A*
     // search approves can be rejected at execution time (buddy-check P1: for a sub-0.5-cell
@@ -149,7 +149,7 @@ pub(crate) fn cell_enterable(grid: &PathGrid, from: Cell, to: Cell) -> bool {
     // Arrest/terrain are NOT footprint-gated here: they represent effects on the mover's own
     // position rather than solid geometry it must clear, so they are evaluated once each, in
     // `find()`'s route assembly (arrest truncation) and in `astar_leg`'s step cost (terrain),
-    // both keyed on cell-center only — mirroring `move_exec.rs`'s existing center-cell model.
+    // both keyed on cell-center only — mirroring `move_exec::execute_move`'s existing center-cell model.
     if let Some(regions) = grid.regions {
         for c in grid.shape.footprint_cells(to, ctr, r_scene, grid.cell) {
             if regions.is_impassable(c) {
@@ -285,7 +285,7 @@ mod astar_tests {
     /// Hex-scene A* integration coverage: proves the fully-wired hex path behaves correctly
     /// end-to-end, mirroring this module's square-scene coverage above. The diagonal rule is a
     /// `SquareGrid`-only concept (`HexGrid` uses uniform 1-cost steps and the admissible axial
-    /// heuristic), so a `HexGrid` shape carries no rule at all — see `grid_shape.rs`.
+    /// heuristic), so a `HexGrid` shape carries no rule at all — see the `grid_shape` module.
     fn open_hex(footprint: f64) -> PathGrid<'static> {
         const NO_WALLS: [Seg; 0] = [];
         let shape: &'static crate::scene::grid_shape::HexGrid =
@@ -462,7 +462,7 @@ impl PartialOrd for QNode {
 /// Δh ≤ 1, which is the cheapest diagonal cost. Consistency is load-bearing: it makes the first
 /// goal-pop optimal and makes the post-goal stale-pop skip safe (see `astar_leg`).
 ///
-/// `pub(crate)` so `SquareGrid::heuristic` (grid_shape.rs) can return this byte-identical value —
+/// `pub(crate)` so `SquareGrid::heuristic` can return this byte-identical value —
 /// `astar_leg` calls it only through `grid.shape.heuristic(...)` now, never directly, so square
 /// scenes keep the exact rule-based estimate while hex scenes get the admissible axial distance.
 pub(crate) fn heuristic(rule: DiagonalRule, c: Cell, goal: Cell) -> f64 {
@@ -1217,8 +1217,8 @@ mod tests {
     #[test]
     fn degenerate_step_supercover_is_not_enterable_even_if_mask_covers_destination() {
         // A step spanning an enormous cell distance makes `supercover_cells` return `None` (the
-        // MAX_MOVE_CELLS span guard in movement.rs). The router must fail closed on `None`, same
-        // as move_exec.rs and ws/room.rs::publish, regardless of what the mask contains at `to`.
+        // MAX_MOVE_CELLS span guard). The router must fail closed on `None`, same
+        // as `move_exec::execute_move` and `Room::publish`, regardless of what the mask contains at `to`.
         let walls: Vec<Seg> = vec![];
         let mut mask = BTreeSet::new();
         mask.insert((5000, 5000)); // covers the destination; would pass footprint_cells alone.

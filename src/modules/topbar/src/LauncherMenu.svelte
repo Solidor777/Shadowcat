@@ -61,8 +61,8 @@
    * Selects menu item `id`: toggles that panel via `AppContext.panels`
    * (`ctx.panels.toggle`) — the only way this module reaches the panel
    * manager; `topbar`'s own `package.json` declares no dependency on
-   * `@shadowcat/module-panels` (`src/modules/topbar/package.json:7-10`) —
-   * then closes the menu, returning focus to the trigger.
+   * `@shadowcat/module-panels` — then closes the menu, returning focus to
+   * the trigger.
    * @param id The panel id to toggle (a `shadowcat.panel` contribution id).
    * @returns Nothing; toggles the panel and closes the menu as side effects.
    * @example

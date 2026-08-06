@@ -84,8 +84,8 @@ are observations awaiting triage, not committed work.
   longer competes with a 30s whole-test budget; if it still recurs, audit the freehand-draw
   commit's paint timing under parallel-worker contention.
 
-- Title: Phase-B world delete swallows asset-directory removal failures. Summary: `routes.rs::
-  delete_world` returns 204 even when `remove_dir_all` on `<assets_path>/<world_id>/` fails for a
+- Title: Phase-B world delete swallows asset-directory removal failures. Summary: `delete_world`
+  returns 204 even when `remove_dir_all` on `<assets_path>/<world_id>/` fails for a
   reason other than NotFound (permission error, Windows open-handle lock); the failure is a
   `tracing::warn!` only, so an admin deleting a world for data-removal reasons gets no signal that
   bytes survived on disk. Status: Accepted (final-review Minor; matches the project-wide delete
@@ -170,8 +170,8 @@ are observations awaiting triage, not committed work.
   whether the lagged egress genuinely stalls (a latency bug in the egress
   select/replay loop under heavy backpressure) or it is purely CI-runner
   saturation; reproduce with a constrained-CPU local run before changing
-  `conn.rs`. Update (M8b-1 push, 2026-06-22): a *second* manifestation observed —
-  the authoritative-seq assertion at `ws_convergence.rs:408`
+  `egress_loop`. Update (M8b-1 push, 2026-06-22): a *second* manifestation observed —
+  the authoritative-seq assertion in `converges_with_publishing_during_resync`
   (`h.authoritative_seqs().last() == Some(300)`) failed `Some(277)` on
   ubuntu-latest after the test's 30s drain-wait budget (300×100ms), with the whole
   test taking 45s; i.e. even the *server-side* single-writer ingress→apply of 300
@@ -195,7 +195,7 @@ are observations awaiting triage, not committed work.
   Full ws_convergence suite now ~2s locally.
 
 - Title: `filter_command` redacts replayed history against the *current*
-  PermissionSet. Summary: `src/server/src/data/permission.rs` loads each
+  PermissionSet. Summary: `filter_command` loads each
   `Update` op's document via `get_document` to resolve visibility, so on
   resync/replay a property whose `GmOnly`↔`All` visibility was flipped after the
   event is redacted under the *new* policy, not the policy in force at the
@@ -213,7 +213,7 @@ are observations awaiting triage, not committed work.
   noted as a replay-fidelity limitation. Status: Accepted.
 
 - Title: no smaller "caption" text-size token in the M7d token set. Summary: the
-  M8b-2 asset panel's tile filename (`Assets.svelte` `.name`) renders at inherited
+  M8b-2 asset panel's tile filename (`Assets`'s `.name`) renders at inherited
   body size — `_primitives.scss`/`_semantic.scss` define `--space-*`, `--radius-*`,
   `--font-sans`, and `--text-*` *colors* but no smaller font-*size* token (the plan's
   assumed `--text-sm` does not exist). Captions/secondary labels therefore can't be
@@ -225,7 +225,7 @@ are observations awaiting triage, not committed work.
 - Title: M8c-2 §10 canvas-chrome token re-audit (outcome). Summary: re-audited the M7d
   3-tier token set against the first rendered canvas chrome. (1) Added a semantic
   `--grid-line` token (= `--slate-700`) so the canvas grid is decoupled from UI
-  `--border`. (2) Fixed a latent M8c-1 bug: `Stage.svelte`'s `readColor` used
+  `--border`. (2) Fixed a latent M8c-1 bug: `Stage`'s `readColor` used
   `getComputedStyle().getPropertyValue("--token")`, which returns the unresolved
   `var(...)` string for aliased custom properties — so the grid silently used its
   fallback color and ignored the theme; it now resolves the real color via a
@@ -236,12 +236,13 @@ are observations awaiting triage, not committed work.
 - Title: M10e-1 config-doc seed races resync (rare double-create). Summary: contribution
   panels (`GameSettingsPanel`, like `FactionsPanel`/`ConditionsPanel`) seed world config-docs
   from a reactive `$effect` that mounts during `#onWelcome` BEFORE the resync stream populates
-  the optimistic store (`ws-client.ts`: welcome → onWelcome+module-activate → resync_request →
+  the optimistic store (`WsClient`'s frame sequence: welcome → onWelcome+module-activate →
+  resync_request →
   event frames → resync_end). The `createSubscriber`+`subscribe()` reactivity + per-doc-type
   `length === 0` guard make a duplicate seed rare, but a GM whose first effect run lands with an
   empty store before resync can still create a duplicate `world-settings`/`light-gradation`/
-  `vision-modes`. This is the SAME project-accepted condition as the `worldSession` scene
-  auto-create (`worldSession.svelte.ts` "rare multi-GM ... double-create is accepted (M12
+  `vision-modes`. This is the SAME project-accepted condition as the `WorldSession` scene
+  auto-create ("rare multi-GM ... double-create is accepted (M12
   dedupes)"). Status: **Accepted / deferred to M12** (singleton-config dedup). Not a regression.
 
 - Title: M10e-1 world-defaults editor exposes a subset of `WorldSceneDefaults`. Summary: the
@@ -289,7 +290,7 @@ are observations awaiting triage, not committed work.
   layout-owning `PanelsController` at registration; `PanelHost` builds it lazily at mount from
   AppContext and binds it into the shell's `PanelsBridge`, and the chip strip must read the SAME
   bridge reactively instead of holding a controller. Workable (documented in
-  `panels/src/index.ts`), but every future stateful module that needs session context will repeat
+  the `panels` module's barrel), but every future stateful module that needs session context will repeat
   this construct-at-mount + bridge dance — treated as an API bug report per the M12 "built against
   the public API" rule. Status: Needs Review (candidate: a session-scoped module hook or
   context-bearing activation phase, weigh at M12c sheet-registry design time).
@@ -298,7 +299,7 @@ are observations awaiting triage, not committed work.
   Task 10's sweep could not fire a REAL native drag of a dockview tab (CDP does not synthesize
   `dragstart`; the coarse-pointer backend engaged dockview's drop overlay but committed no move).
   Coverage substitutes the `PanelMenu` a11y commands, which share the identical classified-
-  `LayoutOp` pipeline (parity documented in `dockview.ts`), plus geometric assertion of the zone
+  `LayoutOp` pipeline (parity documented on `DockviewEngine`), plus geometric assertion of the zone
   move through a reload; drop-POSITION classification fidelity against real pointer geometry
   (edge vs center vs tab-strip index) remains manual-QA-only (also logged as the
   `#toDropSite` fallback TODO). Status: Needs Review (a human mouse pass over dock/float/reorder
@@ -313,7 +314,7 @@ are observations awaiting triage, not committed work.
   (M12b Task 1 code review.)
 
 - Title: M13-0 Task 3 — message doc `/engine` copy goes stale on edit/delete (interim, pre-Task-7).
-  Summary: `build_message_doc` (`chat/mod.rs`) intentionally writes the SAME `MessageSystem` body
+  Summary: `build_message_doc` intentionally writes the SAME `MessageSystem` body
   into both `/system` and `/engine` — the `system` copy stays load-bearing because chat reads still
   deserialize `cur.system` until Task 7 re-roots them, so setting `system: {}` now would break live
   chat. `handle_edit_message`/`handle_delete_message` only construct a `/system` `FieldChange`
@@ -322,8 +323,8 @@ are observations awaiting triage, not committed work.
   diverging from the authoritative `/system` body. Nothing reads the message `/engine` band today
   (dead data until Task 7), and this is pre-v1 with a zero-migration policy (no shipped worlds), so
   no cleanup is required — Task 7 must simply not trust any pre-Task-7 `/engine` copy of a
-  previously-edited message when it re-roots chat. Separately: `apply_command`
-  (`data/sqlite.rs::apply_command`) — an ungated trusted substrate with zero production callers
+  previously-edited message when it re-roots chat. Separately: `SqliteRepository::apply_command`
+  — an ungated trusted substrate with zero production callers
   today — does NOT carry the same broadcast/event-log `/engine` normalization gate added to
   `apply_intent` by this fix; if `apply_command` is ever wired to real undo/replay functionality,
   it must gain the identical gate first. Status: Resolved — M13-0 Task 7 re-rooted both chat READS
@@ -333,8 +334,8 @@ are observations awaiting triage, not committed work.
   still has zero production callers (grep across `src/server/src`), so it was not accidentally wired
   into the chat re-root; its missing `/engine` normalization gate remains inert until a real
   undo/replay caller is added, at which point it needs the same gate as `apply_intent`.
-  Update — **Resolved.** `apply_command` now carries the identical `/engine` normalization gate
-  (`data/sqlite.rs::apply_command`), pinned by
+  Update — **Resolved.** `SqliteRepository::apply_command` now carries the identical `/engine`
+  normalization gate, pinned by
   `apply_command_update_normalizes_engine_broadcast_and_event_log_smuggled_key`.
 
 - Title: Movement gate: token_move gate-dispatch is opt-in on ECS hydration (fail-open shape,
@@ -345,7 +346,7 @@ are observations awaiting triage, not committed work.
   or an Update racing ECS hydration) would commit UNGATED — the gate is skipped (returns `None`,
   falls through to the ordinary write path), not rejected. This is a PRE-EXISTING shape, unchanged
   by Task 6 itself (Task 6 only moved the gate's read target from `/system` to `/engine`).
-  Status: Investigated — unreachable: `apply_intent`'s Phase 1 (`data/sqlite.rs`) validates every
+  Status: Investigated — unreachable: `SqliteRepository::apply_intent`'s Phase 1 validates every
   op in a single batch sequentially, in array order, BEFORE any Phase 2 row mutation runs — an
   `Operation::Update`'s Phase 1 branch calls `Self::load_document(&mut *tx, *doc_id)` and rejects
   with `DataError::Conflict` if it returns `None`; a same-batch `Create` for that same `doc_id`
@@ -370,9 +371,9 @@ are observations awaiting triage, not committed work.
   Status: Needs Review (candidate engine seam for a later checkpoint).
 
 - Title: `effect` doc_type constant has no engine home. Summary: D9 makes `effect` a
-  client-semantics doc_type but neither M12c (which owns `ITEM_DOC_TYPE` in
-  `scene-docs.ts`) nor the M13b rules plan declares an `EFFECT_DOC_TYPE`; M13c defines it in
-  the Nightfox barrel (`index.ts`). Consider promoting it beside `ITEM_DOC_TYPE` if a second
+  client-semantics doc_type but neither M12c (which owns `ITEM_DOC_TYPE`)
+  nor the M13b rules plan declares an `EFFECT_DOC_TYPE`; M13c defines its own `EFFECT_DOC_TYPE` in
+  the Nightfox module's barrel. Consider promoting it beside `ITEM_DOC_TYPE` if a second
   consumer appears. Status: Needs Review.
 
 - Title: No browser e2e harness for external modules. Summary: The M13-1 toolchain e2e is
@@ -402,9 +403,10 @@ are observations awaiting triage, not committed work.
   `labeled_consts` key. Summary: the report's cited backward-compat regression test
   (`stored_pre_m11d2_message_still_deserializes`) doesn't actually exercise a `RollOutcome`-
   shaped blob, so `#[serde(default)]` on `labeled_consts` is backed only by the mechanical,
-  already-precedented pattern (`symbol_counts` uses it identically) plus a client-side
-  (`chat-docs.test.ts`) legacy-fixture test, not a Rust-side one. Low real risk. Status:
-  **Resolved.** `outcome.rs::roll_outcome_missing_defaulted_keys_deserializes` now deserializes a
+  already-precedented pattern (`symbol_counts` uses it identically) plus the client-side test
+  "parses a labeled Const term in labeled_consts, defaulting to [] when absent", not a Rust-side
+  one. Low real risk. Status:
+  **Resolved.** `roll_outcome_missing_defaulted_keys_deserializes` now deserializes a
   `RollOutcome`-shaped JSON blob missing both `labeled_consts` and `symbol_counts`, pinning
   `#[serde(default)]` on both directly.
 
@@ -414,16 +416,16 @@ are observations awaiting triage, not committed work.
   raw faces are already shown regardless of an enclosing sign — a real precedent, not an
   oversight, but a fidelity gap against `labeled_consts`'s own provenance-transparency intent
   since `total` itself is unaffected and correct. Status: **Resolved.** `collect_labeled_consts`
-  (`eval/sum.rs`) now threads an effective sign through `Neg`/`Sub` (`Mul`/`Div` still keep the
+  now threads an effective sign through `Neg`/`Sub` (`Mul`/`Div` still keep the
   literal, matching `DieRecord`'s own precedent), pinned by
   `labeled_const_display_carries_effective_sign`.
 
 - Title: `ResolvedScene.bounds` has two contradictory unit interpretations, and the grid-unit one is
   wrong on hex. Summary: surfaced by the 14e-7 `[sec]` review (reviewer flagged the hex half as
   inferred; the dispatcher traced the rest and found the inconsistency underneath). TWO consumers of
-  the same `.bounds` value disagree on its units. (1) `navmesh::build_navmesh` (`navmesh.rs:131`)
-  treats it as GRID UNITS: `(w_px, h_px) = (w * cell, h * cell)`. (2) `vision::bound_for_scene`
-  (`vision.rs:96-107`) treats it as PIXELS, feeding `width`/`height` straight into `maxx`/`maxy`
+  the same `.bounds` value disagree on its units. (1) `build_navmesh`
+  treats it as GRID UNITS: `(w_px, h_px) = (w * cell, h * cell)`. (2) `bound_for_scene`
+  treats it as PIXELS, feeding `width`/`height` straight into `maxx`/`maxy`
   alongside raw wall coordinates. Both read `resolve_scene(scene).bounds`. On a square scene with
   `cell != 1` these two cannot both be right. Separately, even granting the grid-unit reading, the
   conversion is wrong for hex: `HexGrid.size` is the pointy-top OUTER RADIUS, so `w` hexes span
@@ -437,10 +439,11 @@ are observations awaiting triage, not committed work.
 
 - Title: Hex continuous-weighted preview cost is ~1.73x too small (unit-parity defeated on hex).
   Summary: found by the 14e-7 `[sec]` code review; pre-existing (M10f-4 era), not introduced by
-  `2e6800c`. The weighted continuous branch converts the grid router's cost to scene units with
-  `weighted.cost * cell` (`scene/mod.rs:1206-1209`). That conversion assumes one step spans `cell`
+  `2e6800c`. The weighted continuous branch, in `SceneEcs::pathfind`, converts the grid router's
+  cost to scene units with
+  `weighted.cost * cell`. That conversion assumes one step spans `cell`
   world units, which holds for `SquareGrid`. On hex, `resolve_grid_shape_with_rule` returns a
-  `HexGrid` whose `neighbors_with_cost` is a uniform 1.0 per step (`grid_shape.rs:250-259`), but
+  `HexGrid` whose `neighbors_with_cost` is a uniform 1.0 per step, but
   adjacent hex centers are `sqrt(3) * size ~= 1.732 * cell` apart (`axial_to_pixel((1,0)) =
   (size*sqrt(3), 0)`). So a hex + continuous + terrain scene reports a preview cost about 1.73x too
   small, while the sibling pure-polyanya branch on the same scene reports true Euclidean length —
@@ -451,9 +454,13 @@ are observations awaiting triage, not committed work.
 
 - Title: Hex + continuous `clip_to_visible_mask` has no end-to-end call-site coverage.
   Summary: from the 14e-7 `[sec]` code review. The one integration test for the hex + continuous
-  chain (`scene/mod.rs:4726-4783`) runs with `is_gm: true`, so `mask` is `None` and
-  `clip_to_visible_mask` returns early at its `mask.is_none() && walls.is_empty()` branch
-  (`navmesh.rs:348`). Call-site wiring is therefore pinned end-to-end only for `truncate_at_arrest`;
+  chain runs with `is_gm: true`, so `mask` is `None` and
+  `clip_to_visible_mask` returns early at its `mask.is_none() && walls.is_empty()` branch.
+  (Citation note: the test this sentence originally named no longer matches its own description —
+  it could not be reidentified with confidence during the 2026-08-06 Rule 15 pass; whoever next
+  touches this entry should re-locate the actual hex+continuous integration test, if one still
+  exists, and cite it by name.)
+  Call-site wiring is therefore pinned end-to-end only for `truncate_at_arrest`;
   the shape threaded into `clip_to_visible_mask` — the actual fog gate on the pure-polyanya branch —
   is covered by its unit test but never exercised through `pathfind`. Not a defect (both call sites
   pass the same `&*grid_shape` binding), but a non-GM hex + continuous `pathfind` test with a real
@@ -464,7 +471,7 @@ are observations awaiting triage, not committed work.
   distinct-looking `panels.spec.ts` reload failure shapes observed across this investigation
   (wrong-world dock miss and worlds-list-bounce-on-a-since-deleted-world, both captured by this
   task's own trace forensics and reported in `docs/CLOSED_BUGS.md`; render-ready timeout in a busy
-  world, the third-occurrence class member logged above) are ONE mechanism: `App.svelte`'s `boot()`
+  world, the third-occurrence class member logged above) are ONE mechanism: `App`'s `boot()`
   ignored the URL hash's world route on every load and
   unconditionally entered `ui.global.lastWorld` instead. Under the shared-account 6-worker e2e
   suite (all workers authenticate as the same `ops` account and every `enterWorld` persists
@@ -495,14 +502,14 @@ are observations awaiting triage, not committed work.
   Task 4 verification) and needs no further action.
 
 - Title: `TokenAnimator`'s two Event-vs-MoveStream ordering comments contradict each
-  other. Summary: `src/client/render/src/token-animator.ts:216-217` (inside
-  `animateSamples`) states "the authoritative position Event arrives before the
+  other. Summary: `TokenAnimator.animateSamples`'s own comment states "the authoritative
+  position Event arrives before the
   MoveStream broadcast (normal server ordering), so reconcile() -> setTarget already
-  registered an ease entry", while `setTarget`'s own JSDoc at `:228-231` and its inline
-  guard comment at `:250-251` both state the opposite — "handles the typical
+  registered an ease entry", while `TokenAnimator.setTarget`'s own JSDoc and its inline
+  guard comment both state the opposite — "handles the typical
   MoveStream-before-Event server ordering". Each cites the other as its rationale. Both
   guards are defensive and order-independent (`animateSamples` deletes any competing ease
-  Anim at `:218`; `setTarget` returns early on `if (this.samplesAnim.has(id))` at `:252`),
+  Anim; `setTarget` returns early on `if (this.samplesAnim.has(id))`),
   so playback is correct whichever order actually holds — but exactly one of the two
   comments is wrong about the server, and a maintainer reasoning from the wrong one could
   remove the guard that is in fact load-bearing. Determining the real ordering requires
@@ -512,12 +519,12 @@ are observations awaiting triage, not committed work.
   `src/client/render`, or sooner if movement playback is touched.
 
 - Title: `redeem` has no network-exception path, unlike its three sibling handlers.
-  Summary: `src/modules/entry/src/views/WorldSelect.svelte`'s `refresh`, `create` and
+  Summary: `WorldSelect`'s `refresh`, `create` and
   `confirmDelete` each wrap their work in a bare `catch {}`, which absorbs BOTH an HTTP
   rejection and a network-level `fetch` failure. `redeem` has no `try`/`catch` at all: it
-  relies on `acceptInvite` collapsing every HTTP rejection to `null`
-  (`src/modules/entry/src/entryApi.ts`), which is correct and deliberate for the no-oracle
-  property. But `postJson` (`entryApi.ts:33-39`) does not catch its own `fetch`, and
+  relies on `acceptInvite` collapsing every HTTP rejection to `null`,
+  which is correct and deliberate for the no-oracle
+  property. But `postJson` does not catch its own `fetch`, and
   `acceptInvite` does not catch either — so an offline/DNS failure rejects and propagates
   out of the submit handler as an unhandled rejection, showing the user nothing, where the
   other three would have shown their generic error. Reachability: any invite redemption
@@ -527,13 +534,13 @@ are observations awaiting triage, not committed work.
   inside `acceptInvite`) belongs on the runtime follow-up branch, not in a docs sweep.
 
 - Title: Client and server enumerate the invite-rejection cases as five vs six.
-  Summary: `src/modules/entry/src/entryApi.ts`'s `acceptInvite` doc lists five rejection
-  categories ("unknown, malformed, expired, revoked, already used"); the server's own doc at
-  `src/server/src/http/routes.rs:829-830` lists six, treating "wrong secret" (a known invite
+  Summary: `acceptInvite`'s doc lists five rejection
+  categories ("unknown, malformed, expired, revoked, already used"); the server's own
+  `accept_invite` doc lists six, treating "wrong secret" (a known invite
   id with a non-matching secret) as distinct from "unknown" (no such invite id). Not a false
   claim: both are caller-indistinguishable, so "unknown" is a defensible abstraction rather
   than an omission — and the code makes that stronger than the prose does, since
-  `record.filter(|_| verified)` (`routes.rs:884`) collapses BOTH conditions into a single
+  `accept_invite`'s `record.filter(|_| verified)` collapses BOTH conditions into a single
   `AppError::NotFound` branch, so no separate path exists that could leak the difference.
   Found by the Task 4 spec review, which noted the report's verification step quoted the
   server's six-item list and never reconciled it against the five-item client prose it had
@@ -542,7 +549,7 @@ are observations awaiting triage, not committed work.
 
 - Title: `ModuleManager`'s `Promise.all` is correct — do not "harmonize" it to `Promise.allSettled`.
   Summary: Docs Sweep 12 Task 5's Rule 11 pass compared failure handling across the three settings
-  panels and reported `src/modules/settings/src/ModuleManager.svelte`'s `load()` as sharing the
+  panels and reported `ModuleManager`'s `load()` as sharing the
   affordance-loss shape `InviteManager.refresh()`'s `Promise.allSettled` guards against. On
   verification that conclusion is wrong, and the naive fix is destructive. The two reads
   (`listInstalledModules()`, `getEnabledModules(world)`) are independent network calls but NOT
@@ -585,9 +592,9 @@ are observations awaiting triage, not committed work.
   window `7c0dbb9..11cac8f` is comment-only for runtime code, proved by stripping comment markers
   from the entire non-`.md` diff, whose only residual is one vitest test name and ESLint config
   globs; (2) i18n catalog resolution, since the label comes from `aria-label={t("worlds.newName")}`
-  — but the same failing tests resolve `t("common.password")` one line earlier, and `i18n.ts` is
+  — but the same failing tests resolve `t("common.password")` one line earlier, and `I18n` is
   unchanged in the window; (3) in-memory SQLite handing each pooled connection its own empty
-  database — the pool is `max_connections(1)` (`src/server/src/data/sqlite.rs:156`).
+  database — `SqliteRepository::connect` sets `max_connections(1)`.
   A local `pnpm e2e` against a freshly compiled binary passed 16/16 in 1.7m on 6 workers, with no
   leftover server on port 31999 that `reuseExistingServer` could have silently reused.
   Cause remains UNKNOWN and is deliberately not guessed at. The leading untested candidate is

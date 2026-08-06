@@ -1,7 +1,7 @@
 import type { WorldEntry } from "@shadowcat/types";
 import type { Route } from "./route.svelte";
 
-/** boot()'s single resolution rule (pure, testable without mounting App.svelte).
+/** `boot()`'s single resolution rule (pure, testable without mounting `App`).
  * `enterWorldId` set = the id to enter; `clearLastWorld` = whether the caller
  * must clear the persisted `lastWorld` (a stale/deleted world reference). */
 export interface BootResolution {

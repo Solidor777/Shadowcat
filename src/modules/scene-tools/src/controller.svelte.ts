@@ -66,13 +66,11 @@ export interface ToolContext {
 
 /** The active scene (the viewed scene, M12d) + its grid cell size (default 100 when
  * `grid.size` is absent) and distance scale (default `{ perCell: 5, unit: "ft" }` when
- * `grid.distance` is absent, matching `resolveSceneSettings`'s own default,
- * `src/client/core/src/scene-docs.ts:444`). These are tool-local display/pathfind-arg
- * defaults only; no parity claim is made with the server beyond this: `scene_grid_sizes`
- * (`src/server/src/scene/mod.rs:1189`) is the server's sole intentional cell-size defaulting
- * source and also falls back to 100, but the movement gates themselves REFUSE rather than
- * default when a scene has no live document (`src/server/src/ws/room.rs:333-334`,
- * `:577-580`).
+ * `grid.distance` is absent, matching `resolveSceneSettings`'s own default). These are
+ * tool-local display/pathfind-arg defaults only; no parity claim is made with the server
+ * beyond this: `SceneEcs::scene_grid_sizes` is the server's sole intentional cell-size
+ * defaulting source and also falls back to 100, but the movement gates themselves REFUSE
+ * rather than default when a scene has no live document (`Room::publish`).
  * @param ctx The tool context; reads `viewedSceneId()` (falling back to the first scene) and
  * `documents`.
  * @returns The resolved scene id + grid size + distance scale, or `null` when no scene is
@@ -100,10 +98,9 @@ function activeScene(ctx: ToolContext): { id: string; size: number; perCell: num
  * preview and commit cannot derive different sizes.
  *
  * Every call site in this file that invokes this function also passes that same token id as
- * `Pathfind`'s `token` field (wire shape declared at `src/server/src/ws/protocol.rs:113-117`);
- * when `token` is present the server AUTHORIZES it and DERIVES the footprint from the token's
- * own document, IGNORING the wire `footprint_radius` value entirely (enforced at
- * `src/server/src/ws/conn.rs:681-700`). So the value computed here influences no production
+ * `ClientMsg::Pathfind`'s `token` field; when `token` is present the server AUTHORIZES it and
+ * DERIVES the footprint from the token's own document, IGNORING the wire `footprint_radius`
+ * value entirely (enforced in `handle_pathfind`). So the value computed here influences no production
  * outcome today. It is not dead code: the wire value IS
  * honored whenever `token` is absent, which in this file happens only when zero or multiple
  * tokens are selected — and in that branch this function is never called either (the caller
@@ -269,7 +266,7 @@ const WALL_COLOR = 0xd06060;
 
 /** Drag to draw a wall segment (snapped endpoints); release persists a `wall` doc
  * (`blocksSight`+`blocksMove`+`blocksLight`, all three). The server's collision check reads the
- * same `seg`. The tool rail hides this tool from non-GMs (`ToolRail.svelte`'s `visibleTools`
+ * same `seg`. The tool rail hides this tool from non-GMs (`ToolRail`'s `visibleTools`
  * filter) — that is a UI-only visibility gate, not a permission this factory itself checks or
  * enforces. No active scene → unhandled.
  * @param ctx The tool context; reads the active scene, snaps points, dispatches the create.
@@ -316,7 +313,7 @@ export function makeWallTool(ctx: ToolContext): SceneTool {
 }
 
 /** Region preview stroke color (distinct from walls/measure route). Actual persisted fill/stroke
- * is behavior-tinted by the render layer (`region-view.ts`); this is just the drag preview. */
+ * is behavior-tinted by the render layer (`RegionView.toSpec`); this is just the drag preview. */
 const REGION_PREVIEW_COLOR = 0xd0a030;
 
 /** Author a vector-shaped region: rect/circle drag two opposite corners; polygon is a freehand
@@ -325,7 +322,7 @@ const REGION_PREVIEW_COLOR = 0xd0a030;
  * Create-only (no edit UI) — mirrors `makeWallTool`'s precedent, still accurate: `makeWallTool`
  * likewise has no update path, only create-on-release. Editing behavior/cost/visibility on an
  * already-placed region has no dedicated UI; a GM re-authors by delete+recreate, or toggles
- * `enabled` server-side. The tool rail hides this tool from non-GMs (`ToolRail.svelte`'s
+ * `enabled` server-side. The tool rail hides this tool from non-GMs (`ToolRail`'s
  * `visibleTools` filter) — a UI-only visibility gate, not a permission this factory itself
  * checks or enforces.
  * @param ctx The tool context; reads the active scene, snaps points, dispatches the create.
@@ -408,7 +405,7 @@ function regionShapePath(mode: RegionShapeMode, a: Point, b: Point, freehand: nu
 
 /** The persisted `engine.shape.points` layout for `mode`: rect=[x0,y0,x1,y1], circle=[cx,cy,r],
  * polygon=[x0,y0,x1,y1,...] — matches `parse_region_shape`'s own dispatch on point count
- * (`src/server/src/scene/regions.rs:314-330`: `"rect"` requires exactly 4 points, `"circle"`
+ * (`"rect"` requires exactly 4 points, `"circle"`
  * exactly 3, `"polygon"` an even count ≥6). For `"circle"` this is the raw `[cx, cy, r]` triple,
  * NOT `regionShapePath`'s tessellated preview ring — the two are deliberately different shapes
  * for the same mode and are not interchangeable.
@@ -573,7 +570,7 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
    * field, and both are reached only when exactly one token is selected — so `token` is
    * never `undefined` there and the server always DERIVES the authoritative footprint from
    * that token document instead, ignoring this value entirely
-   * (`src/server/src/ws/conn.rs:681-700`; mirrors `footprintFor`'s own framing above). It is
+   * (`handle_pathfind`; mirrors `footprintFor`'s own framing above). It is
    * not dead code: a future call site passing no `token` would fall back to this value.
    * @returns The footprint radius in grid cells.
    * @example
@@ -741,9 +738,9 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
    * store Event (token → stop). Sample-driven playback wins regardless of which of the two
    * arrives first, and this doc deliberately asserts no ordering between them: if
    * `animateSamples` registered first, `TokenAnimator.setTarget`'s `samplesAnim` guard
-   * (`src/client/render/src/token-animator.ts:252`) makes the Event a no-op; if the Event
-   * landed first, the ease tween it started is deleted when `animateSamples` registers
-   * (`token-animator.ts:218`). Either way the broadcast trajectory owns the token's motion.
+   * makes the Event a no-op; if the Event
+   * landed first, the ease tween it started is deleted when `TokenAnimator.animateSamples` registers.
+   * Either way the broadcast trajectory owns the token's motion.
    * On reject, clears the route overlay (no move).
    *
    * Reuses the last-previewed `PathResult.path` (`lastPreviewedPath`) when already computed
@@ -931,7 +928,7 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
  * different geometry per tool. Each tool is internally consistent across its OWN modes (this
  * one never mixes bbox and rotated-square); no design doc names the cross-tool split itself as
  * a decision, so treat it as consistent-by-construction rather than a documented tradeoff — it
- * mirrors the render layer's own `drawing-view.ts` vs `template-view.ts` split, not a bug.
+ * mirrors the render layer's own `DrawingView.toSpec` vs `TemplateView.toSpec` split, not a bug.
  * @param mode The active draw mode; only `"freehand"` consults `freehand`.
  * @param a The drag start point (raw pointer scene coords; the sole caller, `makeDrawTool`,
  * never snaps).
@@ -1020,7 +1017,7 @@ export function makeDrawTool(ctx: ToolContext, controller: ToolController): Scen
  * bbox `shapePath`'s `"rect"` produces, despite the same mode-name string. This tool is
  * internally consistent across its own modes (always the rotated square for `"rect"`); the
  * cross-tool split with `shapePath` is consistent-by-construction, not a documented tradeoff —
- * it mirrors the render layer's `template-view.ts` vs `drawing-view.ts` split; `"line"` is the two
+ * it mirrors the render layer's `TemplateView.toSpec` vs `DrawingView.toSpec` split; `"line"` is the two
  * endpoints computed from `direction`/`size`, open.
  * @param mode The active template shape mode.
  * @param ax The anchor x (scene coords, post-snap).
@@ -1184,8 +1181,8 @@ export function makeSelectMoveTool(ctx: ToolContext): SceneTool {
   /** A closed ring per selected token into the tool overlay (cleared when empty). Circle
    * tokens receive an ellipse ring, square tokens an axis-aligned box — both keyed off
    * `resolveTokenBox(...).shape`, the SAME field `topTokenAt`'s hit-test
-   * (`src/modules/scene-tools/src/hit-test.ts:28-37`) and the render layer's faction border
-   * (`PixiBackend.updateTokenBorder`, `src/client/render/src/pixi-backend.ts:555-561`) also
+   * and the render layer's faction border
+   * (`PixiBackend.updateTokenBorder`) also
    * read — so the ring, hit-test, and faction border agree on shape structurally (one shared
    * source), not by three independent implementations happening to match.
    * @example

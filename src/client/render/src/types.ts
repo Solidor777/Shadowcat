@@ -46,7 +46,7 @@ export interface TokenTransform {
 }
 
 /** Asset UUIDs already resolved to serve URLs by the AssetResolver (M10h) — the backend never
- * resolves asset ids itself, mirroring today's `assets.url(...)` call in `token-view.ts`. */
+ * resolves asset ids itself, mirroring today's `assets.url(...)` call in `TokenView.toSpec`. */
 export type ResolvedAnimatedSource =
   | { type: "frames"; urls: string[] }
   | { type: "sheet"; url: string; rows: number; cols: number; count?: number };
@@ -72,7 +72,8 @@ export interface TokenNodeSpec {
 
 /** A drawn shape node: a polyline/polygon (flat scene-coord points) with optional fill
  * and stroke, parented to `layer`. Drawings + templates reconcile to this; all shape
- * tessellation (cone/circle/…) happens in `geometry.ts` before reaching the backend. */
+ * tessellation (`circlePoints`/`conePoints`/`squarePoints`/`rectPoints`/`ellipsePoints`)
+ * happens before reaching the backend. */
 export interface ShapeNodeSpec {
   layer: string;
   points: number[];

@@ -200,6 +200,8 @@ other. Task 15 merges both into `eslint.config.js` once `lint:props` also reache
 | 14 | the 6 named arrow/fn-expression sites | 6 |
 | 14b | whatever Task 1's Rust proof surfaces (0 if the 0 holds; otherwise scoped then) | ? |
 | 15 | **Ship task.** Ratchet `eslint.props.config.js` to `error` for every package in both its blocks; consolidate `eslint.docs.config.js` AND `eslint.props.config.js` into `eslint.config.js`; mutation-prove all tiers; full gate matrix; docs sync; reviewed skill-update gate; skills documentation-reference pass. **Also close the `ClassDeclaration` content gap** — see below. | — |
+| 16 | **Core-skill commenting-lessons task** (user directive 2026-08-05). Fold the campaign's accumulated commenting rules and lessons into `shadowcat-codebase-core`. Runs AFTER Task 15 so it captures the finished rule set. Reviewed by `shadowcat-spec-reviewer` per the skill-update gate. Detailed below. | — |
+| R15 | **Rule 15 conversion pass** (user directive 2026-08-05), executed out-of-band during Task 5's review window. Convert every committed `file:line` and bare-filename citation to a symbol citation across `src/**` doc comments and the live tracking docs. Measured: 151 `file:line` sites + ~170 bare-filename sites. Five file-disjoint agents. Excluded `src/client/core` (Task 5's re-reviews were pinned to it) and dated records under `docs/superpowers/`. | ~320 |
 
 **`ClassDeclaration` content is unchecked by the shipped function gate, at zero current cost.** The
 same `contextDefaults` mechanism described above means `eslint.docs.config.js` never content-checks a
@@ -210,6 +212,50 @@ the docs. Task 15 closes it when it merges the configs, by giving `require-descr
 context list that includes `ClassDeclaration`. Do NOT "fix" `MethodDefinition` alongside it —
 methods are already fully content-checked, because a method's value node is a `FunctionExpression`,
 which IS in the plugin's default list. That was verified by probe after being reported as a defect.
+
+## Task 16 — fold the campaign's commenting lessons into `shadowcat-codebase-core`
+
+**Why it is its own task.** Thirteen sweeps have produced a rule set that exists only in
+`docs/design/doc-sweep-truthfulness-rules.md`, which is handed to doc-sweep implementers by path and
+read by nobody else. Every ordinary coding task in this repo writes comments, and none of them load
+that file. `shadowcat-codebase-core` is the always-invoked base skill — it is the only artifact that
+reaches every agent, so it is where the durable commenting rules have to live.
+
+**Ordering.** Runs AFTER Task 15, so it captures the finished rule set rather than a snapshot that
+Task 15 then invalidates. Task 15's "skills documentation-reference pass" is a *different* job —
+that one adds api/rust + api/ts + guide/protocol links to every skill's Pointers. This one adds
+rules. Do not merge them.
+
+**Scope — a compact rules block in the core skill's Gotchas, one line per rule, pointing INTO the
+full document rather than restating it** (the skill family's own authoring rule: orientation+index,
+never duplicate). The load-bearing set, by measured yield:
+
+- **NEVER work around a rule — follow its INTENT; if unsure, ASK** (user directive 2026-08-05,
+  iron-clad). Added inline ahead of this task. It outranks every rule below, because those rules are
+  what get worked around. Reworking text until a rule stops applying is never acceptable, however
+  true the result and however green the gate.
+- **RULE 15 — cite symbols, never file names or line numbers.** Already added inline ahead of this
+  task, since the R15 conversion pass needed it live. Task 16 keeps it and adds the rest.
+- **RULE 1 — a citation must support the claim AS WORDED**, not an adjacent fact. The campaign's
+  single highest-yield rule.
+- **RULE 3 — no third copy.** A property whose semantics its enclosing type already states points at
+  it; it does not restate it. Drift between copies is undetectable by any gate.
+- **RULE 4 — prefer deletion over recomposition**, and delete the whole overclaim. Each rewrite is a
+  fresh chance to assert something unverified.
+- **RULE 5 — absolutes concentrate the errors** (never/always/only/sole/all). Enumerate before
+  writing one.
+- **RULE 9 — never append a second JSDoc block.** Tooling resolves to the nearest preceding block, so
+  an appended one silently orphans the richer original while the linter reports green.
+- **RULE 14 — a green `lint:docs` means tags are PRESENT, not that comments are TRUE**, and it counts
+  only `/** */`. Standalone `//` and `const` comments are ungated and are where several of the
+  campaign's best findings lived.
+
+**Also mirror the durable subset into `docs/design/ARCHITECTURE.md`** — `CLAUDE.md` is git-ignored, so
+a rule that lives only there does not survive a clone. ARCHITECTURE.md is the tracked source of truth.
+
+**Gate.** Reviewed skill-update gate applies: dispatch `shadowcat-spec-reviewer` on the skill diff to
+confirm it captures the rules without drift or broken pointers. One clean pass is not sufficient
+evidence on its own — that gate has previously shipped two real errors after passing.
 
 **The per-task site counts above are the PROPERTY gap only.** The 102 type-declaration sites live in
 the same files and are absorbed by whichever task owns each file — `wire.ts` (Task 2) carries the
@@ -232,26 +278,35 @@ four from the sweep itself (`wire.ts` 192→234 and 359→424 in Task 2; `assets
 41-45→58 in Task 5) and four from a single unrelated +5-line comment fix in `sqlite.rs`. Repaired in
 `8fb44f2`.
 
-**Every task from 6 onward must, before reporting:** grep the tracked docs
-(`docs/*.md`, `docs/design/*.md`) for citations into the files it touched, verify each still lands
-on the construct its prose claims, and repair those that do not. Report the count checked and the
-count repaired — "none found" is only meaningful as the result of a search.
+**RULE 15 retires this problem rather than managing it.** The per-task repair check above was the
+containment strategy; converting every live citation to a symbol is the fix. Once the live tracking
+docs cite `AssetResolver.url` instead of `assets.ts:41-45`, an inserted comment block cannot
+invalidate them — there is no coordinate left to shift.
 
-Two traps inside this check:
+**So the standing per-task instruction is now:** if a task touches a file that any live doc still
+cites by `file:line`, convert that citation to a symbol rather than re-aiming it. Report the count
+converted. Re-aiming a line number is repairing a defect by reproducing it.
+
+The two traps below applied to the re-aiming strategy and are recorded because they explain why
+re-aiming was never sustainable:
 - **A citation that still RESOLVES may no longer SUPPORT.** After a shift, `wire.ts:192` landed on a
-  JSDoc line — a real line, entirely the wrong one. Read what is there, do not just confirm the file
-  is long enough.
-- **An insertion cannot move a line ABOVE it.** Citations above the shift point are correct and must
-  be left alone. "Correcting" them is how a good citation becomes a bad one.
+  JSDoc line — a real line, entirely the wrong one. A checker cannot classify this; only the prose's
+  own wording decides which construct it meant.
+- **An insertion cannot move a line ABOVE it.** Citations above the shift point were correct and had
+  to be left alone — so the repair pass itself had to reason about direction, and "correcting" an
+  already-correct citation was a live way to introduce the defect.
 
 ## Global constraints (bind every task)
 
 1. **Comment-only.** No runtime change. Report a real defect with reachability bounded rather than
    fixing it; log it to `docs/OPEN_BUGS.md`. Correcting a **stale** comment is not a runtime change
    and IS in scope (Rule 7).
-2. `docs/design/doc-sweep-truthfulness-rules.md` — all 14 rules, required reading per task.
-3. **Path-qualify every citation. Re-measure by grep AFTER the last edit.** Never compute a line
-   delta. A property doc added mid-file shifts every citation below it, including cross-file ones.
+2. `docs/design/doc-sweep-truthfulness-rules.md` — all 15 rules, required reading per task.
+3. **RULE 15 — cite SYMBOLS, never file names or line numbers.** Shipped prose names the type and
+   member (`AssetResolver.url`, `Conn::handle_scene_subscribe`), qualified by its **owner** rather
+   than its location. A `file:line` in a committed comment is now a defect in its own right,
+   independent of whether it currently resolves. This supersedes the former path-qualification
+   constraint, and it retires the line-delta problem at the root rather than policing it per task.
 4. **A citation that RESOLVES is not one that SUPPORTS the claim** — the campaign's dominant defect.
 5. **Scope every absolute.** "never/always/only/sole" must be enumerable from code.
 6. **Rule 3 — no third copy.** A property whose semantics are stated by its enclosing type's doc

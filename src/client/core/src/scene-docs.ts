@@ -112,10 +112,10 @@ export type FaceVisual = RenderVisual;
  * callers may cast to; the generated fields are plain `string` (asserted by the server's
  * unit battery, not enforced by a Rust enum). */
 export type RegionShapeKind = "rect" | "circle" | "polygon";
-/** Server-enforced movement meaning composed by `src/server/src/scene/regions.rs`'s
+/** Server-enforced movement meaning composed from
  * `RegionBehavior`/`RegionEffect`: `"impassable"` blocks the router and the move gate
- * (`is_impassable`, `src/server/src/scene/regions.rs:237`); `"arrest"` truncates a route at that
- * cell (`is_arrest`, `src/server/src/scene/regions.rs:242`) without blocking it; `"terrain"` only
+ * (`RegionField::is_impassable`); `"arrest"` truncates a route at that
+ * cell (`RegionField::is_arrest`) without blocking it; `"terrain"` only
  * weights pathfinding cost and never blocks or truncates a route. */
 export type RegionBehavior = "terrain" | "impassable" | "arrest";
 
@@ -139,15 +139,15 @@ function deepFreeze<T>(obj: T): T {
 }
 
 /** Fail-safe finite default scene size (grid units) when a scene has no authored `bounds`, so
- * navmesh construction never faces an unbounded plane. MUST match DEFAULT_SCENE_BOUNDS_UNITS in
- * the server `scene/mod.rs`. Deliberately a fixed constant — NOT a content AABB (content-derived
+ * navmesh construction never faces an unbounded plane. MUST match the server's
+ * `scene::DEFAULT_SCENE_BOUNDS_UNITS`. Deliberately a fixed constant — NOT a content AABB (content-derived
  * bounds were rejected: edge-drag re-mesh churn, ill-defined for open scenes). */
 export const DEFAULT_SCENE_BOUNDS: SceneDimensions = deepFreeze({ width: 100, height: 100 });
 
 /** Built-in defaults — used when no world-settings doc exists or a field is absent.
  * Deep-frozen so shared refs in resolveSceneSettings output are immutable in dev;
- * enumerable values are unchanged. MUST equal the server's `impl Default for
- * WorldSettingsEngine` (`data/engine/scene.rs`) — the client stays the authoritative
+ * enumerable values are unchanged. MUST equal the server's
+ * `data::engine::scene::WorldSettingsEngine`'s `Default` impl — the client stays the authoritative
  * source; a server-side unit test cross-checks parity. */
 export const DEFAULT_WORLD_SETTINGS: WorldSettingsEngine = deepFreeze({
   scene: {
@@ -549,10 +549,12 @@ export const ITEM_DOC_TYPE = "item";
 
 /** An item's opaque body — the game-system-owned `system` band, editable via the tree editor.
  * Any key may legitimately appear; the client's tree editor writes whatever the user enters.
- * The server enforces an overall size cap unconditionally (`validate_system_size`,
- * `src/server/src/data/validation.rs:25`). A game-system module may ADDITIONALLY register a
- * tier-2 JSON Schema for `doc_type: "item"`; when one is registered, `validate_system_schema_tree`
- * (`src/server/src/data/validation.rs:259`) validates the shape of the subtree it names — but a
+ * The server enforces an overall size cap unconditionally
+ * (`data::validation::validate_system_size`).
+ * A game-system module may ADDITIONALLY register a
+ * tier-2 JSON Schema for `doc_type: "item"`; when one is registered,
+ * `data::validation::validate_system_schema_tree`
+ * validates the shape of the subtree it names — but a
  * subtree it names and this document omits is not a violation (the schema governs shape only when
  * the field is present; it never compels a field to exist). With no schema registered for
  * `"item"`, nothing validates any individual field's shape or semantics — only the size cap
@@ -732,8 +734,8 @@ export function buildConditionRegistryDoc(worldId: string, conditions: Record<st
 }
 
 /** A generic scene-entity document (wall/drawing/template/…) parented to `sceneId`; every
- * doc_type this builder is used for (`wall`, `drawing`, `template` — see call sites in
- * `src/modules/scene-tools/src/controller.svelte.ts`) is engine-defined, so the caller's shape
+ * doc_type this builder is used for (`wall`, `drawing`, `template` — see the call sites in
+ * `makeWallTool`, `makeDrawTool`, and `makeTemplateTool`) is engine-defined, so the caller's shape
  * lands in `engine` — `system` stays `{}`. `region` documents use the dedicated
  * `buildRegionDoc` instead (it calls `envelope` directly), not this generic builder.
  * @param worldId The owning world's id.

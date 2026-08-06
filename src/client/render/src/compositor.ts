@@ -2,8 +2,8 @@ import type { DisplayBackend } from "./backend";
 import type { VisibilityInput } from "./types";
 
 /** Owns the mask slot. A thin pass-through to the backend's fog rendering
- * (`PixiBackend.setVisibility`/`setVisibilityBlend` paint the actual sheet+hole fog graphics —
- * see `pixi-backend.ts`) plus a `last`-applied cache so `current()` can answer without a
+ * (`PixiBackend.setVisibility`/`setVisibilityBlend` paint the actual sheet+hole fog graphics)
+ * plus a `last`-applied cache so `current()` can answer without a
  * backend round-trip. This class has no fog-drawing logic of its own. */
 export class Compositor {
   private last: VisibilityInput = { mode: "all", visible: [], explored: [] };

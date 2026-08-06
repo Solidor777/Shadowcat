@@ -2,7 +2,7 @@ import type { LineSeg, CameraTransform, VisibilityInput, TokenNodeSpec, ShapeNod
 import type { LightingFrame } from "./lighting";
 
 /** The narrow GL abstraction the render model drives. The real implementation is
- * `pixi-backend.ts` (Playwright-covered); `MockBackend` covers it in unit tests.
+ * `PixiBackend` (Playwright-covered); `MockBackend` covers it in unit tests.
  * Kept minimal for M8c-1 (background + grid + camera); M8d generalizes to a node
  * API for token/wall/etc. reconcilers. */
 export interface DisplayBackend {

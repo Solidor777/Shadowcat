@@ -1,4 +1,4 @@
-// Client mirror of the chat message content model (src/server/src/chat/mod.rs).
+// Client mirror of the chat message content model (`chat::MessageEngine` et al).
 // `MessageEngine` is deliberately NOT ts-rs-exported (server comment: "Opaque on the
 // WIRE" — the server enforces `deny_unknown_fields` structurally, the exact segment/
 // outcome union is the client's own concern) — this file is the manually-kept-in-sync
@@ -13,7 +13,7 @@ export type { ChannelRegistryEngine, ChatSettingsEngine, DiceSettingsEngine };
 
 export const MESSAGE_DOC_TYPE = "message";
 export const CHANNEL_REGISTRY_DOC_TYPE = "channel-registry";
-/** Server-enforced content cap (chat/mod.rs MAX_MESSAGE_CHARS) — composer pre-validates. */
+/** Server-enforced content cap (`chat::MAX_MESSAGE_CHARS`) — composer pre-validates. */
 export const MAX_MESSAGE_CHARS = 4096;
 
 export const MessageKindSchema = z.enum(["normal", "emote", "roll", "system"]);
@@ -53,8 +53,8 @@ export type ConstTerm = z.infer<typeof ConstTermSchema>;
 
 /** Mirror of dice::outcome::RollOutcome (M11d-2). `successes`/`pass`/`margin`/
  * `tier_label`/`tier_value` are `None` in Total mode with no `difficulty`.
- * PRECISION: `total`/`margin` are i64 and — unlike wire.ts's seq/timestamp
- * fields — CAN legitimately reach i64::MAX/MIN (the evaluator saturates
+ * PRECISION: `total`/`margin` are i64 and — unlike this package's other wire-protocol
+ * seq/timestamp fields — CAN legitimately reach i64::MAX/MIN (the evaluator saturates
  * overflowing constant/multiplication folds), beyond Number.MAX_SAFE_INTEGER;
  * JSON.parse rounds such extremes before Zod runs, so display precision
  * degrades past 2^53. Accepted tradeoff (no crash/security effect).
@@ -81,11 +81,11 @@ export const RollOutcomeSchema = z.object({
 export type RollOutcome = z.infer<typeof RollOutcomeSchema>;
 
 /** Known segment kinds. `html.sanitized_html` is innerHTML-safe ONLY because the
- * server's chat::sanitize (ammonia) produced it — no client code may construct one.
+ * server's `chat::sanitize` (ammonia) produced it — no client code may construct one.
  * `roll_embed.outcome` is a completed, immutable roll's full deterministic result
- * (chat/mod.rs Segment::RollEmbed); `roll_button` renders an unexecuted formula the
- * user can click to send a fresh `/roll` (chat/mod.rs Segment::RollButton).
- * `link_preview` mirrors chat/mod.rs Segment::LinkPreview — a server-fetched,
+ * (`chat::Segment::RollEmbed`); `roll_button` renders an unexecuted formula the
+ * user can click to send a fresh `/roll` (`chat::Segment::RollButton`).
+ * `link_preview` mirrors `chat::Segment::LinkPreview` — a server-fetched,
  * SSRF-guarded preview of a link in the message; the client renders ONLY the
  * stored `url`/`title`/`description` strings (escaped, never innerHTML) and never
  * fetches `url` itself (M11d-3). */
@@ -197,7 +197,7 @@ export function buildChannelRegistryDoc(
 }
 
 /** Doc_type for the single per-world dice-settings config `Document`
- * (server: chat/settings.rs DICE_SETTINGS_DOC_TYPE). `doc_type: "dice-settings"` is
+ * (server: `chat::settings::DICE_SETTINGS_DOC_TYPE`). `doc_type: "dice-settings"` is
  * engine-defined — the body lands in `engine`, `DiceSettingsEngine` mirrors
  * data::engine::registries::DiceSettingsEngine 1:1 (both fields serde-default on the server:
  * Total / high_wins), so a partial body is still safe — the panel always writes the
@@ -225,7 +225,7 @@ export function buildDiceSettingsDoc(
 }
 
 /** Doc_type for the single per-world chat-settings config `Document`
- * (server: chat/settings.rs CHAT_SETTINGS_DOC_TYPE). `doc_type: "chat-settings"` is
+ * (server: `chat::settings::CHAT_SETTINGS_DOC_TYPE`). `doc_type: "chat-settings"` is
  * engine-defined — the body lands in `engine`, `ChatSettingsEngine` mirrors
  * chat::settings::ChatContentPolicy: every field `#[serde(default)]` on the server
  * (false), except `link_previews` which is tri-state: absent/`null` is the spec'd

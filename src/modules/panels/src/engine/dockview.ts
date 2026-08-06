@@ -33,7 +33,7 @@ const STAGE_GROUP_ID = "sc-stage-group";
 
 /** The three dock zones this engine reconciles, in the fixed order `apply()`
  * walks them — an iteration order, not a priority; every zone is always
- * present (see `ExpandedLayout`'s own doc comment in `tree.ts`). */
+ * present (see `ExpandedLayout`'s own doc comment). */
 const ZONE_IDS: readonly ZoneId[] = ["right", "bottom", "left"];
 
 /** The edge direction `addGroup` splits off the stage group in, for the
@@ -162,7 +162,7 @@ class AdoptingContentRenderer implements IContentRenderer {
 /** Derives a dockview group id from the zone-group's CONTENT (its first tab
  * id) rather than its positional index — a group's dockview identity then
  * survives a sibling's insert/removal in the same zone, which would
- * otherwise shift every later index (mirrors `tree.ts`'s `dock` op, which
+ * otherwise shift every later index (mirrors `applyOp`'s `dock` case, which
  * resolves a target group's identity before `detach` runs for the same
  * reason). A reordered or emptied-then-refilled group gets a fresh id and
  * is recreated — accepted as a minor churn cost; a finer content-independent
@@ -259,7 +259,7 @@ class PanelTabRenderer implements ITabRenderer {
   // meta MAP can be rebuilt), the badge object itself is stable for a
   // panel's whole lifetime (registered once at module install), and its
   // count changes independently of any `apply()` cycle — see `PanelBadge`'s
-  // doc comment in contributions.ts.
+  // doc comment.
   #unsubBadge: (() => void) | null = null;
   #closeMenu: (() => void) | null = null;
 
@@ -428,8 +428,8 @@ class PanelTabRenderer implements ITabRenderer {
  * viewId-mismatch case. It has no wiring here regardless of which of those
  * two shapes a drop takes, because `#handleWillDrop` (and its
  * `#handleGroupWillDrop` delegate) `preventDefault()`s on EVERY path it can
- * take — including when `#toDropSite` resolves no subject at all (`!id`,
- * `dockview.ts:1182`) — which trips `handleDropEvent`'s own
+ * take — including when `#toDropSite` resolves no subject at all (`!id`)
+ * — which trips `handleDropEvent`'s own
  * `if (willDropEvent.defaultPrevented) return;`
  * (`dockviewGroupPanelModel.js:1382-1384`) before the model ever reaches the
  * data/viewId branch quoted above. So `onDidDrop` is unreachable here not
@@ -474,8 +474,7 @@ export class DockviewEngine implements EngineAdapter {
   // codebase ships no `advancedDnDService` module (`allModules.js:17-25`), so
   // that optional chain is a permanent no-op — `#handleWillDrop` is
   // otherwise unreachable for any group-target drop (header, tab, or
-  // content). `IDockviewGroupPanelModel.onWillDrop` (`dockviewGroupPanelModel.
-  // d.ts:184` interface, emitter at `dockviewGroupPanelModel.js:162-163`) is a
+  // content). `IDockviewGroupPanelModel.onWillDrop` is a
   // public event on the SAME `group.model` this class already reaches via
   // `api.getGroup(groupId)`, fires with the identical `DockviewWillDropEvent`
   // shape as the component-level event (`dockviewGroupPanelModel.js:1370-1381`,
@@ -560,10 +559,9 @@ export class DockviewEngine implements EngineAdapter {
    * seam for unit tests, not a production configuration point. `PanelHost`
    * itself never constructs a `DockviewEngine` — it receives `engine` as an
    * optional prop, defaulting to `new FakeEngine()` when absent
-   * (`src/modules/panels/src/PanelHost.svelte:11-22,151`); the real production construction is the
-   * panels module's `register()`, with ONE argument
-   * (`props: { engine: new DockviewEngine(consoleLogger()) }`,
-   * `src/modules/panels/src/index.ts:58`).
+   * (`PanelHost`'s `engine` prop); the real production construction is the
+   * panels module's `panels.register()`, with ONE argument
+   * (`props: { engine: new DockviewEngine(consoleLogger()) }`).
    * @param logger Diagnostic sink for vetoed gestures and recoverable
    * failures (defaults to `consoleLogger()`).
    * @param popoutDriver Replaces dockview's native `addPopoutGroup` call for
@@ -656,7 +654,7 @@ export class DockviewEngine implements EngineAdapter {
   }
 
   /** Translates a `PanelMenu` command into the `LayoutOp` `opForMenuCommand`
-   * (policy.ts, dockview-free) maps it to, and emits it through the SAME
+   * (dockview-free) maps it to, and emits it through the SAME
    * `#opListeners` channel a drag gesture uses — the controller cannot tell
    * the two apart, and per the parity requirement, it doesn't need to: both
    * paths produce identical `LayoutOp` shapes for the equivalent move.

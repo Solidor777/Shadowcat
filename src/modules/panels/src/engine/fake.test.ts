@@ -92,7 +92,8 @@ test("FakeEngine constrains a zone's cross-size to ZoneNode.size once it has doc
 // overlapping at the identical position — this asserts two simultaneously
 // popped-out ids render at distinct rects and z-indices under this
 // bespoke-fallback engine (mirrors the cascade tests at the other degraded/
-// rehydrated-position sites: tree.test.ts, controller.test.ts).
+// rehydrated-position sites: `layout/tree`'s own test suite, `PanelsController`'s
+// own test suite).
 test("two simultaneously popped-out ids cascade to distinct floating rects under FakeEngine", () => {
   const host = document.createElement("div");
   const slotFor = makeSlots(["chat", "assets"]);
@@ -119,14 +120,16 @@ test("two simultaneously popped-out ids cascade to distinct floating rects under
 });
 
 // THIRD copy of the cascade constants: `POPOUT_FALLBACK_BASE`/`STEP` inside
-// `apply()`, whose own comment asserts it mirrors `tree.ts`'s
-// SHEET_CASCADE_BASE/STEP and `controller.svelte.ts`'s REHYDRATE_FLOAT_BASE/STEP.
+// `apply()`, whose own comment asserts it mirrors `layout/tree`'s
+// SHEET_CASCADE_BASE/STEP and `PanelsController`'s own REHYDRATE_FLOAT_BASE/STEP.
 // The test above asserts only that two fallback rects DIFFER from each other,
 // which stays green if this copy drifts away from the other two; the
-// controller.test.ts parity test covers the other two but not this one. This
+// "cascade parity at index %i: a floating placement and a rehydrated popout
+// land on the identical rect" parity test covers the other two but not this
+// one. This
 // closes the third leg: with no pre-existing floating panels, the i-th
 // popped-out id's degraded rect must equal what the layout tree would place the
-// i-th floating panel at. Index choice mirrors controller.test.ts's — 3 and 5
+// i-th floating panel at. That test's index choice mirrors it — 3 and 5
 // are the ones that pin the `% 6` modulus rather than merely the step.
 test.each([0, 1, 3, 5, 7])(
   "cascade parity at index %i: FakeEngine's popout fallback matches the layout tree's floating placement",

@@ -63,7 +63,7 @@ fn default_entry() -> String {
 #[derive(Debug, Clone)]
 pub struct InstalledModule {
     /// The install folder name — the routing id (`/modules/<id>/...`), distinct
-    /// from (and cross-checked against, client-side, exactly as `loader.ts`
+    /// from (and cross-checked against, client-side, exactly as `loadModules`
     /// already cross-checks discovery-id vs the module's own declared id).
     pub id: String,
     /// The manifest's declarative capability rules (advisory; unioned into the
@@ -147,8 +147,8 @@ pub fn scan_installed_modules(modules_dir: &Path) -> Vec<InstalledModule> {
     out
 }
 
-/// Minimal semver range matcher mirroring the client's `satisfies` in
-/// `src/client/core/src/semver.ts` (exact / `^` / `~` / `*`) — both sides must
+/// Minimal semver range matcher mirroring the client's `satisfies`
+/// (exact / `^` / `~` / `*`) — both sides must
 /// agree on `engines.shadowcat` compatibility (enable-time here, load-time
 /// there), so the tiny algorithm is duplicated intentionally rather than
 /// shared across the Rust/TS boundary. Fails closed (false) on a malformed

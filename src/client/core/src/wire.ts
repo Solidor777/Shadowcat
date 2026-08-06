@@ -2,7 +2,8 @@
 // types come from `@shadowcat/types` (ts-rs output); these Zod schemas validate
 // inbound server frames at the trust boundary, plus outbound client-frame
 // schemas (e.g. `SendMessageSchema`) that callers may opt to validate before
-// sending. `wire.test.ts` guards them against drift from the Rust types.
+// sending. This module's own "wire drift guard" test suites guard them against drift from
+// the Rust types.
 //
 // i64/u32 fields arrive as JSON numbers and are modeled as `number` (seq and
 // millisecond timestamps stay well within 2^53). ts-rs types i64 as `bigint`;
@@ -146,15 +147,15 @@ export type WireDocument = {
    * doc optimistically under the same id the server will later confirm — and immutable
    * thereafter (no field-path Update reaches `/id`). */
   id: string;
-  /** Placement: `{kind:"world", world_id}` or `{kind:"compendium", pack}`. See `world_of`
-   * (`data/document.rs`) for the world-scope extraction authz keys off of. */
+  /** Placement: `{kind:"world", world_id}` or `{kind:"compendium", pack}`. See
+   * `data::document::world_of` for the world-scope extraction authz keys off of. */
   scope: z.infer<typeof ScopeSchema>;
   /** Unconstrained wire string naming the document's kind (e.g. `actor`, `scene`, `message`).
    * Real server-side structural authority applies only to the 17 engine-defined types
-   * (`is_engine_doc_type`, `data/engine/mod.rs`); any other value is a legitimate
-   * client-only doc_type (e.g. `item`, `scene-docs.ts`). */
+   * (`data::engine::is_engine_doc_type`); any other value is a legitimate
+   * client-only doc_type (e.g. `item`, see `ITEM_DOC_TYPE`). */
   doc_type: string;
-  /** Per-document schema-migration marker (`migrate.rs`'s `CURRENT_SCHEMA_VERSION`, currently
+  /** Per-document schema-migration marker (`CURRENT_SCHEMA_VERSION`, currently
    * 1). The dispatch machinery exists but has no real migration steps yet. */
   schema_version: number;
   /** Universal display name. Redacts to `null` (never a stripped key) under a `/name`
@@ -171,7 +172,7 @@ export type WireDocument = {
   /** This document's OWN `/owner` field, or `null` if unowned. Gated by `EDIT_PERMISSIONS`
    * server-side (not the bare `Owner` role), so an owner can never reassign it. A linked
    * token's EFFECTIVE owner (used for authz) can differ from this raw value — see
-   * `effective_owner` (`data/permission.rs`). */
+   * `data::permission::effective_owner`. */
   owner: string | null;
   /** The document's access-control set: default role, per-user role overrides, per-property
    * visibility overrides, capability grants, and an optional per-document GM-role cap. */
@@ -403,7 +404,7 @@ export type WireCommand = z.infer<typeof CommandSchema>;
 export type ServerMsg = z.infer<typeof ServerMsgSchema>;
 
 /** Client -> server frames. Plain objects (numbers, JSON.stringify-friendly). Mirrors
- * `ws::protocol::ClientMsg` (`src/server/src/ws/protocol.rs`) variant-by-variant; each
+ * `ws::protocol::ClientMsg` variant-by-variant; each
  * variant's per-field doc below cites that Rust doc as the source of truth. */
 export type ClientMsg =
   | {
@@ -469,7 +470,7 @@ export type ClientMsg =
        * GM-only see-as-player override: a member's user id, so the channel is
        * derived from THAT user's view instead of the caller's. Omit for the
        * caller's own view. Authorized entirely server-side
-       * (`src/server/src/ws/conn.rs:1313-1329`): a non-GM caller gets
+       * (`ws::conn::egress_loop`'s `SceneSubscribe` handling): a non-GM caller gets
        * `scene_error` "not authorized to view as another user", and a target
        * who is not a member of the world gets `scene_error` "target user is
        * not a member of this world". The target's role is resolved from the

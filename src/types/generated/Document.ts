@@ -45,7 +45,7 @@ source: Source | null,
 base: unknown, 
 /**
  * Owning user. On tokens, ownership is EFFECTIVE — the token's own owner,
- * else the linked actor's (`effective_owner`, permission.rs); on every
+ * else the linked actor's (`effective_owner`); on every
  * other doc_type this is provenance only and grants no capability.
  */
 owner: string | null, 

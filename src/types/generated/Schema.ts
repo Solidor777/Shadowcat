@@ -7,7 +7,7 @@ import type { SchemaType } from "./SchemaType";
  * by construction. `deny_unknown_fields` makes a malformed schema fail to
  * deserialize at the set endpoint. An all-absent node (`{}`) matches any JSON.
  * Cross-field legality (e.g. `items` only on an array) is not enforced by serde;
- * `validate_schema` (routes.rs) enforces it at set-time.
+ * `validate_schema` enforces it at set-time.
  */
 export type Schema = { 
 /**

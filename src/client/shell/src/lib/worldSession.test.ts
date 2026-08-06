@@ -696,7 +696,7 @@ test("onMoveOutcome: a move_stream whose stop matches the requested goal fires '
 });
 
 test("onMoveOutcome: a region arrest landing exactly on the requested goal still fires 'executed'", async () => {
-  // move_exec.rs: an arrest region stops the walk AT cell entry (stop_index == path.len()-1
+  // `execute_move`: an arrest region stops the walk AT cell entry (stop_index == path.len()-1
   // on a final-step arrest), so `MoveOutcome.truncated = true` server-side even though `stop`
   // equals the requested goal exactly — the token DID reach the goal; only further movement
   // from there is barred. Since `truncated` never crosses the wire, this locks in that the

@@ -51,8 +51,8 @@ export interface WorldMember {
  * a membership change it just caused re-reads through this. Any world member may
  * call it (chat resolves user ids to names for every viewer); a non-member gets a
  * 403, never a 404 — the world id is caller-supplied, so a distinguishable
- * unknown-world response would confirm existence to a non-member (`list_members`,
- * `http/routes.rs`).
+ * unknown-world response would confirm existence to a non-member
+ * (`http::routes::list_members`).
  * @param world The world id.
  * @returns The world's member roster.
  * @example
@@ -74,7 +74,7 @@ export async function listWorldMembers(world: string): Promise<WorldMember[]> {
  * server-side; passing "admin" mints another administrator. The plaintext
  * password is sent once and never echoed back. A case-insensitive username
  * collision surfaces as a client-actionable 409 ("username already taken"),
- * never a raw constraint-violation 500 (`create_user_unique`, `data/sqlite.rs`).
+ * never a raw constraint-violation 500 (`data::sqlite::SqliteRepository::create_user_unique`).
  * @param opts The new account's fields.
  * @param opts.username The new account's username (server validates length/charset/uniqueness).
  * @param opts.password The new account's plaintext password, sent once.
@@ -215,7 +215,7 @@ export async function listWorldInvites(world: string): Promise<InviteEntry[]> {
  * consume statement). GM of that world only, and the revoke is scoped to `world` in
  * SQL — `codeId` belonging to a DIFFERENT world 404s identically to an unknown
  * `codeId`, so this route never confirms an invite id's existence outside the
- * caller's own world (`revoke_invite`, `http/routes.rs`).
+ * caller's own world (`http::routes::revoke_invite`).
  * @param world The world id.
  * @param codeId The invite id to revoke.
  * @example

@@ -48,9 +48,10 @@ test("a deleted drawing removes its shape node", () => {
   expect(backend.shapes.has("d1")).toBe(false);
 });
 
-// The four *-view.ts siblings are near-identical in shape, and two of them (region, wall)
-// rejected non-numeric coordinates while drawing and template did not. These pin all four to the
-// same behavior so the divergence cannot silently return.
+// `DrawingView`, `TemplateView`, `RegionView`, and `WallView` are near-identical in shape, and
+// two of them (`RegionView`, `WallView`) rejected non-numeric coordinates while `DrawingView`
+// and `TemplateView` did not. These pin all four to the same behavior so the divergence cannot
+// silently return.
 test("a drawing with a non-finite coordinate does not render", () => {
   const store = new DocumentStore();
   const backend = new MockBackend();

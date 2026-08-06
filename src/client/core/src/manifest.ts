@@ -8,10 +8,10 @@ import type { Cardinality } from "./contributions";
 
 /** One declarative path→capability requirement a module publishes; the GM's aggregate of these
  * (unioned with the world's own policy) reaches the client as advisory metadata only — see
- * `welcome_capability_requirements` (`src/server/src/ws/conn.rs:1112`), which is NOT the
- * server-side write-enforcement input (`apply_intent` in `data/sqlite.rs` consults only the
+ * `ws::conn::welcome_capability_requirements`, which is NOT the
+ * server-side write-enforcement input (`data::sqlite::SqliteRepository::apply_intent` consults only the
  * GM-authored `world_cap_requirements` record). The client stores the already-unioned result
- * verbatim (`worldSession.svelte.ts:672`); it performs no union logic of its own. */
+ * verbatim (`WorldSession.#onWelcome`); it performs no union logic of its own. */
 export interface CapRequirement {
   /** Document-pointer path prefix this requirement applies to, e.g. `"/system"`. Validated by
    * `CapRequirementSchema` to start with `/`. */
@@ -27,7 +27,7 @@ export interface HookDecl {
   name: string;
   /** The hook's declared semver version. */
   version: string;
-  /** The hook's dispatch kind (`"info" | "mutate" | "cancel"` — see `HookKind` in `hooks.ts`). */
+  /** The hook's dispatch kind (`"info" | "mutate" | "cancel"` — see `HookKind`). */
   kind: HookKind;
 }
 
@@ -36,7 +36,7 @@ export interface ContractProvide {
   /** The contract id, e.g. `"shadowcat.panel"` or `"shadowcat.sheet:actor"`. */
   contract: string;
   /** `"singleton"` (one active provider, collision aborts activation of the second) or
-   * `"multi"` (`ModuleRegistry.activate`'s singleton-collision check in `modules.ts`). */
+   * `"multi"` (`ModuleRegistry.activate`'s singleton-collision check). */
   cardinality: Cardinality;
 }
 
@@ -57,12 +57,12 @@ export interface ContractDeclaration {
  * shape (first-party modules never set it — they ship version-locked inside
  * the binary); the modules-folder install/enable/load pipeline treats a
  * missing or unsatisfied range as a hard reject for community modules
- * specifically (see `loader.ts`'s `checkEngineCompat` and the server's
+ * specifically (see `checkEngineCompat` and the server's
  * `engine_compat_ok`). */
 export interface ModuleEngines {
   /** Semver range this module requires of the host engine, e.g. `"^1.2.0"` — matched by
-   * `semver.ts`'s `satisfies` (caret-0.x leftmost-non-zero fix), mirrored server-side by
-   * `semver_satisfies` in `src/server/src/modules.rs`. */
+   * `satisfies` (caret-0.x leftmost-non-zero fix), mirrored server-side by
+   * `modules::semver_satisfies`. */
   shadowcat: string;
 }
 

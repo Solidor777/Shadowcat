@@ -1279,7 +1279,9 @@ test("Finding 1: onDidRemovePopoutGroup skips a group whose sole (fallback-resol
 
   const api = engine.debugApi!;
   // The stage's own group id (not exported by `dockview.ts`; mirrors the
-  // literal already asserted against at dockview.test.ts:309). The stage's
+  // literal already asserted against in "Finding 4: a tree naming the stage id in a
+  // zone group applies without throwing, and the real stage stays alive in its own
+  // locked group"). The stage's
   // group is never tracked in `#poppedOutGroupPanels` (the stage is never
   // poppable), so this also exercises the fallback lookup — resolving to
   // `[STAGE_ID]` — which the loop's `id === STAGE_ID` guard must then skip

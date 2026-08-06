@@ -1,6 +1,8 @@
 //! `scene`, `world-settings`, `light`, `vision-modes`, `light-gradation`
-//! engine bands (M13-0 S1/S3). Field shapes transcribed verbatim from
-//! scene-docs.ts (minus `name`, moved to the envelope per S2).
+//! engine bands (M13-0 S1/S3). Field shapes mirror the client's re-exported
+//! `SceneEngine`, `WorldSceneDefaults`, `WorldSettingsEngine`, `LightEngine`,
+//! `VisionMode`, and `GradationBand` (minus `name`, moved to the envelope
+//! per S2).
 
 // Ratchet: every item in this module must carry a doc comment, enforced by
 // the two deny attributes below.
@@ -54,7 +56,7 @@ pub enum LightMode {
     EnvironmentLight,
 }
 
-/// Diagonal-step cost rule for the grid pathfinder (`scene/pathfinding.rs`).
+/// Diagonal-step cost rule for the grid pathfinder (`pathfinding::find`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(rename_all = "lowercase")]
@@ -126,7 +128,7 @@ pub struct Grid {
     /// "square" | "hex" — kept a `String` in v1 (asserted by the battery).
     pub kind: String,
     /// Cell size in scene units. For hex grids this is the OUTER radius
-    /// (center-to-vertex circumradius) — `HexGrid` and the client `grid.ts`
+    /// (center-to-vertex circumradius) — `HexGrid` and the client's `GridSpec.size`
     /// share this convention so cell indices always agree.
     pub size: f64,
     /// Real-world distance scale; absent = unitless.
@@ -177,7 +179,7 @@ pub struct SceneLightingOverrides {
     pub environment: Option<EnvironmentLight>,
 }
 
-/// A scene's engine-owned config (scene-docs.ts:63-73 `SceneSystem`).
+/// A scene's engine-owned config (mirrors the client's `SceneEngine`).
 /// `bounds` = the navmesh's outer rectangle in grid units; absent ⇒
 /// `DEFAULT_SCENE_BOUNDS_UNITS` (read-side backstop, unchanged).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
@@ -206,7 +208,7 @@ pub struct SceneEngine {
 }
 
 /// The full set of world-level scene defaults that individual scenes may
-/// override (scene-docs.ts:78-88 `WorldSceneDefaults`).
+/// override (mirrors the client's `WorldSceneDefaults`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -252,7 +254,7 @@ pub struct AnimationSettings {
 }
 
 /// The engine body of a "world-settings" config document
-/// (scene-docs.ts:90-99 `WorldSettingsSystem`).
+/// (mirrors the client's `WorldSettingsEngine`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -271,7 +273,7 @@ pub struct WorldSettingsEngine {
     pub active_scene: Option<Uuid>,
 }
 
-/// MUST equal the client `DEFAULT_WORLD_SETTINGS` (scene-docs.ts:104-119) —
+/// MUST equal the client's `DEFAULT_WORLD_SETTINGS` —
 /// asserted by a unit test (`server-mirrors-client` rule).
 impl Default for WorldSettingsEngine {
     fn default() -> Self {
@@ -303,7 +305,7 @@ impl Default for WorldSettingsEngine {
 }
 
 /// A placed light source: position, photometric properties, and an optional
-/// falloff curve (scene-docs.ts:532-541 `LightSystem`). `brightRadius`/
+/// falloff curve (mirrors the client's `LightEngine`). `brightRadius`/
 /// `dimRadius` are in grid cells.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
@@ -339,7 +341,7 @@ pub struct Falloff {
     pub curve: String,
 }
 
-/// A named vision mode that tokens/actors may possess (scene-docs.ts:494-500
+/// A named vision mode that tokens/actors may possess (mirrors the client's
 /// `VisionMode`). `illuminationFloor`: the lowest gradation band name a token
 /// with this mode can see into. `defaultRange`: effective sight distance in
 /// grid cells (0 = unlimited).
@@ -370,7 +372,7 @@ pub struct VisionModesEngine {
     pub modes: BTreeMap<String, VisionMode>,
 }
 
-/// A named illumination band (scene-docs.ts:456 `GradationBand`).
+/// A named illumination band (mirrors the client's `GradationBand`).
 /// `minIllumination` is the minimum light level [0,1] a cell must reach to
 /// qualify; bands are sorted brightest-first at resolution time.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]

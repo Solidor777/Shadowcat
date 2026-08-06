@@ -60,7 +60,7 @@ function snapshotEmbedded(embedded: Record<string, WireDocument[]>): Record<stri
   return out;
 }
 
-/** Builds the value stored at `WireDocument.base` — see `wire.ts:167-170` for what that field
+/** Builds the value stored at `WireDocument.base` — see that field's own doc comment for what it
  * means and when it's present. Works for both a stamped instance (children keyed by their
  * `source.id`) and a template (children key on `source.id ?? id`, which for a template child is
  * its own id — the same correlation key its instances point to).
@@ -350,7 +350,7 @@ function revertEmbedded(
 function revertChild(child: WireDocument, template: WireDocument): WireDocument {
   const bands = revertBands(child, template, placementExclusions(child.doc_type));
   // Full clone (not a shallow spread) so the returned envelope never aliases `child`'s
-  // `permissions`/`scope`/`source`/`owner` — mirrors `applyMergedBands` in `merge.ts`.
+  // `permissions`/`scope`/`source`/`owner` — mirrors `applyMergedBands`.
   const out = structuredClone(child) as WireDocument;
   return {
     ...out,

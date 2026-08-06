@@ -8,7 +8,8 @@
 //! `apply_intent` only via `handle_send_message` (Create), `handle_edit_message`,
 //! or `handle_delete_message` (both Update, the latter a soft tombstone). Four
 //! chokepoints jointly enforce this: the create-gate baseline-message exemption
-//! (`sqlite.rs`, ties a Create to its authenticated author); the ingress guard
+//! (`apply_intent`'s `is_baseline_message` check, ties a Create to its
+//! authenticated author); the ingress guard
 //! (`ops_target_message`) rejects any client-authored `message` Create/Delete op
 //! at the WS/HTTP boundary; `apply_intent`'s `Update` branch blanket-rejects
 //! every client (`WriteOrigin::Client`) Update targeting a stored `message` doc
@@ -215,7 +216,7 @@ pub fn plain_text_content(raw: &str) -> Vec<Segment> {
 
 /// The message document's `engine` body (M13-0: re-rooted from `system`).
 /// Opaque on the WIRE (no ts-rs — the client declares its own Zod mirror,
-/// M11d's `chat-docs.ts`), but ingress-validated server-side same as every
+/// `ChatMessageEngine`/`parseMessageEngine`), but ingress-validated server-side same as every
 /// other engine-defined doc_type: `deny_unknown_fields` closes the gap a
 /// pre-M13-0 `MessageSystem` left open (an unknown key on this body used to
 /// pass through the opaque `system` band unrejected).
@@ -3069,7 +3070,7 @@ mod tests {
 /// Ingest integration for the link-preview enrich stage (design doc §8):
 /// drives `handle_send_message`/`handle_edit_message` directly, exactly like
 /// `chat::tests`, but against a real stub `axum` target on `127.0.0.1` — the
-/// same `allow_loopback` seam `link_preview.rs`'s own fetcher tests use. Kept
+/// same `build_client_allow_loopback` seam `link_preview`'s own fetcher tests use. Kept
 /// as its own `mod` (not folded into `chat::tests`) because every test here
 /// needs `hyperlinks: true` and a stub server, unlike the rest of the file.
 #[cfg(test)]
@@ -3084,7 +3085,7 @@ mod link_preview_ingest_tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// Spawns a stub HTTP target on a random loopback port, returning the
-    /// port. Mirrors `link_preview.rs`'s own test helper. Callers address it
+    /// port. Mirrors `link_preview`'s own `spawn_stub` test helper. Callers address it
     /// via the fake domain `stub.test` (never a literal `127.0.0.1` URL,
     /// which `validate_url` blocks unconditionally regardless of any
     /// loopback allowance) — `Fixture::new`'s client resolves that name to

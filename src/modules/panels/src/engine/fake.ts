@@ -16,10 +16,10 @@ type Zone = (typeof ZONE_IDS)[number];
  * dependency. Serves two roles: the test double for `PanelHost`'s own tests
  * (`emitOp` simulates a user gesture through the same `onOp` channel a real
  * engine uses), and the fallback engine `PanelHost` mounts by default when
- * constructed WITHOUT an `engine` prop (`PanelHost.svelte`'s own `engine ??
+ * constructed WITHOUT an `engine` prop (`PanelHost`'s own `engine ??
  * new FakeEngine()`) — a seam any bespoke host could rely on, but no
- * production path in THIS codebase reaches it: the shipped `panels` module's
- * `register()` always supplies a `DockviewEngine` instance (`index.ts`), so
+ * production path in THIS codebase reaches it: the shipped `panels.register()`
+ * always supplies a `DockviewEngine` instance, so
  * that default branch is taken only by a caller that mounts `PanelHost`
  * directly without an `engine` prop — today, only the test suite does.
  * @example
@@ -221,8 +221,8 @@ export class FakeEngine implements EngineAdapter {
     const POPOUT_FALLBACK_STEP = 28;
     // Cascades each fallback rect off its index (mirrors the cascade formula
     // at the other degraded/rehydrated-position sites in this checkpoint —
-    // tree.ts's SHEET_CASCADE_BASE/STEP, placeFromPersistedLocation's
-    // "popped-out" case, controller.svelte.ts's REHYDRATE_FLOAT_BASE/STEP) so
+    // `layout/tree`'s SHEET_CASCADE_BASE/STEP, `placeFromPersistedLocation`'s
+    // "popped-out" case, `PanelsController`'s own REHYDRATE_FLOAT_BASE/STEP) so
     // two-or-more simultaneously-popped-out ids don't render fully
     // overlapping at the identical position under this bespoke-fallback engine.
     const maxZ = expanded.floating.reduce((m, f) => Math.max(m, f.z), -1);

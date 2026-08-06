@@ -6,7 +6,7 @@ import type { MovementRestriction } from "./MovementRestriction";
 
 /**
  * The full set of world-level scene defaults that individual scenes may
- * override (scene-docs.ts:78-88 `WorldSceneDefaults`).
+ * override (mirrors the client's `WorldSceneDefaults`).
  */
 export type WorldSceneDefaults = { 
 /**

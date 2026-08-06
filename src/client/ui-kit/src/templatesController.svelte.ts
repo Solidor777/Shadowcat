@@ -137,8 +137,8 @@ export class TemplatesController {
    * separately inside `push`, on `/base` + `/system` — but `planToUpdate` emits paths that
    * filter never checks, notably `/embedded/<coll>` (a different capability). An instance the
    * pusher can write base/system but not `/embedded` on is therefore included, and its ENTIRE
-   * Update is refused: `apply_intent` returns `Forbidden` at the first uncapped path and aborts
-   * the whole intent (`data/sqlite.rs`), so that instance receives none of the push — not even
+   * Update is refused: `Repository::apply_intent` returns `Forbidden` at the first uncapped path and aborts
+   * the whole intent, so that instance receives none of the push — not even
    * the `/name`/`/engine`/`/system` merge — and its `/base` is not refreshed, so it stays
    * `template_changed`. Nothing in the push path retries; it stays stale until someone holding
    * `/embedded` on THAT instance pulls or reverts (both terminate in `planToUpdate`, which always

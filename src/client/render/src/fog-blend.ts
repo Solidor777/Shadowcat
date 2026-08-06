@@ -1,6 +1,6 @@
 // Pure cross-fade math for the mover vision-sweep fog (M2 §T7 smoothness enhancement).
-// Extracted from `pixi-backend.ts` so it is unit-testable without a GL/pixi.js context —
-// `pixi-backend.ts` itself is Playwright-covered only (no WebGL in jsdom).
+// Extracted from `PixiBackend` so it is unit-testable without a GL/pixi.js context —
+// `PixiBackend` itself is Playwright-covered only (no WebGL in jsdom).
 // A `//` header, not a `/** */` block: a doc block preceding another doc block rather
 // than a declaration binds to nothing, since every consumer takes the NEAREST one.
 

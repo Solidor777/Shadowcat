@@ -233,7 +233,7 @@ describe("ChatPanel — composer instantiation", () => {
     const composer = screen.getByTestId("composer");
     expect(composer.getAttribute("data-audience")).toBe("gm_only");
     // The GM postTarget channel is still "general", so placeholderName resolves
-    // normally here too — it's the real Composer.svelte's placeholderGm branch
+    // normally here too — it's the real Composer's placeholderGm branch
     // (gated on audience.kind, not on this prop) that makes it unused for GM.
     expect(composer.getAttribute("data-placeholder")).toBe("General");
   });

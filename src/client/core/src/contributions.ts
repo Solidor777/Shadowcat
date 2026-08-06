@@ -7,14 +7,14 @@ import type { WireDocument } from "./wire";
 
 /** One provider or many for a surface contract. `"singleton"` enforcement (collision aborts
  * activation of the second provider) lives on the consumer, `ContractProvide.cardinality`
- * (`manifest.ts`) — see that doc for the enforcing citation; not restated here. */
+ * — see that field's own doc comment for the enforcing citation; not restated here. */
 export type Cardinality = "singleton" | "multi";
 
 /** Dock zone a panel targets under the panel-manager host. The three-member set is the
- * enforcement boundary itself: `placeByPlacement` (`src/modules/panels/src/layout/tree.ts:281`)
+ * enforcement boundary itself: `placeByPlacement`
  * switches on `DefaultPlacement`'s `kind` and, for `"docked"`, places directly into
  * `l.expanded.zones[zone]` — no zone outside this union is representable in the layout tree. The
- * drop-target policy (`src/modules/panels/src/engine/policy.ts:163`) independently confirms the
+ * drop-target policy (`classifyDrop`) independently confirms the
  * boundary: it vetoes a container-edge drop with `"no top dock zone exists (spec D4)"` because
  * `"top"` is not, and never will be, a `ZoneId`. */
 export type ZoneId = "right" | "bottom" | "left";
@@ -96,10 +96,10 @@ export interface Contribution {
    * duplicate would register successfully and dispose correctly. The risk is downstream:
    * consumers that key off `id` assume uniqueness and were not verified against a collision —
    * `PanelsController` keys its persisted layout tree, `open(id)`/`close(id)`, and `metaMap` off
-   * it (`src/modules/panels/src/controller.svelte.ts`), `PanelHost.svelte` keys its rendered
+   * it, `PanelHost` keys its rendered
    * slots (`{#each ... (c.id)}`) and crash/reload testids off it, and
-   * `sheets.ts`'s deterministic ordering falls back to `contribution.id` as the tie-break when
-   * `module` is absent (a host-registered contribution, `sheets.ts:164`). */
+   * `pickSheet`'s deterministic ordering falls back to `contribution.id` as the tie-break when
+   * `module` is absent (a host-registered contribution). */
   id: string;
   /** The surface contract this contribution targets (e.g. `"shadowcat.panel"`). */
   contract: string;

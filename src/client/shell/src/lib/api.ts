@@ -12,7 +12,7 @@ export interface Me {
 const FETCH_TIMEOUT_MS = 15_000;
 
 /** Bounded retry for the boot chain (`withRetry`'s only caller is
- * `App.svelte`'s `boot()`): a transient backend blip (restart, single 5xx)
+ * `App`'s `boot()`): a transient backend blip (restart, single 5xx)
  * must not permanently strand the SPA on the login/worlds route with no
  * retry and no error surface. Delays are flat values, not a policy knob
  * (YAGNI). Rethrows the last error if every attempt fails.

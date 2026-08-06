@@ -114,7 +114,7 @@
    * set (`setEnabledModules(world, [...enabled])` — a whole-set replace, not
    * a diff). There is no optimistic-concurrency pre-image and no merge: the
    * server-side write is a plain settings overwrite
-   * (`set_world_enabled_modules`, `src/server/src/data/sqlite.rs:1139-1146`,
+   * (`SqliteRepository::set_world_enabled_modules`,
    * calls `set_setting` with no read-then-check-then-write guard). Two GMs
    * saving concurrently is last-write-wins — the second save silently
    * clobbers whatever the first enabled, including modules the second GM

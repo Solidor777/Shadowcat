@@ -3,8 +3,8 @@ import type { DiceDirectionSetting } from "./DiceDirectionSetting";
 import type { DiceModeSetting } from "./DiceModeSetting";
 
 /**
- * GM-configured ambient dice-notation context (chat-docs.ts:154-157
- * `DiceSettingsSystem`). `#[serde(default)]` on the struct means a partial
+ * GM-configured ambient dice-notation context (mirrors the client's
+ * `DiceSettingsEngine`). `#[serde(default)]` on the struct means a partial
  * or absent body fills the rest with the safe default (Total + HighWins).
  */
 export type DiceSettingsEngine = { 

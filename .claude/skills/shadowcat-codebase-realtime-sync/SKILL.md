@@ -17,7 +17,7 @@ optimistically and roll back on divergence.
 
 ## Key files & seams
 
-- `src/server/src/ws/room.rs` — `Room` (per-world), `RingBuffer` (time/size-bounded event buffer)
+- `ws::room` — `Room` (per-world), `RingBuffer` (time/size-bounded event buffer)
   + `range_from(from_seq)` for gap resync, `subscribe() -> (Receiver, seq)`, `current_seq()`,
   `broadcast_aux()` (out-of-band), `RoomRegistry`. `get_or_create` cold-hydrates the scene ECS:
   scene entities (`query_scene_entities`) **plus** the M10e-2 world config-docs

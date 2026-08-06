@@ -6,8 +6,8 @@
 //! `chat-settings` policy governs whether the stored content is a literal
 //! `Segment::Text` or a sanitized `Segment::Html` run. Drives
 //! `handle_send_message` directly (repo + room + ctx), mirroring
-//! `chat/mod.rs`'s own `handle_send_message_*` unit-test harness rather than
-//! the full WS transport used by `chat_audience.rs`.
+//! `chat`'s own `handle_send_message_*` unit-test harness rather than
+//! the full WS transport used by `chat_audience`.
 
 use shadowcat::auth::role::ServerRole;
 use shadowcat::chat::{
@@ -677,10 +677,10 @@ async fn whisper_with_no_body_text_is_rejected_as_empty() {
 }
 
 /// `/roll 2d6+3` driven through the full `handle_send_message` pipeline
-/// (not just the pure parser unit test in `commands.rs`) stores
+/// (not just the pure parser unit test in `chat::commands`) stores
 /// `MessageKind::Roll` with the formula EXECUTED (M11d-2): content is one
 /// `Segment::RollEmbed`, never a literal `Text` of the unexecuted expression
-/// — see `chat_rolls.rs` for the full roll-execution integration matrix.
+/// — see `chat_rolls` for the full roll-execution integration matrix.
 #[tokio::test]
 async fn roll_command_produces_roll_kind_with_executed_embed() {
     let f = Fixture::new().await;
@@ -1086,7 +1086,7 @@ async fn non_recipient_finds_no_trace_of_edited_whisper_content() {
 /// blanket-rejected by `apply_intent`'s `Update` branch, even though the
 /// requester genuinely holds `DocRole::Owner` on the doc (which would
 /// otherwise satisfy the ordinary WRITE_FIELDS check). Distinct from
-/// `sqlite.rs`'s `message_update_rejected_for_client_allowed_for_server_revision`,
+/// the `message_update_rejected_for_client_allowed_for_server_revision` test,
 /// which forges `/system/content` — this proves the rejection is not scoped
 /// to any one field path, closing the specific "forge kind=System" angle the
 /// task brief calls out.
@@ -1160,7 +1160,7 @@ async fn server_message_revision_does_not_grant_permissions_write() {
 /// content inside the payload — so an attacker cannot evade it by crafting a
 /// `Create`/`Delete` whose `system` body impersonates a server-authored
 /// notice (`kind: System`) while still targeting `doc_type: "message"`. This
-/// is a distinct angle from `chat/mod.rs`'s existing
+/// is a distinct angle from `chat`'s existing
 /// `ops_target_message_detects_message_create_and_update` (which only proves
 /// detection for an ordinary `MessageKind::Normal` doc): here the payload is
 /// deliberately forged to look server-authored, proving the guard cannot be

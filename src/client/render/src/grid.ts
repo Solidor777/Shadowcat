@@ -2,8 +2,8 @@ import type { Point, LineSeg } from "./types";
 
 export type GridKind = "square" | "hex";
 
-/** Cost rule for diagonal movement on square grids. Mirrors `DiagonalRule` in
- * `scene-docs.ts` and the server's `pathfinding.rs` `DiagonalRule` enum — see
+/** Cost rule for diagonal movement on square grids. Mirrors the client `DiagonalRule` type
+ * and the server's `DiagonalRule` enum — see
  * {@link Grid.distance} for the exact per-rule formulas and the scope of the parity
  * they match (unweighted routes; terrain regions can raise the server's real cost
  * above what this client-side distance reports). */
@@ -80,12 +80,12 @@ export class Grid {
    *     recurrence instead, but this method always measures a single fresh pair, so parity
    *     0 is the only case that applies here).
    * All four mirror the server's per-rule step costs: chebyshev/manhattan/euclidean
-   * match `pathfinding.rs`'s `heuristic()` exactly (an admissible AND tight bound for a
-   * direct route with no obstacles AND no terrain weighting — `pathfinding.rs:453-457`
-   * notes the heuristic bounds only the UNWEIGHTED step cost, so a terrain region's
-   * `terrain_multiplier > 1.0` can raise the server's real A* cost above what this
-   * client-side `distance()` reports, even on an otherwise-direct, wall-free route);
-   * alternating matches `grid_shape.rs`'s `step_cost`'s 1,2,1,2… parity-threaded
+   * match `pathfinding::heuristic` exactly (an admissible AND tight bound for a
+   * direct route with no obstacles AND no terrain weighting — that function's
+   * ADMISSIBILITY WITH TERRAIN note records that it bounds only the UNWEIGHTED step
+   * cost, so a terrain region's `terrain_multiplier > 1.0` can raise the server's real
+   * A* cost above what this client-side `distance()` reports, even on an otherwise-direct,
+   * wall-free route); alternating matches `grid_shape::step_cost`'s 1,2,1,2… parity-threaded
    * diagonal cost starting at parity 0, whose closed-form sum over `dmin` diagonal
    * steps is `dmin + floor(dmin/2)` (odd `dmin` diverges from this if the parity
    * sequence didn't start fresh; even `dmin` agrees regardless of starting parity).

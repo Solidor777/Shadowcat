@@ -80,7 +80,7 @@ describe("placeNewRegistrations", () => {
 
 // B4 fix: a `persistedSource` (the pre-prune blob a user actually saved) reconstructs a
 // late-registering panel's REAL prior position instead of falling back to its static
-// `reg.placement` default — the boot-race fix (see tree.ts's `placeNewRegistrations` doc
+// `reg.placement` default — the boot-race fix (see `placeNewRegistrations`'s doc
 // comment for the full mechanism).
 describe("placeNewRegistrations with a persistedSource", () => {
   it("places a persisted docked id into its correct zone/group/tab-order", () => {

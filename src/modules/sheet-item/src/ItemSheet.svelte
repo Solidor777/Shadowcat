@@ -6,7 +6,7 @@
   // Item sheet: `name` control (resolved via `namePrefix`, sibling of `systemPrefix` — see
   // below) + dice-notation string values get a roll-to-chat affordance (posts `/roll <formula>`
   // on the default "general" channel over the M11 chat wire — the server executes it) + the
-  // `system` tree editor. `buildItemDoc`'s contract (scene-docs.ts) puts an item's real display
+  // `system` tree editor. `buildItemDoc`'s contract puts an item's real display
   // name alongside `system`, same as every other doc_type — `system` carries only the opaque,
   // genuinely game-system-owned fields. Reads the OPTIMISTIC store; edits use the RAW current
   // value as the OCC pre-image.
@@ -64,14 +64,12 @@
 
   /** Posts `formula` to chat as a `/roll` command on the hardcoded `"general"`
    * channel. `channel` is a purely client-chosen display label the server
-   * never validates or derives audience from (`Audience`'s doc comment,
-   * `src/server/src/chat/mod.rs:105-111`; `handle_send_message`'s channel checks,
-   * `src/server/src/chat/mod.rs:519-524`, only check non-empty/length). Posting
-   * to `"general"` before a GM has ever added it to the channel registry is
-   * harmless: the message still sends, and any UI resolving the channel's
-   * display name falls back to the raw id for an unregistered one (mirrors
-   * `ChatPanel.svelte`'s `channelDisplayName`,
-   * `src/modules/chat/src/ChatPanel.svelte:111-126`).
+   * never validates or derives audience from (see `Audience`'s doc comment;
+   * `handle_send_message`'s channel checks only check non-empty/length).
+   * Posting to `"general"` before a GM has ever added it to the channel
+   * registry is harmless: the message still sends, and any UI resolving the
+   * channel's display name falls back to the raw id for an unregistered one
+   * (mirrors `ChatPanel`'s `channelDisplayName`).
    * @param formula The dice-notation string to roll (already filtered through
    * `isDiceNotation`; see `rollable` above).
    * @example

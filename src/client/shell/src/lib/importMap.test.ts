@@ -19,7 +19,7 @@ const RUNTIME_CHUNKS = [
 ];
 
 describe("shared-runtime import map (build output)", () => {
-  // Mirrors embed.rs's `dist_built()` self-skip: this test only means anything
+  // Mirrors `dist_built()`'s self-skip: this test only means anything
   // after `pnpm --filter @shadowcat/shell build` has run.
   if (!existsSync(path.join(distDir, "index.html"))) {
     it.skip("dist/ not built — run `pnpm --filter @shadowcat/shell build` first", () => {});

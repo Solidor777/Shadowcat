@@ -817,7 +817,7 @@ export class PixiBackend implements DisplayBackend {
    * call silently OVERWRITES `this.tick`, so only the latest ever fires via `runTicker`. No
    * current caller invokes this twice on one backend instance (`RenderEngine.start()` — the sole
    * caller — itself has no double-start guard, but every production caller,
-   * `Stage.svelte`'s `$effect`, constructs a fresh `RenderEngine`/backend pair on each run and
+   * `Stage`'s `$effect`, constructs a fresh `RenderEngine`/backend pair on each run and
    * tears the old one down first) — a contract caveat, not a live bug.
    * @param cb Called once per render frame with the elapsed milliseconds since the previous frame.
    * @example
@@ -841,8 +841,8 @@ export class PixiBackend implements DisplayBackend {
    * dispose strips BOTH entries. `MockBackend.addLayerFilter`'s dispose is stricter here: it
    * removes only its own `{layerId, filter}` entry (by object identity, via `indexOf`), so a
    * duplicate-registration test scenario would pass against the mock and fail against this
-   * backend. No current caller registers the same filter twice on one layer (`engine.ts`'s
-   * `registerLayerFilter` is the sole forwarder) — a live gap, not a live bug.
+   * backend. No current caller registers the same filter twice on one layer (`registerLayerFilter`
+   * is the sole forwarder) — a live gap, not a live bug.
    * @param layerId The target core-layer id (e.g. `"tokens"`).
    * @param filter A Pixi `Filter` (typed `unknown` at this seam — see `DisplayBackend`).
    * @returns A dispose function that removes every filter list entry `=== filter` — see the

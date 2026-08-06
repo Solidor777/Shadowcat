@@ -3,6 +3,40 @@
 **Hand this file to every doc-sweep implementer and reviewer** (by path — do not paste the rules
 into a brief, or they drift between dispatches).
 
+## RULE 0 — GOVERNING: never work around a rule; follow its INTENT, and ask when unsure
+
+User directive, verbatim, binding on every agent in this campaign:
+
+> "we do not try to work around rules, ever. we accept the intent of the rule and follow it.
+>  if we are unsure of the intent, ask the user."
+
+This outranks every rule below, because these are the rules that get worked around. Reworking text,
+code, or scope until a rule no longer applies is never acceptable — not when the result is
+technically true, not when `lint:docs` reports 0. **Every rule in this file was written after a
+specific defect, so its letter encodes one observed instance while its intent covers the whole
+class.** Satisfying the letter against the intent reproduces the original defect in a new shape, and
+does so *while reporting clean*, because the check is what got satisfied.
+
+The concrete case that produced this rule: Rule 15 banned file-name citations, so an agent that hit
+a claim no symbol could cite rewrote `mirrors channels.ts's shape` → `mirrors the chat view model's
+shape`. The filename is gone and the letter is satisfied; the citation now points **nowhere**, which
+is worse than the stale pointer it replaced and is precisely what Rule 15 exists to prevent. Rule
+15's "DO NOT VAGUE THE PROSE" subsection is one instance of this failure; the principle is general.
+
+Three shapes, all of which present as compliance:
+
+- **Rewording until the rule stops applying** — the case above.
+- **Satisfying the check while defeating its purpose** — an empty `/** */` that clears the docs
+  gate, `@returns The result.`, a test that asserts nothing, a cast that hides a real mismatch.
+- **Reading a rule narrowly to shrink the work** — also a descope, separately forbidden.
+
+**How to apply.** Difficulty satisfying a rule is the signal to ask what it is FOR, never to find the
+minimum edit that clears it. If a rule's intent cannot be followed, or is genuinely ambiguous,
+**surface it to the dispatcher, who takes it to the user** — never resolve it silently in the
+artifact. An honestly reported "I could not comply" is worth more than a clean count: the dispatcher
+can adjudicate an exception and cannot even see a reworded one. A rule that is genuinely wrong gets
+raised and changed, not routed around. Carry this into every dispatch.
+
 Every rule traces to a specific defect the `client/core` (620 warnings), `client/render` (339),
 `client/shell`+`ui-kit`+`formula` (276), and `module-panels` (217) sweeps shipped and caught, ordered
 by measured yield. Across all four, **every fix round was triggered by a doc sentence asserting
@@ -10,9 +44,11 @@ something FALSE, or by a citation that did not support it** — never by a missi
 effort accordingly: the risk in a documentation sweep is not absent prose, it is confident prose that
 a future agent will trust and build on.
 
-**Rules 1–12 govern what a sentence claims; Rule 13 governs whether its citation can be checked at
+**Rules 1–12 govern what a sentence claims; Rules 13–15 govern whether its citation can be checked at
 all.** Sweep 10 is why that distinction earns its own rule: three consecutive tasks wrote claims
-tables full of true claims and wrong pointers, and no amount of instruction fixed it.
+tables full of true claims and wrong pointers, and no amount of instruction fixed it. **Rule 15 is the
+governing citation rule for anything persisted, and it overrides Rule 13 wherever they conflict** —
+Rule 13 now binds only the ephemeral review artifacts named in its own scope line.
 
 **The `client/render` sweep found more defects outside the docs than in them** — a real rendering
 bug, two defects in the docs gate itself, a runtime divergence between sibling files, and drift in
@@ -208,7 +244,15 @@ source: RULE 5 says absolutes concentrate the errors, and a relay is where they 
 the source scoped a claim to a specific condition, the restatement keeps that condition or drops the
 claim.
 
-## RULE 13 — cite PATH-QUALIFIED locations, and verify the table mechanically
+## RULE 13 — in EPHEMERAL artifacts only: cite PATH-QUALIFIED locations, and verify the table mechanically
+
+**Scope: claims tables, implementer reports, review packages, and dispatch prose — artifacts written
+to `.superpowers/`, read within the hour, and never merged.** For anything persisted into the repo
+(doc comments, `OPEN_BUGS.md`, `POST_WORK_FINDINGS.md`, `TODO.md`, `PLAN.md`, `CLOSED_BUGS.md`, and
+this file), **Rule 15 governs instead and forbids what this rule requires.** A line number is
+acceptable here for exactly the reason it is banned there: these artifacts are consumed before the
+tree moves under them.
+
 
 Sweep 10's contribution, and the only rule here that instruction alone could not fix. Three
 consecutive tasks shipped claims tables whose `file:line` citations pointed at the wrong lines —
@@ -268,8 +312,73 @@ every comment in the touched files (`/** */` blocks AND standalone `//` lines), 
 happens to count. State the enumeration as a number, not an impression, the same way Rule 11 asks for an
 explicit member list.
 
+## RULE 15 — persisted prose cites SYMBOLS, never file names or line numbers
+
+**The rule.** In any prose that gets committed — doc comments in `.ts`/`.rs`/`.svelte`, and the live
+tracking docs (`OPEN_BUGS.md`, `POST_WORK_FINDINGS.md`, `TODO.md`, `PLAN.md`, `CLOSED_BUGS.md`, this
+file) — cite the **type name and member**, never a path and never a line number.
+
+```
+BAD    see src/server/src/ws/conn.rs:1313-1329
+BAD    see conn.rs (the scene_subscribe arm)
+BAD    `revs` is bumped only by onAssetChanged — see assets.ts:41-45
+GOOD   see `Conn::handle_scene_subscribe`
+GOOD   `AssetResolver.revs` is bumped only by `AssetResolver.onAssetChanged`
+```
+
+**Why this rule outranks Rule 13's path-qualification.** Rule 13 correctly diagnosed that bare
+basenames are unverifiable, and prescribed path-qualified `file:line`. That prescription is
+load-bearing for an artifact read within the hour and fatal for one that ships. A line number is
+invalidated by *any* insertion above it, in *any* commit, by *anyone* — including the documentation
+sweep itself, whose entire product is inserting comment blocks above existing code. The campaign has
+been generating its own citation rot as a by-product of doing its job.
+
+Measured, in this sweep alone: **eight citations in `OPEN_BUGS.md` went stale**, four of them from a
+single five-line commit — and that commit was mine, which is why it was also misattributed to an
+implementer as a Rule 13 violation before being withdrawn. No gate catches this. No linter parses
+Markdown prose for pointers, and nothing at all checks a `file:line` written inside a `//` comment.
+The rot is silent, it accumulates, and every instance aims a future reader at whatever code has since
+drifted into those coordinates — which is strictly worse than no citation, because it still reads as
+diligence. **A symbol name has none of this failure mode: it survives every insertion, every reflow,
+and every move between files. It breaks only on rename or deletion — precisely the edit where a grep
+for the old name finds it.**
+
+**Disambiguation without paths.** Rule 13's motivating problem was real: this repo has two
+`controller.svelte.ts` and 26 `index.ts`. Symbols solve it better than paths did. Qualify with the
+**owner**, not the location — `AssetResolver.url`, `Conn::handle_scene_subscribe`,
+`EngineAdapter.dispose`. For a bare function with a common name, name the module that exports it
+(`chat/mod.rs`'s `broadcast` → `chat::broadcast`). If a symbol is genuinely ambiguous after
+owner-qualification, that ambiguity is a naming defect worth reporting, not a reason to reach for a
+path.
+
+**Do not smuggle the path back in.** "the `AssetChanged` handler in `assets.ts`" is this rule's
+violation wearing prose clothes. Name the symbol and stop. Cross-document references drop the
+extension too: "see OPEN_BUGS, the AssetChanged entry", not "see `docs/OPEN_BUGS.md:143-149`".
+
+**Generated files are edited at their source.** `src/types/generated/engine/*.ts` is ts-rs output
+whose doc comments are verbatim copies of the Rust `///` blocks in `src/server/src/data/engine/`.
+Fix the Rust and regenerate; a citation "fixed" in the generated file is reverted by the next build.
+
+**Files that have no symbols are named by path.** Config and build files — `eslint.config.js`,
+`eslint.props.config.js`, `package.json`, `.github/workflows/ci.yml`, `tsconfig.json` — export no
+type or member to cite, so naming the file *is* naming the thing. Same for a filename used as a
+**value** rather than a pointer (a default like `index.js`, a glob, a URL). This rule governs
+citations of *code behavior*, and neither of these is one.
+
+**This document's own examples are exempt.** The BAD/GOOD blocks above and in Rule 13 must keep
+their `file:line` text — they are the specimens the rule is defined by. "Correcting" them deletes
+the rule's meaning.
+
+**Historical records are exempt, and quotations of them are too.** Dated plan and spec files under
+`docs/superpowers/` are records of what was true when written — rewriting them asserts a present-tense
+precision they never claimed. Likewise, where this file quotes a *past* citation as evidence of a past
+defect (Rules 1 and 12), the quoted `file:line` stays: it is a record of what someone wrote, not a
+pointer this document is asking you to follow.
+
 ## Report contract
 
-The implementer's report must carry a claims table (claim → verifying `file:line`), and corrections in a
-fix round carry the same burden as new claims. State explicitly what the pre-existing-prose re-scan
+The implementer's report must carry a claims table (claim → verifying **symbol**, optionally plus a
+`file:line` for the reviewer's convenience — the report is ephemeral, so Rule 13 governs it, but the
+symbol column is mandatory because it is what the shipped prose must cite under Rule 15). Corrections
+in a fix round carry the same burden as new claims. State explicitly what the pre-existing-prose re-scan
 covered. Report a discovered divergence rather than smoothing it over — but bound its reachability.

@@ -1,7 +1,7 @@
 //! `GridShape` abstracts the per-cell geometry every movement/vision/pathfinding module needs,
 //! so square and hex scenes share one code path instead of two. `SquareGrid` is a byte-identical
 //! port of the pre-existing hardcoded square math; a later `HexGrid` will be the pointy-top axial
-//! implementation mirroring the client's `grid.ts` exactly.
+//! implementation mirroring the client's `Grid` class exactly.
 //!
 //! `cell_center`/`cells_in_bounds` are wired into `accumulate_visible_cells`, `player_lit_mask`,
 //! `explored::mark_polygons`, and `regions::rasterize`;
@@ -84,9 +84,9 @@ pub(crate) trait GridShape {
 /// axis. Source: Red Blob Games axial/cube coordinates (public-domain computational geometry).
 const HEX_BOUNDS_PAD: i32 = 1;
 
-/// Byte-identical port of the pre-existing hardcoded square-grid math (`pathfinding.rs`'s
-/// `cell_center`/`footprint_cells`, `movement.rs`'s `supercover_cells`, `pathfinding.rs`'s
-/// `astar_leg`'s 8-directional `dirs` + `step_cost`). `cell` and `rule` are the scene's resolved
+/// Byte-identical port of the pre-existing hardcoded square-grid math (`cell_center`/
+/// `footprint_cells`, `movement::supercover_cells`, `astar_leg`'s 8-directional `dirs` +
+/// `step_cost`). `cell` and `rule` are the scene's resolved
 /// cell size and diagonal-cost rule.
 pub(crate) struct SquareGrid {
     /// Cell size in scene units.
@@ -135,8 +135,8 @@ impl GridShape for SquareGrid {
         pathfinding::footprint_cells(anchor, ctr, r_scene, cell)
     }
 
-    /// Byte-identical to the per-site square scans in `accumulate_visible_cells`/`explored.rs`/
-    /// `player_lit_mask`: `floor(min/cell)..=floor(max/cell)` on each axis, row-major
+    /// Byte-identical to the per-site square scans in `accumulate_visible_cells`/
+    /// `ExploredSet::mark_polygons`/`player_lit_mask`: `floor(min/cell)..=floor(max/cell)` on each axis, row-major
     /// (`for i { for j }`). `f64 as i32` saturates on an extreme coordinate; the `saturating_mul`
     /// span check then fails closed against the caller-supplied `max_cells` bound.
     fn cells_in_bounds(
@@ -203,11 +203,11 @@ impl GridShape for SquareGrid {
 }
 
 /// Pointy-top axial hex grid (Red Blob Games convention), mirroring
-/// `src/client/render/src/grid.ts`'s `Grid` class's hex math exactly — same coordinate formulas,
+/// the client's `Grid` class's hex math exactly — same coordinate formulas,
 /// same `size` = outer-radius convention, so client and server cell indices always agree.
 pub(crate) struct HexGrid {
     /// Hex size = OUTER radius (circumradius, center to vertex) in scene
-    /// units — the client `grid.ts` convention, not the across-flats width.
+    /// units — the client's `Grid.size` convention, not the across-flats width.
     pub size: f64,
 }
 
@@ -489,7 +489,7 @@ impl GridShape for HexGrid {
     }
 
     /// The 6 pointy-top hex vertices around `cell_center(c)`, vertex `k` at angle `60·k − 30`
-    /// degrees, radius = `self.size`. Mirrors `src/client/render/src/grid.ts`'s `hexLines` vertex
+    /// degrees, radius = `self.size`. Mirrors the client's `hexLines` vertex
     /// convention exactly (Red Blob Games pointy-top) so client and server hex geometry agree.
     fn cell_vertices(&self, c: Cell, _cell: f64) -> Vec<vision::P> {
         let center = self.cell_center(c);
@@ -524,10 +524,10 @@ impl GridShape for HexGrid {
 /// only `Alternating` consumes parity, charging 1.0/2.0 on alternate diagonals and flipping
 /// the bit so the caller must thread the returned parity through consecutive steps.
 ///
-/// The sole definition of this rule — `pathfinding.rs` reaches it through the `GridShape`
+/// The sole definition of this rule — `pathfinding::astar_leg` reaches it through the `GridShape`
 /// trait's neighbor enumeration rather than duplicating it, so the A* cost and any other
 /// consumer cannot drift apart. The client mirrors the same four rules in
-/// `src/client/render/src/grid.ts`'s `Grid.distance`.
+/// the client's `Grid.distance`.
 fn step_cost(rule: DiagonalRule, di: i32, dj: i32, parity: u8) -> (f64, u8) {
     let diagonal = di != 0 && dj != 0;
     if !diagonal {
@@ -719,7 +719,7 @@ mod tests {
     #[test]
     fn hex_grid_cell_of_matches_axial_round_for_a_known_point() {
         // size=50: cell (0,0)'s center is (0,0) in pointy-top axial pixel space (Red Blob Games
-        // convention, matching client/src/render/src/grid.ts's pixelToAxial/axialToPixel exactly).
+        // convention, matching the client's `pixelToAxial`/`axialToPixel` exactly).
         let g = HexGrid { size: 50.0 };
         assert_eq!(g.cell_of((0.0, 0.0)), (0, 0));
         // A point well inside cell (1,0)'s hex (center at axial (1,0) -> pixel via axialToPixel)
@@ -1085,7 +1085,7 @@ mod tests {
         // contract is proven on both grid kinds against their own neighbor functions. `Alternating`
         // is excluded: its step cost depends on the carried parity, so a parity-blind uniform-cost
         // search is not its true cost function (its admissibility is pinned by the square parity
-        // tests in `pathfinding.rs`).
+        // tests in `pathfinding::alternating_five_ten_five_parity`).
         const R: i32 = 4;
         let cells: Vec<Cell> = (-R..=R)
             .flat_map(|i| (-R..=R).map(move |j| (i, j)))

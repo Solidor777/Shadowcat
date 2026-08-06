@@ -9,9 +9,8 @@
 
   // Stable per-instance id: a message can carry multiple inline rolls and many MessageCards
   // mount simultaneously, so a hardcoded id would collide across on-screen instances. Same
-  // `$props.id()` idiom src/modules/topbar/src/LauncherMenu.svelte:9 uses for its own
-  // per-instance id — see that file for its (different) ARIA rationale; this file's own
-  // reason is the collision above.
+  // `$props.id()` idiom `LauncherMenu`'s `menuId` uses for its own per-instance id — see that
+  // file for its (different) ARIA rationale; this file's own reason is the collision above.
   const uid = $props.id();
   const popoverId = `roll-tooltip-popover-${uid}`;
 
@@ -42,8 +41,8 @@
    * popover unreachable on touch. Hover-capable (mouse) devices already get open/close from
    * hover/focus; toggling here too would immediately re-close a hover-just-opened popover
    * (mouseenter fires before click). Gated on `(hover: hover)`, the same media query
-   * `MessageCard.svelte` already uses for its own touch-affordance decision
-   * (src/modules/chat-card/src/MessageCard.svelte:580, the hover/focus action reveal).
+   * `MessageCard`'s `.actions` hover-reveal rule already uses for its own touch-affordance
+   * decision.
    * @example
    * ```
    * // internal; wired to onclick

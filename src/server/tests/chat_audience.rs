@@ -2,7 +2,7 @@
 //! / `Audience::GmOnly`) is invisible to anyone outside its audience on every
 //! egress path — broadcast, HTTP resync/load, and full-text search — and the
 //! GM's usual unconditional access is itself gated by that audience. Harness
-//! mirrors `chat_delivery.rs`'s `spawn`/`add_member`/`connect_with`/`recv_until`.
+//! mirrors `chat_delivery`'s `spawn`/`add_member`/`connect_with`/`recv_until`.
 
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -482,7 +482,7 @@ async fn gm_only_channel_visible_to_gm_hidden_from_regular_member() {
 /// NOTE: the message here is sent by the world's EXISTING GM ("u"), not by
 /// the user being promoted — `build_message_doc` always inserts the sender
 /// as `Owner` on their own message regardless of audience or later role
-/// changes (chat/mod.rs `Audience::GmOnly` doc comment: "plus the sender"),
+/// changes (`Audience::GmOnly`'s own doc comment: "plus the sender"),
 /// so testing promotion against the message's own author would conflate
 /// permanent owner-access with the `gm_role`-gated dynamic mechanism this
 /// test targets.

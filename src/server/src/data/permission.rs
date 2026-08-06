@@ -38,7 +38,7 @@ pub mod cap {
 pub const TOKEN_DOC_TYPE: &str = "token";
 
 /// The actor document a token LINKS to (`engine.actor_id`), or `None` for a raw
-/// or INSTANCED token. Mirrors `resolveTokenActor` (client `actor.ts`): only
+/// or INSTANCED token. Mirrors the client's `resolveTokenActor`: only
 /// `engine.actor_id` is a link — an instanced token's `embedded.actor[0]` is a
 /// frozen placement-time copy and is deliberately NOT a link, so it can never
 /// re-derive ownership from stale embedded state.

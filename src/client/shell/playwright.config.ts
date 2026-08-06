@@ -41,8 +41,8 @@ export default defineConfig({
       // The suite logs in as the same seeded admin identity many times across
       // specs within the auth-throttle's 60s sliding window (Phase A added
       // LOGIN_PER_MIN_PER_IDENTITY=10 to /api/login) — relax the budgets so
-      // the e2e login pattern itself can never trip them. Production defaults
-      // (config.rs) are untouched; this only overrides this webServer process.
+      // the e2e login pattern itself can never trip them. The `http::throttle` module's
+      // production default consts are untouched; this only overrides this webServer process.
       SHADOWCAT_LOGIN_PER_MIN_PER_IDENTITY: "10000",
       SHADOWCAT_LOGIN_PER_MIN_PER_IP: "10000",
       SHADOWCAT_INVITE_PER_MIN_PER_ACCOUNT: "10000",

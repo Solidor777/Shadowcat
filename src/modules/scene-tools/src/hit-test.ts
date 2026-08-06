@@ -4,11 +4,11 @@ import type { Point } from "@shadowcat/render";
 
 /** The id of the topmost token whose footprint contains `p`, or `null`. "Topmost" is the LAST
  * matching entry in `tokens`' own iteration order, which is `ReadableDocuments.query`'s Map-
- * insertion order (`src/client/core/src/store.ts:262-264`,
- * `src/client/core/src/optimistic.ts:164-166` — a `Map` never reorders an existing key on
+ * insertion order (`DocumentStore.query`,
+ * `OptimisticClient.query` — a `Map` never reorders an existing key on
  * update) — the same order `TokenView.reconcile` walks, and the render layer's `tokens` layer
  * only ever APPENDS a new token's container the first time it is seen
- * (`src/client/render/src/pixi-backend.ts:415-423`), so this "last in iteration order" tie-break
+ * (`PixiBackend.createTokenNode`), so this "last in iteration order" tie-break
  * genuinely matches render z-order, not merely by convention. Footprint = the resolved box
  * (M10d, `resolveTokenBox`): a circle token uses ellipse containment, a square the AABB. A
  * degenerate box (`w <= 0 || h <= 0`) is skipped entirely (never hit-testable). Rotation is

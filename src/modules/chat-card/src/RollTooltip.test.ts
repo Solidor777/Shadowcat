@@ -22,7 +22,7 @@ afterEach(() => {
 });
 
 /** Mirrors dice::outcome::DieRecord's defaults, overridable per test (same shape as
- * MessageCard.test.ts's local fixture — RollOutcome only cares about `kept`/`value` here). */
+ * `MessageCard.test`'s `dieRecord` — RollOutcome only cares about `kept`/`value` here). */
 function dieRecord(over: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     value: 4, natural: 4, kept: true, exploded: false,
@@ -33,7 +33,7 @@ function dieRecord(over: Record<string, unknown> = {}): Record<string, unknown> 
 }
 
 /** A localized `t` that resolves the keys this component renders (mirrors
- * MessageCard.test.ts's `fakeT`). */
+ * `MessageCard.test`'s `fakeT`). */
 function fakeT(key: string): string {
   const templates: Record<string, string> = {
     "chat.roll.details": "Roll details",

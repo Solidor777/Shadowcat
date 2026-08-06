@@ -1105,9 +1105,9 @@ async fn clip_move_stream(
 /// enabled (server downgrade, on-disk manifest edit) stops contributing.
 ///
 /// ADVISORY ONLY: the returned union is the client's advisory copy for
-/// showing/hiding write controls (`worldSession.svelte.ts`'s `canEdit`). It is
+/// showing/hiding write controls (the client's `canEdit`). It is
 /// NOT the server-side write-enforcement input — `apply_intent`
-/// (`data/sqlite.rs`) consults only the GM-authored `world_cap_requirements`
+/// consults only the GM-authored `world_cap_requirements`
 /// record, never a module's declared `requirements`.
 async fn welcome_capability_requirements(
     repo: &dyn Repository,
@@ -1138,7 +1138,7 @@ async fn welcome_capability_requirements(
     };
     if !enabled.is_empty() {
         // Blocking std::fs I/O; run off the async worker on every WS-connect
-        // Welcome path, matching the spawn_blocking convention in auth/password.rs.
+        // Welcome path, matching the spawn_blocking convention in `hash_password_async`.
         // A panicked scan (JoinError) degrades to an empty Vec, matching the
         // missing-modules_dir behavior already in scan_installed_modules.
         let dir = modules_dir.to_path_buf();

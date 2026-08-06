@@ -68,8 +68,8 @@ describe("ItemSheet dice roll-to-chat", () => {
 
   // Regression test for the reactive-subscription fix: a second edit in the same rendered
   // instance must read the FIRST edit's result as `old`, not the doc snapshot frozen at first
-  // render. Mirrors ActorSheet.test.ts's "a second edit in the same instance dispatches a
-  // fresh old reflecting the first edit". Fails against the pre-fix frozen-`ctx.documents.get()`
+  // render. Mirrors the `sheet-actor` module's "a second edit in the same instance dispatches a
+  // fresh old reflecting the first edit" test. Fails against the pre-fix frozen-`ctx.documents.get()`
   // derived because the second dispatch's `old` would still be the pre-edit doc's field.
   it("a second edit in the same instance dispatches a fresh old reflecting the first edit", async () => {
     const calls: unknown[] = [];

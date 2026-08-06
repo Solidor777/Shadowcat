@@ -110,7 +110,7 @@
    * Handle the invite-redemption form submit. Unlike `refresh`/`create`/
    * `confirmDelete`, this has no `try`/`catch`: `acceptInvite` collapses every
    * HTTP-level rejection to `null` one layer down, so there is no thrown
-   * message to discard. See `../entryApi.ts`'s `acceptInvite` doc — the
+   * message to discard. See `acceptInvite`'s doc — the
    * statement of record for the no-oracle rationale, and the only place that
    * enumerates the rejection cases. The generic error shown here
    * (`worlds.errorRedeem`) reflects that collapse; it is not a choice this

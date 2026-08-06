@@ -188,14 +188,14 @@ export class WorldSession {
    * Caveat (`gm_role`): the `role === "gm"` short-circuit immediately below returns `true`
    * unconditionally and never consults `doc.permissions.gm_role`. The server's GM bypass is
    * conditional — a document carrying `gm_role: Some(role)` floors even a GM to an ordinary
-   * `DocRole` resolution instead of the unconditional grant (`data/permission.rs`'s
-   * `effective_role`/`resolve_access`) — so this gate's write affordances can over-permit on a
-   * `gm_role`-capped document. Advisory-only, not a live bug today: `apply_intent` re-checks
-   * independently, and separately rejects every ordinary client Update to a `message` doc
-   * outright regardless of role (`data/sqlite.rs`). `chat/mod.rs` is the only place the SERVER
+   * `DocRole` resolution instead of the unconditional grant (`effective_role`/`resolve_access`)
+   * — so this gate's write affordances can over-permit on a
+   * `gm_role`-capped document. Advisory-only, not a live bug today: `Repository::apply_intent`
+   * re-checks independently, and separately rejects every ordinary client Update to a `message` doc
+   * outright regardless of role. `build_message_doc` is the only place the SERVER
    * constructs a `gm_role` today — NOT a bound on where it can live: it is an ordinary field on
    * every document's `permissions` block, so do not assume it is chat-specific (see the SCOPE
-   * NOTE on `canWritePath` in `@shadowcat/core`'s `capabilities.ts`).
+   * NOTE on `canWritePath` in `@shadowcat/core`).
    *
    * @param doc The document being edited.
    * @param path The JSON-pointer path within `doc` the caller wants to write.
@@ -401,12 +401,12 @@ export class WorldSession {
     if (!this.#ws) return Promise.reject(new Error("not connected"));
     const p = this.#ws.moveRequest(scene, tokenId, path);
     // M14b observability signal, derived from THIS SAME promise without altering its
-    // resolution for the caller. `MoveOutcome.truncated` (move_exec.rs) never crosses the
+    // resolution for the caller. `MoveOutcome.truncated` never crosses the
     // wire, so this infers from geometry instead: `stream.stop` is the mover's own exact,
     // unclipped resting position, compared against the requested goal.
     // "executed" = stop reached the requested goal POSITION. Note this is reached-goal, not
     // "not truncated": a region ARREST landing exactly on the final cell also sets the
-    // server's `MoveOutcome.truncated = true` while `stop` still equals the goal (move_exec.rs:
+    // server's `MoveOutcome.truncated = true` while `stop` still equals the goal (`execute_move`:
     // arrest stops AT cell entry, so `stop_index == path.len()-1` on a final-step arrest) — the
     // token DID reach the goal, only further movement from there is barred, so this reads
     // "executed" by design (see the dedicated regression test below for this exact case).
@@ -634,7 +634,7 @@ export class WorldSession {
       // scene THIS client is viewing (a GM roaming scene B must not animate scene A's move, and must
       // animate B's). `viewedSceneId` is the GM's local view when roaming, else the followed
       // `activeScene`. Fail-closed: a stream for any other scene is dropped (latent cross-scene
-      // fog/animation leak, mirrors engine.ts's toVisibility scene filter).
+      // fog/animation leak, mirrors `RenderEngine.toVisibility`'s scene filter).
       if (stream.scene !== this.viewedSceneId) return;
       this.sceneInteraction.animateSamples(
         stream.tokenId,
@@ -815,7 +815,7 @@ export class WorldSession {
   /** Tear down the current world connection: stops and drops the `WsClient`, resets
    * `state`/`role`/`world`/`#gmViewedScene`. Does not clear `store`/`documents`, module
    * registrations, or the `#activated`/`#modulesAdded` latches — the shell's own usage
-   * (`App.svelte`'s `leaveWorld`) discards this instance and constructs a fresh
+   * (`App`'s `leaveWorld`) discards this instance and constructs a fresh
    * `WorldSession` for the next `enter()` rather than reusing this one.
    * @example
    * ```

@@ -23,7 +23,7 @@ class FakeMediaQueryList {
   }
 }
 
-// `sizeClass.svelte.ts` reads `matchMedia` once at module load, so the mock must
+// `sizeClass()`'s module reads `matchMedia` once at module load, so the mock must
 // be stubbed before the (single, file-scoped) dynamic import below picks it up.
 const mql = new FakeMediaQueryList(false); // starts compact
 vi.stubGlobal("matchMedia", () => mql);

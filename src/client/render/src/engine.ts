@@ -793,7 +793,7 @@ export class RenderEngine implements SceneToolHost {
   }
 
   /** Has no production caller today (`src/modules`/`src/client/shell` drive route playback
-   * exclusively through `animateSamples`, per `controller.svelte.ts`'s own "Animation is
+   * exclusively through `animateSamples`, per `commitRoute`'s own "Animation is
    * broadcast-driven via onMoveStream ... no local animation from the moveRequest resolve value"
    * comment); this `SceneToolHost` seam is exercised only by tests. The mechanism below is the
    * contract it honors if called.
@@ -1129,7 +1129,7 @@ export class RenderEngine implements SceneToolHost {
 
   /** Tears down this engine instance: unsubscribes from the document store and the `vision`
    * channel, then calls `DisplayBackend.destroy()` — which releases all GPU resources and
-   * detaches the canvas (`backend.ts:57-58`). Does not individually tear down each doc-type
+   * detaches the canvas. Does not individually tear down each doc-type
    * view (tokens/drawings/templates/walls/regions/pings); their render nodes are reclaimed as
    * part of the backend's own teardown, not by a per-view `destroy()` call here. Call once, when
    * the host unmounts the canvas; the instance is not reusable afterward.

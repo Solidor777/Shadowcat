@@ -116,13 +116,13 @@ export function resolveTokenActor(token: WireDocument, store: ReadableDocuments)
 
 /**
  * The user a document effectively belongs to — the client mirror of the server's
- * `effective_owner` (`data/permission.rs`), which is the authority. `doc.owner` is the
+ * `data::permission::effective_owner`, which is the authority. `doc.owner` is the
  * explicit per-document override; a `token` with no override inherits its LINKED actor's
  * owner, resolved live from the store so re-assigning an actor re-owns its tokens with no
  * re-stamp.
  *
  * Mirrors the server's PRECEDENCE (token's own `/owner`, else the linked actor's owner) but
- * OMITS the server's `actor.scope === doc.scope` guard (`permission.rs`'s `effective_owner`
+ * OMITS the server's `actor.scope === doc.scope` guard (`effective_owner`
  * rejects a resolved actor whose `scope` differs from the token's) — `store.get(actorId)` here
  * is a plain id lookup with no scope filter. This is safe only because the client's
  * `DocumentStore` never holds a cross-scope document today (it is fed solely by the single
@@ -161,7 +161,7 @@ export function effectiveOwner(doc: WireDocument, store: ReadableDocuments): str
 
 /**
  * Whether `userId` holds the `DocRole.Owner` capability floor on `doc` by virtue of
- * effective ownership. Mirrors the server's `effective_role` (`data/permission.rs`),
+ * effective ownership. Mirrors the server's `data::permission::effective_role`,
  * INCLUDING its token scoping: the floor applies to `token` documents only — on every
  * other doc_type `owner` stays provenance-only and grants no capability. Keeping the
  * scoping here (not at the call site) is what stops the client gate from drifting open

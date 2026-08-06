@@ -1,7 +1,7 @@
 //! Ingress-guard integration test: a client `Intent` that authors a `message`
 //! doc directly (bypassing `SendMessage`) is rejected, never reaching
 //! `apply_intent` — the security half of server-authoritative chat ingest.
-//! Harness mirrors `ws_convergence.rs`'s `spawn`/`connect`/`intent_msg` pattern.
+//! Harness mirrors `ws_convergence`'s `spawn`/`connect`/`intent_msg` pattern.
 
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;

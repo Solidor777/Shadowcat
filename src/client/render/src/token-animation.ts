@@ -1,5 +1,5 @@
 // Pure animated-token frame math (M10h). Extracted for the same reason as
-// `computeFogBlendFactor` in `fog-blend.ts` — `pixi-backend.ts` itself is Playwright-covered
+// `computeFogBlendFactor` — `PixiBackend` itself is Playwright-covered
 // only (no WebGL in jsdom), so the frame-selection logic lives here where it's unit-testable.
 // A `//` header, not a `/** */` block: a doc block preceding another doc block rather
 // than a declaration binds to nothing, since every consumer takes the NEAREST one.

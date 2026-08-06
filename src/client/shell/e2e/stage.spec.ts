@@ -144,7 +144,7 @@ test("author an animated (frame-list) actor token; it places without error", asy
 
   // Select the actor, then activate the place tool and click the canvas — mirrors
   // the existing token-placement flow. `makePlaceTool` gives a selected actor
-  // precedence over a raw asset (controller.svelte.ts), so no asset picker is needed.
+  // precedence over a raw asset, so no asset picker is needed.
   await actorsPanel.getByRole("button", { name: "Wisp", exact: true }).click();
   await page.getByTestId("tool-place").click();
   const canvas = page.getByTestId("stage-canvas");

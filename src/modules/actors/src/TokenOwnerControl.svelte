@@ -8,7 +8,7 @@
 
   let { tokenId }: { tokenId: string | null } = $props();
 
-  // Reactive read of the document store (same bridge as Surface.svelte): reading
+  // Reactive read of the document store (same bridge as Surface): reading
   // `subscribe()` inside the derived registers a dependency so the control re-renders
   // when the token — or the ACTOR it inherits from — changes owner.
   const subscribe = createSubscriber((update) => ctx.documents.subscribe(update));
@@ -55,11 +55,11 @@
    * Dispatches a `/owner` Update on the selected token, setting (or clearing, via `null`) the
    * per-token ownership OVERRIDE. This writes the override only — it never touches the linked
    * actor's own `owner` — and does not itself decide who may write `/owner`: that is
-   * `cap::EDIT_PERMISSIONS` server-side (`src/server/src/data/permission.rs:197-204`), excluded
-   * from the `DocRole::Owner` role's BUILT-IN floor (`src/server/src/data/permission.rs:429-432`),
+   * `cap::EDIT_PERMISSIONS` server-side (`required_cap_for_path`), excluded
+   * from the `DocRole::Owner` role's BUILT-IN floor (`role_floor`),
    * so an effective owner (this control's own `resolved` value) cannot write it under that floor
    * alone. Not an absolute: the floored role also selects additive `by_role[Owner]` grants
-   * (`src/server/src/data/permission.rs:463-467`), so a deployment that puts `EDIT_PERMISSIONS`
+   * (`effective_role`), so a deployment that puts `EDIT_PERMISSIONS`
    * there would let an effective owner write `/owner` too — nothing in this codebase populates
    * `by_role[Owner]` that way today. A no-op if no token is selected.
    * @param next The user id to set as the override, or `null` to clear it (falling back to the

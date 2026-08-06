@@ -22,30 +22,30 @@ existing M6b `ModuleRegistry`.
 ## Key files & seams
 
 **Server (authoritative, never runs module code):**
-- `src/server/src/modules.rs` — `scan_installed_modules(dir)` walks `<dir>/*/module.json`, parse +
+- `modules` — `scan_installed_modules(dir)` walks `<dir>/*/module.json`, parse +
   validate each (invalid `id`/`version`/JSON → warn + SKIP, never blocks startup or hides siblings).
   `InstalledModule { id, requirements, engines_shadowcat, manifest_json, entry_url }` where **`id`
   is the install FOLDER name, not the author-declared manifest id**. `entry` (module.json field,
   `default_entry` = `index.js`) computes `entry_url` = `/modules/<folder>/<entry>`.
   `semver_satisfies` (exact/`^`/`~`/`*`, caret-0.x leftmost-non-zero fix) + `engine_compat_ok`
   (**fail-closed**: missing `engines.shadowcat` → reject).
-- `src/server/src/http/module_routes.rs` — `InstalledModuleInfo { id (folder id), manifest,
+- `http::module_routes` — `InstalledModuleInfo { id (folder id), manifest,
   entry_url }` (ts-rs → `src/types/generated/`); `list_installed_modules` (`GET /api/modules`,
   any-auth); `serve_module_file` (`GET /modules/{id}/{*path}` — two-stage canonicalize +
   `is_strictly_within` proper-descendant check, guards BOTH the `id` segment and the `*path`
   segment, rejects path==root equality); `set_world_enabled_modules`/get (`PUT/GET
   /api/worlds/{id}/enabled-modules`, `require_gm`, atomic validate-all + dedup, `MAX_ENABLED_MODULES`).
-- `src/server/src/config.rs` — `Config.modules_dir: Option<String>` + `modules_path()`; the
-  `test_server --modules-dir` flag (`bin/test_server.rs`) sets it for e2e.
-- `src/server/src/ws/{conn.rs,protocol.rs}` — `ServerMsg::Welcome.server_version`
+- `config` — `Config.modules_dir: Option<String>` + `modules_path()`; the
+  `test_server --modules-dir` flag (the `test_server` binary) sets it for e2e.
+- `ws::conn`/`ws::protocol` — `ServerMsg::Welcome.server_version`
   (`env!("CARGO_PKG_VERSION")`); `welcome_capability_requirements` non-destructively UNIONs the GM's
   `world_cap_requirements` with each `engine_compat_ok` enabled module's `requirements`.
 
 **Client core (framework-neutral):**
-- `src/client/core/src/loader.ts` — `loadModules(...) → Promise<ModuleLoadResult { loaded, failed }>`
+- The client `loader` module — `loadModules(...) → Promise<ModuleLoadResult { loaded, failed }>`
   — **per-module contained, NON-throwing** (a single module's import/compat failure no longer aborts
   the batch); `checkEngineCompat`; fail-closed when `opts.shadowcatVersion` is absent.
-- `src/client/core/src/modules.ts` — `ModuleRegistry.activate()` is per-module isolated: a throwing
+- The client `modules` module — `ModuleRegistry.activate()` is per-module isolated: a throwing
   `register()` or a singleton-contract collision is logged + skipped, the topo loop continues, the
   first provider stays sole-active. **Rollback-on-throw:** a `register()` throw mid-registration is
   caught, then `activate()` calls the module's own `unload(id)` to roll back any partial side
@@ -55,10 +55,10 @@ existing M6b `ModuleRegistry`.
   `unload(id)` call is itself wrapped in its own try/catch (logged, not propagated) so a SECOND
   throw during rollback can't abort the whole activation loop — modules ordered after the failing
   one still activate.
-- `src/client/core/src/module-rest.ts` — `listInstalledModules` / `getEnabledModules` /
+- The client `module-rest` module — `listInstalledModules` / `getEnabledModules` /
   `setEnabledModules` REST wrappers (consume `InstalledModuleInfo` via unchecked cast — no Zod).
-- `src/client/core/src/manifest.ts` — `engines?: ModuleEngines` (optional; first-party modules never
-  set it, community modules MUST); `requirements` are advisory. `src/client/core/src/semver.ts` —
+- The client `manifest` module — `engines?: ModuleEngines` (optional; first-party modules never
+  set it, community modules MUST); `requirements` are advisory. The client `semver` module —
   caret-0.x fix mirror of the server.
 
 **Client shell:**
@@ -74,9 +74,9 @@ existing M6b `ModuleRegistry`.
   `.github/workflows/ci.yml`'s web job + `package.json`'s `check:svelte-runtime` script. Its
   CLI-entry-point detection uses `pathToFileURL(...).href` (not a raw `file://${argv[1]}` string
   compare, which never matches on Windows — wrong scheme/separator/drive-letter handling).
-- `src/client/shell/src/lib/worldSession.svelte.ts` — `#loadExternalModules(world, serverVersion)`
+- The shell `worldSession` module — `#loadExternalModules(world, serverVersion)`
   sourced from `w.server_version`; fetch enabled set → `loadModules` → activate; keyed on `info.id`.
-- `src/modules/settings/src/ModuleManager.svelte` — GM installed-module management UI; toggle/save
+- **`ModuleManager`** (`@shadowcat/module-settings`) — GM installed-module management UI; toggle/save
   keyed on the canonical folder `info.id` (manifest id is display-only).
 
 **Out-of-tree reference + guide:** the Nightfox repo (its own git repo, nested into a checkout at
@@ -108,7 +108,7 @@ job's example-build step keep them green; the guides code-import their sources r
 
 ## Gotchas
 
-- **`entry` is a `module.json` field read by the server scanner** (`modules.rs`, default
+- **`entry` is a `module.json` field read by the server scanner** (`modules`, default
   `index.js`), NOT part of the client `ModuleManifest` Zod shape — declare it in module.json only.
 - **The import map serves a FIXED svelte-subpath set** — a module importing a subpath the host does
   not serve (`svelte/store`, `svelte/transition`, …) hard-fails with a runtime `SyntaxError`; adding
@@ -126,11 +126,11 @@ job's example-build step keep them green; the guides code-import their sources r
   dot-segment normalization CLIENT-SIDE before the request is sent — a segment that EXACTLY matches
   `.`/`..`/`%2e`/`%2e%2e` (and case variants) is collapsed/popped before it can reach the router or
   `serve_module_file`'s guard. A dot-segment test therefore proves nothing: confirmed —
-  `serve_module_file_rejects_an_id_segment_that_escapes_the_modules_root` (`http/module_routes.rs`)
+  `serve_module_file_rejects_an_id_segment_that_escapes_the_modules_root` (`http::module_routes`)
   still PASSES against a deliberately-reverted, vulnerable guard. A NON-exact-match segment (e.g.
   `%2e%2e%2fsecret.txt` as one combined segment) is NOT normalized and DOES reach the handler intact.
   Write such tests as (a) a pure unit test of the containment predicate, (b) a symlink/alias HTTP
-  repro (`module_routes.rs`'s `self-link`-style test), or (c) an encoded segment embedded in a longer
+  repro (`http::module_routes`'s `self-link`-style test), or (c) an encoded segment embedded in a longer
   non-exact-match string.
 - **Scope deliberately excluded from M13-1** (manual/admin-trusted tier): no module upload/install UI
   (install stays manual-extract into `<data-dir>/modules/<id>/`); no sandboxing/permissions for

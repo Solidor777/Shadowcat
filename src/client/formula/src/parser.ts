@@ -370,7 +370,7 @@ function checkArity(fn: FnName, argc: number, pos: number): FormulaError | undef
 
 /**
  * Structural check for a `FormulaError` shape — used throughout `Parser` to
- * short-circuit on a sub-result without importing `internal.ts`'s stricter
+ * short-circuit on a sub-result without importing the stricter
  * `isWellFormedError` (this module only ever inspects its OWN freshly-built
  * values, never an untrusted consumer callback's return value).
  * @param v A parser sub-result, either a successful `T` or a `FormulaError`.

@@ -482,7 +482,7 @@ export class WsClient {
 
   /** Send a client frame (no-op if currently disconnected). `ClientMsg` is a plain TS union
    * (outgoing frames are not runtime-validated, unlike `ServerMsgSchema` on the inbound side —
-   * `SendMessageSchema`/`PathfindSchema` in `wire.ts` are standalone opt-in mirrors for callers
+   * `SendMessageSchema`/`PathfindSchema` are standalone opt-in mirrors for callers
    * that want to validate before sending, not enforced here).
    * @param msg The frame to serialize (`JSON.stringify`) and send.
    * @example
@@ -821,7 +821,7 @@ export class WsClient {
    * @param opts Search options.
    * @param opts.limit Max hits per page, sent on the wire as `limit: opts.limit ?? 20`
    * (client-side default only — the server's `Search` frame field is mandatory, no server
-   * default; `ws/protocol.rs`'s `ClientMsg::Search.limit: u32`).
+   * default; `ws::protocol::ClientMsg::Search.limit: u32`).
    * @param opts.cursor Opaque pagination cursor from a prior `SearchPage.nextCursor`.
    * @param opts.timeoutMs How long to wait for `search_result`/`search_error` before rejecting
    * (default 10000).
@@ -880,7 +880,7 @@ export class WsClient {
    * @param opts Live-search options.
    * @param opts.limit Max hits tracked, sent on the wire as `limit: opts.limit ?? 20`
    * (client-side default only — the server's `Search` frame field is mandatory, no server
-   * default; `ws/protocol.rs`'s `ClientMsg::Search.limit: u32`).
+   * default; `ws::protocol::ClientMsg::Search.limit: u32`).
    * @param opts.timeoutMs How long to wait for the initial result before rejecting
    * (default 10000).
    * @param onUpdate Fires with the current top-N hits on the initial result and every
@@ -1120,7 +1120,7 @@ export class WsClient {
    * Listeners survive reconnects; a caller that subscribes once keeps receiving across drops.
    * @param cb Fires with every `MoveStream` frame delivered to this connection, from ANY scene
    * in the world — `WsClient` is a per-world connection with no notion of a "current scene",
-   * and the server's per-recipient egress clip (`clip_move_stream`, `ws/conn.rs`) filters only
+   * and the server's per-recipient egress clip (`ws::conn::clip_move_stream`) filters only
    * by vision/GM-trust, never by scene (a GM with no active see-as gets the full unclipped
    * stream regardless of scene). Filtering to a viewed scene via `MoveStream.scene` is the
    * CALLER's responsibility (see `worldSession`'s `onMoveStream` handler).

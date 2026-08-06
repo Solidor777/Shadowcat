@@ -90,6 +90,24 @@ source of truth. The ones agents break most:
   real migrations can begin at that milestone. A dev DB predating a baseline edit fails the sqlx
   checksum — delete the dev DB file and restart. Any migration files that accumulate anyway are
   deleted on sight (squashed into the baseline).
+- **NEVER work around a rule — follow its INTENT; if unsure, ASK (user directive 2026-08-05).**
+  Verbatim: *"we do not try to work around rules, ever. we accept the intent of the rule and follow
+  it. if we are unsure of the intent, ask the user."* Reworking text or code until a rule stops
+  applying is never acceptable — not when the result is technically true, not when the gate goes
+  green. Every rule here was written after a defect, so the letter encodes one instance and the
+  intent covers the class; honoring the letter against the intent reproduces the original defect in
+  a new shape while reporting clean. Related shapes: an empty `/** */` that satisfies a docs gate, a
+  test that asserts nothing, reading a rule narrowly to shrink scope (also a descope — see
+  [[never-descope-without-consulting-user]]). A rule that is genuinely wrong gets raised and
+  changed, never quietly routed around. [[never-work-around-a-rule-follow-its-intent]]
+- **Comments cite SYMBOLS, never file names or line numbers (user directive 2026-08-05).** Write
+  ``see `Conn::handle_scene_subscribe` ``, never ``see conn.rs:1313`` and never ``the handler in
+  `conn.rs` ``. Qualify by owner (`AssetResolver.url`, `chat::broadcast`), not location. Applies to
+  all committed prose — doc comments and the live tracking docs. A line number is invalidated by any
+  insertion above it and **no gate catches the rot**; a symbol breaks only on rename, which a grep
+  finds. Carve-outs: config/build files (no symbols to cite), filenames used as *values*, and dated
+  records under `docs/superpowers/`. Full rule: `docs/design/doc-sweep-truthfulness-rules.md`
+  RULE 15. [[cite-symbols-not-file-lines]]
 - **`CLAUDE.md` is git-ignored** — it is local-only; durable rules live in `ARCHITECTURE.md` §2,
   the real source of truth. [[claude-md-is-git-ignored]]
 - **ts-rs types are generated** — change the Rust enum/struct, regenerate, then mirror in the

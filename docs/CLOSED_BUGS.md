@@ -298,11 +298,11 @@ Confirmed-real defects that have since been fixed, kept for provenance. New fixe
   cleared its dirty tracking unconditionally, silently dropping the write on failure).
 
 - **[Type incompleteness] `ClientMsg`'s `scene_subscribe` variant omitted the `as_user` field the
-  client actually sends.** `src/client/core/src/ws-client.ts:998` sends
+  client actually sends.** `WsClient.subscribeScene` sends
   `{ type: "scene_subscribe", request_id, channel, ...(opts.asUser ? { as_user: opts.asUser } : {}) }`,
-  but the `wire.ts` variant declared only `type`, `request_id` and `channel`. The spread bypasses
+  but the `ClientMsg` variant declared only `type`, `request_id` and `channel`. The spread bypasses
   TypeScript's excess-property check, so it compiled and there was **never any runtime
-  misbehaviour** — the server accepts and gates the field. The defect was that `wire.ts` is the
+  misbehaviour** — the server accepts and gates the field. The defect was that `ClientMsg` is the
   client's statement of record for the protocol and under-described it: a reader could not see that
   `scene_subscribe` carries `as_user`, and any call site constructing the message without a spread
   would have been rejected by the compiler for sending a field the protocol does support.
@@ -311,7 +311,7 @@ Confirmed-real defects that have since been fixed, kept for provenance. New fixe
   `scene_error` "not authorized to view as another user" and a non-member target receiving
   `scene_error` "target user is not a member of this world", the target's role resolved from the
   server's own membership record so a client-supplied role or scope is never trusted
-  (`src/server/src/ws/conn.rs:1313-1329`). Type-only change; verified zero runtime effect —
+  (`egress_loop`'s `SceneSubscribe` handling). Type-only change; verified zero runtime effect —
   typecheck 0 errors, `@shadowcat/core` 392/392 tests pass, `lint:props` unchanged at 1266 (the new
   field carries its own doc, so it adds no finding). Found by the docs sweep 13 Task 2 implementer
   and deliberately held out of that task, which is comment-only and whose diff was under review;

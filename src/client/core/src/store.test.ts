@@ -183,7 +183,7 @@ describe("setPointer", () => {
   // Anti-drift pin (bug: null-intermediate blocked nested set_pointer): SceneEngine's
   // vision/lighting/etc. are Option<T> with no skip_serializing_if, so they serialize as
   // explicit `null` rather than an absent key. A single fixture asserted on both this
-  // client path and the server's `set_pointer` (see command.rs
+  // client path and the server's `data::command::set_pointer` (see
   // `set_pointer_descends_through_an_explicit_null_intermediate`) pins parity: a future
   // change to one side that forgets the other must fail one of the two tests.
   const NULL_INTERMEDIATE_FIXTURE = { engine: { vision: null } };

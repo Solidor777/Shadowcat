@@ -13,7 +13,7 @@
   // "Speak as" options: the default (no attribution) plus every actor doc the current user
   // may OFFER to speak as — own actors for a Player, all actors for a GM. This list is a
   // client affordance only: the server independently re-authorizes the actual choice at send
-  // (src/server/src/chat/mod.rs:538-561 — a Player must own the named actor; a GM may name
+  // in `handle_send_message` (a Player must own the named actor; a GM may name
   // any actor in the world), so an offer this list gets wrong can only be rejected, never
   // silently accepted. Reactive to actor creation/ownership changes via the store subscriber
   // bridge.
@@ -38,9 +38,9 @@
     }
   });
 
-  // Counter shows only when the author is nearing the server cap (MAX_MESSAGE_CHARS,
-  // src/server/src/chat/mod.rs:386) — not on every keystroke, to avoid a permanently-visible
-  // chrome element.
+  // Counter shows only when the author is nearing the server cap
+  // (`MAX_MESSAGE_CHARS`) — not on every keystroke, to avoid a
+  // permanently-visible chrome element.
   const COUNTER_THRESHOLD = MAX_MESSAGE_CHARS - 200;
 
   let value = $state("");
@@ -52,8 +52,8 @@
 
   const trimmed = $derived(value.trim());
   // Cap/counter/send-gating derive from the TRIMMED length, matching what send() actually
-  // transmits and what the server validates (src/server/src/chat/mod.rs:516,
-  // MAX_MESSAGE_CHARS). Known, fail-safe divergence: JS .length counts UTF-16 code units
+  // transmits and what `handle_send_message` validates against `MAX_MESSAGE_CHARS`.
+  // Known, fail-safe divergence: JS .length counts UTF-16 code units
   // while the server counts Unicode scalar values (chars().count()) — a surrogate-pair
   // (astral-plane) character counts as 2 toward the client's length but 1 toward the
   // server's, so the client can only over-block near the cap, never under-block; this

@@ -3,7 +3,7 @@ import type { TokenOverrides } from "./TokenOverrides";
 import type { TokenVisual } from "./TokenVisual";
 
 /**
- * A token's transform + visual (scene-docs.ts:146-162 `TokenSystem`). `(x,y)`
+ * A token's transform + visual (mirrors the client's `TokenEngine`). `(x,y)`
  * is the token CENTER. `visual` is set only on raw (actorless) tokens —
  * actor-backed tokens resolve their visual via the linked/embedded actor.
  */

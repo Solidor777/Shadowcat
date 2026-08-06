@@ -95,7 +95,7 @@
   // `AppContext.panels` is typed as `PanelsApi & PanelsChipsView`, which
   // intentionally omits `bind` (a proxy-rebind affordance, not part of the
   // general contract other callers use). This rests on composition-root
-  // convention, not the type system: `Table.svelte` is the sole place that
+  // convention, not the type system: `Table` is the sole place that
   // constructs the concrete `PanelsBridge` and assigns it to `ctx.panels`,
   // so this is the sole binding site — guarded at runtime rather than cast
   // unchecked, so a violated convention fails loudly here instead of

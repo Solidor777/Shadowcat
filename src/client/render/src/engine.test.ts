@@ -792,8 +792,8 @@ test("a concurrent derived frame does not clobber an in-flight vision-sweep (no 
 });
 
 test("animateSamples' moverVision seeds a server-aligned catch-up mid-sample (startServerMs in the past)", () => {
-  // Mirrors token-animator.test.ts's "catch-up: jumps to the server-aligned position when
-  // startServerMs is in the past" — exercises the highest-risk untested path: initialElapsed
+  // Mirrors the "catch-up: jumps to the server-aligned position when startServerMs is in the
+  // past" test — exercises the highest-risk untested path: initialElapsed
   // computed from a non-zero serverNow()-startServerMs delta, not always 0.
   const store = new DocumentStore();
   store.applyCommand(sceneCmd(1, "s1"));

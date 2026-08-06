@@ -60,7 +60,7 @@
     // Reads the RAW stored value (not the resolved/defaulted `snapToGrid`) for optimistic-
     // concurrency `old`: the server's field-level conflict check compares against the actual
     // stored value at this path, which is only `null` while the field is genuinely absent.
-    // Mirrors controller.svelte.ts's commitMoves GM branch convention (`eng?.x ?? null`).
+    // Mirrors `commitMoves`'s GM branch convention (`eng?.x ?? null`).
     const rawSnap = (scene.engine as { snapToGrid?: boolean } | undefined)?.snapToGrid ?? null;
     ctx.dispatchIntent([
       { op: "update", doc_id: scene.id, changes: [{ path: "/engine/snapToGrid", old: rawSnap, new: !snapToGrid }] },
@@ -70,10 +70,10 @@
   /** `gmOnly` marks a tool that AUTHORS scene content (creates or edits a document other
    * than a token's own position). The three ungated tools each go through a path the server
    * already polices for a non-GM — but select/move does NOT go through the same path for every
-   * role: `commitMoves` (`controller.svelte.ts`) branches on `ctx.role`. A GM writes
+   * role: `commitMoves` branches on `ctx.role`. A GM writes
    * `/engine/x,y` directly via `dispatchIntent` — an ordinary permission-checked `Update`, with
    * NO movement gate at all, since `Room::publish`'s non-GM position-refusal block
-   * (`src/server/src/ws/room.rs:285-306`) does not apply to a GM's own write. A non-GM's move is
+   * does not apply to a GM's own write. A non-GM's move is
    * request-only and never writes `/engine/x,y` directly: per selected token, `Pathfind` then
    * `MoveRequest` → `execute_move`'s per-cell wall/mask/footprint gate — the same mechanism the
    * measure tool's `commitRoute` uses. Measure previews via the per-requester-masked `Pathfind`
@@ -81,7 +81,7 @@
    * rate-limited per-user relay.
    *
    * `place` in particular MUST stay `gmOnly`, for a reason that is not fully visible from this
-   * file: `Room::publish`'s `Create` gate (`src/server/src/ws/room.rs:307-368`) authorizes a
+   * file: `Room::publish`'s `Create` gate authorizes a
    * placed token's CENTER cell against the requester's visibility mask (matching
    * `movement_restriction` — no check at all under `Unrestricted`) but NEVER checks walls: a
    * placement is a single point, not a traversal, so there is no `line_traversal`/supercover call

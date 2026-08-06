@@ -7,10 +7,11 @@ import type { EngineAdapter } from "./engine/adapter";
 import { applyOp, defaultLayout } from "./layout/tree";
 import { PanelsController } from "./controller.svelte";
 
-/** Minimal fake MediaQueryList (mirrors ui-kit's sizeClass.test.ts) so
+/** Minimal fake MediaQueryList (mirrors `@shadowcat/ui-kit`'s own
+ * `FakeMediaQueryList`) so
  * PanelHost's sizeClass()-driven presentation switch is deterministic under
  * jsdom, which has no real `matchMedia`. Must be stubbed before the
- * file-scoped dynamic import below, since `sizeClass.svelte.ts` reads
+ * file-scoped dynamic import below, since `sizeClass()`'s module reads
  * `matchMedia` once at module load. */
 class FakeMediaQueryList {
   matches: boolean;
@@ -39,7 +40,7 @@ const { default: ThrowingPanel } = await import("./__fixtures__/ThrowingPanel.sv
 const { default: CrashOnceCountingPanel } = await import("./__fixtures__/CrashOnceCountingPanel.svelte");
 // Dynamic, alongside the imports above: a static top-level `import { i18n }
 // from "@shadowcat/ui-kit"` would pull in the whole ui-kit barrel (including
-// `sizeClass.svelte.ts`, which reads `matchMedia` at module load) BEFORE the
+// `sizeClass()`'s module, which reads `matchMedia` at module load) BEFORE the
 // `vi.stubGlobal` call above runs, breaking the ordering that comment warns about.
 const { i18n } = await import("@shadowcat/ui-kit");
 
@@ -175,7 +176,7 @@ test("gmOnly: a gmOnly registration is absent from the compact switcher and dock
   // Compact switcher: the gmOnly panel never reaches `compact.order` either.
   // (The dock-chip strip is now rendered solely by the statusbar's
   // `panel-dock` Surface; its gmOnly filtering is enforced upstream by
-  // `regsForRole`, covered in `controller.test.ts`.)
+  // `regsForRole`, covered in "regsForRole: a gmOnly registration is invisible to a non-GM role".)
   mql.fire(false);
   await Promise.resolve();
   expect(screen.queryByTestId("compact-switch-game-settings:panel")).toBeNull();
@@ -474,7 +475,8 @@ test("Finding 4 (buddy-check): a reload-restored popout's notice reaches the liv
 
   // Proves the notice is actually OBSERVABLE by the live region a screen
   // reader watches (not merely that some callback fired) — the gap Finding
-  // 4 named. `controller.test.ts` proves the narrower claim (construction
+  // 4 named. "rehydratePoppedOut: a persisted popped-out id comes back as
+  // floating + a notice" proves the narrower claim (construction
   // alone must not call `onNotice`); the test below proves `PanelHost` is
   // what performs the flush that makes this text appear.
   const liveRegion = container.querySelector('[role="status"]')!;

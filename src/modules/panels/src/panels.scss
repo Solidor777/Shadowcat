@@ -33,7 +33,7 @@
   height: 100%;
 }
 
-// The custom tab component (`dockview.ts`'s `PanelTabRenderer`) — icon +
+// The custom tab component (`PanelTabRenderer`) — icon +
 // label + menu button, rendered as the CONTENT of dockview's own `.dv-tab`
 // wrapper (which supplies `role="tab"` + roving tabindex; this file never
 // re-styles that wrapper's OWN focus/selection state, only its content).
@@ -95,22 +95,22 @@
 // `:focus-visible` ring on every interactive part this file owns — dockview's
 // own `.dv-tab` wrapper already carries its own focus styling via its theme
 // vars; this covers the parts THIS file introduces (menu button, popover
-// menu items — the latter styled in `PanelMenu.svelte` itself, scoped there).
+// menu items — the latter styled in `PanelMenu` itself, scoped there).
 .sc-tab-menu-btn:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
 }
 
-// `PanelMenu`'s popover is mounted by `dockview.ts`'s `mountPanelMenu`
+// `PanelMenu`'s popover is mounted by `mountPanelMenu`
 // directly into `document.body` (an imperative popup, not a Svelte-tree
 // descendant of `.sc-dockview-root`) — its OWN styling lives in
-// `PanelMenu.svelte`'s scoped `<style>`; this class only positions it.
+// `PanelMenu`'s scoped `<style>`; this class only positions it.
 .sc-panel-menu-popover {
   z-index: var(--z-popover);
 }
 
 // Floating groups are non-modal dialogs (dockview's own `Overlay` sets
-// `role="dialog"`; see `dockview.ts`'s `#wireFloatingA11y`) — token-mapped to
+// `role="dialog"`; see `DockviewEngine.#wireFloatingA11y`) — token-mapped to
 // match the rest of the docked chrome instead of dockview's default theme.
 .dv-resize-container {
   background: var(--surface-base);

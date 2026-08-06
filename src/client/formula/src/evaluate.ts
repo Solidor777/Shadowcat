@@ -39,8 +39,8 @@ export function evaluate(
       try {
         v = resolve(expr.path);
       } catch {
-        // Never interpolate the caught exception's message: `detail` is
-        // player-presentable (types.ts), and a consumer resolver's thrown
+        // Never interpolate the caught exception's message: `FormulaError.detail` is
+        // player-presentable, and a consumer resolver's thrown
         // message is an internal implementation detail, not for players.
         return {
           error: "resolver-error",

@@ -12,7 +12,7 @@ import type { ZoneId } from "@shadowcat/core";
 export const STAGE_ID = "stage";
 
 /** Our own drop-target vocabulary — a dockview `DockviewWillDropEvent` is
- * translated into this shape by `dockview.ts`
+ * translated into this shape by `DockviewEngine.#toDropSite`
  * before reaching `classifyDrop`. `id` is the panel being dropped/dragged;
  * it must be carried here (rather than passed as a separate argument)
  * because `"any op whose subject is 'stage'"` is itself a veto rule this
@@ -66,7 +66,7 @@ export const MENU_FLOAT_RECT: Rect = { x: 96, y: 96, w: 360, h: 280 };
  * dockview dependency.
  *
  * Vetoes `id === STAGE_ID` up front, mirroring `classifyDrop`'s own stage
- * veto — belt-and-suspenders alongside `dockview.ts`'s `#handleMenuCommand`
+ * veto — belt-and-suspenders alongside `DockviewEngine.#handleMenuCommand`
  * guard and W1's headerless stage group (which never gives the stage a menu
  * button to invoke this with in the first place): a menu-command chokepoint
  * with the identical shape as the drag chokepoint, not the sole guard.
@@ -75,8 +75,8 @@ export const MENU_FLOAT_RECT: Rect = { x: 96, y: 96, w: 360, h: 280 };
  * @returns The `LayoutOp` to dispatch, or a veto with its reason.
  * @example
  * ```
- * // not exported from the package's index.ts — internal to engine/dockview.ts's
- * // #handleMenuCommand, which translates a PanelMenu command into a LayoutOp
+ * // not exported from the package's index.ts — internal to
+ * // `DockviewEngine.#handleMenuCommand`, which translates a PanelMenu command into a LayoutOp
  * opForMenuCommand("dockRight", "chat");
  * ```
  */
@@ -127,7 +127,7 @@ function veto(reason: string): { veto: true; reason: string } {
  * without needing a real drag gesture, to prove the invariant holds even if
  * an upstream guard were ever weakened.
  * @param target The drop site to classify (already translated into our own
- * vocabulary by `dockview.ts`).
+ * vocabulary by `DockviewEngine.#toDropSite`).
  * @param layout The current expanded layout, consulted to validate a
  * `"group"` site's target zone exists.
  * @returns The `LayoutOp` this drop should produce, or a veto with its reason.

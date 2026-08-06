@@ -8,7 +8,7 @@ import type { ZoneId, DefaultPlacement } from "@shadowcat/core";
  * container (not the viewport). Carried on `floating` entries and on the `float`/
  * `resizeFloating` ops; the reducer never reads a viewport, so these stay whatever the
  * caller supplied. `x`/`y` may be negative (a panel legitimately dragged partway
- * off-screen); `w`/`h` are never negative (see `persist.ts`'s `isRect`, which enforces
+ * off-screen); `w`/`h` are never negative (see `isRect`, which enforces
  * this on decode). */
 export interface Rect {
   x: number;
@@ -59,7 +59,7 @@ export interface CompactLayout {
 /** The persisted root: a fixed schema `version` tag (for future migrations) plus the
  * expanded and compact views' independent state. The sole value type every reducer
  * function (`applyOp`, `prune`, `placeNewRegistrations`) and the persistence codec
- * (`persist.ts`) operate on. */
+ * (`encodeLayout`/`decodeLayout`) operate on. */
 export interface PanelLayoutV1 {
   version: 1;
   expanded: ExpandedLayout;
@@ -96,7 +96,7 @@ export type PanelLocation =
 
 // The fixed dock-zone set every `ExpandedLayout.zones` record always has an entry for
 // (see `ExpandedLayout`'s own doc comment) — an iteration order for the loops in this file,
-// not a priority. Mirrored (not shared) by `dockview.ts`'s own `ZONE_IDS`, which walks the
+// not a priority. Mirrored (not shared) by `DockviewEngine`'s own `ZONE_IDS`, which walks the
 // same three zones for its dockview-side reconciliation.
 const ZONE_IDS: readonly ZoneId[] = ["right", "bottom", "left"];
 
@@ -107,13 +107,14 @@ const ZONE_DEFAULT_SIZE: Record<ZoneId, number> = { right: 320, bottom: 240, lef
 // Floating-sheet cascade: a fixed base rect, offset a step per already-floating panel,
 // wrapping every 6 so a burst of sheets never marches off-screen. Deterministic + pure
 // so the reducer stays unit-testable (no viewport read). Value aligned with
-// controller.svelte.ts's REHYDRATE_FLOAT_BASE/STEP (kept as a separate constant, not a
+// `PanelsController`'s own `REHYDRATE_FLOAT_BASE`/`REHYDRATE_FLOAT_STEP` (kept as a separate constant, not a
 // shared import, so the two modules stay decoupled) — the same logical operation
 // (reload -> float a persisted popout) must land at the same screen position
 // regardless of which of the two call sites handles a given panel's registration timing.
 // Nothing in either file's types enforces this pairing; the two constants can drift
 // silently unless something exercises both call sites and compares their output. That
-// enforcement is `controller.test.ts:390-394`'s parity test, not a runtime assertion here.
+// enforcement is the "cascade parity at index %i: a floating placement and
+// a rehydrated popout land on the identical rect" test, not a runtime assertion here.
 const SHEET_CASCADE_BASE: Rect = { x: 96, y: 96, w: 420, h: 520 };
 const SHEET_CASCADE_STEP = 28;
 
@@ -400,8 +401,8 @@ export function applyOp(l: PanelLayoutV1, o: LayoutOp): PanelLayoutV1 {
       // `opForMenuCommand`), silently discarding whatever rect the user
       // already dragged/resized it to. Drag gestures never reach this branch
       // for an already-floating panel in the first place: `classifyDrop`'s
-      // `kind: "floating"` case has no producer in `dockview.ts`'s
-      // `#toDropSite` translation (only `"edge"`/`"group"` sites are ever
+      // `kind: "floating"` case has no producer in `DockviewEngine.#toDropSite`'s
+      // translation (only `"edge"`/`"group"` sites are ever
       // built from a real drag), so every `float` op in this codebase is
       // menu-originated — this guard changes no drag-originated behavior.
       const loc = locate(l, o.id);

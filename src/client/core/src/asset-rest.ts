@@ -5,7 +5,7 @@ import type { Asset } from "@shadowcat/types";
 // asset picker, so it lives in the framework-neutral core (not a single panel
 // module). Plain fetch — no Svelte in core's closure (invariant #7).
 
-/** Upload an image to a world. GM-only (`require_gm`, `http/assets.rs::upload`);
+/** Upload an image to a world. GM-only (`require_gm`, `http::assets::upload`);
  * a non-GM member or non-member both get a 403. Streamed multipart to
  * `POST /api/worlds/{world}/assets`; the server validates the leading bytes are
  * a supported image regardless of the file's declared content-type, and
@@ -32,9 +32,9 @@ export async function uploadAsset(world: string, file: File): Promise<Asset> {
 }
 
 /** List a world's assets (the grid source). Membership-gated
- * (`permission_context`, `http/assets.rs::list`); a non-member gets a 403. Any
+ * (`permission_context`, `http::assets::list`); a non-member gets a 403. Any
  * failure throws with only the HTTP status in the message — the server's
- * `{error}` body, if any, is not parsed here (unlike `user-rest.ts`'s
+ * `{error}` body, if any, is not parsed here (unlike the
  * `restError` helper).
  * @param world The world id to list.
  * @returns The world's asset records.
@@ -53,7 +53,7 @@ export async function listAssets(world: string): Promise<Asset[]> {
 
 /** Replace an asset's bytes behind its stable UUID (the id and every existing
  * reference to it survive; only `version`/`content_type`/`byte_size` change).
- * GM-only, scoped to the asset's OWN world (`require_gm`, `http/assets.rs::replace`);
+ * GM-only, scoped to the asset's OWN world (`require_gm`, `http::assets::replace`);
  * an unknown `uuid` is a 404, a known one outside the caller's GM world is a
  * 403. Shares `uploadAsset`'s per-user rate limit and max-byte cap (same
  * GM-only reachability caveat) and broadcasts an out-of-band `AssetChanged` to
@@ -80,7 +80,7 @@ export async function replaceAsset(uuid: string, file: File): Promise<Asset> {
 /** Delete an asset: removes its record and its on-disk file, and broadcasts an
  * out-of-band `AssetChanged` to every connection in the asset's world.
  * GM-only, scoped to the asset's own world (`require_gm`,
- * `http/assets.rs::delete`); an unknown `uuid` is a 404. A file already missing
+ * `http::assets::delete`); an unknown `uuid` is a 404. A file already missing
  * from disk is not fatal — the record deletion still succeeds.
  * @param uuid The asset's stable id.
  * @example

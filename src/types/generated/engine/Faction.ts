@@ -2,7 +2,7 @@
 import type { FactionStance } from "./FactionStance";
 
 /**
- * A faction's display + stance (scene-docs.ts:410-414 `Faction`). `color`
+ * A faction's display + stance (mirrors the client's `Faction`). `color`
  * is "#rrggbb" (the token border color).
  */
 export type Faction = { 

@@ -231,8 +231,8 @@ export class ModuleRegistry {
 
   /** Every active module's declared capability requirements, concatenated. Has
    * no production caller today — unlike the structurally similar
-   * `declarations()`, which `worldSession.svelte.ts` wires into
-   * `reconcileTopology`. See `manifest.ts` for how a module's `requirements`
+   * `declarations()`, which `WorldSession.#onWelcome` wires into
+   * `reconcileTopology`. See `CapRequirement` for how a module's `requirements`
    * reach the server's per-world `capability_requirements` record.
    * @returns The concatenated `requirements` of every currently active module.
    * @example

@@ -5,7 +5,7 @@ import type { WorldSceneDefaults } from "./WorldSceneDefaults";
 
 /**
  * The engine body of a "world-settings" config document
- * (scene-docs.ts:90-99 `WorldSettingsSystem`).
+ * (mirrors the client's `WorldSettingsEngine`).
  */
 export type WorldSettingsEngine = { 
 /**

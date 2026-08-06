@@ -34,8 +34,8 @@ use crate::data::engine as eng;
 use crate::data::membership::PermissionContext;
 use crate::scene::lighting::Band;
 
-/// Resolved per-scene lighting mode. Mirrors `LightMode` in `scene-docs.ts`
-/// (wire twin: `eng::LightMode` — see the module-header alias note).
+/// Resolved per-scene lighting mode. The client's wire twin is generated from
+/// `eng::LightMode` (see the module-header alias note).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum LightMode {
     /// Every LOS cell is fully bright; per-light raycasts are skipped
@@ -46,7 +46,7 @@ pub enum LightMode {
     EnvironmentLight,
 }
 
-/// Per-scene movement gate mode. Mirrors `MovementRestriction` in `scene-docs.ts`.
+/// Per-scene movement gate mode. The client's wire twin is generated from `eng::MovementRestriction`.
 /// Selects the VISION-MASK arm of the gate only (`move_exec::execute_move`'s
 /// `check_mask`); the wall and region gates apply to every non-GM move
 /// regardless of mode.
@@ -61,9 +61,9 @@ pub enum MovementRestriction {
     Unrestricted,
 }
 
-/// Per-scene movement/pathfinding engine choice (M10f-1). Mirrors `MovementModel` in
-/// `scene-docs.ts`. `GridStepped` = the existing grid A* router; `Continuous` = the polyanya
-/// navmesh router.
+/// Per-scene movement/pathfinding engine choice (M10f-1). The client's wire twin is generated
+/// from `eng::MovementModel`. `GridStepped` = the existing grid A* router; `Continuous` = the
+/// polyanya navmesh router.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MovementModel {
     /// Grid A* router (`pathfinding::find`).
@@ -73,7 +73,7 @@ pub enum MovementModel {
 }
 
 /// Fail-safe finite default scene size (grid units) when a scene has no authored `bounds`.
-/// MUST match `DEFAULT_SCENE_BOUNDS` in the client `scene-docs.ts` (client/server parity).
+/// MUST match the client's `DEFAULT_SCENE_BOUNDS` (client/server parity).
 pub const DEFAULT_SCENE_BOUNDS_UNITS: (f64, f64) = (100.0, 100.0);
 
 /// The resolved per-scene lighting/vision/movement settings (subset of the client
@@ -110,7 +110,7 @@ pub struct ResolvedScene {
 }
 
 /// A resolved vision mode (subset of the client `VisionMode`). `default_range` is in cells.
-/// `render_hint` mirrors `SEED_VISION_MODES` in `scene-docs.ts` (e.g. `"desaturate"` for
+/// `render_hint` mirrors the client's `SEED_VISION_MODES` (e.g. `"desaturate"` for
 /// darkvision); absent in seed → `None`, absent in an authored doc entry → `None`.
 #[derive(Clone, Debug)]
 pub struct VisionMode {
@@ -488,7 +488,7 @@ fn wall_set_key(walls: &[vision::Seg]) -> Vec<(u64, u64, u64, u64)> {
 type NavmeshCacheKey = (Uuid, i64, Vec<(u64, u64, u64, u64)>);
 
 /// The footprint radius used when no effective actor resolves. Mirrors the client's
-/// `resolveFootprint` fallback (`src/modules/scene-tools/src/controller.svelte.ts:403`).
+/// `resolveFootprint` fallback.
 /// PARITY-BOUND, not a fail-closed choice: it is more permissive than a 1×1 square's 0.707, and
 /// changing it here without changing the client re-forks the router and the gate. Change both or
 /// neither.
@@ -898,7 +898,7 @@ impl SceneEcs {
         cell: f64,
         rule: pathfinding::DiagonalRule,
     ) -> Box<dyn grid_shape::GridShape + Send + Sync> {
-        // `+ Send + Sync`: `enrich_vision_explored`'s post-lock explored write (conn.rs) holds a
+        // `+ Send + Sync`: `enrich_vision_explored`'s post-lock explored write holds a
         // per-scene map of resolved shapes by shared reference across the spawned egress task's
         // `.await` boundary (a `&Map` is `Send` only when the values are `Sync`). The bound only
         // widens the returned value's capability; every synchronous caller (publish gate, executor)
@@ -918,7 +918,7 @@ impl SceneEcs {
 
     /// The resolved `GridShape` for every scene entity, keyed by scene id — the grid-shape
     /// companion to `scene_grid_sizes`. Captured under the ECS read lock so the post-lock explored
-    /// accumulation (`enrich_vision_explored`, conn.rs) can index each scene's fog through its own
+    /// accumulation (`enrich_vision_explored`) can index each scene's fog through its own
     /// hex/square geometry without re-borrowing the ECS. Each shape resolves via
     /// `resolve_grid_shape(scene, size)` with the scene's own resolved cell size, so it matches the
     /// movement gate and vision mask exactly.
@@ -971,7 +971,7 @@ impl SceneEcs {
                 }
             }
             None => {
-                // Mirrors `SEED_VISION_MODES` in scene-docs.ts: normal has no hint;
+                // Mirrors the client's `SEED_VISION_MODES`: normal has no hint;
                 // darkvision desaturates (faithful-darkvision render, M10e-3).
                 out.insert(
                     "normal".into(),
@@ -1017,7 +1017,7 @@ impl SceneEcs {
     /// `Room::publish`'s sole caller: the D9 refusal predicate compares this call's pre- and
     /// post-image to reject any non-GM `Update` that changes a token's position (players move
     /// only via `MoveRequest` → `execute_move`). A `/system/x` write on a token is structurally
-    /// inert against this `/engine`-only read; see room.rs's
+    /// inert against this `/engine`-only read; see the
     /// `system_field_write_bypasses_the_move_gate_and_does_not_desync_the_engine_band` test.
     ///
     /// Resolve a token move from an `Update`'s `changes`: `(scene, committed_start,
@@ -1670,8 +1670,8 @@ impl SceneEcs {
 
     /// The token's effective vision modes as `(floor_min_illumination, range_cells, render_hint)`
     /// triples. `range_cells == 0.0` ⇒ unlimited. `render_hint` mirrors `VisionMode.render_hint`
-    /// (e.g. `Some("desaturate")` for darkvision). Precedence (mirrors `resolveTokenActor` in
-    /// actor.ts): a LINKED token (`actor_id` present) resolves the shared actor and applies
+    /// (e.g. `Some("desaturate")` for darkvision). Precedence (mirrors `resolveTokenActor`):
+    /// a LINKED token (`actor_id` present) resolves the shared actor and applies
     /// `overrides.vision` as a wholesale replacement when present; a dangling link (actor absent)
     /// yields normal, ignoring overrides. An INSTANCED token (no `actor_id`) uses its
     /// `embedded.actor[0].engine.vision` without overrides. An unknown mode id is dropped
@@ -1683,7 +1683,7 @@ impl SceneEcs {
 
         let token_eng = self.engine_as_cached::<eng::TokenEngine>(token.id, token);
 
-        // Mirror actor.ts resolveTokenActor: a LINKED token (actor_id) resolves the shared actor and
+        // Mirror `resolveTokenActor`: a LINKED token (actor_id) resolves the shared actor and
         // applies the per-token override whitelist (overrides.vision REPLACES the actor's vision); a
         // dangling link (actor absent) yields normal, ignoring overrides. An INSTANCED token (no
         // actor_id) uses its embedded copy's vision; overrides do not apply to instanced tokens.
@@ -1774,7 +1774,7 @@ impl SceneEcs {
     }
 
     /// A token's bounding-disc radius in GRID UNITS (cells). Mirrors the client's `footprintRadius`
-    /// formula (`src/client/core/src/actor.ts:177`): a circle uses `max(w,h)/2`, any other shape
+    /// formula: a circle uses `max(w,h)/2`, any other shape
     /// its half-diagonal `hypot(w,h)/2` (conservative enclosure). Effective-actor resolution
     /// mirrors `resolveTokenActor` via the SAME join `token_vision_floors` implements: a LINKED
     /// token resolves the shared actor and applies the per-token override whitelist; a dangling
@@ -3394,7 +3394,7 @@ mod tests {
         // What the AUTHORITATIVE store reaches. Calls the hoisted rule
         // (`command::apply_field_change`) that `apply_intent` Phase 2 itself calls, so
         // this oracle cannot drift from the store — hand-copying the remove/set branch
-        // here would silently go stale the moment `sqlite.rs` changed. NOT tautological
+        // here would silently go stale the moment `apply_intent` changed. NOT tautological
         // with respect to what this test pins: reverting the ECS mirror to an
         // unconditional `set_pointer` still diverges from this oracle and still fails.
         let db_token: Document = {
@@ -4009,7 +4009,7 @@ mod tests {
 
     #[test]
     fn footprint_radius_mirrors_the_client_formula() {
-        // Mirrors footprintRadius (src/client/core/src/actor.ts:177-180):
+        // Mirrors the client's `footprintRadius`:
         //   circle ⇒ max(w,h)/2 ; square (and any other shape) ⇒ hypot(w,h)/2
         // Representative + boundary cases; `Size` is a free {w,h} pair, so there is no finite
         // domain to enumerate exhaustively.
@@ -4409,7 +4409,7 @@ mod tests {
     #[test]
     fn vision_modes_carry_render_hint() {
         use serde_json::json;
-        // Absent doc → built-in seed mirrors scene-docs.ts: darkvision desaturates, normal does not.
+        // Absent doc → built-in seed mirrors the client's `SEED_VISION_MODES`: darkvision desaturates, normal does not.
         let seeded = SceneEcs::from_documents(vec![doc(10, None, "scene")], 0);
         let m = seeded.resolved_vision_modes();
         assert_eq!(m["normal"].render_hint, None);
@@ -4465,7 +4465,8 @@ mod tests {
     // --- Test helpers for movement-restriction resolution tests ---
 
     /// Set `world_settings` to a doc whose `engine` is `json_engine` (test-only).
-    /// Mirrors how `room.rs` builds a world-settings config doc.
+    /// Mirrors `document::tests::world_scoped_doc`, the same test helper `ws::room`'s own tests
+    /// use to build a world-settings config doc.
     #[cfg(test)]
     impl SceneEcs {
         pub(crate) fn set_world_settings_for_test(&mut self, json_engine: serde_json::Value) {
@@ -6198,8 +6199,9 @@ mod tests {
         let mut docs = continuous_scene_docs();
         let mut secret = region_doc_top(12, 10, "terrain", 5.0, 100.0, 0.0, 200.0, 100.0);
         // Mark the region gm_only via the SAME `/engine` property-visibility override
-        // `region_field`'s per-requester filter checks (`move_exec.rs` uses the identical
-        // convention for its own gm_only region fixtures).
+        // `region_field`'s per-requester filter checks
+        // (`move_exec::authoritative_field_springs_a_secret_region_a_player_was_routed_through`
+        // uses the identical convention for its own gm_only region fixture).
         secret
             .permissions
             .property_overrides
