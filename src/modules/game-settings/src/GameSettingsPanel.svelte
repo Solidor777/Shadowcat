@@ -316,11 +316,17 @@
          Both fields are `boolean | null` on the wire (ChatSettingsEngine,
          data/engine/registries.rs:108-122, aliased as chat/settings.rs's
          ChatContentPolicy) — but they differ in what null MEANS, and each
-         control mirrors its server-side accessor. hyperlinks has no inherit
+         control's DISPLAY expression mirrors its server-side accessor. That
+         mirroring is scoped to the read path only: the accessors resolve a
+         stored value for reading, and nothing server-side ever normalizes a
+         stored null to false, so an OCC `old` pre-image must still carry the
+         RAW value. The hyperlinks `onchange` below violates that and is a known
+         bug — see docs/OPEN_BUGS.md; do not copy its `?? false` into the `old`
+         argument of any new control. hyperlinks has no inherit
          concept: `ChatContentPolicy::hyperlinks()` resolves absent to false
          (`src/server/src/chat/settings.rs:46-48`, `unwrap_or(false)`), so this
          panel exposes it as a plain two-state checkbox coalescing null the same
-         way. link_previews is genuinely TRI-STATE: `previews_enabled()`
+         way for DISPLAY. link_previews is genuinely TRI-STATE: `previews_enabled()`
          (`:61-63`) is `self.hyperlinks() && self.link_previews.unwrap_or(true)`
          — absent defaults ON but only within hyperlinks-on, and true/false is
          an explicit override. That third state is why it gets a select rather

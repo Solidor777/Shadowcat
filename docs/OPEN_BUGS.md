@@ -135,13 +135,22 @@ Currently open, confirmed-real defects. Deferrals belong in `TODO.md`, not here.
     branch with the `property_overrides` fix above; found by the Sweep 11 whole-branch review,
     which is comment-only and cannot carry a behavior change.
 
-- **A lagging WS receiver permanently misses an `AssetChanged{replaced}` frame, leaving a stale
-  image with no self-healing path.** `Room::broadcast_aux`
+- **A WS connection that misses an `AssetChanged{replaced}` frame keeps a stale image forever, with
+  no self-healing path — and an ordinary reconnect is enough to miss it.** `Room::broadcast_aux`
   (`src/server/src/ws/room.rs:243-250`) sends AssetChanged out-of-band: it does not push to the
-  ring or bump `current_seq`. When a connection falls behind, the egress loop's
-  `Err(RecvError::Lagged(n))` arm (`src/server/src/ws/conn.rs:1458-1464`) resyncs by calling
-  `replay` against the ring/log tiers — which never held the aux frame. The connection is NOT
-  torn down, so the client's `AssetResolver` survives with its counter unbumped.
+  ring or bump `current_seq`. **Two independent paths reach the identical failure**, and the
+  reconnect one is far more common than the lag one:
+  - **Plain reconnect (dominant).** `Room::subscribe` (`src/server/src/ws/room.rs:225-230`) returns
+    `self.tx.subscribe()` — a fresh `broadcast::Receiver` positioned at the channel's CURRENT TAIL —
+    and every new connection calls it (`src/server/src/ws/conn.rs:272`). A client whose socket drops
+    for any reason (network blip, laptop sleep/wake, `ws-client.ts`'s own reconnect backoff) during
+    the window a GM replaces an asset comes back subscribed past the frame. No lag, no buffer
+    overflow, no unusual load. The `Welcome`/ring resync that follows cannot supply it, because the
+    frame was never in the ring.
+  - **Broadcast lag.** When a connection falls behind, the egress loop's `Err(RecvError::Lagged(n))`
+    arm (`src/server/src/ws/conn.rs:1458-1464`) resyncs by calling `replay` against the ring/log
+    tiers — which never held the aux frame. The connection is NOT torn down, so the client's
+    `AssetResolver` survives with its counter unbumped.
   - **Why nothing recovers it.** `AssetResolver.revs` is a client-local map incremented only by
     `onAssetChanged` (`src/client/core/src/assets.ts:59-68`); `url()` appends it as `?v={rev}`
     (`:41-45`) and reads the asset's server-side `version` nowhere. A missed frame therefore
@@ -151,13 +160,52 @@ Currently open, confirmed-real defects. Deferrals belong in `TODO.md`, not here.
     The same lost frame also skips the `items` reload and the render re-reconcile that
     `RenderEngine` documents as required for out-of-band notices
     (`src/client/render/src/engine.ts:1084-1097`).
-  - **Reachability/impact:** requires a receiver to lag past the broadcast channel's capacity
-    while a GM replaces asset bytes — the same window `lagged_drops` already counts. No data
-    loss, no authz effect: the stale view is strictly the pre-replace image, which that client
-    was already entitled to see. It persists for that connection until a page reload.
+  - **Reachability/impact:** routine, not load-dependent. The lag path needs a receiver to fall
+    past the broadcast channel's capacity (the window `lagged_drops` counts), but the reconnect
+    path needs only a dropped socket coinciding with a GM's byte-replace — everyday mobile/sleep
+    flakiness is sufficient. Triage this as "happens occasionally in normal use", not "needs
+    sustained heavy load". No data loss and no authz effect: `serve` is gated on world membership,
+    not per-asset ACL, and a replace changes only bytes and `version`, never permissions — so the
+    stale view is strictly the pre-replace image that client was already entitled to see. It
+    persists for that connection until a page reload.
   - **Fix shape:** make the cache-bust derive from the asset's authoritative `version` rather
     than a local counter — e.g. carry `version` in the AssetChanged frame and have `url()` fall
     back to the version last seen in a document/asset listing, so a resync repairs it. Sending
     AssetChanged through `publish` instead would also fix it but costs a world seq per byte-swap,
     which the replace path is deliberately exempt from (`http/assets.rs:296-298`). Found by the
     Sweep 12 Task 6 Rule 11 dimension pass, which is comment-only and cannot carry the change.
+
+- **The GM Settings "hyperlinks" checkbox is permanently non-functional on every world: it sends a
+  coalesced OCC pre-image the server always rejects.** 100% reproducible, not a race.
+  `GameSettingsPanel.svelte:340` passes `chatsys.hyperlinks ?? false` as the `old` argument to
+  `set()`. `set()`'s own `old ?? null` (`:101`) cannot repair this — `false` is not nullish, so the
+  coalesced value is forwarded verbatim as the pre-image.
+  - **Why it fires on a fresh world.** The GM-seed effect (`GameSettingsPanel.svelte:36-43`) creates
+    the `chat-settings` doc with an explicit JSON `hyperlinks: null` — a literal stored null, not an
+    absent key. So the first value ever at `/engine/hyperlinks` is `null`, while the checkbox sends
+    `old: false`.
+  - **Why the server rejects it.** `apply_intent`'s field-level OCC check
+    (`src/server/src/data/sqlite.rs:2285-2298`) computes
+    `actual = whole.pointer(&ch.path).cloned().unwrap_or(Value::Null)` and compares it to `ch.old`
+    through `values_semantically_eq` (`:1778-1834`). That helper special-cases only Object/Object,
+    Array/Array and Number/Number; a `Null` vs `Bool(false)` mismatch falls through to the catch-all
+    `_ => a == b` (`:1833`), which is false. Result:
+    `DataError::Conflict("stale pre-image at /engine/hyperlinks")`.
+  - **Why it never self-heals.** A rejected intent mutates nothing, so the field stays `null` and
+    every subsequent click fails identically. No other code path writes a real boolean there.
+  - **It is the sole offender in the file.** Every other nullable control passes the raw value:
+    `link_previews` uses `?? null` (`:349`), scene overrides use `?? null`, and `lightingEnabled`
+    (`:199`) passes the value directly because its field is a plain `bool` with no null case. The
+    `set()` docblock states the contract this one call site violates: `old` must be the field's real
+    current value.
+  - **Why the tests miss it.** `chat-settings.test.ts:19` is named "toggling hyperlinks dispatches a
+    JSON-pointer update with the real pre-image" but seeds `hyperlinks: false` (`:21`) — the one
+    value for which `?? false` is a no-op. The fixture's own default is `hyperlinks: null` (`:15`),
+    the broken case, and no test exercises it. Client tests mock `dispatchIntent`, so they prove
+    what is SENT, never what the server ACCEPTS.
+  - **Fix shape:** change the `old` argument at `:340` to `chatsys.hyperlinks ?? null`. The
+    `checked={chatsys.hyperlinks ?? false}` display expression at `:339` is correct and stays — it
+    mirrors `ChatContentPolicy::hyperlinks()`'s `unwrap_or(false)` on the read path. Add a test
+    seeding `hyperlinks: null`. Runtime change; belongs on the follow-up branch with
+    `property_overrides` and `makeTemplateTool`. Found during Sweep 12 Task 6 by the dispatcher and
+    independently confirmed by both reviewers, from writing the doc comment that sits above it.
