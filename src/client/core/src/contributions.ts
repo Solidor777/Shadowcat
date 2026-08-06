@@ -14,9 +14,22 @@ export type ZoneId = "right" | "bottom" | "left";
 /** Where a panel starts when its module first contributes it.
  * Absent `defaultPlacement` on a `PanelMeta` means launcher-only (closed). */
 export type DefaultPlacement =
-  | { kind: "docked"; zone: ZoneId; order?: number }
-  | { kind: "minimized" }
-  | { kind: "floating" };
+  | {
+      /** Starts docked into a `ZoneId`. */
+      kind: "docked";
+      /** The dock zone to start docked into. */
+      zone: ZoneId;
+      /** Ascending sort key among panels docked in the same zone; default 0. */
+      order?: number;
+    }
+  | {
+      /** Starts minimized (chip in the panel-dock strip, not rendered). */
+      kind: "minimized";
+    }
+  | {
+      /** Starts floating (its own window/overlay, not docked to a zone). */
+      kind: "floating";
+    };
 
 /** Live tab-badge count seam (e.g. chat unread). A `PanelMeta` object is registered
  * ONCE at module install and is otherwise static — this is the one field on it whose
@@ -24,9 +37,12 @@ export type DefaultPlacement =
  * it carries its own subscribe/read pair rather than requiring the whole meta map to
  * be rebuilt whenever the count changes. */
 export interface PanelBadge {
-  /** Current count; 0 (or omitted) renders no badge. */
+  /** Current count; 0 (or omitted) renders no badge.
+   * @returns The current badge count. */
   get(): number;
-  /** Notifies on every count change; returns an unsubscribe. */
+  /** Notifies on every count change; returns an unsubscribe.
+   * @param cb Called with no arguments after the count changes.
+   * @returns An unsubscribe function. */
   subscribe(cb: () => void): () => void;
 }
 
@@ -34,10 +50,13 @@ export interface PanelBadge {
  * Plain data — framework-neutral. `labelKey` is an i18n key the HOST resolves at
  * render (locale-reactive); `gmOnly` panels are hidden from non-GM users by the host. */
 export interface PanelMeta {
+  /** Icon identifier the host resolves to a rendered icon; opaque to core. */
   icon: string;
+  /** i18n key for the panel's tab label, resolved by the host at render (locale-reactive). */
   labelKey: string;
   /** Advisory UI filter only; the host is responsible for hiding gmOnly panels. */
   gmOnly?: boolean;
+  /** Where the panel starts when first contributed; absent means launcher-only (closed). */
   defaultPlacement?: DefaultPlacement;
   /** Optional live unread/notification count rendered in the tab chrome. */
   badge?: PanelBadge;
@@ -51,28 +70,46 @@ export const PANEL_CONTRACT = "shadowcat.panel";
  * generic fallback registers at `-Infinity`). `match` is an optional per-document
  * predicate — a provider that returns `false` is not a candidate for that doc. */
 export interface SheetMeta {
+  /** Selects among competing providers for the same doc_type; higher wins. The
+   * always-registered generic fallback registers at `-Infinity`. */
   priority: number;
+  /** Optional per-document predicate; a provider whose `match` returns `false` for `doc` is
+   * not a candidate for it. Absent means the provider is a candidate for every document of its
+   * contract's doc_type. */
   match?: (doc: WireDocument) => boolean;
 }
 
+/** One piece of UI a module contributes into a named surface contract. */
 export interface Contribution {
+  /** Unique id for this contribution, used by `contribute`'s returned dispose to remove exactly
+   * this entry. */
   id: string;
+  /** The surface contract this contribution targets (e.g. `"shadowcat.panel"`). */
   contract: string;
   /** Ascending sort key within a contract; default 0. */
   order?: number;
+  /** Opaque props passed to the rendered `component`; framework-neutral, no shape imposed. */
   props?: Record<string, unknown>;
   /** Opaque host-rendered component handle. */
   component: unknown;
+  /** Panel metadata, present iff `contract` is the `shadowcat.panel` family. */
   panel?: PanelMeta;
+  /** Sheet metadata, present iff `contract` is a `shadowcat.sheet:<doc_type>` family member. */
   sheet?: SheetMeta;
 }
 
+/** Internal registration record: a `Contribution` plus its registering module and insertion
+ * order. Not exported. */
 interface Entry {
+  /** The registered contribution. */
   c: Contribution;
+  /** The registering module's id; undefined for a host-registered (non-module) contribution. */
   module?: string;
+  /** Monotonic insertion order, the tie-break after `order` in `contributionsFor`/`entriesFor`. */
   seq: number;
 }
 
+/** A change-notification callback registered via `ContributionRegistry.subscribe`. */
 export type Listener = () => void;
 
 /** Registers contributions into named "surface" contracts (e.g. `shadowcat.panel`,
@@ -80,8 +117,11 @@ export type Listener = () => void;
  * Framework-neutral — `component` is an opaque handle a host renders (the Svelte
  * `<Surface>` adapter, `PanelHost`, `pickSheet`); this class has no rendering opinion. */
 export class ContributionRegistry {
+  /** Every currently registered contribution. */
   private entries: Entry[] = [];
+  /** Subscribers notified on every add/remove. */
   private listeners = new Set<Listener>();
+  /** Monotonic counter stamped onto each `Entry.seq` at registration time. */
   private seqCounter = 0;
 
   /** Register a contribution; returns a dispose that removes exactly it.
@@ -103,7 +143,13 @@ export class ContributionRegistry {
    * dispose();
    * ```
    */
-  contribute(c: Contribution, opts: { module?: string } = {}): () => void {
+  contribute(
+    c: Contribution,
+    opts: {
+      /** The registering module's id; omitted for a host-registered contribution. */
+      module?: string;
+    } = {},
+  ): () => void {
     const entry: Entry = { c, module: opts.module, seq: this.seqCounter++ };
     this.entries.push(entry);
     this.emit();
@@ -148,7 +194,12 @@ export class ContributionRegistry {
    * const entries = registry.entriesFor("shadowcat.sheet:actor");
    * ```
    */
-  entriesFor(contract: string): readonly { contribution: Contribution; module?: string }[] {
+  entriesFor(contract: string): readonly {
+    /** The registered contribution. */
+    contribution: Contribution;
+    /** Its registering module id; undefined for a host-registered contribution. */
+    module?: string;
+  }[] {
     return this.entries
       .filter((e) => e.c.contract === contract)
       .sort((a, b) => (a.c.order ?? 0) - (b.c.order ?? 0) || a.seq - b.seq)

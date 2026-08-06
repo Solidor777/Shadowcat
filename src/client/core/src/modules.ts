@@ -20,53 +20,135 @@ import {
 import { ContributionRegistry, type Contribution } from "./contributions";
 import { satisfies } from "./semver";
 
+/** The capability-scoped surface a module's `register` receives — the trust chokepoint every
+ * module is confined to (`contextFor` builds one per module, stamping `moduleId` onto each
+ * registration so `unload` can find and strip them again). A module never reaches the host's
+ * raw `HookBus`/`ServiceRegistry`/etc. singletons directly, only these wrappers. */
 export interface ModuleContext {
+  /** Hook registration/emission, scoped to this module for listener teardown. */
   hooks: {
+    /** Defines a hook. Passes straight through to `HookBus.defineHook` unstamped — a
+     * definition carries no module ownership, unlike a listener (see `contextFor`'s doc).
+     * @param name The hook's name.
+     * @param def The hook's definition. */
     defineHook(name: string, def: HookDefinition): void;
+    /** Registers a listener, stamped with this module's id so `unload` can remove it.
+     * @param name The hook's name.
+     * @param handler Called when the hook fires.
+     * @param opts Listener options.
+     * @returns An unsubscribe function. */
     on(name: string, handler: Handler<unknown>, opts?: OnOptions): () => void;
+    /** Emits an info-kind hook (fire-and-forget notification to listeners).
+     * @param name The hook's name.
+     * @param payload The value passed to every listener.
+     * @returns Resolves once every listener has run. */
     emitInfo(name: string, payload: unknown): Promise<void>;
+    /** Emits a mutate-kind hook (listeners may transform and return the payload).
+     * @param name The hook's name.
+     * @param payload The initial value, threaded through each listener in turn.
+     * @returns The payload after every listener's transformation. */
     emitMutate<P>(name: string, payload: P): Promise<P>;
-    emitCancel(name: string, payload: unknown): Promise<{ cancelled: boolean; by?: string }>;
+    /** Emits a cancel-kind hook (any listener may veto).
+     * @param name The hook's name.
+     * @param payload The value passed to every listener.
+     * @returns Whether a listener vetoed, and which one. */
+    emitCancel(name: string, payload: unknown): Promise<{
+      /** `true` iff a listener vetoed. */
+      cancelled: boolean;
+      /** The vetoing listener's identity, when cancelled. */
+      by?: string;
+    }>;
   };
+  /** Service provision/lookup, scoped to this module for registration teardown. */
   services: {
-    provide<T>(name: string, impl: T, opts: { version: string }): void;
+    /** Provides a named service implementation, stamped with this module's id.
+     * @param name The service name.
+     * @param impl The implementation to provide.
+     * @param opts Provision options.
+     * @param opts.version The provided implementation's semver version. */
+    provide<T>(name: string, impl: T, opts: {
+      /** The provided implementation's semver version. */
+      version: string;
+    }): void;
+    /** Looks up a named service; `undefined` if none is provided.
+     * @param name The service name.
+     * @returns The implementation, or `undefined` if none is provided. */
     get<T>(name: string): T | undefined;
+    /** Whether a named service is currently provided.
+     * @param name The service name.
+     * @returns `true` iff a service is currently provided under `name`. */
     has(name: string): boolean;
   };
+  /** Registers middleware into a pipeline, stamped with this module's id.
+   * @param pipeline The pipeline name to register into.
+   * @param mw The middleware to register. */
   use<C>(pipeline: PipelineName, mw: Middleware<C>): void;
+  /** UI contribution registration, scoped to this module for teardown. */
   contributions: {
+    /** Registers a contribution, stamped with this module's id.
+     * @param c The contribution to register.
+     * @returns A dispose function that removes it. */
     contribute(c: Contribution): () => void;
   };
+  /** The shared document store every module reads through. */
   store: DocumentStore;
+  /** The shared optimistic client every module dispatches intents through. */
   client: OptimisticClient;
+  /** Logger scoped to this context (not itself module-tagged by `ModuleContext`; callers
+   * needing per-module log attribution do so at the call site). */
   logger: Logger;
+  /** This module's id, as declared in its manifest. */
   moduleId: string;
 }
 
+/** A registrable unit: a manifest plus lifecycle hooks. */
 export interface Module {
+  /** The module's manifest (validated by `ModuleRegistry.add` via `parseManifest`). */
   manifest: ModuleManifest;
+  /** Called once, in dependency order, when the module activates; receives its
+   * capability-scoped `ModuleContext`.
+   * @param ctx This module's capability-scoped context.
+   * @returns Resolves (or returns) once registration is complete. */
   register(ctx: ModuleContext): void | Promise<void>;
+  /** Called on unload, if the module is currently active; optional (a module with no
+   * teardown logic beyond its registrations, which `unload` strips automatically, may omit it).
+   * @returns Resolves (or returns) once teardown is complete. */
   unregister?(): void | Promise<void>;
 }
 
+/** A registered module's identity and activation state, as returned by `ModuleRegistry.list`. */
 export interface ModuleInfo {
+  /** The module's id. */
   id: string;
+  /** The module's declared semver version. */
   version: string;
+  /** Whether the module is currently active. */
   active: boolean;
 }
 
+/** The host-provided singletons a `ModuleRegistry` is constructed over. Not exported. */
 interface Deps {
+  /** The shared hook bus every module's `hooks` wrapper delegates to. */
   hooks: HookBus;
+  /** The shared service registry every module's `services` wrapper delegates to. */
   services: ServiceRegistry;
+  /** The shared middleware chain every module's `use` delegates to. */
   middleware: MiddlewareChain;
+  /** The shared document store passed through to every `ModuleContext`. */
   store: DocumentStore;
+  /** The shared optimistic client passed through to every `ModuleContext`. */
   client: OptimisticClient;
+  /** The shared logger passed through to every `ModuleContext`. */
   logger: Logger;
+  /** The shared contribution registry every module's `contributions` wrapper delegates to. */
   contributions: ContributionRegistry;
 }
 
+/** Internal per-module bookkeeping: the module plus its current activation state. Not exported. */
 interface ModuleRecord {
+  /** The registered module. */
   module: Module;
+  /** Whether this module is currently active. */
   active: boolean;
 }
 
@@ -76,6 +158,7 @@ interface ModuleRecord {
  * unload is a clean teardown. The trust chokepoint — each module sees only the
  * capability-scoped `ModuleContext` `contextFor` builds for it. */
 export class ModuleRegistry {
+  /** Every registered module, keyed by id. */
   private records = new Map<string, ModuleRecord>();
 
   /** Builds a registry scoped over the given host dependencies.
@@ -268,7 +351,14 @@ export class ModuleRegistry {
    * await registry.unload("example-module", { cascade: true });
    * ```
    */
-  async unload(id: string, opts: { cascade?: boolean } = {}): Promise<void> {
+  async unload(
+    id: string,
+    opts: {
+      /** When `true`, first recursively unloads every currently active module that lists `id`
+       * as a dependency; when omitted/`false`, unloading a module with active dependents throws. */
+      cascade?: boolean;
+    } = {},
+  ): Promise<void> {
     const r = this.records.get(id);
     if (!r) return;
     const dependents = this.activeDependentsOf(id);
