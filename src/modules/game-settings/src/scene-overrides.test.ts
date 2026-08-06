@@ -91,7 +91,7 @@ describe("per-scene overrides", () => {
     ]);
   });
 
-  it("setting scene bounds width writes the whole /system/bounds object (height defaults)", async () => {
+  it("setting scene bounds width writes the whole /engine/bounds object (height defaults)", async () => {
     const dispatchIntent = vi.fn();
     const ws = buildWorldSettingsDoc("w1", undefined, "ws1");
     const scene = buildSceneDoc("w1", {}, "scene1");

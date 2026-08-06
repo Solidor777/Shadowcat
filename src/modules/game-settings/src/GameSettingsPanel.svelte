@@ -315,12 +315,16 @@
          JSON-pointer paths: /engine/hyperlinks, /engine/link_previews.
          Both fields are `boolean | null` on the wire (ChatSettingsEngine,
          data/engine/registries.rs:108-122, aliased as chat/settings.rs's
-         ChatContentPolicy) — but they differ in what null MEANS. hyperlinks
-         has no inherit concept: this panel exposes it as a plain two-state
-         checkbox, coalescing null to false (its spec'd default). link_previews
-         is genuinely TRI-STATE (absent/null = default-on-when-hyperlinks-on,
-         true/false = explicit override), so it gets a three-option select
-         instead — the "" option writes null, mirroring the scene-override
+         ChatContentPolicy) — but they differ in what null MEANS, and each
+         control mirrors its server-side accessor. hyperlinks has no inherit
+         concept: `ChatContentPolicy::hyperlinks()` resolves absent to false
+         (`src/server/src/chat/settings.rs:46-48`, `unwrap_or(false)`), so this
+         panel exposes it as a plain two-state checkbox coalescing null the same
+         way. link_previews is genuinely TRI-STATE: `previews_enabled()`
+         (`:61-63`) is `self.hyperlinks() && self.link_previews.unwrap_or(true)`
+         — absent defaults ON but only within hyperlinks-on, and true/false is
+         an explicit override. That third state is why it gets a select rather
+         than a checkbox; the "" option writes null, mirroring the scene-override
          inherit pattern above. -->
     <fieldset>
       <legend>{ctx.t("gameSettings.chat.title")}</legend>
