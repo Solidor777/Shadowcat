@@ -571,3 +571,30 @@ are observations awaiting triage, not committed work.
   ratcheted) is preserved byte-for-byte after widening the ratcheted blocks' `files` globs to match
   the warn tier's — the `ignores` arrays themselves were not touched. Status: No action needed —
   recorded so a future reviewer does not read the four-array asymmetry as a Task 8 regression.
+
+- Title: `ui-e2e` failed 15 of 16 Playwright tests on `main` @ `11cac8f`, then passed on an
+  unmodified re-run of the same commit — a whole-suite flake mode with no captured evidence.
+  Summary: CI run `31066304785` reported 15 failures, every one the same shape — after the login
+  form was filled and submitted, `getByLabel("New world name")` never appeared and the test burned
+  its full 120s timeout (21.1m wall clock, 2 workers). The single pass was `entry-flow.spec.ts`,
+  which drives that same flow, so the flow itself is not broken. `web`, `docs`, `e2e` and all three
+  `rust` jobs were green in the same run; the client bundle built and the server compiled with no
+  panic and no error in the log. Re-running the job on the identical commit turned it green, which
+  establishes non-determinism and rules out a code regression at that SHA.
+  Three candidate causes were tested and eliminated: (1) a sweep-12 source regression — the whole
+  window `7c0dbb9..11cac8f` is comment-only for runtime code, proved by stripping comment markers
+  from the entire non-`.md` diff, whose only residual is one vitest test name and ESLint config
+  globs; (2) i18n catalog resolution, since the label comes from `aria-label={t("worlds.newName")}`
+  — but the same failing tests resolve `t("common.password")` one line earlier, and `i18n.ts` is
+  unchanged in the window; (3) in-memory SQLite handing each pooled connection its own empty
+  database — the pool is `max_connections(1)` (`src/server/src/data/sqlite.rs:156`).
+  A local `pnpm e2e` against a freshly compiled binary passed 16/16 in 1.7m on 6 workers, with no
+  leftover server on port 31999 that `reuseExistingServer` could have silently reused.
+  Cause remains UNKNOWN and is deliberately not guessed at. The leading untested candidate is
+  contention: every HTTP and WS request serializes through that single writer connection, and the
+  runner is slower and less parallel than the dev machine — but nothing yet distinguishes that from
+  a Chromium/runner-level stall. Status: MITIGATED, NOT FIXED — `ui-e2e` now retains Playwright
+  traces on failure and uploads `test-results/` (commit `050ec3d`), because this failure was
+  undiagnosable purely for lack of captured evidence. The next occurrence must be diagnosed from
+  the trace's network log rather than re-reasoned from the console log. Do not treat the green
+  re-run as evidence the underlying cause is gone.
