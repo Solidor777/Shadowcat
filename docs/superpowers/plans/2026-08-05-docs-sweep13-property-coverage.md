@@ -31,14 +31,25 @@ below for why), at which point these numbers become reproducible from the tree a
 | Properties | `PropertyDefinition`, `TSPropertySignature`, `TSMethodSignature`, `TSEnumMember` | **1222** | `eslint.probe3.config.js` |
 | Named arrow / fn expressions | exported + module-level `VariableDeclarator > ArrowFunctionExpression\|FunctionExpression` | **6** | `eslint.probe2.config.js` |
 | **Gate total** | | **1228** | |
-| Type declarations | `TSInterfaceDeclaration`, `TSTypeAliasDeclaration`, `TSEnumDeclaration` | **101** | `eslint.probe.config.js` (1324 combined) |
-| **TS gate total** | | **1329** | |
+| Type declarations | `TSInterfaceDeclaration`, `TSTypeAliasDeclaration`, `TSEnumDeclaration` | **102** | `pnpm lint:props`, group-isolated |
+| **TS gate total** | | **1330** | |
 
-Each probe's raw output is one higher than the real site count: both report the same "unused
-eslint-disable directive" at `core/src/hooks.ts:25`, which is a `linterOptions` artifact of the
-probe configs (they omit the shipped config's `reportUnusedDisableDirectives: false` block for that
-one file, `eslint.docs.config.js:91-94`) and not a missing doc. The real config keeps that block, so
-the artifact disappears once the contexts land in the new property-gate config (see Task 1 below).
+The three figures above are now measured from the shipped `eslint.props.config.js` (Task 1), not
+from the throwaway probes this plan was drafted against. The properties and arrow counts are
+unchanged from the probe estimates; the type-declaration count is **102, not the 101 this table
+carried at drafting**, and the TS total is correspondingly **1330, not 1329**. Both the Task 1
+implementer and the dispatcher measured 102 independently — the implementer via a group-isolated
+run of the shipped config, the dispatcher via a separate types-only probe that also confirmed real
+`.svelte` type declarations exist (`VisualKindEditor`, `MessageCard`, `Entry`).
+
+**The cause of the −1 is unrecoverable and is deliberately not guessed at.** The drafting probes
+(`eslint.probe*.config.js`) were git-ignored scratch and no longer exist, so their globs cannot be
+compared against the shipped config's. Do not reason from the paragraph this one replaces: it
+claimed every probe's raw output ran exactly one high because of an unused-eslint-disable artifact
+at `core/src/hooks.ts:25`, and that subtracting one from the 1324 combined probe therefore yielded
+the type count. That derivation produces 101 and is contradicted by two direct measurements of the
+tree. The shipped config carries the `reportUnusedDisableDirectives: false` block for that file
+(`eslint.props.config.js:105-108`), so no such artifact is present in any number above.
 
 ### Type declarations ARE in scope — and the `z.infer` idiom must be handled, not dodged
 
@@ -141,7 +152,7 @@ other. Task 15 merges both into `eslint.config.js` once `lint:props` also reache
 | 14b | whatever Task 1's Rust proof surfaces (0 if the 0 holds; otherwise scoped then) | ? |
 | 15 | **Ship task.** Ratchet `eslint.props.config.js` to `error` for every package in both its blocks; consolidate `eslint.docs.config.js` AND `eslint.props.config.js` into `eslint.config.js`; mutation-prove all tiers; full gate matrix; docs sync; reviewed skill-update gate; skills documentation-reference pass. | — |
 
-**The per-task site counts above are the PROPERTY gap only.** The 101 type-declaration sites live in
+**The per-task site counts above are the PROPERTY gap only.** The 102 type-declaration sites live in
 the same files and are absorbed by whichever task owns each file — `wire.ts` (Task 2) carries the
 heaviest concentration, since the `z.infer` aliases are exactly that construct. Every brief
 re-measures its own scope under the final config before dispatch and states the live number; **no
