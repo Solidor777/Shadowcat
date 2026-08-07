@@ -34,13 +34,6 @@ pub(crate) struct MoveExecution {
     pub scene: Uuid,
     /// The last successfully reached path coordinate (the committed position after the move).
     pub stop: (f64, f64),
-    /// The legal prefix of the requested path including `start` through `stop`.
-    /// NOT read by the per-recipient egress clip (`clip_move_stream` trims `samples`, never
-    /// `render_path`). Kept alive by this struct's own construction (distance/duration and
-    /// `sample_path` input, computed inline above) and by a test assertion that the executor's
-    /// stop matches the path's last coordinate.
-    #[allow(dead_code)]
-    pub render_path: Vec<(f64, f64)>,
     /// Animation duration in milliseconds (distance / cell / speed * 1000). Zero when stop == start.
     pub duration_ms: f64,
     /// Time-tagged position samples for `MoveStream` broadcast playback.
@@ -698,7 +691,6 @@ impl Room {
             return Ok(MoveExecution {
                 scene: token_scene,
                 stop: start,
-                render_path: vec![start],
                 duration_ms: 0.0,
                 samples: vec![crate::scene::move_stream::PosSamplePt {
                     t_ms: 0.0,
@@ -760,7 +752,6 @@ impl Room {
         Ok(MoveExecution {
             scene: token_scene,
             stop: outcome.stop,
-            render_path: outcome.render_path,
             duration_ms,
             samples,
             mover_vision,
@@ -2995,7 +2986,7 @@ mod room_tests {
     }
 
     #[tokio::test]
-    async fn execute_move_commits_stop_and_returns_render_path() {
+    async fn execute_move_commits_the_stop_it_returns() {
         // "visible" restriction with a light: start (50,50) and the adjacent cell (50,150)
         // are both within the bright radius (1.5 cells), so the player move is allowed.
         // The committed ECS position must equal the returned stop.
@@ -3012,7 +3003,6 @@ mod room_tests {
             )
             .await
             .unwrap();
-        assert_eq!(res.render_path.last().copied(), Some(res.stop));
         // Committed ECS position must equal stop (atomic write invariant).
         assert_eq!(h.committed_pos(h.token_id).await, res.stop);
     }
