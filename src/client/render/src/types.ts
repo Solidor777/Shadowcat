@@ -63,7 +63,7 @@ export interface TokenTransform {
   rotation: number;
 }
 
-/** Asset UUIDs already resolved to serve URLs by the AssetResolver (M10h) — the backend never
+/** Asset UUIDs already resolved to serve URLs by the AssetResolver — the backend never
  * resolves asset ids itself, mirroring today's `assets.url(...)` call in `TokenView.toSpec`. */
 export type ResolvedAnimatedSource =
   | {
@@ -99,7 +99,7 @@ export interface TokenNodeSpec {
   h: number;
   /** Facing, in degrees — see `TokenTransform.rotation`. */
   rotation: number;
-  /** The resolved, already-URL'd visual to draw (M10h: image, or a tick-driven animation). */
+  /** The resolved, already-URL'd visual to draw: image, or a tick-driven animation. */
   visual:
     | {
         /** Discriminant: a static image visual. */
@@ -108,7 +108,7 @@ export interface TokenNodeSpec {
         url: string;
       }
     | {
-        /** Discriminant: a tick-driven animated visual (M10h). */
+        /** Discriminant: a tick-driven animated visual. */
         kind: "animated";
         /** Resolved frame/sheet source — see `ResolvedAnimatedSource`. */
         source: ResolvedAnimatedSource;
@@ -123,7 +123,7 @@ export interface TokenNodeSpec {
   borderColor: number | null;
   /** Condition marker glyphs (emoji), rendered as upright chips along the token's top edge. */
   badges: string[];
-  /** Footprint shape: drives the border outline + hit-test (M10d). */
+  /** Footprint shape: drives the border outline + hit-test. */
   shape: "square" | "circle";
 }
 
@@ -243,7 +243,7 @@ export interface SceneToolHost {
    * @param p A scene-coordinate point.
    * @returns `p` snapped to the active grid, or `p` unchanged when snapping is disabled. */
   snap(p: Point): Point;
-  /** Toggle the scene-level snap-to-grid axis (M10f-3 §4.2): disabled makes `snap` identity
+  /** Toggle the scene-level snap-to-grid axis: disabled makes `snap` identity
    * (free-form float placement/movement for a snap-off scene); grid RENDERING is unaffected —
    * a snap-off scene may still display its reference grid. Every tool that calls `snap` via
    * the AppContext `scene` bridge inherits this automatically.

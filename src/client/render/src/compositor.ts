@@ -40,7 +40,7 @@ export class Compositor {
     this.backend.setVisibility(input);
   }
 
-  /** Cross-fade the mask between two consecutive vision samples (M2 §T7). `current()`
+  /** Cross-fade the mask between two consecutive vision samples. `current()`
    * tracks the nearer endpoint (< 0.5 ⇒ `from`, else `to`) as a best-effort snapshot — the
    * backend, not this value, owns the actual blended visual. Falls back to a plain
    * `setVisibility` nearest-sample snap when the backend has no cross-fade support.

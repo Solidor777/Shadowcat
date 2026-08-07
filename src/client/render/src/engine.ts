@@ -82,7 +82,7 @@ export interface RenderEngineOpts {
   /** Called when a derived frame is applied (host observability hook); carries the applied
    * visibility so the host can surface the fog mode. */
   onDerivedApplied?: (input: VisibilityInput) => void;
-  /** Which scene to render/scene-filter by (M12d). From the host (Stage → `ctx.viewedSceneId`).
+  /** Which scene to render/scene-filter by. From the host (Stage → `ctx.viewedSceneId`).
    * Absent ⇒ the first scene, preserving single-scene behavior. */
   viewedSceneId?: () => string | null;
 }
@@ -100,9 +100,9 @@ export class RenderEngine implements SceneToolHost {
   /** Cosmetic band/tint overlay driven by `onSceneFrame`'s `toLighting` parse; independent of
    * the fog secrecy gate (`compositor`). */
   private readonly lighting: Lighting;
-  /** Reassignable: the active scene's grid drives snapping + lines (M8d §15). */
+  /** Reassignable: the active scene's grid drives snapping + lines. */
   private grid: Grid;
-  /** Scene-level snap-to-grid toggle (M10f-3 §4.2); default enabled. Disabled makes `snap`
+  /** Scene-level snap-to-grid toggle; default enabled. Disabled makes `snap`
    * identity — grid RENDERING is unaffected, only the snap call chain every tool inherits
    * via `ctx.scene.snap`. */
   private snapEnabled = true;
@@ -167,7 +167,7 @@ export class RenderEngine implements SceneToolHost {
    * GM can preview a vision-less player's view. Only ever ADDS fog to the GM's own view (D-V3,
    * no server path) — it can never reveal more than the frame already carries. */
   private fogPreview = false;
-  /** GM see-as-player target (M9c-2): the user whose vision the `vision` subscription requests, or
+  /** GM see-as-player target: the user whose vision the `vision` subscription requests, or
    * null for the GM's own view. The server gates + resolves it (a non-GM is rejected). */
   private viewAsUser: string | null = null;
   /** Active mover vision-sweep overrides, keyed by token id: while a mover's own
@@ -306,7 +306,7 @@ export class RenderEngine implements SceneToolHost {
     );
   }
 
-  /** GM see-as-player (M9c-2): re-subscribe the vision channel viewing as `userId` (null = the GM's
+  /** GM see-as-player: re-subscribe the vision channel viewing as `userId` (null = the GM's
    * own view). Resets the mask watermark so the new view's first frame applies even at the same
    * world seq — a view switch is a fresh stream, not a regression of the same one.
    * @param userId The user whose vision to view as, or `null` to revert to the GM's own view.
@@ -527,7 +527,7 @@ export class RenderEngine implements SceneToolHost {
             /** Flat `[x0,y0,x1,y1,…]` polygon points. */
             points?: number[];
           }[];
-          /** Per-token explored-cell groups (the M9c persistent memory layer). */
+          /** Per-token explored-cell groups (the persistent memory layer). */
           explored?: {
             /** The scene id this cell group belongs to — filtered against the active scene. */
             scene?: string;
@@ -741,7 +741,7 @@ export class RenderEngine implements SceneToolHost {
     return this.snapEnabled ? this.grid.snap(p) : p;
   }
 
-  /** `SceneToolHost.setSnapEnabled`: toggle the scene-level snap-to-grid axis (M10f-3 §4.2).
+  /** `SceneToolHost.setSnapEnabled`: toggle the scene-level snap-to-grid axis.
    * Disabled makes {@link snap} the identity function; grid RENDERING is unaffected (a snap-off
    * scene may still display its reference grid) — only the snap call chain every tool inherits
    * via `ctx.scene.snap` changes.

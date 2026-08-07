@@ -6,7 +6,7 @@ import { computeAnimatedFrame } from "./token-animation";
 import { fogBlendRtStale } from "./fog-blend";
 import type { PingRing } from "./ping-view";
 
-/** Per-token render state (M10h). `container` is the outer, non-rotating node (position = token
+/** Per-token render state. `container` is the outer, non-rotating node (position = token
  * center; badges are its direct children, so they stay upright); `visualContainer` rotates with
  * the token and holds the art + border. `sourceKey` guards visual (re)creation against a
  * tweening token's ~60x/s re-push with an unchanged visual. `anim` is present only while `visual`
@@ -72,7 +72,7 @@ export class PixiBackend implements DisplayBackend {
   private readonly layers = new Map<string, Container>();
   /** The `grid`-layer line strokes, redrawn wholesale by `drawGrid`. */
   private readonly grid = new Graphics();
-  /** Three-state fog (M9c): two stacked black sheets in the `mask` layer. `fogDark` (near-opaque)
+  /** Three-state fog: two stacked black sheets in the `mask` layer. `fogDark` (near-opaque)
    * shows only on UNEXPLORED area — inverse-masked by `exploredHoles` (explored ∪ visible).
    * `fogDim` (semi-transparent) shows on unexplored + explored — inverse-masked by `visibleHoles`.
    * Net: unexplored = both sheets (darkest), explored = dim only, visible = clear. */
@@ -105,7 +105,7 @@ export class PixiBackend implements DisplayBackend {
   private readonly measureText = new Text({ text: "", style: { fill: 0xffffff, fontSize: 14, fontFamily: "sans-serif" } });
   /** The ping-ring overlay, redrawn wholesale by `drawPings`. */
   private readonly pingGraphics = new Graphics();
-  /** Per-cell darkening + tint quads for the lighting layer (M10e-3). Parented under the
+  /** Per-cell darkening + tint quads for the lighting layer. Parented under the
    * `lighting` container, which carries a BlurFilter to soften band/edge boundaries. */
   private readonly lightingGraphics = new Graphics();
   /** Shape document id → its Graphics, populated by `setShape`. */

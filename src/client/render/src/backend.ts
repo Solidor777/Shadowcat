@@ -27,9 +27,9 @@ export interface DisplayBackend {
    * (full visibility → transparent overlay).
    * @param input The fog/mask state to render — see `VisibilityInput`. */
   setVisibility(input: VisibilityInput): void;
-  /** Cross-fade the visibility mask between two consecutive vision samples (M2 §T7 fog
-   * cross-fade — a mover's own vision sweep interpolates between samples instead of
-   * snapping). `factor` in `[0,1]`: 0 = fully `from`, 1 = fully `to`. Optional: a backend
+  /** Cross-fade the visibility mask between two consecutive vision samples — a mover's own
+   * vision sweep interpolates between samples instead of snapping. `factor` in `[0,1]`: 0 =
+   * fully `from`, 1 = fully `to`. Optional: a backend
    * without cross-fade support may omit it; `Compositor.setVisibilityBlend` falls back to a
    * plain `setVisibility` nearest-sample snap when absent.
    * @param from The outgoing (older) vision sample.
@@ -52,7 +52,7 @@ export interface DisplayBackend {
   /** Remove a token render node.
    * @param id The token document id to remove. */
   removeToken(id: string): void;
-  /** Advance any tick-driven animated token visuals by `dtMs` (M10h). Called once per frame
+  /** Advance any tick-driven animated token visuals by `dtMs`. Called once per frame
    * alongside the `startTicker` callback; a no-op backend when nothing has an `animated` visual.
    * @param dtMs Elapsed time since the previous tick, in ms. */
   tickTokenAnimations(dtMs: number): void;
