@@ -165,8 +165,8 @@ token/actor name from non-owners via the `OwnerOrGm` visibility tier. Conditions
 
 ## Hard invariants
 
-- **Token ownership is EFFECTIVE, resolved server-side at authz time — never stamped at create
-  (Task 14i, `[sec]`).** `effective_owner(token) = the token's own `/owner`, else the LINKED
+- **Token ownership is EFFECTIVE, resolved server-side at authz time — never stamped at create.**
+  `effective_owner(token) = the token's own `/owner`, else the LINKED
   actor's owner` (`data::permission::effective_owner`; server join in
   `SqliteRepository::load_effective_owner`, ECS
   side in `SceneEcs::token_effective_owner`, client mirror `effectiveOwner`). A GM sets
