@@ -2,6 +2,26 @@
 
 Currently open, confirmed-real defects. Deferrals belong in `TODO.md`, not here.
 
+- **[a11y] A panel opened via `PanelsApi.open` changes placement without any screen-reader
+  announcement.** `PanelHost`'s `describeOp` maps each layout-changing op to a `panels.moved` live
+  region announcement and returns `null` for ops not worth narrating. `"open"` falls to the
+  `default` arm and is never narrated, on the documented reasoning that no live path dispatches
+  it. That reasoning is false. `PanelsApi.open` is public and has two reachable callers:
+  `SceneBrowserPanel`'s per-scene configure button (which opens the game-settings panel) and
+  `SheetsController.openDocument` (which opens a document sheet). Both route through
+  `PanelsController.dispatch`, which fires `onOp`, which `PanelHost` feeds to `describeOp` —
+  identically to every op that IS narrated.
+  - **Why it matters:** `applyOp`'s `"open"` case is not merely a focus bump. Via
+    `placeByPlacement` it can surface a minimized or closed panel into a docked group — a real
+    placement change, exactly the class of change the live region exists to announce. A
+    screen-reader user clicking "configure" gets no indication the settings panel appeared.
+  - **Fix shape:** narrate `"open"` when it changes placement, distinguishing that from a focus
+    bump within an already-open group or floating window (`locate` before/after the op answers
+    this). Not fixed inline: found during a comment-only documentation sweep, which cannot carry
+    behavior changes.
+  - **Reachability/impact:** no data loss, no authz effect; degrades accessibility only. Both
+    call sites are GM-reachable, and `openDocument` is reachable by any role.
+
 - **`property_overrides` keys are not restricted to the four egress-special-cased fields; a
   self-targeting `/permissions` key silently substitutes the fail-closed default permissions
   object for a redacted viewer.** `validate_property_overrides`

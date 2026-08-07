@@ -49,10 +49,15 @@
    * `"open"` is NOT narrated as a "move" here even though `applyOp`'s
    * `"open"` case can be a real placement change (surfacing a minimized or
    * closed panel into a docked group, via `placeByPlacement`) rather than a
-   * mere focus bump within an already-open group/floating window — no
-   * current UI affordance dispatches `"open"` (unreachable from any control
-   * this host renders today), so this is dead code pending a future
-   * command palette, not a narration bug against any live path.
+   * mere focus bump within an already-open group/floating window. No control
+   * THIS host renders dispatches it, but the op is reachable: `PanelsApi.open`
+   * is public, and `SceneBrowserPanel`'s per-scene configure button and
+   * `SheetsController.openDocument` both call it, reaching `describeOp`
+   * through `PanelsController.dispatch` like any other op. So a real
+   * placement change currently goes unannounced — a live narration gap, not
+   * an unreachable branch. TODO: narrate `"open"` when it changes placement
+   * (distinguish a placement change from a focus bump within an already-open
+   * group).
    * @param op The layout-changing op `PanelsController.onOp` fired.
    * @returns The `panels.moved` announcement text, or `null` for an op not
    * worth narrating.
