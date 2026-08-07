@@ -179,7 +179,8 @@ When documenting a divergence, verify WHICH call path actually reaches it.
 ## RULE 9 — a green `lint:docs` does not mean the docs are well-formed
 
 The gate measures tag **presence**, never placement, duplication, or whether the right prose reaches a
-reader. It cannot catch these, and neither can the `warn`→`error` ratchet:
+reader. Severity does not help — every doc check is now an error that fails CI, and an error about
+presence is still only about presence:
 
 - **Appending a second JSDoc block instead of merging into the existing one.** `jsdoc/require-*`,
   TypeDoc, and tsserver hover all resolve to the **nearest preceding** block. A new tag block appended
@@ -210,7 +211,8 @@ newly-written implementation doc would have been left contradicting its own inte
 **How to apply.** When a sweep documents a symbol, grep the package (and its `types.ts`/interface
 files) for the same claim, and check the interface the symbol implements. Better: give every sweep
 plan an explicit step — "verify claims in already-clean files this sweep's subject matter touches" —
-because the ratchet, the census, and the task list are all blind here by construction.
+because the gate, the census, and the task list are all blind here by construction: a file already at
+zero is invisible to a count, and a false claim inside it costs nothing to leave.
 
 ## RULE 11 — when two findings share a shape, stop hunting instances and audit that dimension
 
@@ -310,11 +312,13 @@ which at least advertises that nothing was verified.
 
 ## RULE 14 — a green `lint:docs` scopes the eye to what it counts, and Rule 7's re-scan inherits that scope
 
-The gate counts `/** */` blocks with the right tags present. It has no opinion on a `const` declaration
-(`require-jsdoc`'s `ArrowFunctionExpression`/`FunctionExpression` requirements are off — see
-`eslint.docs.config.js`'s `rulesAt`), and none at all on a standalone `//` comment anywhere. Every prior
-sweep's Rule 7 re-scan silently inherited the gate's own blind spot by re-checking only `/** */` blocks,
-which is not what Rule 7 promised.
+The gate counts `/** */` blocks with the right tags present, and it has no opinion at all on a
+standalone `//` comment anywhere. `pnpm lint:docs` also declines the bare
+`ArrowFunctionExpression`/`FunctionExpression` selectors, because they would fire on every inline
+callback; `pnpm lint:props` covers the narrow named-binding cases those miss — an exported or
+module-level `const` bound to an arrow or function expression — but a `const` holding a plain VALUE
+is gated by neither. Every prior sweep's Rule 7 re-scan silently inherited the gate's blind spots by
+re-checking only `/** */` blocks, which is not what Rule 7 promised.
 
 Evidence, all from Sweep 11:
 - Two of the sweep's best findings were false comments on `const` declarations, which `require-jsdoc`
