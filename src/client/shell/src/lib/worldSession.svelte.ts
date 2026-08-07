@@ -68,6 +68,10 @@ export interface WorldSessionOpts {
  * opens the connection and `leave()` tears it down.
  * @example
  * ```
+ * declare const selfId: string;
+ * declare const connect: Connect;
+ * declare const layoutModule: Module;
+ * declare const worldId: string;
  * const session = new WorldSession({ selfId, connect, modules: [layoutModule] });
  * await session.enter(worldId);
  * ```
@@ -201,6 +205,8 @@ export class WorldSession {
    * @param id The scene to roam to, or `null` to resume following `activeScene`.
    * @example
    * ```
+   * declare const session: WorldSession;
+   * declare const otherSceneId: string | null;
    * session.setGmViewedScene(otherSceneId); // GM only; no-op+warns for a player
    * ```
    */
@@ -224,6 +230,8 @@ export class WorldSession {
    * `unsubscribe()` on it to stop receiving updates.
    * @example
    * ```
+   * declare const session: WorldSession;
+   * declare function render(hits: WireSearchHit[]): void;
    * const handle = await session.searchDocuments("goblin", { limit: 20 }, (hits) => render(hits));
    * handle.unsubscribe();
    * ```
@@ -268,6 +276,9 @@ export class WorldSession {
    * @returns Whether write controls for `path` should be shown to this user.
    * @example
    * ```
+   * declare const session: WorldSession;
+   * declare const doc: WireDocument;
+   * declare function showHpInput(): void;
    * if (session.canEdit(doc, "/system/hp")) showHpInput();
    * ```
    */
@@ -306,6 +317,9 @@ export class WorldSession {
    * @param opts Connection factory, default modules, and diagnostics/eviction callbacks.
    * @example
    * ```
+   * declare const selfId: string;
+   * declare const connect: Connect;
+   * declare const layoutModule: Module;
    * const session = new WorldSession({ selfId, connect, modules: [layoutModule] });
    * ```
    */
@@ -336,6 +350,8 @@ export class WorldSession {
    * @param ops The operations to predict + transmit as one intent.
    * @example
    * ```
+   * declare const session: WorldSession;
+   * declare const docId: string;
    * session.dispatchIntent([
    *   { op: "update", doc_id: docId, changes: [{ path: "/system/hp", old: 8, new: 10 }] },
    * ]);
@@ -383,7 +399,9 @@ export class WorldSession {
    * @returns A function that removes this listener.
    * @example
    * ```
-   * const off = session.onAssetChanged(({ uuid, op }) => resolver.invalidate(uuid, op));
+   * declare const session: WorldSession;
+   * declare const resolver: AssetResolver;
+   * const off = session.onAssetChanged((msg) => resolver.onAssetChanged(msg));
    * off();
    * ```
    */
@@ -404,6 +422,8 @@ export class WorldSession {
    * @returns A function that removes this listener.
    * @example
    * ```
+   * declare const session: WorldSession;
+   * declare function renderPing(scene: string, x: number, y: number, user: string): void;
    * const off = session.onPing(({ scene, x, y, user }) => renderPing(scene, x, y, user));
    * off();
    * ```
@@ -431,6 +451,9 @@ export class WorldSession {
    * @param y Scene-space y coordinate to ping.
    * @example
    * ```
+   * declare const session: WorldSession;
+   * declare const cellX: number;
+   * declare const cellY: number;
    * session.sendPing(cellX, cellY);
    * ```
    */
@@ -451,6 +474,9 @@ export class WorldSession {
    * @returns The computed path.
    * @example
    * ```
+   * declare const session: WorldSession;
+   * declare const sceneId: string;
+   * declare const tokenId: string;
    * // hypothetical preview (no token): footprintRadius is honored
    * const preview = await session.pathfind(sceneId, [0, 0], [[5, 5]], 0.5);
    * // for a real token: the server derives the footprint from it; footprintRadius is ignored
@@ -479,6 +505,9 @@ export class WorldSession {
    * derived executed/truncated/rejected signal).
    * @example
    * ```
+   * declare const session: WorldSession;
+   * declare const sceneId: string;
+   * declare const tokenId: string;
    * const stream = await session.moveRequest(sceneId, tokenId, [[1, 1], [2, 2]]);
    * ```
    */
@@ -529,6 +558,8 @@ export class WorldSession {
    * @returns A function that removes this listener.
    * @example
    * ```
+   * declare const session: WorldSession;
+   * declare function log(tokenId: string, outcome: "executed" | "truncated" | "rejected"): void;
    * const off = session.onMoveOutcome(({ tokenId, outcome }) => log(tokenId, outcome));
    * off();
    * ```
@@ -560,6 +591,7 @@ export class WorldSession {
    * unknown, so it rejects rather than resolving silently).
    * @example
    * ```
+   * declare const session: WorldSession;
    * await session.sendChatMessage({ channel: "main", content: "Hello!" });
    * ```
    */
@@ -584,6 +616,8 @@ export class WorldSession {
    * elapses with no correlated `chat_error`, rejects on one or on disconnect.
    * @example
    * ```
+   * declare const session: WorldSession;
+   * declare const messageId: string;
    * await session.editChatMessage(messageId, "Updated text");
    * ```
    */
@@ -598,6 +632,8 @@ export class WorldSession {
    * elapses with no correlated `chat_error`, rejects on one or on disconnect.
    * @example
    * ```
+   * declare const session: WorldSession;
+   * declare const messageId: string;
    * await session.deleteChatMessage(messageId);
    * ```
    */
@@ -616,6 +652,8 @@ export class WorldSession {
    * @returns A synchronous handle; call `unsubscribe()` on it to stop receiving frames.
    * @example
    * ```
+   * declare const session: WorldSession;
+   * declare function render(payload: unknown): void;
    * const sub = session.subscribeScene("vision", (frame) => render(frame.payload));
    * sub.unsubscribe();
    * ```
@@ -655,6 +693,14 @@ export class WorldSession {
    * @param rec.gen This record's generation counter; bumped to invalidate a superseded attempt.
    * @example
    * ```
+   * declare const id: string;
+   * declare const rec: {
+   *   channel: string;
+   *   onUpdate: (f: SceneFrame) => void;
+   *   asUser?: string;
+   *   handle: SceneSubscription | null;
+   *   gen: number;
+   * };
    * // called from subscribeScene and from #onWelcome; not part of the public API
    * this.#establishScene(id, rec);
    * ```
@@ -700,6 +746,10 @@ export class WorldSession {
    * @param worldId The world to connect to.
    * @example
    * ```
+   * declare const selfId: string;
+   * declare const connect: Connect;
+   * declare const layoutModule: Module;
+   * declare const worldId: string;
    * const session = new WorldSession({ selfId, connect, modules: [layoutModule] });
    * await session.enter(worldId);
    * ```
@@ -779,6 +829,7 @@ export class WorldSession {
    * @param w The Welcome frame.
    * @example
    * ```
+   * declare const w: WireWelcome;
    * // wired as handlers.onWelcome in enter(); not part of the public API
    * void this.#onWelcome(w);
    * ```
@@ -884,6 +935,7 @@ export class WorldSession {
    * engine-compat gate.
    * @example
    * ```
+   * declare const w: WireWelcome;
    * // called from #onWelcome after a successful module activation; not part of the public API
    * await this.#loadExternalModules(w.world, w.server_version);
    * ```
@@ -937,6 +989,7 @@ export class WorldSession {
    * `WorldSession` for the next `enter()` rather than reusing this one.
    * @example
    * ```
+   * declare const session: WorldSession;
    * session.leave();
    * ```
    */

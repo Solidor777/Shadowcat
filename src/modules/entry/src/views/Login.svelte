@@ -21,6 +21,7 @@
    * @example
    * ```
    * // module-private; not part of the public API — bound to <form onsubmit>
+   * declare const event: SubmitEvent;
    * submit(event);
    * ```
    */

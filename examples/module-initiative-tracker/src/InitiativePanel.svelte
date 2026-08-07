@@ -33,6 +33,7 @@
    * ```
    * // private function; not part of the public API — invoked only from this
    * // component's "Roll" button onclick handler below
+   * declare const actor: WireDocument;
    * roll(actor);
    * ```
    */

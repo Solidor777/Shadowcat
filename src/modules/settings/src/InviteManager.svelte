@@ -83,6 +83,7 @@
    * @example
    * ```
    * // private function; not part of the public API — wired to the mint form's onsubmit
+   * declare const submitEvent: SubmitEvent;
    * await mint(submitEvent);
    * ```
    */
@@ -111,6 +112,7 @@
    * @example
    * ```
    * // private function; not part of the public API — wired to each invite row's revoke button
+   * declare const inviteId: string;
    * await revoke(inviteId);
    * ```
    */
@@ -145,6 +147,7 @@
    * @example
    * ```
    * // private function; not part of the public API — invoked from the invite list's status span
+   * declare const invite: InviteEntry;
    * status(invite);
    * ```
    */
@@ -167,6 +170,7 @@
    * @example
    * ```
    * // private function; not part of the public API — gates the revoke button in the invite list
+   * declare const invite: InviteEntry;
    * spent(invite);
    * ```
    */

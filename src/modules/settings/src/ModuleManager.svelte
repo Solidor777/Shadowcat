@@ -30,6 +30,7 @@
    * ```
    * // private function; not part of the public API — used for the checkbox's
    * // label/aria-label below
+   * declare const info: InstalledModuleInfo;
    * displayName(info);
    * ```
    */
@@ -104,6 +105,7 @@
    * @example
    * ```
    * // private function; not part of the public API — wired to each checkbox's onchange
+   * declare const info: InstalledModuleInfo;
    * toggle(info.id);
    * ```
    */

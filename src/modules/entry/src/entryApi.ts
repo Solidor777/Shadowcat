@@ -27,6 +27,8 @@ async function getJson<T>(url: string): Promise<T> {
  * @example
  * ```
  * // module-private; not part of the public API
+ * declare const username: string;
+ * declare const password: string;
  * const res = await postJson("/api/login", { username, password });
  * ```
  */
@@ -155,6 +157,7 @@ export function listWorlds(): Promise<WorldEntry[]> {
  * @example
  * ```
  * // module-private; not part of the public API
+ * declare const worldId: string;
  * await deleteWorld(worldId);
  * ```
  */
@@ -200,6 +203,7 @@ export async function createWorld(name: string): Promise<WorldEntry> {
  * @example
  * ```
  * // module-private; not part of the public API
+ * declare const code: string;
  * const world = await acceptInvite(code);
  * ```
  */

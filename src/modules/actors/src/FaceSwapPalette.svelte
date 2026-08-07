@@ -42,6 +42,7 @@
    * @example
    * ```
    * // private helper; not part of the public API
+   * declare const tok: WireDocument;
    * currentFace(tok); // tok.engine.face ?? null
    * ```
    */

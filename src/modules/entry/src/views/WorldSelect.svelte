@@ -27,6 +27,7 @@
    * @example
    * ```
    * // module-private; not part of the public API — bound to the delete button
+   * declare const world: WorldEntry;
    * armDelete(world.id);
    * ```
    */
@@ -48,6 +49,7 @@
    * @example
    * ```
    * // module-private; not part of the public API — bound to the confirm form
+   * declare const world: WorldEntry;
    * confirmDelete(world);
    * ```
    */
@@ -95,6 +97,7 @@
    * @example
    * ```
    * // module-private; not part of the public API — bound to <form onsubmit>
+   * declare const event: SubmitEvent;
    * create(event);
    * ```
    */
@@ -129,6 +132,7 @@
    * @example
    * ```
    * // module-private; not part of the public API — bound to <form onsubmit>
+   * declare const event: SubmitEvent;
    * redeem(event);
    * ```
    */

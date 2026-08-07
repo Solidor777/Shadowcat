@@ -74,6 +74,7 @@ function clearDirty(): void {
  * @param snap - A `snapshotDirty` snapshot to merge back into `dirty`.
  * @example
  * ```
+ * declare const snap: DirtySnapshot;
  * remarkDirty(snap);
  * ```
  */
@@ -304,6 +305,7 @@ export function getPanelLayout(world: string): unknown | null {
  * @param blob - The opaque layout blob (see `getPanelLayout`).
  * @example
  * ```
+ * declare const encodedLayout: unknown;
  * setPanelLayout("w1", encodedLayout);
  * ```
  */
@@ -334,6 +336,7 @@ export function getChatRead(world: string): unknown | null {
  * @param blob - The opaque last-read-marker blob (see `getChatRead`).
  * @example
  * ```
+ * declare const marker: unknown;
  * setChatRead("w1", marker);
  * ```
  */

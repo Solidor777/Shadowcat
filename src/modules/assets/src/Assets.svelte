@@ -54,6 +54,7 @@
    * ```
    * // private function; not part of the public API — wired to the upload
    * // input's onchange below
+   * declare const event: Event;
    * void onUpload(event);
    * ```
    */
@@ -90,6 +91,8 @@
    * ```
    * // private function; not part of the public API — wired to each tile's
    * // replace input's onchange below
+   * declare const uuid: string;
+   * declare const event: Event;
    * void onReplace(uuid, event);
    * ```
    */
@@ -113,6 +116,7 @@
    * ```
    * // private function; not part of the public API — wired to each tile's
    * // delete button's onclick below
+   * declare const uuid: string;
    * void onDelete(uuid);
    * ```
    */

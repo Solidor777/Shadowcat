@@ -145,6 +145,7 @@
    * @example
    * ```
    * // private helper; not part of the public API — invoked from the per-row "hide name" button
+   * declare const actorDoc: WireDocument;
    * toggleHidden(actorDoc);
    * ```
    */

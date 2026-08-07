@@ -94,7 +94,7 @@
    * ```
    * // private function; not part of the public API — wired to each control's
    * // onchange below
-   * set(ws.id, "/engine/scene/movementRestriction", wsys.scene.movementRestriction, "visible");
+   * if (ws && wsys) set(ws.id, "/engine/scene/movementRestriction", wsys.scene.movementRestriction, "visible");
    * ```
    */
   function set(docId: string, path: string, old: unknown, value: unknown): void {
@@ -144,7 +144,7 @@
    * ```
    * // private function; not part of the public API — wired to each per-scene
    * // control's onchange below
-   * setScene("/engine/grid/kind", ssys.grid?.kind ?? "square", "hex");
+   * if (ssys) setScene("/engine/grid/kind", ssys.grid?.kind ?? "square", "hex");
    * ```
    */
   function setScene(path: string, old: unknown, value: unknown): void {

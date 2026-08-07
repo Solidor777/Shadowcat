@@ -228,6 +228,7 @@
    * @example
    * ```
    * // public instance method; called by the host through `bind:this`
+   * declare const visualEditor: { reset(): void };
    * visualEditor.reset();
    * ```
    */
