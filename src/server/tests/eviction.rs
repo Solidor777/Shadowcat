@@ -1,5 +1,5 @@
 //! `ServerMsg::Evicted` delivery: per-user targeting and terminal close.
-mod common;
+use shadowcat_test_support as common;
 
 use common::drain_until_type;
 use futures_util::StreamExt;

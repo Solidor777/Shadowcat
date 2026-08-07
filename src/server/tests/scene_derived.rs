@@ -1,7 +1,7 @@
 //! E2E: the SceneDerived channel — initial push, coalesced re-eval on scene
 //! change, and unknown-channel error — over the real WS server.
 
-mod common;
+use shadowcat_test_support as common;
 
 use common::*;
 use futures_util::{SinkExt, StreamExt};

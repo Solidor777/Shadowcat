@@ -1,7 +1,14 @@
 //! Shared WS integration-test harness for the scene tests: a real WS client
 //! against an ephemeral in-process server whose single seeded user owns the
 //! world (GM), so its intents are authorized.
-#![allow(dead_code)]
+//!
+//! A library crate rather than a `tests/common/mod.rs` include. Each integration-test binary
+//! that included that module compiled the whole file and used only part of it, so every unused
+//! helper was dead code in that binary and the module carried a blanket suppression. A `pub`
+//! item in a library is reachable by definition, so the diagnostic no longer fires and nothing
+//! is silenced. Reaching this crate only through `shadowcat`'s [dev-dependencies] keeps it out
+//! of release builds.
+#![deny(missing_docs)]
 
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -16,17 +23,38 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
 use uuid::Uuid;
 
+/// A live in-process server plus everything needed to talk to it: an HTTP client already
+/// authenticated as the seeded user, that user's world, and direct handles to the storage and
+/// WebSocket registry behind the socket.
+///
+/// The seeded user owns `world`, so its intents authorize as GM. A test needing a non-GM
+/// perspective must create and log in a second user rather than reusing `cookie`.
 pub struct Harness {
+    /// `host:port` the ephemeral server bound to. The port is OS-assigned, so concurrent test
+    /// binaries never collide.
     pub addr: String,
+    /// Session cookie for the seeded GM user, ready to attach to a request or a WS handshake.
     pub cookie: String,
-    pub client: reqwest::Client, // cookie-jar client, already logged in
-    pub user: Uuid,              // the seeded user's id
+    /// HTTP client with a cookie jar, already logged in as the seeded user.
+    pub client: reqwest::Client,
+    /// The seeded user's id.
+    pub user: Uuid,
+    /// The world the seeded user owns.
     pub world: Uuid,
+    /// The same repository the running server writes through, for asserting persisted state
+    /// directly instead of reading it back over HTTP.
     pub repo: Arc<SqliteRepository>,
-    pub ws: shadowcat::ws::WsState, // registry handle for room-level test drives
-    pub assets_dir: std::path::PathBuf, // per-run asset root (world dirs live under it)
+    /// Registry handle for driving rooms directly, bypassing the socket.
+    pub ws: shadowcat::ws::WsState,
+    /// Per-run asset root; each world's directory lives beneath it. Distinct per harness, so
+    /// asset writes from concurrent tests cannot overwrite each other.
+    pub assets_dir: std::path::PathBuf,
 }
 
+/// Start a harness with the default configuration.
+///
+/// Equivalent to [`spawn_with`] with a no-op mutator; use that instead when a test needs to
+/// change the config the server starts with.
 pub async fn spawn() -> Harness {
     spawn_with(|_| {}).await
 }
@@ -102,6 +130,8 @@ pub async fn spawn_with(mutate: impl FnOnce(&mut Config)) -> Harness {
     }
 }
 
+/// A connected client WebSocket to the harness server. Named because the underlying
+/// `tokio_tungstenite` type is long enough to obscure every signature that returns one.
 pub type Ws =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
@@ -159,6 +189,8 @@ impl Harness {
             .unwrap()
     }
 
+    /// Open a WebSocket as the seeded GM user. Use [`Harness::connect_as`] to connect as a
+    /// different user.
     pub async fn connect(&self) -> Ws {
         self.connect_as(&self.cookie).await
     }

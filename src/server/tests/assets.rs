@@ -8,10 +8,10 @@
 //! to consume rate quota, which couples the validation order to the quota accounting: validation
 //! must run first, and testing that through the route is the only way to observe the ordering.
 
-mod common;
 use common::{spawn, PNG_1X1};
 use futures_util::StreamExt;
 use shadowcat::data::repository::Repository;
+use shadowcat_test_support as common;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn upload_persists_record_and_file() {
