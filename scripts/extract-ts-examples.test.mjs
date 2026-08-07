@@ -23,6 +23,9 @@ import {
   buildClassInjectionText,
   buildLineMap,
   extractSvelteHost,
+  extractBindThisSimpleIdentifiers,
+  markBindThisAssigned,
+  remapOffsetAfterEdits,
 } from "./extract-ts-examples.mjs";
 import ts from "typescript";
 
@@ -828,5 +831,160 @@ describe("extractSvelteHost", () => {
     expect(got.skip).toBeUndefined();
     expect(got.hostText).toContain("export const X = 1;");
     expect(got.hostText).toContain("const y = 2;");
+  });
+
+  it("marks a bind:this target's declaration definitely-assigned, and toSvelteLine/toHostOffset stay correct around it", () => {
+    const src = [
+      "<div bind:this={contentEl}></div>",
+      '<script lang="ts">',
+      "  export const marker = 1;",
+      "  let contentEl: HTMLElement;",
+      "  /**",
+      "   * @example",
+      "   * ```ts",
+      "   * const controlAfter = 1;",
+      "   * ```",
+      "   */",
+      "  function afterDecl(): void {}",
+      "</script>",
+      "",
+    ].join("\n");
+    const got = extractSvelteHost(src);
+    expect(got.skip).toBeUndefined();
+    expect(got.hostText).toContain("let contentEl!: HTMLElement;");
+    expect(got.bindThisMarked.has("contentEl")).toBe(true);
+
+    const svelteOffset = src.indexOf("const controlAfter");
+    const hostOffset = got.toHostOffset(svelteOffset);
+    expect(got.hostText.slice(hostOffset, hostOffset + "const controlAfter".length)).toBe("const controlAfter");
+    const hostLineIndex = got.hostText.slice(0, hostOffset).split("\n").length - 1;
+    expect(src.split("\n")[got.toSvelteLine(hostLineIndex)]).toContain("const controlAfter");
+  });
+
+  it("does not mark a bind:this identifier that already has an initializer", () => {
+    const src = [
+      "<div bind:this={contentEl}></div>",
+      '<script lang="ts">',
+      "  export const marker = 1;",
+      "  let contentEl: HTMLElement | undefined = undefined;",
+      "</script>",
+      "",
+    ].join("\n");
+    const got = extractSvelteHost(src);
+    expect(got.hostText).toContain("let contentEl: HTMLElement | undefined = undefined;");
+    expect(got.bindThisMarked.has("contentEl")).toBe(false);
+  });
+
+  it("leaves a member-expression bind:this target's base identifier untouched", () => {
+    const src = [
+      "<div bind:this={refs.foo}></div>",
+      '<script lang="ts">',
+      "  export const marker = 1;",
+      "  let refs: Record<string, HTMLElement> = {};",
+      "</script>",
+      "",
+    ].join("\n");
+    const got = extractSvelteHost(src);
+    expect(got.hostText).toContain("let refs: Record<string, HTMLElement> = {};");
+    expect(got.bindThisMarked.size).toBe(0);
+  });
+});
+
+describe("extractBindThisSimpleIdentifiers", () => {
+  it("collects a bare-identifier bind:this target from the template", () => {
+    const got = extractBindThisSimpleIdentifiers('<div bind:this={contentEl}></div>\n<script lang="ts"></script>\n');
+    expect(got.has("contentEl")).toBe(true);
+  });
+
+  it("excludes a member-expression target", () => {
+    const got = extractBindThisSimpleIdentifiers('<div bind:this={refs.foo}></div>\n<script lang="ts"></script>\n');
+    expect(got.size).toBe(0);
+  });
+
+  it("excludes an element-access target", () => {
+    const got = extractBindThisSimpleIdentifiers('<div bind:this={items[i]}></div>\n<script lang="ts"></script>\n');
+    expect(got.size).toBe(0);
+  });
+
+  it("ignores a bind:this-shaped occurrence inside a <script> block (not a real template binding)", () => {
+    const got = extractBindThisSimpleIdentifiers('<script lang="ts">// bind:this={notReal}</script>\n');
+    expect(got.size).toBe(0);
+  });
+
+  it("collects bind:this on a component instance identically to a DOM element", () => {
+    const got = extractBindThisSimpleIdentifiers('<MyComponent bind:this={compRef} />\n<script lang="ts"></script>\n');
+    expect(got.has("compRef")).toBe(true);
+  });
+});
+
+describe("markBindThisAssigned", () => {
+  it("adds a definite-assignment assertion to a matching typed declaration with no initializer", () => {
+    const { text, marked } = markBindThisAssigned("let contentEl: HTMLElement;\n", new Set(["contentEl"]));
+    expect(text).toContain("let contentEl!: HTMLElement;");
+    expect(marked.has("contentEl")).toBe(true);
+  });
+
+  it("leaves an already-initialized declaration untouched", () => {
+    const hostText = "let contentEl: HTMLElement | null = null;\n";
+    const { text, marked } = markBindThisAssigned(hostText, new Set(["contentEl"]));
+    expect(text).toBe(hostText);
+    expect(marked.size).toBe(0);
+  });
+
+  it("leaves an already-asserted declaration untouched (idempotent)", () => {
+    const hostText = "let contentEl!: HTMLElement;\n";
+    const { text, marked } = markBindThisAssigned(hostText, new Set(["contentEl"]));
+    expect(text).toBe(hostText);
+    expect(marked.size).toBe(0);
+  });
+
+  it("reports, rather than marks, a name with no type annotation", () => {
+    const hostText = "let contentEl;\n";
+    const { text, marked, unmarked } = markBindThisAssigned(hostText, new Set(["contentEl"]));
+    expect(text).toBe(hostText);
+    expect(marked.size).toBe(0);
+    expect(unmarked.has("contentEl")).toBe(true);
+  });
+
+  it("marks multiple distinct declarations independently", () => {
+    const hostText = "let a: HTMLElement;\nlet b: HTMLCanvasElement;\n";
+    const { text, marked } = markBindThisAssigned(hostText, new Set(["a", "b"]));
+    expect(text).toContain("let a!: HTMLElement;");
+    expect(text).toContain("let b!: HTMLCanvasElement;");
+    expect(marked.size).toBe(2);
+  });
+
+  it("is a no-op when the name set is empty", () => {
+    const hostText = "let a: HTMLElement;\n";
+    const { text, marked } = markBindThisAssigned(hostText, new Set());
+    expect(text).toBe(hostText);
+    expect(marked.size).toBe(0);
+  });
+});
+
+describe("remapOffsetAfterEdits", () => {
+  it("passes an offset before every replacement through unchanged", () => {
+    expect(remapOffsetAfterEdits(2, [{ start: 10, end: 12, text: "abc" }])).toBe(2);
+  });
+
+  it("shifts an offset after a replacement by the replacement's length delta", () => {
+    // "ab" (len 2) -> "abc" (len 3): a +1 delta applies to every offset at or past `end`.
+    const replacements = [{ start: 5, end: 7, text: "abc" }];
+    expect(remapOffsetAfterEdits(7, replacements)).toBe(8);
+    expect(remapOffsetAfterEdits(20, replacements)).toBe(21);
+  });
+
+  it("accumulates deltas across multiple earlier replacements", () => {
+    const replacements = [
+      { start: 0, end: 2, text: "abc" }, // +1
+      { start: 10, end: 12, text: "de" }, // +0
+      { start: 20, end: 21, text: "fghi" }, // +3
+    ];
+    expect(remapOffsetAfterEdits(25, replacements)).toBe(29);
+  });
+
+  it("clamps an offset landing inside a replaced range to that replacement's start", () => {
+    const replacements = [{ start: 5, end: 10, text: "xyz" }];
+    expect(remapOffsetAfterEdits(7, replacements)).toBe(5);
   });
 });

@@ -909,6 +909,107 @@ function compilePackageClassInjectedExamples(repoRoot, pkgDir, pkgDirs, examples
 // `buildVirtualText`, `buildClassInjectionText`, `compileOverlay`) is reused unchanged —
 // this section only supplies a different HOST, not a second compiler.
 
+const SCRIPT_TAG_RE = /<script([^>]*)>([\s\S]*?)<\/script>/g;
+
+const BIND_THIS_RE = /bind:this\s*=\s*\{([^}]*)\}/g;
+
+/** Every `bind:this={expr}` TEMPLATE target in `svelteText` (a match inside a
+ * `<script>` block is not a real template binding and is excluded) that names a bare
+ * identifier — the one shape `markBindThisAssigned` can act on. A member or
+ * element-access target (`bind:this={refs.foo}`, `bind:this={itemEls[i]}`) is excluded
+ * by design, not merely unhandled: Svelte can only assign INTO an already-existing
+ * object/array through such a target, so the script must already initialize the base
+ * identifier (`refs`, `itemEls`) with a value wherever it is declared — that
+ * declaration already carries an initializer, and TypeScript's definite-assignment
+ * analysis was never confused about it. Only a bare identifier can be the sole,
+ * uninitialized declaration a template-only assignment leaves TypeScript unable to
+ * see. `bind:this` on a component instance (not a DOM element) reduces to the same
+ * bare-identifier shape and needs no separate handling. */
+export function extractBindThisSimpleIdentifiers(svelteText) {
+  const scriptRanges = [];
+  for (const m of svelteText.matchAll(SCRIPT_TAG_RE)) scriptRanges.push([m.index, m.index + m[0].length]);
+  const names = new Set();
+  for (const m of svelteText.matchAll(BIND_THIS_RE)) {
+    if (scriptRanges.some(([s, e]) => m.index >= s && m.index < e)) continue;
+    const expr = m[1].trim();
+    if (/^[A-Za-z_$][\w$]*$/.test(expr)) names.add(expr);
+  }
+  return names;
+}
+
+/** Rewrites every top-level-visible `let`/`var` declaration in `hostText` whose name
+ * is in `names` and which has neither an initializer nor an existing definite-
+ * assignment assertion, adding TypeScript's `!` definite-assignment assertion — the
+ * same feature used for a class field a FRAMEWORK assigns through a mechanism the
+ * compiler cannot see (e.g. Angular `@ViewChild`), applied here because Svelte's
+ * template (`bind:this`) assigns these variables at runtime through a mechanism
+ * script-only extraction never observes. The assertion preserves the declared TYPE
+ * exactly — it is not a widening to `any`, so a genuine type error against that
+ * variable is still caught. A name with an initializer (already definitely assigned)
+ * is left untouched; a name with no type annotation (`!` requires one) is left
+ * untouched and reported in `unmarked` rather than silently ignored. Returns the
+ * ordered list of raw text `replacements` actually applied (ascending by `start`, in
+ * the ORIGINAL `hostText`'s coordinates) so a caller with offsets into that same
+ * original text (`extractSvelteHost`'s `toHostOffset`) can keep them valid against the
+ * edited text via `remapOffsetAfterEdits`. */
+export function markBindThisAssigned(hostText, names) {
+  const marked = new Set();
+  const unmarked = new Set();
+  if (names.size === 0) return { text: hostText, marked, unmarked, replacements: [] };
+  const sourceFile = ts.createSourceFile("host.ts", hostText, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const found = [];
+  const visit = (node) => {
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && names.has(node.name.text)) {
+      found.push(node);
+    }
+    ts.forEachChild(node, visit);
+  };
+  ts.forEachChild(sourceFile, visit);
+  const replacements = [];
+  for (const node of found) {
+    if (node.initializer !== undefined || node.exclamationToken !== undefined) continue;
+    if (node.type === undefined) {
+      unmarked.add(node.name.text);
+      continue;
+    }
+    const updated = ts.factory.updateVariableDeclaration(
+      node,
+      node.name,
+      ts.factory.createToken(ts.SyntaxKind.ExclamationToken),
+      node.type,
+      node.initializer,
+    );
+    const printed = printer.printNode(ts.EmitHint.Unspecified, updated, sourceFile);
+    replacements.push({ start: node.getStart(sourceFile), end: node.getEnd(), text: printed });
+    marked.add(node.name.text);
+  }
+  replacements.sort((a, b) => a.start - b.start);
+  let text = hostText;
+  for (const r of [...replacements].reverse()) text = text.slice(0, r.start) + r.text + text.slice(r.end);
+  return { text, marked, unmarked, replacements };
+}
+
+/** Maps a character offset in the text BEFORE `replacements` to the corresponding
+ * offset in the text AFTER `replacements` were applied — `replacements` is the
+ * ascending-by-`start`, non-overlapping list `markBindThisAssigned` returns, each an
+ * `[start, end)` span in the ORIGINAL text replaced by `text`. Keeps
+ * `extractSvelteHost`'s `toHostOffset` correct once its `hostText` has been edited in
+ * place for a `bind:this` fix, without needing to redo the segment-based
+ * svelte-offset-to-host-offset computation those edits never touch. An offset landing
+ * INSIDE a replaced range has no exact post-edit counterpart (the text there changed);
+ * it is clamped to the start of that edit's replacement, a case no caller actually
+ * exercises (a doc comment's `commentEnd` never falls inside a `let` declaration
+ * statement). */
+export function remapOffsetAfterEdits(offset, replacements) {
+  let delta = 0;
+  for (const r of replacements) {
+    if (offset < r.start) break;
+    if (offset < r.end) return r.start + delta;
+    delta += r.text.length - (r.end - r.start);
+  }
+  return offset + delta;
+}
+
 /** Extracts a Svelte SFC's TypeScript-bearing script content and the data needed to
  * relate a position inside it back to the real `.svelte` file. A `<script module>`
  * block's body (if present) is placed before the instance `<script>` block's body —
@@ -916,7 +1017,9 @@ function compilePackageClassInjectedExamples(repoRoot, pkgDir, pkgDirs, examples
  * the instance script, with no import needed. Returns `{ skip: reason }` when there is
  * no instance `<script>` block, or when a present block is not `lang="ts"` — both
  * legitimate, individually-reported dispositions (see `main`'s `.svelte` handling).
- * Otherwise returns `hostText` plus:
+ * Otherwise returns `hostText` — with every `bind:this={name}` target's declaration
+ * marked definitely-assigned via `markBindThisAssigned` (see that function's own doc
+ * for why this is correct rather than a suppression) — plus:
  * - `toHostOffset(svelteOffset)`: translates a character offset in the ORIGINAL SFC
  *   text (e.g. `commentEnd`, from `extractExamples`) to the equivalent offset in
  *   `hostText`, for `findEnclosingClassTarget`. Returns null when the offset falls
@@ -925,10 +1028,13 @@ function compilePackageClassInjectedExamples(repoRoot, pkgDir, pkgDirs, examples
  * - `toSvelteLine(hostLineIndex)`: translates a 0-based line index WITHIN `hostText`
  *   back to the 0-based line it occupies in the real SFC, for diagnostic citation.
  *   Returns null for a line with no real correspondent (a synthetic separator inserted
- *   only when a block's body does not itself end in a newline). */
+ *   only when a block's body does not itself end in a newline). Unaffected by the
+ *   `bind:this` rewrite: that rewrite only ever inserts characters WITHIN an existing
+ *   line, never adding or removing a line, so a host line index means the same real
+ *   SFC line before and after it runs. */
 export function extractSvelteHost(svelteText) {
   const blocks = [];
-  for (const m of svelteText.matchAll(/<script([^>]*)>([\s\S]*?)<\/script>/g)) {
+  for (const m of svelteText.matchAll(SCRIPT_TAG_RE)) {
     const attrs = m[1];
     const body = m[2];
     const openTagLen = m[0].length - body.length - "</script>".length;
@@ -953,7 +1059,7 @@ export function extractSvelteHost(svelteText) {
     if (!hostText.endsWith("\n")) hostText += "\n";
   }
 
-  const toHostOffset = (svelteOffset) => {
+  const rawToHostOffset = (svelteOffset) => {
     for (const seg of segments) {
       if (svelteOffset >= seg.svelteOffset && svelteOffset <= seg.svelteOffset + seg.length) {
         return seg.hostOffset + (svelteOffset - seg.svelteOffset);
@@ -978,7 +1084,14 @@ export function extractSvelteHost(svelteText) {
     return svelteOffset === null ? null : svelteText.slice(0, svelteOffset).split("\n").length - 1;
   };
 
-  return { hostText, toHostOffset, toSvelteLine };
+  const bindThisNames = extractBindThisSimpleIdentifiers(svelteText);
+  const { text: markedHostText, marked: bindThisMarked, replacements } = markBindThisAssigned(hostText, bindThisNames);
+  const toHostOffset = (svelteOffset) => {
+    const raw = rawToHostOffset(svelteOffset);
+    return raw === null ? null : remapOffsetAfterEdits(raw, replacements);
+  };
+
+  return { hostText: markedHostText, toHostOffset, toSvelteLine, bindThisMarked };
 }
 
 /** Compiles every compilable free-function-wrapper example extracted from `.svelte`
@@ -1036,21 +1149,39 @@ function compilePackageSvelteClassInjectedExamples(repoRoot, pkgDir, pkgDirs, ex
   return [...diagnosticsByPath.entries()].map(([virtualPath, diagnostics]) => ({ ...meta.get(virtualPath), diagnostics }));
 }
 
+/** Where one diagnostic against a compiled example belongs: `"example body"` when
+ * `result.mapLine` cannot attribute the line to the host source, else the
+ * `"host line N"` string it returns. The single source of truth both `formatFailure`
+ * (citation) and `classifyCompiledResult` (pass/fail attribution, see `main`) read, so
+ * the two can never disagree about where a diagnostic lands. */
+function diagnosticLocation(result, diagnostic) {
+  if (diagnostic.file && diagnostic.start !== undefined) {
+    const { line } = ts.getLineAndCharacterOfPosition(diagnostic.file, diagnostic.start);
+    return result.mapLine(line);
+  }
+  return "example body";
+}
+
 /** Formats a diagnostic against the host module symbol and the example's ordinal
  * within that symbol, distinguishing a diagnostic inside the host's own copied text
  * (real host line — actionable against the actual source) from one inside the example
  * body itself. Never cites the virtual path alone. */
 function formatFailure(result) {
-  const lines = result.diagnostics.map((d) => {
-    const message = ts.flattenDiagnosticMessageText(d.messageText, "\n");
-    let where = "example body";
-    if (d.file && d.start !== undefined) {
-      const { line } = ts.getLineAndCharacterOfPosition(d.file, d.start);
-      where = result.mapLine(line);
-    }
-    return `    [${where}] ${message}`;
-  });
+  const lines = result.diagnostics.map((d) => `    [${diagnosticLocation(result, d)}] ${ts.flattenDiagnosticMessageText(d.messageText, "\n")}`);
   return `  ${result.hostFile} :: ${result.symbol} :: example #${result.ordinal}\n${lines.join("\n")}`;
+}
+
+/** Classifies one compiled example's diagnostics as a genuine example-body failure
+ * (at least one diagnostic lands in the example body itself — a content defect on its
+ * own merits) versus HOST-only (every diagnostic is host-attributable — real
+ * information about a broken host script, but never the example's own fault, per the
+ * attribution requirement this checker must honor: a host-side problem is surfaced
+ * distinctly from an example-body failure, never folded into it, and never silently
+ * discarded either). Returns `"pass"` when `result.diagnostics` is empty. */
+function classifyCompiledResult(result) {
+  if (result.diagnostics.length === 0) return "pass";
+  const hasBodyDiagnostic = result.diagnostics.some((d) => diagnosticLocation(result, d) === "example body");
+  return hasBodyDiagnostic ? "body" : "host";
 }
 
 // --- Controls ------------------------------------------------------------------------
@@ -1634,6 +1765,143 @@ function runSvelteHostControl(repoRoot) {
   }
 }
 
+/** `bind:this` definite-assignment controls, exercised through the real
+ * `extractBindThisSimpleIdentifiers` → `markBindThisAssigned` → `extractSvelteHost` →
+ * `buildVirtualText` → `compileOverlay` pipeline:
+ * - **The fix does not blind the checker.** A host variable read before assignment
+ *   that is NOT named by any `bind:this` in the template must still FAIL — proving the
+ *   analysis was corrected, not silenced (a global `strictNullChecks` disable, or a
+ *   filter on the diagnostic's message text, would pass this control's twin covering
+ *   the actual bind:this target below but fail to distinguish it from this one).
+ * - **A real `bind:this` target still FAILS on genuine type errors.** Marking a
+ *   declaration definitely-assigned must not widen its type to `any`: a
+ *   `bind:this={el}` bound to `HTMLDivElement` must still fail an example calling a
+ *   nonexistent method on `el`, and still PASS ordinary use of its real members. */
+function runBindThisAssignmentControl(repoRoot) {
+  const dir = join(repoRoot, "scripts");
+  const options = {
+    target: ts.ScriptTarget.ES2022,
+    module: ts.ModuleKind.ESNext,
+    moduleResolution: ts.ModuleResolutionKind.Bundler,
+    strict: true,
+    noEmit: true,
+    skipLibCheck: true,
+    types: ["svelte"],
+    ...EXAMPLE_HYGIENE_OVERRIDES,
+  };
+  const compile = (svelteText, exampleIndex, label) => {
+    const examples = extractExamples(svelteText);
+    const host = extractSvelteHost(svelteText);
+    if (host.skip) {
+      console.error(`bind:this control setup mismatch (${label}): ${host.skip}`);
+      process.exit(1);
+    }
+    const ex = examples[exampleIndex];
+    const analyzed = analyzeExample(ex.code);
+    const hostBindings = hostTopLevelBindings(host.hostText);
+    const virtualPath = toPosix(join(dir, `__doctest_control_bindthis_${label}__.doctest0.ts`));
+    const overlay = new Map([[virtualPath, buildVirtualText(host.hostText, { ...ex, ...analyzed }, hostBindings)]]);
+    return { host, diagnostics: compileOverlay(options, overlay).get(virtualPath) };
+  };
+  const requireGreen = (label, diagnostics) => {
+    if (diagnostics.length !== 0) {
+      console.error(
+        `bind:this control mismatch (${label}): expected GREEN but got:\n` +
+          diagnostics.map((d) => `  ${ts.flattenDiagnosticMessageText(d.messageText, "\n")}`).join("\n"),
+      );
+      process.exit(1);
+    }
+  };
+  const requireFail = (label, diagnostics, needle) => {
+    const hit = diagnostics.some((d) => ts.flattenDiagnosticMessageText(d.messageText, "\n").includes(needle));
+    if (!hit) {
+      console.error(
+        `bind:this control mismatch (${label}): expected a diagnostic containing "${needle}" but got:\n` +
+          diagnostics.map((d) => `  ${ts.flattenDiagnosticMessageText(d.messageText, "\n")}`).join("\n"),
+      );
+      process.exit(1);
+    }
+  };
+
+  // A `let` never named by any `bind:this` in the template, read before assignment
+  // from inside a nested function — the exact shape the real defect takes, minus the
+  // template binding — must still be reported: the fix must not have blinded the
+  // checker to genuine "used before assigned" bugs.
+  const notBoundHost = [
+    "<div>no bind:this here</div>",
+    '<script lang="ts">',
+    "  export const controlModuleMarker = true;", // real component-shaped module scope (mirrors imports every real host has), not the special non-module script scope TS analyzes differently
+    "  let controlNotBoundThis: number;",
+    "  function controlReadsEarly(): void {",
+    "    console.log(controlNotBoundThis);",
+    "  }",
+    "  /**",
+    "   * @example",
+    "   * ```ts",
+    "   * controlReadsEarly();",
+    "   * ```",
+    "   */",
+    "  function controlNotBoundExample(): void {}",
+    "</script>",
+    "",
+  ].join("\n");
+  if (extractBindThisSimpleIdentifiers(notBoundHost).has("controlNotBoundThis")) {
+    console.error("bind:this control setup mismatch (not-bound): fixture unexpectedly contains a bind:this target");
+    process.exit(1);
+  }
+  requireFail(
+    "unrelated-used-before-assigned-still-fails",
+    compile(notBoundHost, 0, "not_bound").diagnostics,
+    "used before being assigned",
+  );
+
+  // The real defect shape: a `bind:this` target read before assignment from inside a
+  // nested function must compile GREEN (the definite-assignment assertion resolved
+  // it), while its TYPE stays real: a call to a nonexistent member still FAILS, and
+  // ordinary use of a real member still PASSES.
+  const boundHost = [
+    '<div bind:this={controlBoundEl}></div>',
+    '<script lang="ts">',
+    "  export const controlModuleMarker2 = true;", // real component-shaped module scope, per the note on `notBoundHost` above
+    "  let controlBoundEl: HTMLDivElement;",
+    "  function controlReadsEl(): void {",
+    "    console.log(controlBoundEl.tagName);",
+    "  }",
+    "  /**",
+    "   * @example",
+    "   * ```ts",
+    "   * controlReadsEl();",
+    "   * controlBoundEl.click();",
+    "   * ```",
+    "   */",
+    "  function controlBoundGreen(): void {}",
+    "  /**",
+    "   * @example",
+    "   * ```ts",
+    "   * controlBoundEl.controlNonexistentMethod();",
+    "   * ```",
+    "   */",
+    "  function controlBoundTypeStillReal(): void {}",
+    "</script>",
+    "",
+  ].join("\n");
+  if (!extractBindThisSimpleIdentifiers(boundHost).has("controlBoundEl")) {
+    console.error("bind:this control setup mismatch (bound): fixture's bind:this target was not extracted");
+    process.exit(1);
+  }
+  const { host: boundHostResult } = compile(boundHost, 0, "bound_setup");
+  if (!boundHostResult.bindThisMarked.has("controlBoundEl")) {
+    console.error("bind:this control mismatch (declaration-marked): controlBoundEl was not marked definitely-assigned");
+    process.exit(1);
+  }
+  requireGreen("bound-target-resolves-and-real-member-passes", compile(boundHost, 0, "bound_green").diagnostics);
+  requireFail(
+    "bound-target-stays-typed-not-any",
+    compile(boundHost, 1, "bound_fail").diagnostics,
+    "controlNonexistentMethod",
+  );
+}
+
 const repoRootForControls = resolve(fileURLToPath(import.meta.url), "..", "..");
 runExtractionControls();
 runCompilationControl(repoRootForControls);
@@ -1642,6 +1910,7 @@ runHygieneOverrideControl(repoRootForControls);
 runClassContextControl();
 runClassInjectionControl(repoRootForControls);
 runSvelteHostControl(repoRootForControls);
+runBindThisAssignmentControl(repoRootForControls);
 
 const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isMain) {
@@ -1826,29 +2095,40 @@ if (isMain) {
     process.exit(0);
   }
 
+  // `failures`: at least one diagnostic lands in the EXAMPLE BODY — a genuine content
+  // defect on this example's own merits. `hostOnlyFailures`: every diagnostic is
+  // HOST-attributable — real information about a broken host script, surfaced below
+  // distinctly (never discarded), but never counted as this example's own failure; see
+  // `classifyCompiledResult`.
   const failures = [];
+  const hostOnlyFailures = [];
+  const collect = (result) => {
+    const verdict = classifyCompiledResult(result);
+    if (verdict === "body") failures.push(result);
+    else if (verdict === "host") hostOnlyFailures.push(result);
+  };
   for (const [pkgDir, examplesByFile] of byPackage) {
-    for (const result of compilePackageExamples(repo, pkgDir, pkgDirs, examplesByFile)) {
-      if (result.diagnostics.length > 0) failures.push(result);
-    }
+    for (const result of compilePackageExamples(repo, pkgDir, pkgDirs, examplesByFile)) collect(result);
   }
   for (const [pkgDir, examplesByFile] of byPackageInjected) {
-    for (const result of compilePackageClassInjectedExamples(repo, pkgDir, pkgDirs, examplesByFile)) {
-      if (result.diagnostics.length > 0) failures.push(result);
-    }
+    for (const result of compilePackageClassInjectedExamples(repo, pkgDir, pkgDirs, examplesByFile)) collect(result);
   }
   for (const [pkgDir, examplesByFile] of byPackageSvelte) {
-    for (const result of compilePackageSvelteExamples(repo, pkgDir, pkgDirs, examplesByFile)) {
-      if (result.diagnostics.length > 0) failures.push(result);
-    }
+    for (const result of compilePackageSvelteExamples(repo, pkgDir, pkgDirs, examplesByFile)) collect(result);
   }
   for (const [pkgDir, examplesByFile] of byPackageSvelteInjected) {
-    for (const result of compilePackageSvelteClassInjectedExamples(repo, pkgDir, pkgDirs, examplesByFile)) {
-      if (result.diagnostics.length > 0) failures.push(result);
-    }
+    for (const result of compilePackageSvelteClassInjectedExamples(repo, pkgDir, pkgDirs, examplesByFile)) collect(result);
   }
 
-  if (failures.length > 0 || anyUnresolved) {
+  if (hostOnlyFailures.length > 0) {
+    console.error(
+      `${hostOnlyFailures.length} examples compiled with diagnostics attributable ONLY to their HOST script ` +
+        `(none in the example body itself) — real host defects, not counted as example content failures:\n`,
+    );
+    for (const f of hostOnlyFailures) console.error(formatFailure(f));
+  }
+
+  if (failures.length > 0 || hostOnlyFailures.length > 0 || anyUnresolved) {
     if (failures.length > 0) {
       console.error(`${failures.length} of ${compileTotal} compilable examples failed to compile:\n`);
       for (const f of failures) console.error(formatFailure(f));
