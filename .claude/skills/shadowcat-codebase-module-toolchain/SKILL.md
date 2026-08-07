@@ -6,7 +6,7 @@ description: "Use when touching the external/community module toolchain: server-
 # Shadowcat — External Module Toolchain
 
 Orientation for how a module built OUTSIDE the engine repo (own git repo, own release cycle) is
-installed, discovered, served, enabled, and loaded — the M13-1 pipeline. Orientation+index only:
+installed, discovered, served, enabled, and loaded. Orientation+index only:
 points INTO graphify, `docs/design/`, and memory.
 
 ## Purpose
@@ -17,7 +17,7 @@ module code** (ARCHITECTURE §2 invariant 6). A GM enables a module per-world; t
 supplies exactly one runtime instance of `svelte`/`@shadowcat/*` via an import map, fetches the
 enabled set after `Welcome`, dynamically imports each enabled module through the real
 modules-folder → server → import-map path (identical in dev and prod), and activates it through the
-existing M6b `ModuleRegistry`.
+existing `ModuleRegistry`.
 
 ## Key files & seams
 
@@ -131,7 +131,7 @@ job's example-build step keep them green; the guides code-import their sources r
   Write such tests as (a) a pure unit test of the containment predicate, (b) a symlink/alias HTTP
   repro (`http::module_routes`'s `self-link`-style test), or (c) an encoded segment embedded in a longer
   non-exact-match string.
-- **Scope deliberately excluded from M13-1** (manual/admin-trusted tier): no module upload/install UI
+- **Scope deliberately excluded** (manual/admin-trusted tier): no module upload/install UI
   (install stays manual-extract into `<data-dir>/modules/<id>/`); no sandboxing/permissions for
   installed module JS (modules are admin-trusted, same tier as the server binary); no hot
   enable/disable without a client reload; no marketplace/registry, signing, or update channels.
@@ -140,8 +140,7 @@ job's example-build step keep them green; the guides code-import their sources r
 
 - Rationale: `docs/design/ARCHITECTURE.md` §2 invariant 6 (server runs no third-party code) +
   Global Constraint 1 (single instance); `docs/site/guides/creating-a-module.md` (authoring
-  toolchain — `docs/design/module-authoring.md` is a pointer stub); `docs/PLAN.md` M13 (M13-1
-  DONE entry).
+  toolchain — `docs/design/module-authoring.md` is a pointer stub); `docs/PLAN.md`.
 - Relationships: `graphify query "installed module discovery serve enable engine-compat import map loader"`.
 - Lessons: [[build-artifact-tests-must-consume-not-just-exist]],
   [[shared-wire-schema-change-needs-full-repo-test]], [[injected-callback-boundary-must-validate-every-site]].
