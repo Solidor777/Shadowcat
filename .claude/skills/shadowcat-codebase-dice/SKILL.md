@@ -106,8 +106,7 @@ on.
   so `compare_labels` can detect an unordered (symbolic) label — this can NOT be inferred from
   `value` alone, since a genuine ordered value of `0` is indistinguishable from an unordered die's
   derived-`0` fallback. `RollOutcome`'s final shape: `total: i64`, `records`, `successes:
-  Option<i32>`, `pass: Option<bool>`, `margin: Option<i64>` (renamed + widened from a prior
-  `net_margin` field), `tier_label: Option<String>`, `tier_value: Option<i32>`, `crit_successes: i32`,
+  Option<i32>`, `pass: Option<bool>`, `margin: Option<i64>`, `tier_label: Option<String>`, `tier_value: Option<i32>`, `crit_successes: i32`,
   `crit_fails: i32`, `positive_counter: i32`, `negative_counter: i32`, `symbol_counts:
   BTreeMap<Symbol, i32>` (per-symbol tallies over KEPT dice, computed UNCONDITIONALLY
   inside `evaluate_success`'s per-die loop regardless of which `SuccessRule` variant is active;
@@ -145,8 +144,8 @@ on.
   defined meaning over an arbitrary face-list. The Explode chain's retrigger check tests the
   die's DERIVED value (via `face_value_and_symbols`), never the raw redrawn index/face — for
   `Numeric` this is identical to the raw face (a pure pass-through), but for an ordered `Faces` die
-  whose index doesn't track value monotonically, checking the raw index would misfire (fixed
-  during Task 6, a real bug). `push_extra` is the single construction site for a Penetrate child
+  whose index doesn't track value monotonically, checking the raw index would misfire.
+  `push_extra` is the single construction site for a Penetrate child
   `DieRecord` (takes an `ordered: bool` param — reached only from the Numeric-guarded Penetrate
   arm, always `true`); the inlined Standard-explode/Faces-fallback arm (reached only inside the
   `!ordered { continue }`-gated modifier loop, so always `true` too) constructs its own `DieRecord`
@@ -193,8 +192,8 @@ on.
   `cfg.success`. `run_dp(dies, e, better) -> (Vec<u32>, (i32,i32))` is a bounded-knapsack DP,
   `O(N·E²)`, over an injected `better` ordering; ties break toward the SMALLEST `k` at each die,
   and backtracking runs from the LAST die outward so points concentrate on the earliest dice
-  whenever spending is actually needed (R3 lowest-index-first). `allocate` runs `run_dp` up to
-  TWICE (R1 two-pass clamp handling): pass 1 maximizes raw lexicographic `(net, counter)`; if
+  whenever spending is actually needed. `allocate` runs `run_dp` up to
+  TWICE: pass 1 maximizes raw lexicographic `(net, counter)`; if
   `allow_negative` is unset and the achieved net is `< 1`, every allocation clamps to net 0 so a
   second counter-only pass replaces it (the all-failed-region fallback). Both passes mutate only
   the chosen dice's `value` (adjusted face) and `expertise` (points spent). **`allocate` restricts
@@ -347,9 +346,7 @@ on.
   `Some(0)`/`Some(sum)` instead of `None` for the exact Daggerheart Hope/Fear headline case the
   design doc calls out. A label spanning multiple `DiceGroup`s where even one group is unordered
   must also yield `None` for that label (a partial pool with any unordered member has no
-  well-defined sum) — this was a real gap that shipped past Task 2 (written before Task 6
-  introduced `is_ordered`) and was caught only by the whole-branch final review, not any
-  per-task check.
+  well-defined sum).
 - **`recalculate` targets ONLY base naturals (via `group_spans`), never explosion/penetrate
   children** — a `RecalcOp` naming a non-base id silently no-ops (documented on `RecalcOp`, not an
   error). **`recalculate` is NOT a no-op-diff snapshot for a group with an Explode/Reroll
