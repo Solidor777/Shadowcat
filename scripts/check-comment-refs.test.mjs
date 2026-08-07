@@ -102,3 +102,87 @@ test("skill mode EXAMPLE: marker still exempts a specimen line", () => {
   expect(hits).toEqual([]);
   expect(exempted).toBe(1);
 });
+
+// Three additional categories the owner ruled in for skills, on top of the marker subset above.
+test("skill mode flags an ephemeral doc pointer", () => {
+  const fixture = "Deferred work is tracked in `docs/TODO.md`.\n"; // EXAMPLE:
+  const { hits } = scanContent(fixture, { isMd: true });
+  expect(hits.map((h) => h.kind)).toEqual(["ephemeral doc pointer"]);
+});
+
+test("skill mode flags every named churn tracker", () => {
+  for (const file of [
+    "TODO.md",
+    "PLAN.md",
+    "OPEN_BUGS.md",
+    "CLOSED_BUGS.md",
+    "POST_WORK_FINDINGS.md",
+  ]) {
+    const { hits } = scanContent(`See \`docs/${file}\` for the backlog.\n`, {
+      isMd: true,
+    });
+    expect(hits.map((h) => h.kind)).toEqual(["ephemeral doc pointer"]);
+  }
+});
+
+test("skill mode does NOT flag a durable architecture doc as an ephemeral doc pointer", () => {
+  const fixture = "See `docs/design/ARCHITECTURE.md` for the invariant list.\n"; // EXAMPLE:
+  const { hits } = scanContent(fixture, { isMd: true });
+  expect(hits).toEqual([]);
+});
+
+test("skill mode flags history narration", () => {
+  const fixture = "Previously this returned a bare list; now it returns a map.\n"; // EXAMPLE:
+  const { hits } = scanContent(fixture, { isMd: true });
+  expect(hits.map((h) => h.kind)).toEqual(["history narration"]);
+});
+
+test("skill mode does NOT flag `no longer` as history narration", () => {
+  const fixture = "A revoked token is no longer present in the recipient mask.\n"; // EXAMPLE:
+  const { hits } = scanContent(fixture, { isMd: true });
+  expect(hits).toEqual([]);
+});
+
+test("skill mode flags an unnamed spec reference", () => {
+  const fixture = "Field ordering follows the spec'd default.\n"; // EXAMPLE:
+  const { hits } = scanContent(fixture, { isMd: true });
+  expect(hits.map((h) => h.kind)).toEqual(["unnamed spec reference"]);
+});
+
+// Instrument defect A: a milestone id inside a durable design-doc FILENAME must not fire, but a
+// bare milestone id elsewhere on the same line still must.
+test("skill mode does NOT flag a milestone id embedded in a design-doc filename", () => {
+  const fixture =
+    "Rationale in `docs/design/M2-data-foundation.md` covers the schema.\n"; // EXAMPLE:
+  const { hits } = scanContent(fixture, { isMd: true });
+  expect(hits).toEqual([]);
+});
+
+test("skill mode still flags a bare milestone id beside a design-doc filename citation", () => {
+  const fixture =
+    "M9 changed the shape now described in `docs/design/M2-data-foundation.md`.\n"; // EXAMPLE:
+  const { hits } = scanContent(fixture, { isMd: true });
+  expect(hits.map((h) => h.kind)).toEqual(["milestone/task id"]);
+});
+
+// Instrument defect B: the sweep marker must catch the plural form too.
+test("skill mode flags a plural sweep marker", () => {
+  const fixture = "Ephemeral refs were burned down across sweeps 2a+2b.\n"; // EXAMPLE:
+  const { hits } = scanContent(fixture, { isMd: true });
+  expect(hits.map((h) => h.kind)).toEqual(["sweep / round / review marker"]);
+});
+
+// Code-file mode must be unaffected by the skill-only categories and carve-out.
+test("code mode does not gain the ephemeral-doc-pointer category as a distinct kind", () => {
+  const { hits } = scanContent("// See docs/TODO.md for the backlog.\n", { // EXAMPLE:
+    isMd: false,
+  });
+  expect(hits.map((h) => h.kind)).toEqual(["repo document pointer"]);
+});
+
+test("code mode still flags the singular sweep marker unchanged", () => {
+  const { hits } = scanContent("// Cleaned up in sweep 12.\n", { // EXAMPLE:
+    isMd: false,
+  });
+  expect(hits.map((h) => h.kind)).toEqual(["sweep / round / review marker"]);
+});

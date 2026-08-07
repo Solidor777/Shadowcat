@@ -126,7 +126,10 @@ const BANNED = [
   },
   {
     name: "sweep / round / review marker",
-    re: /\b[Ss]weep \d+|\bfix[- ]round|\bbuddy-check|\bwhole-branch[- ]review|\bfinding \d+/i,
+    // EXAMPLE: A joined plural writer ("sweeps 2a+2b") names the same process-assigned marker as
+    // EXAMPLE: a lone singular one; requiring only the singular form read a legitimate hit as
+    // EXAMPLE: clean, missing a ruled-in category rather than widening one.
+    re: /\b[Ss]weeps? \d+|\bfix[- ]round|\bbuddy-check|\bwhole-branch[- ]review|\bfinding \d+/i,
   },
   // EXAMPLE: A dispatch brief, task or plan is scaffolding that stops existing once the work
   // lands, so a comment deferring to one leaves the reader an instruction they cannot retrieve.
@@ -145,14 +148,13 @@ const BANNED = [
 ];
 
 // The subset of BANNED the owner's ruling actually named for skills: milestone ids, task ids,
-// dated plan filenames, and sweep/round/review markers. A skill's "Pointers" section may cite a
-// durable design document by path plus a section anchor, but a dated spec or plan file is a
-// superseded-by-construction record rather than a durable one, so citing one by its dated filename
-// is exactly the "dated plan/spec file" shape and stays banned. "repo document pointer", "unnamed
-// spec reference", "history narration" and "process marker" are left OUT of this subset on purpose:
-// the ruling did not name them, and widening a gate is never the builder's call. Reusing the CODE
-// entries by reference (rather than re-deriving the regexes) keeps a milestone/task/sweep pattern
-// change from silently diverging between the two file classes.
+// dated plan filenames, sweep/round/review markers, history narration and unnamed spec
+// references. A skill's "Pointers" section may cite a durable design document by path plus a
+// section anchor, but a dated spec or plan file is a superseded-by-construction record rather
+// than a durable one, so citing one by its dated filename is exactly the "dated plan/spec file"
+// shape and stays banned. Reusing the CODE entries by reference (rather than re-deriving the
+// regexes) keeps a milestone/task/sweep/narration/spec pattern change from silently diverging
+// between the two file classes.
 const skillBannedByName = (name) => BANNED.find((b) => b.name === name);
 const SKILL_BANNED = [
   skillBannedByName("milestone/task id"),
@@ -167,7 +169,31 @@ const SKILL_BANNED = [
     re: /\b20\d\d-\d\d-\d\d\b/,
   },
   skillBannedByName("sweep / round / review marker"),
+  skillBannedByName("history narration"),
+  skillBannedByName("unnamed spec reference"),
+  // EXAMPLE: The ruling's newly-added "ephemeral doc pointer" category, named apart from the
+  // EXAMPLE: shared "repo document pointer" CODE entry because the split is different for
+  // EXAMPLE: skills: the code entry also bans a durable architecture reference and a bare
+  // EXAMPLE: numbered invariant, for which code has no durable-citation carve-out at all, while
+  // EXAMPLE: a skill may cite one of those by its full design-doc path. Matching on the FILENAME
+  // EXAMPLE: rather than a generic doc-path prefix is what keeps the split correct without any
+  // EXAMPLE: extra carve-out logic: none of these five churn trackers live under the durable
+  // EXAMPLE: design-doc directory, and none of the durable design docs are named after one of
+  // EXAMPLE: them.
+  {
+    name: "ephemeral doc pointer",
+    re: /\b(?:TODO|PLAN|OPEN_BUGS|CLOSED_BUGS|POST_WORK_FINDINGS)\.md\b/,
+  },
 ];
+
+// EXAMPLE: A durable design-doc citation can carry digits that are part of its FILENAME, not a
+// EXAMPLE: process marker (a milestone-numbered data-model doc under the durable design-doc
+// EXAMPLE: directory) — those digits must not feed the milestone/task-id pattern (or any other
+// EXAMPLE: SKILL_BANNED pattern) below. The citation is stripped from the subject before
+// EXAMPLE: matching only; the reported text still comes from the untouched source line, so a
+// EXAMPLE: separate violation riding on the same line (a bare milestone id beside the citation)
+// EXAMPLE: still surfaces.
+const DESIGN_DOC_CITATION = /docs\/design\/[\w.-]+\.md/g;
 
 // The rule extends to code-facing string literals (assert! messages, test names): a developer
 // reads an assertion message at failure time exactly as they read a comment, and it goes stale
@@ -228,7 +254,7 @@ export function scanContent(content, { isMd }) {
     }
     let subject;
     if (isMd) {
-      subject = line.trim();
+      subject = line.trim().replace(DESIGN_DOC_CITATION, "");
     } else {
       const split = splitLine(line, lexState);
       lexState = split.state;
@@ -334,6 +360,7 @@ function main() {
           EXPLANATORY_STRING.source,
           PROSE_LITERAL.source,
           EXAMPLE_EXEMPT.source,
+          DESIGN_DOC_CITATION.source,
         ],
         ROOTS,
         EXTS,
