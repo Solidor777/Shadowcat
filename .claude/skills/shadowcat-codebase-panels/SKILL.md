@@ -6,7 +6,7 @@ description: "Use when touching the Shadowcat panel-manager: @shadowcat/module-p
 # Shadowcat — Panel Manager (dockable panels)
 
 Orientation for the dockable-panel system (dock/float/minimize/compact + pop-out
-windows) that replaced the tabbed sidebar.
+windows) that is the shell's sole panel surface — there is no tabbed sidebar.
 
 ## Purpose
 

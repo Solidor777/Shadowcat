@@ -21,10 +21,10 @@ token/actor name from non-owners via the `OwnerOrGm` visibility tier. Conditions
 
 - The `scene-docs` module — builders + types (all re-exported from `@shadowcat/core`):
   Every builder/accessor below is re-rooted onto the envelope `name` + typed `engine` band;
-  `ActorSystem`/`TokenSystem`/`FactionRegistrySystem`/`ConditionRegistrySystem` are renamed to
-  `ActorEngine`/`TokenEngine`/`FactionRegistryEngine`/`ConditionRegistryEngine` (no back-compat
-  alias — token/actor position, vision, conditions, and visual all now live on `doc.engine`, not
-  `doc.system`). `ItemSystem` is UNCHANGED — `item` is a client-only doc_type with no Rust-side
+  `ActorEngine`/`TokenEngine`/`FactionRegistryEngine`/`ConditionRegistryEngine` hold token/actor
+  position, vision, conditions, and visual on `doc.engine`, not `doc.system` (there is no
+  `ActorSystem`/`TokenSystem`/`FactionRegistrySystem`/`ConditionRegistrySystem` back-compat
+  alias). `ItemSystem` is UNCHANGED — `item` is a client-only doc_type with no Rust-side
   registration, not one of the 17 engine-defined types, so it stays on the opaque `system` band
   ([[shadowcat-codebase-sheets]]/`shadowcat-codebase-documents-permissions` cover it).
   - `buildActorDoc(worldId, name, engine, id?)` — `name: string | null` is now a DEDICATED
@@ -111,8 +111,9 @@ token/actor name from non-owners via the `OwnerOrGm` visibility tier. Conditions
   submit) via the shared `animSourceComplete(anim)` helper (also backs the top-level animated-kind
   completeness check — a single "frames-nonempty AND sheet-asset-present" rule, not two divergent
   copies), face-row name uniqueness (a duplicate name nulls the visual), and that `defaultFace`
-  names an existing row (else nulls the visual); a stale `faceMapRows` entry referencing a
-  since-renamed/removed face is silently DROPPED rather than failing the whole visual.
+  names an existing row (else nulls the visual); a stale `faceMapRows` entry referencing an
+  absent face (row name changed or row deleted) is silently DROPPED rather than failing the
+  whole visual.
   **Per-TOKEN face-swap palette (extracted into `FaceSwapPalette`, prop `{ tokenId: string
   | null }`, mounted by `ActorsPanel` as `<FaceSwapPalette tokenId={selectedTokenId} />`):**
   distinct from the per-actor creation-form editor; shows only when the selected token's effective

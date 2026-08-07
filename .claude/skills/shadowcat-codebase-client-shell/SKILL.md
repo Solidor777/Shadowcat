@@ -17,11 +17,12 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
 ## Key files & seams
 
 - `Contribution`, `ContributionRegistry` (modules
-  contribute UI into named surfaces). `Contribution.panel?` (replaced `tab`) is optional
+  contribute UI into named surfaces). `Contribution.panel?` is optional
   plain-data panel metadata (`icon`, `labelKey`, `gmOnly?`, `defaultPlacement`) the panel host
-  renders; `labelKey` is an i18n key the HOST resolves (locale-reactive).
-- **Panels replaced the tabbed sidebar**: the sidebar module and ui-kit
-  `TabbedSurface` are DELETED. `@shadowcat/module-panels` provides the multi
+  renders; `labelKey` is an i18n key the HOST resolves (locale-reactive). There is no `tab`
+  field — a `Contribution` describes only a panel.
+- **Panels are the sidebar**: the sidebar module and ui-kit
+  `TabbedSurface` do not exist. `@shadowcat/module-panels` provides the multi
   `shadowcat.panel` contract every panel module contributes into, hosts `PanelHost` in
   core-ui's singleton `shadowcat.surface:panel-host` region and the minimized-chips strip in
   statusbar's `shadowcat.surface:panel-dock`. Keep-mounted rule carries over: panels hide via
@@ -117,11 +118,11 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
   any of them unsettled forever. `App.boot()` wraps each of the three awaits in `withRetry` (3 attempts, flat delays) before
   degrading to the login/worlds route — a transient non-2xx or connection reset during startup no
   longer permanently strands the SPA on that fallback route with no retry.
-- **`WorldSession`'s activation latch is split, and the split order is load-bearing
-  (silent-hang-startup fix)** — a single `#bootstrapped` boolean used to latch BEFORE
-  `await #modules.activate()`, so a failed/hung first activation (e.g. a manifest dependency
-  cycle) cached "done" for the session's life: reconnect Welcomes short-circuited, `role` was set,
-  but every Surface stayed empty. It is now two fields: `#modulesAdded` (latches once per
+- **`WorldSession`'s activation latch is split, and the split order is load-bearing** —
+  latching a single `#bootstrapped` boolean BEFORE `await #modules.activate()` would let a
+  failed/hung first activation (e.g. a manifest dependency cycle) cache "done" for the
+  session's life: reconnect Welcomes would short-circuit, `role` would be set, but every
+  Surface would stay empty. It is instead two fields: `#modulesAdded` (latches once per
   session — re-adding modules would duplicate registrations) and `#activated` (latches only on a
   successful `activate()`, reverted to `false` in the `catch` on a thrown activation, so the NEXT
   Welcome retries instead of caching the failure). **`#activated` is still set to `true`
@@ -154,8 +155,8 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
   itself never rejects, so neither failure surfaces to a caller.
 - The shell package — `App`, the `main` entry module, and its `lib/` directory (hash router, api client, session,
   WorldSession controller, default-module wiring). The `sessionState` module owns the
-  `ui_state` blob: `getPanelLayout(world)`/`setPanelLayout(world, blob)` (replaced
-  activeTab) persist the per-world panel layout into `UiState.worlds[world].panelLayout` via
+  `ui_state` blob: `getPanelLayout(world)`/`setPanelLayout(world, blob)` persist the
+  per-world panel layout into `UiState.worlds[world].panelLayout` via
   the existing leading-edge-debounced PUT. The blob is OPAQUE to the shell — the panel host
   owns its shape/validation. **Leaf-key dirty tracking (fixes the same-user cross-session
   clobber — see CLOSED_BUGS, the "Server + client / ui-state persistence" entry)**: a `dirty` structure

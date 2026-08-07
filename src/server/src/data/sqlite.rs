@@ -1514,10 +1514,9 @@ impl SqliteRepository {
         // A dangling link loads `None` and `effective_owner` fails closed to no owner.
         //
         // `load_document` is keyed on id alone (no `world_id` filter), so a cross-world
-        // `actor_id` would otherwise resolve. The scope check that used to live here is
-        // now inside `permission::effective_owner` itself — see that function's doc
-        // comment for the rationale (keeps the reachable set equal to `SceneEcs.actors`
-        // by construction).
+        // `actor_id` would otherwise resolve. The cross-world scope check lives inside
+        // `permission::effective_owner` itself — see that function's doc comment for the
+        // rationale (keeps the reachable set equal to `SceneEcs.actors` by construction).
         let actor = Self::load_document(executor, actor_id).await?;
         Ok(crate::data::permission::effective_owner(
             doc,

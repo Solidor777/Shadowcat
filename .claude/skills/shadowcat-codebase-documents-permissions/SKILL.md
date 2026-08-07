@@ -44,8 +44,7 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
     DERIVES `world` from the doc itself — `http::routes`'s `get_document`/`patch_document`/
     `delete_document` do `let world = world_of(&doc).ok_or(AppError::NotFound)?`, then use that
     extracted world as the authority for the subsequent `permission_context` lookup; `None`
-    (a compendium doc) 404s uniformly with the missing-doc case, matching the behavior
-    `http::routes`'s own now-deleted local copy used to return (existence-hiding). No remaining
+    (a compendium doc) 404s uniformly with the missing-doc case (existence-hiding). No
     by-id/relay call site duplicates this "derive the world from the doc" decision — the ONE
     place to extend THAT specific pattern is here. A separate, narrower match exists at
     `data::sqlite::check_command_scope`: given a caller-ALREADY-known `world_id` (the
@@ -276,10 +275,10 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
     so promotion/demotion to `WorldRole::Gm` takes effect immediately, not a frozen snapshot.
   - `resolve_access_world` deliberately reuses this SAME `effective_role` helper (not
     `doc.permissions.default`) to layer world-level capability grants, so a world-default grant
-    for the GM's fallback role applies consistently even when that GM is `gm_role`-capped — the
-    original (pre-refactor) sketch would have recomputed the role independently from
-    `doc.permissions.default` here and silently diverged for a capped GM; this was a real bug
-    caught before it shipped, not a hypothetical.
+    for the GM's fallback role applies consistently even when that GM is `gm_role`-capped.
+    Recomputing the role independently from `doc.permissions.default` here would silently
+    diverge for a capped GM — this is a real, caught-before-shipping bug class, not a
+    hypothetical, which is why the two call sites must share one `effective_role`.
   - First (and so far only) consumer: `shadowcat-codebase-chat`'s `Audience`→`PermissionSet`
     mapping (`Whisper` sets `Some(DocRole::None)`, `GmOnly` sets `Some(DocRole::Observer)`,
     `Public` leaves it `None`).

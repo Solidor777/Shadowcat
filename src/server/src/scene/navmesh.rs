@@ -830,9 +830,9 @@ mod tests {
     fn los_smooth_refuses_shortcut_with_coincident_endpoints_in_impassable_cell() {
         // A and C are coincident (distance 0 < sample_path's 1e-9 zero-length threshold), both
         // sitting in cell (0,0), which is entirely impassable. B is a distinct, unrelated
-        // vertex the smoothing loop should not be able to skip over. Pre-fix, `chord_ok`
-        // collapsed to a single sample and fell through to `true` without checking cell (0,0)
-        // at all; post-fix it refuses a degenerate chord outright.
+        // vertex the smoothing loop should not be able to skip over. Pins: `chord_ok` refuses a
+        // degenerate (zero-length) chord outright rather than collapsing it to a single sample
+        // and falling through to `true` without checking cell (0,0) at all.
         let mut b = RegionField::builder();
         b.add(
             &RegionShape::Rect {

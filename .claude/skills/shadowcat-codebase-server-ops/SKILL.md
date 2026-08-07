@@ -83,8 +83,8 @@ and restore as a deployment-operator tool, not an in-app feature.
   exported `dir_is_empty_or_absent`). A future caller invoking `create_backup` directly (e.g. an
   in-app export feature) would bypass that gate.
 - **Restore never starts the server** — restore and serve are always two separate invocations
-  (a live connection can't safely have its backing file replaced out from under it; Windows can
-  even fail the replace outright on an open handle).
+  (a live connection can't safely have a different file swapped in as its backing file; Windows
+  can even fail that swap outright on an open handle).
 - **No shell-out for the recursive directory copy** (`tokio::fs` walks only — no `cp -r`/`xcopy`/
   `robocopy`), every path built via `Path`/`PathBuf::join` — cross-platform invariants per project
   CLAUDE.md, verified by a dedicated nested-directory (3+ levels) round-trip test.

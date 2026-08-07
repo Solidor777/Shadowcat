@@ -36,10 +36,10 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   zero-overlap cell). `resolve_scene` also yields `movement_restriction`
   (`MovementRestriction::{Visible,Revealed,Unrestricted}`, scene-overridable, fail-closed to `Visible`)
   + `partial_cell_leniency` (world-only).
-  **THE FORMER PARITY CHECKLIST, now a single-gate constraint list: `Room::publish`
+  **A single-gate constraint list: `Room::publish`
   no longer gates non-GM traversal at all** — a non-GM `Update` touching a token's `/engine/x`/`/engine/y`
-  is refused outright (`ws::room`'s bitwise `a0 != a1` check), and the wall/mask/supercover
-  machinery that used to run there is deleted. `move_exec`/`execute_move` is now the SOLE
+  is refused outright (`ws::room`'s bitwise `a0 != a1` check); `Room::publish` runs no
+  wall/mask/supercover machinery of its own. `move_exec`/`execute_move` is the SOLE
   implementation of the per-cell traversal decision. The six axes below are present-tense
   CONSTRAINTS on `execute_move` itself, and on any future second write path to a
   token's position — such a path MUST route through `execute_move` rather than re-derive its own
@@ -54,10 +54,10 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   apply in every mode, not just two of three);
   (5) **scene identity** — DERIVED from the token, never the frame (below);
   (6) **fail-open defaults** — an absent `scene_grid_sizes` entry means no scene document and must
-  REFUSE, never synthesize a 100-unit grid. **This axis still lives in `Room::publish` today**,
-  not `execute_move`: it guards the retained-and-repointed `Create` placement gate, the one
-  piece of `publish`'s former gate block that survives, now authorizing a created token's position
-  rather than a moved token's path.
+  REFUSE, never synthesize a 100-unit grid. **This axis lives in `Room::publish`**,
+  not `execute_move`: it guards the retained-and-repointed `Create` placement gate, the sole
+  surviving piece of `publish`'s gate block, authorizing a created token's position
+  rather than an in-motion token's path.
   GM scope: `execute_move` and `gate_walk`'s resource guards (`MAX_GATE_WALK_COORD`/
   `MAX_GATE_WALK_SAMPLES`, non-finite, scene-existence) bind unconditionally including GMs;
   GMs bypass every gameplay gate (walls, mask, impassable, arrest, footprint) on both `execute_move`
@@ -389,15 +389,13 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   mask ONCE, above the dispatch, and pass the SAME reference into whichever engine runs — never
   forked (mirrors the pathfinder's own §13 invariant, generalized to a second engine). Client:
   `movementModel` world-default + scene-override editor in `GameSettingsPanel` (mirrors the
-  `movementRestriction` editor exactly). **Originally shipped router + preview only**: the measure-tool's
-  `commitRoute` (the scene-tools `controller` module) refused to send a `moveRequest` when the active scene's
-  `movementModel` was `"continuous"`, by design for that checkpoint. **That restriction was later
-  lifted** — `commitRoute` no longer branches on `movementModel` at all; committing a route
-  proceeds identically for grid-stepped and continuous scenes. This is possible because the server
-  move-execution path (`execute_move`/`gate_walk`/`sample_path`/the egress clip) is fully
-  engine-agnostic — no `movementModel` branch anywhere in that path, so there was
-  nothing engine-specific left to gate at the client. `requestRoute` (the preview path) was always
-  unaffected — no grid-snap fallback, silent no-op on double-click.
+  `movementRestriction` editor exactly). The measure-tool's
+  `commitRoute` (the scene-tools `controller` module) does not branch on `movementModel` at
+  all — committing a route proceeds identically for grid-stepped and continuous scenes, because
+  the server move-execution path (`execute_move`/`gate_walk`/`sample_path`/the egress clip) is
+  fully engine-agnostic: no `movementModel` branch anywhere in that path means nothing
+  engine-specific needs gating at the client. `requestRoute` (the preview path) is unaffected —
+  no grid-snap fallback, silent no-op on double-click.
 - **`snapToGrid` axis (the `scene-docs` module)**: `SceneEngine.snapToGrid?:
   boolean` (typed `engine`-band field, ts-rs exported — not opaque `system`-body
   JSON; mirrors `movementModel`/`bounds`'s field shape).
@@ -621,8 +619,9 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   more than once while the load was in flight. The animated branch's `replaceVisualChild` call is
   ALSO conditional (`if (!(node.visual instanceof AnimatedSprite))`), mirroring the image branch, to
   reduce how often the object gets recreated in the first place. Any future code touching this
-  async-completion pattern (anywhere a display object can be replaced mid-flight) must follow the
-  same object-identity-guard shape — a real bug of this exact kind has been found and fixed before.
+  async-completion pattern (anywhere in-flight code can swap in a different display object) must
+  follow the same object-identity-guard shape — a real bug of this exact kind has been found and
+  fixed before.
 - `engine` (client/render module) — `visionSweeps: Map<tokenId, {samples, elapsed,
   durationMs}>` drives the mover's fog sweep during `MoveStream` playback (keyed per token — unions
   concurrent sweeps' visible sets rather than clobbering). `animateSamples(id, samples, durationMs,
@@ -1034,18 +1033,18 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   below, whole-`/engine`/whole-`/name`) visibility override — currently, secret regions are the
   only doc type that does. Any future doc type that wants whole-body secrecy (vs. per-field) must
   go through this same branch, not a new one.
-  **This same null-not-strip branch was later generalized to `/engine` and `/name` too**
-  (`filter_properties` now special-cases all three top-level pointers identically) — a secret
-  region's declared override moved from `/system` to `/engine` as part of that same re-root (see
+  **This same null-not-strip branch also covers `/engine` and `/name`**
+  (`filter_properties` special-cases all three top-level pointers identically) — a secret
+  region's declared override lives at `/engine`, not `/system` (see
   `shadowcat-codebase-documents-permissions` for the generalized rule).
-- **A fixed-count cube lerp is a THIN LINE, not a supercover.** `HexGrid::
-  line_traversal` originally sampled `n+1` points with `n = max cube-axis delta` (the standard
-  Red Blob hex line-draw). Its sample spacing is one full hex PITCH — a hex's minimum width — so
-  corner slivers fall between samples: it omitted a geometrically crossed hex on ~55% of random
-  segments, and when `n` rounded to 0 it dropped the destination's own hex, breaking its own
-  "both endpoint cells always included" contract. Because this is the hex movement gate's primitive
-  `move_exec` relies on for cell-membership checks, every omitted hex was one a non-GM could move
-  through unchecked against the visibility mask. It is now a **ψ-crossing supercover**: `cell_of` is
+- **A fixed-count cube lerp is a THIN LINE, not a supercover.** The standard Red Blob hex
+  line-draw samples `n+1` points with `n = max cube-axis delta`, spaced one full hex PITCH
+  apart — a hex's minimum width — so corner slivers fall between samples: it omits a
+  geometrically crossed hex on ~55% of random segments, and when `n` rounds to 0 it drops the
+  destination's own hex, breaking the "both endpoint cells always included" contract. Because
+  this is the hex movement gate's primitive `move_exec` relies on for cell-membership checks,
+  every omitted hex is one a non-GM could move through unchecked against the visibility mask.
+  `HexGrid::line_traversal` instead IS a **ψ-crossing supercover**: `cell_of` is
   nearest-center, so a hex is its center's Voronoi cell and every hex boundary lies on an integer
   level set of ψ₁=x−y, ψ₂=z−y, ψ₃=x−z (fractional cube coords) — enumerate every integer ψ crossing,
   sample each interval's midpoint, plus a perpendicular epsilon probe either side of each crossing

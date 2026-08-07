@@ -66,11 +66,11 @@ describe("ItemSheet dice roll-to-chat", () => {
     expect(calls).toEqual([[{ op: "update", doc_id: "i1", changes: [{ path: "/name", old: "Sword", new: "Axe" }] }]]);
   });
 
-  // Regression test for the reactive-subscription fix: a second edit in the same rendered
-  // instance must read the FIRST edit's result as `old`, not the doc snapshot frozen at first
-  // render. Mirrors the `sheet-actor` module's "a second edit in the same instance dispatches a
-  // fresh old reflecting the first edit" test. Fails against the pre-fix frozen-`ctx.documents.get()`
-  // derived because the second dispatch's `old` would still be the pre-edit doc's field.
+  // Mirrors the `sheet-actor` module's "a second edit in the same instance dispatches a fresh
+  // old reflecting the first edit" test. Pins: a second edit in the same rendered instance
+  // reads the FIRST edit's result as `old`, not the doc snapshot frozen at first render —
+  // `ctx.documents.get()` must be re-derived on each dispatch, or the second dispatch's `old`
+  // is still the pre-edit doc's field.
   it("a second edit in the same instance dispatches a fresh old reflecting the first edit", async () => {
     const calls: unknown[] = [];
     const documents = storeWith({ name: "Sword" });

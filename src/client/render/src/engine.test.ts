@@ -954,8 +954,8 @@ describe("multi-scene render filtering", () => {
     expect(backend.visibility).toEqual({ mode: "masked", visible: [], explored: [] });
 
     // Store advances past seq 5 → the deferred frame flushes. It must re-filter against the CURRENT
-    // scene (sB), NOT replay the stale sA-filtered input. Assert scene B's fog still stands (no sA
-    // hole leaking through). This assertion fails against the pre-fix code and passes after.
+    // scene (sB), NOT replay the stale sA-filtered input. Pins: scene B's fog still stands (no sA
+    // hole leaking through) once the deferred frame is applied.
     store.applyCommand({
       seq: 5, world_id: "w1", author: "u", ts: 0,
       ops: [{ op: "create", doc: buildSceneDoc("w1", {}, "sC") }],

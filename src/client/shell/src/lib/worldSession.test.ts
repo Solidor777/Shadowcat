@@ -156,9 +156,8 @@ test("a failed first activation is re-attempted on the next Welcome (no permanen
   });
   await session.enter("w1");
   push(welcomeFrame);
-  // Pre-fix behavior: the second Welcome short-circuits the bootstrap guard and
-  // logs nothing, latching the first failure for the session's life. Fixed
-  // behavior: both Welcomes re-attempt activation and both log the failure.
+  // Pins: the bootstrap guard does not latch a failed activation as done, so a second
+  // Welcome re-attempts activation and both Welcomes log the failure.
   await vi.waitFor(() => expect(errors).toHaveLength(1));
   expect(errors[0][0]).toBe("world session welcome handling failed");
 

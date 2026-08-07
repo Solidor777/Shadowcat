@@ -16,8 +16,7 @@ message-specific redaction/search/broadcast code. **Shipped** (sanitizer + comma
 (`chat::parse_command`) derives `MessageKind`/a content-level `/w` whisper target; `EditMessage`/
 `DeleteMessage` replace c-1's blanket Update rejection with a real, authorized, sanitizing edit
 path and a soft-tombstone delete path, gated by a new `WriteOrigin` marker. **Shipped**
-(the client display layer + three server enablers): `MessageEngine.source` (renamed from
-`MessageSystem`; edit-prefill raw
+(the client display layer + three server enablers): `MessageEngine.source` (edit-prefill raw
 input), an always-on `:shortcode:` → emoji pre-pass in `sanitize`, a member-visible world
 roster, the client Zod mirror (the `chat-docs` module), and the chat UI as three replaceable modules
 (`module-chat` host / `module-chat-composer` / `module-chat-card`) mounted in the tabbed
@@ -162,12 +161,11 @@ with zero message-specific plumbing in any of those subsystems.
     choosing to post to a "GM" channel is what sets `audience: GmOnly`; the server has no concept
     of a reserved channel name.
   - `MessageEngine{channel, user_owner, actor_owner, kind, audience, content, source,
-    edited_at, deleted_at}` (renamed from `MessageSystem`; now lives at
-    `Document.engine`, not `Document.system` — a message doc's `system` body is empty `{}`) — the
-    `engine` body shape; `#[serde(deny_unknown_fields)]` (`MessageSystem` lacked it, so an
-    unknown key used to pass through unrejected;
-    `MessageEngine` closes that gap the same way every other engine-defined doc_type's ingress
-    does). `audience` rides the body verbatim, same treatment as `kind`/`actor_owner`.
+    edited_at, deleted_at}` lives at
+    `Document.engine`, not `Document.system` — a message doc's `system` body is empty `{}` — the
+    `engine` body shape; `#[serde(deny_unknown_fields)]` rejects any unknown key on ingress,
+    closing that gap the same way every other engine-defined doc_type's ingress
+    does. `audience` rides the body verbatim, same treatment as `kind`/`actor_owner`.
     `edited_at`/`deleted_at` (both
     `Option<i64>`, `#[serde(skip_serializing_if = "Option::is_none")]`) are the c-3 edit/delete
     markers — absent (not `null`) on an unedited/live message, so a stored c-1 message
@@ -176,7 +174,7 @@ with zero message-specific plumbing in any of those subsystems.
     stored at ingest as `parsed.body` when the send parsed a `/w` (so an unmodified prefill
     resubmit can't trip the edit path's `AudienceLocked`) else the FULL content
     (command prefix KEPT — `/me x` prefills as `/me x` and re-parses to the same kind);
-    replaced on edit (always full content there; a WHISPER edit skips command parsing entirely,
+    set to the full post-edit content on edit (a WHISPER edit skips command parsing entirely,
     mirroring send's literal-body semantics for a whisper — a non-whisper edit still rejects `/w`);
     **CLEARED (`None`) by
     the delete tombstone alongside `content`** — a retained source would leak deleted content.
@@ -408,9 +406,8 @@ with zero message-specific plumbing in any of those subsystems.
 - **Content model is opaque and NOT ts-rs-exported** (`MessageKind`, `Segment`, `MessageEngine`)
   — only `ActorOwnerRef` and `Audience` (both on the wire `SendMessage` frame) are. The client
   mirror NOW EXISTS: the `chat-docs` module — Zod schemas +
-  `parseMessageEngine(doc) -> ChatMessageEngine | null` (renamed from
-  `parseMessageSystem`/`ChatMessageSystem`, parses `doc.engine` not `doc.system`; fail-closed:
-  wrong doc_type or ANY
+  `parseMessageEngine(doc) -> ChatMessageEngine | null` (parses `doc.engine` not `doc.system`;
+  fail-closed: wrong doc_type or ANY
   malformed body → null, never partial) + `isKnownSegment` (unknown segment kinds parse as
   opaque forward-compat and render as nothing, but the fallback REFUSES kinds "text"/"html" so
   a malformed known-kind segment fails the whole message instead of being misclassified —
@@ -488,14 +485,15 @@ with zero message-specific plumbing in any of those subsystems.
   message's `Audience` or any later `gm_role`/world-role change — e.g. a Player who posts to a
   `GmOnly` channel permanently keeps read/search access to their own message even if never
   promoted to GM. Anyone building an edit/delete path on top of this (c-3) must not assume `Owner`
-  implies "currently privileged"; it means "originally authored."
+  implies "currently privileged" — it marks who authored the message, independent of current
+  privilege.
 
 ## Client display layer
 
 Three independently replaceable modules (UI-is-modules; swap any one without the others):
 
 - **`@shadowcat/module-chat`** (the host) — contributes the sidebar tab
-  (order 0 = the default tab; `settings` was moved to order 6 to keep 0 unique) and DECLARES
+  (order 0 = the default tab; `settings` uses order 6, keeping 0 unique) and DECLARES
   the singleton surfaces `shadowcat.surface:chat.composer` / `chat.message`. **Unread badge
   (Phase-1 cleanup):** the chat tab is dockview-rendered imperatively via `PanelTabRenderer`, not a
   Svelte component, so the badge is a new `PanelBadge` subscribe/get LIVE-BINDING seam on

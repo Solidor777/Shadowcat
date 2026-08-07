@@ -149,8 +149,8 @@ optimistically and roll back on divergence.
   `Connect` implementation that delivers Welcome via a microtask BEFORE its own promise resolves
   (the continuation that calls `armWelcomeWatchdog` runs strictly after), which would otherwise arm
   a watchdog nothing will ever disarm. **`reconnectAttempt` resets on WELCOME, not on socket
-  `open`** — the reset moved from `open()` into the `"welcome"` case (after the generation guard):
-  a server that accepts the socket but never sends Welcome must keep backing off
+  `open`** — the reset lives in the `"welcome"` case (after the generation guard), not in
+  `open()`: a server that accepts the socket but never sends Welcome must keep backing off
   (`scheduleReconnect`'s exponential-with-full-jitter delay) on every watchdog-close/reconnect
   cycle instead of retrying at the base delay forever, which would amplify load against exactly the
   degraded server the watchdog exists to escape.
