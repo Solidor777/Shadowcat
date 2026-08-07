@@ -26,7 +26,7 @@ import PanelMenu from "../PanelMenu.svelte";
 // by `FakeEngine`-only hosts.
 import "../panels.scss";
 
-/** The dockview group id reserved for the stage (W1). Never collides with a
+/** The dockview group id reserved for the stage. Never collides with a
  * zone-group id, which is always derived from a panel id via `groupIdFor`
  * and namespaced under a different prefix. */
 const STAGE_GROUP_ID = "sc-stage-group";
@@ -457,7 +457,7 @@ export class DockviewEngine implements EngineAdapter {
   // re-emit them as ops (that would fight the reducer that just drove this
   // very `apply()` call).
   #applying = false;
-  // Reentrancy guard for W3: `#restoreStage` itself adds a panel; without
+  // Reentrancy guard: `#restoreStage` itself adds a panel; without
   // this, the model's own remove/add bookkeeping could recurse back in.
   #restoringStage = false;
   // One live `onDidDimensionsChange` subscription per managed (non-stage)
@@ -514,9 +514,9 @@ export class DockviewEngine implements EngineAdapter {
   // regardless of this guard. What it WOULD otherwise do, wrongly, is
   // `#floatInvokers.delete(id)` — discarding the very entry `apply()`'s
   // floating loop is about to hand to the panel's OWN new floating dialog a
-  // few lines later. Gating the delete on this set is what actually fixes
-  // Finding 1: the invoker entry now survives the transient churn intact,
-  // available to a LATER, real close of the floating panel.
+  // few lines later. Gating the delete on this set keeps the invoker entry
+  // intact across the transient churn, available to a LATER, real close of
+  // the floating panel.
   #floatTransitionIds = new Set<string>();
   // Last rect (px, relative to the dockview root) `apply()` last placed a
   // floating panel at OR this class last emitted via `resizeFloating` —
@@ -550,8 +550,8 @@ export class DockviewEngine implements EngineAdapter {
   // orphan-group loop from destroying the group dockview still depends on.
   #poppedOutOriginGroups = new Map<string, string>();
   // Gesture-time popout invoker. Defaults to dockview's native popout (verified
-  // same-heap, content re-parented, stylesheets cloned — M12a-0 spike +
-  // `PopoutWindow.open`). Injectable so unit tests exercise the async-result →
+  // same-heap, content re-parented, stylesheets cloned, via `PopoutWindow.open`).
+  // Injectable so unit tests exercise the async-result →
   // op translation without a real `window.open` (jsdom has none).
   #popoutDriver: (panel: IDockviewPanel) => Promise<boolean>;
 
@@ -589,7 +589,7 @@ export class DockviewEngine implements EngineAdapter {
   /** `EngineAdapter.init`: creates the underlying `DockviewApi` against `host`,
    * registers the content/tab component factories (`createComponent`,
    * `createTabComponent` — branching on `options.name`/`options.id` per the
-   * inline comments below), mounts the stage (W1, `#mountStage`), and
+   * inline comments below), mounts the stage (`#mountStage`), and
    * subscribes every component-level event this class translates into ops or
    * DOM/focus teardown (`onWillDrop`, `onDidRemovePanel`,
    * `onDidActivePanelChange`, `onDidRemovePopoutGroup`, `onDidLayoutChange`).
@@ -599,7 +599,7 @@ export class DockviewEngine implements EngineAdapter {
    * @param slotFor Resolves a panel id to its persistent, already-mounted slot
    * element — adopted, never re-created, by this engine's content renderers.
    * @param stageEl The shared canvas/stage element, adopted into its own
-   * dedicated headerless group (W1).
+   * dedicated headerless group.
    * @example
    * ```ts
    * import { DockviewEngine } from "@shadowcat/module-panels";
@@ -628,10 +628,11 @@ export class DockviewEngine implements EngineAdapter {
       // (not `options.name`, which is always this same string) is what the
       // factory below branches on.
       defaultTabComponent: "sc-tab",
-      // The stage's own group is headerless (`hideHeader: true`, W1), so this
-      // is never actually invoked for the stage id — the `undefined` fallback
-      // (dockview's `DefaultTab`) is defense-in-depth only, matching `apply`/
-      // `focus`'s belt-and-suspenders STAGE_ID guards elsewhere in this class.
+      // The stage's own group is headerless (`hideHeader: true`, set by
+      // `#mountStage`), so this is never actually invoked for the stage id —
+      // the `undefined` fallback (dockview's `DefaultTab`) is defense-in-depth
+      // only, matching `apply`/`focus`'s belt-and-suspenders STAGE_ID guards
+      // elsewhere in this class.
       createTabComponent: (options: CreateComponentOptions) =>
         options.id === STAGE_ID
           ? undefined
@@ -662,12 +663,12 @@ export class DockviewEngine implements EngineAdapter {
    * `float` additionally records `invoker` (the tab's own menu button,
    * handed in by `PanelTabRenderer`) as this panel's focus-return target
    * (see `#floatInvokers`). Refuses `STAGE_ID` in TWO independent layers:
-   * the early return below (mirrors `focus()`'s existing W2 guard) and
-   * `opForMenuCommand`'s own veto (mirrors `classifyDrop`'s stage veto) —
-   * belt-and-suspenders alongside `createTabComponent`'s `STAGE_ID` branch
-   * (`init()`) and W1's headerless stage group, which never gives the stage
-   * a `PanelTabRenderer`/menu button to invoke this with in the first place;
-   * neither guard here is the sole line of defense.
+   * the early return below (mirrors `focus()`'s STAGE_ID defense-in-depth
+   * guard) and `opForMenuCommand`'s own veto (mirrors `classifyDrop`'s stage
+   * veto) — belt-and-suspenders alongside `createTabComponent`'s `STAGE_ID`
+   * branch (`init()`) and `#mountStage`'s headerless stage group, which never
+   * gives the stage a `PanelTabRenderer`/menu button to invoke this with in
+   * the first place; neither guard here is the sole line of defense.
    * @param id The panel id the command targets.
    * @param cmd The chosen `MenuCommand`.
    * @param invoker The tab's own menu button — recorded as the focus-return
@@ -703,8 +704,8 @@ export class DockviewEngine implements EngineAdapter {
   /** Gesture-time pop-out: drives dockview's native `addPopoutGroup`
    * synchronously (preserving the user gesture), then translates the async
    * result into a tree op. Success ⇒ `popOut` (records the id + its live popout
-   * group for close-translation). Block/throw ⇒ spec §10 fallback: `float` +
-   * a `panels.popoutBlocked` notice.
+   * group for close-translation). Block/throw ⇒ falls back to `float` + a
+   * `panels.popoutBlocked` notice.
    * @param id The panel id to pop out.
    * @example
    * ```
@@ -752,14 +753,14 @@ export class DockviewEngine implements EngineAdapter {
       });
   }
 
-  /** W1: mounts the stage into its own dedicated group — headerless (no tab
+  /** Mounts the stage into its own dedicated group — headerless (no tab
    * strip, so no close/drag affordance exists at all: `hideHeader: true`
    * sets `header.hidden = true`, and `header` IS the group's `TabsContainer`
    * instance, whose `hidden` setter sets the whole tabs-and-actions
    * element's `display: none`) and locked to `'no-drop-target'` (the
    * model's own drop handler returns before a drop event is even
    * constructed against a group locked this way). Also used by
-   * `#restoreStage` (W3) to remount after an unexpected removal.
+   * `#restoreStage` to remount after an unexpected removal.
    * @param api The live `DockviewApi` to mount the stage group/panel into.
    * @returns The stage's dedicated dockview group (created, or the existing
    * one re-locked, on a repeat call).
@@ -794,7 +795,7 @@ export class DockviewEngine implements EngineAdapter {
     return stageGroup;
   }
 
-  /** W3: fail-safe invariant guard. If the stage panel ever leaves the
+  /** Fail-safe invariant guard. If the stage panel ever leaves the
    * model (a bug elsewhere, a dockview behaviour change, or a wrapper-API
    * gap), remount it immediately and log — the stage must never simply
    * vanish.
@@ -819,7 +820,7 @@ export class DockviewEngine implements EngineAdapter {
   }
 
   /** `DockviewApi.onDidRemovePanel` handler: runs floating-a11y teardown and
-   * the W3 stage-restore guard for EVERY panel removal regardless of cause,
+   * the `#restoreStage` stage-restore guard for EVERY panel removal regardless of cause,
    * then — unless the removal is our own `apply()` reconciliation, or the
    * transient docked→floating transition `#floatTransitionIds` brackets —
    * redispatches it as a `close` `LayoutOp`. See the inline comments below for
@@ -855,7 +856,7 @@ export class DockviewEngine implements EngineAdapter {
     for (const cb of this.#opListeners) cb({ op: "close", id: panel.id });
   }
 
-  /** W1/D4: floating groups are non-modal dialogs (dockview's own `Overlay`
+  /** Floating groups are non-modal dialogs (dockview's own `Overlay`
    * sets `role="dialog"`/`aria-modal="false"` — see `Overlay`'s constructor); this adds
    * the label + focus management the brief requires that dockview doesn't
    * supply itself: `aria-label` = the panel's own label, DOM focus moves
@@ -972,7 +973,7 @@ export class DockviewEngine implements EngineAdapter {
     if (this.#applying) return;
     for (const id of ids) {
       // STAGE_ID veto, belt-and-suspenders alongside every other STAGE_ID guard
-      // in this class: the stage never enters `poppedOut` (W1), so this only
+      // in this class: the stage never enters `poppedOut`, so this only
       // ever matters for the `event.group.model.panels` fallback above — skip
       // it rather than emit a `popIn` for an id that was never a valid subject.
       if (id === STAGE_ID) continue;
@@ -980,7 +981,7 @@ export class DockviewEngine implements EngineAdapter {
     }
   }
 
-  /** W2 + intercept-and-redispatch: the ONLY place a dockview drag event is
+  /** Intercept-and-redispatch: the ONLY place a dockview drag event is
    * translated into `DropSite` and fed to `classifyDrop` (pure/engine-free).
    * `event.preventDefault()` is now called UNCONDITIONALLY once a layout and
    * a classifiable site exist — for a veto, that is the whole story (dockview
@@ -999,8 +1000,8 @@ export class DockviewEngine implements EngineAdapter {
    * op per tab of the dragged group (`#handleGroupWillDrop`), classified
    * against the group's FIRST tab as a representative subject — the same
    * `classifyDrop` rules apply, so a whole-group drop targeting the
-   * container's TOP edge still vetoes (no "top" `ZoneId` exists, W1/D4) exactly
-   * as a single-tab edge drop would.
+   * container's TOP edge still vetoes (no `"top"` `ZoneId` variant exists)
+   * exactly as a single-tab edge drop would.
    *
    * Two independent wires feed this SAME method: `init()`'s `api.onWillDrop`
    * (fires only for root/edge drops — `DockviewComponent`'s constructor's
@@ -1269,10 +1270,10 @@ export class DockviewEngine implements EngineAdapter {
         let previousGroupIdInZone: string | null = null;
 
         zoneNode.groups.forEach((groupNode, index) => {
-          // W3 hardening: a tree group whose tabs are entirely the stage id
-          // (after filtering) has no real content to dock. Creating it
-          // anyway would removePanel the LIVE stage panel out of its own
-          // locked group to "move" it here; W3's `#restoreStage` remounts it
+          // Stage-relocation guard: a tree group whose tabs are entirely the
+          // stage id (after filtering) has no real content to dock. Creating
+          // it anyway would removePanel the LIVE stage panel out of its own
+          // locked group to "move" it here; `#restoreStage` remounts it
           // synchronously, so the loop's own `addPanel("stage")` below would
           // then throw on a duplicate id and abort the whole `apply()`. Skip
           // the group entirely rather than let the tree relocate the stage.
@@ -1299,7 +1300,7 @@ export class DockviewEngine implements EngineAdapter {
           previousGroupIdInZone = groupId;
 
           groupNode.tabs.forEach((tabId, tabIndex) => {
-            // Same W3 hardening as above, per-tab: never let the tree
+            // Same stage-relocation guard as above, per-tab: never let the tree
             // relocate the real stage panel into a zone group.
             if (tabId === STAGE_ID) return;
             seenPanelIds.add(tabId);
@@ -1391,7 +1392,7 @@ export class DockviewEngine implements EngineAdapter {
     }
   }
 
-  /** Finding 3 (buddy-check): translates a managed group's live
+  /** Translates a managed group's live
    * `onDidDimensionsChange` into `resizeZone`/`resizeGroup` ops. Guarded by
    * `#applying` — dockview's own layout pass fires this event while `apply()`
    * itself is adding/removing groups, and that churn is our own reconciliation,
@@ -1512,7 +1513,7 @@ export class DockviewEngine implements EngineAdapter {
   }
 
   /** Test helper: the underlying dockview API, for driving/asserting engine
-   * internals directly (e.g. the W3 guard test calls `debugApi.removePanel`
+   * internals directly (e.g. a `#restoreStage` guard test calls `debugApi.removePanel`
    * on the stage panel the way an external bug or a future dockview version
    * might). Never used by production callers — the `EngineAdapter` seam
    * above never reaches for it.
@@ -1622,7 +1623,7 @@ export class DockviewEngine implements EngineAdapter {
   }
 
   /** `EngineAdapter.focus`: brings `id`'s dockview group/window to the
-   * foreground via `setActive()`. No-ops for the stage id (W2 defense-in-depth
+   * foreground via `setActive()`. No-ops for the stage id (defense-in-depth
    * — the stage is never a normal focus subject) or an id with no live panel.
    * @param id The panel id to focus.
    * @example
@@ -1634,7 +1635,7 @@ export class DockviewEngine implements EngineAdapter {
    * ```
    */
   focus(id: string): void {
-    if (id === STAGE_ID) return; // W2 defense-in-depth: never a normal focus subject
+    if (id === STAGE_ID) return; // defense-in-depth: never a normal focus subject
     this.#api?.getPanel(id)?.api.setActive();
   }
 

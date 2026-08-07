@@ -1,4 +1,4 @@
-// Pure drop-veto + zone-classification policy for the M12a stage well. NO
+// Pure drop-veto + zone-classification policy for the stage well. NO
 // dockview import here (that boundary is the `dockview` module's alone) — dockview's
 // drop events are translated into `DropSite` INSIDE the `dockview` module; this file
 // only ever sees our own vocabulary, so it is directly unit-testable and
@@ -8,7 +8,7 @@ import type { ZoneId } from "@shadowcat/core";
 
 /** Reserved panel id for the always-present canvas/stage content. No
  * registration ever contributes this id — `DockviewEngine` mounts it directly
- * at `init()` (W1) — so `"stage"` can never collide with a real panel id. */
+ * at `init()` — so `"stage"` can never collide with a real panel id. */
 export const STAGE_ID = "stage";
 
 /** Our own drop-target vocabulary — a dockview `DockviewWillDropEvent` is
@@ -36,8 +36,8 @@ export interface DropSite {
    * it created for the stage at `init()`. `layout` (the pure tree) has no
    * notion of the stage at all, so this can't be derived from `layout`
    * alone. Defense-in-depth: dockview's `locked: 'no-drop-target'` on that
-   * group already stops these drops from firing in practice (M12a-0 spike
-   * report, `DockviewGroupPanelModel.handleDropEvent` — the model
+   * group already stops these drops from firing in practice
+   * (`DockviewGroupPanelModel.handleDropEvent` — the model
    * returns before constructing/firing the drop event at all when
    * `locked === 'no-drop-target'`), so this branch is a second, independent
    * layer rather than the sole guard. */
@@ -67,7 +67,7 @@ export const MENU_FLOAT_RECT: Rect = { x: 96, y: 96, w: 360, h: 280 };
  *
  * Vetoes `id === STAGE_ID` up front, mirroring `classifyDrop`'s own stage
  * veto — belt-and-suspenders alongside `DockviewEngine.#handleMenuCommand`
- * guard and W1's headerless stage group (which never gives the stage a menu
+ * guard and `DockviewEngine`'s headerless stage group (which never gives the stage a menu
  * button to invoke this with in the first place): a menu-command chokepoint
  * with the identical shape as the drag chokepoint, not the sole guard.
  * @param command The `PanelMenu` command chosen.
@@ -143,8 +143,8 @@ function veto(reason: string): { veto: true; reason: string } {
  */
 export function classifyDrop(target: DropSite, layout: ExpandedLayout): ClassifyResult {
   // Rule: any op whose subject is "stage" — the stage panel itself is never
-  // draggable (W1 leaves it no drag handle at all; this is the policy-level
-  // backstop).
+  // draggable (the stage's headerless dockview group leaves it no drag handle
+  // at all; this is the policy-level backstop).
   if (target.id === STAGE_ID) {
     return veto("the stage panel is not a draggable subject");
   }
@@ -157,10 +157,10 @@ export function classifyDrop(target: DropSite, layout: ExpandedLayout): Classify
   switch (target.kind) {
     case "edge": {
       // Rule: no drop may resolve ABOVE the stage row — there is no "top"
-      // ZoneId in this layout model (spec D4); a container-edge drop is the
+      // `ZoneId` variant in this layout model; a container-edge drop is the
       // only path that could otherwise ask for one.
       if (target.position === "top") {
-        return veto("no top dock zone exists (spec D4)");
+        return veto("no top dock zone exists");
       }
       if (target.position === "center") {
         return veto("an edge drop cannot resolve to 'center'");

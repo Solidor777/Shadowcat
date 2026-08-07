@@ -142,7 +142,7 @@ test("mount-counter: a docked panel's component mounts exactly once across the f
   await Promise.resolve();
   expect(mounts).toBe(1);
 
-  // Pop-out leg (M12e): dock⇄float⇄...⇄pop-out⇄pop-in never re-mounts. The
+  // Pop-out leg: dock⇄float⇄...⇄pop-out⇄pop-in never re-mounts. The
   // FakeEngine degrades pop-out to a floating window, so the slot is re-parented
   // (adopted), never recreated.
   engine.emitOp({ op: "popOut", id: "chat:panel" });
@@ -446,7 +446,7 @@ test("live region: an engine notice announces the resolved i18n text", async () 
   expect(liveRegion.textContent).toBe(i18n.t("panels.popoutRestoredFloating"));
 });
 
-test("Finding 4 (buddy-check): a reload-restored popout's notice reaches the live region", async () => {
+test("a reload-restored popout's notice reaches the live region", async () => {
   const registry = new ContributionRegistry();
   registry.contribute({
     id: "chat:panel",
@@ -457,8 +457,8 @@ test("Finding 4 (buddy-check): a reload-restored popout's notice reaches the liv
   });
 
   // A persisted layout with "chat:panel" popped-out — `PanelsController`
-  // rehydrates it to floating + queues (but, per Finding 4's fix, does not
-  // yet FIRE) `panels.popoutRestoredFloating` at construction.
+  // rehydrates it to floating + queues (but does not yet FIRE)
+  // `panels.popoutRestoredFloating` at construction.
   let saved = defaultLayout([{ id: "chat:panel", placement: { kind: "docked", zone: "right" } }]);
   saved = applyOp(saved, { op: "dock", id: "chat:panel", zone: "right", group: "new" });
   saved = applyOp(saved, { op: "popOut", id: "chat:panel" });
@@ -474,8 +474,8 @@ test("Finding 4 (buddy-check): a reload-restored popout's notice reaches the liv
   await Promise.resolve();
 
   // Proves the notice is actually OBSERVABLE by the live region a screen
-  // reader watches (not merely that some callback fired) — the gap Finding
-  // 4 named. "rehydratePoppedOut: a persisted popped-out id comes back as
+  // reader watches, not merely that some callback fired.
+  // "rehydratePoppedOut: a persisted popped-out id comes back as
   // floating + a notice" proves the narrower claim (construction
   // alone must not call `onNotice`); the test below proves `PanelHost` is
   // what performs the flush that makes this text appear.
@@ -483,7 +483,7 @@ test("Finding 4 (buddy-check): a reload-restored popout's notice reaches the liv
   expect(liveRegion.textContent).toBe(i18n.t("panels.popoutRestoredFloating"));
 });
 
-test("Finding 4 (buddy-check): PanelHost's post-mount effect — not PanelsController's constructor — is what flushes the reload notice", async () => {
+test("PanelHost's post-mount effect — not PanelsController's constructor — is what flushes the reload notice", async () => {
   const registry = new ContributionRegistry();
   registry.contribute({
     id: "chat:panel",

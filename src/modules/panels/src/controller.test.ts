@@ -283,7 +283,7 @@ test("rehydratePoppedOut: a persisted popped-out id comes back as floating + a n
 
   expect(ctrl.layout.expanded.poppedOut).toEqual([]);
   expect(ctrl.layout.expanded.floating.map((f) => f.id)).toEqual(["chat"]);
-  // Finding 4 (buddy-check): the notice is QUEUED, not fired, at construction
+  // The notice is QUEUED, not fired, at construction
   // — `deps.onNotice` must not be invoked until a post-mount caller (`PanelHost`'s
   // `$effect`) calls `flushPendingNotice()`. Firing it here, synchronously
   // alongside construction, would set the a11y live region's text before its

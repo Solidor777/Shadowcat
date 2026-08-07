@@ -159,8 +159,8 @@
   // `eng.init()` synchronously appends `stageEl` there. `$state` so the
   // adoption effect below reactively re-runs once this transitions from
   // null (mount-before-init race) to set, rather than depending on
-  // declaration/scheduling order between the two effects (buddy-check
-  // finding 1's async-completion guard: identity, not a mode string).
+  // declaration/scheduling order between the two effects — this
+  // async-completion guard keys on object identity, not a mode string.
   let stageHomeEl = $state<HTMLElement | null>(null);
   const slotEls = new Map<string, HTMLElement>();
   // Bumped only by a boundary's reload affordance — the sole sanctioned

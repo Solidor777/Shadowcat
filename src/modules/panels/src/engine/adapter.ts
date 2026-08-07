@@ -23,7 +23,7 @@ export interface EngineAdapter {
   /** Subscribes to user gestures (drag/resize/close/float/dock) normalized to
    * `LayoutOp`s the host reduces onto its layout tree; returns an unsubscribe. */
   onOp(cb: (op: LayoutOp) => void): () => void;
-  /** Subscribes to user-facing engine notices (spec §10) — a stable i18n key
+  /** Subscribes to user-facing engine notices — a stable i18n key
    * the host resolves + surfaces (live region / toast). Optional: engines with
    * no notice source (`FakeEngine`) omit it. Returns an unsubscribe. */
   onNotice?(cb: (key: string) => void): () => void;

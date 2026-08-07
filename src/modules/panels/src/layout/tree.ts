@@ -1,4 +1,4 @@
-// Pure layout tree + reducer for the M12a panel-manager host. Engine-agnostic: no Svelte,
+// Pure layout tree + reducer for the panel-manager host. Engine-agnostic: no Svelte,
 // no dockview, no ui-kit — a host component maps this state onto whatever docking widget
 // it renders (dockview-core, in this codebase). All mutating functions return a NEW object;
 // unchanged-input calls return the SAME reference so a host can cheaply skip a re-render.
@@ -708,9 +708,9 @@ function insertPersistedOrder(order: string[], id: string, persistedSource: Pane
  * When `persistedSource` is non-null (the PRE-`prune` structurally-validated blob this
  * session's user actually saved — see `decodeLayout`'s `source` field) and records a real
  * location for a registration's id, that persisted location is reconstructed exactly via
- * `placeFromPersistedLocation` INSTEAD of `reg.placement`'s static default — this is the
- * fix for the M12a boot race where every panel beyond the first-registering ones raced
- * `defaultLayout` against their own module's registration and got default-placed (and
+ * `placeFromPersistedLocation` INSTEAD of `reg.placement`'s static default — this prevents a
+ * boot race where every panel beyond the first-registering ones would race
+ * `defaultLayout` against their own module's registration and get default-placed (and
  * `#persist`ed), silently discarding the user's saved layout on every reload. An id present
  * in `persistedSource.compact.order` but located nowhere (closed-but-known) is added to
  * `compact.order` and left otherwise unplaced — never re-opened via `reg.placement`. An id

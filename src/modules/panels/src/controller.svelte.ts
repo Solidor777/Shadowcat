@@ -1,4 +1,4 @@
-// The layout-owning controller for the M12a panel-manager host. Bridges every
+// The layout-owning controller for the panel-manager host. Bridges every
 // layout-changing input — engine gestures (drag/dock/float/minimize) AND the
 // imperative `PanelsApi` any module can invoke via `ctx.panels` — onto the pure
 // `applyOp` reducer, then persists the result. `PanelHost` owns the DOM/engine

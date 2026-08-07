@@ -64,7 +64,7 @@ export class FakeEngine implements EngineAdapter {
     this.#host = host;
     this.#slotFor = slotFor;
     // Establishes a definite size chain for the DOM this bespoke-fallback
-    // engine owns (buddy-check finding 2): `host` is a bare container with no
+    // engine owns: `host` is a bare container with no
     // layout of its own, so without a flex context here `centerEl` resolves
     // to `height: auto` and the adopted `.stage` (`height: 100%`, PanelHost.
     // svelte) collapses to its content height. Inline styles are used
@@ -78,9 +78,9 @@ export class FakeEngine implements EngineAdapter {
     // `row` places "left"/"right" as side columns flanking the center well
     // (matching a real docked layout's geometry); "bottom" stacks below the
     // row at full width. Without this nesting, `host`'s own column flow made
-    // every zone a full-width block sibling of the center well — the "loses
-    // width containment" defect (docs/CLOSED_BUGS.md, resolved): a zone `<div>` with no
-    // width of its own, inside a column flex container, stretches to the
+    // every zone a full-width block sibling of the center well — a zone
+    // `<div>` with no width of its own, inside a column flex container,
+    // stretches to the
     // container's full cross-size (`align-items: stretch`, the flex default)
     // regardless of how many groups are docked into it.
     const row = document.createElement("div");
@@ -214,13 +214,13 @@ export class FakeEngine implements EngineAdapter {
 
     // Floating: one container per floating panel, adopted directly and
     // positioned from its `Rect`. Popped-out ids are degraded to floating here
-    // (this bespoke-fallback engine has no cross-window popout; spec §10) so a
+    // (this bespoke-fallback engine has no cross-window popout) so a
     // slot is never lost and the keep-mounted invariant holds — production
     // pop-out is dockview-only.
     const POPOUT_FALLBACK_BASE = { x: 96, y: 96, w: 420, h: 520 };
     const POPOUT_FALLBACK_STEP = 28;
     // Cascades each fallback rect off its index (mirrors the cascade formula
-    // at the other degraded/rehydrated-position sites in this checkpoint —
+    // at the other degraded/rehydrated-position sites —
     // `layout/tree`'s SHEET_CASCADE_BASE/STEP, `placeFromPersistedLocation`'s
     // "popped-out" case, `PanelsController`'s own REHYDRATE_FLOAT_BASE/STEP) so
     // two-or-more simultaneously-popped-out ids don't render fully

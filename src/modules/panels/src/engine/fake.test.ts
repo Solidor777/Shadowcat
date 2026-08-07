@@ -13,7 +13,7 @@ function makeSlots(ids: string[]): (id: string) => HTMLElement {
 }
 
 // jsdom has no layout engine, so this can't assert computed pixel heights —
-// it asserts the CONTRACT (buddy-check finding 2): `init()` must give both
+// it asserts the CONTRACT: `init()` must give both
 // `host` and the adopted center-well container a definite size chain (flex
 // context + `flex: 1`/`min-height: 0`), or the adopted `.stage` element's
 // `height: 100%` resolves against an auto-height ancestor and collapses.
@@ -34,7 +34,7 @@ test("FakeEngine.init establishes a definite size chain on host and centerEl", (
   expect(centerEl!.style.minHeight).toBe("0px");
 });
 
-test("poppedOut degrades to a floating window (bespoke-fallback, spec §10)", () => {
+test("poppedOut degrades to a floating window (bespoke-fallback engine has no cross-window popout)", () => {
   const host = document.createElement("div");
   const slotFor = makeSlots(["chat"]);
   const eng = new FakeEngine();
@@ -52,16 +52,13 @@ test("poppedOut degrades to a floating window (bespoke-fallback, spec §10)", ()
   eng.destroy();
 });
 
-// Regression: `docs/CLOSED_BUGS.md` (resolved) "[Panels] The bespoke-fallback
-// engine ... loses width containment once a THIRD docked group is added".
-// `ZoneNode.size`
-// (the zone's own px basis, already tracked by the reducer and driven by
-// dockview's real splitter) was never read by `FakeEngine.apply` — a docked
-// zone's container carried no width/height constraint at all, so it stretched
-// to the full `host` cross-size (flex `align-items: stretch` default) instead
-// of staying columned, regardless of group count. This asserts the zone
-// container now carries a fixed px cross-size (contained, overflow-managed)
-// once ANY groups are docked, unaffected by how many groups pile up.
+// `FakeEngine.apply` reads `ZoneNode.size` (the zone's own px basis, already
+// tracked by the reducer and driven by dockview's real splitter) to give each
+// docked zone's container a fixed px cross-size (contained, overflow-managed),
+// once ANY groups are docked — without it, a docked zone's container carries
+// no width/height constraint of its own and stretches to the full `host`
+// cross-size (flex `align-items: stretch` default) instead of staying
+// columned, regardless of group count.
 test("FakeEngine constrains a zone's cross-size to ZoneNode.size once it has docked groups, past 2 groups", () => {
   const host = document.createElement("div");
   const slotFor = makeSlots(["a", "b", "c"]);
