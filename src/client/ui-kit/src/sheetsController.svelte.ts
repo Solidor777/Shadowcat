@@ -8,10 +8,15 @@ import { PANEL_CONTRACT, pickSheet, resolveDocRef, type ContributionRegistry, ty
 import type { PanelsApi } from "./panelsBridge.svelte";
 import SheetHost from "./SheetHost.svelte";
 
+/** The controller's collaborators, supplied once at construction. */
 export interface SheetsControllerDeps {
+  /** Registry `#register` contributes each `sheet:<docId>` panel into. */
   contributions: ContributionRegistry;
+  /** Optimistic document view `resolveDocRef` resolves a `SheetRef` against. */
   documents: ReadableDocuments;
+  /** Imperative panel host used to open/focus/close a sheet's panel. */
   panels: PanelsApi;
+  /** Sink for the warnings logged on a dangling/unresolvable open attempt. */
   logger: Logger;
 }
 
@@ -24,6 +29,7 @@ export interface SheetsControllerDeps {
  * tracking live here; placement, cascade, focus, and prune live in the panel manager.
  */
 export class SheetsController {
+  /** The controller's collaborators, fixed at construction. */
   #deps: SheetsControllerDeps;
   /** panelId -> the contribution disposer, for every sheet this controller has registered. */
   #open = new Map<string, () => void>();

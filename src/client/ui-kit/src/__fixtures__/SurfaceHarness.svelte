@@ -9,8 +9,14 @@
   import { t } from "../i18n.svelte";
   import Surface from "../Surface.svelte";
 
-  let { registry, contract }: { registry: ContributionRegistry; contract: string } =
-    $props();
+  // Exercises <Surface> against a caller-controlled registry, so a test can assert
+  // rendering reacts to contributions added/removed after mount.
+  let { registry, contract }: {
+    /** The registry to seed the harness's AppContext with. */
+    registry: ContributionRegistry;
+    /** The contract id forwarded to `<Surface>`. */
+    contract: string;
+  } = $props();
   // The registry is a fixed instance per render; capturing it once is intended.
   // store/world/role/t/assets are unused by <Surface> but required by the AppContext shape.
   // svelte-ignore state_referenced_locally

@@ -12,6 +12,7 @@
  * `TokenSelection.set`'s behavior of re-triggering on any call that starts non-empty.
  */
 export class SceneSelection {
+  /** Backing store for {@link SceneSelection.configureSceneId}. */
   #id = $state<string | null>(null);
 
   /** The scene id currently targeted for configuration, or `null` when none is selected.

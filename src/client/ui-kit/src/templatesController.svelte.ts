@@ -9,20 +9,41 @@ import {
 } from "@shadowcat/core";
 import type { ConflictGroup } from "./mergeConflict";
 
+/** The child/template/plan triple a conflict group's key resolves back to, so
+ * `#openSession`'s `resolve` callback can find what to merge and dispatch once the
+ * modal reports its per-group "theirs" choices. */
+interface ConflictEntry {
+  /** The instance document a conflict group's resolution applies to. */
+  child: WireDocument;
+  /** The child's template document, already resolved via `#templateOf`. */
+  template: WireDocument;
+  /** The precomputed merge plan (`mergedBands` + `conflicts`) from `computePull`. */
+  plan: MergePlan;
+}
+
+/** The controller's collaborators, supplied once at construction. */
 export interface TemplatesControllerDeps {
+  /** Authoritative document mirror `findInstances` snapshots from. */
   store: DocumentStore;
+  /** Optimistic document view `#get`/`#templateOf` resolve ids against. */
   documents: ReadableDocuments;
+  /** Transmits the merge/stamp/revert operations the controller computes. */
   dispatchIntent: (ops: WireOperation[]) => void;
+  /** The current user's world-scoped role; `"gm"` short-circuits `#isOwnerOrGm`. */
   role: "gm" | "player" | "spectator";
+  /** The current user's id, compared against `effectiveOwner` in `#isOwnerOrGm`. */
   selfId: string;
   /** Advisory write gate (mirrors the server). */
   canEdit: (doc: WireDocument, path: string) => boolean;
+  /** Sink for the warnings logged on an unresolvable child/template. */
   logger: Logger;
 }
 
 /** An open conflict-resolution session: the grouped conflicts + a resolver the modal calls. */
 export interface PendingSession {
+  /** The conflict groups to present, one per instance. */
   groups: ConflictGroup[];
+  /** Applies the modal's per-group "theirs" choices and dispatches the resulting Update(s). */
   resolve: (theirsByGroup: Map<string, Set<string>>) => void;
 }
 
@@ -33,7 +54,11 @@ export interface PendingSession {
  * alongside `SheetsController`; imports no module.
  */
 export class TemplatesController {
+  /** The controller's collaborators, fixed at construction. */
   #deps: TemplatesControllerDeps;
+  /** The open conflict session, or `null` when no modal is pending. Reassigned (not
+   * mutated in place) on open/resolve/cancel — a `$state` reassignment, so readers must
+   * re-read `pending` itself rather than caching the object. */
   pending = $state<PendingSession | null>(null);
 
   /** Build a controller wired to its collaborators.
@@ -224,7 +249,7 @@ export class TemplatesController {
       (inst) => this.#deps.canEdit(inst, "/base") && this.#deps.canEdit(inst, "/system"),
     );
     const groups: ConflictGroup[] = [];
-    const conflicted = new Map<string, { child: WireDocument; template: WireDocument; plan: MergePlan }>();
+    const conflicted = new Map<string, ConflictEntry>();
     for (const inst of instances) {
       const plan = computePull(inst, template);
       if (plan.conflicts.length === 0) {
@@ -254,7 +279,7 @@ export class TemplatesController {
    */
   #openSession(
     groups: ConflictGroup[],
-    byKey: Map<string, { child: WireDocument; template: WireDocument; plan: MergePlan }>,
+    byKey: Map<string, ConflictEntry>,
   ): void {
     this.pending = {
       groups,

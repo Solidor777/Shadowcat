@@ -7,10 +7,19 @@
 // forever) rather than passing an undetected no-op through the whole session.
 import type { Logger, PanelMeta } from "@shadowcat/core";
 
+/** Imperative panel-host control by panel id. */
 export interface PanelsApi {
+  /** Open (docking/floating per the panel's persisted layout) the panel `id`.
+   * @param id - The panel id to open. */
   open(id: string): void;
+  /** Close the panel `id`.
+   * @param id - The panel id to close. */
   close(id: string): void;
+  /** Bring the panel `id` to the front / make it the active tab in its group.
+   * @param id - The panel id to focus. */
   focus(id: string): void;
+  /** Open the panel `id` if closed, else close it.
+   * @param id - The panel id to toggle. */
   toggle(id: string): void;
 }
 
@@ -19,8 +28,12 @@ export interface PanelsApi {
  * strip) — the panel-manager module's `PanelsController` implements this
  * alongside `PanelsApi`, and both are bound in the same `bind()` call. */
 export interface PanelsChipsView {
+  /** Ids of the currently minimized panels. */
   readonly minimized: readonly string[];
+  /** Panel metadata (icon/labelKey), gmOnly-filtered, keyed by panel id. */
   readonly metaMap: ReadonlyMap<string, PanelMeta>;
+  /** Restore a minimized panel `id` to its prior placement.
+   * @param id - The minimized panel id to restore. */
   restore(id: string): void;
 }
 
@@ -33,13 +46,13 @@ export interface PanelsChipsView {
  * misuse worth warning about.
  */
 export class PanelsBridge implements PanelsApi, PanelsChipsView {
-  // `$state`: a reader that evaluates `minimized`/`metaMap` inside a Svelte
-  // `$derived`/template BEFORE `bind()` runs (the panel host mounts later
-  // than callers that read AppContext.panels) must still see the bound
-  // implementation once it arrives — a plain field carries no reactive
-  // signal, so a derived that already ran with `#impl === null` would stay
-  // frozen at `[]`/empty forever.
+  /** The bound host, or `null` before {@link PanelsBridge.bind} runs. `$state`: a reader that
+   * evaluates `minimized`/`metaMap` inside a Svelte `$derived`/template BEFORE `bind()` runs
+   * (the panel host mounts later than callers that read AppContext.panels) must still see the
+   * bound implementation once it arrives — a plain field carries no reactive signal, so a
+   * derived that already ran with `#impl === null` would stay frozen at `[]`/empty forever. */
   #impl = $state<(PanelsApi & PanelsChipsView) | null>(null);
+  /** Whether {@link PanelsBridge.#warnOnce} has already logged for this instance. */
   #warned = false;
 
   /** Build an unbound bridge; every call/read no-ops until {@link PanelsBridge.bind} runs.

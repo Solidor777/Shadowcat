@@ -9,7 +9,9 @@ import type { SceneTool, SceneToolHost, Point, ShapeNodeSpec, MoveVisionSample }
 /** The host-facing seam plus late-attachment. */
 export interface SceneInteraction extends SceneToolHost {
   /** Attach the live engine (a SceneToolHost); returns a detach that only clears the
-   * host if it is still the current one (a stale detach after re-attach is a no-op). */
+   * host if it is still the current one (a stale detach after re-attach is a no-op).
+   * @param host - The live engine implementing `SceneToolHost`.
+   * @returns A detach function; safe to call multiple times or after superseded. */
   attach(host: SceneToolHost): () => void;
 }
 
@@ -21,6 +23,7 @@ export interface SceneInteraction extends SceneToolHost {
  * a `RenderEngine` yet.
  */
 export class SceneInteractionBridge implements SceneInteraction {
+  /** The attached live engine, or `null` before attach / after detach. */
   #host: SceneToolHost | null = null;
 
   /** Attach `host` as the live engine. A later `attach` replaces the current host outright
@@ -142,7 +145,12 @@ export class SceneInteractionBridge implements SceneInteraction {
    */
   animateSamples(
     id: string,
-    samples: { tMs: number; pos: [number, number] }[],
+    samples: {
+      /** Milliseconds since the move started that `pos` applies at. */
+      tMs: number;
+      /** The scene-coord position at `tMs`. */
+      pos: [number, number];
+    }[],
     durationMs: number,
     startServerMs: number,
     serverNow?: () => number,

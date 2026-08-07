@@ -5,7 +5,10 @@
    * (e.g. `DockChipsContribution`) that may mount and evaluate BEFORE
    * `bind()` runs, since the panel host mounts later than other AppContext
    * readers. */
-  let { bridge }: { bridge: PanelsBridge } = $props();
+  let { bridge }: {
+    /** The bridge instance under test; possibly pre-bind at mount time. */
+    bridge: PanelsBridge;
+  } = $props();
   const minimized = $derived(bridge.minimized);
 </script>
 

@@ -13,6 +13,7 @@ import { SvelteSet } from "svelte/reactivity";
  * see {@link TokenSelection.set}.
  */
 export class TokenSelection {
+  /** Backing store for {@link TokenSelection.ids}; a stable `SvelteSet` mutated in place. */
   #ids = new SvelteSet<string>();
 
   /** The currently selected token ids. Read-only view over the live set — iterate or check

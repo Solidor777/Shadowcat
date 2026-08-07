@@ -3,8 +3,11 @@
   import type { ConflictGroup } from "./mergeConflict";
 
   let { groups, onApply, onCancel }: {
+    /** The conflict groups to present, one per instance. */
     groups: ConflictGroup[];
+    /** Called with the chosen "theirs" paths per group key when the user applies. */
     onApply: (theirsByGroup: Map<string, Set<string>>) => void;
+    /** Called when the user cancels (Escape or the cancel button) with no changes applied. */
     onCancel: () => void;
   } = $props();
 

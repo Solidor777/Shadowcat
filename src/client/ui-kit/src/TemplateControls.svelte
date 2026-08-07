@@ -5,7 +5,10 @@
   import { createSubscriber } from "svelte/reactivity";
   import { getAppContext } from "./appContext";
 
-  let { docId }: { docId: string } = $props();
+  let { docId }: {
+    /** The sheet's write-target document id this chrome shows provenance/actions for. */
+    docId: string;
+  } = $props();
   const ctx = getAppContext();
   const t = ctx.t;
 

@@ -35,4 +35,5 @@ export function locale(): string {
   return i18n.locale;
 }
 
+/** The reactive translate function's shape, matching `AppContext.t`. */
 export type TFunc = typeof t;
