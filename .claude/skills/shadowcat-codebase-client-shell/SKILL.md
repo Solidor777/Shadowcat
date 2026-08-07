@@ -17,10 +17,10 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
 ## Key files & seams
 
 - `Contribution`, `ContributionRegistry` (modules
-  contribute UI into named surfaces). `Contribution.panel?` (M12a, replaced `tab`) is optional
+  contribute UI into named surfaces). `Contribution.panel?` (replaced `tab`) is optional
   plain-data panel metadata (`icon`, `labelKey`, `gmOnly?`, `defaultPlacement`) the panel host
   renders; `labelKey` is an i18n key the HOST resolves (locale-reactive).
-- **Panels replaced the tabbed sidebar** (M12a): the sidebar module and ui-kit
+- **Panels replaced the tabbed sidebar**: the sidebar module and ui-kit
   `TabbedSurface` are DELETED. `@shadowcat/module-panels` provides the multi
   `shadowcat.panel` contract every panel module contributes into, hosts `PanelHost` in
   core-ui's singleton `shadowcat.surface:panel-host` region and the minimized-chips strip in
@@ -61,22 +61,22 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
 - `AppContext.pathfind` — correlated-request seam: issues a
   `Pathfind` frame via `WsClient.pathfind` and resolves with `PathResult` or rejects with
   `PathError`; wired through `WorldSession` and consumed by `scene-tools` measure-tool route mode.
-- `WsClient.moveRequest(scene, tokenId, path) → Promise<MoveStream>` (M2 —
-  `MoveExecuted` is FULLY RETIRED, server + Zod + client) — correlated-request mirror of
+- `WsClient.moveRequest(scene, tokenId, path) → Promise<MoveStream>` (`MoveExecuted`
+  is FULLY RETIRED, server + Zod + client) — correlated-request mirror of
   `pathfind`: sends `MoveRequest`, resolves with the broadcast `MoveStream` when the matching
   `move_stream` frame arrives (mover's `request_id` correlates; the resolved value signals success
   only — it does NOT drive animation), rejects on `move_error` or timeout (default 10 s). Pure
   transport — no client-side movement logic. Keyed in the shared `pending` map alongside search and
   pathfind.
-- `WsClient.onMoveStream(cb) -> unsubscribe` (M2) — the actual playback seam: fires for EVERY scene
+- `WsClient.onMoveStream(cb) -> unsubscribe` — the actual playback seam: fires for EVERY scene
   viewer (mover + observers) on every broadcast `MoveStream`, independent of the `moveRequest`
   promise. Listeners survive reconnects (not cleared by `failPending`).
 - `AppContext.moveRequest` — AppContext seam wired through
   `WorldSession`; consumed by scene-tools measure-tool route-commit (sends `MoveRequest`, awaits the
-  signal-only resolution, does NOT locally animate — the M10e-5 `TokenAnimator` plays back from the
+  signal-only resolution, does NOT locally animate — the `TokenAnimator` plays back from the
   broadcast, not the promise). Optimistic dispatch + `collinearRuns` chaining were removed;
   route-commit is request-only.
-- `onMoveStream` wiring (M2 Tasks 5-6, `WorldSession.enter`): subscribes once at session start,
+- `onMoveStream` wiring (`WorldSession.enter`): subscribes once at session start,
   **filters `stream.scene` against the active scene** (`this.#optimistic.query("scene")[0]?.id`)
   before forwarding — a room-wide `MoveStream` broadcast for a DIFFERENT scene must not animate a
   token or feed a fog sweep in the one currently rendered (cross-scene leak/flicker guard, mirrors
@@ -85,7 +85,7 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
   forwards through `RenderEngine` to `TokenView`/`TokenAnimator` (position tween) and, when
   `moverVision` is present (mover only), the engine's `visionSweeps` fog-sweep playback (see
   `shadowcat-codebase-scene-rendering`).
-- **External-module loading (M13-1)** — `WorldSession`'s `#loadExternalModules(world,
+- **External-module loading** — `WorldSession`'s `#loadExternalModules(world,
   serverVersion)` runs after `Welcome` (`serverVersion` = `w.server_version`): fetches the world's
   enabled set (keyed on the install FOLDER id, `InstalledModuleInfo.id`, never manifest id), calls
   core `loadModules` (per-module-contained, non-throwing `ModuleLoadResult`), then activates. The
@@ -154,7 +154,7 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
   itself never rejects, so neither failure surfaces to a caller.
 - The shell package — `App`, the `main` entry module, and its `lib/` directory (hash router, api client, session,
   WorldSession controller, default-module wiring). The `sessionState` module owns the
-  `ui_state` blob: `getPanelLayout(world)`/`setPanelLayout(world, blob)` (M12a, replaced
+  `ui_state` blob: `getPanelLayout(world)`/`setPanelLayout(world, blob)` (replaced
   activeTab) persist the per-world panel layout into `UiState.worlds[world].panelLayout` via
   the existing leading-edge-debounced PUT. The blob is OPAQUE to the shell — the panel host
   owns its shape/validation. **Leaf-key dirty tracking (fixes the same-user cross-session
@@ -174,11 +174,11 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
   live in `http::routes::put_ui_state`. The client never sends the whole `{global, worlds}` blob.
   Concurrent same-user sessions (two tabs) now contend only on the individual fields/keys both
   sessions actually write, instead of last-writer-wins on a whole slice or the whole blob.
-- **Multi-scene / viewed-scene seams (M12d)** — `AppContext.viewedSceneId: string | null`
+- **Multi-scene / viewed-scene seams** — `AppContext.viewedSceneId: string | null`
   (a live getter, `Table`: `get viewedSceneId() { return session.viewedSceneId; }` —
   NEVER destructure a snapshot of it), `AppContext.setGmViewedScene(id): void` (GM-only local
   roam; no-ops+warns for a non-GM), `AppContext.searchDocuments(query, opts, onUpdate) ->
-  Promise<SubscriptionHandle>` (the M6c live-FTS subscription seam, newly exposed through
+  Promise<SubscriptionHandle>` (the live-FTS subscription seam, newly exposed through
   `AppContext`/`WorldSession` — wraps `WsClient.subscribeSearch`, ephemeral/NOT
   reconnect-resilient), `AppContext.sceneSelection: SceneSelection`
   (a small stable-ref class, `configureSceneId`
@@ -194,10 +194,9 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
   per-scene section via `ctx.sceneSelection.select(id)` +
   `ctx.panels.open("game-settings:panel")` — the exact `"<module>:panel"` contribution-id
   convention every `PANEL_CONTRACT` registration uses; a bare module id silently no-ops the open
-  call, found in M12d Task 8 review), "View" (`ctx.setGmViewedScene`), "Activate" (writes
+  call), "View" (`ctx.setGmViewedScene`), "Activate" (writes
   `activeScene` via `ctx.dispatchIntent` with the REAL current value as OCC `old`). Scenes have
-  no `name` field — the browser labels rows by index + thumbnail, deliberately (not in the M12
-  spec).
+  no `name` field — the browser labels rows by index + thumbnail, deliberately.
 - AppContext seams (wired in `Table`): `uiState {getPanelLayout, setPanelLayout}`
   (narrow; the shell owns storage), `panels: PanelsApi & PanelsChipsView` — the shell
   constructs ONE `PanelsBridge` (`$state`-backed so
@@ -238,7 +237,7 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
   the world's singleton config-docs — the vision/lighting trio
   (`world-settings`/`light-gradation`/`vision-modes`, resolved by
   `resolveSceneSettings`/`resolveGradation`/`resolveVisionModes`),
-  plus `dice-settings` (M11d-2) and `chat-settings` (M11d-3: the `hyperlinks` +
+  plus `dice-settings` and `chat-settings` (the `hyperlinks` +
   `link_previews` tri-state toggles). Each section uses the same reactive-seed + real-OCC-
   pre-image `set()` idiom. The chat/dice server resolvers + segments are covered by
   `shadowcat-codebase-chat`/`-dice`.
@@ -313,7 +312,7 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
 ## Pointers
 
 - Rationale: `docs/design/ARCHITECTURE.md` §1 (client UI packaging) + §2 invariant 7 (framework-neutral API);
-  `docs/PLAN.md` (M7/M8.5 milestones).
+  `docs/PLAN.md`.
 - Relationships:
   `graphify query "contribution registry surface appContext shell router i18n locale panel"`.
 - History: [[m7-brainstorm]], [[m6b-modules-capabilities]].
