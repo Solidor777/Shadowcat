@@ -184,8 +184,8 @@ token/actor name from non-owners via the `OwnerOrGm` visibility tier. Conditions
     inheriting from it would be the stamped semantics this design rejects.
   - **The floor is token-scoped**, so `owner` keeps its provenance-only meaning on every other
     doc_type — an actor's owner cannot edit their own sheet. Deliberate.
-  - **`/owner` is Update-writable under `cap::EDIT_PERMISSIONS`** (it was previously immutable for
-    everyone, which made a GM owner control unbuildable). `DocRole::Owner`'s BUILT-IN floor is
+  - **`/owner` is Update-writable under `cap::EDIT_PERMISSIONS`** (an immutable `/owner` would make
+    GM ownership re-assignment unbuildable). `DocRole::Owner`'s BUILT-IN floor is
     `{READ, WRITE_FIELDS}` and excludes `EDIT_PERMISSIONS`, so an effective owner cannot steal or
     hand off ownership — but the floored role also selects additive `by_role[Owner]` grants, so a
     deployment that puts `EDIT_PERMISSIONS` there lets an owner pin `/owner = self` (defeating
@@ -193,8 +193,8 @@ token/actor name from non-owners via the `OwnerOrGm` visibility tier. Conditions
     holds exactly; what changed is the POPULATION — "Owner" is now every player with an assigned
     actor rather than a hand-enumerated set.
   - **Known under-permit:** egress redaction still resolves `is_owner` from the literal
-    `doc.owner`. Details and status: `shadowcat-codebase-documents-permissions` (whose territory
-    egress is) and `docs/TODO.md`.
+    `doc.owner`, not the token-derived effective owner. Details and status:
+    `shadowcat-codebase-documents-permissions` (whose territory egress is).
 - **Rendered token size, hit-test, and the selection ring all resolve through `resolveTokenBox`** —
   never read `token.system.w/h` directly for an actor-backed token; doing so bypasses the
   `EffectiveActor.size × grid-cell` scaling, breaks multi-cell tokens, and ignores the shape
@@ -231,17 +231,17 @@ token/actor name from non-owners via the `OwnerOrGm` visibility tier. Conditions
   compute two DIFFERENT random ids instead of converging on one. Harmless today only because
   `CONDITION_REGISTRY_DOC_TYPE` is in the server's doc_type-scoped `data::sqlite::SINGLETON_DOC_TYPES`
   list — the loser's Create is rejected regardless of id, same rollback path as the
-  faction registry, just without the same-id convergence property. Logged to `docs/TODO.md`
-  (consistency/testability, not a bug); don't copy this shape into a new registry seeder — copy
-  the faction one instead.
+  faction registry, just without the same-id convergence property. Accepted as-is (a
+  consistency/testability gap, not a correctness bug); don't copy this shape into a new registry
+  seeder — copy the faction one instead.
 - **`ConditionsPanel`'s `isActive`/`toggle` count different token sets.**
   `isActive(conditionId)` does NOT filter by `ctx.canEdit` (only excludes tokens with no
   resolvable `conditionTarget`); `toggle(conditionId)` mutates only the `canEdit`-passing subset
   but decides ADD-vs-REMOVE from `isActive`'s broader verdict — so a non-editable token in the
   selection can make the palette chip's active/mixed display, and the click's no-op-or-not
   outcome, diverge from what the editable tokens alone would show. Client-side UX inconsistency
-  only (every write still goes through `canEdit` then the server's independent re-check); logged
-  to `docs/TODO.md`, not fixed.
+  only (every write still goes through `canEdit` then the server's independent re-check);
+  accepted as-is, not fixed.
 - **Docs-ratchet is live on `data::engine::token`:** it carries
   `#![deny(missing_docs)]` + the private-items twin — a new undocumented field/variant on
   `TokenEngine`/`ActorEngine`/`TokenVisual`/`AnimatedSource` fails the 3-OS CI clippy step, and

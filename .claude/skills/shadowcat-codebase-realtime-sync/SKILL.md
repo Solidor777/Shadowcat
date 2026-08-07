@@ -189,7 +189,7 @@ optimistically and roll back on divergence.
 
 - **`WsClient.open()` does not re-check `running_` after its connect await** — a `stop()` call
   during a pending connect can leave an adopted-but-unwatched transport assigned to
-  `this.transport`. See `docs/TODO.md`.
+  `this.transport`.
 - **Docs-ratchet is live on the whole `ws/` tree AND the `http/` + `auth/` trees:**
   every file in all three trees carries `#![deny(missing_docs)]` +
   `#![deny(clippy::missing_docs_in_private_items)]` — a new undocumented item fails the 3-OS CI

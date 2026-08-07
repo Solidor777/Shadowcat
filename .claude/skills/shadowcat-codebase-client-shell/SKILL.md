@@ -303,7 +303,7 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
   text, but has no timeout. The shell's `members` seam calls its own copy
   (`WorldSession`'s), so the two can drift further with nothing failing. This is the
   never-fork-a-decision class from `shadowcat-codebase-core`; do not add a third caller to either
-  copy without collapsing them. Fix logged in TODO.
+  copy without collapsing them.
 - **Refactors across a callback boundary must preserve decision branches, not just await ordering**
   [[refactor-preserve-decision-branches]].
 - UI packaging target: swappable entry package + per-element packages + thin shell
@@ -311,8 +311,7 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
 
 ## Pointers
 
-- Rationale: `docs/design/ARCHITECTURE.md` §1 (client UI packaging) + §2 invariant 7 (framework-neutral API);
-  `docs/PLAN.md`.
+- Rationale: `docs/design/ARCHITECTURE.md` §1 (client UI packaging) + §2 invariant 7 (framework-neutral API).
 - Relationships:
   `graphify query "contribution registry surface appContext shell router i18n locale panel"`.
 - History: [[m7-brainstorm]], [[m6b-modules-capabilities]].

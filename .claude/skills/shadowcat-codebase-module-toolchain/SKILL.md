@@ -140,7 +140,7 @@ job's example-build step keep them green; the guides code-import their sources r
 
 - Rationale: `docs/design/ARCHITECTURE.md` §2 invariant 6 (server runs no third-party code) +
   Global Constraint 1 (single instance); `docs/site/guides/creating-a-module.md` (authoring
-  toolchain — `docs/design/module-authoring.md` is a pointer stub); `docs/PLAN.md`.
+  toolchain — `docs/design/module-authoring.md` is a pointer stub).
 - Relationships: `graphify query "installed module discovery serve enable engine-compat import map loader"`.
 - Lessons: [[build-artifact-tests-must-consume-not-just-exist]],
   [[shared-wire-schema-change-needs-full-repo-test]], [[injected-callback-boundary-must-validate-every-site]].

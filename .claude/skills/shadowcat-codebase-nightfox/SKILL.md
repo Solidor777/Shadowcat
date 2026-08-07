@@ -55,7 +55,7 @@ have.
 - **The `contributions` module** (Nightfox repo) — `collectNightfox(host)` walks the embed tree
   exactly (host → `embedded.item` → each item's `embedded.effect`, plus host's own
   `embedded.effect`) and produces `ModifierContribution`s (`{ modId, carrierId, targetId,
-  modifier }`) plus warnings. Targeting per spec §5.3: an item's modifiers target the owning
+  modifier }`) plus warnings. Targeting rule: an item's modifiers target the owning
   actor; an effect's modifiers target its host (actor-embedded → actor; item-embedded → the
   item; item-embedded **with `transfer: true`** → the item's owning actor). Active gating:
   `mechanics.active !== false` on the carrier itself AND the whole carrier chain — an inactive
@@ -142,13 +142,16 @@ new wire frames.
   checkpoint) and needs no such split — its `readOnly` alone is correct and complete.
 - **`nfT`/`NF_MESSAGES`** — chrome-translation helper: prefers the shell's `t`,
   falls back to a built-in English map when `t` echoes the key unchanged (the i18next/test
-  "missing key" signal). **Test-context gotcha:** `setAppContextForTest`'s default `t: (k) => k`
+  "missing key" signal). Nightfox has no public seam to register its own i18n keys into the
+  shell's translation catalog, so `NF_MESSAGES` is a permanent fallback, not a bootstrap
+  scaffold — an out-of-tree module in the same position has the same gap. **Test-context
+  gotcha:** `setAppContextForTest`'s default `t: (k) => k`
   identity-echo means `nfT` under test ALWAYS resolves through `NF_MESSAGES`, never through a
   real translation — a test asserting a raw i18n key can never pass against a correctly
   i18n-routed component; assert against `NF_MESSAGES["..."]` instead. User-authored stat
   labels/keys/values are DATA and never routed through `nfT`.
-- **Registration** (Nightfox's `index` module) — `EFFECT_DOC_TYPE = "effect"` (no engine home yet, filed as
-  friction in `docs/POST_WORK_FINDINGS.md`); all three sheets contribute at `sheet: { priority:
+- **Registration** (Nightfox's `index` module) — `EFFECT_DOC_TYPE = "effect"` (no engine home yet:
+  it is a Nightfox-defined document type, not one of the engine-owned 17); all three sheets contribute at `sheet: { priority:
   10 }`, above the generic sheets (0 / `-Infinity`) so a community sheet module can still outbid
   by priority.
 - Component files: `StatRow`/`StatTable`/`ModifiersEditor` (shared
@@ -277,7 +280,7 @@ not the only, expected caller):
   `"resolver-error"` rather than propagating it. `FormulaErrorKind` is mirrored by hand in
   `FORMULA_ERROR_KINDS` (the `types` module) for runtime validation — adding a kind means updating BOTH the
   union and the array, with nothing else enforcing they stay in sync.
-- **DoS caps, exact values (spec §3.2):** `MAX_FORMULA_LENGTH=512`, `MAX_AST_NODES=256`,
+- **DoS caps, exact values:** `MAX_FORMULA_LENGTH=512`, `MAX_AST_NODES=256`,
   `MAX_PARSE_DEPTH=32` (counts true structural-nesting boundaries — parens, call args,
   unary-minus — NOT grammar-production depth; a flat `a+b+c+...` chain never trips it),
   `MAX_GRAPH_VISITS=2048` (charged once per newly discovered key in `resolveAll`).
@@ -292,8 +295,8 @@ not the only, expected caller):
   (stat, bucket, effect, etc.) into `src/client/formula/`, that is a layering violation — it
   belongs in the Nightfox repo, not here.
 - **The grammar has no exponent notation.** `1e999` lexes as `num(1)` followed by `word("e999")` —
-  a parse error, not a cap error. This was a real spec-text bug found and fixed twice during
-  planning; do not "fix" the lexer to accept exponents without a spec change.
+  a parse error, not a cap error. This is a deliberate grammar boundary, not a lexer defect; do
+  not "fix" the lexer to accept exponents without a grammar change.
 - **Identifiers are case-insensitive, normalized to lowercase; the library reserves no identifier
   names** (reserved-word/tier-1 validation is Nightfox's concern — shipped in
   `nightfox-docs`'s `RESERVED_STAT_KEYS`) — every consumer-facing guard belongs in the
@@ -302,8 +305,8 @@ not the only, expected caller):
 ## Gotchas
 
 - `internal`'s three helpers are the ONLY sanctioned way to cross a consumer-callback boundary.
-  A gap in this pattern was previously found and fixed at one boundary, reopening a bug
-  already fixed twice elsewhere in the pipeline — treat any new injected-callback seam as
+  A gap in this pattern at one boundary reopens the same class of bug that the other injected-callback
+  boundaries in the pipeline already guard against — treat any new injected-callback seam as
   needing the same validation, not a bespoke check.
 - Arithmetic semantics (`/`, `%`, rounding, `finite()` gating, `.5`) → see the
   `@shadowcat/formula` arithmetic bullet under **Key files & seams** — stated once there, so the
@@ -347,8 +350,6 @@ not the only, expected caller):
 - `shadowcat-codebase-sheets` — the sheet registry (`shadowcat.sheet:<doc_type>` contract,
   `pickSheet`/`resolveDocRef`, the `basePrefix` derivation pattern) that Nightfox's sheets
   register into; read it alongside this skill for any sheet-registration work.
-- `docs/POST_WORK_FINDINGS.md` — the external-module i18n-registration-seam gap and the
-  `effect`-doc_type-has-no-engine-home gap.
 - This skill is scoped to the whole Nightfox surface (in-repo formula library + out-of-repo
   rules engine + sheets + roll wire), not just the formula library. Any future Nightfox work
   should extend here too rather than forking a new skill.

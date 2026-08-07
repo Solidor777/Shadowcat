@@ -136,10 +136,10 @@ and restore as a deployment-operator tool, not an in-app feature.
   this for THAT invocation path via `write_barrier` (see Key files & seams / Hard invariants
   above) — the residual gap is CLI-mode-only and inherent to backing up while a separate process
   writes assets outside the barrier's reach.
-- Per-world granular export/import is explicitly OUT of scope — this milestone ships whole-server
-  snapshot/restore only (single shared `shadowcat.db` across all worlds); per-world would need to
-  preserve referential integrity across cross-table FKs and shared asset references, real
-  complexity deferred to `docs/TODO.md` as a distinct future feature.
+- Per-world granular export/import is explicitly OUT of scope — the backup/restore surface ships
+  whole-server snapshot/restore only (single shared `shadowcat.db` across all worlds); per-world
+  would need to preserve referential integrity across cross-table FKs and shared asset
+  references, real complexity not currently implemented.
 
 ## Pointers
 

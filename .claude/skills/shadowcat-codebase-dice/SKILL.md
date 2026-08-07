@@ -112,8 +112,8 @@ on.
   BTreeMap<Symbol, i32>` (per-symbol tallies over KEPT dice, computed UNCONDITIONALLY
   inside `evaluate_success`'s per-die loop regardless of which `SuccessRule` variant is active;
   empty in Total mode), `labeled_consts: Vec<ConstTerm>` (every labeled bare `Const`
-  reachable in the expression, Total-mode only; `#[serde(default)]` so previously stored messages
-  without this field still deserialize; `evaluate_success` always sets this to `Vec::new()` since SuccessCount
+  reachable in the expression, Total-mode only; `#[serde(default)]` so messages persisted before
+  this field existed still deserialize; `evaluate_success` always sets this to `Vec::new()` since SuccessCount
   ignores all AST arithmetic; display-only — NOT read by `by_label`/`compare_labels`; the
   chat wire mirror (the `chat-docs` module's Zod schema) and `MessageCard` render a labeled const's
   displayed `value` as collected by `eval::sum::collect_labeled_consts`, which threads
@@ -277,10 +277,11 @@ on.
   Label-consumption is a shared `take_label()` helper applied after EITHER atomic
   factor — a `DiceGroup` or a bare `Const` — not the `Dice` branch alone; a label immediately
   after a parenthesized/compound sub-expression is still correctly rejected as trailing input
-  (the generalization is scoped to atomic factors only, not the whole grammar). This closed a
-  real bug: `@shadowcat/formula`'s `resolveNotationTemplate` substitutes a resolved
-  identifier as a labeled constant (`value[name]`) even with no dice roll present, and the
-  parser previously rejected any such label not immediately adjacent to a dice group.
+  (the generalization is scoped to atomic factors only, not the whole grammar). This
+  generalization is required: `@shadowcat/formula`'s `resolveNotationTemplate` substitutes a
+  resolved identifier as a labeled constant (`value[name]`) even with no dice roll present, so
+  the parser must accept such a label on a bare `Const`, not only immediately adjacent to a
+  dice group.
   **Exception — a NEGATIVE substitution carries no label at all**: `substituteIdentifier`
   emits `(0 - N)`, an unlabeled parenthesized subtraction,
   and only the non-negative branch emits `N[name]`. The totals are identical either way, but
@@ -426,8 +427,8 @@ on.
 - **This module's pipeline logic is dense and easy to get subtly wrong.** Treat any future
   change to `dice::eval::groups`, `dice::eval::sum`, `dice::eval::success`, `dice::eval::classify`,
   `dice::eval::crit`, `dice::eval::expertise`, or `dice::recalc` as needing independent
-  two-reviewer review by default — each of these modules has previously shipped a real bug that
-  only that review process caught (see the `fixed`-term and derived-value-retrigger Hard
+  two-reviewer review by default — each of these modules carries dense per-group state that a
+  single reviewer can plausibly miss (see the `fixed`-term and derived-value-retrigger Hard
   invariants above for two such cases).
 - **`DieKind::validate()` is enforced at the wire boundary, not inside `roll()`**:
   `chat::rolls::validate_pre_roll` calls it per parsed group before any rolling, so an

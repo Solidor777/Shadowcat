@@ -192,14 +192,15 @@ the reducer (intercept-and-redispatch), so the engine never owns state.
   drag either (`panels.spec` covers launcher-open→dock→reload-survival, re-toggle→
   minimize-to-chip, and the compact/expanded 48rem axis — launcher-closed defaults mean
   there is no chip on a fresh world until a panel is minimized); real-pointer drop-position
-  classification fidelity is a manual-QA gap, logged in POST_WORK_FINDINGS.
+  classification fidelity is a known manual-QA gap — missing e2e coverage for an
+  otherwise-correct path, not a defect in the logic itself.
 - On any dockview-core version bump, re-verify `--z-popover` (1000, defined in `_semantic.scss`)
   still clears dockview's floating-overlay z-index (`--dv-overlay-z-index`, 999 at 7.0.2) — the
   popover menus stack above floating panel groups only by that numeric margin.
 - Dragging a panel INTO an already-open popout group bypasses the reducer — `#groupWillDropSubs`
   is not wired for popout groups, so that specific gesture does not flow through `applyOp` (this
-  gesture's scope was menu-only per spec §9/Decision 6; the drop-classification gap is logged in
-  TODO, not a defect in shipped scope).
+  gesture's scope is menu-only by design; the drop-classification gap for popout targets is a
+  known, unimplemented case, not a defect in shipped scope).
 - `DockviewEngine.#expandGroupDockOp`'s "new group" index computation assumes the dragged whole
   group is not already a member of the target zone — a same-zone whole-group reorder is a
   KNOWN, code-documented index-computation gap (an inline `TODO` beside that method),

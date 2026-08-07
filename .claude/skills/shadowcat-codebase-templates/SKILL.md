@@ -124,8 +124,7 @@ interprets or merges anything itself.
   stays `template_changed`. Nothing in the push path retries, so it stays stale until someone
   holding `/embedded` on THAT instance pulls or reverts (both terminate in `planToUpdate`, which
   always re-emits `/base`) — a different principal from the pusher who lacked the capability.
-  Contained to the one instance (`push` dispatches one intent PER instance), and logged in
-  `docs/TODO.md` with two candidate fixes.**
+  Contained to the one instance (`push` dispatches one intent PER instance); not yet fixed.**
 - `MergeConflictModal` (+ `TemplateModalHost`) — the
   field-level conflict resolution UI: renders one `ConflictGroup` per pending child
   (`{ key, label, conflicts: Conflict[] }`; the type lives in
