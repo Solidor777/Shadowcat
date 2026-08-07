@@ -1,13 +1,12 @@
 ---
 name: shadowcat-codebase-server-ops
-description: "Use when touching Shadowcat's server bootstrap/config/CLI/deployment surface: the `main` module (entry point, early one-shot CLI branches), the `config` module (`Cli`/`Config` layering: CLI flag > SHADOWCAT_* env > TOML > default), the `db` module (single-connection SqlitePool open), or the `backup` module (whole-server VACUUM-INTO backup/restore, M12.5). Covers the single-binary deployment story, not any one data/document subsystem. Invoke shadowcat-codebase-core first."
+description: "Use when touching Shadowcat's server bootstrap/config/CLI/deployment surface: the `main` module (entry point, early one-shot CLI branches), the `config` module (`Cli`/`Config` layering: CLI flag > SHADOWCAT_* env > TOML > default), the `db` module (single-connection SqlitePool open), or the `backup` module (whole-server VACUUM-INTO backup/restore). Covers the single-binary deployment story, not any one data/document subsystem. Invoke shadowcat-codebase-core first."
 ---
 
 # Shadowcat — Server Bootstrap, Config, and Backup/Restore
 
 Orientation for the parts of the server crate that exist ABOVE any one data subsystem: how the
-binary starts, how configuration is resolved, and how a deployment's data is snapshotted/restored
-(M12.5).
+binary starts, how configuration is resolved, and how a deployment's data is snapshotted/restored.
 
 ## Purpose
 
@@ -38,7 +37,7 @@ and restore as a deployment-operator tool, not an in-app feature.
   ([[shadowcat-codebase-documents-permissions]]), which
   separately sets the same `max_connections(1)` — editing `db` does NOT affect the live
   server's connection pool.
-- `backup` (M12.5) — `BackupManifest`, `BackupError`, `dir_is_empty_or_absent`,
+- `backup` — `BackupManifest`, `BackupError`, `dir_is_empty_or_absent`,
   `create_backup(db_path, assets_dir, out_dir) -> Result<BackupManifest, BackupError>`,
   `restore_backup(backup_dir, db_path, assets_dir, force) -> Result<(), BackupError>`. Opens its
   own short-lived `SqlitePool` directly (does not reuse `SqliteRepository`/`AppState`) — pure
@@ -92,12 +91,11 @@ and restore as a deployment-operator tool, not an in-app feature.
 
 ## Gotchas
 
-- **Docs-ratchet is live in this subsystem (docs sweep 1):** the `config`, `db`, `backup`,
+- **Docs-ratchet is live in this subsystem:** the `config`, `db`, `backup`,
   `modules`, `main`, and `bin::test_server` modules all carry `#![deny(missing_docs)]` +
   `#![deny(clippy::missing_docs_in_private_items)]` — a new item without a doc comment fails the
   3-OS CI clippy step. Every lib function also carries a `# Examples` doctest (`no_run` for
-  infra-bound; bins use ` ```text ` — rustdoc runs no doctests for bin targets). Doctest policy +
-  flip mechanics: `docs/superpowers/plans/2026-07-30-docs-sweep1-server-ops.md`. The crate root has
+  infra-bound; bins use ` ```text ` — rustdoc runs no doctests for bin targets). The crate root has
   NO deny attr (a crate-root inner attr would flip the whole crate early — that's the final ratchet).
 - `backup::copy_dir_recursive` silently skips symlinks (documented on the function itself)
   — the assets tree is server-managed and never contains one today, so this avoids following into
@@ -111,7 +109,7 @@ and restore as a deployment-operator tool, not an in-app feature.
   (`.replace('\'', "''")`) before interpolation — re-verify both conditions still hold if this
   code is ever reused somewhere the input could be less trusted.
 - `cargo fmt` with a path argument still reformats the WHOLE crate if not scoped correctly — this
-  bit two different Task implementers in M12.5's own execution, leaving unrelated drift in
+  bit two different implementers, leaving unrelated drift in
   the `http` module that had to be reverted before commit. Use `cargo fmt --check` first, or scope
   explicitly, and diff before committing.
 - `restore_backup`'s destination writes are a stage-then-swap, not an in-place write: the db
@@ -145,10 +143,8 @@ and restore as a deployment-operator tool, not an in-app feature.
 
 ## Pointers
 
-- Design: `docs/superpowers/specs/2026-07-15-m12.5-backups-snapshot-restore-design.md`; plan
-  `docs/superpowers/plans/2026-07-15-m12.5-backups-snapshot-restore.md` (4 SDD tasks, no
-  buddy-check pre-authorized — file I/O + one SQL statement, not the
-  security/concurrency/determinism risk class).
+- This subsystem is classified as file I/O + one SQL statement risk, not the
+  security/concurrency/determinism risk class that requires independent review.
 - Relationships: `graphify query "config cli main backup restore server bootstrap"`.
 - Data-layer side (what `db_path`/`assets_dir` ultimately point at): [[shadowcat-codebase-assets]],
   [[shadowcat-codebase-documents-permissions]] (`SqliteRepository`, `src/server/src/data/`).
