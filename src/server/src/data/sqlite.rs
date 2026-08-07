@@ -6324,12 +6324,14 @@ mod tests {
         let msg = crate::chat::build_message_doc(
             w.id,
             player,
-            "all".into(),
-            None,
-            crate::chat::Audience::Public,
-            crate::chat::MessageKind::Normal,
-            crate::chat::plain_text_content("hi"),
-            None,
+            crate::chat::MessageDraft {
+                channel: "all".into(),
+                actor_owner: None,
+                audience: crate::chat::Audience::Public,
+                kind: crate::chat::MessageKind::Normal,
+                content: crate::chat::plain_text_content("hi"),
+                source: None,
+            },
             1,
         );
         r.apply_intent(
@@ -6346,12 +6348,14 @@ mod tests {
         let mut other = crate::chat::build_message_doc(
             w.id,
             player,
-            "all".into(),
-            None,
-            crate::chat::Audience::Public,
-            crate::chat::MessageKind::Normal,
-            vec![],
-            None,
+            crate::chat::MessageDraft {
+                channel: "all".into(),
+                actor_owner: None,
+                audience: crate::chat::Audience::Public,
+                kind: crate::chat::MessageKind::Normal,
+                content: vec![],
+                source: None,
+            },
             2,
         );
         other.doc_type = "note".into();
@@ -6396,12 +6400,14 @@ mod tests {
         let msg = crate::chat::build_message_doc(
             w.id,
             spec,
-            "all".into(),
-            None,
-            crate::chat::Audience::Public,
-            crate::chat::MessageKind::Normal,
-            vec![],
-            None,
+            crate::chat::MessageDraft {
+                channel: "all".into(),
+                actor_owner: None,
+                audience: crate::chat::Audience::Public,
+                kind: crate::chat::MessageKind::Normal,
+                content: vec![],
+                source: None,
+            },
             1,
         );
         let err = r
@@ -6447,12 +6453,14 @@ mod tests {
         let mut msg = crate::chat::build_message_doc(
             w.id,
             player,
-            "all".into(),
-            None,
-            crate::chat::Audience::Public,
-            crate::chat::MessageKind::Normal,
-            crate::chat::plain_text_content("hi"),
-            None,
+            crate::chat::MessageDraft {
+                channel: "all".into(),
+                actor_owner: None,
+                audience: crate::chat::Audience::Public,
+                kind: crate::chat::MessageKind::Normal,
+                content: crate::chat::plain_text_content("hi"),
+                source: None,
+            },
             1,
         );
         msg.owner = Some(other);
@@ -6496,12 +6504,14 @@ mod tests {
         let msg = crate::chat::build_message_doc(
             w.id,
             player,
-            "all".into(),
-            None,
-            crate::chat::Audience::Public,
-            crate::chat::MessageKind::Normal,
-            crate::chat::plain_text_content("hi"),
-            None,
+            crate::chat::MessageDraft {
+                channel: "all".into(),
+                actor_owner: None,
+                audience: crate::chat::Audience::Public,
+                kind: crate::chat::MessageKind::Normal,
+                content: crate::chat::plain_text_content("hi"),
+                source: None,
+            },
             1,
         );
         let msg_id = msg.id;
@@ -6570,12 +6580,14 @@ mod tests {
         let msg = crate::chat::build_message_doc(
             w.id,
             player,
-            "all".into(),
-            None,
-            crate::chat::Audience::Public,
-            crate::chat::MessageKind::Normal,
-            crate::chat::plain_text_content("hi"),
-            None,
+            crate::chat::MessageDraft {
+                channel: "all".into(),
+                actor_owner: None,
+                audience: crate::chat::Audience::Public,
+                kind: crate::chat::MessageKind::Normal,
+                content: crate::chat::plain_text_content("hi"),
+                source: None,
+            },
             1,
         );
         let msg_id = msg.id;

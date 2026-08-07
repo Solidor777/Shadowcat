@@ -7,8 +7,8 @@
 
 use shadowcat::chat::{
     build_link_preview_client, handle_edit_message, handle_send_message, Audience,
-    LinkPreviewCache, LinkPreviewDeps, MessageEngine, MessageKind, PreviewRateLimiter, Segment,
-    SendMessageError,
+    LinkPreviewCache, LinkPreviewDeps, MessageEngine, MessageKind, MessageRequestCtx,
+    PreviewRateLimiter, Segment, SendMessageError,
 };
 use shadowcat::data::command::{Command, Operation};
 use shadowcat::data::document::{Document, WorldRole};
@@ -84,21 +84,23 @@ impl Fixture {
 
     async fn send(&self, content: &str) -> Result<Command, SendMessageError> {
         handle_send_message(
-            &self.room,
-            &self.repo,
-            &self.alice,
-            &self.rate,
-            LinkPreviewDeps {
-                client: &self.preview_client,
-                cache: &self.preview_cache,
-                rate: &self.preview_rate,
+            MessageRequestCtx {
+                room: &self.room,
+                repo: &self.repo,
+                ctx: &self.alice,
+                rate: &self.rate,
+                preview: LinkPreviewDeps {
+                    client: &self.preview_client,
+                    cache: &self.preview_cache,
+                    rate: &self.preview_rate,
+                },
+                now: 1,
+                budget_per_min: 60,
             },
             "all".into(),
             content.into(),
             None,
             Audience::Public,
-            1,
-            60,
         )
         .await
     }
@@ -263,19 +265,21 @@ async fn edit_of_roll_message_is_immutable() {
     let sent = f.send("/roll 1d6").await.unwrap();
     let id = f.stored_message_doc(&sent).await.id;
     let r = handle_edit_message(
-        &f.room,
-        &f.repo,
-        &f.alice,
-        &f.rate,
-        LinkPreviewDeps {
-            client: &f.preview_client,
-            cache: &f.preview_cache,
-            rate: &f.preview_rate,
+        MessageRequestCtx {
+            room: &f.room,
+            repo: &f.repo,
+            ctx: &f.alice,
+            rate: &f.rate,
+            preview: LinkPreviewDeps {
+                client: &f.preview_client,
+                cache: &f.preview_cache,
+                rate: &f.preview_rate,
+            },
+            now: 2,
+            budget_per_min: 60,
         },
         id,
         "/roll 1d20".into(),
-        2,
-        60,
     )
     .await;
     assert!(matches!(r, Err(SendMessageError::RollImmutable)), "{r:?}");
@@ -289,19 +293,21 @@ async fn edit_into_roll_is_rejected() {
     let sent = f.send("hello").await.unwrap();
     let id = f.stored_message_doc(&sent).await.id;
     let r = handle_edit_message(
-        &f.room,
-        &f.repo,
-        &f.alice,
-        &f.rate,
-        LinkPreviewDeps {
-            client: &f.preview_client,
-            cache: &f.preview_cache,
-            rate: &f.preview_rate,
+        MessageRequestCtx {
+            room: &f.room,
+            repo: &f.repo,
+            ctx: &f.alice,
+            rate: &f.rate,
+            preview: LinkPreviewDeps {
+                client: &f.preview_client,
+                cache: &f.preview_cache,
+                rate: &f.preview_rate,
+            },
+            now: 2,
+            budget_per_min: 60,
         },
         id,
         "/roll 1d6".into(),
-        2,
-        60,
     )
     .await;
     assert!(matches!(r, Err(SendMessageError::RollImmutable)), "{r:?}");
@@ -326,19 +332,21 @@ async fn edit_content_with_inline_span_stays_literal_text() {
     let sent = f.send("hello").await.unwrap();
     let id = f.stored_message_doc(&sent).await.id;
     let edited = handle_edit_message(
-        &f.room,
-        &f.repo,
-        &f.alice,
-        &f.rate,
-        LinkPreviewDeps {
-            client: &f.preview_client,
-            cache: &f.preview_cache,
-            rate: &f.preview_rate,
+        MessageRequestCtx {
+            room: &f.room,
+            repo: &f.repo,
+            ctx: &f.alice,
+            rate: &f.rate,
+            preview: LinkPreviewDeps {
+                client: &f.preview_client,
+                cache: &f.preview_cache,
+                rate: &f.preview_rate,
+            },
+            now: 2,
+            budget_per_min: 60,
         },
         id,
         "[[1d6]]".into(),
-        2,
-        60,
     )
     .await
     .unwrap();

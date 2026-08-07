@@ -301,254 +301,258 @@ async fn handle_socket(
     let preview_rate = state.ws.preview_rate.clone();
     loop {
         tokio::select! {
-            _ = &mut egress => break,
-            frame = stream.next() => {
-                let Some(Ok(frame)) = frame else { break };
-                match frame {
-                    Message::Text(t) => match serde_json::from_str::<ClientMsg>(t.as_str()) {
-                        Ok(ClientMsg::Intent { intent_id, ops }) => {
-                            // Messages are server-authored via SendMessage only;
-                            // a client-authored message op is always rejected here,
-                            // never reaching apply_intent.
-                            if crate::chat::ops_target_message(&ops) {
-                                let _ = etx
-                                    .send(Egress::Frame(Arc::new(ServerMsg::Reject {
-                                        intent_id,
-                                        reason: RejectReason::Forbidden,
-                                    })))
-                                    .await;
-                                continue;
-                            }
-                            // Success is confirmed by the broadcast echo of the
-                            // authored Event; only a rejection is sent directly.
-                            match room.publish(repo.as_ref(), &ctx, ops, now_millis(), WriteOrigin::Client).await {
-                                Ok(_cmd) => {}
-                                Err(e) => {
-                                    let reason = reject_reason(&e);
-                                    tracing::debug!(world = %world_id, %intent_id, ?reason, "intent rejected");
+                    _ = &mut egress => break,
+                    frame = stream.next() => {
+                        let Some(Ok(frame)) = frame else { break };
+                        match frame {
+                            Message::Text(t) => match serde_json::from_str::<ClientMsg>(t.as_str()) {
+                                Ok(ClientMsg::Intent { intent_id, ops }) => {
+                                    // Messages are server-authored via SendMessage only;
+                                    // a client-authored message op is always rejected here,
+                                    // never reaching apply_intent.
+                                    if crate::chat::ops_target_message(&ops) {
+                                        let _ = etx
+                                            .send(Egress::Frame(Arc::new(ServerMsg::Reject {
+                                                intent_id,
+                                                reason: RejectReason::Forbidden,
+                                            })))
+                                            .await;
+                                        continue;
+                                    }
+                                    // Success is confirmed by the broadcast echo of the
+                                    // authored Event; only a rejection is sent directly.
+                                    match room.publish(repo.as_ref(), &ctx, ops, now_millis(), WriteOrigin::Client).await {
+                                        Ok(_cmd) => {}
+                                        Err(e) => {
+                                            let reason = reject_reason(&e);
+                                            tracing::debug!(world = %world_id, %intent_id, ?reason, "intent rejected");
+                                            let _ = etx
+                                                .send(Egress::Frame(Arc::new(ServerMsg::Reject {
+                                                    intent_id,
+                                                    reason,
+                                                })))
+                                                .await;
+                                        }
+                                    }
+                                }
+                                Ok(ClientMsg::TimePing { client_t0 }) => {
+                                    if etx
+                                        .send(Egress::TimePong { client_t0, server_t: now_millis() })
+                                        .await
+                                        .is_err()
+                                    {
+                                        break;
+                                    }
+                                }
+                                Ok(ClientMsg::ResyncRequest { from_seq }) => {
+                                    if etx.send(Egress::Resync(from_seq)).await.is_err() {
+                                        break;
+                                    }
+                                }
+                                Ok(ClientMsg::Search { request_id, query, limit, cursor, subscribe }) => {
+                                    if subscribe {
+                                        // Subscriptions are owned by the egress task (it has
+                                        // the registry, the broadcast, and the sink).
+                                        if etx.send(Egress::Subscribe { request_id, query, limit }).await.is_err() {
+                                            break;
+                                        }
+                                    } else {
+                                        let from = cursor.as_deref().and_then(|c| c.parse::<i64>().ok());
+                                        let frame = match repo.search(&ctx, world_id, &query, limit, from).await {
+                                            Ok(page) => ServerMsg::SearchResult {
+                                                request_id,
+                                                hits: page.hits,
+                                                next_cursor: page.next_cursor.map(|n| n.to_string()),
+                                            },
+                                            Err(e) => {
+                                                tracing::debug!(world = %world_id, %request_id, error = %e, "search failed");
+                                                ServerMsg::SearchError {
+                                                    request_id,
+                                                    message: "search failed".into(),
+                                                }
+                                            }
+                                        };
+                                        if etx.send(Egress::Frame(Arc::new(frame))).await.is_err() {
+                                            break;
+                                        }
+                                    }
+                                }
+                                Ok(ClientMsg::Unsubscribe { request_id }) => {
+                                    if etx.send(Egress::Unsubscribe { request_id }).await.is_err() {
+                                        break;
+                                    }
+                                }
+                                Ok(ClientMsg::Hello { .. }) | Ok(ClientMsg::Pong) => {}
+                                Ok(ClientMsg::SceneSubscribe { request_id, channel, as_user }) => {
+                                    if etx
+                                        .send(Egress::SceneSubscribe { request_id, channel, as_user })
+                                        .await
+                                        .is_err()
+                                    {
+                                        break;
+                                    }
+                                }
+                                Ok(ClientMsg::SceneUnsubscribe { request_id }) => {
+                                    if etx
+                                        .send(Egress::SceneUnsubscribe { request_id })
+                                        .await
+                                        .is_err()
+                                    {
+                                        break;
+                                    }
+                                }
+                                Ok(ClientMsg::ScenePing { scene, x, y }) => {
+                                    // Out-of-band relay to the world room, stamped with the sender.
+                                    // Membership is already gated (a non-member never reaches here);
+                                    // coordinates are not validated. Guard order: cheap rate check
+                                    // first, then the authz lookup (one doc read per admitted ping,
+                                    // bounded at 30/min/user). Over-budget and unauthorized pings both
+                                    // drop silently — no error frame, so a non-reader never learns
+                                    // whether `scene` exists.
+                                    if ping_rate.check(user_id, now_millis(), 30)
+                                        && scene_ping_permitted(scene, &ctx, world_id, repo.as_ref())
+                                            .await
+                                    {
+                                        room.broadcast_aux(ServerMsg::ScenePing {
+                                            scene,
+                                            x,
+                                            y,
+                                            user: user_id,
+                                        });
+                                    }
+                                }
+                                Ok(ClientMsg::MoveRequest { request_id, scene, token_id, path }) => {
+                                    // Server-authoritative move execution. On success, broadcasts
+                                    // MoveStream out-of-band to the room — no etx reply to the requester.
+                                    // On failure, returns MoveError to etx only (no geometry leak).
+                                    // INVARIANT (broadcast-not-requester): the atomic position Event
+                                    // from commit_ops_locked + the MoveStream broadcast are the
+                                    // notifications; no success frame is sent to the requester's etx.
+                                    if let Some(err_frame) = handle_move_request(
+                                        &room,
+                                        repo.as_ref(),
+                                        &ctx,
+                                        scene,
+                                        token_id,
+                                        path,
+                                        request_id,
+                                    )
+                                    .await
+                                    {
+                                        if etx.send(Egress::Frame(Arc::new(err_frame))).await.is_err() {
+                                            break;
+                                        }
+                                    }
+                                }
+                                Ok(ClientMsg::SendMessage { request_id, channel, content, actor_owner, audience }) => {
+                                    // Server-authoritative chat ingest: flood-limit, validate, CONSTRUCT
+                                    // the message doc, and publish. Success is confirmed by the broadcast
+                                    // echo of the authored Event (like Intent). On rejection, a
+                                    // `ChatError` correlated by `request_id` is sent to the sender ONLY
+                                    // (never broadcast) so the failure is surfaced instead of vanishing;
+                                    // `message` is the classified, no-leak `Display` text.
+                                    if let Err(e) = crate::chat::handle_send_message(
+            crate::chat::MessageRequestCtx {
+                room: &room,
+                repo: repo.as_ref(),
+                ctx: &ctx,
+                rate: &message_rate,
+                preview: crate::chat::LinkPreviewDeps { client: &preview_client, cache: &preview_cache, rate: &preview_rate },
+                now: now_millis(),
+                budget_per_min: MESSAGE_RATE_PER_MIN,
+            },
+            channel,
+            content,
+            actor_owner,
+            audience,
+        )
+                                    .await
+                                    {
+                                        tracing::debug!(world = %world_id, user = %user_id, ?e, "message rejected");
+                                        if etx.send(Egress::Frame(Arc::new(ServerMsg::ChatError {
+                                            request_id,
+                                            message: e.to_string(),
+                                        }))).await.is_err() {
+                                            break;
+                                        }
+                                    }
+                                }
+                                Ok(ClientMsg::EditMessage { request_id, message_id, content }) => {
+                                    // Same confirm-by-broadcast-echo shape as SendMessage; a rejection is
+                                    // surfaced to the sender only via a `request_id`-correlated `ChatError`.
+                                    if let Err(e) = crate::chat::handle_edit_message(
+            crate::chat::MessageRequestCtx {
+                room: &room,
+                repo: repo.as_ref(),
+                ctx: &ctx,
+                rate: &message_rate,
+                preview: crate::chat::LinkPreviewDeps { client: &preview_client, cache: &preview_cache, rate: &preview_rate },
+                now: now_millis(),
+                budget_per_min: MESSAGE_RATE_PER_MIN,
+            },
+            message_id,
+            content,
+        )
+                                    .await
+                                    {
+                                        tracing::debug!(world = %world_id, user = %user_id, ?e, "edit rejected");
+                                        if etx.send(Egress::Frame(Arc::new(ServerMsg::ChatError {
+                                            request_id,
+                                            message: e.to_string(),
+                                        }))).await.is_err() {
+                                            break;
+                                        }
+                                    }
+                                }
+                                Ok(ClientMsg::DeleteMessage { request_id, message_id }) => {
+                                    // Same confirm-by-broadcast-echo shape as SendMessage/EditMessage; a
+                                    // rejection is surfaced to the sender only via a correlated `ChatError`.
+                                    if let Err(e) = crate::chat::handle_delete_message(
+                                        &room,
+                                        repo.as_ref(),
+                                        &ctx,
+                                        &message_rate,
+                                        message_id,
+                                        now_millis(),
+                                        MESSAGE_RATE_PER_MIN,
+                                    )
+                                    .await
+                                    {
+                                        tracing::debug!(world = %world_id, user = %user_id, ?e, "delete rejected");
+                                        if etx.send(Egress::Frame(Arc::new(ServerMsg::ChatError {
+                                            request_id,
+                                            message: e.to_string(),
+                                        }))).await.is_err() {
+                                            break;
+                                        }
+                                    }
+                                }
+                                Ok(ClientMsg::Pathfind { request_id, scene, start, waypoints, footprint_radius, token }) => {
+                                    // One-shot pathfinding: resolve GM status, fetch explored off the lock for
+                                    // non-GM Revealed, call SceneEcs::pathfind, reply to this connection only.
+                                    // INVARIANT (one-shot-to-requester): reply goes to etx only, never broadcast.
+                                    let frame = handle_pathfind(
+                                        request_id, scene, start, waypoints, footprint_radius, token,
+                                        &ctx, &room, repo.as_ref(),
+                                    ).await;
+                                    if etx.send(Egress::Frame(Arc::new(frame))).await.is_err() {
+                                        break;
+                                    }
+                                }
+                                Err(_) => {
                                     let _ = etx
-                                        .send(Egress::Frame(Arc::new(ServerMsg::Reject {
-                                            intent_id,
-                                            reason,
+                                        .send(Egress::Frame(Arc::new(ServerMsg::Error {
+                                            code: WsErrorCode::BadMessage,
+                                            message: "malformed frame".into(),
                                         })))
                                         .await;
                                 }
-                            }
+                            },
+                            Message::Close(_) => break,
+                            _ => {}
                         }
-                        Ok(ClientMsg::TimePing { client_t0 }) => {
-                            if etx
-                                .send(Egress::TimePong { client_t0, server_t: now_millis() })
-                                .await
-                                .is_err()
-                            {
-                                break;
-                            }
-                        }
-                        Ok(ClientMsg::ResyncRequest { from_seq }) => {
-                            if etx.send(Egress::Resync(from_seq)).await.is_err() {
-                                break;
-                            }
-                        }
-                        Ok(ClientMsg::Search { request_id, query, limit, cursor, subscribe }) => {
-                            if subscribe {
-                                // Subscriptions are owned by the egress task (it has
-                                // the registry, the broadcast, and the sink).
-                                if etx.send(Egress::Subscribe { request_id, query, limit }).await.is_err() {
-                                    break;
-                                }
-                            } else {
-                                let from = cursor.as_deref().and_then(|c| c.parse::<i64>().ok());
-                                let frame = match repo.search(&ctx, world_id, &query, limit, from).await {
-                                    Ok(page) => ServerMsg::SearchResult {
-                                        request_id,
-                                        hits: page.hits,
-                                        next_cursor: page.next_cursor.map(|n| n.to_string()),
-                                    },
-                                    Err(e) => {
-                                        tracing::debug!(world = %world_id, %request_id, error = %e, "search failed");
-                                        ServerMsg::SearchError {
-                                            request_id,
-                                            message: "search failed".into(),
-                                        }
-                                    }
-                                };
-                                if etx.send(Egress::Frame(Arc::new(frame))).await.is_err() {
-                                    break;
-                                }
-                            }
-                        }
-                        Ok(ClientMsg::Unsubscribe { request_id }) => {
-                            if etx.send(Egress::Unsubscribe { request_id }).await.is_err() {
-                                break;
-                            }
-                        }
-                        Ok(ClientMsg::Hello { .. }) | Ok(ClientMsg::Pong) => {}
-                        Ok(ClientMsg::SceneSubscribe { request_id, channel, as_user }) => {
-                            if etx
-                                .send(Egress::SceneSubscribe { request_id, channel, as_user })
-                                .await
-                                .is_err()
-                            {
-                                break;
-                            }
-                        }
-                        Ok(ClientMsg::SceneUnsubscribe { request_id }) => {
-                            if etx
-                                .send(Egress::SceneUnsubscribe { request_id })
-                                .await
-                                .is_err()
-                            {
-                                break;
-                            }
-                        }
-                        Ok(ClientMsg::ScenePing { scene, x, y }) => {
-                            // Out-of-band relay to the world room, stamped with the sender.
-                            // Membership is already gated (a non-member never reaches here);
-                            // coordinates are not validated. Guard order: cheap rate check
-                            // first, then the authz lookup (one doc read per admitted ping,
-                            // bounded at 30/min/user). Over-budget and unauthorized pings both
-                            // drop silently — no error frame, so a non-reader never learns
-                            // whether `scene` exists.
-                            if ping_rate.check(user_id, now_millis(), 30)
-                                && scene_ping_permitted(scene, &ctx, world_id, repo.as_ref())
-                                    .await
-                            {
-                                room.broadcast_aux(ServerMsg::ScenePing {
-                                    scene,
-                                    x,
-                                    y,
-                                    user: user_id,
-                                });
-                            }
-                        }
-                        Ok(ClientMsg::MoveRequest { request_id, scene, token_id, path }) => {
-                            // Server-authoritative move execution. On success, broadcasts
-                            // MoveStream out-of-band to the room — no etx reply to the requester.
-                            // On failure, returns MoveError to etx only (no geometry leak).
-                            // INVARIANT (broadcast-not-requester): the atomic position Event
-                            // from commit_ops_locked + the MoveStream broadcast are the
-                            // notifications; no success frame is sent to the requester's etx.
-                            if let Some(err_frame) = handle_move_request(
-                                &room,
-                                repo.as_ref(),
-                                &ctx,
-                                scene,
-                                token_id,
-                                path,
-                                request_id,
-                            )
-                            .await
-                            {
-                                if etx.send(Egress::Frame(Arc::new(err_frame))).await.is_err() {
-                                    break;
-                                }
-                            }
-                        }
-                        Ok(ClientMsg::SendMessage { request_id, channel, content, actor_owner, audience }) => {
-                            // Server-authoritative chat ingest: flood-limit, validate, CONSTRUCT
-                            // the message doc, and publish. Success is confirmed by the broadcast
-                            // echo of the authored Event (like Intent). On rejection, a
-                            // `ChatError` correlated by `request_id` is sent to the sender ONLY
-                            // (never broadcast) so the failure is surfaced instead of vanishing;
-                            // `message` is the classified, no-leak `Display` text.
-                            if let Err(e) = crate::chat::handle_send_message(
-                                &room,
-                                repo.as_ref(),
-                                &ctx,
-                                &message_rate,
-                                crate::chat::LinkPreviewDeps { client: &preview_client, cache: &preview_cache, rate: &preview_rate },
-                                channel,
-                                content,
-                                actor_owner,
-                                audience,
-                                now_millis(),
-                                MESSAGE_RATE_PER_MIN,
-                            )
-                            .await
-                            {
-                                tracing::debug!(world = %world_id, user = %user_id, ?e, "message rejected");
-                                if etx.send(Egress::Frame(Arc::new(ServerMsg::ChatError {
-                                    request_id,
-                                    message: e.to_string(),
-                                }))).await.is_err() {
-                                    break;
-                                }
-                            }
-                        }
-                        Ok(ClientMsg::EditMessage { request_id, message_id, content }) => {
-                            // Same confirm-by-broadcast-echo shape as SendMessage; a rejection is
-                            // surfaced to the sender only via a `request_id`-correlated `ChatError`.
-                            if let Err(e) = crate::chat::handle_edit_message(
-                                &room,
-                                repo.as_ref(),
-                                &ctx,
-                                &message_rate,
-                                crate::chat::LinkPreviewDeps { client: &preview_client, cache: &preview_cache, rate: &preview_rate },
-                                message_id,
-                                content,
-                                now_millis(),
-                                MESSAGE_RATE_PER_MIN,
-                            )
-                            .await
-                            {
-                                tracing::debug!(world = %world_id, user = %user_id, ?e, "edit rejected");
-                                if etx.send(Egress::Frame(Arc::new(ServerMsg::ChatError {
-                                    request_id,
-                                    message: e.to_string(),
-                                }))).await.is_err() {
-                                    break;
-                                }
-                            }
-                        }
-                        Ok(ClientMsg::DeleteMessage { request_id, message_id }) => {
-                            // Same confirm-by-broadcast-echo shape as SendMessage/EditMessage; a
-                            // rejection is surfaced to the sender only via a correlated `ChatError`.
-                            if let Err(e) = crate::chat::handle_delete_message(
-                                &room,
-                                repo.as_ref(),
-                                &ctx,
-                                &message_rate,
-                                message_id,
-                                now_millis(),
-                                MESSAGE_RATE_PER_MIN,
-                            )
-                            .await
-                            {
-                                tracing::debug!(world = %world_id, user = %user_id, ?e, "delete rejected");
-                                if etx.send(Egress::Frame(Arc::new(ServerMsg::ChatError {
-                                    request_id,
-                                    message: e.to_string(),
-                                }))).await.is_err() {
-                                    break;
-                                }
-                            }
-                        }
-                        Ok(ClientMsg::Pathfind { request_id, scene, start, waypoints, footprint_radius, token }) => {
-                            // One-shot pathfinding: resolve GM status, fetch explored off the lock for
-                            // non-GM Revealed, call SceneEcs::pathfind, reply to this connection only.
-                            // INVARIANT (one-shot-to-requester): reply goes to etx only, never broadcast.
-                            let frame = handle_pathfind(
-                                request_id, scene, start, waypoints, footprint_radius, token,
-                                &ctx, &room, repo.as_ref(),
-                            ).await;
-                            if etx.send(Egress::Frame(Arc::new(frame))).await.is_err() {
-                                break;
-                            }
-                        }
-                        Err(_) => {
-                            let _ = etx
-                                .send(Egress::Frame(Arc::new(ServerMsg::Error {
-                                    code: WsErrorCode::BadMessage,
-                                    message: "malformed frame".into(),
-                                })))
-                                .await;
-                        }
-                    },
-                    Message::Close(_) => break,
-                    _ => {}
+                    }
                 }
-            }
-        }
     }
 
     egress.abort();

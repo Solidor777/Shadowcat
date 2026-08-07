@@ -13,8 +13,8 @@ use shadowcat::auth::role::ServerRole;
 use shadowcat::chat::{
     build_link_preview_client, build_message_doc, handle_delete_message, handle_edit_message,
     handle_send_message, Audience, ChatContentPolicy, LinkPreviewCache, LinkPreviewDeps,
-    MessageEngine, MessageKind, PreviewRateLimiter, Segment, SendMessageError,
-    CHAT_SETTINGS_DOC_TYPE,
+    MessageDraft, MessageEngine, MessageKind, MessageRequestCtx, PreviewRateLimiter, Segment,
+    SendMessageError, CHAT_SETTINGS_DOC_TYPE,
 };
 use shadowcat::data::command::{Command, FieldChange, Operation, WriteOrigin};
 use shadowcat::data::document::{DocRole, Document, PermissionSet, Scope, WorldRole};
@@ -169,21 +169,23 @@ impl Fixture {
 
     async fn send(&self, content: &str) -> Result<Command, SendMessageError> {
         handle_send_message(
-            &self.room,
-            &self.repo,
-            &self.alice,
-            &self.rate,
-            LinkPreviewDeps {
-                client: &self.preview_client,
-                cache: &self.preview_cache,
-                rate: &self.preview_rate,
+            MessageRequestCtx {
+                room: &self.room,
+                repo: &self.repo,
+                ctx: &self.alice,
+                rate: &self.rate,
+                preview: LinkPreviewDeps {
+                    client: &self.preview_client,
+                    cache: &self.preview_cache,
+                    rate: &self.preview_rate,
+                },
+                now: 1,
+                budget_per_min: 60,
             },
             "all".into(),
             content.into(),
             None,
             Audience::Public,
-            1,
-            60,
         )
         .await
     }
@@ -207,39 +209,43 @@ async fn owner_can_edit_and_content_resanitizes() {
     })
     .await;
     let sent = handle_send_message(
-        &f.room,
-        &f.repo,
-        &f.alice,
-        &f.rate,
-        LinkPreviewDeps {
-            client: &f.preview_client,
-            cache: &f.preview_cache,
-            rate: &f.preview_rate,
+        MessageRequestCtx {
+            room: &f.room,
+            repo: &f.repo,
+            ctx: &f.alice,
+            rate: &f.rate,
+            preview: LinkPreviewDeps {
+                client: &f.preview_client,
+                cache: &f.preview_cache,
+                rate: &f.preview_rate,
+            },
+            now: 1,
+            budget_per_min: 60,
         },
         "all".into(),
         "first".into(),
         None,
         Audience::Public,
-        1,
-        60,
     )
     .await
     .unwrap();
     let id = f.message_id(&sent).await;
     let edited = handle_edit_message(
-        &f.room,
-        &f.repo,
-        &f.alice,
-        &f.rate,
-        LinkPreviewDeps {
-            client: &f.preview_client,
-            cache: &f.preview_cache,
-            rate: &f.preview_rate,
+        MessageRequestCtx {
+            room: &f.room,
+            repo: &f.repo,
+            ctx: &f.alice,
+            rate: &f.rate,
+            preview: LinkPreviewDeps {
+                client: &f.preview_client,
+                cache: &f.preview_cache,
+                rate: &f.preview_rate,
+            },
+            now: 2,
+            budget_per_min: 60,
         },
         id,
         "**second**".into(),
-        2,
-        60,
     )
     .await
     .unwrap();
@@ -252,39 +258,43 @@ async fn owner_can_edit_and_content_resanitizes() {
 async fn non_owner_non_gm_cannot_edit() {
     let f = fixture().await;
     let sent = handle_send_message(
-        &f.room,
-        &f.repo,
-        &f.alice,
-        &f.rate,
-        LinkPreviewDeps {
-            client: &f.preview_client,
-            cache: &f.preview_cache,
-            rate: &f.preview_rate,
+        MessageRequestCtx {
+            room: &f.room,
+            repo: &f.repo,
+            ctx: &f.alice,
+            rate: &f.rate,
+            preview: LinkPreviewDeps {
+                client: &f.preview_client,
+                cache: &f.preview_cache,
+                rate: &f.preview_rate,
+            },
+            now: 1,
+            budget_per_min: 60,
         },
         "all".into(),
         "hi".into(),
         None,
         Audience::Public,
-        1,
-        60,
     )
     .await
     .unwrap();
     let id = f.message_id(&sent).await;
     let r = handle_edit_message(
-        &f.room,
-        &f.repo,
-        &f.bob,
-        &f.rate,
-        LinkPreviewDeps {
-            client: &f.preview_client,
-            cache: &f.preview_cache,
-            rate: &f.preview_rate,
+        MessageRequestCtx {
+            room: &f.room,
+            repo: &f.repo,
+            ctx: &f.bob,
+            rate: &f.rate,
+            preview: LinkPreviewDeps {
+                client: &f.preview_client,
+                cache: &f.preview_cache,
+                rate: &f.preview_rate,
+            },
+            now: 2,
+            budget_per_min: 60,
         },
         id,
         "hax".into(),
-        2,
-        60,
     )
     .await;
     assert!(matches!(r, Err(SendMessageError::Forbidden)));
@@ -298,21 +308,23 @@ async fn non_owner_non_gm_cannot_edit() {
 async fn cannot_edit_already_deleted_message() {
     let f = fixture().await;
     let sent = handle_send_message(
-        &f.room,
-        &f.repo,
-        &f.alice,
-        &f.rate,
-        LinkPreviewDeps {
-            client: &f.preview_client,
-            cache: &f.preview_cache,
-            rate: &f.preview_rate,
+        MessageRequestCtx {
+            room: &f.room,
+            repo: &f.repo,
+            ctx: &f.alice,
+            rate: &f.rate,
+            preview: LinkPreviewDeps {
+                client: &f.preview_client,
+                cache: &f.preview_cache,
+                rate: &f.preview_rate,
+            },
+            now: 1,
+            budget_per_min: 60,
         },
         "all".into(),
         "secret".into(),
         None,
         Audience::Public,
-        1,
-        60,
     )
     .await
     .unwrap();
@@ -321,19 +333,21 @@ async fn cannot_edit_already_deleted_message() {
         .await
         .unwrap();
     let r = handle_edit_message(
-        &f.room,
-        &f.repo,
-        &f.alice,
-        &f.rate,
-        LinkPreviewDeps {
-            client: &f.preview_client,
-            cache: &f.preview_cache,
-            rate: &f.preview_rate,
+        MessageRequestCtx {
+            room: &f.room,
+            repo: &f.repo,
+            ctx: &f.alice,
+            rate: &f.rate,
+            preview: LinkPreviewDeps {
+                client: &f.preview_client,
+                cache: &f.preview_cache,
+                rate: &f.preview_rate,
+            },
+            now: 3,
+            budget_per_min: 60,
         },
         id,
         "resurrected".into(),
-        3,
-        60,
     )
     .await;
     assert!(
@@ -352,39 +366,43 @@ async fn cannot_edit_already_deleted_message() {
 async fn gm_can_edit_players_message() {
     let f = fixture().await;
     let sent = handle_send_message(
-        &f.room,
-        &f.repo,
-        &f.alice,
-        &f.rate,
-        LinkPreviewDeps {
-            client: &f.preview_client,
-            cache: &f.preview_cache,
-            rate: &f.preview_rate,
+        MessageRequestCtx {
+            room: &f.room,
+            repo: &f.repo,
+            ctx: &f.alice,
+            rate: &f.rate,
+            preview: LinkPreviewDeps {
+                client: &f.preview_client,
+                cache: &f.preview_cache,
+                rate: &f.preview_rate,
+            },
+            now: 1,
+            budget_per_min: 60,
         },
         "all".into(),
         "hi".into(),
         None,
         Audience::Public,
-        1,
-        60,
     )
     .await
     .unwrap();
     let id = f.message_id(&sent).await;
     assert!(handle_edit_message(
-        &f.room,
-        &f.repo,
-        &f.gm,
-        &f.rate,
-        LinkPreviewDeps {
-            client: &f.preview_client,
-            cache: &f.preview_cache,
-            rate: &f.preview_rate
+        MessageRequestCtx {
+            room: &f.room,
+            repo: &f.repo,
+            ctx: &f.gm,
+            rate: &f.rate,
+            preview: LinkPreviewDeps {
+                client: &f.preview_client,
+                cache: &f.preview_cache,
+                rate: &f.preview_rate
+            },
+            now: 2,
+            budget_per_min: 60,
         },
         id,
         "moderated".into(),
-        2,
-        60
     )
     .await
     .is_ok());
@@ -400,14 +418,18 @@ async fn gm_can_edit_players_message() {
 async fn gm_can_edit_whisper_message_not_addressed_to_gm() {
     let f = fixture().await;
     let sent = handle_send_message(
-        &f.room,
-        &f.repo,
-        &f.alice,
-        &f.rate,
-        LinkPreviewDeps {
-            client: &f.preview_client,
-            cache: &f.preview_cache,
-            rate: &f.preview_rate,
+        MessageRequestCtx {
+            room: &f.room,
+            repo: &f.repo,
+            ctx: &f.alice,
+            rate: &f.rate,
+            preview: LinkPreviewDeps {
+                client: &f.preview_client,
+                cache: &f.preview_cache,
+                rate: &f.preview_rate,
+            },
+            now: 1,
+            budget_per_min: 60,
         },
         "whispers".into(),
         "hi".into(),
@@ -415,26 +437,26 @@ async fn gm_can_edit_whisper_message_not_addressed_to_gm() {
         Audience::Whisper {
             recipients: vec![f.bob_id],
         },
-        1,
-        60,
     )
     .await
     .unwrap();
     let id = f.message_id(&sent).await;
     let r = handle_edit_message(
-        &f.room,
-        &f.repo,
-        &f.gm,
-        &f.rate,
-        LinkPreviewDeps {
-            client: &f.preview_client,
-            cache: &f.preview_cache,
-            rate: &f.preview_rate,
+        MessageRequestCtx {
+            room: &f.room,
+            repo: &f.repo,
+            ctx: &f.gm,
+            rate: &f.rate,
+            preview: LinkPreviewDeps {
+                client: &f.preview_client,
+                cache: &f.preview_cache,
+                rate: &f.preview_rate,
+            },
+            now: 2,
+            budget_per_min: 60,
         },
         id,
         "moderated".into(),
-        2,
-        60,
     )
     .await;
     assert!(
@@ -451,39 +473,43 @@ async fn gm_can_edit_whisper_message_not_addressed_to_gm() {
 async fn gm_can_edit_gm_only_message_not_individually_listed() {
     let f = fixture().await;
     let sent = handle_send_message(
-        &f.room,
-        &f.repo,
-        &f.alice,
-        &f.rate,
-        LinkPreviewDeps {
-            client: &f.preview_client,
-            cache: &f.preview_cache,
-            rate: &f.preview_rate,
+        MessageRequestCtx {
+            room: &f.room,
+            repo: &f.repo,
+            ctx: &f.alice,
+            rate: &f.rate,
+            preview: LinkPreviewDeps {
+                client: &f.preview_client,
+                cache: &f.preview_cache,
+                rate: &f.preview_rate,
+            },
+            now: 1,
+            budget_per_min: 60,
         },
         "gm".into(),
         "hi".into(),
         None,
         Audience::GmOnly,
-        1,
-        60,
     )
     .await
     .unwrap();
     let id = f.message_id(&sent).await;
     let r = handle_edit_message(
-        &f.room,
-        &f.repo,
-        &f.gm,
-        &f.rate,
-        LinkPreviewDeps {
-            client: &f.preview_client,
-            cache: &f.preview_cache,
-            rate: &f.preview_rate,
+        MessageRequestCtx {
+            room: &f.room,
+            repo: &f.repo,
+            ctx: &f.gm,
+            rate: &f.rate,
+            preview: LinkPreviewDeps {
+                client: &f.preview_client,
+                cache: &f.preview_cache,
+                rate: &f.preview_rate,
+            },
+            now: 2,
+            budget_per_min: 60,
         },
         id,
         "moderated".into(),
-        2,
-        60,
     )
     .await;
     assert!(
@@ -496,39 +522,43 @@ async fn gm_can_edit_gm_only_message_not_individually_listed() {
 async fn edit_cannot_retarget_audience() {
     let f = fixture().await;
     let sent = handle_send_message(
-        &f.room,
-        &f.repo,
-        &f.alice,
-        &f.rate,
-        LinkPreviewDeps {
-            client: &f.preview_client,
-            cache: &f.preview_cache,
-            rate: &f.preview_rate,
+        MessageRequestCtx {
+            room: &f.room,
+            repo: &f.repo,
+            ctx: &f.alice,
+            rate: &f.rate,
+            preview: LinkPreviewDeps {
+                client: &f.preview_client,
+                cache: &f.preview_cache,
+                rate: &f.preview_rate,
+            },
+            now: 1,
+            budget_per_min: 60,
         },
         "all".into(),
         "hi".into(),
         None,
         Audience::Public,
-        1,
-        60,
     )
     .await
     .unwrap();
     let id = f.message_id(&sent).await;
     let r = handle_edit_message(
-        &f.room,
-        &f.repo,
-        &f.alice,
-        &f.rate,
-        LinkPreviewDeps {
-            client: &f.preview_client,
-            cache: &f.preview_cache,
-            rate: &f.preview_rate,
+        MessageRequestCtx {
+            room: &f.room,
+            repo: &f.repo,
+            ctx: &f.alice,
+            rate: &f.rate,
+            preview: LinkPreviewDeps {
+                client: &f.preview_client,
+                cache: &f.preview_cache,
+                rate: &f.preview_rate,
+            },
+            now: 2,
+            budget_per_min: 60,
         },
         id,
         "/w @bob sneaky".into(),
-        2,
-        60,
     )
     .await;
     assert!(matches!(r, Err(SendMessageError::AudienceLocked)));
@@ -703,21 +733,23 @@ async fn roll_command_produces_roll_kind_with_executed_embed() {
 async fn owner_soft_delete_clears_content_and_keeps_doc() {
     let f = fixture().await;
     let sent = handle_send_message(
-        &f.room,
-        &f.repo,
-        &f.alice,
-        &f.rate,
-        LinkPreviewDeps {
-            client: &f.preview_client,
-            cache: &f.preview_cache,
-            rate: &f.preview_rate,
+        MessageRequestCtx {
+            room: &f.room,
+            repo: &f.repo,
+            ctx: &f.alice,
+            rate: &f.rate,
+            preview: LinkPreviewDeps {
+                client: &f.preview_client,
+                cache: &f.preview_cache,
+                rate: &f.preview_rate,
+            },
+            now: 1,
+            budget_per_min: 60,
         },
         "all".into(),
         "secret".into(),
         None,
         Audience::Public,
-        1,
-        60,
     )
     .await
     .unwrap();
@@ -740,21 +772,23 @@ async fn owner_soft_delete_clears_content_and_keeps_doc() {
 async fn non_owner_non_gm_cannot_delete() {
     let f = fixture().await;
     let sent = handle_send_message(
-        &f.room,
-        &f.repo,
-        &f.alice,
-        &f.rate,
-        LinkPreviewDeps {
-            client: &f.preview_client,
-            cache: &f.preview_cache,
-            rate: &f.preview_rate,
+        MessageRequestCtx {
+            room: &f.room,
+            repo: &f.repo,
+            ctx: &f.alice,
+            rate: &f.rate,
+            preview: LinkPreviewDeps {
+                client: &f.preview_client,
+                cache: &f.preview_cache,
+                rate: &f.preview_rate,
+            },
+            now: 1,
+            budget_per_min: 60,
         },
         "all".into(),
         "hi".into(),
         None,
         Audience::Public,
-        1,
-        60,
     )
     .await
     .unwrap();
@@ -774,21 +808,23 @@ async fn non_owner_non_gm_cannot_delete() {
 async fn repeated_delete_of_same_message_is_rate_limited() {
     let f = fixture().await;
     let sent = handle_send_message(
-        &f.room,
-        &f.repo,
-        &f.alice,
-        &f.rate,
-        LinkPreviewDeps {
-            client: &f.preview_client,
-            cache: &f.preview_cache,
-            rate: &f.preview_rate,
+        MessageRequestCtx {
+            room: &f.room,
+            repo: &f.repo,
+            ctx: &f.alice,
+            rate: &f.rate,
+            preview: LinkPreviewDeps {
+                client: &f.preview_client,
+                cache: &f.preview_cache,
+                rate: &f.preview_rate,
+            },
+            now: 1,
+            budget_per_min: 60,
         },
         "all".into(),
         "secret".into(),
         None,
         Audience::Public,
-        1,
-        60,
     )
     .await
     .unwrap();
@@ -813,21 +849,23 @@ async fn repeated_delete_of_same_message_is_rate_limited() {
 async fn soft_delete_leaves_doc_in_sequenced_log() {
     let f = fixture().await;
     let sent = handle_send_message(
-        &f.room,
-        &f.repo,
-        &f.alice,
-        &f.rate,
-        LinkPreviewDeps {
-            client: &f.preview_client,
-            cache: &f.preview_cache,
-            rate: &f.preview_rate,
+        MessageRequestCtx {
+            room: &f.room,
+            repo: &f.repo,
+            ctx: &f.alice,
+            rate: &f.rate,
+            preview: LinkPreviewDeps {
+                client: &f.preview_client,
+                cache: &f.preview_cache,
+                rate: &f.preview_rate,
+            },
+            now: 1,
+            budget_per_min: 60,
         },
         "all".into(),
         "secret".into(),
         None,
         Audience::Public,
-        1,
-        60,
     )
     .await
     .unwrap();
@@ -849,14 +887,18 @@ async fn soft_delete_leaves_doc_in_sequenced_log() {
 async fn gm_can_delete_whisper_message_not_addressed_to_gm() {
     let f = fixture().await;
     let sent = handle_send_message(
-        &f.room,
-        &f.repo,
-        &f.alice,
-        &f.rate,
-        LinkPreviewDeps {
-            client: &f.preview_client,
-            cache: &f.preview_cache,
-            rate: &f.preview_rate,
+        MessageRequestCtx {
+            room: &f.room,
+            repo: &f.repo,
+            ctx: &f.alice,
+            rate: &f.rate,
+            preview: LinkPreviewDeps {
+                client: &f.preview_client,
+                cache: &f.preview_cache,
+                rate: &f.preview_rate,
+            },
+            now: 1,
+            budget_per_min: 60,
         },
         "whispers".into(),
         "hi".into(),
@@ -864,8 +906,6 @@ async fn gm_can_delete_whisper_message_not_addressed_to_gm() {
         Audience::Whisper {
             recipients: vec![f.bob_id],
         },
-        1,
-        60,
     )
     .await
     .unwrap();
@@ -888,21 +928,23 @@ async fn gm_can_delete_whisper_message_not_addressed_to_gm() {
 async fn gm_can_delete_gm_only_message_not_individually_listed() {
     let f = fixture().await;
     let sent = handle_send_message(
-        &f.room,
-        &f.repo,
-        &f.alice,
-        &f.rate,
-        LinkPreviewDeps {
-            client: &f.preview_client,
-            cache: &f.preview_cache,
-            rate: &f.preview_rate,
+        MessageRequestCtx {
+            room: &f.room,
+            repo: &f.repo,
+            ctx: &f.alice,
+            rate: &f.rate,
+            preview: LinkPreviewDeps {
+                client: &f.preview_client,
+                cache: &f.preview_cache,
+                rate: &f.preview_rate,
+            },
+            now: 1,
+            budget_per_min: 60,
         },
         "gm".into(),
         "hi".into(),
         None,
         Audience::GmOnly,
-        1,
-        60,
     )
     .await
     .unwrap();
@@ -935,14 +977,18 @@ async fn non_recipient_still_cannot_see_deleted_whisper() {
         .await
         .unwrap();
     let sent = handle_send_message(
-        &f.room,
-        &f.repo,
-        &f.alice,
-        &f.rate,
-        LinkPreviewDeps {
-            client: &f.preview_client,
-            cache: &f.preview_cache,
-            rate: &f.preview_rate,
+        MessageRequestCtx {
+            room: &f.room,
+            repo: &f.repo,
+            ctx: &f.alice,
+            rate: &f.rate,
+            preview: LinkPreviewDeps {
+                client: &f.preview_client,
+                cache: &f.preview_cache,
+                rate: &f.preview_rate,
+            },
+            now: 1,
+            budget_per_min: 60,
         },
         "whispers".into(),
         "hi".into(),
@@ -950,8 +996,6 @@ async fn non_recipient_still_cannot_see_deleted_whisper() {
         Audience::Whisper {
             recipients: vec![recipient],
         },
-        1,
-        60,
     )
     .await
     .unwrap();
@@ -1003,14 +1047,18 @@ async fn non_recipient_finds_no_trace_of_edited_whisper_content() {
     };
 
     let sent = handle_send_message(
-        &f.room,
-        &f.repo,
-        &f.alice,
-        &f.rate,
-        LinkPreviewDeps {
-            client: &f.preview_client,
-            cache: &f.preview_cache,
-            rate: &f.preview_rate,
+        MessageRequestCtx {
+            room: &f.room,
+            repo: &f.repo,
+            ctx: &f.alice,
+            rate: &f.rate,
+            preview: LinkPreviewDeps {
+                client: &f.preview_client,
+                cache: &f.preview_cache,
+                rate: &f.preview_rate,
+            },
+            now: 1,
+            budget_per_min: 60,
         },
         "whispers".into(),
         "griffonroost".into(),
@@ -1018,26 +1066,26 @@ async fn non_recipient_finds_no_trace_of_edited_whisper_content() {
         Audience::Whisper {
             recipients: vec![recipient],
         },
-        1,
-        60,
     )
     .await
     .unwrap();
     let id = f.message_id(&sent).await;
     let edited = handle_edit_message(
-        &f.room,
-        &f.repo,
-        &f.alice,
-        &f.rate,
-        LinkPreviewDeps {
-            client: &f.preview_client,
-            cache: &f.preview_cache,
-            rate: &f.preview_rate,
+        MessageRequestCtx {
+            room: &f.room,
+            repo: &f.repo,
+            ctx: &f.alice,
+            rate: &f.rate,
+            preview: LinkPreviewDeps {
+                client: &f.preview_client,
+                cache: &f.preview_cache,
+                rate: &f.preview_rate,
+            },
+            now: 2,
+            budget_per_min: 60,
         },
         id,
         "phoenixnest".into(),
-        2,
-        60,
     )
     .await
     .unwrap();
@@ -1172,12 +1220,14 @@ fn client_forged_system_kind_create_and_delete_still_blocked_at_ingress() {
     let mut forged = build_message_doc(
         world,
         attacker,
-        "all".into(),
-        None,
-        Audience::Public,
-        MessageKind::Normal,
-        vec![],
-        None,
+        MessageDraft {
+            channel: "all".into(),
+            actor_owner: None,
+            audience: Audience::Public,
+            kind: MessageKind::Normal,
+            content: vec![],
+            source: None,
+        },
         0,
     );
     // Forge the payload to impersonate a server-authored System notice —

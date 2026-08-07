@@ -267,9 +267,31 @@ pub struct MessageEngine {
     pub deleted_at: Option<i64>,
 }
 
+/// A message's own fields, grouped apart from the writer identity
+/// (`world_id`/`user`) and the moment (`now`) that `build_message_doc` takes
+/// as separate parameters.
+pub struct MessageDraft {
+    /// Client-chosen display label; the server never validates or branches
+    /// on it (see `Audience`'s doc for how a "GM" channel is actually
+    /// enforced).
+    pub channel: String,
+    /// Attribution ref, ingest-validated by `handle_send_message` before
+    /// this draft is built.
+    pub actor_owner: Option<ActorOwnerRef>,
+    /// Intended readership; drives the document's `PermissionSet` (see
+    /// `build_message_doc`'s doc for the exact mapping).
+    pub audience: Audience,
+    /// Message subtype (`Normal`/`Emote`/`Roll`/`System`).
+    pub kind: MessageKind,
+    /// Sanitized/executed content segments.
+    pub content: Vec<Segment>,
+    /// Raw author input kept for client edit-prefill (see `MessageEngine::source`).
+    pub source: Option<String>,
+}
+
 /// Server-construct a message `Document`. INVARIANT: only the server calls
 /// this (via `handle_send_message`); clients never build message docs.
-/// `audience` drives the document's `PermissionSet`:
+/// `draft.audience` drives the document's `PermissionSet`:
 /// - `Public` — `default: Observer`, `gm_role: None` (c-1's original,
 ///   world-readable shape; the GM's unconditional access is unaffected).
 /// - `Whisper { recipients }` — `default: None`, `gm_role: Some(None)` (the
@@ -282,18 +304,15 @@ pub struct MessageEngine {
 /// In every case `owner` is inserted into `users` LAST, so a `Whisper` that
 /// redundantly names the sender as their own recipient can never downgrade
 /// them from `Owner` to `Observer` via map-insertion order.
-#[allow(clippy::too_many_arguments)]
-pub fn build_message_doc(
-    world_id: Uuid,
-    user: Uuid,
-    channel: String,
-    actor_owner: Option<ActorOwnerRef>,
-    audience: Audience,
-    kind: MessageKind,
-    content: Vec<Segment>,
-    source: Option<String>,
-    now: i64,
-) -> Document {
+pub fn build_message_doc(world_id: Uuid, user: Uuid, draft: MessageDraft, now: i64) -> Document {
+    let MessageDraft {
+        channel,
+        actor_owner,
+        audience,
+        kind,
+        content,
+        source,
+    } = draft;
     let (default, gm_role, mut users) = match &audience {
         Audience::Public => (DocRole::Observer, None, BTreeMap::new()),
         Audience::Whisper { recipients } => {
@@ -366,16 +385,18 @@ fn build_roll_error_notice(
     build_message_doc(
         world_id,
         sender,
-        channel,
-        None,
-        Audience::Whisper {
-            recipients: vec![sender],
+        MessageDraft {
+            channel,
+            actor_owner: None,
+            audience: Audience::Whisper {
+                recipients: vec![sender],
+            },
+            kind: MessageKind::System,
+            content: vec![Segment::Text {
+                text: err.to_string(),
+            }],
+            source: None,
         },
-        MessageKind::System,
-        vec![Segment::Text {
-            text: err.to_string(),
-        }],
-        None,
         now,
     )
 }
@@ -485,29 +506,46 @@ impl std::fmt::Display for SendMessageError {
     }
 }
 
+/// Shared request-scoped dependencies for `handle_send_message`/
+/// `handle_edit_message`: what the two entry points hold in common, grouped
+/// the same way `LinkPreviewDeps` groups its own bundle of borrowed deps.
+pub struct MessageRequestCtx<'a> {
+    /// The world's room — the authoritative publish path.
+    pub room: &'a Room,
+    /// The document repository.
+    pub repo: &'a dyn Repository,
+    /// The caller's authenticated identity and world role.
+    pub ctx: &'a PermissionContext,
+    /// The per-user chat flood-budget limiter.
+    pub rate: &'a PingRateLimiter,
+    /// Link-preview fetch dependencies.
+    pub preview: LinkPreviewDeps<'a>,
+    /// The moment of this request (used for `created_at`/`edited_at`/rate accounting).
+    pub now: i64,
+    /// The per-user-per-minute flood budget.
+    pub budget_per_min: usize,
+}
+
 /// Server-authoritative message ingest: flood-limit, validate, CONSTRUCT the
 /// message doc, and publish it via the authoritative path. The sole message-
 /// authoring entry point (see module-level INVARIANT comment) — a client can
 /// only ever reach a stored `message` doc through this function.
-///
-/// `#[allow(too_many_arguments)]`: 11 params post-refactor, still over the
-/// 7-arg lint threshold, but each is a genuinely distinct dependency/input
-/// (room/repo/ctx/rate + bundled preview deps + the 5 message fields) — not
-/// preview-plumbing bloat, which the `LinkPreviewDeps` bundle already closed.
-#[allow(clippy::too_many_arguments)]
 pub async fn handle_send_message(
-    room: &Room,
-    repo: &dyn Repository,
-    ctx: &PermissionContext,
-    rate: &PingRateLimiter,
-    preview: LinkPreviewDeps<'_>,
+    req: MessageRequestCtx<'_>,
     channel: String,
     content: String,
     actor_owner: Option<ActorOwnerRef>,
     audience: Audience,
-    now: i64,
-    budget_per_min: usize,
 ) -> Result<Command, SendMessageError> {
+    let MessageRequestCtx {
+        room,
+        repo,
+        ctx,
+        rate,
+        preview,
+        now,
+        budget_per_min,
+    } = req;
     if content.trim().is_empty() {
         return Err(SendMessageError::Empty);
     }
@@ -780,12 +818,14 @@ pub async fn handle_send_message(
     let doc = build_message_doc(
         room.world_id,
         ctx.user_id,
-        channel,
-        actor_owner,
-        audience,
-        parsed.kind,
-        content_segments,
-        source,
+        MessageDraft {
+            channel,
+            actor_owner,
+            audience,
+            kind: parsed.kind,
+            content: content_segments,
+            source,
+        },
         now,
     );
     room.publish(
@@ -824,18 +864,20 @@ pub async fn handle_send_message(
 /// The sole place this function may reach `Room::publish` uses
 /// `WriteOrigin::ServerMessageRevision`, the ONLY origin that re-opens the
 /// `apply_intent` Update blanket-rejection for a stored `message` doc.
-#[allow(clippy::too_many_arguments)]
 pub async fn handle_edit_message(
-    room: &Room,
-    repo: &dyn Repository,
-    ctx: &PermissionContext,
-    rate: &PingRateLimiter,
-    preview: LinkPreviewDeps<'_>,
+    req: MessageRequestCtx<'_>,
     message_id: Uuid,
     content: String,
-    now: i64,
-    budget_per_min: usize,
 ) -> Result<Command, SendMessageError> {
+    let MessageRequestCtx {
+        room,
+        repo,
+        ctx,
+        rate,
+        preview,
+        now,
+        budget_per_min,
+    } = req;
     if content.trim().is_empty() {
         return Err(SendMessageError::Empty);
     }
@@ -1091,12 +1133,14 @@ mod tests {
         let doc = build_message_doc(
             Uuid::from_u128(10),
             Uuid::from_u128(20),
-            "all".into(),
-            None,
-            Audience::Public,
-            MessageKind::Emote,
-            plain_text_content("waves"),
-            None,
+            MessageDraft {
+                channel: "all".into(),
+                actor_owner: None,
+                audience: Audience::Public,
+                kind: MessageKind::Emote,
+                content: plain_text_content("waves"),
+                source: None,
+            },
             1,
         );
         let sys: MessageEngine = serde_json::from_value(doc.engine.unwrap()).unwrap();
@@ -1161,12 +1205,14 @@ mod tests {
         let doc = build_message_doc(
             world,
             user,
-            "all".into(),
-            None,
-            Audience::Public,
-            MessageKind::Normal,
-            plain_text_content("hi"),
-            None,
+            MessageDraft {
+                channel: "all".into(),
+                actor_owner: None,
+                audience: Audience::Public,
+                kind: MessageKind::Normal,
+                content: plain_text_content("hi"),
+                source: None,
+            },
             1234,
         );
         assert_eq!(doc.doc_type, MESSAGE_DOC_TYPE);
@@ -1191,12 +1237,14 @@ mod tests {
         let msg = build_message_doc(
             Uuid::from_u128(1),
             Uuid::from_u128(2),
-            "all".into(),
-            None,
-            Audience::Public,
-            MessageKind::Normal,
-            vec![],
-            None,
+            MessageDraft {
+                channel: "all".into(),
+                actor_owner: None,
+                audience: Audience::Public,
+                kind: MessageKind::Normal,
+                content: vec![],
+                source: None,
+            },
             0,
         );
         assert!(ops_target_message(&[Operation::Create {
@@ -1207,12 +1255,14 @@ mod tests {
         let mut note = build_message_doc(
             Uuid::from_u128(1),
             Uuid::from_u128(2),
-            "all".into(),
-            None,
-            Audience::Public,
-            MessageKind::Normal,
-            vec![],
-            None,
+            MessageDraft {
+                channel: "all".into(),
+                actor_owner: None,
+                audience: Audience::Public,
+                kind: MessageKind::Normal,
+                content: vec![],
+                source: None,
+            },
             0,
         );
         note.doc_type = "note".into();
@@ -1227,24 +1277,28 @@ mod tests {
         let mut note = build_message_doc(
             Uuid::from_u128(1),
             Uuid::from_u128(2),
-            "all".into(),
-            None,
-            Audience::Public,
-            MessageKind::Normal,
-            vec![],
-            None,
+            MessageDraft {
+                channel: "all".into(),
+                actor_owner: None,
+                audience: Audience::Public,
+                kind: MessageKind::Normal,
+                content: vec![],
+                source: None,
+            },
             0,
         );
         note.doc_type = "note".into();
         let msg = build_message_doc(
             Uuid::from_u128(1),
             Uuid::from_u128(2),
-            "all".into(),
-            None,
-            Audience::Public,
-            MessageKind::Normal,
-            vec![],
-            None,
+            MessageDraft {
+                channel: "all".into(),
+                actor_owner: None,
+                audience: Audience::Public,
+                kind: MessageKind::Normal,
+                content: vec![],
+                source: None,
+            },
             0,
         );
         assert!(ops_target_message(&[
@@ -1274,12 +1328,14 @@ mod tests {
         let doc = build_message_doc(
             Uuid::from_u128(9),
             owner,
-            "all".into(),
-            None,
-            Audience::Public,
-            MessageKind::Normal,
-            plain_text_content("hi"),
-            None,
+            MessageDraft {
+                channel: "all".into(),
+                actor_owner: None,
+                audience: Audience::Public,
+                kind: MessageKind::Normal,
+                content: plain_text_content("hi"),
+                source: None,
+            },
             0,
         );
         assert_eq!(doc.permissions.default, DocRole::Observer);
@@ -1294,14 +1350,16 @@ mod tests {
         let doc = build_message_doc(
             Uuid::from_u128(9),
             owner,
-            "whispers".into(),
-            None,
-            Audience::Whisper {
-                recipients: vec![recipient],
+            MessageDraft {
+                channel: "whispers".into(),
+                actor_owner: None,
+                audience: Audience::Whisper {
+                    recipients: vec![recipient],
+                },
+                kind: MessageKind::Normal,
+                content: plain_text_content("psst"),
+                source: None,
             },
-            MessageKind::Normal,
-            plain_text_content("psst"),
-            None,
             0,
         );
         assert_eq!(doc.permissions.default, DocRole::None);
@@ -1319,14 +1377,16 @@ mod tests {
         let doc = build_message_doc(
             Uuid::from_u128(9),
             owner,
-            "whispers".into(),
-            None,
-            Audience::Whisper {
-                recipients: vec![owner],
+            MessageDraft {
+                channel: "whispers".into(),
+                actor_owner: None,
+                audience: Audience::Whisper {
+                    recipients: vec![owner],
+                },
+                kind: MessageKind::Normal,
+                content: plain_text_content("note to self"),
+                source: None,
             },
-            MessageKind::Normal,
-            plain_text_content("note to self"),
-            None,
             0,
         );
         assert_eq!(
@@ -1342,12 +1402,14 @@ mod tests {
         let doc = build_message_doc(
             Uuid::from_u128(9),
             owner,
-            "gm".into(),
-            None,
-            Audience::GmOnly,
-            MessageKind::Normal,
-            plain_text_content("only the GM sees this"),
-            None,
+            MessageDraft {
+                channel: "gm".into(),
+                actor_owner: None,
+                audience: Audience::GmOnly,
+                kind: MessageKind::Normal,
+                content: plain_text_content("only the GM sees this"),
+                source: None,
+            },
             0,
         );
         assert_eq!(doc.permissions.default, DocRole::None);
@@ -1449,21 +1511,23 @@ mod tests {
         let rate = PingRateLimiter::new();
 
         let cmd = handle_send_message(
-            &room,
-            &repo,
-            &ctx,
-            &rate,
-            LinkPreviewDeps {
-                client: &super::link_preview::build_client_allow_loopback(),
-                cache: &LinkPreviewCache::new(),
-                rate: &PreviewRateLimiter::new(),
+            MessageRequestCtx {
+                room: &room,
+                repo: &repo,
+                ctx: &ctx,
+                rate: &rate,
+                preview: LinkPreviewDeps {
+                    client: &super::link_preview::build_client_allow_loopback(),
+                    cache: &LinkPreviewCache::new(),
+                    rate: &PreviewRateLimiter::new(),
+                },
+                now: 100,
+                budget_per_min: 30,
             },
             "all".into(),
             "hello".into(),
             None,
             Audience::Public,
-            100,
-            30,
         )
         .await
         .unwrap();
@@ -1475,40 +1539,44 @@ mod tests {
         let rate2 = PingRateLimiter::new();
         for _ in 0..2 {
             let _ = handle_send_message(
-                &room,
-                &repo,
-                &ctx,
-                &rate2,
-                LinkPreviewDeps {
-                    client: &super::link_preview::build_client_allow_loopback(),
-                    cache: &LinkPreviewCache::new(),
-                    rate: &PreviewRateLimiter::new(),
+                MessageRequestCtx {
+                    room: &room,
+                    repo: &repo,
+                    ctx: &ctx,
+                    rate: &rate2,
+                    preview: LinkPreviewDeps {
+                        client: &super::link_preview::build_client_allow_loopback(),
+                        cache: &LinkPreviewCache::new(),
+                        rate: &PreviewRateLimiter::new(),
+                    },
+                    now: 100,
+                    budget_per_min: 2,
                 },
                 "all".into(),
                 "x".into(),
                 None,
                 Audience::Public,
-                100,
-                2,
             )
             .await;
         }
         let err = handle_send_message(
-            &room,
-            &repo,
-            &ctx,
-            &rate2,
-            LinkPreviewDeps {
-                client: &super::link_preview::build_client_allow_loopback(),
-                cache: &LinkPreviewCache::new(),
-                rate: &PreviewRateLimiter::new(),
+            MessageRequestCtx {
+                room: &room,
+                repo: &repo,
+                ctx: &ctx,
+                rate: &rate2,
+                preview: LinkPreviewDeps {
+                    client: &super::link_preview::build_client_allow_loopback(),
+                    cache: &LinkPreviewCache::new(),
+                    rate: &PreviewRateLimiter::new(),
+                },
+                now: 100,
+                budget_per_min: 2,
             },
             "all".into(),
             "x".into(),
             None,
             Audience::Public,
-            100,
-            2,
         )
         .await;
         assert!(matches!(err, Err(SendMessageError::RateLimited)));
@@ -1516,21 +1584,23 @@ mod tests {
         // Empty + too-long rejected before any publish.
         assert!(matches!(
             handle_send_message(
-                &room,
-                &repo,
-                &ctx,
-                &rate,
-                LinkPreviewDeps {
-                    client: &super::link_preview::build_client_allow_loopback(),
-                    cache: &LinkPreviewCache::new(),
-                    rate: &PreviewRateLimiter::new()
+                MessageRequestCtx {
+                    room: &room,
+                    repo: &repo,
+                    ctx: &ctx,
+                    rate: &rate,
+                    preview: LinkPreviewDeps {
+                        client: &super::link_preview::build_client_allow_loopback(),
+                        cache: &LinkPreviewCache::new(),
+                        rate: &PreviewRateLimiter::new()
+                    },
+                    now: 100,
+                    budget_per_min: 30,
                 },
                 "all".into(),
                 "".into(),
                 None,
                 Audience::Public,
-                100,
-                30
             )
             .await,
             Err(SendMessageError::Empty)
@@ -1538,21 +1608,23 @@ mod tests {
         let long = "a".repeat(MAX_MESSAGE_CHARS + 1);
         assert!(matches!(
             handle_send_message(
-                &room,
-                &repo,
-                &ctx,
-                &rate,
-                LinkPreviewDeps {
-                    client: &super::link_preview::build_client_allow_loopback(),
-                    cache: &LinkPreviewCache::new(),
-                    rate: &PreviewRateLimiter::new()
+                MessageRequestCtx {
+                    room: &room,
+                    repo: &repo,
+                    ctx: &ctx,
+                    rate: &rate,
+                    preview: LinkPreviewDeps {
+                        client: &super::link_preview::build_client_allow_loopback(),
+                        cache: &LinkPreviewCache::new(),
+                        rate: &PreviewRateLimiter::new()
+                    },
+                    now: 100,
+                    budget_per_min: 30,
                 },
                 "all".into(),
                 long,
                 None,
                 Audience::Public,
-                100,
-                30
             )
             .await,
             Err(SendMessageError::TooLong)
@@ -1562,21 +1634,23 @@ mod tests {
         let seq_before = room.subscribe().1;
         assert!(matches!(
             handle_send_message(
-                &room,
-                &repo,
-                &ctx,
-                &rate,
-                LinkPreviewDeps {
-                    client: &super::link_preview::build_client_allow_loopback(),
-                    cache: &LinkPreviewCache::new(),
-                    rate: &PreviewRateLimiter::new()
+                MessageRequestCtx {
+                    room: &room,
+                    repo: &repo,
+                    ctx: &ctx,
+                    rate: &rate,
+                    preview: LinkPreviewDeps {
+                        client: &super::link_preview::build_client_allow_loopback(),
+                        cache: &LinkPreviewCache::new(),
+                        rate: &PreviewRateLimiter::new()
+                    },
+                    now: 100,
+                    budget_per_min: 30,
                 },
                 "".into(),
                 "hi".into(),
                 None,
                 Audience::Public,
-                100,
-                30
             )
             .await,
             Err(SendMessageError::Empty)
@@ -1584,21 +1658,23 @@ mod tests {
         let long_channel = "c".repeat(MAX_CHANNEL_CHARS + 1);
         assert!(matches!(
             handle_send_message(
-                &room,
-                &repo,
-                &ctx,
-                &rate,
-                LinkPreviewDeps {
-                    client: &super::link_preview::build_client_allow_loopback(),
-                    cache: &LinkPreviewCache::new(),
-                    rate: &PreviewRateLimiter::new()
+                MessageRequestCtx {
+                    room: &room,
+                    repo: &repo,
+                    ctx: &ctx,
+                    rate: &rate,
+                    preview: LinkPreviewDeps {
+                        client: &super::link_preview::build_client_allow_loopback(),
+                        cache: &LinkPreviewCache::new(),
+                        rate: &PreviewRateLimiter::new()
+                    },
+                    now: 100,
+                    budget_per_min: 30,
                 },
                 long_channel,
                 "hi".into(),
                 None,
                 Audience::Public,
-                100,
-                30
             )
             .await,
             Err(SendMessageError::TooLong)
@@ -1641,14 +1717,18 @@ mod tests {
         // A uuid that belongs to no user at all, let alone this world.
         let foreign = Uuid::from_u128(99_999);
         let err = handle_send_message(
-            &room,
-            &repo,
-            &ctx,
-            &rate,
-            LinkPreviewDeps {
-                client: &super::link_preview::build_client_allow_loopback(),
-                cache: &LinkPreviewCache::new(),
-                rate: &PreviewRateLimiter::new(),
+            MessageRequestCtx {
+                room: &room,
+                repo: &repo,
+                ctx: &ctx,
+                rate: &rate,
+                preview: LinkPreviewDeps {
+                    client: &super::link_preview::build_client_allow_loopback(),
+                    cache: &LinkPreviewCache::new(),
+                    rate: &PreviewRateLimiter::new(),
+                },
+                now: 100,
+                budget_per_min: 30,
             },
             "whispers".into(),
             "psst".into(),
@@ -1656,8 +1736,6 @@ mod tests {
             Audience::Whisper {
                 recipients: vec![foreign],
             },
-            100,
-            30,
         )
         .await;
         assert!(matches!(err, Err(SendMessageError::UnknownRecipient)));
@@ -1702,14 +1780,18 @@ mod tests {
         let rate = PingRateLimiter::new();
 
         let cmd = handle_send_message(
-            &room,
-            &repo,
-            &ctx,
-            &rate,
-            LinkPreviewDeps {
-                client: &super::link_preview::build_client_allow_loopback(),
-                cache: &LinkPreviewCache::new(),
-                rate: &PreviewRateLimiter::new(),
+            MessageRequestCtx {
+                room: &room,
+                repo: &repo,
+                ctx: &ctx,
+                rate: &rate,
+                preview: LinkPreviewDeps {
+                    client: &super::link_preview::build_client_allow_loopback(),
+                    cache: &LinkPreviewCache::new(),
+                    rate: &PreviewRateLimiter::new(),
+                },
+                now: 100,
+                budget_per_min: 30,
             },
             "whispers".into(),
             "psst".into(),
@@ -1717,8 +1799,6 @@ mod tests {
             Audience::Whisper {
                 recipients: vec![recipient],
             },
-            100,
-            30,
         )
         .await
         .unwrap();
@@ -1761,21 +1841,23 @@ mod tests {
             .map(Uuid::from_u128)
             .collect();
         let err = handle_send_message(
-            &room,
-            &repo,
-            &ctx,
-            &rate,
-            LinkPreviewDeps {
-                client: &super::link_preview::build_client_allow_loopback(),
-                cache: &LinkPreviewCache::new(),
-                rate: &PreviewRateLimiter::new(),
+            MessageRequestCtx {
+                room: &room,
+                repo: &repo,
+                ctx: &ctx,
+                rate: &rate,
+                preview: LinkPreviewDeps {
+                    client: &super::link_preview::build_client_allow_loopback(),
+                    cache: &LinkPreviewCache::new(),
+                    rate: &PreviewRateLimiter::new(),
+                },
+                now: 100,
+                budget_per_min: 30,
             },
             "whispers".into(),
             "psst".into(),
             None,
             Audience::Whisper { recipients },
-            100,
-            30,
         )
         .await;
         assert!(matches!(err, Err(SendMessageError::TooLong)));
@@ -1818,21 +1900,23 @@ mod tests {
         // the boundary is accepted, not just that over-the-limit is rejected.
         let recipients: Vec<Uuid> = std::iter::repeat_n(player, MAX_WHISPER_RECIPIENTS).collect();
         let cmd = handle_send_message(
-            &room,
-            &repo,
-            &ctx,
-            &rate,
-            LinkPreviewDeps {
-                client: &super::link_preview::build_client_allow_loopback(),
-                cache: &LinkPreviewCache::new(),
-                rate: &PreviewRateLimiter::new(),
+            MessageRequestCtx {
+                room: &room,
+                repo: &repo,
+                ctx: &ctx,
+                rate: &rate,
+                preview: LinkPreviewDeps {
+                    client: &super::link_preview::build_client_allow_loopback(),
+                    cache: &LinkPreviewCache::new(),
+                    rate: &PreviewRateLimiter::new(),
+                },
+                now: 100,
+                budget_per_min: 30,
             },
             "whispers".into(),
             "psst".into(),
             None,
             Audience::Whisper { recipients },
-            100,
-            30,
         )
         .await
         .unwrap();
@@ -1882,21 +1966,23 @@ mod tests {
 
         // Plain message: source == the full content.
         let cmd = handle_send_message(
-            &room,
-            &repo,
-            &ctx,
-            &rate,
-            LinkPreviewDeps {
-                client: &super::link_preview::build_client_allow_loopback(),
-                cache: &LinkPreviewCache::new(),
-                rate: &PreviewRateLimiter::new(),
+            MessageRequestCtx {
+                room: &room,
+                repo: &repo,
+                ctx: &ctx,
+                rate: &rate,
+                preview: LinkPreviewDeps {
+                    client: &super::link_preview::build_client_allow_loopback(),
+                    cache: &LinkPreviewCache::new(),
+                    rate: &PreviewRateLimiter::new(),
+                },
+                now: 100,
+                budget_per_min: 30,
             },
             "all".into(),
             "hello".into(),
             None,
             Audience::Public,
-            100,
-            30,
         )
         .await
         .unwrap();
@@ -1909,21 +1995,23 @@ mod tests {
 
         // Command message: source keeps the command prefix (re-parses identically).
         let cmd = handle_send_message(
-            &room,
-            &repo,
-            &ctx,
-            &rate,
-            LinkPreviewDeps {
-                client: &super::link_preview::build_client_allow_loopback(),
-                cache: &LinkPreviewCache::new(),
-                rate: &PreviewRateLimiter::new(),
+            MessageRequestCtx {
+                room: &room,
+                repo: &repo,
+                ctx: &ctx,
+                rate: &rate,
+                preview: LinkPreviewDeps {
+                    client: &super::link_preview::build_client_allow_loopback(),
+                    cache: &LinkPreviewCache::new(),
+                    rate: &PreviewRateLimiter::new(),
+                },
+                now: 101,
+                budget_per_min: 30,
             },
             "all".into(),
             "/me waves".into(),
             None,
             Audience::Public,
-            101,
-            30,
         )
         .await
         .unwrap();
@@ -1936,21 +2024,23 @@ mod tests {
 
         // Whisper via content /w: source has the /w prefix STRIPPED.
         let cmd = handle_send_message(
-            &room,
-            &repo,
-            &ctx,
-            &rate,
-            LinkPreviewDeps {
-                client: &super::link_preview::build_client_allow_loopback(),
-                cache: &LinkPreviewCache::new(),
-                rate: &PreviewRateLimiter::new(),
+            MessageRequestCtx {
+                room: &room,
+                repo: &repo,
+                ctx: &ctx,
+                rate: &rate,
+                preview: LinkPreviewDeps {
+                    client: &super::link_preview::build_client_allow_loopback(),
+                    cache: &LinkPreviewCache::new(),
+                    rate: &PreviewRateLimiter::new(),
+                },
+                now: 102,
+                budget_per_min: 30,
             },
             "all".into(),
             "/w @alice hi".into(),
             None,
             Audience::Public,
-            102,
-            30,
         )
         .await
         .unwrap();
@@ -1991,21 +2081,23 @@ mod tests {
         let rate = PingRateLimiter::new();
 
         let cmd = handle_send_message(
-            &room,
-            &repo,
-            &ctx,
-            &rate,
-            LinkPreviewDeps {
-                client: &super::link_preview::build_client_allow_loopback(),
-                cache: &LinkPreviewCache::new(),
-                rate: &PreviewRateLimiter::new(),
+            MessageRequestCtx {
+                room: &room,
+                repo: &repo,
+                ctx: &ctx,
+                rate: &rate,
+                preview: LinkPreviewDeps {
+                    client: &super::link_preview::build_client_allow_loopback(),
+                    cache: &LinkPreviewCache::new(),
+                    rate: &PreviewRateLimiter::new(),
+                },
+                now: 100,
+                budget_per_min: 30,
             },
             "all".into(),
             "hello".into(),
             None,
             Audience::Public,
-            100,
-            30,
         )
         .await
         .unwrap();
@@ -2015,19 +2107,21 @@ mod tests {
         };
 
         handle_edit_message(
-            &room,
-            &repo,
-            &ctx,
-            &rate,
-            LinkPreviewDeps {
-                client: &super::link_preview::build_client_allow_loopback(),
-                cache: &LinkPreviewCache::new(),
-                rate: &PreviewRateLimiter::new(),
+            MessageRequestCtx {
+                room: &room,
+                repo: &repo,
+                ctx: &ctx,
+                rate: &rate,
+                preview: LinkPreviewDeps {
+                    client: &super::link_preview::build_client_allow_loopback(),
+                    cache: &LinkPreviewCache::new(),
+                    rate: &PreviewRateLimiter::new(),
+                },
+                now: 101,
+                budget_per_min: 30,
             },
             message_id,
             "goodbye".into(),
-            101,
-            30,
         )
         .await
         .unwrap();
@@ -2086,21 +2180,23 @@ mod tests {
         // NOT parsed — stored kind is Normal, content/source are the literal
         // post-/w-strip body "/me waves".
         let cmd = handle_send_message(
-            &room,
-            &repo,
-            &ctx,
-            &rate,
-            LinkPreviewDeps {
-                client: &super::link_preview::build_client_allow_loopback(),
-                cache: &LinkPreviewCache::new(),
-                rate: &PreviewRateLimiter::new(),
+            MessageRequestCtx {
+                room: &room,
+                repo: &repo,
+                ctx: &ctx,
+                rate: &rate,
+                preview: LinkPreviewDeps {
+                    client: &super::link_preview::build_client_allow_loopback(),
+                    cache: &LinkPreviewCache::new(),
+                    rate: &PreviewRateLimiter::new(),
+                },
+                now: 100,
+                budget_per_min: 30,
             },
             "all".into(),
             "/w @alice /me waves".into(),
             None,
             Audience::Public,
-            100,
-            30,
         )
         .await
         .unwrap();
@@ -2118,19 +2214,21 @@ mod tests {
         // source): kind/content/source must round-trip unchanged, not reparse
         // into MessageKind::Emote.
         handle_edit_message(
-            &room,
-            &repo,
-            &ctx,
-            &rate,
-            LinkPreviewDeps {
-                client: &super::link_preview::build_client_allow_loopback(),
-                cache: &LinkPreviewCache::new(),
-                rate: &PreviewRateLimiter::new(),
+            MessageRequestCtx {
+                room: &room,
+                repo: &repo,
+                ctx: &ctx,
+                rate: &rate,
+                preview: LinkPreviewDeps {
+                    client: &super::link_preview::build_client_allow_loopback(),
+                    cache: &LinkPreviewCache::new(),
+                    rate: &PreviewRateLimiter::new(),
+                },
+                now: 101,
+                budget_per_min: 30,
             },
             message_id,
             "/me waves".into(),
-            101,
-            30,
         )
         .await
         .unwrap();
@@ -2152,21 +2250,23 @@ mod tests {
         // survive without AudienceLocked (only a non-whisper message rejects a
         // literal /w-shaped edit body).
         let cmd2 = handle_send_message(
-            &room,
-            &repo,
-            &ctx,
-            &rate,
-            LinkPreviewDeps {
-                client: &super::link_preview::build_client_allow_loopback(),
-                cache: &LinkPreviewCache::new(),
-                rate: &PreviewRateLimiter::new(),
+            MessageRequestCtx {
+                room: &room,
+                repo: &repo,
+                ctx: &ctx,
+                rate: &rate,
+                preview: LinkPreviewDeps {
+                    client: &super::link_preview::build_client_allow_loopback(),
+                    cache: &LinkPreviewCache::new(),
+                    rate: &PreviewRateLimiter::new(),
+                },
+                now: 102,
+                budget_per_min: 30,
             },
             "all".into(),
             "/w @alice hi".into(),
             None,
             Audience::Public,
-            102,
-            30,
         )
         .await
         .unwrap();
@@ -2183,19 +2283,21 @@ mod tests {
         // command must NOT be rejected AudienceLocked — command parsing is
         // skipped entirely on a whisper edit.
         handle_edit_message(
-            &room,
-            &repo,
-            &ctx,
-            &rate,
-            LinkPreviewDeps {
-                client: &super::link_preview::build_client_allow_loopback(),
-                cache: &LinkPreviewCache::new(),
-                rate: &PreviewRateLimiter::new(),
+            MessageRequestCtx {
+                room: &room,
+                repo: &repo,
+                ctx: &ctx,
+                rate: &rate,
+                preview: LinkPreviewDeps {
+                    client: &super::link_preview::build_client_allow_loopback(),
+                    cache: &LinkPreviewCache::new(),
+                    rate: &PreviewRateLimiter::new(),
+                },
+                now: 103,
+                budget_per_min: 30,
             },
             message_id2,
             "/w @bob hi".into(),
-            103,
-            30,
         )
         .await
         .expect("a whisper edit must never reject a literal /w-shaped body");
@@ -2213,21 +2315,23 @@ mod tests {
         // rejects AudienceLocked — the fast path applies ONLY to whisper
         // messages, not to every message.
         let cmd3 = handle_send_message(
-            &room,
-            &repo,
-            &ctx,
-            &rate,
-            LinkPreviewDeps {
-                client: &super::link_preview::build_client_allow_loopback(),
-                cache: &LinkPreviewCache::new(),
-                rate: &PreviewRateLimiter::new(),
+            MessageRequestCtx {
+                room: &room,
+                repo: &repo,
+                ctx: &ctx,
+                rate: &rate,
+                preview: LinkPreviewDeps {
+                    client: &super::link_preview::build_client_allow_loopback(),
+                    cache: &LinkPreviewCache::new(),
+                    rate: &PreviewRateLimiter::new(),
+                },
+                now: 104,
+                budget_per_min: 30,
             },
             "all".into(),
             "hello".into(),
             None,
             Audience::Public,
-            104,
-            30,
         )
         .await
         .unwrap();
@@ -2236,19 +2340,21 @@ mod tests {
             other => panic!("expected Create, got {other:?}"),
         };
         let err = handle_edit_message(
-            &room,
-            &repo,
-            &ctx,
-            &rate,
-            LinkPreviewDeps {
-                client: &super::link_preview::build_client_allow_loopback(),
-                cache: &LinkPreviewCache::new(),
-                rate: &PreviewRateLimiter::new(),
+            MessageRequestCtx {
+                room: &room,
+                repo: &repo,
+                ctx: &ctx,
+                rate: &rate,
+                preview: LinkPreviewDeps {
+                    client: &super::link_preview::build_client_allow_loopback(),
+                    cache: &LinkPreviewCache::new(),
+                    rate: &PreviewRateLimiter::new(),
+                },
+                now: 105,
+                budget_per_min: 30,
             },
             public_id,
             "/w @alice hi".into(),
-            105,
-            30,
         )
         .await
         .unwrap_err();
@@ -2257,19 +2363,21 @@ mod tests {
         // An ORDINARY whisper edit (genuinely different content) still
         // sanitizes and updates content/source.
         handle_edit_message(
-            &room,
-            &repo,
-            &ctx,
-            &rate,
-            LinkPreviewDeps {
-                client: &super::link_preview::build_client_allow_loopback(),
-                cache: &LinkPreviewCache::new(),
-                rate: &PreviewRateLimiter::new(),
+            MessageRequestCtx {
+                room: &room,
+                repo: &repo,
+                ctx: &ctx,
+                rate: &rate,
+                preview: LinkPreviewDeps {
+                    client: &super::link_preview::build_client_allow_loopback(),
+                    cache: &LinkPreviewCache::new(),
+                    rate: &PreviewRateLimiter::new(),
+                },
+                now: 106,
+                budget_per_min: 30,
             },
             message_id2,
             "bye now".into(),
-            106,
-            30,
         )
         .await
         .unwrap();
@@ -2317,21 +2425,23 @@ mod tests {
         let rate = PingRateLimiter::new();
 
         let cmd = handle_send_message(
-            &room,
-            &repo,
-            &ctx,
-            &rate,
-            LinkPreviewDeps {
-                client: &super::link_preview::build_client_allow_loopback(),
-                cache: &LinkPreviewCache::new(),
-                rate: &PreviewRateLimiter::new(),
+            MessageRequestCtx {
+                room: &room,
+                repo: &repo,
+                ctx: &ctx,
+                rate: &rate,
+                preview: LinkPreviewDeps {
+                    client: &super::link_preview::build_client_allow_loopback(),
+                    cache: &LinkPreviewCache::new(),
+                    rate: &PreviewRateLimiter::new(),
+                },
+                now: 100,
+                budget_per_min: 30,
             },
             "all".into(),
             "attack! [[1d20]] done".into(),
             None,
             Audience::Public,
-            100,
-            30,
         )
         .await
         .unwrap();
@@ -2350,19 +2460,21 @@ mod tests {
         );
 
         let err = handle_edit_message(
-            &room,
-            &repo,
-            &ctx,
-            &rate,
-            LinkPreviewDeps {
-                client: &super::link_preview::build_client_allow_loopback(),
-                cache: &LinkPreviewCache::new(),
-                rate: &PreviewRateLimiter::new(),
+            MessageRequestCtx {
+                room: &room,
+                repo: &repo,
+                ctx: &ctx,
+                rate: &rate,
+                preview: LinkPreviewDeps {
+                    client: &super::link_preview::build_client_allow_loopback(),
+                    cache: &LinkPreviewCache::new(),
+                    rate: &PreviewRateLimiter::new(),
+                },
+                now: 101,
+                budget_per_min: 30,
             },
             message_id,
             "attack! done, no roll".into(),
-            101,
-            30,
         )
         .await
         .unwrap_err();
@@ -2370,21 +2482,23 @@ mod tests {
 
         // A plain Normal message (no roll segment) still edits fine.
         let cmd2 = handle_send_message(
-            &room,
-            &repo,
-            &ctx,
-            &rate,
-            LinkPreviewDeps {
-                client: &super::link_preview::build_client_allow_loopback(),
-                cache: &LinkPreviewCache::new(),
-                rate: &PreviewRateLimiter::new(),
+            MessageRequestCtx {
+                room: &room,
+                repo: &repo,
+                ctx: &ctx,
+                rate: &rate,
+                preview: LinkPreviewDeps {
+                    client: &super::link_preview::build_client_allow_loopback(),
+                    cache: &LinkPreviewCache::new(),
+                    rate: &PreviewRateLimiter::new(),
+                },
+                now: 102,
+                budget_per_min: 30,
             },
             "all".into(),
             "hello there".into(),
             None,
             Audience::Public,
-            102,
-            30,
         )
         .await
         .unwrap();
@@ -2393,19 +2507,21 @@ mod tests {
             other => panic!("expected Create, got {other:?}"),
         };
         handle_edit_message(
-            &room,
-            &repo,
-            &ctx,
-            &rate,
-            LinkPreviewDeps {
-                client: &super::link_preview::build_client_allow_loopback(),
-                cache: &LinkPreviewCache::new(),
-                rate: &PreviewRateLimiter::new(),
+            MessageRequestCtx {
+                room: &room,
+                repo: &repo,
+                ctx: &ctx,
+                rate: &rate,
+                preview: LinkPreviewDeps {
+                    client: &super::link_preview::build_client_allow_loopback(),
+                    cache: &LinkPreviewCache::new(),
+                    rate: &PreviewRateLimiter::new(),
+                },
+                now: 103,
+                budget_per_min: 30,
             },
             plain_id,
             "hello again".into(),
-            103,
-            30,
         )
         .await
         .expect("a plain Normal message must still edit fine");
@@ -2452,14 +2568,18 @@ mod tests {
         let rate = PingRateLimiter::new();
 
         let cmd = handle_send_message(
-            &room,
-            &repo,
-            &ctx,
-            &rate,
-            LinkPreviewDeps {
-                client: &super::link_preview::build_client_allow_loopback(),
-                cache: &LinkPreviewCache::new(),
-                rate: &PreviewRateLimiter::new(),
+            MessageRequestCtx {
+                room: &room,
+                repo: &repo,
+                ctx: &ctx,
+                rate: &rate,
+                preview: LinkPreviewDeps {
+                    client: &super::link_preview::build_client_allow_loopback(),
+                    cache: &LinkPreviewCache::new(),
+                    rate: &PreviewRateLimiter::new(),
+                },
+                now: 100,
+                budget_per_min: 30,
             },
             "all".into(),
             "/roll 2d6".into(),
@@ -2467,8 +2587,6 @@ mod tests {
             Audience::Whisper {
                 recipients: vec![alice],
             },
-            100,
-            30,
         )
         .await
         .unwrap();
@@ -2485,19 +2603,21 @@ mod tests {
         assert!(matches!(sys.audience, Audience::Whisper { .. }));
 
         let err = handle_edit_message(
-            &room,
-            &repo,
-            &ctx,
-            &rate,
-            LinkPreviewDeps {
-                client: &super::link_preview::build_client_allow_loopback(),
-                cache: &LinkPreviewCache::new(),
-                rate: &PreviewRateLimiter::new(),
+            MessageRequestCtx {
+                room: &room,
+                repo: &repo,
+                ctx: &ctx,
+                rate: &rate,
+                preview: LinkPreviewDeps {
+                    client: &super::link_preview::build_client_allow_loopback(),
+                    cache: &LinkPreviewCache::new(),
+                    rate: &PreviewRateLimiter::new(),
+                },
+                now: 101,
+                budget_per_min: 30,
             },
             message_id,
             "2d6 edited".into(),
-            101,
-            30,
         )
         .await
         .unwrap_err();
@@ -2552,12 +2672,14 @@ mod tests {
         let doc = build_message_doc(
             w.id,
             player,
-            "all".into(),
-            None,
-            Audience::Public,
-            MessageKind::Normal,
-            plain_text_content("banshee wail"),
-            None,
+            MessageDraft {
+                channel: "all".into(),
+                actor_owner: None,
+                audience: Audience::Public,
+                kind: MessageKind::Normal,
+                content: plain_text_content("banshee wail"),
+                source: None,
+            },
             1,
         );
         r.apply_intent(
@@ -2653,21 +2775,23 @@ mod tests {
         let rate = PingRateLimiter::new();
 
         let cmd = handle_send_message(
-            &room,
-            &repo,
-            &ctx,
-            &rate,
-            LinkPreviewDeps {
-                client: &super::link_preview::build_client_allow_loopback(),
-                cache: &LinkPreviewCache::new(),
-                rate: &PreviewRateLimiter::new(),
+            MessageRequestCtx {
+                room: &room,
+                repo: &repo,
+                ctx: &ctx,
+                rate: &rate,
+                preview: LinkPreviewDeps {
+                    client: &super::link_preview::build_client_allow_loopback(),
+                    cache: &LinkPreviewCache::new(),
+                    rate: &PreviewRateLimiter::new(),
+                },
+                now: 100,
+                budget_per_min: 30,
             },
             "all".into(),
             "grr".into(),
             Some(ActorOwnerRef::Actor { actor_id }),
             Audience::Public,
-            100,
-            30,
         )
         .await
         .unwrap();
@@ -2732,21 +2856,23 @@ mod tests {
         // itself persisted nothing, not merely that the log is empty.
         let seq_before = repo.events_since(w.id, 0).await.unwrap().len();
         let err = handle_send_message(
-            &room,
-            &repo,
-            &ctx,
-            &rate,
-            LinkPreviewDeps {
-                client: &super::link_preview::build_client_allow_loopback(),
-                cache: &LinkPreviewCache::new(),
-                rate: &PreviewRateLimiter::new(),
+            MessageRequestCtx {
+                room: &room,
+                repo: &repo,
+                ctx: &ctx,
+                rate: &rate,
+                preview: LinkPreviewDeps {
+                    client: &super::link_preview::build_client_allow_loopback(),
+                    cache: &LinkPreviewCache::new(),
+                    rate: &PreviewRateLimiter::new(),
+                },
+                now: 100,
+                budget_per_min: 30,
             },
             "all".into(),
             "grr".into(),
             Some(ActorOwnerRef::Actor { actor_id }),
             Audience::Public,
-            100,
-            30,
         )
         .await;
         assert!(matches!(err, Err(SendMessageError::ActorNotSpeakable)));
@@ -2806,21 +2932,23 @@ mod tests {
         let rate = PingRateLimiter::new();
 
         let err = handle_send_message(
-            &room_a,
-            &repo,
-            &ctx,
-            &rate,
-            LinkPreviewDeps {
-                client: &super::link_preview::build_client_allow_loopback(),
-                cache: &LinkPreviewCache::new(),
-                rate: &PreviewRateLimiter::new(),
+            MessageRequestCtx {
+                room: &room_a,
+                repo: &repo,
+                ctx: &ctx,
+                rate: &rate,
+                preview: LinkPreviewDeps {
+                    client: &super::link_preview::build_client_allow_loopback(),
+                    cache: &LinkPreviewCache::new(),
+                    rate: &PreviewRateLimiter::new(),
+                },
+                now: 0,
+                budget_per_min: 30,
             },
             "all".into(),
             "hi".into(),
             Some(ActorOwnerRef::Actor { actor_id }),
             Audience::Public,
-            0,
-            30,
         )
         .await
         .unwrap_err();
@@ -2857,14 +2985,18 @@ mod tests {
         let rate = PingRateLimiter::new();
 
         let err = handle_send_message(
-            &room,
-            &repo,
-            &ctx,
-            &rate,
-            LinkPreviewDeps {
-                client: &super::link_preview::build_client_allow_loopback(),
-                cache: &LinkPreviewCache::new(),
-                rate: &PreviewRateLimiter::new(),
+            MessageRequestCtx {
+                room: &room,
+                repo: &repo,
+                ctx: &ctx,
+                rate: &rate,
+                preview: LinkPreviewDeps {
+                    client: &super::link_preview::build_client_allow_loopback(),
+                    cache: &LinkPreviewCache::new(),
+                    rate: &PreviewRateLimiter::new(),
+                },
+                now: 100,
+                budget_per_min: 30,
             },
             "all".into(),
             "grr".into(),
@@ -2872,8 +3004,6 @@ mod tests {
                 actor_id: Uuid::new_v4(),
             }),
             Audience::Public,
-            100,
-            30,
         )
         .await;
         assert!(matches!(err, Err(SendMessageError::ActorNotSpeakable)));
@@ -2921,21 +3051,23 @@ mod tests {
         let rate = PingRateLimiter::new();
 
         let cmd = handle_send_message(
-            &room,
-            &repo,
-            &ctx,
-            &rate,
-            LinkPreviewDeps {
-                client: &super::link_preview::build_client_allow_loopback(),
-                cache: &LinkPreviewCache::new(),
-                rate: &PreviewRateLimiter::new(),
+            MessageRequestCtx {
+                room: &room,
+                repo: &repo,
+                ctx: &ctx,
+                rate: &rate,
+                preview: LinkPreviewDeps {
+                    client: &super::link_preview::build_client_allow_loopback(),
+                    cache: &LinkPreviewCache::new(),
+                    rate: &PreviewRateLimiter::new(),
+                },
+                now: 100,
+                budget_per_min: 30,
             },
             "all".into(),
             "grr".into(),
             Some(ActorOwnerRef::Actor { actor_id }),
             Audience::Public,
-            100,
-            30,
         )
         .await
         .unwrap();
@@ -2973,14 +3105,18 @@ mod tests {
         let rate = PingRateLimiter::new();
 
         let err = handle_send_message(
-            &room,
-            &repo,
-            &ctx,
-            &rate,
-            LinkPreviewDeps {
-                client: &super::link_preview::build_client_allow_loopback(),
-                cache: &LinkPreviewCache::new(),
-                rate: &PreviewRateLimiter::new(),
+            MessageRequestCtx {
+                room: &room,
+                repo: &repo,
+                ctx: &ctx,
+                rate: &rate,
+                preview: LinkPreviewDeps {
+                    client: &super::link_preview::build_client_allow_loopback(),
+                    cache: &LinkPreviewCache::new(),
+                    rate: &PreviewRateLimiter::new(),
+                },
+                now: 100,
+                budget_per_min: 30,
             },
             "all".into(),
             "grr".into(),
@@ -2988,8 +3124,6 @@ mod tests {
                 token_id: Uuid::new_v4(),
             }),
             Audience::Public,
-            100,
-            30,
         )
         .await;
         assert!(
@@ -3043,21 +3177,23 @@ mod tests {
         let rate = PingRateLimiter::new();
 
         let err = handle_send_message(
-            &room,
-            &repo,
-            &ctx,
-            &rate,
-            LinkPreviewDeps {
-                client: &super::link_preview::build_client_allow_loopback(),
-                cache: &LinkPreviewCache::new(),
-                rate: &PreviewRateLimiter::new(),
+            MessageRequestCtx {
+                room: &room,
+                repo: &repo,
+                ctx: &ctx,
+                rate: &rate,
+                preview: LinkPreviewDeps {
+                    client: &super::link_preview::build_client_allow_loopback(),
+                    cache: &LinkPreviewCache::new(),
+                    rate: &PreviewRateLimiter::new(),
+                },
+                now: 100,
+                budget_per_min: 30,
             },
             "all".into(),
             "grr".into(),
             Some(ActorOwnerRef::Actor { actor_id: doc_id }),
             Audience::Public,
-            100,
-            30,
         )
         .await;
         assert!(matches!(err, Err(SendMessageError::ActorNotSpeakable)));
@@ -3179,21 +3315,23 @@ mod link_preview_ingest_tests {
 
         async fn send(&self, content: &str, now: i64) -> Result<Command, SendMessageError> {
             handle_send_message(
-                &self.room,
-                &self.repo,
-                &self.ctx,
-                &self.rate,
-                LinkPreviewDeps {
-                    client: &self.preview_client,
-                    cache: &self.preview_cache,
-                    rate: &self.preview_rate,
+                MessageRequestCtx {
+                    room: &self.room,
+                    repo: &self.repo,
+                    ctx: &self.ctx,
+                    rate: &self.rate,
+                    preview: LinkPreviewDeps {
+                        client: &self.preview_client,
+                        cache: &self.preview_cache,
+                        rate: &self.preview_rate,
+                    },
+                    now,
+                    budget_per_min: 60,
                 },
                 "all".into(),
                 content.into(),
                 None,
                 Audience::Public,
-                now,
-                60,
             )
             .await
         }
@@ -3205,19 +3343,21 @@ mod link_preview_ingest_tests {
             now: i64,
         ) -> Result<Command, SendMessageError> {
             handle_edit_message(
-                &self.room,
-                &self.repo,
-                &self.ctx,
-                &self.rate,
-                LinkPreviewDeps {
-                    client: &self.preview_client,
-                    cache: &self.preview_cache,
-                    rate: &self.preview_rate,
+                MessageRequestCtx {
+                    room: &self.room,
+                    repo: &self.repo,
+                    ctx: &self.ctx,
+                    rate: &self.rate,
+                    preview: LinkPreviewDeps {
+                        client: &self.preview_client,
+                        cache: &self.preview_cache,
+                        rate: &self.preview_rate,
+                    },
+                    now,
+                    budget_per_min: 60,
                 },
                 message_id,
                 content.into(),
-                now,
-                60,
             )
             .await
         }
