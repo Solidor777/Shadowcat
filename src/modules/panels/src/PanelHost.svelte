@@ -213,8 +213,8 @@
     if (stagingEl && el.parentElement !== stagingEl) stagingEl.appendChild(el);
   }
 
-  /** Never throws on an unknown/removed id (containment for finding 1): a bug
-   * upstream then degrades to a missing panel, not a dead reactive graph.
+  /** Never throws on an unknown/removed id: a bug upstream then degrades to a
+   * missing panel, not a dead reactive graph.
    * @param id The panel id to resolve a slot for.
    * @returns The registered slot element for `id`, or a detached placeholder
    * (never appended anywhere visible) if none is registered.

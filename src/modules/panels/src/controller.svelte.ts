@@ -74,9 +74,10 @@ const EMPTY_LAYOUT: PanelLayoutV1 = {
   compact: { activeView: null, order: [] },
 };
 
-// Cascade base/step for a reload-rehydrated (formerly popped-out) panel's floating
-// rect — an unoffset rect would stack every rehydrated popout (and the first-ever
-// floating panel) at the identical (x,y). Value kept numerically aligned with
+// Cascade base/step for the floating rect `#rehydratePoppedOut` assigns a persisted
+// popped-out id when it converts that id to floating on reload — an unoffset rect
+// would stack every rehydrated panel (and the first-ever floating panel) at the
+// identical (x,y). Value kept numerically aligned with
 // `layout/tree`'s SHEET_CASCADE_BASE/STEP (not imported — that pair is layout-internal;
 // this is the controller's own, deliberately separate constant so the two modules
 // stay decoupled) so the SAME logical operation (reload -> float a persisted

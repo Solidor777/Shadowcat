@@ -184,14 +184,14 @@ describe("locate", () => {
 });
 
 describe("invariant: at most one location", () => {
-  it("dock removes the panel from wherever it previously was", () => {
+  it("dock removes the panel from wherever it was last placed", () => {
     let l = base();
     l = applyOp(l, { op: "dock", id: "assets", zone: "bottom", group: "new" });
     expect(locate(l, "assets")).toEqual({ where: "docked", zone: "bottom", group: 0, tabIndex: 0 });
     expect(l.expanded.minimized).not.toContain("assets");
   });
 
-  it("float removes the panel from wherever it previously was", () => {
+  it("float removes the panel from wherever it was last placed", () => {
     let l = base();
     l = applyOp(l, { op: "float", id: "assets", rect: { x: 0, y: 0, w: 100, h: 100 } });
     expect(l.expanded.minimized).not.toContain("assets");
