@@ -26,7 +26,7 @@ export function t(key: string, params?: I18nParams): string {
 }
 
 /** The current locale, read reactively — invalidates on setLocale from any
- * source (the Settings switcher, M7d-3 session-restore, etc.).
+ * source (the Settings switcher, session-restore, etc.).
  * @returns The active locale key (e.g. `"en"`).
  * @example locale(); // "en"
  */

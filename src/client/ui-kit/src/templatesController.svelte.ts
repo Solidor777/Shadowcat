@@ -1,4 +1,4 @@
-// Template merge orchestration (M13e). Thin glue: pure core functions → the conflict modal →
+// Template merge orchestration. Thin glue: pure core functions → the conflict modal →
 // `dispatchIntent`. Holds a reactive `pending` conflict session the `TemplateModalHost` renders.
 // Constructed by the shell alongside `SheetsController`; imports no module.
 import {
@@ -27,7 +27,7 @@ export interface PendingSession {
 }
 
 /**
- * Template pull/push/revert/stamp orchestration (M13e), backing `AppContext.templates`. Thin
+ * Template pull/push/revert/stamp orchestration, backing `AppContext.templates`. Thin
  * glue: pure core merge functions → the conflict modal → `dispatchIntent`. Holds a reactive
  * `pending` conflict session that `TemplateModalHost` renders. Constructed by the shell
  * alongside `SheetsController`; imports no module.
@@ -115,7 +115,7 @@ export class TemplatesController {
   canPull(childId: string): boolean {
     const child = this.#get(childId);
     if (!child || !this.#templateOf(child)) return false;
-    // Advisory client-side mirror of the server cap union (spec §4.2): WRITE_FIELDS
+    // Advisory client-side mirror of the server cap union: WRITE_FIELDS
     // (base/system) ∪ MANAGE_EMBEDDED. A merge plan is not computed here (expensive/premature —
     // it isn't computed until the user clicks pull), so a user missing MANAGE_EMBEDDED is
     // withheld even for a merge that happens to touch no embedded content (false negative, safe
@@ -143,7 +143,7 @@ export class TemplatesController {
    * `template_changed`. Nothing in the push path retries; it stays stale until someone holding
    * `/embedded` on THAT instance pulls or reverts (both terminate in `planToUpdate`, which always
    * re-emits `/base`). Each instance is its own intent, so this is contained to that one
-   * instance. Tracked in `docs/TODO.md`.
+   * instance.
    * @param templateId - The template document's id.
    * @returns Whether push is currently permitted.
    * @example templates.canPush(templateId);

@@ -35,7 +35,7 @@ interface SceneRect {
 
 /** Engine-owned grid model + coordinate math (square + pointy-top hex). Pure: the
  * engine draws `lines(...)` into the grid layer and uses `snap`/`cellOf` for
- * placement (M8d). Hex uses axial coords (Red Blob Games). */
+ * placement. Hex uses axial coords (Red Blob Games). */
 export class Grid {
   /**
    * Constructs a grid from a fixed spec — the grid's kind, size, and diagonal rule
@@ -303,8 +303,8 @@ export class Grid {
    * {@link pixelToAxial}'s `q = (√3/3·x − 1/3·y)/size` mixes x and y with OPPOSITE
    * signs, so q's extrema sit on the top-right/bottom-left diagonal while r (a
    * function of y alone) peaks on the other diagonal; sampling only one diagonal
-   * understates q's true range and silently drops in-viewport hexes (fixed; see
-   * `docs/CLOSED_BUGS.md`). Adjacent hex outlines overlap (each edge is drawn twice,
+   * understates q's true range and silently drops in-viewport hexes. Adjacent hex
+   * outlines overlap (each edge is drawn twice,
    * once per flanking hex) — acceptable for a grid overlay, not deduplicated.
    * @param rect The visible scene rectangle to cover.
    * @returns The hex grid's line segments.

@@ -184,7 +184,7 @@ export class PixiBackend implements DisplayBackend {
       if (id === "lighting") {
         c.addChild(this.lightingGraphics);
         // BlurFilter softens cell-boundary stepping artifacts between gradation bands.
-        // POST_WORK: replace with radial gradient fills when PixiJS gradient API stabilises.
+        // TODO: replace with radial gradient fills when PixiJS gradient API stabilises.
         // NOTE: filter is attached directly (not via addLayerFilter); future filter swaps on
         // the "lighting" layer must account for this pre-existing BlurFilter in c.filters.
         c.filters = [new BlurFilter({ strength: 8 })];
@@ -713,7 +713,7 @@ export class PixiBackend implements DisplayBackend {
       g = new Graphics();
       this.shapes.set(id, g);
     }
-    // (Re)parent into the target layer. id→layer is stable for M8d's doc-backed shapes,
+    // (Re)parent into the target layer. id→layer is stable for doc-backed shapes,
     // but addChild moves the node so a future layer-varying reconciler can't leak it.
     const layer = this.layers.get(spec.layer);
     if (layer && g.parent !== layer) layer.addChild(g);
@@ -847,7 +847,7 @@ export class PixiBackend implements DisplayBackend {
       if (c.alpha > 0) this.lightingGraphics.rect(x, y, cellSize, cellSize).fill({ color: 0x000000, alpha: c.alpha });
       if (c.tintAlpha > 0) this.lightingGraphics.rect(x, y, cellSize, cellSize).fill({ color: c.tint, alpha: c.tintAlpha });
       // V1 desaturate approximation: a low-alpha neutral wash mutes color in darkvision-only cells.
-      // POST_WORK: replace with a masked ColorMatrixFilter over the scene layers for true desaturation.
+      // TODO: replace with a masked ColorMatrixFilter over the scene layers for true desaturation.
       if (c.desaturate) this.lightingGraphics.rect(x, y, cellSize, cellSize).fill({ color: 0x808080, alpha: 0.18 });
     }
   }

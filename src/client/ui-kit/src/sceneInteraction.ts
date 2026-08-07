@@ -1,4 +1,4 @@
-// The canvas interaction bridge (M8d §16). A stable handle owned by WorldSession and
+// The canvas interaction bridge. A stable handle owned by WorldSession and
 // exposed on AppContext, so tool components reach the engine's tool API even though the
 // RenderEngine is created lazily inside the Stage effect. Stage attaches the engine on
 // mount; before/after attachment every call no-ops (snap is identity) so a tool

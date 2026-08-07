@@ -170,14 +170,14 @@ export class RenderEngine implements SceneToolHost {
   /** GM see-as-player target (M9c-2): the user whose vision the `vision` subscription requests, or
    * null for the GM's own view. The server gates + resolves it (a non-GM is rejected). */
   private viewAsUser: string | null = null;
-  /** Active mover vision-sweep overrides, keyed by token id (M2 §T6): while a mover's own
+  /** Active mover vision-sweep overrides, keyed by token id: while a mover's own
    * MoveStream plays, the `moverVision` sample with the greatest `tMs <= elapsed` feeds the fog,
    * bypassing `lastInput`. Keyed (mirrors `TokenAnimator.samplesAnim`) so a second concurrent sweep
    * for a DIFFERENT token cannot clobber an in-flight one; when non-empty, ALL active sweeps'
    * chosen samples are unioned into the rendered visible set. Empty when no sweep is in flight
    * (observers never populate this — `animateSamples` only starts a sweep when `moverVision` is
-   * non-empty, and only the mover's own MoveStream carries a non-null `moverVision`, per the M2
-   * per-recipient egress clip). */
+   * non-empty, and only the mover's own MoveStream carries a non-null `moverVision`, because the
+   * server's per-recipient egress clip omits it for observers). */
   private readonly visionSweeps = new Map<
     string,
     {
@@ -351,7 +351,7 @@ export class RenderEngine implements SceneToolHost {
   }): void {
     // Per-channel frames are monotonic in computed_at_seq and latest wins. Drop any
     // frame already superseded by an applied or a pending one — never regress the
-    // mask to an older derived state (defends the M9 consumer against reordering).
+    // mask to an older derived state (defends against out-of-order frame delivery).
     if (frame.computedAtSeq <= this.lastAppliedSeq) return;
     if (this.pendingDerived && frame.computedAtSeq <= this.pendingDerived.seq) return;
     this.lastRawPayload = frame.payload;
@@ -448,7 +448,7 @@ export class RenderEngine implements SceneToolHost {
   }
 
   /** GM-only: toggle the client-side fog preview. `on` renders a no-fog frame as full fog so the
-   * GM can preview the player view (see-as-player is M9c-2). Client-only (D-V3); only adds fog to
+   * GM can preview the player view. Client-only (D-V3); only adds fog to
    * the GM's own view, so it cannot leak.
    * @param on `true` to force a `mode:"all"` frame to render as full fog; `false` to render it as
    * received (no fog).
@@ -665,8 +665,8 @@ export class RenderEngine implements SceneToolHost {
    */
   toLightingForTest(p: unknown): LightingInput | null { return this.toLighting(p); }
 
-  /** Module-facing shader-filter seam (0.x). Forwards to the backend; no engine
-   * consumer in M8 — the first consumers are token fx / Phase-3 VFX.
+  /** Module-facing shader-filter seam. Forwards to the backend; no engine consumer
+   * currently calls it.
    * @param layerId The target core-layer id (e.g. `"tokens"`); the backend defines what an
    * unknown id does (`DisplayBackend.addLayerFilter`).
    * @param filter An opaque, backend-specific filter object (e.g. a PixiJS `Filter`).
@@ -685,7 +685,7 @@ export class RenderEngine implements SceneToolHost {
     return this.opts.backend.addLayerFilter(layerId, filter);
   }
 
-  // --- SceneToolHost: the canvas interaction seam (M8d §7). The host (Stage)
+  // --- SceneToolHost: the canvas interaction seam. The host (Stage)
   // feeds DOM pointer events as screen points; the engine converts to scene coords
   // and routes to the active tool first, falling back to camera pan. ---
 
@@ -882,8 +882,8 @@ export class RenderEngine implements SceneToolHost {
    * import type { RenderEngine, GridSpec } from "@shadowcat/render";
    *
    * declare const engine: RenderEngine;
-   * const spec: GridSpec = { kind: "square", size: 70 };
-   * engine.setGrid(spec);
+   * const gridSpec: GridSpec = { kind: "square", size: 70 };
+   * engine.setGrid(gridSpec);
    * ```
    */
   setGrid(spec: GridSpec): void {
@@ -939,9 +939,10 @@ export class RenderEngine implements SceneToolHost {
 
   /** Drive server-broadcast sample-based playback (SceneToolHost seam). Forwards the position
    * samples to TokenView; `serverNow` used once at call time for catch-up alignment. When
-   * `moverVision` is present (non-empty — only the mover's own MoveStream carries it, per the M2
-   * per-recipient egress clip), also starts a fog vision-sweep keyed to the SAME clock: the
-   * override is applied immediately (T6 §Step 3) and advanced each tick by `tickVisionSweep`.
+   * `moverVision` is present (non-empty — only the mover's own MoveStream carries it, because the
+   * server's per-recipient egress clip omits it for observers), also starts a fog vision-sweep
+   * keyed to the SAME clock: the override is applied immediately and advanced each tick by
+   * `tickVisionSweep`.
    * @param id The token document id whose playback this drives.
    * @param samples Position samples, each a `{tMs, pos}` pair; interpolated between adjacent
    * samples by `tMs`.
@@ -952,8 +953,9 @@ export class RenderEngine implements SceneToolHost {
    * `Math.max(0, serverNow() - startServerMs)` to compute catch-up elapsed time for both the
    * token tween and any accompanying vision sweep; when absent, elapsed starts at `0` (no
    * catch-up assumed).
-   * @param moverVision Mover-only per-sample vision polygons (`null`/absent for observers, per the
-   * M2 per-recipient egress clip); presence starts a fog vision-sweep alongside the position tween.
+   * @param moverVision Mover-only per-sample vision polygons (`null`/absent for observers, because
+   * the server's per-recipient egress clip omits it for them); presence starts a fog vision-sweep
+   * alongside the position tween.
    * @example
    * ```ts
    * import type { RenderEngine } from "@shadowcat/render";

@@ -11,9 +11,7 @@ export interface BackgroundSpec {
 }
 
 /** The narrow GL abstraction the render model drives. The real implementation is
- * `PixiBackend` (Playwright-covered); `MockBackend` covers it in unit tests.
- * Kept minimal for M8c-1 (background + grid + camera); M8d generalizes to a node
- * API for token/wall/etc. reconcilers. */
+ * `PixiBackend` (Playwright-covered); `MockBackend` covers it in unit tests. */
 export interface DisplayBackend {
   /** Create/parent the core layer containers in the given z-order (idempotent).
    * @param orderedIds Layer ids, back-to-front — see the `layers` module's `CORE_LAYERS`. */
@@ -42,7 +40,7 @@ export interface DisplayBackend {
    * @param t The camera transform to apply. */
   setCameraTransform(t: CameraTransform): void;
   /** Module-facing shader-filter seam: attach an opaque filter to a layer; returns a
-   * dispose. No engine consumer in M8 (token fx / Phase-3 VFX are future consumers).
+   * dispose. No engine consumer currently forwards through this seam.
    * @param layerId Target core-layer id.
    * @param filter Backend-specific filter object (opaque to the render model).
    * @returns A dispose callback that removes the filter. */

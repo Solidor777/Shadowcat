@@ -177,7 +177,7 @@ describe("TokenAnimator.animateSamples", () => {
   });
 
   it("partial-occlusion: mid-path gap detected with nominal-interval threshold, contiguous runs stay visible", () => {
-    // Spec: samples at tMs 0,100,200,600,700,800 (durationMs 800). Two contiguous runs
+    // Setup: samples at tMs 0,100,200,600,700,800 (durationMs 800). Two contiguous runs
     // (0→100→200 and 600→700→800) with an occlusion gap (200→600, delta=400).
     // minConsecutiveDelta = 100 (from the contiguous runs); gapThreshold = 150.
     // The durationMs/2 = 400 heuristic would miss this gap entirely (400 = 400 is not >).

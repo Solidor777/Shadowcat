@@ -1,4 +1,4 @@
-// Owns the lifecycle of document (sheet) panels (M12c). Each open document is a runtime
+// Owns the lifecycle of document (sheet) panels. Each open document is a runtime
 // `Contribution` under `shadowcat.panel` with id `sheet:<docId>` — the panel host mounts
 // it via `{#each visibleRegs}` and the layout reducer floats/docks/minimizes it like any
 // panel. This controller is generic host glue (constructed by the shell alongside
@@ -16,7 +16,7 @@ export interface SheetsControllerDeps {
 }
 
 /**
- * Owns the lifecycle of document (sheet) panels (M12c), backing `AppContext.openDocument`.
+ * Owns the lifecycle of document (sheet) panels, backing `AppContext.openDocument`.
  * Each open document is a runtime `Contribution` under `shadowcat.panel` with id
  * `sheet:<docId>` — the panel host mounts it via `{#each visibleRegs}` and the layout
  * reducer floats/docks/minimizes it like any panel. This controller is generic host glue

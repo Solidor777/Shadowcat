@@ -1,4 +1,4 @@
-// Scene scoping for the render layer (M12d). The store holds EVERY scene's children (the server
+// Scene scoping for the render layer. The store holds EVERY scene's children (the server
 // delivers the whole readable doc set); a client renders only the scene it is viewing. A `null`
 // viewed scene (no scene exists yet) yields the unfiltered list — the degenerate pre-scene case,
 // identical to legacy single-scene behavior.

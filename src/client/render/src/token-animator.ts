@@ -297,7 +297,7 @@ export class TokenAnimator {
       //
       // Edge-case: a foreign or rollback authoritative position that coincidentally equals an
       // ahead route-vertex is also swallowed. This is acceptable because routes are constructed
-      // ⊆ the gate-allowed mask (spec §13/§14), so rollbacks should not occur; and if one does
+      // ⊆ the server's gate-allowed movement mask, so rollbacks should not occur; and if one does
       // the engine self-heals on the next store update that issues the real final position.
       for (let i = active.segIndex; i < active.poly.length; i++) {
         const v = active.poly[i];

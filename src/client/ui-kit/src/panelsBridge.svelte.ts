@@ -1,4 +1,4 @@
-// The panel-host bridge (M12a). A stable handle owned by the shell and exposed
+// The panel-host bridge. A stable handle owned by the shell and exposed
 // on AppContext, so module/tool components reach the panel host's imperative
 // API (open/close/focus/toggle a panel by id) even though the host mounts
 // later than callers may first invoke it. Mirrors `SceneInteractionBridge`'s
@@ -38,7 +38,7 @@ export class PanelsBridge implements PanelsApi, PanelsChipsView {
   // than callers that read AppContext.panels) must still see the bound
   // implementation once it arrives — a plain field carries no reactive
   // signal, so a derived that already ran with `#impl === null` would stay
-  // frozen at `[]`/empty forever (buddy-check finding 4).
+  // frozen at `[]`/empty forever.
   #impl = $state<(PanelsApi & PanelsChipsView) | null>(null);
   #warned = false;
 

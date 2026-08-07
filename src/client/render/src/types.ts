@@ -19,7 +19,7 @@ export interface LineSeg {
 }
 
 /** Resolution-independent polygon geometry (D-V1), scene coords, flat
- * [x0,y0,x1,y1,…]. Consumed by the M8c-2 compositor; defined here so the public
+ * [x0,y0,x1,y1,…]. Consumed by the compositor; defined here so the public
  * value-type surface is one module. */
 export interface Polygon {
   /** Flat `[x0,y0,x1,y1,…]` coordinate pairs — see the interface doc for the encoding. */
@@ -39,7 +39,7 @@ export interface CameraTransform {
 /** Visibility for the mask slot (scene coords). `mode:"all"` = no fog (GM / no occlusion).
  * `mode:"masked"` = three-state fog: **unexplored** (outside both sets) = darkest, **explored**
  * (in `explored`, not `visible`) = dimmed memory, **visible** = clear. Empty `visible` + empty
- * `explored` ⇒ full dark fog (see nothing), NOT "see everything". `explored` is the M9c persistent
+ * `explored` ⇒ full dark fog (see nothing), NOT "see everything". `explored` is the persistent
  * memory layer (rect polygons rasterized from the server's per-(scene,player) explored cells);
  * `visible ⊆ explored` semantically (a visible cell is also explored). */
 export interface VisibilityInput {

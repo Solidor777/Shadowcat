@@ -50,7 +50,7 @@ export interface TemplatesApi {
 /**
  * Ambient app state contributed components read via Svelte context. Carries the
  * contribution registry the host renders plus the in-world session essentials
- * (document store, world id, user role). M7d adds the i18n `t`.
+ * (document store, world id, user role, and the i18n `t` function).
  */
 export interface AppContext {
   contributions: ContributionRegistry;

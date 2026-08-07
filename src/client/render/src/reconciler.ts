@@ -50,7 +50,7 @@ export class SceneReconciler {
    * ```
    */
   reconcile(): void {
-    // The viewed scene's background (M12d). `null` viewed id ⇒ the first scene (legacy
+    // The viewed scene's background. `null` viewed id ⇒ the first scene (legacy
     // single-scene behavior; `[0]` is insertion-order).
     const vsid = this.viewedSceneId();
     const scene = (vsid ? this.store.get(vsid) : this.store.query("scene")[0]) as WireDocument | undefined;

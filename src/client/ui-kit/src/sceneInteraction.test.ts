@@ -100,7 +100,7 @@ test("animateSamples forwards to the host (no-op when detached)", () => {
   expect(calls).toEqual([{ id: "t1", samples, durationMs: 1000, startServerMs: 500 }]);
 });
 
-test("animateSamples forwards moverVision to the host (M2 §T6 seam)", () => {
+test("animateSamples forwards moverVision to the host", () => {
   const bridge = new SceneInteractionBridge();
   const samples = [{ tMs: 0, pos: [0, 0] as [number, number] }, { tMs: 500, pos: [100, 0] as [number, number] }];
   const moverVision = [{ tMs: 0, polygons: [[[0, 0], [20, 0], [20, 20]] as [number, number][]] }];

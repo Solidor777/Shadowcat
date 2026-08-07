@@ -22,7 +22,7 @@ export class MockBackend implements DisplayBackend {
    * been called (the fog layer has no default mask to fall back on). */
   visibility: VisibilityInput | null = null;
   /** Last `setVisibilityBlend` call recorded verbatim (from/to/factor), for asserting the
-   * M2 §T7 cross-fade advances 0→1 across a sample interval. */
+   * cross-fade advances 0→1 across a sample interval. */
   visibilityBlend: {
     /** See `DisplayBackend.setVisibilityBlend`'s `from` param. */
     from: VisibilityInput;
