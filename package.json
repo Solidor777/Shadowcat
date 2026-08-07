@@ -19,6 +19,7 @@
     "docs:build:portal": "vitepress build docs/site",
     "docs:serve": "node scripts/serve-docs.mjs",
     "check:svelte-runtime": "node scripts/check-svelte-runtime-entries.mjs",
+    "lint:comments": "node scripts/check-comment-refs.mjs",
     "test:scripts": "vitest run scripts/"
   },
   "devDependencies": {

@@ -8,7 +8,6 @@
 // own `rulesAt`-shaped severity function feeds its own independent
 // warn/ratcheted block pair, with no interaction with eslint.docs.config.js's
 // rule keys at all.
-// Plan: docs/superpowers/plans/2026-08-05-docs-sweep13-property-coverage.md
 import jsdoc from "eslint-plugin-jsdoc";
 import tseslint from "typescript-eslint";
 import svelteParser from "svelte-eslint-parser";

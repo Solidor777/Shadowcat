@@ -1,8 +1,7 @@
-// Doc-coverage lint (spec §2): every function — exported or not — carries a doc
-// comment with description, params, and an @example. Warn-tier during the Phase-1
-// ratchet; sweep plans flip per-package severity to error here, and the final
-// phase merges these rules into eslint.config.js. Kept separate so `pnpm lint`
-// stays warning-free until then.
+// Doc-coverage lint: every function — exported or not — carries a doc comment with description,
+// params, and an @example. Severity is staged per-package from warn to error as each reaches zero;
+// these rules merge into eslint.config.js once every package is at error. Kept as a separate
+// config so `pnpm lint` stays warning-free while any package is still below that bar.
 import jsdoc from "eslint-plugin-jsdoc";
 import tseslint from "typescript-eslint";
 import svelteParser from "svelte-eslint-parser";
@@ -21,7 +20,7 @@ const rulesAt = (sev) => ({
     },
     // Arrow/function expressions only when they are named exports or class fields
     // would over-fire on inline callbacks; declarations and methods are the
-    // "every function" surface the spec enforces mechanically. Inline callbacks
+    // "every function" surface this config enforces mechanically. Inline callbacks
     // are covered by their enclosing declaration's docs.
   }],
   "jsdoc/require-description": sev,
@@ -61,21 +60,20 @@ export default [
     plugins: { jsdoc, "@typescript-eslint": tseslint.plugin },
     rules: RULES,
   },
-  // Ratcheted, repo-wide (sweep 12): every package under these globs reached
-  // zero under the warn tier, so the ratcheted block now takes the SAME globs
+  // Ratcheted, repo-wide: every package under these globs sits at zero under
+  // the warn tier, so the ratcheted block takes the SAME globs
   // as the warn block above rather than an enumerated package list. Because
   // flat config gives the LATER block precedence per rule key, and this block
   // now has `files` byte-identical to the warn block above, this block fully
   // SHADOWS it: every rule key in `rulesAt` resolves to this block's `error`
   // severity here, for every matched file, unconditionally. The warn block is
   // not "empty" — it is superseded. It also cannot stage a future rule on its
-  // own: `rulesAt` is one function feeding both tiers (`:10-12`), so adding a
-  // context there sets both tiers' severity at once, and with the globs now
-  // identical the ratcheted block's `error` is what every file sees. Sweep 13
-  // stages new (property/type) contexts through a SEPARATE config file
-  // instead, precisely because this shadowing makes in-place staging
-  // impossible once a block's globs match its warn-tier sibling's. Plan:
-  // docs/superpowers/plans/2026-08-05-docs-sweep13-property-coverage.md
+  // own: `rulesAt` is one function feeding both tiers, so adding a context
+  // there sets both tiers' severity at once, and with the globs identical the
+  // ratcheted block's `error` is what every file sees. New (property/type)
+  // contexts are therefore staged through a SEPARATE config file, precisely
+  // because this shadowing makes in-place staging impossible once a block's
+  // globs match its warn-tier sibling's.
   {
     files: ["src/types/**/*.ts", "src/client/**/*.ts", "src/modules/**/*.ts", "examples/**/*.ts"],
     // Kept identical to the warn block's ignores. `src/types/generated/**` is
@@ -111,7 +109,7 @@ export default [
     plugins: { jsdoc },
     rules: RULES,
   },
-  // Ratcheted .svelte, repo-wide (sweep 12). Separate from the ratcheted .ts
+  // Ratcheted .svelte, repo-wide. Separate from the ratcheted .ts
   // block because a `.svelte` file needs svelteParser — one block cannot carry
   // both parsers — so gating a package means adding it to BOTH blocks; here it
   // means both blocks take the same broad globs. The rules themselves are the
