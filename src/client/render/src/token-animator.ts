@@ -364,6 +364,7 @@ export class TokenAnimator {
    * @example
    * ```
    * // private method; not part of the public API
+   * declare const sa: SamplesAnim;
    * this.applySamplesAt("token-1", sa);
    * ```
    */

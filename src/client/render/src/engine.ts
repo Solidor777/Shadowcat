@@ -340,6 +340,7 @@ export class RenderEngine implements SceneToolHost {
    * ```
    * // private method; not part of the public API — invoked only as the `subscribeScene`
    * // callback for the "vision" channel
+   * declare const payload: unknown;
    * this.onSceneFrame({ payload, computedAtSeq: 7 });
    * ```
    */

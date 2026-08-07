@@ -18,6 +18,7 @@ import type { ReadableDocuments, WireDocument } from "@shadowcat/core";
  * @example
  * ```
  * // not exported from @shadowcat/render; internal to the render-layer views
+ * declare const store: ReadableDocuments;
  * sceneScopedDocs(store, "token", () => "scene-a"); // only scene-a's tokens
  * sceneScopedDocs(store, "token", () => null); // every token doc in the store
  * ```

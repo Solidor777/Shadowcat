@@ -85,6 +85,7 @@ export class DrawingView {
  * @example
  * ```
  * // not exported from @shadowcat/render; internal to DrawingView.reconcile
+ * declare const doc: WireDocument;
  * const spec = toSpec(doc); // null if doc.engine.shape is absent or malformed
  * ```
  */

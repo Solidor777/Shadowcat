@@ -92,8 +92,9 @@ export interface ToolContext {
  * viewed and none exists.
  * @example
  * ```
+ * declare const ctx: ToolContext;
  * const scene = activeScene(ctx);
- * if (scene) place(scene.id, scene.size);
+ * if (scene) console.log(scene.id, scene.size);
  * ```
  */
 function activeScene(ctx: ToolContext): {
@@ -147,6 +148,8 @@ function activeScene(ctx: ToolContext): {
  * @returns The footprint radius in grid cells.
  * @example
  * ```
+ * declare const ctx: ToolContext;
+ * declare const tokenId: string;
  * const radius = footprintFor(ctx, tokenId);
  * ```
  */
@@ -207,6 +210,7 @@ export class ToolController {
    * @param ctx The tool context every factory closes over.
    * @example
    * ```
+   * declare const ctx: ToolContext;
    * const controller = new ToolController(ctx);
    * ```
    */
@@ -229,6 +233,7 @@ export class ToolController {
    * @param id The tool to activate (or clear, when it is already the active one).
    * @example
    * ```
+   * declare const controller: ToolController;
    * controller.toggle("wall");
    * ```
    */
@@ -251,6 +256,8 @@ export class ToolController {
  * @returns A `SceneTool` implementing only `onPointerDown` (placement is a single click).
  * @example
  * ```
+ * declare const ctx: ToolContext;
+ * declare const controller: ToolController;
  * const tool = makePlaceTool(ctx, controller);
  * ```
  */
@@ -303,7 +310,9 @@ export function makePlaceTool(ctx: ToolContext, controller: ToolController): Sce
  * @returns `true` when the gesture has visible extent and should persist.
  * @example
  * ```
- * if (hasExtent("rect", anchor, b, [])) commitDrawing();
+ * declare const anchor: Point;
+ * declare const b: Point;
+ * const shouldPersist = hasExtent("rect", anchor, b, []);
  * ```
  */
 function hasExtent(mode: DrawMode, a: Point, b: Point, freehand: number[]): boolean {
@@ -323,6 +332,7 @@ const WALL_COLOR = 0xd06060;
  * @returns A `SceneTool` implementing the drag-to-draw gesture.
  * @example
  * ```
+ * declare const ctx: ToolContext;
  * const tool = makeWallTool(ctx);
  * ```
  */
@@ -381,6 +391,8 @@ const REGION_PREVIEW_COLOR = 0xd0a030;
  * @returns A `SceneTool` implementing the drag-to-author gesture.
  * @example
  * ```
+ * declare const ctx: ToolContext;
+ * declare const controller: ToolController;
  * const tool = makeRegionTool(ctx, controller);
  * ```
  */
@@ -439,6 +451,8 @@ export function makeRegionTool(ctx: ToolContext, controller: ToolController): Sc
  * @returns The preview polyline plus whether it should render closed.
  * @example
  * ```
+ * declare const anchor: Point;
+ * declare const b: Point;
  * const { points, closed } = regionShapePath("circle", anchor, b, []);
  * ```
  */
@@ -472,6 +486,8 @@ function regionShapePath(mode: RegionShapeMode, a: Point, b: Point, freehand: nu
  * @returns The flat points array to persist as `engine.shape.points`.
  * @example
  * ```
+ * declare const anchor: Point;
+ * declare const b: Point;
  * const points = regionShapeGeometry("rect", anchor, b, []);
  * ```
  */
@@ -493,6 +509,7 @@ function regionShapeGeometry(mode: RegionShapeMode, a: Point, b: Point, freehand
  * @returns A `SceneTool` implementing the click-to-ping gesture.
  * @example
  * ```
+ * declare const ctx: ToolContext;
  * const tool = makePingTool(ctx);
  * ```
  */
@@ -535,6 +552,7 @@ export function makePingTool(ctx: ToolContext): SceneTool {
  * @returns A `SceneTool` implementing the drag-to-measure gesture (plain or routed).
  * @example
  * ```
+ * declare const ctx: ToolContext;
  * const tool = makeMeasureTool(ctx);
  * ```
  */
@@ -588,6 +606,9 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
    * @returns `true` when both conditions hold.
    * @example
    * ```
+   * declare function inRouteMode(): boolean;
+   * declare const waypoints: [number, number][];
+   * declare const snapped: Point;
    * if (inRouteMode()) waypoints.push([snapped.x, snapped.y]);
    * ```
    */
@@ -607,6 +628,7 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
    * exactly one token.
    * @example
    * ```
+   * declare function tokenCenter(): [number, number] | null;
    * const start = tokenCenter();
    * ```
    */
@@ -636,6 +658,7 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
    * @returns The footprint radius in grid cells.
    * @example
    * ```
+   * declare function resolveFootprint(): number;
    * const fp = resolveFootprint();
    * ```
    */
@@ -652,6 +675,7 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
    * @returns The selected token id, or `undefined`.
    * @example
    * ```
+   * declare function selectedTokenId(): string | undefined;
    * const token = selectedTokenId();
    * ```
    */
@@ -676,6 +700,14 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
    * @param goal The provisional goal, in scene coords (post-snap).
    * @example
    * ```
+   * declare function requestRoute(
+   *   scene: { id: string; perCell: number; unit: string },
+   *   start: [number, number],
+   *   goal: Point,
+   * ): void;
+   * declare const scene: { id: string; perCell: number; unit: string };
+   * declare const start: [number, number];
+   * declare const goal: Point;
    * requestRoute(scene, start, goal);
    * ```
    */
@@ -724,6 +756,7 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
    * tool has moved on (teardown, tool swap, route clear) would be its own bug.
    * @example
    * ```
+   * declare function clearPendingRouteTimer(): void;
    * clearPendingRouteTimer();
    * ```
    */
@@ -745,7 +778,8 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
    * hover-only stop (no further `onPointerMove`) needs one.
    * @example
    * ```
-   * schedulePendingRouteFire(goal); // eventually invokes firePendingRoute
+   * declare function firePendingRoute(): void;
+   * firePendingRoute(); // fires the deferred route-preview request, if one is pending
    * ```
    */
   function firePendingRoute(): void {
@@ -770,6 +804,8 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
    * @param goal The suppressed goal to fire once the cooldown elapses.
    * @example
    * ```
+   * declare function schedulePendingRouteFire(goal: Point): void;
+   * declare const goal: Point;
    * schedulePendingRouteFire(goal);
    * ```
    */
@@ -786,6 +822,7 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
    * first move always fires immediately rather than inheriting a stale cooldown.
    * @example
    * ```
+   * declare function clearRoute(): void;
    * clearRoute();
    * ```
    */
@@ -838,6 +875,8 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
    * @param goal The commit target, in scene coords (post-snap).
    * @example
    * ```
+   * declare function commitRoute(goal: Point): void;
+   * declare const goal: Point;
    * commitRoute(goal);
    * ```
    */
@@ -1006,6 +1045,8 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
  * @returns The preview/persist points plus whether the shape should render/persist closed.
  * @example
  * ```
+ * declare const anchor: Point;
+ * declare const b: Point;
  * const { points, closed } = shapePath("rect", anchor, b, []);
  * ```
  */
@@ -1039,6 +1080,8 @@ function shapePath(mode: DrawMode, a: Point, b: Point, freehand: number[]): {
  * @returns A `SceneTool` implementing the drag-to-draw gesture.
  * @example
  * ```
+ * declare const ctx: ToolContext;
+ * declare const controller: ToolController;
  * const tool = makeDrawTool(ctx, controller);
  * ```
  */
@@ -1100,6 +1143,9 @@ export function makeDrawTool(ctx: ToolContext, controller: ToolController): Scen
  * @returns The preview/persist points plus whether the shape should render/persist closed.
  * @example
  * ```
+ * declare const anchor: Point;
+ * declare const size: number;
+ * declare const direction: number;
  * const { points, closed } = templatePath("cone", anchor.x, anchor.y, size, direction);
  * ```
  */
@@ -1133,6 +1179,9 @@ function templatePath(mode: TemplateMode, ax: number, ay: number, size: number, 
  * @returns The resolved size (scene units) and direction (degrees).
  * @example
  * ```
+ * declare const anchor: Point;
+ * declare const b: Point;
+ * declare const scene: { size: number };
  * const { size, direction } = sizeDir(anchor, b, scene.size);
  * ```
  */
@@ -1165,6 +1214,8 @@ function sizeDir(a: Point, b: Point, cell: number): {
  * @returns A `SceneTool` implementing the drag-to-place gesture.
  * @example
  * ```
+ * declare const ctx: ToolContext;
+ * declare const controller: ToolController;
  * const tool = makeTemplateTool(ctx, controller);
  * ```
  */
@@ -1233,6 +1284,7 @@ const DRAG_THROTTLE_MS = 50;
  * @returns A `SceneTool` implementing the drag-to-move-selection gesture.
  * @example
  * ```
+ * declare const ctx: ToolContext;
  * const tool = makeSelectMoveTool(ctx);
  * ```
  */
@@ -1252,6 +1304,8 @@ export function makeSelectMoveTool(ctx: ToolContext): SceneTool {
    * @returns The token's center in scene coords.
    * @example
    * ```
+   * declare function centerOf(id: string): Point;
+   * declare const tokenId: string;
    * const c = centerOf(tokenId);
    * ```
    */
@@ -1274,6 +1328,7 @@ export function makeSelectMoveTool(ctx: ToolContext): SceneTool {
    * source), not by three independent implementations happening to match.
    * @example
    * ```
+   * declare function drawSelection(): void;
    * drawSelection();
    * ```
    */
@@ -1303,6 +1358,7 @@ export function makeSelectMoveTool(ctx: ToolContext): SceneTool {
    * @param delta The drag offset from grab origin (scene coords, unsnapped).
    * @example
    * ```
+   * declare function previewMoves(delta: Point): void;
    * previewMoves({ x: 10, y: 0 });
    * ```
    */
@@ -1327,6 +1383,7 @@ export function makeSelectMoveTool(ctx: ToolContext): SceneTool {
    * @param delta The drag offset from grab origin (scene coords, unsnapped) to commit.
    * @example
    * ```
+   * declare function commitMoves(delta: Point): void;
    * commitMoves({ x: 10, y: 0 });
    * ```
    */

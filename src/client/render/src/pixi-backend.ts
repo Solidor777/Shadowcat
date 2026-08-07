@@ -495,6 +495,8 @@ export class PixiBackend implements DisplayBackend {
    * @example
    * ```
    * // private method; not part of the public API
+   * declare const node: TokenNode;
+   * declare const spec: TokenNodeSpec;
    * this.updateTokenVisual("00000000-0000-0000-0000-000000000001", node, spec);
    * ```
    */
@@ -541,6 +543,7 @@ export class PixiBackend implements DisplayBackend {
    * @example
    * ```
    * // private method; not part of the public API
+   * declare const node: TokenNode;
    * this.replaceVisualChild(node, new Sprite());
    * ```
    */
@@ -596,6 +599,8 @@ export class PixiBackend implements DisplayBackend {
    * @example
    * ```
    * // private method; not part of the public API
+   * declare const node: TokenNode;
+   * declare const spec: TokenNodeSpec;
    * this.updateTokenBorder(node, spec);
    * ```
    */
@@ -619,6 +624,8 @@ export class PixiBackend implements DisplayBackend {
    * @example
    * ```
    * // private method; not part of the public API
+   * declare const node: TokenNode;
+   * declare const spec: TokenNodeSpec;
    * this.updateTokenBadges(node, spec);
    * ```
    */

@@ -92,6 +92,7 @@ export class RegionView {
  * @example
  * ```
  * // not exported from @shadowcat/render; internal to RegionView.reconcile
+ * declare const doc: WireDocument;
  * const spec = toSpec(doc); // null if doc.engine.shape is absent or malformed
  * ```
  */

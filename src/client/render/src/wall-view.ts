@@ -80,6 +80,7 @@ export class WallView {
  * @example
  * ```
  * // not exported from @shadowcat/render; internal to WallView.reconcile
+ * declare const doc: WireDocument;
  * const spec = toSpec(doc); // null if doc.engine.seg is absent or non-finite
  * ```
  */

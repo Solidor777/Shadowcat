@@ -19,6 +19,8 @@ import type { Point } from "@shadowcat/render";
  * @returns The topmost hit token's id, or `null` when none contains `p`.
  * @example
  * ```
+ * declare const store: ReadableDocuments;
+ * declare const p: Point;
  * const id = topTokenAt(store.query("token"), p, store);
  * ```
  */

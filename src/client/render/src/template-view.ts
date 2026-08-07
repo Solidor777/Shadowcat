@@ -92,6 +92,7 @@ export class TemplateView {
  * @example
  * ```
  * // not exported from @shadowcat/render; internal to TemplateView.reconcile
+ * declare const doc: WireDocument;
  * const spec = toSpec(doc); // null if doc.engine.shape is absent or malformed
  * ```
  */

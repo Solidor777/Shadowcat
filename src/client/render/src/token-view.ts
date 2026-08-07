@@ -310,6 +310,7 @@ export class TokenView {
    * @example
    * ```
    * // private method; not part of the public API
+   * declare const doc: WireDocument;
    * this.toSpec(doc);
    * ```
    */
