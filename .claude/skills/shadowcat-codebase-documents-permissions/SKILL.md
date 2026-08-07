@@ -91,7 +91,7 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
     `load_update_docs` (Update pre-images, awaited ONCE per event before the sync core runs — no
     lock held across that await) and an `actor_lookup` closure backed by the room's in-memory
     `SceneEcs` actor table (`|id| ecs.actor(id)`). No pool read on this path at all — the join is
-    entirely in-memory, preserving the C1 no-pool-query-on-the-hot-path property. The scene read
+    entirely in-memory, preserving the no-pool-query-on-the-hot-path property. The scene read
     guard around `filter_command` itself is short (sync core, no await inside it), the same
     discipline `clip_move_stream` uses.
   - **`http::routes::list_documents`** — one batched `query_documents(world, "actor")` fetch
@@ -114,13 +114,13 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
   aborts before commit; the DERIVED mirrors in the `scene` module go through `mirror_field_change`
   (logs) / `reapply_changes` (adds the `Document` round-trip), because `apply_op` runs on the
   already-committed broadcast/replay path where the ECS has no authority to reject. **Why this is a
-  hard invariant (Task 14i, `[sec]`, fixed a Critical):** `SceneEcs::apply_op` once mirrored with an
-  unconditional `set_pointer`, ignoring `ch.remove`, while the store honoured it — so a `remove:
-  true` change left the DB with the key ABSENT and the ECS holding the caller's unconstrained
-  `new`. With `WRITE_FIELDS` alone, a player removing `/engine/actor_id` with a foreign actor id in
-  `new` made the DB read "unowned" (nobody may write) while the ECS resolved ownership to another
-  actor's owner — who then gained the token as a vision source. **Vision widened exactly where
-  write authz refused.** Note the two call-site trust levels through one helper: `apply_op` sees
+  hard invariant:** an `apply_op` that mirrored with an unconditional `set_pointer`, ignoring
+  `ch.remove`, would leave the DB with the key ABSENT (a `remove: true` change) while the ECS holds
+  the caller's unconstrained `new` — so with `WRITE_FIELDS` alone, a player removing
+  `/engine/actor_id` with a foreign actor id in `new` makes the DB read "unowned" (nobody may write)
+  while the ECS resolves ownership to another actor's owner, who then gains the token as a vision
+  source. **Vision widens exactly where write authz refuses.** Note the two call-site trust levels
+  through one helper: `apply_op` sees
   committed changes, `token_move` sees CLIENT-PROPOSED, not-yet-authorized ones. `MirrorInput::
   {Committed, Proposed}` carries that and decides the LOG LEVEL, not the mutation: `error!` on a
   committed failure (an invariant breach), `debug!` on a proposed one (routine malformed input).
@@ -368,8 +368,8 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
   children, all now swept; its former item-scoped exception is retired). A new undocumented item
   fails the 3-OS CI clippy step. Doc comments on ts-rs types flow into `src/types/generated` —
   editing them means regenerating (`cargo test`) and committing the bindings, and doc claims about
-  authz/redaction must cite the enforcing function (Sweep-1 lesson: a review caught a factually
-  wrong doc).
+  authz/redaction must cite the enforcing function — an uncited claim can state a wrong function
+  and go undetected by any gate.
 - **Wire types are generated** — change the Rust `Visibility`/`Document`, regenerate ts-rs, then
   mirror in the Zod schema (a drift guard enforces parity). Never hand-edit `src/types/generated`.
 - **A naive raw-equality assumption about OCC pre-images is wrong.** Any code (or reviewer)
