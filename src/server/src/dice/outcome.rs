@@ -121,7 +121,7 @@ fn default_ordered() -> bool {
 /// SuccessCount mode it still holds a reference kept-die sum, while
 /// `successes`/`pass`/`margin` (all `None` in Total mode with no `difficulty`)
 /// carry that mode's primary output. `tier_label`/`tier_value` classify `margin`
-/// against the spec's tier ladder; the crit/counter fields are SuccessCount-only
+/// against `RollSpec`'s tier ladder; the crit/counter fields are SuccessCount-only
 /// aggregates (0 in Total mode).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RollOutcome {

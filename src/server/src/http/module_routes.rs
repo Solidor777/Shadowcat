@@ -42,8 +42,8 @@ impl From<&crate::modules::InstalledModule> for InstalledModuleInfo {
 
 /// `GET /api/modules` — every validly installed module. Any authenticated user
 /// (a client needs this to resolve entry URLs for its world's enabled set).
-/// Freshly re-scanned per request (see the plan's "module discovery caching"
-/// decision) — a manual filesystem install is visible without a restart.
+/// Freshly re-scanned per request, with no cache — a manual filesystem install is visible
+/// without a restart, at the cost of a directory walk per call.
 pub async fn list_installed_modules(
     _user: AuthUser,
     State(state): State<AppState>,

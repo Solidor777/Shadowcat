@@ -1134,8 +1134,9 @@ impl SqliteRepository {
 
     /// Replace a world's enabled installed-module set (stored as JSON in
     /// settings, beside `world_cap_requirements`/`world_contract_declarations`
-    /// — enable/disable never mutates either of those; see the plan's
-    /// non-destructive-union decision for the `Welcome` broadcast).
+    /// — enable/disable never mutates either of those; `welcome_capability_requirements` unions
+    /// the enabled modules' declared requirements with the stored GM-authored record fresh on
+    /// every `Welcome`, leaving the stored record the GM's own edit alone).
     pub async fn set_world_enabled_modules(
         &self,
         world: Uuid,

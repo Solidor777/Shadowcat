@@ -80,13 +80,17 @@ const BANNED = [
   // test-file suffix, and neither points outside the code.
   {
     name: "unnamed spec reference",
-    re: /\bspec\s*§|\b(?:the|this|design|parent|wire|per)\s+spec\b|\bspec'?d\b|\bspec\s*:/i,
+    // The trailing-colon form excludes `::`, which is a Rust path segment (a `dice::spec::DieKind`
+    // in a doctest names a module in this crate) rather than a document reference.
+    re: /\bspec\s*§|\b(?:the|this|design|parent|wire|per)\s+spec\b|\bspec'?d\b|\bspec\s*:(?!:)/i,
   },
   {
     name: "sweep / round / review marker",
-    re: /\b[Ss]weep \d+|\bfix[- ]round|\bbuddy-check|\bfinding \d+/i,
+    re: /\b[Ss]weep \d+|\bfix[- ]round|\bbuddy-check|\bwhole-branch[- ]review|\bfinding \d+/i,
   },
-  { name: "process marker", re: /POST_WORK:/ },
+  // EXAMPLE: A dispatch brief, task or plan is scaffolding that stops existing once the work
+  // lands, so a comment deferring to one leaves the reader an instruction they cannot retrieve.
+  { name: "process marker", re: /POST_WORK:|\b(?:task|dispatch) brief\b|\bthe plan\b/i },
 ];
 
 // The rule extends to code-facing string literals (assert! messages, test names): a developer

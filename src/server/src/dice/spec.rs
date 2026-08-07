@@ -271,7 +271,7 @@ impl Default for SuccessRule {
 
 /// Which end of a margin/comparison is "better". `HighWins` (default): a higher
 /// total/success-count beats a lower one. `LowWins`: the inverse (e.g. roll-under
-/// systems). Global to the spec — orients every margin/tier/crit computation.
+/// systems). Global to `RollSpec` — orients every margin/tier/crit computation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum Direction {
     /// Higher totals/success counts are better (the default).

@@ -1,4 +1,4 @@
-// Fails if a dispatch brief mandates an instruction that has since been superseded.
+// EXAMPLE: Fails if a dispatch brief mandates an instruction that has since been superseded.
 //
 // Constraint this enforces: a brief is authored once and dispatched later, so it freezes whatever
 // the guidance said at authoring time. When guidance is replaced, every unsent brief silently
@@ -92,7 +92,8 @@ if (total === 0) {
   console.error(`no *-brief.md found under "${root}". Nothing was examined; check the path.`);
   process.exit(2);
 }
+// This tool's subject IS dispatch briefs, so its own report must name them.
 console.log(
-  `${total - frozen} live dispatch brief(s) carry no superseded instruction ` +
+  `${total - frozen} live dispatch brief(s) carry no superseded instruction ` + // EXAMPLE:
     `(${frozen} frozen as executed).`,
 );
