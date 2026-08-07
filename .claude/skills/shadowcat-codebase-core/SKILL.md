@@ -210,7 +210,12 @@ source of truth. The ones agents break most:
   host's own component imports resolve for free — this script generates no shim of its own).
   Consequences: an example naming a workspace package pulls that package's internals into the
   graph, so `docs:check-examples` can fail at a line the author never touched; and both tagged and
-  untagged fences are checked, so an untagged fence is not an escape hatch.
+  untagged fences are checked, so an untagged fence is not an escape hatch. A diagnostic is
+  attributed by WHERE it lands, not by which example triggered compilation: `classifyCompiledResult`
+  counts a result as an example-content failure only when at least one diagnostic maps to
+  `"example body"`; a result whose diagnostics are ALL host-attributable (`"host line N"`) is
+  reported in its own bucket and still fails the gate (a broken host is real information), but is
+  never folded into the example-failure count or blamed on the example's own content.
 - **The compilation contract is explicit and named — do not re-derive it per package.**
   `EXAMPLE_HYGIENE_OVERRIDES` turns `noUnusedLocals`/`noUnusedParameters` OFF while leaving every
   correctness check on. Production-hygiene lints are a category error on documentation:
@@ -218,9 +223,19 @@ source of truth. The ones agents break most:
   those two flags implicitly from a package config once manufactured 95 phantom failures out of
   197 — a wrong ruler is applied uniformly, so every result looks self-consistent and the diff
   reviews clean.
-- **Known instrument limitation:** a `.svelte` example touching a `bind:this` binding reports
-  `Variable 'X' is used before being assigned`, because the template half is not extracted. Leave
-  these; do not restructure a component to satisfy the checker.
+- **`bind:this` targets are resolved, not left as an instrument gap.** A `.svelte` host's
+  extracted script never sees the template, so a `let el: T;` a template `bind:this={el}`
+  assigns would otherwise read as "used before being assigned". `extractSvelteHost` parses
+  `bind:this={name}` out of the raw SFC text (template only — a match inside a `<script>` block
+  is excluded) via `extractBindThisSimpleIdentifiers`, then `markBindThisAssigned` adds a real
+  TypeScript definite-assignment assertion (`let el!: T;`) to that exact declaration — never a
+  suppression: the declared TYPE is untouched, so a genuine type error against the binding still
+  fails, and a host variable that is truly read before assignment (not a `bind:this` target)
+  still fails too. Only a BARE-IDENTIFIER target is rewritten this way; a member/element-access
+  target (`bind:this={refs.foo}`, `bind:this={itemEls[i]}`) needs no rewrite at all, because
+  Svelte can only assign into an object/array that already exists — its base identifier's
+  declaration necessarily already carries an initializer. Do not restructure a `.svelte`
+  component to satisfy this checker.
 - **A green `pnpm lint:docs` is NOT evidence the docs are correct.** The `jsdoc/require-*` rules
   gate on tag PRESENCE only: they cannot see a vacuous tag (`@returns The result.`), a false
   statement, or a second doc block appended below an existing one. That last case actively
