@@ -1,4 +1,4 @@
-//! Frozen-fixture parity gate for the `GridShape`/`SquareGrid` refactor.
+//! Frozen-fixture parity gate for `GridShape`/`SquareGrid` per-cell math.
 //!
 //! Every scene geometry consumer (grid A* router, per-step move executor, visibility mask,
 //! region rasterization) routes its per-cell math through `grid_shape::GridShape`, and

@@ -54,9 +54,8 @@ const EPS: f64 = 1e-6;
 
 /// DoS guard for `gate_walk`: a walk requiring more than this many dense samples is
 /// rejected outright, never truncated. Arc-length/cell-count based — a single continuous
-/// segment can be arbitrarily long, so an authored-vertex-count cap is not the right invariant
-/// (unlike a prior `MAX_MOVE_PATH`, which bounded the number of AUTHORED waypoints, not
-/// dense samples).
+/// segment can be arbitrarily long, so an authored-vertex-count cap is not the right invariant:
+/// the bound must count dense samples, not authored waypoints.
 pub(crate) const MAX_GATE_WALK_SAMPLES: usize = 4096;
 
 /// Magnitude ceiling (scene units) for any `gate_walk` input path coordinate, checked
@@ -217,9 +216,9 @@ pub(crate) enum MoveReject {
     /// `path` has fewer than 2 points (no step to walk).
     EmptyPath,
     /// `gate_walk` returned `None`: either the path's dense walk (arc-length/sample-count,
-    /// not authored-vertex-count) would exceed `MAX_GATE_WALK_SAMPLES` — the DoS bound, replacing
-    /// a prior authored-vertex cap since a single arbitrarily-long continuous segment is
-    /// now the relevant DoS surface, not the number of authored waypoints — or a path coordinate's
+    /// not authored-vertex-count) would exceed `MAX_GATE_WALK_SAMPLES` — the DoS bound is
+    /// arc-length based because a single arbitrarily-long continuous segment is the DoS
+    /// surface, not the number of authored waypoints — or a path coordinate's
     /// magnitude exceeds `MAX_GATE_WALK_COORD` (a distinct, unreachable-in-practice degenerate
     /// case sharing this variant rather than `Degenerate`, since both originate from the same
     /// `gate_walk` fail-closed `None`).
@@ -256,11 +255,10 @@ pub(crate) enum MoveReject {
 /// mediated through a shared middle gate. On `GridStepped` the two are equivalent
 /// (route-admissible ⇔ gate-admissible) for a non-GM mover; on `Continuous` only the weaker
 /// route ⊆ gate-allowed direction holds, since `gate_walk`'s dense sampling and the router's
-/// cell-center evaluation operate at different granularity. For a grid input this executor is
-/// byte-identical in outcome to
-/// the prior king-step executor (proved via a differential oracle and now
-/// frozen as literal fixtures — see
-/// `frozen_parity_king_step_paths_match_previously_oracle_verified_outcomes`).
+/// cell-center evaluation operate at different granularity. For a grid input, this executor's
+/// outcome is pinned to literal expected fixtures that nothing computes at runtime, so any
+/// change to its grid behaviour requires a deliberate fixture edit — see
+/// `frozen_parity_king_step_grid_outcomes`.
 ///
 /// A >1-cell authored jump is subdivided by `gate_walk` and gated per crossed cell, exactly as if
 /// the client had sent the explicit intermediate waypoints — no new capability, since a
@@ -375,8 +373,7 @@ pub(crate) fn execute_move(
     let mut stopped_early = false;
     let mut cost = 0.0;
     // The cell already accounted for by region/cost logic. The START cell is never itself
-    // "entered" (mirrors the pre-refactor loop, which begins cost accrual at i=1 /
-    // to_cell(next)).
+    // "entered": cost accrual begins at the first cell transition (`i = 1` / `to_cell(next)`).
     let mut last_region_cell = to_cell(walk[0].pos);
 
     for i in 1..walk.len() {
@@ -430,9 +427,9 @@ pub(crate) fn execute_move(
 
         // Step 3: region gate, keyed on CELL-ENTRY TRANSITIONS, not per dense sample
         // — a continuous path subdivided into several sub-cell samples within the same cell
-        // is evaluated exactly once for that cell, matching the pre-refactor accrual count
-        // for grid input (where every authored step already crossed into a distinct new
-        // cell). Center-cell only, mirroring the pre-existing documented asymmetry against
+        // is evaluated exactly once for that cell. For grid input that is one accrual per
+        // authored step, since every authored step crosses into a distinct new
+        // cell. Center-cell only, mirroring the documented asymmetry against
         // the router's footprint-aware check (see `cell_enterable`'s docs).
         //
         // This transition-dedup relies on the router never emitting two consecutive dense
@@ -474,8 +471,7 @@ pub(crate) fn execute_move(
     let stop_sample = walk[stop_idx];
     let render_path = match stop_sample.authored_idx {
         // Stop lands exactly on an authored vertex (always true for grid input, since
-        // gate_walk is identity there): the coarse path is the authored-vertex prefix,
-        // byte-identical to the pre-refactor executor.
+        // gate_walk is identity there): the coarse path is the authored-vertex prefix.
         Some(authored_i) => path[0..=authored_i].to_vec(),
         // Stop lands mid-subdivision (only possible for a genuinely long/any-angle
         // segment): the coarse path is every authored vertex fully passed, plus the exact
@@ -1708,7 +1704,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Differential parity test suite vs the frozen king-step oracle
+    // Frozen-fixture parity suite for king-step grid inputs
     // -----------------------------------------------------------------------
 
     /// Builds a scene with an optional wall and/or region for differential-test scenarios.
@@ -1777,13 +1773,13 @@ mod tests {
         expected: ExpectedOutcome,
     }
 
-    /// Frozen parity fixtures: 10 grid-input scenarios whose expected outcomes were
-    /// independently derived and cross-checked live against a prior king-step oracle
-    /// before the oracle was deleted. This is the permanent parity
-    /// regression that proves `execute_move` still agrees with the pre-refactor executor on
-    /// every grid input, now that no oracle remains to compare against at runtime.
+    /// Frozen parity fixtures: 10 grid-input scenarios whose expected outcomes are literal
+    /// constants, computed by nothing at runtime. This pins `execute_move`'s king-step grid
+    /// behaviour whole — every stop coordinate, render-path vertex, truncation flag and cost —
+    /// so any change to that behaviour fails here and requires a deliberate fixture edit rather
+    /// than a silently re-derived expectation.
     #[test]
-    fn frozen_parity_king_step_paths_match_previously_oracle_verified_outcomes() {
+    fn frozen_parity_king_step_grid_outcomes() {
         let cases = vec![
             FrozenCase {
                 label: "clear scene, full visible, straight path",

@@ -750,12 +750,12 @@ impl SceneEcs {
     /// The validated world-settings engine body, or `None` when the doc is absent or its stored
     /// `engine` fails to deserialize into `WorldSettingsEngine`. Ingress validation
     /// (`data::engine::validate_engine`) already requires every persisted "world-settings" doc's
-    /// `engine` to be a complete, `deny_unknown_fields`-checked `WorldSettingsEngine` — this is
-    /// the direct successor of the prior `scene`+`pathfinding`+`animation`-all-present
-    /// structural guard (mirrors the TS `ws?.scene && ws?.pathfinding && ws?.animation` check),
-    /// now enforced at write time instead of read time. A doc that predates that guard (e.g. a
-    /// test fixture built without going through the ingress gate) still falls back to built-in
-    /// defaults exactly as before. Used by every resolver that reads world-settings so partial/
+    /// `engine` to be a complete, `deny_unknown_fields`-checked `WorldSettingsEngine` — this
+    /// enforces, at write time, the same `scene`+`pathfinding`+`animation`-all-present structural
+    /// completeness the TS mirror (`ws?.scene && ws?.pathfinding && ws?.animation`) still checks
+    /// at read time. A doc that never passed that ingress gate (e.g. a
+    /// test fixture built directly) falls back to built-in
+    /// defaults. Used by every resolver that reads world-settings so partial/
     /// malformed-doc handling stays consistent across all of them.
     fn validated_world_settings_engine(&self) -> Option<eng::WorldSettingsEngine> {
         let doc = self.world_settings.as_ref()?;
