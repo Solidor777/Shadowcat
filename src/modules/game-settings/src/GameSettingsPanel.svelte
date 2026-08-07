@@ -121,7 +121,7 @@
   });
   let selectedSceneId = $state<string | null>(null);
 
-  // Deep-link from the scene browser's "Configure" (M12d): adopt its focused scene. Only reacts to
+  // Deep-link from the scene browser's "Configure": adopt its focused scene. Only reacts to
   // a non-null change, so a manual picker change afterward is preserved until the browser re-focuses.
   $effect(() => {
     const focus = ctx.sceneSelection.configureSceneId;

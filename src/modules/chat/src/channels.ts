@@ -8,8 +8,7 @@
 // player's store never held a `gm_only` message it wasn't a recipient of in the
 // first place: redaction is per-recipient, filtering each connection's outgoing
 // frame individually rather than in one shared pre-fan-out pass (`send_filtered`;
-// the general rule, ARCHITECTURE's invariant 4, "Permissions enforced
-// server-side, per recipient").
+// the general rule: permissions are enforced server-side, per recipient).
 import { parseMessageEngine, type ChatMessageEngine, type WireAudience, type WireDocument } from "@shadowcat/core";
 
 export type ChatView = { kind: "all" } | { kind: "channel"; id: string } | { kind: "gm" };

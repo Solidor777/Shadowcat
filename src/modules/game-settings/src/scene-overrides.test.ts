@@ -73,7 +73,7 @@ describe("per-scene overrides", () => {
     ]);
   });
 
-  it("selecting inherit on a previously-set enum override dispatches null to clear it", async () => {
+  it("selecting inherit on an already-set enum override dispatches null to clear it", async () => {
     // Enum (non-boolean) inherit path: selecting the blank option writes null so the
     // nullish-coalesce in resolveSceneSettings falls back to the world default.
     const dispatchIntent = vi.fn();
@@ -134,7 +134,7 @@ describe("per-scene overrides", () => {
     ]);
   });
 
-  it("selecting inherit on a previously-set movementModel override dispatches null to clear it", async () => {
+  it("selecting inherit on an already-set movementModel override dispatches null to clear it", async () => {
     const dispatchIntent = vi.fn();
     const ws = buildWorldSettingsDoc("w1", undefined, "ws1");
     // Pre-populate the scene with a movementModel override already set.

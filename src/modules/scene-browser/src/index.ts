@@ -1,7 +1,7 @@
 import { PANEL_CONTRACT, type Module } from "@shadowcat/core";
 import SceneBrowserPanel from "./SceneBrowserPanel.svelte";
 
-/** GM scene browser (M12d): scene list with background thumbnails, create, configure (deep-links
+/** GM scene browser: scene list with background thumbnails, create, configure (deep-links
  * the game-settings per-scene section), local view (GM roam), and activate (sets the scene players
  * render). Requires the panel-manager's contract; launcher-closed by default, after game-settings. */
 export const sceneBrowser: Module = {

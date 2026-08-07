@@ -393,7 +393,7 @@ describe("ChatPanel — hidden-tab scroll safety", () => {
   });
 });
 
-describe("ChatPanel — unread tab badge (I3)", () => {
+describe("ChatPanel — unread tab badge", () => {
   class FakeIntersectionObserver {
     static instances: FakeIntersectionObserver[] = [];
     callback: IntersectionObserverCallback;

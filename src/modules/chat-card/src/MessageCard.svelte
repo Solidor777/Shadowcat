@@ -204,8 +204,7 @@
   });
 
   /** Roll-button click: a fresh, public, sender-attributed `/roll` on the carrying message's
-   * channel — never re-executes the carrying message's own roll
-   * (docs/superpowers/specs/2026-07-13-m11d-2-dice-chat-wire-design.md §2 item 3, §7).
+   * channel — never re-executes the carrying message's own roll.
    * @param s The clicked `roll_button` segment.
    * @example
    * ```
@@ -544,8 +543,7 @@
     color: var(--danger, crimson);
   }
   .roll-btn {
-    // Touch floor: matches `.actions button` below. The 44px target for a roll_button is
-    // specified in docs/superpowers/specs/2026-07-13-m11d-2-dice-chat-wire-design.md §7.
+    // Touch floor: matches `.actions button` below. The 44px target applies to a roll_button too.
     min-height: 44px;
     min-width: 44px;
     padding: 0 var(--space-1);
@@ -601,16 +599,14 @@
     display: flex;
     gap: var(--space-1);
   }
-  // Images size to the card and sit on their own line —
-  // docs/superpowers/specs/2026-07-03-m11-chat-system-design.md §5 :165 ("forced to a new line,
-  // sized to the card"). `max-width` caps the width; `display: block` forces the break an inline
-  // <img> would not take.
+  // Images size to the card and sit on their own line, forced to a new line rather than
+  // flowing inline with surrounding text. `max-width` caps the width; `display: block` forces
+  // the break an inline <img> would not take.
   .seg-html :global(img) {
     max-width: 100%;
     display: block;
   }
-  // Link-preview card (docs/superpowers/specs/2026-07-13-m11d-3-link-previews-design.md §7,
-  // "Card rendering"). No <img> — server-fetched title/description/host
+  // Link-preview card. No <img> — server-fetched title/description/host
   // only, all escaped text; the whole card is the link (44px touch floor on the anchor itself).
   .link-preview {
     display: flex;

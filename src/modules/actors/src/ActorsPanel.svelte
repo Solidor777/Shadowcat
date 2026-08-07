@@ -17,7 +17,7 @@
     return ctx.documents.query("actor");
   });
 
-  // Live FTS search (M6c seam). Empty query renders the existing reactive full actor list;
+  // Live FTS search. Empty query renders the existing reactive full actor list;
   // a non-empty query drives a top-N subscription keyed on the query string, torn down/recreated
   // on every query change and on unmount (D-c: search is NOT reconnect-resilient, unlike scene
   // subscriptions — a reconnect mid-search leaves the last-known hits until the next keystroke).
@@ -88,7 +88,7 @@
   // override key outside those four, so in practice `a.permissions` is always present for both a
   // search-sourced and a store-resolved row — but ingress only checks a property_overrides key's
   // JSON-pointer SHAPE (`validation::validate_property_overrides`), not which field it targets, so
-  // this is a today-true observation, not a structural guarantee; see docs/OPEN_BUGS.md. The
+  // this is a today-true observation, not a structural guarantee. The
   // optional chaining below is defensive style, not required by any known gap between the two.
   const isHidden = (a: WireDocument): boolean => a.permissions?.property_overrides["/name"] === "owner_or_gm";
 

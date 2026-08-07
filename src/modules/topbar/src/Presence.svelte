@@ -4,8 +4,8 @@
   const ctx = getAppContext();
   const t = ctx.t;
 
-  // A reactive SvelteMap (userId -> username), populated for every role
-  // (M11d-1). `WorldSession.#onWelcome` refreshes it only on a WS (re)connect
+  // A reactive SvelteMap (userId -> username), populated for every role.
+  // `WorldSession.#onWelcome` refreshes it only on a WS (re)connect
   // Welcome, not on each individual join/leave — a member seated mid-session
   // does not appear here until the next reconnect. Reading it via $derived does track whatever
   // updates DO land (the map is mutated in place, never reassigned), so this

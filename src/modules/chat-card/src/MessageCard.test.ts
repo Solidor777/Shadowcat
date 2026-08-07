@@ -159,7 +159,7 @@ describe("MessageCard — the {@html} boundary", () => {
   });
 });
 
-describe("MessageCard — link preview (M11d-3)", () => {
+describe("MessageCard — link preview", () => {
   it("renders title/description/host as text, with no img", () => {
     const doc = msgDoc("m1", baseSystem({
       content: [

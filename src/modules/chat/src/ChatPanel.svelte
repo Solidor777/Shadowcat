@@ -45,7 +45,7 @@
     return deriveVisibleDocs(derivationCache, ctx.documents.query("message"), view, RENDER_CAP);
   });
 
-  // Unread tab badge (I3): a per-channel read frontier persisted opaquely via
+  // Unread tab badge: a per-channel read frontier persisted opaquely via
   // ctx.uiState (chat owns the blob's shape, the shell only stores it). A
   // persisted marker from a prior session is preferred as-is (so genuinely
   // new messages since last visit count as unread even before this mount's

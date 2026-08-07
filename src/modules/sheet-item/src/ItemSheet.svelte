@@ -5,7 +5,7 @@
 
   // Item sheet: `name` control (resolved via `namePrefix`, sibling of `systemPrefix` — see
   // below) + dice-notation string values get a roll-to-chat affordance (posts `/roll <formula>`
-  // on the default "general" channel over the M11 chat wire — the server executes it) + the
+  // on the default "general" channel over the chat wire — the server executes it) + the
   // `system` tree editor. `buildItemDoc`'s contract puts an item's real display
   // name alongside `system`, same as every other doc_type — `system` carries only the opaque,
   // genuinely game-system-owned fields. Reads the OPTIMISTIC store; edits use the RAW current
