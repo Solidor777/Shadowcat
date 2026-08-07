@@ -85,7 +85,7 @@
    * placed token's CENTER cell against the requester's visibility mask (matching
    * `movement_restriction` — no check at all under `Unrestricted`) but NEVER checks walls: a
    * placement is a single point, not a traversal, so there is no `line_traversal`/supercover call
-   * to run a wall test against (deliberate — see `Room::publish`'s `Create` gate). A `Create` can
+   * to run a wall test against. A `Create` can
    * therefore still place a token behind/through a wall the
    * movement gate would otherwise block. The other server-side check on a player `Create` is
    * `apply_intent`'s `core:create` world-capability grant, which is world-CONFIGURABLE —
