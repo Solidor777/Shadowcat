@@ -9,6 +9,45 @@
   const ctx = getAppContext();
   const t = ctx.t;
 
+  /** Shape of an actor's `engine.displayName` field, read via a structural cast since the row
+   * loop only narrows `a.engine` to `unknown`. */
+  type DisplayNameEngineShape = {
+    /** The actor's authored display name, distinct from the envelope `name` used for search/
+     * ownership; falls back to `name` when unset (`actorDisplayName`). */
+    displayName?: string;
+  };
+  /** Shape of an actor's `engine.faction` field. */
+  type FactionEngineShape = {
+    /** The assigned faction-registry id, or `null`/absent for none. */
+    faction?: string | null;
+  };
+  /** Shape of an actor's `engine.shape` field. */
+  type ShapeEngineShape = {
+    /** The token footprint shape; falls back to `"square"` when unset. */
+    shape?: string;
+  };
+  /** Shape of an actor's `engine.size` field. */
+  type SizeEngineShape = {
+    /** The actor's grid-cell footprint size; falls back to `{ w: 1, h: 1 }` when unset. */
+    size?: {
+      /** Width in grid cells. */
+      w: number;
+      /** Height in grid cells. */
+      h: number;
+    };
+  };
+  /** Shape of an actor's `engine.vision` field. */
+  type VisionEngineShape = {
+    /** The actor's vision-mode assignments; the darkvision row reads/writes the sole
+     * `mode: "darkvision"` entry. */
+    vision?: {
+      /** The vision-modes registry id this assignment applies. */
+      mode: string;
+      /** The assignment's range in grid cells. */
+      range: number;
+    }[];
+  };
+
   // Reactive read of the document store (same bridge as Surface): reading
   // `subscribe()` inside the derived registers a dependency so the list re-renders on create.
   const subscribe = createSubscriber((update) => ctx.documents.subscribe(update));
@@ -57,7 +96,11 @@
   // The visual-kind editor is a child component; it reports its current built visual (or null
   // when incomplete) via `onBuild`, and the host consumes it at create time + resets it after.
   let pendingVisual = $state<TokenVisual | null>(null);
-  let visualEditor = $state<{ reset: () => void }>();
+  let visualEditor = $state<{
+    /** Clears the child editor's own form state back to defaults; called after a successful
+     * `create()` via `bind:this`. */
+    reset: () => void;
+  }>();
 
   const conditionOptions = $derived.by((): [string, Condition][] => {
     subscribe();
@@ -171,7 +214,7 @@
           type="button"
           class:selected={ctx.actorSelection.selectedId === a.id}
           onclick={() => ctx.actorSelection.select(a.id)}
-        >{actorDisplayName({ name: a.name, displayName: (a.engine as { displayName?: string } | undefined)?.displayName })}</button>
+        >{actorDisplayName({ name: a.name, displayName: (a.engine as DisplayNameEngineShape | undefined)?.displayName })}</button>
         <button type="button" class="open-sheet" onclick={() => ctx.openDocument({ docId: a.id })}>
           {t("actors.openSheet")}
         </button>
@@ -195,16 +238,16 @@
           </select>
           <select
             aria-label={t("actors.faction")}
-            value={(a.engine as { faction?: string | null } | undefined)?.faction ?? ""}
-            onchange={(e) => ctx.dispatchIntent([{ op: "update", doc_id: a.id, changes: [{ path: "/engine/faction", old: (a.engine as { faction?: string | null } | undefined)?.faction ?? null, new: e.currentTarget.value || null }] }])}
+            value={(a.engine as FactionEngineShape | undefined)?.faction ?? ""}
+            onchange={(e) => ctx.dispatchIntent([{ op: "update", doc_id: a.id, changes: [{ path: "/engine/faction", old: (a.engine as FactionEngineShape | undefined)?.faction ?? null, new: e.currentTarget.value || null }] }])}
           >
             <option value="">—</option>
             {#each factionOptions as [id, f] (id)}<option value={id}>{f.name}</option>{/each}
           </select>
           <select
             aria-label={t("actors.shape")}
-            value={(a.engine as { shape?: string } | undefined)?.shape ?? "square"}
-            onchange={(e) => ctx.dispatchIntent([{ op: "update", doc_id: a.id, changes: [{ path: "/engine/shape", old: (a.engine as { shape?: string } | undefined)?.shape ?? "square", new: e.currentTarget.value }] }])}
+            value={(a.engine as ShapeEngineShape | undefined)?.shape ?? "square"}
+            onchange={(e) => ctx.dispatchIntent([{ op: "update", doc_id: a.id, changes: [{ path: "/engine/shape", old: (a.engine as ShapeEngineShape | undefined)?.shape ?? "square", new: e.currentTarget.value }] }])}
           >
             <option value="square">{t("actors.shapeSquare")}</option>
             <option value="circle">{t("actors.shapeCircle")}</option>
@@ -213,19 +256,19 @@
                is a string; Number(...) coerces it to keep engine.size numeric for actor.size × cell math. -->
           <input
             type="number" min="0.5" step="0.5" class="size-edit" aria-label={t("actors.width")}
-            value={(a.engine as { size?: { w: number } } | undefined)?.size?.w ?? 1}
-            onchange={(e) => { const sz = (a.engine as { size?: { w: number; h: number } } | undefined)?.size ?? { w: 1, h: 1 }; ctx.dispatchIntent([{ op: "update", doc_id: a.id, changes: [{ path: "/engine/size", old: sz, new: { w: Number(e.currentTarget.value), h: sz.h } }] }]); }}
+            value={(a.engine as SizeEngineShape | undefined)?.size?.w ?? 1}
+            onchange={(e) => { const sz = (a.engine as SizeEngineShape | undefined)?.size ?? { w: 1, h: 1 }; ctx.dispatchIntent([{ op: "update", doc_id: a.id, changes: [{ path: "/engine/size", old: sz, new: { w: Number(e.currentTarget.value), h: sz.h } }] }]); }}
           />
           <input
             type="number" min="0.5" step="0.5" class="size-edit" aria-label={t("actors.height")}
-            value={(a.engine as { size?: { h: number } } | undefined)?.size?.h ?? 1}
-            onchange={(e) => { const sz = (a.engine as { size?: { w: number; h: number } } | undefined)?.size ?? { w: 1, h: 1 }; ctx.dispatchIntent([{ op: "update", doc_id: a.id, changes: [{ path: "/engine/size", old: sz, new: { w: sz.w, h: Number(e.currentTarget.value) } }] }]); }}
+            value={(a.engine as SizeEngineShape | undefined)?.size?.h ?? 1}
+            onchange={(e) => { const sz = (a.engine as SizeEngineShape | undefined)?.size ?? { w: 1, h: 1 }; ctx.dispatchIntent([{ op: "update", doc_id: a.id, changes: [{ path: "/engine/size", old: sz, new: { w: sz.w, h: Number(e.currentTarget.value) } }] }]); }}
           />
           <!-- Per-row darkvision input dispatches an update to /engine/vision; range=0 clears to empty array. -->
           <input
             type="number" min="0" step="1" class="size-edit" aria-label={t("actors.darkvision")}
-            value={(a.engine as { vision?: Array<{ mode: string; range: number }> } | undefined)?.vision?.find((v) => v.mode === "darkvision")?.range ?? 0}
-            onchange={(e) => { const range = Number(e.currentTarget.value); const cur = (a.engine as { vision?: { mode: string; range: number }[] } | undefined)?.vision ?? null; ctx.dispatchIntent([{ op: "update", doc_id: a.id, changes: [{ path: "/engine/vision", old: cur, new: range > 0 ? [{ mode: "darkvision", range }] : [] }] }]); }}
+            value={(a.engine as VisionEngineShape | undefined)?.vision?.find((v) => v.mode === "darkvision")?.range ?? 0}
+            onchange={(e) => { const range = Number(e.currentTarget.value); const cur = (a.engine as VisionEngineShape | undefined)?.vision ?? null; ctx.dispatchIntent([{ op: "update", doc_id: a.id, changes: [{ path: "/engine/vision", old: cur, new: range > 0 ? [{ mode: "darkvision", range }] : [] }] }]); }}
           />
         {/if}
       </li>

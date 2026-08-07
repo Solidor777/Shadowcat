@@ -61,7 +61,10 @@
     // concurrency `old`: the server's field-level conflict check compares against the actual
     // stored value at this path, which is only `null` while the field is genuinely absent.
     // Mirrors `commitMoves`'s GM branch convention (`eng?.x ?? null`).
-    const rawSnap = (scene.engine as { snapToGrid?: boolean } | undefined)?.snapToGrid ?? null;
+    const rawSnap = (scene.engine as {
+      /** The raw stored snap flag; absent (not merely falsy) means "use the derived default". */
+      snapToGrid?: boolean;
+    } | undefined)?.snapToGrid ?? null;
     ctx.dispatchIntent([
       { op: "update", doc_id: scene.id, changes: [{ path: "/engine/snapToGrid", old: rawSnap, new: !snapToGrid }] },
     ]);
@@ -92,7 +95,15 @@
    * fail-closed by default, but a world that granted it would have a real wall-bypass placement
    * hole if this tool were ungated. Ungating an authoring tool therefore requires checking what
    * gates its op KIND, not just that some gate exists on the path. */
-  const tools: { id: ToolId; label: string; gmOnly: boolean }[] = [
+  const tools: {
+    /** The tool id, passed to `controller.toggle`. */
+    id: ToolId;
+    /** The button's visible label and title (already localized via `t`). */
+    label: string;
+    /** Whether the tool authors content and must therefore hide from non-GMs (see the doc
+     * comment above this array for the per-tool rationale). */
+    gmOnly: boolean;
+  }[] = [
     { id: "select", label: t("tools.select"), gmOnly: false },
     { id: "place", label: t("tools.place"), gmOnly: true },
     { id: "draw", label: t("tools.draw"), gmOnly: true },

@@ -10,21 +10,36 @@
     conditionOptions,
     onBuild,
   }: {
+    /** `[id, Condition]` pairs from the world's condition registry, populating the face-map
+     * editor's condition dropdown. */
     conditionOptions: [string, Condition][];
+    /** Called on every editor-state change with the currently buildable `TokenVisual`, or
+     * `null` while the active kind's data is incomplete (see `buildVisual`). */
     onBuild: (visual: TokenVisual | null) => void;
   } = $props();
 
   let assetId = $state<string | null>(null);
   let assetList = $state<Asset[]>([]);
 
+  /** Editor-local flat state for one `AnimatedSource`; `animSourceToSource` projects it into
+   * the wire union, keeping only the fields for the active `sourceType`. */
   type AnimSourceState = {
+    /** Which wire variant this source builds into; gates which other fields are read. */
     sourceType: "frames" | "sheet";
+    /** Picked frame asset ids, in playback order (`sourceType: "frames"` only). */
     frames: string[];
+    /** The sprite-sheet asset id, or `null` until picked (`sourceType: "sheet"` only). */
     sheetAsset: string | null;
+    /** Sprite-sheet row count (`sourceType: "sheet"` only). */
     rows: number;
+    /** Sprite-sheet column count (`sourceType: "sheet"` only). */
     cols: number;
+    /** Sprite-sheet frame count override, or `null` to use `rows * cols`
+     * (`sourceType: "sheet"` only). */
     count: number | null;
+    /** Playback frames-per-second. */
     fps: number;
+    /** Whether playback wraps at the end instead of holding the final frame. */
     loop: boolean;
   };
   /**
@@ -76,7 +91,17 @@
     return (anim.sourceType === "frames" && anim.frames.length > 0) || (anim.sourceType === "sheet" && !!anim.sheetAsset);
   }
 
-  type FaceRowState = { name: string; kind: "image" | "animated"; asset: string | null; anim: AnimSourceState };
+  /** Editor-local state for one row of a `"faces"`-kind visual's face map. */
+  type FaceRowState = {
+    /** The face name this row is keyed under in the built `faces` map. */
+    name: string;
+    /** Which of the row's own fields (`asset` vs `anim`) `faceRowToVisual` projects. */
+    kind: "image" | "animated";
+    /** The picked image asset id (`kind: "image"` only). */
+    asset: string | null;
+    /** The row's own animated-source editor state (`kind: "animated"` only). */
+    anim: AnimSourceState;
+  };
   /**
    * Projects one face-row's editor state into the `FaceVisual` stored under its name in the
    * built `faces` map — the face-row-scoped mirror of `buildVisual`'s image/animated branches.
@@ -117,7 +142,13 @@
   let topAnim = $state<AnimSourceState>(newAnimSourceState());
   let faceRows = $state<FaceRowState[]>([]);
   let defaultFace = $state("");
-  let faceMapRows = $state<{ conditionId: string; faceName: string }[]>([]);
+  let faceMapRows = $state<{
+    /** The condition registry id this row maps from; `""` when unset. */
+    conditionId: string;
+    /** The face name this row maps to; `""` when unset, or stale if the named face was since
+     * renamed/removed (dropped by `buildVisual`, not fatal). */
+    faceName: string;
+  }[]>([]);
 
   /**
    * Builds the `TokenVisual` the host should save (via `onBuild`), or `null` when the current

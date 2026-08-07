@@ -6,7 +6,11 @@
   const ctx = getAppContext();
   const t = ctx.t;
 
-  let { tokenId }: { tokenId: string | null } = $props();
+  let { tokenId }: {
+    /** The currently selected token id, or `null` when no single token is selected — gates
+     * whether the palette has anything to resolve at all. */
+    tokenId: string | null;
+  } = $props();
 
   // Reactive read of the document store (same bridge as Surface): reading
   // `subscribe()` inside the derived registers a dependency so the palette re-renders on swap.
@@ -42,7 +46,10 @@
    * ```
    */
   function currentFace(tok: WireDocument): string | null {
-    return (tok.engine as { face?: string } | undefined)?.face ?? null;
+    return (tok.engine as {
+      /** The token's raw stored active-face override; absent means no override is set. */
+      face?: string;
+    } | undefined)?.face ?? null;
   }
 
   /**

@@ -8,23 +8,38 @@ import type { SceneInteraction, ActorSelection, TokenSelection } from "@shadowca
 import type { WorldRole } from "@shadowcat/types";
 import { topTokenAt } from "./hit-test";
 
+/** A tool id, keying `ToolController.#tools` and gating `ToolRail`'s per-role visibility. */
 export type ToolId = "select" | "place" | "draw" | "template" | "measure" | "ping" | "wall" | "region";
+/** The draw tool's shape mode; `"rect"` here is an axis-aligned two-corner bbox (`shapePath`),
+ * distinct from the template tool's rotated-square `"rect"` (`templatePath`). */
 export type DrawMode = "freehand" | "rect" | "ellipse" | "line";
+/** The template tool's shape mode; `"rect"` here is a rotated square centered on the anchor
+ * (`templatePath`), distinct from the draw tool's axis-aligned `"rect"` (`shapePath`). */
 export type TemplateMode = "circle" | "cone" | "rect" | "line";
+/** The region tool's shape mode, matching `parse_region_shape`'s point-count dispatch
+ * (`regionShapeGeometry`). */
 export type RegionShapeMode = "rect" | "circle" | "polygon";
+/** A region's gameplay effect, matching the server `RegionBehavior` variants (precedence
+ * `Impassable > Arrest > Terrain` at composition time). */
 export type RegionBehaviorMode = "terrain" | "impassable" | "arrest";
 
 /** The AppContext slice the tools need. `documents` is the optimistic view, so a
  * just-auto-created scene / just-placed token is visible to the tools immediately. */
 export interface ToolContext {
+  /** The render-engine bridge tools draw through: snapping, preview overlays, drag-state
+   * signaling and grid distance — never document state. */
   scene: SceneInteraction;
   /** The actor to stamp (the place tool); when set it takes precedence over selectedAsset. */
   actorSelection?: ActorSelection;
   /** Selected token ids (group-select); the select tool reads + moves the whole set. */
   tokenSelection?: TokenSelection;
+  /** Sends write ops to the server; fire-and-forget, no per-call reject signal exposed here. */
   dispatchIntent: (ops: WireOperation[]) => void;
+  /** The optimistic document view, so a just-created scene/token is visible immediately. */
   documents: ReadableDocuments;
+  /** Resolves asset ids to serve URLs (the asset picker's selection). */
   assets: AssetResolver;
+  /** The world id every tool-created document is stamped with. */
   world: string;
   /** The caller's per-world role. Movement authority is role-asymmetric: a GM writes a token
    * position directly, a player's move is request-only and server-executed. */
@@ -81,11 +96,33 @@ export interface ToolContext {
  * if (scene) place(scene.id, scene.size);
  * ```
  */
-function activeScene(ctx: ToolContext): { id: string; size: number; perCell: number; unit: string } | null {
+function activeScene(ctx: ToolContext): {
+  /** The active scene's document id. */
+  id: string;
+  /** Grid cell size in pixels (defaults to 100 when the scene doc omits `grid.size`). */
+  size: number;
+  /** Distance-per-cell scale numerator (defaults to 5, matching `resolveSceneSettings`). */
+  perCell: number;
+  /** Distance unit label (defaults to `"ft"`, matching `resolveSceneSettings`). */
+  unit: string;
+} | null {
   const vsid = ctx.viewedSceneId?.() ?? ctx.documents.query("scene")[0]?.id ?? null;
   const scene = vsid ? ctx.documents.get(vsid) : undefined;
   if (!scene) return null;
-  const grid = (scene.engine as { grid?: { size?: number; distance?: { perCell: number; unit: string } } } | undefined)?.grid;
+  const grid = (scene.engine as {
+    /** Per-scene grid config; absent ⇒ the defaults below apply. */
+    grid?: {
+      /** Grid cell size in pixels; falls back to 100 when absent. */
+      size?: number;
+      /** Distance-per-cell scale; falls back to `{ perCell: 5, unit: "ft" }` when absent. */
+      distance?: {
+        /** Distance-per-cell scale numerator. */
+        perCell: number;
+        /** Distance unit label (e.g. `"ft"`). */
+        unit: string;
+      };
+    };
+  } | undefined)?.grid;
   const size = grid?.size ?? 100;
   const { perCell, unit } = grid?.distance ?? { perCell: 5, unit: "ft" };
   return { id: scene.id, size, perCell, unit };
@@ -140,20 +177,29 @@ const ROUTE_PREVIEW_DEBOUNCE_MS = 100;
 /** Owns the active-tool + selected-asset UI state and routes activation to the engine
  * via the scene bridge. */
 export class ToolController {
+  /** The currently activated tool, or `null` when back to the plain camera (`toggle`'s
+   * re-select-clears rule). */
   active = $state<ToolId | null>(null);
   /** The token art the place tool stamps; chosen in the asset picker. */
   selectedAsset = $state<string | null>(null);
   /** Draw-tool shape mode + stroke color. */
   drawMode = $state<DrawMode>("freehand");
+  /** Draw-tool stroke color (hex string, parsed via `parseColor`). */
   strokeColor = $state("#e0e0e0");
   /** Template-tool shape mode + color. */
   templateMode = $state<TemplateMode>("circle");
+  /** Template-tool fill/stroke color (hex string, parsed via `parseColor`). */
   templateColor = $state("#3388ff");
   /** Region-tool shape mode + behavior/cost/secrecy config. */
   regionShapeMode = $state<RegionShapeMode>("rect");
+  /** Region-tool authored behavior, applied to the next region the tool persists. */
   regionBehavior = $state<RegionBehaviorMode>("terrain");
+  /** Region-tool authored terrain cost multiplier; clamped to `>= 1` at persist time. */
   regionCost = $state<number>(2);
+  /** Region-tool authored secrecy flag; `true` sets `gm_only` visibility on the persisted doc
+   * via `setRegionVisibility`. */
   regionSecret = $state<boolean>(false);
+  /** One `SceneTool` instance per `ToolId`, built once in the constructor. */
   readonly #tools: Record<ToolId, SceneTool>;
 
   /** Builds each tool factory once, closing over `ctx` (and `this` for the factories that read
@@ -218,7 +264,11 @@ export function makePlaceTool(ctx: ToolContext, controller: ToolController): Sce
       if (actorId) {
         const actor = ctx.documents.get(actorId);
         if (!actor) return false;
-        const mode = (actor.engine as { prototype?: boolean } | undefined)?.prototype ? "instance" : "link";
+        const mode = (actor.engine as {
+          /** Whether this actor is a reusable prototype; when true, a placed token instances
+           * (embeds a frozen copy) rather than links (shares the live document). */
+          prototype?: boolean;
+        } | undefined)?.prototype ? "instance" : "link";
         ctx.dispatchIntent([{ op: "create", doc: buildTokenFromActor(ctx.world, scene.id, actor, mode, c, scene.size) }]);
         // A unique (linked) actor places once by default: clear the selection so repeated
         // clicks don't stamp duplicate live-views. The user can opt to keep it selected
@@ -392,7 +442,13 @@ export function makeRegionTool(ctx: ToolContext, controller: ToolController): Sc
  * const { points, closed } = regionShapePath("circle", anchor, b, []);
  * ```
  */
-function regionShapePath(mode: RegionShapeMode, a: Point, b: Point, freehand: number[]): { points: number[]; closed: boolean } {
+function regionShapePath(mode: RegionShapeMode, a: Point, b: Point, freehand: number[]): {
+  /** The flat overlay polyline for the in-progress drag preview. */
+  points: number[];
+  /** Whether the overlay should render as a closed ring (always `true` here — a region is
+   * always an area). */
+  closed: boolean;
+} {
   switch (mode) {
     case "rect":
       return { points: rectPoints(a.x, a.y, b.x, b.y), closed: true };
@@ -558,7 +614,12 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
     const sel = ctx.tokenSelection;
     if (!sel || sel.ids.size !== 1) return null;
     const [id] = [...sel.ids];
-    const eng = ctx.documents.get(id)?.engine as { x?: number; y?: number } | undefined;
+    const eng = ctx.documents.get(id)?.engine as {
+      /** Token center x in scene coords; absent ⇒ falls back to 0. */
+      x?: number;
+      /** Token center y in scene coords; absent ⇒ falls back to 0. */
+      y?: number;
+    } | undefined;
     return [eng?.x ?? 0, eng?.y ?? 0];
   }
 
@@ -618,7 +679,14 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
    * requestRoute(scene, start, goal);
    * ```
    */
-  function requestRoute(scene: { id: string; perCell: number; unit: string }, start: [number, number], goal: Point): void {
+  function requestRoute(scene: {
+    /** The scene document id, passed as `Pathfind`'s scene. */
+    id: string;
+    /** Distance-per-cell scale used for the budget label. */
+    perCell: number;
+    /** Distance unit label (e.g. `"ft"`) used for the budget label. */
+    unit: string;
+  }, start: [number, number], goal: Point): void {
     if (!ctx.pathfind) return;
     const seq = ++pendingSeq;
     const fp = resolveFootprint();
@@ -941,7 +1009,12 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
  * const { points, closed } = shapePath("rect", anchor, b, []);
  * ```
  */
-function shapePath(mode: DrawMode, a: Point, b: Point, freehand: number[]): { points: number[]; closed: boolean } {
+function shapePath(mode: DrawMode, a: Point, b: Point, freehand: number[]): {
+  /** The preview/persist polyline for `mode`. */
+  points: number[];
+  /** Whether the shape should render/persist closed. */
+  closed: boolean;
+} {
   switch (mode) {
     case "freehand":
       return { points: freehand, closed: false };
@@ -1030,7 +1103,12 @@ export function makeDrawTool(ctx: ToolContext, controller: ToolController): Scen
  * const { points, closed } = templatePath("cone", anchor.x, anchor.y, size, direction);
  * ```
  */
-function templatePath(mode: TemplateMode, ax: number, ay: number, size: number, direction: number): { points: number[]; closed: boolean } {
+function templatePath(mode: TemplateMode, ax: number, ay: number, size: number, direction: number): {
+  /** The preview/persist polyline (or ring) for `mode`. */
+  points: number[];
+  /** Whether the shape should render/persist closed. */
+  closed: boolean;
+} {
   switch (mode) {
     case "circle":
       return { points: circlePoints(ax, ay, size), closed: true };
@@ -1058,7 +1136,12 @@ function templatePath(mode: TemplateMode, ax: number, ay: number, size: number, 
  * const { size, direction } = sizeDir(anchor, b, scene.size);
  * ```
  */
-function sizeDir(a: Point, b: Point, cell: number): { size: number; direction: number } {
+function sizeDir(a: Point, b: Point, cell: number): {
+  /** The resolved template size in scene units. */
+  size: number;
+  /** The resolved facing angle in degrees. */
+  direction: number;
+} {
   const dx = b.x - a.x;
   const dy = b.y - a.y;
   const d = Math.hypot(dx, dy);
@@ -1173,7 +1256,12 @@ export function makeSelectMoveTool(ctx: ToolContext): SceneTool {
    * ```
    */
   const centerOf = (id: string): Point => {
-    const e = ctx.documents.get(id)?.engine as { x?: number; y?: number } | undefined;
+    const e = ctx.documents.get(id)?.engine as {
+      /** Token center x in scene coords; absent ⇒ falls back to 0. */
+      x?: number;
+      /** Token center y in scene coords; absent ⇒ falls back to 0. */
+      y?: number;
+    } | undefined;
     return { x: e?.x ?? 0, y: e?.y ?? 0 };
   };
 
@@ -1247,7 +1335,13 @@ export function makeSelectMoveTool(ctx: ToolContext): SceneTool {
       const ops: WireOperation[] = [];
       for (const [id, o] of origins) {
         const target = ctx.scene.snap({ x: o.x + delta.x, y: o.y + delta.y });
-        const eng = ctx.documents.get(id)?.engine as { x?: number; y?: number } | undefined;
+        const eng = ctx.documents.get(id)?.engine as {
+          /** The token's current stored x, read RAW (not resolved/defaulted) so the dispatched
+           * update's `old` matches the server's field-level optimistic-concurrency check. */
+          x?: number;
+          /** The token's current stored y, read RAW for the same reason as `x`. */
+          y?: number;
+        } | undefined;
         ops.push({ op: "update", doc_id: id, changes: [
           { path: "/engine/x", old: eng?.x ?? null, new: target.x },
           { path: "/engine/y", old: eng?.y ?? null, new: target.y },

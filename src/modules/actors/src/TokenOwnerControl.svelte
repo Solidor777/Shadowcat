@@ -6,7 +6,11 @@
   const ctx = getAppContext();
   const t = ctx.t;
 
-  let { tokenId }: { tokenId: string | null } = $props();
+  let { tokenId }: {
+    /** The currently selected token id, or `null` when no single token is selected — the
+     * control renders nothing without a resolvable token. */
+    tokenId: string | null;
+  } = $props();
 
   // Reactive read of the document store (same bridge as Surface): reading
   // `subscribe()` inside the derived registers a dependency so the control re-renders
