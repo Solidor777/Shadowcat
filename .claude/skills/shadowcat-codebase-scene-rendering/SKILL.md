@@ -63,7 +63,7 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   GMs bypass every gameplay gate (walls, mask, impassable, arrest, footprint) on both `execute_move`
   and the Create placement gate — see the GM exemption bullet below.
   **INVARIANT — a movement/routing gate's SCENE is DERIVED FROM THE TOKEN, never taken from the
-  frame (Task 14j, `[sec]`, fixed a Critical).** `Room::execute_move` resolves the scene via
+  frame.** `Room::execute_move` resolves the scene via
   `SceneEcs::token_move(token, &[])`, the same accessor `Room::publish` has always used — which is
   why the drag path was never vulnerable — and EVERY gate input (restriction, cell size,
   `visible_cells_cached`, `get_explored`, and `move_exec`'s walls/regions/grid shape) keys on that
@@ -96,7 +96,7 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   (`scene-docs` module) sets `property_overrides["/engine"] = "gm_only"` to match.
   `movementModel`/`snapToGrid` (below) are likewise typed `SceneEngine` fields, ts-rs exported
   (`MovementModel`/`MovementRestriction` have ts-rs derives; neither is opaque `system`-body JSON).
-  **`engine_as_cached` (Phase-1 A2 perf item, resolved):** the free function `engine_as` still
+  **`engine_as_cached` is a caching wrapper around `engine_as` for hot-path callers:** the free function `engine_as` still
   fully re-`serde_json::from_value`-decodes on every call; `SceneEcs::engine_as_cached::<T>(&self,
   id: Uuid, doc: &Document) -> Option<T>` is the cached wrapper 18 of the ~19 hot-path call sites
   in `scene` now go through (walls, tokens, scenes, regions, lights, the world-settings/gradation/
@@ -628,9 +628,11 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   concurrent sweeps' visible sets rather than clobbering). `animateSamples(id, samples, durationMs,
   startServerMs, moverVision?)` starts a sweep only when `moverVision` is present (an observer never
   populates this — observers receive `moverVision: null` from the egress clip and simply tween
-  position). While `visionSweeps.size > 0`, the engine feeds the SNAPPED (Task 6) or CROSS-FADED
-  (Task 7) sweep polygon to the compositor instead of the last `vision` subscription payload;
-  reverts to that payload the instant the sweep map empties (sweep end or catch-up completion).
+  position). While `visionSweeps.size > 0`, the engine feeds the sweep polygon (cross-faded between
+  samples, or SNAPPED to the nearest sample when no next sample is available or more than one
+  sweep is concurrently in flight — see `pixi-backend` below) to the compositor instead of the
+  last `vision` subscription payload; reverts to that payload the instant the sweep map empties
+  (sweep end or catch-up completion).
 - `fog-blend` (client/render module) — `computeFogBlendFactor(clock, tCur, tNext)`:
   pure, unit-testable blend-factor helper (0 at `tCur` → 1 at `tNext`, clamped `[0,1]`; a
   degenerate/non-finite span snaps to 1 — fail-safe toward the newer sample, never frozen on a
@@ -639,8 +641,8 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
 - `pixi-backend` (client/render module) — `setVisibilityBlend(from, to, factor)`
   rasterizes both the outgoing and incoming vision-sample fog into `RenderTexture`s via the shared
   `captureFog`/`paintFogSheets` helpers (the SAME paint path `setVisibility` uses — draws IDENTICAL
-  fog for a given input) and alpha cross-fades between them; falls back to the Task 6 snap when a
-  next sample is unavailable or more than one sweep is concurrently in flight. No polygon morphing
+  fog for a given input) and alpha cross-fades between them; falls back to snapping to the nearest
+  sample when a next sample is unavailable or more than one sweep is concurrently in flight. No polygon morphing
   — cross-fades rasterized textures only.
 - `lighting` (client/render module) — `Lighting` class (GL-free, unit-tested):
   resolves gradation band→darkening alpha + tint color, applies `renderHint` (e.g. `"darkvision"`
@@ -754,7 +756,7 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
 - **`Room::publish`'s non-GM block retains only two gates, neither a traversal gate.**
   (1) An `Update` touching a token's `/engine/x`/`/engine/y` is refused
   outright on bitwise `a0 != a1` (position changed at all) — zero wall/mask/traversal-cell checks;
-  a select/move-tool drag no longer writes `/engine/x,y` directly at all (Task 5) — it goes through
+  a select/move-tool drag no longer writes `/engine/x,y` directly at all — it goes through
   `previewMoves`/`commitMoves`, request-only via `moveRequest` → `execute_move`, the SOLE remaining
   implementation of the per-cell traversal decision (see the parity-checklist bullet above).
   (2) A `Create` of a `token` doc is still authorized: the target scene must exist
@@ -822,7 +824,8 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   `grid.inputs.shape.footprint_cells ∪ grid.inputs.shape.line_traversal` — that union IS the invariant, not merely
   a suggestion. **Both halves must come from the SHAPE, never the free square functions**
   (`pathfinding::footprint_cells`, `movement::supercover_cells`): those are `SquareGrid`'s own
-  internals, and calling them here reintroduces the square-on-hex defect Task 14e-7 fixed. See
+  internals, and calling them here indexes cells by square coordinates against a mask that may be
+  hex-axial — a live square-on-hex misclassification, not merely a historical one. See
   checklist axis (2) above and the shape-identity invariant below.
 - **The `route ⊆ gate-allowed` invariant is engine-agnostic, not grid-specific.**
   `SceneEcs::pathfind` builds the per-`(user,scene)` visibility mask exactly once and passes the
@@ -831,11 +834,10 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   the identical `grid.footprint_cells ∪ grid.line_traversal` predicate `cell_enterable` uses, so a
   continuous-scene route preview is fog-safe by the same mechanism the grid router already proved.
   Any future third routing engine MUST reuse this same mask-passing shape, not recompute visibility.
-  **Passing the same MASK is necessary but not sufficient — the same GRID SHAPE must travel with it
-  (Task 14e-7, `[sec]`).** This invariant was written assuming a square grid on the continuous
-  engine and was false on hex: `clip_to_visible_mask`, `los_smooth::chord_ok` and
-  `truncate_at_arrest` indexed route samples with square `floor(p/cell)` while the `mask` and
-  `RegionField` handed to them were hex-axial. All three now take `&dyn GridShape`, and the caller
+  **Passing the same MASK is necessary but not sufficient — the same GRID SHAPE must travel with
+  it.** Indexing route samples with square `floor(p/cell)` against a `mask`/`RegionField` built on
+  a hex-axial grid silently misclassifies cell membership. `clip_to_visible_mask`,
+  `los_smooth::chord_ok` and `truncate_at_arrest` all take `&dyn GridShape`, and the caller
   MUST pass the same `resolve_grid_shape`-derived shape those sets were built from — in the weighted
   branch that means `&*grid_shape`, NOT the Euclidean-ruled `euclid_shape` in scope (the diagonal
   rule feeds step cost and the heuristic, never cell identity: `rule` is a `SquareGrid`-only field
@@ -869,8 +871,8 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   admissibility guards are NEVER exempted for a GM on either path — `gate_walk`'s
   `MAX_GATE_WALK_COORD`/`MAX_GATE_WALK_SAMPLES`, non-finite refusal, `MoveReject::SceneUnknown`, the
   footprint-radius range guard, and `Room::publish`'s Create-gate scene-existence refusal all still
-  apply unconditionally. **Admissibility is a SECOND, DISTINCT axis from the gameplay-gate exemption
-  (Task 14e-9, generalized to every gate):** `MAX_GATE_WALK_COORD` binds in every restriction mode
+  apply unconditionally. **Admissibility is a SECOND, DISTINCT axis from the gameplay-gate
+  exemption, and this holds for every gate, not just movement:** `MAX_GATE_WALK_COORD` binds in every restriction mode
   including `Unrestricted` (which short-circuits the mask check later, not the admissibility check).
   An anti-drift test exercises the exact bound and bound+1.0 through the shared symbol, so a value
   change or a `>`/`>=` flip fails. **(Still true)** The executor is not stricter
@@ -921,8 +923,7 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   cost even though its geometry is never disclosed. A future refactor that fed the authoritative
   field into ONLY the dispatch predicate, while still correctly routing/costing off the
   per-requester field, would silently reopen this leak (dispatching to the weighted path at all is
-  itself a signal a secret region exists). Caught during Task 4's review — treat as load-bearing,
-  not incidental.
+  itself a signal a secret region exists). Treat as load-bearing, not incidental.
 - **Polyanya does not weight — the cell `region_field` is the universal weighting overlay for
   BOTH engines.** Polyanya 0.16.1's only cost-affecting knob is the
   `detailed-layers`-gated `Layer.scale` (a per-layer coordinate transform) — off in
@@ -1037,7 +1038,7 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   (`filter_properties` now special-cases all three top-level pointers identically) — a secret
   region's declared override moved from `/system` to `/engine` as part of that same re-root (see
   `shadowcat-codebase-documents-permissions` for the generalized rule).
-- **A fixed-count cube lerp is a THIN LINE, not a supercover (Task 14e-8, `[sec]`).** `HexGrid::
+- **A fixed-count cube lerp is a THIN LINE, not a supercover.** `HexGrid::
   line_traversal` originally sampled `n+1` points with `n = max cube-axis delta` (the standard
   Red Blob hex line-draw). Its sample spacing is one full hex PITCH — a hex's minimum width — so
   corner slivers fall between samples: it omitted a geometrically crossed hex on ~55% of random
@@ -1052,15 +1053,15 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   failure mode and is safe HERE because this set feeds gates only, never a reveal write (the sole
   explored-set writer, `ws::conn::enrich_vision_explored`, is fed by vision polygons via
   `mark_polygons`) — re-check that property before reusing it anywhere else.
-- **"The square failure mode can't happen here" is not a safety argument (Task 14e-8; design
-  decision H6/H5).** Hex genuinely has no analog of the square diagonal-corner-tie bug — 6 uniform
-  neighbors, no orthogonal/diagonal split — and that true statement is what let the thin-line
-  traversal ship unexamined: hex had its OWN omission class. Establishing that a known failure mode
-  is absent says nothing about which failure modes the new geometry has of its own. Related and
-  identical in shape: `scene::navmesh` was excused from the Task 14e hex audit as "the continuous-model
-  router, orthogonal to grid kind" — but grid kind and movement model are INDEPENDENT axes, so they
-  COMBINE (`hex` + `continuous` is a live scene) rather than exclude, and it was square-on-hex at
-  three sites (Task 14e-7). Independence is a reason to CHECK a site, never to skip it.
+- **"The square failure mode can't happen here" is not a safety argument.** Hex genuinely has no
+  analog of the square diagonal-corner-tie bug — 6 uniform neighbors, no orthogonal/diagonal
+  split — and that true statement is what let the thin-line traversal ship unexamined: hex had its
+  OWN omission class. Establishing that a known failure mode is absent says nothing about which
+  failure modes the new geometry has of its own. Related and identical in shape: `scene::navmesh`
+  was excused from a hex audit as "the continuous-model router, orthogonal to grid kind" — but grid
+  kind and movement model are INDEPENDENT axes, so they COMBINE (`hex` + `continuous` is a live
+  scene) rather than exclude, and it was square-on-hex at three sites. Independence is a reason to
+  CHECK a site, never to skip it.
 - **`supercover_cells`'s corner-crossing branch never drifts
   past the target on a diagonal king-step whose leg endpoints both sit exactly on 4-way grid-line
   intersections.** Root cause of the earlier defect: the branch stepped BOTH axes on every `tMax` tie without checking
