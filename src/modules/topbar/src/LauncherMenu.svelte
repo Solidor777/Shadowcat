@@ -67,6 +67,7 @@
    * @returns Nothing; toggles the panel and closes the menu as side effects.
    * @example
    * ```
+   * declare const panelId: string;
    * // private function; not part of the public API — wired to each menu item's onclick
    * activate(panelId);
    * ```
@@ -86,6 +87,7 @@
    * @returns Nothing; may move focus among `itemEls` as a side effect.
    * @example
    * ```
+   * declare const keyboardEvent: KeyboardEvent;
    * // private function; not part of the public API — wired to each menu item's onkeydown
    * onItemKeydown(keyboardEvent, 0);
    * ```
@@ -103,6 +105,7 @@
    * @returns Nothing; opens/closes the menu as a side effect.
    * @example
    * ```
+   * declare const keyboardEvent: KeyboardEvent;
    * // private function; not part of the public API — wired to the trigger's onkeydown
    * onTriggerKeydown(keyboardEvent);
    * ```

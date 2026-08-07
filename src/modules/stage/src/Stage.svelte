@@ -271,6 +271,8 @@
    * function registers in one `abort()` call.
    * @example
    * ```
+   * declare const engine: RenderEngine;
+   * declare const controller: AbortController;
    * // private function; not part of the public API — invoked once per mount $effect run
    * wirePointer(engine, controller.signal);
    * ```

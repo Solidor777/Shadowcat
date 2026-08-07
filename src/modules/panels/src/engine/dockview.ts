@@ -72,6 +72,7 @@ class AdoptingContentRenderer implements IContentRenderer {
    * ```
    * // private class; not part of the public API — constructed only by
    * // DockviewEngine's own `createComponent` factory
+   * declare const stageEl: HTMLElement;
    * new AdoptingContentRenderer(() => stageEl, "sc-dockview-stage-content");
    * ```
    */
@@ -92,6 +93,7 @@ class AdoptingContentRenderer implements IContentRenderer {
    * ```
    * // private method; not part of the public API — invoked only by
    * // dockview-core's own render lifecycle (IContentRenderer.init)
+   * declare const renderer: AdoptingContentRenderer;
    * renderer.init();
    * ```
    */
@@ -106,6 +108,7 @@ class AdoptingContentRenderer implements IContentRenderer {
    * @example
    * ```
    * // private method; not part of the public API
+   * declare const renderer: AdoptingContentRenderer;
    * renderer.layout();
    * ```
    */
@@ -117,6 +120,7 @@ class AdoptingContentRenderer implements IContentRenderer {
    * @example
    * ```
    * // private method; not part of the public API
+   * declare const renderer: AdoptingContentRenderer;
    * renderer.update();
    * ```
    */
@@ -127,6 +131,7 @@ class AdoptingContentRenderer implements IContentRenderer {
    * @example
    * ```
    * // private method; not part of the public API
+   * declare const renderer: AdoptingContentRenderer;
    * renderer.toJSON();
    * ```
    */
@@ -140,6 +145,7 @@ class AdoptingContentRenderer implements IContentRenderer {
    * @example
    * ```
    * // private method; not part of the public API
+   * declare const renderer: AdoptingContentRenderer;
    * renderer.focus();
    * ```
    */
@@ -151,6 +157,7 @@ class AdoptingContentRenderer implements IContentRenderer {
    * ```
    * // private method; not part of the public API — invoked only by
    * // dockview-core when this content renderer is torn down
+   * declare const renderer: AdoptingContentRenderer;
    * renderer.dispose();
    * ```
    */
@@ -201,6 +208,8 @@ function groupIdFor(zone: ZoneId, index: number, tabs: readonly string[]): strin
  * @example
  * ```
  * // private function; not part of the public API
+ * declare const menuButton: HTMLElement;
+ * declare function handleCommand(cmd: MenuCommand): void;
  * const close = mountPanelMenu(menuButton, (cmd) => handleCommand(cmd));
  * close(); // later, or from the menu's own onClose/pointerdown-outside paths
  * ```
@@ -290,6 +299,7 @@ class PanelTabRenderer implements ITabRenderer {
    * ```
    * // private class; not part of the public API — constructed only by
    * // DockviewEngine's own `createTabComponent` factory
+   * declare const meta: PanelMeta | undefined;
    * new PanelTabRenderer("chat", () => meta, (id, cmd, invoker) => {});
    * ```
    */
@@ -334,6 +344,8 @@ class PanelTabRenderer implements ITabRenderer {
    * ```
    * // private method; not part of the public API — invoked only by
    * // dockview-core's own render lifecycle (ITabRenderer.init)
+   * declare const renderer: PanelTabRenderer;
+   * declare const params: TabPartInitParameters;
    * renderer.init(params);
    * ```
    */
@@ -411,6 +423,7 @@ class PanelTabRenderer implements ITabRenderer {
    * ```
    * // private method; not part of the public API — invoked only by
    * // dockview-core when this tab renderer is torn down
+   * declare const renderer: PanelTabRenderer;
    * renderer.dispose();
    * ```
    */
@@ -711,6 +724,7 @@ export class DockviewEngine implements EngineAdapter {
    * ```
    * // private method; not part of the public API — invoked only by
    * // PanelTabRenderer's own menu-command callback
+   * declare const menuButton: HTMLElement;
    * this.#handleMenuCommand("chat", "float", menuButton);
    * ```
    */
@@ -802,6 +816,7 @@ export class DockviewEngine implements EngineAdapter {
    * ```
    * // private method; not part of the public API — invoked only from
    * // init() and #restoreStage()
+   * declare const api: DockviewApi;
    * this.#mountStage(api);
    * ```
    */
@@ -864,6 +879,7 @@ export class DockviewEngine implements EngineAdapter {
    * ```
    * // private method; not part of the public API — invoked only by
    * // dockview-core's own onDidRemovePanel event
+   * declare const panel: IDockviewPanel;
    * this.#handleDidRemovePanel(panel);
    * ```
    */
@@ -907,6 +923,7 @@ export class DockviewEngine implements EngineAdapter {
    * ```
    * // private method; not part of the public API — invoked only from
    * // apply()'s floating loop, once per newly-created floating panel
+   * declare const meta: PanelMeta | undefined;
    * this.#wireFloatingA11y("chat", meta);
    * ```
    */
@@ -962,6 +979,7 @@ export class DockviewEngine implements EngineAdapter {
    * ```
    * // private method; not part of the public API — invoked only by
    * // dockview-core's own onDidActivePanelChange event
+   * declare const event: DockviewActivePanelChangeEvent;
    * this.#handleActivePanelChange(event);
    * ```
    */
@@ -993,6 +1011,7 @@ export class DockviewEngine implements EngineAdapter {
    * ```
    * // private method; not part of the public API — invoked only by
    * // dockview-core's own onDidRemovePopoutGroup event
+   * declare const event: { id: string; group: IDockviewGroupPanel };
    * this.#handleRemovePopoutGroup(event);
    * ```
    */
@@ -1060,6 +1079,7 @@ export class DockviewEngine implements EngineAdapter {
    * // private method; not part of the public API — invoked by both
    * // dockview-core's component-level onWillDrop and, per group, the
    * // group model's own onWillDrop
+   * declare const event: DockviewWillDropEvent;
    * this.#handleWillDrop(event);
    * ```
    */
@@ -1113,6 +1133,8 @@ export class DockviewEngine implements EngineAdapter {
    * ```
    * // private method; not part of the public API — invoked only from
    * // #handleWillDrop when a drop's transfer data has a null panelId
+   * declare const event: DockviewWillDropEvent;
+   * declare const layout: ExpandedLayout;
    * this.#handleGroupWillDrop(event, "sc-group:chat", layout);
    * ```
    */
@@ -1178,6 +1200,10 @@ export class DockviewEngine implements EngineAdapter {
    * ```
    * // private method; not part of the public API — invoked only from
    * // #handleGroupWillDrop
+   * declare const op: Extract<LayoutOp, { op: "dock" }>;
+   * declare const tabs: readonly string[];
+   * declare const event: DockviewWillDropEvent;
+   * declare const layout: ExpandedLayout;
    * this.#expandGroupDockOp(op, tabs, event, layout);
    * ```
    */
@@ -1220,6 +1246,7 @@ export class DockviewEngine implements EngineAdapter {
    * ```
    * // private method; not part of the public API — invoked only from
    * // #handleWillDrop and #handleGroupWillDrop
+   * declare const event: DockviewWillDropEvent;
    * this.#toDropSite(event, "chat");
    * ```
    */

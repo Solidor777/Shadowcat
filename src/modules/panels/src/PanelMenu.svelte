@@ -49,6 +49,7 @@
    * ```
    * // private function; not part of the public API — used only in this
    * // component's own menu-item template below
+   * declare const event: KeyboardEvent;
    * onKeydown(event, 0);
    * ```
    */

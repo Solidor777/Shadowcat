@@ -218,6 +218,7 @@
    * ```
    * // private function; not part of the public API — passed to
    * // CompactSwitcher as its `release` prop below
+   * declare const slotEl: HTMLElement;
    * releaseToStaging(slotEl);
    * ```
    */
@@ -252,8 +253,11 @@
    * slot only if it is still the currently-registered one for `id`.
    * @example
    * ```
-   * <!-- not exported; a Svelte action used only in this component's own template -->
-   * <div use:registerSlot={id}></div>
+   * // not exported; used only via `use:registerSlot={id}` in this component's
+   * // own template — shown here as a direct call for typechecking purposes
+   * declare const node: HTMLElement;
+   * const action = registerSlot(node, "chat");
+   * action.destroy();
    * ```
    */
   function registerSlot(node: HTMLElement, id: string): {

@@ -35,6 +35,7 @@
    * @returns The background asset id, or `null` if the scene has none.
    * @example
    * ```
+   * declare const sceneDoc: WireDocument;
    * // private helper; not part of the public API
    * bgOf(sceneDoc);
    * ```
@@ -54,6 +55,7 @@
    * @returns Nothing; dispatches an intent as a side effect.
    * @example
    * ```
+   * declare const sceneId: string;
    * // private helper; not part of the public API — invoked from a scene row's "activate" button
    * activate(sceneId);
    * ```
@@ -72,6 +74,7 @@
    * @returns Nothing; delegates to `ctx.setGmViewedScene`.
    * @example
    * ```
+   * declare const sceneId: string;
    * // private helper; not part of the public API — invoked from a scene row's "view" button
    * view(sceneId);
    * ```
@@ -103,6 +106,7 @@
    * @returns Nothing; side effects only (selection + panel open).
    * @example
    * ```
+   * declare const sceneId: string;
    * // private helper; not part of the public API — invoked from a scene row's "configure" button
    * configure(sceneId);
    * ```
