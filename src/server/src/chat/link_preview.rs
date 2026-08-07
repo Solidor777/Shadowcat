@@ -1,8 +1,7 @@
 //! SSRF-guarded outbound HTTP fetcher for chat link previews — the server's
 //! FIRST outbound HTTP surface, so every guard here is load-bearing. The
 //! client never fetches link previews itself; ONLY the server fetches, behind
-//! this module's address guard, and stores the result. See the M11d-3 design
-//! doc §2 for the full rationale.
+//! this module's address guard, and stores the result.
 //!
 //! Guard order (each a hard fail-closed reject): URL validation (scheme +
 //! userinfo + host; a literal-IP host is checked against the blocked ranges
@@ -210,7 +209,8 @@ pub async fn enrich(
 /// Why `fetch_preview` failed. Every guard in this module maps to exactly one
 /// variant; there is no panic path. `BadScheme` is the umbrella for every
 /// URL-validation-stage rejection (bad scheme, userinfo present, missing/empty
-/// host) — the spec's guard #1 is a single fail-closed step with one outcome.
+/// host) — `validate_url` is a single fail-closed function with one `Result`,
+/// not a sequence of independently-observable checks.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PreviewError {
     /// URL-validation reject: scheme, userinfo, or a missing/non-domain

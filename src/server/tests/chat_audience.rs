@@ -1,4 +1,4 @@
-//! Integration proof (M11c-2): a restricted-audience message (`Audience::Whisper`
+//! Integration proof: a restricted-audience message (`Audience::Whisper`
 //! / `Audience::GmOnly`) is invisible to anyone outside its audience on every
 //! egress path — broadcast, HTTP resync/load, and full-text search — and the
 //! GM's usual unconditional access is itself gated by that audience. Harness

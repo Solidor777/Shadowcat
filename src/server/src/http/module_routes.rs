@@ -13,8 +13,8 @@ use crate::http::AppState;
 /// name (`crate::modules::InstalledModule::id`) — the SAME key
 /// `set_world_enabled_modules`/`world_enabled_modules` validate and store
 /// against. `manifest` is the raw, author-declared manifest (opaque to the
-/// server beyond structural discovery, ARCHITECTURE invariant 2 — the
-/// client's own Zod schema re-validates it) and may declare a DIFFERENT `id`
+/// server beyond structural discovery — the client's own Zod schema
+/// re-validates it) and may declare a DIFFERENT `id`
 /// than the folder it's installed under; callers must key enabled-set
 /// membership on this `id` field, never `manifest.id`, or toggle state and
 /// save requests silently diverge from the server's authoritative key space.
@@ -73,8 +73,8 @@ fn is_strictly_within(candidate: &std::path::Path, root: &std::path::Path) -> bo
 /// `GET /modules/{id}/{*path}` — static file serving from an installed
 /// module's OWN folder only. Auth: any authenticated user (browsers `import()`
 /// the entry + fetch its relative assets under session cookies). The server
-/// never reads/executes this JS (ARCHITECTURE invariant 2) — this is
-/// byte-serving with a MANDATORY two-stage path-traversal guard:
+/// never reads or executes this JS — this is byte-serving with a MANDATORY
+/// two-stage path-traversal guard:
 ///   1. `id` alone (a single URL segment, but percent-encoded `..`/`/` can
 ///      still smuggle a traversal into it) must canonicalize to a path still
 ///      inside the modules root.
@@ -423,9 +423,9 @@ mod tests {
         res.assert_status(StatusCode::NOT_FOUND);
     }
 
-    // Buddy-check Critical: pure unit coverage of the containment predicate
-    // itself, run on ALL three CI OSes (unlike the symlink-based HTTP
-    // reproduction below, which is unix-only). `Path::starts_with` alone is
+    // Pure unit coverage of the containment predicate itself, run on ALL
+    // three CI OSes (unlike the symlink-based HTTP reproduction below, which
+    // is unix-only). `Path::starts_with` alone is
     // satisfied by EQUALITY — an `id`/`rel_path` that canonicalizes to exactly
     // `root` must NOT be treated as "within" it, or stage 2 permits reading
     // ANY file under `modules_root`, including another module's own files.
@@ -447,7 +447,7 @@ mod tests {
         );
     }
 
-    // Buddy-check Critical: HTTP-reachable reproduction. A module "folder"
+    // HTTP-reachable reproduction. A module "folder"
     // that is itself a symlink resolving to `modules_root` (rather than to
     // some unrelated external directory, see the "escaping" test below)
     // canonicalizes `module_dir` to exactly `modules_root` — the equality
@@ -478,7 +478,7 @@ mod tests {
         res.assert_status(StatusCode::NOT_FOUND);
     }
 
-    // Buddy-check Important: the documented symlink-resolution defense
+    // The documented symlink-resolution defense
     // ("Both canonicalize calls resolve symlinks too, closing that escape
     // route") had zero regression coverage. A module "folder" that is itself a
     // symlink pointing outside modules_root must still 404 once containment
@@ -505,7 +505,7 @@ mod tests {
     // coverage of the Unix-only test above (the canonicalize-based guard
     // itself is platform-neutral).
 
-    // Buddy-check Minor: regression lock for `Path::join` replacing the base
+    // Regression lock for `Path::join` replacing the base
     // entirely when given an absolute second argument. Already defended by the
     // post-join canonicalize + `starts_with` re-check; this test guards against
     // a future "simplification" that trusts the join without re-canonicalizing.
@@ -523,7 +523,7 @@ mod tests {
         res.assert_status(StatusCode::NOT_FOUND);
     }
 
-    // Whole-branch-review Minor: the Windows-specific counterpart of the
+    // The Windows-specific counterpart of the
     // absolute-rel_path family above. On Windows a DRIVE-LETTER-absolute second
     // argument (`C:\...`) makes `Path::join` discard the base entirely, exactly
     // as a leading `/` does on Unix — a hazard the Unix-rooted tests can't
@@ -548,7 +548,7 @@ mod tests {
         );
     }
 
-    // Buddy-check Minor: double-percent-encoding must fail closed (single
+    // Double-percent-encoding must fail closed (single
     // decode pass yields a literal, non-path string like `%2e%2e%2fsecret.txt`
     // that simply doesn't exist), not panic or 500.
     #[tokio::test]

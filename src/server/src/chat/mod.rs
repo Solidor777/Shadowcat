@@ -1,8 +1,7 @@
 //! Chat domain: the server-authoritative message model and ingest.
 //!
 //! Messages are ordinary sequenced `Document`s with a typed, ingress-validated
-//! `engine` body (this module's `MessageEngine`, M13-0: re-rooted from the
-//! opaque `system` band `MessageSystem` used pre-M13-0); `system` stays
+//! `engine` body (this module's `MessageEngine`); `system` stays
 //! reserved-empty (`{}`) for message docs. Authored and revised ONLY by the
 //! server — never built or mutated by a client directly. A `message` doc_type reaches
 //! `apply_intent` only via `handle_send_message` (Create), `handle_edit_message`,
@@ -146,9 +145,9 @@ pub enum MessageKind {
 }
 
 /// One piece of a message's sanitized content model. Serialized into the
-/// message's opaque `system` body (no ts-rs — M11d declares its own Zod mirror).
-/// Extensible: later checkpoints add the variants they produce (c-3 marks/links/
-/// images, c-4 preview cards, M11d roll embeds).
+/// message's `engine` body (no ts-rs — the client declares its own Zod
+/// mirror). Extensible: a new content type is added as a new `Segment`
+/// variant.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Segment {
@@ -203,7 +202,7 @@ pub enum Segment {
         /// Server-extracted description (may be empty).
         description: String,
     },
-    // Reserved, produced later: DocLink (M11d).
+    // Reserved for a future `DocLink` segment variant.
 }
 
 /// The c-1 producer: wrap raw input as a single literal-text segment. Rich
@@ -214,12 +213,10 @@ pub fn plain_text_content(raw: &str) -> Vec<Segment> {
     }]
 }
 
-/// The message document's `engine` body (M13-0: re-rooted from `system`).
-/// Opaque on the WIRE (no ts-rs — the client declares its own Zod mirror,
-/// `ChatMessageEngine`/`parseMessageEngine`), but ingress-validated server-side same as every
-/// other engine-defined doc_type: `deny_unknown_fields` closes the gap a
-/// pre-M13-0 `MessageSystem` left open (an unknown key on this body used to
-/// pass through the opaque `system` band unrejected).
+/// The message document's `engine` body. Opaque on the WIRE (no ts-rs — the
+/// client declares its own Zod mirror, `ChatMessageEngine`/`parseMessageEngine`),
+/// but ingress-validated server-side same as every other engine-defined
+/// doc_type: `deny_unknown_fields` rejects any unknown key on this body.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MessageEngine {
@@ -251,7 +248,7 @@ pub struct MessageEngine {
     /// literal-body treatment of a whisper's content), so nested command-like
     /// text in a whisper body is never parsed on send OR on edit.
     ///
-    /// EXPOSURE NOTE: like every string leaf of `system` (incl. `channel`),
+    /// EXPOSURE NOTE: like every string leaf of `engine` (incl. `channel`),
     /// this pre-sanitize text is swept into the content-agnostic FTS index and
     /// can surface in `SearchHit.snippet`/`.document`. Any search-UI consumer
     /// must treat message-doc snippet/`source` strings as inert text (never
@@ -526,7 +523,7 @@ pub async fn handle_send_message(
     if !rate.check(ctx.user_id, now, budget_per_min) {
         return Err(SendMessageError::RateLimited);
     }
-    // Attribution ownership gate (spec §8): `actor_owner` is client-supplied
+    // Attribution ownership gate: `actor_owner` is client-supplied
     // and otherwise stored verbatim — without this check any world member
     // could attribute a message to ANY actor doc, spoofing its display name
     // to every recipient who can read the message. Fail-closed, whole-send:
@@ -562,10 +559,10 @@ pub async fn handle_send_message(
                 }
             }
             // No first-party producer resolves a TokenInstance ref into a
-            // display identity at send time (speak-as-token is an
-            // explicitly deferred M11d follow-up, design doc §8) — reject
-            // fail-closed rather than store an unvalidated ref that a
-            // future consumer might trust.
+            // display identity at send time.
+            // TODO: implement speak-as-token attribution.
+            // Until then, reject fail-closed rather than store an
+            // unvalidated ref that a future consumer might trust.
             ActorOwnerRef::TokenInstance { .. } => {
                 return Err(SendMessageError::ActorNotSpeakable);
             }
@@ -803,10 +800,10 @@ pub async fn handle_send_message(
 }
 
 /// Server-authoritative message edit: owner-or-GM only, and rewrites ONLY
-/// `content`/`kind`/`edited_at` on the stored `/engine` body (M13-0:
-/// re-rooted from `/system`) — `channel`/`user_owner`/`actor_owner`/
-/// `audience`/`deleted_at` are copied verbatim from the stored document,
-/// never re-derived from the edit request.
+/// `content`/`kind`/`edited_at` on the stored `/engine` body —
+/// `channel`/`user_owner`/`actor_owner`/`audience`/`deleted_at` are copied
+/// verbatim from the stored document, never re-derived from the edit
+/// request.
 ///
 /// For a NON-WHISPER message, this re-runs the same command-parse + sanitize
 /// pipeline `handle_send_message` uses; a `/w` (or any whisper-targeting
@@ -1141,7 +1138,7 @@ mod tests {
                 text: "hello <b>world</b>".into()
             }]
         );
-        // Producer stores raw text verbatim; markup is inert data, rendered as text (M11d).
+        // Producer stores raw text verbatim; markup is inert data, rendered as text.
         let j = serde_json::to_value(&segs[0]).unwrap();
         assert_eq!(j["kind"], "text");
         assert_eq!(j["text"], "hello <b>world</b>");
@@ -3567,11 +3564,11 @@ mod link_preview_ingest_tests {
         );
     }
 
-    /// A stored pre-M11d-3 `MessageEngine` (no `LinkPreview` segments) still
-    /// round-trips through the deserializer — the new segment variant is
-    /// purely additive, not a breaking schema change.
+    /// A stored `MessageEngine` with no `LinkPreview` segments still
+    /// round-trips through the deserializer — the `LinkPreview` segment
+    /// variant is purely additive, not a breaking schema change.
     #[test]
-    fn stored_pre_m11d3_message_still_deserializes() {
+    fn stored_message_without_link_preview_segments_still_deserializes() {
         let j = serde_json::json!({
             "channel": "all",
             "user_owner": Uuid::from_u128(1),

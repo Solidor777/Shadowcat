@@ -2,11 +2,12 @@
 //!
 //! `execute_roll`/`validate_formula` are the sole entry points from the chat
 //! ingest stage: parse the caller-supplied formula against the dice crate's
-//! `notation::parse`, enforce the wire-boundary caps below (closing the
-//! dice-crate DoS/overflow gaps `docs/TODO.md` deferred to this checkpoint),
-//! then roll/evaluate. The dice crate itself stays pure — it has no notion of
-//! these caps, entropy seeding, or chat settings; those are transport policy
-//! that belongs here, not in `dice/`.
+//! `notation::parse`, enforce the wire-boundary caps below (`MAX_ROLL_DICE`,
+//! `MAX_ROLL_RECORDS`, `MAX_EXPERTISE`, `MAX_DIE_SIDES` — the dice crate's own
+//! types stay unbounded, so an untrusted formula has no size limit until it
+//! crosses this boundary), then roll/evaluate. The dice crate itself stays
+//! pure — it has no notion of these caps, entropy seeding, or chat settings;
+//! those are transport policy that belongs here, not in `dice/`.
 //!
 //! `execute_roll`/`validate_formula`/`BodyChunk`/`scan_body` are called from
 //! `handle_send_message`'s roll stage — the sole ingest path

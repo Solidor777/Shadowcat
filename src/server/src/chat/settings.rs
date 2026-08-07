@@ -21,7 +21,7 @@ use crate::dice::{Direction, ModeKind, ParseContext};
 pub const CHAT_SETTINGS_DOC_TYPE: &str = "chat-settings";
 
 /// GM-configured chat content policy, stored as the `engine` body of the
-/// `chat-settings` doc (M13-0: re-rooted from `system`). The ONE definition —
+/// `chat-settings` doc. The ONE definition —
 /// `data::engine::registries::ChatSettingsEngine` (the ts-rs-exported, ingress-
 /// validated struct) — re-exported under this chat-domain name rather than
 /// duplicated. Every field is `Option<bool>`; absent (`None`) resolves to
@@ -51,7 +51,7 @@ impl ChatContentPolicy {
         self.emails.unwrap_or(false)
     }
 
-    /// Resolved link-preview enablement (design doc §6): previews require
+    /// Resolved link-preview enablement: previews require
     /// `hyperlinks` to be on (a preview with no rendered link is
     /// meaningless), and within that, `link_previews` defaults ON when
     /// absent — a GM must explicitly write `link_previews: false` to opt
@@ -73,8 +73,9 @@ impl ChatContentPolicy {
 /// orders `ORDER BY id`, so if two `chat-settings` docs ever coexist the
 /// lowest-UUID one always wins — never a nondeterministic policy. The fail-closed
 /// direction bounds a stray doc (it can only WIDEN enrichment, which still needs
-/// GM-authored content to matter). Construction-time uniqueness (a singleton
-/// doc-type create-gate) is the stronger, still-deferred half — see `docs/TODO.md`.
+/// GM-authored content to matter).
+/// TODO: enforce construction-time uniqueness via a singleton doc-type
+/// create-gate, the stronger half of preventing a stray `chat-settings` doc.
 pub async fn resolve_content_policy(repo: &dyn Repository, world_id: Uuid) -> ChatContentPolicy {
     let docs = match repo.query_documents(world_id, CHAT_SETTINGS_DOC_TYPE).await {
         Ok(d) => d,
@@ -282,9 +283,10 @@ mod tests {
 
     #[tokio::test]
     async fn duplicate_settings_docs_resolve_deterministically_by_lowest_id() {
-        // No construction-time uniqueness guard yet (see the resolver doc +
-        // TODO.md); resolution must still be DETERMINISTIC — `query_documents`
-        // orders by id, so the lowest-UUID doc's policy always wins.
+        // No construction-time uniqueness guard exists, so more than one
+        // `chat-settings` doc can coexist; resolution must still be
+        // DETERMINISTIC — `query_documents` orders by id, so the
+        // lowest-UUID doc's policy always wins.
         let (repo, world_id, gm) = world().await;
         let mut low = settings_doc(world_id, gm, serde_json::json!({ "markdown": true }));
         low.id = Uuid::from_u128(1);

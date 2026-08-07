@@ -1,4 +1,4 @@
-//! Integration proof (M11c-3): `handle_send_message` runs a `SendMessage`
+//! Integration proof: `handle_send_message` runs a `SendMessage`
 //! frame's raw content through the command parser and content sanitizer
 //! before persisting — `/me` yields `MessageKind::Emote`, `/w @name` resolves
 //! a real member's username to their uuid and builds `Audience::Whisper`
@@ -94,10 +94,9 @@ impl Fixture {
                 permissions: PermissionSet::default(),
                 embedded: BTreeMap::new(),
                 parent_id: None,
-                // "chat-settings" is engine-defined (M13-0: re-rooted from
-                // `system`) — the policy under test lives on `engine`, which
-                // is what `resolve_content_policy` actually reads; `system`
-                // stays reserved-empty.
+                // "chat-settings" is engine-defined — the policy under test
+                // lives on `engine`, which is what `resolve_content_policy`
+                // actually reads; `system` stays reserved-empty.
                 engine: Some(serde_json::to_value(policy).unwrap()),
                 system: serde_json::json!({}),
                 created_at: 0,
@@ -678,7 +677,7 @@ async fn whisper_with_no_body_text_is_rejected_as_empty() {
 
 /// `/roll 2d6+3` driven through the full `handle_send_message` pipeline
 /// (not just the pure parser unit test in `chat::commands`) stores
-/// `MessageKind::Roll` with the formula EXECUTED (M11d-2): content is one
+/// `MessageKind::Roll` with the formula EXECUTED: content is one
 /// `Segment::RollEmbed`, never a literal `Text` of the unexecuted expression
 /// — see `chat_rolls` for the full roll-execution integration matrix.
 #[tokio::test]
@@ -1080,7 +1079,7 @@ async fn non_recipient_finds_no_trace_of_edited_whisper_content() {
     }
 }
 
-/// Anchor proof (M11c-3, §6 coupled seam): a raw client `Intent` `Update`
+/// Anchor proof: a raw client `Intent` `Update`
 /// attempting to forge `/system/kind` on an existing, legitimately-owned
 /// message to `"system"` (impersonating a server-authored notice) is still
 /// blanket-rejected by `apply_intent`'s `Update` branch, even though the
@@ -1088,8 +1087,7 @@ async fn non_recipient_finds_no_trace_of_edited_whisper_content() {
 /// otherwise satisfy the ordinary WRITE_FIELDS check). Distinct from
 /// the `message_update_rejected_for_client_allowed_for_server_revision` test,
 /// which forges `/system/content` — this proves the rejection is not scoped
-/// to any one field path, closing the specific "forge kind=System" angle the
-/// task brief calls out.
+/// to any one field path, closing the specific "forge kind=System" angle.
 #[tokio::test]
 async fn client_intent_update_to_message_still_forbidden() {
     let f = fixture().await;
@@ -1155,7 +1153,7 @@ async fn server_message_revision_does_not_grant_permissions_write() {
     );
 }
 
-/// Anchor proof (M11c-3, §6 coupled seam): the WS/HTTP ingress guard
+/// Anchor proof: the WS/HTTP ingress guard
 /// (`ops_target_message`) is keyed purely on the op's `doc_type`, not on any
 /// content inside the payload — so an attacker cannot evade it by crafting a
 /// `Create`/`Delete` whose `system` body impersonates a server-authored

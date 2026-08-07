@@ -366,7 +366,7 @@ pub fn scene_subscribe(request_n: u64, channel: &str) -> Message {
     )
 }
 
-/// A `scene_subscribe` frame carrying `as_user` (M9c-2 see-as-player; GM-only, server-authorized).
+/// A `scene_subscribe` frame carrying `as_user` (see-as-player; GM-only, server-authorized).
 pub fn scene_subscribe_as(request_n: u64, channel: &str, as_user: Uuid) -> Message {
     Message::Text(
         serde_json::json!({

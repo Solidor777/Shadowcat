@@ -201,12 +201,11 @@ impl P {
                 if matches!(self.peek(), Some(Token::D)) {
                     self.bump();
                     let sides = self.expect_int()?;
-                    // Adaptation: reject a non-positive sides count at parse time.
+                    // Reject a non-positive sides count at parse time.
                     // `DieKind::Numeric { min, max }` with `min > max` (or a
                     // non-positive span) is only `debug_assert!`-guarded deep in
                     // `rng::roll_uniform`, a no-op in release builds. Never construct
-                    // that variant here for an invalid range (docs/TODO.md
-                    // "Server / dice (M11a)" min>max validation gap).
+                    // that variant here for an invalid range.
                     if sides < 1 {
                         return Err(ParseError::InvalidDieSides(sides));
                     }
@@ -290,8 +289,9 @@ impl P {
                             self.expertise = Some(n as u32);
                         }
                         "cf" => {
-                            // Failure-counting parsed as success on the inverted comparator
-                            // (single count path in M11a; dedicated fail-count is M11b).
+                            // Failure-counting is parsed as success on the inverted
+                            // comparator — the grammar has no separate fail-count
+                            // representation.
                             let (comp, target) = self.cmp_target_required()?;
                             if self.success.is_some() {
                                 return Err(ParseError::DuplicateSuccessRule);
@@ -461,8 +461,7 @@ mod tests {
     #[test]
     fn rejects_zero_sides() {
         // sides < 1 must be a parse-time Err, never a constructed DieKind::Numeric
-        // with a degenerate (non-positive-span) range (Adaptation 1 / TODO.md
-        // "Server / dice (M11a)" min>max validation gap).
+        // with a degenerate (non-positive-span) range.
         match parse("4d0", ParseContext::default()) {
             Err(ParseError::InvalidDieSides(0)) => {}
             other => panic!("expected InvalidDieSides(0), got {other:?}"),

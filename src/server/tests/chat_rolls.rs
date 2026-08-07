@@ -1,4 +1,4 @@
-//! Integration proof (M11d-2): `handle_send_message`'s roll stage actually
+//! Integration proof: `handle_send_message`'s roll stage actually
 //! executes dice notation at ingest, authors a `MessageKind::System` whisper
 //! notice on failure instead of the intended message, interleaves inline
 //! rolls/buttons with sanitized text, and never re-executes a roll on edit.
@@ -353,12 +353,12 @@ async fn edit_content_with_inline_span_stays_literal_text() {
     );
 }
 
-/// (g) A stored pre-M11d-2 `MessageEngine` JSON (no roll segments) still
+/// (g) A stored `MessageEngine` JSON with no roll segments still
 /// round-trips — the roll `Segment` variants are additive. RollOutcome
 /// missing-key back-compat is pinned separately in `dice::outcome`'s
 /// `roll_outcome_missing_defaulted_keys_deserializes`.
 #[test]
-fn stored_pre_m11d2_message_still_deserializes() {
+fn stored_message_without_roll_segments_still_deserializes() {
     let j = serde_json::json!({
         "channel": "all",
         "user_owner": Uuid::from_u128(1),

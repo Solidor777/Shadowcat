@@ -1,4 +1,4 @@
-//! Proof (M11c-1 checkpoint): a server-authored `message` document rides the
+//! Proof: a server-authored `message` document rides the
 //! existing create -> sequence -> broadcast path over a real two-client WS
 //! connection, with no message-specific transport code. Mirrors the
 //! `ws_convergence` harness (spawn/login/connect/add_member).

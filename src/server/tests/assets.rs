@@ -201,7 +201,7 @@ async fn list_returns_world_assets() {
     assert_eq!(list.len(), 2);
 }
 
-// --- Buddy-check regression tests ---
+// --- Upload/replace rate-limit and idempotency regression tests ---
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn rejected_upload_does_not_consume_rate_quota() {
