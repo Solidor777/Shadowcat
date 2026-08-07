@@ -273,6 +273,32 @@ impl VisionMoveInputs {
     }
 }
 
+/// Who is asking `SceneEcs::pathfind` for a route, and what they are allowed to see. These three
+/// values decide every per-requester filter the router applies: the visibility mask
+/// (`SceneEcs::visible_cells`), the routing wall set (`SceneEcs::move_walls`) and the region field
+/// (`SceneEcs::region_field`).
+///
+/// INVARIANT: this describes the requester ONLY. The route itself (`scene`, `start`, `waypoints`,
+/// `footprint_radius`) stays in `pathfind`'s own parameters, and the wire frame that ultimately
+/// supplies those values has its own type — `ws::conn`'s `PathfindRequest`, which is
+/// client-controlled and unauthorized. The two are deliberately not one type: `PathfindRequest`
+/// crosses into this layer only after the presence gate and the named-token ownership check have
+/// run, and `footprint_radius` is REPLACED with the token-derived value on the way through.
+pub struct RouteRequester<'a> {
+    /// The requesting user. Selects the per-requester wall/region view via
+    /// `move_walls(scene, Some(user))` / `region_field(scene, Some(user))`, and the visibility
+    /// mask via `visible_cells(user, ..)`.
+    pub user: Uuid,
+    /// Whether the requester is a GM. Skips the mask entirely and selects the AUTHORITATIVE
+    /// (`None`-viewer) wall set and region field — callers must never pass a GM's id as the
+    /// viewer, per `move_walls`/`region_field`'s two-value contract.
+    pub is_gm: bool,
+    /// The requester's fog memory for this scene, pre-fetched by the caller off the scene read
+    /// lock. Consulted ONLY under `MovementRestriction::Revealed`, where it is unioned into the
+    /// mask; `None` degrades `Revealed` to visible-only, which is the fail-closed direction.
+    pub explored: Option<&'a crate::scene::explored::ExploredSet>,
+}
+
 /// The per-world derived world. Writes are serialized by the caller
 /// (`Room::publish` under `publish_guard`); reads (derived recompute) take a
 /// shared borrow.
@@ -1324,31 +1350,29 @@ impl SceneEcs {
         Some(arc)
     }
 
-    /// Plan a route for `user`'s token in `scene`. Reuses the `visible_cells`
-    /// mask so the preview agrees with the movement gate. `is_gm`/`unrestricted` ⇒
-    /// no mask; `visible` ⇒ `visible_cells`; `revealed` ⇒ `visible_cells ∪ explored`. `explored`
-    /// is the caller's pre-fetched `ExploredSet` (only consulted under `revealed`; the handler
-    /// fetches it off the lock). An empty non-GM mask ⇒ `find` returns Unreachable (fail-closed —
+    /// Plan a route for `requester`'s token in `scene`. Reuses the `visible_cells`
+    /// mask so the preview agrees with the movement gate. `requester.is_gm`/`unrestricted` ⇒
+    /// no mask; `visible` ⇒ `visible_cells`; `revealed` ⇒ `visible_cells ∪ requester.explored`.
+    /// An empty non-GM mask ⇒ `find` returns Unreachable (fail-closed —
     /// the dark-scene freeze that mirrors the movement gate, by design).
     ///
     /// Coupling: `visible_cells` is the ONE canonical mask shared between this
     /// method, the movement gate (`move_exec::execute_move`, reached via
     /// `Room::execute_move`), and `Room::publish`'s token-placement gate. Do NOT fork the
     /// per-cell decision here.
-    // Eight args mirrors the flat ECS-assembly signature; the handler that calls this already
-    // holds all inputs separately (user, scene, start, waypoints, footprint, is_gm, explored)
-    // so a wrapper struct would only obscure the coupling to the movement gate.
-    #[allow(clippy::too_many_arguments)]
     pub fn pathfind(
         &self,
-        user: Uuid,
+        requester: RouteRequester<'_>,
         scene: Uuid,
         start: (f64, f64),
         waypoints: &[(f64, f64)],
         footprint_radius: f64,
-        is_gm: bool,
-        explored: Option<&crate::scene::explored::ExploredSet>,
     ) -> Result<pathfinding::PathOutcome, pathfinding::PathFail> {
+        let RouteRequester {
+            user,
+            is_gm,
+            explored,
+        } = requester;
         // Scene-existence admissibility, ahead of any routing work and for every requester
         // including a GM. Coupling: both movement gates (`Room::publish`, `Room::execute_move`)
         // refuse a scene with no document, so the router agrees with them on which scenes are
@@ -3274,13 +3298,15 @@ mod tests {
         // can account for the refusal — with the default restored this routes successfully.
         let ecs = SceneEcs::new();
         let out = ecs.pathfind(
-            Uuid::from_u128(7),
+            RouteRequester {
+                user: Uuid::from_u128(7),
+                is_gm: true,
+                explored: None,
+            },
             Uuid::from_u128(404),
             (50.0, 50.0),
             &[(450.0, 50.0)],
             0.1,
-            true,
-            None,
         );
         assert!(
             matches!(out, Err(pathfinding::PathFail::Invalid)),
@@ -5848,13 +5874,15 @@ mod tests {
         // GM (is_gm=true): no mask; an open scene routes start→goal at chebyshev cost.
         let (ecs, _user, scene) = scene_with_lit_player_token();
         let r = ecs.pathfind(
-            Uuid::from_u128(1),
+            RouteRequester {
+                user: Uuid::from_u128(1),
+                is_gm: true,
+                explored: None,
+            },
             scene,
             (50.0, 50.0),
             &[(250.0, 50.0)],
             0.1,
-            true,
-            None,
         );
         let outcome = r.expect("GM route");
         assert!((outcome.cost - 2.0).abs() < 1e-9);
@@ -5887,13 +5915,16 @@ mod tests {
         }));
         let outcome = ecs
             .pathfind(
-                Uuid::from_u128(1),
+                RouteRequester {
+user: Uuid::from_u128(1),
+is_gm: true,
+explored: // GM: unrestricted mask
+                None,
+},
                 Uuid::from_u128(10),
                 (50.0, 50.0),
                 &[(950.0, 50.0)],
                 0.1,
-                true, // GM: unrestricted mask
-                None,
             )
             .expect("continuous route over an open bounded scene");
         // Euclidean straight line ≈ 900, unlike a grid diagonal-rule cost — proves the navmesh
@@ -5935,13 +5966,16 @@ mod tests {
         }));
         let outcome = ecs
             .pathfind(
-                Uuid::from_u128(1),
+                RouteRequester {
+user: Uuid::from_u128(1),
+is_gm: true,
+explored: // GM: unrestricted mask
+                None,
+},
                 Uuid::from_u128(10),
                 (50.0, 50.0),
                 &[(50.0, 50.0)],
                 0.1,
-                true, // GM: unrestricted mask
-                None,
             )
             .expect("start == goal must succeed, not Unreachable");
         assert_eq!(outcome.path, vec![(50.0, 50.0)]);
@@ -6056,13 +6090,15 @@ mod tests {
         ecs.set_world_settings_for_test(continuous_world_settings());
         let out = ecs
             .pathfind(
-                Uuid::from_u128(1),
+                RouteRequester {
+                    user: Uuid::from_u128(1),
+                    is_gm: true,
+                    explored: None,
+                },
                 Uuid::from_u128(10),
                 (50.0, 50.0),
                 &[(250.0, 50.0)],
                 0.1,
-                true,
-                None,
             )
             .expect("weighted continuous route");
         // Tight pin (not a loose range): the forced-Euclidean detour is exactly 2 diagonal steps
@@ -6132,13 +6168,15 @@ mod tests {
 
         let out = ecs
             .pathfind(
-                Uuid::from_u128(1),
+                RouteRequester {
+                    user: Uuid::from_u128(1),
+                    is_gm: true,
+                    explored: None,
+                },
                 Uuid::from_u128(10),
                 g.cell_center((0, 1)),
                 &[g.cell_center((4, 1))],
                 0.1,
-                true,
-                None,
             )
             .expect("hex continuous route");
         assert!(out.arrested, "the arrest hex truncates the preview");
@@ -6163,13 +6201,15 @@ mod tests {
         ecs.set_world_settings_for_test(continuous_world_settings());
         let out = ecs
             .pathfind(
-                Uuid::from_u128(1),
+                RouteRequester {
+                    user: Uuid::from_u128(1),
+                    is_gm: true,
+                    explored: None,
+                },
                 Uuid::from_u128(10),
                 (50.0, 50.0),
                 &[(250.0, 50.0)],
                 0.1,
-                true,
-                None,
             )
             .expect("polyanya route");
         assert!(
@@ -6200,13 +6240,15 @@ mod tests {
         ecs.set_world_settings_for_test(continuous_world_settings());
         let out = ecs
             .pathfind(
-                Uuid::from_u128(1),
+                RouteRequester {
+                    user: Uuid::from_u128(1),
+                    is_gm: true,
+                    explored: None,
+                },
                 Uuid::from_u128(10),
                 (50.0, 50.0),
                 &[(250.0, 350.0)],
                 0.1,
-                true,
-                None,
             )
             .expect("route around impassable");
         // No route point falls inside an impassable cell (column 1, y in [0,300)).
@@ -6251,13 +6293,15 @@ mod tests {
         // Player (non-GM, unrestricted movement => no mask): secret terrain absent => straight route.
         let p = ecs
             .pathfind(
-                player,
+                RouteRequester {
+                    user: player,
+                    is_gm: false,
+                    explored: None,
+                },
                 Uuid::from_u128(10),
                 (50.0, 50.0),
                 &[(250.0, 50.0)],
                 0.1,
-                false,
-                None,
             )
             .expect("player route");
         assert!(
@@ -6268,13 +6312,15 @@ mod tests {
         // GM sees the authoritative field => bends.
         let g = ecs
             .pathfind(
-                Uuid::from_u128(1),
+                RouteRequester {
+                    user: Uuid::from_u128(1),
+                    is_gm: true,
+                    explored: None,
+                },
                 Uuid::from_u128(10),
                 (50.0, 50.0),
                 &[(250.0, 50.0)],
                 0.1,
-                true,
-                None,
             )
             .expect("gm route");
         assert!(
@@ -6304,7 +6350,17 @@ mod tests {
         // bounds rect itself never fails — only the visibility clip should stop the route short.
         let far_goal = (9500.0, 9500.0);
         let outcome = ecs
-            .pathfind(user, scene, (50.0, 50.0), &[far_goal], 0.1, false, None)
+            .pathfind(
+                RouteRequester {
+                    user,
+                    is_gm: false,
+                    explored: None,
+                },
+                scene,
+                (50.0, 50.0),
+                &[far_goal],
+                0.1,
+            )
             .expect(
                 "clip truncates the route short of the unseen goal rather than failing outright",
             );
@@ -6393,7 +6449,17 @@ mod tests {
         // this sub-path, so a route can never even be found outside the mask).
         let near_goal = (150.0, 50.0);
         let near = ecs
-            .pathfind(user, scene_id, (50.0, 50.0), &[near_goal], 0.1, false, None)
+            .pathfind(
+                RouteRequester {
+                    user,
+                    is_gm: false,
+                    explored: None,
+                },
+                scene_id,
+                (50.0, 50.0),
+                &[near_goal],
+                0.1,
+            )
             .expect("weighted route to a visible goal succeeds");
         for &(px, py) in &near.path {
             let c = ((px / cell).floor() as i32, (py / cell).floor() as i32);
@@ -6408,7 +6474,17 @@ mod tests {
         // search itself, not a post-hoc clip), so it fails closed (`Unreachable`) rather than
         // returning a route that threads unseen cells.
         let far_goal = (9500.0, 9500.0);
-        let far = ecs.pathfind(user, scene_id, (50.0, 50.0), &[far_goal], 0.1, false, None);
+        let far = ecs.pathfind(
+            RouteRequester {
+                user,
+                is_gm: false,
+                explored: None,
+            },
+            scene_id,
+            (50.0, 50.0),
+            &[far_goal],
+            0.1,
+        );
         assert!(
             far.is_err(),
             "weighted route to an unseen goal fails closed rather than routing through fog: {far:?}"
@@ -6461,13 +6537,15 @@ mod tests {
         // preview is the full, untruncated straight polyanya route.
         let p = ecs
             .pathfind(
-                player,
+                RouteRequester {
+                    user: player,
+                    is_gm: false,
+                    explored: None,
+                },
                 scene,
                 (50.0, 50.0),
                 &[(450.0, 50.0)],
                 0.1,
-                false,
-                None,
             )
             .expect("player route");
         assert!(
@@ -6483,13 +6561,15 @@ mod tests {
         // GM: authoritative field truncates the route at the arrest cell entry.
         let g = ecs
             .pathfind(
-                Uuid::from_u128(1),
+                RouteRequester {
+                    user: Uuid::from_u128(1),
+                    is_gm: true,
+                    explored: None,
+                },
                 scene,
                 (50.0, 50.0),
                 &[(450.0, 50.0)],
                 0.1,
-                true,
-                None,
             )
             .expect("gm route");
         assert!(
@@ -6566,13 +6646,15 @@ mod tests {
         let (ecs, scene, player, token) = scene_with_secret_wall_between_two_cells(false);
         let out = ecs
             .pathfind(
-                player,
+                RouteRequester {
+                    user: player,
+                    is_gm: false,
+                    explored: None,
+                },
                 scene,
                 (50.0, 50.0),
                 &[(250.0, 50.0)],
                 0.4,
-                false,
-                None,
             )
             .expect("the player's route ignores a wall it cannot see");
         assert!(
@@ -6607,7 +6689,17 @@ mod tests {
         // necessarily crosses (and which, at cell size 100, every column-1 cell center sits exactly on).
         let (ecs, scene, gm, _token) = scene_with_secret_wall_between_two_cells(true);
         let out = ecs
-            .pathfind(gm, scene, (50.0, 50.0), &[(250.0, 50.0)], 0.4, true, None)
+            .pathfind(
+                RouteRequester {
+                    user: gm,
+                    is_gm: true,
+                    explored: None,
+                },
+                scene,
+                (50.0, 50.0),
+                &[(250.0, 50.0)],
+                0.4,
+            )
             .expect("a GM route exists (bounds admit a detour around the wall's endpoint)");
         let wall = ((150.0, 0.0), (150.0, 100.0));
         for seg in out.path.windows(2) {
@@ -6626,13 +6718,15 @@ mod tests {
         // continuous-engine dispatch.
         let (ecs, _user, scene) = scene_with_lit_player_token();
         let r = ecs.pathfind(
-            Uuid::from_u128(1),
+            RouteRequester {
+                user: Uuid::from_u128(1),
+                is_gm: true,
+                explored: None,
+            },
             scene,
             (50.0, 50.0),
             &[(250.0, 50.0)],
             0.1,
-            true,
-            None,
         );
         let outcome = r.expect("GM route");
         assert!(
@@ -6650,13 +6744,15 @@ mod tests {
         assert!(!mask.is_empty(), "the lit token has a non-empty mask");
         // A far goal well outside the lit radius → Unreachable.
         let far = ecs.pathfind(
-            user,
+            RouteRequester {
+                user,
+                is_gm: false,
+                explored: None,
+            },
             scene,
             (50.0, 50.0),
             &[(5000.0, 5000.0)],
             0.1,
-            false,
-            None,
         );
         assert_eq!(far, Err(crate::scene::pathfinding::PathFail::Unreachable));
     }
@@ -6679,13 +6775,15 @@ mod tests {
             cell,
         );
         let r = ecs.pathfind(
-            user,
+            RouteRequester {
+                user,
+                is_gm: false,
+                explored: Some(&explored),
+            },
             scene,
             (50.0, 50.0),
             &[(350.0, 50.0)],
             0.1,
-            false,
-            Some(&explored),
         );
         assert!(
             r.is_ok(),

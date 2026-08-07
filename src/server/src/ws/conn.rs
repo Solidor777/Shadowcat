@@ -705,13 +705,15 @@ async fn handle_pathfind(
         None => footprint_radius,
     };
     match s.pathfind(
-        ctx.user_id,
+        crate::scene::RouteRequester {
+            user: ctx.user_id,
+            is_gm,
+            explored: explored.as_ref(),
+        },
         scene,
         start,
         &waypoints,
         footprint_radius,
-        is_gm,
-        explored.as_ref(),
     ) {
         Ok(outcome) => ServerMsg::PathResult {
             request_id,

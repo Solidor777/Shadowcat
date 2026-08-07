@@ -2621,7 +2621,17 @@ mod tests {
             let mask = ecs.visible_cells(user, scene, false);
             // NOT `if let Ok` — a fixture that yields no route must fail the test, not skip it.
             let route = ecs
-                .pathfind(user, scene, start, &[goal], fp, false, None)
+                .pathfind(
+                    crate::scene::RouteRequester {
+                        user,
+                        is_gm: false,
+                        explored: None,
+                    },
+                    scene,
+                    start,
+                    &[goal],
+                    fp,
+                )
                 .expect("the fixture is routable for this footprint");
             let out = execute_move(
                 &ecs,
@@ -2657,7 +2667,17 @@ mod tests {
         let fp = ecs.resolve_token_footprint(token).expect("in-range");
         let mask = ecs.visible_cells(user, scene, false);
         let route = ecs
-            .pathfind(user, scene, start, &[goal], fp, false, None)
+            .pathfind(
+                crate::scene::RouteRequester {
+                    user,
+                    is_gm: false,
+                    explored: None,
+                },
+                scene,
+                start,
+                &[goal],
+                fp,
+            )
             .expect("the fixture is routable for this footprint");
         assert!(
             route.path.len() >= 2,
@@ -2708,7 +2728,17 @@ mod tests {
             )
             .expect("admissible input");
             if out.truncated {
-                let route = ecs.pathfind(user, scene, path[0], &[path[1]], fp, false, None);
+                let route = ecs.pathfind(
+                    crate::scene::RouteRequester {
+                        user,
+                        is_gm: false,
+                        explored: None,
+                    },
+                    scene,
+                    path[0],
+                    &[path[1]],
+                    fp,
+                );
                 if let Ok(r) = route {
                     assert!(
                         r.path.last().copied() != Some(path[1]),
