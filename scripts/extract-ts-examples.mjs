@@ -1,9 +1,11 @@
 // Staleness gate for doc examples: every @example fence in a workspace .ts source is
 // compiled inside a virtual sibling of its host module, so the example sees exactly the
-// symbols its host module sees — including non-exported ones. .svelte sources, and
-// examples that reference an enclosing class's `this`/private members, carry @example
-// blocks too but are never compiled here; each such category's count is reported
-// separately so it stays visible instead of silently passing over it.
+// symbols its host module sees — including non-exported ones. An example referencing an
+// enclosing class's `this`/private members is instead injected as a synthetic method
+// into the class actually enclosing the documented symbol. .svelte sources carry
+// @example blocks too but are never compiled here; that count, and any example this
+// gate genuinely cannot resolve (no import to upgrade, no enclosing class), is reported
+// separately and individually so nothing passes over in silence.
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { basename, dirname, extname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -33,7 +35,10 @@ function symbolAfter(sourceText, index) {
  * block tagged @example, tagged ` ```ts ` or untagged (fence tagging is not opt-in —
  * only a fence tagged for a DIFFERENT language, e.g. ` ```svelte `, is excluded). Each
  * entry carries the host symbol it documents and the example's 1-based ordinal within
- * that symbol, so a compile failure can be reported without a file:line citation. */
+ * that symbol, so a compile failure can be reported without a file:line citation, plus
+ * `commentEnd` — the character offset right after the doc comment, the same anchor
+ * `symbolAfter` reads from, reused by `findEnclosingClassTarget` to locate the actual
+ * AST declaration (and its enclosing class, if any) the comment documents. */
 export function extractExamples(sourceText) {
   const out = [];
   const ordinals = new Map();
@@ -57,7 +62,7 @@ export function extractExamples(sourceText) {
       const fenceLine = offsetLine + body.slice(0, fence.index).split("\n").length - 1;
       const ordinal = (ordinals.get(symbol) ?? 0) + 1;
       ordinals.set(symbol, ordinal);
-      out.push({ code, line: fenceLine, symbol, ordinal });
+      out.push({ code, line: fenceLine, symbol, ordinal, commentEnd: block.index + body.length });
     }
   }
   return out;
@@ -229,8 +234,9 @@ function referencesEnclosingThisOrPrivate(statement) {
  * of a wrapping function (import/export declarations, and any declaration carrying an
  * `export` modifier — none of these are legal inside a function body) and the rest, and
  * flags whether the example references an enclosing class's `this`/private members (a
- * shape no wrapper, hoisted or not, can type-check without injecting it into the host
- * class body — reported as an unchecked category instead of compiled). */
+ * shape no plain top-level wrapper can type-check — see `findEnclosingClassTarget` and
+ * `buildClassInjectionText` for how such an example is instead compiled as a synthetic
+ * method injected into the host class body). */
 export function analyzeExample(code) {
   const sourceFile = ts.createSourceFile("example.ts", code, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
   const hoisted = [];
@@ -562,6 +568,164 @@ export function buildVirtualText(
   return `${hostText}\n${hoistedBlock}${WRAPPER_OPEN}${analyzed.rest.join("\n")}${WRAPPER_CLOSE}`;
 }
 
+// --- Class-context injection ---------------------------------------------------------
+// An example that references an enclosing class's `this`/private members cannot
+// type-check as a free function: `this` has no type outside a method, and a
+// `#private` reference is a syntax error outside a class body. Such an example is
+// instead injected as a synthetic method inside the class that actually encloses the
+// documented symbol.
+
+/** Marker lines wrapping every stretch of text that came from the EXAMPLE (the
+ * injected method body, and the hoisted import block) rather than from the host's own
+ * source, so `buildLineMap` can attribute a diagnostic's line to "host line N" or
+ * "example body" by scanning the FINAL text for these markers — correct regardless of
+ * how many lines an earlier transformation (splitting a type-only import, upgrading
+ * one to a value import) added or removed before the marked region, which a
+ * fixed-offset line count could not track. */
+const EXAMPLE_BODY_START = "// __doc_example_body_start__";
+const EXAMPLE_BODY_END = "// __doc_example_body_end__";
+
+/** Maps each 0-based line index of `text` to the 0-based line number it corresponds to
+ * in the ORIGINAL host file, or `null` when the line is inside an
+ * `EXAMPLE_BODY_START`/`EXAMPLE_BODY_END` marked region (including the marker lines
+ * themselves). Lines outside any marked region appear in `text` in the same relative
+ * order as in the original host file (splicing only ever inserts, never reorders or
+ * deletes), so a running counter over just those lines reconstructs real 1-based host
+ * line numbers. */
+export function buildLineMap(text) {
+  const lines = text.split("\n");
+  const map = new Array(lines.length).fill(null);
+  let hostLine = 0;
+  let inBody = false;
+  for (let i = 0; i < lines.length; i++) {
+    const trimmed = lines[i].trim();
+    if (trimmed === EXAMPLE_BODY_START) {
+      inBody = true;
+      continue;
+    }
+    if (trimmed === EXAMPLE_BODY_END) {
+      inBody = false;
+      continue;
+    }
+    if (inBody) continue;
+    map[i] = hostLine;
+    hostLine += 1;
+  }
+  return map;
+}
+
+/** A diagnostic-line formatter backed by a simple threshold — used by the free-function
+ * wrapper path, where the host's own text is never edited mid-file, so every line at or
+ * past a fixed count belongs to the example. */
+function hostLineMapper(hostLineCount) {
+  return (line) => (line < hostLineCount ? `host line ${line + 1}` : "example body");
+}
+
+/** A diagnostic-line formatter backed by `buildLineMap` — used by the class-injection
+ * path, where the example's method is spliced into the MIDDLE of the host's text, so a
+ * single threshold cannot distinguish host lines that follow the injection point from
+ * the injected content itself. */
+function arrayLineMapper(lineMap) {
+  return (line) => {
+    const hostLine = lineMap[line];
+    return hostLine === null || hostLine === undefined ? "example body" : `host line ${hostLine + 1}`;
+  };
+}
+
+function establishesOwnStatic(node) {
+  return (
+    ts.isMethodDeclaration(node) ||
+    ts.isPropertyDeclaration(node) ||
+    ts.isGetAccessorDeclaration(node) ||
+    ts.isSetAccessorDeclaration(node) ||
+    ts.isConstructorDeclaration(node)
+  );
+}
+
+/** The class enclosing the declaration a doc comment documents, found by AST position
+ * rather than by name — the same "next real token after the comment" anchor
+ * `symbolAfter` approximates with a regex, but exact: the node anywhere in the file
+ * with the SMALLEST start position at or after `commentEnd` is the declaration the
+ * comment leads (a class body member if the comment sits inside a class, the class
+ * declaration itself if the comment documents the class as a whole). Returns null when
+ * that declaration is not inside any class — a plain top-level function whose example
+ * happens to reference `this` has no injection target, and none is guessed. `isStatic`
+ * is true when the documented member itself carries the `static` modifier, so the
+ * caller injects a static synthetic member and `this` resolves against the correct
+ * (static vs instance) side. */
+export function findEnclosingClassTarget(sourceFile, commentEnd) {
+  let best = null;
+  const visit = (node) => {
+    const start = node.getStart(sourceFile);
+    if (start >= commentEnd && (best === null || start < best.getStart(sourceFile))) {
+      best = node;
+    }
+    ts.forEachChild(node, visit);
+  };
+  ts.forEachChild(sourceFile, visit);
+  if (best === null) return null;
+  let node = best;
+  let isStatic = false;
+  if (establishesOwnStatic(node)) {
+    if (ts.canHaveModifiers(node)) {
+      isStatic = (ts.getModifiers(node) ?? []).some((m) => m.kind === ts.SyntaxKind.StaticKeyword);
+    }
+    node = node.parent;
+  }
+  if (ts.isClassDeclaration(node) && node.name) return { classNode: node, isStatic };
+  return null;
+}
+
+/** A synthetic method name guaranteed not to collide with any existing member
+ * (instance or static, public or private) of `classNode` — the example's own local
+ * bindings live inside that method's own function scope, where a same-named class
+ * member is never ambiguous with a local variable (a class member is only ever
+ * reachable via `this.name`/`ClassName.name`, never as a bare identifier), so only the
+ * synthetic method's OWN name needs a collision check. */
+export function pickSyntheticMethodName(classNode) {
+  const existingNames = new Set();
+  for (const member of classNode.members) {
+    if (member.name && (ts.isIdentifier(member.name) || ts.isPrivateIdentifier(member.name))) {
+      existingNames.add(member.name.text);
+    }
+  }
+  let i = 0;
+  while (existingNames.has(`__docExample${i}`)) i += 1;
+  return `__docExample${i}`;
+}
+
+/** The full virtual-file text for a class-context example: the host module's full
+ * text, spliced to insert a synthetic method — `static` exactly when the documented
+ * member is `static`, so `this` resolves against the correct side — as the last member
+ * of `target.classNode`, body-only from `ex.rest` (its own hoisted import/export/
+ * declare statements cannot live inside a class body; they are appended at module top
+ * level afterward, exactly as `buildVirtualText` does). Splicing happens BEFORE
+ * resolving type/value clashes and deduping hoisted imports so their character offsets
+ * are computed against the ALREADY-spliced text, never invalidated by a length change
+ * introduced earlier in the file. Every stretch of example-authored text is wrapped in
+ * `EXAMPLE_BODY_START`/`EXAMPLE_BODY_END` markers so the returned `lineMap` (see
+ * `buildLineMap`) can attribute each diagnostic correctly. */
+export function buildClassInjectionText(hostText, ex, target, hostBindings, selfPackageName = null, hostFile = null) {
+  const { classNode, isStatic } = target;
+  const insertPos = classNode.end - 1;
+  const methodName = pickSyntheticMethodName(classNode);
+  const methodText =
+    `\n  ${EXAMPLE_BODY_START}\n` +
+    `  ${isStatic ? "static " : ""}async ${methodName}(): Promise<void> {\n${ex.rest.join("\n")}\n  }\n` +
+    `  ${EXAMPLE_BODY_END}\n`;
+  const splicedHostText = hostText.slice(0, insertPos) + methodText + hostText.slice(insertPos);
+
+  const resolved = resolveTypeValueClashes(splicedHostText, hostBindings, ex.hoisted, selfPackageName, hostFile);
+  const hoisted = ex.hoisted
+    .map((h) => dedupeAgainstHost(h, resolved.hostBindings, selfPackageName, hostFile))
+    .filter((h) => h !== null);
+  const hoistedBlock =
+    hoisted.length > 0 ? `\n${EXAMPLE_BODY_START}\n${hoisted.join("\n")}\n${EXAMPLE_BODY_END}\n` : "";
+
+  const text = `${resolved.hostText}${hoistedBlock}`;
+  return { text, unresolved: resolved.unresolved, lineMap: buildLineMap(text) };
+}
+
 /** The example-compilation option contract, applied on top of whatever a package's own
  * `tsconfig.json` resolves to. **Type correctness is enforced; production-hygiene
  * lints are not.** An example is documentation, not shipped code: a binding kept only
@@ -649,10 +813,10 @@ function compileOverlay(options, overlay) {
   );
 }
 
-/** Compiles every compilable extracted example for one package (an example flagged
- * `classContext` by `analyzeExample` is never passed in here — see the unchecked-count
- * reporting in `main`). Returns per-example pass/fail with host symbol, ordinal and
- * mapped diagnostics. */
+/** Compiles every compilable free-function-wrapper example for one package (a
+ * `classContext`-flagged example is never passed in here — see
+ * `compilePackageClassInjectedExamples`). Returns per-example pass/fail with host
+ * symbol, ordinal and mapped diagnostics. */
 function compilePackageExamples(repoRoot, pkgDir, pkgDirs, examplesByFile) {
   const options = packageCompilerOptions(repoRoot, pkgDir, pkgDirs);
   const selfPackageName = packageOwnName(repoRoot, pkgDir);
@@ -671,7 +835,39 @@ function compilePackageExamples(repoRoot, pkgDir, pkgDirs, examplesByFile) {
       const resolved = resolveTypeValueClashes(hostText, hostBindings, ex.hoisted, selfPackageName, hostFile);
       const effectiveHostLineCount = resolved.hostText.split("\n").length;
       overlay.set(virtualPath, buildVirtualText(resolved.hostText, ex, resolved.hostBindings, selfPackageName, hostFile));
-      meta.set(virtualPath, { hostFile, hostLineCount: effectiveHostLineCount, ...ex });
+      meta.set(virtualPath, { hostFile, mapLine: hostLineMapper(effectiveHostLineCount), ...ex });
+    });
+  }
+  const diagnosticsByPath = compileOverlay(options, overlay);
+  return [...diagnosticsByPath.entries()].map(([virtualPath, diagnostics]) => ({
+    ...meta.get(virtualPath),
+    diagnostics,
+  }));
+}
+
+/** Compiles every class-context example for one package by injecting each as a
+ * synthetic method via `buildClassInjectionText`. The enclosing-class target is
+ * re-derived here from a fresh parse of the CURRENT host text, never carried over from
+ * an earlier parse in `main`'s classification pass, so the AST node driving the splice
+ * is always consistent with the text it is spliced into. */
+function compilePackageClassInjectedExamples(repoRoot, pkgDir, pkgDirs, examplesByFile) {
+  const options = packageCompilerOptions(repoRoot, pkgDir, pkgDirs);
+  const selfPackageName = packageOwnName(repoRoot, pkgDir);
+  const overlay = new Map();
+  const meta = new Map();
+  for (const [hostFile, examples] of examplesByFile) {
+    const hostText = readFileSync(hostFile, "utf8");
+    const dir = dirname(hostFile);
+    const base = basename(hostFile, extname(hostFile));
+    const hostBindings = hostTopLevelBindings(hostText);
+    const hostSourceFile = ts.createSourceFile(hostFile, hostText, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+    examples.forEach((ex, i) => {
+      const target = findEnclosingClassTarget(hostSourceFile, ex.commentEnd);
+      if (target === null) return; // pre-filtered by `main`; defensive only
+      const virtualPath = toPosix(join(dir, `${base}.doctest${i}.inject${extname(hostFile)}`));
+      const built = buildClassInjectionText(hostText, ex, target, hostBindings, selfPackageName, hostFile);
+      overlay.set(virtualPath, built.text);
+      meta.set(virtualPath, { hostFile, mapLine: arrayLineMapper(built.lineMap), ...ex });
     });
   }
   const diagnosticsByPath = compileOverlay(options, overlay);
@@ -691,7 +887,7 @@ function formatFailure(result) {
     let where = "example body";
     if (d.file && d.start !== undefined) {
       const { line } = ts.getLineAndCharacterOfPosition(d.file, d.start);
-      if (line < result.hostLineCount) where = `host line ${line + 1}`;
+      where = result.mapLine(line);
     }
     return `    [${where}] ${message}`;
   });
@@ -882,12 +1078,117 @@ function runClassContextControl() {
   }
 }
 
+/** Class-injection controls, exercised through the real extract → analyze → target →
+ * inject → compile pipeline against one synthetic host class: a `this.`-style example
+ * calling a REAL private method compiles GREEN; one calling a private member that does
+ * NOT EXIST fails; and an example on a STATIC method resolves `this` against the
+ * static side specifically. The static/instance case gives both sides a private member
+ * of the SAME NAME but different parameter arity — a static/instance mixup is a type
+ * that still checks (a name that resolves, just on the wrong side), not a syntax
+ * error, so a naive same-signature test would pass even with the wrong side wired in;
+ * the arity mismatch forces a genuine compile failure if the wrong side is used. */
+function runClassInjectionControl(repoRoot) {
+  const dir = join(repoRoot, "scripts");
+  const hostFile = toPosix(join(dir, "__doctest_control_injection_host__.ts"));
+  const hostText = [
+    "export class ControlInjectionHost {",
+    "  /**",
+    "   * @example",
+    "   * ```ts",
+    '   * this.sharedName("hi");',
+    "   * ```",
+    "   */",
+    "  instanceMethod(): void {",
+    '    this.sharedName("hi");',
+    "  }",
+    "",
+    "  private sharedName(arg: string): void {",
+    "    void arg;",
+    "  }",
+    "",
+    "  /**",
+    "   * @example",
+    "   * ```ts",
+    "   * this.sharedName();",
+    "   * ```",
+    "   */",
+    "  static staticMethod(): void {}",
+    "",
+    "  private static sharedName(): void {}",
+    "",
+    "  /**",
+    "   * @example",
+    "   * ```ts",
+    "   * this.doesNotExist();",
+    "   * ```",
+    "   */",
+    "  instanceMethod2(): void {}",
+    "}",
+    "",
+  ].join("\n");
+
+  const examples = extractExamples(hostText);
+  if (examples.length !== 3) {
+    console.error(`class-injection control setup mismatch: expected 3 examples, found ${examples.length}`);
+    process.exit(1);
+  }
+  const [instanceEx, staticEx, missingEx] = examples;
+  const hostBindings = hostTopLevelBindings(hostText);
+  const options = {
+    target: ts.ScriptTarget.ES2022,
+    module: ts.ModuleKind.ESNext,
+    moduleResolution: ts.ModuleResolutionKind.Bundler,
+    strict: true,
+    noEmit: true,
+    skipLibCheck: true,
+    ...EXAMPLE_HYGIENE_OVERRIDES,
+  };
+
+  const compileOne = (ex) => {
+    const analyzed = analyzeExample(ex.code);
+    const sourceFile = ts.createSourceFile(hostFile, hostText, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+    const target = findEnclosingClassTarget(sourceFile, ex.commentEnd);
+    if (target === null) {
+      console.error(`class-injection control setup mismatch: no enclosing class found for ${ex.symbol}`);
+      process.exit(1);
+    }
+    const built = buildClassInjectionText(hostText, { ...ex, ...analyzed }, target, hostBindings);
+    const virtualPath = toPosix(join(dir, `__doctest_control_injection__${ex.symbol}.doctest0.ts`));
+    return compileOverlay(options, new Map([[virtualPath, built.text]])).get(virtualPath);
+  };
+
+  const instanceDiagnostics = compileOne(instanceEx);
+  if (instanceDiagnostics.length !== 0) {
+    console.error(
+      `class-injection control mismatch: a real-private-method example did not compile green:\n` +
+        instanceDiagnostics.map((d) => `  ${ts.flattenDiagnosticMessageText(d.messageText, "\n")}`).join("\n"),
+    );
+    process.exit(1);
+  }
+
+  const staticDiagnostics = compileOne(staticEx);
+  if (staticDiagnostics.length !== 0) {
+    console.error(
+      `class-injection control mismatch: a static-method example did not resolve against the static side:\n` +
+        staticDiagnostics.map((d) => `  ${ts.flattenDiagnosticMessageText(d.messageText, "\n")}`).join("\n"),
+    );
+    process.exit(1);
+  }
+
+  const missingDiagnostics = compileOne(missingEx);
+  if (missingDiagnostics.length === 0) {
+    console.error("class-injection control mismatch: an example calling a nonexistent private member compiled green");
+    process.exit(1);
+  }
+}
+
 const repoRootForControls = resolve(fileURLToPath(import.meta.url), "..", "..");
 runExtractionControls();
 runCompilationControl(repoRootForControls);
 runTypeValueClashControl(repoRootForControls);
 runHygieneOverrideControl(repoRootForControls);
 runClassContextControl();
+runClassInjectionControl(repoRootForControls);
 
 const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isMain) {
@@ -901,9 +1202,10 @@ if (isMain) {
   );
 
   const byPackage = new Map();
-  let classContextCount = 0;
+  const byPackageInjected = new Map();
   let compileTotal = 0;
   const unresolvedClashes = [];
+  const noEnclosingClass = [];
   for (const file of candidateFiles(repo, roots)) {
     const hostText = readFileSync(file, "utf8");
     const examples = extractExamples(hostText);
@@ -911,10 +1213,25 @@ if (isMain) {
     const pkgDir = packageForFile(repo, pkgDirs, file);
     const selfPackageName = pkgDir === null ? null : packageOwnName(repo, pkgDir);
     const hostBindings = hostTopLevelBindings(hostText);
+    const hostSourceFile = ts.createSourceFile(file, hostText, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
     for (const ex of examples) {
       const analyzed = analyzeExample(ex.code);
       if (analyzed.classContext) {
-        classContextCount += 1;
+        // The injection target is the class enclosing the DOCUMENTED SYMBOL, found by
+        // AST position from `ex.commentEnd` — never merely the first or nearest class
+        // in the file. A top-level example with no enclosing class is never guessed
+        // at; it is reported individually below instead.
+        const target = findEnclosingClassTarget(hostSourceFile, ex.commentEnd);
+        if (target === null) {
+          noEnclosingClass.push({ hostFile: file, symbol: ex.symbol, ordinal: ex.ordinal });
+          continue;
+        }
+        if (pkgDir === null) continue; // outside every workspace package: cannot resolve a tsconfig
+        compileTotal += 1;
+        if (!byPackageInjected.has(pkgDir)) byPackageInjected.set(pkgDir, new Map());
+        const forFileInjected = byPackageInjected.get(pkgDir);
+        if (!forFileInjected.has(file)) forFileInjected.set(file, []);
+        forFileInjected.get(file).push({ ...ex, ...analyzed });
         continue;
       }
       if (pkgDir === null) continue; // outside every workspace package: cannot resolve a tsconfig
@@ -936,10 +1253,6 @@ if (isMain) {
   }
 
   console.log(`${svelteCount} @example blocks found in .svelte sources — unchecked (never compiled)`);
-  console.log(
-    `${classContextCount} @example blocks reference an enclosing class's this/private members — ` +
-      `unchecked (not compiled; would need injection into the host class body)`,
-  );
 
   if (unresolvedClashes.length > 0) {
     console.error(
@@ -954,8 +1267,21 @@ if (isMain) {
     }
   }
 
+  if (noEnclosingClass.length > 0) {
+    console.error(
+      `${noEnclosingClass.length} @example blocks reference an enclosing class's this/private members but have ` +
+        `no enclosing class:`,
+    );
+    for (const u of noEnclosingClass) {
+      console.error(
+        `  ${u.hostFile} :: ${u.symbol} :: example #${u.ordinal} :: the documented declaration is not a class ` +
+          `member — no injection target exists, and none is guessed`,
+      );
+    }
+  }
+
   if (compileTotal === 0) {
-    if (unresolvedClashes.length > 0) process.exit(1);
+    if (unresolvedClashes.length > 0 || noEnclosingClass.length > 0) process.exit(1);
     console.log("no compilable @example ts blocks found — trivially green");
     process.exit(0);
   }
@@ -966,8 +1292,13 @@ if (isMain) {
       if (result.diagnostics.length > 0) failures.push(result);
     }
   }
+  for (const [pkgDir, examplesByFile] of byPackageInjected) {
+    for (const result of compilePackageClassInjectedExamples(repo, pkgDir, pkgDirs, examplesByFile)) {
+      if (result.diagnostics.length > 0) failures.push(result);
+    }
+  }
 
-  if (failures.length > 0 || unresolvedClashes.length > 0) {
+  if (failures.length > 0 || unresolvedClashes.length > 0 || noEnclosingClass.length > 0) {
     if (failures.length > 0) {
       console.error(`${failures.length} of ${compileTotal} compilable examples failed to compile:\n`);
       for (const f of failures) console.error(formatFailure(f));

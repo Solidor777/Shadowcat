@@ -18,8 +18,16 @@ import {
   resolveTypeValueClashes,
   buildVirtualText,
   EXAMPLE_HYGIENE_OVERRIDES,
+  findEnclosingClassTarget,
+  pickSyntheticMethodName,
+  buildClassInjectionText,
+  buildLineMap,
 } from "./extract-ts-examples.mjs";
 import ts from "typescript";
+
+function parse(text) {
+  return ts.createSourceFile("host.ts", text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+}
 
 describe("extractExamples", () => {
   it("extracts a tagged ```ts fence inside an @example tag with its line number", () => {
@@ -424,6 +432,239 @@ describe("buildVirtualText", () => {
     const analyzed = analyzeExample('import { Foo } from "mod";\nconsole.log(Foo);');
     const text = buildVirtualText(hostText, analyzed);
     expect(text.match(/from "mod"/g)).toHaveLength(1);
+  });
+});
+
+describe("findEnclosingClassTarget", () => {
+  it("finds the class enclosing a documented instance member, by position not by name", () => {
+    const text = [
+      "class Foo {",
+      "  /**",
+      "   * @example",
+      "   * ```ts",
+      "   * this.bar();",
+      "   * ```",
+      "   */",
+      "  bar(): void {}",
+      "}",
+    ].join("\n");
+    const [ex] = extractExamples(text);
+    const target = findEnclosingClassTarget(parse(text), ex.commentEnd);
+    expect(target).not.toBeNull();
+    expect(target.classNode.name.text).toBe("Foo");
+    expect(target.isStatic).toBe(false);
+  });
+
+  it("resolves to the SECOND class in a multi-class file, not the first or nearest-by-scan", () => {
+    const text = [
+      "class First {",
+      "  same(): void {}",
+      "}",
+      "",
+      "class Second {",
+      "  /**",
+      "   * @example",
+      "   * ```ts",
+      "   * this.same();",
+      "   * ```",
+      "   */",
+      "  same(): void {}",
+      "}",
+    ].join("\n");
+    const [ex] = extractExamples(text);
+    const target = findEnclosingClassTarget(parse(text), ex.commentEnd);
+    expect(target.classNode.name.text).toBe("Second");
+  });
+
+  it("flags a documented static member as static", () => {
+    const text = [
+      "class Foo {",
+      "  /**",
+      "   * @example",
+      "   * ```ts",
+      "   * this.bar();",
+      "   * ```",
+      "   */",
+      "  static bar(): void {}",
+      "}",
+    ].join("\n");
+    const [ex] = extractExamples(text);
+    const target = findEnclosingClassTarget(parse(text), ex.commentEnd);
+    expect(target.isStatic).toBe(true);
+  });
+
+  it("returns null for a documented declaration with no enclosing class", () => {
+    const text = [
+      "/**",
+      " * @example",
+      " * ```ts",
+      " * this.bar();",
+      " * ```",
+      " */",
+      "export function bar(): void {}",
+    ].join("\n");
+    const [ex] = extractExamples(text);
+    expect(findEnclosingClassTarget(parse(text), ex.commentEnd)).toBeNull();
+  });
+
+  it("targets the class itself when the comment documents the class, not a member", () => {
+    const text = [
+      "/**",
+      " * @example",
+      " * ```ts",
+      " * this.bar();",
+      " * ```",
+      " */",
+      "export class Foo {",
+      "  bar(): void {}",
+      "}",
+    ].join("\n");
+    const [ex] = extractExamples(text);
+    const target = findEnclosingClassTarget(parse(text), ex.commentEnd);
+    expect(target).not.toBeNull();
+    expect(target.classNode.name.text).toBe("Foo");
+  });
+});
+
+describe("pickSyntheticMethodName", () => {
+  it("avoids an existing member name", () => {
+    const text = "class Foo {\n  __docExample0(): void {}\n  __docExample1(): void {}\n}\n";
+    const sourceFile = parse(text);
+    const classNode = sourceFile.statements[0];
+    expect(pickSyntheticMethodName(classNode)).toBe("__docExample2");
+  });
+
+  it("picks __docExample0 for a class with no synthetic members yet", () => {
+    const sourceFile = parse("class Foo {\n  bar(): void {}\n}\n");
+    const classNode = sourceFile.statements[0];
+    expect(pickSyntheticMethodName(classNode)).toBe("__docExample0");
+  });
+});
+
+describe("buildLineMap", () => {
+  it("maps lines outside a marked region to increasing host line numbers, and marked lines to null", () => {
+    const text = [
+      "line0",
+      "// __doc_example_body_start__",
+      "injected0",
+      "injected1",
+      "// __doc_example_body_end__",
+      "line1",
+    ].join("\n");
+    const map = buildLineMap(text);
+    expect(map[0]).toBe(0);
+    expect(map[1]).toBeNull();
+    expect(map[2]).toBeNull();
+    expect(map[3]).toBeNull();
+    expect(map[4]).toBeNull();
+    expect(map[5]).toBe(1);
+  });
+});
+
+describe("buildClassInjectionText — end-to-end shape and compilation", () => {
+  it("injects a static synthetic method for a documented static member", () => {
+    const hostText = [
+      "export class Foo {",
+      "  /**",
+      "   * @example",
+      "   * ```ts",
+      "   * this.bar();",
+      "   * ```",
+      "   */",
+      "  static bar(): void {}",
+      "}",
+      "",
+    ].join("\n");
+    const [ex] = extractExamples(hostText);
+    const analyzed = analyzeExample(ex.code);
+    expect(analyzed.classContext).toBe(true);
+    const target = findEnclosingClassTarget(parse(hostText), ex.commentEnd);
+    const hostBindings = hostTopLevelBindings(hostText);
+    const built = buildClassInjectionText(hostText, { ...ex, ...analyzed }, target, hostBindings);
+    expect(built.text).toMatch(/static async __docExample0/);
+  });
+
+  it("injects an instance synthetic method for a documented instance member", () => {
+    const hostText = [
+      "export class Foo {",
+      "  /**",
+      "   * @example",
+      "   * ```ts",
+      "   * this.bar();",
+      "   * ```",
+      "   */",
+      "  bar(): void {}",
+      "}",
+      "",
+    ].join("\n");
+    const [ex] = extractExamples(hostText);
+    const analyzed = analyzeExample(ex.code);
+    const target = findEnclosingClassTarget(parse(hostText), ex.commentEnd);
+    const hostBindings = hostTopLevelBindings(hostText);
+    const built = buildClassInjectionText(hostText, { ...ex, ...analyzed }, target, hostBindings);
+    expect(built.text).toMatch(/(?<!static )async __docExample0/);
+    expect(built.text).not.toMatch(/static async __docExample0/);
+  });
+
+  function compileInjected(hostText) {
+    const [ex] = extractExamples(hostText);
+    const analyzed = analyzeExample(ex.code);
+    const target = findEnclosingClassTarget(parse(hostText), ex.commentEnd);
+    const hostBindings = hostTopLevelBindings(hostText);
+    const built = buildClassInjectionText(hostText, { ...ex, ...analyzed }, target, hostBindings);
+    const options = {
+      target: ts.ScriptTarget.ES2022,
+      module: ts.ModuleKind.ESNext,
+      moduleResolution: ts.ModuleResolutionKind.Bundler,
+      strict: true,
+      noEmit: true,
+      skipLibCheck: true,
+      ...EXAMPLE_HYGIENE_OVERRIDES,
+    };
+    const path = "/virtual/injected.ts";
+    const host = ts.createCompilerHost(options, true);
+    const base = { fileExists: host.fileExists.bind(host), getSourceFile: host.getSourceFile.bind(host) };
+    host.fileExists = (f) => f === path || base.fileExists(f);
+    host.getSourceFile = (f, lv, onErr, sc) =>
+      f === path ? ts.createSourceFile(f, built.text, lv, true) : base.getSourceFile(f, lv, onErr, sc);
+    const program = ts.createProgram([path], options, host);
+    return ts.getPreEmitDiagnostics(program, program.getSourceFile(path));
+  }
+
+  it("compiles GREEN when the example calls a real private method", () => {
+    const hostText = [
+      "export class Foo {",
+      "  /**",
+      "   * @example",
+      "   * ```ts",
+      "   * this.bar();",
+      "   * ```",
+      "   */",
+      "  useBar(): void {",
+      "    this.bar();",
+      "  }",
+      "",
+      "  private bar(): void {}",
+      "}",
+      "",
+    ].join("\n");
+    expect(compileInjected(hostText)).toHaveLength(0);
+  });
+
+  it("FAILS when the example calls a private member that does not exist", () => {
+    const hostText = [
+      "export class Foo {",
+      "  /**",
+      "   * @example",
+      "   * ```ts",
+      "   * this.doesNotExist();",
+      "   * ```",
+      "   */",
+      "  useBar(): void {}",
+      "}",
+      "",
+    ].join("\n");
+    expect(compileInjected(hostText).length).toBeGreaterThan(0);
   });
 });
 
