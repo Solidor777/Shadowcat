@@ -18,8 +18,13 @@
     leaveWorld,
     serverRole,
   }: {
+    /** The entered world's session, non-null by the time `App` mounts `Table` (it
+     * renders `Table` only once role+world are set from Welcome). */
     session: WorldSession;
+    /** Tears down `session` and returns the shell to the entry/worlds route. */
     leaveWorld: () => void;
+    /** The caller's server tier — see `AppContext.serverRole` for the fail-closed
+     * derivation and its cosmetic-only status. */
     serverRole: "admin" | "user";
   } = $props();
 

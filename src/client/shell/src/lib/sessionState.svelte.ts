@@ -14,7 +14,10 @@ const COOLDOWN_MS = 500;
 let timer: ReturnType<typeof setTimeout> | null = null;
 let pendingDuringCooldown = false;
 
+/** A dirty-trackable key of `UiState.global` (`"locale"` or `"lastWorld"`). */
 type GlobalField = keyof UiState["global"];
+/** A dirty-trackable key of one `UiState.worlds[id]` entry (`"panelLayout"` or
+ * `"chatRead"`). */
 type WorldKey = keyof UiState["worlds"][string];
 
 /** Leaf-key dirty tracking: persist() sends ONLY the individual fields/keys
@@ -32,7 +35,9 @@ const dirty = {
 /** A structural copy of `dirty`, taken before clearing it for a persist
  * attempt so a failure can restore exactly what was lost. */
 type DirtySnapshot = {
+  /** Copy of the dirty global-field set at snapshot time. */
   global: Set<GlobalField>;
+  /** Copy of the dirty per-world key sets at snapshot time, keyed by world id. */
   worlds: Map<string, Set<WorldKey>>;
 };
 

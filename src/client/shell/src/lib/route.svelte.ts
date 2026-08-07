@@ -1,9 +1,29 @@
+/** The parsed shape of `location.hash`, as produced by `parseHash` and consumed by
+ * `routeToHash`/`currentRoute`/`resolveBootWorld`. */
 export type Route =
-  | { name: "setup" }
-  | { name: "login" }
-  | { name: "worlds" }
-  | { name: "world"; id: string }
-  | { name: "unknown" };
+  | {
+      /** Discriminant for the first-run/initial setup route. */
+      name: "setup";
+    }
+  | {
+      /** Discriminant for the login route. */
+      name: "login";
+    }
+  | {
+      /** Discriminant for the worlds-list route. */
+      name: "worlds";
+    }
+  | {
+      /** Discriminant for a specific-world route; carries `id`. */
+      name: "world";
+      /** The world id from the route's path segment. */
+      id: string;
+    }
+  | {
+      /** Discriminant for an unrecognized hash path (including an empty hash);
+       * see `parseHash`. */
+      name: "unknown";
+    };
 
 /** Parses a `location.hash` string into a `Route`. An unrecognized path
  * (including an empty hash) resolves to `{ name: "unknown" }`.

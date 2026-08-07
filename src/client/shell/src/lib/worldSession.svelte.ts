@@ -41,9 +41,12 @@ import { SceneInteractionBridge, ActorSelection, TokenSelection } from "@shadowc
 import { listWorldMembers } from "./api";
 import { SvelteMap } from "svelte/reactivity";
 
+/** The WS connection lifecycle a `WorldSession` exposes as its reactive `state`. */
 export type ConnState = "connecting" | "open" | "closed";
 
+/** Construction options for `WorldSession`. */
 export interface WorldSessionOpts {
+  /** This client's own user id (ownership checks; see `WorldSession.selfId`). */
   selfId: string;
   /** Browser: webSocketConnect(wsUrl). Tests: a mock connect. */
   connect: Connect;
@@ -70,8 +73,13 @@ export interface WorldSessionOpts {
  * ```
  */
 export class WorldSession {
+  /** Authoritative document store, fed by `onCommand`; the rollback base for the
+   * optimistic view (`documents`). */
   readonly store = new DocumentStore();
+  /** Registry of contract declarations + contributions from active modules; passed
+   * into `ModuleRegistry` and exposed to `AppContext`. */
   readonly contributions = new ContributionRegistry();
+  /** Resolves asset ids to URLs; bumped on `onAssetChanged`. */
   readonly assets = new AssetResolver();
   /** Canvas interaction bridge: the Stage attaches the engine; tool components reach
    * it via AppContext. Stable across Stage remount. */
@@ -80,17 +88,60 @@ export class WorldSession {
   readonly actorSelection = new ActorSelection();
   /** Selected token ids for group-select; set by the factions panel, read by the select tool. Stable. */
   readonly tokenSelection = new TokenSelection();
-  #assetListeners = new Set<(msg: { uuid: string; op: "replaced" | "deleted" }) => void>();
-  #pingListeners = new Set<(msg: { scene: string; x: number; y: number; user: string }) => void>();
+  /** `onAssetChanged` subscriber set. */
+  #assetListeners = new Set<
+    (msg: {
+      /** The changed asset's id. */
+      uuid: string;
+      /** Which change occurred. */
+      op: "replaced" | "deleted";
+    }) => void
+  >();
+  /** `onPing` subscriber set. */
+  #pingListeners = new Set<
+    (msg: {
+      /** The scene the ping was placed on. */
+      scene: string;
+      /** Scene-space x coordinate. */
+      x: number;
+      /** Scene-space y coordinate. */
+      y: number;
+      /** The user who placed the ping. */
+      user: string;
+    }) => void
+  >();
   /** Listeners for THIS client's own `moveRequest` outcomes —
    * not a broadcast of every scene viewer's moves, unlike `#pingListeners`. */
-  #moveOutcomeListeners = new Set<(msg: { tokenId: string; outcome: "executed" | "truncated" | "rejected" }) => void>();
+  #moveOutcomeListeners = new Set<
+    (msg: {
+      /** The token that moved. */
+      tokenId: string;
+      /** The derived outcome; see `moveRequest`'s doc for how `executed`/`truncated`
+       * are derived and how they differ from `MoveStream.truncated`. */
+      outcome: "executed" | "truncated" | "rejected";
+    }) => void
+  >();
+  /** Live `subscribeScene` records, keyed by a locally-generated subscription id. */
   #sceneSubs = new Map<
     string,
-    { channel: string; onUpdate: (f: SceneFrame) => void; handle: SceneSubscription | null; gen: number }
+    {
+      /** The SceneDerived channel name. */
+      channel: string;
+      /** Called with each new frame on that channel. */
+      onUpdate: (f: SceneFrame) => void;
+      /** The currently-live WS handle, or `null` while (re-)establishing. */
+      handle: SceneSubscription | null;
+      /** Generation counter; bumped to invalidate a superseded establish attempt. */
+      gen: number;
+    }
   >();
+  /** The WS connection lifecycle; `"open"` after `enter()`'s `WsClient.start()`
+   * resolves, `"closed"` after `leave()`. */
   state = $state<ConnState>("closed");
+  /** This client's role in the entered world, set from the Welcome frame; `null`
+   * before the first Welcome and after `leave()`. */
   role = $state<WorldRole | null>(null);
+  /** The entered world's id, set at the start of `enter()`; `null` after `leave()`. */
   world = $state<string | null>(null);
   /** Client-local GM override of the rendered/subscribed scene ("GM roams"). Never set for
    * a player (they follow `world-settings.activeScene`). Overrides `viewedSceneId` for THIS
@@ -105,13 +156,23 @@ export class WorldSession {
   /** World-default capability grants + declarative requirements from the latest Welcome; inputs
    * to the advisory `canEdit` gate. Re-set on every (re)connect. */
   #worldGrants: WireWelcome["world_default_grants"] = { by_role: {}, by_user: {} };
+  /** Module-declared write-capability requirements from the latest Welcome; the
+   * advisory-only half of `canEdit`'s `#requirements` caveat — see `canEdit`'s doc. */
   #requirements: WireCapabilityRequirement[] = [];
 
+  /** The live transport, constructed fresh in `enter()` and dropped in `leave()`;
+   * `null` before the first `enter()` and after `leave()`. */
   #ws: WsClient | null = null;
+  /** The optimistic (predicted) document view backing `documents`. */
   #optimistic: OptimisticClient;
   /** Intents predicted while reconnecting (transport down but the client is still
    * `running`), queued to flush in FIFO order after the next resync completes. */
-  #offlineQueue: { intentId: string; ops: WireOperation[] }[] = [];
+  #offlineQueue: {
+    /** The correlated intent id, matched against the server echo/reject. */
+    intentId: string;
+    /** The operations predicted + queued as one intent. */
+    ops: WireOperation[];
+  }[] = [];
   /** The optimistic (predicted) document view — the canvas render source, so a placed
    * or dragged document shows immediately. `store` stays the authoritative rollback base
    * (panels that want confirmed-only state read it).
@@ -169,7 +230,12 @@ export class WorldSession {
    */
   searchDocuments(
     query: string,
-    opts: { limit?: number; timeoutMs?: number },
+    opts: {
+      /** See the `@param opts.limit` doc above. */
+      limit?: number;
+      /** See the `@param opts.timeoutMs` doc above. */
+      timeoutMs?: number;
+    },
     onUpdate: (hits: WireSearchHit[]) => void,
   ): Promise<SubscriptionHandle> {
     if (!this.#ws) return Promise.reject(new Error("not connected"));
@@ -216,7 +282,10 @@ export class WorldSession {
     const caps = resolveCaps(doc.permissions, this.opts.selfId, this.role, this.#worldGrants, owned);
     return canWritePath(path, caps, false, this.#requirements);
   }
+  /** Registry of first-party + external modules; `activate()` is called from
+   * `#onWelcome`. */
   #modules: ModuleRegistry;
+  /** Diagnostics sink for this session; `opts.logger` or a console default. */
   #logger: Logger;
   /** In-world bootstrap guards. Modules are ADDED exactly once per session
    * (re-adding would duplicate registrations). `#activated` is set
@@ -228,6 +297,8 @@ export class WorldSession {
    * `ModuleRegistry.activate` is incremental (activates only not-yet-active
    * modules), so a retry never double-activates an already-active module. */
   #modulesAdded = false;
+  /** Latches only on a SUCCESSFUL `activate()`; reverted to `false` in the catch on
+   * a thrown activation so the next Welcome retries — see the field-level doc above. */
   #activated = false;
 
   /** Construct a session bound to one connection factory + default module set; call
@@ -316,7 +387,14 @@ export class WorldSession {
    * off();
    * ```
    */
-  onAssetChanged(cb: (msg: { uuid: string; op: "replaced" | "deleted" }) => void): () => void {
+  onAssetChanged(
+    cb: (msg: {
+      /** The changed asset's id. */
+      uuid: string;
+      /** Which change occurred. */
+      op: "replaced" | "deleted";
+    }) => void,
+  ): () => void {
     this.#assetListeners.add(cb);
     return () => this.#assetListeners.delete(cb);
   }
@@ -330,7 +408,18 @@ export class WorldSession {
    * off();
    * ```
    */
-  onPing(cb: (msg: { scene: string; x: number; y: number; user: string }) => void): () => void {
+  onPing(
+    cb: (msg: {
+      /** The scene the ping was placed on. */
+      scene: string;
+      /** Scene-space x coordinate. */
+      x: number;
+      /** Scene-space y coordinate. */
+      y: number;
+      /** The user who placed the ping. */
+      user: string;
+    }) => void,
+  ): () => void {
     this.#pingListeners.add(cb);
     return () => this.#pingListeners.delete(cb);
   }
@@ -444,7 +533,15 @@ export class WorldSession {
    * off();
    * ```
    */
-  onMoveOutcome(cb: (msg: { tokenId: string; outcome: "executed" | "truncated" | "rejected" }) => void): () => void {
+  onMoveOutcome(
+    cb: (msg: {
+      /** The token that moved. */
+      tokenId: string;
+      /** The derived outcome — see `moveRequest`'s doc for how `executed`/
+       * `truncated` are derived and how they differ from `MoveStream.truncated`. */
+      outcome: "executed" | "truncated" | "rejected";
+    }) => void,
+  ): () => void {
     this.#moveOutcomeListeners.add(cb);
     return () => this.#moveOutcomeListeners.delete(cb);
   }
@@ -467,9 +564,13 @@ export class WorldSession {
    * ```
    */
   sendChatMessage(opts: {
+    /** See the `@param opts.channel` doc above. */
     channel: string;
+    /** See the `@param opts.content` doc above. */
     content: string;
+    /** See the `@param opts.actorOwner` doc above. */
     actorOwner?: WireActorOwnerRef | null;
+    /** See the `@param opts.audience` doc above. */
     audience?: WireAudience;
   }): Promise<void> {
     if (!this.#ws) return Promise.reject(new Error("not connected"));
@@ -522,7 +623,10 @@ export class WorldSession {
   subscribeScene(
     channel: string,
     onUpdate: (f: SceneFrame) => void,
-    opts: { asUser?: string } = {},
+    opts: {
+      /** See the `@param opts.asUser` doc above. */
+      asUser?: string;
+    } = {},
   ): SceneSubscription {
     const id = crypto.randomUUID();
     const rec = { channel, onUpdate, asUser: opts.asUser, handle: null as SceneSubscription | null, gen: 0 };
@@ -557,7 +661,18 @@ export class WorldSession {
    */
   #establishScene(
     id: string,
-    rec: { channel: string; onUpdate: (f: SceneFrame) => void; asUser?: string; handle: SceneSubscription | null; gen: number },
+    rec: {
+      /** See the `@param rec.channel` doc above. */
+      channel: string;
+      /** See the `@param rec.onUpdate` doc above. */
+      onUpdate: (f: SceneFrame) => void;
+      /** See the `@param rec.asUser` doc above. */
+      asUser?: string;
+      /** See the `@param rec.handle` doc above. */
+      handle: SceneSubscription | null;
+      /** See the `@param rec.gen` doc above. */
+      gen: number;
+    },
   ): void {
     const ws = this.#ws;
     if (!ws) return;
