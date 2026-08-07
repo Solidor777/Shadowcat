@@ -142,8 +142,8 @@ the reducer (intercept-and-redispatch), so the engine never owns state.
   `event.group.model.panels` fallback when the panel isn't in `#poppedOutGroupPanels`, and the
   `STAGE_ID` skip. All three read correct on inspection but are exactly the class of bug found
   twice in this file under adversarial testing — do not trust inspection alone for changes here.
-- **`#applying` is a synchronous-only guard — it cannot suppress an `AsapEvent` listener** (F3,
-  live floating re-drag/resize sync). `DockviewApi.onDidLayoutChange` is dockview's `AsapEvent`:
+- **`#applying` is a synchronous-only guard — it cannot suppress an `AsapEvent` listener**
+  (live floating re-drag/resize sync). `DockviewApi.onDidLayoutChange` is dockview's `AsapEvent`:
   `.fire()` schedules delivery via `queueMicrotask`, so every listener runs on the
   NEXT microtask, after `apply()`'s synchronous `finally { this.#applying = false }` has already
   reset the flag. A handler bound to this event that checks `#applying` gets a permanent `false`
@@ -217,7 +217,7 @@ the reducer (intercept-and-redispatch), so the engine never owns state.
   cross-window re-parent + stylesheet clone is dockview's own (spike-verified) machinery plus a
   manual-QA item, same class as the existing real-pointer-drag gap below.
 - jsdom never runs real layout, so `boundingBox` (backed by `getBoundingClientRect()`) always
-  reads all-zero unless a test stubs it — `dockview.test`'s F3 tests assign a replacement
+  reads all-zero unless a test stubs it — `dockview.test`'s live floating re-drag/resize sync tests assign a replacement
   `getBoundingClientRect` directly onto the floating panel's `group.element`, then fire
   `(api as any).component._bufferOnDidLayoutChange.fire()` and `await Promise.resolve()` twice
   (the `AsapEvent` microtask hop) rather than simulating a real resize-handle/title-bar drag.
