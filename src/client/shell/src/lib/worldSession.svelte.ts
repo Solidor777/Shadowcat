@@ -401,15 +401,18 @@ export class WorldSession {
     if (!this.#ws) return Promise.reject(new Error("not connected"));
     const p = this.#ws.moveRequest(scene, tokenId, path);
     // An observability signal derived from THIS SAME promise without altering its
-    // resolution for the caller. `MoveOutcome.truncated` never crosses the
-    // wire, so this infers from geometry instead: `stream.stop` is the mover's own exact,
-    // unclipped resting position, compared against the requested goal.
+    // resolution for the caller. Derived from geometry, NOT from the frame's `truncated`
+    // flag, because the two answer different questions: `stream.stop` is the mover's own
+    // exact, unclipped resting position, compared against the requested goal.
     // "executed" = stop reached the requested goal POSITION. Note this is reached-goal, not
     // "not truncated": a region ARREST landing exactly on the final cell also sets the
     // server's `MoveOutcome.truncated = true` while `stop` still equals the goal (`execute_move`:
     // arrest stops AT cell entry, so `stop_index == path.len()-1` on a final-step arrest) — the
     // token DID reach the goal, only further movement from there is barred, so this reads
     // "executed" by design (see the dedicated regression test below for this exact case).
+    // A consumer wanting "was the traversal cut short", arrest-at-goal INCLUDED, must read
+    // `MoveStream.truncated` instead — the authoritative flag, which no geometry can
+    // reconstruct. It is `null` for a clipped observer and populated only for the mover/GM.
     // "truncated" = stop landed SHORT of the goal — a wall/mask/impassable-region gate cut the
     // move off before it arrived.
     const goal = path.at(-1) ?? null;

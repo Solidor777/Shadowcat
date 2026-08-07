@@ -200,8 +200,9 @@ pub(crate) struct MoveOutcome {
     /// `true` when the move stopped before `path.last()` — wall, mask, region-impassable, OR
     /// region-arrest, including a region-arrest on the FINAL step (where `stop_index ==
     /// path.len()-1` would make the index comparison alone report false; a `stopped_early`
-    /// bool ensures that case is reported correctly).
-    #[allow(dead_code)]
+    /// bool ensures that case is reported correctly). Threaded onto the `MoveStream` wire
+    /// frame via `MoveExecution::truncated`, and trusted-only there: a clipped observer
+    /// receives `None`.
     pub truncated: bool,
     /// Total terrain-weighted cost accumulated over the walked prefix. Not consumed by any
     /// per-turn movement-budget cap (none exists yet); exposed for the wire and future use.

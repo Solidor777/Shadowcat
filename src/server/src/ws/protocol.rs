@@ -507,6 +507,17 @@ pub enum ServerMsg {
         /// clipped `samples` don't show, and disclosing it would let an observer detect hidden
         /// terrain by comparing the visible portion of the move against the reported total.
         cost: Option<f64>,
+        /// `true` when the move stopped before the requested goal — wall, mask,
+        /// region-impassable, or region-arrest. The authoritative answer: a client cannot
+        /// derive it from `stop` alone, because a region-arrest on the FINAL step ends the
+        /// move AT the goal coordinate and so is indistinguishable from an untruncated move
+        /// by geometry.
+        /// `Some(flag)` for the mover and a GM (trusted, full information); `None` for a
+        /// clipped observer, on the same grounds as `cost` — the observer's `samples` and
+        /// `stop` are already clipped to what they witnessed, so a truthful `truncated` would
+        /// disclose whether anything blocked the token BEYOND their vision, revealing the
+        /// presence of a wall or a `gm_only` region they cannot see.
+        truncated: Option<bool>,
     },
 }
 
@@ -790,6 +801,7 @@ mod protocol_tests {
             samples: in_samples.clone(),
             mover_vision: in_vision.clone(),
             cost: Some(3.5),
+            truncated: Some(true),
         };
         let wire = serde_json::to_string(&msg).unwrap();
         // Tag must be snake_case.
@@ -808,6 +820,7 @@ mod protocol_tests {
                 samples,
                 mover_vision,
                 cost,
+                truncated,
             } => {
                 assert_eq!(request_id, Uuid::from_u128(1));
                 assert_eq!(token_id, Uuid::from_u128(2));
@@ -819,6 +832,11 @@ mod protocol_tests {
                 assert_eq!(samples, in_samples);
                 assert_eq!(mover_vision, in_vision);
                 assert_eq!(cost, Some(3.5), "mover/GM path: cost is disclosed");
+                assert_eq!(
+                    truncated,
+                    Some(true),
+                    "mover/GM path: truncation is disclosed"
+                );
             }
             _ => panic!("expected MoveStream"),
         }
@@ -838,12 +856,16 @@ mod protocol_tests {
             samples: in_samples2,
             mover_vision: None,
             cost: None,
+            truncated: None,
         };
         let wire2 = serde_json::to_string(&msg_no_vision).unwrap();
         let back2: ServerMsg = serde_json::from_str(&wire2).unwrap();
         match back2 {
             ServerMsg::MoveStream {
-                mover_vision, cost, ..
+                mover_vision,
+                cost,
+                truncated,
+                ..
             } => {
                 assert_eq!(
                     mover_vision, None,
@@ -853,6 +875,12 @@ mod protocol_tests {
                     cost, None,
                     "observer path: cost must round-trip as None (secrecy: must not disclose \
                      authoritative cost, which may reflect secret terrain, to an observer)"
+                );
+                assert_eq!(
+                    truncated, None,
+                    "observer path: truncated must round-trip as None (secrecy: a truthful flag \
+                     answers whether anything stopped the token BEYOND the observer's clipped \
+                     view, disclosing a wall or gm_only region they cannot see)"
                 );
             }
             _ => panic!("expected MoveStream"),

@@ -806,6 +806,9 @@ async fn handle_move_request(
                 // nulls it per recipient at egress for a clipped observer (secrecy: see
                 // `ServerMsg::MoveStream.cost` doc).
                 cost: Some(exec.cost),
+                // Same trusted-only treatment as `cost`: full value in-process, nulled per
+                // recipient at egress for a clipped observer.
+                truncated: Some(exec.truncated),
             };
             room.broadcast_aux(frame);
             // No success frame to the requester: the broadcast is the notification.
@@ -975,6 +978,7 @@ async fn clip_move_stream(
         samples,
         mover_vision: _, // forwarded only to the mover via msg.clone(); observers get None
         cost,
+        truncated,
     } = msg
     else {
         return None;
@@ -1001,6 +1005,7 @@ async fn clip_move_stream(
         samples: samples.clone(),
         mover_vision: None,
         cost: *cost,
+        truncated: *truncated,
     };
 
     // Choose whose authoritative vision this recipient's samples are clipped against — or
@@ -1090,6 +1095,13 @@ async fn clip_move_stream(
         // engine-agnostic (grid or continuous), because a continuous weighted cost may
         // reflect gm_only terrain.
         cost: None,
+        // INVARIANT (no-truncation-leak): same whole-move-scalar rule as `cost`. The
+        // observer's `samples` and `stop` are already clipped to what they witnessed, so a
+        // truthful `truncated` would answer a question their clipped view cannot: whether
+        // anything stopped the token BEYOND their vision. Disclosing it reveals the presence
+        // of a wall or a `gm_only` region they cannot see — and a region-arrest on the final
+        // step is invisible to geometry, so this flag is the ONLY channel carrying it.
+        truncated: None,
     })
 }
 
@@ -3582,6 +3594,7 @@ mod tests {
             samples: samples.clone(),
             mover_vision: mv.clone(),
             cost: Some(2.0),
+            truncated: Some(false),
         };
 
         let result = clip_move_stream(&frame, &ctx, None, &room).await;
@@ -3636,6 +3649,7 @@ mod tests {
             ],
             mover_vision: None,
             cost: Some(2.0),
+            truncated: Some(false),
         };
 
         let result = clip_move_stream(&frame, &obs_ctx, None, &room).await;
@@ -3687,6 +3701,7 @@ mod tests {
             ],
             mover_vision: None,
             cost: Some(2.0),
+            truncated: Some(false),
         };
 
         let result = clip_move_stream(&frame, &obs_ctx, None, &room).await;
@@ -3781,6 +3796,7 @@ mod tests {
             ],
             mover_vision: None,
             cost: Some(3.0),
+            truncated: Some(false),
         };
 
         let result = clip_move_stream(&frame, &obs_ctx, None, &room).await;
@@ -3796,6 +3812,7 @@ mod tests {
                 stop: out_stop,
                 duration_ms: out_duration_ms,
                 cost,
+                truncated,
                 ..
             } => {
                 assert_eq!(
@@ -3819,6 +3836,10 @@ mod tests {
                     "duration_ms must be clipped to last visible sample t_ms (0 ms), got {out_duration_ms}"
                 );
                 assert_eq!(cost, None, "cost must be nulled for a clipped observer");
+                assert_eq!(
+                    truncated, None,
+                    "truncated must be nulled for a clipped observer"
+                );
             }
             other => panic!("expected MoveStream, got {other:?}"),
         }
@@ -3863,6 +3884,7 @@ mod tests {
             ],
             mover_vision: None,
             cost: Some(2.0),
+            truncated: Some(false),
         };
 
         let result = clip_move_stream(&frame, &obs_ctx, None, &room).await;
@@ -3935,6 +3957,7 @@ mod tests {
             samples: samples.clone(),
             mover_vision: mv,
             cost: Some(2.0),
+            truncated: Some(false),
         };
 
         let result = clip_move_stream(&frame, &gm_ctx, None, &room).await;
@@ -4011,6 +4034,7 @@ mod tests {
             ],
             mover_vision: None,
             cost: Some(2.0),
+            truncated: Some(false),
         };
 
         // GM previewing as `target`.
@@ -4027,6 +4051,7 @@ mod tests {
                 stop: out_stop,
                 duration_ms: out_duration_ms,
                 cost,
+                truncated,
                 ..
             } => {
                 assert_eq!(
@@ -4050,6 +4075,10 @@ mod tests {
                 assert_eq!(
                     cost, None,
                     "cost nulled for a clipped see-as preview (same secrecy as a real observer)"
+                );
+                assert_eq!(
+                    truncated, None,
+                    "truncated nulled for a clipped see-as preview (same secrecy as a real observer)"
                 );
             }
             other => panic!("expected MoveStream, got {other:?}"),
@@ -4102,6 +4131,7 @@ mod tests {
             samples: samples.clone(),
             mover_vision: None,
             cost: Some(2.0),
+            truncated: Some(false),
         };
 
         let result = clip_move_stream(&frame, &gm_ctx, Some(target_ctx), &room).await;
@@ -4164,6 +4194,7 @@ mod tests {
             ],
             mover_vision: None,
             cost: Some(2.0),
+            truncated: Some(false),
         };
 
         let result = clip_move_stream(&frame, &gm_ctx, Some(target_ctx), &room).await;

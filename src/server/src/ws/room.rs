@@ -46,6 +46,11 @@ pub(crate) struct MoveExecution {
     /// Total terrain-weighted cost accumulated over the walked prefix, from
     /// `move_exec::MoveOutcome::cost`. Threaded onto the `MoveStream` wire frame downstream.
     pub cost: f64,
+    /// `true` when the move stopped before the requested goal, from
+    /// `move_exec::MoveOutcome::truncated`. Threaded onto the `MoveStream` wire frame
+    /// downstream, where it is trusted-only (`None` for a clipped observer) for the same
+    /// reason as `cost`.
+    pub truncated: bool,
 }
 
 /// Ring-buffer event cap (hot-resync depth).
@@ -701,6 +706,10 @@ impl Room {
                 // mover — here None signals stop == start, not an Unrestricted restriction.
                 mover_vision: None,
                 cost: 0.0,
+                // Not hardcoded false: this branch is reached only when the very first step
+                // was blocked, so the outcome is truncated. Reading it keeps the wire signal
+                // derived from the executor rather than restated here.
+                truncated: outcome.truncated,
             });
         }
 
@@ -756,6 +765,7 @@ impl Room {
             samples,
             mover_vision,
             cost: outcome.cost,
+            truncated: outcome.truncated,
         })
     }
 

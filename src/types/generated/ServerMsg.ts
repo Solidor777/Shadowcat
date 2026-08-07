@@ -278,4 +278,17 @@ mover_vision: Array<VisionSample> | null,
  * clipped `samples` don't show, and disclosing it would let an observer detect hidden
  * terrain by comparing the visible portion of the move against the reported total.
  */
-cost: number | null, };
+cost: number | null, 
+/**
+ * `true` when the move stopped before the requested goal — wall, mask,
+ * region-impassable, or region-arrest. The authoritative answer: a client cannot
+ * derive it from `stop` alone, because a region-arrest on the FINAL step ends the
+ * move AT the goal coordinate and so is indistinguishable from an untruncated move
+ * by geometry.
+ * `Some(flag)` for the mover and a GM (trusted, full information); `None` for a
+ * clipped observer, on the same grounds as `cost` — the observer's `samples` and
+ * `stop` are already clipped to what they witnessed, so a truthful `truncated` would
+ * disclose whether anything blocked the token BEYOND their vision, revealing the
+ * presence of a wall or a `gm_only` region they cannot see.
+ */
+truncated: boolean | null, };
