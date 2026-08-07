@@ -148,8 +148,12 @@ jobs:
 
   # Docs pipeline: portal + generated references assembled and link-checked.
   # Single-OS: the docs site is a build artifact, not platform-gated code; the
-  # rust matrix already proves the crate compiles per-OS. The two report steps
-  # are warn-tier (exit 0) until the sweep phases ratchet lints to deny.
+  # rust matrix already proves the crate compiles per-OS.
+  #
+  # Every step here is a gate. None is informational and none is warn-tier: a
+  # check that reports a violation without failing grandfathers whatever existed
+  # when it was added, and a grandfathered violation is indistinguishable to
+  # every later reader from code that was checked and passed.
   docs:
     runs-on: ubuntu-latest
     steps:
@@ -166,18 +170,23 @@ jobs:
       # docs:build starts with the client build (rust-embed needs dist/ before
       # cargo doc), then typedoc, cargo doc, vitepress, assembly + link check.
       - run: pnpm docs:build
-      - name: Doc-coverage report (TS, informational)
+      - name: Function doc coverage (TS)
         run: pnpm lint:docs
-      - name: Doc-coverage report (Rust, informational)
-        run: cargo clippy --manifest-path src/server/Cargo.toml --all-targets -- -W missing-docs -W clippy::missing-docs-in-private-items
-      # Example-presence report: rustdoc's missing_doc_code_examples lint is
-      # nightly-only; -W keeps it warn-tier (exit 0). continue-on-error covers
-      # nightly toolchain breakage (spec degradation clause: non-blocking until repaired).
+      - name: Property and type doc coverage (TS)
+        run: pnpm lint:props
+      - name: No ephemeral references in code comments
+        run: pnpm lint:comments
+      - name: Doc examples typecheck (TS)
+        run: pnpm docs:check-examples
+      - name: Doc coverage (Rust)
+        run: cargo clippy --manifest-path src/server/Cargo.toml --all-targets -- -D missing-docs -D clippy::missing-docs-in-private-items
+      # rustdoc's missing_doc_code_examples lint is nightly-only, so this step needs the nightly
+      # toolchain. It denies rather than warns: the lint being nightly-gated bears on which
+      # toolchain runs it, not on whether a missing example is acceptable.
       - uses: dtolnay/rust-toolchain@nightly
-      - name: Example-presence report (Rust, nightly, informational)
-        continue-on-error: true
+      - name: Doc examples present (Rust)
         env:
-          RUSTDOCFLAGS: "-W rustdoc::missing_doc_code_examples"
+          RUSTDOCFLAGS: "-D rustdoc::missing_doc_code_examples"
         run: cargo +nightly doc --manifest-path src/server/Cargo.toml --document-private-items --no-deps --target-dir target/nightly-doc
       - name: Upload docs site
         uses: actions/upload-artifact@v4

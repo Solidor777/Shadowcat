@@ -25,8 +25,11 @@ const BANNED = [
     why: "Superseded: cite a SYMBOL, never a file path or line number. A line number is invalidated by any edit above it, and nothing detects that.",
   },
   {
-    pattern: /all 1[0-5] rules/i,
-    why: "Superseded: a brief must not state how many rules exist. The count changes as rules are added, and a brief carrying a stale one instructs an implementer to apply a subset.",
+    // Any count, not a range of known-stale ones: a pattern encoding which counts are currently
+    // wrong asserts what the current count is, so it must be widened every time the set grows and
+    // goes quiet — still passing — when it is not.
+    pattern: /all \d+ rules\b/i,
+    why: "A brief must not state how many rules exist. Every count expires as rules are added, and a brief carrying a stale one instructs an implementer to apply a subset and report success.",
   },
 ];
 

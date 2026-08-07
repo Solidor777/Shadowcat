@@ -1,13 +1,12 @@
-// Property/type/named-arrow doc-coverage lint. A SEPARATE ESLint invocation
-// from eslint.docs.config.js, not an extension of it: that file's ratcheted
-// `.ts`/`.svelte` blocks carry `files` globs byte-identical to their
-// warn-tier siblings, so flat config's later-block-wins-per-rule-key
-// semantics make its warn tier fully SHADOWED — adding a new context to its
-// shared `rulesAt` would land at `error`, repo-wide, immediately, with no way
-// to stage a burn-down. This file exists so that shadowing cannot happen: its
-// own `rulesAt`-shaped severity function feeds its own independent
-// warn/ratcheted block pair, with no interaction with eslint.docs.config.js's
-// rule keys at all.
+// Property/type/named-arrow doc-coverage lint.
+//
+// Every rule is an error. There is no advisory tier: a warning is a violation that ships, and it
+// is indistinguishable to every later reader from code that was checked and passed.
+//
+// A SEPARATE ESLint invocation from eslint.docs.config.js, not an extension of it. Both configs
+// set the same rule KEYS with different `contexts` lists, and flat config resolves a key to the
+// last block that sets it — merged into one config, whichever block came later would silently
+// replace the other's context list, dropping that coverage with no error and no output change.
 import jsdoc from "eslint-plugin-jsdoc";
 import tseslint from "typescript-eslint";
 import svelteParser from "svelte-eslint-parser";
@@ -55,13 +54,13 @@ const PARAM_RETURN_CONTEXTS = ["TSMethodSignature", ...ARROW_CONTEXTS];
 // (FunctionDeclaration/ClassDeclaration/MethodDefinition) is explicitly
 // `false` here — this config gates only the twelve contexts above, so the two
 // configs never both assert requirements about the same construct. Declining
-// `ArrowFunctionExpression`/`FunctionExpression` mirrors eslint.docs.config.js's
-// own choice to leave them unrequired there too (`eslint.docs.config.js:19-20`)
-// rather than duplicating a requirement that file already enforces — this
-// config introduces no requirement on the bare selectors either way; its
-// ARROW_CONTEXTS entries reach only the four narrow, named-binding paths.
-const rulesAt = (sev) => ({
-  "jsdoc/require-jsdoc": [sev, {
+// `ArrowFunctionExpression`/`FunctionExpression` mirrors the function-doc gate's
+// own choice to leave them unrequired, rather than duplicating a requirement
+// that gate already enforces — this config introduces no requirement on the
+// bare selectors either way; its ARROW_CONTEXTS entries reach only the four
+// narrow, named-binding paths.
+const RULES = {
+  "jsdoc/require-jsdoc": ["error", {
     require: {
       FunctionDeclaration: false,
       MethodDefinition: false,
@@ -77,26 +76,22 @@ const rulesAt = (sev) => ({
   // would keep these three rules blind to all twelve contexts above if left
   // implicit — losing that default's function coverage inside THIS config is
   // fine, because eslint.docs.config.js already enforces it at `error`.
-  "jsdoc/require-description": [sev, { contexts: ALL_CONTEXTS }],
-  "jsdoc/require-param": [sev, { contexts: PARAM_RETURN_CONTEXTS }],
-  "jsdoc/require-param-description": [sev, { contexts: PARAM_RETURN_CONTEXTS }],
-  "jsdoc/require-returns": [sev, { contexts: PARAM_RETURN_CONTEXTS }],
+  "jsdoc/require-description": ["error", { contexts: ALL_CONTEXTS }],
+  "jsdoc/require-param": ["error", { contexts: PARAM_RETURN_CONTEXTS }],
+  "jsdoc/require-param-description": ["error", { contexts: PARAM_RETURN_CONTEXTS }],
+  "jsdoc/require-returns": ["error", { contexts: PARAM_RETURN_CONTEXTS }],
   // Deliberately NOT extended to any of the twelve contexts: an `@example` on
-  // each of ~1222 interface properties is noise, not documentation, and would
-  // inflate `docs:check-examples`'s compiled-example count for no reader
-  // value. Stays on the plugin's function-shaped default list only.
-  "jsdoc/require-example": [sev, { exemptNoArguments: false }],
-});
+  // every interface property is noise, not documentation, and would inflate
+  // `docs:check-examples`'s compiled-example count for no reader value. Stays
+  // on the plugin's function-shaped default list only.
+  "jsdoc/require-example": ["error", { exemptNoArguments: false }],
+};
 
-const RULES = rulesAt("warn");
-
-// Same caveat as eslint.docs.config.js: these rules gate on tag PRESENCE
-// only. They cannot detect a vacuous tag, an orphaned second block, or a
-// property doc that restates the field name. With 1436 property/type/arrow
-// warnings measured under this config (`pnpm lint:props`), a restated-name
-// doc is the dominant risk, not a footnote — a clean run here is evidence
-// the tags exist, never that the docs are good.
-const RULES_RATCHETED = rulesAt("error");
+// These rules gate on tag PRESENCE only. They cannot detect a vacuous tag, an
+// orphaned second block, or a property doc that restates the field name — the
+// dominant risk here, since a property's name and its description are so easily
+// the same words. A clean run is evidence the tags exist, never that the docs
+// are good.
 
 export default [
   {
@@ -111,25 +106,6 @@ export default [
     languageOptions: { parser: tseslint.parser },
     plugins: { jsdoc, "@typescript-eslint": tseslint.plugin },
     rules: RULES,
-  },
-  // Ratcheted `.ts`: starts with a glob matching NO real file (flat config
-  // rejects an empty `files` array outright). A later burn-down replaces this
-  // placeholder with each package's real glob as it reaches zero under the
-  // warn tier above. This block's `files` must stay an enumerated subset,
-  // NEVER widened to match the warn block's broad glob — that byte-identical
-  // widening is exactly what shadows eslint.docs.config.js's own warn tier
-  // (see the top-of-file comment). This file's contexts are meant to end up
-  // merged into eslint.docs.config.js and this file deleted, once every
-  // package is clean — not to reach that same widened-glob state on its own.
-  {
-    files: ["__sweep13_ratchet_placeholder__/**/*.ts"],
-    ignores: [
-      "**/node_modules/**", "**/dist/**", "**/*.test.ts", "**/*.spec.ts", "**/vitest.setup.ts",
-      "src/types/generated/**",
-    ],
-    languageOptions: { parser: tseslint.parser },
-    plugins: { jsdoc, "@typescript-eslint": tseslint.plugin },
-    rules: RULES_RATCHETED,
   },
   // Mirrors eslint.docs.config.js's hooks.ts exemption: a registered-but-
   // ruleless plugin makes an inline eslint-disable naming its rules dead
@@ -148,19 +124,5 @@ export default [
     },
     plugins: { jsdoc },
     rules: RULES,
-  },
-  // Ratcheted `.svelte`: same placeholder rationale, and the same
-  // never-widen-to-match-the-warn-glob constraint, as the `.ts` ratchet
-  // above. A package with components needs BOTH this block and the `.ts`
-  // ratchet updated together, or its components stay silently advisory.
-  {
-    files: ["__sweep13_ratchet_placeholder__/**/*.svelte"],
-    ignores: ["**/node_modules/**", "**/dist/**"],
-    languageOptions: {
-      parser: svelteParser,
-      parserOptions: { parser: tseslint.parser },
-    },
-    plugins: { jsdoc },
-    rules: RULES_RATCHETED,
   },
 ];

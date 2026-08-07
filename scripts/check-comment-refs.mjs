@@ -134,7 +134,12 @@ const covers = argv.flatMap((a, i) => (a === "--cover" ? [argv[i + 1]] : [])).fi
 
 /** Repo-relative path with forward slashes, so a scope reads the same on every platform. */
 const norm = (p) => p.split("\\").join("/");
-const inScope = (p) => scopes.length === 0 || scopes.some((s) => p.startsWith(norm(s)));
+
+// Prefix matching is path-boundary-aware: a raw `startsWith` makes "src/modules/chat" also claim
+// "src/modules/chat-card", silently pulling a sibling directory into a scope that never named it.
+// The over-match is invisible — the count is simply larger, and larger reads as more thorough.
+const under = (p, prefix) => p === norm(prefix) || p.startsWith(norm(prefix) + "/");
+const inScope = (p) => scopes.length === 0 || scopes.some((s) => under(p, s));
 
 const scanned = [...ROOTS.flatMap(sources), ...rootFiles()].map(norm).filter(inScope);
 const hits = [];
@@ -188,6 +193,10 @@ const INSTRUMENT = createHash("sha256")
       ROOTS,
       EXTS,
       [...SKIP_DIRS].sort(),
+      // The scope-matching rule is part of the ruler: changing what a prefix claims changes every
+      // scoped count without touching a pattern. Hashing the function's source keeps the
+      // fingerprint honest without anyone remembering to bump a version.
+      under.toString(),
     ]),
   )
   .digest("hex")
@@ -271,7 +280,7 @@ if (covers.length > 0) {
   const problems = [];
 
   for (const prefix of covers) {
-    const matched = scanned.filter((p) => p.startsWith(norm(prefix)));
+    const matched = scanned.filter((p) => under(p, prefix));
     if (matched.length === 0) {
       problems.push(`EMPTY    "${prefix}" matches no file. A typo reads as an empty slice.`);
     }
