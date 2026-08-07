@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { applyOp, defaultLayout, locate, placeNewRegistrations, prune, type PanelLayoutV1 } from "./tree";
+import {
+  applyOp,
+  defaultLayout,
+  locate,
+  placeNewRegistrations,
+  prune,
+  type LayoutOp,
+  type PanelLayoutV1,
+} from "./tree";
 
 const REGS = [
   { id: "chat", placement: { kind: "docked" as const, zone: "right" as const } },
@@ -199,7 +207,7 @@ describe("invariant: at most one location", () => {
   });
 
   it("random op sequences never place an id in two locations at once", () => {
-    const ops: Array<() => object> = [
+    const ops: Array<() => LayoutOp> = [
       () => ({ op: "dock", id: "assets", zone: "right", group: "new" }),
       () => ({ op: "dock", id: "assets", zone: "bottom", group: 0 }),
       () => ({ op: "float", id: "assets", rect: { x: 1, y: 2, w: 3, h: 4 } }),
@@ -212,8 +220,7 @@ describe("invariant: at most one location", () => {
     // Deterministic pseudo-random walk (seeded index sequence) — reproducible, not corpus-based.
     const seq = [0, 3, 1, 2, 4, 5, 6, 3, 2, 4, 0, 5, 1, 6, 3];
     for (const i of seq) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      l = applyOp(l, ops[i]() as any);
+      l = applyOp(l, ops[i]());
       const loc = locate(l, "assets");
       const count =
         (loc.where === "docked" ? 1 : 0) +
@@ -525,7 +532,7 @@ describe("prune", () => {
 });
 
 describe("every op is total (no throw on any prior location)", () => {
-  const ALL_OPS: object[] = [
+  const ALL_OPS: LayoutOp[] = [
     { op: "open", id: "ghost" },
     { op: "close", id: "ghost" },
     { op: "dock", id: "ghost", zone: "right", group: "new" },
@@ -543,8 +550,7 @@ describe("every op is total (no throw on any prior location)", () => {
   it("applies every op against a fresh empty layout without throwing", () => {
     for (const o of ALL_OPS) {
       const l = defaultLayout([]);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      expect(() => applyOp(l, o as any)).not.toThrow();
+      expect(() => applyOp(l, o)).not.toThrow();
     }
   });
 });
@@ -576,7 +582,7 @@ describe("every op is total against a POPULATED layout (not just a fresh empty o
     }
   }
 
-  const OPS_ON_POPULATED: object[] = [
+  const OPS_ON_POPULATED: LayoutOp[] = [
     { op: "open", id: "p6" },
     { op: "close", id: "p3" },
     { op: "dock", id: "p5", zone: "right", group: "new" },
@@ -602,8 +608,7 @@ describe("every op is total against a POPULATED layout (not just a fresh empty o
     for (const o of OPS_ON_POPULATED) {
       const l = populated();
       let l2!: PanelLayoutV1;
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      expect(() => (l2 = applyOp(l, o as any))).not.toThrow();
+      expect(() => (l2 = applyOp(l, o))).not.toThrow();
       assertOneLocationInvariant(l2);
     }
   });

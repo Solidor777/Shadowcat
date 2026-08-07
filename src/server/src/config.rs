@@ -160,10 +160,9 @@ impl Config {
     /// let cfg = Config::load(Cli::default()).expect("config layering");
     /// assert!(!cfg.bind.is_empty());
     /// ```
-    // Boot-only call; figment::Error is third-party and large by value, so the
-    // large-Result cost is irrelevant here.
-    #[allow(clippy::result_large_err)]
-    pub fn load(cli: Cli) -> Result<Self, figment::Error> {
+    // Boxed: figment::Error is third-party and large by value, so returning it inline
+    // would widen every Result in the boot path to that error's size.
+    pub fn load(cli: Cli) -> Result<Self, Box<figment::Error>> {
         let config_path = cli
             .config
             .clone()

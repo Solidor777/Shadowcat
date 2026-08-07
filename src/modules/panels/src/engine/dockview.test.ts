@@ -3,7 +3,54 @@ import { defaultLayout, applyOp, type LayoutOp, type PanelLayoutV1 } from "../la
 import { DockviewEngine } from "./dockview";
 import { STAGE_ID } from "./policy";
 import { silentLogger, type PanelMeta } from "@shadowcat/core";
-import type { DockviewApi, DockviewWillDropEvent, IDockviewGroupPanel } from "dockview-core";
+import type {
+  DockviewApi,
+  DockviewWillDropEvent,
+  IDockviewGroupPanel,
+  IDockviewPanel,
+} from "dockview-core";
+
+/** A dockview-core internal event emitter. These are regular (non-`#`-private) class
+ * fields, so a structural declaration reaches them without the library exposing them. */
+interface InternalEmitter<T> {
+  fire(payload: T): void;
+}
+
+/** The subset of `DockviewWillDropEvent` the engine's own drop listener reads. Tests
+ * construct exactly this and push it through the internal emitter, exercising the same
+ * listener path a real drop takes. */
+interface WillDropProbe {
+  kind: DockviewWillDropEvent["kind"];
+  position: DockviewWillDropEvent["position"];
+  panel: IDockviewPanel | undefined;
+  group: IDockviewGroupPanel | undefined;
+  getData: () => { viewId: string; groupId: string; panelId: string | null };
+  readonly defaultPrevented: boolean;
+  preventDefault: () => void;
+}
+
+/** `DockviewComponent` internals. Declaring the reached members narrowly keeps the
+ * dependency checkable: a dockview upgrade that renames one fails at this declaration
+ * rather than passing an untyped value through every call site. */
+interface ComponentInternals {
+  _onWillDrop: InternalEmitter<WillDropProbe>;
+  _bufferOnDidLayoutChange: InternalEmitter<void>;
+}
+
+/** Group-level internals, reached per group rather than through the component. */
+interface GroupModelInternals {
+  _onWillDrop: InternalEmitter<WillDropProbe>;
+}
+interface GroupApiInternals {
+  _onDidDimensionChange: InternalEmitter<{ width: number; height: number }>;
+}
+
+const componentOf = (api: DockviewApi): ComponentInternals =>
+  (api as unknown as { component: ComponentInternals }).component;
+const modelOf = (group: IDockviewGroupPanel): GroupModelInternals =>
+  group.model as unknown as GroupModelInternals;
+const apiOf = (group: IDockviewGroupPanel): GroupApiInternals =>
+  group.api as unknown as GroupApiInternals;
 
 let engine: DockviewEngine | null = null;
 // Hosts appended to `document.body` for focus-management tests (jsdom only
@@ -162,11 +209,11 @@ function fireWillDrop(
     position: DockviewWillDropEvent["position"];
     panelId: string | null;
     groupId: string;
-    group: unknown;
+    group: IDockviewGroupPanel;
   }>,
 ): { defaultPrevented: boolean } {
   let prevented = false;
-  const event = {
+  const event: WillDropProbe = {
     kind: overrides.kind ?? "edge",
     position: overrides.position ?? "top",
     panel: undefined,
@@ -179,8 +226,7 @@ function fireWillDrop(
       prevented = true;
     },
   };
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (engine.debugApi as any).component._onWillDrop.fire(event);
+  componentOf(engine.debugApi!)._onWillDrop.fire(event);
   return event;
 }
 
@@ -373,7 +419,7 @@ test("group-onto-group: a whole-group transfer targeting an existing group's con
   engine.onOp((op) => ops.push(op));
 
   let prevented = false;
-  const event = {
+  const event: WillDropProbe = {
     kind: "content",
     position: "center",
     panel: undefined,
@@ -388,8 +434,7 @@ test("group-onto-group: a whole-group transfer targeting an existing group's con
       prevented = true;
     },
   };
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (chatGroup.model as any)._onWillDrop.fire(event);
+  modelOf(chatGroup)._onWillDrop.fire(event);
 
   expect(prevented).toBe(true);
   expect(ops).toEqual([{ op: "dock", id: "assets", zone: "right", group: 0, tabIndex: 1 }]);
@@ -424,7 +469,7 @@ test("group-onto-group: a whole-group transfer targeting a SPECIFIC tab-strip po
   engine.onOp((op) => ops.push(op));
 
   let prevented = false;
-  const event = {
+  const event: WillDropProbe = {
     kind: "tab",
     position: "center",
     // A real tab-strip drop target: "p2" is the tab the pointer is hovering
@@ -441,8 +486,7 @@ test("group-onto-group: a whole-group transfer targeting a SPECIFIC tab-strip po
       prevented = true;
     },
   };
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (chatGroup.model as any)._onWillDrop.fire(event);
+  modelOf(chatGroup)._onWillDrop.fire(event);
 
   expect(prevented).toBe(true);
   // Both dragged tabs land at consecutive indices starting at "p2"'s
@@ -478,7 +522,7 @@ test("group-onto-group: an ALLOWED single-panel drop onto an existing group's co
   engine.onOp((op) => ops.push(op));
 
   let prevented = false;
-  const event = {
+  const event: WillDropProbe = {
     kind: "content",
     position: "center",
     panel: undefined,
@@ -493,8 +537,7 @@ test("group-onto-group: an ALLOWED single-panel drop onto an existing group's co
       prevented = true;
     },
   };
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (chatGroup.model as any)._onWillDrop.fire(event);
+  modelOf(chatGroup)._onWillDrop.fire(event);
 
   expect(prevented).toBe(true);
   expect(ops).toHaveLength(1);
@@ -538,7 +581,7 @@ test("no spurious close op: an ALLOWED cross-group drop, applied through the red
   const ops: LayoutOp[] = [];
   engine.onOp((op) => ops.push(op));
 
-  const event = {
+  const event: WillDropProbe = {
     kind: "content",
     position: "center",
     panel: undefined,
@@ -549,8 +592,7 @@ test("no spurious close op: an ALLOWED cross-group drop, applied through the red
     },
     preventDefault() {},
   };
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (chatGroup.model as any)._onWillDrop.fire(event);
+  modelOf(chatGroup)._onWillDrop.fire(event);
 
   // Apply the emitted op, mirroring the real controller — this drives the
   // reconcile that actually performs the cross-group move.
@@ -581,10 +623,8 @@ test("a group's live dimension change emits resizeZone + resizeGroup ops with sa
   const chatGroup = engine.debugApi!.getPanel("chat")!.group;
   const notesGroup = engine.debugApi!.getPanel("notes")!.group;
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (notesGroup.api as any)._onDidDimensionChange.fire({ width: 320, height: 150 });
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (chatGroup.api as any)._onDidDimensionChange.fire({ width: 320, height: 300 });
+  apiOf(notesGroup)._onDidDimensionChange.fire({ width: 320, height: 150 });
+  apiOf(chatGroup)._onDidDimensionChange.fire({ width: 320, height: 300 });
 
   const resizeZoneOps = ops.filter((o): o is Extract<LayoutOp, { op: "resizeZone" }> => o.op === "resizeZone");
   const resizeGroupOps = ops.filter((o): o is Extract<LayoutOp, { op: "resizeGroup" }> => o.op === "resizeGroup");
@@ -620,8 +660,7 @@ test("dimension changes synchronously triggered from inside apply() are NOT emit
   // a genuine mid-`apply()` window, not merely "nothing happened to fire".
   const unsub = engine.debugApi!.onDidActivePanelChange((event) => {
     if (event.panel?.id !== "notes") return;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (event.panel.group.api as any)._onDidDimensionChange.fire({ width: 500, height: 500 });
+    apiOf(event.panel.group)._onDidDimensionChange.fire({ width: 500, height: 500 });
   });
 
   layout = applyOp(layout, { op: "dock", id: "notes", zone: "right", group: 0 });
@@ -653,8 +692,7 @@ test("F3: a live drag/resize of an already-floating panel emits a resizeFloating
   groupEl.getBoundingClientRect = () =>
     ({ left: 50, top: 60, width: 220, height: 160, right: 270, bottom: 220, x: 50, y: 60, toJSON: () => ({}) }) as DOMRect;
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (engine.debugApi as any).component._bufferOnDidLayoutChange.fire();
+  componentOf(engine.debugApi!)._bufferOnDidLayoutChange.fire();
   // `onDidLayoutChange` is dockview's `AsapEvent` — listeners run on the next microtask.
   await Promise.resolve();
   await Promise.resolve();
@@ -687,8 +725,7 @@ test("F3: a resizeFloating op's own round trip through apply() does not re-emit 
   groupEl.getBoundingClientRect = () =>
     ({ left: 10, top: 10, width: 200, height: 150, right: 210, bottom: 160, x: 10, y: 10, toJSON: () => ({}) }) as DOMRect;
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (engine.debugApi as any).component._bufferOnDidLayoutChange.fire();
+  componentOf(engine.debugApi!)._bufferOnDidLayoutChange.fire();
   await Promise.resolve();
   await Promise.resolve();
 
