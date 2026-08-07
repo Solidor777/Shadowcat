@@ -42,8 +42,15 @@ const rootFiles = () =>
 // does not apply; this one is neither, and it is the only exemption the scanner has.
 const EXAMPLE_EXEMPT = /\bEXAMPLE:/;
 
-/** A line whose content is a comment. Block-comment bodies are matched via the leading `*`. */
-const COMMENT = /^\s*(\/\/|\*|\/\/\/|\/\/!)/;
+/**
+ * A line whose content is a comment: a line-comment form, a block-comment body via its leading
+ * `*`, or a block-comment OPENING line.
+ *
+ * The opening form is load-bearing and was missing. `/**` matches neither the two-slash forms nor
+ * the leading-star form, so the first line of every doc comment went unscanned — and the first
+ * line is exactly where a summary sentence, and therefore an id or a pointer, tends to sit.
+ */
+const COMMENT = /^\s*(\/\/|\*|\/\*)/;
 
 const BANNED = [
   // A capital M, digits, an optional letter and an optional dashed number are one id shape: the
