@@ -90,7 +90,7 @@ fn route(rule: DiagonalRule, field: &RegionField) -> PathOutcome {
         (50.0, 50.0),
         &[(250.0, 250.0)],
         PathInputs {
-            footprint_radius: 0.1,
+            footprint_radius_cells: 0.1,
             cell: 100.0,
             walls: &[],
             mask: None,

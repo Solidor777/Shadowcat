@@ -1430,7 +1430,7 @@ impl SceneEcs {
                     start,
                     waypoints,
                     pathfinding::PathInputs {
-                        footprint_radius,
+                        footprint_radius_cells: footprint_radius,
                         cell,
                         walls: &walls,
                         mask: mask.as_ref(),
@@ -1465,7 +1465,7 @@ impl SceneEcs {
                         start,
                         waypoints,
                         pathfinding::PathInputs {
-                            footprint_radius,
+                            footprint_radius_cells: footprint_radius,
                             cell,
                             walls: &walls,
                             mask: mask.as_ref(),

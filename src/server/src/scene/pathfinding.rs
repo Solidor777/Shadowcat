@@ -33,27 +33,44 @@ use std::collections::{BTreeSet, BinaryHeap, HashMap};
 /// A grid cell `(i, j)`; cell `(i,j)` covers `[i*cell,(i+1)*cell) × [j*cell,(j+1)*cell)`.
 pub type Cell = (i32, i32);
 
-/// Assembled, borrow-only inputs for one A* search. `mask = None` ⇒ unconstrained (GM or
-/// `unrestricted`); `Some(set)` ⇒ a cell (and every footprint-overlapped cell) must be in the set.
-/// `window` (i0,j0,i1,j1 inclusive) bounds the search so a GM query with an unreachable goal can't
-/// wander unboundedly.
-pub struct PathGrid<'a> {
-    /// Grid cell size in scene units.
-    pub cell: f64,
-    /// Mover footprint radius in CELLS (wall-clearance inflation input).
+/// The caller-supplied half of an A* search: the scene's traversal geometry, the requester's view
+/// of it, and the mover's size. `find` derives the remaining piece — the search `window` — from
+/// `start`/`waypoints`/`walls`, then assembles both into the `PathGrid` its search runs against, so
+/// every field here reaches `cell_enterable`'s per-cell gate unchanged.
+///
+/// INVARIANT: `mask`, `walls` and `regions` are the REQUESTER's view, resolved by the caller
+/// (`SceneEcs::pathfind`) — `mask = None` only for a GM or an `Unrestricted` scene, and `walls`/
+/// `regions` omit whatever tier the requester may not see. `shape` MUST be the same `GridShape`
+/// those three sets were built with; a mask indexed in one coordinate system and tested in another
+/// is not a shared mask.
+pub struct PathInputs<'a> {
+    /// Mover footprint radius in CELLS; `find` rejects anything outside
+    /// `[0, MAX_FOOTPRINT_CELLS]` (NaN and ±Inf included).
     pub footprint_radius_cells: f64,
+    /// Grid cell size in scene units (positive finite).
+    pub cell: f64,
     /// `blocksMove` wall segments a step may not cross.
     pub walls: &'a [vision::Seg],
-    /// Visibility mask: `None` = unconstrained (GM or `Unrestricted`);
-    /// `Some` = every entered (and footprint-overlapped) cell must be in it.
+    /// Visibility mask: `None` = unconstrained (GM or `Unrestricted`); `Some` = every entered
+    /// (and footprint-overlapped) cell must be in it. An empty `Some` set is the fail-closed
+    /// dark-scene freeze, not an absent constraint.
     pub mask: Option<&'a BTreeSet<Cell>>,
-    /// Composed region field (weighting/impassable/arrest); `None` = no regions.
+    /// Composed region field (weighting/impassable/arrest); `None` = no region enforcement.
     pub regions: Option<&'a crate::scene::regions::RegionField>,
-    /// Inclusive `(i0, j0, i1, j1)` search bound (unbounded-wander guard).
-    pub window: (i32, i32, i32, i32),
     /// Cell geometry for this scene (`SquareGrid` or `HexGrid`), resolved by the caller from the
     /// scene's `grid.kind` and passed into `find()`.
     pub shape: &'a dyn crate::scene::grid_shape::GridShape,
+}
+
+/// Assembled, borrow-only inputs for one A* search: the caller-supplied `PathInputs` plus the
+/// search `window` (i0,j0,i1,j1 inclusive) `find` derives so a GM query with an unreachable goal
+/// can't wander unboundedly. Holds `PathInputs` directly rather than restating its fields, so a
+/// field added there reaches `cell_enterable`/`astar_leg` without a second, hand-synchronised copy.
+pub struct PathGrid<'a> {
+    /// Caller-supplied traversal geometry, requester view, and mover size.
+    pub inputs: PathInputs<'a>,
+    /// Inclusive `(i0, j0, i1, j1)` search bound (unbounded-wander guard).
+    pub window: (i32, i32, i32, i32),
 }
 
 /// Center of cell `c` in scene coords.
@@ -101,12 +118,12 @@ pub(crate) fn cell_enterable(grid: &PathGrid, from: Cell, to: Cell) -> bool {
     if to.0 < i0 || to.0 > i1 || to.1 < j0 || to.1 > j1 {
         return false;
     }
-    let r_scene = grid.footprint_radius_cells.max(0.0) * grid.cell;
-    let ctr = grid.shape.cell_center(to);
-    let a = grid.shape.cell_center(from);
+    let r_scene = grid.inputs.footprint_radius_cells.max(0.0) * grid.inputs.cell;
+    let ctr = grid.inputs.shape.cell_center(to);
+    let a = grid.inputs.shape.cell_center(from);
 
     // (1) Footprint disc vs every blocksMove wall.
-    for w in grid.walls {
+    for w in grid.inputs.walls {
         if point_segment_distance(ctr, w.a, w.b) < r_scene {
             return false;
         }
@@ -122,13 +139,17 @@ pub(crate) fn cell_enterable(grid: &PathGrid, from: Cell, to: Cell) -> bool {
     // footprint, the destination footprint disc alone never reaches a diagonal step's corner
     // flanker cells. `None` (degenerate/over-cap span) fails closed: not enterable, mirroring
     // the gate's `None ⇒ Forbidden`.
-    if let Some(mask) = grid.mask {
-        for c in grid.shape.footprint_cells(to, ctr, r_scene, grid.cell) {
+    if let Some(mask) = grid.inputs.mask {
+        for c in grid
+            .inputs
+            .shape
+            .footprint_cells(to, ctr, r_scene, grid.inputs.cell)
+        {
             if !mask.contains(&c) {
                 return false;
             }
         }
-        match grid.shape.line_traversal(a, ctr, grid.cell) {
+        match grid.inputs.shape.line_traversal(a, ctr, grid.inputs.cell) {
             Some(step_cells) => {
                 if !step_cells.iter().all(|c| mask.contains(c)) {
                     return false;
@@ -138,7 +159,7 @@ pub(crate) fn cell_enterable(grid: &PathGrid, from: Cell, to: Cell) -> bool {
         }
     }
     // (3) Center-to-center step clears every wall (reuses the segment-cross predicate).
-    for w in grid.walls {
+    for w in grid.inputs.walls {
         if crate::scene::segments_cross(a, ctr, w.a, w.b) {
             return false;
         }
@@ -150,8 +171,12 @@ pub(crate) fn cell_enterable(grid: &PathGrid, from: Cell, to: Cell) -> bool {
     // position rather than solid geometry it must clear, so they are evaluated once each, in
     // `find()`'s route assembly (arrest truncation) and in `astar_leg`'s step cost (terrain),
     // both keyed on cell-center only — mirroring `move_exec::execute_move`'s existing center-cell model.
-    if let Some(regions) = grid.regions {
-        for c in grid.shape.footprint_cells(to, ctr, r_scene, grid.cell) {
+    if let Some(regions) = grid.inputs.regions {
+        for c in grid
+            .inputs
+            .shape
+            .footprint_cells(to, ctr, r_scene, grid.inputs.cell)
+        {
             if regions.is_impassable(c) {
                 return false;
             }
@@ -174,13 +199,15 @@ mod astar_tests {
                 rule,
             }));
         PathGrid {
-            cell: 100.0,
-            footprint_radius_cells: footprint,
-            walls: &NO_WALLS,
-            mask: None,
-            regions: None,
+            inputs: PathInputs {
+                cell: 100.0,
+                footprint_radius_cells: footprint,
+                walls: &NO_WALLS,
+                mask: None,
+                regions: None,
+                shape,
+            },
             window: (-50, -50, 50, 50),
-            shape,
         }
     }
 
@@ -250,13 +277,15 @@ mod astar_tests {
             rule: DiagonalRule::Chebyshev,
         };
         let g = PathGrid {
-            cell: c,
-            footprint_radius_cells: 0.1,
-            walls: &walls,
-            mask: None,
-            regions: None,
+            inputs: PathInputs {
+                cell: c,
+                footprint_radius_cells: 0.1,
+                walls: &walls,
+                mask: None,
+                regions: None,
+                shape: &shape,
+            },
             window: (-10, -10, 10, 10),
-            shape: &shape,
         };
         assert_eq!(astar_leg(&g, (0, 0), (3, 3), 0), Err(PathFail::Unreachable));
     }
@@ -274,7 +303,7 @@ mod astar_tests {
     fn astar_leg_routes_through_grid_shape_not_hardcoded_dirs() {
         // Same assertions as `chebyshev_diagonal_is_cost_one_per_step`, but this test exists
         // specifically to fail if a future edit reintroduces a hardcoded `dirs`/`step_cost` path
-        // instead of going through `grid.shape.neighbors_with_cost(...)`.
+        // instead of going through `grid.inputs.shape.neighbors_with_cost(...)`.
         let g = open(DiagonalRule::Chebyshev, 0.1);
         let (cells, cost, _p) = astar_leg(&g, (0, 0), (3, 3), 0).unwrap();
         assert!((cost - 3.0).abs() < 1e-9);
@@ -291,13 +320,15 @@ mod astar_tests {
         let shape: &'static crate::scene::grid_shape::HexGrid =
             Box::leak(Box::new(crate::scene::grid_shape::HexGrid { size: 100.0 }));
         PathGrid {
-            cell: 100.0,
-            footprint_radius_cells: footprint,
-            walls: &NO_WALLS,
-            mask: None,
-            regions: None,
+            inputs: PathInputs {
+                cell: 100.0,
+                footprint_radius_cells: footprint,
+                walls: &NO_WALLS,
+                mask: None,
+                regions: None,
+                shape,
+            },
             window: (-50, -50, 50, 50),
-            shape,
         }
     }
 
@@ -314,7 +345,7 @@ mod astar_tests {
             b: (hx, 50.0),
         }];
         let mut g = open_hex(0.1);
-        g.walls = &walls;
+        g.inputs.walls = &walls;
         let (cells, cost, _p) = astar_leg(&g, (0, 0), (2, 0), 0).unwrap();
         assert_eq!(cells.first(), Some(&(0, 0)));
         assert_eq!(cells.last(), Some(&(2, 0)));
@@ -340,7 +371,7 @@ mod astar_tests {
         mask.insert((2, 0));
         // (1, 0) deliberately absent — the masked-out cell.
         let mut g = open_hex(0.1);
-        g.mask = Some(&mask);
+        g.inputs.mask = Some(&mask);
         let (cells, cost, _p) = astar_leg(&g, (0, 0), (2, 0), 0).unwrap();
         assert!(
             !cells.contains(&(1, 0)),
@@ -375,13 +406,15 @@ mod astar_tests {
             }
         }
         let g = PathGrid {
-            cell: 100.0,
-            footprint_radius_cells: 0.1,
-            walls: &[],
-            mask: Some(&mask),
-            regions: None,
+            inputs: PathInputs {
+                cell: 100.0,
+                footprint_radius_cells: 0.1,
+                walls: &[],
+                mask: Some(&mask),
+                regions: None,
+                shape: &hx,
+            },
             window: (-50, -50, 50, 50),
-            shape: &hx,
         };
         let (cells, cost, _p) = astar_leg(&g, (-3, 1), (0, 0), 0).unwrap();
         assert_eq!(
@@ -463,8 +496,9 @@ impl PartialOrd for QNode {
 /// goal-pop optimal and makes the post-goal stale-pop skip safe (see `astar_leg`).
 ///
 /// `pub(crate)` so `SquareGrid::heuristic` can return this byte-identical value —
-/// `astar_leg` calls it only through `grid.shape.heuristic(...)` now, never directly, so square
-/// scenes keep the exact rule-based estimate while hex scenes get the admissible axial distance.
+/// `astar_leg` calls it only through `grid.inputs.shape.heuristic(...)` now, never directly, so
+/// square scenes keep the exact rule-based estimate while hex scenes get the admissible axial
+/// distance.
 pub(crate) fn heuristic(rule: DiagonalRule, c: Cell, goal: Cell) -> f64 {
     let di = (goal.0 - c.0).abs();
     let dj = (goal.1 - c.1).abs();
@@ -493,7 +527,7 @@ pub(crate) fn astar_leg(
     let mut open = BinaryHeap::new();
     g_score.insert((start, start_parity), 0.0);
     open.push(QNode {
-        f: grid.shape.heuristic(start, goal),
+        f: grid.inputs.shape.heuristic(start, goal),
         g: 0.0,
         cell: start,
         parity: start_parity,
@@ -531,18 +565,21 @@ pub(crate) fn astar_leg(
         if expansions > MAX_PATH_NODES {
             return Err(PathFail::Exceeded);
         }
-        for (next, sc, next_parity) in grid.shape.neighbors_with_cost(cell, parity) {
+        for (next, sc, next_parity) in grid.inputs.shape.neighbors_with_cost(cell, parity) {
             if !cell_enterable(grid, cell, next) {
                 continue;
             }
-            let mult = grid.regions.map_or(1.0, |r| r.terrain_multiplier(next));
+            let mult = grid
+                .inputs
+                .regions
+                .map_or(1.0, |r| r.terrain_multiplier(next));
             let tentative = g_popped + sc * mult;
             let key = (next, next_parity);
             if tentative < *g_score.get(&key).unwrap_or(&f64::INFINITY) {
                 came_from.insert(key, (cell, parity));
                 g_score.insert(key, tentative);
                 open.push(QNode {
-                    f: tentative + grid.shape.heuristic(next, goal),
+                    f: tentative + grid.inputs.shape.heuristic(next, goal),
                     g: tentative,
                     cell: next,
                     parity: next_parity,
@@ -577,34 +614,6 @@ pub struct PathOutcome {
     pub arrested: bool,
 }
 
-/// The caller-supplied half of a `PathGrid`: the scene's traversal geometry, the requester's view
-/// of it, and the mover's size. `find` derives the remaining `PathGrid` field — the search
-/// `window` — from `start`/`waypoints`/`walls`, then assembles both into the `PathGrid` its search
-/// runs against, so every field here reaches `cell_enterable`'s per-cell gate unchanged.
-///
-/// INVARIANT: `mask`, `walls` and `regions` are the REQUESTER's view, resolved by the caller
-/// (`SceneEcs::pathfind`) — `mask = None` only for a GM or an `Unrestricted` scene, and `walls`/
-/// `regions` omit whatever tier the requester may not see. `shape` MUST be the same
-/// `GridShape` those three sets were built with; a mask indexed in one coordinate system and
-/// tested in another is not a shared mask.
-pub struct PathInputs<'a> {
-    /// Mover footprint radius in CELLS; `find` rejects anything outside
-    /// `[0, MAX_FOOTPRINT_CELLS]` (NaN and ±Inf included).
-    pub footprint_radius: f64,
-    /// Grid cell size in scene units (positive finite).
-    pub cell: f64,
-    /// `blocksMove` wall segments a step may not cross.
-    pub walls: &'a [vision::Seg],
-    /// Visibility mask: `None` = unconstrained (GM or `Unrestricted`); `Some` = every entered
-    /// (and footprint-overlapped) cell must be in it. An empty `Some` set is the fail-closed
-    /// dark-scene freeze, not an absent constraint.
-    pub mask: Option<&'a BTreeSet<Cell>>,
-    /// Composed region field (weighting/impassable/arrest); `None` = no region enforcement.
-    pub regions: Option<&'a crate::scene::regions::RegionField>,
-    /// Cell geometry for this scene (`SquareGrid` or `HexGrid`).
-    pub shape: &'a dyn crate::scene::grid_shape::GridShape,
-}
-
 /// Plan a footprint-clear, mask-bounded route `start -> waypoints[0] -> ... -> waypoints[last]`.
 /// `waypoints` is the full ordered leg list whose last element is the goal (empty => `Invalid`).
 /// Returns the literal `start` followed by cell-center points through the goal, and the total
@@ -614,24 +623,16 @@ pub fn find(
     waypoints: &[vision::P],
     inputs: PathInputs<'_>,
 ) -> Result<PathOutcome, PathFail> {
-    let PathInputs {
-        footprint_radius,
-        cell,
-        walls,
-        mask,
-        regions,
-        shape,
-    } = inputs;
     // Validation (fail-closed): all degenerate inputs => Invalid.
     if waypoints.is_empty() || waypoints.len() > MAX_WAYPOINTS {
         return Err(PathFail::Invalid);
     }
     // `contains` rejects NaN and ±Inf (NaN comparisons return false; Inf > MAX_FOOTPRINT_CELLS).
-    if !(0.0..=MAX_FOOTPRINT_CELLS).contains(&footprint_radius) {
+    if !(0.0..=MAX_FOOTPRINT_CELLS).contains(&inputs.footprint_radius_cells) {
         return Err(PathFail::Invalid);
     }
     // INVARIANT: cell.is_finite() && cell > 0.0 makes the NaN-cell division path unreachable downstream.
-    if !cell.is_finite() || cell <= 0.0 {
+    if !inputs.cell.is_finite() || inputs.cell <= 0.0 {
         return Err(PathFail::Invalid);
     }
     let finite = |p: &vision::P| p.0.is_finite() && p.1.is_finite();
@@ -652,7 +653,7 @@ pub fn find(
     for p in waypoints {
         acc(p.0, p.1);
     }
-    for w in walls {
+    for w in inputs.walls {
         acc(w.a.0, w.a.1);
         acc(w.b.0, w.b.1);
     }
@@ -663,7 +664,9 @@ pub fn find(
     // reading spuriously Unreachable). INVARIANT: the window only bounds SEARCH extent — the
     // per-cell gate lives in `cell_enterable`, so reshaping the window never approves a cell the
     // executor would reject.
-    let (bi0, bj0, bi1, bj1) = shape.cell_bounds((minx, miny), (maxx, maxy), cell);
+    let (bi0, bj0, bi1, bj1) = inputs
+        .shape
+        .cell_bounds((minx, miny), (maxx, maxy), inputs.cell);
     let window = (
         bi0 - WINDOW_MARGIN,
         bj0 - WINDOW_MARGIN,
@@ -671,15 +674,10 @@ pub fn find(
         bj1 + WINDOW_MARGIN,
     );
 
-    let grid = PathGrid {
-        cell,
-        footprint_radius_cells: footprint_radius,
-        walls,
-        mask,
-        regions,
-        window,
-        shape,
-    };
+    // Moves `inputs` into `grid` whole, rather than restating its fields — a field added to
+    // `PathInputs` reaches `cell_enterable`/`astar_leg` through `grid.inputs` with no second edit
+    // here.
+    let grid = PathGrid { inputs, window };
 
     // Run each leg, threading end-parity into the next leg's start_parity so the route is priced as
     // one continuous move. Resetting parity per leg would underprice 5-10-5 at waypoint boundaries.
@@ -692,13 +690,13 @@ pub fn find(
     let mut total = 0.0;
     let mut parity = 0u8;
     // Grid-correct pixel→cell mapping (square floor / hex axial-round). MUST agree with the window
-    // above: both derive from `grid.shape`, so a hex goal's axial cell always lands inside the
-    // axial window. A square-only `to_cell` here paired with the square window would silently
+    // above: both derive from `grid.inputs.shape`, so a hex goal's axial cell always lands inside
+    // the axial window. A square-only `to_cell` here paired with the square window would silently
     // route a hex request to the WRONG destination cell; fixing only one side would instead make
     // the goal fall outside the other's box, reading spuriously Unreachable.
-    let mut from = grid.shape.cell_of(start);
+    let mut from = grid.inputs.shape.cell_of(start);
     for (leg_index, wp) in waypoints.iter().enumerate() {
-        let goal = grid.shape.cell_of(*wp);
+        let goal = grid.inputs.shape.cell_of(*wp);
         let (leg, cost, end_parity) = match astar_leg(&grid, from, goal, parity) {
             Ok(v) => v,
             Err(PathFail::Unreachable) => {
@@ -732,12 +730,12 @@ pub fn find(
 
     // Arrest truncation: the route is cut at the FIRST visible arrest cell after the
     // start (a token already standing in a cell is not "entering" it). Recompute the truncated
-    // cost by replaying the per-step cost across the surviving prefix via `grid.shape` — parity
-    // threading is purely sequential (order-dependent, not leg-boundary-dependent), so replaying
-    // from parity 0 over the assembled `cells` reproduces exactly the cost the original per-leg
-    // accumulation gives for that same prefix.
+    // cost by replaying the per-step cost across the surviving prefix via `grid.inputs.shape` —
+    // parity threading is purely sequential (order-dependent, not leg-boundary-dependent), so
+    // replaying from parity 0 over the assembled `cells` reproduces exactly the cost the original
+    // per-leg accumulation gives for that same prefix.
     let mut arrested = false;
-    if let Some(rf) = regions {
+    if let Some(rf) = grid.inputs.regions {
         if let Some(idx) = cells
             .iter()
             .enumerate()
@@ -751,6 +749,7 @@ pub fn find(
             total = 0.0;
             for w in cells.windows(2) {
                 let (_, sc, next_p) = grid
+                    .inputs
                     .shape
                     .neighbors_with_cost(w[0], p)
                     .into_iter()
@@ -773,7 +772,7 @@ pub fn find(
     // matching the router's per-cell contract; only the mover's own starting point is literal.
     let mut path: Vec<vision::P> = cells
         .into_iter()
-        .map(|c| grid.shape.cell_center(c))
+        .map(|c| grid.inputs.shape.cell_center(c))
         .collect();
     if let Some(first) = path.first_mut() {
         *first = start;
@@ -802,7 +801,7 @@ mod find_tests {
             (50.0, 50.0),
             &[],
             PathInputs {
-                footprint_radius: 0.1,
+                footprint_radius_cells: 0.1,
                 cell: 100.0,
                 walls: &NO_WALLS,
                 mask: None,
@@ -821,7 +820,7 @@ mod find_tests {
                 (f64::NAN, 0.0),
                 &[(150.0, 50.0)],
                 PathInputs {
-                    footprint_radius: 0.1,
+                    footprint_radius_cells: 0.1,
                     cell: 100.0,
                     walls: &NO_WALLS,
                     mask: None,
@@ -831,13 +830,13 @@ mod find_tests {
             ),
             Err(PathFail::Invalid)
         );
-        // Negative footprint_radius.
+        // Negative footprint_radius_cells.
         assert_eq!(
             find(
                 (50.0, 50.0),
                 &[(150.0, 50.0)],
                 PathInputs {
-                    footprint_radius: -1.0,
+                    footprint_radius_cells: -1.0,
                     cell: 100.0,
                     walls: &NO_WALLS,
                     mask: None,
@@ -853,7 +852,7 @@ mod find_tests {
                 (50.0, 50.0),
                 &[(150.0, 50.0)],
                 PathInputs {
-                    footprint_radius: 0.1,
+                    footprint_radius_cells: 0.1,
                     cell: 0.0,
                     walls: &NO_WALLS,
                     mask: None,
@@ -863,13 +862,13 @@ mod find_tests {
             ),
             Err(PathFail::Invalid)
         );
-        // NaN footprint_radius — contains() returns false for NaN comparisons.
+        // NaN footprint_radius_cells — contains() returns false for NaN comparisons.
         assert_eq!(
             find(
                 (50.0, 50.0),
                 &[(150.0, 50.0)],
                 PathInputs {
-                    footprint_radius: f64::NAN,
+                    footprint_radius_cells: f64::NAN,
                     cell: 100.0,
                     walls: &NO_WALLS,
                     mask: None,
@@ -879,13 +878,13 @@ mod find_tests {
             ),
             Err(PathFail::Invalid)
         );
-        // Infinite footprint_radius — exceeds MAX_FOOTPRINT_CELLS.
+        // Infinite footprint_radius_cells — exceeds MAX_FOOTPRINT_CELLS.
         assert_eq!(
             find(
                 (50.0, 50.0),
                 &[(150.0, 50.0)],
                 PathInputs {
-                    footprint_radius: f64::INFINITY,
+                    footprint_radius_cells: f64::INFINITY,
                     cell: 100.0,
                     walls: &NO_WALLS,
                     mask: None,
@@ -895,13 +894,13 @@ mod find_tests {
             ),
             Err(PathFail::Invalid)
         );
-        // footprint_radius exactly one above the cap.
+        // footprint_radius_cells exactly one above the cap.
         assert_eq!(
             find(
                 (50.0, 50.0),
                 &[(150.0, 50.0)],
                 PathInputs {
-                    footprint_radius: MAX_FOOTPRINT_CELLS + 1.0,
+                    footprint_radius_cells: MAX_FOOTPRINT_CELLS + 1.0,
                     cell: 100.0,
                     walls: &NO_WALLS,
                     mask: None,
@@ -920,7 +919,7 @@ mod find_tests {
             (50.0, 50.0),
             &[(250.0, 50.0)],
             PathInputs {
-                footprint_radius: 0.1,
+                footprint_radius_cells: 0.1,
                 cell: 100.0,
                 walls: &NO_WALLS,
                 mask: None,
@@ -942,7 +941,8 @@ mod find_tests {
         // `size`). Route along axial direction (1,-1) to (70,-70) — "off the square diagonal": the
         // goal's pixel x is ~0.866·70·cell, so a square `floor(x/cell)+margin` window (=68) clips
         // its axial q (=70), and a square pixel→cell map would resolve the goal to the WRONG axial
-        // cell. Only the hex-correct window + `cell_of` (both from `grid.shape`) resolve the route.
+        // cell. Only the hex-correct window + `cell_of` (both from `grid.inputs.shape`) resolve
+        // the route.
         let hex = HexGrid { size: 100.0 };
         let start = hex.cell_center((0, 0));
         let goal_cell = (70, -70);
@@ -957,14 +957,14 @@ mod find_tests {
             start,
             &[goal],
             PathInputs {
-footprint_radius: 0.1,
-cell: 100.0,
-walls: &NO_WALLS,
-mask: // GM / unconstrained: only the window (not a mask) can gate reachability here
-            None,
-regions: None,
-shape: &hex,
-},
+                footprint_radius_cells: 0.1,
+                cell: 100.0,
+                walls: &NO_WALLS,
+                // GM / unconstrained: only the window (not a mask) can gate reachability here.
+                mask: None,
+                regions: None,
+                shape: &hex,
+            },
         )
         .expect("a reachable hex route must resolve, not read Unreachable");
         assert_eq!(outcome.path.first(), Some(&start));
@@ -992,7 +992,7 @@ shape: &hex,
             start,
             &[wp, goal],
             PathInputs {
-                footprint_radius: 0.1,
+                footprint_radius_cells: 0.1,
                 cell: 100.0,
                 walls: &NO_WALLS,
                 mask: None,
@@ -1017,7 +1017,7 @@ shape: &hex,
                 (50.0, 50.0),
                 &wps,
                 PathInputs {
-                    footprint_radius: 0.1,
+                    footprint_radius_cells: 0.1,
                     cell: 100.0,
                     walls: &NO_WALLS,
                     mask: None,
@@ -1037,7 +1037,7 @@ shape: &hex,
                 (50.0, 50.0),
                 &[(250.0, 50.0)],
                 PathInputs {
-                    footprint_radius: 0.1,
+                    footprint_radius_cells: 0.1,
                     cell: 100.0,
                     walls: &NO_WALLS,
                     mask: Some(&mask),
@@ -1067,14 +1067,14 @@ shape: &hex,
             start,
             &[goal],
             PathInputs {
-footprint_radius: 10.0,
-cell: // footprint_radius_cells (10 cells) > WINDOW_MARGIN (8 cells)
-            c,
-walls: &walls,
-mask: None,
-regions: None,
-shape: &sq(c, DiagonalRule::Chebyshev),
-},
+                // footprint_radius_cells (10 cells) > WINDOW_MARGIN (8 cells)
+                footprint_radius_cells: 10.0,
+                cell: c,
+                walls: &walls,
+                mask: None,
+                regions: None,
+                shape: &sq(c, DiagonalRule::Chebyshev),
+            },
         );
         assert_eq!(result, Err(PathFail::Unreachable));
     }
@@ -1112,7 +1112,7 @@ shape: &sq(c, DiagonalRule::Chebyshev),
             (50.0, 50.0),
             &[(450.0, 50.0)],
             PathInputs {
-                footprint_radius: 0.1,
+                footprint_radius_cells: 0.1,
                 cell: 100.0,
                 walls: &NO_WALLS,
                 mask: None,
@@ -1139,7 +1139,7 @@ shape: &sq(c, DiagonalRule::Chebyshev),
             (50.0, 50.0),
             &[(250.0, 50.0)],
             PathInputs {
-                footprint_radius: 0.1,
+                footprint_radius_cells: 0.1,
                 cell: 100.0,
                 walls: &NO_WALLS,
                 mask: None,
@@ -1170,13 +1170,15 @@ mod tests {
                 rule: DiagonalRule::Chebyshev,
             }));
         PathGrid {
-            cell: 100.0,
-            footprint_radius_cells: footprint,
-            walls,
-            mask,
-            regions: None,
+            inputs: PathInputs {
+                cell: 100.0,
+                footprint_radius_cells: footprint,
+                walls,
+                mask,
+                regions: None,
+                shape,
+            },
             window: (-100, -100, 100, 100),
-            shape,
         }
     }
 
@@ -1348,7 +1350,7 @@ mod tests {
         let field = b.build();
         let walls: Vec<Seg> = vec![];
         let mut g = grid(&walls, None, 0.2);
-        g.regions = Some(&field);
+        g.inputs.regions = Some(&field);
         assert!(
             !cell_enterable(&g, (0, 0), (1, 0)),
             "cell (1,0) center (150,50) is inside the impassable rect"
@@ -1386,7 +1388,7 @@ mod tests {
         let field = b.build();
         let walls: Vec<Seg> = vec![];
         let mut g = grid(&walls, None, 0.1);
-        g.regions = Some(&field);
+        g.inputs.regions = Some(&field);
         let (_cells, cost, _p) = astar_leg(&g, (0, 0), (2, 0), 0).unwrap();
         assert!(
             (cost - 6.0).abs() < 1e-9,
