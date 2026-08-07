@@ -533,10 +533,8 @@ async fn handle_socket(
                                     // One-shot pathfinding: resolve GM status, fetch explored off the lock for
                                     // non-GM Revealed, call SceneEcs::pathfind, reply to this connection only.
                                     // INVARIANT (one-shot-to-requester): reply goes to etx only, never broadcast.
-                                    let frame = handle_pathfind(
-                                        request_id, scene, start, waypoints, footprint_radius, token,
-                                        &ctx, &room, repo.as_ref(),
-                                    ).await;
+                                    let req = PathfindRequest { request_id, scene, start, waypoints, footprint_radius, token };
+                                    let frame = handle_pathfind(req, &ctx, &room, repo.as_ref()).await;
                                     if etx.send(Egress::Frame(Arc::new(frame))).await.is_err() {
                                         break;
                                     }
@@ -600,6 +598,35 @@ async fn scene_ping_permitted(
     access.has(crate::data::permission::cap::READ)
 }
 
+/// The `ClientMsg::Pathfind` frame's payload, carried as one value from the ingress match arm
+/// into `handle_pathfind`.
+///
+/// INVARIANT: every field is CLIENT-SUPPLIED and unauthorized at construction. `handle_pathfind`
+/// is where each earns trust: `scene` via the non-GM presence gate
+/// (`SceneEcs::user_owns_token_in_scene`), `token` via the effective-ownership plus
+/// same-scene-parent check, and `footprint_radius` only when no `token` is named — a named token
+/// REPLACES it with `SceneEcs::resolve_token_footprint`'s value, so a route preview and the
+/// authoritative gate cannot disagree about the mover's size.
+///
+/// This is deliberately NOT the same type as `scene::RouteRequester` or the parameters of
+/// `SceneEcs::pathfind`, even though `scene`/`start`/`waypoints`/`footprint_radius` reach that
+/// call: these are the pre-authorization values, and one shared type across the boundary would
+/// let a caller forward the frame straight through, skipping the token-derived footprint override.
+struct PathfindRequest {
+    /// Correlation id echoed on the `PathResult`/`PathError` reply.
+    request_id: Uuid,
+    /// The scene to route in. Not proof of presence — see the struct INVARIANT.
+    scene: Uuid,
+    /// The mover's current position, the route's first point.
+    start: (f64, f64),
+    /// Ordered leg list whose last element is the goal.
+    waypoints: Vec<(f64, f64)>,
+    /// Hypothetical footprint radius in cells; IGNORED when `token` is `Some`.
+    footprint_radius: f64,
+    /// Optional footprint source. Authorized before use, and never a presence proof.
+    token: Option<Uuid>,
+}
+
 /// Resolve and execute a one-shot grid pathfind request.
 ///
 /// INVARIANT (no-lock-across-await): the scene read guard is taken twice — once to read
@@ -613,18 +640,20 @@ async fn scene_ping_permitted(
 /// this scan. Without the scan a player can route-preview inside a scene they have never entered:
 /// an `unrestricted` scene has no visibility mask to fail closed on, and the returned polyline
 /// discloses that scene's `blocksMove` wall layout.
-#[allow(clippy::too_many_arguments)]
 async fn handle_pathfind(
-    request_id: Uuid,
-    scene: Uuid,
-    start: (f64, f64),
-    waypoints: Vec<(f64, f64)>,
-    footprint_radius: f64,
-    token: Option<Uuid>,
+    req: PathfindRequest,
     ctx: &crate::data::membership::PermissionContext,
     room: &crate::ws::room::Room,
     repo: &dyn crate::data::repository::Repository,
 ) -> ServerMsg {
+    let PathfindRequest {
+        request_id,
+        scene,
+        start,
+        waypoints,
+        footprint_radius,
+        token,
+    } = req;
     let is_gm = ctx.world_role == crate::data::document::WorldRole::Gm;
     // Step 0: non-GM presence gate, ahead of any routing work. `user_owns_token_in_scene` is a
     // document scan routed through `token_effective_owner`, so ownership is the same rule the
@@ -2289,12 +2318,14 @@ mod tests {
 
         // GM: unconstrained (no mask) → PathResult for any reachable goal.
         let gm_result = handle_pathfind(
-            rid,
-            scene_id,
-            (50.0, 50.0),
-            vec![(250.0, 50.0)],
-            0.1,
-            None,
+            PathfindRequest {
+                request_id: rid,
+                scene: scene_id,
+                start: (50.0, 50.0),
+                waypoints: vec![(250.0, 50.0)],
+                footprint_radius: 0.1,
+                token: None,
+            },
             &gm_ctx,
             &room,
             repo.as_ref(),
@@ -2308,12 +2339,14 @@ mod tests {
         // Non-GM in a dark scene: mask is empty → every cell is out-of-mask → PathError "unreachable".
         // This is the documented fail-closed behaviour: dark scene + visible restriction freezes movement.
         let player_result = handle_pathfind(
-            rid,
-            scene_id,
-            (50.0, 50.0),
-            vec![(250.0, 50.0)],
-            0.1,
-            None,
+            PathfindRequest {
+                request_id: rid,
+                scene: scene_id,
+                start: (50.0, 50.0),
+                waypoints: vec![(250.0, 50.0)],
+                footprint_radius: 0.1,
+                token: None,
+            },
             &player,
             &room,
             repo.as_ref(),
@@ -2559,12 +2592,14 @@ mod tests {
         let rid = Uuid::from_u128(0xF002);
 
         let leaked = handle_pathfind(
-            rid,
-            scene_b,
-            (50.0, 50.0),
-            vec![(450.0, 50.0)],
-            0.1,
-            None,
+            PathfindRequest {
+                request_id: rid,
+                scene: scene_b,
+                start: (50.0, 50.0),
+                waypoints: vec![(450.0, 50.0)],
+                footprint_radius: 0.1,
+                token: None,
+            },
             &player,
             &room,
             repo.as_ref(),
@@ -2578,12 +2613,14 @@ mod tests {
         // The same cross-scene probe, now naming a token the requester DOES own in scene A. The
         // presence gate must still refuse for scene B: naming a token is not presence in a scene.
         let leaked_with_named_token = handle_pathfind(
-            rid,
-            scene_b,
-            (50.0, 50.0),
-            vec![(250.0, 50.0)],
-            0.4,
-            Some(token_id),
+            PathfindRequest {
+                request_id: rid,
+                scene: scene_b,
+                start: (50.0, 50.0),
+                waypoints: vec![(250.0, 50.0)],
+                footprint_radius: 0.4,
+                token: Some(token_id),
+            },
             &player,
             &room,
             repo.as_ref(),
@@ -2596,12 +2633,14 @@ mod tests {
 
         // Control: the player's own scene still routes (the guard cannot break play).
         let own = handle_pathfind(
-            rid,
-            scene_a,
-            (50.0, 50.0),
-            vec![(450.0, 50.0)],
-            0.1,
-            None,
+            PathfindRequest {
+                request_id: rid,
+                scene: scene_a,
+                start: (50.0, 50.0),
+                waypoints: vec![(450.0, 50.0)],
+                footprint_radius: 0.1,
+                token: None,
+            },
             &player,
             &room,
             repo.as_ref(),
@@ -2614,12 +2653,14 @@ mod tests {
 
         // The GM routes in any scene — presence is a non-GM gate only.
         let gm = handle_pathfind(
-            rid,
-            scene_b,
-            (50.0, 50.0),
-            vec![(450.0, 50.0)],
-            0.1,
-            None,
+            PathfindRequest {
+                request_id: rid,
+                scene: scene_b,
+                start: (50.0, 50.0),
+                waypoints: vec![(450.0, 50.0)],
+                footprint_radius: 0.1,
+                token: None,
+            },
             &gm_ctx,
             &room,
             repo.as_ref(),
@@ -2757,12 +2798,14 @@ mod tests {
 
         let rid = Uuid::from_u128(0xF010);
         let res = handle_pathfind(
-            rid,
-            scene_id,
-            (50.0, 50.0),
-            vec![(250.0, 50.0)],
-            0.4,
-            Some(token_b),
+            PathfindRequest {
+                request_id: rid,
+                scene: scene_id,
+                start: (50.0, 50.0),
+                waypoints: vec![(250.0, 50.0)],
+                footprint_radius: 0.4,
+                token: Some(token_b),
+            },
             &player_a,
             &room,
             repo.as_ref(),
@@ -2897,12 +2940,14 @@ mod tests {
 
         let rid = Uuid::from_u128(0xF011);
         let res = handle_pathfind(
-            rid,
-            scene_b,
-            (50.0, 50.0),
-            vec![(250.0, 50.0)],
-            0.4,
-            Some(token_in_a),
+            PathfindRequest {
+                request_id: rid,
+                scene: scene_b,
+                start: (50.0, 50.0),
+                waypoints: vec![(250.0, 50.0)],
+                footprint_radius: 0.4,
+                token: Some(token_in_a),
+            },
             &player,
             &room,
             repo.as_ref(),
@@ -3078,12 +3123,14 @@ mod tests {
             harness_with_narrow_corridor_and_large_owned_token().await;
         let rid = Uuid::from_u128(0xF012);
         let res = handle_pathfind(
-            rid,
-            scene_id,
-            (150.0, 350.0),
-            vec![(150.0, -350.0)],
-            0.01,
-            Some(token_id),
+            PathfindRequest {
+                request_id: rid,
+                scene: scene_id,
+                start: (150.0, 350.0),
+                waypoints: vec![(150.0, -350.0)],
+                footprint_radius: 0.01,
+                token: Some(token_id),
+            },
             &player,
             &room,
             repo.as_ref(),
@@ -3103,12 +3150,14 @@ mod tests {
             harness_with_narrow_corridor_and_large_owned_token().await;
         let rid = Uuid::from_u128(0xF013);
         let res = handle_pathfind(
-            rid,
-            scene_id,
-            (150.0, 350.0),
-            vec![(150.0, -350.0)],
-            0.01,
-            None,
+            PathfindRequest {
+                request_id: rid,
+                scene: scene_id,
+                start: (150.0, 350.0),
+                waypoints: vec![(150.0, -350.0)],
+                footprint_radius: 0.01,
+                token: None,
+            },
             &player,
             &room,
             repo.as_ref(),
@@ -3245,12 +3294,14 @@ mod tests {
 
         let rid = Uuid::from_u128(0xF014);
         let res = handle_pathfind(
-            rid,
-            scene_id,
-            (50.0, 50.0),
-            vec![(250.0, 50.0)],
-            0.4,
-            Some(token_id),
+            PathfindRequest {
+                request_id: rid,
+                scene: scene_id,
+                start: (50.0, 50.0),
+                waypoints: vec![(250.0, 50.0)],
+                footprint_radius: 0.4,
+                token: Some(token_id),
+            },
             &player,
             &room,
             repo.as_ref(),
