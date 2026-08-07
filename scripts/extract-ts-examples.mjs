@@ -380,39 +380,161 @@ export function dedupeAgainstHost(hoistedText, hostBindings, selfPackageName = n
   return printer.printNode(ts.EmitHint.Unspecified, newStatement, sourceFile);
 }
 
+/** Every name across `hoisted` that classifies as `"clash"` against `hostBindings` —
+ * needed as a VALUE (e.g. to `new` it) while the host only provides it as a TYPE. See
+ * `resolveTypeValueClashes` for why this is resolved by upgrading the host's own
+ * import rather than left unresolved. */
+function clashingNames(hoisted, hostBindings, selfPackageName, hostFile) {
+  const names = new Set();
+  for (const hoistedText of hoisted) {
+    const sourceFile = ts.createSourceFile("hoisted.ts", hoistedText, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+    const statement = sourceFile.statements[0];
+    if (!statement || !ts.isImportDeclaration(statement) || !statement.importClause) continue;
+    const specifier = specifierValue(statement.moduleSpecifier, sourceFile);
+    const isSelfBarrel =
+      (selfPackageName !== null && specifier === selfPackageName) || isSelfFileReference(hostFile, specifier);
+    const check = (name, elementTypeOnly) => {
+      if (classifyBinding(name, elementTypeOnly, hostBindings, specifier, isSelfBarrel) === "clash") names.add(name);
+    };
+    const clause = statement.importClause;
+    if (clause.name) check(clause.name.text, clause.isTypeOnly);
+    if (clause.namedBindings) {
+      if (ts.isNamespaceImport(clause.namedBindings)) {
+        check(clause.namedBindings.name.text, clause.isTypeOnly);
+      } else if (ts.isNamedImports(clause.namedBindings)) {
+        for (const el of clause.namedBindings.elements) check(el.name.text, clause.isTypeOnly || el.isTypeOnly);
+      }
+    }
+  }
+  return names;
+}
+
 /** True when hoisting would leave an import needing a name as a VALUE (e.g. to `new`
  * it) alongside the host's own pre-existing TYPE-ONLY import of the identical name —
  * the shape of a doc example that imports the class it documents from the package's
  * public surface while the host module itself only ever needs that class's TYPE (a
  * `verbatimModuleSyntax` codebase writes exactly this: `import type { X }` where a
- * value is never touched). No import statement can bind the same top-level name twice
- * in one module regardless of type-only-ness — TypeScript rejects `import type { X }`
- * and `import { X }` (or an aliased `import { X as Y }`) from the same specifier
- * coexisting as a duplicate identifier — so this is not a compile FAILURE the example
- * or the host did anything wrong to cause; it is the point at which "compile inside
- * the host's own scope" and "an example may exercise the value half of a name the host
- * only uses as a type" become mutually exclusive. Reported as its own unchecked
- * category instead of a cryptic duplicate-identifier diagnostic. */
+ * value is never touched). See `resolveTypeValueClashes` for how this is resolved. */
 export function hasTypeValueClash(hoisted, hostBindings, selfPackageName = null, hostFile = null) {
-  return hoisted.some((hoistedText) => {
-    const sourceFile = ts.createSourceFile("hoisted.ts", hoistedText, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
-    const statement = sourceFile.statements[0];
-    if (!statement || !ts.isImportDeclaration(statement) || !statement.importClause) return false;
-    const specifier = specifierValue(statement.moduleSpecifier, sourceFile);
-    const isSelfBarrel =
-      (selfPackageName !== null && specifier === selfPackageName) || isSelfFileReference(hostFile, specifier);
-    const clashes = (name, elementTypeOnly) =>
-      classifyBinding(name, elementTypeOnly, hostBindings, specifier, isSelfBarrel) === "clash";
+  return clashingNames(hoisted, hostBindings, selfPackageName, hostFile).size > 0;
+}
+
+/** Rewrites the SPECIFIC import statements in `hostText` that bind a name in
+ * `namesToUpgrade` from type-only to a value import — narrowly, leaving every other
+ * name in the same (or any other) import declaration untouched. A whole-clause
+ * `import type { A, B }` where only `A` clashes is split into `import { A } from …`
+ * plus `import type { B } from …`, so `B` stays exactly as type-only as it was. Safe
+ * ONLY because the merged virtual file is typechecked, never emitted: the
+ * `verbatimModuleSyntax` rule that makes `import type` meaningful for real output
+ * governs emitted JS, which this file never produces. The host's real file on disk is
+ * never touched — this operates on an in-memory copy of its text.
+ *
+ * Returns the rewritten text and the subset of `namesToUpgrade` actually resolved.
+ * A name is left out of `upgraded` when it names something other than an import (a
+ * local `interface`/`type` alias has no import statement to upgrade — its type-only
+ * status is intrinsic, not a `verbatimModuleSyntax` restriction) or when it appears in
+ * an import clause shape this function does not recognize; the caller reports any such
+ * name individually rather than silently treating it as resolved. */
+export function upgradeTypeOnlyImports(hostText, namesToUpgrade) {
+  const upgraded = new Set();
+  if (namesToUpgrade.size === 0) return { text: hostText, upgraded };
+  const sourceFile = ts.createSourceFile("host.ts", hostText, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const replacements = [];
+  for (const statement of sourceFile.statements) {
+    if (!ts.isImportDeclaration(statement) || !statement.importClause) continue;
     const clause = statement.importClause;
-    if (clause.name && clashes(clause.name.text, clause.isTypeOnly)) return true;
-    if (clause.namedBindings) {
-      if (ts.isNamespaceImport(clause.namedBindings)) return clashes(clause.namedBindings.name.text, clause.isTypeOnly);
-      if (ts.isNamedImports(clause.namedBindings)) {
-        return clause.namedBindings.elements.some((el) => clashes(el.name.text, clause.isTypeOnly || el.isTypeOnly));
+    const specifier = statement.moduleSpecifier;
+    const rewritten = [];
+
+    if (clause.name && !clause.namedBindings && clause.isTypeOnly && namesToUpgrade.has(clause.name.text)) {
+      upgraded.add(clause.name.text);
+      const newClause = ts.factory.updateImportClause(clause, false, clause.name, undefined);
+      rewritten.push(ts.factory.updateImportDeclaration(statement, statement.modifiers, newClause, specifier, statement.attributes));
+    } else if (clause.namedBindings && ts.isNamespaceImport(clause.namedBindings)) {
+      const ns = clause.namedBindings;
+      if (clause.isTypeOnly && namesToUpgrade.has(ns.name.text)) {
+        upgraded.add(ns.name.text);
+        const newClause = ts.factory.updateImportClause(clause, false, clause.name, ns);
+        rewritten.push(ts.factory.updateImportDeclaration(statement, statement.modifiers, newClause, specifier, statement.attributes));
+      }
+    } else if (clause.namedBindings && ts.isNamedImports(clause.namedBindings)) {
+      const elements = clause.namedBindings.elements;
+      if (clause.isTypeOnly) {
+        const toUpgrade = elements.filter((el) => namesToUpgrade.has(el.name.text));
+        const toKeep = elements.filter((el) => !namesToUpgrade.has(el.name.text));
+        if (toUpgrade.length > 0) {
+          for (const el of toUpgrade) upgraded.add(el.name.text);
+          rewritten.push(
+            ts.factory.createImportDeclaration(
+              statement.modifiers,
+              ts.factory.createImportClause(false, undefined, ts.factory.createNamedImports(toUpgrade)),
+              specifier,
+              statement.attributes,
+            ),
+          );
+          if (toKeep.length > 0) {
+            rewritten.push(
+              ts.factory.createImportDeclaration(
+                statement.modifiers,
+                ts.factory.createImportClause(true, undefined, ts.factory.createNamedImports(toKeep)),
+                specifier,
+                statement.attributes,
+              ),
+            );
+          }
+        }
+      } else {
+        let anyElementChanged = false;
+        const newElements = elements.map((el) => {
+          if (el.isTypeOnly && namesToUpgrade.has(el.name.text)) {
+            anyElementChanged = true;
+            upgraded.add(el.name.text);
+            return ts.factory.updateImportSpecifier(el, false, el.propertyName, el.name);
+          }
+          return el;
+        });
+        if (anyElementChanged) {
+          const newNamedBindings = ts.factory.updateNamedImports(clause.namedBindings, newElements);
+          const newClause = ts.factory.updateImportClause(clause, clause.isTypeOnly, clause.name, newNamedBindings);
+          rewritten.push(
+            ts.factory.updateImportDeclaration(statement, statement.modifiers, newClause, specifier, statement.attributes),
+          );
+        }
       }
     }
-    return false;
-  });
+
+    if (rewritten.length === 0) continue;
+    const printed = rewritten.map((s) => printer.printNode(ts.EmitHint.Unspecified, s, sourceFile)).join("\n");
+    replacements.push({ start: statement.getStart(sourceFile), end: statement.getEnd(), text: printed });
+  }
+  if (replacements.length === 0) return { text: hostText, upgraded };
+  replacements.sort((a, b) => b.start - a.start);
+  let text = hostText;
+  for (const r of replacements) text = text.slice(0, r.start) + r.text + text.slice(r.end);
+  return { text, upgraded };
+}
+
+/** Resolves every type/value clash between `hoisted` and `hostBindings` by upgrading
+ * the host's own clashing import(s) to a value import, narrowly, via
+ * `upgradeTypeOnlyImports`, and reflecting the upgrade in a COPY of `hostBindings` (the
+ * upgraded names now read `typeOnly: false`) so a subsequent `dedupeAgainstHost` pass
+ * correctly treats the example's own now-redundant import as droppable. A name that
+ * resists the upgrade (see `upgradeTypeOnlyImports`) is returned in `unresolved` for
+ * the caller to report individually — never silently compiled as if nothing were
+ * wrong, and never silently dropped into an uninspected bucket. Returns the ORIGINAL
+ * `hostText`/`hostBindings` unchanged when there is nothing to resolve. */
+export function resolveTypeValueClashes(hostText, hostBindings, hoisted, selfPackageName = null, hostFile = null) {
+  const clashes = clashingNames(hoisted, hostBindings, selfPackageName, hostFile);
+  if (clashes.size === 0) return { hostText, hostBindings, unresolved: new Set() };
+  const { text, upgraded } = upgradeTypeOnlyImports(hostText, clashes);
+  const unresolved = new Set([...clashes].filter((name) => !upgraded.has(name)));
+  if (upgraded.size === 0) return { hostText, hostBindings, unresolved };
+  const newBindings = new Map(hostBindings);
+  for (const name of upgraded) {
+    const existing = newBindings.get(name);
+    newBindings.set(name, { specifier: existing.specifier, typeOnly: false });
+  }
+  return { hostText: text, hostBindings: newBindings, unresolved };
 }
 
 const WRAPPER_OPEN = "async function __docExample(): Promise<void> {\n";
@@ -520,14 +642,18 @@ function compilePackageExamples(repoRoot, pkgDir, pkgDirs, examplesByFile) {
   const meta = new Map();
   for (const [hostFile, examples] of examplesByFile) {
     const hostText = readFileSync(hostFile, "utf8");
-    const hostLineCount = hostText.split("\n").length;
     const dir = dirname(hostFile);
     const base = basename(hostFile, extname(hostFile));
     const hostBindings = hostTopLevelBindings(hostText);
     examples.forEach((ex, i) => {
       const virtualPath = toPosix(join(dir, `${base}.doctest${i}${extname(hostFile)}`));
-      overlay.set(virtualPath, buildVirtualText(hostText, ex, hostBindings, selfPackageName, hostFile));
-      meta.set(virtualPath, { hostFile, hostLineCount, ...ex });
+      // Each example gets its OWN resolution: a clash-driven upgrade is scoped to the
+      // names one example's hoisted imports actually need, never shared across the
+      // other examples of the same host file.
+      const resolved = resolveTypeValueClashes(hostText, hostBindings, ex.hoisted, selfPackageName, hostFile);
+      const effectiveHostLineCount = resolved.hostText.split("\n").length;
+      overlay.set(virtualPath, buildVirtualText(resolved.hostText, ex, resolved.hostBindings, selfPackageName, hostFile));
+      meta.set(virtualPath, { hostFile, hostLineCount: effectiveHostLineCount, ...ex });
     });
   }
   const diagnosticsByPath = compileOverlay(options, overlay);
@@ -633,6 +759,50 @@ function runCompilationControl(repoRoot) {
   }
 }
 
+/** A host module that only ever imports a name TYPE-ONLY, paired with an example
+ * needing that same name as a VALUE (to `new` it) — the shape `resolveTypeValueClashes`
+ * exists for — must compile GREEN end to end: resolve the clash, build the virtual
+ * text, and run it through the real TS compiler. Never left as an unchecked bucket. */
+function runTypeValueClashControl(repoRoot) {
+  const dir = join(repoRoot, "scripts");
+  const helperPath = toPosix(join(dir, "__doctest_control_helper2__.ts"));
+  const hostPath = toPosix(join(dir, "__doctest_control_typevalue__.doctest0.ts"));
+  const hostText = 'import type { ControlAssetResolver } from "./__doctest_control_helper2__";\nexport {};\n';
+  const analyzed = analyzeExample(
+    'import { ControlAssetResolver } from "./__doctest_control_helper2__";\n' +
+      "const v = new ControlAssetResolver();\nconsole.log(v);",
+  );
+  const hostBindings = hostTopLevelBindings(hostText);
+  const resolved = resolveTypeValueClashes(hostText, hostBindings, analyzed.hoisted, null, null);
+  if (resolved.unresolved.size > 0) {
+    console.error(
+      `compilation control mismatch: type/value clash left unresolved for ${[...resolved.unresolved].join(", ")}`,
+    );
+    process.exit(1);
+  }
+  const options = {
+    target: ts.ScriptTarget.ES2022,
+    module: ts.ModuleKind.ESNext,
+    moduleResolution: ts.ModuleResolutionKind.Bundler,
+    strict: true,
+    noUnusedLocals: true,
+    noEmit: true,
+    skipLibCheck: true,
+  };
+  const overlay = new Map([
+    [helperPath, "export class ControlAssetResolver {}\n"],
+    [hostPath, buildVirtualText(resolved.hostText, analyzed, resolved.hostBindings)],
+  ]);
+  const diagnostics = compileOverlay(options, overlay).get(hostPath);
+  if (diagnostics.length !== 0) {
+    console.error(
+      `compilation control mismatch: type-only-host/value-example example did not compile green:\n` +
+        diagnostics.map((d) => `  ${ts.flattenDiagnosticMessageText(d.messageText, "\n")}`).join("\n"),
+    );
+    process.exit(1);
+  }
+}
+
 /** A `this.`-style example (documenting a class method) must be classified as needing
  * class context, never compiled as a free function and never silently dropped. */
 function runClassContextControl() {
@@ -651,6 +821,7 @@ function runClassContextControl() {
 const repoRootForControls = resolve(fileURLToPath(import.meta.url), "..", "..");
 runExtractionControls();
 runCompilationControl(repoRootForControls);
+runTypeValueClashControl(repoRootForControls);
 runClassContextControl();
 
 const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
@@ -666,8 +837,8 @@ if (isMain) {
 
   const byPackage = new Map();
   let classContextCount = 0;
-  let typeValueClashCount = 0;
   let compileTotal = 0;
+  const unresolvedClashes = [];
   for (const file of candidateFiles(repo, roots)) {
     const hostText = readFileSync(file, "utf8");
     const examples = extractExamples(hostText);
@@ -682,8 +853,13 @@ if (isMain) {
         continue;
       }
       if (pkgDir === null) continue; // outside every workspace package: cannot resolve a tsconfig
-      if (hasTypeValueClash(analyzed.hoisted, hostBindings, selfPackageName, file)) {
-        typeValueClashCount += 1;
+      // A type/value clash is resolved by upgrading the host's own clashing import(s)
+      // — never left as a silent unchecked bucket. A name that resists the upgrade
+      // (see `resolveTypeValueClashes`) is reported individually below, with its own
+      // reason, and still fails the gate.
+      const { unresolved } = resolveTypeValueClashes(hostText, hostBindings, analyzed.hoisted, selfPackageName, file);
+      if (unresolved.size > 0) {
+        unresolvedClashes.push({ hostFile: file, symbol: ex.symbol, ordinal: ex.ordinal, names: [...unresolved] });
         continue;
       }
       compileTotal += 1;
@@ -699,12 +875,22 @@ if (isMain) {
     `${classContextCount} @example blocks reference an enclosing class's this/private members — ` +
       `unchecked (not compiled; would need injection into the host class body)`,
   );
-  console.log(
-    `${typeValueClashCount} @example blocks need a name as a VALUE that the host module only ever imports ` +
-      `as a TYPE — unchecked (no import statement can bind the same name twice in one module)`,
-  );
+
+  if (unresolvedClashes.length > 0) {
+    console.error(
+      `${unresolvedClashes.length} @example blocks need a name as a value the host cannot provide even after ` +
+        `upgrading its type-only import:`,
+    );
+    for (const u of unresolvedClashes) {
+      console.error(
+        `  ${u.hostFile} :: ${u.symbol} :: example #${u.ordinal} :: cannot upgrade ${u.names.join(", ")} — ` +
+          `the host declares it directly (not via an import), so no import statement can be rewritten`,
+      );
+    }
+  }
 
   if (compileTotal === 0) {
+    if (unresolvedClashes.length > 0) process.exit(1);
     console.log("no compilable @example ts blocks found — trivially green");
     process.exit(0);
   }
@@ -716,10 +902,12 @@ if (isMain) {
     }
   }
 
-  if (failures.length > 0) {
-    console.error(`${failures.length} of ${compileTotal} compilable examples failed to compile:\n`);
-    for (const f of failures) console.error(formatFailure(f));
-    console.error(`\n${failures.length} of ${compileTotal} TS doc examples FAILED to typecheck`);
+  if (failures.length > 0 || unresolvedClashes.length > 0) {
+    if (failures.length > 0) {
+      console.error(`${failures.length} of ${compileTotal} compilable examples failed to compile:\n`);
+      for (const f of failures) console.error(formatFailure(f));
+      console.error(`\n${failures.length} of ${compileTotal} TS doc examples FAILED to typecheck`);
+    }
     process.exit(1);
   }
   console.log(`${compileTotal} TS doc examples typecheck OK`);

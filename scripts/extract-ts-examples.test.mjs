@@ -14,6 +14,8 @@ import {
   hostTopLevelBindings,
   dedupeAgainstHost,
   hasTypeValueClash,
+  upgradeTypeOnlyImports,
+  resolveTypeValueClashes,
   buildVirtualText,
 } from "./extract-ts-examples.mjs";
 
@@ -297,6 +299,108 @@ describe("hasTypeValueClash", () => {
   it("does not flag an unrelated name", () => {
     const bindings = hostTopLevelBindings('import type { AssetResolver } from "mod";\n');
     expect(hasTypeValueClash(['import { Other } from "mod";'], bindings)).toBe(false);
+  });
+});
+
+describe("upgradeTypeOnlyImports", () => {
+  it("upgrades a whole-clause type-only import naming a single clashing binding", () => {
+    const { text, upgraded } = upgradeTypeOnlyImports('import type { AssetResolver } from "mod";\n', new Set(["AssetResolver"]));
+    expect(text).toBe('import { AssetResolver } from "mod";\n');
+    expect(upgraded).toEqual(new Set(["AssetResolver"]));
+  });
+
+  it("splits a whole-clause type-only import, upgrading ONLY the clashing name and leaving the rest type-only", () => {
+    const { text, upgraded } = upgradeTypeOnlyImports(
+      'import type { ReadableDocuments, AssetResolver, WireDocument } from "@shadowcat/core";\n',
+      new Set(["AssetResolver"]),
+    );
+    expect(upgraded).toEqual(new Set(["AssetResolver"]));
+    expect(text).toContain('import { AssetResolver } from "@shadowcat/core";');
+    expect(text).toContain('import type { ReadableDocuments, WireDocument } from "@shadowcat/core";');
+    // The untouched names must still be type-only — never broadly upgraded.
+    expect(text).not.toMatch(/import \{[^}]*ReadableDocuments/);
+  });
+
+  it("upgrades only the specific per-element `type` marker in a mixed named import", () => {
+    const { text, upgraded } = upgradeTypeOnlyImports(
+      'import { type Foo, Bar } from "mod";\n',
+      new Set(["Foo"]),
+    );
+    expect(upgraded).toEqual(new Set(["Foo"]));
+    expect(text).toContain("import { Foo, Bar }");
+  });
+
+  it("upgrades a type-only default import", () => {
+    const { text, upgraded } = upgradeTypeOnlyImports('import type Foo from "mod";\n', new Set(["Foo"]));
+    expect(upgraded).toEqual(new Set(["Foo"]));
+    expect(text).toBe('import Foo from "mod";\n');
+  });
+
+  it("does not upgrade a name that names no import at all — reports it as unresolved via the empty `upgraded` set", () => {
+    const { text, upgraded } = upgradeTypeOnlyImports("interface AssetResolver {}\n", new Set(["AssetResolver"]));
+    expect(upgraded.size).toBe(0);
+    expect(text).toBe("interface AssetResolver {}\n");
+  });
+
+  it("leaves the host's real text alone when no requested name is found", () => {
+    const original = 'import type { Foo } from "mod";\n';
+    const { text, upgraded } = upgradeTypeOnlyImports(original, new Set(["NotPresent"]));
+    expect(text).toBe(original);
+    expect(upgraded.size).toBe(0);
+  });
+});
+
+describe("resolveTypeValueClashes", () => {
+  it("upgrades the host's type-only import and marks the example's own hoisted import as redundant", () => {
+    const hostText = 'import type { AssetResolver } from "mod";\nexport {};\n';
+    const bindings = hostTopLevelBindings(hostText);
+    const resolved = resolveTypeValueClashes(
+      hostText,
+      bindings,
+      ['import { AssetResolver } from "mod";'],
+      null,
+      null,
+    );
+    expect(resolved.unresolved.size).toBe(0);
+    expect(resolved.hostText).toContain('import { AssetResolver } from "mod";');
+    expect(resolved.hostBindings.get("AssetResolver")).toEqual({ specifier: "mod", typeOnly: false });
+  });
+
+  it("returns the unresolved name when the host declares it locally, not via import", () => {
+    const hostText = "interface AssetResolver {}\n";
+    const bindings = hostTopLevelBindings(hostText);
+    const resolved = resolveTypeValueClashes(
+      hostText,
+      bindings,
+      ['import { AssetResolver } from "@shadowcat/core";'],
+      "@shadowcat/core",
+      null,
+    );
+    expect(resolved.unresolved).toEqual(new Set(["AssetResolver"]));
+    expect(resolved.hostText).toBe(hostText);
+  });
+
+  it("is a no-op when there is no clash", () => {
+    const hostText = 'import { Foo } from "mod";\nexport {};\n';
+    const bindings = hostTopLevelBindings(hostText);
+    const resolved = resolveTypeValueClashes(hostText, bindings, [], null, null);
+    expect(resolved.hostText).toBe(hostText);
+    expect(resolved.hostBindings).toBe(bindings);
+    expect(resolved.unresolved.size).toBe(0);
+  });
+});
+
+describe("type/value clash — virtual text shape after resolution", () => {
+  it("emits exactly one AssetResolver binding — the upgraded host import — never a competing duplicate", () => {
+    const hostText = 'import type { AssetResolver } from "./__doctest_control_helper__";\nexport {};\n';
+    const analyzed = analyzeExample(
+      'import { AssetResolver } from "./__doctest_control_helper__";\nconst v = new AssetResolver();\nconsole.log(v);',
+    );
+    const hostBindings = hostTopLevelBindings(hostText);
+    const resolved = resolveTypeValueClashes(hostText, hostBindings, analyzed.hoisted, null, null);
+    expect(resolved.unresolved.size).toBe(0);
+    const text = buildVirtualText(resolved.hostText, analyzed, resolved.hostBindings);
+    expect(text.match(/import \{ AssetResolver \}/g)).toHaveLength(1);
   });
 });
 
