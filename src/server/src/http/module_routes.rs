@@ -158,7 +158,7 @@ pub async fn get_world_enabled_modules(
 
 /// Replace a world's enabled installed-module set. GM/admin only. Every id
 /// must name a currently-installed, validly-manifested module whose
-/// `engines.shadowcat` range is satisfied by the running server version (T6) —
+/// `engines.shadowcat` range is satisfied by the running server version —
 /// enabling a version-incompatible or unknown module is rejected outright,
 /// atomically (never partially applied).
 pub async fn set_world_enabled_modules(
@@ -257,7 +257,7 @@ mod tests {
     }
 
     /// The wire `id` MUST be the install folder name, not the manifest's
-    /// author-declared `id` — the server's enabled-module set (T6) is keyed on
+    /// author-declared `id` — the server's enabled-module set is keyed on
     /// the folder, so a client keying on `manifest.id` instead would show
     /// wrong toggle state and send ids the server rejects whenever the two
     /// diverge (a community author's declared id colliding with, or simply

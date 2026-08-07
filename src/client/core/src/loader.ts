@@ -66,7 +66,7 @@ function normalize(imported: DefaultExport | Module): Module {
  * not satisfy it. A missing `engines.shadowcat` is NOT an error here — the
  * field is optional on the shared manifest shape (first-party modules never
  * set it); the modules-folder pipeline's enable/load gate is what makes it
- * effectively required for community modules (T6).
+ * effectively required for community modules.
  * @param manifest The module's manifest.
  * @param shadowcatVersion The running host's version, checked against `manifest.engines.shadowcat`.
  * @example
@@ -91,7 +91,7 @@ function checkEngineCompat(manifest: ModuleManifest, shadowcatVersion: string): 
  * @param opts.entries The discovered manifest/entry pairs.
  * @param opts.importFn The environment's dynamic import.
  * @param opts.registry The `ModuleRegistry` to add successful imports to.
- * @param opts.shadowcatVersion Optional running host version, for the T6 load-time engine-compat gate.
+ * @param opts.shadowcatVersion Optional running host version, for the load-time engine-compat gate.
  * @returns The ids that loaded, and the entries that failed with a reason.
  * @example
  * ```ts
@@ -134,7 +134,7 @@ export async function loadModules(opts: {
   /** The registry successful imports are added to. */
   registry: ModuleRegistry;
   /** When provided, each entry's `engines.shadowcat` (if declared) is checked
-   * against this version before import (T6 load-time gate). */
+   * against this version before import (load-time gate). */
   shadowcatVersion?: string;
 }): Promise<ModuleLoadResult> {
   const loaded: string[] = [];
@@ -147,7 +147,7 @@ export async function loadModules(opts: {
       parseManifest(manifest);
       // typeof-check (not truthy-check): an empty-string shadowcatVersion must still
       // run the gate, failing closed via `satisfies("", range)`'s semver parse error,
-      // rather than being treated as "omitted" and silently skipping the T6 gate.
+      // rather than being treated as "omitted" and silently skipping the gate.
       if (typeof opts.shadowcatVersion === "string") {
         checkEngineCompat(manifest, opts.shadowcatVersion);
       }

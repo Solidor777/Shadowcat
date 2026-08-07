@@ -143,11 +143,11 @@ describe("stampInstance", () => {
 
 describe("computePull + planToUpdate", () => {
   it("emits whole-band FieldChanges with REAL child pre-images + a /base refresh", () => {
-    const tmpl = doc({ id: "T", name: "T2", system: { hp: 5 } });
+    const tmpl = doc({ id: "T", name: "Preset-v1", system: { hp: 5 } });
     const child = doc({ id: "C", name: "C1", source: { id: "T", pack: null, version: 1 }, system: { hp: 1, note: "mine" } });
-    // Base name matches the template's name at stamp time ("T2", unchanged since); the child's
+    // Base name matches the template's name at stamp time ("Preset-v1", unchanged since); the child's
     // OWN local rename to "C1" has no competing parent diff, so it merges through untouched.
-    child.base = { name: "T2", engine: null, system: { hp: 1 }, embedded: {} };
+    child.base = { name: "Preset-v1", engine: null, system: { hp: 1 }, embedded: {} };
     // Template changed hp 1→5 (child's base hp was 1); "note" is absent from base, so it's a
     // child-local addition since sync (not a template deletion) and merge3 keeps it untouched.
     const plan = computePull(child, tmpl);
@@ -160,7 +160,7 @@ describe("computePull + planToUpdate", () => {
     expect(system.new).toEqual({ hp: 5, note: "mine" });  // merged
     const baseChange = op.changes.find((c) => c.path === "/base")!;
     expect(baseChange.old).toEqual(child.base);
-    expect(baseChange.new).toEqual({ name: "T2", engine: null, system: { hp: 5 }, embedded: {} });
+    expect(baseChange.new).toEqual({ name: "Preset-v1", engine: null, system: { hp: 5 }, embedded: {} });
     // /name unchanged on the merged bands → no /name change emitted.
     expect(op.changes.some((c) => c.path === "/name")).toBe(false);
     // REGRESSION (leaf-removal wire capability): the merge engine reconciles subtrees by

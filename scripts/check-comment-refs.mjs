@@ -50,9 +50,12 @@ const BANNED = [
   // unsuffixed form carries no less process identity than the suffixed one, so a pattern that
   // required the suffix would read the short form as clean.
   { name: "milestone/task id", re: /\bM\d+[a-z]?(?:-\d+)?\b/ },
-  // A capital D, I or W followed by digits: phase checkpoints, workstreams and numbered
-  // invariants. All are ids a process assigns, resolvable only by a reader holding that artifact.
-  { name: "phase / workstream / invariant id", re: /\b[DIW]\d+\b/ },
+  // A capital D, I, T or W followed by digits: phase checkpoints, numbered invariants, tasks and
+  // workstreams. All are ids a process assigns, resolvable only by a reader holding that artifact.
+  // The T form collides with a generic type parameter, but only where a comment names one WITHOUT
+  // backticks — and a comment naming a type is required to cite it as a symbol regardless, so the
+  // collision resolves the same way every other value/document collision here does.
+  { name: "phase / workstream / invariant id", re: /\b[DITW]\d+\b/ },
   {
     name: "repo document pointer",
     re: /docs\/[\w./-]+\.md|\b(?:TODO|OPEN_BUGS|CLOSED_BUGS|POST_WORK_FINDINGS|ARCHITECTURE|PLAN)\.md|ARCHITECTURE\s*[§#]|\binvariant\s*#?\s*\d+/i,
@@ -119,8 +122,12 @@ const PROSE_LITERAL = /\s/;
 
 // Explanatory contexts stay in scope on top of the shape test, since a test name or assertion
 // EXAMPLE: message can legitimately be a single token — `it("M13-0")` is prose minus the spaces.
+// `.expect(` is Rust's method form and takes a human-readable message. A BARE `expect(` is the
+// JavaScript assertion form and takes the SUBJECT under test, so treating its literals as prose
+// pulls program data into scope. Only the dotted form qualifies; a genuine message passed to the
+// JavaScript form is prose and is already caught by the shape test.
 const EXPLANATORY_STRING =
-  /\bassert(?:_eq|_ne)?!|\bpanic!|\.expect\(|\bexpect\(|^\s*(?:async\s+)?(?:test|it|describe)\s*(?:\.\w+)?\s*\(/;
+  /\bassert(?:_eq|_ne)?!|\bpanic!|\.expect\(|^\s*(?:async\s+)?(?:test|it|describe)\s*(?:\.\w+)?\s*\(/;
 
 /** Recursively collects source paths under `dir`; called once per entry in ROOTS. */
 function sources(dir) {

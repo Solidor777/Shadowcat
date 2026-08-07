@@ -842,7 +842,7 @@ test("Welcome warns (but still enters the world) when an enabled id is not insta
 });
 
 test("resolves an enabled folder id to its installed entry even when the manifest declares a different id", async () => {
-  // Regression: the enabled-module set (T6) is keyed on the install FOLDER
+  // Regression: the enabled-module set is keyed on the install FOLDER
   // id, never the manifest's author-declared id — the two may legitimately
   // differ. A lookup keyed on `manifest.id` would (wrongly) treat this
   // entry as "not installed" and skip it.
