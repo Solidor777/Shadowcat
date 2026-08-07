@@ -90,6 +90,14 @@ const BANNED = [
   },
   // EXAMPLE: A dispatch brief, task or plan is scaffolding that stops existing once the work
   // lands, so a comment deferring to one leaves the reader an instruction they cannot retrieve.
+  //
+  // EXAMPLE: the plan form stays broad even though a `MergePlan`-typed value gets described the
+  // EXAMPLE: same way in prose. Both senses take the possessive, so no wording test separates
+  // them — but a comment naming a VALUE must cite it as a symbol in backticks anyway, which
+  // resolves the collision at its source. Narrowing to spare the value sense costs real
+  // EXAMPLE: detections: the deferring forms are open-ended ("named by the plan", "see the
+  // plan's decision"), so any list of them enumerates the phrasings already written, never the
+  // ones still to come.
   { name: "process marker", re: /POST_WORK:|\b(?:task|dispatch) brief\b|\bthe plan\b/i },
 ];
 
