@@ -11,7 +11,7 @@ Server is the source of truth; the client only mirrors the wire shape.
 ## Purpose
 
 A document is a typed envelope (id, type, owner, permissions, `schema_version`, display `name`)
-carrying **three bands (M13-0)**: the envelope `name: Option<String>` itself, a typed `engine`
+carrying **three bands**: the envelope `name: Option<String>` itself, a typed `engine`
 JSONB body (present only for engine-defined `doc_type`s, strictly ingress-validated), and an
 opaque `system` JSONB body the engine never interprets semantically. Permissions are enforced
 server-side **per recipient**: hidden fields are stripped before transmission, never
@@ -25,7 +25,7 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
   body; `enum Visibility { All, GmOnly, OwnerOrGm }` (the per-property visibility tiers);
   `PermissionSet.gm_role: Option<DocRole>` (`#[serde(default)]`, ts-rs exported) — see Hard
   Invariants below.
-  - `base: Option<serde_json::Value>` (M13e, `#[serde(default)]`, `#[ts(type = "unknown")]`) —
+  - `base: Option<serde_json::Value>` (`#[serde(default)]`, `#[ts(type = "unknown")]`) —
     the opaque 3-way-merge snapshot the generic templates system stamps onto an instance at
     stamp/pull/push/revert time (see `shadowcat-codebase-templates` for the client-side
     `MergeBase` shape/algorithm). Purely a client-owned blob: the server never interprets it.
@@ -52,7 +52,7 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
     world a command is being applied to), it asserts `doc.scope` is `Scope::World` for that
     SAME id, rejecting any other scope — a guard inside `apply_intent`/`apply_command`, not a
     `world_of`-style derivation, so it does not duplicate `world_of` itself.
-- `data::engine` (M13-0) — the typed `engine`-band structs + the ingress-validation
+- `data::engine` — the typed `engine`-band structs + the ingress-validation
   registry, one submodule per doc-type family (`data::engine::token`, `data::engine::scene`,
   `data::engine::geometry`, `data::engine::registries`) plus the `data::engine` module itself:
   `is_engine_doc_type(doc_type) -> bool` (the 17-entry registry:
@@ -165,7 +165,7 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
   - `filter_properties(doc, access)` strips hidden **properties** from an outgoing doc — a
     PROPERTY-visibility gate only (see Hard Invariants: it does NOT decide whole-document
     withholding). `/system`, `/engine`, and `/name` overrides all **null the field rather than
-    strip the key** (M13-0 generalized this from a `/system`-only special case) — dropping the key
+    strip the key** (generalized from a `/system`-only special case) — dropping the key
     would either fail re-deserialization (`system`) or be indistinguishable from a doc that never
     had a name/engine body, breaking the client's stable envelope shape; nested pointers one level
     down still strip normally. `/base` gets the same null-not-strip treatment, but its visibility
@@ -175,20 +175,20 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
     redaction) applies the same unconditional `/base` policy at every embedded depth.
 - `data::search` — `index_content` (full) vs `index_content_public` (redacted):
   the index is **partitioned by visibility**, not redacted after the fact. Indexes `name ∪ engine
-  ∪ system` (M13-0 added `name` and `engine` as leaf sources alongside `system`, same
+  ∪ system` (`name` and `engine` are leaf sources alongside `system`, same
   string-leaf-walk treatment; `index_content_public` needs no structural change — it re-runs
   `filter_properties` first, and a nulled `/engine`/`/name` band simply contributes nothing).
 - `data::repository`/`data::validation` — `Repository` trait (storage seam; SQLite today, Postgres-capable later) +
   structural validation (size caps, field-path validity, `deny_unknown_fields`); `data::validation`
-  applies the same `MAX_SYSTEM_BYTES` (256 KiB) cap to `engine` as to `system` (M13-0), checked
-  independently per block. `base` (M13e) gets the SAME independent size cap
+  applies the same `MAX_SYSTEM_BYTES` (256 KiB) cap to `engine` as to `system`, checked
+  independently per block. `base` gets the SAME independent size cap
   (`validate_system_size`'s cap function, shared across all three blocks) but is explicitly
   `EXEMPT` from `validate_engine_tree` — the tree walker only ever visits `/engine`, never
   `/base`, because `base` is a historical snapshot that may legitimately hold a stale
   `engine`/`system` shape from before the current schema (a template edited after an instance
   stamped from it); running current-schema validation against a deliberately-historical blob
   would be wrong, not defense-in-depth.
-- `data::validation::validate_system_schema_tree` (M13f, tier-2) — a read-only recursive
+- `data::validation::validate_system_schema_tree` (tier-2) — a read-only recursive
   `system`-band structural gate, run beside (not instead of) `validate_engine_tree`.
   `validate_value_against_schema(value, schema) -> Result<(), SchemaMismatch>` is the pure
   accept/reject matcher over the type-tree grammar. Types: `Schema`/`SchemaType`/
@@ -218,7 +218,7 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
   the batch's other ops) — this is the same whole-batch-rollback semantics every other
   `apply_intent` validation failure already has, not a new rollback path.
 - `data::sqlite::apply_intent` — Phase-1 OCC pre-image comparison
-  (`values_semantically_eq`) is **numeric-variant-aware, not raw equality** (M13-0). Same-variant
+  (`values_semantically_eq`) is **numeric-variant-aware, not raw equality**. Same-variant
   integer pairs (both `PosInt`/`NegInt`) compare EXACTLY as `i128`, no magnitude limit — this never
   touches `f64`, so two distinct large integers past 2^53 never alias into a false match. Only a
   genuinely-mixed pair (one integer variant, one `Float`) falls back to an `f64` comparison, gated
@@ -235,8 +235,8 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
   reason }`) — no new wire frame.
 - The client `wire` module — Zod mirror: `VisibilitySchema = z.enum(["all","gm_only",
   "owner_or_gm"])`, `property_overrides`. ts-rs generates the TS types from the Rust source.
-- The client `scene-docs` module — `ITEM_DOC_TYPE = "item"`, `ItemSystem`, `buildItemDoc`
-  (M12c): a **client-only doc_type** — the server has NO Rust-side knowledge of `item` and
+- The client `scene-docs` module — `ITEM_DOC_TYPE = "item"`, `ItemSystem`, `buildItemDoc`:
+  a **client-only doc_type** — the server has NO Rust-side knowledge of `item` and
   requires none, since `doc_type` is an unconstrained wire string and `system` is opaque JSONB the
   server never interprets. An item document lives standalone (top-level, `parent_id: null`) or
   embedded in an actor's inventory (`actor.embedded.item[]`); write-site resolution for an embedded
@@ -303,7 +303,7 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
   which raw `==` would treat as unequal to a stored `100`, causing a spurious `Conflict` on an
   otherwise up-to-date write). See the `data::sqlite` seam entry above for the exact comparison rule.
 - **`/base`'s egress visibility is hardcoded `OwnerOrGm`, UNCONDITIONAL — never driven by
-  `property_overrides` (M13e).** `filter_properties` and `collect_hidden`/`redact_change` both
+  `property_overrides`.** `filter_properties` and `collect_hidden`/`redact_change` both
   independently hide `/base` from any recipient who is neither the document's owner nor a GM,
   regardless of what `permissions.property_overrides` says (a doc author cannot loosen or
   tighten `/base`'s visibility by setting an override on it — there is none to set). This is
@@ -313,7 +313,7 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
   recipient — leaking the snapshot would bypass that override. Any future change to `base`'s
   redaction must keep both call sites (whole-doc `filter_properties`, broadcast-delta
   `collect_hidden`) in sync; they are two independent code paths, not one shared chokepoint.
-- **Tier-2 (M13f) validates the `system` band's SHAPE only, never values — it EXTENDS invariant 6
+- **Tier-2 validates the `system` band's SHAPE only, never values — it EXTENDS invariant 6
   (three-band document shape), it does not replace it.** `engine`-band validation
   (`validate_engine`/`validate_engine_tree`) remains the separate, pre-existing REAL semantic
   ingress gate for the 17 engine-defined doc types (see the `engine ingress validation` invariant
@@ -361,7 +361,7 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
 
 ## Gotchas
 
-- **Docs-ratchet covers the ENTIRE `data` module tree (docs sweeps 2a+2b):** every module —
+- **Docs-ratchet covers the ENTIRE `data` module tree:** every module —
   `data::{document,command,permission,repository,membership,validation,search,asset,sqlite}`
   AND `data::engine::{geometry,registries,scene,token}` — carries `#![deny(missing_docs)]` +
   `#![deny(clippy::missing_docs_in_private_items)]` (the `data` module's inner attrs cascade to all
@@ -372,7 +372,7 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
   wrong doc).
 - **Wire types are generated** — change the Rust `Visibility`/`Document`, regenerate ts-rs, then
   mirror in the Zod schema (a drift guard enforces parity). Never hand-edit `src/types/generated`.
-- **A naive raw-equality assumption about OCC pre-images is wrong (M13-0).** Any code (or reviewer)
+- **A naive raw-equality assumption about OCC pre-images is wrong.** Any code (or reviewer)
   reasoning about `apply_intent`'s Phase-1 conflict check must account for
   `values_semantically_eq`'s numeric-variant awareness — see the Hard Invariants entry above and
   the `data::sqlite` seam. Treating pre-image comparison as plain `serde_json::Value` `==` will
@@ -387,9 +387,8 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
 
 - Rationale: `docs/design/M2-data-foundation.md`; invariants in `docs/design/ARCHITECTURE.md`
   §2 invariant 4 (per-recipient permissions) + invariant 6 (three-band document shape) + §6 (data
-  model). M13-0 design: `docs/superpowers/specs/2026-07-15-m13-0-document-shape-design.md`. M13f
-  (tier-2 structural schema registry) design:
-  `docs/superpowers/specs/2026-07-18-m13f-server-schema-registry-design.md`.
+  model). Design rationale for the three-band document shape and the tier-2 structural schema
+  registry lives under `docs/superpowers/specs/`.
 - Relationships: `graphify query "document permissions redaction filter_properties can_see"`,
   `graphify path "permission.rs" "search.rs"`.
 - Deferred merge model: [[document-inheritance-merge-model]].

@@ -1,11 +1,11 @@
 ---
 name: shadowcat-codebase-panels
-description: "Use when touching the Shadowcat panel-manager (M12a-e): @shadowcat/module-panels (layout tree + LayoutOp reducer, EngineAdapter/DockviewEngine/FakeEngine, PanelsController, PanelHost/PanelMenu/DockChips/CompactSwitcher), the shell's PanelsBridge (AppContext.panels), the shadowcat.panel contract panels contribute into, per-world panelLayout persistence, pop-out (same-heap window) panels, or the stage-well veto rules (STAGE_ID — enforced inside panels; stage's own source is scene-rendering territory). Covers src/modules/panels/** + ui-kit panelsBridge. Invoke shadowcat-codebase-core first."
+description: "Use when touching the Shadowcat panel-manager: @shadowcat/module-panels (layout tree + LayoutOp reducer, EngineAdapter/DockviewEngine/FakeEngine, PanelsController, PanelHost/PanelMenu/DockChips/CompactSwitcher), the shell's PanelsBridge (AppContext.panels), the shadowcat.panel contract panels contribute into, per-world panelLayout persistence, pop-out (same-heap window) panels, or the stage-well veto rules (STAGE_ID — enforced inside panels; stage's own source is scene-rendering territory). Covers src/modules/panels/** + ui-kit panelsBridge. Invoke shadowcat-codebase-core first."
 ---
 
 # Shadowcat — Panel Manager (dockable panels)
 
-Orientation for the M12a-e dockable-panel system (dock/float/minimize/compact + M12e pop-out
+Orientation for the dockable-panel system (dock/float/minimize/compact + pop-out
 windows) that replaced the tabbed sidebar.
 
 ## Purpose
@@ -39,7 +39,7 @@ the reducer (intercept-and-redispatch), so the engine never owns state.
 - `panels/layout`'s `encodeLayout`/`decodeLayout` (structural
   validation, unknown-id prune, reset-to-default on garbage). `decodeLayout` also returns the
   pre-prune `source` layout so late registrations restore their persisted spot (below).
-  `poppedOut` back-compat: absent on a pre-M12e blob normalizes to `[]` (`withPoppedOut`);
+  `poppedOut` back-compat: absent on a blob predating pop-out support normalizes to `[]` (`withPoppedOut`);
   present-but-malformed fails the whole blob.
 - `EngineAdapter` seam (incl. optional
   `onNotice?(cb):()=>void`); `FakeEngine` = test double / bespoke-fallback (degrades pop-out to a
@@ -78,7 +78,7 @@ the reducer (intercept-and-redispatch), so the engine never owns state.
   (`shadowcat.panel`), contributes `PanelHost` into core-ui's singleton
   `shadowcat.surface:panel-host` with a fresh `new DockviewEngine(...)` per world session
   (`register` runs per install), and chips into statusbar's `shadowcat.surface:panel-dock`.
-- `src/modules/stage/` — the canvas stage module; the stage center well is INVIOLABLE (W1–W3):
+- `src/modules/stage/` — the canvas stage module; the stage center well is INVIOLABLE:
   never dockable-over, never floatable, never minimizable — `STAGE_ID` vetoed in both the drop
   and menu paths.
 - Panel modules declare `Contribution.panel` metadata (`icon`, `labelKey`, `gmOnly?`,
@@ -86,12 +86,12 @@ the reducer (intercept-and-redispatch), so the engine never owns state.
   from the layout tree, not a minimized chip) until opened from the topbar `LauncherMenu`
   ([[shadowcat-codebase-client-shell]]) — toggling the same launcher item again minimizes it
   back to a statusbar chip.
-- `src/client/shell/public/popout.html` (M12e) — same-origin loader document served at
+- `src/client/shell/public/popout.html` — same-origin loader document served at
   `/popout.html` by `static_handler` (exact-match lookup, real 404-on-miss — NOT a
   SPA catch-all; verified against `static_handler`). A popped-out panel's `Window`
   navigates here; `dockview-core`'s own `addStyles` clones stylesheets into the cross-document
   popup. `[[embed-dist-compile-ordering]]`: the client build must run before the server embeds
-  `dist/` (`dist/popout.html` presence is part of the M12e build-verification step).
+  `dist/` (`dist/popout.html` presence is part of the build-verification step).
 
 ## Hard invariants
 
@@ -113,7 +113,7 @@ the reducer (intercept-and-redispatch), so the engine never owns state.
   mid-flight (float transition) invalidates key-equality staleness checks
   [[async-completion-needs-object-identity-not-key]]; see `DockviewEngine.#floatTransitionIds`.
 - **Pop-out is gesture-time imperative, never routed through `apply()`'s declarative
-  reconcile** (M12e). The only producer of a `popOut` tree op is the menu-command handler
+  reconcile.** The only producer of a `popOut` tree op is the menu-command handler
   `DockviewEngine.#requestPopOut`, which calls `window.open`-backed `addPopoutGroup` FIRST
   and emits the op only after that promise resolves `true`. No code path can need pop-out
   reconciled through the reducer's `apply()` diff and silently miss it, because `apply()` never
@@ -140,9 +140,8 @@ the reducer (intercept-and-redispatch), so the engine never owns state.
   `#applying`-suppression branch (a `popIn` must NOT fire when OUR OWN `apply()` reconcile is
   what caused the popout group's removal, e.g. a menu "dock" on a popped-out panel), the
   `event.group.model.panels` fallback when the panel isn't in `#poppedOutGroupPanels`, and the
-  `STAGE_ID` skip. All three read correct on inspection but are exactly the class of bug this
-  file's Task 5 buddy-check found twice under adversarial testing — do not trust inspection
-  alone for changes here.
+  `STAGE_ID` skip. All three read correct on inspection but are exactly the class of bug found
+  twice in this file under adversarial testing — do not trust inspection alone for changes here.
 - **`#applying` is a synchronous-only guard — it cannot suppress an `AsapEvent` listener** (F3,
   live floating re-drag/resize sync). `DockviewApi.onDidLayoutChange` is dockview's `AsapEvent`:
   `.fire()` schedules delivery via `queueMicrotask`, so every listener runs on the
@@ -173,7 +172,7 @@ the reducer (intercept-and-redispatch), so the engine never owns state.
   and floating z bumps in the TREE), and `PanelHost` calls `init`/`apply`/`onOp`/`onNotice`/`destroy`
   but never `eng.focus`. The reachable chain is `sheetsController` → `PanelsBridge` →
   `PanelsController.focus` and stops there. Consequence to know before wiring it up:
-  `DockviewEngine.focus` early-returns on `STAGE_ID` (W2 stage-well defense-in-depth) and
+  `DockviewEngine.focus` early-returns on `STAGE_ID` (stage-well defense-in-depth) and
   `FakeEngine.focus` has NO such guard — a never-fork-a-decision violation that is inert only
   because the seam is uncalled. Logged in TODO.
 - Panel modules `requires` `PANEL_CONTRACT`, which topologically activates `panels` FIRST —
@@ -191,16 +190,15 @@ the reducer (intercept-and-redispatch), so the engine never owns state.
   `DockviewEngine` directly under jsdom (init/apply/DOM adoption) with duck-typed
   `DockviewWillDropEvent`s standing in for drops. NO e2e test exercises a real dockview tab
   drag either (`panels.spec` covers launcher-open→dock→reload-survival, re-toggle→
-  minimize-to-chip, and the compact/expanded 48rem axis — M12b launcher-closed defaults mean
+  minimize-to-chip, and the compact/expanded 48rem axis — launcher-closed defaults mean
   there is no chip on a fresh world until a panel is minimized); real-pointer drop-position
-  classification fidelity is a manual-QA gap, logged in POST_WORK_FINDINGS (M12a
-  verification gap).
+  classification fidelity is a manual-QA gap, logged in POST_WORK_FINDINGS.
 - On any dockview-core version bump, re-verify `--z-popover` (1000, defined in `_semantic.scss`)
   still clears dockview's floating-overlay z-index (`--dv-overlay-z-index`, 999 at 7.0.2) — the
   popover menus stack above floating panel groups only by that numeric margin.
 - Dragging a panel INTO an already-open popout group bypasses the reducer — `#groupWillDropSubs`
-  is not wired for popout groups, so that specific gesture does not flow through `applyOp` (M12e
-  Task 5 scope was menu-only per spec §9/Decision 6; the drop-classification gap is logged in
+  is not wired for popout groups, so that specific gesture does not flow through `applyOp` (this
+  gesture's scope was menu-only per spec §9/Decision 6; the drop-classification gap is logged in
   TODO, not a defect in shipped scope).
 - `DockviewEngine.#expandGroupDockOp`'s "new group" index computation assumes the dragged whole
   group is not already a member of the target zone — a same-zone whole-group reorder is a
@@ -225,8 +223,7 @@ the reducer (intercept-and-redispatch), so the engine never owns state.
 
 ## Pointers
 
-- Design: `docs/superpowers/specs/2026-07-13-m12-dockable-panels-default-modules-design.md`
-  (approved f97dd62); plans `docs/superpowers/plans/2026-07-13-m12a-panel-manager-core.md`,
-  `docs/superpowers/plans/2026-07-15-m12e-popout-windows.md` (pop-out; D4).
+- Design: `docs/superpowers/specs/` (panel-manager + pop-out windows); implementation plans
+  under `docs/superpowers/plans/`.
 - Relationships: `graphify query "panels controller layout tree engine adapter dockview bridge chips popout"`.
 - Shell/AppContext side: [[shadowcat-codebase-client-shell]].
