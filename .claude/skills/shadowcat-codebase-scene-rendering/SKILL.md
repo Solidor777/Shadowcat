@@ -31,7 +31,7 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   `DEFAULT_SCENE_BOUNDS` in the `scene-docs` module (dual-language default-parity invariant — verify both
   when either changes). Per-scene only, no world-settings layer. **Movement gate:**
   `visible_cells(user, scene, lenient)` is the move-gate mask — under strict (center) sampling it
-  EQUALS `player_lit_mask`'s cells (spec §13) because both share `cell_visible` / `lighting_inputs` /
+  EQUALS `player_lit_mask`'s cells because both share `cell_visible` / `lighting_inputs` /
   `source_los_poly` / `point_qualifies`; `lenient` adds the 4 corners (a superset, never a
   zero-overlap cell). `resolve_scene` also yields `movement_restriction`
   (`MovementRestriction::{Visible,Revealed,Unrestricted}`, scene-overridable, fail-closed to `Visible`)
@@ -70,11 +70,12 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   derived scene. `MoveExecution.scene` carries it out, and `MoveStream.scene` is stamped from it, so
   the per-recipient egress clip and the client's viewed-scene filter cannot key on a client value
   either. A request whose `scene_id` disagrees is additionally refused, but that is redundant
-  defense-in-depth: the derivation is the mechanism. **Why:** `MoveRequest` previously trusted the
-  client's `scene_id` while reading the token's position scene-agnostically, so a player owning a
-  token in scene A could have the gate evaluated against scene B — B's walls, their own mask in B,
-  B's regions — and teleport through fog in A. Authorization was intact (they owned the token); it
-  was a total bypass of the wall + visibility gate. **A routing request that names NO token**
+  defense-in-depth: the derivation is the mechanism. **Why derivation, not the request's own
+  `scene_id`:** trusting a request's `scene_id` while reading the token's position
+  scene-agnostically would let a player owning a token in scene A get the gate evaluated against
+  scene B — B's walls, their own mask in B, B's regions — teleporting through fog in A despite
+  valid token ownership; deriving the scene from the token is what closes that bypass.
+  **A routing request that names NO token**
   (`Pathfind`) cannot derive, so a non-GM must instead prove PRESENCE: they must effectively own a
   token in the named scene, routed through the same effective-ownership rule (never a forked
   ownership check), failing with the generic `Unreachable` so it discloses nothing.
@@ -188,8 +189,8 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   **Keyed on CELL-ENTRY TRANSITIONS, not per dense sample:** a continuous path subdivided
   into several sub-cell samples within the same cell is evaluated exactly once for that cell,
   matching the prior per-authored-step accrual count on grid input (where every step already
-  crossed into a distinct new cell); a non-consecutive re-entry into a previously-visited cell (A
-  → B → A) still re-evaluates correctly since the dedup only compares against the IMMEDIATELY
+  crossed into a distinct new cell); re-entering a cell already crossed earlier in the SAME walk
+  (A → B → A) still re-evaluates correctly since the dedup only compares against the IMMEDIATELY
   prior cell, never a stale earlier value. Impassable stops BEFORE entry into the cell (like a
   wall — `stop` lands on the prior cell); arrest stops AT entry (the cell is entered, then the
   walk halts — a final-step arrest still sets `truncated: true` even though `stop_index ==
@@ -197,15 +198,15 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   cell-entry (1.0 outside any terrain region — this is a per-step-distance BASELINE, not merely
   additive terrain weighting; a plain grid move with no regions at all still accrues `1.0` per
   step) — center-cell-only, terrain-only; it does NOT apply the diagonal-rule step-cost factor
-  (`sc` — 1.0/2.0/√2/alternating) that `pathfinding::astar_leg`'s step-cost function applies. **Known, logged
-  inconsistency (`docs/TODO.md`):** the two `cost` values are numerically comparable only under
+  (`sc` — 1.0/2.0/√2/alternating) that `pathfinding::astar_leg`'s step-cost function applies. **Known
+  inconsistency:** the two `cost` values are numerically comparable only under
   Chebyshev (where the diagonal step cost is 1.0); under any other diagonal rule they diverge. This
   is a deliberate v1 scoping decision, not a bug — nothing currently consumes or
   compares the two costs together. Resolve before any per-turn movement-budget system consumes
-  either `MoveOutcome.cost` or `MoveStream.cost`. **RESOLVED (Phase-1 sweep):** `supercover_cells`'s
+  either `MoveOutcome.cost` or `MoveStream.cost`. `supercover_cells`'s
   lattice-corner-tie drift (a diagonal king-step whose leg endpoints both sit exactly on 4-way
-  grid-line intersections could spuriously fail-closed) is fixed via a per-axis remaining-step
-  budget gating the diagonal corner branch — see `docs/CLOSED_BUGS.md` for the root cause and fix.
+  grid-line intersections could otherwise spuriously fail-closed) is fixed via a per-axis
+  remaining-step budget gating the diagonal corner branch.
 - `scene` — adds `SceneEcs::token_position(token) -> Option<(f64,f64)>` and
   `SceneEcs::resolved_animation_speed() -> f64` (`pub(crate)` seams; the latter sits alongside
   `resolved_diagonal_rule`, sources `world_settings.animation`, defaults to 6 cells/sec).
@@ -282,7 +283,7 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   only when `user` can see the visibility tier declared on its `/engine` (defaults
   to `All` when undeclared), via the SAME `resolve_access`/`property_overrides["/engine"]`
   mechanism that already
-  gates every other document's egress (spec §3: no new secrecy machinery). **Callers MUST pass
+  gates every other document's egress — no new secrecy machinery. **Callers MUST pass
   `None` for a GM requester** — mirrors `visible_cells`'s GM-skips-the-mask convention; passing
   `Some(gm_user)` would incorrectly filter a GM's own field.
 - `scene::pathfinding` — pure, headless grid A* (no I/O; clean-room):
@@ -319,8 +320,8 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   `astar_leg`'s per-leg running total, because parity threading is purely sequential/order-
   dependent — replaying reproduces the exact cost the original per-leg accumulation would give for
   that same prefix). Returns `PathOutcome { path, cost, arrested }`. This truncation exists so a
-  player-facing route preview is honest about a hazard it already knows about (spec §5: "arrest is
-  honest in preview") — never shows a route running past an arrest cell the requester can see.
+  player-facing route preview is honest about a hazard it already knows about — it never shows a
+  route running past an arrest cell the requester can see.
   `SceneEcs::pathfind(requester: RouteRequester, scene, start, waypoints, footprint_radius)` —
   `RouteRequester` describes the REQUESTER ONLY (`user`, `is_gm`, `explored`); the route itself
   stays in `pathfind`'s own trailing parameters. It builds a `PathInputs` and passes it to
@@ -476,8 +477,8 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
     one candidate chord) fails only that chord, leaving it at its single grid step while smoothing
     continues over the rest of the path. `cost`/`arrested` are carried through UNCHANGED (not
     recomputed) — the pre-smoothing weighted grid cost is a conservative (never-cheaper) budget for
-    the straighter geometry, the same preview-vs-execution divergence class as the pre-existing
-    `MoveOutcome.cost`/router-cost TODO (an exact per-span smoothed cost is deferred, `docs/TODO.md`).
+    the straighter geometry, the same preview-vs-execution divergence class as
+    `MoveOutcome.cost`/router-cost (an exact per-span smoothed cost is not currently computed).
   - `navmesh::truncate_at_arrest(outcome, field, cell)` — arrest post-filter for the pure-polyanya
     continuous path (which never runs through `find`, so needs its own arrest truncation, mirroring
     `find`'s arrest logic for the walls-only route). Arc-length-samples the route
@@ -733,7 +734,7 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   FLUSH, not at arrival. Any future engine cache that spans a client-local scene switch (not just
   vision/fog) must follow this same raw-payload-cache/filter-at-consumption shape — filtering
   eagerly and caching the filtered result is the bug pattern to avoid.
-- **RESOLVED (`docs/CLOSED_BUGS.md`): `flushPendingDerived` no longer regresses `lastAppliedSeq` to
+- **`flushPendingDerived` never regresses `lastAppliedSeq` to
   a stale `pendingDerived` entry superseded by an immediately-applied newer frame.** `onSceneFrame`'s
   IMMEDIATE-apply branch (taken when a frame's `computedAtSeq` is not ahead of `store.appliedSeq` at
   arrival) never touched `pendingDerived` — a still-set OLDER deferred entry (e.g. seq 5) could
@@ -810,7 +811,7 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
 - **The pathfinder route is footprint-STRICTER than the center-based authoritative gate on WALLS,
   but its MASK predicate is now a superset of the gate's.**
   `cell_enterable`'s wall check (footprint-disc clearance) is stricter than the
-  authoritative gate's center-based wall check (parent spec §14) — a wide token can be dragged
+  authoritative gate's center-based wall check — a wide token can be dragged
   (gate allows the center path) along a corridor the router refuses (footprint doesn't fit); this
   wall asymmetry is intentional and safe (over-restrictive, never under). The MASK check requires
   `grid.inputs.shape.footprint_cells(to,...) ∪ grid.inputs.shape.line_traversal(from,to,cell)` — the same RESOLVED
@@ -894,17 +895,17 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   per-recipient clip is computed once at ITS execute time against the recipient's then-current
   vision; two tokens moving simultaneously do not reveal each other mid-walk if a watcher's vision
   opens after the clip — reconciles at the stop + the next `vision` rebroadcast. Live
-  cross-animation concurrency is deferred (`docs/TODO.md` — needs a per-move server loop). Client
+  cross-animation concurrency is not currently implemented — it would need a per-move server loop. Client
   computes NO vision in any of this (ARCHITECTURE §2 invariant 3/4) — it renders only the streamed,
   already-clipped polygons.
 - **Region secrecy is a two-value contract on `region_field`, never a third mode.**
   `region_field(scene, None)` = authoritative (GM + `move_exec`); `region_field(scene, Some(user))`
   = per-requester (the router only). Callers must never pass `Some(gm_user)`. By construction the
-  router's field is a SUBSET of the authoritative field (spec §6 parity) — a secret region can
+  router's field is a SUBSET of the authoritative field — a secret region can
   narrow a player's route/preview but can never appear to them where it wouldn't to the GM, and it
   always still applies at `move_exec` regardless of what the router showed. Reuses the EXACT same
   `resolve_access`/`property_overrides["/engine"]` mechanism as ordinary document egress (not
-  `"/system"`) — no new secrecy machinery was introduced for regions (spec §3).
+  `"/system"`) — no new secrecy machinery was introduced for regions.
   **Fixture-construction precision (test/brief authoring convention):** the correct way to mark a
   region `gm_only` in a test fixture is
   `doc.permissions.property_overrides.insert("/engine".into(), Visibility::GmOnly)` — matching
@@ -1028,11 +1029,10 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   the `"system"` key from the redacted JSON before re-deserializing into `Document` panics.
   `filter_properties` special-cases the exact pointer `"/system"` (as opposed to a nested pointer
   like `"/system/name"`, which keeps the normal key-strip) to null the value instead. This branch
-  was previously a latent, unexercised code path — no doc type had previously declared a
-  whole-`/system` visibility override (only nested-property overrides existed); secret regions
-  were the first doc type to exercise it, and the panic-on-strip bug was caught before it shipped.
-  Any future doc type that wants whole-body secrecy (vs. per-field) must go through this same
-  branch, not a new one.
+  is exercised only by a doc type that declares a whole-`/system` (or, after the generalization
+  below, whole-`/engine`/whole-`/name`) visibility override — currently, secret regions are the
+  only doc type that does. Any future doc type that wants whole-body secrecy (vs. per-field) must
+  go through this same branch, not a new one.
   **This same null-not-strip branch was later generalized to `/engine` and `/name` too**
   (`filter_properties` now special-cases all three top-level pointers identically) — a secret
   region's declared override moved from `/system` to `/engine` as part of that same re-root (see
@@ -1043,9 +1043,8 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   corner slivers fall between samples: it omitted a geometrically crossed hex on ~55% of random
   segments, and when `n` rounded to 0 it dropped the destination's own hex, breaking its own
   "both endpoint cells always included" contract. Because this is the hex movement gate's primitive
-  in BOTH `Room::publish` (formerly; `publish` ran the same traversal gate `execute_move` now runs
-  alone) and `move_exec`, every omitted hex was one a non-GM could move through unchecked against
-  the visibility mask. It is now a **ψ-crossing supercover**: `cell_of` is
+  `move_exec` relies on for cell-membership checks, every omitted hex was one a non-GM could move
+  through unchecked against the visibility mask. It is now a **ψ-crossing supercover**: `cell_of` is
   nearest-center, so a hex is its center's Voronoi cell and every hex boundary lies on an integer
   level set of ψ₁=x−y, ψ₂=z−y, ψ₃=x−z (fractional cube coords) — enumerate every integer ψ crossing,
   sample each interval's midpoint, plus a perpendicular epsilon probe either side of each crossing
@@ -1062,10 +1061,9 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   router, orthogonal to grid kind" — but grid kind and movement model are INDEPENDENT axes, so they
   COMBINE (`hex` + `continuous` is a live scene) rather than exclude, and it was square-on-hex at
   three sites (Task 14e-7). Independence is a reason to CHECK a site, never to skip it.
-- **RESOLVED (`docs/CLOSED_BUGS.md`): `supercover_cells`'s corner-crossing branch no longer drifts
+- **`supercover_cells`'s corner-crossing branch never drifts
   past the target on a diagonal king-step whose leg endpoints both sit exactly on 4-way grid-line
-  intersections.** (Discovered via a Task 6 fixture-derivation error; a later fix
-  closed it.) Root cause: the branch stepped BOTH axes on every `tMax` tie without checking
+  intersections.** Root cause of the earlier defect: the branch stepped BOTH axes on every `tMax` tie without checking
   whether an axis had already reached its target cell — a forced single-axis step early in the
   traversal (from an endpoint sitting exactly on a grid line) could put `t_max_i`/`t_max_j` into
   permanent lockstep, so every later tie re-stepped the already-arrived axis too, drifting past
@@ -1077,11 +1075,11 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   crossings (both flankers emitted) is unchanged and covered by dedicated regression tests in
   `scene::movement`. `execute_move`'s frozen-fixture "diagonal 3-step king path, full visible" case
   (`scene::move_exec`) is updated to the now-correct non-truncated outcome.
-- **Cross-scene `MoveStream`/`ScenePing` leak class — a NEW divergence axis, not a
-  pre-existing gap.** Before multi-scene viewing, every client rendered the SAME scene (`activeScene`, in
-  lockstep) — there was no per-client "which scene am I looking at" state for a broadcast
-  fan-out egress path to diverge against, so this leak class could not previously exist.
-  `gmViewedScene` (GM local roam) is what FIRST introduces per-client scene divergence: a
+- **Cross-scene `MoveStream`/`ScenePing` leak class — exists only because per-client scene
+  divergence is possible.** When every client renders the SAME scene (`activeScene`, in
+  lockstep), there is no per-client "which scene am I looking at" state for a broadcast
+  fan-out egress path to diverge against, so this leak class cannot exist.
+  `gmViewedScene` (GM local roam) is what introduces per-client scene divergence: a
   room-wide `MoveStream`/`ScenePing` broadcast now reaches connections that may be viewing
   DIFFERENT scenes than the event targets. `WorldSession` closes it client-side by dropping any
   frame whose `scene` doesn't equal `this.viewedSceneId` (`onMoveStream`/the `scene_ping` handler,
@@ -1095,7 +1093,7 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
 ## Pointers
 
 - Rationale: `docs/design/ARCHITECTURE.md` §2 (invariants 3, 5, 6 + the geometry exception)
-  + §7 (rendering provenance); `docs/PLAN.md` (scene/vision/movement milestones).
+  + §7 (rendering provenance).
 - Relationships:
   `graphify query "scene ECS derived read-model vision fog stage pixi render tokens regions faces animated"`.
 - History/decisions: [[m8-brainstorm]], [[m8d-2-scene-tools]], [[m9-progress]],
