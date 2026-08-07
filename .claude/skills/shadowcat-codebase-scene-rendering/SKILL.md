@@ -139,8 +139,14 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   structs): gradation `Band`s (`sorted_bands`/`band_index`/`floor_min`), `Light` radial falloff
   (`light_illumination`), `cell_illumination` (max-compose env + lights, `blocksLight` occlusion via
   `point_in_poly`). Clean-room. Non-finite/empty inputs fail closed (under-reveal).
-- `scene::move_exec` — pure, lock-free `execute_move(ecs, scene, token, path,
-  restriction, visible, cell) -> Result<MoveOutcome, MoveReject>` (M1 server-authoritative
+- `scene::move_exec` — pure, lock-free `execute_move(ecs, gate: MoveGateInputs, token, path,
+  is_gm, footprint_radius_cells) -> Result<MoveOutcome, MoveReject>`. `MoveGateInputs` bundles the
+  resolved scene state (`scene`, `restriction`, `visible`, `cell`) and is destructured on entry.
+  **`is_gm` is deliberately NOT a field of it**: that struct mixes inputs a GM is exempt from
+  (`restriction`/`visible`, read only under `check_mask`) with inputs that bind a GM
+  unconditionally (`scene`, whose absent document is `MoveReject::SceneUnknown`; `cell`, whose
+  non-finite or non-positive value is `MoveReject::Degenerate`). The exemption switch must never
+  share a value with the guards it may not exempt. (M1 server-authoritative
   movement; **engine-agnostic since M10f-2**): `path` may be ANY polyline — grid A* cell-center
   vertices ≤1 cell apart, or any-angle continuous vertices arbitrarily far apart. `gate_walk`
   (M10f-2, new pure primitive, same file) subdivides it into a DENSE walk where every consecutive
@@ -282,16 +288,20 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   `Some(gm_user)` would incorrectly filter a GM's own field.
 - `scene::pathfinding` — pure, headless grid A* (no I/O; clean-room):
   `DiagonalRule` (`chebyshev`|`manhattan`|`euclidean`|`alternating`) + `resolved_diagonal_rule`
-  (world-only — no per-scene override; mirrors `resolveSceneSettings` precedence); `PathGrid` (wall-
-  segment lookup built from `move_walls`); `cell_enterable(grid, from, to)` — four checks, ALL must
+  (world-only — no per-scene override; mirrors `resolveSceneSettings` precedence);
+  `PathInputs` (the caller-supplied routing environment: `footprint_radius_cells`, `cell`, `walls`
+  built from `move_walls`, `mask`, `regions`, `shape`) and `PathGrid { inputs: PathInputs, window }`,
+  which HOLDS a `PathInputs` rather than restating its fields — `window` is the `find`-derived
+  unbounded-wander bound, not a caller input, which is why it sits outside `PathInputs`;
+  `cell_enterable(grid, from, to)` — four checks, ALL must
   pass: (1) footprint-disc-vs-wall clearance (the token's bounding disc must clear ALL `blocksMove`
   segments, via `point_segment_distance`); (2) **mask** — every cell in `footprint_cells(to,...) ∪
   grid.shape.line_traversal(cell_center(from), cell_center(to), cell)` must be in the non-GM mask
   (M3: the union closes buddy-check P1 — footprint-disc-at-destination alone missed a diagonal
   step's corner-flanker cells for sub-0.5-cell footprints, letting the router approve a step the
   M1 executor then rejected; `None` from `line_traversal` fails closed); (3) center-to-center
-  step crosses no wall (`segments_cross`); (4) `region_arrests`/impassable check via `PathGrid.regions:
-  Option<&RegionField>` (M10g — see below; a `None` grid field means "no region enforcement",
+  step crosses no wall (`segments_cross`); (4) `region_arrests`/impassable check via
+  `PathGrid.inputs.regions: Option<&RegionField>` (M10g — see below; a `None` grid field means "no region enforcement",
   distinct from an empty `RegionField`). `astar_leg` — king-move A*, 4 diagonal
   rules, 5-10-5 parity tracked in the `(cell, parity)` node and carried across waypoint legs (cost
   1,2,1,2…, never reset per leg), admissible+consistent heuristics per rule, stale-pop skip,
@@ -312,7 +322,15 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   that same prefix). Returns `PathOutcome { path, cost, arrested }`. This truncation exists so a
   player-facing route preview is honest about a hazard it already knows about (spec §5: "arrest is
   honest in preview") — never shows a route running past an arrest cell the requester can see.
-  `SceneEcs::pathfind` — reuses the SAME `visible_cells` mask as the M10e-4 movement gate (**§13
+  `SceneEcs::pathfind(RouteRequester)` — takes the requester's inputs (`user`, `scene`, `start`,
+  `waypoints`, `footprint_radius`, `is_gm`, `explored`) as one struct, and passes a `PathInputs`
+  down to `pathfinding::find`. **`RouteRequester` and the wire-side `PathfindRequest` are
+  deliberately SEPARATE types even though four fields coincide**: `footprint_radius` is a client
+  hypothetical on the wire side and the token-derived authoritative value here, because
+  `handle_pathfind` REPLACES it via `SceneEcs::resolve_token_footprint` whenever the frame names a
+  token. One shared type would let a caller forward the frame straight through and skip that
+  override — a token-size oracle. Do not "simplify" these into one type.
+  It reuses the SAME `visible_cells` mask as the M10e-4 movement gate (**§13
   invariant: never fork the per-cell visibility decision** — the route cannot thread the unknown nor
   leak hidden geometry); unions `explored` (`ExploredSet::iter`) for `revealed`; GM unconstrained
   (no mask); empty non-GM mask ⇒ `PathError::Unreachable` (fail-closed); passes

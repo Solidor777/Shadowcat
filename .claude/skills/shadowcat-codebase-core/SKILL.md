@@ -200,14 +200,27 @@ source of truth. The ones agents break most:
   change. Their `.ts` ignore lists must stay byte-identical; they exempt test files under BOTH
   runners' conventions (`**/*.test.ts` and `**/*.spec.ts`) plus `src/types/generated/**`, while a
   test HELPER MODULE that is not itself a test file stays covered.
-- **An `@example` that imports a workspace package by name compiles that package's own source.**
-  `scripts/extract-ts-examples.mjs` builds one scratch program over `src/types`, `src/client`,
-  `src/modules`, `examples`; a tagged ```ts fence naming a package pulls that package's internals
-  into the compiled graph, so `docs:check-examples` can fail at a line the author never touched.
-  This is why the generated `*.svelte` ambient shim types default exports `any`, not `unknown`: a
-  package whose source passes one of its own `.svelte` imports to Svelte's `mount()` needs the shim
-  freely assignable, and `unknown` is not. Expect the first example to name a not-yet-exercised
-  package to surface latent breakage of this shape.
+- **`@example` blocks compile INSIDE the module that documents them, not in a scratch file.**
+  `scripts/extract-ts-examples.mjs` compiles each example through the TypeScript compiler API with
+  an in-memory virtual overlay of its host module, under that host's OWN package `tsconfig` — so
+  the host's imports, private helpers and `this` resolve exactly as in real code, and an example on
+  a class member is injected into the host class body. `.svelte` hosts join the same path via their
+  extracted `<script>`/`<script module>` block; runes type correctly because svelte's own
+  `types/index.d.ts` declares them as ambient globals (it also declares `module '*.svelte'`, so a
+  host's own component imports resolve for free — this script generates no shim of its own).
+  Consequences: an example naming a workspace package pulls that package's internals into the
+  graph, so `docs:check-examples` can fail at a line the author never touched; and both tagged and
+  untagged fences are checked, so an untagged fence is not an escape hatch.
+- **The compilation contract is explicit and named — do not re-derive it per package.**
+  `EXAMPLE_HYGIENE_OVERRIDES` turns `noUnusedLocals`/`noUnusedParameters` OFF while leaving every
+  correctness check on. Production-hygiene lints are a category error on documentation:
+  `const x = await upload(...)` is the CORRECT shape for an example and is not a defect. Inheriting
+  those two flags implicitly from a package config once manufactured 95 phantom failures out of
+  197 — a wrong ruler is applied uniformly, so every result looks self-consistent and the diff
+  reviews clean.
+- **Known instrument limitation:** a `.svelte` example touching a `bind:this` binding reports
+  `Variable 'X' is used before being assigned`, because the template half is not extracted. Leave
+  these; do not restructure a component to satisfy the checker.
 - **A green `pnpm lint:docs` is NOT evidence the docs are correct.** The `jsdoc/require-*` rules
   gate on tag PRESENCE only: they cannot see a vacuous tag (`@returns The result.`), a false
   statement, or a second doc block appended below an existing one. That last case actively
