@@ -176,6 +176,8 @@ jobs:
         run: pnpm lint:props
       - name: No ephemeral references in code comments
         run: pnpm lint:comments
+      - name: No dead-code or unused-item suppressions
+        run: pnpm lint:allowances
       - name: Doc examples typecheck (TS)
         run: pnpm docs:check-examples
       - name: Doc coverage (Rust)

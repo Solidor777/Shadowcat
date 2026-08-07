@@ -20,6 +20,7 @@
     "docs:serve": "node scripts/serve-docs.mjs",
     "check:svelte-runtime": "node scripts/check-svelte-runtime-entries.mjs",
     "lint:comments": "node scripts/check-comment-refs.mjs",
+    "lint:allowances": "node scripts/check-lint-allowances.mjs",
     "test:scripts": "vitest run scripts/"
   },
   "devDependencies": {
