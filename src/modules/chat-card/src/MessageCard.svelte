@@ -399,7 +399,7 @@
                   {s.label ?? s.formula}
                 </button>
               {:else if s.kind === "link_preview"}
-                <!-- Server-fetched preview (SSRF-guarded, M11d-3). The client NEVER fetches
+                <!-- Server-fetched preview (SSRF-guarded). The client NEVER fetches
                 `s.url` or any remote resource — only stored title/description/url strings are
                 rendered, all as escaped text. No <img>: an <img src> would make the viewer's
                 browser fetch a remote resource, leaking their IP to a URL an attacker chose. -->

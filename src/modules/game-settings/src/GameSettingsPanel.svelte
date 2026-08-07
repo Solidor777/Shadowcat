@@ -320,7 +320,7 @@
          stored value for reading, and nothing server-side ever normalizes a
          stored null to false, so an OCC `old` pre-image must still carry the
          RAW value. The hyperlinks `onchange` below violates that and is a known
-         bug — see docs/OPEN_BUGS.md; do not copy its `?? false` into the `old`
+         bug; do not copy its `?? false` into the `old`
          argument of any new control. hyperlinks has no inherit
          concept: `ChatContentPolicy::hyperlinks` resolves absent to false
          (`unwrap_or(false)`), so this
