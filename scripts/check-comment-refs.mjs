@@ -58,8 +58,8 @@ const ROOTS = ["src", "scripts"];
 // a section anchor, but not a milestone id, a task id, a sweep marker, or a date. A separate root
 // (not folded into ROOTS) because these files carry a different extension and a different notion
 // of "comment" — the whole line is prose, there is no surrounding code to split it from.
-const MD_ROOTS = [".claude/skills"];
-const MD_EXTS = [".md"];
+export const MD_ROOTS = [".claude/skills"];
+export const MD_EXTS = [".md"];
 
 // Repo-root config files are code too — an eslint config decides what ships. They are collected by
 // walking the root non-recursively rather than by listing them, so a new config is in scope the
@@ -85,8 +85,11 @@ import { splitLine } from "./lib/comment-span.mjs";
 const BANNED = [
   // A capital M, digits, an optional letter and an optional dashed number are one id shape: the
   // unsuffixed form carries no less process identity than the suffixed one, so a pattern that
-  // required the suffix would read the short form as clean.
-  { name: "milestone/task id", re: /\bM\d+[a-z]?(?:-\d+)?\b/ },
+  // required the suffix would read the short form as clean. The spelled-out `Task N` form is the
+  // same id shape written in full rather than abbreviated behind the capital letter, so it is the
+  // same category, not a second one — a coverage scan of the corpus this pattern governs found it
+  // surviving under this entry's own name while the abbreviated form was already caught.
+  { name: "milestone/task id", re: /\bM\d+[a-z]?(?:-\d+)?\b|\bTask\s+\d+[a-z]?(?:-\d+)?\b/ },
   // A capital D, I, T or W followed by digits: phase checkpoints, numbered invariants, tasks and
   // workstreams. All are ids a process assigns, resolvable only by a reader holding that artifact.
   // The T form collides with a generic type parameter, but only where a comment names one WITHOUT
@@ -129,7 +132,9 @@ const BANNED = [
     // EXAMPLE: A joined plural writer ("sweeps 2a+2b") names the same process-assigned marker as
     // EXAMPLE: a lone singular one; requiring only the singular form read a legitimate hit as
     // EXAMPLE: clean, missing a ruled-in category rather than widening one.
-    re: /\b[Ss]weeps? \d+|\bfix[- ]round|\bbuddy-check|\bwhole-branch[- ]review|\bfinding \d+/i,
+    // EXAMPLE: A hyphenated writer ("Sweep-1 lesson") is the same marker as the spaced form;
+    // requiring the space alone missed it the identical way the plural gap above was missed.
+    re: /\b[Ss]weeps?[ -]\d+|\bfix[- ]round|\bbuddy-check|\bwhole-branch[- ]review|\bfinding \d+/i,
   },
   // EXAMPLE: A dispatch brief, task or plan is scaffolding that stops existing once the work
   // lands, so a comment deferring to one leaves the reader an instruction they cannot retrieve.
@@ -184,6 +189,28 @@ const SKILL_BANNED = [
     name: "ephemeral doc pointer",
     re: /\b(?:TODO|PLAN|OPEN_BUGS|CLOSED_BUGS|POST_WORK_FINDINGS)\.md\b/,
   },
+  // The two entries below are skill-ONLY (no `skillBannedByName` reuse, no BANNED counterpart):
+  // a corpus scan surfaced the same letter+digit local-reference shape as `[DITW]\d+` above, under
+  // different letters, but those letters (`C1`/`C2`, `R1`/`R3`/`R4`, `F3`/`F7`) are also live Rust
+  // and TypeScript identifiers and test names in `src/` — reusing this by reference the way the
+  // other entries do would fail code files that carry none of this skill's process debt. Restricted
+  // to exactly one digit: the corpus also holds legitimate two-digit tokens sharing a first letter
+  // (Fortran extension names `F90`/`F95`/`F03`/`F08`, a third-party skill's own `B0`-`B3` step
+  // labels) that a looser digit count would misclassify as the same local-marker shape. `B` is
+  // excluded from the letter set for the same reason: it names only that third-party skill's own
+  // step headings in the corpus, never a local Shadowcat marker.
+  {
+    name: "local letter+digit marker",
+    re: /\b[ACFHR]\d(?:-\d+)?\b/,
+  },
+  // A `Constraint N` / `Global Constraint N` reference is the same bare-numbered-registry shape as
+  // the code entry's `invariant N`, naming an item outside the line without a document to resolve
+  // it against. Skill-only for the same reason as above: `src/client/shell/src/lib/importMap.test.ts`
+  // carries a test name citing the identical constraint by number, which a shared entry would fail.
+  {
+    name: "numbered constraint",
+    re: /\b(?:Global\s+)?Constraint\s*#?\s*\d+\b/i,
+  },
 ];
 
 // EXAMPLE: A durable design-doc citation can carry digits that are part of its FILENAME, not a
@@ -194,6 +221,94 @@ const SKILL_BANNED = [
 // EXAMPLE: separate violation riding on the same line (a bare milestone id beside the citation)
 // EXAMPLE: still surfaces.
 const DESIGN_DOC_CITATION = /docs\/design\/[\w.-]+\.md/g;
+
+// Coverage control: a pattern vocabulary enumerated from remembered examples can always miss a
+// shape nobody happened to remember, and reasoning about the pattern list in isolation cannot
+// surface that gap — only reading the governed corpus can. This section makes that reading
+// repeatable: a deliberately BROAD matcher for "identifier-shaped token in prose" runs over the
+// same corpus BANNED/SKILL_BANNED govern, and every match is required to resolve one of two ways —
+// caught by an existing BANNED/SKILL_BANNED pattern already (a real hit, not a coverage gap), or
+// named on the ACKNOWLEDGED list below with a reason. Anything left over is RESIDUE: a shape
+// nobody has looked at, and the point is that it fails loudly instead of passing silently.
+//
+// This is a review aid, not a third ban list — it never fails a file itself. `main`'s `--residue`
+// mode fails only when RESIDUE is non-empty, never on an acknowledged match.
+const CANDIDATE_TOKEN = /\b[A-Z][A-Za-z]{0,20}\s?\d+[a-z]?(?:-\d+)?\b/g;
+
+// Named, counted, one reason each — an unnamed or uncounted acknowledgement is a backdoor by the
+// same reasoning as the EXAMPLE exemption. Each entry was matched against the corpus once and is
+// real: a product/standard name, a versioned code symbol, or a vendored tool skill's own internal
+// structure, none of which is a Shadowcat-process-assigned id.
+const ACKNOWLEDGED = [
+  {
+    name: "product, protocol or algorithm name carrying a version-like number",
+    re: /\bNeo4j\b|\bIPv4\b|\bIpv4\b|\bNAT64\b|\bFTS5\b|\bI18n\b|\bPowerShell\s?\d+(?:\.\d+)?\b|\bUUIDv5\b|\bRFC\s?\d+\b|\bArgon2\b|\bSplitMix64\b|\bSvelte\s?\d+\b|\bHTTP\s?\d+\b|\bPolyanya\s?\d+\b/,
+  },
+  {
+    name: "a code symbol cited as a value, not a process id",
+    re: /\bPanelLayoutV1\b|\bVec2\b/,
+  },
+  {
+    name: "a Fortran source-extension entry inside a vendored skill's own file-extension list",
+    re: /\bF(?:90|95|03|08)\b/,
+  },
+  {
+    name: "a CLI placeholder argument name inside a vendored skill's example command line",
+    re: /\bNODE[12]\b/,
+  },
+  {
+    name: "a POSIX character-class fragment inside a vendored skill's shell excerpt",
+    re: /\bZ0-9\b/,
+  },
+  {
+    name: "a plain quantity in prose, not an id",
+    re: /\bMaximum\s?\d+\b|\bLast\s?\d+\b/,
+  },
+  {
+    name: "a vendored tool skill's own procedural step heading (self-contained table of contents)",
+    re: /\b[Ss]teps?[ -]?\d+[a-z]?(?:-\d+)?\b|\bB[0-3]\b/,
+  },
+  {
+    name: "the two-phase validate-then-commit structural label reused across subsystem skills",
+    re: /\bPhase[ -]?\d+\b/,
+  },
+  {
+    name: "a numbered-rule citation into the durable truthfulness-rules design doc",
+    re: /\bRULE\s?\d+\b/,
+  },
+];
+
+/**
+ * Runs the broad candidate matcher over one file's text and classifies every match: already a
+ * real BANNED/SKILL_BANNED hit (not a coverage gap — it will already fail the main scan),
+ * acknowledged as a named legitimate token, or RESIDUE — an unrecognised shape that must be
+ * looked at. Pure function of its argument, mirroring `scanContent`, so a test exercises it on
+ * fabricated text without touching the filesystem.
+ */
+export function scanCandidates(content) {
+  const lines = content.split("\n");
+  const acknowledged = [];
+  const residue = [];
+  let exempted = 0;
+  lines.forEach((line, i) => {
+    if (EXAMPLE_EXEMPT.test(line)) {
+      exempted += 1;
+      return;
+    }
+    const subject = line.replace(DESIGN_DOC_CITATION, "");
+    const tokens = subject.match(CANDIDATE_TOKEN) ?? [];
+    for (const token of tokens) {
+      if (SKILL_BANNED.some((b) => b.re.test(token))) continue;
+      const ack = ACKNOWLEDGED.find((a) => a.re.test(token));
+      if (ack) {
+        acknowledged.push({ line: i + 1, token, reason: ack.name });
+        continue;
+      }
+      residue.push({ line: i + 1, token, text: line.trim() });
+    }
+  });
+  return { acknowledged, residue, exempted };
+}
 
 // The rule extends to code-facing string literals (assert! messages, test names): a developer
 // reads an assertion message at failure time exactly as they read a comment, and it goes stale
@@ -221,7 +336,7 @@ const EXPLANATORY_STRING =
   /\bassert(?:_eq|_ne)?!|\bpanic!|\.expect\(|^\s*(?:async\s+)?(?:test|it|describe)\s*(?:\.\w+)?\s*\(/;
 
 /** Recursively collects paths matching `exts` under `dir`; called once per entry in a roots list. */
-function sources(dir, exts) {
+export function sources(dir, exts) {
   const out = [];
   for (const name of readdirSync(dir)) {
     if (SKIP_DIRS.has(name)) continue;
@@ -288,6 +403,7 @@ export function scanContent(content, { isMd }) {
 //   --by-area          per-directory table instead of the per-site list
 //   --json             machine-readable {total, byKind, byArea, hits}
 //   --cover <prefix>   verify prefixes partition the tree disjointly and exhaustively (repeatable)
+//   --residue          coverage control: report the skill corpus's unrecognised candidate tokens
 function main() {
   const argv = process.argv.slice(2);
   const scopes = argv
@@ -315,6 +431,48 @@ function main() {
   ].map(norm);
   const mdFiles = MD_ROOTS.flatMap((d) => sources(d, MD_EXTS)).map(norm);
   const isMdFile = new Set(mdFiles);
+
+  // --residue: the coverage control. Runs the broad candidate matcher over the governed skill
+  // corpus and reports what BANNED/SKILL_BANNED and ACKNOWLEDGED do not yet explain. Exits 1 only
+  // on non-empty RESIDUE — an acknowledged match is not a failure, it is the mechanism working.
+  if (argv.includes("--residue")) {
+    const residueFiles = mdFiles.filter(inScope);
+    if (scopes.length > 0 && residueFiles.length === 0) {
+      console.error(`--scope matched 0 skill file(s): ${scopes.join(", ")}`);
+      console.error(
+        "Nothing was examined, so this is not a clean result. Check the prefix.",
+      );
+      process.exit(2);
+    }
+    let ackTotal = 0;
+    const ackByReason = new Map();
+    const residue = [];
+    for (const path of residueFiles) {
+      const content = readFileSync(path, "utf8");
+      const result = scanCandidates(content);
+      ackTotal += result.acknowledged.length;
+      for (const a of result.acknowledged)
+        ackByReason.set(a.reason, (ackByReason.get(a.reason) ?? 0) + 1);
+      for (const r of result.residue) residue.push({ path, ...r });
+    }
+    console.log(`${ackTotal} acknowledged candidate(s):`);
+    for (const [reason, n] of [...ackByReason].sort((a, b) => b[1] - a[1]))
+      console.log(`  ${String(n).padStart(4)}  ${reason}`);
+    console.log("");
+    if (residue.length === 0) {
+      console.log("0 unrecognised candidate(s). Coverage control: clean.");
+      process.exit(0);
+    }
+    console.error(`${residue.length} unrecognised candidate(s):`);
+    for (const r of residue)
+      console.error(`  ${r.path}:${r.line}  ${JSON.stringify(r.token)}  ${r.text}`);
+    console.error(
+      "\nEach must become a BANNED/SKILL_BANNED pattern (genuine miss) or a named, reasoned " +
+        "ACKNOWLEDGED entry (legitimate token) — never silently ignored.",
+    );
+    process.exit(1);
+  }
+
   const scanned = [...codeFiles, ...mdFiles].filter(inScope);
   const hits = [];
   let exempted = 0;

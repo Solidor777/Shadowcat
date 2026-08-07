@@ -1,5 +1,12 @@
+import { readFileSync } from "node:fs";
 import { test, expect } from "vitest";
-import { scanContent } from "./check-comment-refs.mjs";
+import {
+  scanContent,
+  scanCandidates,
+  sources,
+  MD_ROOTS,
+  MD_EXTS,
+} from "./check-comment-refs.mjs";
 
 // Every fixture string below is a SPECIMEN whose exact wording is the thing under test — an id, a
 // date, a filename this suite must reproduce verbatim to prove the pattern matches it. Each such
@@ -185,4 +192,116 @@ test("code mode still flags the singular sweep marker unchanged", () => {
     isMd: false,
   });
   expect(hits.map((h) => h.kind)).toEqual(["sweep / round / review marker"]);
+});
+
+// Spelled-out task-id form (the corpus's coverage gap this pattern update closes) — both file
+// classes, since the entry is shared by reference and must not diverge between them.
+test("code mode flags a spelled-out task id", () => {
+  const { hits } = scanContent("// Fixed a defect Task 14j introduced.\n", { // EXAMPLE:
+    isMd: false,
+  });
+  expect(hits.map((h) => h.kind)).toEqual(["milestone/task id"]);
+});
+
+test("skill mode flags a spelled-out task id", () => {
+  const fixture = "The hex audit landed in Task 14e-8 and generalized the gate.\n"; // EXAMPLE:
+  const { hits } = scanContent(fixture, { isMd: true });
+  expect(hits.map((h) => h.kind)).toEqual(["milestone/task id"]);
+});
+
+// Hyphenated sweep-marker form — the same coverage-scan pass surfaced this second gap in the
+// already-shared sweep entry.
+test("skill mode flags a hyphenated sweep marker", () => {
+  const fixture = "Caught by review (Sweep-1 lesson): the doc claim was wrong.\n"; // EXAMPLE:
+  const { hits } = scanContent(fixture, { isMd: true });
+  expect(hits.map((h) => h.kind)).toEqual(["sweep / round / review marker"]);
+});
+
+// Skill-only local-marker categories (never reused by BANNED — src carries live identifiers and
+// test names of the identical shape, so a shared entry would fail the code-file-count-0 gate).
+test("skill mode flags a bare local letter+digit marker", () => {
+  const fixture = "documented as the C1 no-pool-query-on-the-hot-path property.\n"; // EXAMPLE:
+  const { hits } = scanContent(fixture, { isMd: true });
+  expect(hits.map((h) => h.kind)).toEqual(["local letter+digit marker"]);
+});
+
+test("code mode does NOT gain the local letter+digit marker category", () => {
+  const { hits } = scanContent('const label = "C1"; // a real identifier, not prose\n', {
+    isMd: false,
+  });
+  expect(hits).toEqual([]);
+});
+
+test("skill mode flags a numbered constraint reference", () => {
+  const fixture = "requires exactly one runtime instance (Global Constraint 1).\n"; // EXAMPLE:
+  const { hits } = scanContent(fixture, { isMd: true });
+  expect(hits.map((h) => h.kind)).toEqual(["numbered constraint"]);
+});
+
+test("code mode does NOT gain the numbered constraint category", () => {
+  const { hits } = scanContent('it("Constraint 1: single runtime instance", () => {});\n', {
+    isMd: false,
+  });
+  expect(hits).toEqual([]);
+});
+
+// Coverage control (`scanCandidates`): a genuine miss, an acknowledged legitimate token, and a
+// BANNED-shadowed candidate must resolve to exactly the right bucket.
+test("scanCandidates reports a genuinely novel shape as residue", () => {
+  const { residue, acknowledged } = scanCandidates(
+    "Fixed in Sprint 4 without a regression.\n",
+  );
+  expect(residue.map((r) => r.token)).toEqual(["Sprint 4"]);
+  expect(acknowledged).toEqual([]);
+});
+
+test("scanCandidates does not re-report a token an existing BANNED pattern already catches", () => {
+  const { residue } = scanCandidates("Landed in Task 6, a real bug.\n"); // EXAMPLE:
+  expect(residue).toEqual([]);
+});
+
+test("scanCandidates names and counts a legitimate acknowledged token", () => {
+  const { acknowledged, residue } = scanCandidates(
+    "Uses Svelte 5 (Runes) for the client shell.\n",
+  );
+  expect(residue).toEqual([]);
+  expect(acknowledged).toEqual([
+    {
+      line: 1,
+      token: "Svelte 5",
+      reason: "product, protocol or algorithm name carrying a version-like number",
+    },
+  ]);
+});
+
+test("scanCandidates respects the EXAMPLE: exemption", () => {
+  const { residue, acknowledged, exempted } = scanCandidates(
+    "- EXAMPLE: `Sprint 4` is not a real reference.\n",
+  );
+  expect(residue).toEqual([]);
+  expect(acknowledged).toEqual([]);
+  expect(exempted).toBe(1);
+});
+
+// The coverage control itself, wired into `pnpm test:scripts` so a new unrecognised form in the
+// governed skill corpus fails CI instead of passing silently the way the spelled-out task-id form
+// once did. Every acknowledged match must be real (present in ACKNOWLEDGED with a reason) and
+// every remaining candidate must be empty — a red run here means a real corpus token nobody has
+// looked at, not a flaky test.
+test("coverage control: the governed skill corpus has no unrecognised candidate tokens", () => {
+  const files = MD_ROOTS.flatMap((d) => sources(d, MD_EXTS));
+  const residue = [];
+  let acknowledgedTotal = 0;
+  for (const path of files) {
+    const content = readFileSync(path, "utf8");
+    const result = scanCandidates(content);
+    acknowledgedTotal += result.acknowledged.length;
+    for (const r of result.residue) residue.push({ path, ...r });
+  }
+  expect(files.length).toBeGreaterThan(0);
+  expect(residue, JSON.stringify(residue, null, 2)).toEqual([]);
+  // The acknowledged list is a live exemption, not dead code — this fails if every entry in
+  // ACKNOWLEDGED ever stops matching anything in the corpus, so a future edit that empties a
+  // reason out is caught here rather than left as a silent uncounted carve-out.
+  expect(acknowledgedTotal).toBeGreaterThan(0);
 });
