@@ -296,7 +296,7 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   `cell_enterable(grid, from, to)` — four checks, ALL must
   pass: (1) footprint-disc-vs-wall clearance (the token's bounding disc must clear ALL `blocksMove`
   segments, via `point_segment_distance`); (2) **mask** — every cell in `footprint_cells(to,...) ∪
-  grid.shape.line_traversal(cell_center(from), cell_center(to), cell)` must be in the non-GM mask
+  grid.inputs.shape.line_traversal(cell_center(from), cell_center(to), cell)` must be in the non-GM mask
   (M3: the union closes buddy-check P1 — footprint-disc-at-destination alone missed a diagonal
   step's corner-flanker cells for sub-0.5-cell footprints, letting the router approve a step the
   M1 executor then rejected; `None` from `line_traversal` fails closed); (3) center-to-center
@@ -307,7 +307,7 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   1,2,1,2…, never reset per leg), admissible+consistent heuristics per rule, stale-pop skip,
   `MAX_PATH_NODES`/`MAX_WAYPOINTS`/`MAX_FOOTPRINT_CELLS` fail-closed bounds; **M10g terrain
   weighting:** the step-cost function multiplies the diagonal-rule base cost (`sc`) by
-  `grid.regions.map_or(1.0, |r| r.terrain_multiplier(next))`, so a terrain region raises (never
+  `grid.inputs.regions.map_or(1.0, |r| r.terrain_multiplier(next))`, so a terrain region raises (never
   lowers — multipliers are validated `>= 1.0` at `region_field` construction) the A* edge weight
   into that cell, honored by the admissible/consistent heuristic (which already lower-bounds the
   UNWEIGHTED cost, so remains admissible under any `>=1.0` weighting). `find` — validates
@@ -322,14 +322,16 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   that same prefix). Returns `PathOutcome { path, cost, arrested }`. This truncation exists so a
   player-facing route preview is honest about a hazard it already knows about (spec §5: "arrest is
   honest in preview") — never shows a route running past an arrest cell the requester can see.
-  `SceneEcs::pathfind(RouteRequester)` — takes the requester's inputs (`user`, `scene`, `start`,
-  `waypoints`, `footprint_radius`, `is_gm`, `explored`) as one struct, and passes a `PathInputs`
-  down to `pathfinding::find`. **`RouteRequester` and the wire-side `PathfindRequest` are
-  deliberately SEPARATE types even though four fields coincide**: `footprint_radius` is a client
-  hypothetical on the wire side and the token-derived authoritative value here, because
-  `handle_pathfind` REPLACES it via `SceneEcs::resolve_token_footprint` whenever the frame names a
-  token. One shared type would let a caller forward the frame straight through and skip that
-  override — a token-size oracle. Do not "simplify" these into one type.
+  `SceneEcs::pathfind(requester: RouteRequester, scene, start, waypoints, footprint_radius)` —
+  `RouteRequester` describes the REQUESTER ONLY (`user`, `is_gm`, `explored`); the route itself
+  stays in `pathfind`'s own trailing parameters. It builds a `PathInputs` and passes it to
+  `pathfinding::find`. **`pathfind`'s route parameters and the wire-side `PathfindRequest` are
+  deliberately NOT unified into one type** even though `scene`/`start`/`waypoints`/
+  `footprint_radius` coincide: `footprint_radius` is a client hypothetical on the wire and the
+  token-derived authoritative value here, because `handle_pathfind` REPLACES it via
+  `SceneEcs::resolve_token_footprint` whenever the frame names a token. A shared type would let a
+  caller forward the frame straight through and skip that override — a token-size oracle. Do not
+  "simplify" these into one type.
   It reuses the SAME `visible_cells` mask as the M10e-4 movement gate (**§13
   invariant: never fork the per-cell visibility decision** — the route cannot thread the unknown nor
   leak hidden geometry); unions `explored` (`ExploredSet::iter`) for `revealed`; GM unconstrained
@@ -815,12 +817,12 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   authoritative gate's center-based wall check (parent spec §14) — a wide token can be dragged
   (gate allows the center path) along a corridor the router refuses (footprint doesn't fit); this
   wall asymmetry is intentional and safe (over-restrictive, never under). The MASK check requires
-  `grid.shape.footprint_cells(to,...) ∪ grid.shape.line_traversal(from,to,cell)` — the same RESOLVED
+  `grid.inputs.shape.footprint_cells(to,...) ∪ grid.inputs.shape.line_traversal(from,to,cell)` — the same RESOLVED
   `GridShape` primitives `scene::move_exec` uses per step — so the router's mask predicate is
   provably `≥` the gate's; **route ⊆ gate-allowed holds for every footprint size**, including the
   sub-0.5-cell diagonal case where the pre-M3 footprint-disc-only check let the router approve a step
   the gate rejected (buddy-check P1). Never make the pathfinder mask test weaker than
-  `grid.shape.footprint_cells ∪ grid.shape.line_traversal` — that union IS the invariant, not merely
+  `grid.inputs.shape.footprint_cells ∪ grid.inputs.shape.line_traversal` — that union IS the invariant, not merely
   a suggestion. **Both halves must come from the SHAPE, never the free square functions**
   (`pathfinding::footprint_cells`, `movement::supercover_cells`): those are `SquareGrid`'s own
   internals, and calling them here reintroduces the square-on-hex defect Task 14e-7 fixed. See
@@ -1015,7 +1017,7 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   override in the pathfinder; the same rule applies across all scenes in a world. Matches the client
   `resolveSceneSettings` precedence (the setting lives in `world-settings`, not per-scene).
 - **`region_arrests`/impassable checking is footprint-gated in the router (`cell_enterable`'s mask
-  check, via `grid.shape.footprint_cells ∪ grid.shape.line_traversal`) but CENTER-CELL-ONLY in `move_exec` — a
+  check, via `grid.inputs.shape.footprint_cells ∪ grid.inputs.shape.line_traversal`) but CENTER-CELL-ONLY in `move_exec` — a
   deliberate asymmetry (route stricter, execution looser), not a bug (M10g).** `route ⊆
   gate-allowed` still holds because the router's predicate is already a documented superset of the
   executor's. Do not "fix" `move_exec` to match the router's footprint check without re-deriving
