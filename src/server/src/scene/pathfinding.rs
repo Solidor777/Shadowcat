@@ -1193,13 +1193,13 @@ mod tests {
 
     #[test]
     fn diagonal_step_missing_flanker_cell_is_not_enterable_small_footprint() {
-        // Buddy-check P1 regression. A perfectly diagonal step (0,0)->(1,1) at cell=100 crosses
+        // Regression test. A perfectly diagonal step (0,0)->(1,1) at cell=100 crosses
         // the shared corner exactly, so supercover_cells emits BOTH flanker cells (1,0) and (0,1)
         // in addition to the two endpoint cells. A small (point-sized) footprint disc at the
         // destination (1,1) only overlaps (1,1) itself — footprint_cells alone would not catch a
         // missing flanker. The mask below has every cell EXCEPT the (0,1) flanker: the step must
         // be rejected once the router's mask check includes the step's supercover, even though
-        // the footprint-disc-only check (pre-fix behavior) would have passed it.
+        // a footprint-disc-only check alone would have passed it.
         let walls: Vec<Seg> = vec![];
         let mut mask = BTreeSet::new();
         mask.insert((0, 0));

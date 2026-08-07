@@ -5,7 +5,7 @@
 //! into a dense walk where every consecutive pair is at most one cell apart (Chebyshev),
 //! preserving already-≤1-cell segments as an identity. The per-step gate then runs over this
 //! dense walk, validating each dense sub-step against the SAME predicate set
-//! `pathfinding::cell_enterable` uses for routing (D4):
+//! `pathfinding::cell_enterable` uses for routing:
 //! - a footprint-disc clearance test AND a center-to-center segment-crossing test against every
 //!   `blocksMove` wall in the AUTHORITATIVE wall set (`ecs.move_walls(scene, None)`) — both are
 //!   required; the disc test alone lets a wall between two adjacent cell centers become
@@ -23,7 +23,7 @@
 //! when the move stops before `path.last()` for any reason (wall, mask, region-impassable, or
 //! region-arrest), including a region-arrest on the final path step.
 //!
-//! INVARIANT (I4 route-gate parity): step 2 calls `GridShape::line_traversal(prev,
+//! INVARIANT (route-gate parity): step 2 calls `GridShape::line_traversal(prev,
 //! next, cell)` (via `ecs.resolve_grid_shape`) and checks `all ∈ visible` over
 //! `footprint_cells ∪ line_traversal` — square delegates to `movement::supercover_cells`, hex to
 //! a ψ-crossing supercover, so the predicate agrees on every cell on BOTH grid kinds, not square
@@ -31,7 +31,7 @@
 //! `GridStepped`, route-admissible ⇔ gate-admissible for a non-GM mover (the parity tests in this
 //! file pin the equivalence); on `Continuous` the two evaluate at different granularity (dense
 //! `gate_walk` sampling vs the router's cell-center check), so only the weaker route ⊆
-//! gate-allowed direction holds. `execute_move` is the sole per-cell traversal decision (I2) —
+//! gate-allowed direction holds. `execute_move` is the sole per-cell traversal decision —
 //! there is no separate gate to keep in sync. The caller pre-computes `visible` off the ECS read
 //! lock, so this executor is pure and imposes no lock ordering.
 //!
@@ -225,9 +225,8 @@ pub(crate) enum MoveReject {
     /// `gate_walk` fail-closed `None`).
     TooLong,
     /// A structural invariant was violated: non-finite coords, or `path[0]` not at the
-    /// token's committed position. (This variant formerly also covered a non-adjacent
-    /// king-step jump; that case is now subdivided-and-gated instead of rejected — see
-    /// `gate_walk`.)
+    /// token's committed position. Does NOT cover a non-adjacent king-step jump: that case is
+    /// subdivided-and-gated instead of rejected — see `gate_walk`.
     Degenerate,
     /// The token's scene has no document — refuse rather than synthesize a grid.
     SceneUnknown,
@@ -253,7 +252,7 @@ pub(crate) enum MoveReject {
 /// kinds — square cell-walk, hex ψ-crossing, per `ecs.resolve_grid_shape`), and the
 /// pre-computed `visible` set over `footprint_cells ∪ line_traversal`. There is no third gate
 /// this executor and the router must independently agree with — `execute_move` is the sole
-/// per-cell traversal decision (I2) — so this parity is pinned directly between the two, not
+/// per-cell traversal decision, so this parity is pinned directly between the two, not
 /// mediated through a shared middle gate. On `GridStepped` the two are equivalent
 /// (route-admissible ⇔ gate-admissible) for a non-GM mover; on `Continuous` only the weaker
 /// route ⊆ gate-allowed direction holds, since `gate_walk`'s dense sampling and the router's
@@ -284,17 +283,17 @@ pub(crate) enum MoveReject {
 ///   lock). Ignored when `Unrestricted`. For `Visible` this is `visible_cells(...)`; for
 ///   `Revealed` the caller MUST pass `visible_cells(...) ∪ explored`.
 /// - `cell` — Grid cell size in scene units (positive finite).
-/// - `is_gm` — When true, every gameplay gate (walls, mask, impassable, arrest) is bypassed
-///   (M9 §5's "ignore walls" override, matching `publish`'s own GM position write). Resource
+/// - `is_gm` — When true, every gameplay gate (walls, mask, impassable, arrest) is bypassed,
+///   matching `publish`'s own GM position write. Resource
 ///   guards (`gate_walk`'s `MAX_GATE_WALK_COORD`/`MAX_GATE_WALK_SAMPLES`, the non-finite and
 ///   scene-existence refusals, and the `footprint_radius_cells` range guard below) are never
 ///   exempted. Terrain cost still accrues regardless.
 /// - `footprint_radius_cells` — The mover's bounding-disc radius in grid cells (see
 ///   `SceneEcs::resolve_token_footprint`). Must be in `[0, pathfinding::MAX_FOOTPRINT_CELLS]`;
 ///   out-of-range (including NaN) is `MoveReject::Degenerate`, unconditionally — a GM's wider
-///   gameplay exemption does not cover this input guard (I1).
-// A plain `is_gm` flag with early-outs, not a shared profile struct: after D9 there is exactly
-// one gate, and a shared symbol with a single consumer is indirection with no second party to
+///   gameplay exemption does not cover this input guard.
+// A plain `is_gm` flag with early-outs, not a shared profile struct: this executor is the sole
+// gameplay gate, and a shared symbol with a single consumer is indirection with no second party to
 // keep honest.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn execute_move(
@@ -318,7 +317,7 @@ pub(crate) fn execute_move(
     if path.iter().any(|p| !p.0.is_finite() || !p.1.is_finite()) {
         return Err(MoveReject::Degenerate);
     }
-    // I1: a resource/admissibility guard, never exempted for a GM. `contains` rejects NaN and
+    // A resource/admissibility guard, never exempted for a GM. `contains` rejects NaN and
     // ±Inf (NaN comparisons are always false; Inf > MAX_FOOTPRINT_CELLS).
     if !(0.0..=crate::scene::pathfinding::MAX_FOOTPRINT_CELLS).contains(&footprint_radius_cells) {
         return Err(MoveReject::Degenerate);
@@ -340,7 +339,7 @@ pub(crate) fn execute_move(
     // Gameplay gates apply to non-GMs only. A GM may make an illegal move: they move with or
     // without pathfinding, and a placement lands where asked, matching `publish`'s GM
     // position write. Resource guards — `gate_walk`'s MAX_GATE_WALK_COORD / MAX_GATE_WALK_SAMPLES,
-    // non-finite refusal, and the scene-existence refusal — are NOT exempted for a GM (I1).
+    // non-finite refusal, and the scene-existence refusal — are NOT exempted for a GM.
     let check_walls = !is_gm;
     let check_regions = !is_gm;
     let check_mask = !is_gm && !matches!(restriction, MovementRestriction::Unrestricted);
@@ -358,7 +357,7 @@ pub(crate) fn execute_move(
     let grid = ecs.resolve_grid_shape(scene, cell);
 
     // The executor always reads the AUTHORITATIVE wall set: a `gm_only` wall omitted from the
-    // requester's route springs here, exactly as a secret region does (D10, I3).
+    // requester's route springs here, exactly as a secret region does.
     let gate_walls = ecs.move_walls(scene, None);
 
     // Constant for the whole walk: the footprint disc radius in scene units, mirroring
@@ -440,11 +439,10 @@ pub(crate) fn execute_move(
         // This transition-dedup relies on the router never emitting two consecutive dense
         // samples that map to the SAME cell: true for grid A* (`pathfinding::find`) and true
         // for `gate_walk`'s output here, since it only ever emits progressing samples along the
-        // input polyline (no stationary/duplicate cell re-visits). Unlike the prior
-        // king-step executor, this is no longer independently enforced by an adjacency guard —
-        // that guard used to reject a non-adjacent jump outright; this executor now subdivides
-        // instead of rejecting (see `gate_walk`), so a duplicate-cell transition would silently
-        // fall through this dedup rather than being caught by a separate check.
+        // input polyline (no stationary/duplicate cell re-visits). There is no separate adjacency
+        // guard rejecting a non-adjacent jump: this executor subdivides via `gate_walk` instead of
+        // rejecting, so a duplicate-cell transition would silently fall through this dedup rather
+        // than being caught by a separate check.
         if next_cell != last_region_cell {
             // Impassable IS footprint-gated (`cell_enterable`'s check 4):
             // a wide body cannot fit past impassable terrain any more than past a wall.
@@ -460,7 +458,7 @@ pub(crate) fn execute_move(
             // Arrest and terrain stay CENTER-CELL only, mirroring `cell_enterable`'s documented
             // asymmetry: they act on the mover's own position rather
             // than solid geometry it must clear. Footprint-gating arrest here would make the gate
-            // stricter than the router and break I4.
+            // stricter than the router and break route-gate parity.
             if check_regions && regions.is_arrest(next_cell) {
                 stop_idx = i;
                 stopped_early = true;
@@ -1288,7 +1286,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // GM gate-exemption tests (D8): a GM bypasses every gameplay gate (walls, mask,
+    // GM gate-exemption tests: a GM bypasses every gameplay gate (walls, mask,
     // impassable, arrest) but no resource guard, and terrain cost still accrues.
     // -----------------------------------------------------------------------
 
@@ -1452,7 +1450,7 @@ mod tests {
 
     #[test]
     fn gm_move_is_still_refused_beyond_the_coordinate_bound() {
-        // I1: a GM bypasses gameplay gates and NO resource guard.
+        // A GM bypasses gameplay gates but NO resource guard.
         let (ecs, scene, token) = scene_with_wall_across_the_path();
         let over = MAX_GATE_WALK_COORD + 1.0;
         let err = execute_move(
@@ -1934,11 +1932,10 @@ mod tests {
             },
             FrozenCase {
                 // The (200,200)->(300,100) leg has both endpoints exactly on 4-way grid-line
-                // intersections. `movement::supercover_cells`'s corner-crossing branch used to
-                // spuriously fail-closed on this shape — fixed by gating
+                // intersections. `movement::supercover_cells`'s corner-crossing branch gates
                 // the diagonal corner-step on a per-axis remaining-step budget so a tMax tie
-                // that merely coincides with an axis already at its target can no longer drift
-                // the traversal past (ei,ej). This is now the CORRECT (non-truncated) outcome.
+                // that merely coincides with an axis already at its target cannot drift
+                // the traversal past (ei,ej). The CORRECT outcome here is non-truncated.
                 label: "diagonal 3-step king path, full visible",
                 wall: None,
                 region: None,
@@ -2325,7 +2322,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Footprint-aware gate tests (D4): `execute_move` adopts `cell_enterable`'s footprint
+    // Footprint-aware gate tests: `execute_move` adopts `cell_enterable`'s footprint
     // predicate set instead of gating on the mover's center cell alone.
     // -----------------------------------------------------------------------
 
@@ -2464,8 +2461,9 @@ mod tests {
     /// A `blocksMove` wall at x=100, sitting exactly midway (0.5 cell) between cell (0,0)'s center
     /// (50,50) and cell (1,0)'s center (150,50) — clears the default 0.4-cell footprint disc test
     /// (0.5 > 0.4) but still crosses the direct center-to-center step. The wall's y-span is huge
-    /// (±2000, far past the search window) so no detour around either end exists: the reverse-I4
-    /// test below needs column 1 genuinely UNREACHABLE, not merely blocked on the direct step (a
+    /// (±2000, far past the search window) so no detour around either end exists: the
+    /// reverse-parity test below needs column 1 genuinely UNREACHABLE, not merely blocked on the
+    /// direct step (a
     /// finite wall's north/south end would let a detour reach the same destination cell via a
     /// different route, which the test cannot distinguish from a gate/router disagreement). The
     /// token carries no actor, so `resolve_token_footprint` falls back to the 0.4 default.
@@ -2616,7 +2614,7 @@ mod tests {
 
     #[test]
     fn route_admissible_implies_gate_admissible_for_a_non_gm_grid() {
-        // I4 forward direction, GridStepped-scoped: there `gate_walk` is the identity on
+        // Forward-parity direction, GridStepped-scoped: there `gate_walk` is the identity on
         // cell-center input, so the gate's sample points ARE the cell centers `cell_enterable`
         // evaluates at, giving the STRONG route ⇔ gate equivalence. This test only asserts the
         // ⇒ half (the ⇐ half is `gate_refused_steps_are_absent_from_every_route_non_gm_grid`
@@ -2654,7 +2652,7 @@ mod tests {
 
     #[test]
     fn route_admissible_implies_gate_admissible_for_a_non_gm_continuous() {
-        // I4 WEAKER direction, Continuous-scoped: `gate_walk`'s dense sampling and the router's
+        // Weaker route ⊆ gate-allowed direction, Continuous-scoped: `gate_walk`'s dense sampling and the router's
         // cell-center evaluation operate at different granularity on this model, so only route ⊆
         // gate-allowed holds here — NOT the reverse/equivalence, which the plan scopes to
         // GridStepped only (see the GridStepped test above). This reuses
@@ -2693,7 +2691,7 @@ mod tests {
 
     #[test]
     fn gate_refused_steps_are_absent_from_every_route_non_gm_grid() {
-        // I4 REVERSE direction: catches a gate MORE
+        // Reverse-parity direction: catches a gate MORE
         // permissive than the router (e.g. a dropped segments_cross check).
         let (ecs, scene, token, user) =
             scene_with_wall_between_adjacent_cells_and_default_footprint();
@@ -2806,7 +2804,7 @@ mod tests {
     fn arrest_stays_center_cell_matching_the_router() {
         // `cell_enterable` does NOT footprint-gate arrest. A wide
         // token whose FOOTPRINT touches an arrest cell but whose CENTER does not must not be
-        // arrested, or the gate becomes stricter than the router and I4 breaks.
+        // arrested, or the gate becomes stricter than the router and route-gate parity breaks.
         let (ecs, scene, token, user) = scene_with_arrest_cell_beside_the_path_and_wide_token();
         let fp = ecs.resolve_token_footprint(token).expect("in-range"); // > 0.5
         let mask = ecs.visible_cells(user, scene, false);
@@ -2852,7 +2850,7 @@ mod tests {
 
     #[test]
     fn execute_move_refuses_an_out_of_range_footprint() {
-        // I1: the new gate input gets an admissibility guard like every other. A NaN radius
+        // This gate input gets an admissibility guard like every other. A NaN radius
         // would make every `dist < r_scene` comparison false — fail-open.
         let (ecs, scene, token) = scene_with_wall_across_the_path_for_footprint_guard();
         for bad in [

@@ -462,8 +462,8 @@ fn engine_tier_visible(doc: &Document, viewer: Option<Uuid>) -> bool {
 /// Exact, order-independent key for a routing wall set — the third component of
 /// `NavmeshCacheKey`. A mesh is only valid for the wall set it was inflated from, so two
 /// requesters share a mesh exactly when they see the same walls. An EXACT sorted key rather than
-/// a hash: a collision would serve one requester a mesh built from another's wall set, which is
-/// the leak D10 exists to close, and wall counts here are bounded by
+/// a hash: a collision would serve one requester a mesh built from another's wall set — the leak
+/// this key exists to close — and wall counts here are bounded by
 /// `MAX_NAVMESH_OBSTACLE_SEGMENTS` so the cost is irrelevant. Sorted on the raw bit patterns so
 /// `hecs`'s unstable iteration order cannot cause a miss.
 fn wall_set_key(walls: &[vision::Seg]) -> Vec<(u64, u64, u64, u64)> {
@@ -1013,7 +1013,7 @@ impl SceneEcs {
         Some((t.x, t.y))
     }
 
-    /// `Room::publish`'s sole caller: the D9 refusal predicate compares this call's pre- and
+    /// `Room::publish`'s sole caller: the refusal predicate compares this call's pre- and
     /// post-image to reject any non-GM `Update` that changes a token's position (players move
     /// only via `MoveRequest` → `execute_move`). A `/system/x` write on a token is structurally
     /// inert against this `/engine`-only read; see the
@@ -1362,7 +1362,7 @@ impl SceneEcs {
             return Err(pathfinding::PathFail::Invalid);
         };
         let grid_shape = self.resolve_grid_shape(scene, cell);
-        // Per-requester routing wall set (D10): a non-GM's route omits `gm_only` walls, so their
+        // Per-requester routing wall set: a non-GM's route omits `gm_only` walls, so their
         // geometry cannot be inferred from route shape. The executor always reads the authoritative
         // set (`None`) and springs a secret wall at execution, exactly as a secret region springs.
         // Hoisted above the engine dispatch so BOTH engines receive the SAME slice — never a forked
@@ -2041,7 +2041,7 @@ impl SceneEcs {
                     if !crate::scene::vision::point_in_poly(&poly, (cx, cy)) {
                         continue;
                     }
-                    // Spec §3/§6: lighting OFF ⇒ all-bright untinted; globalIllumination ⇒
+                    // Lighting OFF ⇒ all-bright untinted; globalIllumination ⇒
                     // all-bright tinted by the environment. level=1.0 so every vision floor
                     // (incl. normal "dim") passes — every LOS cell is visible.
                     let cl = if li.all_bright {
@@ -5525,7 +5525,8 @@ mod tests {
     }
 
     /// One public blocksMove wall at x=100 and one `gm_only` blocksMove wall at x=150.
-    /// Both also carry blocksSight+blocksLight so the I5 test can observe them in the vision sets.
+    /// Both also carry blocksSight+blocksLight so the wall-set-parity test below can observe them
+    /// in the vision sets.
     fn scene_with_public_and_secret_move_walls() -> (SceneEcs, Uuid, Uuid) {
         let (mut ecs, scene) = scene_with_grid(100.0);
         let player = Uuid::new_v4();
@@ -5588,7 +5589,7 @@ mod tests {
         );
     }
 
-    /// I5 anti-drift: vision and lighting keep the FULL wall set; only routing filters. This is a
+    /// Anti-drift: vision and lighting keep the FULL wall set; only routing filters. This is a
     /// must-NOT-converge constraint, so it gets a test rather than only a doc comment.
     #[test]
     fn vision_and_lighting_keep_a_gm_only_wall_that_routing_drops() {
@@ -5596,12 +5597,12 @@ mod tests {
         assert_eq!(
             ecs.sight_walls(scene).len(),
             2,
-            "sight_walls keeps the gm_only wall (M9b)"
+            "sight_walls keeps the gm_only wall"
         );
         assert_eq!(
             ecs.light_walls(scene).len(),
             2,
-            "light_walls keeps the gm_only wall (M9b)"
+            "light_walls keeps the gm_only wall"
         );
         assert_eq!(
             ecs.move_walls(scene, Some(player)).len(),
@@ -6340,7 +6341,7 @@ mod tests {
 
         // Near goal, still within the small visible mask: the weighted route must succeed and
         // stay entirely inside the mask (the grid A* mask check IS the enforcement mechanism for
-        // this sub-path — Finding 1 — so a route can never even be found outside the mask).
+        // this sub-path, so a route can never even be found outside the mask).
         let near_goal = (150.0, 50.0);
         let near = ecs
             .pathfind(user, scene_id, (50.0, 50.0), &[near_goal], 0.1, false, None)

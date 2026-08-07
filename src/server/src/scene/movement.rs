@@ -237,13 +237,12 @@ mod tests {
 
     #[test]
     fn diagonal_leg_with_both_endpoints_on_lattice_corners_succeeds() {
-        // Regression test: a diagonal king-step whose
-        // BOTH endpoints sit exactly on 4-way grid-line intersections used to spuriously
-        // fail-closed. Root cause: the corner-crossing branch stepped BOTH axes on every tMax
-        // tie without checking whether one axis had already reached its target cell — once a
-        // preceding single-axis step (forced here because a0's y-coordinate starts exactly on a
-        // grid line) put t_max_i and t_max_j into permanent lockstep, every subsequent tie
-        // re-stepped the already-arrived axis too, drifting the traversal past (ei,ej) forever.
+        // Regression test: a diagonal king-step whose BOTH endpoints sit exactly on 4-way
+        // grid-line intersections (here, a0's y-coordinate starts exactly on a grid line, forcing
+        // a preceding single-axis step that puts t_max_i and t_max_j into lockstep). The per-axis
+        // remaining-step budget (`remaining_i`/`remaining_j`) must gate the diagonal corner-step so
+        // a tMax tie that merely coincides with an axis already at its target does not re-step
+        // that axis and drift the traversal past (ei,ej).
         let c = cells((200.0, 200.0), (300.0, 100.0), 100.0);
         assert!(c.contains(&(2, 2)), "start cell present");
         assert!(c.contains(&(3, 1)), "end cell present");

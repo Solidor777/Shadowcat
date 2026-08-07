@@ -307,8 +307,8 @@ pub(crate) fn navmesh_find(
 /// square indices compares two different affine maps into the same `(i32,i32)` space — an
 /// arbitrary membership answer in BOTH directions (an occluded hex admitted, a visible one
 /// refused). `grid` MUST be the same `resolve_grid_shape`-derived shape `mask` was built with.
-/// Check (b) always runs, independent of `mask`. **Two checks, both secrecy-relevant — do not
-/// reuse the pre-D10 framing.** The mask check is a secrecy gate (route ⊆ gate-allowed). The wall
+/// Check (b) always runs, independent of `mask`. **Two checks, both secrecy-relevant, neither
+/// substitutes for the other.** The mask check is a secrecy gate (route ⊆ gate-allowed). The wall
 /// check is a router-FIDELITY guarantee for PUBLIC walls (the navmesh's true polyline may detour
 /// around a wall corner, but once downsampled to at most `MAX_VISION_SAMPLES` arc-length samples,
 /// a chord between two samples straddling that corner could otherwise cross the wall the true
@@ -1074,7 +1074,7 @@ mod tests {
             "expected ~900, got {}",
             outcome.cost
         );
-        assert!(!outcome.arrested, "M10f-1 navmesh carries no regions");
+        assert!(!outcome.arrested, "the navmesh carries no regions");
         assert_eq!(outcome.path.first(), Some(&(50.0, 50.0)));
         let last = *outcome.path.last().unwrap();
         assert!((last.0 - 950.0).abs() < 1.0 && (last.1 - 50.0).abs() < 1.0);
@@ -1378,8 +1378,9 @@ mod tests {
     // so `grid.kind:"hex"` + `movementModel:"continuous"` is a live scene). Each test pairs the
     // hex assertion with the SAME call driven by a `SquareGrid` of the same cell size: `SquareGrid`
     // delegates verbatim to the free `pathfinding::footprint_cells` / `movement::supercover_cells`
-    // / `floor(p/cell)` math these three sites used before, so the square arm IS the pre-fix
-    // behavior and pins each test's non-vacuity permanently rather than only at authoring time.
+    // / `floor(p/cell)` math, so the square arm demonstrates the exact square-on-hex defect shape
+    // these tests guard against, pinning each test's non-vacuity permanently rather than only at
+    // authoring time.
 
     use crate::scene::grid_shape::{GridShape, HexGrid, SquareGrid};
 
@@ -1450,7 +1451,7 @@ mod tests {
         let sq_last = *squared.path.last().unwrap();
         assert!(
             (sq_last.0 - goal.0).abs() < 1e-6 && (sq_last.1 - goal.1).abs() < 1e-6,
-            "square indexing admits the whole route into the occluded hex (the pre-fix leak), \
+            "square indexing admits the whole route into the occluded hex, \
              last = {sq_last:?}"
         );
     }
@@ -1497,7 +1498,7 @@ mod tests {
             squared.path,
             vec![path[0], path[2]],
             "square indexing never queries axial (2,-1) and wrongly straightens straight through \
-             the impassable hex (the pre-fix behavior)"
+             the impassable hex"
         );
     }
 
@@ -1541,7 +1542,7 @@ mod tests {
         assert!(
             sq_last.0 < 200.0,
             "square indexing cuts at square cell (3,0) = x∈[150,200), a different location on \
-             the map (the pre-fix behavior), last x = {}",
+             the map, last x = {}",
             sq_last.0
         );
     }

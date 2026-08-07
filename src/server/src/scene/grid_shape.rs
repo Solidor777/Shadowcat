@@ -1375,8 +1375,10 @@ mod tests {
     fn hex_line_traversal_includes_the_far_endpoint_hex_on_a_sub_hex_step() {
         // Reduced counterexample. A step short enough that the max cube-axis delta rounds to 0 still
         // crosses a hex boundary: (-40, 0) sits in hex (0,0) (inradius 43.3), (-50, 0) in hex (-1,0).
-        // The pre-fix fixed-count cube lerp took `n = 0` and returned ONLY the start hex, omitting
-        // even the far endpoint's own hex — an unseen hex a token could step into ungated.
+        // A naive fixed-sample-count line-draw (sampling `n+1` points, `n` = max cube-axis delta)
+        // takes `n = 0` here and would return ONLY the start hex, omitting even the far endpoint's
+        // own hex — an unseen hex a token could step into ungated. The ψ-crossing supercover below
+        // must still catch it.
         let g = HexGrid { size: 50.0 };
         let (a, b) = ((-40.0, 0.0), (-50.0, 0.0));
         assert_eq!(g.cell_of(a), (0, 0));
@@ -1392,8 +1394,8 @@ mod tests {
     #[test]
     fn hex_line_traversal_includes_a_corner_clipped_hex() {
         // Reduced counterexample. This segment clips a short sliver of hex (-1,0) near the vertex it
-        // shares with (0,0)/(0,-1); the pre-fix sampler's one-hex-pitch spacing straddled the sliver
-        // entirely and never named it.
+        // shares with (0,0)/(0,-1); a fixed one-hex-pitch sample spacing would straddle the sliver
+        // entirely and never name it. The ψ-crossing supercover below must still catch it.
         let g = HexGrid { size: 50.0 };
         let a = (-51.640_685_867_085_56, 82.356_123_493_857_9);
         let b = (-32.076_474_134_396_726, -54.002_821_619_560_066);
