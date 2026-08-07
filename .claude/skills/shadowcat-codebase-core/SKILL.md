@@ -185,19 +185,21 @@ source of truth. The ones agents break most:
 - Server (from `src/server/`): `cargo test`, `cargo fmt`, `cargo clippy`.
 - Docs: `pnpm docs:build` (full site → `dist-docs/`; runs `pnpm build` first — embed ordering),
   `pnpm docs:serve` (view; file:// unsupported), `pnpm docs:check-examples` (`@example` ```ts
-  blocks must typecheck — CI-blocking in the web job), `pnpm lint:docs` (doc-coverage gate;
-  `eslint.docs.config.js` holds one rule set via `rulesAt(severity)`, applied at `warn` repo-wide
-  and at `error` for ratcheted packages. **Ratcheted today: `@shadowcat/core`, `@shadowcat/render`,
-  `@shadowcat/shell`, `@shadowcat/ui-kit`, `@shadowcat/formula`, `@shadowcat/module-panels` — a
-  missing doc comment in any of them fails the command**; everything else — the remaining module
-  packages, `src/types`, `examples` — is still advisory. A sweep flips its package only after reaching zero. **A package WITH COMPONENTS
-  is ratcheted in TWO blocks, not one** (`formula` is pure TS and needs only the first): `.ts` and
-  `.svelte` need
-  different parsers and one flat-config block cannot carry both, so a package with components has a
-  `.ts` entry AND a separate `svelteParser` block — ratcheting only the first silently leaves every
-  component advisory. Both `.ts` ignore lists must also stay byte-identical; they exempt test files
-  under BOTH runners' conventions (`**/*.test.ts` and `**/*.spec.ts`), while a test HELPER MODULE
-  that is not itself a test file stays covered.)
+  blocks must typecheck — CI-blocking), `pnpm lint:docs` (function doc coverage),
+  `pnpm lint:props` (property/type/named-arrow doc coverage), `pnpm lint:comments` (no ephemeral
+  references). **All are errors repo-wide with no per-package staging** — see the no-ratchets rule
+  above; there is no `rulesAt(severity)` and no advisory tier anywhere in these configs.
+  Two structural constraints survive and still bite:
+  **(1) A package with COMPONENTS is covered by TWO blocks, not one.** `.ts` and `.svelte` need
+  different parsers and one flat-config block cannot carry both, so each config has a `.ts` block
+  AND a separate `svelteParser` block; a rule added to only the first silently skips every
+  component. **(2) `eslint.docs.config.js` and `eslint.props.config.js` are separate INVOCATIONS
+  and must stay that way** — both set the same rule KEYS with different `contexts` lists, and flat
+  config resolves a key to the last block that sets it, so merging them would silently replace one
+  config's context list with the other's, dropping that coverage with no error and no output
+  change. Their `.ts` ignore lists must stay byte-identical; they exempt test files under BOTH
+  runners' conventions (`**/*.test.ts` and `**/*.spec.ts`) plus `src/types/generated/**`, while a
+  test HELPER MODULE that is not itself a test file stays covered.
 - **An `@example` that imports a workspace package by name compiles that package's own source.**
   `scripts/extract-ts-examples.mjs` builds one scratch program over `src/types`, `src/client`,
   `src/modules`, `examples`; a tagged ```ts fence naming a package pulls that package's internals
