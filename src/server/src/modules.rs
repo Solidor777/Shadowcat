@@ -19,11 +19,11 @@ struct ModuleManifestMirror {
     // Deserialization presence-validates id/version (a manifest missing either
     // fails parse and is skipped); the fields themselves are never read past
     // that point, since `InstalledModule::id` is the folder name, not this one.
-    /// Author-declared id — presence-validated only, never trusted as a key.
-    #[allow(dead_code)]
+    /// Author-declared id. Checked against the folder name at load and reported on mismatch; the
+    /// folder name remains the key everywhere downstream.
     id: String,
-    /// Author-declared semver — presence-validated only.
-    #[allow(dead_code)]
+    /// Author-declared semver. Recorded in the load-time diagnostic; engine compatibility is
+    /// decided by `engines.shadowcat`, never by this.
     version: String,
     /// Declarative path-prefix → capability rules, unioned into the world's
     /// broadcast `capability_requirements` (advisory to the client only).
@@ -135,6 +135,23 @@ pub fn scan_installed_modules(modules_dir: &Path) -> Vec<InstalledModule> {
             Some(n) => n.to_string(),
             None => continue,
         };
+        // The folder name is the module's identity everywhere downstream, so a manifest declaring
+        // a different id is not merely cosmetic: every reference an author writes against their
+        // own declared id resolves to nothing. Reported rather than rejected, because the declared
+        // id has never been authoritative and refusing to load would break modules that work.
+        if mirror.id != folder_id {
+            tracing::warn!(
+                dir = %dir.display(),
+                declared = %mirror.id,
+                folder = %folder_id,
+                "module.json declares an id that is not the folder name; the folder name is used"
+            );
+        }
+        // The declared version is not authoritative for anything the server decides — engine
+        // compatibility is gated by `engines.shadowcat`, not by this — but it is the only record
+        // of what an operator actually has installed, and a version mismatch against what they
+        // believe they deployed is otherwise invisible at runtime.
+        tracing::debug!(id = %folder_id, version = %mirror.version, "module loaded");
         let entry_url = format!("/modules/{folder_id}/{}", mirror.entry);
         out.push(InstalledModule {
             id: folder_id,
@@ -264,6 +281,25 @@ mod tests {
         assert_eq!(found[0].entry_url, "/modules/actors-plus/index.js");
         assert_eq!(found[0].engines_shadowcat.as_deref(), Some("^0.1.0"));
         assert_eq!(found[0].manifest_json["id"], "actors-plus");
+    }
+
+    #[test]
+    fn a_declared_id_that_is_not_the_folder_name_still_loads_under_the_folder_name() {
+        let dir = tempfile::tempdir().unwrap();
+        write_module(
+            dir.path(),
+            "on-disk-name",
+            r#"{"id":"declared-name","version":"1.0.0"}"#,
+        );
+        let found = scan_installed_modules(dir.path());
+        // The folder name wins everywhere the id is used as a key, and the mismatch does not
+        // reject the module — it is reported, so a module that works today keeps working.
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].id, "on-disk-name");
+        assert_eq!(found[0].entry_url, "/modules/on-disk-name/index.js");
+        // The raw manifest is preserved verbatim, declared id included, so a consumer can still
+        // see what the author wrote.
+        assert_eq!(found[0].manifest_json["id"], "declared-name");
     }
 
     #[test]
