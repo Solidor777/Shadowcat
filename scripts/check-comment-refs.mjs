@@ -42,122 +42,9 @@ const rootFiles = () =>
 // does not apply; this one is neither, and it is the only exemption the scanner has.
 const EXAMPLE_EXEMPT = /\bEXAMPLE:/;
 
-/**
- * Splits one source line into its comment span and its code span, carrying block-comment state
- * across lines.
- *
- * INVARIANT: a comment is a lexical REGION, not a line shape. Classifying whole lines by a
- * leading-token pattern makes every comment whose text does not begin its line invisible —
- * trailing `//` after code, a block opener, an HTML comment in markup, a block continuation line
- * that does not lead with `*` — and each such gap silently zeroes counts while every BANNED
- * pattern still looks correct. Deriving the span instead of matching a shape removes the whole
- * class rather than one anchor at a time.
- *
- * Over-scanning is the deliberate failure direction: a construct misread as a comment surfaces a
- * visible false positive, whereas a missed comment is invisible and reads as a pass.
- */
-function splitLine(line, state) {
-  let code = "";
-  let comment = "";
-  let i = 0;
-  let { inBlock, inHtml } = state;
-  while (i < line.length) {
-    if (inHtml) {
-      const end = line.indexOf("-->", i);
-      if (end === -1) return { code, comment: comment + line.slice(i), state: { inBlock, inHtml } };
-      comment += line.slice(i, end);
-      i = end + 3;
-      inHtml = false;
-      continue;
-    }
-    if (inBlock) {
-      const end = line.indexOf("*/", i);
-      if (end === -1) return { code, comment: comment + line.slice(i), state: { inBlock, inHtml } };
-      comment += line.slice(i, end);
-      i = end + 2;
-      inBlock = false;
-      continue;
-    }
-    const c = line[i];
-    // A `//` or `/*` inside a string literal is program data the code acts on, never a comment
-    // opener; consuming the literal whole keeps it in the code span for the literal rules below.
-    if (c === '"' || c === "'" || c === "`") {
-      let j = i + 1;
-      while (j < line.length) {
-        if (line[j] === "\\") {
-          j += 2;
-          continue;
-        }
-        if (line[j] === c) {
-          j += 1;
-          break;
-        }
-        j += 1;
-      }
-      code += line.slice(i, j);
-      i = j;
-      continue;
-    }
-    if (c === "/" && line[i + 1] === "/") {
-      comment += line.slice(i + 2);
-      break;
-    }
-    if (c === "/" && line[i + 1] === "*") {
-      inBlock = true;
-      i += 2;
-      continue;
-    }
-    if (c === "<" && line.startsWith("<!--", i)) {
-      inHtml = true;
-      i += 4;
-      continue;
-    }
-    code += c;
-    i += 1;
-  }
-  return { code, comment, state: { inBlock, inHtml } };
-}
-
-/**
- * Controls for `splitLine`, checked on every run.
- *
- * `BANNED` is a list of visible claims and gets scrutinised whenever a violation is missed. What
- * decides which TEXT those patterns are ever applied to is written once and reads as plumbing, so
- * a gap there zeroes every count while each pattern still looks correct — a scanner examining the
- * wrong text cannot be caught by tuning what it matches. Each specimen therefore states the
- * comment span its line must yield; `null` means the line contributes no comment text.
- */
-const SUBJECT_SPECIMENS = [
-  ["line comment", "// text", " text"],
-  ["rust doc comment", "/// text", "/ text"],
-  ["rust inner doc", "//! text", "! text"],
-  ["block opener", "/** text", "* text"],
-  ["block continuation with star", " * text", " * text"],
-  ["block continuation without star", "   text", "   text"],
-  ["trailing comment after code", "let x = 1; // text", " text"],
-  ["html comment", "<!-- text -->", " text "],
-  ["code only", "const x = 1;", null],
-  ["url inside a string is not a comment", 'const u = "https://example.test/a";', null],
-  ["escaped quote does not end the string", 'const s = "a\\"// b";', null],
-];
-
-for (const [label, line, want] of SUBJECT_SPECIMENS) {
-  // A star-led continuation is comment text only while block state is open, so it is fed that
-  // state; every other specimen is checked from a cold start.
-  const cold = { inBlock: label.startsWith("block continuation"), inHtml: false };
-  const got = splitLine(line, cold).comment;
-  const ok = want === null ? got.trim() === "" : got === want;
-  if (!ok) {
-    console.error(
-      `check-comment-refs: splitLine fails its own control "${label}".\n` +
-        `  line:     ${JSON.stringify(line)}\n` +
-        `  expected: ${JSON.stringify(want)}\n` +
-        `  actual:   ${JSON.stringify(got)}\n` +
-        `Every count this script produces is void until this is fixed.`,
-    );
-    process.exit(2);
-  }
-}
+// The comment/code split, and its controls, live in one module so this gate and the
+// suppression gate cannot drift apart about what counts as a comment.
+import { splitLine } from "./lib/comment-span.mjs";
 
 const BANNED = [
   // A capital M, digits, an optional letter and an optional dashed number are one id shape: the
@@ -323,12 +210,20 @@ if (scopes.length > 0 && scanned.length === 0) {
 // same zero. Every count this script prints is therefore stamped with a fingerprint of the rules
 // that produced it, and a run whose fingerprint differs from the previous run for the same scope
 // says so instead of inviting a comparison that is not valid.
+//
+// Hashed function sources are line-ending-normalized. `Function.prototype.toString` returns the
+// literal source text, so the same function hashes differently depending on how the file reached
+// the disk — git stores LF and checks out CRLF on Windows. Without normalizing, a CI run and a
+// local run report different instruments for identical rules, and every comparison between them is
+// refused for a reason that has nothing to do with the rules.
+const stableSource = (fn) => fn.toString().split("\r\n").join("\n");
+
 const INSTRUMENT = createHash("sha256")
   .update(
     JSON.stringify([
       BANNED.map((b) => [b.name, b.re.source, b.re.flags]),
       [
-        splitLine.toString(),
+        stableSource(splitLine),
         STRING_LITERAL.source,
         EXPLANATORY_STRING.source,
         PROSE_LITERAL.source,
@@ -340,7 +235,7 @@ const INSTRUMENT = createHash("sha256")
       // The scope-matching rule is part of the ruler: changing what a prefix claims changes every
       // scoped count without touching a pattern. Hashing the function's source keeps the
       // fingerprint honest without anyone remembering to bump a version.
-      under.toString(),
+      stableSource(under),
     ]),
   )
   .digest("hex")
