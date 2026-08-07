@@ -43,14 +43,121 @@ const rootFiles = () =>
 const EXAMPLE_EXEMPT = /\bEXAMPLE:/;
 
 /**
- * A line whose content is a comment: a line-comment form, a block-comment body via its leading
- * `*`, or a block-comment OPENING line.
+ * Splits one source line into its comment span and its code span, carrying block-comment state
+ * across lines.
  *
- * The opening form is load-bearing and was missing. `/**` matches neither the two-slash forms nor
- * the leading-star form, so the first line of every doc comment went unscanned — and the first
- * line is exactly where a summary sentence, and therefore an id or a pointer, tends to sit.
+ * INVARIANT: a comment is a lexical REGION, not a line shape. Classifying whole lines by a
+ * leading-token pattern makes every comment whose text does not begin its line invisible —
+ * trailing `//` after code, a block opener, an HTML comment in markup, a block continuation line
+ * that does not lead with `*` — and each such gap silently zeroes counts while every BANNED
+ * pattern still looks correct. Deriving the span instead of matching a shape removes the whole
+ * class rather than one anchor at a time.
+ *
+ * Over-scanning is the deliberate failure direction: a construct misread as a comment surfaces a
+ * visible false positive, whereas a missed comment is invisible and reads as a pass.
  */
-const COMMENT = /^\s*(\/\/|\*|\/\*)/;
+function splitLine(line, state) {
+  let code = "";
+  let comment = "";
+  let i = 0;
+  let { inBlock, inHtml } = state;
+  while (i < line.length) {
+    if (inHtml) {
+      const end = line.indexOf("-->", i);
+      if (end === -1) return { code, comment: comment + line.slice(i), state: { inBlock, inHtml } };
+      comment += line.slice(i, end);
+      i = end + 3;
+      inHtml = false;
+      continue;
+    }
+    if (inBlock) {
+      const end = line.indexOf("*/", i);
+      if (end === -1) return { code, comment: comment + line.slice(i), state: { inBlock, inHtml } };
+      comment += line.slice(i, end);
+      i = end + 2;
+      inBlock = false;
+      continue;
+    }
+    const c = line[i];
+    // A `//` or `/*` inside a string literal is program data the code acts on, never a comment
+    // opener; consuming the literal whole keeps it in the code span for the literal rules below.
+    if (c === '"' || c === "'" || c === "`") {
+      let j = i + 1;
+      while (j < line.length) {
+        if (line[j] === "\\") {
+          j += 2;
+          continue;
+        }
+        if (line[j] === c) {
+          j += 1;
+          break;
+        }
+        j += 1;
+      }
+      code += line.slice(i, j);
+      i = j;
+      continue;
+    }
+    if (c === "/" && line[i + 1] === "/") {
+      comment += line.slice(i + 2);
+      break;
+    }
+    if (c === "/" && line[i + 1] === "*") {
+      inBlock = true;
+      i += 2;
+      continue;
+    }
+    if (c === "<" && line.startsWith("<!--", i)) {
+      inHtml = true;
+      i += 4;
+      continue;
+    }
+    code += c;
+    i += 1;
+  }
+  return { code, comment, state: { inBlock, inHtml } };
+}
+
+/**
+ * Controls for `splitLine`, checked on every run.
+ *
+ * `BANNED` is a list of visible claims and gets scrutinised whenever a violation is missed. What
+ * decides which TEXT those patterns are ever applied to is written once and reads as plumbing, so
+ * a gap there zeroes every count while each pattern still looks correct — a scanner examining the
+ * wrong text cannot be caught by tuning what it matches. Each specimen therefore states the
+ * comment span its line must yield; `null` means the line contributes no comment text.
+ */
+const SUBJECT_SPECIMENS = [
+  ["line comment", "// text", " text"],
+  ["rust doc comment", "/// text", "/ text"],
+  ["rust inner doc", "//! text", "! text"],
+  ["block opener", "/** text", "* text"],
+  ["block continuation with star", " * text", " * text"],
+  ["block continuation without star", "   text", "   text"],
+  ["trailing comment after code", "let x = 1; // text", " text"],
+  ["html comment", "<!-- text -->", " text "],
+  ["code only", "const x = 1;", null],
+  ["url inside a string is not a comment", 'const u = "https://example.test/a";', null],
+  ["escaped quote does not end the string", 'const s = "a\\"// b";', null],
+];
+
+for (const [label, line, want] of SUBJECT_SPECIMENS) {
+  // A star-led continuation is comment text only while block state is open, so it is fed that
+  // state; every other specimen is checked from a cold start.
+  const cold = { inBlock: label.startsWith("block continuation"), inHtml: false };
+  const got = splitLine(line, cold).comment;
+  const ok = want === null ? got.trim() === "" : got === want;
+  if (!ok) {
+    console.error(
+      `check-comment-refs: splitLine fails its own control "${label}".\n` +
+        `  line:     ${JSON.stringify(line)}\n` +
+        `  expected: ${JSON.stringify(want)}\n` +
+        `  actual:   ${JSON.stringify(got)}\n` +
+        `Every count this script produces is void until this is fixed.`,
+    );
+    process.exit(2);
+  }
+}
 
 const BANNED = [
   // A capital M, digits, an optional letter and an optional dashed number are one id shape: the
@@ -176,19 +283,26 @@ const hits = [];
 let exempted = 0;
 for (const path of scanned) {
   const lines = readFileSync(path, "utf8").split("\n");
+  // Block-comment state spans lines, so it is per-file and threaded through the whole scan.
+  let lexState = { inBlock: false, inHtml: false };
   lines.forEach((line, i) => {
+    const split = splitLine(line, lexState);
+    lexState = split.state;
     if (EXAMPLE_EXEMPT.test(line)) {
       exempted += 1;
       return;
     }
-    // A comment line is checked whole; a code line is checked only inside its string literals,
-    // so identifiers and paths that are part of the program are never flagged. Of those literals,
+    // Comment text is checked whole; the code span is checked only inside its string literals, so
+    // identifiers and paths that are part of the program are never flagged. Of those literals,
     // prose ones always count and token-shaped ones count only in an explanatory context.
-    const literals = COMMENT.test(line) ? [] : (line.match(STRING_LITERAL) ?? []);
-    const explanatory = EXPLANATORY_STRING.test(line);
-    const subject = COMMENT.test(line)
-      ? line
-      : literals.filter((l) => explanatory || PROSE_LITERAL.test(l.slice(1, -1))).join(" ");
+    const literals = split.code.match(STRING_LITERAL) ?? [];
+    const explanatory = EXPLANATORY_STRING.test(split.code);
+    const subject = [
+      split.comment,
+      ...literals.filter((l) => explanatory || PROSE_LITERAL.test(l.slice(1, -1))),
+    ]
+      .join(" ")
+      .trim();
     if (subject === "") return;
     const hit = BANNED.find((b) => b.re.test(subject));
     if (hit) hits.push({ path, line: i + 1, kind: hit.name, text: line.trim() });
@@ -214,7 +328,7 @@ const INSTRUMENT = createHash("sha256")
     JSON.stringify([
       BANNED.map((b) => [b.name, b.re.source, b.re.flags]),
       [
-        COMMENT.source,
+        splitLine.toString(),
         STRING_LITERAL.source,
         EXPLANATORY_STRING.source,
         PROSE_LITERAL.source,
