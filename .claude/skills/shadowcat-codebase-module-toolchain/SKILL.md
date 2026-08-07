@@ -90,7 +90,7 @@ job's example-build step keep them green; the guides code-import their sources r
 
 - **The server NEVER executes installed module code** — it only discovers + serves it as static
   bytes (ARCHITECTURE §2 invariant 6). Authority over the `system` band stays structural.
-- **Exactly one runtime instance** of `svelte`/`svelte/*`/`@shadowcat/*` (Global Constraint 1) —
+- **Exactly one runtime instance** of `svelte`/`svelte/*`/`@shadowcat/*` —
   requires `preserveEntrySignatures: "strict"` so runtime chunks export real API names, verified by
   a test that IMPORTS each chunk (not just checks existence) [[build-artifact-tests-must-consume-not-just-exist]].
 - **The enabled-module set is keyed on the install FOLDER id, never the manifest id** — the server
@@ -138,9 +138,9 @@ job's example-build step keep them green; the guides code-import their sources r
 
 ## Pointers
 
-- Rationale: `docs/design/ARCHITECTURE.md` §2 invariant 6 (server runs no third-party code) +
-  Global Constraint 1 (single instance); `docs/site/guides/creating-a-module.md` (authoring
-  toolchain — `docs/design/module-authoring.md` is a pointer stub).
+- Rationale: `docs/design/ARCHITECTURE.md` §2 invariant 6 (server runs no third-party code);
+  `docs/site/guides/creating-a-module.md` (authoring toolchain — `docs/design/module-authoring.md`
+  is a pointer stub).
 - Relationships: `graphify query "installed module discovery serve enable engine-compat import map loader"`.
 - Lessons: [[build-artifact-tests-must-consume-not-just-exist]],
   [[shared-wire-schema-change-needs-full-repo-test]], [[injected-callback-boundary-must-validate-every-site]].
