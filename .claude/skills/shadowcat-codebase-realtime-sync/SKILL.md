@@ -20,10 +20,9 @@ optimistically and roll back on divergence.
 - `ws::room` — `Room` (per-world), `RingBuffer` (time/size-bounded event buffer)
   + `range_from(from_seq)` for gap resync, `subscribe() -> (Receiver, seq)`, `current_seq()`,
   `broadcast_aux()` (out-of-band), `RoomRegistry`. `get_or_create` cold-hydrates the scene ECS:
-  scene entities (`query_scene_entities`) **plus** the M10e-2 world config-docs
+  scene entities (`query_scene_entities`) **plus** the world config-docs
   `world-settings`/`light-gradation`/`vision-modes` + actors (`query_documents`), seeded via
   `SceneEcs::set_world_config`/`set_actors`; the live `apply_op` path keeps the side-tables current.
-  **M1 additions:**
   - `Room::commit_ops_locked(repo, ctx, ops, ts)` (`pub(crate)`) — gate-free authoritative write
     tail (apply_intent → ECS-hydrate → ring/seq → broadcast Event → stats). Extracted from
     `publish`; PRECONDITION: caller MUST already hold `publish_guard`. Non-reentrant — do NOT
@@ -191,8 +190,8 @@ optimistically and roll back on divergence.
 - **`WsClient.open()` does not re-check `running_` after its connect await** — a `stop()` call
   during a pending connect can leave an adopted-but-unwatched transport assigned to
   `this.transport`. See `docs/TODO.md`.
-- **Docs-ratchet is live on the whole `ws/` tree (docs sweep 3) AND the `http/` + `auth/` trees
-  (docs sweep 4):** every file in all three trees carries `#![deny(missing_docs)]` +
+- **Docs-ratchet is live on the whole `ws/` tree AND the `http/` + `auth/` trees:**
+  every file in all three trees carries `#![deny(missing_docs)]` +
   `#![deny(clippy::missing_docs_in_private_items)]` — a new undocumented item fails the 3-OS CI
   clippy step, and `ws::protocol` doc comments flow into the generated `ServerMsg`/`ClientMsg` TS
   types (regenerate + commit bindings with any change; the docs site's protocol page links these
@@ -225,7 +224,7 @@ optimistically and roll back on divergence.
   call site — no error frame, no behavior split — because any distinguishable response would leak
   scene existence to a non-reader. Rate-limited independently (30/min/user via `ping_rate`,
   checked BEFORE the authz lookup so an over-budget sender never pays a doc read).
-- **MoveRequest → MoveStream (M2, broadcast):** `MoveStream` is an **aux broadcast frame** — sent
+- **MoveRequest → MoveStream (broadcast):** `MoveStream` is an **aux broadcast frame** — sent
   via `Room::broadcast_aux` like `ScenePing`, carrying NO seq number (it is cosmetic playback data,
   not an authoritative document event; it never touches the `RingBuffer`/gap-resync path).
   `MoveRequest` is still a one-shot correlated pair for the mover's promise (resolves on the
@@ -246,7 +245,7 @@ optimistically and roll back on divergence.
   `WsClient.onMoveStream` → `worldSession` → `SceneInteractionBridge.animateSamples` →
   `RenderEngine` → `TokenView` / `TokenAnimator`. `onMoveStream` listeners survive reconnects
   (NOT cleared in `failPending`).
-- **Gated moves are request-only + server-executed (M1/M2 invariant):** the client sends
+- **Gated moves are request-only + server-executed:** the client sends
   `MoveRequest` and waits; the server validates, executes, and broadcasts `MoveStream`. The client
   MUST NOT apply an optimistic position update for a gated move. The atomic position `Event` (from
   `commit_ops_locked`) is the authoritative document update; the `MoveStream.samples` drive
