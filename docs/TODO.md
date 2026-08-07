@@ -7,6 +7,19 @@ unblocking condition, not a "someday maybe." A few headings are explicitly
 labeled "Actionable now": these are NOT blocked on anything — the underlying
 capability already exists — but are deferred as out-of-scope-for-now work.
 
+## Actionable now: audit every existing `allow(clippy)` suppression
+- TODO: Bring the 11 pre-existing `#[allow(clippy::*)]` suppressions in `src/` under the
+  suppression rule (`.claude/CLAUDE.md`, "Lint Suppressions Require Explicit User Approval").
+  The rule is a GATE applying retroactively — nothing is grandfathered — so each existing site is
+  a defect until either fixed or explicitly signed off by the user, per instance. Fix the cause
+  rather than moving the annotation; `#[expect(...)]` is not an alternative form.
+  Known distribution: nine `clippy::too_many_arguments` (`chat::mod` ×3, `dice::eval::groups`,
+  `scene::mod` ×2, `scene::move_exec`, plus the remainder) and one `clippy::result_large_err`
+  in `config`. `too_many_arguments` is usually removable by grouping the arguments into the
+  struct they already implicitly form; `result_large_err` by boxing the error variant.
+  Extend `scripts/check-lint-allowances.mjs` to match `allow`/`expect` of `clippy::*` so the
+  gate enforces this, and expect it to fail until the audit lands.
+
 ## Blocked on a reverse-proxy deployment story
 - TODO: `ClientIp` resolves solely from `ConnectInfo<SocketAddr>` — the real
   peer address of the accepted TCP connection — with no `X-Forwarded-For`/`Forwarded` handling.
