@@ -1405,12 +1405,14 @@ impl SceneEcs {
                 pathfinding::find(
                     start,
                     waypoints,
-                    footprint_radius,
-                    cell,
-                    &walls,
-                    mask.as_ref(),
-                    Some(&regions),
-                    &*grid_shape,
+                    pathfinding::PathInputs {
+                        footprint_radius,
+                        cell,
+                        walls: &walls,
+                        mask: mask.as_ref(),
+                        regions: Some(&regions),
+                        shape: &*grid_shape,
+                    },
                 )
             }
             MovementModel::Continuous => {
@@ -1438,12 +1440,14 @@ impl SceneEcs {
                     let weighted = pathfinding::find(
                         start,
                         waypoints,
-                        footprint_radius,
-                        cell,
-                        &walls,
-                        mask.as_ref(),
-                        Some(&regions),
-                        &*euclid_shape,
+                        pathfinding::PathInputs {
+                            footprint_radius,
+                            cell,
+                            walls: &walls,
+                            mask: mask.as_ref(),
+                            regions: Some(&regions),
+                            shape: &*euclid_shape,
+                        },
                     )?;
                     // `find` reports cost in CELLS; the continuous engine reports SCENE UNITS
                     // (parity with the polyanya path below). Convert before smoothing carries it

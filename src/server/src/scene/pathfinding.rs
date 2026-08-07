@@ -577,21 +577,51 @@ pub struct PathOutcome {
     pub arrested: bool,
 }
 
+/// The caller-supplied half of a `PathGrid`: the scene's traversal geometry, the requester's view
+/// of it, and the mover's size. `find` derives the remaining `PathGrid` field — the search
+/// `window` — from `start`/`waypoints`/`walls`, then assembles both into the `PathGrid` its search
+/// runs against, so every field here reaches `cell_enterable`'s per-cell gate unchanged.
+///
+/// INVARIANT: `mask`, `walls` and `regions` are the REQUESTER's view, resolved by the caller
+/// (`SceneEcs::pathfind`) — `mask = None` only for a GM or an `Unrestricted` scene, and `walls`/
+/// `regions` omit whatever tier the requester may not see. `shape` MUST be the same
+/// `GridShape` those three sets were built with; a mask indexed in one coordinate system and
+/// tested in another is not a shared mask.
+pub struct PathInputs<'a> {
+    /// Mover footprint radius in CELLS; `find` rejects anything outside
+    /// `[0, MAX_FOOTPRINT_CELLS]` (NaN and ±Inf included).
+    pub footprint_radius: f64,
+    /// Grid cell size in scene units (positive finite).
+    pub cell: f64,
+    /// `blocksMove` wall segments a step may not cross.
+    pub walls: &'a [vision::Seg],
+    /// Visibility mask: `None` = unconstrained (GM or `Unrestricted`); `Some` = every entered
+    /// (and footprint-overlapped) cell must be in it. An empty `Some` set is the fail-closed
+    /// dark-scene freeze, not an absent constraint.
+    pub mask: Option<&'a BTreeSet<Cell>>,
+    /// Composed region field (weighting/impassable/arrest); `None` = no region enforcement.
+    pub regions: Option<&'a crate::scene::regions::RegionField>,
+    /// Cell geometry for this scene (`SquareGrid` or `HexGrid`).
+    pub shape: &'a dyn crate::scene::grid_shape::GridShape,
+}
+
 /// Plan a footprint-clear, mask-bounded route `start -> waypoints[0] -> ... -> waypoints[last]`.
 /// `waypoints` is the full ordered leg list whose last element is the goal (empty => `Invalid`).
 /// Returns the literal `start` followed by cell-center points through the goal, and the total
 /// cost in cells.
-#[allow(clippy::too_many_arguments)]
 pub fn find(
     start: vision::P,
     waypoints: &[vision::P],
-    footprint_radius: f64,
-    cell: f64,
-    walls: &[vision::Seg],
-    mask: Option<&BTreeSet<Cell>>,
-    regions: Option<&crate::scene::regions::RegionField>,
-    shape: &dyn crate::scene::grid_shape::GridShape,
+    inputs: PathInputs<'_>,
 ) -> Result<PathOutcome, PathFail> {
+    let PathInputs {
+        footprint_radius,
+        cell,
+        walls,
+        mask,
+        regions,
+        shape,
+    } = inputs;
     // Validation (fail-closed): all degenerate inputs => Invalid.
     if waypoints.is_empty() || waypoints.len() > MAX_WAYPOINTS {
         return Err(PathFail::Invalid);
@@ -771,12 +801,14 @@ mod find_tests {
         let r = find(
             (50.0, 50.0),
             &[],
-            0.1,
-            100.0,
-            &NO_WALLS,
-            None,
-            None,
-            &sq(100.0, DiagonalRule::Chebyshev),
+            PathInputs {
+                footprint_radius: 0.1,
+                cell: 100.0,
+                walls: &NO_WALLS,
+                mask: None,
+                regions: None,
+                shape: &sq(100.0, DiagonalRule::Chebyshev),
+            },
         );
         assert_eq!(r, Err(PathFail::Invalid));
     }
@@ -788,12 +820,14 @@ mod find_tests {
             find(
                 (f64::NAN, 0.0),
                 &[(150.0, 50.0)],
-                0.1,
-                100.0,
-                &NO_WALLS,
-                None,
-                None,
-                &sq(100.0, DiagonalRule::Chebyshev)
+                PathInputs {
+                    footprint_radius: 0.1,
+                    cell: 100.0,
+                    walls: &NO_WALLS,
+                    mask: None,
+                    regions: None,
+                    shape: &sq(100.0, DiagonalRule::Chebyshev),
+                }
             ),
             Err(PathFail::Invalid)
         );
@@ -802,12 +836,14 @@ mod find_tests {
             find(
                 (50.0, 50.0),
                 &[(150.0, 50.0)],
-                -1.0,
-                100.0,
-                &NO_WALLS,
-                None,
-                None,
-                &sq(100.0, DiagonalRule::Chebyshev)
+                PathInputs {
+                    footprint_radius: -1.0,
+                    cell: 100.0,
+                    walls: &NO_WALLS,
+                    mask: None,
+                    regions: None,
+                    shape: &sq(100.0, DiagonalRule::Chebyshev),
+                }
             ),
             Err(PathFail::Invalid)
         );
@@ -816,12 +852,14 @@ mod find_tests {
             find(
                 (50.0, 50.0),
                 &[(150.0, 50.0)],
-                0.1,
-                0.0,
-                &NO_WALLS,
-                None,
-                None,
-                &sq(0.0, DiagonalRule::Chebyshev)
+                PathInputs {
+                    footprint_radius: 0.1,
+                    cell: 0.0,
+                    walls: &NO_WALLS,
+                    mask: None,
+                    regions: None,
+                    shape: &sq(0.0, DiagonalRule::Chebyshev),
+                }
             ),
             Err(PathFail::Invalid)
         );
@@ -830,12 +868,14 @@ mod find_tests {
             find(
                 (50.0, 50.0),
                 &[(150.0, 50.0)],
-                f64::NAN,
-                100.0,
-                &NO_WALLS,
-                None,
-                None,
-                &sq(100.0, DiagonalRule::Chebyshev)
+                PathInputs {
+                    footprint_radius: f64::NAN,
+                    cell: 100.0,
+                    walls: &NO_WALLS,
+                    mask: None,
+                    regions: None,
+                    shape: &sq(100.0, DiagonalRule::Chebyshev),
+                }
             ),
             Err(PathFail::Invalid)
         );
@@ -844,12 +884,14 @@ mod find_tests {
             find(
                 (50.0, 50.0),
                 &[(150.0, 50.0)],
-                f64::INFINITY,
-                100.0,
-                &NO_WALLS,
-                None,
-                None,
-                &sq(100.0, DiagonalRule::Chebyshev)
+                PathInputs {
+                    footprint_radius: f64::INFINITY,
+                    cell: 100.0,
+                    walls: &NO_WALLS,
+                    mask: None,
+                    regions: None,
+                    shape: &sq(100.0, DiagonalRule::Chebyshev),
+                }
             ),
             Err(PathFail::Invalid)
         );
@@ -858,12 +900,14 @@ mod find_tests {
             find(
                 (50.0, 50.0),
                 &[(150.0, 50.0)],
-                MAX_FOOTPRINT_CELLS + 1.0,
-                100.0,
-                &NO_WALLS,
-                None,
-                None,
-                &sq(100.0, DiagonalRule::Chebyshev)
+                PathInputs {
+                    footprint_radius: MAX_FOOTPRINT_CELLS + 1.0,
+                    cell: 100.0,
+                    walls: &NO_WALLS,
+                    mask: None,
+                    regions: None,
+                    shape: &sq(100.0, DiagonalRule::Chebyshev),
+                }
             ),
             Err(PathFail::Invalid)
         );
@@ -875,12 +919,14 @@ mod find_tests {
         let outcome = find(
             (50.0, 50.0),
             &[(250.0, 50.0)],
-            0.1,
-            100.0,
-            &NO_WALLS,
-            None,
-            None,
-            &sq(100.0, DiagonalRule::Chebyshev),
+            PathInputs {
+                footprint_radius: 0.1,
+                cell: 100.0,
+                walls: &NO_WALLS,
+                mask: None,
+                regions: None,
+                shape: &sq(100.0, DiagonalRule::Chebyshev),
+            },
         )
         .unwrap();
         assert!((outcome.cost - 2.0).abs() < 1e-9);
@@ -910,12 +956,15 @@ mod find_tests {
         let outcome = find(
             start,
             &[goal],
-            0.1,
-            100.0,
-            &NO_WALLS,
-            None, // GM / unconstrained: only the window (not a mask) can gate reachability here
+            PathInputs {
+footprint_radius: 0.1,
+cell: 100.0,
+walls: &NO_WALLS,
+mask: // GM / unconstrained: only the window (not a mask) can gate reachability here
             None,
-            &hex,
+regions: None,
+shape: &hex,
+},
         )
         .expect("a reachable hex route must resolve, not read Unreachable");
         assert_eq!(outcome.path.first(), Some(&start));
@@ -942,12 +991,14 @@ mod find_tests {
         let outcome = find(
             start,
             &[wp, goal],
-            0.1,
-            100.0,
-            &NO_WALLS,
-            None,
-            None,
-            &sq(100.0, DiagonalRule::Alternating),
+            PathInputs {
+                footprint_radius: 0.1,
+                cell: 100.0,
+                walls: &NO_WALLS,
+                mask: None,
+                regions: None,
+                shape: &sq(100.0, DiagonalRule::Alternating),
+            },
         )
         .unwrap();
         assert!(
@@ -965,12 +1016,14 @@ mod find_tests {
             find(
                 (50.0, 50.0),
                 &wps,
-                0.1,
-                100.0,
-                &NO_WALLS,
-                None,
-                None,
-                &sq(100.0, DiagonalRule::Chebyshev)
+                PathInputs {
+                    footprint_radius: 0.1,
+                    cell: 100.0,
+                    walls: &NO_WALLS,
+                    mask: None,
+                    regions: None,
+                    shape: &sq(100.0, DiagonalRule::Chebyshev),
+                }
             ),
             Err(PathFail::Invalid)
         );
@@ -983,12 +1036,14 @@ mod find_tests {
             find(
                 (50.0, 50.0),
                 &[(250.0, 50.0)],
-                0.1,
-                100.0,
-                &NO_WALLS,
-                Some(&mask),
-                None,
-                &sq(100.0, DiagonalRule::Chebyshev)
+                PathInputs {
+                    footprint_radius: 0.1,
+                    cell: 100.0,
+                    walls: &NO_WALLS,
+                    mask: Some(&mask),
+                    regions: None,
+                    shape: &sq(100.0, DiagonalRule::Chebyshev),
+                }
             ),
             Err(PathFail::Unreachable)
         );
@@ -1011,12 +1066,15 @@ mod find_tests {
         let result = find(
             start,
             &[goal],
-            10.0, // footprint_radius_cells (10 cells) > WINDOW_MARGIN (8 cells)
+            PathInputs {
+footprint_radius: 10.0,
+cell: // footprint_radius_cells (10 cells) > WINDOW_MARGIN (8 cells)
             c,
-            &walls,
-            None,
-            None,
-            &sq(c, DiagonalRule::Chebyshev),
+walls: &walls,
+mask: None,
+regions: None,
+shape: &sq(c, DiagonalRule::Chebyshev),
+},
         );
         assert_eq!(result, Err(PathFail::Unreachable));
     }
@@ -1053,12 +1111,14 @@ mod find_tests {
         let outcome = find(
             (50.0, 50.0),
             &[(450.0, 50.0)],
-            0.1,
-            100.0,
-            &NO_WALLS,
-            None,
-            Some(&field),
-            &sq(100.0, DiagonalRule::Chebyshev),
+            PathInputs {
+                footprint_radius: 0.1,
+                cell: 100.0,
+                walls: &NO_WALLS,
+                mask: None,
+                regions: Some(&field),
+                shape: &sq(100.0, DiagonalRule::Chebyshev),
+            },
         )
         .unwrap();
         assert!(outcome.arrested);
@@ -1078,12 +1138,14 @@ mod find_tests {
         let outcome = find(
             (50.0, 50.0),
             &[(250.0, 50.0)],
-            0.1,
-            100.0,
-            &NO_WALLS,
-            None,
-            None,
-            &sq(100.0, DiagonalRule::Chebyshev),
+            PathInputs {
+                footprint_radius: 0.1,
+                cell: 100.0,
+                walls: &NO_WALLS,
+                mask: None,
+                regions: None,
+                shape: &sq(100.0, DiagonalRule::Chebyshev),
+            },
         )
         .unwrap();
         assert!(!outcome.arrested);

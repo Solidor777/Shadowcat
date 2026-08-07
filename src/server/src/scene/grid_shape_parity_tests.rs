@@ -23,7 +23,7 @@ use uuid::Uuid;
 use crate::data::document::Document;
 use crate::scene::grid_shape::SquareGrid;
 use crate::scene::move_exec::execute_move;
-use crate::scene::pathfinding::{find, DiagonalRule, PathOutcome};
+use crate::scene::pathfinding::{find, DiagonalRule, PathInputs, PathOutcome};
 use crate::scene::regions::{rasterize, RegionBehavior, RegionField, RegionShape};
 use crate::scene::{MovementRestriction, SceneEcs};
 
@@ -89,12 +89,14 @@ fn route(rule: DiagonalRule, field: &RegionField) -> PathOutcome {
     find(
         (50.0, 50.0),
         &[(250.0, 250.0)],
-        0.1,
-        100.0,
-        &[],
-        None,
-        Some(field),
-        &SquareGrid { cell: 100.0, rule },
+        PathInputs {
+            footprint_radius: 0.1,
+            cell: 100.0,
+            walls: &[],
+            mask: None,
+            regions: Some(field),
+            shape: &SquareGrid { cell: 100.0, rule },
+        },
     )
     .expect("forced diagonal staircase is reachable under every rule")
 }
