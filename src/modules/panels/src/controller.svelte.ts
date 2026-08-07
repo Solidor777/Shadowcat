@@ -37,15 +37,31 @@ export function regsForRole(regs: readonly Contribution[], role: WorldRole): Con
  * something a terminal implementation like this controller needs to expose),
  * so callers hand it in separately from the `PanelsApi` methods below. */
 export interface PanelsBridgeLike {
+  /** Installs `impl` as the bridge's live `PanelsApi` implementation.
+   * @param impl The implementation to bind.
+   */
   bind(impl: PanelsApi): void;
 }
 
+/** Everything `PanelsController` needs from its host to bridge layout-changing inputs onto
+ * `applyOp` and persist the result. */
 export interface PanelsControllerDeps {
+  /** The registry to read `shadowcat.panel` contract registrations from; keys panels off
+   * `Contribution.id` (see `Contribution`'s own doc for the uniqueness caveat this
+   * controller does not itself verify). */
   contributions: ContributionRegistry;
+  /** The current world session's role, consulted by `regsForRole` to filter `gmOnly`
+   * registrations. */
   role: WorldRole;
+  /** Reads the persisted layout blob (`unknown` — the shell's `panelLayout` storage is
+   * Zod-free by design). */
   getPanelLayout: () => unknown;
+  /** Persists a new layout blob. */
   setPanelLayout: (blob: unknown) => void;
+  /** The shell's `PanelsBridge`, into which this controller binds itself as the live
+   * `PanelsApi` implementation. */
   bridge: PanelsBridgeLike;
+  /** Diagnostic sink for recoverable failures. */
   logger: Logger;
   /** Fired with the `panels.layoutReset` i18n key when a persisted layout blob
    * was rejected and the default was substituted in its place; the caller
@@ -103,8 +119,13 @@ const REHYDRATE_FLOAT_STEP = 28;
  * ```
  */
 export class PanelsController implements PanelsApi, PanelsChipsView {
+  /** The host-supplied dependencies this controller bridges layout-changing inputs through. */
   #deps: PanelsControllerDeps;
+  /** `createSubscriber`'s notify function for non-rune (`PanelsChipsView`) consumers of
+   * `#layout`. */
   #subscribe: () => void;
+  /** The live layout state; the sole value every `PanelsApi`/`PanelsChipsView` method reads
+   * and every layout-changing input mutates via `applyOp`/`prune`/`placeNewRegistrations`. */
   #layout = $state<PanelLayoutV1>(EMPTY_LAYOUT);
   /** The pre-`prune` structurally-validated blob `#layout` was decoded from at construction
    * (`null` on reset/first-run) — retained so `syncRegistrations` can place a

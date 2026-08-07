@@ -54,7 +54,10 @@ const ZONE_EDGE_DIRECTION: Record<ZoneId, "left" | "right" | "below"> = {
  * the stage — the adapter's own cached reference), per the `EngineAdapter`
  * contract. */
 class AdoptingContentRenderer implements IContentRenderer {
+  /** This renderer's own wrapper element, adopted into dockview's panel content container. */
   readonly element: HTMLElement;
+  /** The externally-owned element adopted into `element` by `init`; `null` before `init`
+   * runs or after `dispose`. */
   #adopted: HTMLElement | null = null;
 
   /** Stashes `resolve` for `init()` to call (never invoked here — see the class
@@ -248,11 +251,17 @@ function mountPanelMenu(
  * map is always current; an `i18n.subscribe` re-renders the label on locale
  * change. */
 class PanelTabRenderer implements ITabRenderer {
+  /** This tab's chrome wrapper, rendered as the content of dockview's own tab element. */
   readonly element: HTMLElement;
+  /** The tab's icon element. */
   #iconEl: HTMLElement;
+  /** The tab's label element; text kept current with `i18n.subscribe` and `getMeta()`. */
   #labelEl: HTMLElement;
+  /** The tab's badge count element; visibility/text driven by `#unsubBadge`'s callback. */
   #badgeEl: HTMLElement;
+  /** The tab's command-menu button. */
   #menuBtn: HTMLButtonElement;
+  /** Unsubscribes this renderer's `i18n.subscribe` locale-change listener. */
   #unsubLocale: () => void;
   // `PanelMeta.badge`'s own subscribe, bound once at construction: unlike
   // icon/label (read live through `getMeta()` on every render, since the
@@ -260,7 +269,10 @@ class PanelTabRenderer implements ITabRenderer {
   // panel's whole lifetime (registered once at module install), and its
   // count changes independently of any `apply()` cycle — see `PanelBadge`'s
   // doc comment.
+  /** Unsubscribes this tab's `PanelMeta.badge` count listener; `null` when the panel's meta
+   * carries no badge. */
   #unsubBadge: (() => void) | null = null;
+  /** Closes the currently-open command-menu popover; `null` when no popover is open. */
   #closeMenu: (() => void) | null = null;
 
   /** Builds this tab's chrome (icon/label/badge/menu-button elements) and wires
@@ -442,117 +454,139 @@ class PanelTabRenderer implements ITabRenderer {
  * place, even if this class's own veto did not already foreclose the
  * question.) */
 export class DockviewEngine implements EngineAdapter {
+  /** The live dockview API; `null` before `init` runs or after `destroy`. */
   #api: DockviewApi | null = null;
+  /** Subscribers registered via `onOp`. */
   #opListeners = new Set<(op: LayoutOp) => void>();
-  #disposables: { dispose(): void }[] = [];
+  /** Every dockview subscription this engine owns, disposed in bulk by `destroy`. */
+  #disposables: {
+    /** Tears down this one subscription. */
+    dispose(): void;
+  }[] = [];
+  /** Diagnostic sink for vetoed gestures and recoverable failures. */
   #logger: Logger;
+  /** The layout last passed to `apply`; `null` before the first `apply` call. */
   #expanded: ExpandedLayout | null = null;
-  // dockview group id -> our (zone, index) for that group, as of the last
-  // `apply()`. Used to translate a drop event's target group back into our
-  // vocabulary; rebuilt fresh on every `apply()` call.
-  #zoneOfGroup = new Map<string, { zone: ZoneId; index: number }>();
-  // True for the synchronous duration of `apply()` — panel/group removals
-  // dockview fires WHILE we are diffing are OUR OWN reconciliation, not a
-  // user gesture, so `onDidRemovePanel`/`onDidActivePanelChange` must not
-  // re-emit them as ops (that would fight the reducer that just drove this
-  // very `apply()` call).
+  /** dockview group id -> our (zone, index) for that group, as of the last `apply()`. Used
+   * to translate a drop event's target group back into our vocabulary; rebuilt fresh on
+   * every `apply()` call. */
+  #zoneOfGroup = new Map<
+    string,
+    {
+      /** The zone this dockview group corresponds to. */
+      zone: ZoneId;
+      /** This group's positional index within `zone`, as of the last `apply()`. */
+      index: number;
+    }
+  >();
+  /** True for the synchronous duration of `apply()` — panel/group removals dockview fires
+   * WHILE we are diffing are OUR OWN reconciliation, not a user gesture, so
+   * `onDidRemovePanel`/`onDidActivePanelChange` must not re-emit them as ops (that would
+   * fight the reducer that just drove this very `apply()` call). */
   #applying = false;
-  // Reentrancy guard: `#restoreStage` itself adds a panel; without
-  // this, the model's own remove/add bookkeeping could recurse back in.
+  /** Reentrancy guard: `#restoreStage` itself adds a panel; without this, the model's own
+   * remove/add bookkeeping could recurse back in. */
   #restoringStage = false;
-  // One live `onDidDimensionsChange` subscription per managed (non-stage)
-  // group, keyed by dockview group id. Added the moment `apply()` creates a
-  // group, disposed the moment `apply()` removes it (and on `destroy()`) —
-  // a group's whole lifetime is bracketed by exactly one subscription.
-  #groupResizeSubs = new Map<string, { dispose(): void }>();
-  // One live `group.model.onWillDrop` subscription per managed (non-stage)
-  // group — same add/dispose lifecycle as `#groupResizeSubs` above. Required
-  // because `DockviewApi.onWillDrop` (subscribed once in `init()`, below)
-  // NEVER fires for a drop targeting an existing group: the component only
-  // forwards a group model's `onWillDrop` through `_advancedDnDService?.
-  // dispatchWillDrop(event)` (in `DockviewComponent.createGroup`'s
-  // `onWillDrop` wiring), and this
-  // codebase ships no `advancedDnDService` module (`AllModules` lists none), so
-  // that optional chain is a permanent no-op — `#handleWillDrop` is
-  // otherwise unreachable for any group-target drop (header, tab, or
-  // content). `IDockviewGroupPanelModel.onWillDrop` is a
-  // public event on the SAME `group.model` this class already reaches via
-  // `api.getGroup(groupId)`, fires with the identical `DockviewWillDropEvent`
-  // shape as the component-level event (where `handleDropEvent` constructs
-  // the event), and gates `_onMove`/
-  // `_onDidDrop` on `defaultPrevented` exactly like the root path
-  // (`DockviewGroupPanelModel.handleDropEvent`) — so binding
-  // `#handleWillDrop` to it directly closes the group-onto-group veto bypass
-  // AND lets an ALLOWED group-target drop be intercepted-and-redispatched the
-  // same way as a root/edge drop, no new method needed.
-  #groupWillDropSubs = new Map<string, { dispose(): void }>();
-  // Last EMITTED px dimensions per zone/group, to skip dockview's frequent
-  // sub-pixel dimension churn (every layout pass fires this event, not just
-  // a user's splitter drag) — avoids feedback-loop op spam.
+  /** One live `onDidDimensionsChange` subscription per managed (non-stage) group, keyed by
+   * dockview group id. Added the moment `apply()` creates a group, disposed the moment
+   * `apply()` removes it (and on `destroy()`) — a group's whole lifetime is bracketed by
+   * exactly one subscription. */
+  #groupResizeSubs = new Map<
+    string,
+    {
+      /** Tears down this group's dimension-change subscription. */
+      dispose(): void;
+    }
+  >();
+  /** One live `group.model.onWillDrop` subscription per managed (non-stage) group — same
+   * add/dispose lifecycle as `#groupResizeSubs` above. Required because
+   * `DockviewApi.onWillDrop` (subscribed once in `init()`, below) NEVER fires for a drop
+   * targeting an existing group: the component only forwards a group model's `onWillDrop`
+   * through `_advancedDnDService?.dispatchWillDrop(event)` (in
+   * `DockviewComponent.createGroup`'s `onWillDrop` wiring), and this codebase ships no
+   * `advancedDnDService` module (`AllModules` lists none), so that optional chain is a
+   * permanent no-op — `#handleWillDrop` is otherwise unreachable for any group-target drop
+   * (header, tab, or content). `IDockviewGroupPanelModel.onWillDrop` is a public event on
+   * the SAME `group.model` this class already reaches via `api.getGroup(groupId)`, fires
+   * with the identical `DockviewWillDropEvent` shape as the component-level event (where
+   * `handleDropEvent` constructs the event), and gates `_onMove`/`_onDidDrop` on
+   * `defaultPrevented` exactly like the root path (`DockviewGroupPanelModel.handleDropEvent`)
+   * — so binding `#handleWillDrop` to it directly closes the group-onto-group veto bypass
+   * AND lets an ALLOWED group-target drop be intercepted-and-redispatched the same way as a
+   * root/edge drop, no new method needed. */
+  #groupWillDropSubs = new Map<
+    string,
+    {
+      /** Tears down this group's `onWillDrop` subscription. */
+      dispose(): void;
+    }
+  >();
+  /** Last EMITTED px dimension per zone, to skip dockview's frequent sub-pixel dimension
+   * churn (every layout pass fires this event, not just a user's splitter drag) — avoids
+   * feedback-loop op spam. */
   #lastZonePx = new Map<ZoneId, number>();
+  /** Last EMITTED px dimension per group, keyed by dockview group id; same purpose as
+   * `#lastZonePx`. */
   #lastGroupPx = new Map<string, number>();
-  // Meta snapshot from the last `apply()` call — read by `PanelTabRenderer`'s
-  // `getMeta` closure (icon/labelKey are effectively static per panel once
-  // registered, so a live reference here is sufficient; no per-render diffing).
+  /** Meta snapshot from the last `apply()` call — read by `PanelTabRenderer`'s `getMeta`
+   * closure (icon/labelKey are effectively static per panel once registered, so a live
+   * reference here is sufficient; no per-render diffing). */
   #meta: ReadonlyMap<string, PanelMeta> = new Map();
-  // Invoking element (the menu button) for each floating panel created via a
-  // "float" menu command, so `#teardownFloatingA11y` can return focus to it
-  // on close. Absent for any future non-menu float path — that path simply
-  // degrades to no focus-return, never a crash.
+  /** Invoking element (the menu button) for each floating panel created via a "float" menu
+   * command, so `#teardownFloatingA11y` can return focus to it on close. Absent for any
+   * future non-menu float path — that path simply degrades to no focus-return, never a
+   * crash. */
   #floatInvokers = new Map<string, HTMLElement>();
-  // One live Escape-to-close keydown listener per floating panel's dialog
-  // element, disposed the moment that panel leaves the model (mirrors
-  // `#groupResizeSubs`'s per-group add/dispose lifecycle).
+  /** One live Escape-to-close keydown listener per floating panel's dialog element,
+   * disposed the moment that panel leaves the model (mirrors `#groupResizeSubs`'s per-group
+   * add/dispose lifecycle). */
   #floatingEscapeSubs = new Map<string, () => void>();
-  // Ids currently mid-transition from docked into floating WITHIN THE SAME
-  // `apply()` call (the floating loop's remove+re-add-under-same-id branch,
-  // mirroring the zone loop's cross-group-move pattern). `api.removePanel`
-  // fires `onDidRemovePanel` synchronously — by the time that listener runs,
-  // dockview has already detached the outgoing tab's DOM (confirmed: a
-  // `document.contains` check inside the listener already reads false), so
-  // `#teardownFloatingA11y` never gets to invoke `invoker.focus()` here
-  // regardless of this guard. What it WOULD otherwise do, wrongly, is
-  // `#floatInvokers.delete(id)` — discarding the very entry `apply()`'s
-  // floating loop is about to hand to the panel's OWN new floating dialog a
-  // few lines later. Gating the delete on this set keeps the invoker entry
-  // intact across the transient churn, available to a LATER, real close of
-  // the floating panel.
+  /** Ids currently mid-transition from docked into floating WITHIN THE SAME `apply()` call
+   * (the floating loop's remove+re-add-under-same-id branch, mirroring the zone loop's
+   * cross-group-move pattern). `api.removePanel` fires `onDidRemovePanel` synchronously — by
+   * the time that listener runs, dockview has already detached the outgoing tab's DOM
+   * (confirmed: a `document.contains` check inside the listener already reads false), so
+   * `#teardownFloatingA11y` never gets to invoke `invoker.focus()` here regardless of this
+   * guard. What it WOULD otherwise do, wrongly, is `#floatInvokers.delete(id)` — discarding
+   * the very entry `apply()`'s floating loop is about to hand to the panel's OWN new
+   * floating dialog a few lines later. Gating the delete on this set keeps the invoker
+   * entry intact across the transient churn, available to a LATER, real close of the
+   * floating panel. */
   #floatTransitionIds = new Set<string>();
-  // Last rect (px, relative to the dockview root) `apply()` last placed a
-  // floating panel at OR this class last emitted via `resizeFloating` —
-  // whichever happened most recently. Read by `#handleFloatingLayoutChange`
-  // to detect a real user-driven drift and to suppress re-emitting a rect
-  // the tree already knows about. Deleted alongside `#floatingEscapeSubs`/
-  // `#floatInvokers` in `#teardownFloatingA11y` (mirrors their per-id
-  // add/dispose lifecycle) and cleared wholesale in `destroy()`.
+  /** Last rect (px, relative to the dockview root) `apply()` last placed a floating panel
+   * at OR this class last emitted via `resizeFloating` — whichever happened most recently.
+   * Read by `#handleFloatingLayoutChange` to detect a real user-driven drift and to
+   * suppress re-emitting a rect the tree already knows about. Deleted alongside
+   * `#floatingEscapeSubs`/`#floatInvokers` in `#teardownFloatingA11y` (mirrors their per-id
+   * add/dispose lifecycle) and cleared wholesale in `destroy()`. */
   #lastFloatingRect = new Map<string, Rect>();
+  /** Subscribers registered via `onNotice`. */
   #noticeListeners = new Set<(key: string) => void>();
-  // Popout group id -> the panel ids it hosts, recorded when a pop-out succeeds
-  // so `onDidRemovePopoutGroup` (window closed by the user) can translate a
-  // group id back into `popIn` ops without depending on the group's live panel
-  // membership at fire time (dockview's teardown may have already moved them).
+  /** Popout group id -> the panel ids it hosts, recorded when a pop-out succeeds so
+   * `onDidRemovePopoutGroup` (window closed by the user) can translate a group id back into
+   * `popIn` ops without depending on the group's live panel membership at fire time
+   * (dockview's teardown may have already moved them). */
   #poppedOutGroupPanels = new Map<string, string[]>();
-  // Ids with a pop-out request currently in flight (driver called, promise not
-  // yet settled). dockview's `addPopoutGroup` is wrapped in `mutation()`, whose
-  // `finally` fires the instant the function RETURNS its pending promise — not
-  // when it settles — so it serializes only the synchronous portion, leaving the
-  // async `window.open` → re-parent gap unguarded. Without this set, a second
-  // "Pop out" click on the SAME id inside that gap opens a second window and
-  // re-keys `#poppedOutGroupPanels` to the first (now-orphaned) group id,
-  // corrupting the tree on the eventual window close. Refuse a duplicate until
-  // the first request settles.
+  /** Ids with a pop-out request currently in flight (driver called, promise not yet
+   * settled). dockview's `addPopoutGroup` is wrapped in `mutation()`, whose `finally` fires
+   * the instant the function RETURNS its pending promise — not when it settles — so it
+   * serializes only the synchronous portion, leaving the async `window.open` → re-parent
+   * gap unguarded. Without this set, a second "Pop out" click on the SAME id inside that
+   * gap opens a second window and re-keys `#poppedOutGroupPanels` to the first
+   * (now-orphaned) group id, corrupting the tree on the eventual window close. Refuse a
+   * duplicate until the first request settles. */
   #pendingPopouts = new Set<string>();
-  // Popped-out panel id -> the group id it lived in BEFORE pop-out (its ORIGIN
-  // group). dockview keeps that group alive-but-hidden (`setVisible(false)`) and
-  // its window-close path (`disposePopoutWindow`) hands the panel back to that
-  // exact group object; the `popOut` op meanwhile detaches the group from the
-  // persisted tree, so `apply()` seeds these ids into `seenGroupIds` to keep the
-  // orphan-group loop from destroying the group dockview still depends on.
+  /** Popped-out panel id -> the group id it lived in BEFORE pop-out (its ORIGIN group).
+   * dockview keeps that group alive-but-hidden (`setVisible(false)`) and its window-close
+   * path (`disposePopoutWindow`) hands the panel back to that exact group object; the
+   * `popOut` op meanwhile detaches the group from the persisted tree, so `apply()` seeds
+   * these ids into `seenGroupIds` to keep the orphan-group loop from destroying the group
+   * dockview still depends on. */
   #poppedOutOriginGroups = new Map<string, string>();
-  // Gesture-time popout invoker. Defaults to dockview's native popout (verified
-  // same-heap, content re-parented, stylesheets cloned, via `PopoutWindow.open`).
-  // Injectable so unit tests exercise the async-result →
-  // op translation without a real `window.open` (jsdom has none).
+  /** Gesture-time popout invoker. Defaults to dockview's native popout (verified same-heap,
+   * content re-parented, stylesheets cloned, via `PopoutWindow.open`). Injectable so unit
+   * tests exercise the async-result → op translation without a real `window.open` (jsdom
+   * has none). */
   #popoutDriver: (panel: IDockviewPanel) => Promise<boolean>;
 
   /** Builds an engine instance with no dockview API yet (that is created by
@@ -962,7 +996,12 @@ export class DockviewEngine implements EngineAdapter {
    * this.#handleRemovePopoutGroup(event);
    * ```
    */
-  #handleRemovePopoutGroup(event: { id: string; group: IDockviewGroupPanel }): void {
+  #handleRemovePopoutGroup(event: {
+    /** The dockview id of the popout group that was removed. */
+    id: string;
+    /** The removed group itself; see this method's own doc for its fallback role. */
+    group: IDockviewGroupPanel;
+  }): void {
     const ids = this.#poppedOutGroupPanels.get(event.id) ?? event.group.model.panels.map((p) => p.id);
     this.#poppedOutGroupPanels.delete(event.id);
     // Origin-group tracking clears unconditionally (like `#poppedOutGroupPanels`
@@ -1143,7 +1182,13 @@ export class DockviewEngine implements EngineAdapter {
    * ```
    */
   #expandGroupDockOp(
-    op: Extract<LayoutOp, { op: "dock" }>,
+    op: Extract<
+      LayoutOp,
+      {
+        /** Selects the `dock` variant of `LayoutOp` for this type-level filter. */
+        op: "dock";
+      }
+    >,
     tabs: readonly string[],
     event: DockviewWillDropEvent,
     layout: ExpandedLayout,

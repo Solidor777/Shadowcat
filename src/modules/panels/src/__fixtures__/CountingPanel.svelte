@@ -3,7 +3,7 @@
 
   /** Test fixture: reports exactly one call per component mount, independent
    * of prop changes or reactive re-runs, to prove keep-mounted-by-construction. */
-  let { onMountFn }: { onMountFn: () => void } = $props();
+  let { onMountFn }: { /** Called once per mount. */ onMountFn: () => void } = $props();
 
   onMount(() => {
     onMountFn();

@@ -9,6 +9,9 @@ import type { ExpandedLayout, LayoutOp } from "../layout/tree";
 import type { EngineAdapter } from "./adapter";
 
 const ZONE_IDS = ["right", "bottom", "left"] as const;
+/** The three fixed dock zones this engine builds DOM for; mirrors `@shadowcat/core`'s
+ * `ZoneId`, kept as a local literal union rather than importing it so this engine's DOM
+ * layer stays decoupled from the layout-tree package. */
 type Zone = (typeof ZONE_IDS)[number];
 
 /** In-memory `EngineAdapter`: plain divs per zone/group/floating panel,
@@ -30,14 +33,25 @@ type Zone = (typeof ZONE_IDS)[number];
  * ```
  */
 export class FakeEngine implements EngineAdapter {
+  /** The container passed to `init`; `null` before `init` runs or after `destroy`. */
   #host: HTMLElement | null = null;
+  /** The slot resolver passed to `init`; `null` before `init` runs or after `destroy`. */
   #slotFor: ((id: string) => HTMLElement) | null = null;
+  /** Each zone's own container element, built once by `init`. */
   #zoneEls = new Map<Zone, HTMLElement>();
-  #groupEls = new Map<string, HTMLElement>(); // key: `${zone}:${index}`
-  #floatEls = new Map<string, HTMLElement>(); // key: panel id
+  /** Each docked group's wrapper element, keyed `${zone}:${index}`; torn down and rebuilt
+   * fresh on every `apply` call (see `apply`'s own doc). */
+  #groupEls = new Map<string, HTMLElement>();
+  /** Each floating (or degraded popped-out — see `apply`) panel's container, keyed by panel
+   * id; reused and only repositioned across `apply` calls, unlike `#groupEls`. */
+  #floatEls = new Map<string, HTMLElement>();
+  /** Subscribers registered via `onOp`; `emitOp` is this engine's sole emission source. */
   #opListeners = new Set<(op: LayoutOp) => void>();
+  /** The last id passed to `focus`, read back via the `focused` test getter. */
   #focused: string | null = null;
+  /** The `stageEl` passed to `init`; `null` before `init` runs or after `destroy`. */
   #stageEl: HTMLElement | null = null;
+  /** The center-well container `#stageEl` was adopted into, built by `init`. */
   #centerEl: HTMLElement | null = null;
 
   /** `EngineAdapter.init`: builds this engine's own zone/center-well DOM

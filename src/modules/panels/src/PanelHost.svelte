@@ -19,7 +19,14 @@
     engine,
     logger,
     controller,
-  }: { engine?: EngineAdapter; logger?: Logger; controller?: PanelsController } = $props();
+  }: {
+    /** The docking engine to reconcile the layout onto; see this component's own doc. */
+    engine?: EngineAdapter;
+    /** Diagnostic sink for recoverable failures; see this component's own doc. */
+    logger?: Logger;
+    /** The layout-owning controller; see this component's own doc. */
+    controller?: PanelsController;
+  } = $props();
   const log = untrack(() => logger ?? consoleLogger());
 
   const ctx = getAppContext();
@@ -244,7 +251,10 @@
    * <div use:registerSlot={id}></div>
    * ```
    */
-  function registerSlot(node: HTMLElement, id: string): { destroy(): void } {
+  function registerSlot(node: HTMLElement, id: string): {
+    /** Unregisters this slot, per this function's own doc. */
+    destroy(): void;
+  } {
     slotEls.set(id, node);
     return {
       destroy() {

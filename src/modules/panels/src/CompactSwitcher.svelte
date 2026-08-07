@@ -18,11 +18,17 @@
     release,
     onSwitch,
   }: {
+    /** Panel ids in display order for the tab strip; see `CompactLayout.order`. */
     order: string[];
+    /** The currently-shown panel id; see `CompactLayout.activeView`. */
     activeView: string | null;
+    /** Per-panel display metadata (title, icon) keyed by panel id. */
     meta: ReadonlyMap<string, PanelMeta>;
+    /** Resolves a panel id to its persistent, already-mounted slot element. */
     slotFor: (id: string) => HTMLElement;
+    /** Returns an adopted slot element to PanelHost's staging container. */
     release: (el: HTMLElement) => void;
+    /** Called when the user picks a different tab, with the newly-selected panel id. */
     onSwitch: (id: string) => void;
   } = $props();
 

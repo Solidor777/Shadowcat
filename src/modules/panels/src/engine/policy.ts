@@ -18,6 +18,8 @@ export const STAGE_ID = "stage";
  * because `"any op whose subject is 'stage'"` is itself a veto rule this
  * function evaluates. */
 export interface DropSite {
+  /** What kind of target this is: an existing group's tab strip/content, a zone edge, or a
+   * floating-panel drop. */
   kind: "group" | "edge" | "floating";
   /** The panel id being dropped/dragged. */
   id: string;
@@ -42,6 +44,12 @@ export interface DropSite {
    * `locked === 'no-drop-target'`), so this branch is a second, independent
    * layer rather than the sole guard. */
   stageGroup?: boolean;
+  /** Where within the target the drop resolved to. Only consulted by `classifyDrop` for a
+   * `kind: "edge"` site, where `"top"` and `"center"` are vetoed (no `"top"` `ZoneId` exists;
+   * an edge drop cannot resolve to `"center"`) — `"group"`/`"floating"` sites carry a value
+   * here but `classifyDrop` never reads it for them. All five values are representable only
+   * because dockview's own drop-position vocabulary includes them upstream of this policy
+   * layer. */
   position: "left" | "right" | "top" | "bottom" | "center";
 }
 
@@ -102,7 +110,15 @@ export function opForMenuCommand(command: MenuCommand, id: string): ClassifyResu
   }
 }
 
-export type ClassifyResult = LayoutOp | { veto: true; reason: string };
+/** The result of classifying a gesture into either a `LayoutOp` to dispatch, or a refusal. */
+export type ClassifyResult =
+  | LayoutOp
+  | {
+      /** Discriminant: this gesture is refused. */
+      veto: true;
+      /** Human-readable reason surfaced in a vetoed-gesture log message. */
+      reason: string;
+    };
 
 /** Builds a veto result — the `{ veto: true, reason }` shape both
  * `classifyDrop` and `opForMenuCommand` return to refuse a gesture.
@@ -115,7 +131,12 @@ export type ClassifyResult = LayoutOp | { veto: true; reason: string };
  * veto("the stage panel is not a draggable subject");
  * ```
  */
-function veto(reason: string): { veto: true; reason: string } {
+function veto(reason: string): {
+  /** Discriminant: this gesture is refused. */
+  veto: true;
+  /** Human-readable reason surfaced in a vetoed-gesture log message. */
+  reason: string;
+} {
   return { veto: true, reason };
 }
 

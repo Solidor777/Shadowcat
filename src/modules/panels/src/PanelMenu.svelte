@@ -11,13 +11,19 @@
     onCommand,
     onClose,
   }: {
+    /** Called once with the chosen command, right before the popover closes itself. */
     onCommand: (cmd: MenuCommand) => void;
-    // `returnFocus` (default true) lets Tab close the popup WITHOUT forcing
-    // focus back to the invoking tab — see the Tab case below.
+    /** Closes the popover. `returnFocus` (default true) lets Tab close it WITHOUT forcing
+     * focus back to the invoking tab — see the Tab case below. */
     onClose: (returnFocus?: boolean) => void;
   } = $props();
 
-  const items: { cmd: MenuCommand; labelKey: string }[] = [
+  const items: {
+    /** The command this item dispatches on activation. */
+    cmd: MenuCommand;
+    /** The i18n key for this item's visible label. */
+    labelKey: string;
+  }[] = [
     { cmd: "dockRight", labelKey: "panels.dockRight" },
     { cmd: "dockBottom", labelKey: "panels.dockBottom" },
     { cmd: "dockLeft", labelKey: "panels.dockLeft" },

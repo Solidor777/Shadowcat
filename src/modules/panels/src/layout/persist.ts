@@ -303,7 +303,17 @@ export function decodeLayout(
   raw: unknown,
   known: ReadonlySet<string>,
   fallback: () => PanelLayoutV1,
-): { layout: PanelLayoutV1; reset: boolean; source: PanelLayoutV1 | null } {
+): {
+  /** The layout to use — `raw` decoded and pruned against `known`, or `fallback()`'s result
+   * on any validation failure. */
+  layout: PanelLayoutV1;
+  /** `true` iff `raw` failed structural or referential validation (see this function's own
+   * doc); pruning alone never sets this. */
+  reset: boolean;
+  /** The pre-prune normalized blob, or `null` on `reset`; see this function's own doc for
+   * why later-registering panels need it. */
+  source: PanelLayoutV1 | null;
+} {
   if (!isPanelLayoutV1(raw) || !isReferentiallyConsistent(raw)) return { layout: fallback(), reset: true, source: null };
   const normalized = withPoppedOut(raw);
   return { layout: prune(normalized, known), reset: false, source: normalized };
