@@ -46,7 +46,7 @@ source of truth. The ones agents break most:
 - **NEVER FORK A DECISION ACROSS TWO PATHS — the defect class this codebase produces most.**
   Whenever two code paths are *documented* to agree on something, they eventually disagree on an
   input nobody thought to check, and the disagreement is a security defect rather than a bug. Six
-  instances found in one branch (the 2026-07-22 hex-grid campaign), across four subsystems:
+  instances found in one branch, across four subsystems:
   | Forked on | Where | Consequence |
   |---|---|---|
   | Cell indexing | `Room::publish`, `clip_to_visible_mask` | square indices tested against a hex-axial mask |
@@ -68,7 +68,7 @@ source of truth. The ones agents break most:
 - **`dist/` must be built before any `cargo` build of the server** — `rust-embed` validates
   `../../dist/` at COMPILE time. [[embed-dist-compile-ordering]]
 - **Capability/permission model** layered server/world/document roles. [[capability-permissions]]
-- **Three-band document shape (M13-0): envelope `name` + typed `engine` + opaque `system`.**
+- **Three-band document shape: envelope `name` + typed `engine` + opaque `system`.**
   Server runs no third-party code; authority over the opaque `system` body is structural only
   (size/field-path/`deny_unknown_fields`) — no semantic validation, ever. The typed `engine` body
   (present only for the 17 engine-defined doc types: tokens, actors, scenes, walls, regions,
@@ -82,7 +82,7 @@ source of truth. The ones agents break most:
 
 ## Gotchas
 
-- **No data migrations pre-customers (user directive 2026-07-30).** Until a PLAN.md milestone
+- **No data migrations pre-customers (user directive).** Until a PLAN.md milestone
   explicitly marks live customer databases, there is no upgrade path to preserve: SQL schema
   changes EDIT `src/server/migrations/0001_init.sql` (the single baseline) in place — never add
   an incremental migration file — and document-schema changes keep `data::migrate` step-free
@@ -90,7 +90,7 @@ source of truth. The ones agents break most:
   real migrations can begin at that milestone. A dev DB predating a baseline edit fails the sqlx
   checksum — delete the dev DB file and restart. Any migration files that accumulate anyway are
   deleted on sight (squashed into the baseline).
-- **NEVER work around a rule — follow its INTENT; if unsure, ASK (user directive 2026-08-05).**
+- **NEVER work around a rule — follow its INTENT; if unsure, ASK (user directive).**
   Verbatim: *"we do not try to work around rules, ever. we accept the intent of the rule and follow
   it. if we are unsure of the intent, ask the user."* Reworking text or code until a rule stops
   applying is never acceptable — not when the result is technically true, not when the gate goes
@@ -100,7 +100,7 @@ source of truth. The ones agents break most:
   test that asserts nothing, reading a rule narrowly to shrink scope (also a descope — see
   [[never-descope-without-consulting-user]]). A rule that is genuinely wrong gets raised and
   changed, never quietly routed around. [[never-work-around-a-rule-follow-its-intent]]
-- **Comments cite SYMBOLS, never file names or line numbers (user directive 2026-08-05).** Write
+- **Comments cite SYMBOLS, never file names or line numbers (user directive).** Write
   ``see `egress_loop`'s `SceneSubscribe` arm ``, never ``see conn.rs:1313`` and never ``the handler in
   `conn.rs` ``. Qualify by owner (`AssetResolver.url`, `chat::broadcast`), not location. Applies to
   all committed prose — doc comments and the live tracking docs. A line number is invalidated by any
