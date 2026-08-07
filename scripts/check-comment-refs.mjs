@@ -113,9 +113,21 @@ const BANNED = [
   // would train writers to dodge the wording instead of dropping the narration. Removing history
   // narration is therefore a review obligation this pattern only partly covers, never a claim that
   // a clean run means none remains.
+  //
+  // EXAMPLE: `pre-fix`/`post-fix`/`pre-refactor`/`post-refactor` are the same shape as
+  // EXAMPLE: "before/after the fix" written as a compound instead of a phrase — a coverage scan
+  // of the corpus this pattern governs found it surviving under this entry's own name in exactly
+  // this compound form.
+  //
+  // The `used to` form is bound to an explicit subject pronoun (`it`/`this`/`that`/`which`/`they`)
+  // rather than matched bare: unqualified "used to <verb>" is also the ordinary present-tense
+  // passive-purpose construction ("the id used to recognize our own echoes"), which this corpus
+  // carries dozens of and which is not narration at all. Requiring a subject pronoun keeps the
+  // EXAMPLE: match on the past-habitual reading ("the check that used to live here") without the
+  // recall needed to remember every purpose-clause phrasing that would otherwise collide.
   {
     name: "history narration",
-    re: /\bpreviously\b|\bformerly\b|\bhistorically\b|\b(?:before|after) the (?:fix|refactor|change|rewrite)\b/i,
+    re: /\bpreviously\b|\bformerly\b|\bhistorically\b|\b(?:before|after) the (?:fix|refactor|change|rewrite)\b|\bpre-(?:fix|refactor)\b|\bpost-(?:fix|refactor)\b|\b(?:it|this|that|which|they)\s+used to\b/i,
   },
   // EXAMPLE: An unnamed reference to "the spec" is the same defect as a named one and strictly
   // worse to resolve: the reader cannot even tell which document went stale. Matches a spec
@@ -225,15 +237,37 @@ const DESIGN_DOC_CITATION = /docs\/design\/[\w.-]+\.md/g;
 // Coverage control: a pattern vocabulary enumerated from remembered examples can always miss a
 // shape nobody happened to remember, and reasoning about the pattern list in isolation cannot
 // surface that gap — only reading the governed corpus can. This section makes that reading
-// repeatable: a deliberately BROAD matcher for "identifier-shaped token in prose" runs over the
-// same corpus BANNED/SKILL_BANNED govern, and every match is required to resolve one of two ways —
-// caught by an existing BANNED/SKILL_BANNED pattern already (a real hit, not a coverage gap), or
-// named on the ACKNOWLEDGED list below with a reason. Anything left over is RESIDUE: a shape
-// nobody has looked at, and the point is that it fails loudly instead of passing silently.
+// repeatable: deliberately BROAD matchers run over the governed skill corpus, and every match is
+// required to resolve one of two ways — caught by an existing BANNED/SKILL_BANNED pattern already
+// (a real hit, not a coverage gap), or named on an ACKNOWLEDGED list below with a reason. Anything
+// left over is RESIDUE: a shape nobody has looked at, and the point is that it fails loudly
+// instead of passing silently.
 //
 // This is a review aid, not a third ban list — it never fails a file itself. `main`'s `--residue`
 // mode fails only when RESIDUE is non-empty, never on an acknowledged match.
+//
+// Two independent candidate SHAPES run side by side because they miss different things: an
+// EXAMPLE: identifier-shaped candidate (a letter run plus digits) cannot see a marker with no
+// EXAMPLE: digit at all — `pre-fix` has none — which is exactly the gap that motivated the
+// second class below. Neither shape subsumes the other, so both must run for the control to
+// cover what BANNED's own entries already ban by shape (an id, and separately a narration phrase).
 const CANDIDATE_TOKEN = /\b[A-Z][A-Za-z]{0,20}\s?\d+[a-z]?(?:-\d+)?\b/g;
+
+// The narration-shaped class: comment text carrying temporal/comparative language about the code
+// itself. Scoped narrower than "every word that can describe a past state" on purpose — a first
+// pass against the governed corpus included the common English words `new`/`still`/`now`/`was`/
+// `were`/`since`/`until`/`after`/`old` and produced ~520 of ~630 raw matches, essentially all of
+// them present-tense or runtime-data prose ("the caller now owns the buffer", "if the previous
+// sample was inside the mask") with no shape-level way to tell a genuine narration instance from
+// the noise. Acknowledging that volume, or worse acknowledging it by a reason that amounts to "the
+// word is usually fine," would be exactly the false-negative-to-false-positive swap this class
+// exists to avoid: the acknowledged list is not a place to launder low-signal noise, and a list
+// that large is not reviewable by anyone. Retained here are the higher-signal forms the campaign's
+// own brief named alongside those words: pre-/post- compounds and six single words whose corpus
+// occurrences turned out to be mostly genuine narration once actually read (`legacy` was the sole
+// exception — see ACKNOWLEDGED_NARRATION).
+const NARRATION_CANDIDATE_TOKEN =
+  /\bpre-[a-z]+\b|\bpost-[a-z]+\b|\boriginally\b|\blegacy\b|\bdeprecated\b|\brenamed\b|\bmoved\b|\breplaced\b/gi;
 
 // Named, counted, one reason each — an unnamed or uncounted acknowledgement is a backdoor by the
 // same reasoning as the EXAMPLE exemption. Each entry was matched against the corpus once and is
@@ -278,12 +312,35 @@ const ACKNOWLEDGED = [
   },
 ];
 
+// Deliberately narrow: no entry here matches a bare, single English verb by itself. `re` is
+// tested against a short WINDOW starting at the match (the token plus a few trailing
+// characters), not the bare token, so an entry can additionally require the specific word
+// immediately after the match.
+const ACKNOWLEDGED_NARRATION = [
+  {
+    name: "a pre-/post- compound naming a technical stage, artifact or concept (e.g. pre-pass, post-commit, pre-image), distinct in shape from the compounds BANNED already covers",
+    re: /^(?:pre|post)-[a-z]+/i,
+  },
+  {
+    name: "'legacy' naming a still-supported compatibility path or a third-party product's own version",
+    re: /^legacy\b/i,
+  },
+  {
+    name: "the passive 'replaced BY' construction stating a substitution/derivation rule",
+    re: /^replaced\s+by\b/i,
+  },
+];
+
 /**
- * Runs the broad candidate matcher over one file's text and classifies every match: already a
+ * Runs the broad candidate matchers over one file's text and classifies every match: already a
  * real BANNED/SKILL_BANNED hit (not a coverage gap — it will already fail the main scan),
  * acknowledged as a named legitimate token, or RESIDUE — an unrecognised shape that must be
  * looked at. Pure function of its argument, mirroring `scanContent`, so a test exercises it on
  * fabricated text without touching the filesystem.
+ *
+ * `contextChars` sets how many characters past the match an ACKNOWLEDGED entry's `re` can see:
+ * 0 for the identifier class (its entries match the bare token), a few for the narration class
+ * (an entry there can require a specific following word, e.g. "replaced BY").
  */
 export function scanCandidates(content) {
   const lines = content.split("\n");
@@ -296,15 +353,22 @@ export function scanCandidates(content) {
       return;
     }
     const subject = line.replace(DESIGN_DOC_CITATION, "");
-    const tokens = subject.match(CANDIDATE_TOKEN) ?? [];
-    for (const token of tokens) {
-      if (SKILL_BANNED.some((b) => b.re.test(token))) continue;
-      const ack = ACKNOWLEDGED.find((a) => a.re.test(token));
-      if (ack) {
-        acknowledged.push({ line: i + 1, token, reason: ack.name });
-        continue;
+    const classes = [
+      { re: CANDIDATE_TOKEN, acks: ACKNOWLEDGED, contextChars: 0 },
+      { re: NARRATION_CANDIDATE_TOKEN, acks: ACKNOWLEDGED_NARRATION, contextChars: 8 },
+    ];
+    for (const { re, acks, contextChars } of classes) {
+      for (const m of subject.matchAll(re)) {
+        const token = m[0];
+        if (SKILL_BANNED.some((b) => b.re.test(token))) continue;
+        const context = subject.slice(m.index, m.index + token.length + contextChars);
+        const ack = acks.find((a) => a.re.test(context));
+        if (ack) {
+          acknowledged.push({ line: i + 1, token, reason: ack.name });
+          continue;
+        }
+        residue.push({ line: i + 1, token, text: line.trim() });
       }
-      residue.push({ line: i + 1, token, text: line.trim() });
     }
   });
   return { acknowledged, residue, exempted };
