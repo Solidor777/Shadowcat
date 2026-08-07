@@ -352,7 +352,7 @@
    * // private function; not part of the public API — invoked from the
    * // visibility $effect (which gates markRead) and the message-count/
    * // IntersectionObserver effects below
-   * isVisible(container);
+   * if (container) isVisible(container);
    * ```
    */
   function isVisible(el: HTMLElement): boolean {

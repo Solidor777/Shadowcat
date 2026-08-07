@@ -33,6 +33,9 @@ export type ChatReadState = Record<string, ReadMarker>;
  * @example
  * ```
  * // private module; not reachable as a workspace import — call shape:
+ * declare const doc: WireDocument;
+ * declare const read: ChatReadState;
+ * declare const channel: string;
  * isAfter(doc, read[channel]);
  * ```
  */
@@ -59,6 +62,9 @@ function isAfter(doc: WireDocument, marker: ReadMarker | undefined): boolean {
  * @example
  * ```
  * // private module; not reachable as a workspace import — call shape:
+ * declare const messages: readonly WireDocument[];
+ * declare const read: ChatReadState;
+ * declare const selfId: string;
  * computeUnreadCount(messages, read, selfId);
  * ```
  */
@@ -81,6 +87,7 @@ export function computeUnreadCount(messages: readonly WireDocument[], read: Chat
  * @example
  * ```
  * // private module; not reachable as a workspace import — call shape:
+ * declare const messages: readonly WireDocument[];
  * markAllRead(messages);
  * ```
  */

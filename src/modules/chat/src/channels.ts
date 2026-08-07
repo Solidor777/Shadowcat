@@ -61,6 +61,7 @@ export function postTarget(view: ChatView): {
  * @example
  * ```
  * // private module; not reachable as a workspace import — call shape:
+ * declare const sys: ChatMessageEngine;
  * inView({ kind: "gm" }, sys); // → sys.audience.kind === "gm_only"
  * ```
  */
@@ -81,6 +82,8 @@ export function inView(view: ChatView, sys: ChatMessageEngine): boolean {
  * @example
  * ```
  * // private module; not reachable as a workspace import — call shape:
+ * declare const doc1: WireDocument;
+ * declare const doc2: WireDocument;
  * [doc1, doc2].sort(byCreation);
  * ```
  */
@@ -164,6 +167,8 @@ export function resetParseCallCount(): void {
  * @example
  * ```
  * // private function; not reachable as a workspace import — call shape:
+ * declare const cache: ChatDerivationCache;
+ * declare const doc: WireDocument;
  * insertionIndex(cache, doc);
  * ```
  */
@@ -196,6 +201,8 @@ function insertionIndex(cache: ChatDerivationCache, doc: WireDocument): number {
  * @example
  * ```
  * // private module; not reachable as a workspace import — call shape:
+ * declare const cache: ChatDerivationCache;
+ * declare const allMessages: WireDocument[];
  * deriveVisibleDocs(cache, allMessages, { kind: "all" }, RENDER_CAP);
  * ```
  */
@@ -274,6 +281,10 @@ export const VIRTUALIZE_OVERSCAN = 8;
  * @example
  * ```
  * // private module; not reachable as a workspace import — call shape:
+ * declare const scrollTop: number;
+ * declare const clientHeight: number;
+ * declare const scrollHeight: number;
+ * declare const totalCount: number;
  * computeVisibleWindow(scrollTop, clientHeight, scrollHeight, totalCount);
  * ```
  */

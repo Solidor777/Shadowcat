@@ -31,6 +31,7 @@ export class ChatUnreadBadge implements PanelBadge {
    * @example
    * ```
    * // private method; not reachable as a workspace import — call shape:
+   * declare const badge: ChatUnreadBadge;
    * badge.get();
    * ```
    */
@@ -46,6 +47,7 @@ export class ChatUnreadBadge implements PanelBadge {
    * @example
    * ```
    * // private method; not reachable as a workspace import — call shape:
+   * declare const badge: ChatUnreadBadge;
    * badge.set(3);
    * ```
    */
@@ -62,6 +64,7 @@ export class ChatUnreadBadge implements PanelBadge {
    * @example
    * ```
    * // private method; not reachable as a workspace import — call shape:
+   * declare const badge: ChatUnreadBadge;
    * const unsubscribe = badge.subscribe(() => {});
    * ```
    */

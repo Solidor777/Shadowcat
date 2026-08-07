@@ -85,7 +85,9 @@
      * @param event The keyboard event.
      * @example
      * ```
-     * // internal; registered only while the popover is open
+     * // internal; registered only while the popover is open (declared inside the
+     * // effect body, so only its call shape is shown here)
+     * declare function onDocKeydown(event: KeyboardEvent): void;
      * onDocKeydown(new KeyboardEvent("keydown", { key: "Escape" }));
      * ```
      */

@@ -70,6 +70,8 @@ class Parser {
    * ```
    * // not part of the public `@shadowcat/formula` surface — Parser is not exported;
    * // reachable only through `parseFormula`.
+   * declare const tokens: Tok[];
+   * declare const src: string;
    * new Parser(tokens, src.length);
    * ```
    */
@@ -135,6 +137,8 @@ class Parser {
    * ```
    * // not part of the public `@shadowcat/formula` surface — Parser is not exported;
    * // reachable only through `parseFormula`.
+   * declare const tokens: Tok[];
+   * declare const src: string;
    * new Parser(tokens, src.length).parseTop();
    * ```
    */
