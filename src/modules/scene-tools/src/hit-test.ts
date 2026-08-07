@@ -10,7 +10,7 @@ import type { Point } from "@shadowcat/render";
  * only ever APPENDS a new token's container the first time it is seen
  * (`PixiBackend.createTokenNode`), so this "last in iteration order" tie-break
  * genuinely matches render z-order, not merely by convention. Footprint = the resolved box
- * (M10d, `resolveTokenBox`): a circle token uses ellipse containment, a square the AABB. A
+ * (`resolveTokenBox`): a circle token uses ellipse containment, a square the AABB. A
  * degenerate box (`w <= 0 || h <= 0`) is skipped entirely (never hit-testable). Rotation is
  * ignored for picking.
  * @param tokens The candidate token documents (typically `store.query("token")`).

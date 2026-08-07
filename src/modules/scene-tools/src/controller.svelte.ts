@@ -60,11 +60,11 @@ export interface ToolContext {
     tokenId: string,
     path: [number, number][],
   ) => Promise<MoveStream>;
-  /** The scene tools act on (M12d). From `ctx.viewedSceneId`; absent ⇒ the first scene (legacy). */
+  /** The scene the tools act on. From `ctx.viewedSceneId`; absent ⇒ the first scene. */
   viewedSceneId?: () => string | null;
 }
 
-/** The active scene (the viewed scene, M12d) + its grid cell size (default 100 when
+/** The active (viewed) scene + its grid cell size (default 100 when
  * `grid.size` is absent) and distance scale (default `{ perCell: 5, unit: "ft" }` when
  * `grid.distance` is absent, matching `resolveSceneSettings`'s own default). These are
  * tool-local display/pathfind-arg defaults only; no parity claim is made with the server
@@ -149,7 +149,7 @@ export class ToolController {
   /** Template-tool shape mode + color. */
   templateMode = $state<TemplateMode>("circle");
   templateColor = $state("#3388ff");
-  /** Region-tool shape mode + behavior/cost/secrecy config (M10g authoring). */
+  /** Region-tool shape mode + behavior/cost/secrecy config. */
   regionShapeMode = $state<RegionShapeMode>("rect");
   regionBehavior = $state<RegionBehaviorMode>("terrain");
   regionCost = $state<number>(2);
@@ -606,7 +606,7 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
    * issued — last-write-wins coalescing of stale RESPONSES, a separate mechanism from the
    * leading-edge debounce above it (which only throttles REQUEST volume; see the
    * `pendingSeq`/`lastRouteRequestAt` field comments). The final element of `allWaypoints` IS
-   * the goal (server contract: goal = waypoints.last(), spec §3.2).
+   * the goal, matching `SceneEcs::pathfind`'s `waypoints[last]`-is-destination contract.
    * @param scene The active scene.
    * @param scene.id The scene document id.
    * @param scene.perCell The distance-per-cell scale used for the budget label.
@@ -775,9 +775,9 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
    */
   function commitRoute(goal: Point): void {
     if (!ctx.pathfind || !ctx.moveRequest || !ctx.tokenSelection || ctx.tokenSelection.ids.size !== 1) return;
-    // Continuous-scene execution is wired end-to-end (M10f-3): the server move-execution path
-    // is engine-agnostic since M10f-2 (no movementModel branch anywhere), so committing a route
-    // proceeds identically for grid-stepped and continuous scenes.
+    // Never branches on `movementModel`: the server move-execution path
+    // (`execute_move`/`gate_walk`) is engine-agnostic, so committing a route proceeds
+    // identically for grid-stepped and continuous scenes.
     const scene = activeScene(ctx);
     const start = tokenCenter();
     if (!scene || !start) return;
@@ -894,7 +894,7 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
         // Do NOT call clearRoute() here — that would bump pendingSeq and abort the commit.
         if (committing) return;
         // Release: clear overlays (mid-gesture-clear invariant). The actual move is
-        // handled by the select-move tool / M10e-4 server gate — not here.
+        // handled by the select-move tool / the server's `execute_move` gate — not here.
         clearRoute();
         return;
       }
@@ -1075,9 +1075,8 @@ function sizeDir(a: Point, b: Point, cell: number): { size: number; direction: n
  * within one scene unit of the SNAPPED anchor — in a snapping scene an ordinary click lands
  * some arbitrary fraction of a cell away from that anchor, so it takes the normal branch and
  * produces a small, effectively arbitrary template instead of the intended one-cell default.
- * Known, logged defect: see the `makeTemplateTool` near-zero-drag entry in `docs/OPEN_BUGS.md`
- * (referenced by tool name, not by title, so a retitle cannot orphan this pointer).
- * Comment-only note; the behavior itself is unchanged here.
+ * TODO: make an ordinary (unsnapped) click produce the intended one-cell default template
+ * instead of an arbitrary small one.
  * @param ctx The tool context; reads the active scene, snaps the anchor, dispatches the create.
  * @param controller Supplies the configured `templateMode`/`templateColor`.
  * @returns A `SceneTool` implementing the drag-to-place gesture.

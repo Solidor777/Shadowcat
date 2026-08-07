@@ -29,7 +29,7 @@
   /** Live engine handle for the GM vision control (set after async init). */
   let engineRef: RenderEngine | null = null;
   /** GM vision mode: "all" (no fog), "fog" (client-only full-fog preview), or "as:<userId>"
-   * (M9c-2 see-as-player: re-subscribe vision as that user — server-gated to GMs). */
+   * (see-as-player: re-subscribe vision as that user — server-gated to GMs). */
   let gmView = $state("all");
   /** Candidate see-as targets: distinct token owners the GM sees (best-effort; usernames need a
    * members source — labeled by short id for now). */
@@ -144,7 +144,7 @@
         });
       });
       wirePointer(e, controller.signal);
-      // Drive the grid from the viewed scene's engine.grid (M8d §15), updating only on
+      // Drive the grid from the viewed scene's `engine.grid`, updating only on
       // a real change so a token drag does not rebuild the grid each frame; also expose
       // the rendered token count as a test/observability signal (mirrors render-ready).
       let lastGridKey = "";
@@ -164,7 +164,7 @@
           lastGridKey = key;
           e.setGrid(spec);
         }
-        // Snap-to-grid is per-scene (M10f-3 §4.2-4.3). Pushed unconditionally each pass — a
+        // Snap-to-grid is per-scene. Pushed unconditionally each pass — a
         // cheap flag assignment (unlike setGrid's Grid rebuild or setAnimation's config
         // object), so no change-detection gate is needed here.
         e.setSnapEnabled(settings.snapToGrid);
@@ -208,9 +208,9 @@
         e.addPing(m.x, m.y);
         host.dataset.lastPing = `${m.x},${m.y}`;
       });
-      // Read-only observability signal for the local player's own move requests
-      // (M14b) — no behavior change to movement, just an outcome the client already
-      // receives via moveRequest's resolution (see worldSession.moveRequest).
+      // Read-only observability signal for the local player's own move requests —
+      // no behavior change to movement, just an outcome the client already
+      // receives via `WorldSession.moveRequest`'s resolution.
       offMoveOutcome = onMoveOutcome((m) => {
         host.dataset.lastMoveOutcome = m.outcome;
       });

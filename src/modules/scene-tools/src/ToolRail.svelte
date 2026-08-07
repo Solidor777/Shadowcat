@@ -34,7 +34,7 @@
 
   // Reactive subscription mirrors GameSettingsPanel's registry-seed pattern: calling
   // subscribe() inside each $derived.by registers a reactive dependency on the document
-  // store so the snap toggle re-resolves as the active scene's doc changes (M10f-3 §4.4).
+  // store so the snap toggle re-resolves as the active scene's doc changes.
   const subscribe = createSubscriber((update) => ctx.documents.subscribe(update));
   const activeScene = $derived.by((): WireDocument | undefined => {
     subscribe();
@@ -46,7 +46,7 @@
     return resolveSceneSettings(activeScene, ctx.documents).snapToGrid;
   });
 
-  /** GM-authored scene-level snap toggle (M10f-3 §4.4): writes the engine-owned
+  /** GM-authored scene-level snap toggle: writes the engine-owned
    * `/engine/snapToGrid` field on the active scene document (shared, not local UI state).
    * No-op with no active scene.
    * @example
@@ -85,8 +85,8 @@
    * placed token's CENTER cell against the requester's visibility mask (matching
    * `movement_restriction` — no check at all under `Unrestricted`) but NEVER checks walls: a
    * placement is a single point, not a traversal, so there is no `line_traversal`/supercover call
-   * to run a wall test against (deliberate — see the comment at that gate, and ARCHITECTURE
-   * invariant 6). A `Create` can therefore still place a token behind/through a wall the
+   * to run a wall test against (deliberate — see `Room::publish`'s `Create` gate). A `Create` can
+   * therefore still place a token behind/through a wall the
    * movement gate would otherwise block. The other server-side check on a player `Create` is
    * `apply_intent`'s `core:create` world-capability grant, which is world-CONFIGURABLE —
    * fail-closed by default, but a world that granted it would have a real wall-bypass placement

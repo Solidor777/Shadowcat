@@ -21,8 +21,8 @@ function tokenDocs(): ReadableDocuments {
   } as unknown as ReadableDocuments;
 }
 
-/** A documents view exposing a single scene doc with the given `system` body (M10f-3 snap
- * wiring: `resolveSceneSettings` reads it via `documents.query("scene")[0]`). */
+/** A documents view exposing a single scene doc with the given `engine` body, read by
+ * `resolveSceneSettings` via `documents.query("scene")[0]`. */
 function sceneDocs(engine: Record<string, unknown>): ReadableDocuments {
   return {
     query: (t: string) => (t === "scene" ? [{ id: "s1", doc_type: "scene", engine, system: {} }] : []),
@@ -133,7 +133,7 @@ test("pushes the resolved snapToGrid to the engine (continuous scene: default fa
   spy.mockRestore();
 });
 
-test("drives the initial reconcile from ctx.viewedSceneId (M12d)", async () => {
+test("drives the initial reconcile from ctx.viewedSceneId", async () => {
   const store = new DocumentStore();
   store.applyCommand({
     seq: 1,
@@ -235,7 +235,7 @@ test("exposes the viewed scene's committed token positions as data-token-positio
   await vi.waitFor(() => expect(host.dataset.tokenPositions).toBe("t-a:100,50;t-b:250,-125"));
 });
 
-test("exposes the server's move-resolution outcome as data-last-move-outcome (M14b)", async () => {
+test("exposes the server's move-resolution outcome as data-last-move-outcome", async () => {
   const createBackend = vi.fn(async () => fakeBackend());
   let capturedCb: ((msg: { tokenId: string; outcome: "executed" | "truncated" | "rejected" }) => void) | null = null;
   const { container } = render(Stage, {
@@ -259,7 +259,7 @@ test("exposes the server's move-resolution outcome as data-last-move-outcome (M1
   expect(host.dataset.lastMoveOutcome).toBe("executed");
 });
 
-test("the viewedSceneId-change watcher calls reapplyViewedScene exactly once per genuine change (M12d review)", async () => {
+test("the viewedSceneId-change watcher calls reapplyViewedScene exactly once per genuine change", async () => {
   const store = new DocumentStore();
   store.applyCommand({
     seq: 1,
