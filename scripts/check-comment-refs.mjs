@@ -13,8 +13,9 @@
 // Implicit coupling: the patterns below mirror RULE 16's banned table. Adding a category there
 // without adding it here leaves the rule unenforced, which is how the original 266 accumulated.
 
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { readFileSync, readdirSync, statSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { createHash } from "node:crypto";
 
 const SKIP_DIRS = new Set(["node_modules", "dist", "target", ".git", "dist-docs"]);
 const EXTS = [".ts", ".rs", ".svelte"];
@@ -130,6 +131,70 @@ if (scopes.length > 0 && scanned.length === 0) {
   process.exit(2);
 }
 
+// A bare count carries no record of the instrument that produced it, so a widened pattern and a
+// regressed codebase are the same number going up, and a broken scanner and a clean scope are the
+// same zero. Every count this script prints is therefore stamped with a fingerprint of the rules
+// that produced it, and a run whose fingerprint differs from the previous run for the same scope
+// says so instead of inviting a comparison that is not valid.
+const INSTRUMENT = createHash("sha256")
+  .update(
+    JSON.stringify([
+      BANNED.map((b) => [b.name, b.re.source, b.re.flags]),
+      [COMMENT.source, STRING_LITERAL.source, EXPLANATORY_STRING.source],
+      EXTS,
+      [...SKIP_DIRS].sort(),
+    ]),
+  )
+  .digest("hex")
+  .slice(0, 8);
+
+const STATE_PATH = ".superpowers/rule16-instrument.json";
+const scopeKey = scopes.length > 0 ? scopes.map(norm).sort().join(",") : "<repo>";
+
+/** Prior run for this scope, or null. Absent/corrupt state is simply no prior run. */
+function priorRun() {
+  try {
+    return JSON.parse(readFileSync(STATE_PATH, "utf8"))[scopeKey] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** Records this run so the NEXT one can tell an instrument change from a code change. */
+function recordRun(total) {
+  try {
+    let all = {};
+    try {
+      all = JSON.parse(readFileSync(STATE_PATH, "utf8"));
+    } catch {
+      /* first run, or unreadable state — start fresh */
+    }
+    all[scopeKey] = { instrument: INSTRUMENT, total, filesScanned: scanned.length };
+    mkdirSync(".superpowers", { recursive: true });
+    writeFileSync(STATE_PATH, JSON.stringify(all, null, 2));
+  } catch {
+    /* state is an aid, never a gate: a read-only checkout must still be able to run this */
+  }
+}
+
+/** The line that makes a count self-describing. Print it beside every total. */
+function provenance(total) {
+  const prior = priorRun();
+  const head = `instrument ${INSTRUMENT}; ${scanned.length} file(s) scanned`;
+  if (!prior) return `${head}; no prior run recorded for this scope`;
+  if (prior.instrument !== INSTRUMENT) {
+    return (
+      `${head}\nINSTRUMENT CHANGED since the last run for this scope ` +
+      `(${prior.instrument} -> ${INSTRUMENT}). The previous total of ${prior.total} was measured ` +
+      `by different rules and is NOT comparable to ${total}. Any movement here is the ruler, ` +
+      `not necessarily the code.`
+    );
+  }
+  const delta = total - prior.total;
+  const dir = delta === 0 ? "unchanged" : delta > 0 ? `+${delta}` : `${delta}`;
+  return `${head}; same instrument as last run: ${prior.total} -> ${total} (${dir})`;
+}
+
 /** Groups by the first three path segments (`src/server/src`, `src/modules/panels`). */
 const tally = (keyOf) => {
   const m = new Map();
@@ -141,33 +206,51 @@ const byArea = tally((h) => h.path.split("/").slice(0, 3).join("/"));
 const files = new Set(hits.map((h) => h.path)).size;
 
 if (wantJson) {
+  const prior = priorRun();
   console.log(
     JSON.stringify(
-      { total: hits.length, filesScanned: scanned.length, filesWithHits: files, byKind, byArea, hits },
+      {
+        total: hits.length,
+        instrument: INSTRUMENT,
+        comparableToPrior: prior ? prior.instrument === INSTRUMENT : null,
+        prior,
+        filesScanned: scanned.length,
+        filesWithHits: files,
+        byKind,
+        byArea,
+        hits,
+      },
       null,
       2,
     ),
   );
+  recordRun(hits.length);
   process.exit(hits.length > 0 ? 1 : 0);
 }
 
 if (wantArea) {
   const scopeNote = scopes.length > 0 ? ` under ${scopes.join(", ")}` : "";
-  console.log(`${hits.length} site(s) in ${files} file(s)${scopeNote}; ${scanned.length} scanned.`);
+  console.log(`${hits.length} site(s) in ${files} file(s)${scopeNote}`);
+  console.log(provenance(hits.length));
   for (const [area, n] of byArea) console.log(`${String(n).padStart(5)}  ${area}`);
+  recordRun(hits.length);
   process.exit(hits.length > 0 ? 1 : 0);
 }
 
 if (hits.length > 0) {
   console.error(`RULE 16: ${hits.length} ephemeral reference(s) in code comments.`);
   console.error("A code comment must be durable commentary about the code and only the code.");
+  console.error(provenance(hits.length));
   console.error("Fix by stating the CONSTRAINT inline and dropping the POINTER.\n");
   for (const [kind, n] of byKind) console.error(`  ${String(n).padStart(4)}  ${kind}`);
   console.error("");
   for (const [area, n] of byArea) console.error(`  ${String(n).padStart(4)}  ${area}`);
   console.error("");
   for (const h of hits) console.error(`  ${h.path}:${h.line}  [${h.kind}]  ${h.text}`);
+  recordRun(hits.length);
   process.exit(1);
 }
 
-console.log(`RULE 16: no ephemeral references in ${scanned.length} scanned file(s).`);
+console.log(`RULE 16: no ephemeral references in code comments.`);
+console.log(provenance(0));
+recordRun(0);
