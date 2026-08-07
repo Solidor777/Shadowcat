@@ -6003,22 +6003,27 @@ mod tests {
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
+    /// A rect region's corners in scene units, ordered as the `points` array the
+    /// `"rect"` shape expects.
+    struct RegionRect {
+        x0: f64,
+        y0: f64,
+        x1: f64,
+        y1: f64,
+    }
+
     fn region_doc_top(
         id: u128,
         parent: u128,
         behavior: &str,
         cost: f64,
-        x0: f64,
-        y0: f64,
-        x1: f64,
-        y1: f64,
+        rect: RegionRect,
     ) -> Document {
         entity_doc_eng(
             id,
             parent,
             "region",
-            json!({ "shape": { "kind": "rect", "points": [x0, y0, x1, y1] },
+            json!({ "shape": { "kind": "rect", "points": [rect.x0, rect.y0, rect.x1, rect.y1] },
                     "behavior": behavior, "cost": cost, "enabled": true }),
         )
     }
@@ -6031,9 +6036,7 @@ mod tests {
         // (would be 1+5 = 6 cells => 600 scene units). Proves terrain BENDS the continuous route and
         // that cost is in scene units.
         let mut docs = continuous_scene_docs();
-        docs.push(region_doc_top(
-            12, 10, "terrain", 5.0, 100.0, 0.0, 200.0, 100.0,
-        ));
+        docs.push(region_doc_top(12, 10, "terrain", 5.0, RegionRect { x0: 100.0, y0: 0.0, x1: 200.0, y1: 100.0 }));
         let mut ecs = SceneEcs::from_documents(docs, 0);
         ecs.set_world_settings_for_test(continuous_world_settings());
         let out = ecs
@@ -6088,9 +6091,7 @@ mod tests {
         // x∈[150,200) — a different location — cutting the preview roughly a full hex early.
         let g = grid_shape::HexGrid { size: 50.0 };
         let mut docs = hex_continuous_scene_docs();
-        docs.push(region_doc_top(
-            12, 10, "arrest", 1.0, 285.0, 55.0, 320.0, 95.0,
-        ));
+        docs.push(region_doc_top(12, 10, "arrest", 1.0, RegionRect { x0: 285.0, y0: 55.0, x1: 320.0, y1: 95.0 }));
         let mut ecs = SceneEcs::from_documents(docs, 0);
         ecs.set_world_settings_for_test(continuous_world_settings());
         // Fixture guard: exactly one hex arrests, and it is the axial cell the assertions name.
@@ -6157,16 +6158,7 @@ mod tests {
         // Impassable wall-of-cells on column 1 (Rect [100,0]-[200,300]) blocks the straight line;
         // the weighted route must detour and still reach the goal.
         let mut docs = continuous_scene_docs();
-        docs.push(region_doc_top(
-            12,
-            10,
-            "impassable",
-            1.0,
-            100.0,
-            0.0,
-            200.0,
-            300.0,
-        ));
+        docs.push(region_doc_top(12, 10, "impassable", 1.0, RegionRect { x0: 100.0, y0: 0.0, x1: 200.0, y1: 300.0 }));
         let mut ecs = SceneEcs::from_documents(docs, 0);
         ecs.set_world_settings_for_test(continuous_world_settings());
         let out = ecs
@@ -6195,7 +6187,7 @@ mod tests {
         // gm_only terrain (mult 5) on cell (1,0). A player (non-GM) never sees it: their route is
         // the straight polyanya line (no bend, ~200 scene units). The GM's route bends (weighted).
         let mut docs = continuous_scene_docs();
-        let mut secret = region_doc_top(12, 10, "terrain", 5.0, 100.0, 0.0, 200.0, 100.0);
+        let mut secret = region_doc_top(12, 10, "terrain", 5.0, RegionRect { x0: 100.0, y0: 0.0, x1: 200.0, y1: 100.0 });
         // Mark the region gm_only via the SAME `/engine` property-visibility override
         // `region_field`'s per-requester filter checks
         // (`move_exec::authoritative_field_springs_a_secret_region_a_player_was_routed_through`
@@ -6322,7 +6314,7 @@ mod tests {
         // deliberately placed off the requester's route so this test isolates "does the weighted
         // sub-path correctly enforce the mask" from "does terrain bend the route" (already
         // covered by `pathfind_continuous_terrain_bends_the_route_and_costs_scene_units`).
-        let terrain = region_doc_top(12, 10, "terrain", 5.0, 5000.0, 5000.0, 5100.0, 5100.0);
+        let terrain = region_doc_top(12, 10, "terrain", 5.0, RegionRect { x0: 5000.0, y0: 5000.0, x1: 5100.0, y1: 5100.0 });
         let ecs = SceneEcs::from_documents(vec![scene, tok, light, terrain], 0);
         let scene_id = Uuid::from_u128(10);
         let cell = 100.0;
@@ -6375,7 +6367,7 @@ mod tests {
         // always reads the authoritative field regardless of requester, so committing the
         // player's own (untruncated) preview still arrests at the same cell.
         let mut docs = continuous_scene_docs();
-        let mut secret = region_doc_top(12, 10, "arrest", 1.0, 200.0, 0.0, 300.0, 100.0);
+        let mut secret = region_doc_top(12, 10, "arrest", 1.0, RegionRect { x0: 200.0, y0: 0.0, x1: 300.0, y1: 100.0 });
         secret
             .permissions
             .property_overrides
