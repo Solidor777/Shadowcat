@@ -135,8 +135,16 @@ source of truth. The ones agents break most:
   tail. **Direction of dependency: doc → code, never code → doc** — the backlog or bug entry cites
   the SYMBOL (RULE 15) and points inward, so closing it cannot rot a comment.
   Stronger than RULE 15 and wins where they touch: RULE 15 says how to cite, this says what may be
-  referred to at all. Markdown docs, skills and `.superpowers/` artifacts are exempt — they may
-  cite documents by path + section anchor.
+  referred to at all. Ordinary Markdown docs and `.superpowers/` artifacts remain exempt — they may
+  cite documents by path + section anchor. **This skill family (`.claude/skills/**/*.md`) is now
+  IN SCOPE for a narrower subset** (owner ruling): a skill may still cite a durable document by
+  path + section anchor, but may not carry a milestone/task id (`M13-0`, `M10e-4`), a phase/
+  workstream/invariant id (`D9`, `D16`), a sweep/round/review marker (`sweep 12`, `fix-round`,
+  `buddy-check`), or a date bare or narrative (`2026-07-30`, `(user directive 2026-08-05)`) —
+  including a dated plan/spec filename, which is a superseded-by-construction record and not a
+  durable citation regardless of its `docs/` path. Repo-document pointers to non-durable trackers,
+  unnamed spec references, history narration and process markers are not yet ruled on for skills;
+  do not widen the skill subset to cover them without a ruling.
   **Enforced retroactively with no grandfathering** (user directive) by
   `node scripts/check-comment-refs.mjs` — no baseline, no allowlist, every legacy hit fails. But
   **a green detector is not a satisfied rule**: history narration is only partly detectable (`no

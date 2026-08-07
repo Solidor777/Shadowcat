@@ -502,6 +502,23 @@ stronger constraint and it wins wherever the two touch.
 | History narration | `previously an Array`, `formerly client-owned`, `before the fix` |
 | Process markers | `POST_WORK: replace with …` |
 
+**Banned in a `.claude/skills/` brief — the narrower subset the ruling actually named:**
+
+| Banned | Example found in this repo |
+|---|---|
+| Milestone / task ids, in any form | `M13-0`, `M10e-4`, `M12.5` |
+| Phase, workstream and numbered-invariant ids | `Task 14j`, `D9`, `D16` |
+| Sweep / round / review markers | `sweep 12`, `fix-round`, `buddy-check`, `whole-branch review`, `finding 3` |
+| Dates, bare or narrative | `2026-07-30`, `(user directive 2026-08-05)` |
+| Dated plan/spec filenames | `docs/superpowers/plans/2026-07-15-m13a-formula-library.md` |
+
+**Not banned in a skill:** a durable document cited by path plus a section anchor —
+`docs/design/ARCHITECTURE.md §2`, `docs/design/doc-sweep-truthfulness-rules.md` RULE 16 — since
+that citation names something that does not get renumbered, closed, or superseded out from under
+it. Repo-document pointers to non-durable trackers, unnamed spec references, history narration and
+process markers are not yet ruled on for skills; widening the skill subset to cover them is a
+decision for whoever owns the rule, not an inference to draw from this table.
+
 **Local numbering is not an exception.** An `I4` whose definition lives in a sibling comment of the
 same subsystem still forces the reader to resolve a number that no compiler, test or tool binds to
 anything. Ruled in scope by the user. The conversion states the invariant where it is load-bearing —
@@ -561,8 +578,14 @@ of dropping the narration. **A green detector is therefore not a satisfied rule*
 narration is a review obligation. Reword to evade a pattern while still speaking of something
 outside the code and you have violated RULE 0, not fixed anything.
 
-**Scope.** Code comments and code-facing strings. Markdown documents, skills and `.superpowers/`
-artifacts may
-reference other documents by path + section anchor — prose has no symbols, and those artifacts are
-read as documents. Do not carry this rule's prohibition into them, and do not carry their allowance
-back into code.
+**Scope.** Code comments and code-facing strings, plus the narrower subset below for
+`.claude/skills/`. A codebase-skill brief is prose, not code, and may reference a durable document
+by path + section anchor — prose has no symbols, and a durable document is read as one. But a
+skill may not carry a milestone id, a task id, a sweep/round/review marker, or a date: those are
+process ephemera regardless of the file that names them, and a "Pointers" section that cites a
+dated plan or spec by its dated filename is citing a superseded-by-construction record, not a
+durable one, so that citation stays banned too. `.superpowers/` artifacts and dated plan/spec
+files under `docs/superpowers/` remain wholly exempt — they are executed records, not durable
+references, and are never themselves rewritten to satisfy this rule. Do not carry this rule's
+code-comment prohibition into ordinary Markdown documentation, and do not carry a skill's narrow
+carve-out back into code.
