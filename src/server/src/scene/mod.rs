@@ -491,7 +491,6 @@ type NavmeshCacheKey = (Uuid, i64, Vec<(u64, u64, u64, u64)>);
 /// PARITY-BOUND, not a fail-closed choice: it is more permissive than a 1×1 square's 0.707, and
 /// changing it here without changing the client re-forks the router and the gate. Change both or
 /// neither.
-#[allow(dead_code)] // consumed by the future footprint-aware gate; parity-pinned by tests now
 pub(crate) const DEFAULT_FOOTPRINT_RADIUS_CELLS: f64 = 0.4;
 
 impl SceneEcs {

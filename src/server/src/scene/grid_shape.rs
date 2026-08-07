@@ -13,7 +13,6 @@
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
-#![allow(dead_code)]
 
 use crate::scene::pathfinding::{self, Cell, DiagonalRule};
 use crate::scene::vision;

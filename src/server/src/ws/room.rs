@@ -52,7 +52,6 @@ pub(crate) struct MoveExecution {
     pub mover_vision: Option<Vec<crate::scene::move_stream::VisionSamplePt>>,
     /// Total terrain-weighted cost accumulated over the walked prefix, from
     /// `move_exec::MoveOutcome::cost`. Threaded onto the `MoveStream` wire frame downstream.
-    #[allow(dead_code)]
     pub cost: f64,
 }
 
