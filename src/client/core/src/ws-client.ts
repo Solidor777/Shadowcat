@@ -79,6 +79,15 @@ export interface MoveStream {
    * Null for a clipped observer (mirrors moverVision) — the authoritative cost may reflect
    * secret-region terrain the observer's clipped samples don't reveal. */
   cost: number | null;
+  /** Whether the move stopped before the requested goal — wall, mask, region-impassable, or
+   * region-arrest. The authoritative signal, and not derivable from `stop`: a region arrest on
+   * the FINAL step ends the move AT the goal coordinate, so geometry cannot distinguish it from
+   * an untruncated move. Distinct from `WorldSession.onMoveOutcome`'s derived
+   * `executed`/`truncated`, which answers "did it reach the goal position" instead.
+   * Null for a clipped observer (mirrors `moverVision`/`cost`) — their samples and stop are
+   * already clipped to what they witnessed, so a truthful flag would disclose whether something
+   * stopped the token beyond their vision. */
+  truncated: boolean | null;
 }
 
 /** The union of results a correlated request in `pending` can resolve to. */
@@ -738,6 +747,7 @@ export class WsClient {
             ? msg.mover_vision.map((v) => ({ tMs: v.t_ms, polygons: v.polygons as [number, number][][] }))
             : null,
           cost: msg.cost,
+          truncated: msg.truncated,
         };
         // Resolve the mover's pending promise (if request_id matches).
         const p = this.pending.get(msg.request_id);

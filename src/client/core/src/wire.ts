@@ -385,6 +385,12 @@ export const ServerMsgSchema = z.discriminatedUnion("type", [
     // Null for a clipped observer (mirrors mover_vision) — the authoritative cost may
     // reflect secret-region terrain the observer's clipped samples don't reveal.
     cost: z.number().nullable(),
+    // Whether the move stopped before the requested goal. Null for a clipped observer, whose
+    // samples and stop are ALREADY clipped to what they witnessed: a truthful flag would
+    // disclose whether something stopped the token beyond their vision. Declared here because
+    // `z.object` strips keys it does not name — an omitted field is silently discarded at
+    // parse, so a server field absent from this schema never reaches any consumer.
+    truncated: z.boolean().nullable(),
   }),
   // Terminal eviction (world or account deletion); the server closes the
   // socket right after. Terminal: the client must stop, not reconnect.

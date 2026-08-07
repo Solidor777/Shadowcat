@@ -204,6 +204,7 @@ describe("parseServerMsg", () => {
         { t_ms: 0.0, polygons: [[[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]]] },
       ],
       cost: 3.5,
+      truncated: true,
     };
     const m = parseServerMsg(JSON.stringify(frame));
     expect(m).not.toBeNull();
@@ -212,6 +213,9 @@ describe("parseServerMsg", () => {
       expect(m.stop).toEqual([100.0, 200.0]);
       expect(m.samples).toHaveLength(2);
       expect(m.mover_vision).toHaveLength(1);
+      // A field absent from the schema is stripped by `z.object`, silently and with no parse
+      // error, so asserting the VALUE survived is the only thing that catches an omitted key.
+      expect(m.truncated).toBe(true);
       const vision = m.mover_vision;
       if (vision) expect(vision[0].polygons[0]).toHaveLength(3);
     }
@@ -230,6 +234,7 @@ describe("parseServerMsg", () => {
       samples: [{ t_ms: 0.0, pos: [0.0, 0.0] }],
       mover_vision: null,
       cost: 1.0,
+      truncated: false,
     };
     const m = parseServerMsg(JSON.stringify(frame));
     expect(m).not.toBeNull();
@@ -254,12 +259,16 @@ describe("parseServerMsg", () => {
       // A clipped observer never learns the authoritative cost — it may reflect
       // secret-region terrain their clipped samples don't reveal.
       cost: null,
+      // Withheld on the same grounds: their samples and stop are already clipped, so the flag
+      // would disclose whether something stopped the token beyond their vision.
+      truncated: null,
     };
     const m = parseServerMsg(JSON.stringify(frame));
     expect(m).not.toBeNull();
     expect(m?.type).toBe("move_stream");
     if (m?.type === "move_stream") {
       expect(m.cost).toBeNull();
+      expect(m.truncated).toBeNull();
     }
   });
 

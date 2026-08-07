@@ -824,12 +824,15 @@ describe("WsClient", () => {
         samples: [{ t_ms: 0, pos: [0, 0] }, { t_ms: 500, pos: [100, 0] }],
         mover_vision: null,
         cost: 2,
+        truncated: true,
       }),
     );
 
     // Promise resolves with camelCase-mapped MoveStream.
     const result = await p;
     expect(result.tokenId).toBe("tok1");
+    // The mapper must copy the flag across; an omitted key here is invisible at parse time.
+    expect(result.truncated).toBe(true);
     expect(result.startServerMs).toBe(1000);
     expect(result.durationMs).toBe(500);
     expect(result.stop).toEqual([100, 0]);
@@ -873,6 +876,9 @@ describe("WsClient", () => {
         mover_vision: null,
         // A clipped observer's cost is server-nulled (secrecy: mirrors moverVision).
         cost: null,
+        // Nulled on the same grounds — the flag would reveal whether anything stopped the
+        // token beyond the observer's clipped view.
+        truncated: null,
       }),
     );
     await flush();
@@ -880,6 +886,7 @@ describe("WsClient", () => {
     // No pending promise was rejected; listener fires with camelCase fields.
     expect(streams).toHaveLength(1);
     expect(streams[0].tokenId).toBe("tok2");
+    expect(streams[0].truncated).toBeNull();
     expect(streams[0].mover).toBe("user2");
     expect(streams[0].moverVision).toBeNull();
     expect(streams[0].cost).toBeNull();

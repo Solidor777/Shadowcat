@@ -551,7 +551,11 @@ function fakeMoveHost(): import("@shadowcat/render").SceneToolHost & {
   };
 }
 
-function moveStreamFrame(scene: string, moverVision: unknown = null): Record<string, unknown> {
+function moveStreamFrame(
+  scene: string,
+  moverVision: unknown = null,
+  truncated: boolean | null = false,
+): Record<string, unknown> {
   return {
     type: "move_stream",
     request_id: "r1",
@@ -564,6 +568,7 @@ function moveStreamFrame(scene: string, moverVision: unknown = null): Record<str
     samples: [{ t_ms: 0, pos: [0, 0] }, { t_ms: 500, pos: [100, 0] }],
     mover_vision: moverVision,
     cost: 2,
+    truncated,
   };
 }
 
@@ -715,7 +720,7 @@ test("onMoveOutcome: a region arrest landing exactly on the requested goal still
   await vi.waitFor(() => expect(sent.some((m) => m.type === "move_request")).toBe(true));
   const reqId = sent.find((m) => m.type === "move_request")!.request_id as string;
   // stop exactly at the requested goal, as an arrest-on-final-cell outcome would report.
-  push({ ...moveStreamFrame("s1"), request_id: reqId, stop: [100, 0] });
+  push({ ...moveStreamFrame("s1", null, true), request_id: reqId, stop: [100, 0] });
   await resolved;
   await vi.waitFor(() => expect(got).toHaveLength(1));
   expect(got[0]).toEqual({ tokenId: "tok1", outcome: "executed" });
@@ -736,7 +741,7 @@ test("onMoveOutcome: a move_stream whose stop falls short of the requested goal 
   const reqId = sent.find((m) => m.type === "move_request")!.request_id as string;
   // The server stopped short of the requested goal (wall/mask/region gate) — no separate
   // `truncated` flag rides the wire, so the client infers it from the stop mismatch.
-  push({ ...moveStreamFrame("s1"), request_id: reqId, stop: [50, 0] });
+  push({ ...moveStreamFrame("s1", null, true), request_id: reqId, stop: [50, 0] });
   await resolved;
   await vi.waitFor(() => expect(got).toHaveLength(1));
   expect(got[0]).toEqual({ tokenId: "tok1", outcome: "truncated" });
