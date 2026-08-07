@@ -10,7 +10,20 @@
   // name alongside `system`, same as every other doc_type — `system` carries only the opaque,
   // genuinely game-system-owned fields. Reads the OPTIMISTIC store; edits use the RAW current
   // value as the OCC pre-image.
-  let { docId, systemPrefix, close }: { docId: string; systemPrefix: string; close: () => void } = $props();
+  let {
+    docId,
+    systemPrefix,
+    close,
+  }: {
+    /** The document that owns `systemPrefix`'s tree — the item's own id for a top-level
+     * (linked) item, or the parent actor's id for an item embedded in its inventory. */
+    docId: string;
+    /** The write root for the opaque `system` tree; `namePrefix` (below) is derived from
+     * it by stripping the trailing `/system`, since it may be nested under an actor. */
+    systemPrefix: string;
+    /** Closes the hosting panel; wired to the header close button. */
+    close: () => void;
+  } = $props();
 
   const ctx = getAppContext();
   const t = ctx.t;
@@ -39,7 +52,12 @@
   const readOnly = $derived(!doc || !ctx.canEdit(doc, systemPrefix));
 
   // Dice-notation leaves (string values that look like `NdM`), for the roll affordance.
-  const rollable = $derived.by((): { key: string; formula: string }[] => {
+  const rollable = $derived.by((): {
+    /** The `system` field name this formula came from; the roll button's label. */
+    key: string;
+    /** The trimmed dice-notation string, passed verbatim to `roll` on click. */
+    formula: string;
+  }[] => {
     if (!system) return [];
     return Object.entries(system)
       .filter(([, v]) => typeof v === "string" && isDiceNotation(v))

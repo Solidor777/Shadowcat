@@ -4,7 +4,19 @@
   import { getPointer, type WireDocument } from "@shadowcat/core";
   import { abilityMod, evalFormula } from "./rules";
 
-  let { docId, systemPrefix, close }: { docId: string; systemPrefix: string; close: () => void } = $props();
+  let {
+    docId,
+    systemPrefix,
+    close,
+  }: {
+    /** The actor document this sheet edits — the `setField`/`ctx.documents.get` key. */
+    docId: string;
+    /** The write root within `docId` for this sheet's fields (e.g. `/system` for a top-level
+     * actor); every `getPointer`/`setField` call below is relative to it. */
+    systemPrefix: string;
+    /** Closes the hosting panel; wired to this sheet's header close button. */
+    close: () => void;
+  } = $props();
 
   const ctx = getAppContext();
   const subscribe = createSubscriber((update) => ctx.documents.subscribe(update));

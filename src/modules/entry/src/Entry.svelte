@@ -11,9 +11,13 @@
     /** Resolves true once the shell has the authenticated identity, false if the
      *  post-login identity fetch failed (entry then returns to login, not worlds). */
     onAuthenticated: () => boolean | Promise<boolean>;
+    /** Invoked once `WorldSelect` (or a redeemed invite) picks a world; the shell owns
+     * entering it and never returns control to this package for that world session. */
     onEnterWorld: (worldId: string) => void;
   } = $props();
 
+  /** The pre-world flow's local progression, entirely internal to this package — never the
+   * shell's hash route (see the module-level comment above `onAuthenticated`/`onEnterWorld`). */
   type Step = "loading" | "setup" | "login" | "worlds";
   let step = $state<Step>("loading");
 

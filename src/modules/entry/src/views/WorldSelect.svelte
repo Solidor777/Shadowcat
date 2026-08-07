@@ -3,7 +3,13 @@
   import { listWorlds, createWorld, acceptInvite, deleteWorld } from "../entryApi";
   import { t } from "@shadowcat/ui-kit";
 
-  let { onEnter }: { onEnter: (worldId: string) => void } = $props();
+  let {
+    onEnter,
+  }: {
+    /** Invoked to enter a world, whether picked from the list, just created, or just
+     * redeemed via invite — `Entry` hands this straight through to the shell. */
+    onEnter: (worldId: string) => void;
+  } = $props();
   let worlds = $state<WorldEntry[]>([]);
   let newName = $state("");
   let inviteCode = $state("");

@@ -5,7 +5,20 @@
 
   // The always-available sheet: document envelope metadata + the type-aware tree editor
   // over the writable `system` body. Reads the OPTIMISTIC store so redaction is free.
-  let { docId, systemPrefix, close }: { docId: string; systemPrefix: string; close: () => void } = $props();
+  let {
+    docId,
+    systemPrefix,
+    close,
+  }: {
+    /** The document this sheet renders — read here only to look it up in `ctx.documents`;
+     * every displayed envelope field (`doc_type`/`id`/`owner`) comes off the doc itself. */
+    docId: string;
+    /** The `system`-tree root the `SystemTreeEditor` below edits; this sheet adds no
+     * engine-field or name controls of its own (unlike `ActorSheet`/`ItemSheet`). */
+    systemPrefix: string;
+    /** Closes the hosting panel; wired to the header close button. */
+    close: () => void;
+  } = $props();
 
   const ctx = getAppContext();
   const t = ctx.t;

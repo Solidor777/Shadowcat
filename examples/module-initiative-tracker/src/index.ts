@@ -4,8 +4,12 @@ import InitiativePanel from "./InitiativePanel.svelte";
 
 /** One tracked combatant row: the actor's doc id, display name, and rolled score. */
 export interface Entry {
+  /** The rolled actor's document id — `sortEntries`' tie-break reads `name`, not this field. */
   actorId: string;
+  /** Display name captured at roll time (`InitiativePanel.roll`); not re-read from the actor
+   * document afterward, so a later rename does not retroactively relabel the tracked entry. */
   name: string;
+  /** The `rollInitiative` result for this actor; `sortEntries`' primary (descending) sort key. */
   initiative: number;
 }
 

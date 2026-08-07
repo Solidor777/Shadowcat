@@ -34,7 +34,12 @@
    * ```
    */
   function displayName(info: InstalledModuleInfo): string {
-    const id = (info.manifest as { id?: unknown }).id;
+    const id = (info.manifest as {
+      /** The manifest's own author-declared module id, read structurally since
+       * `InstalledModuleInfo.manifest` is untyped JSON — see the function doc above for
+       * why this is display-only and never a toggle/save key. */
+      id?: unknown;
+    }).id;
     return typeof id === "string" ? id : info.id;
   }
 

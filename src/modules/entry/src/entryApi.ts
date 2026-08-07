@@ -63,11 +63,17 @@ export function getConfig(): Promise<ServerConfig> {
  * const me = await getMe();
  * ```
  */
-export async function getMe(): Promise<{ id: string } | null> {
+export async function getMe(): Promise<{
+  /** The authenticated caller's user id. */
+  id: string;
+} | null> {
   const res = await fetch("/api/me", { headers: { accept: "application/json" } });
   if (res.status === 401) return null;
   if (!res.ok) throw new Error(`/api/me → ${res.status}`);
-  return (await res.json()) as { id: string };
+  return (await res.json()) as {
+    /** The authenticated caller's user id. */
+    id: string;
+  };
 }
 
 /**
@@ -111,7 +117,13 @@ export async function setup(
   username: string,
   password: string,
   token?: string,
-): Promise<{ ok: boolean; status: number }> {
+): Promise<{
+  /** `true` on a 2xx response. */
+  ok: boolean;
+  /** The raw HTTP status code, kept so a 403 (bad/missing setup token) is distinguishable
+   * from any other failure — see the `@returns` note above. */
+  status: number;
+}> {
   const body: Record<string, string> = { username, password };
   if (token) body.token = token;
   const res = await postJson("/api/setup", body);

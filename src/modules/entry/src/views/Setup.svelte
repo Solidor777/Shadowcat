@@ -2,7 +2,12 @@
   import { setup } from "../entryApi";
   import { t } from "@shadowcat/ui-kit";
 
-  let { onDone }: { onDone: () => void } = $props();
+  let {
+    onDone,
+  }: {
+    /** Invoked once the first admin account is bootstrapped; `Entry` advances to `login`. */
+    onDone: () => void;
+  } = $props();
   let username = $state("");
   let password = $state("");
   let token = $state("");

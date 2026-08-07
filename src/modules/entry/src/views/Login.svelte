@@ -2,7 +2,13 @@
   import { login } from "../entryApi";
   import { t } from "@shadowcat/ui-kit";
 
-  let { onAuthed }: { onAuthed: () => void } = $props();
+  let {
+    onAuthed,
+  }: {
+    /** Invoked after a successful login; `Entry.afterLogin` awaits the shell's own identity
+     * confirmation before advancing past this view, not this callback's return value. */
+    onAuthed: () => void;
+  } = $props();
   let username = $state("");
   let password = $state("");
   let error = $state(false);

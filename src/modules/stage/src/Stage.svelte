@@ -15,6 +15,7 @@
     createBackend = (canvas: HTMLCanvasElement): Promise<DisplayBackend> =>
       createPixiBackend(canvas, { background: readColor("--surface-base", 0x101014) }),
   }: {
+    /** See the doc comment on the destructured default above. */
     createBackend?: (canvas: HTMLCanvasElement) => Promise<DisplayBackend>;
   } = $props();
 
@@ -154,7 +155,17 @@
         const activeSceneDoc = vsid ? documents.get(vsid) : documents.query("scene")[0];
         // Resolved once so both diagonalRule and animation read from the same snapshot.
         const settings = resolveSceneSettings(activeSceneDoc, documents);
-        const g = (activeSceneDoc?.engine as { grid?: { kind: "square" | "hex"; size: number } } | undefined)?.grid;
+        const g = (activeSceneDoc?.engine as {
+          /** Mirrors the server's `data::engine::scene::Grid`; absent on a scene doc that
+           * predates a grid write, falling back to the square/100 default below. */
+          grid?: {
+            /** `"square"` or `"hex"` — kept a string in v1, mirroring `Grid.kind`. */
+            kind: "square" | "hex";
+            /** Cell size in scene units; for hex grids the OUTER radius
+             * (center-to-vertex circumradius), mirroring `Grid.size`. */
+            size: number;
+          };
+        } | undefined)?.grid;
         // Diagonal rule is world-scoped (world-settings.pathfinding.diagonalRule); resolved
         // here so the ruler reflects the GM's active rule choice without requiring a page reload.
         const diagonalRule = settings.diagonalRule;
@@ -186,7 +197,13 @@
         // which a position-less count cannot express.
         host.dataset.tokenPositions = sceneTokens
           .map((t) => {
-            const e = t.engine as { x?: number; y?: number } | undefined;
+            const e = t.engine as {
+              /** Committed center X in scene units, mirroring `TokenEngine.x`; absent on
+               * a token doc that predates placement. */
+              x?: number;
+              /** Committed center Y in scene units, mirroring `TokenEngine.y`. */
+              y?: number;
+            } | undefined;
             return `${t.id}:${e?.x ?? 0},${e?.y ?? 0}`;
           })
           .sort()
