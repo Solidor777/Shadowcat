@@ -438,8 +438,8 @@ fn reapply_changes(doc: &mut Document, changes: &[FieldChange]) {
 /// absent) against `user`'s access, via `permission::resolve_access` + `effective_owner(doc,
 /// None)` — the no-actor-join form, exact for any doc type that never carries an actor link
 /// (wall, region). `move_walls` and `region_field` both call this rather than keep a private
-/// copy: the plan's anti-fork rule requires one shared symbol wherever two paths must agree on
-/// the same decision. Do not re-inline this at a new call site.
+/// copy: two paths that must agree on the same decision share one symbol rather than each keeping
+/// its own copy (anti-fork). Do not re-inline this at a new call site.
 fn engine_tier_visible(doc: &Document, viewer: Option<Uuid>) -> bool {
     let Some(user) = viewer else {
         return true;
@@ -767,7 +767,7 @@ impl SceneEcs {
     pub fn resolve_scene(&self, scene: Uuid) -> ResolvedScene {
         // World layer: `validated_world_settings_engine` already enforces the
         // scene+pathfinding+animation-all-present structural guard at write time (ingress),
-        // so a `None` here means the same "fall back to built-ins" case the old guard covered.
+        // so a `None` here means the same "fall back to built-ins" case this guard covers.
         let ws = self.validated_world_settings_engine();
         let ws_scene = ws.as_ref().map(|w| &w.scene);
         // Built-in defaults (mirror DEFAULT_WORLD_SETTINGS.scene / WorldSettingsEngine::default).
@@ -943,8 +943,8 @@ impl SceneEcs {
             .max(0.001)
     }
 
-    /// Resolved vision-mode registry. Returns a `BTreeMap` for deterministic key order (mirrors
-    /// the plan's Global Constraint on determinism; `.get(id)` works identically for callers).
+    /// Resolved vision-mode registry. Returns a `BTreeMap` for deterministic key order
+    /// (`.get(id)` works identically for callers).
     /// Fail-closed to the built-in `normal`+`darkvision` seed ONLY when no doc/`modes` is present
     /// (mirrors TS `sys?.modes ?? SEED`). A GM-authored modes doc with all-malformed entries is
     /// returned as-is rather than silently re-granting built-in modes the GM may have removed.
@@ -993,7 +993,7 @@ impl SceneEcs {
         out
     }
 
-    /// Count of hydrated scene entities.
+    /// Count of hydrated scene entities. Feeds the debug-only `"identity"` channel's payload.
     pub fn entity_count(&self) -> usize {
         self.index.len()
     }
@@ -2458,9 +2458,8 @@ type VisibleCellsCacheEntry = (
 );
 
 /// The per-source LOS raycast + per-cell scan shared by `visible_cells` and
-/// `visible_cells_cached` on a cache miss — extracted verbatim (no logic change) from
-/// `visible_cells`'s prior inline loop so there is exactly one implementation of the expensive
-/// half of the computation for both entry points to call.
+/// `visible_cells_cached` on a cache miss — the sole implementation of the expensive half of the
+/// computation, so both entry points share identical behavior.
 fn accumulate_visible_cells(
     out: &mut std::collections::BTreeSet<(i32, i32)>,
     sources: &[VisSrc],
@@ -2490,10 +2489,10 @@ fn accumulate_visible_cells(
         // Candidate cells via GridShape. Lenient samples corners, so a cell just outside the
         // center-bbox can still qualify: expand the scan by one cell each side under leniency.
         // `cells_in_bounds` takes PIXEL bounds, so the pad is applied in pixel space
-        // (`pad_px = pad * cell`) BEFORE the call. For SQUARE this is byte-identical to the old
-        // integer-index pad: with integer `pad`, `floor((min - pad*cell)/cell) == floor(min/cell)
-        // - pad` (and likewise `+ pad` on max), so the enumerated row-major index rectangle is
-        // unchanged. For HEX the padded pixel AABB feeds the axial-bounds superset. `None`
+        // (`pad_px = pad * cell`) BEFORE the call. For SQUARE, with integer `pad`,
+        // `floor((min - pad*cell)/cell) == floor(min/cell) - pad` (and likewise `+ pad` on max), so
+        // this pixel-space pad and an equivalent integer-index pad enumerate the same row-major
+        // index rectangle. For HEX the padded pixel AABB feeds the axial-bounds superset. `None`
         // (over-cap / degenerate) maps to the pre-existing skip-with-warn (same message +
         // `continue`), so `MAX_CELLS_PER_POLYGON` stays enforced.
         let pad_px = if lenient { cell } else { 0.0 };
@@ -6562,7 +6561,8 @@ mod tests {
     #[test]
     fn pathfind_grid_stepped_scene_is_byte_for_byte_unchanged() {
         // Same fixture/assertions as the existing `pathfind_gm_unconstrained_routes_without_a_mask`
-        // test, proving the default (grid-stepped) dispatch branch is untouched by this checkpoint.
+        // test, proving the default (grid-stepped) dispatch branch is unaffected by the
+        // continuous-engine dispatch.
         let (ecs, _user, scene) = scene_with_lit_player_token();
         let r = ecs.pathfind(
             Uuid::from_u128(1),

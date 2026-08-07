@@ -43,8 +43,8 @@ mod smoke {
         );
     }
 
-    // A later checkpoint caches `polyanya::Mesh` behind a `std::sync::Mutex` on `SceneEcs`, which
-    // itself lives behind a `tokio::sync::RwLock` shared across connection tasks — this requires
+    // `SceneEcs::navmesh_cache` caches `polyanya::Mesh` behind a `std::sync::Mutex`, which itself
+    // lives behind a `tokio::sync::RwLock` shared across connection tasks — this requires
     // `Mesh: Send + Sync`. Assert the bound at the point the dependency enters the tree so a
     // violation surfaces here, not after a cache is already built on top of it.
     #[test]
@@ -226,7 +226,7 @@ pub(crate) fn build_navmesh(
 /// calling `Mesh::path` directly with oversized/infinite coordinates. The guard is kept anyway to
 /// bound an untrusted wire magnitude before it reaches a third-party numeric library, and gives a
 /// more precise `PathFail::Invalid` instead of an indistinguishable `Unreachable`. Any leg with no
-/// route ⇒ `Unreachable`. `arrested` is always `false` — this checkpoint's navmesh carries no
+/// route ⇒ `Unreachable`. `arrested` is always `false` — this navmesh carries walls only, no
 /// region field.
 pub(crate) fn navmesh_find(
     nav: &NavMesh,

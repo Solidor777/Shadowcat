@@ -262,10 +262,9 @@ pub(crate) enum MoveReject {
 /// frozen as literal fixtures — see
 /// `frozen_parity_king_step_paths_match_previously_oracle_verified_outcomes`).
 ///
-/// A >1-cell authored jump is no longer rejected outright: it is subdivided by `gate_walk`
-/// and gated per crossed cell, exactly as if the client had sent the explicit intermediate
-/// waypoints — no new capability, since a well-formed sequence of intermediate
-/// waypoints was always legal.
+/// A >1-cell authored jump is subdivided by `gate_walk` and gated per crossed cell, exactly as if
+/// the client had sent the explicit intermediate waypoints — no new capability, since a
+/// well-formed sequence of intermediate waypoints was always legal.
 ///
 /// GM-ness is folded into `restriction == Unrestricted` by the caller (mirroring `publish`'s
 /// `if !Unrestricted { continue }` skip).
@@ -800,10 +799,9 @@ mod tests {
 
     #[test]
     fn long_jump_is_subdivided_and_gated_not_rejected() {
-        // A >1-cell authored jump is no longer rejected outright (§4.2): it is subdivided by
-        // gate_walk and gated per crossed cell, exactly as if the client had sent the
-        // explicit intermediate waypoints. All crossed cells here are visible and
-        // wall-clear, so the jump succeeds.
+        // A >1-cell authored jump is subdivided by gate_walk and gated per crossed cell, exactly
+        // as if the client had sent the explicit intermediate waypoints. All crossed cells here
+        // are visible and wall-clear, so the jump succeeds.
         let (ecs, scene, token) = clear_scene();
         let visible = visible_grid(6);
         let out = execute_move(
@@ -856,9 +854,9 @@ mod tests {
 
     #[test]
     fn rejects_path_exceeding_gate_walk_cap() {
-        // Replaces the old vertex-count TooLong check (§4.3): the DoS bound is now
-        // arc-length/gate-walk-sample based. A single segment whose Chebyshev length would
-        // require more than MAX_GATE_WALK_SAMPLES sub-steps fails closed, never truncated.
+        // The `TooLong` DoS bound is arc-length/gate-walk-sample based, not vertex-count based:
+        // a single segment whose Chebyshev length would require more than MAX_GATE_WALK_SAMPLES
+        // sub-steps fails closed, never truncated.
         let (ecs, scene, token) = clear_scene();
         let v: BTreeSet<(i32, i32)> = BTreeSet::new();
         assert!(matches!(
@@ -1399,10 +1397,7 @@ mod tests {
             0.4,
         )
         .expect("a GM move is admissible");
-        assert!(
-            !out.truncated,
-            "a GM move is not truncated by a wall (M9 §5)"
-        );
+        assert!(!out.truncated, "a GM move is not truncated by a wall");
         assert_eq!(
             out.render_path.last().copied(),
             Some((250.0, 50.0)),
@@ -2654,8 +2649,8 @@ mod tests {
     fn route_admissible_implies_gate_admissible_for_a_non_gm_continuous() {
         // Weaker route ⊆ gate-allowed direction, Continuous-scoped: `gate_walk`'s dense sampling and the router's
         // cell-center evaluation operate at different granularity on this model, so only route ⊆
-        // gate-allowed holds here — NOT the reverse/equivalence, which the plan scopes to
-        // GridStepped only (see the GridStepped test above). This reuses
+        // gate-allowed holds here — NOT the reverse/equivalence, which holds for GridStepped only
+        // (see the GridStepped test above). This reuses
         // `scene_with_narrow_gap_and_wide_token`'s existing `Continuous` dispatch arm: no region
         // is present, so `pathfind` takes the pure-polyanya branch and returns a genuine
         // multi-sample any-angle route through the 300-unit gap (footprint radius 80), not a

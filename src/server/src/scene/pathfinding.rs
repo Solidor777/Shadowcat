@@ -663,9 +663,9 @@ pub fn find(
     let mut parity = 0u8;
     // Grid-correct pixel→cell mapping (square floor / hex axial-round). MUST agree with the window
     // above: both derive from `grid.shape`, so a hex goal's axial cell always lands inside the
-    // axial window. A prior square-only `to_cell` here paired with the square window silently routed
-    // a hex request to the WRONG destination cell; fixing only one side would instead make the goal
-    // fall outside the other's box, reading spuriously Unreachable.
+    // axial window. A square-only `to_cell` here paired with the square window would silently
+    // route a hex request to the WRONG destination cell; fixing only one side would instead make
+    // the goal fall outside the other's box, reading spuriously Unreachable.
     let mut from = grid.shape.cell_of(start);
     for (leg_index, wp) in waypoints.iter().enumerate() {
         let goal = grid.shape.cell_of(*wp);
@@ -901,7 +901,8 @@ mod find_tests {
         let start = hex.cell_center((0, 0));
         let goal_cell = (70, -70);
         let goal = hex.cell_center(goal_cell);
-        // Documents that the fix is load-bearing: the pre-hex square window would clip this goal.
+        // This assertion documents why the hex-aware window above is load-bearing: a square-only
+        // window would clip this goal.
         assert!(
             (goal.0 / 100.0).floor() as i32 + WINDOW_MARGIN < goal_cell.0,
             "fixture must exercise the window-clipping case"

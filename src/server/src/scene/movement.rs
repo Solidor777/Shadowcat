@@ -283,8 +283,8 @@ mod tests {
         //
         // By simulation the traversal reaches ci=13, cj=3 where accumulated t_max_i and
         // t_max_j differ by 3.33e-16, which is GREATER than the absolute f64::EPSILON
-        // (2.22e-16). The old absolute-epsilon guard misses this corner entirely; both
-        // flanking cells (14,3) and (13,4) are silently dropped (under-include).
+        // (2.22e-16). An absolute-epsilon guard would miss this corner entirely; both
+        // flanking cells (14,3) and (13,4) would be silently dropped (under-include).
         //
         // The relative-epsilon fix (magnitude * ε * 64) produces a tolerance ≈ 4.26e-14,
         // which correctly detects the corner and emits both flankers.

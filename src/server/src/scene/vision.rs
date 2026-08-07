@@ -233,7 +233,7 @@ mod tests {
 
     #[test]
     fn point_segment_distance_degenerate_segment_uses_geometry_scale_epsilon() {
-        // A segment with near-zero (but not exactly zero) length, below the old
+        // A segment with near-zero (but not exactly zero) length, below the plain
         // f64::EPSILON threshold but meaningfully non-degenerate at scene scale.
         let a = (0.0, 0.0);
         let b = (1e-9, 0.0); // len2 = 1e-18, well below both thresholds — still degenerate

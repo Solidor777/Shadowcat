@@ -1,9 +1,9 @@
 //! Frozen-fixture parity gate for the `GridShape`/`SquareGrid` refactor.
 //!
 //! Every scene geometry consumer (grid A* router, per-step move executor, visibility mask,
-//! region rasterization) now routes its per-cell math through `grid_shape::GridShape`. The
-//! `SquareGrid` implementation is a byte-identical port of the pre-refactor hardcoded square
-//! math, so its output MUST equal what the hardcoded code produced. This module pins the FULL
+//! region rasterization) routes its per-cell math through `grid_shape::GridShape`, and
+//! `SquareGrid` is the sole square-grid implementation all of them share — so a drift in its
+//! output is a drift in every consumer at once. This module pins the FULL
 //! result of a curated scenario battery (every waypoint of a route, every cell of a returned set,
 //! every cost value) so a single-cell drift — including a future `HexGrid` cutover mis-wiring the
 //! square path — fails here before any downstream consumer silently ships the change.

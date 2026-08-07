@@ -314,9 +314,9 @@ impl GridShape for HexGrid {
         let ay = -ax - az;
         let (bx, bz) = (bq, br);
         let by = -bx - bz;
-        // DoS bound on the hex-distance span, unchanged from the pre-supercover sampler. What it
-        // bounds changed: the boundary-crossing count is `Σ|Δψₖ| + 3 ≤ 4n + 3` rather than the old
-        // `n + 1` samples — same order, so the worst case is ~16k crossings at the same n cap.
+        // DoS bound on the hex-distance span: the boundary-crossing count is
+        // `Σ|Δψₖ| + 3 ≤ 4n + 3`, the same order as an `n + 1`-sample bound, so the worst case is
+        // ~16k crossings at the same n cap.
         const MAX_HEX_LINE_SAMPLES: i64 = 4096;
         let n = ((ax - bx).abs().max((ay - by).abs()).max((az - bz).abs())).round() as i64;
         if !(0..=MAX_HEX_LINE_SAMPLES).contains(&n) {

@@ -66,8 +66,8 @@ impl ExploredSet {
     /// indexed through `grid` at `cell_size` world units per cell. Returns the count of newly-added
     /// cells (0 ⇒ no growth). `grid` supplies both the candidate-cell enumeration
     /// (`GridShape::cells_in_bounds`) and each candidate's center (`GridShape::cell_center`), so a
-    /// hex scene indexes hex axial cells while a square scene stays byte-identical to the prior
-    /// hardcoded `floor(min/cell)..=floor(max/cell)` rectangle + `(i+0.5)*cell` center math.
+    /// hex scene indexes hex axial cells while a square scene's candidate enumeration and cell-center
+    /// math reduce to exactly `floor(min/cell)..=floor(max/cell)` and `(i+0.5)*cell`.
     /// Correctness (the `Revealed` gate composes this set with `GridShape::line_traversal`
     /// move-cells) requires `grid` to be the SAME resolved shape (`resolve_grid_shape`) the gate and
     /// the vision mask use for this scene. A polygon whose bbox is over-cap
@@ -96,8 +96,9 @@ impl ExploredSet {
                 maxy = maxy.max(y);
             }
             // `cells_in_bounds` is a SUPERSET candidate filter (never misses a cell whose center is
-            // in the AABB); `None` on the same over-cap/degenerate conditions the prior inline scan's
-            // `MAX_CELLS_PER_POLYGON`/`saturating_mul` guard enforced → skip (under-reveal, fail-safe).
+            // in the AABB); `None` on an over-cap/degenerate input (the same
+            // `MAX_CELLS_PER_POLYGON`/`saturating_mul` guard `cells_in_bounds` enforces) → skip
+            // (under-reveal, fail-safe).
             let Some(candidates) =
                 grid.cells_in_bounds((minx, miny), (maxx, maxy), cell_size, MAX_CELLS_PER_POLYGON)
             else {
