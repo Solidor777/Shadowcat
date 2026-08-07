@@ -27,12 +27,17 @@ export const FORMULA_ERROR_KINDS = [
   "resolver-error",
 ] as const satisfies readonly FormulaErrorKind[];
 
+/** A library failure value — see `FormulaErrorKind`'s doc comment for the
+ * fail-closed contract this shape exists to satisfy. */
 export interface FormulaError {
+  /** Which failure category occurred; see `FormulaErrorKind`'s per-variant comments. */
   readonly error: FormulaErrorKind;
   /** Player-presentable, e.g. "unexpected '?' at position 4". Never internal dumps. */
   readonly detail: string;
 }
 
+/** A function's result: either a finite number or a `FormulaError` — the
+ * library never throws and never returns `NaN`/`Infinity` in this slot. */
 export type FormulaValue = number | FormulaError;
 
 /**

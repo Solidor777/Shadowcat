@@ -11,7 +11,16 @@
 // the general rule: permissions are enforced server-side, per recipient).
 import { parseMessageEngine, type ChatMessageEngine, type WireAudience, type WireDocument } from "@shadowcat/core";
 
-export type ChatView = { kind: "all" } | { kind: "channel"; id: string } | { kind: "gm" };
+/** Which slice of the store's `message` docs the panel currently renders — a display filter only, see `inView`. */
+export type ChatView =
+  | { /** Every message regardless of `channel`/`audience`. */ kind: "all" }
+  | {
+      /** Only messages whose `channel` matches `id`. */
+      kind: "channel";
+      /** The channel-registry key to filter on. */
+      id: string;
+    }
+  | { /** Only messages whose `audience.kind === "gm_only"`. */ kind: "gm" };
 
 /**
  * The `{channel, audience}` a message send from `view` should use: a channel
@@ -27,7 +36,12 @@ export type ChatView = { kind: "all" } | { kind: "channel"; id: string } | { kin
  * postTarget({ kind: "gm" }); // → { channel: "general", audience: { kind: "gm_only" } }
  * ```
  */
-export function postTarget(view: ChatView): { channel: string; audience: WireAudience } {
+export function postTarget(view: ChatView): {
+  /** The channel a send from `view` should carry. */
+  channel: string;
+  /** The audience a send from `view` should carry. */
+  audience: WireAudience;
+} {
   if (view.kind === "channel") return { channel: view.id, audience: { kind: "public" } };
   if (view.kind === "gm") return { channel: "general", audience: { kind: "gm_only" } };
   return { channel: "general", audience: { kind: "public" } };
@@ -269,7 +283,12 @@ export function computeVisibleWindow(
   scrollHeight: number,
   totalCount: number,
   overscan = VIRTUALIZE_OVERSCAN,
-): { start: number; end: number } {
+): {
+  /** First index (inclusive) of the windowed range. */
+  start: number;
+  /** Last index (exclusive) of the windowed range. */
+  end: number;
+} {
   if (totalCount === 0) return { start: 0, end: 0 };
   if (clientHeight <= 0 || scrollHeight <= clientHeight) return { start: 0, end: totalCount };
   const fraction = Math.min(1, Math.max(0, scrollTop / (scrollHeight - clientHeight)));

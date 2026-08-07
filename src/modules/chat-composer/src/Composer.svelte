@@ -3,7 +3,18 @@
   import { getAppContext } from "@shadowcat/ui-kit";
   import { actorDisplayName, MAX_MESSAGE_CHARS, type WireActorOwnerRef, type WireAudience, type WireDocument } from "@shadowcat/core";
 
-  let { channel, audience, placeholderName }: { channel: string; audience: WireAudience; placeholderName: string } = $props();
+  let {
+    channel,
+    audience,
+    placeholderName,
+  }: {
+    /** The client-chosen channel label to post under — a display grouping with zero server-enforced meaning. */
+    channel: string;
+    /** The intended readership to send with; the server, not `channel`, is what actually restricts readers. */
+    audience: WireAudience;
+    /** The active view's display name, shown in the composer's placeholder text (never the sender's own name). */
+    placeholderName: string;
+  } = $props();
 
   const ctx = getAppContext();
   const t = ctx.t;
@@ -145,7 +156,7 @@
   <select id="chat-composer-speak-as" bind:value={selectedActorId}>
     <option value="">{t("chat.composer.myself")}</option>
     {#each speakableActors as actor (actor.id)}
-      <option value={actor.id}>{actorDisplayName({ name: actor.name, displayName: (actor.engine as { displayName?: string } | undefined)?.displayName })}</option>
+      <option value={actor.id}>{actorDisplayName({ name: actor.name, displayName: (actor.engine as { /** The actor's authored display name, if any. */ displayName?: string } | undefined)?.displayName })}</option>
     {/each}
   </select>
   <label class="visually-hidden" for="chat-composer-input">{placeholder}</label>

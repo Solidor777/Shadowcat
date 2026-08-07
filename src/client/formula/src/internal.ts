@@ -2,6 +2,18 @@ import { FORMULA_ERROR_KINDS, type FormulaError, type FormulaValue } from "./typ
 
 const FORMULA_ERROR_KIND_SET: ReadonlySet<string> = new Set(FORMULA_ERROR_KINDS);
 
+// Type-only extraction (no runtime change): both `isWellFormedError` casts an
+// untrusted `v` to this same probe shape twice inline; factoring it out gives
+// each field one place to carry its doc rather than restating it per cast.
+/** Ad-hoc probe shape for reading `error`/`detail` off an untrusted value before
+ * either field is confirmed to satisfy `FormulaError`'s stricter contract. */
+interface ErrorProbe {
+  /** Candidate `FormulaErrorKind` tag — `unknown` until narrowed against `FORMULA_ERROR_KIND_SET`. */
+  error?: unknown;
+  /** Candidate detail message — `unknown` until narrowed to a string. */
+  detail?: unknown;
+}
+
 // Not part of the package's public surface — `@shadowcat/formula`'s public
 // exports omit this module — shared trust-boundary helpers for `evaluate` and
 // `resolveAll`, both of which validate a consumer-supplied callback's return
@@ -26,12 +38,12 @@ const FORMULA_ERROR_KIND_SET: ReadonlySet<string> = new Set(FORMULA_ERROR_KINDS)
  * ```
  */
 export function isWellFormedError(v: unknown): v is FormulaError {
+  if (typeof v !== "object" || v === null) return false;
+  const probe = v as ErrorProbe;
   return (
-    typeof v === "object" &&
-    v !== null &&
-    typeof (v as { error?: unknown }).error === "string" &&
-    FORMULA_ERROR_KIND_SET.has((v as { error: string }).error) &&
-    typeof (v as { detail?: unknown }).detail === "string"
+    typeof probe.error === "string" &&
+    FORMULA_ERROR_KIND_SET.has(probe.error) &&
+    typeof probe.detail === "string"
   );
 }
 

@@ -6,10 +6,13 @@ import { parseMessageEngine, type WireDocument } from "@shadowcat/core";
 
 /** A channel's read frontier: the newest message the user has seen there. */
 export interface ReadMarker {
+  /** The frontier message's `created_at`, compared before `id` (see `isAfter`). */
   createdAt: number;
+  /** The frontier message's id — the tie-break when two messages share `createdAt`. */
   id: string;
 }
 
+/** Per-channel read frontier — a channel absent from this map has never been marked read. */
 export type ChatReadState = Record<string, ReadMarker>;
 
 /**

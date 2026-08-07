@@ -20,7 +20,9 @@ import type { PanelBadge } from "@shadowcat/core";
  * ```
  */
 export class ChatUnreadBadge implements PanelBadge {
+  /** The current unread count; written only by `set`. */
   #count = 0;
+  /** Callbacks registered via `subscribe`, notified in insertion order by `set`. */
   #listeners = new Set<() => void>();
 
   /**

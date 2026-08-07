@@ -12,10 +12,20 @@
   } from "@shadowcat/core";
   import RollTooltip from "./RollTooltip.svelte";
 
-  type RollEmbedSegment = Extract<ChatSegment, { kind: "roll_embed" }>;
-  type RollButtonSegment = Extract<ChatSegment, { kind: "roll_button" }>;
+  /** A message's whole content narrowed to its one executed roll. */
+  type RollEmbedSegment = Extract<ChatSegment, { /** Discriminant. */ kind: "roll_embed" }>;
+  /** A clickable "reroll this formula" segment, narrowed from `ChatSegment`. */
+  type RollButtonSegment = Extract<ChatSegment, { /** Discriminant. */ kind: "roll_button" }>;
 
-  let { message, showChannel }: { message: WireDocument; showChannel: boolean } = $props();
+  let {
+    message,
+    showChannel,
+  }: {
+    /** The stored message document; its `engine` body is parsed below via `parseMessageEngine`. */
+    message: WireDocument;
+    /** Whether to render the `channel` chip — true only in the "All" view, where channel is otherwise ambiguous. */
+    showChannel: boolean;
+  } = $props();
 
   const ctx = getAppContext();
   const t = ctx.t;
@@ -52,7 +62,13 @@
   // hasn't cleared that check yet — the link briefly reflects the local guess until the
   // confirm/reject echo settles. A `token_instance` ref opens the token (its embedded actor);
   // an `actor` ref opens the actor doc. Absent ⇒ plain text, no link.
-  const actorOpenRef = $derived.by((): { tokenId: string } | { docId: string } | null => {
+  const actorOpenRef = $derived.by((): {
+    /** A live placed-token id to open (`token_instance` owner ref). */
+    tokenId: string;
+  } | {
+    /** A live actor-document id to open (`actor` owner ref). */
+    docId: string;
+  } | null => {
     const owner = sys?.actor_owner;
     if (!owner) return null;
     if (owner.kind === "actor") return ctx.documents.get(owner.actor_id) ? { docId: owner.actor_id } : null;
@@ -162,7 +178,7 @@
    * ```
    */
   function textOf(content: (ChatSegment | UnknownSegment)[]): string {
-    return content.filter(isKnownSegment).filter((s) => s.kind === "text").map((s) => (s as Extract<ChatSegment, { kind: "text" }>).text).join("");
+    return content.filter(isKnownSegment).filter((s) => s.kind === "text").map((s) => (s as Extract<ChatSegment, { /** Discriminant, already matched by the preceding filter. */ kind: "text" }>).text).join("");
   }
 
   // The two explicit roll-command prefixes `chat::parse_command` accepts via its

@@ -101,9 +101,9 @@
   // a channel value should never be null in a doc this client wrote, but a
   // directly-edited or legacy doc could still contain one; filter defensively
   // rather than crash on render.
-  const channelEntries = $derived.by((): [string, { name: string }][] => {
+  const channelEntries = $derived.by((): [string, { /** The channel's GM-authored display name. */ name: string }][] => {
     const sys = registry?.engine as ChannelRegistryEngine | undefined;
-    return Object.entries(sys?.channels ?? {}).filter((e): e is [string, { name: string }] => e[1] != null);
+    return Object.entries(sys?.channels ?? {}).filter((e): e is [string, { /** The channel's GM-authored display name. */ name: string }] => e[1] != null);
   });
 
   /**
@@ -220,13 +220,25 @@
   const cardComp = $derived.by(() => {
     subscribeContributions();
     return ctx.contributions.contributionsFor("shadowcat.surface:chat.message")[0]?.component as
-      | Component<{ message: WireDocument; showChannel: boolean }>
+      | Component<{
+          /** The message document to render — passed straight through to whichever card module is contributed. */
+          message: WireDocument;
+          /** Forwarded to the card so it can show the channel chip only in the "All" view. */
+          showChannel: boolean;
+        }>
       | undefined;
   });
   const composerComp = $derived.by(() => {
     subscribeContributions();
     return ctx.contributions.contributionsFor("shadowcat.surface:chat.composer")[0]?.component as
-      | Component<{ channel: string; audience: WireAudience; placeholderName: string }>
+      | Component<{
+          /** Post-target channel label, from `postTarget(view)`. */
+          channel: string;
+          /** Post-target audience, from `postTarget(view)`. */
+          audience: WireAudience;
+          /** The active view's display name, forwarded for the composer's placeholder text. */
+          placeholderName: string;
+        }>
       | undefined;
   });
 

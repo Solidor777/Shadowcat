@@ -162,7 +162,7 @@ function substituteIdentifier(
 export function resolveNotationTemplate(
   src: string,
   resolve: (path: string[]) => FormulaValue,
-): { notation: string } | FormulaError {
+): { /** The rewritten notation string, ready to post to `chat::rolls`. */ notation: string } | FormulaError {
   if (src.length > MAX_FORMULA_LENGTH) {
     return { error: "cap", detail: `template exceeds ${MAX_FORMULA_LENGTH} characters` };
   }

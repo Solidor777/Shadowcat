@@ -2,7 +2,12 @@
   import { getAppContext } from "@shadowcat/ui-kit";
   import type { RollOutcome } from "@shadowcat/core";
 
-  let { outcome }: { outcome: RollOutcome } = $props();
+  let {
+    outcome,
+  }: {
+    /** The executed roll's full audit record — every die, kept/dropped, plus any labeled constants. */
+    outcome: RollOutcome;
+  } = $props();
 
   const ctx = getAppContext();
   const t = ctx.t;

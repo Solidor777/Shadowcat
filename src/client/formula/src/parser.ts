@@ -4,14 +4,49 @@ import { type FormulaError, MAX_AST_NODES, MAX_PARSE_DEPTH } from "./types";
 /** Names accepted where a word is immediately followed by `(` — anything else
  * there is a parse error; the library reserves no OTHER identifiers. */
 const FN_NAMES = new Set(["min", "max", "floor", "ceil", "round"]);
+/** Mirrors `FN_NAMES` as a literal union for exhaustive `checkArity`/`primary` switching. */
 type FnName = "min" | "max" | "floor" | "ceil" | "round";
 
+/** The parsed expression AST — one node per production in the grammar `Parser` implements. */
 export type Expr =
-  | { kind: "num"; value: number }
-  | { kind: "ref"; path: string[] } // opaque dotted path — the library assigns no meaning
-  | { kind: "neg"; operand: Expr }
-  | { kind: "bin"; op: "+" | "-" | "*" | "/" | "%"; left: Expr; right: Expr }
-  | { kind: "call"; fn: FnName; args: Expr[] };
+  | {
+      /** Discriminant: a numeric literal leaf. */
+      kind: "num";
+      /** The literal's value. */
+      value: number;
+    }
+  | {
+      /** Discriminant: a dotted reference. */
+      kind: "ref";
+      /** The dotted segments in source order (e.g. `["hp", "max"]` for `hp.max`) —
+       * an opaque path the library assigns no meaning to; a consumer's `resolve`
+       * callback owns interpreting it. */
+      path: string[];
+    }
+  | {
+      /** Discriminant: a unary-minus node. */
+      kind: "neg";
+      /** The negated subexpression. */
+      operand: Expr;
+    }
+  | {
+      /** Discriminant: a binary arithmetic node. */
+      kind: "bin";
+      /** The applied operator. */
+      op: "+" | "-" | "*" | "/" | "%";
+      /** The left operand, evaluated first. */
+      left: Expr;
+      /** The right operand. */
+      right: Expr;
+    }
+  | {
+      /** Discriminant: a builtin function call. */
+      kind: "call";
+      /** The called builtin's name — already arity-checked by `checkArity` at parse time. */
+      fn: FnName;
+      /** The call's arguments in source order. */
+      args: Expr[];
+    };
 
 /** Recursive-descent parser over `tokenize`'s output.
  * Grammar: additive := multiplicative (('+'|'-') multiplicative)* ;
@@ -21,7 +56,9 @@ export type Expr =
  * A word immediately followed by '(' must be a known function name; otherwise
  * the word begins a dotted ref path (a dotted segment is never a call). */
 class Parser {
+  /** Index of the next unconsumed token in `toks`. */
   private pos = 0;
+  /** Total nodes constructed so far via `node()`, charged against `MAX_AST_NODES`. */
   private nodeCount = 0;
 
   /**
@@ -154,7 +191,14 @@ class Parser {
     if (isErr(left)) return left;
     for (;;) {
       if (this.atOp("+") || this.atOp("-")) {
-        const op = (this.peek() as { kind: "op"; value: "+" | "-" }).value;
+        const op = (
+          this.peek() as {
+            /** Narrowed by the preceding `atOp` check to an `op` token. */
+            kind: "op";
+            /** Narrowed by the preceding `atOp` check to one of these two operators. */
+            value: "+" | "-";
+          }
+        ).value;
         this.pos++;
         const right = this.multiplicative(depth);
         if (isErr(right)) return right;
@@ -186,7 +230,14 @@ class Parser {
     if (isErr(left)) return left;
     for (;;) {
       if (this.atOp("*") || this.atOp("/") || this.atOp("%")) {
-        const op = (this.peek() as { kind: "op"; value: "*" | "/" | "%" }).value;
+        const op = (
+          this.peek() as {
+            /** Narrowed by the preceding `atOp` check to an `op` token. */
+            kind: "op";
+            /** Narrowed by the preceding `atOp` check to one of these three operators. */
+            value: "*" | "/" | "%";
+          }
+        ).value;
         this.pos++;
         const right = this.unary(depth);
         if (isErr(right)) return right;
