@@ -176,7 +176,7 @@ export interface ResolvedSceneSettings {
   /** Whether fog-of-war hides unexplored areas on this scene; scene `vision` override, else the
    * world default. */
   fog: boolean;
-  /** Whether a player also sees through their observed tokens' own vision (M10 observer mode);
+  /** Whether a player also sees through their observed tokens' own vision (observer mode);
    * scene `vision` override, else the world default. */
   observerVision: boolean;
   /** How movement is gated by visibility on this scene; scene `vision` override, else the world
@@ -185,7 +185,7 @@ export interface ResolvedSceneSettings {
   /** The movement/routing engine this scene uses (grid vs continuous); scene `vision` override,
    * else the world default. */
   movementModel: MovementModel;
-  /** Effective snap-to-grid axis (M10f-3 §4.1): an explicit scene value overrides in either
+  /** Effective snap-to-grid axis: an explicit scene value overrides in either
    * direction (including `false`); absent falls back to a derived default keyed off the
    * RESOLVED `movementModel` (false for continuous, true otherwise). */
   snapToGrid: boolean;
@@ -533,7 +533,7 @@ export function buildActorDoc(worldId: string, name: string | null, engine: Acto
   return envelope(worldId, "actor", null, {}, id, engine, name);
 }
 
-/** Client-only `item` doc_type (M12c): NOT engine-defined (`data::engine::is_engine_doc_type`
+/** Client-only `item` doc_type: NOT engine-defined (`data::engine::is_engine_doc_type`
  * excludes "item") — the server stays fully structural for an item's body, same as every
  * other doc_type's `system` blob: `validate_system_size` caps it (`MAX_SYSTEM_BYTES`) and
  * `validate_system_schema_tree` enforces any module-registered tier-2 schema for `"item"`

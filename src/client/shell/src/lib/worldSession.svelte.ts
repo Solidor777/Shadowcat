@@ -82,7 +82,7 @@ export class WorldSession {
   readonly tokenSelection = new TokenSelection();
   #assetListeners = new Set<(msg: { uuid: string; op: "replaced" | "deleted" }) => void>();
   #pingListeners = new Set<(msg: { scene: string; x: number; y: number; user: string }) => void>();
-  /** Listeners for THIS client's own `moveRequest` outcomes (M14b observability signal) —
+  /** Listeners for THIS client's own `moveRequest` outcomes —
    * not a broadcast of every scene viewer's moves, unlike `#pingListeners`. */
   #moveOutcomeListeners = new Set<(msg: { tokenId: string; outcome: "executed" | "truncated" | "rejected" }) => void>();
   #sceneSubs = new Map<
@@ -92,7 +92,7 @@ export class WorldSession {
   state = $state<ConnState>("closed");
   role = $state<WorldRole | null>(null);
   world = $state<string | null>(null);
-  /** Client-local GM override of the rendered/subscribed scene (M12d "GM roams"). Never set for
+  /** Client-local GM override of the rendered/subscribed scene ("GM roams"). Never set for
    * a player (they follow `world-settings.activeScene`). Overrides `viewedSceneId` for THIS
    * client's own render + vision + see-as channels only; the server is unaware of it. */
   #gmViewedScene = $state<string | null>(null);
@@ -126,7 +126,7 @@ export class WorldSession {
     return this.opts.selfId;
   }
 
-  /** The scene THIS client renders + subscribes to (M12d). A GM's local roam
+  /** The scene THIS client renders + subscribes to. A GM's local roam
    * (`#gmViewedScene`) overrides; otherwise follows `world-settings.activeScene`, else the first
    * scene. Reads the optimistic view + `#gmViewedScene` $state, so Svelte deriveds that read it
    * (bridged through `documents.subscribe`) react to both scene-doc changes and roam changes.
@@ -135,7 +135,7 @@ export class WorldSession {
     return resolveViewedScene(this.#optimistic, { gmViewedScene: this.role === "gm" ? this.#gmViewedScene : null });
   }
 
-  /** GM local roam (M12d): view any scene without moving players. Ignored (warned) for a non-GM —
+  /** GM local roam: view any scene without moving players. Ignored (warned) for a non-GM —
    * players have no local override. `null` clears the roam (follow `activeScene`).
    * @param id The scene to roam to, or `null` to resume following `activeScene`.
    * @example
@@ -151,7 +151,7 @@ export class WorldSession {
     this.#gmViewedScene = id;
   }
 
-  /** Live full-text search over documents (M6c subscription seam). Ephemeral: NOT re-established
+  /** Live full-text search over documents (subscription seam). Ephemeral: NOT re-established
    * across reconnects (unlike `subscribeScene`) — the caller re-subscribes on the next query.
    * Rejects immediately when there is no live transport.
    * @param query The FTS query string.

@@ -53,7 +53,7 @@ export interface ContractDeclaration {
   requires: string[];
 }
 
-/** Minimal engine-compat gate (T6, M13-1). Optional on the shared manifest
+/** Minimal engine-compat gate. Optional on the shared manifest
  * shape (first-party modules never set it — they ship version-locked inside
  * the binary); the modules-folder install/enable/load pipeline treats a
  * missing or unsatisfied range as a hard reject for community modules

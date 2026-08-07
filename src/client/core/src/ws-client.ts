@@ -75,7 +75,7 @@ export interface MoveStream {
   samples: MoveSample[];
   /** Time-tagged vision-polygon samples for the mover; always `null` for an observer. */
   moverVision: MoveVisionSample[] | null;
-  /** Total terrain-weighted movement cost for this move (M10g). Informational.
+  /** Total terrain-weighted movement cost for this move. Informational.
    * Null for a clipped observer (mirrors moverVision) — the authoritative cost may reflect
    * secret-region terrain the observer's clipped samples don't reveal. */
   cost: number | null;

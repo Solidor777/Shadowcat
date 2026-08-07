@@ -20,7 +20,7 @@ export const MessageKindSchema = z.enum(["normal", "emote", "roll", "system"]);
 /** The inferred TS shape of `MessageKindSchema`. */
 export type MessageKind = z.infer<typeof MessageKindSchema>;
 
-/** Mirror of dice::outcome::DieRecord (M11d-2). Only the fields the roll card
+/** Mirror of `dice::outcome::DieRecord`. Only the fields the roll card
  * renders are validated; `.passthrough()` tolerates server-only audit fields
  * (id, rerolled_from, ordered, ...) the client doesn't read, so an additive
  * server-side field never breaks this mirror. */
@@ -51,7 +51,7 @@ export const ConstTermSchema = z.object({
 /** The inferred TS shape of `ConstTermSchema`. */
 export type ConstTerm = z.infer<typeof ConstTermSchema>;
 
-/** Mirror of dice::outcome::RollOutcome (M11d-2). `successes`/`pass`/`margin`/
+/** Mirror of `dice::outcome::RollOutcome`. `successes`/`pass`/`margin`/
  * `tier_label`/`tier_value` are `None` in Total mode with no `difficulty`.
  * PRECISION: `total`/`margin` are i64 and — unlike this package's other wire-protocol
  * seq/timestamp fields — CAN legitimately reach i64::MAX/MIN (the evaluator saturates

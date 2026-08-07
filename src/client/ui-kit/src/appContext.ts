@@ -107,13 +107,13 @@ export interface AppContext {
   actorSelection: ActorSelection;
   /** Selected token ids for group-select; set by the factions panel, read by the select tool. */
   tokenSelection: TokenSelection;
-  /** The scene THIS client renders + subscribes to (M12d). Players follow
+  /** The scene THIS client renders + subscribes to. Players follow
    * `world-settings.activeScene`; a GM roaming via `setGmViewedScene` overrides locally. Getter —
    * reactive when read through a `documents.subscribe` bridge. */
   viewedSceneId: string | null;
-  /** GM local roam (M12d): view any scene without moving players. No-op for a non-GM. */
+  /** GM local roam: view any scene without moving players. No-op for a non-GM. */
   setGmViewedScene: (id: string | null) => void;
-  /** Live full-text document search (M6c seam). Resolves once the initial page arrives (and fires
+  /** Live full-text document search seam. Resolves once the initial page arrives (and fires
    * `onUpdate` for it); subsequent pushes fire `onUpdate`. Ephemeral — NOT reconnect-resilient;
    * re-subscribe per query. Rejects when there is no transport. */
   searchDocuments: (
@@ -121,7 +121,7 @@ export interface AppContext {
     opts: { limit?: number; timeoutMs?: number },
     onUpdate: (hits: WireSearchHit[]) => void,
   ) => Promise<SubscriptionHandle>;
-  /** Which scene the game-settings per-scene section edits (M12d "Configure"); set by the scene
+  /** Which scene the game-settings per-scene section edits ("Configure"); set by the scene
    * browser, read by GameSettingsPanel. */
   sceneSelection: SceneSelection;
   /** Broadcast a transient location ping at scene coords on the active scene. */
@@ -159,7 +159,7 @@ export interface AppContext {
    * asymmetric case: the broadcast Event echo carries no `request_id`, so an accepted op is
    * never acknowledged and resolution is assumed from silence. See `ChatApi` above. */
   chat: ChatApi;
-  /** Template merge seam: stamp + pull/push/revert (M13e). */
+  /** Template merge seam: stamp + pull/push/revert. */
   templates: TemplatesApi;
   /** Leave the current world and return to world-select. */
   leaveWorld: () => void;

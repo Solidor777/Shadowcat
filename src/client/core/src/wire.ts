@@ -92,7 +92,7 @@ export const SchemaTypeSchema = z.enum([
   "null",
 ]);
 
-/** Recursive structural type-tree (M13f tier-2). Absent fields are optional (the server
+/** Recursive structural type-tree (tier-2). Absent fields are optional (the server
  * omits a `None` via `skip_serializing_if`). Shape only — never a value rule; the grammar
  * has no `enum`, numeric/string bounds, `pattern`, or `anyOf`/`oneOf` combinator. */
 export type WireSchema = {

@@ -42,7 +42,7 @@ export interface MockServerOptions {
   rejectRule?: (ctx: IntentContext) => RejectReason | null;
 }
 
-/** An in-process TypeScript stand-in for the M5 server protocol, driving the
+/** An in-process TypeScript stand-in for the server protocol, driving the
  * WS client end-to-end in tests without the Rust server (the `web` CI job has
  * no Rust toolchain). It assigns seqs, echoes intents as authoritative Events,
  * broadcasts to every connection, serves resync from an in-memory log, and

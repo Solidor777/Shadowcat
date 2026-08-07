@@ -54,8 +54,8 @@ export interface PanelBadge {
   subscribe(cb: () => void): () => void;
 }
 
-/** Panel metadata for the `shadowcat.panel` contract (M12a panel-manager host).
- * Plain data — framework-neutral. `labelKey` is an i18n key the HOST resolves at
+/** Panel metadata for the `shadowcat.panel` contract (the panel-manager host's
+ * contribution shape). Plain data — framework-neutral. `labelKey` is an i18n key the HOST resolves at
  * render (locale-reactive); `gmOnly` panels are hidden from non-GM users by the host. */
 export interface PanelMeta {
   /** Icon identifier the host resolves to a rendered icon; opaque to core. */
@@ -73,7 +73,7 @@ export interface PanelMeta {
 /** Contract id panel modules contribute under for the panel-manager host. */
 export const PANEL_CONTRACT = "shadowcat.panel";
 
-/** Provider metadata for the `shadowcat.sheet:<doc_type>` contract family (M12c).
+/** Provider metadata for the `shadowcat.sheet:<doc_type>` contract family.
  * `priority` selects among competing providers (higher wins; the always-registered
  * generic fallback registers at `-Infinity`). `match` is an optional per-document
  * predicate — a provider that returns `false` is not a candidate for that doc. */
