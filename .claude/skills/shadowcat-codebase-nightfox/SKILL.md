@@ -1,18 +1,14 @@
 ---
 name: shadowcat-codebase-nightfox
-description: "Use when touching `@shadowcat/formula` (the framework-neutral expression library: lexer/parser/evaluator, dependency-graph resolution, dice-notation-template mode), the Nightfox rules engine it feeds (the `nightfox-docs`/`contributions`/`resolve` modules), or the Nightfox sheets layer (`src/sheets/*` — the `sheet-model` module, StatRow/StatTable/ModifiersEditor, ActorSheet/ItemSheet/EffectSheet, the `nf-i18n` module), external repo `C:\\Dev\\Nightfox`, nested for dev at `src/modules/nightfox/`. Covers src/client/formula/ (in-repo) and the Nightfox repo's src/ (out-of-repo, M13b+). Invoke shadowcat-codebase-core first."
+description: "Use when touching `@shadowcat/formula` (the framework-neutral expression library: lexer/parser/evaluator, dependency-graph resolution, dice-notation-template mode), the Nightfox rules engine it feeds (the `nightfox-docs`/`contributions`/`resolve` modules), or the Nightfox sheets layer (`src/sheets/*` — the `sheet-model` module, StatRow/StatTable/ModifiersEditor, ActorSheet/ItemSheet/EffectSheet, the `nf-i18n` module), external repo `C:\\Dev\\Nightfox`, nested for dev at `src/modules/nightfox/`. Covers src/client/formula/ (in-repo) and the Nightfox repo's src/ (out-of-repo). Invoke shadowcat-codebase-core first."
 ---
 
 # Shadowcat — Nightfox / `@shadowcat/formula`
 
-Orientation for the shared formula library and the Nightfox rules engine consuming it (M13a
-shipped in this repo; M13b + M13c + M13d shipped in the external Nightfox repo — this skill covers
-all four, extended in-place rather than forking a new one per checkpoint). Spec:
-`docs/superpowers/specs/2026-07-15-m13-nightfox-system-design.md` §§3-7 (decisions D2-D4, D7-D14;
-§7 = the roll wire). Plans: `docs/superpowers/plans/2026-07-15-m13a-formula-library.md` (library),
-`docs/superpowers/plans/2026-07-15-m13b-nightfox-headless-rules.md` (rules engine),
-`docs/superpowers/plans/2026-07-16-m13c-nightfox-sheets.md` (sheets),
-`docs/superpowers/plans/2026-07-15-m13d-roll-wire.md` (roll wire).
+Orientation for the shared formula library and the Nightfox rules engine consuming it — the
+formula library lives in this repo; the rules engine, sheets layer, and roll wire live in the
+external Nightfox repo. This skill covers the whole surface (library + rules engine + sheets +
+roll wire), extended in place rather than forking a new skill per checkpoint.
 
 ## Purpose
 
@@ -25,27 +21,27 @@ Nightfox is the first consumer but any game system may use or replace this libra
 its dependency closure — it is usable from server-side validators and other headless contexts,
 not just the client.
 
-Nightfox itself (M13b) is a **standalone external repository** (`C:\Dev\Nightfox`, own git
+Nightfox itself is a **standalone external repository** (`C:\Dev\Nightfox`, own git
 history, never pushed by an agent — the user owns that remote), nested a second time into a
 Shadowcat checkout at `src/modules/nightfox/` purely so the pnpm workspace resolves
-`@shadowcat/core`/`@shadowcat/formula` for dev (M13-1's toolchain). All Nightfox source paths
+`@shadowcat/core`/`@shadowcat/formula` for dev. All Nightfox source paths
 below are Nightfox-repo-relative (`src/...` under `C:\Dev\Nightfox`), not in-tree Shadowcat
 paths — never edit them from a Shadowcat-repo working tree.
 
-## The Nightfox rules engine (M13b)
+## The Nightfox rules engine
 
 Headless, pure-function rules package: `system.stats`/`system.mechanics` data model (Zod
 tier-1 validation) + a one-dependency-graph resolver + typed commutative modifier buckets +
 `item`/`effect` semantics. Zero server change (client-semantics only, ARCHITECTURE §2 invariant
-6); zero Svelte/store dependency — sheets (M13c) call these functions with docs they already
+6); zero Svelte/store dependency — sheets call these functions with docs they already
 have.
 
 - **The `nightfox-docs` module** (Nightfox repo) — the stat/mechanics data model and its fail-closed
   boundary. `Stat` is a discriminated union on `type`: `number` (`base` + optional `formula`/
   `roll`), `resource` (`current` + `maxBase`/`maxFormula`, `clampToMax` default `true`), `text`
   (`value: string`), `boolean` (`value: boolean`) — only `number`/`resource` are
-  formula/modifier targets (D7). `Modifier = { stat, op: "add"|"mulAdditive"|"mulCompound",
-  value: string | number }` — magnitude is itself a formula or literal (D4). `parseNightfox(doc)`
+  formula/modifier targets. `Modifier = { stat, op: "add"|"mulAdditive"|"mulCompound",
+  value: string | number }` — magnitude is itself a formula or literal. `parseNightfox(doc)`
   returns `null` when BOTH `system.stats` and `system.mechanics` are absent (not a
   Nightfox-bearing doc) **or** when EITHER present side is malformed (fail-closed, never a
   partial parse) — an absent-but-not-both side defaults (`stats: {}` / `mechanics: {version:
@@ -78,7 +74,7 @@ have.
   `(carrierId, modId)` sort order — the permutation battery (below) exists specifically to catch
   a regression here. Reference semantics (§5.2): a bare reference resolves to the referenced
   stat's **final** value (cross-stat and cross-doc, so `attack = dex + str` sees a str-boosting
-  belt); **exception 1 (D8)**: a stat's own derived formula referencing its own key reads its
+  belt); **exception 1**: a stat's own derived formula referencing its own key reads its
   own **base**, not final (layering, not recursion); **exception 2**: `base.<key>` always reads
   base from anywhere. A modifier magnitude referencing its own **target's** final value is a
   cycle → error (self-scaling composes via `mulAdditive` instead). Scope rules (§5.3): bare
@@ -93,14 +89,14 @@ have.
   error value (fail-closed, visible chip) — the missing-ref tolerance is a modifier-only
   courtesy, not a general one. An errored magnitude poisons its target stat's final value rather
   than being silently dropped. `statRefResolver` exposes the same reference rules over an
-  already-resolved doc for roll-template previews (M13d) and sheet formula previews.
+  already-resolved doc for roll-template previews and sheet formula previews.
 - **Nightfox's `index` module** (Nightfox repo) — the module's public barrel, re-exporting the full pure
-  API surface above alongside the M13-1-scaffolded manifest/`register()` (superseded by real
-  sheet registration in M13c, not touched by M13b).
+  API surface above alongside a scaffolded manifest/`register()` (superseded by the real
+  sheet registration below).
 
-## The sheets layer (M13c)
+## The sheets layer
 
-`src/sheets/` (Nightfox repo) — actor/item/effect sheets over the M12c sheet registry
+`src/sheets/` (Nightfox repo) — actor/item/effect sheets over the sheet registry
 (`shadowcat.sheet:<doc_type>` contract, see `shadowcat-codebase-sheets`), all client-side, no
 new wire frames.
 
@@ -108,7 +104,7 @@ new wire frames.
   systemPrefix)` ALWAYS resolves `resolveNightfox` from the TOP-LEVEL host document, then
   extracts the self doc's slice by id — resolving an embedded item/effect in isolation would
   drop transfer/`parent.*` flow (§5.3). The self doc is located by stripping the trailing
-  `/system` off `systemPrefix` to get `basePrefix` — **the same M13-0 `basePrefix` derivation
+  `/system` off `systemPrefix` to get `basePrefix` — **the same `basePrefix` derivation
   documented in `shadowcat-codebase-sheets`'s `ActorSheet`/`ItemSheet` paragraph
   (`systemPrefix.replace(/\/system$/, "")`)**: `systemPrefix` (`/system` or
   `/embedded/<coll>/<i>/system`) is where `mechanics`/`stats` live, `basePrefix` is where
@@ -118,7 +114,7 @@ new wire frames.
   implementation review; no shipped test currently exercises the embedded (non-top-level) case
   that would catch a regression, so treat any new sheet or write helper touching
   `stats`/`mechanics` as needing this check first, and consider adding that regression test.
-- **Map-CRUD idiom (D11), every write helper (`addStat`/`editStatField`/`removeStat`/
+- **Map-CRUD idiom, every write helper (`addStat`/`editStatField`/`removeStat`/
   `setStatOrder`/`addModifier`/`editModifierField`/`removeModifier`/`setMechanicsFlag`)**: add =
   single-key `old:null`; edit = single-key raw-old; remove = whole-map `setField` replace with
   the current map as the pre-image (`set_pointer` cannot delete a key in place). Stat/modifier
@@ -131,7 +127,7 @@ new wire frames.
   a formula reference). `addModifier` uses its own simpler ad-hoc check
   (`id.length === 0 || id.includes("/")`), because a modifier id is an opaque generated UUID with
   no reserved-word semantics to protect — only pointer-injection safety matters for it.
-- **Presentation-only order (D12):** `StatTable`'s add-stat assigns `max-existing-order + 1`,
+- **Presentation-only order:** `StatTable`'s add-stat assigns `max-existing-order + 1`,
   not a count — a remove-then-add sequence with a naive count would collide orders. Order never
   feeds `resolveNightfox`; it's a `sort()` key at render time only.
 - **Permission-gating split — a Critical-class distinction, not interchangeable `readOnly`
@@ -140,8 +136,8 @@ new wire frames.
   (item/effect active toggle, effect transfer toggle) gates on the DISTINCT
   `core:manage_embedded` capability. `ActorSheet` computes this per-carrier as `embedReadOnly`,
   never reusing the actor's own `write_fields`-derived `readOnly` for embedded controls — caught
-  as a Critical/Important in Task 7's pre-authorized buddy-check (2 blind reviewers, same finding
-  independently); `ItemSheet` inherits the identical pattern (`effectReadOnly`) for its own
+  as a Critical/Important finding by two independent reviewers reviewing the same code blind,
+  reaching the same conclusion; `ItemSheet` inherits the identical pattern (`effectReadOnly`) for its own
   embedded effects. `EffectSheet` has no embeds of its own (effects are leaf documents in this
   checkpoint) and needs no such split — its `readOnly` alone is correct and complete.
 - **`nfT`/`NF_MESSAGES`** — chrome-translation helper: prefers the shell's `t`,
@@ -151,47 +147,47 @@ new wire frames.
   real translation — a test asserting a raw i18n key can never pass against a correctly
   i18n-routed component; assert against `NF_MESSAGES["..."]` instead. User-authored stat
   labels/keys/values are DATA and never routed through `nfT`.
-- **Registration** (Nightfox's `index` module) — `EFFECT_DOC_TYPE = "effect"` (D9; no engine home yet, filed as
+- **Registration** (Nightfox's `index` module) — `EFFECT_DOC_TYPE = "effect"` (no engine home yet, filed as
   friction in `docs/POST_WORK_FINDINGS.md`); all three sheets contribute at `sheet: { priority:
   10 }`, above the generic sheets (0 / `-Infinity`) so a community sheet module can still outbid
-  by priority (D10).
+  by priority.
 - Component files: `StatRow`/`StatTable`/`ModifiersEditor` (shared
   editors — per-instance datalist ids via `$props.id()` to avoid collision across simultaneous
   instances), `ActorSheet`/`ItemSheet`/`EffectSheet` (per-doc-type sheets),
   the `format` module (value display + live formula-validation + warning chips, sharing `resolve`'s
   `isParseError`).
 
-### The permutation invariant (D3/D12) — a tested property, not a hope
+### The permutation invariant — a tested property, not a hope
 
 `permutation.test` (Nightfox repo) is a 100-seed exact-equality battery over three
 independently-toggled shuffle axes — embed-array order, record key insertion order (`stats` and
 `modifiers` records together, one flag), and `order` field values — tested via four comparison
 variants against the natural-order baseline: one per individual axis plus one with all three
 axes combined. `resolveNightfox` output must deep-equal across all of them. This is the concrete test the
-canonical-fold-order fix exists for; a failure here is a Task-4/`resolve` bug, never a test to
+canonical-fold-order fix exists for; a failure here is a `resolve` bug, never a test to
 loosen (`[[tests-yield-to-correct-code]]`).
 
-## The roll wire (M13d)
+## The roll wire
 
 The `roll` module (Nightfox repo) — `buildStatRollContent(resolved: Map<string, ResolvedStat>, block:
 NightfoxBlock, key: string): { content: string } | FormulaError` is the pure builder that turns a
 resolved stat into chat content, posted verbatim through the existing chat seam
-(`WsClient.sendChatMessage`/`SendMessage`). Zero new wire frames, zero server change — the M11d-2
+(`WsClient.sendChatMessage`/`SendMessage`). Zero new wire frames, zero server change — the
 ingest boundary (`chat::rolls` caps/entropy/validation, see `shadowcat-codebase-chat`/
 `shadowcat-codebase-dice`) remains the only security boundary; this builder is untrusted-input
 producer, not consumer.
 
-- **Pathway:** stat lookup in `block.stats[key]` → rollable-type gate (`number`/`resource` only,
-  D7; `text`/`boolean` or a missing key return a `FormulaError` instead of posting) → template =
+- **Pathway:** stat lookup in `block.stats[key]` → rollable-type gate (`number`/`resource` only;
+  `text`/`boolean` or a missing key return a `FormulaError` instead of posting) → template =
   `stat.roll ?? key` (no authored template = a bare flat-value roll on the stat key itself) →
-  `resolveNotationTemplate(template, statRefResolver(resolved, block))` (M13a/M13b, resolves every
+  `resolveNotationTemplate(template, statRefResolver(resolved, block))` (resolves every
   bare/dotted reference to its **final** resolved value per the existing resolver scope rules) →
   on success, `content = "<template> [[<notation>]]"`; on any resolver error (a referenced stat is
   itself errored, e.g. a broken `formula`), the builder returns that `FormulaError` and never
   posts.
 - **Verbatim-copy rule:** the builder never rewrites, rounds, or otherwise normalizes the produced
   notation string — `resolveNotationTemplate` alone owns that (including the count-less-`d` → `1d`
-  normalization the M11 parser requires; the visible template text keeps the user's authored
+  normalization the dice-notation parser requires; the visible template text keeps the user's authored
   `d20`). A non-integer resolved value (e.g. a `formula` evaluating to `7 / 2`) is a `type` error
   from the builder rather than a silently-rounded roll — explicit rounding is required upstream.
 - **One-embed-per-message constraint:** the builder emits exactly ONE inline `[[…]]` roll embed per
@@ -205,7 +201,7 @@ producer, not consumer.
   a self-inflicted rejection for a pathological author), but do not assume the cap is unreachable.
   Never call the builder in a loop to compose a multi-roll message; that is an unenforced-by-this-
   function caller discipline, not a library-level cap.
-- **Server-side prerequisite this pathway depends on:** the M11 dice notation parser now accepts a
+- **Server-side prerequisite this pathway depends on:** the dice notation parser accepts a
   trailing `[label]` on ANY atomic factor (a bare `Const` or a `DiceGroup`), not only a dice group
   — required because `resolveNotationTemplate` substitutes a resolved identifier as a labeled
   constant (`value[name]`) even when the template has no dice group at all (e.g. `str`'s default
@@ -229,10 +225,9 @@ Load-bearing for anyone writing a new `evalNode` consumer (Nightfox's `resolve` 
 not the only, expected caller):
 
 - **`resolveAll` is a pure function of the key set** — sorted-root traversal means the same set
-  of requested keys always produces the same result regardless of call/iteration order (fixed
-  during M13b Task 5 review: an earlier version was order-dependent on the caller's key
-  ordering, which is exactly the kind of bug the Nightfox permutation battery is designed to
-  surface one layer up).
+  of requested keys always produces the same result regardless of call/iteration order (an
+  earlier version was order-dependent on the caller's key ordering, which is exactly the kind of
+  bug the Nightfox permutation battery is designed to surface one layer up).
 - **Cycle-error detail names the lexicographically smallest cycle member** — a canonical,
   deterministic choice so two logically-identical graphs built in different key orders report
   byte-identical error details.
@@ -244,7 +239,7 @@ not the only, expected caller):
   `evaluate`'s own `ref` case has a try/catch around a *different* concern (turning a malformed
   resolver return into a `FormulaError`) and must not be reused to catch the trampoline signal.
   The visiting/stack pairing invariant that makes this safe fails loudly (not silently) on
-  violation as of the M13b Task 5 fix.
+  violation.
 
 ## Key files & seams (`@shadowcat/formula`, in this repo)
 
@@ -295,19 +290,19 @@ not the only, expected caller):
   PR touching `resolveAll` or its consumers as needing that invariant re-verified.
 - **Zero Nightfox vocabulary in this package.** If a change introduces a Nightfox-specific concept
   (stat, bucket, effect, etc.) into `src/client/formula/`, that is a layering violation — it
-  belongs in the Nightfox repo (M13b+), not here.
+  belongs in the Nightfox repo, not here.
 - **The grammar has no exponent notation.** `1e999` lexes as `num(1)` followed by `word("e999")` —
   a parse error, not a cap error. This was a real spec-text bug found and fixed twice during
   planning; do not "fix" the lexer to accept exponents without a spec change.
 - **Identifiers are case-insensitive, normalized to lowercase; the library reserves no identifier
   names** (reserved-word/tier-1 validation is Nightfox's concern — shipped in
-  `nightfox-docs`'s `RESERVED_STAT_KEYS`, M13b) — every consumer-facing guard belongs in the
+  `nightfox-docs`'s `RESERVED_STAT_KEYS`) — every consumer-facing guard belongs in the
   consumer, not here.
 
 ## Gotchas
 
 - `internal`'s three helpers are the ONLY sanctioned way to cross a consumer-callback boundary.
-  A prior task (buddy-check-caught) skipped this pattern at one boundary and reopened a bug
+  A gap in this pattern was previously found and fixed at one boundary, reopening a bug
   already fixed twice elsewhere in the pipeline — treat any new injected-callback seam as
   needing the same validation, not a bespoke check.
 - Arithmetic semantics (`/`, `%`, rounding, `finite()` gating, `.5`) → see the
@@ -342,33 +337,18 @@ not the only, expected caller):
   correctly routes through `nfT`.
 - **An embedded carrier's write capability is NOT the sheet's own `write_fields`.** Reusing a
   single `readOnly` for both a sheet's own fields and its embedded items/effects is a
-  Critical-class permission bug (Task 7 buddy-check), not a minor UX gap — always compute
+  Critical-class permission bug caught by independent two-reviewer review, not a minor UX gap — always compute
   embedded-write gating from `core:manage_embedded` per carrier.
 
 ## Pointers
 
-- Spec: `docs/superpowers/specs/2026-07-15-m13-nightfox-system-design.md` §3 (formula grammar,
-  caps, error model, template mode — `@shadowcat/formula`), §§4-5 (Nightfox data model + one-graph
-  resolver, decisions D2-D4, D7-D9, D11-D14 — the rules engine), §6 (sheets — this skill's
-  "sheets layer" section).
-- Plans: `docs/superpowers/plans/2026-07-15-m13a-formula-library.md` (M13a, shipped, this repo);
-  `docs/superpowers/plans/2026-07-15-m13b-nightfox-headless-rules.md` (M13b, shipped, Nightfox
-  repo); `docs/superpowers/plans/2026-07-16-m13c-nightfox-sheets.md` (M13c, shipped, Nightfox
-  repo).
-- `docs/PLAN.md` M13 section — milestone chain (M13-0 → M13-1 → **M13a** → **M13b** → **M13c** →
-  M13d → M13e → M13f) and which repo (this one vs. the external Nightfox repo) owns each step;
-  the M13b/M13c done-entries there are the empirically-verified record of what shipped (task
-  count, buddy-check findings, suite counts) — this skill is the orientation layer, not the
-  changelog.
 - `docs/design/ARCHITECTURE.md` §6 — the `system.stats`/`system.mechanics` reserved-directory
-  premise (D13/D14) as a durable engine invariant, independent of Nightfox as a specific system.
-- `shadowcat-codebase-sheets` — the M12c sheet registry (`shadowcat.sheet:<doc_type>` contract,
-  `pickSheet`/`resolveDocRef`, the `basePrefix` derivation pattern) that M13c's sheets register
-  into; read it alongside this skill for any sheet-registration work.
+  premise as a durable engine invariant, independent of Nightfox as a specific system.
+- `shadowcat-codebase-sheets` — the sheet registry (`shadowcat.sheet:<doc_type>` contract,
+  `pickSheet`/`resolveDocRef`, the `basePrefix` derivation pattern) that Nightfox's sheets
+  register into; read it alongside this skill for any sheet-registration work.
 - `docs/POST_WORK_FINDINGS.md` — the external-module i18n-registration-seam gap and the
-  `effect`-doc_type-has-no-engine-home gap, both filed at M13c.
-- M13d (the roll wire — the `roll` module, the differential `roll-wire.e2e.test`) shipped in
-  place in this skill's "The roll wire (M13d)" section above, per the same in-place-extension
-  convention prior checkpoints established — this skill is scoped to the whole Nightfox surface
-  (in-repo library + out-of-repo rules engine + sheets + rolls), not just the formula library. Any
-  future Nightfox checkpoint (M13e+) should extend here too rather than forking a new skill.
+  `effect`-doc_type-has-no-engine-home gap.
+- This skill is scoped to the whole Nightfox surface (in-repo formula library + out-of-repo
+  rules engine + sheets + roll wire), not just the formula library. Any future Nightfox work
+  should extend here too rather than forking a new skill.
