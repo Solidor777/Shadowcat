@@ -562,13 +562,30 @@ export function buildVirtualText(
   return `${hostText}\n${hoistedBlock}${WRAPPER_OPEN}${analyzed.rest.join("\n")}${WRAPPER_CLOSE}`;
 }
 
+/** The example-compilation option contract, applied on top of whatever a package's own
+ * `tsconfig.json` resolves to. **Type correctness is enforced; production-hygiene
+ * lints are not.** An example is documentation, not shipped code: a binding kept only
+ * to name what a call returns (`const asset = await uploadAsset(...);`) is the correct
+ * shape for a doc example, not a defect, and `noUnusedLocals`/`noUnusedParameters`
+ * would report it as one purely because the host package happens to enable that lint
+ * for its own production hygiene. Inheriting a package's options WHOLESALE silently
+ * turns that production-hygiene policy into an example-correctness verdict with
+ * nothing marking the transition — this block is the marker: any future option that
+ * governs style/hygiene rather than whether an example actually works belongs here,
+ * named, rather than being rediscovered the next time it inflates a failure count. */
+export const EXAMPLE_HYGIENE_OVERRIDES = {
+  noUnusedLocals: false,
+  noUnusedParameters: false,
+};
+
 /** A package's real compiler options, resolved via `ts.getParsedCommandLineOfConfigFile`
- * against that package's own tsconfig.json (which extends tsconfig.base.json) — so
- * examples are checked under the same `strict`, `noUnusedLocals` and
- * `verbatimModuleSyntax` settings, and the same `types`, as the code they document.
- * `baseUrl`/`paths` are added on top so a workspace-package-name import resolves even
- * when the host package does not itself declare that package as a dependency
- * (including a package importing itself by name). */
+ * against that package's own tsconfig.json (which extends tsconfig.base.json), so
+ * examples are checked under the same `strict` and `verbatimModuleSyntax` settings,
+ * and the same `types`, as the code they document — with `EXAMPLE_HYGIENE_OVERRIDES`
+ * layered on top to keep production-hygiene lints from becoming example-correctness
+ * verdicts. `baseUrl`/`paths` are added on top so a workspace-package-name import
+ * resolves even when the host package does not itself declare that package as a
+ * dependency (including a package importing itself by name). */
 function packageCompilerOptions(repoRoot, pkgDir, pkgDirs) {
   const configPath = join(repoRoot, pkgDir, "tsconfig.json");
   const parseConfigHost = {
@@ -585,6 +602,7 @@ function packageCompilerOptions(repoRoot, pkgDir, pkgDirs) {
   if (!parsed) throw new Error(`unable to parse ${configPath}`);
   return {
     ...parsed.options,
+    ...EXAMPLE_HYGIENE_OVERRIDES,
     noEmit: true,
     baseUrl: toPosix(repoRoot),
     paths: {
@@ -741,9 +759,9 @@ function runCompilationControl(repoRoot) {
     module: ts.ModuleKind.ESNext,
     moduleResolution: ts.ModuleResolutionKind.Bundler,
     strict: true,
-    noUnusedLocals: true,
     noEmit: true,
     skipLibCheck: true,
+    ...EXAMPLE_HYGIENE_OVERRIDES,
   };
   const overlay = new Map([
     [helperPath, "export function controlHelperValue(): number {\n  return 1;\n}\n"],
@@ -785,9 +803,9 @@ function runTypeValueClashControl(repoRoot) {
     module: ts.ModuleKind.ESNext,
     moduleResolution: ts.ModuleResolutionKind.Bundler,
     strict: true,
-    noUnusedLocals: true,
     noEmit: true,
     skipLibCheck: true,
+    ...EXAMPLE_HYGIENE_OVERRIDES,
   };
   const overlay = new Map([
     [helperPath, "export class ControlAssetResolver {}\n"],
@@ -798,6 +816,52 @@ function runTypeValueClashControl(repoRoot) {
     console.error(
       `compilation control mismatch: type-only-host/value-example example did not compile green:\n` +
         diagnostics.map((d) => `  ${ts.flattenDiagnosticMessageText(d.messageText, "\n")}`).join("\n"),
+    );
+    process.exit(1);
+  }
+}
+
+/** `EXAMPLE_HYGIENE_OVERRIDES` must draw the line exactly where it claims to: an
+ * example whose only issue is an unused binding compiles GREEN (hygiene is off), and
+ * an example with a genuine type error still FAILS (correctness stays on). Proving
+ * only the first half would leave the override free to silently swallow real errors
+ * alongside the hygiene noise it targets. */
+function runHygieneOverrideControl(repoRoot) {
+  const dir = join(repoRoot, "scripts");
+  const options = {
+    target: ts.ScriptTarget.ES2022,
+    module: ts.ModuleKind.ESNext,
+    moduleResolution: ts.ModuleResolutionKind.Bundler,
+    strict: true,
+    noEmit: true,
+    skipLibCheck: true,
+    ...EXAMPLE_HYGIENE_OVERRIDES,
+  };
+
+  const unusedPath = toPosix(join(dir, "__doctest_control_hygiene_unused__.doctest0.ts"));
+  const unusedAnalyzed = analyzeExample("const controlHygieneUnused = 1;\n");
+  const unusedDiagnostics = compileOverlay(
+    options,
+    new Map([[unusedPath, buildVirtualText("export {};\n", unusedAnalyzed)]]),
+  ).get(unusedPath);
+  if (unusedDiagnostics.length !== 0) {
+    console.error(
+      `hygiene control mismatch: an example whose only issue is an unused binding did not compile green:\n` +
+        unusedDiagnostics.map((d) => `  ${ts.flattenDiagnosticMessageText(d.messageText, "\n")}`).join("\n"),
+    );
+    process.exit(1);
+  }
+
+  const typeErrorPath = toPosix(join(dir, "__doctest_control_hygiene_typeerror__.doctest0.ts"));
+  const typeErrorAnalyzed = analyzeExample('const controlHygieneTypeError: number = "not a number";\n');
+  const typeErrorDiagnostics = compileOverlay(
+    options,
+    new Map([[typeErrorPath, buildVirtualText("export {};\n", typeErrorAnalyzed)]]),
+  ).get(typeErrorPath);
+  if (typeErrorDiagnostics.length === 0) {
+    console.error(
+      "hygiene control mismatch: an example with a genuine type error compiled green — " +
+        "EXAMPLE_HYGIENE_OVERRIDES is masking correctness errors, not just hygiene lints",
     );
     process.exit(1);
   }
@@ -822,6 +886,7 @@ const repoRootForControls = resolve(fileURLToPath(import.meta.url), "..", "..");
 runExtractionControls();
 runCompilationControl(repoRootForControls);
 runTypeValueClashControl(repoRootForControls);
+runHygieneOverrideControl(repoRootForControls);
 runClassContextControl();
 
 const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);

@@ -17,7 +17,9 @@ import {
   upgradeTypeOnlyImports,
   resolveTypeValueClashes,
   buildVirtualText,
+  EXAMPLE_HYGIENE_OVERRIDES,
 } from "./extract-ts-examples.mjs";
+import ts from "typescript";
 
 describe("extractExamples", () => {
   it("extracts a tagged ```ts fence inside an @example tag with its line number", () => {
@@ -422,6 +424,43 @@ describe("buildVirtualText", () => {
     const analyzed = analyzeExample('import { Foo } from "mod";\nconsole.log(Foo);');
     const text = buildVirtualText(hostText, analyzed);
     expect(text.match(/from "mod"/g)).toHaveLength(1);
+  });
+});
+
+describe("EXAMPLE_HYGIENE_OVERRIDES", () => {
+  const baseOptions = {
+    target: ts.ScriptTarget.ES2022,
+    module: ts.ModuleKind.ESNext,
+    moduleResolution: ts.ModuleResolutionKind.Bundler,
+    strict: true,
+    noEmit: true,
+    skipLibCheck: true,
+  };
+
+  function compile(code) {
+    const options = { ...baseOptions, ...EXAMPLE_HYGIENE_OVERRIDES };
+    const path = "/virtual/hygiene-test.ts";
+    const analyzed = analyzeExample(code);
+    const text = buildVirtualText("export {};\n", analyzed);
+    const host = ts.createCompilerHost(options, true);
+    const base = { fileExists: host.fileExists.bind(host), getSourceFile: host.getSourceFile.bind(host) };
+    host.fileExists = (f) => f === path || base.fileExists(f);
+    host.getSourceFile = (f, lv, onErr, sc) =>
+      f === path ? ts.createSourceFile(f, text, lv, true) : base.getSourceFile(f, lv, onErr, sc);
+    const program = ts.createProgram([path], options, host);
+    return ts.getPreEmitDiagnostics(program, program.getSourceFile(path));
+  }
+
+  it("turns off noUnusedLocals and noUnusedParameters, and nothing else", () => {
+    expect(EXAMPLE_HYGIENE_OVERRIDES).toEqual({ noUnusedLocals: false, noUnusedParameters: false });
+  });
+
+  it("compiles GREEN an example whose only issue is an unused binding", () => {
+    expect(compile("const unusedOnly = 1;\n")).toHaveLength(0);
+  });
+
+  it("still FAILS an example with a genuine type error", () => {
+    expect(compile('const typeError: number = "not a number";\n').length).toBeGreaterThan(0);
   });
 });
 
