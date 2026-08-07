@@ -7,7 +7,7 @@ const PNG_1X1 = Buffer.from(
   "base64",
 );
 
-// Scene-space geometry for this spec. The camera starts at `Camera`'s default offset (0,0)
+// Scene-space geometry for this test. The camera starts at `Camera`'s default offset (0,0)
 // scale 1 and nothing here pans or zooms, so a scene coordinate
 // is exactly a canvas-local pixel — identical in BOTH sessions regardless of how
 // much of the viewport each one's panels consume.
@@ -163,9 +163,10 @@ async function expectTokenX(page: Page, x: number, why: string): Promise<void> {
 // SCOPE. The scene being hex drives the client (render, snapping) and the server's hex-specific
 // `GridShape` (axial rounding, supercover traversal, `cell_enterable`'s footprint/mask/wall
 // checks) for every leg — Unrestricted no longer means routing-agnostic, since a non-GM's move
-// is ALWAYS routed post-D9. The hex router's exact per-cell parity with the executor is also
-// pinned by the server's own unit and integration tests; this spec proves the end-to-end
-// authoring→drag→commit path round-trips through a real hex scene, not that parity itself.
+// is always server-routed through real A* pathfinding (never client-executed). The hex router's
+// exact per-cell parity with the executor is also pinned by the server's own unit and integration
+// tests; this test proves the end-to-end authoring→drag→commit path round-trips through a real
+// hex scene, not that parity itself.
 test("a non-GM player's wall-crossing drag on a hex scene is rejected by the server and rolled back", async ({
   page,
   browser,
@@ -209,7 +210,7 @@ test("a non-GM player's wall-crossing drag on a hex scene is rejected by the ser
     viewport: VIEWPORT,
   });
   const player = await playerCtx.newPage();
-  // Captures every WS frame the player's client SENDS, for the rest of the test. Post-D9 a
+  // Captures every WS frame the player's client SENDS, for the rest of the test. A
   // gated player move issues no optimistic document write at all (`commitMoves`'s player branch
   // never touches `ctx.documents` — the token's rendered position advances only off the
   // server's own `MoveStream`), so proving a drag actually dispatched a request — rather than
@@ -283,7 +284,7 @@ test("a non-GM player's wall-crossing drag on a hex scene is rejected by the ser
     await gm.getByTestId("launcher-item-assets:panel").click();
 
     // A `blocksMove` wall between the token and the illegal destination is NOT enough on its
-    // own: post-D9 a player's move is real A* routing (`SceneEcs::pathfind`), and Unrestricted
+    // own: a player's move is always real A* routing (`SceneEcs::pathfind`), and Unrestricted
     // mode has no visibility mask to bound the search — a single open wall segment is always
     // flankable by detouring around its endpoint within the router's fixed search-window margin
     // (`WINDOW_MARGIN`), REGARDLESS of how long the segment is made, since the
@@ -334,7 +335,7 @@ test("a non-GM player's wall-crossing drag on a hex scene is rejected by the ser
     const pathfindsBeforeIllegalDrag = pathfindCount();
     await dragScene(player, { x: LEGAL_X, y: TOKEN_Y }, { x: ILLEGAL_X, y: TOKEN_Y });
 
-    // The position must never change: post-D9 a gated player move issues no optimistic write, so
+    // The position must never change: a gated player move issues no optimistic write, so
     // a rejection has nothing to "roll back" — it simply never applies. The enclosing box makes
     // this leg genuinely Unreachable to the router itself (`PathError`, client-side `pathfind`
     // promise rejects), so the client's `.catch()` never even calls `moveRequest` — the absence

@@ -37,7 +37,7 @@ export function isWellFormedError(v: unknown): v is FormulaError {
 
 /** Gates any arithmetic result behind `Number.isFinite` — an overflow to
  * `Infinity`/`-Infinity` (or a stray `NaN`) becomes a `FormulaValue` error
- * instead of leaking past the library boundary (spec §5.2).
+ * instead of leaking past the library boundary.
  * @param n A raw arithmetic result (e.g. from `+`, `/`, or a builtin call).
  * @returns `n` itself when finite, else a `"non-finite"` `FormulaError`.
  * @example

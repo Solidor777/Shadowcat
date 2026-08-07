@@ -1,5 +1,5 @@
 // Client-core template operations: stamp (create-from-template) + the 3-way pull/push/revert
-// emission (M13e). All produce document ops; the caller dispatches via `dispatchIntent`. The
+// emission. All produce document ops; the caller dispatches via `dispatchIntent`. The
 // server never merges — a merge is an ordinary batched `Update`.
 import type { WireDocument, WireOperation, WireFieldChange } from "./wire";
 import {
@@ -234,7 +234,7 @@ export function planToUpdate(child: WireDocument, template: WireDocument, merged
  * the template value/deletion; the rest keep the child ("mine") value already in `mergedBands`.
  * Pure (clones its input).
  * @param mergedBands The child-wins-default bands from a `MergePlan`.
- * @param conflicts The plan's unresolved conflicts.
+ * @param conflicts `MergePlan`'s unresolved conflicts.
  * @param theirs The set of conflict `path`s the user picked "take template" for.
  * @returns A new `MergeBands` with each `theirs` path resolved toward the template.
  * @example

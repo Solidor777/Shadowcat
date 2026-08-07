@@ -4,7 +4,7 @@ import { finite, validateResolverOutput } from "./internal";
 
 /** Structural recursion over `Expr`. Resolver errors and non-finite arithmetic
  * results both short-circuit as `FormulaValue` errors — the evaluator never
- * throws and never returns `NaN`/`Infinity` (spec §5.2). Operands evaluate
+ * throws and never returns `NaN`/`Infinity`. Operands evaluate
  * left-to-right; the FIRST error encountered wins. Recursion depth is bounded
  * indirectly by `MAX_AST_NODES`, not `MAX_PARSE_DEPTH`: a flat additive/
  * multiplicative chain (e.g. `a + b + c + ...`) builds one `evaluate` stack

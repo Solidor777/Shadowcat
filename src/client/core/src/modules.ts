@@ -274,8 +274,7 @@ export class ModuleRegistry {
    * colliding singleton contract or a throwing `register()` is caught, logged,
    * and left inactive WITHOUT aborting the topological loop — one broken or
    * colliding module (first-party or external) must never brick the modules
-   * ordered after it (ARCHITECTURE §2 invariant 4). An already-active module is
-   * skipped as a no-op.
+   * ordered after it. An already-active module is skipped as a no-op.
    * @returns Resolves once every module has been attempted (activated, skipped,
    * or rolled back on failure) — a single module's activation failure never
    * rejects the call. Rejects only if the dependency graph itself has a cycle

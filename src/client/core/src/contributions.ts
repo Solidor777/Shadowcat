@@ -15,7 +15,7 @@ export type Cardinality = "singleton" | "multi";
  * switches on `DefaultPlacement`'s `kind` and, for `"docked"`, places directly into
  * `l.expanded.zones[zone]` — no zone outside this union is representable in the layout tree. The
  * drop-target policy (`classifyDrop`) independently confirms the
- * boundary: it vetoes a container-edge drop with `"no top dock zone exists (spec D4)"` because
+ * boundary: it vetoes any container-edge drop targeting `"top"`, because
  * `"top"` is not, and never will be, a `ZoneId`. */
 export type ZoneId = "right" | "bottom" | "left";
 

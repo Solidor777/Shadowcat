@@ -1,4 +1,4 @@
-// An in-process TypeScript implementation of the M5 server protocol, used to
+// An in-process TypeScript implementation of the WS server protocol, used to
 // drive the WS client end-to-end in tests without the Rust server (the `web` CI
 // job has no Rust toolchain). It assigns seqs, echoes intents as authoritative
 // Events, broadcasts to all connections, serves resync from a log, and supports

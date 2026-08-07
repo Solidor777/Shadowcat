@@ -1,4 +1,4 @@
-// Sheet registry resolution + document-reference write-site resolution (M12c).
+// Sheet registry resolution + document-reference write-site resolution.
 // Pure: no Svelte, no panel-manager, no AppContext. `openDocument` (ui-kit) and the
 // generic sheet components consume these. Fail-closed everywhere — a dangling or
 // raw reference resolves to `null`, never a throw.
@@ -141,8 +141,8 @@ export function resolveDocRef(ref: SheetRef, store: ReadableDocuments): SheetTar
 
 /** Resolve the sheet COMPONENT for a document: doc_type providers plus the generic
  * fallback, filtered by each provider's `match`, highest `priority` wins, ties broken by
- * lexicographically lowest registering module id (the M11d-3 deterministic-singleton
- * precedent). `-Infinity` keeps the fallback below every real provider. Null only when
+ * lexicographically lowest registering module id (deterministic across load order).
+ * `-Infinity` keeps the fallback below every real provider. Null only when
  * nothing (not even a fallback) is registered.
  * @param registry The contribution registry to search for sheet providers.
  * @param doc The document to pick a sheet component for.

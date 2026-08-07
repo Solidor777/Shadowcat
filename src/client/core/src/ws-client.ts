@@ -1,4 +1,4 @@
-// WebSocket client over the M5 protocol: maintains an ordered application
+// WebSocket client over the server's WS protocol: maintains an ordered application
 // watermark (the client-side sequence guard), recovers gaps via ResyncRequest,
 // reconnects with exponential backoff, and tracks the server time offset. It
 // emits in-order commands and rejects to its handlers; wiring to the document
@@ -23,7 +23,7 @@ export interface SearchPage {
 }
 
 /** A resolved pathfind result (WsClient.pathfind). `arrested` is true when the route was cut
- * short by a visible arrest region (spec §5). */
+ * short by a visible arrest region. */
 export interface PathResult {
   /** Ordered `[x, y]` scene-coordinate waypoints of the computed route. */
   path: [number, number][];
@@ -540,9 +540,10 @@ export class WsClient {
   }
 
   /** One connection attempt: bumps `connGeneration`, awaits `opts.connect`, and on success arms
-   * the Welcome watchdog; on failure (or if `stop()` ran while the connect was pending — see
-   * the `running_`-not-rechecked-post-await gotcha, `docs/TODO.md`) schedules a reconnect
-   * instead. Called by `start()` and by `scheduleReconnect`'s resolved sleep. Not exported.
+   * the Welcome watchdog; on failure schedules a reconnect instead. `running_` is checked only
+   * BEFORE the `opts.connect` await, not after — a `stop()` call while the connect is pending
+   * still lets the resolved transport be adopted into `this.transport` unwatched.
+   * Called by `start()` and by `scheduleReconnect`'s resolved sleep. Not exported.
    * @returns Resolves once this attempt has either armed the watchdog or scheduled a retry.
    * @example
    * ```

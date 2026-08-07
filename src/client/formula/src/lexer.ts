@@ -61,7 +61,7 @@ function isWordChar(ch: string): boolean {
 }
 
 /** Single left-to-right scan into tokens. Identifiers are lowercased on read
- * (spec §3.1 case-insensitive identifiers). Never throws — unrecognized
+ * (identifiers are case-insensitive). Never throws — unrecognized
  * input returns a `FormulaError` value instead.
  * @param src Formula source text.
  * @returns The token stream on success, or a `FormulaError` — `"cap"` for a

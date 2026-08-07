@@ -4,7 +4,7 @@
 // stays environment-neutral so a future sandboxed delivery is another importFn.
 // Every entry loads in isolation: a parse/compat/import/id-mismatch failure on
 // one entry never aborts the batch — a broken community module must degrade to
-// a reported failure, never brick every other module in the load list (M13-1 §3).
+// a reported failure, never brick every other module in the load list.
 import { ModuleRegistry, type Module } from "./modules";
 import { parseManifest, type ModuleManifest } from "./manifest";
 import { satisfies } from "./semver";

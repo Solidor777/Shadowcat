@@ -138,7 +138,7 @@ describe("resolveSceneSettings", () => {
     expect(r.snapToGrid).toBe(true);
   });
 
-  it("snapToGrid defaults to false for a continuous scene (derived default, spec §4.1)", () => {
+  it("snapToGrid defaults to false for a continuous scene (derived default)", () => {
     const scene = buildSceneDoc("w1", { vision: { movementModel: "continuous", losRestriction: null, fog: null, observerVision: null, movementRestriction: null } }, "scene1");
     const r = resolveSceneSettings(scene, storeWith(scene));
     expect(r.movementModel).toBe("continuous");
@@ -379,7 +379,7 @@ describe("buildRegionDoc", () => {
   });
 });
 
-describe("TokenVisual union (M10h)", () => {
+describe("TokenVisual union", () => {
   it("admits a plain image visual", () => {
     const v: TokenVisual = { kind: "image", asset: "a1" };
     expect(v.kind).toBe("image");

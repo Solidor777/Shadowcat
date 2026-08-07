@@ -3,7 +3,7 @@ import type { Asset } from "@shadowcat/types";
 // Client-side asset REST, beside AssetResolver: the asset upload/list/replace/
 // delete contract with the server. Shared by the assets panel and scene-tools'
 // asset picker, so it lives in the framework-neutral core (not a single panel
-// module). Plain fetch — no Svelte in core's closure (invariant #7).
+// module). Plain fetch — core stays framework-neutral, so no Svelte in its dependency closure.
 
 /** Upload an image to a world. GM-only (`require_gm`, `http::assets::upload`);
  * a non-GM member or non-member both get a 403. Streamed multipart to

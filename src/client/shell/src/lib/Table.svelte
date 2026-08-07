@@ -37,7 +37,7 @@
   // like `panels`/`sheets`.
   const sceneSelection = new SceneSelection();
 
-  // Template merge controller (M13e): stamp/pull/push/revert orchestration + the conflict modal.
+  // Template merge controller: stamp/pull/push/revert orchestration + the conflict modal.
   // `session` is fixed per Table, so capturing it once here is intended (see the identical
   // rationale on the `setAppContext` call below).
   // svelte-ignore state_referenced_locally

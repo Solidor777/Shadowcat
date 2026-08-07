@@ -7,13 +7,11 @@ export type AssetOp = "replaced" | "deleted";
  * counter cache-busts the URL on replace so a fresh request (and thus ETag
  * revalidation) happens. Deleted uuids resolve to the placeholder.
  *
- * KNOWN DEFECT (`docs/OPEN_BUGS.md`, the AssetChanged entry): `revs` is
- * client-local and bumped only by `onAssetChanged` — it never reads the
- * asset's server-side `version`. A connection that misses an
- * `AssetChanged{replaced}` frame — an ordinary reconnect is sufficient to
- * cause this, see the linked entry for the mechanism — keeps a
- * byte-identical `url()` result forever; no new request is ever issued, so
- * nothing self-heals until a page reload.
+ * KNOWN DEFECT: `revs` is client-local and bumped only by `onAssetChanged` — it never reads the
+ * asset's server-side `version`. A connection that misses an `AssetChanged{replaced}` frame (an
+ * ordinary reconnect is sufficient to cause this, since a missed broadcast is never replayed)
+ * keeps a byte-identical `url()` result forever; no new request is ever issued, so nothing
+ * self-heals until a page reload.
  */
 export class AssetResolver {
   /** Per-uuid cache-busting revision, incremented only by `onAssetChanged` —

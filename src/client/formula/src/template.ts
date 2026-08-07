@@ -3,7 +3,7 @@ import { validateResolverOutput } from "./internal";
 
 /** Identifier words whose leading-alpha prefix means dice notation, not a stat.
  * Mirrors `P::modifiers`'s keyword match (kh/kl/dh/dl/r/ro/cs/cf/t/e)
- * plus the 'd' dice operator. M13b's authoring validation imports this list. */
+ * plus the 'd' dice operator. Nightfox's stat-key authoring validation imports this list. */
 export const NOTATION_KEYWORDS: readonly string[] =
   ["d", "kh", "kl", "dh", "dl", "r", "ro", "cs", "cf", "t", "e"];
 
@@ -119,7 +119,7 @@ function substituteIdentifier(
   }
   // Intentionally asymmetric: spec formula is `abs(value) > i32::MAX`, so the true i32
   // minimum (-2147483648) is rejected as a cap error even though it IS representable in
-  // an i32. This mirrors the spec literally — do not "fix" it into a symmetric range check.
+  // an i32. This asymmetry is intentional — do not "fix" it into a symmetric range check.
   if (Math.abs(value) > I32_MAX) {
     return { error: "cap", detail: `'${originalText}' = ${value}: out of i32 range` };
   }
@@ -136,13 +136,14 @@ function substituteIdentifier(
   // `Expr::Neg` — so a labeled `-N[label]` would still contribute a signed chip,
   // while this form's two unlabeled `Const`s contribute none. A negative
   // substitution therefore shows no `[label]` chip in the breakdown.
-  // See docs/TODO.md — whether that is intended has not been established.
+  // TODO: decide whether that is intended; if the chip is wanted, emit `-N[originalText]`
+  // instead (arithmetically identical per the fold above).
   if (value < 0) return `(0 - ${-value})`;
   return `${value}[${originalText}]`;
 }
 
 /** Rewrites a dice-notation template: identifiers resolve to labeled constants, existing
- * dice-notation atoms (and `[label]` spans) pass through untouched. Spec §3 template mode.
+ * dice-notation atoms (and `[label]` spans) pass through untouched.
  * INVARIANT: never throws; every failure path returns a FormulaError.
  * @param src Template text, e.g. `"1d20 + str"` — a mix of dice-notation atoms
  * (numbers, the `d` operator, `NOTATION_KEYWORDS` modifiers, `[label]` spans)
@@ -202,7 +203,7 @@ export function resolveNotationTemplate(
       // by a digit or another keyword-shaped run (e.g. "t1", "d2mod") cannot be resolved
       // as an identifier here: `readAlphaPrefix` stops at the first non-alpha char, so
       // the keyword letter alone matches NOTATION_KEYWORDS and the remainder re-lexes as
-      // dice-notation atoms, not a continued identifier. M13b's tier-1 authoring
+      // dice-notation atoms, not a continued identifier. Nightfox's stat-key authoring
       // validation (reserved-key checking) must reject this compound shape too, not just
       // literal keyword collisions.
       if (NOTATION_KEYWORDS.includes(lower)) {

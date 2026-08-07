@@ -259,7 +259,7 @@ test("GM vision dropdown: see-all / preview-fog drive the fog in real GL", async
   await expect(host).toHaveAttribute("data-vision-mode", "all");
 });
 
-// Buddy-check finding 1: below the 48rem/768px breakpoint the panel host switches to its
+// Below the 48rem/768px breakpoint the panel host switches to its
 // compact presentation, which hides `.engine-host` — the stage canvas must be relocated
 // into the persistent `.compact-stage` well (kept mounted, never inside a hidden ancestor)
 // rather than buried and invisible.

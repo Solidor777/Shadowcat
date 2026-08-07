@@ -2,7 +2,7 @@ import { tokenize, type Tok } from "./lexer";
 import { type FormulaError, MAX_AST_NODES, MAX_PARSE_DEPTH } from "./types";
 
 /** Names accepted where a word is immediately followed by `(` — anything else
- * there is a parse error (spec: the library reserves no OTHER identifiers). */
+ * there is a parse error; the library reserves no OTHER identifiers. */
 const FN_NAMES = new Set(["min", "max", "floor", "ceil", "round"]);
 type FnName = "min" | "max" | "floor" | "ceil" | "round";
 

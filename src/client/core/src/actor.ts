@@ -1,5 +1,5 @@
 // Resolves a token to its EffectiveActor: the single read-through every token-decoration
-// consumer (render visual, faction border [M10b], conditions [M10c], displayName) uses.
+// consumer (render visual, faction border, conditions, displayName) uses.
 // Linked tokens read the shared actor + apply the override whitelist; instanced tokens read
 // their embedded copy. Returns null for a raw (actorless) or dangling-link token.
 // Re-rooted onto the three-band document shape: `name` (the actor's real identity) lives on
@@ -127,7 +127,8 @@ export function resolveTokenActor(token: WireDocument, store: ReadableDocuments)
  * is a plain id lookup with no scope filter. This is safe only because the client's
  * `DocumentStore` never holds a cross-scope document today (it is fed solely by the single
  * connected world's WS stream; a `"compendium"`-scoped id never enters `store`), not because
- * the check is unnecessary in principle. See `docs/TODO.md` for making this structural.
+ * the check is unnecessary in principle.
+ * TODO: enforce the scope guard structurally instead of relying on `store`'s current feed shape.
  *
  * Fail-closed: no link, a dangling link, a resolved document that is not an actor, and an
  * unowned actor all yield `null`. INSTANCED tokens deliberately do NOT inherit from their
@@ -332,9 +333,9 @@ export function resolveTokenBox(token: WireDocument, store: ReadableDocuments, e
   return { x, y, w: eng?.w ?? 0, h: eng?.h ?? 0, shape: "square" };
 }
 
-/** Bounding-disc radius (grid units) consumed by the M10e+ pathfinder for clearance/inflation.
- * Conservative enclosure: a square uses its half-diagonal, a circle its radius. Per-engine
- * refinement (grid clearance vs navmesh inflation) is owned by M10e/M10f.
+/** Bounding-disc radius (grid units) consumed identically by both the grid A* pathfinder's
+ * clearance check and the navmesh router's inflation — neither refines it per-engine.
+ * Conservative enclosure: a square uses its half-diagonal, a circle its radius.
  * @param eff The `shape`/`size` slice of an `EffectiveActor`.
  * @returns The bounding-disc radius, in grid units.
  * @example

@@ -28,7 +28,7 @@ export type { Cardinality } from "./generated/Cardinality";
 export type { ContractProvide } from "./generated/ContractProvide";
 export type { ContractDeclaration } from "./generated/ContractDeclaration";
 
-// Structural schema registry (M13f)
+// Structural schema registry
 export type { SchemaType } from "./generated/SchemaType";
 export type { Schema } from "./generated/Schema";
 export type { SchemaDeclaration } from "./generated/SchemaDeclaration";
@@ -37,7 +37,7 @@ export type { SchemaDeclaration } from "./generated/SchemaDeclaration";
 export type { ServerConfig } from "./generated/ServerConfig";
 export type { WorldEntry } from "./generated/WorldEntry";
 
-// Module toolchain (M13-1)
+// Module toolchain
 export type { InstalledModuleInfo } from "./generated/InstalledModuleInfo";
 
 // Assets

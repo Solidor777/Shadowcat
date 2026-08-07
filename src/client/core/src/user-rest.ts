@@ -1,8 +1,8 @@
 import type { WorldRole } from "@shadowcat/types";
 
-// Account + membership REST, beside the `module-rest` module. Framework-neutral (no
-// Svelte in core's closure, invariant #7) so the settings module's admin
-// user-management and GM member-add surfaces can both consume it.
+// Account + membership REST, beside the `module-rest` module. Core stays framework-neutral,
+// so no Svelte in its dependency closure — the settings module's admin user-management and
+// GM member-add surfaces can both consume it.
 //
 // The server is the sole authority on who may call these: `/api/users` is
 // gated on ServerRole::Admin and membership writes on world-GM. Nothing here

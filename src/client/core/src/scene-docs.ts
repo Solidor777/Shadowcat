@@ -166,7 +166,7 @@ export const DEFAULT_WORLD_SETTINGS: WorldSettingsEngine = deepFreeze({
   activeScene: null,
 });
 
-// --- Resolved settings (M10e-1) ---
+// --- Resolved settings ---
 
 /** The fully resolved per-scene settings after merging built-ins → world defaults → scene overrides. */
 export interface ResolvedSceneSettings {
@@ -460,7 +460,7 @@ export function resolveSceneSettings(scene: WireDocument | undefined, store: Rea
     observerVision: v?.observerVision ?? d.scene.observerVision,
     movementRestriction: v?.movementRestriction ?? d.scene.movementRestriction,
     movementModel,
-    // Derived default keyed off the RESOLVED movementModel (M10f-3 §4.1) — `??` only falls
+    // Derived default keyed off the RESOLVED movementModel — `??` only falls
     // through on null/undefined, never on `false`, so an explicit stored boolean (including
     // false) always overrides the derived default in either direction.
     snapToGrid: eng?.snapToGrid ?? (movementModel === "continuous" ? false : true),
@@ -475,8 +475,8 @@ export function resolveSceneSettings(scene: WireDocument | undefined, store: Rea
   };
 }
 
-/** The single client-side answer to "which scene does THIS client render/subscribe to"
- * (M12d). Resolution order: a resolvable `gmViewedScene` (GM local roam) → a resolvable
+/** The single client-side answer to "which scene does THIS client render/subscribe to".
+ * Resolution order: a resolvable `gmViewedScene` (GM local roam) → a resolvable
  * `world-settings.activeScene` (players follow) → the first scene (legacy). `null` ONLY when
  * no scene exists. Fail-closed by construction: an id that no longer names a scene is ignored
  * (never renders nothing while scenes exist, never leaks a nonexistent scene's channel).
@@ -586,7 +586,7 @@ export function buildItemDoc(worldId: string, name: string | null, system: ItemS
 
 /** Build a token from an actor. `link` references the shared actor; `instance` embeds an
  * independent copy with `source` provenance (the deferred merge engine consumes it). Size/
- * shape resolve from the actor (M10d); `w`/`h` seed the rendered cell size now.
+ * shape resolve from the actor; `w`/`h` seed the rendered cell size now.
  * `doc_type: "token"` is engine-defined — the transform/visual/link body lands in `engine`.
  * @param worldId The owning world's id.
  * @param sceneId The scene document this token is parented to.
@@ -760,7 +760,7 @@ export function buildSceneEntityDoc(worldId: string, sceneId: string, docType: s
   return envelope(worldId, docType, sceneId, {}, id, engine, null);
 }
 
-// --- Light-gradation registry (M10e-1) ---
+// --- Light-gradation registry ---
 
 /** Built-in three-band gradation (bright → dim → dark).
  * Stored unsorted; `resolveGradation` returns a sorted copy.
@@ -813,7 +813,7 @@ export function resolveGradation(store: ReadableDocuments): GradationBand[] {
   return [...bands].sort((a, b) => b.minIllumination - a.minIllumination);
 }
 
-// --- Vision-modes registry (M10e-1) ---
+// --- Vision-modes registry ---
 
 /** Built-in two-mode seed: normal sight + darkvision.
  * Deep-frozen so shared refs returned by resolveVisionModes cannot be mutated by consumers. */
@@ -860,7 +860,7 @@ export function resolveVisionModes(store: ReadableDocuments): Record<string, Vis
   return eng?.modes ?? SEED_VISION_MODES;
 }
 
-// --- Light source doc type (M10e-1) ---
+// --- Light source doc type ---
 
 /** A light-source document parented to `sceneId`. The caller supplies the full `engine`
  * body (no default constant — no aliasing concern). `doc_type: "light"` is engine-defined.
@@ -885,7 +885,7 @@ export function buildLightDoc(worldId: string, sceneId: string, engine: LightEng
   return envelope(worldId, "light", sceneId, {}, id, engine, null);
 }
 
-// --- Region doc type (M10g) ---
+// --- Region doc type ---
 
 /** A region document parented to `sceneId`. Visible to all by default; use
  * `setRegionVisibility` to make it a secret trap. `doc_type: "region"` is engine-defined.

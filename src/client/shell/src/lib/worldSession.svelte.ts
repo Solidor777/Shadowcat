@@ -74,7 +74,7 @@ export class WorldSession {
   readonly contributions = new ContributionRegistry();
   readonly assets = new AssetResolver();
   /** Canvas interaction bridge: the Stage attaches the engine; tool components reach
-   * it via AppContext. Stable across Stage remount (M8d §16). */
+   * it via AppContext. Stable across Stage remount. */
   readonly sceneInteraction = new SceneInteractionBridge();
   /** The actor the place tool stamps; set by module-actors, read by scene-tools. Stable. */
   readonly actorSelection = new ActorSelection();
@@ -400,7 +400,7 @@ export class WorldSession {
   ): Promise<MoveStream> {
     if (!this.#ws) return Promise.reject(new Error("not connected"));
     const p = this.#ws.moveRequest(scene, tokenId, path);
-    // M14b observability signal, derived from THIS SAME promise without altering its
+    // An observability signal derived from THIS SAME promise without altering its
     // resolution for the caller. `MoveOutcome.truncated` never crosses the
     // wire, so this infers from geometry instead: `stream.stop` is the mover's own exact,
     // unclipped resting position, compared against the requested goal.
@@ -737,11 +737,11 @@ export class WorldSession {
         rec.handle = null;
         this.#establishScene(id, rec);
       }
-      // M8d §15: ensure an active scene exists so the place tool has a parent to
+      // Ensure an active scene exists so the place tool has a parent to
       // attach tokens to. GM-only (players can't author the world's first scene);
       // guard on the optimistic view (includes the pending create) so a reconnect
       // Welcome — or a scene from another GM — does not double-create. The rare
-      // multi-GM simultaneous-first-entry double-create is accepted (M12 dedupes).
+      // multi-GM simultaneous-first-entry double-create is accepted.
       if (this.role === "gm" && this.world && this.#optimistic.query("scene").length === 0) {
         this.dispatchIntent([{ op: "create", doc: buildSceneDoc(this.world) }]);
       }
@@ -752,15 +752,15 @@ export class WorldSession {
 
   /** Fetch the world's enabled installed-module set + their (manifest,
    * entry_url) pairs and load them through the shared, per-module-contained
-   * loader (M13-1 §3). Runs exactly once per WorldSession (called only inside
+   * loader. Runs exactly once per WorldSession (called only inside
    * the `#activated` guard, after a successful `activate()`) — external
-   * modules never hot-reload across a reconnect within one session (no hot
-   * unload, M13-1 §2); "next client load
+   * modules never hot-reload across a reconnect within one session (there is no hot-unload
+   * path); "next client load
    * of that world" means a fresh WorldSession (page load / re-enter), not a
    * WS reconnect. A discovery-level failure (network, malformed response)
    * degrades to a logged warning; the session still enters the world with
    * only its first-party modules active — a broken pipeline must never brick
-   * a world (invariant 4).
+   * a world.
    * @param world The world id to load enabled external modules for.
    * @param serverVersion The connected server's version, passed through to `loadModules`'
    * engine-compat gate.

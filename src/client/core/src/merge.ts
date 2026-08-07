@@ -1,5 +1,5 @@
 // Pure, order-independent 3-way merge primitives (client-core). The server never merges;
-// the merge is computed here and applied as an ordinary batched `Update` (M13e). Every value
+// the merge is computed here and applied as an ordinary batched `Update`. Every value
 // is plain JSON (objects recurse key-by-key, arrays are opaque leaves, scalars are leaves).
 import { setPointer, getPointer } from "./store";
 import type { WireDocument } from "./wire";

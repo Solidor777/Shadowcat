@@ -16,7 +16,7 @@ interface WireLike {
  * Presence-only reconciliation: warn for each module present on exactly one
  * side, keyed by `module_id`. Version and the `provides`/`requires` payload are
  * NOT compared — a same-id/different-contract-set drift reconciles silently.
- * Richer mismatch detection is deferred to module management (see TODO.md).
+ * TODO: Detect version/`provides`/`requires` mismatches beyond presence-only comparison.
  * @param local This client's own loaded module contract declarations.
  * @param remote The server-broadcast `Welcome.contract_declarations`.
  * @param logger Diagnostic sink for each presence mismatch.

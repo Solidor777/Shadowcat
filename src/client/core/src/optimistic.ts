@@ -9,7 +9,7 @@
 // by us confirms the oldest pending intent (FIFO) — its effect is now in base,
 // so it leaves pending. A reject simply drops the pending entry. Rollback is
 // therefore "recompute view from base + remaining pending"; no inverse ops are
-// needed on the client (the M2 reversible representation backs server-side
+// needed on the client (a reversible operation representation backs server-side
 // rollback / undo, not this local prediction). The server stays authoritative:
 // optimism is a prediction, replaced by `base` on confirm or discarded on reject.
 import { applyOperation, type Listener, type ReadableDocuments } from "./store";

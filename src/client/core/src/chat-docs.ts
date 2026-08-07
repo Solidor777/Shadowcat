@@ -88,7 +88,7 @@ export type RollOutcome = z.infer<typeof RollOutcomeSchema>;
  * `link_preview` mirrors `chat::Segment::LinkPreview` — a server-fetched,
  * SSRF-guarded preview of a link in the message; the client renders ONLY the
  * stored `url`/`title`/`description` strings (escaped, never innerHTML) and never
- * fetches `url` itself (M11d-3). */
+ * fetches `url` itself. */
 export const ChatSegmentSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("text"), text: z.string() }),
   z.object({ kind: z.literal("html"), sanitized_html: z.string() }),
@@ -228,9 +228,10 @@ export function buildDiceSettingsDoc(
  * (server: `chat::settings::CHAT_SETTINGS_DOC_TYPE`). `doc_type: "chat-settings"` is
  * engine-defined — the body lands in `engine`, `ChatSettingsEngine` mirrors
  * chat::settings::ChatContentPolicy: every field `#[serde(default)]` on the server
- * (false), except `link_previews` which is tri-state: absent/`null` is the spec'd
- * default-on-when-hyperlinks-on behavior (`ChatContentPolicy::previews_enabled`),
- * `true`/`false` is an explicit GM override. The panel writes single fields via
+ * (false), except `link_previews` which is tri-state: absent/`null` defaults previews ON
+ * whenever `hyperlinks` is also on (`ChatContentPolicy::previews_enabled`), and OFF when
+ * `hyperlinks` is off regardless of this field; `true`/`false` is an explicit GM override.
+ * The panel writes single fields via
  * JSON-pointer update, never the whole doc. */
 export const CHAT_SETTINGS_DOC_TYPE = "chat-settings";
 

@@ -72,7 +72,7 @@ function rollOutcome(overrides: Partial<Record<string, unknown>> = {}) {
   };
 }
 
-describe("roll segments (M11d-2)", () => {
+describe("roll segments", () => {
   test("parses a roll_embed segment", () => {
     const eng = parseMessageEngine(msgDoc({
       ...base, kind: "roll",
@@ -156,7 +156,7 @@ describe("roll segments (M11d-2)", () => {
   });
 });
 
-describe("link_preview segments (M11d-3)", () => {
+describe("link_preview segments", () => {
   test("parses a link_preview segment", () => {
     const eng = parseMessageEngine(msgDoc({
       ...base,

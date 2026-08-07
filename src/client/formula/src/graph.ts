@@ -25,8 +25,8 @@ class NeedsDependency {
  * in-progress stack. Every node on a cycle resolves to {error:"cycle"}.
  * INVARIANT: the result is a pure function of the key SET — independent of
  * the caller's key order (consumers rely on this for the Nightfox permutation
- * invariant, spec D3/D12). Enforced by sorting the roots before iteration;
- * see the note at the root loop.
+ * invariant: identical inputs must resolve identically regardless of embed/record/order
+ * shuffling). Enforced by sorting the roots before iteration; see the note at the root loop.
  *
  * Recursion bound: O(1) JS call-stack frames regardless of graph depth or
  * chain length. `evalNode` is a consumer-supplied synchronous callback that
@@ -165,7 +165,7 @@ export function resolveAll(
         }
         // evalNode threw something other than our internal signal: a
         // consumer-callback fault, never allowed to propagate past the
-        // library boundary (never throw, per spec §3.2). Never interpolate
+        // library boundary — this package never throws on any input. Never interpolate
         // the caught exception's message: `FormulaError.detail` is player-presentable,
         // and a consumer evalNode's thrown message is an
         // internal implementation detail, not for players.

@@ -1,5 +1,5 @@
 /** Marked failure value. INVARIANT: library functions return these — they never throw
- * and never emit NaN/Infinity (spec §3.2 fail-closed error values). */
+ * and never emit NaN/Infinity; every error path returns a value instead (fail-closed). */
 export type FormulaErrorKind =
   | "parse"        // source text does not lex/parse
   | "unknown-ref"  // resolver had no value for a reference (consumer-originated)
