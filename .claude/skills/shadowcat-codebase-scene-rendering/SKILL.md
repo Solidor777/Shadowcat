@@ -928,6 +928,33 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   earlier draft broadcast `cost` unconditionally). **Load-bearing invariant, not a footnote:** any
   FUTURE whole-move scalar added to `MoveStream` must default to the same trusted-only disclosure
   pattern unless explicitly proven safe to broadcast to every recipient.
+  - **Exercised once, as `MoveStream.truncated: Option<bool>`** — `Some` for the mover/GM, `None`
+    for a clipped observer, set alongside `cost` at all three construction points
+    (`handle_move_request`'s broadcast frame, `clip_move_stream`'s `full_gm_stream`, and its
+    clipped-observer tail). The leak it prevents is distinct from `cost`'s: an observer's `samples`
+    and `stop` are ALREADY clipped to what they witnessed, so a truthful `truncated` would answer a
+    question their view cannot — whether anything stopped the token BEYOND their vision, disclosing
+    a wall or a `gm_only` region they cannot see. **When adding the next scalar, derive its leak
+    from what the clip already hides, rather than copying `cost`'s rationale**; the mechanism is
+    shared but the disclosure differs per field.
+  - The secrecy is mutation-proven, not merely asserted: setting the clipped tail to `*truncated`
+    fails `clip_observer_sees_near_side_prefix_any_angle_diagonal_path` and
+    `clip_gm_see_as_clips_to_target_vision`. A future scalar should carry an equivalent negative
+    test, since a leaked field is otherwise invisible to every gate.
+  - **A wire scalar needs THREE client-side edits or it is silently discarded.** Adding the field
+    to the Rust variant is not "wiring it": the client re-validates every inbound frame through a
+    hand-written Zod schema (`wire.ts`'s `move_stream` object), and `z.object` STRIPS keys it does
+    not name — no parse error, no warning, the value simply never arrives. The full path is the
+    Zod schema, the `MoveStream` interface in `ws-client.ts`, and that file's snake_case→camelCase
+    mapper in the `"move_stream"` case; miss any one and the field is unreachable from client
+    code while every gate stays green. `truncated` is pinned end-to-end by assertions on the
+    parsed value and on the mapped object, mover and clipped-observer paths both.
+  - **`truncated` is NOT interchangeable with the client's derived move outcome.**
+    `WorldSession.moveRequest` derives `executed`/`truncated` from geometry (does `stop` equal the
+    requested goal), which is a DIFFERENT predicate: a region arrest on the final step sets the
+    server's `truncated` while `stop` still equals the goal, and the client deliberately reports
+    that as `executed` because the token did reach the goal. Do not "simplify" the client to read
+    the wire flag — the two answer different questions, and a regression test pins the arrest case.
 - **The four shape views are a NEAR-IDENTICAL SIBLING SET, and that is where they diverge silently.**
   `drawing-view`, `template-view`, `region-view`, and `wall-view` share one shape: a
   `reconcile()` diffing scene-scoped docs against tracked ids, and a module-private `toSpec()`
