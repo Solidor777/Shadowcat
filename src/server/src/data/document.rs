@@ -283,8 +283,9 @@ pub struct ContractDeclaration {
     pub requires: Vec<String>,
 }
 
-/// A single JSON type tag for a schema node (M13f tier-2). Shape only — never a
-/// value discriminator (invariant 6).
+/// A single JSON type tag for a schema node. Shape only — never a value
+/// discriminator, keeping schema validation built from this type structural
+/// rather than semantic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 #[serde(rename_all = "snake_case")]
@@ -345,9 +346,10 @@ impl<'de> Deserialize<'de> for AdditionalProperties {
     }
 }
 
-/// A structural (shape-only) type-tree node (M13f tier-2). By construction cannot
-/// express a value rule (no enum/bounds/pattern/combinators) — invariant 6 holds
-/// by construction. `deny_unknown_fields` makes a malformed schema fail to
+/// A structural (shape-only) type-tree node. By construction cannot
+/// express a value rule (no enum/bounds/pattern/combinators), so a schema built
+/// from this type can only ever check shape, never a value.
+/// `deny_unknown_fields` makes a malformed schema fail to
 /// deserialize at the set endpoint. An all-absent node (`{}`) matches any JSON.
 /// Cross-field legality (e.g. `items` only on an array) is not enforced by serde;
 /// `validate_schema` enforces it at set-time.
@@ -386,7 +388,7 @@ pub struct Schema {
     pub nullable: Option<bool>,
 }
 
-/// A module's per-`(doc_type, subtree)` structural schema (M13f tier-2). Pure
+/// A module's per-`(doc_type, subtree)` structural schema. Pure
 /// data — the server stores and interprets it as a shape check, never as code.
 /// `subtree_pointer` is a strict `/system/…` descendant (enforced at set-time).
 /// `schema_format` is the engine-owned vocabulary version; `version` is the

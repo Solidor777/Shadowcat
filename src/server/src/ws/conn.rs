@@ -111,7 +111,7 @@ struct Sub {
 /// A derived scene-channel subscription's stored state. `fingerprint` is the
 /// last delivered payload; a re-eval pushes only when it changes. `view_ctx` is the effective
 /// context the channel is computed for: the connection's own ctx, or — for a GM see-as-player
-/// subscription (M9c-2) — the server-resolved target player's context.
+/// subscription — the server-resolved target player's context.
 struct SceneSub {
     /// Channel name.
     channel: String,
@@ -824,7 +824,7 @@ async fn handle_move_request(
 /// after the ECS read lock is dropped (it does async DB I/O); `grid` carries each scene's cell size,
 /// captured under that lock. Explored is emitted only for scenes the player currently has vision in
 /// (the payload's polygons) — a token-less player gets no explored. `accumulate` is FALSE for a GM
-/// see-as-player view (M9c-2): it is a read-only observer that emits the target's stored explored
+/// see-as-player view: it is a read-only observer that emits the target's stored explored
 /// but must NOT grow the target's memory from the GM's session.
 async fn enrich_vision_explored(
     payload: &mut serde_json::Value,
@@ -1094,9 +1094,9 @@ async fn clip_move_stream(
 }
 
 /// Union `world_reqs` (GM-authored, unchanged) with the `requirements`
-/// declared by each of the world's currently ENABLED installed modules (M13-1
-/// §2 — "enabling a module publishes its manifest requirements through the
-/// capability machinery"). Non-destructive: `world_cap_requirements` itself is
+/// declared by each of the world's currently ENABLED installed modules —
+/// enabling a module publishes its manifest requirements through the
+/// capability machinery. Non-destructive: `world_cap_requirements` itself is
 /// NEVER mutated by enable/disable; this union is recomputed fresh on every
 /// `Welcome`, so a mid-session enable/disable takes effect on the affected
 /// world's next (re)connect, exactly like a `world_cap_requirements` edit
@@ -1149,9 +1149,9 @@ async fn welcome_capability_requirements(
         for id in &enabled {
             // Re-check engine-compat here (not just at enable time): a module
             // enabled while compatible can go stale after a server downgrade
-            // or an on-disk manifest edit. Invariant 5 ("enforced at enable AND
-            // load") is a continuous property, not a one-time gate — a
-            // now-incompatible enabled module must not publish requirements.
+            // or an on-disk manifest edit. Engine-compat is enforced at BOTH
+            // enable and load — a continuous property, not a one-time gate —
+            // so a now-incompatible enabled module must not publish requirements.
             if let Some(m) = installed
                 .iter()
                 .find(|m| &m.id == id && crate::modules::engine_compat_ok(m))
@@ -1306,7 +1306,7 @@ async fn egress_loop<S>(
                         let f = ServerMsg::SceneError { request_id, message: "too many subscriptions".into() };
                         if sink.send(text(&f)).await.is_err() { break; }
                     } else {
-                        // Resolve the effective view context. `as_user` (see-as-player, M9c-2) is
+                        // Resolve the effective view context. `as_user` (see-as-player) is
                         // GM-ONLY, and the target's role is resolved SERVER-SIDE — a non-GM can never
                         // view as another user, and a client-supplied role/scope is never trusted.
                         // This is the player-to-player access boundary.
@@ -1400,7 +1400,7 @@ async fn egress_loop<S>(
                             ServerMsg::MoveStream { .. } => {
                                 // Resolve this connection's active see-as-player target, if any:
                                 // a `vision`-channel scene subscription whose resolved `view_ctx`
-                                // is a DIFFERENT user than the connection's own (a GM see-as, M9c-2).
+                                // is a DIFFERENT user than the connection's own (a GM see-as).
                                 // Only a GM can hold such a sub — the `SceneSubscribe` handler gates
                                 // `as_user` to a GM and server-resolves the target role — so the
                                 // `world_role == Gm` guard here is belt-and-suspenders. Vision subs
@@ -1875,13 +1875,13 @@ mod tests {
         );
     }
 
-    /// Buddy-check Important: a module that is enabled but whose on-disk manifest
+    /// A module that is enabled but whose on-disk manifest
     /// declares an engine range the RUNNING server no longer satisfies (a version
     /// downgrade, or a manifest edited after enable) must NOT publish its
     /// requirements into the advisory Welcome union — mirroring the enable-time
-    /// `engine_compat_ok` gate in `module_routes::set_world_enabled_modules` as a
-    /// continuous property, not a one-time check (invariant 5: "enforced at enable
-    /// AND load"). Simulated by storing the id directly via `set_world_enabled_modules`
+    /// `engine_compat_ok` gate in `module_routes::set_world_enabled_modules`: engine
+    /// compatibility is enforced both at enable time and again on every Welcome load,
+    /// not just once. Simulated by storing the id directly via `set_world_enabled_modules`
     /// (bypassing the HTTP enable-time gate) against a manifest declaring `^99.0.0`.
     #[tokio::test]
     async fn welcome_excludes_requirements_from_an_enabled_but_now_incompatible_module() {
@@ -1935,7 +1935,8 @@ mod tests {
     /// red/green blocking-detection test (blocking-vs-non-blocking isn't
     /// directly unit-testable) — mirrors
     /// `welcome_unions_enabled_modules_requirements_with_gm_authored_ones`'s
-    /// setup and must pass both before and after the refactor.
+    /// setup, verifying the `spawn_blocking`-wrapped path yields results
+    /// identical to the direct (non-blocking) path.
     #[tokio::test]
     async fn welcome_capability_requirements_still_resolves_module_requirements_via_spawn_blocking()
     {
@@ -1988,7 +1989,7 @@ mod tests {
             .collect()
     }
 
-    /// The M9c dispatch-layer accumulation: a masked vision payload grows + persists the player's
+    /// The dispatch-layer accumulation: a masked vision payload grows + persists the player's
     /// explored fog and gains a scene-tagged `explored` set; a revisit re-emits without growing; a
     /// GM `mode:"all"` payload is untouched (no fog → no explored).
     #[tokio::test]
@@ -3740,9 +3741,9 @@ mod tests {
     }
 
     /// Same near-side/occluded clip boundary as `clip_observer_sees_near_side_prefix`, but over
-    /// a genuinely any-angle (non-axis-aligned) path — proves the M2 per-recipient egress clip
+    /// a genuinely any-angle (non-axis-aligned) path — proves the per-recipient egress clip
     /// is engine-agnostic geometry, unaffected by whether the sampled polyline is grid-stepped or
-    /// continuous (M10f-3 §6). Wall at x=100 (unchanged); observer at (50,50) sees anything with
+    /// continuous. Wall at x=100 (unchanged); observer at (50,50) sees anything with
     /// x<100 regardless of y, so the diagonal y-offsets below don't change the visibility split.
     #[tokio::test]
     async fn clip_observer_sees_near_side_prefix_any_angle_diagonal_path() {
@@ -3824,8 +3825,9 @@ mod tests {
     }
 
     /// A `gm_only` (`DocRole::None`) `blocksSight` wall bounds the observer's authoritative
-    /// vision identically to a normal wall — `sight_walls` is permission-blind (full wall set,
-    /// M9b invariant). When the mover's entire path lies behind the secret wall, the frame is
+    /// vision identically to a normal wall — `sight_walls` is permission-blind, returning
+    /// every wall regardless of visibility tier. When the mover's entire path lies behind
+    /// the secret wall, the frame is
     /// fully suppressed: the observer receives zero `MoveStream` frames, not an empty-sample one.
     #[tokio::test]
     async fn clip_gm_only_wall_suppresses_observer() {

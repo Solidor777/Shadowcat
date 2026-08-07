@@ -73,9 +73,9 @@ pub enum ClientMsg {
         /// The live search to cancel.
         request_id: Uuid,
     },
-    /// Subscribe to a derived scene channel (e.g. M9 "vision"). M8a recognizes
-    /// only the debug "identity" channel; unknown channels yield SceneError.
-    /// `as_user` (M9c-2 see-as-player) is **GM-only**: it views the channel as that user; the
+    /// Subscribe to a derived scene channel (`compute_derived` currently recognizes
+    /// "vision", plus a debug-only "identity" channel); unknown channels yield SceneError.
+    /// `as_user` (see-as-player) is **GM-only**: it views the channel as that user; the
     /// server rejects it for non-GMs and resolves the target's role server-side. Omitted/None =
     /// the connection's own view.
     SceneSubscribe {
@@ -309,7 +309,8 @@ pub enum ServerMsg {
     /// A sequenced broadcast carrying the authoritative command. `intent_id` is
     /// the originator's correlation token; it is `None` on the shared broadcast
     /// (an originator confirms its own write by receiving this echo of its
-    /// authored command). Per-intent `Some` correlation is added in M6.
+    /// authored command), and `Some` when the write was made under an
+    /// intent id, correlating this Event back to that specific intent.
     Event {
         /// The committed, per-recipient-filtered command.
         command: Command,
@@ -432,9 +433,8 @@ pub enum ServerMsg {
     },
     /// The route for the `Pathfind` with this `request_id`: ordered cell-center scene points
     /// (incl. start + goal) and the total cost in cells (client multiplies `grid.distance.perCell`).
-    /// `arrested` is true when an arrest region truncated the route before the requested goal
-    /// (spec §5 "honest preview" — the player-facing route never silently ends short without
-    /// telling the client why).
+    /// `arrested` is true when an arrest region truncated the route before the requested goal —
+    /// the player-facing route never silently ends short without telling the client why.
     PathResult {
         /// The originating pathfind's correlation token.
         request_id: Uuid,
@@ -499,8 +499,8 @@ pub enum ServerMsg {
         /// server-clipped position samples and render against their existing authoritative fog;
         /// the client computes no vision. Sending mover vision to observers would leak geometry.
         mover_vision: Option<Vec<VisionSample>>,
-        /// Total terrain-weighted movement cost accumulated over the executed move (M10g spec
-        /// §6). Informational — no per-turn budget cap consumes it in v1.
+        /// Total terrain-weighted movement cost accumulated over the executed move.
+        /// Informational — no per-turn budget cap consumes it in v1.
         /// `Some(cost)` for the mover and a GM (trusted, full information); `None` for a
         /// clipped observer, mirroring `mover_vision`'s null-for-observers treatment — the
         /// authoritative cost may reflect secret-region (`gm_only`) terrain the observer's

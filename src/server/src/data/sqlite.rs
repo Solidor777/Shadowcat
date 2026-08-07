@@ -808,7 +808,7 @@ impl SqliteRepository {
         Ok(())
     }
 
-    /// The player's serialized explored-cell blob for a scene (M9c), or `None` when unexplored.
+    /// The player's serialized explored-cell blob for a scene, or `None` when unexplored.
     /// Per-(scene, user) SECRET memory — never broadcast; dispatched per-recipient over `vision`.
     pub async fn get_explored(
         &self,
@@ -2008,7 +2008,7 @@ impl Repository for SqliteRepository {
         // Welcome union, see `ws::conn::welcome_capability_requirements`) are
         // advisory client-side UX only and are intentionally NOT consulted here —
         // server authority over write policy stays with the GM/operator, never
-        // community module code (ARCHITECTURE invariant 6).
+        // community module code.
         let world_reqs = self.world_cap_requirements(world_id).await?;
         // Loaded before the transaction (like `world_cap_requirements` above):
         // the single-writer pool would deadlock on a mid-tx settings query.
@@ -2212,16 +2212,15 @@ impl Repository for SqliteRepository {
                     //
                     // Grant only READ + WRITE_FIELDS (never `all: true`) —
                     // both existing handlers construct a single `/engine`
-                    // FieldChange (M13-0: re-rooted from `/system`) and never
-                    // touch `/permissions` or `/embedded`, so the exemption is
+                    // FieldChange and never touch `/permissions` or
+                    // `/embedded`, so the exemption is
                     // scoped to exactly what it is used for. This still
                     // authorizes the GM-not-addressed moderation edit/delete
                     // of `/engine` while denying `/permissions`/`/embedded`
                     // writes by construction, closing the gap even for a
                     // hypothetical future `ServerMessageRevision` caller with
                     // a broader op.
-                    // CAVEAT: unlike the prior unconditional `all: true`, this
-                    // concrete cap set does NOT auto-satisfy an ADDITIVE
+                    // CAVEAT: this concrete cap set does NOT auto-satisfy an ADDITIVE
                     // `declared_caps_for_path` world/module requirement on a
                     // message `/engine` (sub-)path (checked further below).
                     // No first-party module declares one today, so this is
@@ -5782,9 +5781,9 @@ mod tests {
         // ranking would shift when the query term ALSO appears in GM-only
         // text they can never see — leaking the existence of a hidden match
         // through score/rank even though row selection and snippets are
-        // already correctly redacted. Pre-dates this task (present since
-        // M6c-1); widened by the M13-0 /engine+/name FTS re-root because
-        // `content_all` now also carries name/engine content.
+        // already correctly redacted. `content_all` carries name/engine
+        // content in addition to system content, widening the surface this
+        // affects.
         use crate::auth::role::ServerRole;
         use crate::data::command::Operation;
         use crate::data::document::{DocRole, PermissionSet, Scope, Visibility};

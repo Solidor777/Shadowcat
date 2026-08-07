@@ -115,8 +115,9 @@ pub struct ChatSettingsEngine {
     pub hyperlinks: Option<bool>,
     /// Allow mailto links.
     pub emails: Option<bool>,
-    /// Tri-state: absent is the spec'd default-on-when-hyperlinks-on
-    /// behavior; `Some(true)`/`Some(false)` are an explicit GM override.
+    /// Tri-state: absent defaults ON whenever `hyperlinks` is also on, per
+    /// `ChatSettingsEngine::previews_enabled`; `Some(true)`/`Some(false)` are
+    /// an explicit GM override.
     pub link_previews: Option<bool>,
 }
 

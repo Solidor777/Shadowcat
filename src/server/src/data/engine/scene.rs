@@ -1,8 +1,8 @@
 //! `scene`, `world-settings`, `light`, `vision-modes`, `light-gradation`
-//! engine bands (M13-0 S1/S3). Field shapes mirror the client's re-exported
+//! engine bands. Field shapes mirror the client's re-exported
 //! `SceneEngine`, `WorldSceneDefaults`, `WorldSettingsEngine`, `LightEngine`,
-//! `VisionMode`, and `GradationBand` (minus `name`, moved to the envelope
-//! per S2).
+//! `VisionMode`, and `GradationBand` (minus `name`, which lives on the
+//! envelope instead).
 
 // Ratchet: every item in this module must carry a doc comment, enforced by
 // the two deny attributes below.
@@ -267,8 +267,9 @@ pub struct WorldSettingsEngine {
     pub animation: AnimationSettings,
     /// The scene players render. `None`/absent/dangling ⇒ the first scene
     /// (legacy behavior). Deliberately NOT part of the structural-
-    /// completeness triple below, so a pre-M12d world-settings doc missing
-    /// this key is still "complete" and keeps its authored settings.
+    /// completeness triple below, so a world-settings doc written before
+    /// this field existed is still "complete" and keeps its authored
+    /// settings.
     #[serde(default)]
     pub active_scene: Option<Uuid>,
 }

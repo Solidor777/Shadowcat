@@ -80,9 +80,10 @@ pub struct InstalledModule {
 /// Scan `<modules_dir>/*/module.json`, parse + validate each. An invalid
 /// manifest (missing/malformed `id`/`version`, or malformed JSON) is logged
 /// (warn) and skipped — one broken module must not prevent startup or hide the
-/// others (ARCHITECTURE invariant 6: server authority over a community-authored
-/// body is structural only; fail-open on discovery is this plan's own Global
-/// Constraint 4, not itself an ARCHITECTURE invariant). A missing `modules_dir`
+/// others. This fail-open-on-discovery behavior is a deliberate design choice,
+/// separate from the server's purely structural authority over a
+/// community-authored manifest body (`manifest_json` is served byte-for-byte,
+/// never semantically interpreted). A missing `modules_dir`
 /// (nothing installed yet) yields an empty list, not an error. Deterministic
 /// id-sorted order.
 ///

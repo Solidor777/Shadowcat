@@ -1,6 +1,6 @@
-//! `token`/`actor` engine bands (M13-0 S1/S3). Field shapes mirror the
+//! `token`/`actor` engine bands. Field shapes mirror the
 //! client's re-exported `TokenEngine`/`ActorEngine` (minus `name`, which
-//! moved to the envelope per S2).
+//! lives on the envelope instead).
 
 // Ratchet: every item in this module must carry a doc comment, enforced by
 // the two deny attributes below.
@@ -191,7 +191,7 @@ pub struct VisionAssignment {
     pub range: f64,
 }
 
-/// The client-owned token/actor visual union (M10h). Internally tagged on
+/// The client-owned token/actor visual union. Internally tagged on
 /// `kind`; serde does not support `deny_unknown_fields` on an internally
 /// tagged enum (a documented limitation — NOT applied here).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
@@ -228,7 +228,7 @@ pub enum TokenVisual {
 }
 
 /// The two kinds the render layer actually draws — the render/resolution
-/// boundary (M10h). A face's own visual is always one of these — no nesting
+/// boundary. A face's own visual is always one of these — no nesting
 /// (a face can never itself be `{kind:"faces"}`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]

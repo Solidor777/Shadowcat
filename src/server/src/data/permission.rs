@@ -727,7 +727,7 @@ pub fn filter_properties(doc: &Document, access: &Access) -> Document {
         .map(|(p, _)| p.clone())
         .collect();
     // `base` is a historical snapshot of this doc's own (possibly hidden) bands — it is
-    // hardcoded `OwnerOrGm` visibility, unconditional and non-overridable (M13e), independent
+    // hardcoded `OwnerOrGm` visibility, unconditional and non-overridable, independent
     // of `property_overrides`. Only the document's owner or a GM ever needs it to compute a
     // pull/push/revert; no other recipient should receive the raw snapshot.
     if !access.can_see(Visibility::OwnerOrGm) {
@@ -767,7 +767,7 @@ fn collect_hidden(doc: &Document, access: &Access, prefix: &str, out: &mut Vec<S
             out.push(format!("{prefix}{p}"));
         }
     }
-    // Mirrors `filter_properties`' hardcoded `OwnerOrGm` policy for `/base` (M13e) — see
+    // Mirrors `filter_properties`' hardcoded `OwnerOrGm` policy for `/base` — see
     // that function's comment. This recursion structure means the push fires at every
     // embedded depth too (each recursive call gets its own `prefix`), covering an embedded
     // child's own `base` the same way, even though `base` is documented as top-level-only —
@@ -1663,7 +1663,7 @@ mod tests {
 
     #[tokio::test]
     async fn filter_command_create_drops_op_entirely_for_default_none_region() {
-        // M10g secrecy fix: a secret region declares `default: DocRole::None` (not just a
+        // A secret region declares `default: DocRole::None` (not just a
         // `/system` gm_only override), so `filter_command` must drop the Create op ENTIRELY
         // for a non-GM/non-owner recipient (no envelope at all — id/parent_id/existence must
         // never reach them), while a GM still receives the full op.

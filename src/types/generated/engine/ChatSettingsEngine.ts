@@ -26,7 +26,8 @@ hyperlinks: boolean | null,
  */
 emails: boolean | null, 
 /**
- * Tri-state: absent is the spec'd default-on-when-hyperlinks-on
- * behavior; `Some(true)`/`Some(false)` are an explicit GM override.
+ * Tri-state: absent defaults ON whenever `hyperlinks` is also on, per
+ * `ChatSettingsEngine::previews_enabled`; `Some(true)`/`Some(false)` are
+ * an explicit GM override.
  */
 link_previews: boolean | null, };

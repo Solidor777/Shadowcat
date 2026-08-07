@@ -564,7 +564,7 @@ mod tests {
     fn set_pointer_writes_into_an_indexed_embedded_actor_copy() {
         // An instanced token toggles conditions on its embedded actor copy at
         // `/embedded/actor/0/system/conditions`: array-index intermediate descent
-        // followed by an object-leaf insert. (M10c instanced-condition write path.)
+        // followed by an object-leaf insert.
         let mut v =
             serde_json::json!({ "embedded": { "actor": [ { "system": { "conditions": [] } } ] } });
         set_pointer(
