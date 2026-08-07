@@ -1,9 +1,9 @@
 ---
 name: shadowcat-codebase-templates
-description: "Use when touching Shadowcat's generic templates/3-way-merge engine (M13e): stamp/pull/push/revert of a document instance against its template, `Document.base` (the opaque merge snapshot), `@shadowcat/core`'s `merge`/`templates` modules (structuralDiff, merge3Tree/merge3/merge3Embedded, restampSubtree, takeTemplate, placement exclusions, snapshotBase, stampInstance, computePull/computeRevert, planToUpdate, applyResolutions, findInstances, syncState), `TemplatesController`/`AppContext.templates`, the field-level conflict modal (`MergeConflictModal`/`TemplateModalHost`), or the host-rendered `TemplateControls`/`SheetHost` chrome every sheet gets for free. Templates are not a doc_type — any document can be a template or an instance via `source`. Invoke shadowcat-codebase-core first; for the server-side `base` field/authz see shadowcat-codebase-documents-permissions, for the sheet-panel wrapper mechanics see shadowcat-codebase-sheets."
+description: "Use when touching Shadowcat's generic templates/3-way-merge engine: stamp/pull/push/revert of a document instance against its template, `Document.base` (the opaque merge snapshot), `@shadowcat/core`'s `merge`/`templates` modules (structuralDiff, merge3Tree/merge3/merge3Embedded, restampSubtree, takeTemplate, placement exclusions, snapshotBase, stampInstance, computePull/computeRevert, planToUpdate, applyResolutions, findInstances, syncState), `TemplatesController`/`AppContext.templates`, the field-level conflict modal (`MergeConflictModal`/`TemplateModalHost`), or the host-rendered `TemplateControls`/`SheetHost` chrome every sheet gets for free. Templates are not a doc_type — any document can be a template or an instance via `source`. Invoke shadowcat-codebase-core first; for the server-side `base` field/authz see shadowcat-codebase-documents-permissions, for the sheet-panel wrapper mechanics see shadowcat-codebase-sheets."
 ---
 
-# Shadowcat — Templates & 3-Way Merge Engine (M13e)
+# Shadowcat — Templates & 3-Way Merge Engine
 
 Orientation for the generic templates system: any document can be stamped as a reusable
 template, instanced elsewhere, and later pulled from / pushed to / reverted against its
@@ -12,7 +12,7 @@ template via a client-side 3-way merge — no server-side merge logic, no `templ
 ## Purpose
 
 A "template" is just a document another document's `source: { id, ... }` field points at
-(`Document.source`, pre-existing). What M13e adds is the machinery to keep an instance and its
+(`Document.source`, pre-existing). The templates system adds the machinery to keep an instance and its
 template's mergeable content (`name`/`engine`/`system`/`embedded`) in sync over time, using a
 classic 3-way merge (base/mine/theirs) where "base" is a client-owned snapshot
 (`Document.base`) taken at stamp time or the last successful sync. This is entirely client-core
@@ -200,8 +200,6 @@ interprets or merges anything itself.
 
 ## Pointers
 
-- Design: `docs/superpowers/plans/2026-07-18-m13e-templates-merge-engine.md` (plan + Global
-  Constraints + the E1–E10/§ numbering referenced throughout this skill).
 - Server-side `base` field/authz/redaction: `shadowcat-codebase-documents-permissions`.
 - Sheet-panel wrapper mechanics (`SheetHost`, `#register`): `shadowcat-codebase-sheets`.
 - Relationships: `graphify query "merge3 stampInstance TemplatesController base snapshot"`.
