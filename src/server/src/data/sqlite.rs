@@ -8765,18 +8765,20 @@ mod tests {
             .create_user("player-one", None, ServerRole::User, 0)
             .await
             .unwrap();
-        let w1 = r.create_world_owned("W1", gm, 0).await.unwrap();
-        let w2 = r.create_world_owned("W2", gm, 0).await.unwrap();
+        let token_world = r.create_world_owned("token-world", gm, 0).await.unwrap();
+        let actor_world = r.create_world_owned("actor-world", gm, 0).await.unwrap();
 
-        // The actor lives in W2 and is owned by p1; the token lives in W1.
-        let foreign_actor = actor_doc_owned_by(w2.id, Some(p1));
-        gm_create(&r, gm, w2.id, vec![foreign_actor.clone()], 1).await;
-        let token = owned_token_doc(w1.id, Some(foreign_actor.id));
-        gm_create(&r, gm, w1.id, vec![token.clone()], 2).await;
+        // The actor is owned by p1 but lives in a different world from the token it is linked to.
+        let foreign_actor = actor_doc_owned_by(actor_world.id, Some(p1));
+        gm_create(&r, gm, actor_world.id, vec![foreign_actor.clone()], 1).await;
+        let token = owned_token_doc(token_world.id, Some(foreign_actor.id));
+        gm_create(&r, gm, token_world.id, vec![token.clone()], 2).await;
 
-        // p1 is a member of W1 too, so only the scope check can deny this.
-        r.add_member(w1.id, p1, WorldRole::Player).await.unwrap();
-        let denied = try_move(&r, w1.id, p1, token.id, (0.0, 0.0), (3.0, 3.0), 3).await;
+        // p1 is a member of the token's world too, so only the scope check can deny this.
+        r.add_member(token_world.id, p1, WorldRole::Player)
+            .await
+            .unwrap();
+        let denied = try_move(&r, token_world.id, p1, token.id, (0.0, 0.0), (3.0, 3.0), 3).await;
         assert!(
             matches!(denied, Err(DataError::Forbidden)),
             "a cross-world actor link must not confer ownership, got {denied:?}"
@@ -8785,11 +8787,26 @@ mod tests {
         // Non-vacuity: the identical setup with the actor in the TOKEN's own world
         // succeeds — proving the denial is the scope check, not the membership or
         // the link machinery.
-        let local_actor = actor_doc_owned_by(w1.id, Some(p1));
-        let local_token = owned_token_doc(w1.id, Some(local_actor.id));
-        gm_create(&r, gm, w1.id, vec![local_actor, local_token.clone()], 4).await;
-        try_move(&r, w1.id, p1, local_token.id, (0.0, 0.0), (3.0, 3.0), 5)
-            .await
-            .expect("a same-world actor link confers ownership");
+        let local_actor = actor_doc_owned_by(token_world.id, Some(p1));
+        let local_token = owned_token_doc(token_world.id, Some(local_actor.id));
+        gm_create(
+            &r,
+            gm,
+            token_world.id,
+            vec![local_actor, local_token.clone()],
+            4,
+        )
+        .await;
+        try_move(
+            &r,
+            token_world.id,
+            p1,
+            local_token.id,
+            (0.0, 0.0),
+            (3.0, 3.0),
+            5,
+        )
+        .await
+        .expect("a same-world actor link confers ownership");
     }
 }

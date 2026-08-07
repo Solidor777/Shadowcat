@@ -143,6 +143,19 @@ source of truth. The ones agents break most:
   longer` usually describes runtime data, not the code's past), so it is a review obligation.
   Rewording to evade a pattern while still speaking of something outside the code violates RULE 0.
   Full rule: `docs/design/doc-sweep-truthfulness-rules.md` RULE 16.
+- **There are NO justified keeps, exemptions or carve-outs unless the user explicitly signs off**
+  (user directive, iron-clad). A well-argued keep is still a decision about *what the work covers*,
+  which is the user's, never yours or a subagent's — ratifying one is a silent descope wearing
+  technical clothes. Report a candidate as unconverted and awaiting a ruling; never as `kept`,
+  never as "the carve-out covers this". **The first move is to remove the NEED for the exemption:**
+  a fixture named `"W1"` that forced a comment to name a banned shape became `"token-world"`, and
+  the comment then said what it meant with nothing to exempt. Any exemption that does exist must
+  print its active count in its own output — an uncounted exemption is a backdoor, and a silent one
+  is indistinguishable from a rule that does not apply.
+- **No ratchets, only gates** (user directive) — nothing is grandfathered. Every doc/comment check
+  is `error` and fails CI: `pnpm lint:docs`, `lint:props`, `lint:comments`, `docs:check-examples`,
+  and Rust `-D missing-docs`. A warn tier is an exemption spread across a whole codebase, and a
+  reported-but-passing violation is indistinguishable to a later reader from code that was checked.
 - **`CLAUDE.md` is git-ignored** — it is local-only; durable rules live in `ARCHITECTURE.md` §2,
   the real source of truth. [[claude-md-is-git-ignored]]
 - **ts-rs types are generated** — change the Rust enum/struct, regenerate, then mirror in the

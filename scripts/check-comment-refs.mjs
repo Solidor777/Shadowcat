@@ -33,46 +33,50 @@ const ROOTS = ["src", "scripts"];
 const rootFiles = () =>
   readdirSync(".").filter((n) => EXTS.some((e) => n.endsWith(e)) && statSync(n).isFile());
 
-// EXAMPLE: A detector must be able to quote the shape it detects. `M8` in a pattern's docs is not
-// a reference to a milestone — it describes this code's own matching behaviour, and stays true
-// whether or not a milestone was ever numbered 8. Marked lines are exempt, and the
-// count of active exemptions is printed with every result: an exemption nobody counts is a
-// backdoor, and a silent one is indistinguishable from a rule that does not apply.
+// Patterns below are documented by describing the shape they match wherever describing is as clear
+// as showing. Where a specimen genuinely carries more than a description — a phrase whose exact
+// wording is the thing being matched — the line carries this marker and is skipped.
+//
+// The exemption is narrow by construction and its active count prints with every result. An
+// exemption nobody counts is a backdoor, and a silent one is indistinguishable from a rule that
+// does not apply; this one is neither, and it is the only exemption the scanner has.
 const EXAMPLE_EXEMPT = /\bEXAMPLE:/;
 
 /** A line whose content is a comment. Block-comment bodies are matched via the leading `*`. */
 const COMMENT = /^\s*(\/\/|\*|\/\/\/|\/\/!)/;
 
 const BANNED = [
-  // EXAMPLE: `M8`, `M8c`, `M8c-1` are one id shape. The bare form carries no less process
-  // EXAMPLE: identity than the suffixed one, and a pattern requiring the suffix reads `M8` clean.
+  // A capital M, digits, an optional letter and an optional dashed number are one id shape: the
+  // unsuffixed form carries no less process identity than the suffixed one, so a pattern that
+  // required the suffix would read the short form as clean.
   { name: "milestone/task id", re: /\bM\d+[a-z]?(?:-\d+)?\b/ },
-  // EXAMPLE: Phase checkpoints (`D9`), workstreams (`W1`) and numbered invariants (`I4`) are ids
-  // a process assigns, resolvable only by a reader who holds the process artifact.
+  // A capital D, I or W followed by digits: phase checkpoints, workstreams and numbered
+  // invariants. All are ids a process assigns, resolvable only by a reader holding that artifact.
   { name: "phase / workstream / invariant id", re: /\b[DIW]\d+\b/ },
   {
     name: "repo document pointer",
     re: /docs\/[\w./-]+\.md|\b(?:TODO|OPEN_BUGS|CLOSED_BUGS|POST_WORK_FINDINGS|ARCHITECTURE|PLAN)\.md|ARCHITECTURE\s*[§#]|\binvariant\s*#?\s*\d+/i,
   },
   { name: "dated plan/spec file", re: /\b20\d\d-\d\d-\d\d[\w-]*\.md/ },
-  // A date stamps a comment with when someone wrote it, which is not behaviour. Bare dates
-  // inside example data (`backups/2026-07-30`) are program illustration, so a match requires a
-  // parenthesised or "as of" form.
+  // A date stamps a comment with when someone wrote it, which is not behaviour. A match requires a
+  // parenthesised or "as of" form, because a bare ISO date also appears inside illustrative
+  // program data (a backup path, a sample record) where it names a value rather than a writing.
   {
     name: "date stamp",
     re: /\(\s*20\d\d-\d\d-\d\d\s*\)|\bas of \d|\bas of (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)/i,
   },
-  // Prose describing a superseded state of the code. Only high-precision forms match: "no
-  // longer" overwhelmingly describes runtime data ("an id that no longer names a scene"), and
-  // flagging it would train writers to dodge the word rather than drop the narration. The
-  // general prohibition is a review rule, not a pattern.
+  // Prose describing a superseded state of the code. Only high-precision forms match. Phrases like
+  // "no longer" overwhelmingly describe runtime data rather than the code's past, so flagging them
+  // would train writers to dodge the wording instead of dropping the narration. Removing history
+  // narration is therefore a review obligation this pattern only partly covers, never a claim that
+  // a clean run means none remains.
   {
     name: "history narration",
     re: /\bpreviously\b|\bformerly\b|\bhistorically\b|\b(?:before|after) the (?:fix|refactor|change|rewrite)\b/i,
   },
-  // EXAMPLE: An unnamed "the spec" is the same defect as a named one and strictly worse to
-  // resolve: the reader cannot even tell which document went stale. Matches a reference to a spec
-  // DOCUMENT, not the word — `spec` is also a parameter name (`setBackground(spec)`) and the e2e
+  // EXAMPLE: An unnamed reference to "the spec" is the same defect as a named one and strictly
+  // worse to resolve: the reader cannot even tell which document went stale. Matches a spec
+  // DOCUMENT, not the bare word — that word is also a common parameter name and an end-to-end
   // test-file suffix, and neither points outside the code.
   {
     name: "unnamed spec reference",
