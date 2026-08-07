@@ -635,12 +635,14 @@ impl Room {
             let scene = self.scene.read().await;
             outcome = move_exec::execute_move(
                 &scene,
-                token_scene,
+                move_exec::MoveGateInputs {
+                    scene: token_scene,
+                    restriction,
+                    visible: &visible,
+                    cell,
+                },
                 token,
                 &path,
-                restriction,
-                &visible,
-                cell,
                 is_gm,
                 footprint,
             )

@@ -22,7 +22,7 @@ use uuid::Uuid;
 
 use crate::data::document::Document;
 use crate::scene::grid_shape::SquareGrid;
-use crate::scene::move_exec::execute_move;
+use crate::scene::move_exec::{execute_move, MoveGateInputs};
 use crate::scene::pathfinding::{find, DiagonalRule, PathInputs, PathOutcome};
 use crate::scene::regions::{rasterize, RegionBehavior, RegionField, RegionShape};
 use crate::scene::{MovementRestriction, SceneEcs};
@@ -184,12 +184,14 @@ fn gate_walk_mask_gate_parity_pins_diagonal_truncation_point() {
         .collect();
     let out = execute_move(
         &ecs,
-        scene,
+        MoveGateInputs {
+            scene,
+            restriction: MovementRestriction::Visible,
+            visible: &visible,
+            cell: 100.0,
+        },
         token,
         &[(0.0, 0.0), (100.0, 100.0), (200.0, 200.0), (300.0, 300.0)],
-        MovementRestriction::Visible,
-        &visible,
-        100.0,
         false,
         0.4,
     )
@@ -248,12 +250,14 @@ fn gate_walk_flanker_gate_truncates_with_both_diagonal_endpoints_visible() {
     .collect();
     let out = execute_move(
         &ecs,
-        scene,
+        MoveGateInputs {
+            scene,
+            restriction: MovementRestriction::Visible,
+            visible: &visible,
+            cell: 100.0,
+        },
         token,
         &[(0.0, 0.0), (100.0, 100.0), (200.0, 200.0), (300.0, 300.0)],
-        MovementRestriction::Visible,
-        &visible,
-        100.0,
         false,
         0.4,
     )

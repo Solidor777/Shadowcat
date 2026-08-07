@@ -6582,12 +6582,14 @@ explored: // GM: unrestricted mask
         let visible: std::collections::BTreeSet<(i32, i32)> = std::collections::BTreeSet::new();
         let exec_out = crate::scene::move_exec::execute_move(
             &ecs,
-            scene,
+            crate::scene::move_exec::MoveGateInputs {
+                scene,
+                restriction: MovementRestriction::Unrestricted,
+                visible: &visible,
+                cell: 100.0,
+            },
             token,
             &p.path,
-            MovementRestriction::Unrestricted,
-            &visible,
-            100.0,
             false,
             0.4,
         )
@@ -6665,12 +6667,14 @@ explored: // GM: unrestricted mask
         let visible = ecs.visible_cells(player, scene, false);
         let exec = crate::scene::move_exec::execute_move(
             &ecs,
-            scene,
+            crate::scene::move_exec::MoveGateInputs {
+                scene,
+                restriction: MovementRestriction::Unrestricted,
+                visible: &visible,
+                cell: 100.0,
+            },
             token,
             &out.path,
-            MovementRestriction::Unrestricted,
-            &visible,
-            100.0,
             false,
             0.4,
         )
@@ -7258,12 +7262,14 @@ explored: // GM: unrestricted mask
         let lenient_mask = ecs.visible_cells(user, scene, true);
         let out = crate::scene::move_exec::execute_move(
             &ecs,
-            scene,
+            crate::scene::move_exec::MoveGateInputs {
+                scene,
+                restriction: MovementRestriction::Visible,
+                visible: &lenient_mask,
+                cell,
+            },
             token,
             &[(0.0, 0.0), dest],
-            MovementRestriction::Visible,
-            &lenient_mask,
-            cell,
             false,
             0.4,
         )
@@ -7277,12 +7283,14 @@ explored: // GM: unrestricted mask
         let strict_mask = ecs.visible_cells(user, scene, false);
         let out = crate::scene::move_exec::execute_move(
             &ecs,
-            scene,
+            crate::scene::move_exec::MoveGateInputs {
+                scene,
+                restriction: MovementRestriction::Visible,
+                visible: &strict_mask,
+                cell,
+            },
             token,
             &[(0.0, 0.0), dest],
-            MovementRestriction::Visible,
-            &strict_mask,
-            cell,
             false,
             0.4,
         )

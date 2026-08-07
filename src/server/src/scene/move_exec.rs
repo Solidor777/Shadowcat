@@ -232,6 +232,28 @@ pub(crate) enum MoveReject {
     SceneUnknown,
 }
 
+/// The scene state `execute_move`'s per-cell gate runs against, all of it resolved by the caller
+/// (`Room::execute_move`) before or around the scene read guard rather than re-derived here.
+///
+/// INVARIANT: `scene` is DERIVED FROM THE TOKEN (`SceneEcs::token_move`), never taken from the
+/// client's frame — every other field must be resolved for that same derived scene, or the gate
+/// evaluates one scene's geometry against another's mask.
+pub(crate) struct MoveGateInputs<'a> {
+    /// Scene the token lives in. An absent document is `MoveReject::SceneUnknown`, which binds a
+    /// GM exactly as it binds a player.
+    pub scene: Uuid,
+    /// Movement restriction mode pre-resolved by the caller from `SceneEcs::resolve_scene`;
+    /// `Unrestricted` means the mask gate is skipped.
+    pub restriction: MovementRestriction,
+    /// The resolved mask the gate decision uses. Ignored when `Unrestricted`. For `Visible` this
+    /// is `SceneEcs::visible_cells`; for `Revealed` the caller MUST pass
+    /// `visible_cells ∪ explored` — this function does not union it.
+    pub visible: &'a BTreeSet<(i32, i32)>,
+    /// Grid cell size in scene units. Non-finite or non-positive is `MoveReject::Degenerate`,
+    /// which binds a GM exactly as it binds a player.
+    pub cell: f64,
+}
+
 /// Walk `path` step by step, validating each step against the wall gate (step 1), the
 /// vision-mask gate (step 2), and the region field (step 3).
 ///
@@ -271,16 +293,10 @@ pub(crate) enum MoveReject {
 /// # Arguments
 ///
 /// - `ecs` — ECS to query for token position and wall geometry.
-/// - `scene` — Scene the token lives in.
+/// - `gate` — The scene state the caller resolved off the read lock (see `MoveGateInputs`).
 /// - `token` — Token doc id.
 /// - `path` — Proposed path (cell centers for grid, any-angle vertices for continuous);
 ///   `path[0]` must equal the token's committed position within `EPS`.
-/// - `restriction` — Movement restriction mode pre-resolved by the caller from
-///   `resolve_scene`; `Unrestricted` means mask is skipped.
-/// - `visible` — The resolved mask the gate decision uses (caller resolves off the read
-///   lock). Ignored when `Unrestricted`. For `Visible` this is `visible_cells(...)`; for
-///   `Revealed` the caller MUST pass `visible_cells(...) ∪ explored`.
-/// - `cell` — Grid cell size in scene units (positive finite).
 /// - `is_gm` — When true, every gameplay gate (walls, mask, impassable, arrest) is bypassed,
 ///   matching `publish`'s own GM position write. Resource
 ///   guards (`gate_walk`'s `MAX_GATE_WALK_COORD`/`MAX_GATE_WALK_SAMPLES`, the non-finite and
@@ -290,21 +306,27 @@ pub(crate) enum MoveReject {
 ///   `SceneEcs::resolve_token_footprint`). Must be in `[0, pathfinding::MAX_FOOTPRINT_CELLS]`;
 ///   out-of-range (including NaN) is `MoveReject::Degenerate`, unconditionally — a GM's wider
 ///   gameplay exemption does not cover this input guard.
-// A plain `is_gm` flag with early-outs, not a shared profile struct: this executor is the sole
-// gameplay gate, and a shared symbol with a single consumer is indirection with no second party to
-// keep honest.
-#[allow(clippy::too_many_arguments)]
+//
+// `is_gm` stays a standalone parameter, never a field of `MoveGateInputs`: that struct mixes
+// inputs a GM is exempt from (`restriction` and `visible`, read only under `check_mask`) with
+// inputs that bind a GM unconditionally (`scene`, whose absent document is
+// `MoveReject::SceneUnknown`; `cell`, whose non-finite or non-positive value is
+// `MoveReject::Degenerate`). The exemption switch does not belong in the same value as the
+// guards it must never exempt.
 pub(crate) fn execute_move(
     ecs: &SceneEcs,
-    scene: Uuid,
+    gate: MoveGateInputs<'_>,
     token: Uuid,
     path: &[(f64, f64)],
-    restriction: MovementRestriction,
-    visible: &BTreeSet<(i32, i32)>,
-    cell: f64,
     is_gm: bool,
     footprint_radius_cells: f64,
 ) -> Result<MoveOutcome, MoveReject> {
+    let MoveGateInputs {
+        scene,
+        restriction,
+        visible,
+        cell,
+    } = gate;
     // --- Input validation (fail closed on every degenerate input) ---
     if path.len() < 2 {
         return Err(MoveReject::EmptyPath);
@@ -613,12 +635,14 @@ mod tests {
             (0..3).flat_map(|i| (0..3).map(move |j| (i, j))).collect();
         let out = execute_move(
             &ecs,
-            scene,
+            MoveGateInputs {
+                scene,
+                restriction: MovementRestriction::Visible,
+                visible: &visible,
+                cell: 100.0,
+            },
             token,
             &[(0.0, 0.0), (100.0, 0.0), (100.0, 100.0)],
-            MovementRestriction::Visible,
-            &visible,
-            100.0,
             false,
             0.4,
         )
@@ -635,12 +659,14 @@ mod tests {
         let visible = visible_grid(4);
         let out = execute_move(
             &ecs,
-            scene,
+            MoveGateInputs {
+                scene,
+                restriction: MovementRestriction::Visible,
+                visible: &visible,
+                cell: 100.0,
+            },
             token,
             &[(0.0, 0.0), (100.0, 0.0), (100.0, 100.0)],
-            MovementRestriction::Visible,
-            &visible,
-            100.0,
             false,
             0.4,
         )
@@ -659,12 +685,14 @@ mod tests {
         visible.insert((1, 0));
         let out = execute_move(
             &ecs,
-            scene,
+            MoveGateInputs {
+                scene,
+                restriction: MovementRestriction::Visible,
+                visible: &visible,
+                cell: 100.0,
+            },
             token,
             &[(0.0, 0.0), (100.0, 0.0), (100.0, 100.0)],
-            MovementRestriction::Visible,
-            &visible,
-            100.0,
             false,
             0.4,
         )
@@ -690,12 +718,14 @@ mod tests {
         // (1,0) deliberately excluded — the corner-crossing flanker cell.
         let out = execute_move(
             &ecs,
-            scene,
+            MoveGateInputs {
+                scene,
+                restriction: MovementRestriction::Visible,
+                visible: &visible,
+                cell: 100.0,
+            },
             token,
             &[(0.0, 0.0), (200.0, 200.0)],
-            MovementRestriction::Visible,
-            &visible,
-            100.0,
             false,
             0.4,
         )
@@ -720,12 +750,14 @@ mod tests {
         // With the union mask: all supercover cells are present → reaches goal.
         let out = execute_move(
             &ecs,
-            scene,
+            MoveGateInputs {
+                scene,
+                restriction: MovementRestriction::Revealed,
+                visible: &union_mask,
+                cell: 100.0,
+            },
             token,
             &[(0.0, 0.0), (100.0, 0.0), (100.0, 100.0)],
-            MovementRestriction::Revealed,
-            &union_mask,
-            100.0,
             false,
             0.4,
         )
@@ -740,12 +772,14 @@ mod tests {
         // (1,1) absent — caller did NOT union in explored; step (100,0)→(100,100) blocked.
         let out2 = execute_move(
             &ecs,
-            scene,
+            MoveGateInputs {
+                scene,
+                restriction: MovementRestriction::Revealed,
+                visible: &raw_mask,
+                cell: 100.0,
+            },
             token,
             &[(0.0, 0.0), (100.0, 0.0), (100.0, 100.0)],
-            MovementRestriction::Revealed,
-            &raw_mask,
-            100.0,
             false,
             0.4,
         )
@@ -761,12 +795,14 @@ mod tests {
         let empty: BTreeSet<(i32, i32)> = BTreeSet::new();
         let out = execute_move(
             &ecs,
-            scene,
+            MoveGateInputs {
+                scene,
+                restriction: MovementRestriction::Unrestricted,
+                visible: &empty,
+                cell: 100.0,
+            },
             token,
             &[(0.0, 0.0), (100.0, 0.0), (100.0, 100.0)],
-            MovementRestriction::Unrestricted,
-            &empty,
-            100.0,
             false,
             0.4,
         )
@@ -781,14 +817,16 @@ mod tests {
         assert!(matches!(
             execute_move(
                 &ecs,
-                scene,
+                MoveGateInputs {
+                    scene,
+                    restriction: MovementRestriction::Unrestricted,
+                    visible: &v,
+                    cell: 100.0,
+                },
                 token,
                 &[(500.0, 0.0), (600.0, 0.0)],
-                MovementRestriction::Unrestricted,
-                &v,
-                100.0,
                 false,
-                0.4,
+                0.4
             ),
             Err(MoveReject::Degenerate)
         ));
@@ -803,12 +841,15 @@ mod tests {
         let visible = visible_grid(6);
         let out = execute_move(
             &ecs,
-            scene,
-            token,
-            &[(0.0, 0.0), (500.0, 0.0)], // 5 cells in one authored jump
+            MoveGateInputs {
+scene,
+restriction: // 5 cells in one authored jump
             MovementRestriction::Visible,
-            &visible,
-            100.0,
+visible: &visible,
+cell: 100.0,
+},
+            token,
+            &[(0.0, 0.0), (500.0, 0.0)],
             false,
             0.4,
         )
@@ -830,12 +871,14 @@ mod tests {
         visible.insert((2, 0));
         let out = execute_move(
             &ecs,
-            scene,
+            MoveGateInputs {
+                scene,
+                restriction: MovementRestriction::Visible,
+                visible: &visible,
+                cell: 100.0,
+            },
             token,
             &[(0.0, 0.0), (500.0, 0.0)],
-            MovementRestriction::Visible,
-            &visible,
-            100.0,
             false,
             0.4,
         )
@@ -859,14 +902,16 @@ mod tests {
         assert!(matches!(
             execute_move(
                 &ecs,
-                scene,
+                MoveGateInputs {
+                    scene,
+                    restriction: MovementRestriction::Unrestricted,
+                    visible: &v,
+                    cell: 1.0,
+                },
                 token,
                 &[(0.0, 0.0), (1.0e7, 0.0)],
-                MovementRestriction::Unrestricted,
-                &v,
-                1.0,
                 false,
-                0.4,
+                0.4
             ),
             Err(MoveReject::TooLong)
         ));
@@ -879,14 +924,16 @@ mod tests {
         assert!(matches!(
             execute_move(
                 &ecs,
-                scene,
+                MoveGateInputs {
+                    scene,
+                    restriction: MovementRestriction::Unrestricted,
+                    visible: &v,
+                    cell: 100.0,
+                },
                 token,
                 &[(0.0, 0.0)],
-                MovementRestriction::Unrestricted,
-                &v,
-                100.0,
                 false,
-                0.4,
+                0.4
             ),
             Err(MoveReject::EmptyPath)
         ));
@@ -900,14 +947,16 @@ mod tests {
         assert!(matches!(
             execute_move(
                 &ecs,
-                scene,
+                MoveGateInputs {
+                    scene,
+                    restriction: MovementRestriction::Unrestricted,
+                    visible: &v,
+                    cell: 100.0,
+                },
                 unknown,
                 &[(0.0, 0.0), (100.0, 0.0)],
-                MovementRestriction::Unrestricted,
-                &v,
-                100.0,
                 false,
-                0.4,
+                0.4
             ),
             Err(MoveReject::NotAToken)
         ));
@@ -920,12 +969,14 @@ mod tests {
         // Unrestricted with empty mask should reach the goal with no walls.
         let out = execute_move(
             &ecs,
-            scene,
+            MoveGateInputs {
+                scene,
+                restriction: MovementRestriction::Unrestricted,
+                visible: &empty,
+                cell: 100.0,
+            },
             token,
             &[(0.0, 0.0), (100.0, 0.0), (100.0, 100.0)],
-            MovementRestriction::Unrestricted,
-            &empty,
-            100.0,
             false,
             0.4,
         )
@@ -981,12 +1032,14 @@ mod tests {
         let visible = visible_grid(3);
         let out = execute_move(
             &ecs,
-            scene_id,
+            MoveGateInputs {
+                scene: scene_id,
+                restriction: MovementRestriction::Unrestricted,
+                visible: &visible,
+                cell: 100.0,
+            },
             token_id,
             &[(0.0, 0.0), (100.0, 0.0), (100.0, 100.0)],
-            MovementRestriction::Unrestricted,
-            &visible,
-            100.0,
             false,
             0.4,
         )
@@ -1024,12 +1077,14 @@ mod tests {
         let visible = visible_grid(3);
         let out = execute_move(
             &ecs,
-            scene_id,
+            MoveGateInputs {
+                scene: scene_id,
+                restriction: MovementRestriction::Unrestricted,
+                visible: &visible,
+                cell: 100.0,
+            },
             token_id,
             &[(0.0, 0.0), (100.0, 0.0)],
-            MovementRestriction::Unrestricted,
-            &visible,
-            100.0,
             false,
             0.4,
         )
@@ -1070,12 +1125,14 @@ mod tests {
         let visible = visible_grid(3);
         let out = execute_move(
             &ecs,
-            scene_id,
+            MoveGateInputs {
+                scene: scene_id,
+                restriction: MovementRestriction::Unrestricted,
+                visible: &visible,
+                cell: 100.0,
+            },
             token_id,
             &[(0.0, 0.0), (100.0, 0.0)],
-            MovementRestriction::Unrestricted,
-            &visible,
-            100.0,
             false,
             0.4,
         )
@@ -1132,12 +1189,14 @@ mod tests {
         let visible = BTreeSet::new();
         let out = execute_move(
             &ecs,
-            scene_id,
+            MoveGateInputs {
+                scene: scene_id,
+                restriction: MovementRestriction::Unrestricted,
+                visible: &visible,
+                cell: 50.0,
+            },
             token_id,
             &[(0.0, 0.0), c10],
-            MovementRestriction::Unrestricted,
-            &visible,
-            50.0,
             false,
             0.4,
         )
@@ -1207,12 +1266,14 @@ mod tests {
 
         let out = execute_move(
             &ecs,
-            scene_id,
+            MoveGateInputs {
+                scene: scene_id,
+                restriction: MovementRestriction::Visible,
+                visible: &visible,
+                cell: 50.0,
+            },
             token_id,
             &[(0.0, 0.0), c30],
-            MovementRestriction::Visible,
-            &visible,
-            50.0,
             false,
             0.4,
         )
@@ -1263,12 +1324,14 @@ mod tests {
         let visible = visible_grid(3);
         let out = execute_move(
             &ecs,
-            scene_id,
+            MoveGateInputs {
+                scene: scene_id,
+                restriction: MovementRestriction::Visible,
+                visible: &visible,
+                cell: 100.0,
+            },
             token_id,
             &[(0.0, 0.0), (100.0, 0.0), (100.0, 100.0)],
-            MovementRestriction::Visible,
-            &visible,
-            100.0,
             false,
             0.4,
         )
@@ -1384,12 +1447,14 @@ mod tests {
         let path = [(50.0, 50.0), (150.0, 50.0), (250.0, 50.0)];
         let out = execute_move(
             &ecs,
-            scene,
+            MoveGateInputs {
+                scene,
+                restriction: MovementRestriction::Unrestricted,
+                visible: &empty_mask(),
+                cell: 100.0,
+            },
             token,
             &path,
-            MovementRestriction::Unrestricted,
-            &empty_mask(),
-            100.0,
             true,
             0.4,
         )
@@ -1408,12 +1473,14 @@ mod tests {
         let path = [(50.0, 50.0), (150.0, 50.0), (250.0, 50.0)];
         let out = execute_move(
             &ecs,
-            scene,
+            MoveGateInputs {
+                scene,
+                restriction: MovementRestriction::Unrestricted,
+                visible: &empty_mask(),
+                cell: 100.0,
+            },
             token,
             &path,
-            MovementRestriction::Unrestricted,
-            &empty_mask(),
-            100.0,
             true,
             0.4,
         )
@@ -1427,12 +1494,14 @@ mod tests {
         let (ecs, scene, token) = scene_with_wall_across_the_path();
         let out = execute_move(
             &ecs,
-            scene,
+            MoveGateInputs {
+                scene,
+                restriction: MovementRestriction::Unrestricted,
+                visible: &empty_mask(),
+                cell: 100.0,
+            },
             token,
             &[(50.0, 50.0), (150.0, 50.0)],
-            MovementRestriction::Unrestricted,
-            &empty_mask(),
-            100.0,
             false,
             0.4,
         )
@@ -1447,12 +1516,14 @@ mod tests {
         let over = MAX_GATE_WALK_COORD + 1.0;
         let err = execute_move(
             &ecs,
-            scene,
+            MoveGateInputs {
+                scene,
+                restriction: MovementRestriction::Unrestricted,
+                visible: &empty_mask(),
+                cell: 100.0,
+            },
             token,
             &[(50.0, 50.0), (over, 50.0)],
-            MovementRestriction::Unrestricted,
-            &empty_mask(),
-            100.0,
             true,
             0.4,
         )
@@ -1466,12 +1537,14 @@ mod tests {
         let (ecs, scene, token) = scene_with_terrain_multiplier_3();
         let out = execute_move(
             &ecs,
-            scene,
+            MoveGateInputs {
+                scene,
+                restriction: MovementRestriction::Unrestricted,
+                visible: &empty_mask(),
+                cell: 100.0,
+            },
             token,
             &[(50.0, 50.0), (150.0, 50.0)],
-            MovementRestriction::Unrestricted,
-            &empty_mask(),
-            100.0,
             true,
             0.4,
         )
@@ -1497,12 +1570,14 @@ mod tests {
         // Any-angle single segment, not axis-aligned, not diagonal-45.
         let out = execute_move(
             &ecs,
-            scene,
+            MoveGateInputs {
+                scene,
+                restriction: MovementRestriction::Visible,
+                visible: &visible,
+                cell: 100.0,
+            },
             token,
             &[(0.0, 0.0), (350.0, 120.0)],
-            MovementRestriction::Visible,
-            &visible,
-            100.0,
             false,
             0.4,
         )
@@ -1548,12 +1623,14 @@ mod tests {
         // dense substeps of 100 units each; the wall sits inside the third substep.
         let out = execute_move(
             &ecs,
-            scene_id,
+            MoveGateInputs {
+                scene: scene_id,
+                restriction: MovementRestriction::Unrestricted,
+                visible: &visible,
+                cell: 100.0,
+            },
             token_id,
             &[(0.0, 0.0), (400.0, 0.0)],
-            MovementRestriction::Unrestricted,
-            &visible,
-            100.0,
             false,
             0.4,
         )
@@ -1594,12 +1671,14 @@ mod tests {
         let visible = visible_grid(5);
         let out = execute_move(
             &ecs,
-            scene_id,
+            MoveGateInputs {
+                scene: scene_id,
+                restriction: MovementRestriction::Unrestricted,
+                visible: &visible,
+                cell: 100.0,
+            },
             token_id,
             &[(0.0, 0.0), (400.0, 0.0)],
-            MovementRestriction::Unrestricted,
-            &visible,
-            100.0,
             false,
             0.4,
         )
@@ -1637,12 +1716,14 @@ mod tests {
         let visible = visible_grid(5);
         let out = execute_move(
             &ecs,
-            scene_id,
+            MoveGateInputs {
+                scene: scene_id,
+                restriction: MovementRestriction::Unrestricted,
+                visible: &visible,
+                cell: 100.0,
+            },
             token_id,
             &[(0.0, 0.0), (400.0, 0.0)],
-            MovementRestriction::Unrestricted,
-            &visible,
-            100.0,
             false,
             0.4,
         )
@@ -1685,12 +1766,14 @@ mod tests {
         // Any-angle polyline: (50,50) -> (250,50) -> (350,50); the first leg is 2 cells in one hop.
         let out = execute_move(
             &ecs,
-            scene_id,
+            MoveGateInputs {
+                scene: scene_id,
+                restriction: MovementRestriction::Unrestricted,
+                visible: &visible,
+                cell: 100.0,
+            },
             token_id,
             &[(50.0, 50.0), (250.0, 50.0), (350.0, 50.0)],
-            MovementRestriction::Unrestricted,
-            &visible,
-            100.0,
             false,
             0.4,
         )
@@ -1949,12 +2032,14 @@ mod tests {
                 scene_with_wall_and_region(case.wall, case.region, case.secret_region);
             let result = execute_move(
                 &ecs,
-                scene,
+                MoveGateInputs {
+                    scene,
+                    restriction: case.restriction,
+                    visible: &case.visible,
+                    cell: 100.0,
+                },
                 token,
                 &case.path,
-                case.restriction,
-                &case.visible,
-                100.0,
                 false,
                 0.4,
             );
@@ -2261,12 +2346,14 @@ mod tests {
         let empty: BTreeSet<(i32, i32)> = BTreeSet::new();
         let out = execute_move(
             &ecs,
-            scene,
+            MoveGateInputs {
+                scene,
+                restriction: MovementRestriction::Unrestricted,
+                visible: &empty,
+                cell: 100.0,
+            },
             token,
             &[(0.0, 0.0), c1, c2],
-            MovementRestriction::Unrestricted,
-            &empty,
-            100.0,
             false,
             0.4,
         )
@@ -2292,12 +2379,14 @@ mod tests {
         // (2, 0) deliberately excluded.
         let out = execute_move(
             &ecs,
-            scene,
+            MoveGateInputs {
+                scene,
+                restriction: MovementRestriction::Visible,
+                visible: &visible,
+                cell: 100.0,
+            },
             token,
             &[(0.0, 0.0), c1, c2],
-            MovementRestriction::Visible,
-            &visible,
-            100.0,
             false,
             0.4,
         )
@@ -2635,12 +2724,14 @@ mod tests {
                 .expect("the fixture is routable for this footprint");
             let out = execute_move(
                 &ecs,
-                scene,
+                MoveGateInputs {
+                    scene,
+                    restriction: MovementRestriction::Visible,
+                    visible: &mask,
+                    cell: 100.0,
+                },
                 token,
                 &route.path,
-                MovementRestriction::Visible,
-                &mask,
-                100.0,
                 false,
                 fp,
             )
@@ -2685,12 +2776,14 @@ mod tests {
         );
         let out = execute_move(
             &ecs,
-            scene,
+            MoveGateInputs {
+                scene,
+                restriction: MovementRestriction::Visible,
+                visible: &mask,
+                cell: 100.0,
+            },
             token,
             &route.path,
-            MovementRestriction::Visible,
-            &mask,
-            100.0,
             false,
             fp,
         )
@@ -2717,12 +2810,14 @@ mod tests {
         for path in candidates {
             let out = execute_move(
                 &ecs,
-                scene,
+                MoveGateInputs {
+                    scene,
+                    restriction: MovementRestriction::Visible,
+                    visible: &mask,
+                    cell: 100.0,
+                },
                 token,
                 &path,
-                MovementRestriction::Visible,
-                &mask,
-                100.0,
                 false,
                 fp,
             )
@@ -2760,12 +2855,14 @@ mod tests {
         let mask = ecs.visible_cells(user, scene, false);
         let out = execute_move(
             &ecs,
-            scene,
+            MoveGateInputs {
+                scene,
+                restriction: MovementRestriction::Visible,
+                visible: &mask,
+                cell: 100.0,
+            },
             token,
             &[(50.0, 50.0), (150.0, 50.0)],
-            MovementRestriction::Visible,
-            &mask,
-            100.0,
             false,
             0.4,
         )
@@ -2783,12 +2880,14 @@ mod tests {
         let mask = ecs.visible_cells(user, scene, false);
         let out = execute_move(
             &ecs,
-            scene,
+            MoveGateInputs {
+                scene,
+                restriction: MovementRestriction::Visible,
+                visible: &mask,
+                cell: 100.0,
+            },
             token,
             &[(50.0, 50.0), (150.0, 50.0)],
-            MovementRestriction::Visible,
-            &mask,
-            100.0,
             false,
             fp,
         )
@@ -2806,12 +2905,14 @@ mod tests {
         let mask = ecs.visible_cells(user, scene, false);
         let out = execute_move(
             &ecs,
-            scene,
+            MoveGateInputs {
+                scene,
+                restriction: MovementRestriction::Visible,
+                visible: &mask,
+                cell: 100.0,
+            },
             token,
             &[(50.0, 50.0), (150.0, 150.0)],
-            MovementRestriction::Visible,
-            &mask,
-            100.0,
             false,
             0.4,
         )
@@ -2832,12 +2933,14 @@ mod tests {
         let mask = ecs.visible_cells(user, scene, false);
         let out = execute_move(
             &ecs,
-            scene,
+            MoveGateInputs {
+                scene,
+                restriction: MovementRestriction::Visible,
+                visible: &mask,
+                cell: 100.0,
+            },
             token,
             &[(50.0, 50.0), (150.0, 50.0)],
-            MovementRestriction::Visible,
-            &mask,
-            100.0,
             false,
             fp,
         )
@@ -2854,12 +2957,14 @@ mod tests {
             scene_with_narrow_gap_and_wide_token("square", MovementModel::GridStepped);
         let out = execute_move(
             &ecs,
-            scene,
+            MoveGateInputs {
+                scene,
+                restriction: MovementRestriction::Unrestricted,
+                visible: &empty_mask(),
+                cell: 100.0,
+            },
             token,
             &[start, goal],
-            MovementRestriction::Unrestricted,
-            &empty_mask(),
-            100.0,
             true,
             5.0,
         )
@@ -2882,12 +2987,14 @@ mod tests {
         ] {
             let err = execute_move(
                 &ecs,
-                scene,
+                MoveGateInputs {
+                    scene,
+                    restriction: MovementRestriction::Unrestricted,
+                    visible: &empty_mask(),
+                    cell: 100.0,
+                },
                 token,
                 &[(50.0, 50.0), (150.0, 50.0)],
-                MovementRestriction::Unrestricted,
-                &empty_mask(),
-                100.0,
                 false,
                 bad,
             )
