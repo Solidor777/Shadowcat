@@ -30,11 +30,11 @@ interprets or merges anything itself.
     conflicts if both changed — arrays have no stable per-element identity to diff), **objects
     merge key-level** (each key independently: parent-only / child-only / both-same /
     both-different-conflict). `exclusions` drops matching paths from the parent side entirely
-    (never merge, never conflict) — the placement-exclusion mechanism (E8, below).
+    (never merge, never conflict) — the placement-exclusion mechanism (below).
   - `merge3Embedded(baseChildren, theirsChildren, mineChildren)` — **internal helper, not
     exported from `@shadowcat/core`** (used only inside `merge3`); correlates embedded children
     across base/mine/theirs **by `source.id`, never by array index or embedded-array position**
-    (E7) — an instance's embedded children were themselves stamped from the template's embedded
+    — an instance's embedded children were themselves stamped from the template's embedded
     children, so `source.id` is the only stable cross-side key. Handles instance-added
     (mine-only, kept) and base-missing (fail-safe: kept, not silently dropped) cases; a
     correlated triple with a real conflict is kept pending, not merged.
@@ -46,7 +46,7 @@ interprets or merges anything itself.
     (guards against the aliasing hazard in `[[embedded-copy-needs-deep-clone]]`).
   - `takeTemplate(root, conflict)` — applies "theirs" for one conflicted leaf, used by conflict
     resolution.
-  - `isPlacementExcluded(path, exclusions)` / `placementExclusions(docType)` (E8) — per-doc_type
+  - `isPlacementExcluded(path, exclusions)` / `placementExclusions(docType)` — per-doc_type
     paths that are always instance-owned and never merged/pulled/pushed (e.g. a token's on-scene
     `x`/`y`) — checked by every pull/revert/push computation in the `templates` module, not re-derived
     per call site.
@@ -115,7 +115,7 @@ interprets or merges anything itself.
   `canPush` gates the TEMPLATE only. `push` then per-instance-filters by
   `canEdit(inst, "/base")`/`canEdit(inst, "/system")`, additionally filtering `findInstances`'
   same-world result before splitting into dispatch-now (no conflicts) vs. conflict-modal groups
-  (E9: same-world see+write, not just same-world see). **That per-instance filter has a known gap:
+  (same-world see+write, not just same-world see). **That per-instance filter has a known gap:
   `planToUpdate` emits paths the filter never checks — notably `/embedded/<coll>`, which needs a
   DIFFERENT capability — so an instance the pusher can write base/system but not `/embedded` on is
   included, and its ENTIRE Update is then refused: `data::sqlite::apply_intent` returns `Forbidden`
@@ -127,7 +127,7 @@ interprets or merges anything itself.
   Contained to the one instance (`push` dispatches one intent PER instance), and logged in
   `docs/TODO.md` with two candidate fixes.**
 - `MergeConflictModal` (+ `TemplateModalHost`) — the
-  field-level conflict resolution UI (E5/§6.2): renders one `ConflictGroup` per pending child
+  field-level conflict resolution UI: renders one `ConflictGroup` per pending child
   (`{ key, label, conflicts: Conflict[] }`; the type lives in
   the `mergeConflict` module — a plain TS module, because a named type export
   from a `.svelte` file is invisible to plain tsc consumers like TypeDoc), lets the user pick
