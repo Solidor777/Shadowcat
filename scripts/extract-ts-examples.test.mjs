@@ -22,6 +22,7 @@ import {
   pickSyntheticMethodName,
   buildClassInjectionText,
   buildLineMap,
+  extractSvelteHost,
 } from "./extract-ts-examples.mjs";
 import ts from "typescript";
 
@@ -737,5 +738,95 @@ describe("candidateFiles / svelteFiles", () => {
     const repo = resolve(fileURLToPath(import.meta.url), "..", "..");
     const files = svelteFiles(repo, ["src/modules"]);
     for (const f of files) expect(f.endsWith(".svelte")).toBe(true);
+  });
+});
+
+describe("extractSvelteHost", () => {
+  it("reports a skip reason for an SFC with no <script> block", () => {
+    const got = extractSvelteHost("<div>no script here</div>\n");
+    expect(got.skip).toBe("no <script> block");
+  });
+
+  it("reports a skip reason for a non-ts instance <script> block", () => {
+    const got = extractSvelteHost('<script lang="js">const x = 1;</script>\n');
+    expect(got.skip).toBe('the <script> instance block is not lang="ts"');
+  });
+
+  it("reports a skip reason for a non-ts <script module> block", () => {
+    const src = ['<script module lang="js">export const X = 1;</script>', '<script lang="ts">const y = 2;</script>', ""].join(
+      "\n",
+    );
+    const got = extractSvelteHost(src);
+    expect(got.skip).toBe('the <script module> block is not lang="ts"');
+  });
+
+  it("reports a skip reason for a module-only SFC (no instance script)", () => {
+    const got = extractSvelteHost('<script module lang="ts">export const X = 1;</script>\n');
+    expect(got.skip).toBe("no instance <script> block (module-only SFC)");
+  });
+
+  it("hostText equals the instance body verbatim for an instance-only SFC", () => {
+    const src = ['<div>template</div>', '<script lang="ts">', "const controlSvelteOnly = 1;", "</script>", ""].join("\n");
+    const got = extractSvelteHost(src);
+    expect(got.skip).toBeUndefined();
+    expect(got.hostText).toContain("const controlSvelteOnly = 1;");
+  });
+
+  it("toHostOffset maps a commentEnd inside the instance block, and toSvelteLine maps back to the real SFC line", () => {
+    const src = ['<div>template</div>', '<script lang="ts">', "const controlOffset = 1;", "</script>", ""].join("\n");
+    const svelteOffset = src.indexOf("const controlOffset");
+    const got = extractSvelteHost(src);
+    const hostOffset = got.toHostOffset(svelteOffset);
+    expect(hostOffset).not.toBeNull();
+    expect(got.hostText.slice(hostOffset, hostOffset + "const controlOffset".length)).toBe("const controlOffset");
+    const hostLineIndex = got.hostText.slice(0, hostOffset).split("\n").length - 1;
+    const realLine = got.toSvelteLine(hostLineIndex);
+    expect(src.split("\n")[realLine]).toContain("const controlOffset");
+  });
+
+  it("toHostOffset returns null for an offset outside every script block", () => {
+    const src = ['<div>template text</div>', '<script lang="ts">const x = 1;</script>', ""].join("\n");
+    const got = extractSvelteHost(src);
+    expect(got.toHostOffset(src.indexOf("template text"))).toBeNull();
+  });
+
+  it("concatenates a <script module> block before the instance block, and both remain individually offset-mappable", () => {
+    const src = [
+      '<script module lang="ts">',
+      "export const CONTROL_MODULE = 1;",
+      "</script>",
+      "",
+      '<script lang="ts">',
+      "const controlInstance = CONTROL_MODULE + 1;",
+      "</script>",
+      "",
+    ].join("\n");
+    const got = extractSvelteHost(src);
+    expect(got.skip).toBeUndefined();
+    expect(got.hostText.indexOf("CONTROL_MODULE = 1")).toBeLessThan(got.hostText.indexOf("controlInstance"));
+
+    const moduleSvelteOffset = src.indexOf("CONTROL_MODULE = 1");
+    const moduleHostOffset = got.toHostOffset(moduleSvelteOffset);
+    expect(got.hostText.slice(moduleHostOffset, moduleHostOffset + "CONTROL_MODULE = 1".length)).toBe("CONTROL_MODULE = 1");
+
+    const instanceSvelteOffset = src.indexOf("controlInstance =");
+    const instanceHostOffset = got.toHostOffset(instanceSvelteOffset);
+    expect(got.hostText.slice(instanceHostOffset, instanceHostOffset + "controlInstance =".length)).toBe(
+      "controlInstance =",
+    );
+
+    const instanceHostLine = got.hostText.slice(0, instanceHostOffset).split("\n").length - 1;
+    const realLine = got.toSvelteLine(instanceHostLine);
+    expect(src.split("\n")[realLine]).toContain("controlInstance");
+  });
+
+  it("recognizes the legacy context=\"module\" spelling", () => {
+    const src = ['<script context="module" lang="ts">export const X = 1;</script>', '<script lang="ts">const y = 2;</script>', ""].join(
+      "\n",
+    );
+    const got = extractSvelteHost(src);
+    expect(got.skip).toBeUndefined();
+    expect(got.hostText).toContain("export const X = 1;");
+    expect(got.hostText).toContain("const y = 2;");
   });
 });

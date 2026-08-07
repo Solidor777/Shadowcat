@@ -616,19 +616,32 @@ export function buildLineMap(text) {
 
 /** A diagnostic-line formatter backed by a simple threshold — used by the free-function
  * wrapper path, where the host's own text is never edited mid-file, so every line at or
- * past a fixed count belongs to the example. */
-function hostLineMapper(hostLineCount) {
-  return (line) => (line < hostLineCount ? `host line ${line + 1}` : "example body");
+ * past a fixed count belongs to the example. `translate` converts a 0-based line index
+ * WITHIN `hostText` to the 0-based line it corresponds to in the file the citation
+ * should name — identity for a `.ts` host (`hostText` IS that file verbatim), or
+ * `extractSvelteHost`'s `toSvelteLine` for a `.svelte` host, where `hostText` is only
+ * the extracted script content and a further indirection is needed to cite the real
+ * SFC line. A `translate` returning `null` (a line `extractSvelteHost` cannot relate
+ * back, e.g. a synthetic block separator) falls back to "example body" rather than
+ * mis-citing a line. */
+function hostLineMapper(hostLineCount, translate = (n) => n) {
+  return (line) => {
+    if (line >= hostLineCount) return "example body";
+    const real = translate(line);
+    return real === null ? "example body" : `host line ${real + 1}`;
+  };
 }
 
 /** A diagnostic-line formatter backed by `buildLineMap` — used by the class-injection
  * path, where the example's method is spliced into the MIDDLE of the host's text, so a
  * single threshold cannot distinguish host lines that follow the injection point from
- * the injected content itself. */
-function arrayLineMapper(lineMap) {
+ * the injected content itself. See `hostLineMapper` for `translate`. */
+function arrayLineMapper(lineMap, translate = (n) => n) {
   return (line) => {
     const hostLine = lineMap[line];
-    return hostLine === null || hostLine === undefined ? "example body" : `host line ${hostLine + 1}`;
+    if (hostLine === null || hostLine === undefined) return "example body";
+    const real = translate(hostLine);
+    return real === null ? "example body" : `host line ${real + 1}`;
   };
 }
 
@@ -875,6 +888,152 @@ function compilePackageClassInjectedExamples(repoRoot, pkgDir, pkgDirs, examples
     ...meta.get(virtualPath),
     diagnostics,
   }));
+}
+
+// --- Svelte SFC hosts ----------------------------------------------------------------
+// A `.svelte` file's `@example` blocks are documented inside its `<script lang="ts">`
+// content, which is not itself a standalone TS module: `svelte2tsx` is what normally
+// gives that content a real component type and is bundled inside `svelte-check`, not
+// resolvable as a package from this workspace. What IS available is the extracted
+// script text itself (valid TS on its own — Svelte's runes are declared as ambient
+// globals by `node_modules/svelte/types/index.d.ts`, pulled in automatically once a
+// package's own tsconfig sets `"types": ["svelte"]`, exactly as it already does for
+// every package that owns a `.svelte` example-bearing file — no extra file-set wiring
+// needed on top of `packageCompilerOptions`, reused unchanged. The same ambient file
+// also declares `declare module '*.svelte'` itself, so a host's own
+// `import Foo from "./Foo.svelte"` resolves for free too — no shim of this script's
+// own is needed to keep that import from producing a host-attributable "cannot find
+// module" diagnostic (verified: compiling a host with such an import, with and
+// without a hand-written shim, produces the identical zero diagnostics). Everything downstream
+// of `hostText` (`hostTopLevelBindings`, `dedupeAgainstHost`, `resolveTypeValueClashes`,
+// `buildVirtualText`, `buildClassInjectionText`, `compileOverlay`) is reused unchanged —
+// this section only supplies a different HOST, not a second compiler.
+
+/** Extracts a Svelte SFC's TypeScript-bearing script content and the data needed to
+ * relate a position inside it back to the real `.svelte` file. A `<script module>`
+ * block's body (if present) is placed before the instance `<script>` block's body —
+ * mirroring the visibility Svelte itself grants a module block's top-level bindings to
+ * the instance script, with no import needed. Returns `{ skip: reason }` when there is
+ * no instance `<script>` block, or when a present block is not `lang="ts"` — both
+ * legitimate, individually-reported dispositions (see `main`'s `.svelte` handling).
+ * Otherwise returns `hostText` plus:
+ * - `toHostOffset(svelteOffset)`: translates a character offset in the ORIGINAL SFC
+ *   text (e.g. `commentEnd`, from `extractExamples`) to the equivalent offset in
+ *   `hostText`, for `findEnclosingClassTarget`. Returns null when the offset falls
+ *   outside every script block (a doc comment in the template, never observed but
+ *   reported rather than assumed impossible).
+ * - `toSvelteLine(hostLineIndex)`: translates a 0-based line index WITHIN `hostText`
+ *   back to the 0-based line it occupies in the real SFC, for diagnostic citation.
+ *   Returns null for a line with no real correspondent (a synthetic separator inserted
+ *   only when a block's body does not itself end in a newline). */
+export function extractSvelteHost(svelteText) {
+  const blocks = [];
+  for (const m of svelteText.matchAll(/<script([^>]*)>([\s\S]*?)<\/script>/g)) {
+    const attrs = m[1];
+    const body = m[2];
+    const openTagLen = m[0].length - body.length - "</script>".length;
+    const bodyStart = m.index + openTagLen;
+    const isModule = /(?:^|\s)module(?:\s|=|$)/.test(attrs) || /context\s*=\s*["']module["']/.test(attrs);
+    const isTs = /lang\s*=\s*["']ts["']/.test(attrs);
+    blocks.push({ isModule, isTs, body, bodyStart });
+  }
+  const moduleBlock = blocks.find((b) => b.isModule) ?? null;
+  const instanceBlock = blocks.find((b) => !b.isModule) ?? null;
+  if (moduleBlock === null && instanceBlock === null) return { skip: "no <script> block" };
+  if (instanceBlock === null) return { skip: "no instance <script> block (module-only SFC)" };
+  if (!instanceBlock.isTs) return { skip: 'the <script> instance block is not lang="ts"' };
+  if (moduleBlock !== null && !moduleBlock.isTs) return { skip: 'the <script module> block is not lang="ts"' };
+
+  const segments = [];
+  let hostText = "";
+  for (const block of [moduleBlock, instanceBlock]) {
+    if (!block) continue;
+    segments.push({ hostOffset: hostText.length, svelteOffset: block.bodyStart, length: block.body.length });
+    hostText += block.body;
+    if (!hostText.endsWith("\n")) hostText += "\n";
+  }
+
+  const toHostOffset = (svelteOffset) => {
+    for (const seg of segments) {
+      if (svelteOffset >= seg.svelteOffset && svelteOffset <= seg.svelteOffset + seg.length) {
+        return seg.hostOffset + (svelteOffset - seg.svelteOffset);
+      }
+    }
+    return null;
+  };
+  const toSvelteOffset = (hostOffset) => {
+    for (const seg of segments) {
+      if (hostOffset >= seg.hostOffset && hostOffset <= seg.hostOffset + seg.length) {
+        return seg.svelteOffset + (hostOffset - seg.hostOffset);
+      }
+    }
+    return null;
+  };
+  const hostLineStarts = [0];
+  for (let i = 0; i < hostText.length; i++) if (hostText[i] === "\n") hostLineStarts.push(i + 1);
+  const toSvelteLine = (hostLineIndex) => {
+    const hostOffset = hostLineStarts[hostLineIndex];
+    if (hostOffset === undefined) return null;
+    const svelteOffset = toSvelteOffset(hostOffset);
+    return svelteOffset === null ? null : svelteText.slice(0, svelteOffset).split("\n").length - 1;
+  };
+
+  return { hostText, toHostOffset, toSvelteLine };
+}
+
+/** Compiles every compilable free-function-wrapper example extracted from `.svelte`
+ * hosts for one package, mirroring `compilePackageExamples` exactly except for where
+ * `hostText` comes from (`extractSvelteHost` instead of the raw file). `examplesByFile`
+ * maps each `.svelte` absolute path to its already-extracted `{ hostText,
+ * toSvelteLine }` plus the examples destined for this (non-class-context) path. */
+function compilePackageSvelteExamples(repoRoot, pkgDir, pkgDirs, examplesByFile) {
+  const options = packageCompilerOptions(repoRoot, pkgDir, pkgDirs);
+  const selfPackageName = packageOwnName(repoRoot, pkgDir);
+  const overlay = new Map();
+  const meta = new Map();
+  for (const [hostFile, { hostText, toSvelteLine, examples }] of examplesByFile) {
+    const dir = dirname(hostFile);
+    const base = basename(hostFile, extname(hostFile));
+    const hostBindings = hostTopLevelBindings(hostText);
+    examples.forEach((ex, i) => {
+      const virtualPath = toPosix(join(dir, `${base}.doctest${i}.ts`));
+      const resolved = resolveTypeValueClashes(hostText, hostBindings, ex.hoisted, selfPackageName, hostFile);
+      const effectiveHostLineCount = resolved.hostText.split("\n").length;
+      overlay.set(virtualPath, buildVirtualText(resolved.hostText, ex, resolved.hostBindings, selfPackageName, hostFile));
+      meta.set(virtualPath, { hostFile, mapLine: hostLineMapper(effectiveHostLineCount, toSvelteLine), ...ex });
+    });
+  }
+  const diagnosticsByPath = compileOverlay(options, overlay);
+  return [...diagnosticsByPath.entries()].map(([virtualPath, diagnostics]) => ({ ...meta.get(virtualPath), diagnostics }));
+}
+
+/** Compiles every class-context example extracted from `.svelte` hosts for one
+ * package by injecting each as a synthetic method, mirroring
+ * `compilePackageClassInjectedExamples` except for the `hostText` source. A
+ * class-context example with no enclosing class (the overwhelming majority — a
+ * component's script is not itself a TS class) is filtered out by `main` before
+ * reaching this function, exactly as for `.ts` hosts. */
+function compilePackageSvelteClassInjectedExamples(repoRoot, pkgDir, pkgDirs, examplesByFile) {
+  const options = packageCompilerOptions(repoRoot, pkgDir, pkgDirs);
+  const selfPackageName = packageOwnName(repoRoot, pkgDir);
+  const overlay = new Map();
+  const meta = new Map();
+  for (const [hostFile, { hostText, toSvelteLine, examples }] of examplesByFile) {
+    const dir = dirname(hostFile);
+    const base = basename(hostFile, extname(hostFile));
+    const hostBindings = hostTopLevelBindings(hostText);
+    const hostSourceFile = ts.createSourceFile(hostFile, hostText, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+    examples.forEach((ex, i) => {
+      const target = findEnclosingClassTarget(hostSourceFile, ex.hostCommentEnd);
+      if (target === null) return; // pre-filtered by `main`; defensive only
+      const virtualPath = toPosix(join(dir, `${base}.doctest${i}.inject.ts`));
+      const built = buildClassInjectionText(hostText, ex, target, hostBindings, selfPackageName, hostFile);
+      overlay.set(virtualPath, built.text);
+      meta.set(virtualPath, { hostFile, mapLine: arrayLineMapper(built.lineMap, toSvelteLine), ...ex });
+    });
+  }
+  const diagnosticsByPath = compileOverlay(options, overlay);
+  return [...diagnosticsByPath.entries()].map(([virtualPath, diagnostics]) => ({ ...meta.get(virtualPath), diagnostics }));
 }
 
 /** Formats a diagnostic against the host module symbol and the example's ordinal
@@ -1182,6 +1341,299 @@ function runClassInjectionControl(repoRoot) {
   }
 }
 
+/** `.svelte` host controls, exercised through the real `extractExamples` →
+ * `extractSvelteHost` → `analyzeExample` → `buildVirtualText`/`buildClassInjectionText`
+ * → `compileOverlay` pipeline against synthetic SFC text (never a file on disk):
+ * - **Rune typing is real, not `any`.** A host binding `let n = $state(0)` must make
+ *   an example doing `n.toUpperCase()` FAIL, and one doing arithmetic on it (`n * 2`)
+ *   compile GREEN — proving both that the ambient rune declarations resolved with
+ *   their real generic signature AND that the FAIL half isn't a false positive from
+ *   something else entirely.
+ * - **Host context resolves.** An example calling a real host-declared function
+ *   compiles GREEN; one calling a name the host never declares FAILS.
+ * - **`<script module>` bindings resolve.** An example reading a module-block export,
+ *   with no import, compiles GREEN — the same visibility Svelte itself grants an
+ *   instance script over its own module block.
+ * - **An unrelated host-side `.svelte` import never masks a real example error.** A
+ *   host importing a nonexistent-on-disk `./Child.svelte` component — resolved by
+ *   svelte's own `declare module '*.svelte'` ambient declaration, pulled in the same
+ *   way as the rune globals, needing no shim of this script's own — compiles GREEN
+ *   for a correct example and still FAILS for one with a genuine type error, proving
+ *   neither diagnostic direction is accidentally swallowed. */
+function runSvelteHostControl(repoRoot) {
+  const dir = join(repoRoot, "scripts");
+  const options = {
+    target: ts.ScriptTarget.ES2022,
+    module: ts.ModuleKind.ESNext,
+    moduleResolution: ts.ModuleResolutionKind.Bundler,
+    strict: true,
+    noEmit: true,
+    skipLibCheck: true,
+    types: ["svelte"],
+    ...EXAMPLE_HYGIENE_OVERRIDES,
+  };
+
+  const compileSvelteExample = (svelteText, exampleIndex, label) => {
+    const examples = extractExamples(svelteText);
+    const host = extractSvelteHost(svelteText);
+    if (host.skip) {
+      console.error(`svelte control setup mismatch (${label}): ${host.skip}`);
+      process.exit(1);
+    }
+    const ex = examples[exampleIndex];
+    if (!ex) {
+      console.error(`svelte control setup mismatch (${label}): expected an example at index ${exampleIndex}`);
+      process.exit(1);
+    }
+    const analyzed = analyzeExample(ex.code);
+    const hostBindings = hostTopLevelBindings(host.hostText);
+    const virtualPath = toPosix(join(dir, `__doctest_control_svelte_${label}__.doctest0.ts`));
+    const overlay = new Map([
+      [virtualPath, buildVirtualText(host.hostText, { ...ex, ...analyzed }, hostBindings)],
+    ]);
+    return compileOverlay(options, overlay).get(virtualPath);
+  };
+
+  const requireGreen = (label, diagnostics) => {
+    if (diagnostics.length !== 0) {
+      console.error(
+        `svelte control mismatch (${label}): expected GREEN but got:\n` +
+          diagnostics.map((d) => `  ${ts.flattenDiagnosticMessageText(d.messageText, "\n")}`).join("\n"),
+      );
+      process.exit(1);
+    }
+  };
+  const requireFail = (label, diagnostics) => {
+    if (diagnostics.length === 0) {
+      console.error(`svelte control mismatch (${label}): expected a compile failure but got GREEN`);
+      process.exit(1);
+    }
+  };
+
+  const runeHost = [
+    '<script lang="ts">',
+    "  let n = $state(0);",
+    "  /**",
+    "   * @example",
+    "   * ```ts",
+    "   * n.toUpperCase();",
+    "   * ```",
+    "   */",
+    "  function controlRuneFail(): void {}",
+    "  /**",
+    "   * @example",
+    "   * ```ts",
+    "   * const doubled = n * 2;",
+    "   * console.log(doubled);",
+    "   * ```",
+    "   */",
+    "  function controlRunePass(): void {}",
+    "</script>",
+    "",
+  ].join("\n");
+  requireFail("rune-typed-not-any", compileSvelteExample(runeHost, 0, "rune_fail"));
+  requireGreen("rune-typed-arithmetic-still-works", compileSvelteExample(runeHost, 1, "rune_pass"));
+
+  const hostContextHost = [
+    '<script lang="ts">',
+    "  function controlHostHelper(): number {",
+    "    return 1;",
+    "  }",
+    "  /**",
+    "   * @example",
+    "   * ```ts",
+    "   * const v: number = controlHostHelper();",
+    "   * console.log(v);",
+    "   * ```",
+    "   */",
+    "  function controlHostGreen(): void {}",
+    "  /**",
+    "   * @example",
+    "   * ```ts",
+    "   * controlHostMissing();",
+    "   * ```",
+    "   */",
+    "  function controlHostFail(): void {}",
+    "</script>",
+    "",
+  ].join("\n");
+  requireGreen("host-context-resolves", compileSvelteExample(hostContextHost, 0, "host_green"));
+  requireFail("host-context-missing-member-fails", compileSvelteExample(hostContextHost, 1, "host_fail"));
+
+  const moduleBlockHost = [
+    '<script module lang="ts">',
+    "  export const CONTROL_MODULE_VALUE = 42;",
+    "</script>",
+    "",
+    '<script lang="ts">',
+    "  /**",
+    "   * @example",
+    "   * ```ts",
+    "   * const doubled: number = CONTROL_MODULE_VALUE * 2;",
+    "   * console.log(doubled);",
+    "   * ```",
+    "   */",
+    "  function controlModuleBinding(): void {}",
+    "</script>",
+    "",
+  ].join("\n");
+  requireGreen("module-block-binding-visible", compileSvelteExample(moduleBlockHost, 0, "module_block"));
+
+  const componentImportHost = [
+    '<script lang="ts">',
+    '  import ControlChild from "./__doctest_control_svelte_child__.svelte";',
+    "  void ControlChild;",
+    "  /**",
+    "   * @example",
+    "   * ```ts",
+    "   * const good: number = 1;",
+    "   * console.log(good);",
+    "   * ```",
+    "   */",
+    "  function controlComponentImportNeverReported(): void {}",
+    "  /**",
+    "   * @example",
+    "   * ```ts",
+    "   * const bad: number = \"not a number\";",
+    "   * console.log(bad);",
+    "   * ```",
+    "   */",
+    "  function controlComponentImportStillCatchesRealErrors(): void {}",
+    "</script>",
+    "",
+  ].join("\n");
+  requireGreen("unrelated-component-import-not-reported", compileSvelteExample(componentImportHost, 0, "component_import_green"));
+  requireFail("unrelated-component-import-does-not-mask-real-errors", compileSvelteExample(componentImportHost, 1, "component_import_fail"));
+
+  // A synthetic-`this`-referencing example inside a class DECLARED in a .svelte
+  // instance script exercises the full class-injection path for a `.svelte` host —
+  // target resolution AND the `arrayLineMapper(built.lineMap, toSvelteLine)`
+  // composition that maps a diagnostic back to the real SFC line through TWO
+  // indirections (the class-injection splice, then the script-extraction offset),
+  // never proven by the free-function-only checks above.
+  const classInjectionSrc = [
+    '<div>template</div>',
+    '<script lang="ts">',
+    "  class ControlSvelteClass {",
+    "    /**",
+    "     * @example",
+    "     * ```ts",
+    "     * this.controlSharedName();",
+    "     * ```",
+    "     */",
+    "    instanceMethod(): void {",
+    "      this.controlSharedName();",
+    "    }",
+    "    private controlSharedName(): void {}",
+    "    /**",
+    "     * @example",
+    "     * ```ts",
+    "     * this.doesNotExist();",
+    "     * ```",
+    "     */",
+    "    instanceMethod2(): void {}",
+    "  }",
+    "</script>",
+    "",
+  ].join("\n");
+  const classHost = extractSvelteHost(classInjectionSrc);
+  if (classHost.skip) {
+    console.error(`svelte control setup mismatch (class-injection): ${classHost.skip}`);
+    process.exit(1);
+  }
+  const classExamples = extractExamples(classInjectionSrc);
+  if (classExamples.length !== 2) {
+    console.error(`svelte control setup mismatch (class-injection): expected 2 examples, found ${classExamples.length}`);
+    process.exit(1);
+  }
+  const classHostBindings = hostTopLevelBindings(classHost.hostText);
+  const classHostSourceFile = ts.createSourceFile("host.ts", classHost.hostText, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const compileClassInjected = (ex, label) => {
+    const hostCommentEnd = classHost.toHostOffset(ex.commentEnd);
+    const target = findEnclosingClassTarget(classHostSourceFile, hostCommentEnd);
+    if (target === null) {
+      console.error(`svelte control setup mismatch (class-injection ${label}): no enclosing class found`);
+      process.exit(1);
+    }
+    const built = buildClassInjectionText(classHost.hostText, { ...ex, ...analyzeExample(ex.code) }, target, classHostBindings);
+    const virtualPath = toPosix(join(dir, `__doctest_control_svelte_class_${label}__.doctest0.ts`));
+    const diagnostics = compileOverlay(options, new Map([[virtualPath, built.text]])).get(virtualPath);
+    return { diagnostics, mapLine: arrayLineMapper(built.lineMap, classHost.toSvelteLine) };
+  };
+
+  const realMethodResult = compileClassInjected(classExamples[0], "real_method");
+  requireGreen("class-injection-real-private-method", realMethodResult.diagnostics);
+
+  const missingResult = compileClassInjected(classExamples[1], "missing_method");
+  requireFail("class-injection-missing-private-member", missingResult.diagnostics);
+  // The failing call lives inside the INJECTED synthetic method (example-authored
+  // text, marked by `buildClassInjectionText`'s EXAMPLE_BODY markers) — the composed
+  // `arrayLineMapper(built.lineMap, classHost.toSvelteLine)` must still report
+  // "example body" for it, never a fabricated host line, proving the extra
+  // svelte-offset indirection didn't corrupt the null/non-null marker distinction.
+  const missingDiag = missingResult.diagnostics[0];
+  const { line } = ts.getLineAndCharacterOfPosition(missingDiag.file, missingDiag.start);
+  const citedLine = missingResult.mapLine(line);
+  if (citedLine !== "example body") {
+    console.error(`svelte control mismatch (class-injection-line-citation): expected "example body", got "${citedLine}"`);
+    process.exit(1);
+  }
+
+  // A diagnostic on the class's OWN (real host) member declaration — never inside an
+  // injected region — must map to the REAL .svelte line through the same composition.
+  const badMemberSrc = [
+    "<div>template line one</div>",
+    "<div>template line two</div>",
+    '<script lang="ts">',
+    "  class ControlSvelteBadMember {",
+    '    private controlBadHostMember: number = "not a number";',
+    "    /**",
+    "     * @example",
+    "     * ```ts",
+    "     * this.controlBadHostMember;",
+    "     * ```",
+    "     */",
+    "    instanceMethod(): void {",
+    "      void this.controlBadHostMember;",
+    "    }",
+    "  }",
+    "</script>",
+    "",
+  ].join("\n");
+  const badMemberHost = extractSvelteHost(badMemberSrc);
+  const badMemberEx = extractExamples(badMemberSrc)[0];
+  const badMemberBindings = hostTopLevelBindings(badMemberHost.hostText);
+  const badMemberSourceFile = ts.createSourceFile(
+    "host.ts",
+    badMemberHost.hostText,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS,
+  );
+  const badMemberTarget = findEnclosingClassTarget(badMemberSourceFile, badMemberHost.toHostOffset(badMemberEx.commentEnd));
+  const badMemberBuilt = buildClassInjectionText(
+    badMemberHost.hostText,
+    { ...badMemberEx, ...analyzeExample(badMemberEx.code) },
+    badMemberTarget,
+    badMemberBindings,
+  );
+  const badMemberVirtualPath = toPosix(join(dir, "__doctest_control_svelte_class_bad_member__.doctest0.ts"));
+  const badMemberDiagnostics = compileOverlay(options, new Map([[badMemberVirtualPath, badMemberBuilt.text]])).get(
+    badMemberVirtualPath,
+  );
+  requireFail("class-injection-bad-host-member-declaration-fails", badMemberDiagnostics);
+  const badMemberDiag = badMemberDiagnostics[0];
+  const badMemberLine = ts.getLineAndCharacterOfPosition(badMemberDiag.file, badMemberDiag.start).line;
+  const badMemberCited = arrayLineMapper(badMemberBuilt.lineMap, badMemberHost.toSvelteLine)(badMemberLine);
+  const expectedRealLine = badMemberSrc.split("\n").findIndex((l) => l.includes("controlBadHostMember: number")) + 1;
+  if (badMemberCited !== `host line ${expectedRealLine}`) {
+    console.error(
+      `svelte control mismatch (class-injection-host-line-citation): expected "host line ${expectedRealLine}", got "${badMemberCited}"`,
+    );
+    process.exit(1);
+  }
+}
+
 const repoRootForControls = resolve(fileURLToPath(import.meta.url), "..", "..");
 runExtractionControls();
 runCompilationControl(repoRootForControls);
@@ -1189,6 +1641,7 @@ runTypeValueClashControl(repoRootForControls);
 runHygieneOverrideControl(repoRootForControls);
 runClassContextControl();
 runClassInjectionControl(repoRootForControls);
+runSvelteHostControl(repoRootForControls);
 
 const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isMain) {
@@ -1196,13 +1649,10 @@ if (isMain) {
   const roots = ["src/types", "src/client", "src/modules", "examples"];
   const pkgDirs = workspacePackageDirs(repo);
 
-  const svelteCount = svelteFiles(repo, roots).reduce(
-    (sum, f) => sum + extractExamples(readFileSync(f, "utf8")).length,
-    0,
-  );
-
   const byPackage = new Map();
   const byPackageInjected = new Map();
+  const byPackageSvelte = new Map();
+  const byPackageSvelteInjected = new Map();
   let compileTotal = 0;
   const unresolvedClashes = [];
   const noEnclosingClass = [];
@@ -1252,7 +1702,95 @@ if (isMain) {
     }
   }
 
-  console.log(`${svelteCount} @example blocks found in .svelte sources — unchecked (never compiled)`);
+  // Svelte SFC hosts: same three dispositions as a `.ts` host (compile, unresolved
+  // clash, no enclosing class) plus one host-structural bucket `.ts` never needs — no
+  // usable `<script lang="ts">` content to compile against at all.
+  const svelteNoScript = [];
+  let svelteTotal = 0;
+  let svelteCompiled = 0;
+  for (const file of svelteFiles(repo, roots)) {
+    const svelteText = readFileSync(file, "utf8");
+    const examples = extractExamples(svelteText);
+    if (examples.length === 0) continue;
+    svelteTotal += examples.length;
+    const host = extractSvelteHost(svelteText);
+    if (host.skip) {
+      for (const ex of examples) svelteNoScript.push({ hostFile: file, symbol: ex.symbol, ordinal: ex.ordinal, reason: host.skip });
+      continue;
+    }
+    const { hostText, toHostOffset, toSvelteLine } = host;
+    const pkgDir = packageForFile(repo, pkgDirs, file);
+    if (pkgDir === null) {
+      for (const ex of examples) {
+        svelteNoScript.push({
+          hostFile: file,
+          symbol: ex.symbol,
+          ordinal: ex.ordinal,
+          reason: "outside every workspace package: cannot resolve a tsconfig",
+        });
+      }
+      continue;
+    }
+    const selfPackageName = packageOwnName(repo, pkgDir);
+    const hostBindings = hostTopLevelBindings(hostText);
+    const hostSourceFile = ts.createSourceFile(file, hostText, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+    for (const ex of examples) {
+      const analyzed = analyzeExample(ex.code);
+      const hostCommentEnd = toHostOffset(ex.commentEnd);
+      if (hostCommentEnd === null) {
+        svelteNoScript.push({
+          hostFile: file,
+          symbol: ex.symbol,
+          ordinal: ex.ordinal,
+          reason: "the doc comment lies outside any TS script block",
+        });
+        continue;
+      }
+      if (analyzed.classContext) {
+        const target = findEnclosingClassTarget(hostSourceFile, hostCommentEnd);
+        if (target === null) {
+          noEnclosingClass.push({ hostFile: file, symbol: ex.symbol, ordinal: ex.ordinal });
+          continue;
+        }
+        compileTotal += 1;
+        svelteCompiled += 1;
+        if (!byPackageSvelteInjected.has(pkgDir)) byPackageSvelteInjected.set(pkgDir, new Map());
+        const forFileInjected = byPackageSvelteInjected.get(pkgDir);
+        if (!forFileInjected.has(file)) forFileInjected.set(file, { hostText, toSvelteLine, examples: [] });
+        forFileInjected.get(file).examples.push({ ...ex, ...analyzed, hostCommentEnd });
+        continue;
+      }
+      const { unresolved } = resolveTypeValueClashes(hostText, hostBindings, analyzed.hoisted, selfPackageName, file);
+      if (unresolved.size > 0) {
+        unresolvedClashes.push({ hostFile: file, symbol: ex.symbol, ordinal: ex.ordinal, names: [...unresolved] });
+        continue;
+      }
+      compileTotal += 1;
+      svelteCompiled += 1;
+      if (!byPackageSvelte.has(pkgDir)) byPackageSvelte.set(pkgDir, new Map());
+      const forFile = byPackageSvelte.get(pkgDir);
+      if (!forFile.has(file)) forFile.set(file, { hostText, toSvelteLine, examples: [] });
+      forFile.get(file).examples.push({ ...ex, ...analyzed });
+    }
+  }
+
+  const svelteNoEnclosingClass = noEnclosingClass.filter((u) => extname(u.hostFile) === ".svelte").length;
+  const svelteUnresolvedClashes = unresolvedClashes.filter((u) => extname(u.hostFile) === ".svelte").length;
+  const svelteSkippedTotal = svelteNoScript.length + svelteNoEnclosingClass + svelteUnresolvedClashes;
+  if (svelteCompiled + svelteSkippedTotal !== svelteTotal) {
+    console.error(
+      `svelte example census mismatch: ${svelteCompiled} compiled + ${svelteSkippedTotal} reported-skipped ` +
+        `= ${svelteCompiled + svelteSkippedTotal}, expected ${svelteTotal} total @example blocks found in .svelte sources`,
+    );
+    process.exit(1);
+  }
+
+  if (svelteNoScript.length > 0) {
+    console.error(`${svelteNoScript.length} @example blocks in .svelte sources have no compilable script content:`);
+    for (const u of svelteNoScript) {
+      console.error(`  ${u.hostFile} :: ${u.symbol} :: example #${u.ordinal} :: ${u.reason}`);
+    }
+  }
 
   if (unresolvedClashes.length > 0) {
     console.error(
@@ -1280,8 +1818,10 @@ if (isMain) {
     }
   }
 
+  const anyUnresolved = unresolvedClashes.length > 0 || noEnclosingClass.length > 0 || svelteNoScript.length > 0;
+
   if (compileTotal === 0) {
-    if (unresolvedClashes.length > 0 || noEnclosingClass.length > 0) process.exit(1);
+    if (anyUnresolved) process.exit(1);
     console.log("no compilable @example ts blocks found — trivially green");
     process.exit(0);
   }
@@ -1297,8 +1837,18 @@ if (isMain) {
       if (result.diagnostics.length > 0) failures.push(result);
     }
   }
+  for (const [pkgDir, examplesByFile] of byPackageSvelte) {
+    for (const result of compilePackageSvelteExamples(repo, pkgDir, pkgDirs, examplesByFile)) {
+      if (result.diagnostics.length > 0) failures.push(result);
+    }
+  }
+  for (const [pkgDir, examplesByFile] of byPackageSvelteInjected) {
+    for (const result of compilePackageSvelteClassInjectedExamples(repo, pkgDir, pkgDirs, examplesByFile)) {
+      if (result.diagnostics.length > 0) failures.push(result);
+    }
+  }
 
-  if (failures.length > 0 || unresolvedClashes.length > 0 || noEnclosingClass.length > 0) {
+  if (failures.length > 0 || anyUnresolved) {
     if (failures.length > 0) {
       console.error(`${failures.length} of ${compileTotal} compilable examples failed to compile:\n`);
       for (const f of failures) console.error(formatFailure(f));
