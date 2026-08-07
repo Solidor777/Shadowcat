@@ -82,7 +82,7 @@ source of truth. The ones agents break most:
 
 ## Gotchas
 
-- **No data migrations pre-customers (user directive).** Until a PLAN.md milestone
+- **No data migrations pre-customers (user directive).** Until a milestone
   explicitly marks live customer databases, there is no upgrade path to preserve: SQL schema
   changes EDIT `src/server/migrations/0001_init.sql` (the single baseline) in place — never add
   an incremental migration file — and document-schema changes keep `data::migrate` step-free
@@ -114,14 +114,14 @@ source of truth. The ones agents break most:
   argues from usefulness, and usefulness was never the test — so there are none.
   **Banned in `.ts`/`.rs`/`.svelte` comments**, and in code-facing strings (`assert!` messages, test
   names — ruled in scope by the user; program data like a fixture's world name is untouched):
-  - milestone/task ids in ANY form — `M13-0`, `M11d-3`, `T1/T3`, and the bare `M8`
-  - phase, workstream and numbered-invariant ids — `post-D9`, `W1`, `I4` — **including local
+  - milestone/task ids in ANY form — `M13-0`, `M11d-3`, `T1/T3`, and the bare `M8`  <!-- EXAMPLE: RULE 16 specimen -->
+  - phase, workstream and numbered-invariant ids — `post-D9`, `W1`, `I4` — **including local  <!-- EXAMPLE: RULE 16 specimen -->
     numbering defined only in a sibling comment**, ruled in scope by the user: a number no
     compiler, test or tool binds to anything still forces the reader to go find it
-  - repo document pointers — `` `docs/TODO.md` ``, `ARCHITECTURE §2 invariant 4`, bare `invariant 6`
-  - dated plan/spec files, and unnamed spec references (`per spec §3.2`, `the spec'd default`)
-  - sweep / fix-round / `buddy-check finding N` markers, `POST_WORK:`, and date stamps
-  - **history narration** — `previously`, `formerly`, `before the fix`, "used to return X"
+  - repo document pointers — `` `docs/TODO.md` ``, `ARCHITECTURE §2 invariant 4`, bare `invariant 6`  <!-- EXAMPLE: RULE 16 specimen -->
+  - dated plan/spec files, and unnamed spec references (`per spec §3.2`, `the spec'd default`)  <!-- EXAMPLE: RULE 16 specimen -->
+  - sweep / fix-round / `buddy-check finding N` markers, `POST_WORK:`, and date stamps  <!-- EXAMPLE: RULE 16 specimen -->
+  - **history narration** — `previously`, `formerly`, `before the fix`, "used to return X"  <!-- EXAMPLE: RULE 16 specimen -->
 
   **These are one class: each names something outside the code whose identity a process assigns** —
   milestones get renumbered, bug entries move `OPEN_BUGS` → `CLOSED_BUGS`, specs get superseded,
@@ -129,24 +129,31 @@ source of truth. The ones agents break most:
   unlike a stale claim *about code*, **no reader and no tool can tell**, because the referent's
   disappearance is invisible from the code.
   The conversion is always **state the CONSTRAINT, drop the POINTER** — and where the pointer
-  carried nothing (`(M13e)` appended to a true sentence), **delete the token and change nothing
+  carried nothing (`(M13e)` appended to a true sentence), **delete the token and change nothing  <!-- EXAMPLE: RULE 16 specimen -->
   else**; RULE 4 prefers deletion, and inventing a plausible replacement constraint is the single
-  worst outcome available. `TODO:` itself stays (a code marker); what goes is the "see `TODO.md`"
+  worst outcome available. `TODO:` itself stays (a code marker); what goes is the "see `TODO.md`"  <!-- EXAMPLE: RULE 16 specimen -->
   tail. **Direction of dependency: doc → code, never code → doc** — the backlog or bug entry cites
   the SYMBOL (RULE 15) and points inward, so closing it cannot rot a comment.
   Stronger than RULE 15 and wins where they touch: RULE 15 says how to cite, this says what may be
   referred to at all. Ordinary Markdown docs and `.superpowers/` artifacts remain exempt — they may
   cite documents by path + section anchor. **This skill family (`.claude/skills/**/*.md`) is now
   IN SCOPE for a narrower subset** (owner ruling): a skill may still cite a durable document by
-  path + section anchor, but may not carry a milestone/task id (`M13-0`, `M10e-4`), a phase/
-  workstream/invariant id (`D9`, `D16`), a sweep/round/review marker (`sweep 12`, `fix-round`,
-  `buddy-check`), or a date bare or narrative (`2026-07-30`, `(user directive 2026-08-05)`) —
+  path + section anchor, but may not carry a milestone/task id (`M13-0`, `M10e-4`), a phase/  <!-- EXAMPLE: RULE 16 specimen -->
+  workstream/invariant id (`D9`, `D16`), a sweep/round/review marker (`sweep 12`, `fix-round`,  <!-- EXAMPLE: RULE 16 specimen -->
+  `buddy-check`), or a date bare or narrative (`2026-07-30`, `(user directive 2026-08-05)`) —  <!-- EXAMPLE: RULE 16 specimen -->
   including a dated plan/spec filename, which is a superseded-by-construction record and not a
   durable citation regardless of its `docs/` path. Repo-document pointers to non-durable trackers,
-  unnamed spec references, history narration and process markers are not yet ruled on for skills;
-  do not widen the skill subset to cover them without a ruling.
+  unnamed spec references and history narration are ALSO ruled in for skills; process markers are not;
+  do not widen the skill subset further without a ruling.
   **Enforced retroactively with no grandfathering** (user directive) by
-  `node scripts/check-comment-refs.mjs` — no baseline, no allowlist, every legacy hit fails. But
+  `node scripts/check-comment-refs.mjs` — no baseline, no side-car allowlist, every legacy hit
+  fails. The ONE exemption is an `EXAMPLE` marker (that word, then a colon) on a line that
+  deliberately exhibits a banned
+  form in order to DEFINE it — the use-vs-mention collision a pattern cannot see, and the reason
+  this rule's own statement below is marked. It is owner-approved per instance, sits on the line
+  it exempts (so no position to rot), and the gate prints its active count, because an uncounted
+  exemption is a backdoor. It covers specimens only: a genuine pointer gets converted, never
+  marked. But
   **a green detector is not a satisfied rule**: history narration is only partly detectable (`no
   longer` usually describes runtime data, not the code's past), so it is a review obligation.
   Rewording to evade a pattern while still speaking of something outside the code violates RULE 0.
@@ -156,7 +163,7 @@ source of truth. The ones agents break most:
   which is the user's, never yours or a subagent's — ratifying one is a silent descope wearing
   technical clothes. Report a candidate as unconverted and awaiting a ruling; never as `kept`,
   never as "the carve-out covers this". **The first move is to remove the NEED for the exemption:**
-  a fixture named `"W1"` that forced a comment to name a banned shape became `"token-world"`, and
+  a fixture named `"W1"` that forced a comment to name a banned shape became `"token-world"`, and  <!-- EXAMPLE: RULE 16 specimen -->
   the comment then said what it meant with nothing to exempt. Any exemption that does exist must
   print its active count in its own output — an uncounted exemption is a backdoor, and a silent one
   is indistinguishable from a rule that does not apply.
@@ -183,8 +190,8 @@ source of truth. The ones agents break most:
   with private items under `/api/rust/`). Guides code-import the CI-built `examples/*` packages.
 - **graphify** (`graphify-out/`) — relationships: `graphify query "<q>"`,
   `graphify path "<A>" "<B>"`, `graphify explain "<concept>"`.
-- **`docs/design/`** — rationale: `ARCHITECTURE.md` (invariants/tech), `M2-data-foundation.md`,
-  per-system docs; `docs/PLAN.md` = milestone roadmap.
+- **`docs/design/`** — rationale: `ARCHITECTURE.md` (invariants/tech), `docs/design/M2-data-foundation.md`,
+  per-system docs.
 - **memory** (`~/.claude/projects/C--Dev-Shadowcat/memory/`) — cross-session lessons + resume state.
 
 **Build / test / lint commands:**
