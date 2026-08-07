@@ -159,6 +159,7 @@ export class MockServer {
    * @example
    * ```
    * // internal helper; not part of the public API
+   * declare const conn: Conn;
    * this.dropConn(conn);
    * ```
    */
@@ -178,6 +179,8 @@ export class MockServer {
    * @example
    * ```
    * // internal helper; not part of the public API
+   * declare const conn: Conn;
+   * declare const data: string;
    * this.onClientMessage(conn, data);
    * ```
    */
@@ -223,6 +226,7 @@ export class MockServer {
    * @example
    * ```
    * // internal helper; not part of the public API
+   * declare const conn: Conn;
    * this.handleIntent(conn, "intent-1", []);
    * ```
    */
@@ -260,6 +264,7 @@ export class MockServer {
    * @example
    * ```
    * // internal helper; not part of the public API
+   * declare const conn: Conn;
    * this.handleResync(conn, 1);
    * ```
    */
@@ -285,6 +290,7 @@ export class MockServer {
    * @example
    * ```
    * // internal helper; not part of the public API
+   * declare const command: WireCommand;
    * this.broadcast({ type: "event", command, intent_id: null });
    * ```
    */
@@ -304,6 +310,7 @@ export class MockServer {
    * @example
    * ```
    * // internal helper; not part of the public API
+   * declare const conn: Conn;
    * this.sendTo(conn, { type: "resync_end", current_seq: 0 });
    * ```
    */

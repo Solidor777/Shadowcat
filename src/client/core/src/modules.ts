@@ -384,6 +384,7 @@ export class ModuleRegistry {
    * @example
    * ```
    * // internal helper; not part of the public API
+   * declare const module: Module;
    * this.depsSatisfied(module);
    * ```
    */

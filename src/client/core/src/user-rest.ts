@@ -243,6 +243,7 @@ export async function revokeWorldInvite(world: string, codeId: string): Promise<
  * @example
  * ```
  * // internal helper; not part of the public API
+ * declare const res: Response;
  * await restError(res, "list users failed");
  * ```
  */

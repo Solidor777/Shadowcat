@@ -66,6 +66,7 @@ export interface SheetTarget {
  * @example
  * ```
  * // internal helper; not part of the public API (see resolveDocRef for the public entry point)
+ * declare const top: WireDocument;
  * readEmbeddedChild(top, "/embedded/actor/0");
  * ```
  */

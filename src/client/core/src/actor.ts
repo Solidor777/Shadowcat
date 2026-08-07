@@ -42,7 +42,9 @@ export interface EffectiveActor {
  * @example
  * ```
  * // internal helper; not part of the public API (see resolveTokenActor for the public entry point)
- * project(actorDoc, actorDoc.engine as ActorEngine, token.engine?.overrides);
+ * declare const actorDoc: WireDocument;
+ * declare const token: WireDocument;
+ * project(actorDoc, actorDoc.engine as ActorEngine, (token.engine as TokenEngine | undefined)?.overrides);
  * ```
  */
 function project(actorDoc: WireDocument, base: ActorEngine, overrides?: TokenOverrides | null): EffectiveActor {
@@ -298,6 +300,8 @@ export interface TokenBox {
  * @example
  * ```
  * // internal helper; not part of the public API (see resolveTokenBox for the public entry point)
+ * declare const token: WireDocument;
+ * declare const store: ReadableDocuments;
  * sceneCellSize(token, store);
  * ```
  */
@@ -385,7 +389,10 @@ export function selectedFaceNamesFor(token: WireDocument, store: ReadableDocumen
  * @example
  * ```
  * // internal helper; not part of the public API (see resolveTokenVisual for the public entry point)
- * resolveFace(visual, token.engine?.face, actor?.conditions ?? []);
+ * declare const visual: Extract<TokenVisual, { kind: "faces" }>;
+ * declare const token: WireDocument;
+ * declare const actor: EffectiveActor | null;
+ * resolveFace(visual, (token.engine as TokenEngine | undefined)?.face, actor?.conditions ?? []);
  * ```
  */
 function resolveFace(

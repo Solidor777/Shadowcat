@@ -474,6 +474,7 @@ export class WsClient {
    * @example
    * ```
    * // wraps every handler dispatch in handleFrame(); not part of the public API
+   * declare const msg: WireWelcome;
    * this.safeEmit(() => this.opts.handlers.onWelcome?.(msg));
    * ```
    */
@@ -633,6 +634,8 @@ export class WsClient {
    * @example
    * ```
    * // wired as onMessage in open(): this.opts.connect({ onMessage: (d) => this.handleFrame(d, gen), ... })
+   * declare const text: string;
+   * declare const gen: number;
    * this.handleFrame(text, gen);
    * ```
    */
@@ -1163,6 +1166,7 @@ export class WsClient {
    * @example
    * ```
    * // called from sendChatMessage/editChatMessage/deleteChatMessage; not part of the public API
+   * declare const request_id: string;
    * const p = this.trackChatOp(request_id);
    * ```
    */
@@ -1292,6 +1296,7 @@ export class WsClient {
    * @example
    * ```
    * // called from handleFrame's "event" case; not part of the public API
+   * declare const msg: Extract<ServerMsg, { type: "event" }>;
    * this.applyEvent(msg.command);
    * ```
    */

@@ -240,6 +240,7 @@ function sameResult(a: Diff, b: Diff): boolean {
  * @example
  * ```
  * // internal helper; not part of the public API
+ * declare const root: unknown;
  * applyDiff(root, { path: "/hp", kind: "set", value: 7 });
  * ```
  */
@@ -466,6 +467,7 @@ function baseFromChild(b: EmbeddedBaseChild): MergeBase {
  * @example
  * ```
  * // internal helper; not part of the public API
+ * declare const someWireDocument: WireDocument;
  * bandsMergeBase(someWireDocument);
  * ```
  */
@@ -490,6 +492,8 @@ function bandsMergeBase(d: WireDocument): MergeBase {
  * @example
  * ```
  * // internal helper; not part of the public API
+ * declare const someWireDocument: WireDocument;
+ * declare const someBaseChild: EmbeddedBaseChild;
  * childUnchangedVsBase(someWireDocument, someBaseChild);
  * ```
  */
@@ -508,6 +512,8 @@ function childUnchangedVsBase(child: WireDocument, b: EmbeddedBaseChild): boolea
  * @example
  * ```
  * // internal helper; not part of the public API
+ * declare const someWireDocument: WireDocument;
+ * declare const someMergeBands: MergeBands;
  * applyMergedBands(someWireDocument, someMergeBands);
  * ```
  */
@@ -529,6 +535,7 @@ function applyMergedBands(child: WireDocument, bands: MergeBands): WireDocument 
  * @example
  * ```
  * // internal helper; not part of the public API
+ * declare const someConflicts: Conflict[];
  * prefixConflicts(someConflicts, "items", 0);
  * ```
  */

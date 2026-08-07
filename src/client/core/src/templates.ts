@@ -41,6 +41,7 @@ function defaultPerms(): WireDocument["permissions"] {
  * @example
  * ```
  * // internal helper; not part of the public API (see snapshotBase for the public entry point)
+ * declare const doc: WireDocument;
  * snapshotEmbedded(doc.embedded);
  * ```
  */
@@ -164,6 +165,9 @@ export function computePull(child: WireDocument, template: WireDocument): MergeP
  * @example
  * ```
  * // internal helper; not part of the public API (see planToUpdate for the public entry point)
+ * declare const changes: WireFieldChange[];
+ * declare const child: WireDocument;
+ * declare const mergedBands: MergeBands;
  * pushIfChanged(changes, "/name", child.name, mergedBands.name);
  * ```
  */
@@ -278,6 +282,8 @@ type Bands = {
  * @example
  * ```
  * // internal helper; not part of the public API (see computeRevert for the public entry point)
+ * declare const child: WireDocument;
+ * declare const template: WireDocument;
  * revertBands(child, template, placementExclusions(child.doc_type));
  * ```
  */
@@ -307,6 +313,8 @@ function revertBands(child: Bands, template: Bands, exclusions: string[]): Bands
  * @example
  * ```
  * // internal helper; not part of the public API (see computeRevert for the public entry point)
+ * declare const template: WireDocument;
+ * declare const child: WireDocument;
  * revertEmbedded(template.embedded, child.embedded);
  * ```
  */
@@ -344,6 +352,8 @@ function revertEmbedded(
  * @example
  * ```
  * // internal helper; not part of the public API (see computeRevert for the public entry point)
+ * declare const childKid: WireDocument;
+ * declare const templateKid: WireDocument;
  * revertChild(childKid, templateKid);
  * ```
  */
