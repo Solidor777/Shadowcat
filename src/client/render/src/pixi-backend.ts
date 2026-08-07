@@ -15,21 +15,21 @@ interface TokenNode {
   /** Outer, non-rotating node — its position is the token center; `badges` are its direct
    * children so they stay upright regardless of `visualContainer`'s rotation. */
   container: Container;
-  /** Inner node that rotates with the token (`.angle = spec.rotation`); holds `visual` +
+  /** Inner node that rotates with the token (`.angle = tokenSpec.rotation`); holds `visual` +
    * `border`. */
   visualContainer: Container;
   /** The art sprite — a plain `Sprite` for an image visual, an `AnimatedSprite` while
-   * `spec.visual.kind === "animated"`. */
+   * `tokenSpec.visual.kind === "animated"`. */
   visual: Sprite | AnimatedSprite;
   /** Faction-border outline, redrawn by `updateTokenBorder`; cleared (no stroke) when
-   * `spec.borderColor` is `null`. */
+   * `tokenSpec.borderColor` is `null`. */
   border: Graphics;
-  /** Condition-marker glyph chips, one `Text` per `spec.badges` entry, in order. */
+  /** Condition-marker glyph chips, one `Text` per `tokenSpec.badges` entry, in order. */
   badges: Text[];
-  /** `spec.badges.join("")`, memoized by `updateTokenBadges` to skip a full badge-set rebuild
+  /** `tokenSpec.badges.join("")`, memoized by `updateTokenBadges` to skip a full badge-set rebuild
    * when the badge list is unchanged. */
   badgeKey: string;
-  /** `visualSourceKey(spec.visual)` of the last-applied visual, or `null` before the first
+  /** `visualSourceKey(tokenSpec.visual)` of the last-applied visual, or `null` before the first
    * `setToken` call — an unchanged key short-circuits `updateTokenVisual`'s reload. */
   sourceKey: string | null;
   /** Tick-driven animation state, or `null` while `visual` is a plain (non-animated) `Sprite`. */
@@ -48,7 +48,7 @@ interface TokenNode {
 
 /** Identity key for a `TokenNodeSpec.visual` — equal specs must produce an equal key so a
  * tweening token's re-push (same visual, new transform) skips texture (re)loading.
- * @param v A token's resolved visual spec (image URL, or an animated source + fps/loop).
+ * @param v A token's resolved visual tokenSpec (image URL, or an animated source + fps/loop).
  * @returns A string key equal for equal specs; an `"image:"`- vs `"animated:"`-prefixed key never
  * collides across kinds.
  * @example
@@ -213,7 +213,7 @@ export class PixiBackend implements DisplayBackend {
   }
 
   /** `DisplayBackend.setBackground`: set or clear the background-layer sprite. `null` invalidates
-   * any in-flight load (bumping `loadSeq`) and destroys the current sprite. A non-null spec whose
+   * any in-flight load (bumping `loadSeq`) and destroys the current sprite. A non-null tokenSpec whose
    * `url` already matches the current background is a steady-state no-op (skips a redundant
    * reload). Otherwise loads the texture asynchronously (`Assets.load`) and swaps the sprite in
    * once the load resolves, guarded by a monotonic `loadSeq` token — not a URL comparison — so a
@@ -423,7 +423,7 @@ export class PixiBackend implements DisplayBackend {
    * place. `visualContainer.angle` rotates the art + border only; `container`'s own position is
    * the token center and its badge children never rotate (see `TokenNode`'s field doc).
    * @param id The token document id.
-   * @param spec The resolved token render spec (transform, size, visual, border, badges, shape).
+   * @param tokenSpec The resolved token render tokenSpec (transform, size, visual, border, badges, shape).
    * @example
    * ```ts
    * import { PixiBackend } from "@shadowcat/render";
@@ -436,14 +436,14 @@ export class PixiBackend implements DisplayBackend {
    * });
    * ```
    */
-  setToken(id: string, spec: TokenNodeSpec): void {
+  setToken(id: string, tokenSpec: TokenNodeSpec): void {
     let node = this.tokens.get(id);
     if (!node) node = this.createTokenNode(id);
-    node.container.position.set(spec.x, spec.y);
-    node.visualContainer.angle = spec.rotation; // degrees; rotates art + border, not badges
-    this.updateTokenVisual(id, node, spec);
-    this.updateTokenBorder(node, spec);
-    this.updateTokenBadges(node, spec);
+    node.container.position.set(tokenSpec.x, tokenSpec.y);
+    node.visualContainer.angle = tokenSpec.rotation; // degrees; rotates art + border, not badges
+    this.updateTokenVisual(id, node, tokenSpec);
+    this.updateTokenBorder(node, tokenSpec);
+    this.updateTokenBadges(node, tokenSpec);
   }
 
   /** Construct a new `TokenNode`: an outer non-rotating `container` (positioned at the token
@@ -473,9 +473,9 @@ export class PixiBackend implements DisplayBackend {
     return node;
   }
 
-  /** Resolve `spec.visual` onto `node.visual`, sized to `spec.w`×`spec.h` on both entry and exit
+  /** Resolve `tokenSpec.visual` onto `node.visual`, sized to `tokenSpec.w`×`tokenSpec.h` on both entry and exit
    * (so a size-only re-push still applies even when the visual itself is unchanged — see the
-   * `sourceKey` short-circuit below). Guarded by `visualSourceKey(spec.visual)`: an unchanged key
+   * `sourceKey` short-circuit below). Guarded by `visualSourceKey(tokenSpec.visual)`: an unchanged key
    * is a tweening token's transform-only re-push and returns immediately without touching
    * `node.visual`/reloading anything. On a changed key: swaps `node.visual` to a plain `Sprite`
    * (image) or an `AnimatedSprite` (animated) via `replaceVisualChild` only when the CURRENT node
@@ -491,34 +491,34 @@ export class PixiBackend implements DisplayBackend {
    * @param id The token document id (used to re-check `this.tokens.get(id) === node` in the async
    * completion callback).
    * @param node The token's render node, mutated in place.
-   * @param spec The resolved token spec; only `.visual`/`.w`/`.h` are read here.
+   * @param tokenSpec The resolved token tokenSpec; only `.visual`/`.w`/`.h` are read here.
    * @example
    * ```
    * // private method; not part of the public API
    * declare const node: TokenNode;
-   * declare const spec: TokenNodeSpec;
-   * this.updateTokenVisual("00000000-0000-0000-0000-000000000001", node, spec);
+   * declare const tokenSpec: TokenNodeSpec;
+   * this.updateTokenVisual("00000000-0000-0000-0000-000000000001", node, tokenSpec);
    * ```
    */
-  private updateTokenVisual(id: string, node: TokenNode, spec: TokenNodeSpec): void {
-    const key = visualSourceKey(spec.visual);
-    node.visual.width = spec.w;
-    node.visual.height = spec.h;
+  private updateTokenVisual(id: string, node: TokenNode, tokenSpec: TokenNodeSpec): void {
+    const key = visualSourceKey(tokenSpec.visual);
+    node.visual.width = tokenSpec.w;
+    node.visual.height = tokenSpec.h;
     if (node.sourceKey === key) return; // unchanged visual: a tweening token's transform-only re-push
     node.sourceKey = key;
-    if (spec.visual.kind === "image") {
+    if (tokenSpec.visual.kind === "image") {
       if (node.visual instanceof AnimatedSprite) this.replaceVisualChild(node, new Sprite());
       node.anim = null;
       const sprite = node.visual;
-      const url = spec.visual.url;
+      const url = tokenSpec.visual.url;
       void Assets.load(url).then((texture) => {
         if (this.tokens.get(id) === node && node.visual === sprite && node.sourceKey === key) sprite.texture = texture;
       });
     } else {
-      // Hoist the narrowed "animated" variant into its own binding: `spec.visual` re-read inside
+      // Hoist the narrowed "animated" variant into its own binding: `tokenSpec.visual` re-read inside
       // an async closure loses the enclosing if/else narrowing (a fresh property read on a union),
-      // so a plain `spec.visual.fps` there does not typecheck without this.
-      const visual = spec.visual;
+      // so a plain `tokenSpec.visual.fps` there does not typecheck without this.
+      const visual = tokenSpec.visual;
       if (!(node.visual instanceof AnimatedSprite)) this.replaceVisualChild(node, new AnimatedSprite([Texture.EMPTY]));
       const sprite = node.visual as AnimatedSprite;
       sprite.autoUpdate = false; // driven by tickTokenAnimations, not Pixi's shared ticker
@@ -531,8 +531,8 @@ export class PixiBackend implements DisplayBackend {
         node.anim = { fps: visual.fps, loop: visual.loop, frameCount: textures.length, elapsedMs: 0 };
       });
     }
-    node.visual.width = spec.w;
-    node.visual.height = spec.h;
+    node.visual.width = tokenSpec.w;
+    node.visual.height = tokenSpec.h;
   }
 
   /** Swap `node.visual` for `next`: re-anchors `next` to `(0.5,0.5)`, removes and destroys the old
@@ -591,26 +591,26 @@ export class PixiBackend implements DisplayBackend {
   }
 
   /** Redraw `node.border`: clears it first, then strokes an ellipse (`shape:"circle"`) or rect
-   * (otherwise) sized to `spec.w`×`spec.h`, centered on the visual's own origin. `borderColor:
+   * (otherwise) sized to `tokenSpec.w`×`tokenSpec.h`, centered on the visual's own origin. `borderColor:
    * null` leaves the border cleared (no stroke) — the caller's way of expressing "no faction
    * border".
    * @param node The token render node whose border to redraw.
-   * @param spec The resolved token spec; only `.w`/`.h`/`.shape`/`.borderColor` are read here.
+   * @param tokenSpec The resolved token tokenSpec; only `.w`/`.h`/`.shape`/`.borderColor` are read here.
    * @example
    * ```
    * // private method; not part of the public API
    * declare const node: TokenNode;
-   * declare const spec: TokenNodeSpec;
-   * this.updateTokenBorder(node, spec);
+   * declare const tokenSpec: TokenNodeSpec;
+   * this.updateTokenBorder(node, tokenSpec);
    * ```
    */
-  private updateTokenBorder(node: TokenNode, spec: TokenNodeSpec): void {
-    const hw = spec.w / 2;
-    const hh = spec.h / 2;
+  private updateTokenBorder(node: TokenNode, tokenSpec: TokenNodeSpec): void {
+    const hw = tokenSpec.w / 2;
+    const hh = tokenSpec.h / 2;
     node.border.clear();
-    if (spec.borderColor === null) return;
-    if (spec.shape === "circle") node.border.ellipse(0, 0, hw, hh).stroke({ width: 3, color: spec.borderColor });
-    else node.border.rect(-hw, -hh, spec.w, spec.h).stroke({ width: 3, color: spec.borderColor });
+    if (tokenSpec.borderColor === null) return;
+    if (tokenSpec.shape === "circle") node.border.ellipse(0, 0, hw, hh).stroke({ width: 3, color: tokenSpec.borderColor });
+    else node.border.rect(-hw, -hh, tokenSpec.w, tokenSpec.h).stroke({ width: 3, color: tokenSpec.borderColor });
   }
 
   /** Redraw `node`'s condition-marker badges: emoji glyph chips laid out left-to-right along the
@@ -620,31 +620,31 @@ export class PixiBackend implements DisplayBackend {
    * an unchanged badge list only re-places the existing `Text` nodes (`place`); a changed one
    * destroys every existing badge and rebuilds the set from scratch.
    * @param node The token render node whose badges to redraw.
-   * @param spec The resolved token spec; only `.w`/`.h`/`.badges` are read here.
+   * @param tokenSpec The resolved token tokenSpec; only `.w`/`.h`/`.badges` are read here.
    * @example
    * ```
    * // private method; not part of the public API
    * declare const node: TokenNode;
-   * declare const spec: TokenNodeSpec;
-   * this.updateTokenBadges(node, spec);
+   * declare const tokenSpec: TokenNodeSpec;
+   * this.updateTokenBadges(node, tokenSpec);
    * ```
    */
-  private updateTokenBadges(node: TokenNode, spec: TokenNodeSpec): void {
+  private updateTokenBadges(node: TokenNode, tokenSpec: TokenNodeSpec): void {
     // Upright glyph chips along the token's top edge, relative to the (non-rotating) outer
     // container's own origin — badges are its direct children, so they stay upright automatically
     // when visualContainer (the sibling holding the rotating art+border) rotates.
-    const size = Math.max(12, Math.min(spec.w, spec.h) * 0.28);
+    const size = Math.max(12, Math.min(tokenSpec.w, tokenSpec.h) * 0.28);
     const place = (txt: Text, i: number): void => {
-      txt.position.set(-spec.w / 2 + size / 2 + i * (size + 2), -spec.h / 2 + size / 2);
+      txt.position.set(-tokenSpec.w / 2 + size / 2 + i * (size + 2), -tokenSpec.h / 2 + size / 2);
     };
-    const badgeKey = spec.badges.join("");
+    const badgeKey = tokenSpec.badges.join("");
     if (node.badgeKey === badgeKey) {
       node.badges.forEach(place);
       return;
     }
     for (const b of node.badges) b.destroy();
     node.badgeKey = badgeKey;
-    node.badges = spec.badges.map((glyph, i) => {
+    node.badges = tokenSpec.badges.map((glyph, i) => {
       const txt = new Text({ text: glyph, style: { fontSize: size, fontFamily: "sans-serif" } });
       txt.anchor.set(0.5);
       place(txt, i);
@@ -699,10 +699,10 @@ export class PixiBackend implements DisplayBackend {
   }
 
   /** `DisplayBackend.setShape`: upsert a drawn shape node — creates a `Graphics` for a new `id`,
-   * (re)parents it into `spec.layer` if it isn't already there (an id→layer change moves the node
-   * rather than leaking the old parent), clears it, then paints `spec` via `paintShape`.
+   * (re)parents it into `tokenSpec.layer` if it isn't already there (an id→layer change moves the node
+   * rather than leaking the old parent), clears it, then paints `tokenSpec` via `paintShape`.
    * @param id The shape document id.
-   * @param spec The resolved shape spec (target layer, points, fill/stroke).
+   * @param tokenSpec The resolved shape tokenSpec (target layer, points, fill/stroke).
    * @example
    * ```ts
    * import { PixiBackend } from "@shadowcat/render";
@@ -714,7 +714,7 @@ export class PixiBackend implements DisplayBackend {
    * });
    * ```
    */
-  setShape(id: string, spec: ShapeNodeSpec): void {
+  setShape(id: string, tokenSpec: ShapeNodeSpec): void {
     let g = this.shapes.get(id);
     if (!g) {
       g = new Graphics();
@@ -722,10 +722,10 @@ export class PixiBackend implements DisplayBackend {
     }
     // (Re)parent into the target layer. id→layer is stable for doc-backed shapes,
     // but addChild moves the node so a future layer-varying reconciler can't leak it.
-    const layer = this.layers.get(spec.layer);
+    const layer = this.layers.get(tokenSpec.layer);
     if (layer && g.parent !== layer) layer.addChild(g);
     g.clear();
-    paintShape(g, spec);
+    paintShape(g, tokenSpec);
   }
 
   /** `DisplayBackend.removeShape`: destroy a drawn shape node and drop it from `this.shapes`. A
@@ -978,7 +978,7 @@ export class PixiBackend implements DisplayBackend {
 /** Append one shape (a polyline/polygon subpath + its fill/stroke) onto a Graphics.
  * Does not clear, so multiple shapes can share one Graphics (the overlay).
  * @param g The Graphics to paint onto (not cleared by this call).
- * @param spec The shape to paint: a polyline/polygon (flat scene-coord points) with optional
+ * @param tokenSpec The shape to paint: a polyline/polygon (flat scene-coord points) with optional
  * `closed`/`fill`/`stroke`.
  * @example
  * ```
@@ -988,14 +988,14 @@ export class PixiBackend implements DisplayBackend {
  * paintShape(g, { points: [0, 0, 10, 0, 10, 10, 0, 10], closed: true, stroke: null, fill: null });
  * ```
  */
-function paintShape(g: Graphics, spec: Omit<ShapeNodeSpec, "layer">): void {
-  const p = spec.points;
+function paintShape(g: Graphics, tokenSpec: Omit<ShapeNodeSpec, "layer">): void {
+  const p = tokenSpec.points;
   if (p.length < 4) return; // need at least two points
   g.moveTo(p[0], p[1]);
   for (let i = 2; i < p.length; i += 2) g.lineTo(p[i], p[i + 1]);
-  if (spec.closed) g.closePath();
-  if (spec.fill) g.fill({ color: spec.fill.color, alpha: spec.fill.alpha });
-  if (spec.stroke) g.stroke({ width: spec.stroke.width, color: spec.stroke.color });
+  if (tokenSpec.closed) g.closePath();
+  if (tokenSpec.fill) g.fill({ color: tokenSpec.fill.color, alpha: tokenSpec.fill.alpha });
+  if (tokenSpec.stroke) g.stroke({ width: tokenSpec.stroke.width, color: tokenSpec.stroke.color });
 }
 
 /** Paint the three-state fog (unexplored darkest / explored dimmed / visible clear) onto the
