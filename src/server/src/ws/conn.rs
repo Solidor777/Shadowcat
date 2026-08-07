@@ -282,11 +282,13 @@ async fn handle_socket(
         sink,
         rx,
         erx,
-        egress_room,
-        egress_repo,
-        ctx,
-        current_seq,
-        modules_dir,
+        EgressConnState {
+            room: egress_room,
+            repo: egress_repo,
+            ctx,
+            current_seq,
+            modules_dir,
+        },
     ));
 
     // Ingress: parse client frames, forward intents to egress / publish.
@@ -1192,6 +1194,26 @@ async fn welcome_capability_requirements(
         .collect()
 }
 
+/// What a connection knows about its world, fixed for the connection's
+/// duration: the room it publishes/subscribes through, the document
+/// repository, the caller's resolved identity and role, the resync watermark
+/// `egress_loop` starts from, and the installed-modules directory used to
+/// build the Welcome capability requirements.
+struct EgressConnState {
+    /// The world's room — the authoritative publish/subscribe path.
+    room: Arc<Room>,
+    /// The document repository.
+    repo: Arc<SqliteRepository>,
+    /// The caller's authenticated identity and world role, resolved once at
+    /// connect time and reused for every outgoing frame's per-recipient filter.
+    ctx: PermissionContext,
+    /// The resync watermark `egress_loop` starts delivering from.
+    current_seq: i64,
+    /// The installed-modules directory scanned for the Welcome frame's
+    /// capability requirements.
+    modules_dir: std::path::PathBuf,
+}
+
 /// The egress half: fans room broadcasts into this connection with
 /// per-recipient filtering, serves resyncs/time-pongs, and owns the live
 /// search + scene-channel subscription registries (re-evaluated on events,
@@ -1202,19 +1224,21 @@ async fn welcome_capability_requirements(
 /// ```text
 /// // One egress_loop per connection; it exits when the socket or room closes.
 /// ```
-#[allow(clippy::too_many_arguments)]
 async fn egress_loop<S>(
     mut sink: S,
     mut rx: tokio::sync::broadcast::Receiver<Arc<ServerMsg>>,
     mut erx: mpsc::Receiver<Egress>,
-    room: Arc<Room>,
-    repo: Arc<SqliteRepository>,
-    ctx: PermissionContext,
-    current_seq: i64,
-    modules_dir: std::path::PathBuf,
+    conn: EgressConnState,
 ) where
     S: Sink<Message> + Unpin,
 {
+    let EgressConnState {
+        room,
+        repo,
+        ctx,
+        current_seq,
+        modules_dir,
+    } = conn;
     let world_id = room.world_id;
     // Loaded once per connection (not per event): a per-event read would contend
     // with apply_intent on the single-writer pool. A defaults change mid-session
@@ -1715,11 +1739,15 @@ mod tests {
             sink,
             rx,
             erx,
-            room.clone(),
-            repo.clone(),
-            ctx,
-            current_seq,
-            std::path::PathBuf::from("nonexistent-test-modules-dir-for-egress-lag-test"),
+            EgressConnState {
+                room: room.clone(),
+                repo: repo.clone(),
+                ctx,
+                current_seq,
+                modules_dir: std::path::PathBuf::from(
+                    "nonexistent-test-modules-dir-for-egress-lag-test",
+                ),
+            },
         ));
 
         // Drain the `Welcome` (consumes the sole credit); the egress now has zero
