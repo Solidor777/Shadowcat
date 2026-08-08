@@ -625,3 +625,15 @@ are observations awaiting triage, not committed work.
   Task 6; the file is untouched by that task and the warnings are pre-existing.
   Status: Needs Review — trace whether `Table` is keyed/remounted per world entry
   before deciding whether to fix or suppress.
+  Update — the remount path is now half traced. `App` holds `session` as nullable state:
+  `App.leaveWorld` assigns null and `App.enterWorld` assigns a fresh `WorldSession`, and
+  `Table` renders only under a guard requiring `session?.role` and `session?.world`. So
+  the leave-then-enter path drops the guard, unmounts `Table`, and remounts it against
+  the new session — on that path the capture is correct and the warning is a false
+  positive. What remains open is narrower: whether `App.enterWorld` can run while the
+  guard still holds, i.e. a world-to-world switch that never passes through null. On
+  that path `Table` is reused, `session` is reassigned underneath it, and
+  `SheetsController` keeps the previous session's `contributions` and `documents`.
+  Status: Needs Review — determine whether `App.enterWorld` is reachable without
+  `App.leaveWorld` running first. If it is not, the warning is a false positive and the
+  capture should be documented as deliberate rather than changed.
