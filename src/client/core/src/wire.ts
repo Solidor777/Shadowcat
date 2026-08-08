@@ -60,12 +60,24 @@ export const CapabilityGrantsSchema = z.object({
   by_user: z.record(z.array(z.string())),
 });
 
-export const CapabilityRequirementSchema = z.object({
+/** A declarative requirement: writing any field under `path_prefix` requires the
+ * actor to additionally hold every capability in `caps` (on top of the structural
+ * base capability for that path). Pure data — the server enforces possession and
+ * never interprets the meaning of the path or the capabilities. Mirrors
+ * `crate::data::document::CapabilityRequirement`. */
+export type WireCapabilityRequirement = {
+  /** JSON-pointer prefix the rule applies to (writes at or under it). */
+  path_prefix: string;
+  /** Capabilities the writer must ALL hold, on top of the structural base
+   * capability for the path (`required_cap_for_path`). */
+  caps: string[];
+};
+
+/** Validator for a `CapabilityRequirement`. */
+export const CapabilityRequirementSchema: z.ZodType<WireCapabilityRequirement> = z.object({
   path_prefix: z.string(),
   caps: z.array(z.string()),
 });
-/** The inferred TS shape of `CapabilityRequirementSchema` above. */
-export type WireCapabilityRequirement = z.infer<typeof CapabilityRequirementSchema>;
 
 export const CardinalitySchema = z.enum(["singleton", "multi"]);
 
@@ -230,17 +242,59 @@ export const DocumentSchema: z.ZodType<WireDocument> = z.lazy(() =>
   }),
 );
 
-export const FieldChangeSchema = z.object({
+/** One field-level change with its pre-image. Mirrors `crate::data::command::FieldChange`.
+ * `old`/`new` are always present on the wire (the Rust struct has no
+ * `skip_serializing_if` on either); they are typed optional here only because
+ * `z.unknown()` accepts an absent key at parse time (same reasoning as `WireDocument`'s
+ * `engine`/`system`), not because the server may omit them. */
+export type WireFieldChange = {
+  /** JSON pointer to the field, e.g. `/system/hp`. */
+  path: string;
+  /** OCC pre-image: the raw currently-stored value (`values_semantically_eq`
+   * compares it at apply time server-side; a mismatch rejects the intent). */
+  old?: unknown;
+  /** The value to write (unused when `remove` is true). */
+  new?: unknown;
+  /** When true, REMOVE the object key at `path` (genuine absence) instead of
+   * setting `new`. Object keys only — array-index removal is rejected server-side
+   * (`remove_pointer`). Omitted on the wire when false (mirrors the server's
+   * `#[serde(default, skip_serializing_if)]`). */
+  remove?: boolean;
+};
+
+/** Validator for a single field change carried by an `Operation`. */
+export const FieldChangeSchema: z.ZodType<WireFieldChange> = z.object({
   path: z.string(),
   old: z.unknown(),
   new: z.unknown(),
-  // When true, REMOVE the object key at `path` (genuine absence) instead of
-  // setting `new`. Omitted on the wire when false (mirrors the server's
-  // `#[serde(skip_serializing_if)]`).
   remove: z.boolean().optional(),
 });
 
-export const OperationSchema = z.discriminatedUnion("op", [
+/** A single operation within a `Command`. Mirrors `crate::data::command::Operation`. */
+export type WireOperation =
+  | {
+      /** Insert a whole new document. */
+      op: "create";
+      /** The full document to insert. */
+      doc: WireDocument;
+    }
+  | {
+      /** Remove a document (carries the full pre-image for invertibility). */
+      op: "delete";
+      /** The document as it existed at deletion. */
+      doc: WireDocument;
+    }
+  | {
+      /** Field-level changes against an existing document. */
+      op: "update";
+      /** Target document id. */
+      doc_id: string;
+      /** Ordered field changes, each with its OCC pre-image. */
+      changes: WireFieldChange[];
+    };
+
+/** Validator for a single `Operation` within a `Command`. */
+export const OperationSchema: z.ZodType<WireOperation> = z.discriminatedUnion("op", [
   z.object({ op: z.literal("create"), doc: DocumentSchema }),
   z.object({ op: z.literal("delete"), doc: DocumentSchema }),
   z.object({
@@ -250,7 +304,23 @@ export const OperationSchema = z.discriminatedUnion("op", [
   }),
 ]);
 
-export const CommandSchema = z.object({
+/** A command that has been assigned a per-world sequence number. Mirrors
+ * `crate::data::command::Command`. */
+export type WireCommand = {
+  /** Per-world monotonic sequence number (the client's replay watermark). */
+  seq: number;
+  /** World the command applied to. */
+  world_id: string;
+  /** Originating user. */
+  author: string;
+  /** Author-side timestamp, Unix epoch milliseconds. */
+  ts: number;
+  /** The applied operations, in order. */
+  ops: WireOperation[];
+};
+
+/** Validator for a `Command`. */
+export const CommandSchema: z.ZodType<WireCommand> = z.object({
   seq: int,
   world_id: z.string(),
   author: z.string(),
@@ -258,13 +328,23 @@ export const CommandSchema = z.object({
   ops: z.array(OperationSchema),
 });
 
-export const SearchHitSchema = z.object({
+/** One search result: the per-recipient-filtered document, its BM25 relevance, and a
+ * highlighted snippet. Mirrors `crate::data::search::SearchHit`. */
+export type WireSearchHit = {
+  /** The matched document, already per-recipient filtered. */
+  document: WireDocument;
+  /** BM25 relevance as SQLite returns it (lower = more relevant). */
+  score: number;
+  /** Highlighted match snippet from the recipient's own index partition. */
+  snippet: string;
+};
+
+/** Validator for a `SearchHit`. */
+export const SearchHitSchema: z.ZodType<WireSearchHit> = z.object({
   document: DocumentSchema,
   score: z.number(),
   snippet: z.string(),
 });
-/** The inferred TS shape of `SearchHitSchema` above. */
-export type WireSearchHit = z.infer<typeof SearchHitSchema>;
 
 export const ServerMsgSchema = z.discriminatedUnion("type", [
   z.object({
@@ -409,12 +489,6 @@ export const ServerMsgSchema = z.discriminatedUnion("type", [
 
 /** The inferred TS shape of `ScopeSchema` above. */
 export type WireScope = z.infer<typeof ScopeSchema>;
-/** The inferred TS shape of `FieldChangeSchema` above. */
-export type WireFieldChange = z.infer<typeof FieldChangeSchema>;
-/** The inferred TS shape of `OperationSchema` above. */
-export type WireOperation = z.infer<typeof OperationSchema>;
-/** The inferred TS shape of `CommandSchema` above. */
-export type WireCommand = z.infer<typeof CommandSchema>;
 /** The inferred TS shape of `ServerMsgSchema` above (the full discriminated union of inbound
  * server frames). */
 export type ServerMsg = z.infer<typeof ServerMsgSchema>;
