@@ -417,3 +417,18 @@ Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one de
   own JSDoc. (Surfaced by sweep 11 Task 5's Rule-11 sibling audit; routed here rather than
   `OPEN_BUGS.md` in sweep 11 Task 6 because the divergence never produces an incorrect state,
   server-authoritative or otherwise — only a possibly-confusing no-op click.)
+
+## Actionable now — `FieldChangeSchema` accepts a frame that omits `old`/`new`
+- TODO: Tighten `FieldChangeSchema` so a server frame missing the `old` or `new` key is
+  rejected rather than parsed. `z.unknown()` accepts an absent key (`undefined` satisfies
+  `unknown`), so `FieldChangeSchema.safeParse({ path })` succeeds today with both value keys
+  gone. The Rust `crate::data::command::FieldChange` never omits them — only `remove` carries
+  `#[serde(skip_serializing_if)]` — so a frame lacking them is malformed, and the client's
+  validation boundary currently admits it. **Not a live defect**: `templates.ts`'s
+  `pushIfChanged`, the sole non-test writer, always supplies real values, and the laxity has
+  never been exercised. The correct shape is likely a required-key validator that still
+  permits an explicit `null`/`undefined` VALUE, since `old` is genuinely absent-valued for a
+  key that did not previously exist. Deferred because tightening a wire validator changes
+  runtime accept/reject behavior, which is outside a documentation-only change and needs its
+  own consent. Made visible by splitting `WireFieldChange` from its schema: the hand-written
+  type surfaced the optionality that `z.infer` had silently absorbed.
