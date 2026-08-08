@@ -225,8 +225,11 @@ source of truth. The ones agents break most:
   discriminated wire union adds a new such reflection: add it BY NAME. Never widen the list to a path
   glob — a glob silently absorbs every future synthesized discriminant, whereas an enumerated list
   fails the gate until someone adds a name deliberately, which is the point. Adding a name needs the
-  owner's per-instance sign-off like any other exemption, and `scripts/report-doc-exemptions.mjs`
-  prints the active count and every name on each run, because an uncounted exemption is a backdoor.
+  owner's per-instance sign-off like any other exemption. `scripts/report-doc-exemptions.mjs`
+  derives the active set by scanning every `typedoc*.json` in the repo (never one hardcoded
+  path — an exemption added to a config the scan doesn't read would otherwise be invisible to
+  the count), and `report-doc-exemptions-cli.mjs` prints the total plus a per-source breakdown
+  on each `docs:generate` run, because an uncounted exemption is a backdoor.
 
 ## Pointers
 

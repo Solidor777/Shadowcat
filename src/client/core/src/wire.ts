@@ -9,6 +9,27 @@
 // millisecond timestamps stay well within 2^53). ts-rs types i64 as `bigint`;
 // using `number` keeps JSON.parse/stringify ergonomic (bigint is not
 // JSON-serializable). The drift guard normalizes that one scalar difference.
+//
+// Schemas here are typed `z.ZodType<HandWrittenType>` rather than the reverse
+// (`type X = z.infer<typeof XSchema>`), so the hand-written type stays the
+// documentable declaration TypeDoc renders. That direction alone lets a
+// SCHEMA narrower than the type pass silently: `z.ZodType<T> = expr` only
+// requires `expr`'s inferred output be ASSIGNABLE to `T`, and a discriminated
+// union missing an arm — or a field narrowed to a literal subtype — is still
+// assignable to the wider declared type. Each such schema is therefore split
+// into an unannotated `xImpl` const (its inferred type is exactly what the
+// Zod expression structurally produces, not the target type read back
+// through an annotation) and an exported `XSchema: z.ZodType<T> = xImpl`
+// wrapper for callers; the module's test suite asserts
+// `expectTypeOf<z.infer<typeof xImpl>>().toEqualTypeOf<T>()` against the
+// unannotated const, which fails on both a dropped union arm and a narrowed
+// field. A `z.lazy` self-referential schema (`SchemaSchema`, `DocumentSchema`)
+// cannot take this split: TypeScript requires the annotation directly on the
+// const a lazy callback recurses into, or the self-reference is an
+// unresolvable circular type. Their guard is the weaker (but still real)
+// one this pattern replaces everywhere else — missing-required-field
+// detection via ordinary assignability — which is sound for them because
+// neither declares a top-level discriminated union of its own to narrow.
 import { z } from "zod";
 
 /** A wire integer (i64/u32) — see the module note on number vs bigint. */
@@ -42,11 +63,13 @@ export type WireActorOwnerRef =
       token_id: string;
     };
 
-/** Validator for a `WireActorOwnerRef`. */
-export const ActorOwnerRefSchema: z.ZodType<WireActorOwnerRef> = z.discriminatedUnion("kind", [
+// Unannotated impl const — see the module-level note above `z` import for why.
+export const actorOwnerRefSchemaImpl = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("actor"), actor_id: z.string() }),
   z.object({ kind: z.literal("token_instance"), token_id: z.string() }),
 ]);
+/** Validator for a `WireActorOwnerRef`. */
+export const ActorOwnerRefSchema: z.ZodType<WireActorOwnerRef> = actorOwnerRefSchemaImpl;
 
 /** The intended readership of a chat message beyond the ordinary world-readable default.
  * Carried on the `SendMessage` frame and stored verbatim in `MessageEngine`; drives the
@@ -70,12 +93,14 @@ export type WireAudience =
       kind: "gm_only";
     };
 
-/** Validator for a `WireAudience`. */
-export const AudienceSchema: z.ZodType<WireAudience> = z.discriminatedUnion("kind", [
+// Unannotated impl const — see the module-level note above the `z` import.
+export const audienceSchemaImpl = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("public") }),
   z.object({ kind: z.literal("whisper"), recipients: z.array(z.string()) }),
   z.object({ kind: z.literal("gm_only") }),
 ]);
+/** Validator for a `WireAudience`. */
+export const AudienceSchema: z.ZodType<WireAudience> = audienceSchemaImpl;
 
 export const ScopeSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("compendium"), pack: z.string() }),
@@ -99,11 +124,13 @@ export type WireCapabilityGrants = {
   by_user: Record<string, string[]>;
 };
 
-/** Validator for a `CapabilityGrants`. */
-export const CapabilityGrantsSchema: z.ZodType<WireCapabilityGrants> = z.object({
+// Unannotated impl const — see the module-level note above the `z` import.
+export const capabilityGrantsSchemaImpl = z.object({
   by_role: z.record(z.array(z.string())),
   by_user: z.record(z.array(z.string())),
 });
+/** Validator for a `CapabilityGrants`. */
+export const CapabilityGrantsSchema: z.ZodType<WireCapabilityGrants> = capabilityGrantsSchemaImpl;
 
 /** A declarative requirement: writing any field under `path_prefix` requires the
  * actor to additionally hold every capability in `caps` (on top of the structural
@@ -118,11 +145,14 @@ export type WireCapabilityRequirement = {
   caps: string[];
 };
 
-/** Validator for a `CapabilityRequirement`. */
-export const CapabilityRequirementSchema: z.ZodType<WireCapabilityRequirement> = z.object({
+// Unannotated impl const — see the module-level note above the `z` import.
+export const capabilityRequirementSchemaImpl = z.object({
   path_prefix: z.string(),
   caps: z.array(z.string()),
 });
+/** Validator for a `CapabilityRequirement`. */
+export const CapabilityRequirementSchema: z.ZodType<WireCapabilityRequirement> =
+  capabilityRequirementSchemaImpl;
 
 export const CardinalitySchema = z.enum(["singleton", "multi"]);
 
@@ -135,11 +165,13 @@ export type WireContractProvide = {
   cardinality: z.infer<typeof CardinalitySchema>;
 };
 
-/** Validator for a `ContractProvide`. */
-export const ContractProvideSchema: z.ZodType<WireContractProvide> = z.object({
+// Unannotated impl const — see the module-level note above the `z` import.
+export const contractProvideSchemaImpl = z.object({
   contract: z.string(),
   cardinality: CardinalitySchema,
 });
+/** Validator for a `ContractProvide`. */
+export const ContractProvideSchema: z.ZodType<WireContractProvide> = contractProvideSchemaImpl;
 
 /** A module's UI contract declaration: what surface contracts it provides and which it
  * requires an active provider for. Pure data — the server validates and distributes these
@@ -156,13 +188,16 @@ export type WireContractDeclaration = {
   requires: string[];
 };
 
-/** Validator for a `ContractDeclaration`. */
-export const ContractDeclarationSchema: z.ZodType<WireContractDeclaration> = z.object({
+// Unannotated impl const — see the module-level note above the `z` import.
+export const contractDeclarationSchemaImpl = z.object({
   module_id: z.string(),
   version: z.string(),
   provides: z.array(ContractProvideSchema),
   requires: z.array(z.string()),
 });
+/** Validator for a `ContractDeclaration`. */
+export const ContractDeclarationSchema: z.ZodType<WireContractDeclaration> =
+  contractDeclarationSchemaImpl;
 
 export const SchemaTypeSchema = z.enum([
   "object",
@@ -192,6 +227,13 @@ export type WireSchema = {
   nullable?: boolean;
 };
 
+// Annotated directly on this const (not split into an unannotated impl + exported wrapper,
+// unlike its siblings) — `z.lazy` recurses into `SchemaSchema` by name below, and TypeScript
+// cannot infer this const's own type from an expression that references itself; the annotation
+// is what breaks that circularity. This is judged NOT to need the split for guard strength: the
+// type has no top-level discriminated union to narrow, so the assignability check the
+// annotation performs still catches a dropped/renamed required field (only union-arm narrowing
+// would slip past a bare annotation, and there is none here to narrow).
 export const SchemaSchema: z.ZodType<WireSchema> = z.lazy(() =>
   z.object({
     type: SchemaTypeSchema.optional(),
@@ -222,8 +264,8 @@ export type WireSchemaDeclaration = {
   schema: WireSchema;
 };
 
-/** Validator for a `SchemaDeclaration`. */
-export const SchemaDeclarationSchema: z.ZodType<WireSchemaDeclaration> = z.object({
+// Unannotated impl const — see the module-level note above the `z` import.
+export const schemaDeclarationSchemaImpl = z.object({
   module_id: z.string(),
   version: z.string(),
   schema_format: int,
@@ -231,6 +273,9 @@ export const SchemaDeclarationSchema: z.ZodType<WireSchemaDeclaration> = z.objec
   subtree_pointer: z.string(),
   schema: SchemaSchema,
 });
+/** Validator for a `SchemaDeclaration`. */
+export const SchemaDeclarationSchema: z.ZodType<WireSchemaDeclaration> =
+  schemaDeclarationSchemaImpl;
 
 /** A document's access-control set: default role, per-user role overrides, per-property
  * visibility overrides, capability grants, and an optional per-document GM-role cap. Mirrors
@@ -254,14 +299,16 @@ export type WirePermissionSet = {
   gm_role: z.infer<typeof DocRoleSchema> | null;
 };
 
-/** Validator for a `PermissionSet`. */
-export const PermissionSetSchema: z.ZodType<WirePermissionSet> = z.object({
+// Unannotated impl const — see the module-level note above the `z` import.
+export const permissionSetSchemaImpl = z.object({
   default: DocRoleSchema,
   users: z.record(DocRoleSchema),
   property_overrides: z.record(VisibilitySchema),
   capabilities: CapabilityGrantsSchema,
   gm_role: DocRoleSchema.nullable(),
 });
+/** Validator for a `PermissionSet`. */
+export const PermissionSetSchema: z.ZodType<WirePermissionSet> = permissionSetSchemaImpl;
 
 /** The validated document shape (`bigint` i64 fields modeled as `number`). */
 export type WireDocument = {
@@ -331,6 +378,13 @@ export type WireDocument = {
  * `WsClient.applyEvent`, which catches it, surfaces it via `onError`, and still
  * advances `nextExpected` — leaving the target document at its stale pre-update
  * value, not absent. */
+// Annotated directly on this const for the same reason as `SchemaSchema` above (a `z.lazy`
+// self-reference to `DocumentSchema` by name below forces the annotation here to break the
+// circular type inference). Judged NOT to need the impl-const split: `WireDocument` has no
+// top-level discriminated union of its own, so the annotation's assignability check still
+// catches a dropped/renamed required field; only a narrowed nested field would slip past it,
+// and every nested field with union structure (`permissions`, `scope`) already resolves through
+// its own split, guard-covered schema.
 export const DocumentSchema: z.ZodType<WireDocument> = z.lazy(() =>
   z.object({
     id: z.string(),
@@ -371,13 +425,15 @@ export type WireFieldChange = {
   remove?: boolean;
 };
 
-/** Validator for a single field change carried by an `Operation`. */
-export const FieldChangeSchema: z.ZodType<WireFieldChange> = z.object({
+// Unannotated impl const — see the module-level note above the `z` import.
+export const fieldChangeSchemaImpl = z.object({
   path: z.string(),
   old: z.unknown(),
   new: z.unknown(),
   remove: z.boolean().optional(),
 });
+/** Validator for a single field change carried by an `Operation`. */
+export const FieldChangeSchema: z.ZodType<WireFieldChange> = fieldChangeSchemaImpl;
 
 /** A single operation within a `Command`. Mirrors `crate::data::command::Operation`. */
 export type WireOperation =
@@ -402,8 +458,8 @@ export type WireOperation =
       changes: WireFieldChange[];
     };
 
-/** Validator for a single `Operation` within a `Command`. */
-export const OperationSchema: z.ZodType<WireOperation> = z.discriminatedUnion("op", [
+// Unannotated impl const — see the module-level note above the `z` import.
+export const operationSchemaImpl = z.discriminatedUnion("op", [
   z.object({ op: z.literal("create"), doc: DocumentSchema }),
   z.object({ op: z.literal("delete"), doc: DocumentSchema }),
   z.object({
@@ -412,6 +468,8 @@ export const OperationSchema: z.ZodType<WireOperation> = z.discriminatedUnion("o
     changes: z.array(FieldChangeSchema),
   }),
 ]);
+/** Validator for a single `Operation` within a `Command`. */
+export const OperationSchema: z.ZodType<WireOperation> = operationSchemaImpl;
 
 /** A command that has been assigned a per-world sequence number. Mirrors
  * `crate::data::command::Command`. */
@@ -428,14 +486,16 @@ export type WireCommand = {
   ops: WireOperation[];
 };
 
-/** Validator for a `Command`. */
-export const CommandSchema: z.ZodType<WireCommand> = z.object({
+// Unannotated impl const — see the module-level note above the `z` import.
+export const commandSchemaImpl = z.object({
   seq: int,
   world_id: z.string(),
   author: z.string(),
   ts: int,
   ops: z.array(OperationSchema),
 });
+/** Validator for a `Command`. */
+export const CommandSchema: z.ZodType<WireCommand> = commandSchemaImpl;
 
 /** One search result: the per-recipient-filtered document, its BM25 relevance, and a
  * highlighted snippet. Mirrors `crate::data::search::SearchHit`. */
@@ -448,12 +508,14 @@ export type WireSearchHit = {
   snippet: string;
 };
 
-/** Validator for a `SearchHit`. */
-export const SearchHitSchema: z.ZodType<WireSearchHit> = z.object({
+// Unannotated impl const — see the module-level note above the `z` import.
+export const searchHitSchemaImpl = z.object({
   document: DocumentSchema,
   score: z.number(),
   snippet: z.string(),
 });
+/** Validator for a `SearchHit`. */
+export const SearchHitSchema: z.ZodType<WireSearchHit> = searchHitSchemaImpl;
 
 /** A single position sample in a `move_stream` timeline. `t_ms` is elapsed milliseconds from
  * `start_server_ms`; `pos` is the scene-coord cell-center at that instant. INVARIANT:
@@ -750,8 +812,13 @@ export type ServerMsg =
       user: string | null;
     };
 
-/** Validator for every frame the server sends, discriminated by `type`. */
-export const ServerMsgSchema: z.ZodType<ServerMsg> = z.discriminatedUnion("type", [
+// Unannotated impl const — see the module-level note above the `z` import. This is the
+// finding's worked example: deleting an arm (e.g. the "reject" object below) or narrowing a
+// field (e.g. `user_role: z.literal("gm")` in the "welcome" arm) makes
+// `serverMsgSchemaImpl`'s inferred type a strict subset of `ServerMsg`, which the drift-guard
+// test's `expectTypeOf<z.infer<typeof serverMsgSchemaImpl>>().toEqualTypeOf<ServerMsg>()`
+// rejects — `toEqualTypeOf` requires exact bidirectional equality, not mere assignability.
+export const serverMsgSchemaImpl = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("welcome"),
     world: z.string(),
@@ -885,6 +952,8 @@ export const ServerMsgSchema: z.ZodType<ServerMsg> = z.discriminatedUnion("type"
   }),
   z.object({ type: z.literal("evicted"), user: z.string().nullable() }),
 ]);
+/** Validator for every frame the server sends, discriminated by `type`. */
+export const ServerMsgSchema: z.ZodType<ServerMsg> = serverMsgSchemaImpl;
 
 /** The inferred TS shape of `ScopeSchema` above. */
 export type WireScope = z.infer<typeof ScopeSchema>;

@@ -10,6 +10,7 @@ import {
   htmlFilesUnder,
   cssFilesUnder,
   rewriteAbsolutePaths,
+  hasSurvivingAbsoluteRef,
 } from "./assemble-docs.mjs";
 
 describe("extractLocalLinks", () => {
@@ -220,6 +221,43 @@ describe("rewriteAbsolutePaths", () => {
     writeFileSync(changedFile, `<a href="/protocol.html">p</a>`);
     writeFileSync(untouchedFile, `<a href="./local.html">l</a>`);
     expect(rewriteAbsolutePaths(root, [changedFile, untouchedFile])).toBe(1);
+  });
+});
+
+// This gate (the `hasSurvivingAbsoluteRef` check + assemble-docs.mjs's `isMain`
+// `process.exit(1)` block that uses it) had zero automated coverage before these tests — every
+// other function in this file is exported and tested; this predicate was verified by hand
+// against adversarial inputs only. It is about to be load-bearing on every docs build, so it is
+// now observed failing (and passing) directly, not just wired-in-and-trusted.
+describe("hasSurvivingAbsoluteRef", () => {
+  it("HTML: reports a surviving root-absolute href/src", () => {
+    expect(hasSurvivingAbsoluteRef("page.html", `<a href="/protocol.html">p</a>`)).toBe(true);
+    expect(hasSurvivingAbsoluteRef("page.html", `<img src='/logo.png'>`)).toBe(true);
+  });
+  it("HTML: clean once every ref is relative or scheme-prefixed", () => {
+    expect(
+      hasSurvivingAbsoluteRef(
+        "page.html",
+        `<a href="./guides/a.html">g</a><a href="https://example.com/x">ext</a><a href="//cdn.example/lib.js">p</a>`,
+      ),
+    ).toBe(false);
+  });
+  it("CSS: reports a surviving root-absolute url()", () => {
+    expect(hasSurvivingAbsoluteRef("style.css", `.a{background:url(/assets/a.png)}`)).toBe(true);
+    expect(hasSurvivingAbsoluteRef("style.css", `.b{background:url( '/assets/b.png' )}`)).toBe(true);
+  });
+  it("CSS: clean once every url() is relative or scheme-prefixed", () => {
+    expect(
+      hasSurvivingAbsoluteRef(
+        "style.css",
+        `.a{background:url(../assets/a.png)}.b{background:url("https://cdn.example/x.png")}`,
+      ),
+    ).toBe(false);
+  });
+  it("dispatches on the CSS extension rather than content, so a .html file's url() text is ignored", () => {
+    expect(hasSurvivingAbsoluteRef("page.html", `<style>.a{background:url(/x.png)}</style>`)).toBe(
+      false,
+    );
   });
 });
 

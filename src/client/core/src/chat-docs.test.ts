@@ -1,6 +1,47 @@
-import { describe, expect, test } from "vitest";
-import { parseMessageEngine, buildChannelRegistryDoc, buildDiceSettingsDoc, buildChatSettingsDoc, isKnownSegment, MESSAGE_DOC_TYPE } from "./chat-docs";
+import { describe, expect, expectTypeOf, test } from "vitest";
+import { z } from "zod";
+import {
+  parseMessageEngine,
+  buildChannelRegistryDoc,
+  buildDiceSettingsDoc,
+  buildChatSettingsDoc,
+  isKnownSegment,
+  MESSAGE_DOC_TYPE,
+  dieRecordSchemaImpl,
+  constTermSchemaImpl,
+  chatSegmentSchemaImpl,
+  rollOutcomeSchemaImpl,
+  chatMessageEngineSchemaImpl,
+  type DieRecord,
+  type ConstTerm,
+  type ChatSegment,
+  type RollOutcome,
+  type ChatMessageEngine,
+} from "./chat-docs";
 import type { WireDocument } from "./wire";
+
+// Non-vacuous schema/type guard — see `wire.ts`'s module-level note above its `z` import for the
+// full rationale (asserting against the unannotated `xImpl` const, not `z.infer<typeof XSchema>`,
+// is what makes a dropped union arm or a narrowed field fail this assertion). `RollOutcomeSchema`
+// and `ChatMessageEngineSchema` are covered by their own describe block below, since both widen
+// their INPUT type via `.default(...)` and so need the matching 3-arg `z.ZodType` form.
+describe("chat-docs drift guard — non-vacuous schema/type assertions", () => {
+  test("DieRecord", () => {
+    expectTypeOf<z.infer<typeof dieRecordSchemaImpl>>().toEqualTypeOf<DieRecord>();
+  });
+  test("ConstTerm", () => {
+    expectTypeOf<z.infer<typeof constTermSchemaImpl>>().toEqualTypeOf<ConstTerm>();
+  });
+  test("ChatSegment", () => {
+    expectTypeOf<z.infer<typeof chatSegmentSchemaImpl>>().toEqualTypeOf<ChatSegment>();
+  });
+  test("RollOutcome", () => {
+    expectTypeOf<z.infer<typeof rollOutcomeSchemaImpl>>().toEqualTypeOf<RollOutcome>();
+  });
+  test("ChatMessageEngine", () => {
+    expectTypeOf<z.infer<typeof chatMessageEngineSchemaImpl>>().toEqualTypeOf<ChatMessageEngine>();
+  });
+});
 
 function msgDoc(engine: unknown, docType = MESSAGE_DOC_TYPE): WireDocument {
   return {

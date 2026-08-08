@@ -104,7 +104,7 @@ const ROOT_ABSOLUTE_URL = /url\(\s*(?:"\s*\/(?!\/)[^"]*"|'\s*\/(?!\/)[^']*'|\/(?
  * attribute predicate for HTML, the url() predicate for CSS, verifying the REWRITE'S
  * RESULT rather than merely echoing the rewrite's own recognition of what needed
  * changing. */
-function hasSurvivingAbsoluteRef(file, content) {
+export function hasSurvivingAbsoluteRef(file, content) {
   return file.endsWith(".css") ? ROOT_ABSOLUTE_URL.test(content) : ROOT_ABSOLUTE_ATTR.test(content);
 }
 

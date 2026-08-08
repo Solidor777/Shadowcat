@@ -173,10 +173,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       # build:all starts with the client build (rust-embed needs dist/ before
       # cargo doc), then typedoc, cargo doc, vitepress, assembly + link check,
-      # and finally the active documentation-exemption count.
+      # and finally the active documentation-exemption count. cargo doc runs
+      # through scripts/cargo-doc-strict.mjs, which sets RUSTDOCFLAGS itself —
+      # the same flag a local `pnpm build:all` carries, so this step and a
+      # contributor's own machine see the same gate.
       - run: pnpm build:all
-        env:
-          RUSTDOCFLAGS: "-D warnings"
+      - name: Skill doc-pointer references resolve
+        run: node scripts/check-skill-api-refs-cli.mjs
       - name: Function doc coverage (TS)
         run: pnpm lint:docs
       - name: Property and type doc coverage (TS)

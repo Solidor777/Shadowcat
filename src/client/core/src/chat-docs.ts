@@ -57,24 +57,32 @@ export type DieRecord = {
   symbols: string[];
 };
 
+// Unannotated impl const: typed `z.ZodType<T> = expr` only requires `expr`'s inferred output be
+// ASSIGNABLE to `T`, so a field narrowed to a literal subtype would pass silently under the
+// exported annotation alone. Kept unannotated so the drift-guard test can assert
+// `z.infer<typeof dieRecordSchemaImpl>` against `DieRecord` directly (see `wire.ts`'s module note
+// for the full rationale, shared across both files). Deliberately WITHOUT `.passthrough()` here —
+// that call adds a `[k: string]: unknown` index signature to the inferred output, which is a
+// real (intentional) WIDENING of `DieRecord` that a strict `toEqualTypeOf` would always flag as
+// a mismatch, defeating the guard for a reason unrelated to drift. `.passthrough()` is applied
+// only at the exported `DieRecordSchema`, so runtime validation is unchanged.
+export const dieRecordSchemaImpl = z.object({
+  value: z.number(),
+  natural: z.number(),
+  kept: z.boolean(),
+  exploded: z.boolean(),
+  crit_success: z.boolean(),
+  crit_fail: z.boolean(),
+  expertise: z.number(),
+  group_index: z.number(),
+  label: z.string().nullish(),
+  symbols: z.array(z.string()),
+});
 /** Validator for a `DieRecord`. Only the fields the roll card renders are
  * validated; `.passthrough()` tolerates server-only audit fields (id,
  * rerolled_from, ordered, ...) the client doesn't read, so an additive
  * server-side field never breaks this mirror. */
-export const DieRecordSchema: z.ZodType<DieRecord> = z
-  .object({
-    value: z.number(),
-    natural: z.number(),
-    kept: z.boolean(),
-    exploded: z.boolean(),
-    crit_success: z.boolean(),
-    crit_fail: z.boolean(),
-    expertise: z.number(),
-    group_index: z.number(),
-    label: z.string().nullish(),
-    symbols: z.array(z.string()),
-  })
-  .passthrough();
+export const DieRecordSchema: z.ZodType<DieRecord> = dieRecordSchemaImpl.passthrough();
 
 /** A labeled bare constant term in a roll expression. Mirrors
  * `dice::spec::ConstTerm`. Display/provenance decoration only — never fed
@@ -86,11 +94,13 @@ export type ConstTerm = {
   label?: string | null;
 };
 
-/** Validator for a `ConstTerm`. */
-export const ConstTermSchema: z.ZodType<ConstTerm> = z.object({
+// Unannotated impl const — see `dieRecordSchemaImpl`'s note above / `wire.ts`'s module note.
+export const constTermSchemaImpl = z.object({
   value: z.number(),
   label: z.string().nullish(),
 });
+/** Validator for a `ConstTerm`. */
+export const ConstTermSchema: z.ZodType<ConstTerm> = constTermSchemaImpl;
 
 /** A roll's fully-derived, deterministic result. Mirrors
  * `dice::outcome::RollOutcome`. `successes`/`pass`/`margin`/`tier_label`/
@@ -132,10 +142,8 @@ export type RollOutcome = {
   labeled_consts: ConstTerm[];
 };
 
-/** Validator for a `RollOutcome`. Input type is widened to `unknown` because
- * `labeled_consts.default([])` makes that key optional on input while the
- * hand-written `RollOutcome` output type keeps it required. */
-export const RollOutcomeSchema: z.ZodType<RollOutcome, z.ZodTypeDef, unknown> = z.object({
+// Unannotated impl const — see `dieRecordSchemaImpl`'s note above / `wire.ts`'s module note.
+export const rollOutcomeSchemaImpl = z.object({
   total: z.number(),
   records: z.array(DieRecordSchema),
   successes: z.number().nullish(),
@@ -150,6 +158,10 @@ export const RollOutcomeSchema: z.ZodType<RollOutcome, z.ZodTypeDef, unknown> = 
   symbol_counts: z.record(z.string(), z.number()),
   labeled_consts: z.array(ConstTermSchema).default([]),
 });
+/** Validator for a `RollOutcome`. Input type is widened to `unknown` because
+ * `labeled_consts.default([])` makes that key optional on input while the
+ * hand-written `RollOutcome` output type keeps it required. */
+export const RollOutcomeSchema: z.ZodType<RollOutcome, z.ZodTypeDef, unknown> = rollOutcomeSchemaImpl;
 
 /** One piece of a message's sanitized content model — one of the five known segment
  * kinds. Mirrors `chat::Segment`. `html.sanitized_html` is innerHTML-safe ONLY because
@@ -201,16 +213,20 @@ export type ChatSegment =
       description: string;
     };
 
-/** Validator for a `ChatSegment`. Input type is widened to `unknown` because the
- * `roll_embed` arm's `outcome: RollOutcomeSchema` inherits `RollOutcomeSchema`'s
- * own widened input (see that schema's doc). */
-export const ChatSegmentSchema: z.ZodType<ChatSegment, z.ZodTypeDef, unknown> = z.discriminatedUnion("kind", [
+// Unannotated impl const — see `dieRecordSchemaImpl`'s note above / `wire.ts`'s module note.
+// The union-narrowing case this pattern guards against is exactly what a segment-kind arm
+// removal or a `kind: z.literal(...)` narrowing inside one would be.
+export const chatSegmentSchemaImpl = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("text"), text: z.string() }),
   z.object({ kind: z.literal("html"), sanitized_html: z.string() }),
   z.object({ kind: z.literal("roll_embed"), formula: z.string(), outcome: RollOutcomeSchema }),
   z.object({ kind: z.literal("roll_button"), formula: z.string(), label: z.string().nullish() }),
   z.object({ kind: z.literal("link_preview"), url: z.string(), title: z.string(), description: z.string() }),
 ]);
+/** Validator for a `ChatSegment`. Input type is widened to `unknown` because the
+ * `roll_embed` arm's `outcome: RollOutcomeSchema` inherits `RollOutcomeSchema`'s
+ * own widened input (see that schema's doc). */
+export const ChatSegmentSchema: z.ZodType<ChatSegment, z.ZodTypeDef, unknown> = chatSegmentSchemaImpl;
 /** Forward-compat: a segment kind this client doesn't know (e.g. a future server's
  * DocLink) parses as opaque and renders as nothing — the message still shows.
  * INVARIANT: refuses every KNOWN kind — without this, a malformed
@@ -285,10 +301,8 @@ export type ChatMessageEngine = {
   deleted_at?: number | null;
 };
 
-/** Validator for a `ChatMessageEngine`. Input type is widened to `unknown` because
- * `audience.default(...)` makes that key optional on input while the hand-written
- * `ChatMessageEngine` output type keeps it required. */
-export const ChatMessageEngineSchema: z.ZodType<ChatMessageEngine, z.ZodTypeDef, unknown> = z.object({
+// Unannotated impl const — see `dieRecordSchemaImpl`'s note above / `wire.ts`'s module note.
+export const chatMessageEngineSchemaImpl = z.object({
   channel: z.string(),
   user_owner: z.string(),
   actor_owner: ActorOwnerRefSchema.nullish(),
@@ -299,6 +313,11 @@ export const ChatMessageEngineSchema: z.ZodType<ChatMessageEngine, z.ZodTypeDef,
   edited_at: z.number().nullish(),
   deleted_at: z.number().nullish(),
 });
+/** Validator for a `ChatMessageEngine`. Input type is widened to `unknown` because
+ * `audience.default(...)` makes that key optional on input while the hand-written
+ * `ChatMessageEngine` output type keeps it required. */
+export const ChatMessageEngineSchema: z.ZodType<ChatMessageEngine, z.ZodTypeDef, unknown> =
+  chatMessageEngineSchemaImpl;
 
 /** Fail-closed body parse: null unless `doc` is a message with a valid `engine` body.
  * @param doc The candidate document.
