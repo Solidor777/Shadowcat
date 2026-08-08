@@ -224,6 +224,9 @@ the reducer (intercept-and-redispatch), so the engine never owns state.
 
 ## Pointers
 
+- **Generated API** — `/api/ts/modules/_shadowcat_module-panels.html` (TypeDoc —
+  `@shadowcat/module-panels`), `_shadowcat_ui-kit.html` (`PanelsBridge`). Produce with
+  `pnpm build:all`.
 - Design: `docs/superpowers/specs/` (panel-manager + pop-out windows); implementation plans
   under `docs/superpowers/plans/`.
 - Relationships: `graphify query "panels controller layout tree engine adapter dockview bridge chips popout"`.

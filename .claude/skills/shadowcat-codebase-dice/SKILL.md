@@ -451,6 +451,10 @@ on.
 
 ## Pointers
 
+- **Generated API** — `/api/rust/shadowcat/dice/` (rustdoc, private items included — the
+  `eval`/`notation`/`outcome`/`recalc`/`rng`/`spec` submodule tree). The transport boundary
+  (`chat::rolls`) is documented under `shadowcat-codebase-chat`'s generated-API pointer instead.
+  Produce with `pnpm build:all`.
 - Deferred work: TODO's dice section (dice-count cap, serde-defaults, `Token` Display impl —
   several already resolved), a dedicated `SuccessConfig.expertise` bounding entry (unbounded `E`
   is an `O(N·E²)` DoS/wrap-around vector), and the `DieKind::Faces` empty-face-list panic-surface

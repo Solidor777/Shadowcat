@@ -76,6 +76,9 @@ and serves uploads unconverted (the conversion pipeline is deferred).
 
 ## Pointers
 
+- **Generated API** — `/api/rust/shadowcat/data/asset/`, `/api/rust/shadowcat/http/assets/`
+  (rustdoc, private items included), `/api/ts/modules/_shadowcat_module-assets.html` (TypeDoc).
+  Produce with `pnpm build:all`.
 - Rationale: `docs/design/ARCHITECTURE.md` §4 (asset pipeline deferral) + §6 (stable asset identity).
 - Relationships:
   `graphify query "asset upload store ETag version AssetChanged streaming limit"`.

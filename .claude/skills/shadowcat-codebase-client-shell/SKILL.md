@@ -312,6 +312,11 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
 
 ## Pointers
 
+- **Generated API** — `/api/ts/modules/_shadowcat_shell.html`, `_shadowcat_ui-kit.html` (TypeDoc),
+  plus the shell/UI module pages `_shadowcat_module-core-ui.html`, `_shadowcat_module-entry.html`,
+  `_shadowcat_module-topbar.html`, `_shadowcat_module-statusbar.html`,
+  `_shadowcat_module-scene-browser.html`, `_shadowcat_module-game-settings.html`. Produce with
+  `pnpm build:all`.
 - Rationale: `docs/design/ARCHITECTURE.md` §1 (client UI packaging) + §2 invariant 7 (framework-neutral API).
 - Relationships:
   `graphify query "contribution registry surface appContext shell router i18n locale panel"`.

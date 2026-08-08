@@ -263,6 +263,11 @@ token/actor name from non-owners via the `OwnerOrGm` visibility tier. Conditions
 
 ## Pointers
 
+- **Generated API** — `/api/rust/shadowcat/data/engine/token/` (rustdoc, private items included —
+  `TokenEngine`/`ActorEngine`/`TokenVisual`/`AnimatedSource`),
+  `/api/ts/modules/_shadowcat_core.html` (TypeDoc — the `scene-docs`/`actor` modules),
+  `/api/ts/modules/_shadowcat_module-actors.html`, `_shadowcat_module-factions.html`,
+  `_shadowcat_module-conditions.html`. Produce with `pnpm build:all`.
 - Design rationale: `docs/superpowers/specs/` (token design docs, incl. faces + animated visuals);
   data-model context in `docs/design/M2-data-foundation.md`.
 - Relationships:

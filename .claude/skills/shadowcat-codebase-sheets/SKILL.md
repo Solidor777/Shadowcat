@@ -167,6 +167,10 @@ the sheet, and opens/focuses the panel. This is the seam mods use to add their o
 
 ## Pointers
 
+- **Generated API** — `/api/ts/modules/_shadowcat_core.html` (TypeDoc — the `sheets` module),
+  `_shadowcat_ui-kit.html` (`SheetsController`/`SheetHost`/`SystemTreeEditor`),
+  `_shadowcat_module-sheet-actor.html`, `_shadowcat_module-sheet-fallback.html`,
+  `_shadowcat_module-sheet-item.html`. Produce with `pnpm build:all`.
 - Relationships: `graphify query "sheets registry openDocument SheetsController resolveDocRef pickSheet setField"`.
 - Panel-manager internals sheets mount into: [[shadowcat-codebase-panels]].
 - Document/permission model + the client-only `item` doc_type: [[shadowcat-codebase-documents-permissions]].

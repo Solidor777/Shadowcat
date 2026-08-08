@@ -143,6 +143,10 @@ and restore as a deployment-operator tool, not an in-app feature.
 
 ## Pointers
 
+- **Generated API** — `/api/rust/shadowcat/config/`, `/api/rust/shadowcat/db/`,
+  `/api/rust/shadowcat/backup/` (rustdoc, private items included); the `main` module's own doc
+  comment is on the crate root, `/api/rust/shadowcat/` (no `main` module has its own generated
+  page — it's a binary entry point, not a documented public item). Produce with `pnpm build:all`.
 - This subsystem is classified as file I/O + one SQL statement risk, not the
   security/concurrency/determinism risk class that requires independent review.
 - Relationships: `graphify query "config cli main backup restore server bootstrap"`.

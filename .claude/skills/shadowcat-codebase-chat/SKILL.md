@@ -567,6 +567,10 @@ Three independently replaceable modules (UI-is-modules; swap any one without the
 
 ## Pointers
 
+- **Generated API** — `/api/rust/shadowcat/chat/` (rustdoc, private items included — the
+  `rolls`/`link_preview`/`preview_cache`/`sanitize`/`shortcodes`/`settings`/`commands` submodule
+  tree), `/api/ts/modules/_shadowcat_module-chat.html`, `_shadowcat_module-chat-composer.html`,
+  `_shadowcat_module-chat-card.html` (TypeDoc). Produce with `pnpm build:all`.
 - The sanitizer's only new production dependencies are `ammonia` (HTML cleaning) and
   `pulldown-cmark` (Markdown rendering).
 - `shadowcat-codebase-documents-permissions` — the `Document`/`PermissionSet`/redaction/search

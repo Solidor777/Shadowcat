@@ -345,6 +345,9 @@ not the only, expected caller):
 
 ## Pointers
 
+- **Generated API** — `/api/ts/modules/_shadowcat_formula.html` (TypeDoc — `@shadowcat/formula`,
+  in-repo). The Nightfox rules engine, sheets layer, and roll wire live in the external Nightfox
+  repo and have no page under this repo's `dist-docs/`. Produce with `pnpm build:all`.
 - `docs/design/ARCHITECTURE.md` §6 — the `system.stats`/`system.mechanics` reserved-directory
   premise as a durable engine invariant, independent of Nightfox as a specific system.
 - `shadowcat-codebase-sheets` — the sheet registry (`shadowcat.sheet:<doc_type>` contract,

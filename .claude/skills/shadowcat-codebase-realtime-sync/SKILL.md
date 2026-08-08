@@ -255,6 +255,10 @@ optimistically and roll back on divergence.
 
 ## Pointers
 
+- **Generated API** — `/api/rust/shadowcat/ws/`, `/api/rust/shadowcat/http/`,
+  `/api/rust/shadowcat/auth/` (rustdoc, private items included),
+  `/api/ts/modules/_shadowcat_core.html` (TypeDoc — the client `store` module). Produce with
+  `pnpm build:all`.
 - Rationale: `docs/design/ARCHITECTURE.md` §2 (invariants 1-4) + §3 (tokio/axum/sqlx/argon2).
 - Relationships:
   `graphify query "websocket room broadcast egress optimistic rollback store session auth"`.

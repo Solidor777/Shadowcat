@@ -79,6 +79,18 @@ source of truth. The ones agents break most:
   (ARCHITECTURE §2 invariant 6). See `shadowcat-codebase-documents-permissions` for the
   `data/engine/` registry and `shadowcat-codebase-scene-rendering`/`-chat`/`-actors-tokens` for
   the per-subsystem re-root.
+- **A type built via `Extract<SomeUnion, { type: "x" }>` cannot be documented.** TypeDoc cannot
+  project such a projection into a documentable reflection, so a comment on it is unfixable no
+  matter how it's placed. The resolution is structural: declare the member as its own named
+  exported interface and make it a member of the union directly, rather than extracting it back
+  out afterwards. `WireWelcome` follows this shape — a named member of `ServerMsg`, not an
+  `Extract<>` projection of it. Follow the same precedent wherever this shape recurs.
+- **`WirePermissionSet` exists because one anonymous access-control type spans a file boundary.**
+  `WireDocument.permissions` and `StampOpts.permissions` share the same shape across two files; a
+  single exported name is structurally required there — the alternative duplicates the
+  access-control shape inline in both places, the forked-decision defect this codebase produces
+  most (see above). Nothing became newly reachable when the name was introduced:
+  `WireDocument["permissions"]` already exposed the identical shape.
 
 ## Gotchas
 
@@ -178,6 +190,29 @@ source of truth. The ones agents break most:
 - **Decide on technical merits, not "how Foundry does it."** [[decide-on-merits-not-foundry]]
 - **Tests yield to correct code** — fix code only if objectively wrong; else fix the test.
   [[tests-yield-to-correct-code]]
+- **TypeDoc silently drops a `/** */` doc comment written on the same line as its target** inside
+  a single-line object literal or a single-line union arm. A multi-line sibling in the same file
+  documents correctly. The comment is present in the source and absent from the output, so a
+  reader checking the source concludes the symbol is documented while the coverage gate reports
+  it undocumented — the two disagree and the source looks right. Fix: move the comment onto its
+  own line above the member.
+- **TypeDoc's `entryPointStrategy: "packages"` makes most root-level `typedoc.json` settings
+  inert.** `Options.copyForPackage` builds a FRESH options object per package, resets every value
+  to its default, applies only the root's `packageOptions` map, then reads that package's own
+  `typedoc.json` and its `extends` chain — nothing else from the root config reaches a package
+  conversion.
+  - `skipErrorChecking` and `intentionallyNotDocumented` set at the root are inert; only the
+    per-package config (`typedoc.base.json`, which every package extends, or a specific package's
+    own file) has any effect.
+  - `treatValidationWarningsAsErrors` is genuinely root-scoped and governs the final exit code —
+    both the root and per-package copies are load-bearing, for different validations.
+  - A per-package `validation` override that forces `invalidLink` off is a MERGE, not a replace,
+    so `notDocumented` inherited from the shared base survives it — that's what makes the
+    per-package documentation gate real.
+  - An exemption belongs in the config of the ONE package whose reflections need it; putting it
+    in the shared base makes every other package flag all of its names as unused.
+  Same class as the two separate ESLint config blocks above: a setting that looks authoritative,
+  reports success, and does nothing.
 
 ## Pointers
 
@@ -194,12 +229,22 @@ source of truth. The ones agents break most:
   per-system docs.
 - **memory** (`~/.claude/projects/C--Dev-Shadowcat/memory/`) — cross-session lessons + resume state.
 
+- **Generated API root** — `/api/rust/shadowcat/` (rustdoc, private items included), `/api/ts/`
+  (TypeDoc, one entry point per workspace package). Produce with `pnpm build:all`; open
+  `dist-docs/index.html` directly over `file://` or serve with `pnpm docs:serve`. Each subsystem
+  skill below points to its own package/crate-module pages under this root.
+
 **Build / test / lint commands:**
 - Client build (produces `dist/`): `pnpm build` (= `pnpm --filter @shadowcat/shell build`).
 - Client tests: `pnpm -r test` (Vitest). Typecheck: `pnpm -r typecheck`. Lint: `pnpm lint` (ESLint).
 - Server (from `src/server/`): `cargo test`, `cargo fmt`, `cargo clippy`.
-- Docs: `pnpm docs:build` (full site → `dist-docs/`; runs `pnpm build` first — embed ordering),
-  `pnpm docs:serve` (view; the assembled `dist-docs/index.html` also opens directly over
+- `pnpm build:all` is the full build entry point: the client build, then `docs:generate`
+  (TypeDoc, `cargo doc`, the VitePress portal, assembly with its link check, and the
+  documentation-exemption count). `pnpm docs:build` is a delegating alias for `build:all`, and
+  `docs:generate` is the single place the chain is spelled out — don't re-enumerate its stages
+  anywhere else. The client build must run first: `rust-embed` validates `dist/` at compile
+  time, so `cargo doc` fails without it.
+- Docs: `pnpm docs:serve` (view; the assembled `dist-docs/index.html` also opens directly over
   `file://` for static content, styling, and link navigation — anything driven by the site's
   runtime JavaScript, including search, the appearance toggle, and the mobile nav panel, needs the
   server instead), `pnpm docs:check-examples` (`@example` ```ts

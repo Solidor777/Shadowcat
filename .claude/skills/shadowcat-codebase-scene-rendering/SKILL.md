@@ -1092,6 +1092,9 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
 
 ## Pointers
 
+- **Generated API** — `/api/rust/shadowcat/scene/` (rustdoc, private items included),
+  `/api/ts/modules/_shadowcat_render.html` (TypeDoc), `/api/ts/modules/_shadowcat_module-scene-tools.html`,
+  `_shadowcat_module-stage.html`. Produce with `pnpm build:all`.
 - Rationale: `docs/design/ARCHITECTURE.md` §2 (invariants 3, 5, 6 + the geometry exception)
   + §7 (rendering provenance).
 - Relationships:

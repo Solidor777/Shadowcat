@@ -138,6 +138,10 @@ job's example-build step keep them green; the guides code-import their sources r
 
 ## Pointers
 
+- **Generated API** — `/api/rust/shadowcat/modules/`, `/api/rust/shadowcat/http/module_routes/`
+  (rustdoc, private items included), `/api/ts/modules/shadowcat-example-initiative-tracker.html`,
+  `shadowcat-example-system-minimal.html` (TypeDoc — the two in-repo worked-example scaffolds).
+  Produce with `pnpm build:all`.
 - Rationale: `docs/design/ARCHITECTURE.md` §2 invariant 6 (server runs no third-party code);
   `docs/site/guides/creating-a-module.md` (authoring toolchain — `docs/design/module-authoring.md`
   is a pointer stub).

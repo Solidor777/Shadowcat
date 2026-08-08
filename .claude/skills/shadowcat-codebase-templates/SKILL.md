@@ -199,6 +199,10 @@ interprets or merges anything itself.
 
 ## Pointers
 
+- **Generated API** — `/api/ts/modules/_shadowcat_core.html` (TypeDoc — the `merge`/`templates`
+  modules). No dedicated rustdoc page: the server only stores/redacts/size-caps the opaque `base`
+  blob (see `shadowcat-codebase-documents-permissions`'s generated-API pointer for that). Produce
+  with `pnpm build:all`.
 - Server-side `base` field/authz/redaction: `shadowcat-codebase-documents-permissions`.
 - Sheet-panel wrapper mechanics (`SheetHost`, `#register`): `shadowcat-codebase-sheets`.
 - Relationships: `graphify query "merge3 stampInstance TemplatesController base snapshot"`.

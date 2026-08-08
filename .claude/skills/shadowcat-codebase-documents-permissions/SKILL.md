@@ -384,6 +384,10 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
 
 ## Pointers
 
+- **Generated API** — `/api/rust/shadowcat/data/` (rustdoc, private items included — the
+  `Document`/`permission`/`command`/`engine`/`repository`/`search`/`membership`/`validation`
+  submodule tree), `/api/ts/modules/_shadowcat_core.html` (TypeDoc — the `wire` Zod mirror).
+  Produce with `pnpm build:all`.
 - Rationale: `docs/design/M2-data-foundation.md`; invariants in `docs/design/ARCHITECTURE.md`
   §2 invariant 4 (per-recipient permissions) + invariant 6 (three-band document shape) + §6 (data
   model). Design rationale for the three-band document shape and the tier-2 structural schema
