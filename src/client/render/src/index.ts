@@ -2,7 +2,7 @@ export type { Point, LineSeg, Polygon, CameraTransform, VisibilityInput, TokenTr
 export type { LightingInput, LitCell } from "./types";
 export { Lighting, LIGHTING_FADE_MS, type LightingFrame, type LitDrawCell } from "./lighting";
 export { TokenAnimator, type AnimationConfig } from "./token-animator";
-export type { EasingMode, TokenTweenConfig } from "./easing";
+export type { EasingMode } from "./easing";
 export { TokenView } from "./token-view";
 export { DrawingView } from "./drawing-view";
 export { TemplateView } from "./template-view";
@@ -17,5 +17,5 @@ export { MockBackend } from "./backend.mock";
 export { SceneReconciler } from "./reconciler";
 export { Compositor } from "./compositor";
 export { RenderEngine, type RenderEngineOpts, type SubscribeScene, type SceneSubscription } from "./engine";
-export { PixiBackend, createPixiBackend, type PixiBackendOptions } from "./pixi-backend";
+export { PixiBackend, createPixiBackend } from "./pixi-backend";
 export { parseColor, rectPoints, ellipsePoints, circlePoints, conePoints, squarePoints } from "./geometry";

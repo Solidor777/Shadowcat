@@ -177,7 +177,9 @@ export interface WsSubscribeSceneOptions {
 export interface ChatSendOptions {
   /** The chat channel to post into. */
   channel: string;
-  /** The message body (server-sanitized; see `shadowcat-codebase-chat`). */
+  /** The message body. Server-sanitized before storage and broadcast: rendered (when the
+   * world's chat policy enables Markdown/HTML) then cleaned by `ammonia`, or otherwise wrapped
+   * verbatim as inert text — never stored or broadcast as raw client-supplied markup. */
   content: string;
   /** Optional actor attribution; sent as `null` when omitted. */
   actorOwner?: WireActorOwnerRef | null;
