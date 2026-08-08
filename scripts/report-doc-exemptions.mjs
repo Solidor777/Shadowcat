@@ -6,7 +6,13 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import process from "node:process";
 
-/** The enumerated documentation exemptions in effect for a TypeDoc config. */
+/**
+ * Reads the enumerated documentation exemptions off a parsed TypeDoc config.
+ *
+ * @param {{ intentionallyNotDocumented?: string[] }} config - a parsed TypeDoc config object.
+ * @returns {{ count: number, names: string[] }} the number of exempted reflection names and
+ *   the names themselves, in the order they appear in the config.
+ */
 export function reportDocExemptions(config) {
   const names = config.intentionallyNotDocumented ?? [];
   return { count: names.length, names };
