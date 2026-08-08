@@ -70,15 +70,22 @@ export async function listWorldMembers(world: string): Promise<WorldMember[]> {
   return (await res.json()) as WorldMember[];
 }
 
+/** Fields for `createUser`. */
+export interface CreateUserOptions {
+  /** The new account's username (server validates length/charset/uniqueness). */
+  username: string;
+  /** The new account's plaintext password, sent once. */
+  password: string;
+  /** The new account's server tier; omitted means a plain user. */
+  serverRole?: "admin" | "user";
+}
+
 /** Create an account. Admin-only. `serverRole` defaults to a plain user
  * server-side; passing "admin" mints another administrator. The plaintext
  * password is sent once and never echoed back. A case-insensitive username
  * collision surfaces as a client-actionable 409 ("username already taken"),
  * never a raw constraint-violation 500 (`data::sqlite::SqliteRepository::create_user_unique`).
  * @param opts The new account's fields.
- * @param opts.username The new account's username (server validates length/charset/uniqueness).
- * @param opts.password The new account's plaintext password, sent once.
- * @param opts.serverRole The new account's server tier; omitted means a plain user.
  * @returns The created account.
  * @example
  * ```ts
@@ -87,14 +94,7 @@ export async function listWorldMembers(world: string): Promise<WorldMember[]> {
  * const user = await createUser({ username: "example-user", password: "correct-horse-battery-staple" });
  * ```
  */
-export async function createUser(opts: {
-  /** The new account's username (server validates length/charset/uniqueness). */
-  username: string;
-  /** The new account's plaintext password, sent once. */
-  password: string;
-  /** The new account's server tier; omitted means a plain user. */
-  serverRole?: "admin" | "user";
-}): Promise<ServerUser> {
+export async function createUser(opts: CreateUserOptions): Promise<ServerUser> {
   const res = await fetch("/api/users", {
     method: "POST",
     headers: { "content-type": "application/json" },

@@ -19,6 +19,7 @@ export type { Logger } from "./logger";
 export { HookBus, STOP } from "./hooks";
 export type { HookKind, HookDefinition, OnOptions, Handler, CoreHooks } from "./hooks";
 export { ServiceRegistry } from "./services";
+export type { ServiceProvideOptions } from "./services";
 export { MiddlewareChain } from "./middleware";
 export type { PipelineName, Middleware } from "./middleware";
 export { ManifestSchema, parseManifest, declarationOf } from "./manifest";
@@ -31,14 +32,20 @@ export type {
   ContractDeclaration,
 } from "./manifest";
 export { ModuleRegistry } from "./modules";
-export type { Module, ModuleContext, ModuleInfo } from "./modules";
+export type {
+  Module,
+  ModuleContext,
+  ModuleInfo,
+  ModuleServiceProvideOptions,
+  ModuleUnloadOptions,
+} from "./modules";
 export { loadModules } from "./loader";
-export type { ImportFn, ModuleEntry, ModuleLoadFailure, ModuleLoadResult } from "./loader";
+export type { ImportFn, ModuleEntry, ModuleLoadFailure, ModuleLoadResult, LoadModulesOptions } from "./loader";
 export { resolveCaps, canWritePath } from "./capabilities";
 export { DocumentStore, setPointer, removePointer, getPointer, applyOperation } from "./store";
 export type { Listener, ReadableDocuments } from "./store";
 export { ContributionRegistry, PANEL_CONTRACT } from "./contributions";
-export type { Contribution, Cardinality, PanelMeta, PanelBadge, DefaultPlacement, ZoneId, SheetMeta } from "./contributions";
+export type { Contribution, Cardinality, PanelMeta, PanelBadge, DefaultPlacement, ZoneId, SheetMeta, ContributeOptions } from "./contributions";
 export { reconcileTopology } from "./topology";
 export { I18n } from "./i18n";
 export type { Messages, I18nParams } from "./i18n";
@@ -56,6 +63,12 @@ export type {
   SubscriptionHandle,
   SceneFrame,
   SceneSubscription,
+  ScenePingNotice,
+  WsTimeoutOptions,
+  WsSearchOptions,
+  WsSubscribeSearchOptions,
+  WsSubscribeSceneOptions,
+  ChatSendOptions,
 } from "./ws-client";
 export { webSocketConnect } from "./transport";
 export type { Transport, TransportHandlers, Connect } from "./transport";
@@ -83,12 +96,12 @@ export type {
   WireAudience,
 } from "./wire";
 export { AssetResolver } from "./assets";
-export type { AssetOp } from "./assets";
+export type { AssetOp, AssetChangedNotice } from "./assets";
 export { listAssets, uploadAsset, replaceAsset, deleteAsset } from "./asset-rest";
 export { listInstalledModules, getEnabledModules, setEnabledModules } from "./module-rest";
 export type { InstalledModuleInfo } from "@shadowcat/types";
 export { listUsers, createUser, deleteUser, listWorldMembers, createWorldInvite, listWorldInvites, revokeWorldInvite } from "./user-rest";
-export type { ServerUser, WorldMember, MintedInvite, InviteEntry } from "./user-rest";
+export type { ServerUser, WorldMember, MintedInvite, InviteEntry, CreateUserOptions } from "./user-rest";
 export { buildSceneDoc, buildTokenDoc, buildSceneEntityDoc, buildActorDoc, buildTokenFromActor, setNameHidden, buildFactionRegistryDoc, buildConditionRegistryDoc, buildWorldSettingsDoc, DEFAULT_WORLD_SETTINGS, resolveSceneSettings, resolveViewedScene, DEFAULT_GRADATION, buildLightGradationDoc, resolveGradation, SEED_VISION_MODES, buildVisionModesDoc, resolveVisionModes, buildLightDoc, buildRegionDoc, setRegionVisibility, DEFAULT_SCENE_BOUNDS, envelope, buildItemDoc, ITEM_DOC_TYPE, deterministicId } from "./scene-docs";
 export type { SceneEngine, TokenEngine, ActorEngine, TokenOverrides, RenderVisual, AnimatedSource, FaceVisual, TokenVisual, Faction, FactionStance, FactionRegistryEngine, Condition, ConditionRegistryEngine, MovementRestriction, MovementModel, LightMode, DiagonalRule, EasingMode, EnvironmentLight, GridDistance, SceneVisionOverrides, SceneLightingOverrides, WorldSceneDefaults, WorldSettingsEngine, ResolvedSceneSettings, GradationBand, LightGradationEngine, VisionMode, VisionModesEngine, VisionAssignment, LightEngine, RegionShapeKind, RegionShape, RegionBehavior, RegionEngine, SceneDimensions, ItemSystem, DrawingEngine, DrawingShape, TemplateEngine, TemplateShape, Stroke, Fill, Grid, WallEngine, Seg } from "./scene-docs";
 export { resolveTokenActor, effectiveOwner, ownerFloorApplies, actorDisplayName, resolveConditions, conditionTarget, resolveTokenBox, footprintRadius, resolveTokenVisual, selectedFaceNamesFor } from "./actor";

@@ -4,7 +4,7 @@ import type { DisplayBackend } from "./backend";
 import type { TokenNodeSpec, ResolvedAnimatedSource } from "./types";
 import { parseColor } from "./geometry";
 import { TokenAnimator, type MoveSample } from "./token-animator";
-import type { EasingMode } from "./easing";
+import type { EasingMode, TokenTweenConfig } from "./easing";
 import { sceneScopedDocs } from "./scene-scope";
 
 /** Renders `doc_type:"token"` docs as backend token nodes, tweening transforms via a
@@ -93,8 +93,6 @@ export class TokenView {
   /** Update the speed + easing used to compute tween durations. Affects only FUTURE tweens, same
    * as `setCellSize`.
    * @param cfg The new tween speed/easing.
-   * @param cfg.speedCellsPerSec Tween speed, in grid cells per second.
-   * @param cfg.easing The easing curve applied to polyline tweens.
    * @example
    * ```ts
    * import { TokenView, MockBackend } from "@shadowcat/render";
@@ -105,12 +103,7 @@ export class TokenView {
    * view.setAnimationConfig({ speedCellsPerSec: 6, easing: "easeInOut" });
    * ```
    */
-  setAnimationConfig(cfg: {
-    /** Tween speed, in grid cells per second. */
-    speedCellsPerSec: number;
-    /** The easing curve applied to polyline tweens. */
-    easing: EasingMode;
-  }): void {
+  setAnimationConfig(cfg: TokenTweenConfig): void {
     this.animSpeed = cfg.speedCellsPerSec;
     this.animEasing = cfg.easing;
     this.pushAnimConfig();

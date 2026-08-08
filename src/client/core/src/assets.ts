@@ -1,6 +1,16 @@
 /** Op carried by an out-of-band AssetChanged frame. */
 export type AssetOp = "replaced" | "deleted";
 
+/** An out-of-band asset mutation notice (replace/delete); carries no seq. Shared by
+ * `AssetResolver.onAssetChanged` and `WsClientHandlers.onAssetChanged` — both consume the
+ * identical wire shape. */
+export interface AssetChangedNotice {
+  /** The changed asset's uuid. */
+  uuid: string;
+  /** Whether the asset's bytes were replaced or the asset was deleted. */
+  op: AssetOp;
+}
+
 /**
  * Resolves asset UUIDs to serve URLs and reacts to out-of-band AssetChanged
  * notices. The server's ETag handles HTTP caching; a monotonic per-uuid `rev`
@@ -60,9 +70,8 @@ export class AssetResolver {
    * way `revs`/`deleted` ever change — a frame this connection never
    * receives (see the class doc's KNOWN DEFECT) leaves both permanently
    * stale for that uuid.
-   * @param msg The broadcast frame.
-   * @param msg.uuid The affected asset's uuid.
-   * @param msg.op `"replaced"` bumps the cache-busting revision; `"deleted"` switches `url()` to the placeholder.
+   * @param msg The broadcast frame; `op: "replaced"` bumps the cache-busting revision,
+   * `op: "deleted"` switches `url()` to the placeholder.
    * @example
    * ```ts
    * import { AssetResolver } from "@shadowcat/core";
@@ -71,12 +80,7 @@ export class AssetResolver {
    * resolver.onAssetChanged({ uuid: "00000000-0000-0000-0000-000000000001", op: "replaced" });
    * ```
    */
-  onAssetChanged(msg: {
-    /** The affected asset's stable uuid. */
-    uuid: string;
-    /** `"replaced"` bumps the cache-busting revision; `"deleted"` switches `url()` to the placeholder. */
-    op: AssetOp;
-  }): void {
+  onAssetChanged(msg: AssetChangedNotice): void {
     if (msg.op === "deleted") {
       this.deleted.add(msg.uuid);
       this.revs.delete(msg.uuid);

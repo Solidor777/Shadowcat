@@ -1,5 +1,5 @@
 import { getContext, setContext } from "svelte";
-import type { ContributionRegistry, DocumentStore, ReadableDocuments, AssetResolver, SceneFrame, SceneSubscription, WireOperation, WireDocument, PathResult, MoveStream, WireActorOwnerRef, WireAudience, SheetRef, SubscriptionHandle, WireSearchHit, StampOpts, SyncState } from "@shadowcat/core";
+import type { ContributionRegistry, DocumentStore, ReadableDocuments, AssetResolver, SceneFrame, SceneSubscription, WireOperation, WireDocument, PathResult, MoveStream, ChatSendOptions, SheetRef, SubscriptionHandle, WireSearchHit, StampOpts, SyncState } from "@shadowcat/core";
 import type { WorldRole } from "@shadowcat/types";
 import type { SceneInteraction } from "./sceneInteraction";
 import type { ActorSelection } from "./actorSelection.svelte";
@@ -11,6 +11,12 @@ import type { SceneSelection } from "./sceneSelection.svelte";
  * reactive implementation). */
 export type TFunc = (key: string, params?: Record<string, string | number>) => string;
 
+/** Options for `AppContext.subscribeScene`. */
+export interface AppSubscribeSceneOptions {
+  /** Userid to view the channel as; GM-only, server-rejected otherwise. */
+  asUser?: string;
+}
+
 /** Chat transport seam (see `AppContext.chat`). Each call resolves when the op
  * is accepted (success-assumed after a short window with no error), and rejects
  * with the server's player-presentable reason on a correlated rejection so the
@@ -18,22 +24,9 @@ export type TFunc = (key: string, params?: Record<string, string | number>) => s
 export interface ChatApi {
   /** Post a new chat message. Resolves per the class doc's success/rejection contract.
    * @param opts - Message content plus optional attribution/audience.
-   * @param opts.channel - The chat channel to post into.
-   * @param opts.content - The message body (server-sanitized).
-   * @param opts.actorOwner - Optional actor attribution; sent as `null` when omitted.
-   * @param opts.audience - Recipient scoping; defaults to `{ kind: "public" }`.
    * @returns Resolves (void) once the send is accepted; rejects with the server's
    * player-presentable reason otherwise. */
-  send(opts: {
-    /** The chat channel to post into. */
-    channel: string;
-    /** The message body (server-sanitized). */
-    content: string;
-    /** Optional actor attribution; sent as `null` when omitted. */
-    actorOwner?: WireActorOwnerRef | null;
-    /** Recipient scoping; defaults to `{ kind: "public" }`. */
-    audience?: WireAudience;
-  }): Promise<void>;
+  send(opts: ChatSendOptions): Promise<void>;
   /** Edit an existing message's content. The server enforces edit ownership and
    * rejects via the same correlated-rejection path as `send`.
    * @param messageId - Id of the message to edit.
@@ -145,15 +138,11 @@ export interface AppContext {
    * @param channel - The SceneDerived channel name.
    * @param onUpdate - Called with each pushed frame.
    * @param opts - Optional GM see-as-player override.
-   * @param opts.asUser - Userid to view the channel as; GM-only, server-rejected otherwise.
    * @returns A subscription handle carrying a synchronous unsubscribe. */
   subscribeScene(
     channel: string,
     onUpdate: (f: SceneFrame) => void,
-    opts?: {
-      /** Userid to view the channel as; GM-only, server-rejected otherwise. */
-      asUser?: string;
-    },
+    opts?: AppSubscribeSceneOptions,
   ): SceneSubscription;
   /** Predict + transmit document operations as one correlated optimistic intent
    * (the module write path). `ctx.client`/`store` reflect the prediction.

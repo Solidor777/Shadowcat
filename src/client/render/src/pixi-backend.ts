@@ -6,6 +6,12 @@ import { computeAnimatedFrame } from "./token-animation";
 import { fogBlendRtStale } from "./fog-blend";
 import type { PingRing } from "./ping-view";
 
+/** Initial renderer options for `createPixiBackend`. */
+export interface PixiBackendOptions {
+  /** The initial background clear color, packed `0xRRGGBB`. */
+  background: number;
+}
+
 /** Per-token render state. `container` is the outer, non-rotating node (position = token
  * center; badges are its direct children, so they stay upright); `visualContainer` rotates with
  * the token and holds the art + border. `sourceKey` guards visual (re)creation against a
@@ -1039,7 +1045,6 @@ function paintFogSheets(dark: Graphics, dim: Graphics, exploredHoles: Graphics, 
 /** Construct a PixiBackend over a canvas (async: v8 Application.init is async).
  * @param canvas The `<canvas>` element Pixi renders into.
  * @param opts Initial renderer options.
- * @param opts.background The initial background clear color, packed `0xRRGGBB`.
  * @returns A `PixiBackend` wrapping a fully-initialized Pixi `Application` (antialiased, WebGL
  * preferred, HiDPI-aware via `devicePixelRatio` resolution + `autoDensity`).
  * @example
@@ -1052,10 +1057,7 @@ function paintFogSheets(dark: Graphics, dim: Graphics, exploredHoles: Graphics, 
  */
 export async function createPixiBackend(
   canvas: HTMLCanvasElement,
-  opts: {
-    /** The initial background clear color, packed `0xRRGGBB`. */
-    background: number;
-  },
+  opts: PixiBackendOptions,
 ): Promise<PixiBackend> {
   const app = new Application();
   await app.init({

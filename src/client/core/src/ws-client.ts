@@ -13,6 +13,7 @@ import {
   type WireActorOwnerRef,
   type WireAudience,
 } from "./wire";
+import type { AssetChangedNotice } from "./assets";
 
 // Re-exported so consumers importing `WireWelcome` from this module keep resolving — its
 // canonical declaration lives alongside `ServerMsg`'s other hand-written wire shapes.
@@ -119,6 +120,71 @@ export interface SceneSubscription {
 
 import type { Connect, Transport } from "./transport";
 
+/** A relayed location ping (`WsClientHandlers.onScenePing`); carries no seq. */
+export interface ScenePingNotice {
+  /** The scene the ping landed on. */
+  scene: string;
+  /** Scene-coordinate x. */
+  x: number;
+  /** Scene-coordinate y. */
+  y: number;
+  /** The user id who sent the ping (server-stamped, not client-asserted). */
+  user: string;
+}
+
+/** Timeout override for a correlated request whose only option is how long to wait for the
+ * reply before rejecting. Shared by `WsClient.moveRequest` and `WsClient.pathfind` — each
+ * signature's own doc states its default. */
+export interface WsTimeoutOptions {
+  /** How long to wait for the correlated reply before rejecting. */
+  timeoutMs?: number;
+}
+
+/** `WsClient.search` options. */
+export interface WsSearchOptions {
+  /** Max hits per page, sent on the wire as `limit: opts.limit ?? 20` (client-side default
+   * only — the server's `Search` frame field is mandatory, no server default;
+   * `ws::protocol::ClientMsg::Search.limit: u32`). */
+  limit?: number;
+  /** Opaque pagination cursor from a prior `SearchPage.nextCursor`. */
+  cursor?: string;
+  /** How long to wait for `search_result`/`search_error` before rejecting (default 10000). */
+  timeoutMs?: number;
+}
+
+/** `WsClient.subscribeSearch` options. */
+export interface WsSubscribeSearchOptions {
+  /** Max hits tracked, sent on the wire as `limit: opts.limit ?? 20` (client-side default
+   * only — the server's `Search` frame field is mandatory, no server default;
+   * `ws::protocol::ClientMsg::Search.limit: u32`). */
+  limit?: number;
+  /** How long to wait for the initial result before rejecting (default 10000). */
+  timeoutMs?: number;
+}
+
+/** `WsClient.subscribeScene` options. */
+export interface WsSubscribeSceneOptions {
+  /** How long to wait for the first `scene_derived`/`scene_error` before rejecting
+   * (default 10000). */
+  timeoutMs?: number;
+  /** GM-only see-as-player override; sent as `as_user` only when set (the server gates and
+   * resolves it — an unauthorized value is the server's rejection to make). */
+  asUser?: string;
+}
+
+/** Options for `WsClient.sendChatMessage` and `ChatApi.send` — both post a chat message over
+ * the identical wire shape. */
+export interface ChatSendOptions {
+  /** The chat channel to post into. */
+  channel: string;
+  /** The message body (server-sanitized; see `shadowcat-codebase-chat`). */
+  content: string;
+  /** Optional actor attribution; sent as `null` when omitted. */
+  actorOwner?: WireActorOwnerRef | null;
+  /** Recipient scoping; defaults to `{ kind: "public" }`. */
+  audience?: WireAudience;
+}
+
 /** The handler set a `WsClient` dispatches inbound frames to; every member is a callback the
  * client invokes, never one it calls itself. */
 export interface WsClientHandlers {
@@ -141,31 +207,11 @@ export interface WsClientHandlers {
    * @param error The thrown value from the failed `onCommand` apply. */
   onError?(error: unknown): void;
   /** An out-of-band asset mutation notice (replace/delete); carries no seq.
-   * @param msg The changed asset's id and whether it was replaced or deleted.
-   * @param msg.uuid The changed asset's uuid.
-   * @param msg.op Whether the asset's bytes were replaced or the asset was deleted. */
-  onAssetChanged?(msg: {
-    /** The changed asset's uuid. */
-    uuid: string;
-    /** Whether the asset's bytes were replaced or the asset was deleted. */
-    op: "replaced" | "deleted";
-  }): void;
+   * @param msg The changed asset's id and whether it was replaced or deleted. */
+  onAssetChanged?(msg: AssetChangedNotice): void;
   /** An out-of-band relayed location ping (carries no seq).
-   * @param msg The ping's scene, coordinates, and sending user.
-   * @param msg.scene The scene the ping landed on.
-   * @param msg.x Scene-coordinate x.
-   * @param msg.y Scene-coordinate y.
-   * @param msg.user The user id who sent the ping (server-stamped, not client-asserted). */
-  onScenePing?(msg: {
-    /** The scene the ping landed on. */
-    scene: string;
-    /** Scene-coordinate x. */
-    x: number;
-    /** Scene-coordinate y. */
-    y: number;
-    /** The user id who sent the ping (server-stamped, not client-asserted). */
-    user: string;
-  }): void;
+   * @param msg The ping's scene, coordinates, and sending user. */
+  onScenePing?(msg: ScenePingNotice): void;
   /** Terminal eviction (world/account deleted). The client has already
    * stopped (no reconnect) when this fires; route the user out of the world. */
   onEvicted?: () => void;
@@ -832,12 +878,6 @@ export class WsClient {
    * or after `timeoutMs`.
    * @param query The full-text query string.
    * @param opts Search options.
-   * @param opts.limit Max hits per page, sent on the wire as `limit: opts.limit ?? 20`
-   * (client-side default only — the server's `Search` frame field is mandatory, no server
-   * default; `ws::protocol::ClientMsg::Search.limit: u32`).
-   * @param opts.cursor Opaque pagination cursor from a prior `SearchPage.nextCursor`.
-   * @param opts.timeoutMs How long to wait for `search_result`/`search_error` before rejecting
-   * (default 10000).
    * @returns The resolved page of hits + an optional `nextCursor`.
    * @example
    * ```ts
@@ -850,17 +890,7 @@ export class WsClient {
    * const page = await client.search("goblin", { limit: 10 });
    * ```
    */
-  search(
-    query: string,
-    opts: {
-      /** Max hits per page; see the method doc for the wire default. */
-      limit?: number;
-      /** Opaque pagination cursor from a prior `SearchPage.nextCursor`. */
-      cursor?: string;
-      /** Timeout before rejecting; see the method doc for the default. */
-      timeoutMs?: number;
-    } = {},
-  ): Promise<SearchPage> {
+  search(query: string, opts: WsSearchOptions = {}): Promise<SearchPage> {
     const request_id = crypto.randomUUID();
     const timeoutMs = opts.timeoutMs ?? 10_000;
     return new Promise<SearchPage>((resolve, reject) => {
@@ -891,11 +921,6 @@ export class WsClient {
    * disconnect the subscription is dropped and a pending initial rejects.
    * @param query The full-text query string.
    * @param opts Live-search options.
-   * @param opts.limit Max hits tracked, sent on the wire as `limit: opts.limit ?? 20`
-   * (client-side default only — the server's `Search` frame field is mandatory, no server
-   * default; `ws::protocol::ClientMsg::Search.limit: u32`).
-   * @param opts.timeoutMs How long to wait for the initial result before rejecting
-   * (default 10000).
    * @param onUpdate Fires with the current top-N hits on the initial result and every
    * subsequent `search_update` push.
    * @returns A handle whose `unsubscribe()` stops updates and sends `{ type: "unsubscribe" }`.
@@ -913,12 +938,7 @@ export class WsClient {
    */
   subscribeSearch(
     query: string,
-    opts: {
-      /** Max hits tracked; see the method doc for the wire default. */
-      limit?: number;
-      /** Timeout before rejecting the initial result; see the method doc for the default. */
-      timeoutMs?: number;
-    },
+    opts: WsSubscribeSearchOptions,
     onUpdate: (hits: WireSearchHit[]) => void,
   ): Promise<SubscriptionHandle> {
     const request_id = crypto.randomUUID();
@@ -966,10 +986,6 @@ export class WsClient {
    * @param onUpdate Fires with `{ payload, computedAtSeq }` for every frame delivered on this
    * subscription.
    * @param opts Subscription options.
-   * @param opts.timeoutMs How long to wait for the first `scene_derived`/`scene_error` before
-   * rejecting (default 10000).
-   * @param opts.asUser GM-only see-as-player override; sent as `as_user` only when set (the
-   * server gates and resolves it — an unauthorized value is the server's rejection to make).
    * @returns A handle whose `unsubscribe()` drops the channel and sends `scene_unsubscribe`.
    * @example
    * ```ts
@@ -986,12 +1002,7 @@ export class WsClient {
   subscribeScene(
     channel: string,
     onUpdate: (frame: SceneFrame) => void,
-    opts: {
-      /** Timeout before rejecting; see the method doc for the default. */
-      timeoutMs?: number;
-      /** GM-only see-as-player target; see the method doc. */
-      asUser?: string;
-    } = {},
+    opts: WsSubscribeSceneOptions = {},
   ): Promise<SceneSubscription> {
     const request_id = crypto.randomUUID();
     const timeoutMs = opts.timeoutMs ?? 10_000;
@@ -1028,9 +1039,8 @@ export class WsClient {
    * `token` is given.
    * @param token Optional token id the route is for; when present the server derives the
    * footprint from the token and this method's `footprintRadius` argument is not honored.
-   * @param opts Request options.
-   * @param opts.timeoutMs How long to wait for `path_result`/`path_error` before rejecting
-   * (default 10000).
+   * @param opts Request options; `timeoutMs` (how long to wait for `path_result`/`path_error`
+   * before rejecting) defaults to 10000.
    * @returns The computed path, cost, and whether it was cut short by a visible arrest region.
    * @example
    * ```ts
@@ -1049,10 +1059,7 @@ export class WsClient {
     waypoints: [number, number][],
     footprintRadius: number,
     token?: string,
-    opts: {
-      /** Timeout before rejecting; see the method doc for the default. */
-      timeoutMs?: number;
-    } = {},
+    opts: WsTimeoutOptions = {},
   ): Promise<PathResult> {
     const request_id = crypto.randomUUID();
     const timeoutMs = opts.timeoutMs ?? 10_000;
@@ -1086,9 +1093,8 @@ export class WsClient {
    * @param scene The scene id the token is on.
    * @param tokenId The token to move.
    * @param path Ordered `[x, y]` waypoints for the requested move.
-   * @param opts Request options.
-   * @param opts.timeoutMs How long to wait for the mover's own `move_stream`/`move_error`
-   * before rejecting (default 10000).
+   * @param opts Request options; `timeoutMs` (how long to wait for the mover's own
+   * `move_stream`/`move_error` before rejecting) defaults to 10000.
    * @returns The mover's `MoveStream` (full trajectory + `moverVision`); observers instead
    * receive their own clipped copy via `onMoveStream`, never through this promise.
    * @example
@@ -1106,10 +1112,7 @@ export class WsClient {
     scene: string,
     tokenId: string,
     path: [number, number][],
-    opts: {
-      /** Timeout before rejecting; see the method doc for the default. */
-      timeoutMs?: number;
-    } = {},
+    opts: WsTimeoutOptions = {},
   ): Promise<MoveStream> {
     const request_id = crypto.randomUUID();
     const timeoutMs = opts.timeoutMs ?? 10_000;
@@ -1197,11 +1200,6 @@ export class WsClient {
    * player-presentable reason on a correlated `chat_error`; the composer surfaces the
    * rejection instead of it vanishing.
    * @param opts Send options.
-   * @param opts.channel The chat channel to post into.
-   * @param opts.content The message body (server-sanitized; see `shadowcat-codebase-chat`).
-   * @param opts.actorOwner Optional actor attribution for the message; sent as `null` when
-   * omitted.
-   * @param opts.audience Optional recipient scoping; defaults to `{ kind: "public" }`.
    * @returns Resolves (void) once the send is accepted; rejects with the server's
    * player-presentable reason otherwise.
    * @example
@@ -1215,16 +1213,7 @@ export class WsClient {
    * await client.sendChatMessage({ channel: "main", content: "hello" });
    * ```
    */
-  sendChatMessage(opts: {
-    /** The chat channel to post into. */
-    channel: string;
-    /** The message body (server-sanitized). */
-    content: string;
-    /** Optional actor attribution; sent as `null` when omitted. */
-    actorOwner?: WireActorOwnerRef | null;
-    /** Recipient scoping; defaults to `{ kind: "public" }`. */
-    audience?: WireAudience;
-  }): Promise<void> {
+  sendChatMessage(opts: ChatSendOptions): Promise<void> {
     const request_id = crypto.randomUUID();
     const p = this.trackChatOp(request_id);
     this.send({

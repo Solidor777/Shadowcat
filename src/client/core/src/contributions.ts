@@ -129,6 +129,12 @@ interface Entry {
 /** A change-notification callback registered via `ContributionRegistry.subscribe`. */
 export type Listener = () => void;
 
+/** Registration options for `ContributionRegistry.contribute`. */
+export interface ContributeOptions {
+  /** The registering module's id; omitted for a host-registered contribution. */
+  module?: string;
+}
+
 /** Registers contributions into named "surface" contracts (e.g. `shadowcat.panel`,
  * `shadowcat.sheet:<doc_type>`) and notifies subscribers on every add/remove.
  * Framework-neutral — `component` is an opaque handle a host renders (the Svelte
@@ -143,9 +149,8 @@ export class ContributionRegistry {
 
   /** Register a contribution; returns a dispose that removes exactly it.
    * @param c The contribution to register.
-   * @param opts Registration options.
-   * @param opts.module The registering module's id, recorded for `removeModule` teardown
-   * and `entriesFor`'s module-id tie-break; omitted for a host-registered (non-module)
+   * @param opts Registration options; `module` (recorded for `removeModule` teardown and
+   * `entriesFor`'s module-id tie-break) is omitted for a host-registered (non-module)
    * contribution.
    * @returns A dispose function that removes this contribution and notifies subscribers.
    * @example
@@ -160,13 +165,7 @@ export class ContributionRegistry {
    * dispose();
    * ```
    */
-  contribute(
-    c: Contribution,
-    opts: {
-      /** The registering module's id; omitted for a host-registered contribution. */
-      module?: string;
-    } = {},
-  ): () => void {
+  contribute(c: Contribution, opts: ContributeOptions = {}): () => void {
     const entry: Entry = { c, module: opts.module, seq: this.seqCounter++ };
     this.entries.push(entry);
     this.emit();

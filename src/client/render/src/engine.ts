@@ -1,7 +1,7 @@
 import type { ReadableDocuments, AssetResolver } from "@shadowcat/core";
 import type { DisplayBackend } from "./backend";
 import type { VisibilityInput, LightingInput, LitCell, SceneTool, SceneToolHost, Point, ShapeNodeSpec, Polygon, MoveVisionSample } from "./types";
-import type { EasingMode } from "./easing";
+import type { TokenTweenConfig } from "./easing";
 import { computeFogBlendFactor } from "./fog-blend";
 import { Camera } from "./camera";
 import { Compositor } from "./compositor";
@@ -896,8 +896,6 @@ export class RenderEngine implements SceneToolHost {
   /** Push animation config (speed + easing) to the token animator. Separate from setGrid
    * so world-settings animation changes can be applied without rebuilding the grid.
    * @param cfg Animation config.
-   * @param cfg.speedCellsPerSec Token tween speed, in grid cells per second.
-   * @param cfg.easing The tween's easing curve (`EasingMode`).
    * @example
    * ```ts
    * import type { RenderEngine } from "@shadowcat/render";
@@ -906,12 +904,7 @@ export class RenderEngine implements SceneToolHost {
    * engine.setAnimation({ speedCellsPerSec: 6, easing: "linear" });
    * ```
    */
-  setAnimation(cfg: {
-    /** Token tween speed, in grid cells per second. */
-    speedCellsPerSec: number;
-    /** The tween's easing curve. */
-    easing: EasingMode;
-  }): void {
+  setAnimation(cfg: TokenTweenConfig): void {
     this.tokens.setAnimationConfig(cfg);
   }
 

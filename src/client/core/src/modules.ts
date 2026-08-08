@@ -20,6 +20,21 @@ import {
 import { ContributionRegistry, type Contribution } from "./contributions";
 import { satisfies } from "./semver";
 
+/** Options for `ModuleContext.services.provide` — narrower than `ServiceProvideOptions`
+ * (no `module` field: the wrapper stamps the calling module's id automatically). */
+export interface ModuleServiceProvideOptions {
+  /** The provided implementation's semver version. */
+  version: string;
+}
+
+/** Options for `ModuleRegistry.unload`. */
+export interface ModuleUnloadOptions {
+  /** When `true`, first recursively unloads every currently active module that lists the
+   * unloading module as a dependency; when omitted/`false`, unloading a module with active
+   * dependents throws instead. */
+  cascade?: boolean;
+}
+
 /** The capability-scoped surface a module's `register` receives — the trust chokepoint every
  * module is confined to (`contextFor` builds one per module, stamping `moduleId` onto each
  * registration so `unload` can find and strip them again). A module never reaches the host's
@@ -64,12 +79,8 @@ export interface ModuleContext {
     /** Provides a named service implementation, stamped with this module's id.
      * @param name The service name.
      * @param impl The implementation to provide.
-     * @param opts Provision options.
-     * @param opts.version The provided implementation's semver version. */
-    provide<T>(name: string, impl: T, opts: {
-      /** The provided implementation's semver version. */
-      version: string;
-    }): void;
+     * @param opts Provision options. */
+    provide<T>(name: string, impl: T, opts: ModuleServiceProvideOptions): void;
     /** Looks up a named service; `undefined` if none is provided.
      * @param name The service name.
      * @returns The implementation, or `undefined` if none is provided. */
@@ -339,9 +350,6 @@ export class ModuleRegistry {
    * marks it inactive. A no-op if `id` isn't registered.
    * @param id The module id to unload.
    * @param opts Unload options.
-   * @param opts.cascade When `true`, first recursively unloads every currently
-   * active module that lists `id` as a dependency; when omitted/`false`, unloading
-   * a module with active dependents throws instead.
    * @example
    * ```ts
    * import { ModuleRegistry } from "@shadowcat/core";
@@ -350,14 +358,7 @@ export class ModuleRegistry {
    * await registry.unload("example-module", { cascade: true });
    * ```
    */
-  async unload(
-    id: string,
-    opts: {
-      /** When `true`, first recursively unloads every currently active module that lists `id`
-       * as a dependency; when omitted/`false`, unloading a module with active dependents throws. */
-      cascade?: boolean;
-    } = {},
-  ): Promise<void> {
+  async unload(id: string, opts: ModuleUnloadOptions = {}): Promise<void> {
     const r = this.records.get(id);
     if (!r) return;
     const dependents = this.activeDependentsOf(id);

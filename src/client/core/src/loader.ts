@@ -34,6 +34,19 @@ export interface ModuleLoadFailure {
   error: string;
 }
 
+/** Options for `loadModules`. */
+export interface LoadModulesOptions {
+  /** The discovered manifest/entry pairs to load, in order. */
+  entries: ModuleEntry[];
+  /** The environment's dynamic import. */
+  importFn: ImportFn;
+  /** The registry successful imports are added to. */
+  registry: ModuleRegistry;
+  /** When provided, each entry's `engines.shadowcat` (if declared) is checked
+   * against this version before import (load-time gate). */
+  shadowcatVersion?: string;
+}
+
 /** The per-batch outcome of `loadModules` — every entry is contained; a batch never throws. */
 export interface ModuleLoadResult {
   /** Module ids successfully imported and added to the registry. */
@@ -88,10 +101,6 @@ function checkEngineCompat(manifest: ModuleManifest, shadowcatVersion: string): 
  * contained: a manifest-parse, engine-compat, import, or id-mismatch failure
  * on one entry is collected in `failed` and never aborts the batch.
  * @param opts Load options.
- * @param opts.entries The discovered manifest/entry pairs.
- * @param opts.importFn The environment's dynamic import.
- * @param opts.registry The `ModuleRegistry` to add successful imports to.
- * @param opts.shadowcatVersion Optional running host version, for the load-time engine-compat gate.
  * @returns The ids that loaded, and the entries that failed with a reason.
  * @example
  * ```ts
@@ -126,17 +135,7 @@ function checkEngineCompat(manifest: ModuleManifest, shadowcatVersion: string): 
  * });
  * ```
  */
-export async function loadModules(opts: {
-  /** The discovered manifest/entry pairs to load, in order. */
-  entries: ModuleEntry[];
-  /** The environment's dynamic import. */
-  importFn: ImportFn;
-  /** The registry successful imports are added to. */
-  registry: ModuleRegistry;
-  /** When provided, each entry's `engines.shadowcat` (if declared) is checked
-   * against this version before import (load-time gate). */
-  shadowcatVersion?: string;
-}): Promise<ModuleLoadResult> {
+export async function loadModules(opts: LoadModulesOptions): Promise<ModuleLoadResult> {
   const loaded: string[] = [];
   const failed: ModuleLoadFailure[] = [];
   for (const { manifest, entry } of opts.entries) {

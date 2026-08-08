@@ -1,6 +1,15 @@
 /** Token-motion easing curves. Pure, GL-free, unit-tested. */
 export type EasingMode = "easeInOut" | "linear";
 
+/** Tween speed + easing curve for a token's motion. Shared by `TokenView.setAnimationConfig`
+ * and `RenderEngine.setAnimation`, which forwards its `cfg` straight through unchanged. */
+export interface TokenTweenConfig {
+  /** Tween speed, in grid cells per second. */
+  speedCellsPerSec: number;
+  /** The easing curve applied to polyline tweens. */
+  easing: EasingMode;
+}
+
 /**
  * Standard quadratic ease-in-out (smooth accel/decel). Source: standard easing formula
  * (Penner). Chosen over cubic for a gentle, predictable VTT feel. Symmetric about the
