@@ -200,7 +200,9 @@ source of truth. The ones agents break most:
 - Server (from `src/server/`): `cargo test`, `cargo fmt`, `cargo clippy`.
 - Docs: `pnpm docs:build` (full site → `dist-docs/`; runs `pnpm build` first — embed ordering),
   `pnpm docs:serve` (view; the assembled `dist-docs/index.html` also opens directly over
-  `file://` — only client-side search needs the server), `pnpm docs:check-examples` (`@example` ```ts
+  `file://` for static content, styling, and link navigation — anything driven by the site's
+  runtime JavaScript, including search, the appearance toggle, and the mobile nav panel, needs the
+  server instead), `pnpm docs:check-examples` (`@example` ```ts
   blocks must typecheck — CI-blocking), `pnpm lint:docs` (function doc coverage),
   `pnpm lint:props` (property/type/named-arrow doc coverage), `pnpm lint:comments` (no ephemeral
   references). **All are errors repo-wide with no per-package staging** — see the no-ratchets rule

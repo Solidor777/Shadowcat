@@ -69,21 +69,44 @@ export function cssFilesUnder(dir, skipSubtrees = []) {
  * directories below the site root. Scheme-prefixed, protocol-relative, fragment-only
  * and already-relative links pass through untouched.
  * A directory target is expanded to its index.html: file:// does not resolve a bare
- * directory, unlike an HTTP server. */
+ * directory, unlike an HTTP server.
+ * The fragment and query are split off before the trailing-slash test and reattached
+ * after the path is rewritten, mirroring extractLocalLinks's split order, so a query
+ * VALUE (which may itself end in a slash or carry a path) is never mistaken for the
+ * link's own path. */
 export function toRelativeHref(link, depth) {
   if (SKIP_SCHEMES.test(link) || !link.startsWith("/")) return link;
   const hash = link.indexOf("#");
   const frag = hash === -1 ? "" : link.slice(hash);
-  let path = hash === -1 ? link : link.slice(0, hash);
+  const beforeFrag = hash === -1 ? link : link.slice(0, hash);
+  const q = beforeFrag.indexOf("?");
+  const query = q === -1 ? "" : beforeFrag.slice(q);
+  let path = q === -1 ? beforeFrag : beforeFrag.slice(0, q);
   if (path.endsWith("/")) path += "index.html";
   const prefix = depth === 0 ? "./" : "../".repeat(depth);
-  return prefix + path.slice(1) + frag;
+  return prefix + path.slice(1) + query + frag;
 }
 
-/** Root-absolute href/src attribute, or CSS url(...) reference, still present in a
- * portal file after rewriteAbsolutePaths — used to fail the build on a surviving
- * reference rather than silently shipping a broken file:// link. */
-const ROOT_ABSOLUTE_REF = /(?:(?:href|src)="\/(?!\/)[^"]*"|url\(("|')?\/(?!\/)[^"')]*\1?\))/;
+/** Root-absolute value on ANY HTML attribute, either quote style — deliberately
+ * broader than the href/src/double-quote-only pattern rewriteAbsolutePaths itself
+ * rewrites, so a form the rewrite does not recognise (a single-quoted attribute, or
+ * an attribute other than href/src carrying a local reference) still fails the
+ * structural check below instead of shipping unrewritten. */
+const ROOT_ABSOLUTE_ATTR = /[a-zA-Z_:][-\w:.]*\s*=\s*(?:"\/(?!\/)[^"]*"|'\/(?!\/)[^']*')/;
+
+/** Root-absolute CSS url(...) reference, tolerant of whitespace around the quotes
+ * and inside the parens — deliberately broader than the tight pattern
+ * rewriteAbsolutePaths itself rewrites, matching what an unminified build (which
+ * CSS syntax permits) would produce. */
+const ROOT_ABSOLUTE_URL = /url\(\s*(?:"\s*\/(?!\/)[^"]*"|'\s*\/(?!\/)[^']*'|\/(?!\/)[^"')]*)\s*\)/;
+
+/** True if a root-absolute local reference survives in a portal file — checks the
+ * attribute predicate for HTML, the url() predicate for CSS, verifying the REWRITE'S
+ * RESULT rather than merely echoing the rewrite's own recognition of what needed
+ * changing. */
+function hasSurvivingAbsoluteRef(file, content) {
+  return file.endsWith(".css") ? ROOT_ABSOLUTE_URL.test(content) : ROOT_ABSOLUTE_ATTR.test(content);
+}
 
 /** Rewrite root-absolute local refs in the given portal files to depth-relative
  * ones, so the assembled site resolves under file:// as well as over HTTP.
@@ -133,7 +156,9 @@ if (isMain) {
   const portalPages = htmlFilesUnder(paths.out, apiSubtrees);
   const portalStyles = cssFilesUnder(paths.out, apiSubtrees);
   rewriteAbsolutePaths(paths.out, [...portalPages, ...portalStyles]);
-  const stillAbsolute = portalPages.filter((f) => ROOT_ABSOLUTE_REF.test(readFileSync(f, "utf8")));
+  const stillAbsolute = [...portalPages, ...portalStyles].filter((f) =>
+    hasSurvivingAbsoluteRef(f, readFileSync(f, "utf8")),
+  );
   if (stillAbsolute.length > 0) {
     for (const f of stillAbsolute) console.error(`root-absolute reference survived rewrite: ${f}`);
     process.exit(1);

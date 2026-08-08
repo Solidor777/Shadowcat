@@ -28,6 +28,8 @@ features:
 ## Reading these docs locally
 
 From a Shadowcat checkout run `pnpm docs:build` once, then open
-`dist-docs/index.html` directly in a browser. Client-side search needs a server
-(browsers refuse to load module scripts from `file://`); for that, run
-`pnpm docs:serve` and open the printed URL instead.
+`dist-docs/index.html` directly in a browser. Static content, styling, and ordinary
+link navigation all work this way. Anything driven by the site's runtime
+JavaScript — client-side search, the appearance toggle, the mobile nav panel — needs
+a server instead, because browsers refuse to load module scripts from `file://`; for
+that, run `pnpm docs:serve` and open the printed URL.

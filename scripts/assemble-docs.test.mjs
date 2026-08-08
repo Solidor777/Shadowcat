@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { existsSync, mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -9,6 +9,7 @@ import {
   toRelativeHref,
   htmlFilesUnder,
   cssFilesUnder,
+  rewriteAbsolutePaths,
 } from "./assemble-docs.mjs";
 
 describe("extractLocalLinks", () => {
@@ -98,6 +99,22 @@ describe("toRelativeHref", () => {
   it("preserves a fragment on a rewritten link", () => {
     expect(toRelativeHref("/protocol.html#frames", 1)).toBe("../protocol.html#frames");
   });
+
+  it("does not expand a directory-shaped query value on a file target", () => {
+    expect(toRelativeHref("/search?redirect=/home/", 1)).toBe("../search?redirect=/home/");
+  });
+
+  it("expands a directory target while preserving its query", () => {
+    expect(toRelativeHref("/modules/?foo=1", 1)).toBe("../modules/index.html?foo=1");
+  });
+
+  it("preserves a query value that itself contains a slash", () => {
+    expect(toRelativeHref("/download?path=/a/b", 1)).toBe("../download?path=/a/b");
+  });
+
+  it("preserves both a query and a fragment, in order", () => {
+    expect(toRelativeHref("/page?tab=info#section", 1)).toBe("../page?tab=info#section");
+  });
 });
 
 describe("htmlFilesUnder", () => {
@@ -144,6 +161,65 @@ describe("cssFilesUnder", () => {
   it("skips the given top-level subtrees", () => {
     const found = cssFilesUnder(root, [join("api", "ts")]);
     expect(found).toEqual([join(root, "assets", "style.css")]);
+  });
+});
+
+describe("rewriteAbsolutePaths", () => {
+  let root;
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), "docs-rewrite-"));
+  });
+
+  it("rewrites root-absolute href/src at depth 0, leaving an already-relative ref alone", () => {
+    const file = join(root, "index.html");
+    writeFileSync(
+      file,
+      `<link href="/assets/style.css"><a href="./guides/a.html">g</a><img src="/logo.png">`,
+    );
+    const changed = rewriteAbsolutePaths(root, [file]);
+    expect(changed).toBe(1);
+    expect(readFileSync(file, "utf8")).toBe(
+      `<link href="./assets/style.css"><a href="./guides/a.html">g</a><img src="./logo.png">`,
+    );
+  });
+
+  it("rewrites at depth 2, walking up two directory levels", () => {
+    mkdirSync(join(root, "guides", "sub"), { recursive: true });
+    const file = join(root, "guides", "sub", "b.html");
+    writeFileSync(file, `<a href="/protocol.html">p</a>`);
+    rewriteAbsolutePaths(root, [file]);
+    expect(readFileSync(file, "utf8")).toBe(`<a href="../../protocol.html">p</a>`);
+  });
+
+  it("rewrites CSS url() references for each quote style at depth 1", () => {
+    mkdirSync(join(root, "assets"), { recursive: true });
+    const file = join(root, "assets", "style.css");
+    writeFileSync(
+      file,
+      `.a{background:url(/assets/a.png)}.b{background:url('/assets/b.png')}.c{background:url("/assets/c.png")}`,
+    );
+    const changed = rewriteAbsolutePaths(root, [file]);
+    expect(changed).toBe(1);
+    expect(readFileSync(file, "utf8")).toBe(
+      `.a{background:url(../assets/a.png)}.b{background:url('../assets/b.png')}.c{background:url("../assets/c.png")}`,
+    );
+  });
+
+  it("returns 0 and leaves the file untouched when nothing needs rewriting", () => {
+    const file = join(root, "index.html");
+    const before = `<a href="./local.html">l</a>`;
+    writeFileSync(file, before);
+    const changed = rewriteAbsolutePaths(root, [file]);
+    expect(changed).toBe(0);
+    expect(readFileSync(file, "utf8")).toBe(before);
+  });
+
+  it("counts only the files it actually changes", () => {
+    const changedFile = join(root, "a.html");
+    const untouchedFile = join(root, "b.html");
+    writeFileSync(changedFile, `<a href="/protocol.html">p</a>`);
+    writeFileSync(untouchedFile, `<a href="./local.html">l</a>`);
+    expect(rewriteAbsolutePaths(root, [changedFile, untouchedFile])).toBe(1);
   });
 });
 
