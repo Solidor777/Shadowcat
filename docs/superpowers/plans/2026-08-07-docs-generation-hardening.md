@@ -794,7 +794,6 @@ git commit -m "build(docs): enumerate generated-discriminant exemptions and make
 
 **Files:**
 - Modify: `package.json`
-- Modify: `scripts/package.sh`
 - Modify: `.github/workflows/ci.yml`
 
 **Interfaces:**
@@ -834,9 +833,11 @@ echo "exit=$?"
 
 Expected: exit 0, same output.
 
-- [ ] **Step 4: Wire packaging to the full build**
+- [x] **Step 4: Wire packaging to the full build — WITHDRAWN by owner ruling; `scripts/package.sh` stays unchanged**
 
-In `scripts/package.sh`, replace the client-only build invocation with `pnpm build:all` so a released artifact cannot carry stale documentation. Read the script first — if it invokes `pnpm build` as one step of a longer sequence, replace only that step.
+This step's premise was false. `scripts/package.sh` invokes no build: it requires `target/release/shadowcat` to exist already, then copies that binary and the application icon into `target/package/`. It never copies `dist-docs/`, so the distributable carries no documentation and calling `build:all` from it would regenerate a site the artifact does not contain, while adding the TypeDoc, `cargo doc` and VitePress chain to the three-OS matrix job.
+
+The owner ruled that the distributable ships the binary and icon only, and documentation is published as its own CI artifact rebuilt from scratch on every run. Make no change to `scripts/package.sh`.
 
 - [ ] **Step 5: Point CI at the named entry point**
 
@@ -851,8 +852,8 @@ In `.github/workflows/ci.yml`, the docs job's build step becomes:
 - [ ] **Step 6: Commit**
 
 ```bash
-git add package.json scripts/package.sh .github/workflows/ci.yml
-git commit -m "build: add build:all as the full client-plus-docs entry point" -- package.json scripts/package.sh .github/workflows/ci.yml
+git add package.json .github/workflows/ci.yml
+git commit -m "build: add build:all as the full client-plus-docs entry point" -- package.json .github/workflows/ci.yml
 ```
 
 ---

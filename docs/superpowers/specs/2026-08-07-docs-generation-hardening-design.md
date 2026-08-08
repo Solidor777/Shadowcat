@@ -34,7 +34,8 @@ pipeline:
 ## Goals
 
 1. TypeDoc and rustdoc emit zero warnings, and warnings thereafter fail CI.
-2. Documentation regeneration is part of the full build and of release packaging.
+2. Documentation regeneration is part of the full build, and the published
+   documentation artifact is rebuilt from scratch on every CI run.
 3. `dist-docs/index.html` opens by double-click on Windows, macOS, and Linux.
 4. Every `shadowcat-codebase-*` skill points into the generated documentation.
 5. The work merges to `main` and CI is green.
@@ -51,7 +52,8 @@ pipeline:
 
 | Question | Decision |
 |---|---|
-| Where docs regeneration hooks into the build | Split fast vs full: `pnpm build` stays client-only; a new `build:all` runs client + docs and is what CI and packaging invoke |
+| Where docs regeneration hooks into the build | Split fast vs full: `pnpm build` stays client-only; a new `build:all` runs client + docs and is what CI invokes |
+| Whether the distributable ships documentation | No, by owner ruling. `target/package/` carries the binary and icon only; documentation is published as a separate CI artifact |
 | How the index becomes clickable | Rewrite the portal's absolute paths to depth-relative in the assembly step; keep `docs:serve` for full fidelity |
 | Whether generator warnings fail CI | Yes |
 | `skipErrorChecking` | Set to `false` (measured: 0 errors, so no cost) |
@@ -223,8 +225,14 @@ build           unchanged — client only
 ```
 
 `docs:build` is retained as a delegating alias so CI, documentation, and habit
-keep working. `scripts/package.sh` invokes `build:all` before packaging, so a
-released artifact cannot carry stale documentation.
+keep working.
+
+`scripts/package.sh` is unchanged and invokes no build of its own. It requires
+`target/release/shadowcat` to exist already, then copies that binary and the
+application icon into `target/package/`; it never copies `dist-docs/`, so the
+distributable carries no documentation to go stale. Documentation ships as its
+own CI artifact, rebuilt from scratch by the docs job on every run, which is
+what keeps it current.
 
 The client build must remain first in the chain: `rust-embed` validates `dist/`
 at compile time, so `cargo doc` fails without it.
@@ -368,8 +376,7 @@ apply.
    The largest piece.
 4. `intentionallyNotDocumented` enumeration and its printed count.
 5. Flip `treatValidationWarningsAsErrors` and `skipErrorChecking`.
-6. Script restructure — `docs:generate`, `build:all`, `docs:build` delegation,
-   `package.sh`.
+6. Script restructure — `docs:generate`, `build:all`, `docs:build` delegation.
 7. The relative-path rewrite, its tests, and the three falsified claims.
 8. Skill pointers, reviewed by `shadowcat-spec-reviewer`.
 9. Merge, push, watch CI.
