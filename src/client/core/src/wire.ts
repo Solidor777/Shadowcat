@@ -27,22 +27,55 @@ export const WsErrorCodeSchema = z.enum([
   "internal",
 ]);
 
-/** Mirrors `crate::chat::ActorOwnerRef` (chat message attribution). */
-export const ActorOwnerRefSchema = z.discriminatedUnion("kind", [
+/** Chat message attribution: who a message is spoken as. Mirrors `crate::chat::ActorOwnerRef`. */
+export type WireActorOwnerRef =
+  | {
+      /** A canonical world-scoped actor document. */
+      kind: "actor";
+      /** The actor document id (world-pinned by `handle_send_message`). */
+      actor_id: string;
+    }
+  | {
+      /** An instanced actor addressed through its token. */
+      kind: "token_instance";
+      /** The token document id the instanced actor lives on. */
+      token_id: string;
+    };
+
+/** Validator for a `WireActorOwnerRef`. */
+export const ActorOwnerRefSchema: z.ZodType<WireActorOwnerRef> = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("actor"), actor_id: z.string() }),
   z.object({ kind: z.literal("token_instance"), token_id: z.string() }),
 ]);
-/** The inferred TS shape of `ActorOwnerRefSchema` above. */
-export type WireActorOwnerRef = z.infer<typeof ActorOwnerRefSchema>;
 
-/** Mirrors `crate::chat::Audience` (chat message readership). */
-export const AudienceSchema = z.discriminatedUnion("kind", [
+/** The intended readership of a chat message beyond the ordinary world-readable default.
+ * Carried on the `SendMessage` frame and stored verbatim in `MessageEngine`; drives the
+ * document's `PermissionSet` server-side. `channel` stays a purely client-chosen label — the
+ * server never validates it or derives audience from it. Mirrors `crate::chat::Audience`. */
+export type WireAudience =
+  | {
+      /** Every world member may read (the default). */
+      kind: "public";
+    }
+  | {
+      /** Only `recipients` (plus the sender) may read. The GM reads it ONLY if their own
+       * uuid is among `recipients` — not automatically. */
+      kind: "whisper";
+      /** User ids allowed to read; the sender is implicitly included. */
+      recipients: string[];
+    }
+  | {
+      /** Only whoever currently holds the GM role (plus the sender) may read — resolved
+       * dynamically, not a frozen roster at send time. */
+      kind: "gm_only";
+    };
+
+/** Validator for a `WireAudience`. */
+export const AudienceSchema: z.ZodType<WireAudience> = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("public") }),
   z.object({ kind: z.literal("whisper"), recipients: z.array(z.string()) }),
   z.object({ kind: z.literal("gm_only") }),
 ]);
-/** The inferred TS shape of `AudienceSchema` above. */
-export type WireAudience = z.infer<typeof AudienceSchema>;
 
 export const ScopeSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("compendium"), pack: z.string() }),
