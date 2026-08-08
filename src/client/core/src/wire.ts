@@ -55,7 +55,18 @@ export const SourceSchema = z.object({
   version: int,
 });
 
-export const CapabilityGrantsSchema = z.object({
+/** Additive capability grants beyond the built-in `DocRole` floor, keyed by namespaced
+ * capability string (e.g. `core:manage_embedded`). Grants widen what a role/user may do on
+ * a document; they never revoke the floor. Mirrors `crate::data::document::CapabilityGrants`. */
+export type WireCapabilityGrants = {
+  /** Extra capabilities granted to everyone holding a given `DocRole`, keyed by role. */
+  by_role: Record<string, string[]>;
+  /** Extra capabilities granted to specific users (by id), regardless of role. */
+  by_user: Record<string, string[]>;
+};
+
+/** Validator for a `CapabilityGrants`. */
+export const CapabilityGrantsSchema: z.ZodType<WireCapabilityGrants> = z.object({
   by_role: z.record(z.array(z.string())),
   by_user: z.record(z.array(z.string())),
 });
@@ -81,19 +92,43 @@ export const CapabilityRequirementSchema: z.ZodType<WireCapabilityRequirement> =
 
 export const CardinalitySchema = z.enum(["singleton", "multi"]);
 
-export const ContractProvideSchema = z.object({
+/** A UI surface contract a module provides, with its cardinality. Mirrors
+ * `crate::data::document::ContractProvide`. */
+export type WireContractProvide = {
+  /** The surface contract id (e.g. `shadowcat.panel`). */
+  contract: string;
+  /** How many providers the contract admits. */
+  cardinality: z.infer<typeof CardinalitySchema>;
+};
+
+/** Validator for a `ContractProvide`. */
+export const ContractProvideSchema: z.ZodType<WireContractProvide> = z.object({
   contract: z.string(),
   cardinality: CardinalitySchema,
 });
 
-export const ContractDeclarationSchema = z.object({
+/** A module's UI contract declaration: what surface contracts it provides and which it
+ * requires an active provider for. Pure data — the server validates and distributes these
+ * strings; it never holds components or runs module code. Mirrors
+ * `crate::data::document::ContractDeclaration`. */
+export type WireContractDeclaration = {
+  /** Declaring module's id. */
+  module_id: string;
+  /** Declaring module's version. */
+  version: string;
+  /** Contracts this module provides, with cardinality. */
+  provides: WireContractProvide[];
+  /** Contract ids this module requires an active provider for. */
+  requires: string[];
+};
+
+/** Validator for a `ContractDeclaration`. */
+export const ContractDeclarationSchema: z.ZodType<WireContractDeclaration> = z.object({
   module_id: z.string(),
   version: z.string(),
   provides: z.array(ContractProvideSchema),
   requires: z.array(z.string()),
 });
-/** The inferred TS shape of `ContractDeclarationSchema` above. */
-export type WireContractDeclaration = z.infer<typeof ContractDeclarationSchema>;
 
 export const SchemaTypeSchema = z.enum([
   "object",
@@ -134,7 +169,27 @@ export const SchemaSchema: z.ZodType<WireSchema> = z.lazy(() =>
   }),
 );
 
-export const SchemaDeclarationSchema = z.object({
+/** A world's structural schema declaration (tier-2): the `system`-band shape constraint a
+ * module attaches to a doc_type's `system` subtree, GM-set and enforced server-side.
+ * `schema_format` is the engine-owned vocabulary version; `version` is the module's content
+ * version (provenance only). Mirrors `crate::data::document::SchemaDeclaration`. */
+export type WireSchemaDeclaration = {
+  /** Declaring module's id (provenance). */
+  module_id: string;
+  /** Declaring module's content version (provenance only). */
+  version: string;
+  /** Engine-owned schema-vocabulary version (`SCHEMA_FORMAT_V1`). */
+  schema_format: number;
+  /** The doc_type whose `system` band this schema constrains. */
+  doc_type: string;
+  /** Strict `/system/…` descendant pointer the schema roots at (set-time enforced). */
+  subtree_pointer: string;
+  /** The structural type-tree itself. */
+  schema: WireSchema;
+};
+
+/** Validator for a `SchemaDeclaration`. */
+export const SchemaDeclarationSchema: z.ZodType<WireSchemaDeclaration> = z.object({
   module_id: z.string(),
   version: z.string(),
   schema_format: int,
@@ -142,8 +197,6 @@ export const SchemaDeclarationSchema = z.object({
   subtree_pointer: z.string(),
   schema: SchemaSchema,
 });
-/** The inferred TS shape of `SchemaDeclarationSchema` above. */
-export type WireSchemaDeclaration = z.infer<typeof SchemaDeclarationSchema>;
 
 export const PermissionSetSchema = z.object({
   default: DocRoleSchema,
@@ -346,7 +399,298 @@ export const SearchHitSchema: z.ZodType<WireSearchHit> = z.object({
   snippet: z.string(),
 });
 
-export const ServerMsgSchema = z.discriminatedUnion("type", [
+/** A single position sample in a `move_stream` timeline. `t_ms` is elapsed milliseconds from
+ * `start_server_ms`; `pos` is the scene-coord cell-center at that instant. INVARIANT:
+ * `t_ms >= 0`; samples are ordered by ascending `t_ms`. Mirrors `crate::ws::protocol::PosSample`. */
+export type WireMoveStreamSample = {
+  /** Elapsed time in milliseconds from the enclosing frame's `start_server_ms`. */
+  t_ms: number;
+  /** Scene-coordinate position (x, y) at this sample instant. */
+  pos: [number, number];
+};
+
+/** A single vision-polygon sample in a `move_stream` timeline, paired with a position sample
+ * by `t_ms`. Ordered `[x,y]` vertices of a visible region at this instant; multiple polygons
+ * cover non-contiguous visible regions. Not necessarily convex. Sent only for the mover.
+ * Mirrors `crate::ws::protocol::VisionSample`. */
+export type WireMoveStreamVisionSample = {
+  /** Elapsed time in milliseconds — matches the corresponding position sample's `t_ms`. */
+  t_ms: number;
+  /** Visibility polygons (scene coords) visible at this instant. Each polygon is an ordered
+   * list of [x, y] vertices; multiple polygons cover non-contiguous visible areas. */
+  polygons: [number, number][][];
+};
+
+/** Validator for every frame the server sends, discriminated by `type`. Mirrors
+ * `crate::ws::protocol::ServerMsg`. */
+export type ServerMsg =
+  | {
+      /** Sent right after a successful join. Carries the world's default capability grants,
+       * the connecting user's world role, and the declarative capability requirements so the
+       * client can replicate access resolution for advisory UI gating (the server remains
+       * authoritative). */
+      type: "welcome";
+      /** The joined world. */
+      world: string;
+      /** The world's latest committed seq at join time. */
+      current_seq: number;
+      /** Server wall-clock at send, Unix epoch milliseconds. */
+      server_time: number;
+      /** The running server's semver (`CARGO_PKG_VERSION`). The client's load-time
+       * engine-compat gate checks each external module's `engines.shadowcat` range against
+       * this; delivered here (authenticated, per-session) rather than on public
+       * `/api/config` to avoid disclosing the exact build to unauthenticated callers. */
+      server_version: string;
+      /** The world's default per-document capability grants. */
+      world_default_grants: WireCapabilityGrants;
+      /** The connecting user's role in this world. */
+      user_role: z.infer<typeof WorldRoleSchema>;
+      /** Declarative path-prefix capability requirements (advisory mirror). */
+      capability_requirements: WireCapabilityRequirement[];
+      /** The world's UI contract declarations, so the client can validate its loaded module
+       * set against the world's declared topology. */
+      contract_declarations: WireContractDeclaration[];
+      /** The world's structural schema declarations (tier-2), so the client can mirror
+       * expectations. Informational/parity only — tier-1 Zod validates client-side; this is
+       * NOT a client enforcement gate. */
+      schema_declarations: WireSchemaDeclaration[];
+    }
+  | {
+      /** A sequenced broadcast carrying the authoritative command. */
+      type: "event";
+      /** The committed, per-recipient-filtered command. */
+      command: WireCommand;
+      /** Originator's correlation token; `null` on the shared broadcast (an originator
+       * confirms its own write by receiving this echo of its authored command), and
+       * non-null when the write was made under an intent id, correlating this event back
+       * to that specific intent. */
+      intent_id: string | null;
+    }
+  | {
+      /** An `intent` the write path refused, addressed to its originator only. */
+      type: "reject";
+      /** The refused intent's correlation token. */
+      intent_id: string;
+      /** Why it was refused. */
+      reason: z.infer<typeof RejectReasonSchema>;
+    }
+  | {
+      /** Opens a resync replay range. */
+      type: "resync_begin";
+      /** First seq delivered in the replay (inclusive; equals the client's requested
+       * `from_seq`). */
+      from_seq: number;
+      /** Last seq the replay will deliver. */
+      to_seq: number;
+      /** Which tier serves the replay. */
+      source: z.infer<typeof ResyncSourceSchema>;
+    }
+  | {
+      /** Closes a resync replay range; live delivery resumes after this. */
+      type: "resync_end";
+      /** The authoritative seq after replay; live delivery resumes here. */
+      current_seq: number;
+    }
+  | {
+      /** Time calibration reply: echoes the client send time, adds the server time. */
+      type: "time_pong";
+      /** Echo of the ping's client send time. */
+      client_t0: number;
+      /** Server wall-clock at reply, Unix epoch milliseconds. */
+      server_t: number;
+    }
+  | {
+      /** Heartbeat. */
+      type: "ping";
+    }
+  | {
+      /** A non-fatal or fatal error, by code. */
+      type: "error";
+      /** Machine-actionable category. */
+      code: z.infer<typeof WsErrorCodeSchema>;
+      /** Player-presentable text (never internal details). */
+      message: string;
+    }
+  | {
+      /** Results for the `search` with this `request_id`. Documents are already filtered
+       * for the recipient. */
+      type: "search_result";
+      /** The originating search's correlation token. */
+      request_id: string;
+      /** Per-recipient-filtered hits, rank order. */
+      hits: WireSearchHit[];
+      /** Opaque next-page token; `null` = exhausted. */
+      next_cursor: string | null;
+    }
+  | {
+      /** The `search` with this `request_id` failed. */
+      type: "search_error";
+      /** The failed search's correlation token. */
+      request_id: string;
+      /** Player-presentable failure text. */
+      message: string;
+    }
+  | {
+      /** A live subscription's refreshed top-N (full replace). Documents are already
+       * filtered for the recipient. */
+      type: "search_update";
+      /** The live subscription's correlation token. */
+      request_id: string;
+      /** The refreshed, per-recipient-filtered top-N (full replace). */
+      hits: WireSearchHit[];
+    }
+  | {
+      /** A derived-state push: coalesced, per recipient, ordered after the document events
+       * it reflects via `computed_at_seq`. `payload` is opaque to the transport. */
+      type: "scene_derived";
+      /** The subscription's correlation token. */
+      request_id: string;
+      /** The channel this push belongs to. */
+      channel: string;
+      /** The document seq this state was computed at (orders vs events). */
+      computed_at_seq: number;
+      /** Channel-defined derived state; opaque to the transport. `z.unknown()` infers an
+       * optional property (same reasoning as `WireDocument.engine`/`.system`). */
+      payload?: unknown;
+    }
+  | {
+      /** A derived subscription failed (e.g. unknown channel). */
+      type: "scene_error";
+      /** The failed subscription's correlation token. */
+      request_id: string;
+      /** Player-presentable failure text. */
+      message: string;
+    }
+  | {
+      /** Out-of-band asset mutation notice. Carries no seq and is never buffered or
+       * resynced; holders re-resolve against the record's `version`. */
+      type: "asset_changed";
+      /** The mutated asset's id. */
+      uuid: string;
+      /** What happened to it. */
+      op: "replaced" | "deleted";
+    }
+  | {
+      /** A relayed location ping: the sender's transient marker at scene coords. Out-of-band
+       * (no seq, never buffered/resynced), mirroring `asset_changed`. */
+      type: "scene_ping";
+      /** Scene the ping landed on. */
+      scene: string;
+      /** Scene-coordinate x. */
+      x: number;
+      /** Scene-coordinate y. */
+      y: number;
+      /** Who pinged (senders receive their own echo). */
+      user: string;
+    }
+  | {
+      /** The route for the `pathfind` with this `request_id`: ordered cell-center scene
+       * points (incl. start + goal) and the total cost in cells (client multiplies
+       * `grid.distance.perCell`). `arrested` is true when an arrest region truncated the
+       * route before the requested goal — the player-facing route never silently ends
+       * short without telling the client why. */
+      type: "path_result";
+      /** The originating pathfind's correlation token. */
+      request_id: string;
+      /** Ordered cell-center scene points, start through goal inclusive. */
+      path: [number, number][];
+      /** Total route cost in cells (multiply by `grid.distance.perCell`). */
+      cost: number;
+      /** True when an arrest region truncated the route short of the goal. */
+      arrested: boolean;
+    }
+  | {
+      /** The `pathfind` with this `request_id` failed (unreachable / invalid request /
+       * search exceeded). */
+      type: "path_error";
+      /** The failed pathfind's correlation token. */
+      request_id: string;
+      /** Player-presentable failure text. */
+      message: string;
+    }
+  | {
+      /** A `move_request` was rejected (token already moving, caller not owner, malformed
+       * path, etc.). Addressed to the originating connection only; never broadcast. */
+      type: "move_error";
+      /** The refused move's correlation token. */
+      request_id: string;
+      /** Player-presentable failure text. */
+      message: string;
+    }
+  | {
+      /** A `send_message`/`edit_message`/`delete_message` was rejected. One shared variant
+       * covers all three chat ops: they share a single error enum (`chat::SendMessageError`)
+       * and its player-presentable `Display`; the failed op is implicit in which request
+       * `request_id` belongs to. Addressed to the originating connection only; never
+       * broadcast. */
+      type: "chat_error";
+      /** The refused chat op's correlation token. */
+      request_id: string;
+      /** `SendMessageError`'s player-presentable `Display` text — authorization/existence/
+       * internal classes are already collapsed to a generic string there (no leak). */
+      message: string;
+    }
+  | {
+      /** Broadcast to the scene, then clipped per recipient at egress: the mover receives
+       * the full trajectory and `mover_vision`; observers receive only the position samples
+       * their own vision admits, with `mover_vision` nulled; a fully-occluded recipient
+       * receives nothing. */
+      type: "move_stream";
+      /** Correlates with the originating `move_request`. */
+      request_id: string;
+      /** The token being moved. */
+      token_id: string;
+      /** The user who owns the move (mover's user id). */
+      mover: string;
+      /** The scene in which the move occurs. */
+      scene: string;
+      /** Authoritative server wall-clock time (ms) at which the animation starts.
+       * INVARIANT: must be set before send so all clients sync to the same origin. */
+      start_server_ms: number;
+      /** Total wall-clock animation budget in milliseconds. */
+      duration_ms: number;
+      /** Final resting position (scene coords) after the move completes. */
+      stop: [number, number];
+      /** Ordered position samples along the route (t=0 is start, t=duration_ms is stop).
+       * INVARIANT: non-empty; first sample t_ms == 0.0 is the starting cell-center. */
+      samples: WireMoveStreamSample[];
+      /** Per-sample vision polygons for the mover only. `null` for observers, who receive
+       * server-clipped position samples and render against their existing authoritative fog;
+       * the client computes no vision. Sending mover vision to observers would leak geometry. */
+      mover_vision: WireMoveStreamVisionSample[] | null;
+      /** Total terrain-weighted movement cost accumulated over the executed move.
+       * Informational — no per-turn budget cap consumes it in v1. Present for the mover and
+       * a GM (trusted, full information); `null` for a clipped observer, mirroring
+       * `mover_vision`'s null-for-observers treatment — the authoritative cost may reflect
+       * secret-region (`gm_only`) terrain the observer's clipped `samples` don't show, and
+       * disclosing it would let an observer detect hidden terrain by comparing the visible
+       * portion of the move against the reported total. */
+      cost: number | null;
+      /** `true` when the move stopped before the requested goal — wall, mask,
+       * region-impassable, or region-arrest. The authoritative answer: a client cannot
+       * derive it from `stop` alone, because a region-arrest on the FINAL step ends the move
+       * AT the goal coordinate and so is indistinguishable from an untruncated move by
+       * geometry. Present for the mover and a GM (trusted, full information); `null` for a
+       * clipped observer, on the same grounds as `cost` — the observer's `samples` and
+       * `stop` are already clipped to what they witnessed, so a truthful `truncated` would
+       * disclose whether anything blocked the token BEYOND their vision, revealing the
+       * presence of a wall or a `gm_only` region they cannot see. */
+      truncated: boolean | null;
+    }
+  | {
+      /** Terminal eviction notice: the recipient's world or account is being deleted.
+       * `user: null` addresses every connection in the room (world deletion); a set id
+       * addresses only that user's connections (account deletion — broadcast to every room,
+       * non-targets skip it silently). The egress loop delivers this frame, sends a
+       * protocol Close, and terminates the connection; the client must treat it as terminal
+       * (no reconnect). */
+      type: "evicted";
+      /** `null` = every connection in the room; set = that user only. */
+      user: string | null;
+    };
+
+/** Validator for every frame the server sends, discriminated by `type`. */
+export const ServerMsgSchema: z.ZodType<ServerMsg> = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("welcome"),
     world: z.string(),
@@ -472,26 +816,17 @@ export const ServerMsgSchema = z.discriminatedUnion("type", [
         }),
       )
       .nullable(),
-    // Null for a clipped observer (mirrors mover_vision) — the authoritative cost may
-    // reflect secret-region terrain the observer's clipped samples don't reveal.
     cost: z.number().nullable(),
-    // Whether the move stopped before the requested goal. Null for a clipped observer, whose
-    // samples and stop are ALREADY clipped to what they witnessed: a truthful flag would
-    // disclose whether something stopped the token beyond their vision. Declared here because
-    // `z.object` strips keys it does not name — an omitted field is silently discarded at
-    // parse, so a server field absent from this schema never reaches any consumer.
+    // `truncated` is declared here (rather than left to fall through) because `z.object`
+    // strips keys it does not name — an omitted field is silently discarded at parse, so a
+    // server field absent from this schema never reaches any consumer.
     truncated: z.boolean().nullable(),
   }),
-  // Terminal eviction (world or account deletion); the server closes the
-  // socket right after. Terminal: the client must stop, not reconnect.
   z.object({ type: z.literal("evicted"), user: z.string().nullable() }),
 ]);
 
 /** The inferred TS shape of `ScopeSchema` above. */
 export type WireScope = z.infer<typeof ScopeSchema>;
-/** The inferred TS shape of `ServerMsgSchema` above (the full discriminated union of inbound
- * server frames). */
-export type ServerMsg = z.infer<typeof ServerMsgSchema>;
 
 /** Client -> server frames. Plain objects (numbers, JSON.stringify-friendly). Mirrors
  * `ws::protocol::ClientMsg` variant-by-variant; each
