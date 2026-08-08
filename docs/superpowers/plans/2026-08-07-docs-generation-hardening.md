@@ -1166,6 +1166,7 @@ Work from the topmost error down. Do not disable a gate to get green — every g
 Session runs Opus at high effort; the human directed no model or effort switch.
 
 - **Plan-writer:** mainline, no switch. The session is already at the plan-writer ceiling and holds the measurement context from the design phase.
+- **Dispatcher:** mainline at the session's current effort, no switch — the human directed no model or effort change.
 - **Implementers:** `shadowcat-coder` (sonnet, medium) per the project's agent directive. Escalate to `shadowcat-coder-opus` on a BLOCKED report before involving the human.
 - **Reviewers:** `shadowcat-code-reviewer` and `shadowcat-spec-reviewer` (high) as the two-reviewer pair at each checkpoint. Escalate to the `-opus` twins when findings read as shallow or uncertain.
 - Reviewers have no Bash by directive: pre-generate any diff to a file and relay gate output to them.
