@@ -374,7 +374,7 @@ pub struct VisionModesEngine {
 }
 
 /// A named illumination band (mirrors the client's `GradationBand`).
-/// `minIllumination` is the minimum light level [0,1] a cell must reach to
+/// `minIllumination` is the minimum light level `[0,1]` a cell must reach to
 /// qualify; bands are sorted brightest-first at resolution time.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
@@ -382,7 +382,7 @@ pub struct VisionModesEngine {
 pub struct GradationBand {
     /// Band name (`VisionMode.illumination_floor` references it).
     pub name: String,
-    /// Minimum light level [0,1] a cell must reach to qualify.
+    /// Minimum light level `[0,1]` a cell must reach to qualify.
     pub min_illumination: f64,
 }
 

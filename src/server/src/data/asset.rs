@@ -16,7 +16,7 @@ pub struct Asset {
     pub id: Uuid,
     /// Owning world (assets are world-scoped).
     pub world_id: Uuid,
-    /// "<world_id>/<uuid>", relative to the configured assets_dir.
+    /// `"<world_id>/<uuid>"`, relative to the configured assets_dir.
     pub storage_key: String,
     /// Filename as uploaded (display only; never a storage path).
     pub original_name: String,

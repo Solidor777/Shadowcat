@@ -14,7 +14,7 @@ id: string,
  */
 world_id: string, 
 /**
- * "<world_id>/<uuid>", relative to the configured assets_dir.
+ * `"<world_id>/<uuid>"`, relative to the configured assets_dir.
  */
 storage_key: string, 
 /**

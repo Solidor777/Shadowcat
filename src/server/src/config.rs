@@ -73,7 +73,7 @@ pub struct Config {
     pub admin_user: Option<String>,
     /// Headless first-admin bootstrap password; `None` = interactive setup form.
     pub admin_password: Option<String>,
-    /// "auto" | "off" | "required" | <explicit token>.
+    /// `"auto"` | `"off"` | `"required"` | `<explicit token>`.
     pub setup_token: String,
     /// Session-cookie signing key (base64). `None` = generated once and
     /// persisted to the DB `settings` table, then loaded on every later boot —

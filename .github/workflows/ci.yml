@@ -170,6 +170,8 @@ jobs:
       # docs:build starts with the client build (rust-embed needs dist/ before
       # cargo doc), then typedoc, cargo doc, vitepress, assembly + link check.
       - run: pnpm docs:build
+        env:
+          RUSTDOCFLAGS: "-D warnings"
       - name: Function doc coverage (TS)
         run: pnpm lint:docs
       - name: Property and type doc coverage (TS)

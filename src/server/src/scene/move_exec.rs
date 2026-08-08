@@ -47,7 +47,7 @@ use uuid::Uuid;
 
 use crate::scene::{MovementRestriction, SceneEcs};
 
-/// Epsilon for path[0]-vs-committed-position comparison (scene units).
+/// Epsilon for `path[0]`-vs-committed-position comparison (scene units).
 /// A client rounding the center-of-cell to the nearest float can drift by at most
 /// a few ULPs at typical coordinate magnitudes; 1e-6 is strict but not pedantic.
 const EPS: f64 = 1e-6;

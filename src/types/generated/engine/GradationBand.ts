@@ -2,7 +2,7 @@
 
 /**
  * A named illumination band (mirrors the client's `GradationBand`).
- * `minIllumination` is the minimum light level [0,1] a cell must reach to
+ * `minIllumination` is the minimum light level `[0,1]` a cell must reach to
  * qualify; bands are sorted brightest-first at resolution time.
  */
 export type GradationBand = { 
@@ -11,6 +11,6 @@ export type GradationBand = {
  */
 name: string, 
 /**
- * Minimum light level [0,1] a cell must reach to qualify.
+ * Minimum light level `[0,1]` a cell must reach to qualify.
  */
 minIllumination: number, };
