@@ -127,8 +127,8 @@ pub fn effective_owner(doc: &Document, linked_actor: Option<&Document>) -> Optio
 
 /// `effective_owner` joined through a caller-supplied in-memory actor source
 /// (the room's `SceneEcs` actor table on the WS/HTTP write-read hot paths, or
-/// `|_| None` where no such table exists). Never queries the pool — the C1
-/// no-pool-query-on-hot-path property egress relies on.
+/// `|_| None` where no such table exists). Never queries the pool — egress
+/// relies on this no-pool-query-on-hot-path property.
 ///
 /// # Examples
 ///
@@ -802,7 +802,7 @@ fn touches_permissions(path: &str) -> bool {
 /// redacted command keeps its seq with empty ops.
 ///
 /// `effective_owner_via` joined through a caller-supplied in-memory actor
-/// source — the C1 no-pool-query-on-hot-path property. Sync core: the loads
+/// source, so this never queries the pool. Sync core: the loads
 /// this needs (`current`, the Update pre-images) are hoisted to
 /// `load_update_docs` and awaited by the caller BEFORE calling in, and the
 /// actor join reads an in-memory table (the room's `SceneEcs`, or `|_| None`
@@ -2705,15 +2705,15 @@ mod tests {
         );
     }
 
-    // ---- C1: filter_command joins the effective owner (egress hot path) ----
+    // ---- filter_command joins the effective owner (egress hot path) ----
 
     #[tokio::test]
     async fn filter_command_admits_the_inheriting_owner_of_a_linked_token() {
         // token: permissions.default = None, owner = None, linked to an actor owned
         // by P. Literal-owner egress treated P as a stranger (op dropped); the
         // effective join must now deliver Create/Update/Delete AND OwnerOrGm-tier
-        // content to P, while a true stranger still receives nothing. This is C2:
-        // a document P can write (owner floor at apply_intent) is one P receives.
+        // content to P, while a true stranger still receives nothing. A document
+        // P can write (owner floor at apply_intent) is one P receives.
         let p = Uuid::from_u128(1);
         let stranger = Uuid::from_u128(2);
         let actor_id = Uuid::from_u128(42);
@@ -2740,11 +2740,7 @@ mod tests {
             world_role: WorldRole::Player,
         };
         let out = filter_command(&cmd, &p_ctx, &WorldCapDefaults::default(), &current, lookup);
-        assert_eq!(
-            out.ops.len(),
-            1,
-            "inheriting owner must RECEIVE the create (C2)"
-        );
+        assert_eq!(out.ops.len(), 1, "inheriting owner must RECEIVE the create");
 
         let s_ctx = PermissionContext {
             user_id: stranger,

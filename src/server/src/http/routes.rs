@@ -1343,7 +1343,7 @@ const MAX_SCHEMA_DECLARATIONS: usize = 256;
 const MAX_SCHEMA_NODES: usize = 512;
 /// Upper bound on schema type-tree nesting depth.
 const MAX_SCHEMA_DEPTH: usize = 16;
-/// The single schema-format vocabulary version this server understands (F7). A
+/// The single schema-format vocabulary version this server understands. A
 /// future vocabulary bump increments this and the set endpoint rejects formats
 /// it does not know, so a format bump can never be silently half-enforced.
 const SCHEMA_FORMAT_V1: u32 = 1;

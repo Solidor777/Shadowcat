@@ -385,7 +385,7 @@ export type MergePlan = {
   conflicts: Conflict[];
 };
 
-/** Per-`doc_type` instance-local paths that never merge (E8).
+/** Per-`doc_type` instance-local paths that never merge.
  * @param docType The document's `doc_type`.
  * @returns The list of `/engine/*` pointers excluded from template merge for this doc type
  * (currently only `token`'s placement fields; every other doc type gets `[]`).
@@ -545,7 +545,7 @@ function prefixConflicts(conflicts: Conflict[], coll: string, idx: number): Conf
 }
 
 /** 3-way merge of the embedded collections, correlating instance↔template children by
- * `source.id`↔`id` (E7), using `base.embedded[coll][*].sourceId` as the membership record.
+ * `source.id`↔`id`, using `base.embedded[coll][*].sourceId` as the membership record.
  * Not exported (folded into `merge3`'s public surface).
  * @param base The last-synced `MergeBase.embedded` snapshot.
  * @param parentEmbedded The template's current `embedded` collections.

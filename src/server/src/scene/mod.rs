@@ -6898,7 +6898,7 @@ explored: // GM: unrestricted mask
         );
     }
 
-    // --- wall-less scene full intrascene vision (C2) ---
+    // --- wall-less scene full intrascene vision ---
 
     /// A wall-less 40x40-unit scene must reveal its own full bounded extent, not a small
     /// `VISION_BOUND_MARGIN` box around the viewpoint.
@@ -7028,11 +7028,11 @@ explored: // GM: unrestricted mask
         );
     }
 
-    // --- source_los_poly wall-less degenerate box (C2 follow-up: player_lit_mask/visible_cells) ---
+    // --- source_los_poly wall-less degenerate box (player_lit_mask/visible_cells) ---
 
     /// A wall-less 500x500-unit scene, all-bright lighting (isolates the bound-box defect from
-    /// illumination), `losRestriction` off (so `source_los_poly` takes the plain-rectangle branch
-    /// — the same branch the original C2 bug hit). Cell (4,4) — center (450,450) — lies within the
+    /// illumination), `losRestriction` off (so `source_los_poly` takes the plain-rectangle branch,
+    /// the branch susceptible to the bound-box defect). Cell (4,4) — center (450,450) — lies within the
     /// scene's authored bounds but strictly outside a degenerate
     /// `viewpoint±VISION_BOUND_MARGIN(100)` box around the token at (50,50): `[-50,-50]..[150,150]`.
     fn wall_less_large_scene_all_bright() -> (SceneEcs, Uuid, Uuid) {
@@ -7069,7 +7069,7 @@ explored: // GM: unrestricted mask
     }
 
     /// `player_lit_mask` (the egress/secrecy gate) must cover a wall-less scene's full authored
-    /// bounds, not a degenerate box around the viewpoint — the same C2 defect class fixed in
+    /// bounds, not a degenerate box around the viewpoint — the same bound-box defect class fixed in
     /// `player_vision_polygons`/`player_vision_inputs`, applied here to `source_los_poly`, the
     /// primitive `player_lit_mask` shares with `visible_cells`.
     #[test]
@@ -7101,8 +7101,8 @@ explored: // GM: unrestricted mask
 
     /// No-fork parity: `source_los_poly`'s bound (as exercised via `visible_cells`) must agree
     /// with `player_vision_polygons`'s bound (via `vision::bound_for_scene` directly) on the same
-    /// wall-less scene — closing the "two/three vision paths diverge" defect class the original
-    /// C2 fix's brief warned about, generalized to this third path.
+    /// wall-less scene — closing the "two/three vision paths diverge" defect class, generalized to
+    /// this third path.
     #[test]
     fn visible_cells_agrees_with_player_vision_polygons_bound_on_wall_less_scene() {
         let (ecs, user, scene_id) = wall_less_large_scene_all_bright();

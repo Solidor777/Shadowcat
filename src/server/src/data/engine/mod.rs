@@ -1,5 +1,5 @@
-//! Typed `engine` band structs + the doc_type registry (S1/S3): the engine
-//! band exists iff `doc_type` is engine-defined, and its stored JSON must
+//! Typed `engine` band structs + the doc_type registry: the engine band
+//! exists iff `doc_type` is engine-defined, and its stored JSON must
 //! deserialize into that doc_type's struct — a strict ingress gate rather
 //! than an opaque pointer-walked body.
 

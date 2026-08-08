@@ -229,7 +229,7 @@ test("skill mode flags a bare local letter+digit marker", () => {
 });
 
 test("code mode does NOT gain the local letter+digit marker category", () => {
-  const { hits } = scanContent('const label = "C1"; // a real identifier, not prose\n', {
+  const { hits } = scanContent('const label = "C1"; // a real identifier, not prose\n', { // EXAMPLE:
     isMd: false,
   });
   expect(hits).toEqual([]);
@@ -242,7 +242,7 @@ test("skill mode flags a numbered constraint reference", () => {
 });
 
 test("code mode does NOT gain the numbered constraint category", () => {
-  const { hits } = scanContent('it("Constraint 1: single runtime instance", () => {});\n', {
+  const { hits } = scanContent('it("Constraint 1: single runtime instance", () => {});\n', { // EXAMPLE:
     isMd: false,
   });
   expect(hits).toEqual([]);
@@ -252,9 +252,9 @@ test("code mode does NOT gain the numbered constraint category", () => {
 // BANNED-shadowed candidate must resolve to exactly the right bucket.
 test("scanCandidates reports a genuinely novel shape as residue", () => {
   const { residue, acknowledged } = scanCandidates(
-    "Fixed in Sprint 4 without a regression.\n",
+    "Fixed in Sprint 4 without a regression.\n", // EXAMPLE:
   );
-  expect(residue.map((r) => r.token)).toEqual(["Sprint 4"]);
+  expect(residue.map((r) => r.token)).toEqual(["Sprint 4"]); // EXAMPLE:
   expect(acknowledged).toEqual([]);
 });
 
@@ -295,17 +295,19 @@ test("scanCandidates in code mode reads only the comment span, not program ident
   expect(residue).toEqual([]);
 });
 
-test("scanCandidates in code mode reports a novel shape found in a comment", () => {
-  const { residue } = scanCandidates("// Fixed in Sprint 4 without a regression.\n", {
+test("scanCandidates in code mode reports a novel unspaced shape found in a comment", () => {
+  // The spaced "Word Number" candidate sub-form is skill-only (see CANDIDATE_TOKEN_WORD's own
+  // comment), so a code-mode fixture must use the unspaced label form to exercise this path.
+  const { residue } = scanCandidates("// Fixed the Bump7 regression.\n", { // EXAMPLE:
     isMd: false,
   });
-  expect(residue.map((r) => r.token)).toEqual(["Sprint 4"]);
+  expect(residue.map((r) => r.token)).toEqual(["Bump7"]); // EXAMPLE:
 });
 
 test("scanCandidates in code mode shadows a token BANNED already catches, not SKILL_BANNED", () => {
-  // "C1" is SKILL_BANNED's local-letter+digit marker, not a CODE pattern — in code mode it must
+  // EXAMPLE: "C1" is SKILL_BANNED's local-letter+digit marker, not a CODE pattern — in code mode it must
   // surface as residue, proving the shadow check uses BANNED for code files.
-  const { residue } = scanCandidates("// documented as the C1 property\n", { isMd: false });
+  const { residue } = scanCandidates("// documented as the C1 property\n", { isMd: false }); // EXAMPLE:
   expect(residue.map((r) => r.token)).toEqual(["C1"]);
 });
 

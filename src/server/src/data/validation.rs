@@ -11,7 +11,7 @@ use crate::data::DataError;
 
 /// Maximum serialized size of EACH opaque body block (`system`, `engine`,
 /// `base`) independently. Region/drawing point arrays make `engine`
-/// size-unbounded without this cap (spec S6); the name is kept as
+/// size-unbounded without this cap; the name is kept as
 /// `MAX_SYSTEM_BYTES` since it is referenced by that name across the
 /// codebase, but it now bounds every block, not just `system`.
 pub const MAX_SYSTEM_BYTES: usize = 256 * 1024;

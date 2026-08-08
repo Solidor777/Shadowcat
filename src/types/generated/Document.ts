@@ -24,7 +24,7 @@ doc_type: string,
  */
 schema_version: number, 
 /**
- * Universal display name (S2). Redacts to `null` under a `/name` override.
+ * Universal display name. Redacts to `null` under a `/name` override.
  */
 name: string | null, 
 /**
@@ -65,7 +65,7 @@ embedded: { [key in string]: Array<Document> },
  */
 parent_id: string | null, 
 /**
- * Engine band (S1/S3): present iff `doc_type` is engine-defined; validated
+ * Engine band: present iff `doc_type` is engine-defined; validated
  * against the doc_type's typed struct at ingress (data/engine). Stored
  * post-validation. `None` for community/system doc types.
  */

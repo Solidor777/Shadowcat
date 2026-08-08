@@ -453,7 +453,7 @@ pub struct Document {
     pub doc_type: String,
     /// Envelope schema version for forward migration.
     pub schema_version: u32,
-    /// Universal display name (S2). Redacts to `null` under a `/name` override.
+    /// Universal display name. Redacts to `null` under a `/name` override.
     #[serde(default)]
     pub name: Option<String>,
     /// Provenance of a stamped instance; `None` = not an instance. Immutable:
@@ -488,7 +488,7 @@ pub struct Document {
     /// scenes themselves). Immutable via field-path Update (envelope field).
     #[serde(default)]
     pub parent_id: Option<Uuid>,
-    /// Engine band (S1/S3): present iff `doc_type` is engine-defined; validated
+    /// Engine band: present iff `doc_type` is engine-defined; validated
     /// against the doc_type's typed struct at ingress (data/engine). Stored
     /// post-validation. `None` for community/system doc types.
     #[serde(default)]
@@ -543,7 +543,7 @@ pub(crate) mod tests {
         let doc: Document = serde_json::from_value(bare).unwrap();
         assert!(doc.name.is_none() && doc.engine.is_none());
 
-        // S4 reservation: unknown root key `modules` is rejected
+        // Unknown root key `modules` is rejected: reserved for future module-scoped storage.
         let with_modules = serde_json::json!({
             "id": Uuid::from_u128(1), "scope": {"kind": "world", "world_id": Uuid::from_u128(9)},
             "doc_type": "note", "schema_version": 1, "system": {}, "modules": {},

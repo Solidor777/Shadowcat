@@ -240,9 +240,11 @@ const SKILL_BANNED = [
   },
   // The two entries below are skill-ONLY (no `skillBannedByName` reuse, no BANNED counterpart):
   // a corpus scan surfaced the same letter+digit local-reference shape as `[DITW]\d+` above, under
-  // different letters, but those letters (`C1`/`C2`, `R1`/`R3`/`R4`, `F3`/`F7`) are also live Rust
-  // and TypeScript identifiers and test names in `src/` — reusing this by reference the way the
-  // other entries do would fail code files that carry none of this skill's process debt. Restricted
+  // different letters. Those letters are exactly the ones a short Rust/TypeScript identifier, test
+  // name, or algorithm label routinely takes (a one-letter-plus-digit token is a common naming
+  // shape for a local variable or a test-scenario label) — reusing this by reference the way the
+  // other entries do would fail code files carrying that ordinary vocabulary rather than any of
+  // this skill's process debt. Restricted
   // to exactly one digit: the corpus also holds legitimate two-digit tokens sharing a first letter
   // (Fortran extension names `F90`/`F95`/`F03`/`F08`, a third-party skill's own `B0`-`B3` step
   // labels) that a looser digit count would misclassify as the same local-marker shape. `B` is
@@ -288,7 +290,17 @@ const DESIGN_DOC_CITATION = /docs\/design\/[\w.-]+\.md/g;
 // EXAMPLE: digit at all — `pre-fix` has none — which is exactly the gap that motivated the
 // second class below. Neither shape subsumes the other, so both must run for the control to
 // cover what BANNED's own entries already ban by shape (an id, and separately a narration phrase).
-const CANDIDATE_TOKEN = /\b[A-Z][A-Za-z]{0,20}\s?\d+[a-z]?(?:-\d+)?\b/g;
+//
+// The identifier shape itself splits into two sub-forms that behave differently per corpus. A
+// EXAMPLE: real local design marker is LABEL-shaped and unspaced (`S1`, `D9`, `E8`, `M13-0`) — a corpus
+// scan of `src`/`scripts` under the spaced sub-form (a capitalized word plus a bare number, e.g.
+// a fixture or scene counter) found it to be almost entirely an ordinary-English "Word Number"
+// test-scenario counter, not a marker at all, while the skill corpus's spaced form still carries
+// genuine hits (BANNED's own spelled-out "Task N" entry names one spaced shape that IS a real
+// marker). The unspaced label form stays a candidate in both corpora; the spaced "Word Number"
+// form is scoped to the skill corpus only.
+const CANDIDATE_TOKEN_LABEL = /\b[A-Z][A-Za-z]{0,20}\d+[a-z]?(?:-\d+)?\b/g;
+const CANDIDATE_TOKEN_WORD = /\b[A-Z][A-Za-z]{0,20}\s\d+[a-z]?(?:-\d+)?\b/g;
 
 // The narration-shaped class: comment text carrying temporal/comparative language about the code
 // itself. Scoped narrower than "every word that can describe a past state" on purpose — a first
@@ -323,7 +335,23 @@ const WORD_NARRATION_TOKEN =
 const ACKNOWLEDGED = [
   {
     name: "product, protocol or algorithm name carrying a version-like number",
-    re: /\bNeo4j\b|\bIPv4\b|\bIpv4\b|\bNAT64\b|\bFTS5\b|\bI18n\b|\bPowerShell\s?\d+(?:\.\d+)?\b|\bUUIDv5\b|\bRFC\s?\d+\b|\bArgon2\b|\bSplitMix64\b|\bSvelte\s?\d+\b|\bHTTP\s?\d+\b|\bPolyanya\s?\d+\b/,
+    re: /\bNeo4j\b|\bIPv4\b|\bIpv4\b|\bIPv6\b|\bNAT64\b|\bFTS5\b|\bI18n\b|\bPowerShell\s?\d+(?:\.\d+)?\b|\bUUIDv5\b|\bRFC\s?\d+\b|\bArgon2\b|\bSplitMix32\b|\bSplitMix64\b|\bSvelte\s?\d+\b|\bHTTP\s?\d+\b|\bPolyanya\s?\d+\b|\bWin32\b|\bJSON1\b|\bGIF89a\b|\bBM25\b|\bPF1e\b|\bTS2322\b/,
+  },
+  {
+    name: "a versioned product/spec/language-edition name spaced in prose (a real recognisable vocabulary, not an id)",
+    re: /\bNode\s?22\b|\bD\s?5e\b|\bCSS\s?3\b/,
+  },
+  {
+    name: "a SQL micro-query/clause literal used as a lightweight existence or connectivity probe, not prose",
+    re: /\bSELECT\s?1\b|\bLIMIT\s?1\b/,
+  },
+  {
+    name: "the ASCII C0 control-character class, a real technical term rather than a process id",
+    re: /\bC0\b/,
+  },
+  {
+    name: "an algorithm/route waypoint label or an inline first-pass-version label, not a process id",
+    re: /\bV[12]\b/,
   },
   {
     name: "a code symbol cited as a value, not a process id",
@@ -444,7 +472,11 @@ export function scanCandidates(content, { isMd } = { isMd: true }) {
     lexState = state;
     if (subject === "") return;
     const classes = [
-      { re: CANDIDATE_TOKEN, acks: ACKNOWLEDGED, contextChars: 0 },
+      { re: CANDIDATE_TOKEN_LABEL, acks: ACKNOWLEDGED, contextChars: 0 },
+      // Skill-only: see CANDIDATE_TOKEN_WORD's own comment for why code is excluded.
+      ...(isMd
+        ? [{ re: CANDIDATE_TOKEN_WORD, acks: ACKNOWLEDGED, contextChars: 0 }]
+        : []),
       { re: PRE_POST_NARRATION_TOKEN, acks: ACKNOWLEDGED_NARRATION, contextChars: 8 },
       // Skill-only: see WORD_NARRATION_TOKEN's own comment for why code is excluded.
       ...(isMd

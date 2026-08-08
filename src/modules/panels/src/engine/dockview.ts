@@ -1522,7 +1522,7 @@ export class DockviewEngine implements EngineAdapter {
     }
   }
 
-  /** F3: translates a live re-drag or re-resize of an ALREADY-floating panel
+  /** Translates a live re-drag or re-resize of an ALREADY-floating panel
    * into a `resizeFloating` op, mirroring `#handleGroupDimensionsChange`'s role
    * for docked zones. Bound to `DockviewApi.onDidLayoutChange` rather than a
    * per-panel `onDidDimensionsChange` subscription, for two reasons found by

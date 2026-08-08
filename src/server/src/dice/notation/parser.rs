@@ -31,7 +31,7 @@ struct P {
     /// `TotalConfig::difficulty` in Total mode, or a direction-derived
     /// `SuccessRule` in SuccessCount mode.
     t_target: Option<i32>,
-    /// Roll-level expertise budget from an `e<N>` token (design §8/R4). Shared state,
+    /// Roll-level expertise budget from an `e<N>` token. Shared state,
     /// not per-`DiceGroup`; applied only when the resolved mode is SuccessCount.
     expertise: Option<u32>,
 }
@@ -583,7 +583,7 @@ mod tests {
 
     #[test]
     fn e_token_is_discarded_under_total_ambient_without_error() {
-        // R4: a stray e<N> where the mode can't use it must NOT fail the roll.
+        // A stray e<N> where the mode can't use it must NOT fail the roll.
         let spec = parse("1d20t10e3", ParseContext::default()).unwrap(); // ambient Total
         match spec.mode {
             Mode::Total(c) => assert_eq!(c.difficulty, Some(10)),

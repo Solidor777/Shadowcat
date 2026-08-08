@@ -269,7 +269,7 @@ type Bands = {
   system?: unknown;
 };
 
-/** Reset one node's own bands to the template's current value, keeping placement (E8). Reuses
+/** Reset one node's own bands to the template's current value, keeping placement paths intact. Reuses
  * `merge3Tree` with the child as its OWN base (so `childDiff` is always empty and every parent
  * diff auto-applies with zero conflicts) — the "always take template" trick. NOTE: this handles
  * only `name`/`engine`/`system`; embedded reset is a SEPARATE algorithm (`revertEmbedded`) — see
@@ -373,7 +373,7 @@ function revertChild(child: WireDocument, template: WireDocument): WireDocument 
 
 /** Revert: discard the child's local diffs on the mergeable bands — every path becomes the
  * template's current value, embedded content resets per `revertEmbedded` — except placement
- * paths (kept, E8), then refresh `base`. No conflicts are possible (revert never asks the user
+ * paths (kept), then refresh `base`. No conflicts are possible (revert never asks the user
  * to choose; it always takes the template).
  * @param child The instance document to revert.
  * @param template The template document to revert against.

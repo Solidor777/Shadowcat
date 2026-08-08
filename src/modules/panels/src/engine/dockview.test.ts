@@ -670,7 +670,7 @@ test("dimension changes synchronously triggered from inside apply() are NOT emit
   expect(ops.filter((o) => o.op === "resizeZone" || o.op === "resizeGroup")).toHaveLength(0);
 });
 
-test("F3: a live drag/resize of an already-floating panel emits a resizeFloating op syncing its new Rect", async () => {
+test("a live drag/resize of an already-floating panel emits a resizeFloating op syncing its new Rect", async () => {
   const host = document.createElement("div");
   const stageEl = document.createElement("div");
   const slotFor = makeSlots(["chat"]);
@@ -700,7 +700,7 @@ test("F3: a live drag/resize of an already-floating panel emits a resizeFloating
   expect(ops).toContainEqual({ op: "resizeFloating", id: "chat", rect: { x: 50, y: 60, w: 220, h: 160 } });
 });
 
-test("F3: a resizeFloating op's own round trip through apply() does not re-emit (self-caused churn is suppressed)", async () => {
+test("a resizeFloating op's own round trip through apply() does not re-emit (self-caused churn is suppressed)", async () => {
   const host = document.createElement("div");
   const stageEl = document.createElement("div");
   const slotFor = makeSlots(["chat"]);

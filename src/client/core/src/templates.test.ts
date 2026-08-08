@@ -144,9 +144,9 @@ describe("stampInstance", () => {
 describe("computePull + planToUpdate", () => {
   it("emits whole-band FieldChanges with REAL child pre-images + a /base refresh", () => {
     const tmpl = doc({ id: "T", name: "Preset-v1", system: { hp: 5 } });
-    const child = doc({ id: "C", name: "C1", source: { id: "T", pack: null, version: 1 }, system: { hp: 1, note: "mine" } });
+    const child = doc({ id: "C", name: "Custom-Name", source: { id: "T", pack: null, version: 1 }, system: { hp: 1, note: "mine" } });
     // Base name matches the template's name at stamp time ("Preset-v1", unchanged since); the child's
-    // OWN local rename to "C1" has no competing parent diff, so it merges through untouched.
+    // OWN local rename to "Custom-Name" has no competing parent diff, so it merges through untouched.
     child.base = { name: "Preset-v1", engine: null, system: { hp: 1 }, embedded: {} };
     // Template changed hp 1→5 (child's base hp was 1); "note" is absent from base, so it's a
     // child-local addition since sync (not a template deletion) and merge3 keeps it untouched.

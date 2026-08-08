@@ -164,8 +164,8 @@ export class RenderEngine implements SceneToolHost {
   /** The last derived visibility, re-rendered when the GM fog preview toggles. */
   private lastInput: VisibilityInput = { mode: "all", visible: [], explored: [] };
   /** GM-only client preview: when true a no-fog (`mode:"all"`) frame renders as full fog, so the
-   * GM can preview a vision-less player's view. Only ever ADDS fog to the GM's own view (D-V3,
-   * no server path) — it can never reveal more than the frame already carries. */
+   * GM can preview a vision-less player's view. Only ever ADDS fog to the GM's own view, client-only
+   * with no server path — it can never reveal more than the frame already carries. */
   private fogPreview = false;
   /** GM see-as-player target: the user whose vision the `vision` subscription requests, or
    * null for the GM's own view. The server gates + resolves it (a non-GM is rejected). */
@@ -449,7 +449,7 @@ export class RenderEngine implements SceneToolHost {
   }
 
   /** GM-only: toggle the client-side fog preview. `on` renders a no-fog frame as full fog so the
-   * GM can preview the player view. Client-only (D-V3); only adds fog to
+   * GM can preview the player view. Client-only, with no server path; only adds fog to
    * the GM's own view, so it cannot leak.
    * @param on `true` to force a `mode:"all"` frame to render as full fog; `false` to render it as
    * received (no fog).

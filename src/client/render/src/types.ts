@@ -18,7 +18,7 @@ export interface LineSeg {
   y2: number;
 }
 
-/** Resolution-independent polygon geometry (D-V1), scene coords, flat
+/** Resolution-independent polygon geometry, scene coords, flat
  * [x0,y0,x1,y1,…]. Consumed by the compositor; defined here so the public
  * value-type surface is one module. */
 export interface Polygon {

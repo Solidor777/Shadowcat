@@ -27,7 +27,7 @@ describe("encodeLayout / decodeLayout round-trip", () => {
   });
 });
 
-describe("decodeLayout source (B4: pre-prune blob for PanelsController)", () => {
+describe("decodeLayout source (pre-prune blob for PanelsController)", () => {
   it("returns the untouched pre-prune blob as source when valid, even with a partial known set", () => {
     const l = base(); // records both "chat" and "assets"
     const encoded = encodeLayout(l);
