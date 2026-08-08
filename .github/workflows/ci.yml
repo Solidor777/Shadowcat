@@ -168,7 +168,8 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - uses: dtolnay/rust-toolchain@stable
       # build:all starts with the client build (rust-embed needs dist/ before
-      # cargo doc), then typedoc, cargo doc, vitepress, assembly + link check.
+      # cargo doc), then typedoc, cargo doc, vitepress, assembly + link check,
+      # and finally the active documentation-exemption count.
       - run: pnpm build:all
         env:
           RUSTDOCFLAGS: "-D warnings"

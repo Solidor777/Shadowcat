@@ -219,6 +219,7 @@ command strings:
 
 ```
 docs:generate   typedoc + cargo doc + vitepress portal + assemble
+                + exemption count
 build:all       pnpm build && pnpm docs:generate
 docs:build      delegates to build:all
 build           unchanged — client only
