@@ -640,7 +640,7 @@ Expected: no output.
 pnpm docs:api:ts 2>&1 | sed -E 's/\x1b\[[0-9;]*m//g' | grep -c '^\[warning\]'
 ```
 
-Expected: `9` — the eight generated discriminants plus the trailing `Found 0 errors and 8 warnings` summary line, which itself matches `^\[warning\]`.
+Expected: `51` lines, resolving to **8 distinct** reflections plus the trailing `Found 0 errors and 8 warnings` summary line, which itself matches `^\[warning\]`. A reflection is reported once per package program that reaches it, so warning LINES far exceed distinct entries; count distinct names, never lines. (This step originally predicted `9`, conflating the two — corrected in place rather than removed so the mistake is not re-derived.)
 
 - [ ] **Step 6: Confirm behavior is unchanged and commit**
 

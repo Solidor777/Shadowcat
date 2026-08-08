@@ -127,8 +127,8 @@ export type RollOutcome = {
   /** Per-symbol tallies over kept dice, computed unconditionally. */
   symbol_counts: Record<string, number>;
   /** Every labeled `Const` term in the expression; empty in SuccessCount mode
-   * (arithmetic is ignored there) and defaults to empty for any roll
-   * persisted before this field existed. */
+   * (arithmetic is ignored there). `.default([])` supplies empty for a stored roll
+   * whose record carries no `labeled_consts` key. */
   labeled_consts: ConstTerm[];
 };
 

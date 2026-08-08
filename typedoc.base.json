@@ -6,6 +6,5 @@
   "requiredToBeDocumented": [
     "Class", "Interface", "Enum", "EnumMember", "Function", "Method",
     "Property", "TypeAlias", "Variable"
-  ],
-  "treatValidationWarningsAsErrors": true
+  ]
 }

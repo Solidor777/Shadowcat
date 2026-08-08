@@ -204,11 +204,15 @@ source of truth. The ones agents break most:
   - `skipErrorChecking` and `intentionallyNotDocumented` set at the root are inert; only the
     per-package config (`typedoc.base.json`, which every package extends, or a specific package's
     own file) has any effect.
-  - `treatValidationWarningsAsErrors` is genuinely root-scoped and governs the final exit code —
-    both the root and per-package copies are load-bearing, for different validations.
+  - **The split is: per-package config decides WHAT is validated, the ROOT config alone decides
+    whether a warning is FATAL.** `treatValidationWarningsAsErrors` only counts at the root.
+    Measured: with it removed from the root and left `true` in `typedoc.base.json`, a real
+    coverage warning still PRINTS and the run exits 0; restored at the root, the same warning
+    exits 4. A per-package copy cannot make any gate real, so never reach for one to harden a
+    check — there is exactly one place that does it.
   - A per-package `validation` override that forces `invalidLink` off is a MERGE, not a replace,
-    so `notDocumented` inherited from the shared base survives it — that's what makes the
-    per-package documentation gate real.
+    so `notDocumented` inherited from the shared base survives it — that's what keeps the
+    per-package coverage check running at all (its escalation to an error still comes from root).
   - An exemption belongs in the config of the ONE package whose reflections need it; putting it
     in the shared base makes every other package flag all of its names as unused.
   Same class as the two separate ESLint config blocks above: a setting that looks authoritative,
@@ -232,7 +236,8 @@ source of truth. The ones agents break most:
 - **docs site** (`docs/site/` → `pnpm docs:build` → `dist-docs/`, `pnpm docs:serve` to view) —
   the user-facing layer: guides (hosting / creating-a-module / creating-a-system), per-module
   pages, wire-protocol page, and the generated API references (TypeDoc under `/api/ts/`, rustdoc
-  with private items under `/api/rust/`). Guides code-import the CI-built `examples/*` packages.
+  with private items under `/api/rust/shadowcat/` — `/api/rust/` itself has no index page, since
+  rustdoc emits none under `--no-deps`). Guides code-import the CI-built `examples/*` packages.
 - **graphify** (`graphify-out/`) — relationships: `graphify query "<q>"`,
   `graphify path "<A>" "<B>"`, `graphify explain "<concept>"`.
 - **`docs/design/`** — rationale: `ARCHITECTURE.md` (invariants/tech), `docs/design/M2-data-foundation.md`,

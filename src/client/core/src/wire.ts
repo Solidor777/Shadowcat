@@ -88,9 +88,10 @@ export const SourceSchema = z.object({
   version: int,
 });
 
-/** Additive capability grants beyond the built-in `DocRole` floor, keyed by namespaced
- * capability string (e.g. `core:manage_embedded`). Grants widen what a role/user may do on
- * a document; they never revoke the floor. Mirrors `crate::data::document::CapabilityGrants`. */
+/** Additive capability grants beyond the built-in `DocRole` floor. Each map is keyed by
+ * grantee — a `DocRole` or a user id — and its values are namespaced capability strings
+ * (e.g. `core:manage_embedded`). Grants widen what a role/user may do on a document; they
+ * never revoke the floor. Mirrors `crate::data::document::CapabilityGrants`. */
 export type WireCapabilityGrants = {
   /** Extra capabilities granted to everyone holding a given `DocRole`, keyed by role. */
   by_role: Record<string, string[]>;
@@ -511,7 +512,7 @@ export type WireWelcome = {
   schema_declarations: WireSchemaDeclaration[];
 };
 
-/** Validator for every frame the server sends, discriminated by `type`. Mirrors
+/** Every frame the server sends, discriminated by `type`. Mirrors
  * `crate::ws::protocol::ServerMsg`. */
 export type ServerMsg =
   | WireWelcome

@@ -158,8 +158,8 @@ pub struct RollOutcome {
     /// labeled `DiceGroup`'s dice show up in `records`; a bare constant has no
     /// dice pool, so this is NEVER read by `by_label`/`compare_labels`. Always
     /// empty in SuccessCount mode (arithmetic is ignored there) and for an
-    /// unlabeled constant. `#[serde(default)]`: absent on any roll persisted
-    /// before this field existed.
+    /// unlabeled constant. `#[serde(default)]` supplies empty for a stored roll
+    /// whose record carries no `labeled_consts` key.
     #[serde(default)]
     pub labeled_consts: Vec<ConstTerm>,
 }

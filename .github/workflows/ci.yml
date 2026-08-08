@@ -150,10 +150,14 @@ jobs:
   # Single-OS: the docs site is a build artifact, not platform-gated code; the
   # rust matrix already proves the crate compiles per-OS.
   #
-  # Every step here is a gate. None is informational and none is warn-tier: a
-  # check that reports a violation without failing grandfathers whatever existed
-  # when it was added, and a grandfathered violation is indistinguishable to
-  # every later reader from code that was checked and passed.
+  # Every step here is a gate. None is warn-tier: a check that reports a violation
+  # without failing grandfathers whatever existed when it was added, and a
+  # grandfathered violation is indistinguishable to every later reader from code
+  # that was checked and passed. The one non-gating output is the documentation
+  # exemption count printed at the tail of build:all, which reports rather than
+  # fails — it exists so an exemption cannot be active and uncounted, and the
+  # exemptions it names are themselves gated: an entry that stops matching becomes
+  # an unused-exemption warning, and warnings here are fatal.
   docs:
     runs-on: ubuntu-latest
     steps:

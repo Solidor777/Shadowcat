@@ -112,9 +112,10 @@ impl Default for DocRole {
     }
 }
 
-/// Additive capability grants beyond the built-in `DocRole` floor, keyed by
-/// namespaced capability string (e.g. `core:manage_embedded`). Grants widen
-/// what a role/user may do on a document; they never revoke the floor.
+/// Additive capability grants beyond the built-in `DocRole` floor. Each map is
+/// keyed by grantee — a `DocRole` or a user id — and its values are namespaced
+/// capability strings (e.g. `core:manage_embedded`). Grants widen what a
+/// role/user may do on a document; they never revoke the floor.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 pub struct CapabilityGrants {

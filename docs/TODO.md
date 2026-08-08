@@ -424,9 +424,11 @@ Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one de
   `unknown`), so `FieldChangeSchema.safeParse({ path })` succeeds today with both value keys
   gone. The Rust `crate::data::command::FieldChange` never omits them — only `remove` carries
   `#[serde(skip_serializing_if)]` — so a frame lacking them is malformed, and the client's
-  validation boundary currently admits it. **Not a live defect**: `templates.ts`'s
-  `pushIfChanged`, the sole non-test writer, always supplies real values, and the laxity has
-  never been exercised. The correct shape is likely a required-key validator that still
+  validation boundary currently admits it. **Not a live defect**: the server never omits either
+  key, so no real frame exercises the laxity. (An outbound writer such as the `templates`
+  module's `pushIfChanged` is irrelevant here — `FieldChangeSchema` validates INBOUND frames,
+  and values constructed on the client never pass through it.) The correct shape is likely a
+  required-key validator that still
   permits an explicit `null`/`undefined` VALUE, since `old` is genuinely absent-valued for a
   key that did not previously exist. Deferred because tightening a wire validator changes
   runtime accept/reject behavior, which is outside a documentation-only change and needs its
@@ -472,3 +474,13 @@ Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one de
   with a fenced CSS example containing `url(/assets/x.png)` would fail the build spuriously, and
   the obvious repair for that is narrowing the detector — which is what hides the real misses.
   The fix has to parse out the `<style>` regions and test those.
+
+## Actionable now — `WireCapabilityGrants` maps are typed wider than the Rust source
+- TODO: Narrow `WireCapabilityGrants.by_role` from `Record<string, string[]>` to a partial map
+  keyed by `DocRole`, matching `crate::data::document::CapabilityGrants`' `BTreeMap<DocRole,
+  BTreeSet<String>>`. The client type admits any string key, so a frame carrying an unknown role
+  name parses clean. **Not a live defect**: the validator was always this wide — naming the type
+  did not change what it accepts — and the server is the only writer, so no unknown role reaches
+  it. Tightening it changes runtime accept/reject at the wire boundary, which needs its own
+  consent rather than riding along with a documentation change. `by_user` is correctly
+  `Record<string, string[]>`: its keys are user ids, which are genuinely open.

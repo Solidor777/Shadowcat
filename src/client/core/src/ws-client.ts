@@ -177,9 +177,11 @@ export interface WsSubscribeSceneOptions {
 export interface ChatSendOptions {
   /** The chat channel to post into. */
   channel: string;
-  /** The message body. Server-sanitized before storage and broadcast: rendered (when the
-   * world's chat policy enables Markdown/HTML) then cleaned by `ammonia`, or otherwise wrapped
-   * verbatim as inert text — never stored or broadcast as raw client-supplied markup. */
+  /** The message body. Server-sanitized before storage and broadcast: a shortcode pre-pass runs
+   * in every mode, then the world's chat policy decides the rest — Markdown is rendered to HTML
+   * and cleaned by `ammonia`, HTML-only skips the render and goes straight to `ammonia`, and with
+   * both off the text is emitted as an inert text segment. Never stored or broadcast as raw
+   * client-supplied markup. */
   content: string;
   /** Optional actor attribution; sent as `null` when omitted. */
   actorOwner?: WireActorOwnerRef | null;
