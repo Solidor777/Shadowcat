@@ -63,9 +63,10 @@ export function isFormulaError(v: FormulaValue): v is FormulaError {
   return typeof v !== "number";
 }
 
-/** Maximum accepted source length of a formula, in characters. Rejected before
- * lexing (`tokenize`'s length check runs before the scan loop), so a hostile
- * input cannot force tokenization work. */
+/** Maximum accepted source length of a formula, in UTF-16 code units (`.length`) —
+ * not characters/code points, so an astral character (e.g. an emoji) counts as 2.
+ * Rejected before lexing (`tokenize`'s length check runs before the scan loop),
+ * so a hostile input cannot force tokenization work. */
 export const MAX_FORMULA_LENGTH = 512;
 /** Maximum node count of a parsed formula AST, charged once per node
  * constructed (the parser's `node()` chokepoint counts every node regardless

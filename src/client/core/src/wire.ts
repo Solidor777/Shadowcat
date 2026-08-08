@@ -200,8 +200,16 @@ export type WireDocument = {
 };
 
 /** Validates a `WireDocument` envelope. `embedded` holds child documents, so the
- * schema is recursive (`z.lazy`); a value that fails this parse is treated as
- * absent by every caller, never partially trusted. */
+ * schema is recursive (`z.lazy`). Callers differ on how a parse failure is handled —
+ * this schema does not itself guarantee uniform treatment: `parseServerMsg` uses
+ * `safeParse` and treats a failure as absent (`null`), but `applyOperation`'s
+ * `"update"` branch (the `store` module) calls the throwing `.parse()` on the
+ * post-image; that throw propagates out of `OptimisticClient.applyCommand`'s
+ * per-op loop mid-command, leaving any sibling ops already applied earlier in the
+ * same command committed while the rest of the command is abandoned, and out of
+ * `WsClient.applyEvent`, which catches it, surfaces it via `onError`, and still
+ * advances `nextExpected` — leaving the target document at its stale pre-update
+ * value, not absent. */
 export const DocumentSchema: z.ZodType<WireDocument> = z.lazy(() =>
   z.object({
     id: z.string(),
