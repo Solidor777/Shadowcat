@@ -328,7 +328,12 @@ export class HookBus {
   async emitCancel(
     name: string,
     payload: unknown,
-  ): Promise<{ /** Whether a listener returned `false`/`STOP` and halted dispatch. */ cancelled: boolean; /** The halting listener's `module`, if it registered one. */ by?: string }> {
+  ): Promise<{
+    /** Whether a listener returned `false`/`STOP` and halted dispatch. */
+    cancelled: boolean;
+    /** The halting listener's `module`, if it registered one. */
+    by?: string;
+  }> {
     if (!this.expectKind(name, "cancel")) return { cancelled: false };
     for (const l of this.ordered(name)) {
       try {

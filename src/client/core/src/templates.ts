@@ -1,7 +1,7 @@
 // Client-core template operations: stamp (create-from-template) + the 3-way pull/push/revert
 // emission. All produce document ops; the caller dispatches via `dispatchIntent`. The
 // server never merges — a merge is an ordinary batched `Update`.
-import type { WireDocument, WireOperation, WireFieldChange } from "./wire";
+import type { WireDocument, WireOperation, WireFieldChange, WirePermissionSet } from "./wire";
 import {
   merge3, merge3Tree, takeTemplate, structuralDiff, isPlacementExcluded, placementExclusions, deepEqual,
   restampSubtree, type MergeBase, type MergeBands, type MergePlan, type Conflict, type EmbeddedBaseChild,
@@ -16,7 +16,7 @@ export interface StampOpts {
   /** The stamped instance's parent document id, or `null` for a top-level document. */
   parentId: string | null;
   /** The initiator's own permissions for the new doc; a deny-all default when omitted. */
-  permissions?: WireDocument["permissions"];
+  permissions?: WirePermissionSet;
 }
 
 /** A deny-all `PermissionSet` for a freshly stamped instance when `StampOpts.permissions` is
@@ -29,7 +29,7 @@ export interface StampOpts {
  * defaultPerms();
  * ```
  */
-function defaultPerms(): WireDocument["permissions"] {
+function defaultPerms(): WirePermissionSet {
   return { default: "none", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} }, gm_role: null };
 }
 

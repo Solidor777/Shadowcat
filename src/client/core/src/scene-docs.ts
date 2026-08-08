@@ -204,7 +204,12 @@ export interface ResolvedSceneSettings {
    * exists. */
   diagonalRule: DiagonalRule;
   /** Token movement animation timing; world-settings only — no per-scene override exists. */
-  animation: { /** Animated movement speed, grid cells per second. */ speedCellsPerSec: number; /** The easing curve applied to the animation. */ easing: EasingMode };
+  animation: {
+    /** Animated movement speed, grid cells per second. */
+    speedCellsPerSec: number;
+    /** The easing curve applied to the animation. */
+    easing: EasingMode;
+  };
   /** The scene's grid-to-real-world distance mapping; scene `grid.distance`, else a built-in
    * `{ perCell: 5, unit: "ft" }` default (5e scale). */
   gridDistance: GridDistance;

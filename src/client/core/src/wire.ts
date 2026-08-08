@@ -231,7 +231,30 @@ export const SchemaDeclarationSchema: z.ZodType<WireSchemaDeclaration> = z.objec
   schema: SchemaSchema,
 });
 
-export const PermissionSetSchema = z.object({
+/** A document's access-control set: default role, per-user role overrides, per-property
+ * visibility overrides, capability grants, and an optional per-document GM-role cap. Mirrors
+ * `crate::data::document::PermissionSet`. Named (rather than inferred inline via
+ * `z.infer<typeof PermissionSetSchema>`) so every consumer — `WireDocument.permissions` and
+ * `StampOpts.permissions` alike — resolves to one documented declaration instead of each site
+ * synthesizing its own anonymous type. */
+export type WirePermissionSet = {
+  /** The role assigned to any user not individually listed in `users`. */
+  default: z.infer<typeof DocRoleSchema>;
+  /** Per-user role overrides, keyed by user id; takes precedence over `default` for that user. */
+  users: Record<string, z.infer<typeof DocRoleSchema>>;
+  /** Per-property visibility overrides, keyed by JSON pointer (e.g. `/system/hp`). See
+   * `Access.can_see`/`filter_properties` for how these are enforced server-side. */
+  property_overrides: Record<string, z.infer<typeof VisibilitySchema>>;
+  /** Additive capability grants beyond the resolved role's built-in floor, by role and by user. */
+  capabilities: WireCapabilityGrants;
+  /** Caps the otherwise-unconditional GM see-all/edit-all short-circuit to this document's own
+   * per-document role floor; `null` preserves the default unconditional GM access. See
+   * `data::permission::effective_role`. */
+  gm_role: z.infer<typeof DocRoleSchema> | null;
+};
+
+/** Validator for a `PermissionSet`. */
+export const PermissionSetSchema: z.ZodType<WirePermissionSet> = z.object({
   default: DocRoleSchema,
   users: z.record(DocRoleSchema),
   property_overrides: z.record(VisibilitySchema),
@@ -272,9 +295,8 @@ export type WireDocument = {
    * token's EFFECTIVE owner (used for authz) can differ from this raw value — see
    * `data::permission::effective_owner`. */
   owner: string | null;
-  /** The document's access-control set: default role, per-user role overrides, per-property
-   * visibility overrides, capability grants, and an optional per-document GM-role cap. */
-  permissions: z.infer<typeof PermissionSetSchema>;
+  /** The document's access-control set. See `WirePermissionSet`. */
+  permissions: WirePermissionSet;
   /** Child documents keyed by `doc_type` (e.g. an actor's inventory `item`s). Each embedded
    * doc is itself a full `WireDocument`, recursively. */
   embedded: Record<string, WireDocument[]>;
@@ -454,40 +476,46 @@ export type WireMoveStreamVisionSample = {
   polygons: [number, number][][];
 };
 
+/** The `welcome` server frame, sent right after a successful join. Carries the world's default
+ * capability grants, the connecting user's world role, and the declarative capability
+ * requirements so the client can replicate access resolution for advisory UI gating (the server
+ * remains authoritative). Named (rather than an inline `ServerMsg` union arm) so a TypeDoc
+ * consumer that reaches it via `Extract<ServerMsg, {type:"welcome"}>` (see `WireWelcome` in the
+ * `ws-client` module) resolves to a real declaration instead of a synthesized type stripped of
+ * its member docs. */
+export interface ServerWelcomeMsg {
+  /** Discriminates this frame within `ServerMsg`. */
+  type: "welcome";
+  /** The joined world. */
+  world: string;
+  /** The world's latest committed seq at join time. */
+  current_seq: number;
+  /** Server wall-clock at send, Unix epoch milliseconds. */
+  server_time: number;
+  /** The running server's semver (`CARGO_PKG_VERSION`). The client's load-time
+   * engine-compat gate checks each external module's `engines.shadowcat` range against
+   * this; delivered here (authenticated, per-session) rather than on public
+   * `/api/config` to avoid disclosing the exact build to unauthenticated callers. */
+  server_version: string;
+  /** The world's default per-document capability grants. */
+  world_default_grants: WireCapabilityGrants;
+  /** The connecting user's role in this world. */
+  user_role: z.infer<typeof WorldRoleSchema>;
+  /** Declarative path-prefix capability requirements (advisory mirror). */
+  capability_requirements: WireCapabilityRequirement[];
+  /** The world's UI contract declarations, so the client can validate its loaded module
+   * set against the world's declared topology. */
+  contract_declarations: WireContractDeclaration[];
+  /** The world's structural schema declarations (tier-2), so the client can mirror
+   * expectations. Informational/parity only — tier-1 Zod validates client-side; this is
+   * NOT a client enforcement gate. */
+  schema_declarations: WireSchemaDeclaration[];
+}
+
 /** Validator for every frame the server sends, discriminated by `type`. Mirrors
  * `crate::ws::protocol::ServerMsg`. */
 export type ServerMsg =
-  | {
-      /** Sent right after a successful join. Carries the world's default capability grants,
-       * the connecting user's world role, and the declarative capability requirements so the
-       * client can replicate access resolution for advisory UI gating (the server remains
-       * authoritative). */
-      type: "welcome";
-      /** The joined world. */
-      world: string;
-      /** The world's latest committed seq at join time. */
-      current_seq: number;
-      /** Server wall-clock at send, Unix epoch milliseconds. */
-      server_time: number;
-      /** The running server's semver (`CARGO_PKG_VERSION`). The client's load-time
-       * engine-compat gate checks each external module's `engines.shadowcat` range against
-       * this; delivered here (authenticated, per-session) rather than on public
-       * `/api/config` to avoid disclosing the exact build to unauthenticated callers. */
-      server_version: string;
-      /** The world's default per-document capability grants. */
-      world_default_grants: WireCapabilityGrants;
-      /** The connecting user's role in this world. */
-      user_role: z.infer<typeof WorldRoleSchema>;
-      /** Declarative path-prefix capability requirements (advisory mirror). */
-      capability_requirements: WireCapabilityRequirement[];
-      /** The world's UI contract declarations, so the client can validate its loaded module
-       * set against the world's declared topology. */
-      contract_declarations: WireContractDeclaration[];
-      /** The world's structural schema declarations (tier-2), so the client can mirror
-       * expectations. Informational/parity only — tier-1 Zod validates client-side; this is
-       * NOT a client enforcement gate. */
-      schema_declarations: WireSchemaDeclaration[];
-    }
+  | ServerWelcomeMsg
   | {
       /** A sequenced broadcast carrying the authoritative command. */
       type: "event";
@@ -894,7 +922,10 @@ export type ClientMsg =
       /** Client send timestamp, echoed back in `time_pong`. */
       client_t0: number;
     }
-  | { /** Heartbeat reply. */ type: "pong" }
+  | {
+      /** Heartbeat reply. */
+      type: "pong";
+    }
   | {
       /** A full-text search request, correlated by `request_id`. When `subscribe` is true, the
        * initial `search_result` is followed by `search_update`s on change. */

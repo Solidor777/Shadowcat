@@ -20,7 +20,12 @@ export interface EffectiveActor {
    * one (resolve further via `resolveTokenVisual`, which also handles the `"faces"` union). */
   visual: TokenVisual | null;
   /** Footprint size in grid units (not pixels — see `resolveTokenBox` for the pixel conversion). */
-  size: { /** Width, grid units. */ w: number; /** Height, grid units. */ h: number };
+  size: {
+    /** Width, grid units. */
+    w: number;
+    /** Height, grid units. */
+    h: number;
+  };
   /** The footprint shape used for rendering, hit-testing, and the pathfinder's clearance radius. */
   shape: "square" | "circle";
   /** The assigned faction's id, or `null` for no faction. Resolve the `Faction` record itself via

@@ -122,6 +122,8 @@ const CapRequirementSchema = z.object({
 
 const ModuleEnginesSchema = z.object({ shadowcat: z.string().min(1) });
 
+/** Validator for a `ModuleManifest`. See `ModuleManifest`'s doc comment for the compile-time
+ * guarantee this annotation does and does not provide. */
 export const ManifestSchema: z.ZodType<ModuleManifest> = z.object({
   id: z.string().min(1),
   version: z.string().min(1),

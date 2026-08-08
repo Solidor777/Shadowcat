@@ -7,7 +7,7 @@ import type { RejectReason } from "@shadowcat/types";
 import {
   parseServerMsg,
   type ClientMsg,
-  type ServerMsg,
+  type ServerWelcomeMsg,
   type WireCommand,
   type WireSearchHit,
   type WireActorOwnerRef,
@@ -113,11 +113,10 @@ export interface SceneSubscription {
   unsubscribe(): void;
 }
 
-/** The `Welcome` server frame (capability fields included). */
-export type WireWelcome = Extract<
-  ServerMsg,
-  { /** Discriminant literal selecting the `welcome` variant of `ServerMsg`. */ type: "welcome" }
->;
+/** The `Welcome` server frame (capability fields included). Alias of `ServerWelcomeMsg`, the
+ * `welcome` arm of `ServerMsg` — named so TypeDoc resolves its members directly rather than
+ * through an `Extract<>` projection (which would otherwise strip their doc comments). */
+export type WireWelcome = ServerWelcomeMsg;
 import type { Connect, Transport } from "./transport";
 
 /** The handler set a `WsClient` dispatches inbound frames to; every member is a callback the
@@ -1296,8 +1295,8 @@ export class WsClient {
    * @example
    * ```
    * // called from handleFrame's "event" case; not part of the public API
-   * declare const msg: Extract<ServerMsg, { type: "event" }>;
-   * this.applyEvent(msg.command);
+   * declare const cmd: WireCommand;
+   * this.applyEvent(cmd);
    * ```
    */
   private applyEvent(cmd: WireCommand): void {
