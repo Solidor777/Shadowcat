@@ -213,6 +213,16 @@ source of truth. The ones agents break most:
     in the shared base makes every other package flag all of its names as unused.
   Same class as the two separate ESLint config blocks above: a setting that looks authoritative,
   reports success, and does nothing.
+- **The ONLY documented-coverage exemption is eight ts-rs synthesized discriminants, enumerated by
+  name in `src/types/typedoc.json`'s `intentionallyNotDocumented`.** ts-rs propagates a Rust field's
+  doc comment into the generated TS, but drops the doc on the enum VARIANT, and the discriminant key
+  itself (`"kind"`, `"type"`, `"op"`) is synthesized by serde's `tag` attribute — there is no
+  declaration anywhere to attach a doc comment to, so these cannot be fixed at the source. A new
+  discriminated wire union adds a new such reflection: add it BY NAME. Never widen the list to a path
+  glob — a glob silently absorbs every future synthesized discriminant, whereas an enumerated list
+  fails the gate until someone adds a name deliberately, which is the point. Adding a name needs the
+  owner's per-instance sign-off like any other exemption, and `scripts/report-doc-exemptions.mjs`
+  prints the active count and every name on each run, because an uncounted exemption is a backdoor.
 
 ## Pointers
 
