@@ -6,6 +6,9 @@ import {
   sources,
   MD_ROOTS,
   MD_EXTS,
+  collectFiles,
+  gateFileSet,
+  residueReport,
 } from "./check-comment-refs.mjs";
 
 // Every fixture string below is a SPECIMEN whose exact wording is the thing under test — an id, a
@@ -281,6 +284,55 @@ test("scanCandidates respects the EXAMPLE: exemption", () => {
   expect(residue).toEqual([]);
   expect(acknowledged).toEqual([]);
   expect(exempted).toBe(1);
+});
+
+// scanCandidates in code-file mode: comment/string-literal extraction and shadowing against
+// BANNED (not SKILL_BANNED) must mirror scanContent's own code-mode behaviour exactly.
+test("scanCandidates in code mode reads only the comment span, not program identifiers", () => {
+  const { residue } = scanCandidates('const Vec2 = 4; // ordinary code, not prose\n', {
+    isMd: false,
+  });
+  expect(residue).toEqual([]);
+});
+
+test("scanCandidates in code mode reports a novel shape found in a comment", () => {
+  const { residue } = scanCandidates("// Fixed in Sprint 4 without a regression.\n", {
+    isMd: false,
+  });
+  expect(residue.map((r) => r.token)).toEqual(["Sprint 4"]);
+});
+
+test("scanCandidates in code mode shadows a token BANNED already catches, not SKILL_BANNED", () => {
+  // "C1" is SKILL_BANNED's local-letter+digit marker, not a CODE pattern — in code mode it must
+  // surface as residue, proving the shadow check uses BANNED for code files.
+  const { residue } = scanCandidates("// documented as the C1 property\n", { isMd: false });
+  expect(residue.map((r) => r.token)).toEqual(["C1"]);
+});
+
+// The reach-equality control this task exists to add: the coverage control (`--residue`, backed
+// by `residueReport`/`gateFileSet`) must examine exactly the file set the gate itself scans — both
+// corpora, not a filtered subset of one. This is the regression test for the fourth occurrence of
+// the same mechanical defect (a control's reach silently narrower than the gate's).
+test("residue control's file set is identical to the gate's file set", () => {
+  const gate = gateFileSet([]);
+  const residue = residueReport([]);
+  expect(residue.filesScanned).toBe(gate.scanned.length);
+
+  const { codeFiles, mdFiles } = collectFiles();
+  expect(gate.scanned.length).toBe(codeFiles.length + mdFiles.length);
+  expect(codeFiles.length).toBeGreaterThan(0);
+  expect(mdFiles.length).toBeGreaterThan(0);
+
+  // Every code file scanned is Rust/TS/Svelte/etc under a code root, never a skill markdown file,
+  // and vice versa — the coverage control cannot silently collapse to markdown-only the way the
+  // original defect did.
+  for (const f of gate.scanned) {
+    if (gate.isMdFile.has(f)) {
+      expect(MD_EXTS.some((e) => f.endsWith(e))).toBe(true);
+    } else {
+      expect(f.endsWith(".md")).toBe(false);
+    }
+  }
 });
 
 // The coverage control itself, wired into `pnpm test:scripts` so a new unrecognised form in the

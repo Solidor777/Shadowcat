@@ -12,9 +12,9 @@ whisper allowlist + a GM-only channel): a message's readership is now driven by 
 enum mapped onto the generic `PermissionSet`/`gm_role` mechanism, still with zero
 message-specific redaction/search/broadcast code. **Shipped** (sanitizer + command parser
 + a validated, sanitizing edit/delete path): a content-sanitization boundary (`chat::sanitize`,
-`ammonia` + `pulldown-cmark`) replaces c-1's raw-text-only model; a leading-command parser
+`ammonia` + `pulldown-cmark`) replaces the original raw-text-only model; a leading-command parser
 (`chat::parse_command`) derives `MessageKind`/a content-level `/w` whisper target; `EditMessage`/
-`DeleteMessage` replace c-1's blanket Update rejection with a real, authorized, sanitizing edit
+`DeleteMessage` replace the original blanket Update rejection with a real, authorized, sanitizing edit
 path and a soft-tombstone delete path, gated by a new `WriteOrigin` marker. **Shipped**
 (the client display layer + three server enablers): `MessageEngine.source` (edit-prefill raw
 input), an always-on `:shortcode:` → emoji pre-pass in `sanitize`, a member-visible world
@@ -150,7 +150,7 @@ with zero message-specific plumbing in any of those subsystems.
     (`<strong>`/`<a>`/`<img>`). A separate typed `Link`/`Image` segment would require re-parsing
     already-sanitized HTML to extract them, duplicating work `ammonia` already did; `Html` is the
     single content-bearing rich variant.
-  - `plain_text_content(raw) -> Vec<Segment>` — the c-1 producer, wraps raw input verbatim as one
+  - `plain_text_content(raw) -> Vec<Segment>` — the fail-closed plain-text producer, wraps raw input verbatim as one
     `Segment::Text` (no sanitization yet; the client renders it as a text node, never
     `innerHTML`, so embedded markup is inert).
   - `Audience` (`Public`/`Whisper{recipients: Vec<Uuid>}`/`GmOnly`, `#[default] Public`, tagged
@@ -167,9 +167,9 @@ with zero message-specific plumbing in any of those subsystems.
     closing that gap the same way every other engine-defined doc_type's ingress
     does. `audience` rides the body verbatim, same treatment as `kind`/`actor_owner`.
     `edited_at`/`deleted_at` (both
-    `Option<i64>`, `#[serde(skip_serializing_if = "Option::is_none")]`) are the c-3 edit/delete
-    markers — absent (not `null`) on an unedited/live message, so a stored c-1 message
-    round-trips unchanged. `source: Option<String>` (same serde shape) is the author's
+    `Option<i64>`, `#[serde(skip_serializing_if = "Option::is_none")]`) are the edit/delete
+    markers — absent (not `null`) on an unedited/live message, so an existing stored message
+    lacking those fields round-trips unchanged. `source: Option<String>` (same serde shape) is the author's
     RAW input kept for client edit-prefill (sanitized `Segment::Html` can't be reversed):
     stored at ingest as `parsed.body` when the send parsed a `/w` (so an unmodified prefill
     resubmit can't trip the edit path's `AudienceLocked`) else the FULL content
@@ -189,7 +189,7 @@ with zero message-specific plumbing in any of those subsystems.
 
     | `Audience` | `default` | `gm_role` | `users` |
     |---|---|---|---|
-    | `Public` | `Observer` | `None` | `{owner: Owner}` — c-1's original, unrestricted shape |
+    | `Public` | `Observer` | `None` | `{owner: Owner}` — the original, unrestricted default shape |
     | `Whisper{recipients}` | `None` | `Some(DocRole::None)` | `{owner: Owner, ...recipients: Observer}` |
     | `GmOnly` | `None` | `Some(DocRole::Observer)` | `{owner: Owner}` only |
 
@@ -203,13 +203,13 @@ with zero message-specific plumbing in any of those subsystems.
   - `handle_send_message(room, repo, ctx, rate, channel, content, actor_owner, audience, now,
     budget_per_min) -> Result<Command, SendMessageError>` — validates (empty/`MAX_MESSAGE_CHARS =
     4096`/`MAX_CHANNEL_CHARS = 128`/per-user-per-minute flood budget via `PingRateLimiter`), then
-    runs `parse_command(&content)` (c-3). If the parsed command carries `whisper_to` (a content-
+    runs `parse_command(&content)`. If the parsed command carries `whisper_to` (a content-
     level `/w @user...`), its RAW name list is cap-checked against `MAX_WHISPER_RECIPIENTS = 128`
     BEFORE any username is resolved (resolving first would run one sequential
     `member_id_by_username` DB round-trip per `@name` ahead of the cap — the exact resource-
     amplification `MAX_WHISPER_RECIPIENTS` exists to prevent); resolved names build the
-    EFFECTIVE `Audience::Whisper` — **content `/w` wins over the c-2 wire frame's `audience`
-    field.** The effective audience is then re-validated (cap + `Repository::
+    EFFECTIVE `Audience::Whisper` — **content `/w` wins over the `SendMessage` wire frame's
+    `audience` field.** The effective audience is then re-validated (cap + `Repository::
     member_role(world_id, r).await?.is_some()` per recipient, fail-closed,
     `SendMessageError::UnknownRecipient`, nothing persisted) through the SAME chokepoint
     regardless of which front-door (frame field or content `/w`) produced it. A post-parse empty
@@ -218,7 +218,7 @@ with zero message-specific plumbing in any of those subsystems.
     `sanitize(&parsed.body, &policy)` to produce `content_segments`, then `build_message_doc`, then
     `room.publish(..., vec![Operation::Create { doc }], ..., WriteOrigin::Client)`. **The sole
     message-authoring entry point** — nothing else may produce a stored `message` doc. Posting
-    rights are unchanged from c-1 (any world member may `SendMessage`); `audience` restricts only
+    rights are open to any world member (any member may `SendMessage`); `audience` restricts only
     *readers*, never senders.
   - `ops_target_message(ops: &[Operation]) -> bool` — the ingress guard: `true` if any `Create`/
     `Delete` op targets a `message` doc_type. `Operation::Update` is always `false` here (an
@@ -258,8 +258,8 @@ with zero message-specific plumbing in any of those subsystems.
   (documented): pre-parse replacement also fires inside markdown code spans. Table sortedness
   is pinned by a test (`binary_search_by_key` silently breaks on a mis-sorted row).
 - `chat::sanitize` — `sanitize(raw: &str, policy: &ChatContentPolicy) ->
-  Vec<Segment>`, the c-3 content-security boundary. `!policy.markdown && !policy.html` short-
-  circuits to a single `Segment::Text` (identical to c-1's `plain_text_content`, the fail-closed
+  Vec<Segment>`, the content-security boundary. `!policy.markdown && !policy.html` short-
+  circuits to a single `Segment::Text` (identical to `plain_text_content`, the fail-closed
   baseline). Otherwise: `pulldown-cmark` renders Markdown to an HTML string (when `markdown` is
   on; when `html` is off, cmark's raw-HTML events are DOWNGRADED to escaped `Text` events rather
   than dropped, so an author's embedded tag becomes inert display text, e.g. `<b>` → `&lt;b&gt;`,
@@ -294,7 +294,7 @@ with zero message-specific plumbing in any of those subsystems.
   shorthand (optionally `+K`/`-K`) → `MessageKind::Roll`, body stored VERBATIM/unexecuted (a
   future checkpoint runs it). `/w @user @user... rest` → `MessageKind::Normal` +
   `whisper_to: Some(raw_usernames)` — this is chat's SECOND `/w` front-door, independent of the
-  c-2 `SendMessage` wire frame's `audience` field; `handle_send_message` reconciles the two,
+  `SendMessage` wire frame's `audience` field; `handle_send_message` reconciles the two,
   content taking precedence (see below). **`kind` can never be `MessageKind::System` from any
   parse path** — proven by an exhaustive test over every command token, not just the default
   fallthrough — `System` is reserved for a future server-authored-notice producer that does not
@@ -303,7 +303,7 @@ with zero message-specific plumbing in any of those subsystems.
   actor_owner: Option<ActorOwnerRef>, audience: Audience }` (ts-rs exported; `audience` is
   `#[serde(default)]`, so an omitted field parses as `Audience::Public`).
   `ClientMsg::EditMessage { request_id, message_id, content }` and
-  `ClientMsg::DeleteMessage { request_id, message_id }` (both ts-rs exported, c-3) are the ONLY
+  `ClientMsg::DeleteMessage { request_id, message_id }` (both ts-rs exported) are the ONLY
   client-facing ways to mutate an existing stored message. **All three now carry a REQUIRED
   `request_id: Uuid`** (mirroring the `Search`/`Pathfind`/`MoveRequest` correlation pattern):
   success is still confirmed only by the broadcast `Event` echo, but a rejection is now surfaced
@@ -384,7 +384,7 @@ with zero message-specific plumbing in any of those subsystems.
   `PermissionSet`: a non-addressed GM's capped role there has no `WRITE_FIELDS`, which would
   incorrectly deny a legitimate moderation edit/delete.
 - **`/w` has two independent front-doors, and content wins.** A whisper audience can be set either
-  via the c-2 `SendMessage` wire frame's `audience: Audience::Whisper{...}` field, or via a c-3
+  via the `SendMessage` wire frame's `audience: Audience::Whisper{...}` field, or via a
   content-level `/w @user...` command. `handle_send_message` reconciles both through the exact
   same cap+membership validation chokepoint; when BOTH are present, the parsed content `/w`
   overrides the frame's `audience` argument. An edit can never open either front-door — a `/w` in
@@ -457,8 +457,8 @@ with zero message-specific plumbing in any of those subsystems.
   existence/internal-class (`ActorNotSpeakable`/`Forbidden`/`NotFound`/`Data`) return a FIXED
   generic string that ignores the inner value. `NotFound`==`Forbidden` (existence-oracle close);
   `Data(_)` never echoes the inner `DataError`. Adding a variant means classifying it here.
-- **`Segment` now has `Html` alongside `Text`.** A pre-c-3 assumption that `content` is always
-  literal, inert text is no longer valid — `sanitize()` produces `Segment::Html{sanitized_html}`
+- **`Segment` now has `Html` alongside `Text`.** The assumption that `content` is always
+  literal, inert text no longer holds — `sanitize()` produces `Segment::Html{sanitized_html}`
   whenever the world's `chat-settings` policy has `markdown` or `html` enabled, and the client is
   expected to render that variant via `innerHTML` (it is safe by construction ONLY because it
   passed through `ammonia`; never innerHTML-render a `Text` segment or a `Html` segment your code
@@ -469,7 +469,7 @@ with zero message-specific plumbing in any of those subsystems.
   unconditional will misdiagnose why an edit/delete succeeds.
 - **`chat-settings` fail-closed means a missing or malformed policy doc silently degrades to plain
   text**, not an error surfaced anywhere — a GM who intends to enable Markdown but leaves the
-  `chat-settings` doc absent, or types a field with the wrong JSON type, gets ordinary c-1-style
+  `chat-settings` doc absent, or types a field with the wrong JSON type, gets ordinary
   plain text with no diagnostic. This is deliberate (see `chat::settings`'s module doc) but easy to
   mistake for a bug when testing enrichment toggles.
 - **`MAX_MESSAGE_CHARS = 4096` and the per-minute flood budget are enforced only inside
@@ -484,7 +484,7 @@ with zero message-specific plumbing in any of those subsystems.
 - **A message's sender always retains `DocRole::Owner` in `permissions.users`**, regardless of the
   message's `Audience` or any later `gm_role`/world-role change — e.g. a Player who posts to a
   `GmOnly` channel permanently keeps read/search access to their own message even if never
-  promoted to GM. Anyone building an edit/delete path on top of this (c-3) must not assume `Owner`
+  promoted to GM. Anyone building an edit/delete path on top of this must not assume `Owner`
   implies "currently privileged" — it marks who authored the message, independent of current
   privilege.
 
@@ -512,7 +512,7 @@ Three independently replaceable modules (UI-is-modules; swap any one without the
   `postTarget(view)` `{channel, audience, placeholderName}` to the composer. Views:
   All / per-registry-channel / **GM pseudo-channel** (display-only filters over
   `query("message")` — the server enforces `audience`, never `channel`; posting on the GM view
-  sets `audience: gm_only`, exactly the c-2 contract). Channels live in a `channel-registry`
+  sets `audience: gm_only`). Channels live in a `channel-registry`
   singleton config doc (id→`{name}` map, GM-seeded `{general}` via the reactive-seed idiom;
   add/rename are single-key updates but **remove is a WHOLE-FIELD replace of
   `/engine/channels`** (was `/system/channels`) with the key deleted — `set_pointer` cannot delete keys; a null

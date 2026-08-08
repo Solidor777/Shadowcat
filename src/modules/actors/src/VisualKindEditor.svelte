@@ -257,7 +257,7 @@
 
   // Continuously report the current built visual (or null when incomplete) to the host, which
   // gates its submit button and consumes it at create time. buildVisual reads every editor
-  // $state, so this effect re-emits on any change — mirroring the host's former inline read.
+  // $state, so this effect re-emits on any change, keeping `onBuild` synced with every field.
   $effect(() => {
     onBuild(buildVisual());
   });

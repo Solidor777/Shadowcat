@@ -364,7 +364,7 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
   `data::{document,command,permission,repository,membership,validation,search,asset,sqlite}`
   AND `data::engine::{geometry,registries,scene,token}` — carries `#![deny(missing_docs)]` +
   `#![deny(clippy::missing_docs_in_private_items)]` (the `data` module's inner attrs cascade to all
-  children, all now swept; its former item-scoped exception is retired). A new undocumented item
+  children, with no item-scoped exception anywhere in the tree). A new undocumented item
   fails the 3-OS CI clippy step. Doc comments on ts-rs types flow into `src/types/generated` —
   editing them means regenerating (`cargo test`) and committing the bindings, and doc claims about
   authz/redaction must cite the enforcing function — an uncited claim can state a wrong function

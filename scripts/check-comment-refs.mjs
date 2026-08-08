@@ -69,6 +69,43 @@ const rootFiles = () =>
     (n) => EXTS.some((e) => n.endsWith(e)) && statSync(n).isFile(),
   );
 
+/** Repo-relative path with forward slashes, so a scope reads the same on every platform. */
+const norm = (p) => p.split("\\").join("/");
+
+// Prefix matching is path-boundary-aware: a raw `startsWith` makes "src/modules/chat" also claim
+// "src/modules/chat-card", silently pulling a sibling directory into a scope that never named it.
+// The over-match is invisible — the count is simply larger, and larger reads as more thorough.
+const under = (p, prefix) => p === norm(prefix) || p.startsWith(norm(prefix) + "/");
+
+/** True when `p` sits inside one of `scopes` (or `scopes` is empty, meaning "everything"). */
+export const inScope = (scopes, p) =>
+  scopes.length === 0 || scopes.some((s) => under(p, s));
+
+// Single source of the two corpora this gate governs. Every consumer — the main scan, `--cover`,
+// and the `--residue` coverage control — calls this one function rather than re-deriving its own
+// path list, so a future change to what the gate scans cannot silently leave the control scanning
+// a narrower set: there is no second derivation left to drift.
+export function collectFiles() {
+  const codeFiles = [
+    ...ROOTS.flatMap((d) => sources(d, EXTS)),
+    ...rootFiles(),
+  ].map(norm);
+  const mdFiles = MD_ROOTS.flatMap((d) => sources(d, MD_EXTS)).map(norm);
+  return { codeFiles, mdFiles };
+}
+
+/**
+ * The gate's own scope-filtered file set, plus a lookup for which of those files are skill prose
+ * rather than code. `--residue` reads this exact return value — see `residueReport` — so its
+ * corpus cannot diverge from the gate's without changing this one function.
+ */
+export function gateFileSet(scopes = []) {
+  const { codeFiles, mdFiles } = collectFiles();
+  const isMdFile = new Set(mdFiles);
+  const scanned = [...codeFiles, ...mdFiles].filter((p) => inScope(scopes, p));
+  return { scanned, isMdFile };
+}
+
 // Patterns below are documented by describing the shape they match wherever describing is as clear
 // as showing. Where a specimen genuinely carries more than a description — a phrase whose exact
 // wording is the thing being matched — the line carries this marker and is skipped.
@@ -262,12 +299,22 @@ const CANDIDATE_TOKEN = /\b[A-Z][A-Za-z]{0,20}\s?\d+[a-z]?(?:-\d+)?\b/g;
 // the noise. Acknowledging that volume, or worse acknowledging it by a reason that amounts to "the
 // word is usually fine," would be exactly the false-negative-to-false-positive swap this class
 // exists to avoid: the acknowledged list is not a place to launder low-signal noise, and a list
-// that large is not reviewable by anyone. Retained here are the higher-signal forms the campaign's
-// own brief named alongside those words: pre-/post- compounds and six single words whose corpus
-// occurrences turned out to be mostly genuine narration once actually read (`legacy` was the sole
-// exception — see ACKNOWLEDGED_NARRATION).
-const NARRATION_CANDIDATE_TOKEN =
-  /\bpre-[a-z]+\b|\bpost-[a-z]+\b|\boriginally\b|\blegacy\b|\bdeprecated\b|\brenamed\b|\bmoved\b|\breplaced\b/gi;
+// that large is not reviewable by anyone.
+//
+// The pre-/post- compound shape is meaningful in BOTH corpora and runs unconditionally.
+const PRE_POST_NARRATION_TOKEN = /\bpre-[a-z]+\b|\bpost-[a-z]+\b/gi;
+
+// The six single words below are meaningful ONLY over the skill corpus, not code: a corpus scan
+// of `src`/`scripts` under this same class found `moved`/`replaced`/`renamed`/`deprecated` used
+// almost exclusively as runtime-data or wire-protocol vocabulary — an `AssetChanged` op literally
+// named `"replaced"`, a doc comment on "the token that moved", a wire-drift test naming "a renamed
+// … enum variant" — none of it narration of the CODE's own past, all of it the ordinary present-
+// tense description this class is designed not to flag. The skill corpus is pure prose about a
+// subsystem's current shape, where the same six words turned out to be mostly genuine narration
+// once read (`legacy` was the sole exception — see ACKNOWLEDGED_NARRATION); code comments are not,
+// so this half of the class is scoped to `isMd` rather than widened to swallow that noise.
+const WORD_NARRATION_TOKEN =
+  /\boriginally\b|\blegacy\b|\bdeprecated\b|\brenamed\b|\bmoved\b|\breplaced\b/gi;
 
 // Named, counted, one reason each — an unnamed or uncounted acknowledgement is a backdoor by the
 // same reasoning as the EXAMPLE exemption. Each entry was matched against the corpus once and is
@@ -342,25 +389,72 @@ const ACKNOWLEDGED_NARRATION = [
  * 0 for the identifier class (its entries match the bare token), a few for the narration class
  * (an entry there can require a specific following word, e.g. "replaced BY").
  */
-export function scanCandidates(content) {
+/**
+ * Extracts the comment/prose text one line contributes, mirroring exactly what `scanContent`
+ * checks against BANNED/SKILL_BANNED. Shared so the coverage control (`scanCandidates`) can never
+ * see a different subject than the gate does — a defect class this gate has hit three times
+ * already (a vocabulary gap, a scope gap, a corpus-filter gap), each time because a second
+ * derivation of "what counts" existed somewhere and drifted from the first.
+ */
+function lineSubject(line, isMd, lexState) {
+  if (isMd) {
+    return { subject: line.trim().replace(DESIGN_DOC_CITATION, ""), state: lexState };
+  }
+  const split = splitLine(line, lexState);
+  const literals = split.code.match(STRING_LITERAL) ?? [];
+  const explanatory = EXPLANATORY_STRING.test(split.code);
+  const subject = [
+    split.comment,
+    ...literals.filter((l) => explanatory || PROSE_LITERAL.test(l.slice(1, -1))),
+  ]
+    .join(" ")
+    .trim();
+  return { subject, state: split.state };
+}
+
+/**
+ * Runs the broad candidate matchers over one file's text and classifies every match: already a
+ * real BANNED/SKILL_BANNED hit (not a coverage gap — it will already fail the main scan),
+ * acknowledged as a named legitimate token, or RESIDUE — an unrecognised shape that must be
+ * looked at. Pure function of its arguments, mirroring `scanContent`, so a test exercises it on
+ * fabricated text without touching the filesystem.
+ *
+ * `isMd` selects the same comment/prose subject extraction `scanContent` uses (`lineSubject`) and
+ * the matching BANNED/SKILL_BANNED list to shadow against, so a code-file candidate already caught
+ * by a CODE pattern is not double-reported here, and a skill-file candidate is checked against the
+ * skill ruleset rather than the code one.
+ *
+ * A class's own `contextChars` sets how many characters past the match an ACKNOWLEDGED entry's
+ * `re` can see: 0 for the identifier class (its entries match the bare token), a few for the
+ * narration class (an entry there can require a specific following word, e.g. "replaced BY").
+ */
+export function scanCandidates(content, { isMd } = { isMd: true }) {
+  const banned = isMd ? SKILL_BANNED : BANNED;
   const lines = content.split("\n");
   const acknowledged = [];
   const residue = [];
   let exempted = 0;
+  let lexState = { inBlock: false, inHtml: false };
   lines.forEach((line, i) => {
     if (EXAMPLE_EXEMPT.test(line)) {
       exempted += 1;
       return;
     }
-    const subject = line.replace(DESIGN_DOC_CITATION, "");
+    const { subject, state } = lineSubject(line, isMd, lexState);
+    lexState = state;
+    if (subject === "") return;
     const classes = [
       { re: CANDIDATE_TOKEN, acks: ACKNOWLEDGED, contextChars: 0 },
-      { re: NARRATION_CANDIDATE_TOKEN, acks: ACKNOWLEDGED_NARRATION, contextChars: 8 },
+      { re: PRE_POST_NARRATION_TOKEN, acks: ACKNOWLEDGED_NARRATION, contextChars: 8 },
+      // Skill-only: see WORD_NARRATION_TOKEN's own comment for why code is excluded.
+      ...(isMd
+        ? [{ re: WORD_NARRATION_TOKEN, acks: ACKNOWLEDGED_NARRATION, contextChars: 8 }]
+        : []),
     ];
     for (const { re, acks, contextChars } of classes) {
       for (const m of subject.matchAll(re)) {
         const token = m[0];
-        if (SKILL_BANNED.some((b) => b.re.test(token))) continue;
+        if (banned.some((b) => b.re.test(token))) continue;
         const context = subject.slice(m.index, m.index + token.length + contextChars);
         const ack = acks.find((a) => a.re.test(context));
         if (ack) {
@@ -431,32 +525,39 @@ export function scanContent(content, { isMd }) {
       exempted += 1;
       return;
     }
-    let subject;
-    if (isMd) {
-      subject = line.trim().replace(DESIGN_DOC_CITATION, "");
-    } else {
-      const split = splitLine(line, lexState);
-      lexState = split.state;
-      // Comment text is checked whole; the code span is checked only inside its string literals,
-      // so identifiers and paths that are part of the program are never flagged. Of those
-      // literals, prose ones always count and token-shaped ones count only in an explanatory
-      // context.
-      const literals = split.code.match(STRING_LITERAL) ?? [];
-      const explanatory = EXPLANATORY_STRING.test(split.code);
-      subject = [
-        split.comment,
-        ...literals.filter(
-          (l) => explanatory || PROSE_LITERAL.test(l.slice(1, -1)),
-        ),
-      ]
-        .join(" ")
-        .trim();
-    }
+    // Comment text is checked whole; the code span is checked only inside its string literals, so
+    // identifiers and paths that are part of the program are never flagged. Of those literals,
+    // prose ones always count and token-shaped ones count only in an explanatory context.
+    const { subject, state } = lineSubject(line, isMd, lexState);
+    lexState = state;
     if (subject === "") return;
     const hit = banned.find((b) => b.re.test(subject));
     if (hit) hits.push({ line: i + 1, kind: hit.name, text: line.trim() });
   });
   return { hits, exempted };
+}
+
+/**
+ * The `--residue` coverage control's full computation, over the SAME file set `gateFileSet`
+ * returns for `scopes` — not a second derivation of it. Returns the acknowledged tally (grouped
+ * by reason) and the residue list, plus how many files were actually read, so a caller (or a
+ * test) can compare that count against the gate's own `scanned.length` for the identical scopes
+ * and prove the two can never silently diverge.
+ */
+export function residueReport(scopes = []) {
+  const { scanned, isMdFile } = gateFileSet(scopes);
+  let ackTotal = 0;
+  const ackByReason = new Map();
+  const residue = [];
+  for (const path of scanned) {
+    const content = readFileSync(path, "utf8");
+    const result = scanCandidates(content, { isMd: isMdFile.has(path) });
+    ackTotal += result.acknowledged.length;
+    for (const a of result.acknowledged)
+      ackByReason.set(a.reason, (ackByReason.get(a.reason) ?? 0) + 1);
+    for (const r of result.residue) residue.push({ path, ...r });
+  }
+  return { ackTotal, ackByReason, residue, filesScanned: scanned.length };
 }
 
 // Query interface. It exists so no caller has to re-derive a subset by grepping this script's
@@ -479,46 +580,21 @@ function main() {
     .flatMap((a, i) => (a === "--cover" ? [argv[i + 1]] : []))
     .filter(Boolean);
 
-  /** Repo-relative path with forward slashes, so a scope reads the same on every platform. */
-  const norm = (p) => p.split("\\").join("/");
-
-  // Prefix matching is path-boundary-aware: a raw `startsWith` makes "src/modules/chat" also claim
-  // "src/modules/chat-card", silently pulling a sibling directory into a scope that never named it.
-  // The over-match is invisible — the count is simply larger, and larger reads as more thorough.
-  const under = (p, prefix) =>
-    p === norm(prefix) || p.startsWith(norm(prefix) + "/");
-  const inScope = (p) => scopes.length === 0 || scopes.some((s) => under(p, s));
-
-  const codeFiles = [
-    ...ROOTS.flatMap((d) => sources(d, EXTS)),
-    ...rootFiles(),
-  ].map(norm);
-  const mdFiles = MD_ROOTS.flatMap((d) => sources(d, MD_EXTS)).map(norm);
-  const isMdFile = new Set(mdFiles);
-
-  // --residue: the coverage control. Runs the broad candidate matcher over the governed skill
-  // corpus and reports what BANNED/SKILL_BANNED and ACKNOWLEDGED do not yet explain. Exits 1 only
-  // on non-empty RESIDUE — an acknowledged match is not a failure, it is the mechanism working.
+  // --residue: the coverage control. Reads `gateFileSet(scopes)` — the exact array the main scan
+  // below also reads — so it cannot silently narrow to one corpus the way it once did when it
+  // filtered `mdFiles` alone. Exits 1 only on non-empty RESIDUE — an acknowledged match is not a
+  // failure, it is the mechanism working.
   if (argv.includes("--residue")) {
-    const residueFiles = mdFiles.filter(inScope);
+    const { scanned: residueFiles } = gateFileSet(scopes);
     if (scopes.length > 0 && residueFiles.length === 0) {
-      console.error(`--scope matched 0 skill file(s): ${scopes.join(", ")}`);
+      console.error(`--scope matched 0 file(s): ${scopes.join(", ")}`);
       console.error(
         "Nothing was examined, so this is not a clean result. Check the prefix.",
       );
       process.exit(2);
     }
-    let ackTotal = 0;
-    const ackByReason = new Map();
-    const residue = [];
-    for (const path of residueFiles) {
-      const content = readFileSync(path, "utf8");
-      const result = scanCandidates(content);
-      ackTotal += result.acknowledged.length;
-      for (const a of result.acknowledged)
-        ackByReason.set(a.reason, (ackByReason.get(a.reason) ?? 0) + 1);
-      for (const r of result.residue) residue.push({ path, ...r });
-    }
+    const { ackTotal, ackByReason, residue, filesScanned } = residueReport(scopes);
+    console.log(`${filesScanned} file(s) scanned (code + skill corpora).`);
     console.log(`${ackTotal} acknowledged candidate(s):`);
     for (const [reason, n] of [...ackByReason].sort((a, b) => b[1] - a[1]))
       console.log(`  ${String(n).padStart(4)}  ${reason}`);
@@ -537,7 +613,7 @@ function main() {
     process.exit(1);
   }
 
-  const scanned = [...codeFiles, ...mdFiles].filter(inScope);
+  const { scanned, isMdFile } = gateFileSet(scopes);
   const hits = [];
   let exempted = 0;
   for (const path of scanned) {

@@ -8530,7 +8530,7 @@ mod tests {
         let denied = try_move(&r, w, p1, token.id, (6.0, 6.0), (8.0, 8.0), 5).await;
         assert!(
             matches!(denied, Err(DataError::Forbidden)),
-            "the actor's FORMER owner must lose the token, got {denied:?}"
+            "the actor's ORIGINAL owner must lose the token, got {denied:?}"
         );
     }
 
