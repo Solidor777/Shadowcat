@@ -432,3 +432,14 @@ Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one de
   runtime accept/reject behavior, which is outside a documentation-only change and needs its
   own consent. Made visible by splitting `WireFieldChange` from its schema: the hand-written
   type surfaced the optionality that `z.infer` had silently absorbed.
+
+## Actionable now — `WireSearchHit.snippet` carries no inert-text exposure note
+- TODO: Port the exposure note from `crate::chat::MessageEngine`'s `source` field onto the
+  client wire types. Every `engine` string leaf — `source` included — is swept into the FTS
+  index and can surface through `WireSearchHit.snippet` and `WireSearchHit.document`, so a
+  consumer must render it as inert text and never as innerHTML. `WireSearchHit.snippet`'s
+  current doc ("Highlighted match snippet from the recipient's own index partition.") states
+  the provenance but not the handling constraint. **Not currently reachable**: no UI module
+  consumes `.snippet` yet, which is exactly why the note should land before the first
+  search-UI consumer exists rather than after. Surfaced while naming the chat schema types,
+  when the Rust field doc was ported and its exposure note was dropped as out-of-scope.
