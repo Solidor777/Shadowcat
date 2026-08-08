@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["src/server"]
+members = ["src/server", "src/server/test-support"]
 
 [profile.release]
 opt-level = "z"

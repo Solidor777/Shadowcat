@@ -3,17 +3,65 @@ import type { LightingInput } from "./types";
 
 /** A resolved + interpolated cell ready to draw: alpha = band darkening, tint = packed color,
  * tintAlpha (0 ⇒ no tint), desaturate from the render hint. */
-export interface LitDrawCell { i: number; j: number; alpha: number; tint: number; tintAlpha: number; desaturate: boolean }
-export interface LightingFrame { cell: number; cells: LitDrawCell[] }
+export interface LitDrawCell {
+  /** Grid column index. */
+  i: number;
+  /** Grid row index. */
+  j: number;
+  /** Darkening fill opacity, `[0, MAX_DARK_ALPHA]`; `0` = no darkening (brightest band). */
+  alpha: number;
+  /** Packed `0xRRGGBB` tint color; `0` means no tint (see `tintAlpha`). */
+  tint: number;
+  /** Tint fill opacity — `0` when `tint === 0` (nothing to paint), else `TINT_ALPHA`. */
+  tintAlpha: number;
+  /** Whether to paint the flat desaturation wash — see `resolve`'s doc for the hint-name rule. */
+  desaturate: boolean;
+}
+/** A resolved lighting overlay ready for `DisplayBackend.setLighting`. */
+export interface LightingFrame {
+  /** Active scene's cell size, in px. */
+  cell: number;
+  /** The resolved per-cell paint instructions. */
+  cells: LitDrawCell[];
+}
 
-/** Cosmetic only — fog/lit-mask is the secrecy gate; this layer is purely visual. */
-const LIGHTING_FADE_MS = 250;
+/** Duration, in ms, of the day/night fade `Lighting.setTarget` starts and
+ * `Lighting.tick` advances. Cosmetic only — fog/lit-mask is the secrecy gate;
+ * this layer is purely visual. */
+export const LIGHTING_FADE_MS = 250;
 /** Maximum darkening opacity applied at the darkest gradation band. */
 const MAX_DARK_ALPHA = 0.6;
 /** Tint overlay opacity when a packed color is present (tint !== 0). */
 const TINT_ALPHA = 0.25;
 
-const key = (c: { i: number; j: number }): string => `${c.i},${c.j}`;
+/** Cell identity key for matching a cell across `prev`/`target` frames during a fade.
+ * @param c A cell's grid coordinates.
+ * @param c.i Grid column index.
+ * @param c.j Grid row index.
+ * @returns `"i,j"`.
+ * @example
+ * ```
+ * // module-private helper; not exported from @shadowcat/render
+ * key({ i: 0, j: 0 }); // "0,0"
+ * ```
+ */
+const key = (c: {
+  /** Grid column index. */
+  i: number;
+  /** Grid row index. */
+  j: number;
+}): string => `${c.i},${c.j}`;
+/** Linear interpolation between `a` and `b` at position `t`.
+ * @param a The value at `t=0`.
+ * @param b The value at `t=1`.
+ * @param t Interpolation position, typically `[0,1]`.
+ * @returns `a + (b - a) * t`.
+ * @example
+ * ```
+ * // module-private helper; not exported from @shadowcat/render
+ * lerp(0, 10, 0.5); // 5
+ * ```
+ */
 const lerp = (a: number, b: number, t: number): number => a + (b - a) * t;
 
 /**
@@ -25,7 +73,7 @@ const lerp = (a: number, b: number, t: number): number => a + (b - a) * t;
  * @returns The interpolated packed 0xRRGGBB color.
  * @example
  * ```
- * // not exported from @shadowcat/render's index.ts; internal to Lighting's day/night fade
+ * // not exported from @shadowcat/render; internal to Lighting's day/night fade
  * lerpRgb(0xff0000, 0x0000ff, 0.5); // ~0x800080
  * ```
  */
@@ -39,7 +87,9 @@ function lerpRgb(a: number, b: number, t: number): number {
  * (band→alpha, hint→desaturate) and interpolates day/night transitions; the backend
  * just paints LightingFrames. Cosmetic only — fog is the secrecy gate. */
 export class Lighting {
+  /** The frame captured at the start of the current fade — the interpolation source. */
   private prev: LightingFrame = { cell: 0, cells: [] };
+  /** The frame this fade is interpolating toward, set by `setTarget`. */
   private target: LightingFrame = { cell: 0, cells: [] };
   /** Elapsed fade time; starts at LIGHTING_FADE_MS so the initial state is settled. */
   private elapsed = LIGHTING_FADE_MS;
@@ -185,7 +235,7 @@ export class Lighting {
  * @returns A `LightingFrame` with one `LitDrawCell` per input cell, in the same order.
  * @example
  * ```
- * // not exported from @shadowcat/render's index.ts; internal to Lighting.setTarget
+ * // not exported from @shadowcat/render; internal to Lighting.setTarget
  * resolve({ cell: 100, bands: [{ name: "bright", min: 0.67 }, { name: "dark", min: 0 }],
  *   hints: ["desaturate"], cells: [{ i: 0, j: 0, band: 1, tint: 0, hint: 0 }] });
  * // { cell: 100, cells: [{ i: 0, j: 0, alpha: 0.6, tint: 0, tintAlpha: 0, desaturate: true }] }

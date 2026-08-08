@@ -33,8 +33,8 @@ function storeWithEmbeddedActor(fields: Record<string, unknown>) {
 describe("module-sheet-actor registration", () => {
   it("registers ActorSheet under shadowcat.sheet:actor at priority 0", () => {
     const contributions = new ContributionRegistry();
-    // Mirrors the real ModuleContext.contributions wrapper (modules.ts activate): a
-    // 1-arg contribute(c) closure that auto-injects the module id — index.ts never
+    // Mirrors the real ModuleContext.contributions wrapper (`ModuleRegistry.activate`): a
+    // 1-arg contribute(c) closure that auto-injects the module id — the module entry never
     // self-declares it, matching every other first-party module.
     sheetActor.register({
       contributions: { contribute: (c: Parameters<typeof contributions.contribute>[0]) => contributions.contribute(c, { module: "sheet-actor" }) },
@@ -71,10 +71,9 @@ describe("ActorSheet edits", () => {
     expect(calls).toEqual([[{ op: "update", doc_id: "a1", changes: [{ path: "/engine/size", old: { w: 2, h: 3 }, new: { w: 5, h: 3 } }] }]]);
   });
 
-  // Regression test for the reactive-subscription fix: a second edit in the same rendered
-  // instance must read the FIRST edit's result as `old`, not the doc snapshot frozen at first
-  // render. Fails against the pre-fix frozen-`ctx.documents.get()` derived because the second
-  // dispatch's `old` would still be the pre-edit doc's field, not the post-edit one.
+  // Pins: a second edit in the same rendered instance reads the FIRST edit's result as `old`,
+  // not the doc snapshot frozen at first render — `ctx.documents.get()` must be re-derived on
+  // each dispatch, or the second dispatch's `old` is still the pre-edit doc's field.
   it("a second edit in the same instance dispatches a fresh old reflecting the first edit", async () => {
     const calls: unknown[] = [];
     const documents = storeWith({ name: "Goblin", displayName: "Creature", faction: null, shape: "square", size: { w: 1, h: 1 }, conditions: [], prototype: false, visual: { kind: "image", asset: "x" } });
@@ -100,9 +99,9 @@ describe("ActorSheet edits", () => {
     ]);
   });
 
-  // Combines the compound-field and repeat-edit scenarios: editing sizeH after sizeW must
-  // read the FIRST edit's w back as old/new, not the pre-render snapshot. Fails against the
-  // pre-fix frozen doc because the second dispatch would revert w to its original value.
+  // Combines the compound-field and repeat-edit scenarios. Pins: editing sizeH after sizeW
+  // reads the FIRST edit's w back as old/new from a re-derived doc, not a frozen pre-render
+  // snapshot that would revert w to its original value on the second dispatch.
   it("editing sizeH after sizeW preserves the first edit's w, not the frozen pre-render value", async () => {
     const calls: unknown[] = [];
     const documents = storeWith({ name: "Goblin", displayName: "Creature", faction: null, shape: "square", size: { w: 1, h: 1 }, conditions: [], prototype: false, visual: { kind: "image", asset: "x" } });

@@ -34,7 +34,7 @@ describe("classifyDrop — vetoes", () => {
     expect(isVeto(result)).toBe(true);
   });
 
-  test("vetoes an edge drop resolving to 'top' (no top zone, spec D4)", () => {
+  test("vetoes an edge drop resolving to 'top' (no top zone)", () => {
     const site: DropSite = { kind: "edge", id: "chat", position: "top" };
     const result = classifyDrop(site, layout);
     expect(isVeto(result)).toBe(true);
@@ -135,7 +135,7 @@ describe("opForMenuCommand — parity with classifyDrop", () => {
     if ("op" in op && op.op === "float") expect(op.rect).toBeTruthy();
   });
 
-  test("Finding 4: any command against the stage id is vetoed, mirroring classifyDrop's own stage veto", () => {
+  test("any command against the stage id is vetoed, mirroring classifyDrop's own stage veto", () => {
     for (const cmd of ["dockRight", "dockBottom", "dockLeft", "float", "minimize", "close"] as const) {
       const result = opForMenuCommand(cmd, STAGE_ID);
       expect("veto" in result && result.veto).toBe(true);

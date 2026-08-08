@@ -8,23 +8,38 @@ import type { SceneInteraction, ActorSelection, TokenSelection } from "@shadowca
 import type { WorldRole } from "@shadowcat/types";
 import { topTokenAt } from "./hit-test";
 
+/** A tool id, keying `ToolController.#tools` and gating `ToolRail`'s per-role visibility. */
 export type ToolId = "select" | "place" | "draw" | "template" | "measure" | "ping" | "wall" | "region";
+/** The draw tool's shape mode; `"rect"` here is an axis-aligned two-corner bbox (`shapePath`),
+ * distinct from the template tool's rotated-square `"rect"` (`templatePath`). */
 export type DrawMode = "freehand" | "rect" | "ellipse" | "line";
+/** The template tool's shape mode; `"rect"` here is a rotated square centered on the anchor
+ * (`templatePath`), distinct from the draw tool's axis-aligned `"rect"` (`shapePath`). */
 export type TemplateMode = "circle" | "cone" | "rect" | "line";
+/** The region tool's shape mode, matching `parse_region_shape`'s point-count dispatch
+ * (`regionShapeGeometry`). */
 export type RegionShapeMode = "rect" | "circle" | "polygon";
+/** A region's gameplay effect, matching the server `RegionBehavior` variants (precedence
+ * `Impassable > Arrest > Terrain` at composition time). */
 export type RegionBehaviorMode = "terrain" | "impassable" | "arrest";
 
 /** The AppContext slice the tools need. `documents` is the optimistic view, so a
  * just-auto-created scene / just-placed token is visible to the tools immediately. */
 export interface ToolContext {
+  /** The render-engine bridge tools draw through: snapping, preview overlays, drag-state
+   * signaling and grid distance — never document state. */
   scene: SceneInteraction;
   /** The actor to stamp (the place tool); when set it takes precedence over selectedAsset. */
   actorSelection?: ActorSelection;
   /** Selected token ids (group-select); the select tool reads + moves the whole set. */
   tokenSelection?: TokenSelection;
+  /** Sends write ops to the server; fire-and-forget, no per-call reject signal exposed here. */
   dispatchIntent: (ops: WireOperation[]) => void;
+  /** The optimistic document view, so a just-created scene/token is visible immediately. */
   documents: ReadableDocuments;
+  /** Resolves asset ids to serve URLs (the asset picker's selection). */
   assets: AssetResolver;
+  /** The world id every tool-created document is stamped with. */
   world: string;
   /** The caller's per-world role. Movement authority is role-asymmetric: a GM writes a token
    * position directly, a player's move is request-only and server-executed. */
@@ -60,34 +75,55 @@ export interface ToolContext {
     tokenId: string,
     path: [number, number][],
   ) => Promise<MoveStream>;
-  /** The scene tools act on (M12d). From `ctx.viewedSceneId`; absent ⇒ the first scene (legacy). */
+  /** The scene the tools act on. From `ctx.viewedSceneId`; absent ⇒ the first scene. */
   viewedSceneId?: () => string | null;
 }
 
-/** The active scene (the viewed scene, M12d) + its grid cell size (default 100 when
+/** The active (viewed) scene + its grid cell size (default 100 when
  * `grid.size` is absent) and distance scale (default `{ perCell: 5, unit: "ft" }` when
- * `grid.distance` is absent, matching `resolveSceneSettings`'s own default,
- * `src/client/core/src/scene-docs.ts:444`). These are tool-local display/pathfind-arg
- * defaults only; no parity claim is made with the server beyond this: `scene_grid_sizes`
- * (`src/server/src/scene/mod.rs:1189`) is the server's sole intentional cell-size defaulting
- * source and also falls back to 100, but the movement gates themselves REFUSE rather than
- * default when a scene has no live document (`src/server/src/ws/room.rs:333-334`,
- * `:577-580`).
+ * `grid.distance` is absent, matching `resolveSceneSettings`'s own default). These are
+ * tool-local display/pathfind-arg defaults only; no parity claim is made with the server
+ * beyond this: `SceneEcs::scene_grid_sizes` is the server's sole intentional cell-size
+ * defaulting source and also falls back to 100, but the movement gates themselves REFUSE
+ * rather than default when a scene has no live document (`Room::publish`).
  * @param ctx The tool context; reads `viewedSceneId()` (falling back to the first scene) and
  * `documents`.
  * @returns The resolved scene id + grid size + distance scale, or `null` when no scene is
  * viewed and none exists.
  * @example
  * ```
+ * declare const ctx: ToolContext;
  * const scene = activeScene(ctx);
- * if (scene) place(scene.id, scene.size);
+ * if (scene) console.log(scene.id, scene.size);
  * ```
  */
-function activeScene(ctx: ToolContext): { id: string; size: number; perCell: number; unit: string } | null {
+function activeScene(ctx: ToolContext): {
+  /** The active scene's document id. */
+  id: string;
+  /** Grid cell size in pixels (defaults to 100 when the scene doc omits `grid.size`). */
+  size: number;
+  /** Distance-per-cell scale numerator (defaults to 5, matching `resolveSceneSettings`). */
+  perCell: number;
+  /** Distance unit label (defaults to `"ft"`, matching `resolveSceneSettings`). */
+  unit: string;
+} | null {
   const vsid = ctx.viewedSceneId?.() ?? ctx.documents.query("scene")[0]?.id ?? null;
   const scene = vsid ? ctx.documents.get(vsid) : undefined;
   if (!scene) return null;
-  const grid = (scene.engine as { grid?: { size?: number; distance?: { perCell: number; unit: string } } } | undefined)?.grid;
+  const grid = (scene.engine as {
+    /** Per-scene grid config; absent ⇒ the defaults below apply. */
+    grid?: {
+      /** Grid cell size in pixels; falls back to 100 when absent. */
+      size?: number;
+      /** Distance-per-cell scale; falls back to `{ perCell: 5, unit: "ft" }` when absent. */
+      distance?: {
+        /** Distance-per-cell scale numerator. */
+        perCell: number;
+        /** Distance unit label (e.g. `"ft"`). */
+        unit: string;
+      };
+    };
+  } | undefined)?.grid;
   const size = grid?.size ?? 100;
   const { perCell, unit } = grid?.distance ?? { perCell: 5, unit: "ft" };
   return { id: scene.id, size, perCell, unit };
@@ -100,10 +136,9 @@ function activeScene(ctx: ToolContext): { id: string; size: number; perCell: num
  * preview and commit cannot derive different sizes.
  *
  * Every call site in this file that invokes this function also passes that same token id as
- * `Pathfind`'s `token` field (wire shape declared at `src/server/src/ws/protocol.rs:113-117`);
- * when `token` is present the server AUTHORIZES it and DERIVES the footprint from the token's
- * own document, IGNORING the wire `footprint_radius` value entirely (enforced at
- * `src/server/src/ws/conn.rs:681-700`). So the value computed here influences no production
+ * `ClientMsg::Pathfind`'s `token` field; when `token` is present the server AUTHORIZES it and
+ * DERIVES the footprint from the token's own document, IGNORING the wire `footprint_radius`
+ * value entirely (enforced in `handle_pathfind`). So the value computed here influences no production
  * outcome today. It is not dead code: the wire value IS
  * honored whenever `token` is absent, which in this file happens only when zero or multiple
  * tokens are selected — and in that branch this function is never called either (the caller
@@ -113,6 +148,8 @@ function activeScene(ctx: ToolContext): { id: string; size: number; perCell: num
  * @returns The footprint radius in grid cells.
  * @example
  * ```
+ * declare const ctx: ToolContext;
+ * declare const tokenId: string;
  * const radius = footprintFor(ctx, tokenId);
  * ```
  */
@@ -143,20 +180,29 @@ const ROUTE_PREVIEW_DEBOUNCE_MS = 100;
 /** Owns the active-tool + selected-asset UI state and routes activation to the engine
  * via the scene bridge. */
 export class ToolController {
+  /** The currently activated tool, or `null` when back to the plain camera (`toggle`'s
+   * re-select-clears rule). */
   active = $state<ToolId | null>(null);
   /** The token art the place tool stamps; chosen in the asset picker. */
   selectedAsset = $state<string | null>(null);
   /** Draw-tool shape mode + stroke color. */
   drawMode = $state<DrawMode>("freehand");
+  /** Draw-tool stroke color (hex string, parsed via `parseColor`). */
   strokeColor = $state("#e0e0e0");
   /** Template-tool shape mode + color. */
   templateMode = $state<TemplateMode>("circle");
+  /** Template-tool fill/stroke color (hex string, parsed via `parseColor`). */
   templateColor = $state("#3388ff");
-  /** Region-tool shape mode + behavior/cost/secrecy config (M10g authoring). */
+  /** Region-tool shape mode + behavior/cost/secrecy config. */
   regionShapeMode = $state<RegionShapeMode>("rect");
+  /** Region-tool authored behavior, applied to the next region the tool persists. */
   regionBehavior = $state<RegionBehaviorMode>("terrain");
+  /** Region-tool authored terrain cost multiplier; clamped to `>= 1` at persist time. */
   regionCost = $state<number>(2);
+  /** Region-tool authored secrecy flag; `true` sets `gm_only` visibility on the persisted doc
+   * via `setRegionVisibility`. */
   regionSecret = $state<boolean>(false);
+  /** One `SceneTool` instance per `ToolId`, built once in the constructor. */
   readonly #tools: Record<ToolId, SceneTool>;
 
   /** Builds each tool factory once, closing over `ctx` (and `this` for the factories that read
@@ -164,6 +210,7 @@ export class ToolController {
    * @param ctx The tool context every factory closes over.
    * @example
    * ```
+   * declare const ctx: ToolContext;
    * const controller = new ToolController(ctx);
    * ```
    */
@@ -186,6 +233,7 @@ export class ToolController {
    * @param id The tool to activate (or clear, when it is already the active one).
    * @example
    * ```
+   * declare const controller: ToolController;
    * controller.toggle("wall");
    * ```
    */
@@ -208,6 +256,8 @@ export class ToolController {
  * @returns A `SceneTool` implementing only `onPointerDown` (placement is a single click).
  * @example
  * ```
+ * declare const ctx: ToolContext;
+ * declare const controller: ToolController;
  * const tool = makePlaceTool(ctx, controller);
  * ```
  */
@@ -221,7 +271,11 @@ export function makePlaceTool(ctx: ToolContext, controller: ToolController): Sce
       if (actorId) {
         const actor = ctx.documents.get(actorId);
         if (!actor) return false;
-        const mode = (actor.engine as { prototype?: boolean } | undefined)?.prototype ? "instance" : "link";
+        const mode = (actor.engine as {
+          /** Whether this actor is a reusable prototype; when true, a placed token instances
+           * (embeds a frozen copy) rather than links (shares the live document). */
+          prototype?: boolean;
+        } | undefined)?.prototype ? "instance" : "link";
         ctx.dispatchIntent([{ op: "create", doc: buildTokenFromActor(ctx.world, scene.id, actor, mode, c, scene.size) }]);
         // A unique (linked) actor places once by default: clear the selection so repeated
         // clicks don't stamp duplicate live-views. The user can opt to keep it selected
@@ -256,7 +310,9 @@ export function makePlaceTool(ctx: ToolContext, controller: ToolController): Sce
  * @returns `true` when the gesture has visible extent and should persist.
  * @example
  * ```
- * if (hasExtent("rect", anchor, b, [])) commitDrawing();
+ * declare const anchor: Point;
+ * declare const b: Point;
+ * const shouldPersist = hasExtent("rect", anchor, b, []);
  * ```
  */
 function hasExtent(mode: DrawMode, a: Point, b: Point, freehand: number[]): boolean {
@@ -269,13 +325,14 @@ const WALL_COLOR = 0xd06060;
 
 /** Drag to draw a wall segment (snapped endpoints); release persists a `wall` doc
  * (`blocksSight`+`blocksMove`+`blocksLight`, all three). The server's collision check reads the
- * same `seg`. The tool rail hides this tool from non-GMs (`ToolRail.svelte`'s `visibleTools`
+ * same `seg`. The tool rail hides this tool from non-GMs (`ToolRail`'s `visibleTools`
  * filter) — that is a UI-only visibility gate, not a permission this factory itself checks or
  * enforces. No active scene → unhandled.
  * @param ctx The tool context; reads the active scene, snaps points, dispatches the create.
  * @returns A `SceneTool` implementing the drag-to-draw gesture.
  * @example
  * ```
+ * declare const ctx: ToolContext;
  * const tool = makeWallTool(ctx);
  * ```
  */
@@ -316,7 +373,7 @@ export function makeWallTool(ctx: ToolContext): SceneTool {
 }
 
 /** Region preview stroke color (distinct from walls/measure route). Actual persisted fill/stroke
- * is behavior-tinted by the render layer (`region-view.ts`); this is just the drag preview. */
+ * is behavior-tinted by the render layer (`RegionView.toSpec`); this is just the drag preview. */
 const REGION_PREVIEW_COLOR = 0xd0a030;
 
 /** Author a vector-shaped region: rect/circle drag two opposite corners; polygon is a freehand
@@ -325,7 +382,7 @@ const REGION_PREVIEW_COLOR = 0xd0a030;
  * Create-only (no edit UI) — mirrors `makeWallTool`'s precedent, still accurate: `makeWallTool`
  * likewise has no update path, only create-on-release. Editing behavior/cost/visibility on an
  * already-placed region has no dedicated UI; a GM re-authors by delete+recreate, or toggles
- * `enabled` server-side. The tool rail hides this tool from non-GMs (`ToolRail.svelte`'s
+ * `enabled` server-side. The tool rail hides this tool from non-GMs (`ToolRail`'s
  * `visibleTools` filter) — a UI-only visibility gate, not a permission this factory itself
  * checks or enforces.
  * @param ctx The tool context; reads the active scene, snaps points, dispatches the create.
@@ -334,6 +391,8 @@ const REGION_PREVIEW_COLOR = 0xd0a030;
  * @returns A `SceneTool` implementing the drag-to-author gesture.
  * @example
  * ```
+ * declare const ctx: ToolContext;
+ * declare const controller: ToolController;
  * const tool = makeRegionTool(ctx, controller);
  * ```
  */
@@ -392,10 +451,18 @@ export function makeRegionTool(ctx: ToolContext, controller: ToolController): Sc
  * @returns The preview polyline plus whether it should render closed.
  * @example
  * ```
+ * declare const anchor: Point;
+ * declare const b: Point;
  * const { points, closed } = regionShapePath("circle", anchor, b, []);
  * ```
  */
-function regionShapePath(mode: RegionShapeMode, a: Point, b: Point, freehand: number[]): { points: number[]; closed: boolean } {
+function regionShapePath(mode: RegionShapeMode, a: Point, b: Point, freehand: number[]): {
+  /** The flat overlay polyline for the in-progress drag preview. */
+  points: number[];
+  /** Whether the overlay should render as a closed ring (always `true` here — a region is
+   * always an area). */
+  closed: boolean;
+} {
   switch (mode) {
     case "rect":
       return { points: rectPoints(a.x, a.y, b.x, b.y), closed: true };
@@ -408,7 +475,7 @@ function regionShapePath(mode: RegionShapeMode, a: Point, b: Point, freehand: nu
 
 /** The persisted `engine.shape.points` layout for `mode`: rect=[x0,y0,x1,y1], circle=[cx,cy,r],
  * polygon=[x0,y0,x1,y1,...] — matches `parse_region_shape`'s own dispatch on point count
- * (`src/server/src/scene/regions.rs:314-330`: `"rect"` requires exactly 4 points, `"circle"`
+ * (`"rect"` requires exactly 4 points, `"circle"`
  * exactly 3, `"polygon"` an even count ≥6). For `"circle"` this is the raw `[cx, cy, r]` triple,
  * NOT `regionShapePath`'s tessellated preview ring — the two are deliberately different shapes
  * for the same mode and are not interchangeable.
@@ -419,6 +486,8 @@ function regionShapePath(mode: RegionShapeMode, a: Point, b: Point, freehand: nu
  * @returns The flat points array to persist as `engine.shape.points`.
  * @example
  * ```
+ * declare const anchor: Point;
+ * declare const b: Point;
  * const points = regionShapeGeometry("rect", anchor, b, []);
  * ```
  */
@@ -440,6 +509,7 @@ function regionShapeGeometry(mode: RegionShapeMode, a: Point, b: Point, freehand
  * @returns A `SceneTool` implementing the click-to-ping gesture.
  * @example
  * ```
+ * declare const ctx: ToolContext;
  * const tool = makePingTool(ctx);
  * ```
  */
@@ -482,6 +552,7 @@ export function makePingTool(ctx: ToolContext): SceneTool {
  * @returns A `SceneTool` implementing the drag-to-measure gesture (plain or routed).
  * @example
  * ```
+ * declare const ctx: ToolContext;
  * const tool = makeMeasureTool(ctx);
  * ```
  */
@@ -535,6 +606,9 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
    * @returns `true` when both conditions hold.
    * @example
    * ```
+   * declare function inRouteMode(): boolean;
+   * declare const waypoints: [number, number][];
+   * declare const snapped: Point;
    * if (inRouteMode()) waypoints.push([snapped.x, snapped.y]);
    * ```
    */
@@ -554,6 +628,7 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
    * exactly one token.
    * @example
    * ```
+   * declare function tokenCenter(): [number, number] | null;
    * const start = tokenCenter();
    * ```
    */
@@ -561,7 +636,12 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
     const sel = ctx.tokenSelection;
     if (!sel || sel.ids.size !== 1) return null;
     const [id] = [...sel.ids];
-    const eng = ctx.documents.get(id)?.engine as { x?: number; y?: number } | undefined;
+    const eng = ctx.documents.get(id)?.engine as {
+      /** Token center x in scene coords; absent ⇒ falls back to 0. */
+      x?: number;
+      /** Token center y in scene coords; absent ⇒ falls back to 0. */
+      y?: number;
+    } | undefined;
     return [eng?.x ?? 0, eng?.y ?? 0];
   }
 
@@ -573,11 +653,12 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
    * field, and both are reached only when exactly one token is selected — so `token` is
    * never `undefined` there and the server always DERIVES the authoritative footprint from
    * that token document instead, ignoring this value entirely
-   * (`src/server/src/ws/conn.rs:681-700`; mirrors `footprintFor`'s own framing above). It is
+   * (`handle_pathfind`; mirrors `footprintFor`'s own framing above). It is
    * not dead code: a future call site passing no `token` would fall back to this value.
    * @returns The footprint radius in grid cells.
    * @example
    * ```
+   * declare function resolveFootprint(): number;
    * const fp = resolveFootprint();
    * ```
    */
@@ -594,6 +675,7 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
    * @returns The selected token id, or `undefined`.
    * @example
    * ```
+   * declare function selectedTokenId(): string | undefined;
    * const token = selectedTokenId();
    * ```
    */
@@ -609,7 +691,7 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
    * issued — last-write-wins coalescing of stale RESPONSES, a separate mechanism from the
    * leading-edge debounce above it (which only throttles REQUEST volume; see the
    * `pendingSeq`/`lastRouteRequestAt` field comments). The final element of `allWaypoints` IS
-   * the goal (server contract: goal = waypoints.last(), spec §3.2).
+   * the goal, matching `SceneEcs::pathfind`'s `waypoints[last]`-is-destination contract.
    * @param scene The active scene.
    * @param scene.id The scene document id.
    * @param scene.perCell The distance-per-cell scale used for the budget label.
@@ -618,10 +700,25 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
    * @param goal The provisional goal, in scene coords (post-snap).
    * @example
    * ```
+   * declare function requestRoute(
+   *   scene: { id: string; perCell: number; unit: string },
+   *   start: [number, number],
+   *   goal: Point,
+   * ): void;
+   * declare const scene: { id: string; perCell: number; unit: string };
+   * declare const start: [number, number];
+   * declare const goal: Point;
    * requestRoute(scene, start, goal);
    * ```
    */
-  function requestRoute(scene: { id: string; perCell: number; unit: string }, start: [number, number], goal: Point): void {
+  function requestRoute(scene: {
+    /** The scene document id, passed as `Pathfind`'s scene. */
+    id: string;
+    /** Distance-per-cell scale used for the budget label. */
+    perCell: number;
+    /** Distance unit label (e.g. `"ft"`) used for the budget label. */
+    unit: string;
+  }, start: [number, number], goal: Point): void {
     if (!ctx.pathfind) return;
     const seq = ++pendingSeq;
     const fp = resolveFootprint();
@@ -659,6 +756,7 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
    * tool has moved on (teardown, tool swap, route clear) would be its own bug.
    * @example
    * ```
+   * declare function clearPendingRouteTimer(): void;
    * clearPendingRouteTimer();
    * ```
    */
@@ -680,7 +778,8 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
    * hover-only stop (no further `onPointerMove`) needs one.
    * @example
    * ```
-   * schedulePendingRouteFire(goal); // eventually invokes firePendingRoute
+   * declare function firePendingRoute(): void;
+   * firePendingRoute(); // fires the deferred route-preview request, if one is pending
    * ```
    */
   function firePendingRoute(): void {
@@ -705,6 +804,8 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
    * @param goal The suppressed goal to fire once the cooldown elapses.
    * @example
    * ```
+   * declare function schedulePendingRouteFire(goal: Point): void;
+   * declare const goal: Point;
    * schedulePendingRouteFire(goal);
    * ```
    */
@@ -721,6 +822,7 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
    * first move always fires immediately rather than inheriting a stale cooldown.
    * @example
    * ```
+   * declare function clearRoute(): void;
    * clearRoute();
    * ```
    */
@@ -741,9 +843,9 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
    * store Event (token → stop). Sample-driven playback wins regardless of which of the two
    * arrives first, and this doc deliberately asserts no ordering between them: if
    * `animateSamples` registered first, `TokenAnimator.setTarget`'s `samplesAnim` guard
-   * (`src/client/render/src/token-animator.ts:252`) makes the Event a no-op; if the Event
-   * landed first, the ease tween it started is deleted when `animateSamples` registers
-   * (`token-animator.ts:218`). Either way the broadcast trajectory owns the token's motion.
+   * makes the Event a no-op; if the Event
+   * landed first, the ease tween it started is deleted when `TokenAnimator.animateSamples` registers.
+   * Either way the broadcast trajectory owns the token's motion.
    * On reject, clears the route overlay (no move).
    *
    * Reuses the last-previewed `PathResult.path` (`lastPreviewedPath`) when already computed
@@ -773,14 +875,16 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
    * @param goal The commit target, in scene coords (post-snap).
    * @example
    * ```
+   * declare function commitRoute(goal: Point): void;
+   * declare const goal: Point;
    * commitRoute(goal);
    * ```
    */
   function commitRoute(goal: Point): void {
     if (!ctx.pathfind || !ctx.moveRequest || !ctx.tokenSelection || ctx.tokenSelection.ids.size !== 1) return;
-    // Continuous-scene execution is wired end-to-end (M10f-3): the server move-execution path
-    // is engine-agnostic since M10f-2 (no movementModel branch anywhere), so committing a route
-    // proceeds identically for grid-stepped and continuous scenes.
+    // Never branches on `movementModel`: the server move-execution path
+    // (`execute_move`/`gate_walk`) is engine-agnostic, so committing a route proceeds
+    // identically for grid-stepped and continuous scenes.
     const scene = activeScene(ctx);
     const start = tokenCenter();
     if (!scene || !start) return;
@@ -897,7 +1001,7 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
         // Do NOT call clearRoute() here — that would bump pendingSeq and abort the commit.
         if (committing) return;
         // Release: clear overlays (mid-gesture-clear invariant). The actual move is
-        // handled by the select-move tool / M10e-4 server gate — not here.
+        // handled by the select-move tool / the server's `execute_move` gate — not here.
         clearRoute();
         return;
       }
@@ -931,7 +1035,7 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
  * different geometry per tool. Each tool is internally consistent across its OWN modes (this
  * one never mixes bbox and rotated-square); no design doc names the cross-tool split itself as
  * a decision, so treat it as consistent-by-construction rather than a documented tradeoff — it
- * mirrors the render layer's own `drawing-view.ts` vs `template-view.ts` split, not a bug.
+ * mirrors the render layer's own `DrawingView.toSpec` vs `TemplateView.toSpec` split, not a bug.
  * @param mode The active draw mode; only `"freehand"` consults `freehand`.
  * @param a The drag start point (raw pointer scene coords; the sole caller, `makeDrawTool`,
  * never snaps).
@@ -941,10 +1045,17 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
  * @returns The preview/persist points plus whether the shape should render/persist closed.
  * @example
  * ```
+ * declare const anchor: Point;
+ * declare const b: Point;
  * const { points, closed } = shapePath("rect", anchor, b, []);
  * ```
  */
-function shapePath(mode: DrawMode, a: Point, b: Point, freehand: number[]): { points: number[]; closed: boolean } {
+function shapePath(mode: DrawMode, a: Point, b: Point, freehand: number[]): {
+  /** The preview/persist polyline for `mode`. */
+  points: number[];
+  /** Whether the shape should render/persist closed. */
+  closed: boolean;
+} {
   switch (mode) {
     case "freehand":
       return { points: freehand, closed: false };
@@ -969,6 +1080,8 @@ function shapePath(mode: DrawMode, a: Point, b: Point, freehand: number[]): { po
  * @returns A `SceneTool` implementing the drag-to-draw gesture.
  * @example
  * ```
+ * declare const ctx: ToolContext;
+ * declare const controller: ToolController;
  * const tool = makeDrawTool(ctx, controller);
  * ```
  */
@@ -1020,7 +1133,7 @@ export function makeDrawTool(ctx: ToolContext, controller: ToolController): Scen
  * bbox `shapePath`'s `"rect"` produces, despite the same mode-name string. This tool is
  * internally consistent across its own modes (always the rotated square for `"rect"`); the
  * cross-tool split with `shapePath` is consistent-by-construction, not a documented tradeoff —
- * it mirrors the render layer's `template-view.ts` vs `drawing-view.ts` split; `"line"` is the two
+ * it mirrors the render layer's `TemplateView.toSpec` vs `DrawingView.toSpec` split; `"line"` is the two
  * endpoints computed from `direction`/`size`, open.
  * @param mode The active template shape mode.
  * @param ax The anchor x (scene coords, post-snap).
@@ -1030,10 +1143,18 @@ export function makeDrawTool(ctx: ToolContext, controller: ToolController): Scen
  * @returns The preview/persist points plus whether the shape should render/persist closed.
  * @example
  * ```
+ * declare const anchor: Point;
+ * declare const size: number;
+ * declare const direction: number;
  * const { points, closed } = templatePath("cone", anchor.x, anchor.y, size, direction);
  * ```
  */
-function templatePath(mode: TemplateMode, ax: number, ay: number, size: number, direction: number): { points: number[]; closed: boolean } {
+function templatePath(mode: TemplateMode, ax: number, ay: number, size: number, direction: number): {
+  /** The preview/persist polyline (or ring) for `mode`. */
+  points: number[];
+  /** Whether the shape should render/persist closed. */
+  closed: boolean;
+} {
   switch (mode) {
     case "circle":
       return { points: circlePoints(ax, ay, size), closed: true };
@@ -1058,10 +1179,18 @@ function templatePath(mode: TemplateMode, ax: number, ay: number, size: number, 
  * @returns The resolved size (scene units) and direction (degrees).
  * @example
  * ```
+ * declare const anchor: Point;
+ * declare const b: Point;
+ * declare const scene: { size: number };
  * const { size, direction } = sizeDir(anchor, b, scene.size);
  * ```
  */
-function sizeDir(a: Point, b: Point, cell: number): { size: number; direction: number } {
+function sizeDir(a: Point, b: Point, cell: number): {
+  /** The resolved template size in scene units. */
+  size: number;
+  /** The resolved facing angle in degrees. */
+  direction: number;
+} {
   const dx = b.x - a.x;
   const dy = b.y - a.y;
   const d = Math.hypot(dx, dy);
@@ -1078,14 +1207,15 @@ function sizeDir(a: Point, b: Point, cell: number): { size: number; direction: n
  * within one scene unit of the SNAPPED anchor — in a snapping scene an ordinary click lands
  * some arbitrary fraction of a cell away from that anchor, so it takes the normal branch and
  * produces a small, effectively arbitrary template instead of the intended one-cell default.
- * Known, logged defect: see the `makeTemplateTool` near-zero-drag entry in `docs/OPEN_BUGS.md`
- * (referenced by tool name, not by title, so a retitle cannot orphan this pointer).
- * Comment-only note; the behavior itself is unchanged here.
+ * TODO: make an ordinary (unsnapped) click produce the intended one-cell default template
+ * instead of an arbitrary small one.
  * @param ctx The tool context; reads the active scene, snaps the anchor, dispatches the create.
  * @param controller Supplies the configured `templateMode`/`templateColor`.
  * @returns A `SceneTool` implementing the drag-to-place gesture.
  * @example
  * ```
+ * declare const ctx: ToolContext;
+ * declare const controller: ToolController;
  * const tool = makeTemplateTool(ctx, controller);
  * ```
  */
@@ -1154,6 +1284,7 @@ const DRAG_THROTTLE_MS = 50;
  * @returns A `SceneTool` implementing the drag-to-move-selection gesture.
  * @example
  * ```
+ * declare const ctx: ToolContext;
  * const tool = makeSelectMoveTool(ctx);
  * ```
  */
@@ -1173,23 +1304,31 @@ export function makeSelectMoveTool(ctx: ToolContext): SceneTool {
    * @returns The token's center in scene coords.
    * @example
    * ```
+   * declare function centerOf(id: string): Point;
+   * declare const tokenId: string;
    * const c = centerOf(tokenId);
    * ```
    */
   const centerOf = (id: string): Point => {
-    const e = ctx.documents.get(id)?.engine as { x?: number; y?: number } | undefined;
+    const e = ctx.documents.get(id)?.engine as {
+      /** Token center x in scene coords; absent ⇒ falls back to 0. */
+      x?: number;
+      /** Token center y in scene coords; absent ⇒ falls back to 0. */
+      y?: number;
+    } | undefined;
     return { x: e?.x ?? 0, y: e?.y ?? 0 };
   };
 
   /** A closed ring per selected token into the tool overlay (cleared when empty). Circle
    * tokens receive an ellipse ring, square tokens an axis-aligned box — both keyed off
    * `resolveTokenBox(...).shape`, the SAME field `topTokenAt`'s hit-test
-   * (`src/modules/scene-tools/src/hit-test.ts:28-37`) and the render layer's faction border
-   * (`PixiBackend.updateTokenBorder`, `src/client/render/src/pixi-backend.ts:555-561`) also
+   * and the render layer's faction border
+   * (`PixiBackend.updateTokenBorder`) also
    * read — so the ring, hit-test, and faction border agree on shape structurally (one shared
    * source), not by three independent implementations happening to match.
    * @example
    * ```
+   * declare function drawSelection(): void;
    * drawSelection();
    * ```
    */
@@ -1219,6 +1358,7 @@ export function makeSelectMoveTool(ctx: ToolContext): SceneTool {
    * @param delta The drag offset from grab origin (scene coords, unsnapped).
    * @example
    * ```
+   * declare function previewMoves(delta: Point): void;
    * previewMoves({ x: 10, y: 0 });
    * ```
    */
@@ -1243,6 +1383,7 @@ export function makeSelectMoveTool(ctx: ToolContext): SceneTool {
    * @param delta The drag offset from grab origin (scene coords, unsnapped) to commit.
    * @example
    * ```
+   * declare function commitMoves(delta: Point): void;
    * commitMoves({ x: 10, y: 0 });
    * ```
    */
@@ -1251,7 +1392,13 @@ export function makeSelectMoveTool(ctx: ToolContext): SceneTool {
       const ops: WireOperation[] = [];
       for (const [id, o] of origins) {
         const target = ctx.scene.snap({ x: o.x + delta.x, y: o.y + delta.y });
-        const eng = ctx.documents.get(id)?.engine as { x?: number; y?: number } | undefined;
+        const eng = ctx.documents.get(id)?.engine as {
+          /** The token's current stored x, read RAW (not resolved/defaulted) so the dispatched
+           * update's `old` matches the server's field-level optimistic-concurrency check. */
+          x?: number;
+          /** The token's current stored y, read RAW for the same reason as `x`. */
+          y?: number;
+        } | undefined;
         ops.push({ op: "update", doc_id: id, changes: [
           { path: "/engine/x", old: eng?.x ?? null, new: target.x },
           { path: "/engine/y", old: eng?.y ?? null, new: target.y },

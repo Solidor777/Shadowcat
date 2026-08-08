@@ -1,14 +1,14 @@
-//! Integration proof (M11d-2): `handle_send_message`'s roll stage actually
+//! Integration proof: `handle_send_message`'s roll stage actually
 //! executes dice notation at ingest, authors a `MessageKind::System` whisper
 //! notice on failure instead of the intended message, interleaves inline
 //! rolls/buttons with sanitized text, and never re-executes a roll on edit.
 //! Drives `handle_send_message`/`handle_edit_message` directly, mirroring
-//! `chat_content.rs`'s fixture shape.
+//! `chat_content`'s fixture shape.
 
 use shadowcat::chat::{
     build_link_preview_client, handle_edit_message, handle_send_message, Audience,
-    LinkPreviewCache, LinkPreviewDeps, MessageEngine, MessageKind, PreviewRateLimiter, Segment,
-    SendMessageError,
+    LinkPreviewCache, LinkPreviewDeps, MessageEngine, MessageKind, MessageRequestCtx,
+    PreviewRateLimiter, Segment, SendMessageError,
 };
 use shadowcat::data::command::{Command, Operation};
 use shadowcat::data::document::{Document, WorldRole};
@@ -84,21 +84,23 @@ impl Fixture {
 
     async fn send(&self, content: &str) -> Result<Command, SendMessageError> {
         handle_send_message(
-            &self.room,
-            &self.repo,
-            &self.alice,
-            &self.rate,
-            LinkPreviewDeps {
-                client: &self.preview_client,
-                cache: &self.preview_cache,
-                rate: &self.preview_rate,
+            MessageRequestCtx {
+                room: &self.room,
+                repo: &self.repo,
+                ctx: &self.alice,
+                rate: &self.rate,
+                preview: LinkPreviewDeps {
+                    client: &self.preview_client,
+                    cache: &self.preview_cache,
+                    rate: &self.preview_rate,
+                },
+                now: 1,
+                budget_per_min: 60,
             },
             "all".into(),
             content.into(),
             None,
             Audience::Public,
-            1,
-            60,
         )
         .await
     }
@@ -263,19 +265,21 @@ async fn edit_of_roll_message_is_immutable() {
     let sent = f.send("/roll 1d6").await.unwrap();
     let id = f.stored_message_doc(&sent).await.id;
     let r = handle_edit_message(
-        &f.room,
-        &f.repo,
-        &f.alice,
-        &f.rate,
-        LinkPreviewDeps {
-            client: &f.preview_client,
-            cache: &f.preview_cache,
-            rate: &f.preview_rate,
+        MessageRequestCtx {
+            room: &f.room,
+            repo: &f.repo,
+            ctx: &f.alice,
+            rate: &f.rate,
+            preview: LinkPreviewDeps {
+                client: &f.preview_client,
+                cache: &f.preview_cache,
+                rate: &f.preview_rate,
+            },
+            now: 2,
+            budget_per_min: 60,
         },
         id,
         "/roll 1d20".into(),
-        2,
-        60,
     )
     .await;
     assert!(matches!(r, Err(SendMessageError::RollImmutable)), "{r:?}");
@@ -289,19 +293,21 @@ async fn edit_into_roll_is_rejected() {
     let sent = f.send("hello").await.unwrap();
     let id = f.stored_message_doc(&sent).await.id;
     let r = handle_edit_message(
-        &f.room,
-        &f.repo,
-        &f.alice,
-        &f.rate,
-        LinkPreviewDeps {
-            client: &f.preview_client,
-            cache: &f.preview_cache,
-            rate: &f.preview_rate,
+        MessageRequestCtx {
+            room: &f.room,
+            repo: &f.repo,
+            ctx: &f.alice,
+            rate: &f.rate,
+            preview: LinkPreviewDeps {
+                client: &f.preview_client,
+                cache: &f.preview_cache,
+                rate: &f.preview_rate,
+            },
+            now: 2,
+            budget_per_min: 60,
         },
         id,
         "/roll 1d6".into(),
-        2,
-        60,
     )
     .await;
     assert!(matches!(r, Err(SendMessageError::RollImmutable)), "{r:?}");
@@ -326,19 +332,21 @@ async fn edit_content_with_inline_span_stays_literal_text() {
     let sent = f.send("hello").await.unwrap();
     let id = f.stored_message_doc(&sent).await.id;
     let edited = handle_edit_message(
-        &f.room,
-        &f.repo,
-        &f.alice,
-        &f.rate,
-        LinkPreviewDeps {
-            client: &f.preview_client,
-            cache: &f.preview_cache,
-            rate: &f.preview_rate,
+        MessageRequestCtx {
+            room: &f.room,
+            repo: &f.repo,
+            ctx: &f.alice,
+            rate: &f.rate,
+            preview: LinkPreviewDeps {
+                client: &f.preview_client,
+                cache: &f.preview_cache,
+                rate: &f.preview_rate,
+            },
+            now: 2,
+            budget_per_min: 60,
         },
         id,
         "[[1d6]]".into(),
-        2,
-        60,
     )
     .await
     .unwrap();
@@ -353,12 +361,12 @@ async fn edit_content_with_inline_span_stays_literal_text() {
     );
 }
 
-/// (g) A stored pre-M11d-2 `MessageEngine` JSON (no roll segments) still
+/// (g) A stored `MessageEngine` JSON with no roll segments still
 /// round-trips — the roll `Segment` variants are additive. RollOutcome
 /// missing-key back-compat is pinned separately in `dice::outcome`'s
 /// `roll_outcome_missing_defaulted_keys_deserializes`.
 #[test]
-fn stored_pre_m11d2_message_still_deserializes() {
+fn stored_message_without_roll_segments_still_deserializes() {
     let j = serde_json::json!({
         "channel": "all",
         "user_owner": Uuid::from_u128(1),

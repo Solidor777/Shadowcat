@@ -3,7 +3,12 @@
  * menuitem's own activation IS selecting it via Enter/Space/click). Framework- and
  * dockview-free by construction — pure keyboard-event logic only. */
 export interface MenuKeyboard {
+  /** Move DOM focus to the item at `index`, wrapping in both directions.
+   * @param index - Target index; wrapped modulo the current item count. */
   focusItem(index: number): void;
+  /** Handle one keydown on the item at `index` per the WAI-ARIA APG Menu Button pattern.
+   * @param event - The native keydown event.
+   * @param index - The index of the item that currently has focus. */
   handleKeydown(event: KeyboardEvent, index: number): void;
 }
 

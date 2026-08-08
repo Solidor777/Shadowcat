@@ -1,13 +1,25 @@
 // Pure, order-independent 3-way merge primitives (client-core). The server never merges;
-// the merge is computed here and applied as an ordinary batched `Update` (M13e). Every value
+// the merge is computed here and applied as an ordinary batched `Update`. Every value
 // is plain JSON (objects recurse key-by-key, arrays are opaque leaves, scalars are leaves).
 import { setPointer, getPointer } from "./store";
 import type { WireDocument } from "./wire";
 
 /** One structural change between two JSON trees at an RFC-6901 pointer. */
 export type Diff =
-  | { path: string; kind: "set"; value: unknown }
-  | { path: string; kind: "delete" };
+  | {
+      /** The RFC-6901 pointer where the change occurred. */
+      path: string;
+      /** A value was written or overwritten at `path`. */
+      kind: "set";
+      /** The new value at `path`. */
+      value: unknown;
+    }
+  | {
+      /** The RFC-6901 pointer where the change occurred. */
+      path: string;
+      /** The key/element at `path` was removed (no value). */
+      kind: "delete";
+    };
 
 /** Narrows `v` to a non-null, non-array object — the recursion boundary `structuralDiff`/
  * `deepEqual` use to decide "recurse key-by-key" vs "treat as an opaque leaf". Not exported.
@@ -154,10 +166,16 @@ export function deletePointer(root: unknown, pointer: string): void {
  * sync. `parent`/`child` are `undefined` when that side deleted the key. `parentKind` records
  * how "take template" resolves it (set the parent value, or delete the key). */
 export type Conflict = {
+  /** The RFC-6901 pointer of the conflicting field. */
   path: string;
+  /** The value at `path` in the last-synced snapshot both sides diverged from. */
   base: unknown;
+  /** The template/parent side's current value at `path`; `undefined` iff the parent deleted it. */
   parent: unknown;
+  /** The instance/child side's current value at `path`; `undefined` iff the child deleted it. */
   child: unknown;
+  /** How "take template" (`takeTemplate`) resolves this conflict: `"set"` writes `parent`,
+   * `"delete"` removes the key. */
   parentKind: "set" | "delete";
 };
 
@@ -206,7 +224,11 @@ function pathsOverlap(a: string, b: string): boolean {
 function sameResult(a: Diff, b: Diff): boolean {
   if (a.kind !== b.kind) return false;
   if (a.kind === "delete") return true;
-  return deepEqual(a.value, (b as { value: unknown }).value);
+  return deepEqual(
+    a.value,
+    (b as { /** The `set` diff's value, narrowed past the `Diff` union's `"delete"` arm. */ value: unknown })
+      .value,
+  );
 }
 
 /** Apply one `Diff` into `root` (mutates): `set` clones `d.value` before splicing it in (`d.value`
@@ -218,6 +240,7 @@ function sameResult(a: Diff, b: Diff): boolean {
  * @example
  * ```
  * // internal helper; not part of the public API
+ * declare const root: unknown;
  * applyDiff(root, { path: "/hp", kind: "set", value: 7 });
  * ```
  */
@@ -258,7 +281,12 @@ export function merge3Tree(
   parentNow: unknown,
   childNow: unknown,
   exclusions: string[],
-): { merged: unknown; conflicts: Conflict[] } {
+): {
+  /** The merged tree (child-wins default for unresolved conflicts). */
+  merged: unknown;
+  /** Unresolved conflicts, left at the child value in `merged`. */
+  conflicts: Conflict[];
+} {
   const parentDiff = structuralDiff(base, parentNow).filter((d) => !isPlacementExcluded(d.path, exclusions));
   const childDiff = structuralDiff(base, childNow);
   const merged = structuredClone(childNow) as unknown;
@@ -308,35 +336,56 @@ export function takeTemplate(root: unknown, c: Conflict): void {
 /** The mergeable bands of a live document; `embedded` children are full documents (envelope
  * preserved). Produced by `merge3`, written whole-band by `planToUpdate`. */
 export type MergeBands = {
+  /** The document's `name` band after merge. */
   name: string | null;
+  /** The document's `engine` band after merge. */
   engine: unknown;
+  /** The document's `system` band after merge. */
   system: unknown;
+  /** Merged embedded collections, keyed by collection name; each child is a full document
+   * (envelope preserved), not a bands-only record. */
   embedded: Record<string, WireDocument[]>;
 };
 
 /** One embedded child inside a `base` snapshot: bands + the `sourceId` correlation key (the
  * child's `source.id` at sync time — the template child's id). Recurses (finite-depth embedding). */
 export type EmbeddedBaseChild = {
+  /** The child's `source.id` at sync time — the correlation key `merge3Embedded` matches
+   * instance/template children by. */
   sourceId: string;
+  /** The child's `name` band at sync time. */
   name: string | null;
+  /** The child's `engine` band at sync time. */
   engine: unknown;
+  /** The child's `system` band at sync time. */
   system: unknown;
+  /** The child's own embedded collections at sync time, recursively in the same shape. */
   embedded: Record<string, EmbeddedBaseChild[]>;
 };
 
 /** The opaque `Document.base` snapshot shape (client-owned). Top-level bands + recursive
  * embedded content keyed for provenance correlation. */
 export type MergeBase = {
+  /** The document's `name` band at sync time. */
   name: string | null;
+  /** The document's `engine` band at sync time. */
   engine: unknown;
+  /** The document's `system` band at sync time. */
   system: unknown;
+  /** Embedded collections at sync time, keyed by collection name, each reduced to
+   * `EmbeddedBaseChild` records (not full documents). */
   embedded: Record<string, EmbeddedBaseChild[]>;
 };
 
 /** Result of a 3-way merge: the child-wins-default merged bands + the conflicts to resolve. */
-export type MergePlan = { mergedBands: MergeBands; conflicts: Conflict[] };
+export type MergePlan = {
+  /** The merged bands (child-wins default for unresolved conflicts). */
+  mergedBands: MergeBands;
+  /** Every unresolved conflict, top-level and embedded. */
+  conflicts: Conflict[];
+};
 
-/** Per-`doc_type` instance-local paths that never merge (E8).
+/** Per-`doc_type` instance-local paths that never merge.
  * @param docType The document's `doc_type`.
  * @returns The list of `/engine/*` pointers excluded from template merge for this doc type
  * (currently only `token`'s placement fields; every other doc type gets `[]`).
@@ -418,6 +467,7 @@ function baseFromChild(b: EmbeddedBaseChild): MergeBase {
  * @example
  * ```
  * // internal helper; not part of the public API
+ * declare const someWireDocument: WireDocument;
  * bandsMergeBase(someWireDocument);
  * ```
  */
@@ -442,6 +492,8 @@ function bandsMergeBase(d: WireDocument): MergeBase {
  * @example
  * ```
  * // internal helper; not part of the public API
+ * declare const someWireDocument: WireDocument;
+ * declare const someBaseChild: EmbeddedBaseChild;
  * childUnchangedVsBase(someWireDocument, someBaseChild);
  * ```
  */
@@ -460,6 +512,8 @@ function childUnchangedVsBase(child: WireDocument, b: EmbeddedBaseChild): boolea
  * @example
  * ```
  * // internal helper; not part of the public API
+ * declare const someWireDocument: WireDocument;
+ * declare const someMergeBands: MergeBands;
  * applyMergedBands(someWireDocument, someMergeBands);
  * ```
  */
@@ -481,6 +535,7 @@ function applyMergedBands(child: WireDocument, bands: MergeBands): WireDocument 
  * @example
  * ```
  * // internal helper; not part of the public API
+ * declare const someConflicts: Conflict[];
  * prefixConflicts(someConflicts, "items", 0);
  * ```
  */
@@ -490,7 +545,7 @@ function prefixConflicts(conflicts: Conflict[], coll: string, idx: number): Conf
 }
 
 /** 3-way merge of the embedded collections, correlating instance↔template children by
- * `source.id`↔`id` (E7), using `base.embedded[coll][*].sourceId` as the membership record.
+ * `source.id`↔`id`, using `base.embedded[coll][*].sourceId` as the membership record.
  * Not exported (folded into `merge3`'s public surface).
  * @param base The last-synced `MergeBase.embedded` snapshot.
  * @param parentEmbedded The template's current `embedded` collections.
@@ -508,7 +563,12 @@ function merge3Embedded(
   base: Record<string, EmbeddedBaseChild[]>,
   parentEmbedded: Record<string, WireDocument[]>,
   childEmbedded: Record<string, WireDocument[]>,
-): { merged: Record<string, WireDocument[]>; conflicts: Conflict[] } {
+): {
+  /** The merged embedded collections, keyed by collection name. */
+  merged: Record<string, WireDocument[]>;
+  /** Conflicts found while merging embedded children, path-prefixed with `/embedded/<coll>/<idx>`. */
+  conflicts: Conflict[];
+} {
   const merged: Record<string, WireDocument[]> = {};
   const conflicts: Conflict[] = [];
   const colls = new Set([...Object.keys(base), ...Object.keys(parentEmbedded), ...Object.keys(childEmbedded)]);
@@ -577,7 +637,7 @@ function merge3Embedded(
 /** Full 3-way merge over the mergeable bands (`name`+`engine`+`system` tree + `embedded`).
  * `exclusions` apply to the top-level doc; embedded children use their own doc_type exclusions.
  * Pure + order-independent. Conflicts default to the child ("keep mine") in `mergedBands`.
- * @param base The last-synced `MergeBase` snapshot. `templates.ts`'s `computePull` passes
+ * @param base The last-synced `MergeBase` snapshot. `computePull` passes
  * `child.base ?? snapshotBase(child)` — a base-less (unstamped) child falls back to a snapshot
  * of ITSELF, not the template: `childDiff` is then empty against that base, so every
  * template-side change auto-applies with zero conflicts (a clean template-wins result),
@@ -612,7 +672,14 @@ export function merge3(
     bandsTree(childNow.name, childNow.engine ?? null, childNow.system),
     exclusions,
   );
-  const m = tree.merged as { name: string | null; engine: unknown; system: unknown };
+  const m = tree.merged as {
+    /** The merged `name` band. */
+    name: string | null;
+    /** The merged `engine` band. */
+    engine: unknown;
+    /** The merged `system` band. */
+    system: unknown;
+  };
   const emb = merge3Embedded(base.embedded, parentNow.embedded, childNow.embedded);
   return {
     mergedBands: { name: m.name, engine: m.engine, system: m.system, embedded: emb.merged },

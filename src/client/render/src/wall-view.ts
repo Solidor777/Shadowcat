@@ -10,6 +10,7 @@ const WALL_WIDTH = 4;
 
 /** Reconciles `doc_type:"wall"` documents into the `walls` layer as line segments. */
 export class WallView {
+  /** Document ids currently tracked in the backend, refreshed each `reconcile()`. */
   private readonly ids = new Set<string>();
 
   /**
@@ -78,7 +79,8 @@ export class WallView {
  * @returns A `ShapeNodeSpec` for the `walls` layer, or `null` if it can't be rendered.
  * @example
  * ```
- * // not exported from @shadowcat/render's index.ts; internal to WallView.reconcile
+ * // not exported from @shadowcat/render; internal to WallView.reconcile
+ * declare const doc: WireDocument;
  * const spec = toSpec(doc); // null if doc.engine.seg is absent or non-finite
  * ```
  */
@@ -86,8 +88,8 @@ function toSpec(doc: WireDocument): ShapeNodeSpec | null {
   const s = doc.engine as WallEngine | undefined;
   if (!s?.seg) return null;
   const { x1, y1, x2, y2 } = s.seg;
-  // `WallEngine` is round-tripped through serde on ingress (`data/engine/mod.rs`'s
-  // `normalize_engine`) but never passed through a `.validate()` call (unlike the
+  // `WallEngine` is round-tripped through serde on ingress (`normalize_engine`) but never
+  // passed through a `.validate()` call (unlike the
   // "token" doc_type), so a non-finite endpoint isn't ruled out server-side; guard here
   // instead (a malformed wall just doesn't render rather than pushing NaN into the
   // geometry).

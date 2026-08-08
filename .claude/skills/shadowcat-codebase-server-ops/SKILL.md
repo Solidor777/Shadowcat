@@ -1,55 +1,54 @@
 ---
 name: shadowcat-codebase-server-ops
-description: "Use when touching Shadowcat's server bootstrap/config/CLI/deployment surface: `src/server/src/main.rs` (entry point, early one-shot CLI branches), `src/server/src/config.rs` (`Cli`/`Config` layering: CLI flag > SHADOWCAT_* env > TOML > default), `src/server/src/db.rs` (single-connection SqlitePool open), or `src/server/src/backup.rs` (whole-server VACUUM-INTO backup/restore, M12.5). Covers the single-binary deployment story, not any one data/document subsystem. Invoke shadowcat-codebase-core first."
+description: "Use when touching Shadowcat's server bootstrap/config/CLI/deployment surface: the `main` module (entry point, early one-shot CLI branches), the `config` module (`Cli`/`Config` layering: CLI flag > SHADOWCAT_* env > TOML > default), the `db` module (single-connection SqlitePool open), or the `backup` module (whole-server VACUUM-INTO backup/restore). Covers the single-binary deployment story, not any one data/document subsystem. Invoke shadowcat-codebase-core first."
 ---
 
 # Shadowcat — Server Bootstrap, Config, and Backup/Restore
 
 Orientation for the parts of the server crate that exist ABOVE any one data subsystem: how the
-binary starts, how configuration is resolved, and how a deployment's data is snapshotted/restored
-(M12.5).
+binary starts, how configuration is resolved, and how a deployment's data is snapshotted/restored.
 
 ## Purpose
 
-`main.rs` is the single entry point for the `shadowcat` binary — normal server startup AND the
+`main` is the single entry point for the `shadowcat` binary — normal server startup AND the
 one-shot `--backup-to`/`--restore-from` CLI modes share it, mutually exclusive with each other and
-with serving. `config.rs` resolves the effective `Config` from four layered sources. `backup.rs`
+with serving. `config` resolves the effective `Config` from four layered sources. `backup`
 is a pure-I/O module (no `AppState`/`SqliteRepository` dependency) providing whole-server backup
 and restore as a deployment-operator tool, not an in-app feature.
 
 ## Key files & seams
 
-- `src/server/src/config.rs` — `Cli` (flat `clap::Parser` struct, no `clap::Subcommand`) →
+- `config` — `Cli` (flat `clap::Parser` struct, no `clap::Subcommand`) →
   `Config::load(cli)` layers CLI flag > `SHADOWCAT_*` env > TOML file > built-in default.
   `Config.db: String` (default `./shadowcat.db`), `Config.assets_dir: Option<String>` (`None` →
   sibling `assets/` beside the db file, via `Config::assets_path()`). `Cli.backup_to`/
   `restore_from: Option<String>` and `Cli.force: bool` are CLI-ONLY triggers — never on `Config`,
   never read from TOML/env (a one-shot operation is not persistent server configuration).
-- `src/server/src/main.rs` — `main()`'s FIRST branch: if both `backup_to` and `restore_from` are
+- `main` — `main()`'s FIRST branch: if both `backup_to` and `restore_from` are
   `Some`, `anyhow::bail!` before `Config::load` even runs. The three fields are cloned OUT of
   `cli` before `Config::load(cli)` consumes it by value. Either flag alone short-circuits to
   `run_backup`/`run_restore` and `return Ok(())` — `SqliteRepository::connect` (the long-lived
   pool) and `axum::serve` are structurally unreachable on that path, not just conditionally
   skipped.
-- `src/server/src/db.rs` — `open_pool(url)`: `SqlitePoolOptions::max_connections(1)`. **Dead
-  code** — its only caller is its own unit test; production startup (`main.rs`) and
-  `backup.rs`/`tests/backup_cli.rs` all open pools independently. The whole server's actual
-  single-connection invariant lives in `SqliteRepository::connect`
-  (`src/server/src/data/sqlite.rs`, [[shadowcat-codebase-documents-permissions]]), which
-  separately sets the same `max_connections(1)` — editing `db.rs` does NOT affect the live
+- `db` — `open_pool(url)`: `SqlitePoolOptions::max_connections(1)`. **Dead
+  code** — its only caller is its own unit test; production startup (`main`) and
+  `backup`/`tests::backup_cli` all open pools independently. The whole server's actual
+  single-connection invariant lives in `data::sqlite::SqliteRepository::connect`
+  ([[shadowcat-codebase-documents-permissions]]), which
+  separately sets the same `max_connections(1)` — editing `db` does NOT affect the live
   server's connection pool.
-- `src/server/src/backup.rs` (M12.5) — `BackupManifest`, `BackupError`, `dir_is_empty_or_absent`,
+- `backup` — `BackupManifest`, `BackupError`, `dir_is_empty_or_absent`,
   `create_backup(db_path, assets_dir, out_dir) -> Result<BackupManifest, BackupError>`,
   `restore_backup(backup_dir, db_path, assets_dir, force) -> Result<(), BackupError>`. Opens its
   own short-lived `SqlitePool` directly (does not reuse `SqliteRepository`/`AppState`) — pure
   file I/O + one SQL statement, deliberately decoupled from the rest of the server so it works
   even when `main()`'s normal startup path never runs.
-- `POST /api/admin/backup` (Phase A, `http/routes.rs::admin_backup`, admin-only via `AdminUser`)
-  — in-server backup trigger, layered ABOVE `backup.rs`. Writes into
-  `Config::backups_path()` (`config.rs`, `None` → sibling `backups/` beside the db file, mirroring
+- `POST /api/admin/backup` (Phase A, `http::routes::admin_backup`, admin-only via `AdminUser`)
+  — in-server backup trigger, layered ABOVE `backup`. Writes into
+  `Config::backups_path()` (`config`, `None` → sibling `backups/` beside the db file, mirroring
   `assets_path()`'s convention), one timestamped subdirectory per run. Holds `AppState.write_barrier`
-  (`Arc<tokio::sync::RwLock<()>>`, `http/mod.rs`) in WRITE mode across the whole snapshot; asset
-  `upload`/`replace` (`http/assets.rs`) each acquire it in READ mode around their own commit+rename
+  (`Arc<tokio::sync::RwLock<()>>`, `http`) in WRITE mode across the whole snapshot; asset
+  `upload`/`replace` (`http::assets`) each acquire it in READ mode around their own commit+rename
   step, so no asset write can interleave with an in-server backup's file copy. DB writers need no
   gating — `VACUUM INTO` is transactionally consistent against a live writer on its own.
 
@@ -60,7 +59,7 @@ and restore as a deployment-operator tool, not an in-app feature.
   atomic, consistency-guaranteed live-snapshot primitive.
 - **Assets copy ALWAYS runs after the db snapshot, never before/concurrently** — asset uploads
   write bytes to disk BEFORE inserting the referencing DB row
-  ([[shadowcat-codebase-assets]]-adjacent: `http/assets.rs` create path), and asset files are
+  ([[shadowcat-codebase-assets]]-adjacent: `http::assets` create path), and asset files are
   never deleted except by explicit delete, so db-then-assets ordering guarantees every asset a
   snapshot's rows reference is already present in the assets copy. `manifest.json` is written
   last, after both.
@@ -80,26 +79,25 @@ and restore as a deployment-operator tool, not an in-app feature.
   structurally inert — the control flow cannot reach any destination-mutating call before the
   gate's `return Err`. Asymmetric ownership: `restore_backup` enforces its own gate internally
   regardless of caller, but `create_backup` does NOT check `out_dir` for prior contents — the
-  refuse-non-empty gate for backup lives at the CLI layer (`main.rs::run_backup`, via the
+  refuse-non-empty gate for backup lives at the CLI layer (`main::run_backup`, via the
   exported `dir_is_empty_or_absent`). A future caller invoking `create_backup` directly (e.g. an
   in-app export feature) would bypass that gate.
 - **Restore never starts the server** — restore and serve are always two separate invocations
-  (a live connection can't safely have its backing file replaced out from under it; Windows can
-  even fail the replace outright on an open handle).
+  (a live connection can't safely have a different file swapped in as its backing file; Windows
+  can even fail that swap outright on an open handle).
 - **No shell-out for the recursive directory copy** (`tokio::fs` walks only — no `cp -r`/`xcopy`/
   `robocopy`), every path built via `Path`/`PathBuf::join` — cross-platform invariants per project
   CLAUDE.md, verified by a dedicated nested-directory (3+ levels) round-trip test.
 
 ## Gotchas
 
-- **Docs-ratchet is live in this subsystem (docs sweep 1):** `config.rs`, `db.rs`, `backup.rs`,
-  `modules.rs`, `main.rs`, and `bin/test_server.rs` all carry `#![deny(missing_docs)]` +
+- **Docs-ratchet is live in this subsystem:** the `config`, `db`, `backup`,
+  `modules`, `main`, and `bin::test_server` modules all carry `#![deny(missing_docs)]` +
   `#![deny(clippy::missing_docs_in_private_items)]` — a new item without a doc comment fails the
   3-OS CI clippy step. Every lib function also carries a `# Examples` doctest (`no_run` for
-  infra-bound; bins use ` ```text ` — rustdoc runs no doctests for bin targets). Doctest policy +
-  flip mechanics: `docs/superpowers/plans/2026-07-30-docs-sweep1-server-ops.md`. `lib.rs` has NO
-  deny attr (crate-root inner attr would flip the whole crate early — that's the final ratchet).
-- `copy_dir_recursive` (`backup.rs`) silently skips symlinks (documented on the function itself)
+  infra-bound; bins use ` ```text ` — rustdoc runs no doctests for bin targets). The crate root has
+  NO deny attr (a crate-root inner attr would flip the whole crate early — that's the final ratchet).
+- `backup::copy_dir_recursive` silently skips symlinks (documented on the function itself)
   — the assets tree is server-managed and never contains one today, so this avoids following into
   an unexpected target rather than guessing at semantics. Revisit if `assets_dir` is ever pointed
   at a symlinked/shared directory.
@@ -111,8 +109,8 @@ and restore as a deployment-operator tool, not an in-app feature.
   (`.replace('\'', "''")`) before interpolation — re-verify both conditions still hold if this
   code is ever reused somewhere the input could be less trusted.
 - `cargo fmt` with a path argument still reformats the WHOLE crate if not scoped correctly — this
-  bit two different Task implementers in M12.5's own execution, leaving unrelated drift in
-  `http/mod.rs` that had to be reverted before commit. Use `cargo fmt --check` first, or scope
+  bit two different implementers, leaving unrelated drift in
+  the `http` module that had to be reverted before commit. Use `cargo fmt --check` first, or scope
   explicitly, and diff before committing.
 - `restore_backup`'s destination writes are a stage-then-swap, not an in-place write: the db
   copies to `<db_path>.restore-tmp` then a single `rename` swaps it in (rename atomically replaces
@@ -130,7 +128,7 @@ and restore as a deployment-operator tool, not an in-app feature.
   so a crash in that window pairs a new db with old (or momentarily absent) assets; recovery is
   re-running `restore_backup` with `force` (the db swap already completed, so a force-less retry
   would refuse on the now-existing `db_path`).
-- The CLI backup mode (`create_backup` invoked directly by `main.rs::run_backup`, cross-process,
+- The CLI backup mode (`create_backup` invoked directly by `main::run_backup`, cross-process,
   no live server) still has NO write-quiesce — its assets-copy is not transactionally coupled to
   the `VACUUM INTO` snapshot, so a CLI backup racing an external process's in-flight asset REPLACE
   can capture updated metadata with pre-replace bytes for a brief window
@@ -138,17 +136,19 @@ and restore as a deployment-operator tool, not an in-app feature.
   this for THAT invocation path via `write_barrier` (see Key files & seams / Hard invariants
   above) — the residual gap is CLI-mode-only and inherent to backing up while a separate process
   writes assets outside the barrier's reach.
-- Per-world granular export/import is explicitly OUT of scope — this milestone ships whole-server
-  snapshot/restore only (single shared `shadowcat.db` across all worlds); per-world would need to
-  preserve referential integrity across cross-table FKs and shared asset references, real
-  complexity deferred to `docs/TODO.md` as a distinct future feature.
+- Per-world granular export/import is explicitly OUT of scope — the backup/restore surface ships
+  whole-server snapshot/restore only (single shared `shadowcat.db` across all worlds); per-world
+  would need to preserve referential integrity across cross-table FKs and shared asset
+  references, real complexity not currently implemented.
 
 ## Pointers
 
-- Design: `docs/superpowers/specs/2026-07-15-m12.5-backups-snapshot-restore-design.md`; plan
-  `docs/superpowers/plans/2026-07-15-m12.5-backups-snapshot-restore.md` (4 SDD tasks, no
-  buddy-check pre-authorized — file I/O + one SQL statement, not the
-  security/concurrency/determinism risk class).
+- **Generated API** — `/api/rust/shadowcat/config/`, `/api/rust/shadowcat/db/`,
+  `/api/rust/shadowcat/backup/` (rustdoc, private items included); the `main` module's own doc
+  comment is on the crate root, `/api/rust/shadowcat/` (no `main` module has its own generated
+  page — it's a binary entry point, not a documented public item). Produce with `pnpm build:all`.
+- This subsystem is classified as file I/O + one SQL statement risk, not the
+  security/concurrency/determinism risk class that requires independent review.
 - Relationships: `graphify query "config cli main backup restore server bootstrap"`.
 - Data-layer side (what `db_path`/`assets_dir` ultimately point at): [[shadowcat-codebase-assets]],
   [[shadowcat-codebase-documents-permissions]] (`SqliteRepository`, `src/server/src/data/`).

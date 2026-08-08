@@ -19,7 +19,7 @@ import { sheetActor } from "@shadowcat/module-sheet-actor";
 import { sheetItem } from "@shadowcat/module-sheet-item";
 import { SHEET_FALLBACK_CONTRACT, sheetContract } from "@shadowcat/core";
 
-// Every panel-contributing module in App.svelte's default set, registered in the
+// Every panel-contributing module in `App`'s default set, registered in the
 // exact order enterWorld() passes to WorldSession. INVARIANT: exactly one
 // contribution may hold the lowest `order` — a tie at the minimum order is
 // resolved by registration sequence, so an unintended second order-0 (or lower)

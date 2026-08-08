@@ -1,7 +1,7 @@
-//! Region primitive (M10g): vector-shaped zones that weight, block, or arrest grid movement.
-//! Pure geometry — no ECS, no I/O (mirrors `scene/movement.rs`'s module invariant). Consumed by
+//! Region primitive: vector-shaped zones that weight, block, or arrest grid movement.
+//! Pure geometry — no ECS, no I/O (mirrors the `scene::movement` module's invariant). Consumed by
 //! `SceneEcs::region_field` (hydration + visibility filtering) and `scene::pathfinding` /
-//! `scene::move_exec` (the two enforcement points, spec §5/§6).
+//! `scene::move_exec` (the two enforcement points).
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 /// A grid cell `(i, j)` (same convention as `pathfinding::Cell`).
 pub(crate) type Cell = (i32, i32);
 
-/// Authored region geometry (M8d-3a vector-shape vocabulary: rect/circle/polygon).
+/// Authored region geometry (vector-shape vocabulary: rect/circle/polygon).
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum RegionShape {
     /// Axis-aligned rectangle; corners may arrive in any order (normalized
@@ -42,7 +42,7 @@ pub(crate) enum RegionShape {
     },
 }
 
-/// The region's gameplay effect (spec §2.1).
+/// The region's gameplay effect.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum RegionBehavior {
     /// Weighted (difficult) terrain: multiplies entry cost by the region cost.
@@ -53,7 +53,7 @@ pub(crate) enum RegionBehavior {
     Arrest,
 }
 
-/// Per-cell composed effect after precedence + MAX overlap resolution (spec §2.4).
+/// Per-cell composed effect after precedence + MAX overlap resolution.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum RegionEffect {
     /// At least one impassable region covers the cell (highest precedence).
@@ -184,8 +184,8 @@ fn point_in_polygon(p: (f64, f64), poly: &[(f64, f64)]) -> bool {
     inside
 }
 
-/// Compose zero or more (behavior, cost) contributions for ONE cell into a single effect, per
-/// spec §2.4: precedence `Impassable > Arrest > Terrain`; overlapping Terrain costs take the MAX
+/// Compose zero or more (behavior, cost) contributions for ONE cell into a single effect:
+/// precedence `Impassable > Arrest > Terrain`; overlapping Terrain costs take the MAX
 /// (not summed — difficulty is not cumulative). `None` when nothing contributes.
 pub(crate) fn compose(contributions: &[(RegionBehavior, f64)]) -> Option<RegionEffect> {
     if contributions

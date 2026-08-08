@@ -30,7 +30,7 @@
 <header class="topbar" class:compact>
   <LauncherMenu />
 
-  <!-- World title. Scene title is deferred to M12d (scene docs carry no name yet). -->
+  <!-- World title only: scene docs carry no name field to render. -->
   <div class="title" data-testid="topbar-title">
     <strong class="app">{t("app.name")}</strong>
     <span class="world">{t("topbar.world", { world })}</span>

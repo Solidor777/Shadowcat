@@ -7,17 +7,30 @@ import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
+/** The seeded e2e fixture `test_server` prints to stdout on boot — one ready-made
+ * world/document/pair of accounts every e2e spec can log into without its own setup. */
 export interface Fixture {
+  /** The seeded world's id. */
   world: string;
+  /** A seeded document's id inside `world`. */
   doc: string;
+  /** The seeded GM account's username. */
   gm: string;
+  /** The seeded player account's username. */
   player: string;
 }
 
+/** A running `test_server` process handle. */
 export interface TestServer {
+  /** The server's HTTP base URL, parsed from its stdout. */
   baseUrl: string;
+  /** The server's WebSocket URL, derived from `baseUrl`. */
   wsUrl: string;
+  /** The server's seeded e2e fixture, parsed from its stdout. */
   fixture: Fixture;
+  /** Force-kills the process (`taskkill /F` on Windows, `SIGKILL` elsewhere). A no-op
+   * if the process never got a pid. The kill itself is fire-and-forget — this does NOT
+   * wait for the process to actually exit before returning. */
   stop(): void;
 }
 
@@ -37,7 +50,10 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../
  * server.stop();
  * ```
  */
-export async function startTestServer(opts: { modulesDir?: string } = {}): Promise<TestServer> {
+export async function startTestServer(opts: {
+  /** An optional `--modules-dir` flag passed to the binary. */
+  modulesDir?: string;
+} = {}): Promise<TestServer> {
   const isWindows = process.platform === "win32";
   const exe = path.join(repoRoot, "target", "debug", isWindows ? "test_server.exe" : "test_server");
 

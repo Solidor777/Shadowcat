@@ -1,7 +1,7 @@
 import { SHEET_FALLBACK_CONTRACT, type Module } from "@shadowcat/core";
 import FallbackSheet from "./FallbackSheet.svelte";
 
-/** The always-registered generic document sheet (M12c). Registers under the fallback
+/** The always-registered generic document sheet. Registers under the fallback
  * contract at `-Infinity` priority so a doc_type-specific provider always wins, but every
  * document can still open. Replaceable — a game-system module can raise the bar. */
 export const sheetFallback: Module = {

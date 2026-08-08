@@ -253,7 +253,7 @@ mod tests {
     /// sample's position is hand-derived from the arc-length formula and checked against the
     /// actual output — proving the diagonal segment-selection + lerp math is correct for a
     /// genuinely any-angle segment (not just the t=0/t=1 boundary identities every
-    /// interpolation, correct or broken, satisfies). M10f-3 §6.
+    /// interpolation, correct or broken, satisfies).
     #[test]
     fn diagonal_any_angle_path_samples_endpoints_with_monotonic_time() {
         let p0 = (0.0_f64, 0.0_f64);

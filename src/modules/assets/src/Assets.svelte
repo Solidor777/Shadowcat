@@ -35,9 +35,8 @@
 
   // Load on mount; reload whenever another client (or our own replace/delete)
   // broadcasts an AssetChanged. The resolver was already cache-busted by
-  // WorldSession before this fires (its onAssetChanged handler bumps
-  // `this.assets` BEFORE notifying listeners like this effect —
-  // src/client/shell/src/lib/worldSession.svelte.ts:611-614), so re-rendered
+  // WorldSession before this fires (its `enter`'s `onAssetChanged` handler bumps
+  // `this.assets` BEFORE notifying listeners like this effect), so re-rendered
   // <img> tags pull fresh bytes.
   $effect(() => {
     void reload();
@@ -45,9 +44,9 @@
   });
 
   /** Uploads the selected file as a brand-new asset, then explicitly reloads
-   * the grid. `upload` never broadcasts `AssetChanged` (only `replace`/`delete`
-   * do — `src/server/src/http/assets.rs:172-252` has no broadcast call, versus
-   * `:364`/`:411`), so a freshly-created asset has no broadcast round-trip to
+   * the grid. `assets::upload` never broadcasts `AssetChanged` (only `assets::replace`/
+   * `assets::delete`
+   * do), so a freshly-created asset has no broadcast round-trip to
    * react to; this component must refresh itself.
    * @param e The `<input type="file">` change event; the input's value is
    * reset so choosing the same filename again still fires `onchange`.
@@ -55,6 +54,7 @@
    * ```
    * // private function; not part of the public API — wired to the upload
    * // input's onchange below
+   * declare const event: Event;
    * void onUpload(event);
    * ```
    */
@@ -73,14 +73,14 @@
 
   /** Replaces the asset's bytes behind its stable `uuid`, without an explicit
    * reload. Refresh here is driven entirely by the server's out-of-band
-   * `asset_changed{replaced}` broadcast (`Room::broadcast_aux`,
-   * `src/server/src/ws/room.rs:243-250` — best-effort, dropped if there are no
+   * `asset_changed{replaced}` broadcast (`Room::broadcast_aux` — best-effort, dropped
+   * if there are no
    * receivers, and never replayed on resync): the `onAssetChanged` effect
    * above both reloads `items` and lets `resolver` bump its cache-busting
    * revision so the `<img>` tag re-requests fresh bytes. If that one broadcast
    * is lost — e.g. a receiver briefly disconnected when it fires — nothing
-   * else in this component notices: `resolver.url()` only cache-busts in
-   * response to `onAssetChanged` (`src/client/core/src/assets.ts:41-45`), not
+   * else in this component notices: `AssetResolver.url` only cache-busts in
+   * response to `onAssetChanged`, not
    * from the asset's server-side `version`, so the tile keeps its pre-replace
    * URL and may go on being served from the browser cache until some
    * unrelated reload happens.
@@ -91,6 +91,8 @@
    * ```
    * // private function; not part of the public API — wired to each tile's
    * // replace input's onchange below
+   * declare const uuid: string;
+   * declare const event: Event;
    * void onReplace(uuid, event);
    * ```
    */
@@ -114,6 +116,7 @@
    * ```
    * // private function; not part of the public API — wired to each tile's
    * // delete button's onclick below
+   * declare const uuid: string;
    * void onDelete(uuid);
    * ```
    */

@@ -11,8 +11,12 @@
     meta,
     onRestore,
   }: {
+    /** Minimized panel ids to render as chips; caller-filtered by role (see this
+     * component's own doc). */
     minimized: readonly string[];
+    /** Per-panel display metadata (title, icon) keyed by panel id. */
     meta: ReadonlyMap<string, PanelMeta>;
+    /** Called when a chip is clicked, with the panel id to restore. */
     onRestore: (id: string) => void;
   } = $props();
 

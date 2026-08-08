@@ -194,6 +194,56 @@ Communicate with load-bearing facts. Strip sycophantic language and redundant ex
 "Warning: The requested global singleton conflicts with the lock-free threading model defined in `CLAUDE.md`. Implementing this will introduce race conditions. Please confirm if you want to proceed with this deviation."
 ```
 
+---
+
+## Lint Suppressions Require Explicit User Approval
+**Core Directive:** A suppression silences a diagnostic without fixing what it describes. Every
+suppression requires the user's explicit, per-instance sign-off. Enforced by the
+`pnpm lint:allowances` gate — a **gate, never a ratchet**: it applies retroactively to existing
+code, and nothing is grandfathered in.
+
+### 1. The Covered Set
+`#[allow(dead_code)]`, `#[allow(unused*)]`, `#[allow(clippy::*)]`, `eslint-disable` of
+`no-unused-vars`, and `@ts-ignore` / `@ts-nocheck`. **No agent may add any of these on its own
+authority, and finding one already in the tree is a defect to fix, not a precedent to follow.**
+
+### 2. `expect` Is Not An Escape Hatch
+`#[expect(...)]` counts as a suppression and is equally forbidden. It is self-invalidating, so it
+reads as the "responsible" form — but the rule's intent is that **there is no dead or
+lint-violating code**, not that suppressions be kept fresh. Choosing `expect` to satisfy the letter
+while preserving the thing the rule exists to remove is working around the rule.
+
+### 3. Fix The Code, Never Move The Annotation
+Make the item reachable, delete it, or scope it to the build that uses it (`#[cfg(test)]` for
+test-only code, which must never compile into the release binary). Refactor the signature rather
+than silencing `too_many_arguments`. If no fix exists, **stop and ask** — do not suppress and
+report success.
+
+#### ❌ Bad (Suppression Chosen To Clear The Gate)
+```rust
+// Nothing reads this, so the lint fires; the annotation hides that fact.
+#[allow(dead_code)]      // or #[expect(dead_code, reason = "...")] — equally forbidden
+pub truncated: bool,
+
+#[allow(clippy::too_many_arguments)]   // silences the design smell it is reporting
+fn execute(a: A, b: B, c: C, d: D, e: E, f: F, g: G, h: H) {}
+```
+
+#### ✅ Good (The Diagnostic's Cause Removed)
+```rust
+// Made live: threaded onto the wire frame, so the lint no longer fires.
+pub truncated: bool,
+
+// Test-only state compiled only into test builds.
+#[cfg(test)]
+pub probe_counter: u32,
+
+// Arguments grouped into the struct they already form.
+fn execute(ctx: &MoveCtx, route: &Route) {}
+```
+
+---
+
 Here is the optimized guidelines set for data privacy, security, and intellectual property, formatted to match the agent-optimized structure.
 
 ---

@@ -4,22 +4,31 @@ export type CoreLayerId =
   | "background" | "grid" | "tiles" | "regions" | "drawings" | "walls"
   | "tokens" | "templates" | "lighting" | "mask" | "overlays";
 
+/** The fixed, ascending z-order of the engine-owned core layers — index into this array is the
+ * core order key `orderedIds`/`register` resolve fractional module orders against. */
 export const CORE_LAYERS: readonly CoreLayerId[] = [
   "background", "grid", "tiles", "regions", "drawings", "walls",
   "tokens", "templates", "lighting", "mask", "overlays",
 ] as const;
 
+/** A module-registered layer spliced between core layers by `LayerRegistry.register`. */
 interface ModuleLayer {
+  /** The layer's id; must not collide with a core id or another module layer's id. */
   id: string;
+  /** Position in z-order, relative to the core indices in `CORE_LAYERS` (fractional values
+   * splice between two core layers). */
   order: number;
 }
 
 /** Ordered named layer stack — client-only, engine-owned (#6/#7). Core layers are
  * fixed; modules add layers at a fractional `order` relative to core indices. */
 export class LayerRegistry {
+  /** Core layer id → its fixed z-order index (`CORE_LAYERS`'s own index), used by `register` to
+   * reject a colliding module id. */
   private readonly core = new Map<string, number>(
     CORE_LAYERS.map((id, i) => [id, i]),
   );
+  /** Registered module layers, in registration order (NOT z-order — `orderedIds` sorts). */
   private modules: ModuleLayer[] = [];
 
   /** All layer ids in ascending z-order (core indices + module fractional orders).
@@ -35,7 +44,12 @@ export class LayerRegistry {
    * ```
    */
   orderedIds(): string[] {
-    const all: { id: string; order: number }[] = [
+    const all: {
+      /** Layer id. */
+      id: string;
+      /** Z-order sort key. */
+      order: number;
+    }[] = [
       ...CORE_LAYERS.map((id, i) => ({ id, order: i })),
       ...this.modules,
     ];

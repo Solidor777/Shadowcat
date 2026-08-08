@@ -9,7 +9,7 @@ pub type DieId = u32;
 /// A single face of a `DieKind::Faces` die. `value` is `Some` for a face that
 /// participates numerically (ordering, totals); `None` for a face whose only
 /// payload is `symbols`. A `Faces` die is "ordered" (see `eval::classify` /
-/// `is_ordered`, M11b-3 §9) iff EVERY face has `value: Some`.
+/// `is_ordered`) iff EVERY face has `value: Some`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Face {
     /// Numeric worth, or `None` for a symbols-only face (makes the die
@@ -24,7 +24,7 @@ pub struct Face {
 pub type Symbol = String;
 
 /// A die's face space. `Numeric`: an ordered inclusive range. `Faces`: an
-/// explicit, possibly-unordered, possibly-symbolic list (M11b-3).
+/// explicit, possibly-unordered, possibly-symbolic list.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DieKind {
     /// An ordered inclusive integer range.
@@ -49,9 +49,10 @@ pub enum DieKind {
 pub enum DieKindError {
     /// `Faces { faces: [] }` — `roll_uniform(0, faces.len() - 1)` requires a
     /// non-degenerate range; `roll_uniform` only `debug_assert!`s this (a
-    /// no-op in release). No notation path constructs `Faces` today (M11b-3
-    /// is struct-only for face-lists); this becomes the enforcement point at
-    /// M11d's untrusted-wire boundary.
+    /// no-op in release). No notation path constructs `Faces` today (it is
+    /// struct-only for face-lists); `chat::rolls::validate_pre_roll` calls
+    /// `DieKind::validate()` on every parsed group before rolling, so this is
+    /// the enforcement point at the untrusted-wire boundary.
     EmptyFaces,
 }
 
@@ -83,7 +84,7 @@ impl DieKind {
     /// comparator explode/reroll) iff its faces have a defined ordering.
     /// `Numeric` is always ordered. `Faces` is ordered iff EVERY face has
     /// `value: Some` — a single unordered face makes the whole die unrankable
-    /// against a valued sibling (M11b-3 §9/design decision).
+    /// against a valued sibling.
     pub fn is_ordered(&self) -> bool {
         match self {
             DieKind::Numeric { .. } => true,
@@ -270,7 +271,7 @@ impl Default for SuccessRule {
 
 /// Which end of a margin/comparison is "better". `HighWins` (default): a higher
 /// total/success-count beats a lower one. `LowWins`: the inverse (e.g. roll-under
-/// systems). Global to the spec — orients every margin/tier/crit computation.
+/// systems). Global to `RollSpec` — orients every margin/tier/crit computation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum Direction {
     /// Higher totals/success counts are better (the default).
@@ -361,7 +362,7 @@ pub struct SuccessConfig {
     /// Optional crit-fail event (see `CritFail`).
     #[serde(default)]
     pub crit_fail: Option<CritFail>,
-    /// Expertise budget (M11b-2): points distributed across the pooled kept dice
+    /// Expertise budget: points distributed across the pooled kept dice
     /// to maximize net successes (tie-break net counters). 0 = off.
     #[serde(default)]
     pub expertise: u32,

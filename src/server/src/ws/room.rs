@@ -34,13 +34,6 @@ pub(crate) struct MoveExecution {
     pub scene: Uuid,
     /// The last successfully reached path coordinate (the committed position after the move).
     pub stop: (f64, f64),
-    /// The legal prefix of the requested path including `start` through `stop`.
-    /// NOT read by the per-recipient egress clip (`clip_move_stream` trims `samples`, never
-    /// `render_path`). Kept alive by this struct's own construction (distance/duration and
-    /// `sample_path` input, computed inline above) and by a test assertion that the executor's
-    /// stop matches the path's last coordinate.
-    #[allow(dead_code)]
-    pub render_path: Vec<(f64, f64)>,
     /// Animation duration in milliseconds (distance / cell / speed * 1000). Zero when stop == start.
     pub duration_ms: f64,
     /// Time-tagged position samples for `MoveStream` broadcast playback.
@@ -52,8 +45,12 @@ pub(crate) struct MoveExecution {
     pub mover_vision: Option<Vec<crate::scene::move_stream::VisionSamplePt>>,
     /// Total terrain-weighted cost accumulated over the walked prefix, from
     /// `move_exec::MoveOutcome::cost`. Threaded onto the `MoveStream` wire frame downstream.
-    #[allow(dead_code)]
     pub cost: f64,
+    /// `true` when the move stopped before the requested goal, from
+    /// `move_exec::MoveOutcome::truncated`. Threaded onto the `MoveStream` wire frame
+    /// downstream, where it is trusted-only (`None` for a clipped observer) for the same
+    /// reason as `cost`.
+    pub truncated: bool,
 }
 
 /// Ring-buffer event cap (hot-resync depth).
@@ -244,7 +241,7 @@ impl Room {
     /// `publish`, it does NOT push to the ring or bump `current_seq`, so a
     /// lagging receiver that resyncs from the ring/log never replays it, and it
     /// also drops when there are no receivers. DELIVERY IS NOT GUARANTEED and an
-    /// AssetChanged loss is NOT self-healing — see `Assets.svelte`'s `onReplace`.
+    /// AssetChanged loss is NOT self-healing — see `Assets`'s `onReplace`.
     pub fn broadcast_aux(&self, msg: ServerMsg) {
         let _ = self.tx.send(std::sync::Arc::new(msg));
     }
@@ -267,12 +264,12 @@ impl Room {
         origin: WriteOrigin,
     ) -> Result<Command, DataError> {
         let _guard = self.publish_guard.lock().await;
-        // D9: a non-GM may not CHANGE a token's position. Gated movement is request-only and
+        // A non-GM may not CHANGE a token's position. Gated movement is request-only and
         // server-executed (`ClientMsg::MoveRequest` → `execute_move`), the only path that can
         // gate each step, arrest a token partway, and stream the authoritative trajectory. A
         // client-authored position write can do none of those, so it is refused rather than
         // validated — strictly stricter than the traversal gate this replaces, leaving
-        // `execute_move` the SOLE implementation of the per-cell traversal decision (I2).
+        // `execute_move` the SOLE implementation of the per-cell traversal decision.
         //
         // `token_move` yields (scene, committed_start, post_image_end) over the whole /engine
         // band with all changes applied in array order, so a wholesale `/engine` write or
@@ -281,7 +278,7 @@ impl Room {
         // a write that re-states the same coordinates is not a move. Bitwise inequality, not an
         // epsilon window — an epsilon would grant a free sub-threshold teleport per op.
         //
-        // GMs are exempt: a GM places a token where they choose, walls included (M9 §5).
+        // GMs are exempt: a GM places a token where they choose, walls included.
         if ctx.world_role != crate::data::document::WorldRole::Gm {
             // Pending Revealed-mode checks deferred past the ECS read borrow: (scene_id,
             // cells, visible_set). Revealed mode requires an async get_explored call which
@@ -308,7 +305,7 @@ impl Room {
                         // A created token's position is authorized against the SAME mask
                         // accessor the movement gate used. Placement was ungated on the
                         // reasoning that `core:create` is privileged, but a world can grant
-                        // it to Player (data/document.rs:531), and placing a token in an
+                        // it to Player via `WorldCapDefaults::role_has`, and placing a token in an
                         // unseen cell reveals that area through the new token's own vision —
                         // a strictly larger capability than the movement refused above.
                         // Center-cell only: a placement is a point, not a traversal.
@@ -390,7 +387,7 @@ impl Room {
                     }
                 };
                 // Invariant: `visible` may be corner-sampled (lenient) while `explored` is
-                // center-sampled by construction (explored.rs). The asymmetry only ever ENLARGES
+                // center-sampled by construction (`ExploredSet::mark_polygons`). The asymmetry only ever ENLARGES
                 // `visible ∪ explored`, so it is fail-safe — it never over-permits beyond cells
                 // the player currently sees or has genuinely explored.
                 if !move_cells
@@ -482,7 +479,7 @@ impl Room {
     /// 6. Call `commit_ops_locked` — non-reentrant Mutex, guard already held, MUST NOT re-acquire.
     ///    Single acquisition per logical write ensures broadcast order equals seq order.
     ///
-    /// # Revealed-union contract (spec §13)
+    /// # Revealed-union contract
     ///
     /// For `MovementRestriction::Revealed` the `visible` set passed to the executor MUST be
     /// `visible_cells(user, scene, lenient) ∪ explored` — the same union `publish` tests with
@@ -580,9 +577,9 @@ impl Room {
                 .ok_or(DataError::Forbidden)?;
 
             // GMs are exempt from every gameplay gate here — walls, mask, impassable and arrest —
-            // per the M9 design spec's GM "ignore walls" override (M9 §5), matching `publish`'s own
-            // GM position write. Resource guards (`gate_walk`'s coordinate/sample bounds, the
-            // scene-existence refusal) stay unconditional for a GM.
+            // matching `publish`'s own GM "ignore walls" position write. Resource guards
+            // (`gate_walk`'s coordinate/sample bounds, the scene-existence refusal) stay
+            // unconditional for a GM.
             is_gm = ctx.world_role == crate::data::document::WorldRole::Gm;
             restriction = if is_gm {
                 MovementRestriction::Unrestricted
@@ -605,7 +602,7 @@ impl Room {
         } // scene read guard dropped here — safe to await (publish_guard still held)
 
         // --- Revealed union: fetch explored AFTER dropping the scene read guard ---
-        // INVARIANT (spec §13): for Revealed the `visible` set passed to execute_move MUST be
+        // INVARIANT: for Revealed the `visible` set passed to execute_move MUST be
         // visible_cells ∪ explored. Fail-closed: error or missing blob → empty explored set
         // (falls back to visible-only, which is stricter but safe).
         let visible = if is_revealed {
@@ -638,12 +635,14 @@ impl Room {
             let scene = self.scene.read().await;
             outcome = move_exec::execute_move(
                 &scene,
-                token_scene,
+                move_exec::MoveGateInputs {
+                    scene: token_scene,
+                    restriction,
+                    visible: &visible,
+                    cell,
+                },
                 token,
                 &path,
-                restriction,
-                &visible,
-                cell,
                 is_gm,
                 footprint,
             )
@@ -673,7 +672,7 @@ impl Room {
             // GM mover → None (no fog to sweep), regardless of restriction mode. Non-GM movers
             // get a per-sample vision polygon at each hypothetical position along the
             // trajectory, including in Unrestricted-mode scenes. The SAME full sight_walls set
-            // is used as for static vision (M9b full-wall-set invariant). Hoisting:
+            // is used as for static vision. Hoisting:
             // player_vision_inputs collects walls + static-token polygons ONCE per move; each
             // sample calls polygons_at (one moving-token raycast only, no repeated ECS scan).
             mover_vision = if ctx.world_role == crate::data::document::WorldRole::Gm {
@@ -699,7 +698,6 @@ impl Room {
             return Ok(MoveExecution {
                 scene: token_scene,
                 stop: start,
-                render_path: vec![start],
                 duration_ms: 0.0,
                 samples: vec![crate::scene::move_stream::PosSamplePt {
                     t_ms: 0.0,
@@ -710,6 +708,10 @@ impl Room {
                 // mover — here None signals stop == start, not an Unrestricted restriction.
                 mover_vision: None,
                 cost: 0.0,
+                // Not hardcoded false: this branch is reached only when the very first step
+                // was blocked, so the outcome is truncated. Reading it keeps the wire signal
+                // derived from the executor rather than restated here.
+                truncated: outcome.truncated,
             });
         }
 
@@ -761,11 +763,11 @@ impl Room {
         Ok(MoveExecution {
             scene: token_scene,
             stop: outcome.stop,
-            render_path: outcome.render_path,
             duration_ms,
             samples,
             mover_vision,
             cost: outcome.cost,
+            truncated: outcome.truncated,
         })
     }
 
@@ -880,12 +882,12 @@ impl RoomRegistry {
         let Some(world) = repo.get_world(world_id).await? else {
             return Ok(None);
         };
-        // Hydrate the derived ECS from persisted scene entities (#5) using the
+        // Hydrate the derived ECS from persisted scene entities using the
         // same definition as the live path (`is_scene_entity`), so the loader and
         // the predicate cannot drift. Stamp it with the world's current seq.
         let docs = repo.query_scene_entities(world_id).await?;
         let mut scene_ecs = SceneEcs::from_documents(docs, world.seq);
-        // M10e-2: hydrate the lighting-aware vision inputs that are NOT scene entities — the three
+        // Hydrate the lighting-aware vision inputs that are NOT scene entities — the three
         // world config singletons + actors — so the mask computation is pure/synchronous under the
         // scene read-lock. Kept live thereafter by `apply_op`.
         //
@@ -1331,7 +1333,7 @@ mod room_tests {
     }
 
     /// A `/system/x` write on a token is game-system data — it must not be treated as a move
-    /// by `Room::publish`'s M9a/M10e-4 gate (which reads `/engine` exclusively), and the
+    /// by `Room::publish`'s movement gate (which reads `/engine` exclusively), and the
     /// write must not desync the ECS's committed `/engine` position. This is the integration-
     /// level counterpart of `scene::mod::tests::token_move_uses_post_image_resisting_forged_
     /// bypasses`'s `/system/x` decoy assertion (same naming-collision decoy: `/system/x` vs.
@@ -1390,9 +1392,10 @@ mod room_tests {
     /// in BOTH possible orderings of the two changes. Both replay implementations apply
     /// `changes` via `command::apply_field_change` in array order independently; this pins them
     /// against silently diverging (which would let the predicate judge one post-image while a
-    /// different one actually lands). Actor is the GM: this is a real position CHANGE, which D9
-    /// refuses for a non-GM outright — the property under test (replay agreement) is orthogonal
-    /// to who is writing, and the GM path exercises the identical `token_move`/commit replay.
+    /// different one actually lands). Actor is the GM: this is a real position CHANGE, which the
+    /// movement gate refuses for a non-GM outright — the property under test (replay agreement)
+    /// is orthogonal to who is writing, and the GM path exercises the identical
+    /// `token_move`/commit replay.
     #[tokio::test]
     async fn mixed_wholesale_and_leaf_engine_changes_agree_between_gate_and_commit_in_both_orderings(
     ) {
@@ -1507,10 +1510,10 @@ mod room_tests {
     }
 
     // -----------------------------------------------------------------------
-    // D9: non-GM position writes refused; Create placement gated on the same mask
+    // Non-GM position writes refused; Create placement gated on the same mask
     // -----------------------------------------------------------------------
 
-    /// Shared fixture handle for the D9 refusal/Create-gate tests: a room with a scene, an
+    /// Shared fixture handle for the non-GM-refusal/Create-gate tests: a room with a scene, an
     /// optional token, and both a GM and a player `PermissionContext`.
     struct PlaceHandle {
         room: Arc<Room>,
@@ -1522,8 +1525,9 @@ mod room_tests {
         scene: Uuid,
     }
 
-    /// A scene with a player-owned token at (50,50). No movement-restriction machinery: D9
-    /// refuses a non-GM position CHANGE unconditionally, so these fixtures need no lighting.
+    /// A scene with a player-owned token at (50,50). No movement-restriction machinery: the
+    /// movement gate refuses a non-GM position CHANGE unconditionally, so these fixtures need
+    /// no lighting.
     async fn room_with_player_owned_token() -> PlaceHandle {
         use crate::data::document::DocRole;
 
@@ -1585,8 +1589,8 @@ mod room_tests {
     }
 
     /// A scene with a `blocksMove` wall crossing the GM's test move (50,50)->(250,50), and a
-    /// token at (50,50). Demonstrates the M9 §5 "GM ignores walls" exemption narratively — D9's
-    /// refusal never reaches a GM regardless, so no gate actually consults this wall.
+    /// token at (50,50). Demonstrates the "GM ignores walls" exemption narratively — the
+    /// non-GM-refusal never reaches a GM regardless, so no gate actually consults this wall.
     async fn room_with_gm_and_blocking_wall() -> PlaceHandle {
         use serde_json::json;
 
@@ -2155,7 +2159,7 @@ mod room_tests {
     #[tokio::test]
     async fn gm_token_position_update_still_succeeds_through_a_wall() {
         use serde_json::json;
-        // A GM places a token where they like, walls included (M9 §5).
+        // A GM places a token where they like, walls included.
         let h = room_with_gm_and_blocking_wall().await;
         let ops = vec![Operation::Update {
             doc_id: h.token,
@@ -2267,7 +2271,7 @@ mod room_tests {
 
     #[tokio::test]
     async fn non_gm_token_create_in_explored_but_unlit_cell_succeeds() {
-        // Guards the Create gate's Revealed branch (room.rs's `revealed_pending` consumption
+        // Guards the Create gate's Revealed branch (the `revealed_pending` consumption
         // loop): a cell that is explored-but-not-currently-visible must still admit a player
         // Create, mirroring `execute_move_revealed_union_allows_explored_cell`'s movement-side
         // assertion of the same `visible ∪ explored` contract.
@@ -2634,7 +2638,7 @@ mod room_tests {
     }
 
     // -----------------------------------------------------------------------
-    // M10e-4: movement-restriction gate
+    // Movement-restriction gate
     // -----------------------------------------------------------------------
 
     struct MovementHandle {
@@ -2810,7 +2814,7 @@ mod room_tests {
     }
 
     // -----------------------------------------------------------------------
-    // M1: commit_ops_locked direct test — gate-free authoritative write path
+    // commit_ops_locked direct test — gate-free authoritative write path
     // -----------------------------------------------------------------------
 
     #[tokio::test]
@@ -2994,7 +2998,7 @@ mod room_tests {
     }
 
     #[tokio::test]
-    async fn execute_move_commits_stop_and_returns_render_path() {
+    async fn execute_move_commits_the_stop_it_returns() {
         // "visible" restriction with a light: start (50,50) and the adjacent cell (50,150)
         // are both within the bright radius (1.5 cells), so the player move is allowed.
         // The committed ECS position must equal the returned stop.
@@ -3011,7 +3015,6 @@ mod room_tests {
             )
             .await
             .unwrap();
-        assert_eq!(res.render_path.last().copied(), Some(res.stop));
         // Committed ECS position must equal stop (atomic write invariant).
         assert_eq!(h.committed_pos(h.token_id).await, res.stop);
     }
@@ -3794,10 +3797,10 @@ mod room_tests {
     }
 
     /// Identical to `movement_scene`, but the scene doc's `engine.vision.movementModel` is
-    /// explicitly `"continuous"` (M10f-3 §6): proves `execute_move` gates an any-angle route
+    /// explicitly `"continuous"`: proves `execute_move` gates an any-angle route
     /// from a scene genuinely marked continuous, not just incidentally sent a diagonal path.
-    /// Functionally inert on the server today — `execute_move` has no `movementModel` branch
-    /// (engine-agnostic since M10f-2); this mirrors `movement_scene`'s body (this file's
+    /// Functionally inert on the server today — `execute_move` has no `movementModel` branch,
+    /// being engine-agnostic; this mirrors `movement_scene`'s body (this file's
     /// established per-scenario-helper convention) with one added JSON key.
     async fn movement_scene_continuous(restriction: &str, with_light: bool) -> MovementHandle {
         use serde_json::json;
@@ -3933,9 +3936,9 @@ mod room_tests {
 
     #[tokio::test]
     async fn execute_move_continuous_any_angle_route_commits_atomically() {
-        // Proves the M10f-2 unified sampled executor gates a genuinely any-angle
+        // Proves the unified sampled executor gates a genuinely any-angle
         // (non-grid-aligned) polyline exactly like a grid path — no movementModel branch
-        // anywhere on this path (M10f-3 §3.2). Goal (110,130) is a 3-4-5 triangle scaled ×20
+        // anywhere on this path. Goal (110,130) is a 3-4-5 triangle scaled ×20
         // from start (50,50): distance = sqrt(60²+80²) = 100 wu, safely inside the light's
         // 150 wu bright radius (50 wu margin) and not a grid cell-center (cell centers sit
         // at 50 + 100k on each axis).

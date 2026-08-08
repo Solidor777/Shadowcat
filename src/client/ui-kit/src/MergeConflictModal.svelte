@@ -3,8 +3,11 @@
   import type { ConflictGroup } from "./mergeConflict";
 
   let { groups, onApply, onCancel }: {
+    /** The conflict groups to present, one per instance. */
     groups: ConflictGroup[];
+    /** Called with the chosen "theirs" paths per group key when the user applies. */
     onApply: (theirsByGroup: Map<string, Set<string>>) => void;
+    /** Called when the user cancels (Escape or the cancel button) with no changes applied. */
     onCancel: () => void;
   } = $props();
 
@@ -109,7 +112,7 @@
   .was { opacity: 0.7; }
   label { display: inline-flex; align-items: center; gap: var(--space-1); }
   .actions { display: flex; justify-content: flex-end; gap: var(--space-2); margin-top: var(--space-2); }
-  // Touch-target constraint (M13e Global Constraints): ≥44px targets under coarse-pointer input.
+  // Touch-target constraint: ≥44px targets under coarse-pointer input.
   button { min-height: 44px; padding: 0 var(--space-3); border: 1px solid var(--border); border-radius: var(--radius-1); background: var(--surface); color: inherit; }
   @media (pointer: coarse) {
     button, input[type="radio"] { min-height: 44px; min-width: 44px; }

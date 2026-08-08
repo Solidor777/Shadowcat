@@ -73,9 +73,9 @@ pub enum ClientMsg {
         /// The live search to cancel.
         request_id: Uuid,
     },
-    /// Subscribe to a derived scene channel (e.g. M9 "vision"). M8a recognizes
-    /// only the debug "identity" channel; unknown channels yield SceneError.
-    /// `as_user` (M9c-2 see-as-player) is **GM-only**: it views the channel as that user; the
+    /// Subscribe to a derived scene channel (`compute_derived` currently recognizes
+    /// "vision", plus a debug-only "identity" channel); unknown channels yield SceneError.
+    /// `as_user` (see-as-player) is **GM-only**: it views the channel as that user; the
     /// server rejects it for non-GMs and resolves the target's role server-side. Omitted/None =
     /// the connection's own view.
     SceneSubscribe {
@@ -309,7 +309,8 @@ pub enum ServerMsg {
     /// A sequenced broadcast carrying the authoritative command. `intent_id` is
     /// the originator's correlation token; it is `None` on the shared broadcast
     /// (an originator confirms its own write by receiving this echo of its
-    /// authored command). Per-intent `Some` correlation is added in M6.
+    /// authored command), and `Some` when the write was made under an
+    /// intent id, correlating this Event back to that specific intent.
     Event {
         /// The committed, per-recipient-filtered command.
         command: Command,
@@ -432,9 +433,8 @@ pub enum ServerMsg {
     },
     /// The route for the `Pathfind` with this `request_id`: ordered cell-center scene points
     /// (incl. start + goal) and the total cost in cells (client multiplies `grid.distance.perCell`).
-    /// `arrested` is true when an arrest region truncated the route before the requested goal
-    /// (spec §5 "honest preview" — the player-facing route never silently ends short without
-    /// telling the client why).
+    /// `arrested` is true when an arrest region truncated the route before the requested goal —
+    /// the player-facing route never silently ends short without telling the client why.
     PathResult {
         /// The originating pathfind's correlation token.
         request_id: Uuid,
@@ -499,14 +499,25 @@ pub enum ServerMsg {
         /// server-clipped position samples and render against their existing authoritative fog;
         /// the client computes no vision. Sending mover vision to observers would leak geometry.
         mover_vision: Option<Vec<VisionSample>>,
-        /// Total terrain-weighted movement cost accumulated over the executed move (M10g spec
-        /// §6). Informational — no per-turn budget cap consumes it in v1.
+        /// Total terrain-weighted movement cost accumulated over the executed move.
+        /// Informational — no per-turn budget cap consumes it in v1.
         /// `Some(cost)` for the mover and a GM (trusted, full information); `None` for a
         /// clipped observer, mirroring `mover_vision`'s null-for-observers treatment — the
         /// authoritative cost may reflect secret-region (`gm_only`) terrain the observer's
         /// clipped `samples` don't show, and disclosing it would let an observer detect hidden
         /// terrain by comparing the visible portion of the move against the reported total.
         cost: Option<f64>,
+        /// `true` when the move stopped before the requested goal — wall, mask,
+        /// region-impassable, or region-arrest. The authoritative answer: a client cannot
+        /// derive it from `stop` alone, because a region-arrest on the FINAL step ends the
+        /// move AT the goal coordinate and so is indistinguishable from an untruncated move
+        /// by geometry.
+        /// `Some(flag)` for the mover and a GM (trusted, full information); `None` for a
+        /// clipped observer, on the same grounds as `cost` — the observer's `samples` and
+        /// `stop` are already clipped to what they witnessed, so a truthful `truncated` would
+        /// disclose whether anything blocked the token BEYOND their vision, revealing the
+        /// presence of a wall or a `gm_only` region they cannot see.
+        truncated: Option<bool>,
     },
 }
 
@@ -790,6 +801,7 @@ mod protocol_tests {
             samples: in_samples.clone(),
             mover_vision: in_vision.clone(),
             cost: Some(3.5),
+            truncated: Some(true),
         };
         let wire = serde_json::to_string(&msg).unwrap();
         // Tag must be snake_case.
@@ -808,6 +820,7 @@ mod protocol_tests {
                 samples,
                 mover_vision,
                 cost,
+                truncated,
             } => {
                 assert_eq!(request_id, Uuid::from_u128(1));
                 assert_eq!(token_id, Uuid::from_u128(2));
@@ -819,6 +832,11 @@ mod protocol_tests {
                 assert_eq!(samples, in_samples);
                 assert_eq!(mover_vision, in_vision);
                 assert_eq!(cost, Some(3.5), "mover/GM path: cost is disclosed");
+                assert_eq!(
+                    truncated,
+                    Some(true),
+                    "mover/GM path: truncation is disclosed"
+                );
             }
             _ => panic!("expected MoveStream"),
         }
@@ -838,12 +856,16 @@ mod protocol_tests {
             samples: in_samples2,
             mover_vision: None,
             cost: None,
+            truncated: None,
         };
         let wire2 = serde_json::to_string(&msg_no_vision).unwrap();
         let back2: ServerMsg = serde_json::from_str(&wire2).unwrap();
         match back2 {
             ServerMsg::MoveStream {
-                mover_vision, cost, ..
+                mover_vision,
+                cost,
+                truncated,
+                ..
             } => {
                 assert_eq!(
                     mover_vision, None,
@@ -853,6 +875,12 @@ mod protocol_tests {
                     cost, None,
                     "observer path: cost must round-trip as None (secrecy: must not disclose \
                      authoritative cost, which may reflect secret terrain, to an observer)"
+                );
+                assert_eq!(
+                    truncated, None,
+                    "observer path: truncated must round-trip as None (secrecy: a truthful flag \
+                     answers whether anything stopped the token BEYOND the observer's clipped \
+                     view, disclosing a wall or gm_only region they cannot see)"
                 );
             }
             _ => panic!("expected MoveStream"),

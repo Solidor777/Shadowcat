@@ -94,7 +94,7 @@
    * ```
    * // private function; not part of the public API — wired to each control's
    * // onchange below
-   * set(ws.id, "/engine/scene/movementRestriction", wsys.scene.movementRestriction, "visible");
+   * if (ws && wsys) set(ws.id, "/engine/scene/movementRestriction", wsys.scene.movementRestriction, "visible");
    * ```
    */
   function set(docId: string, path: string, old: unknown, value: unknown): void {
@@ -121,7 +121,7 @@
   });
   let selectedSceneId = $state<string | null>(null);
 
-  // Deep-link from the scene browser's "Configure" (M12d): adopt its focused scene. Only reacts to
+  // Deep-link from the scene browser's "Configure": adopt its focused scene. Only reacts to
   // a non-null change, so a manual picker change afterward is preserved until the browser re-focuses.
   $effect(() => {
     const focus = ctx.sceneSelection.configureSceneId;
@@ -144,7 +144,7 @@
    * ```
    * // private function; not part of the public API — wired to each per-scene
    * // control's onchange below
-   * setScene("/engine/grid/kind", ssys.grid?.kind ?? "square", "hex");
+   * if (ssys) setScene("/engine/grid/kind", ssys.grid?.kind ?? "square", "hex");
    * ```
    */
   function setScene(path: string, old: unknown, value: unknown): void {
@@ -284,7 +284,7 @@
   {#if ctx.role === "gm" && dicesys && diceDoc}
     <!-- Ambient dice-notation context: mode (Total/Success count) and direction
          (High/Low wins). JSON-pointer paths: /engine/mode, /engine/direction.
-         Matches the server body shape (data/engine/registries.rs DiceSettingsEngine) exactly:
+         Matches the server body shape (`DiceSettingsEngine`) exactly:
          mode "total"|"success_count", direction "high_wins"|"low_wins". -->
     <fieldset>
       <legend>{ctx.t("gameSettings.dice.title")}</legend>
@@ -313,21 +313,20 @@
   {#if ctx.role === "gm" && chatsys && chatDoc}
     <!-- Chat content policy: hyperlinks toggle + link-preview tri-state.
          JSON-pointer paths: /engine/hyperlinks, /engine/link_previews.
-         Both fields are `boolean | null` on the wire (ChatSettingsEngine,
-         data/engine/registries.rs:108-122, aliased as chat/settings.rs's
-         ChatContentPolicy) — but they differ in what null MEANS, and each
+         Both fields are `boolean | null` on the wire (`ChatSettingsEngine`,
+         aliased as `ChatContentPolicy`) — but they differ in what null MEANS, and each
          control's DISPLAY expression mirrors its server-side accessor. That
          mirroring is scoped to the read path only: the accessors resolve a
          stored value for reading, and nothing server-side ever normalizes a
          stored null to false, so an OCC `old` pre-image must still carry the
          RAW value. The hyperlinks `onchange` below violates that and is a known
-         bug — see docs/OPEN_BUGS.md; do not copy its `?? false` into the `old`
+         bug; do not copy its `?? false` into the `old`
          argument of any new control. hyperlinks has no inherit
-         concept: `ChatContentPolicy::hyperlinks()` resolves absent to false
-         (`src/server/src/chat/settings.rs:46-48`, `unwrap_or(false)`), so this
+         concept: `ChatContentPolicy::hyperlinks` resolves absent to false
+         (`unwrap_or(false)`), so this
          panel exposes it as a plain two-state checkbox coalescing null the same
-         way for DISPLAY. link_previews is genuinely TRI-STATE: `previews_enabled()`
-         (`:61-63`) is `self.hyperlinks() && self.link_previews.unwrap_or(true)`
+         way for DISPLAY. link_previews is genuinely TRI-STATE: `ChatContentPolicy::previews_enabled`
+         is `self.hyperlinks() && self.link_previews.unwrap_or(true)`
          — absent defaults ON but only within hyperlinks-on, and true/false is
          an explicit override. That third state is why it gets a select rather
          than a checkbox; the "" option writes null, mirroring the scene-override

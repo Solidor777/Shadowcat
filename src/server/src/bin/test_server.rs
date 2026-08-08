@@ -36,8 +36,7 @@ use clap::Parser;
 
 /// `--modules-dir <path>`: overrides the modules folder the embedded router
 /// scans/serves from (default: none installed). Lets the Node<->Rust e2e
-/// harness — and an external module repo's own smoke script (see the
-/// creating-a-module guide, `docs/site/guides/creating-a-module.md`) — point a
+/// harness — and an external module repo's own smoke script — point a
 /// fresh `test_server` at a fixture-populated temp folder without touching the
 /// hardcoded in-memory fixture data below.
 #[derive(Parser, Debug, Default)]
@@ -63,8 +62,8 @@ async fn main() -> anyhow::Result<()> {
         .await?;
     repo.add_member(world.id, player, WorldRole::Player).await?;
 
-    // A player-owned actor (engine-defined per M13-0 S1) carrying a populated
-    // /engine/vision subtree; `name` lives on the envelope (S2), `hp` stays
+    // A player-owned actor (engine-defined) carrying a populated
+    // /engine/vision subtree; `name` lives on the envelope, `hp` stays
     // opaque game-system data.
     let mut perms = PermissionSet::default();
     perms.users.insert(player, DocRole::Owner);
@@ -89,7 +88,7 @@ async fn main() -> anyhow::Result<()> {
             "conditions": [],
             "prototype": true,
             // A whole-number range: `apply_intent`'s OCC pre-image comparison
-            // is numeric-aware (`values_semantically_eq` in `data/sqlite.rs`)
+            // is numeric-aware (`data::sqlite::values_semantically_eq`)
             // across the serde_json PosInt/Float variant split, so a JS
             // client's whole-number pre-image round-trips correctly here.
             "vision": [{ "mode": "darkvision", "range": 30 }]

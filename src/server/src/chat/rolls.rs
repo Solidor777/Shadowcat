@@ -2,14 +2,15 @@
 //!
 //! `execute_roll`/`validate_formula` are the sole entry points from the chat
 //! ingest stage: parse the caller-supplied formula against the dice crate's
-//! `notation::parse`, enforce the wire-boundary caps below (closing the
-//! dice-crate DoS/overflow gaps `docs/TODO.md` deferred to this checkpoint),
-//! then roll/evaluate. The dice crate itself stays pure — it has no notion of
-//! these caps, entropy seeding, or chat settings; those are transport policy
-//! that belongs here, not in `dice/`.
+//! `notation::parse`, enforce the wire-boundary caps below (`MAX_ROLL_DICE`,
+//! `MAX_ROLL_RECORDS`, `MAX_EXPERTISE`, `MAX_DIE_SIDES` — the dice crate's own
+//! types stay unbounded, so an untrusted formula has no size limit until it
+//! crosses this boundary), then roll/evaluate. The dice crate itself stays
+//! pure — it has no notion of these caps, entropy seeding, or chat settings;
+//! those are transport policy that belongs here, not in `dice/`.
 //!
 //! `execute_roll`/`validate_formula`/`BodyChunk`/`scan_body` are called from
-//! `handle_send_message`'s roll stage (`chat/mod.rs`) — the sole ingest path
+//! `handle_send_message`'s roll stage — the sole ingest path
 //! that may execute untrusted dice notation.
 
 #![deny(missing_docs)]
@@ -184,7 +185,7 @@ pub enum RollError {
     /// Two ladder rungs share one `margin_offset` -- `classify`'s
     /// max_by_key/min_by_key tie is caller-order-dependent, so which rung wins
     /// would be nondeterministic. Refused at construction so every downstream
-    /// ladder is unambiguous (classify.rs's doc comment documents the tie).
+    /// ladder is unambiguous (`dice::eval::classify`'s doc comment documents the tie).
     DuplicateTierOffset(i32),
 }
 
@@ -298,7 +299,7 @@ fn validate_pre_roll(spec: &RollSpec) -> Result<(), RollError> {
 }
 
 /// Uniqueness guard over a classification ladder's `margin_offset`s. Notation
-/// cannot author a non-empty ladder today (parser.rs emits `tiers: vec![]`),
+/// cannot author a non-empty ladder today (`dice::notation::parser` emits `tiers: vec![]`),
 /// so this arms the boundary for the tier-ladder syntax before it exists --
 /// the guard predates the untrusted path by construction.
 fn validate_tiers(tiers: &[crate::dice::spec::Tier]) -> Result<(), RollError> {

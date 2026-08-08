@@ -6,16 +6,20 @@ const EPSILON = 0.01;
 
 /** A server-sampled position entry: elapsed ms from startServerMs + scene-coord position. */
 export interface MoveSample {
+  /** Elapsed ms from the playback's `startServerMs` this sample applies at. */
   tMs: number;
+  /** Scene-coord `[x,y]` position at this sample. */
   pos: [number, number];
 }
 
 /** State for a sample-driven playback (animateSamples). Separate from the polyline Anim so
  * the two modes can coexist independently (e.g. a route-commit walk alongside a broadcast play). */
 interface SamplesAnim {
+  /** The (already server-clipped) position samples being played back. */
   samples: MoveSample[];
   /** Accumulated elapsed time (ms) from the start of the animation; pre-seeded for catch-up. */
   elapsed: number;
+  /** Total playback duration, in ms. */
   durationMs: number;
   /** Gap threshold: consecutive tMs gaps exceeding this are treated as occlusion spans.
    * Computed as minConsecutiveDelta × 1.5 (nominal-interval-based); Infinity when fewer than
@@ -25,12 +29,26 @@ interface SamplesAnim {
 
 /** Animation tuning resolved from `world-settings.animation` + the active grid. */
 export interface AnimationConfig {
+  /** Tween speed, in grid cells per second. */
   speedCellsPerSec: number;
+  /** Easing curve applied to polyline tweens (`startAnim`) — sample-driven playback
+   * (`animateSamples`) always linearly interpolates and ignores this. */
   easing: EasingMode;
   /** Pixels per grid cell (grid.size); converts pixel distance to cells for duration. */
   cellSize: number;
 }
 
+/** Linear interpolation between `a` and `b` at position `t`.
+ * @param a The value at `t=0`.
+ * @param b The value at `t=1`.
+ * @param t Interpolation position (typically `[0,1]`, unclamped).
+ * @returns `a + (b - a) * t`.
+ * @example
+ * ```
+ * // module-private helper; not exported from @shadowcat/render
+ * lerp(0, 10, 0.5); // 5
+ * ```
+ */
 const lerp = (a: number, b: number, t: number): number => a + (b - a) * t;
 
 /** Compute the gap detection threshold for occlusion spans from a sample list.
@@ -48,14 +66,14 @@ const lerp = (a: number, b: number, t: number): number => a + (b - a) * t;
  * any interpolated position outside the observer's vision, and both endpoints are legitimately
  * visible to this observer. A robust fix would need the animator to know the server's nominal
  * inter-sample interval independent of the clipped sample count (e.g. threaded through from
- * move_stream.rs's SAMPLES_PER_CELL/duration), which this pure client-side heuristic cannot
+ * `SAMPLES_PER_CELL`/duration), which this pure client-side heuristic cannot
  * derive from 2 points alone without risking new false-positive/negative gap calls.
  * @param samples The full (already server-clipped) sample list for one MoveStream playback.
  * @returns The gap threshold in ms (minimum positive consecutive inter-sample delta × 1.5), or
  * `Infinity` when fewer than 3 samples are present (gap detection disabled).
  * @example
  * ```
- * // module-private; not exported from @shadowcat/render's index.ts
+ * // module-private; not exported from @shadowcat/render
  * computeGapThreshold([{ tMs: 0, pos: [0, 0] }, { tMs: 100, pos: [1, 0] }, { tMs: 200, pos: [2, 0] }]); // 150
  * ```
  */
@@ -71,15 +89,24 @@ function computeGapThreshold(samples: MoveSample[]): number {
   return minDelta * 1.5;
 }
 
+/** A polyline ease-to-stop tween, driven by `startAnim`/advanced by `tick`. */
 interface Anim {
   /** Polyline in scene px; `poly[0]` is the start captured at (re)target time. */
   poly: [number, number][];
+  /** Per-segment lengths (px), parallel to `poly` (one shorter — `poly.length - 1` entries). */
   segLen: number[];
+  /** Sum of `segLen`; the eased distance target at `tRaw=1`. */
   total: number;
+  /** Accumulated elapsed time (ms) since this tween started. */
   elapsed: number;
+  /** Total tween duration, in ms — `(total / cfg.cellSize / cfg.speedCellsPerSec) * 1000` at
+   * the config active when `startAnim` ran. */
   duration: number;
+  /** Rendered rotation at tween start (`t=0`). */
   startRot: number;
+  /** Rotation to settle at once the tween completes (`t=1`). */
   finalRot: number;
+  /** Easing curve applied to `elapsed/duration` before mapping onto `total`. */
   easing: EasingMode;
   /** True for an explicit route walk; gates the optimistic-vertex ignore rule. */
   pathDriven: boolean;
@@ -91,11 +118,15 @@ interface Anim {
  * target along an eased polyline. Duration = pathDistanceCells / speedCellsPerSec.
  * New tokens snap; moves tween; a newer authoritative position retargets in place. */
 export class TokenAnimator {
+  /** Each tracked token's current rendered transform (interpolated mid-tween). */
   private cur = new Map<string, TokenTransform>();
+  /** Live polyline ease-to-stop tweens, keyed by token id. */
   private anim = new Map<string, Anim>();
+  /** Live sample-driven (broadcast MoveStream) playbacks, keyed by token id. */
   private samplesAnim = new Map<string, SamplesAnim>();
   /** Token ids currently in an occlusion gap (server-clipped visibility span). */
   private hidden = new Set<string>();
+  /** Tween-duration tuning applied to newly-started animations — see `setConfig`. */
   private cfg: AnimationConfig = { speedCellsPerSec: 6, easing: "easeInOut", cellSize: 100 };
 
   /** Replace the tween-duration tuning (speed/easing/cellSize). Affects only FUTURE tweens started
@@ -266,7 +297,7 @@ export class TokenAnimator {
       //
       // Edge-case: a foreign or rollback authoritative position that coincidentally equals an
       // ahead route-vertex is also swallowed. This is acceptable because routes are constructed
-      // ⊆ the gate-allowed mask (spec §13/§14), so rollbacks should not occur; and if one does
+      // ⊆ the server's gate-allowed movement mask, so rollbacks should not occur; and if one does
       // the engine self-heals on the next store update that issues the real final position.
       for (let i = active.segIndex; i < active.poly.length; i++) {
         const v = active.poly[i];
@@ -280,7 +311,7 @@ export class TokenAnimator {
   }
 
   /** Has no production caller today (`src/modules`/`src/client/shell` drive route playback
-   * exclusively through `animateSamples`, per `controller.svelte.ts`'s own "Animation is
+   * exclusively through `animateSamples`, per `commitRoute`'s own "Animation is
    * broadcast-driven via onMoveStream ... no local animation from the moveRequest resolve value"
    * comment); exercised only by tests and this package's `TokenView`/`RenderEngine`
    * passthroughs. The mechanism below is the contract it honors if called.
@@ -333,6 +364,7 @@ export class TokenAnimator {
    * @example
    * ```
    * // private method; not part of the public API
+   * declare const sa: SamplesAnim;
    * this.applySamplesAt("token-1", sa);
    * ```
    */
@@ -403,8 +435,8 @@ export class TokenAnimator {
    * later `setConfig` call does not retroactively affect this tween — see `setConfig`). Degenerate
    * input (non-finite `total`, `total < EPSILON`, non-positive `cellSize` or `speedCellsPerSec`)
    * fails closed: snaps directly to `poly`'s last vertex (when finite) instead of animating,
-   * mirroring the fail-closed convention used server-side in movement.rs/lighting.rs/vision.rs
-   * (non-finite input → snap/under-reveal, never freeze on NaN or animate forever).
+   * mirroring the fail-closed convention used server-side in `scene::movement`/`scene::lighting`/
+   * `scene::vision` (non-finite input → snap/under-reveal, never freeze on NaN or animate forever).
    * @param id The token id to animate.
    * @param c The token's current rendered transform (tween start point).
    * @param poly The polyline to walk, in scene px; `poly[0]` should equal `(c.x, c.y)`.
@@ -430,8 +462,8 @@ export class TokenAnimator {
     // Non-finite total (NaN/Infinity from NaN/Infinity coordinates) is treated as degenerate:
     // NaN total makes `total < EPSILON` false, `tRaw >= 1` never true → the token is pinned to
     // NaN and re-reports `moved` every tick forever. The !isFinite guard catches this case and
-    // snaps to the last vertex instead. Mirrors the fail-closed convention in movement.rs /
-    // lighting.rs / vision.rs (non-finite inputs → under-reveal / snap, never freeze or NaN output).
+    // snaps to the last vertex instead. Mirrors the fail-closed convention in `scene::movement` /
+    // `scene::lighting` / `scene::vision` (non-finite inputs → under-reveal / snap, never freeze or NaN output).
     // If the last vertex itself is non-finite, fall back to leaving `cur` unchanged.
     if (!Number.isFinite(total) || total < EPSILON || this.cfg.cellSize <= 0 || this.cfg.speedCellsPerSec <= 0) {
       if (Number.isFinite(last[0]) && Number.isFinite(last[1])) {

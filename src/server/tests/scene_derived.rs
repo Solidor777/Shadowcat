@@ -1,7 +1,7 @@
 //! E2E: the SceneDerived channel — initial push, coalesced re-eval on scene
 //! change, and unknown-channel error — over the real WS server.
 
-mod common;
+use shadowcat_test_support as common;
 
 use common::*;
 use futures_util::{SinkExt, StreamExt};
@@ -47,7 +47,7 @@ async fn vision_channel_works_over_the_wire_for_gm() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn vision_emits_persistent_explored_for_a_player_across_reconnect() {
-    // The player path (M9c): a token-owning player's masked vision payload carries a non-empty,
+    // The player path: a token-owning player's masked vision payload carries a non-empty,
     // scene-tagged `explored` set that persists across a reconnect. Exercises the egress dispatch
     // wiring (enrich_vision_explored at the real socket sites with the recipient's own user/world).
     let h = spawn().await;
@@ -112,7 +112,7 @@ async fn vision_frame_includes_lit_mask_after_room_hydration() {
     // get_or_create cold-start hydration — the room already exists when the GM publishes,
     // so the config-docs arrive via apply_op, not via the DB query_documents path.
     // Cold-start hydration (get_or_create reading from a pre-populated DB) is covered by
-    // the `get_or_create_hydrates_config_and_actors_from_db` unit test in ws/room.rs.
+    // the `get_or_create_hydrates_config_and_actors_from_db` unit test in `ws::room`.
     let h = spawn().await;
     let (player, player_cookie) = h.add_player("litplayer").await;
 
@@ -250,7 +250,7 @@ async fn vision_frame_includes_lit_mask_after_room_hydration() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn gm_can_see_as_player_but_a_player_cannot_see_as_another() {
-    // M9c-2 see-as-player: a GM subscribing `vision` with `as_user = player` receives EXACTLY that
+    // See-as-player: a GM subscribing `vision` with `as_user = player` receives EXACTLY that
     // player's masked view (their polygons + explored). A non-GM `as_user` is rejected — the
     // player-to-player access boundary.
     let h = spawn().await;

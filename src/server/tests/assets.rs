@@ -1,7 +1,17 @@
-mod common;
+//! End-to-end asset lifecycle against a live server: upload, retrieval, replacement, deletion and
+//! listing, each asserted on BOTH the database record and the file on disk, plus the gates around
+//! them — content-type and size-cap rejection, world-membership authorization, `304` revalidation,
+//! per-user rate limiting, and the broadcasts that replacement and deletion emit.
+//!
+//! Exercises the HTTP surface rather than `data::repository` directly, so a change that leaves the
+//! repository correct while breaking the route still fails here. A rejected upload is asserted not
+//! to consume rate quota, which couples the validation order to the quota accounting: validation
+//! must run first, and testing that through the route is the only way to observe the ordering.
+
 use common::{spawn, PNG_1X1};
 use futures_util::StreamExt;
 use shadowcat::data::repository::Repository;
+use shadowcat_test_support as common;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn upload_persists_record_and_file() {
@@ -191,7 +201,7 @@ async fn list_returns_world_assets() {
     assert_eq!(list.len(), 2);
 }
 
-// --- Buddy-check regression tests ---
+// --- Upload/replace rate-limit and idempotency regression tests ---
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn rejected_upload_does_not_consume_rate_quota() {

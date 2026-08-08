@@ -27,6 +27,8 @@ async function getJson<T>(url: string): Promise<T> {
  * @example
  * ```
  * // module-private; not part of the public API
+ * declare const username: string;
+ * declare const password: string;
  * const res = await postJson("/api/login", { username, password });
  * ```
  */
@@ -41,7 +43,7 @@ async function postJson(url: string, body: unknown): Promise<Response> {
 /**
  * Fetch the server's public configuration.
  * @returns The server config. Field semantics are defined by the generated
- * `ServerConfig` type (`src/types/generated/ServerConfig.ts`, from the Rust
+ * `ServerConfig` type (from the Rust
  * source) — not restated here.
  * @example
  * ```
@@ -63,11 +65,17 @@ export function getConfig(): Promise<ServerConfig> {
  * const me = await getMe();
  * ```
  */
-export async function getMe(): Promise<{ id: string } | null> {
+export async function getMe(): Promise<{
+  /** The authenticated caller's user id. */
+  id: string;
+} | null> {
   const res = await fetch("/api/me", { headers: { accept: "application/json" } });
   if (res.status === 401) return null;
   if (!res.ok) throw new Error(`/api/me → ${res.status}`);
-  return (await res.json()) as { id: string };
+  return (await res.json()) as {
+    /** The authenticated caller's user id. */
+    id: string;
+  };
 }
 
 /**
@@ -93,12 +101,12 @@ export async function login(username: string, password: string): Promise<boolean
  * policy demands one, and is omitted from the request body entirely when not
  * supplied. Under the DEFAULT `auto` policy a loopback-only bind needs no
  * token, but `setup_token: "required"` demands one on every bind including
- * loopback (`src/server/src/config.rs:349-361`, `setup_token_policy`).
+ * loopback (`Config::setup_token_policy`).
  * @param username The new admin account's username.
  * @param password The new admin account's password.
  * @param token The setup token, when the server requires one.
  * @returns `{ ok, status }` — `status` is returned specifically so the caller
- * can distinguish a token mismatch (403, see `views/Setup.svelte`'s
+ * can distinguish a token mismatch (403, see `Setup`'s
  * `errorToken` branch) from any other failure, which is surfaced generically
  * using the status code.
  * @example
@@ -111,7 +119,13 @@ export async function setup(
   username: string,
   password: string,
   token?: string,
-): Promise<{ ok: boolean; status: number }> {
+): Promise<{
+  /** `true` on a 2xx response. */
+  ok: boolean;
+  /** The raw HTTP status code, kept so a 403 (bad/missing setup token) is distinguishable
+   * from any other failure — see the `@returns` note above. */
+  status: number;
+}> {
   const body: Record<string, string> = { username, password };
   if (token) body.token = token;
   const res = await postJson("/api/setup", body);
@@ -121,7 +135,7 @@ export async function setup(
 /**
  * List worlds the caller is a member of.
  * @returns The caller's worlds. Field semantics are defined by the generated
- * `WorldEntry` type (`src/types/generated/WorldEntry.ts`, from the Rust
+ * `WorldEntry` type (from the Rust
  * source) — not restated here.
  * @example
  * ```
@@ -136,13 +150,14 @@ export function listWorlds(): Promise<WorldEntry[]> {
 /**
  * Permanently delete a world. This function performs NO confirmation of its
  * own — the type-the-exact-name gate that guards destructive calls lives one
- * layer up, in `views/WorldSelect.svelte` (`armDelete`/`confirmDelete`). Do
+ * layer up, in `WorldSelect` (`armDelete`/`confirmDelete`). Do
  * not call this from a control that skips that gate.
  * @param id The world id to delete.
  * @returns Resolves on success. Throws on any non-2xx.
  * @example
  * ```
  * // module-private; not part of the public API
+ * declare const worldId: string;
  * await deleteWorld(worldId);
  * ```
  */
@@ -155,7 +170,7 @@ export async function deleteWorld(id: string): Promise<void> {
  * Create a new world; the caller is seated as its GM.
  * @param name The new world's display name.
  * @returns The created world. Field semantics are defined by the generated
- * `WorldEntry` type (`src/types/generated/WorldEntry.ts`). Throws on any
+ * `WorldEntry` type. Throws on any
  * non-2xx.
  * @example
  * ```
@@ -177,9 +192,9 @@ export async function createWorld(name: string): Promise<WorldEntry> {
  * world they hold no valid code for. Callers must surface a single generic
  * failure rather than trying to explain which case it was.
  *
- * Server proof: both rejection paths return `AppError::NotFound`
- * (`src/server/src/http/routes.rs:884-885` and `:897-898`), which maps to 404
- * at `src/server/src/http/error.rs:73`. The first of those collapses "no such
+ * Server proof: both rejection paths in `accept_invite` return `AppError::NotFound`,
+ * which maps to 404
+ * in `AppError`'s `IntoResponse` impl. The first of those collapses "no such
  * invite" and "wrong secret" into ONE branch (`record.filter(|_| verified)`),
  * so the two are indistinguishable by construction, not by discipline.
  * @param code The invite's bearer code.
@@ -188,6 +203,7 @@ export async function createWorld(name: string): Promise<WorldEntry> {
  * @example
  * ```
  * // module-private; not part of the public API
+ * declare const code: string;
  * const world = await acceptInvite(code);
  * ```
  */

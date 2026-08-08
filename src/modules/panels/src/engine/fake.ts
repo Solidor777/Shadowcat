@@ -9,6 +9,9 @@ import type { ExpandedLayout, LayoutOp } from "../layout/tree";
 import type { EngineAdapter } from "./adapter";
 
 const ZONE_IDS = ["right", "bottom", "left"] as const;
+/** The three fixed dock zones this engine builds DOM for; mirrors `@shadowcat/core`'s
+ * `ZoneId`, kept as a local literal union rather than importing it so this engine's DOM
+ * layer stays decoupled from the layout-tree package. */
 type Zone = (typeof ZONE_IDS)[number];
 
 /** In-memory `EngineAdapter`: plain divs per zone/group/floating panel,
@@ -16,10 +19,10 @@ type Zone = (typeof ZONE_IDS)[number];
  * dependency. Serves two roles: the test double for `PanelHost`'s own tests
  * (`emitOp` simulates a user gesture through the same `onOp` channel a real
  * engine uses), and the fallback engine `PanelHost` mounts by default when
- * constructed WITHOUT an `engine` prop (`PanelHost.svelte`'s own `engine ??
+ * constructed WITHOUT an `engine` prop (`PanelHost`'s own `engine ??
  * new FakeEngine()`) — a seam any bespoke host could rely on, but no
- * production path in THIS codebase reaches it: the shipped `panels` module's
- * `register()` always supplies a `DockviewEngine` instance (`index.ts`), so
+ * production path in THIS codebase reaches it: the shipped `panels.register()`
+ * always supplies a `DockviewEngine` instance, so
  * that default branch is taken only by a caller that mounts `PanelHost`
  * directly without an `engine` prop — today, only the test suite does.
  * @example
@@ -30,14 +33,25 @@ type Zone = (typeof ZONE_IDS)[number];
  * ```
  */
 export class FakeEngine implements EngineAdapter {
+  /** The container passed to `init`; `null` before `init` runs or after `destroy`. */
   #host: HTMLElement | null = null;
+  /** The slot resolver passed to `init`; `null` before `init` runs or after `destroy`. */
   #slotFor: ((id: string) => HTMLElement) | null = null;
+  /** Each zone's own container element, built once by `init`. */
   #zoneEls = new Map<Zone, HTMLElement>();
-  #groupEls = new Map<string, HTMLElement>(); // key: `${zone}:${index}`
-  #floatEls = new Map<string, HTMLElement>(); // key: panel id
+  /** Each docked group's wrapper element, keyed `${zone}:${index}`; torn down and rebuilt
+   * fresh on every `apply` call (see `apply`'s own doc). */
+  #groupEls = new Map<string, HTMLElement>();
+  /** Each floating (or degraded popped-out — see `apply`) panel's container, keyed by panel
+   * id; reused and only repositioned across `apply` calls, unlike `#groupEls`. */
+  #floatEls = new Map<string, HTMLElement>();
+  /** Subscribers registered via `onOp`; `emitOp` is this engine's sole emission source. */
   #opListeners = new Set<(op: LayoutOp) => void>();
+  /** The last id passed to `focus`, read back via the `focused` test getter. */
   #focused: string | null = null;
+  /** The `stageEl` passed to `init`; `null` before `init` runs or after `destroy`. */
   #stageEl: HTMLElement | null = null;
+  /** The center-well container `#stageEl` was adopted into, built by `init`. */
   #centerEl: HTMLElement | null = null;
 
   /** `EngineAdapter.init`: builds this engine's own zone/center-well DOM
@@ -64,7 +78,7 @@ export class FakeEngine implements EngineAdapter {
     this.#host = host;
     this.#slotFor = slotFor;
     // Establishes a definite size chain for the DOM this bespoke-fallback
-    // engine owns (buddy-check finding 2): `host` is a bare container with no
+    // engine owns: `host` is a bare container with no
     // layout of its own, so without a flex context here `centerEl` resolves
     // to `height: auto` and the adopted `.stage` (`height: 100%`, PanelHost.
     // svelte) collapses to its content height. Inline styles are used
@@ -78,9 +92,9 @@ export class FakeEngine implements EngineAdapter {
     // `row` places "left"/"right" as side columns flanking the center well
     // (matching a real docked layout's geometry); "bottom" stacks below the
     // row at full width. Without this nesting, `host`'s own column flow made
-    // every zone a full-width block sibling of the center well — the "loses
-    // width containment" defect (docs/CLOSED_BUGS.md, resolved): a zone `<div>` with no
-    // width of its own, inside a column flex container, stretches to the
+    // every zone a full-width block sibling of the center well — a zone
+    // `<div>` with no width of its own, inside a column flex container,
+    // stretches to the
     // container's full cross-size (`align-items: stretch`, the flex default)
     // regardless of how many groups are docked into it.
     const row = document.createElement("div");
@@ -214,15 +228,15 @@ export class FakeEngine implements EngineAdapter {
 
     // Floating: one container per floating panel, adopted directly and
     // positioned from its `Rect`. Popped-out ids are degraded to floating here
-    // (this bespoke-fallback engine has no cross-window popout; spec §10) so a
+    // (this bespoke-fallback engine has no cross-window popout) so a
     // slot is never lost and the keep-mounted invariant holds — production
     // pop-out is dockview-only.
     const POPOUT_FALLBACK_BASE = { x: 96, y: 96, w: 420, h: 520 };
     const POPOUT_FALLBACK_STEP = 28;
     // Cascades each fallback rect off its index (mirrors the cascade formula
-    // at the other degraded/rehydrated-position sites in this checkpoint —
-    // tree.ts's SHEET_CASCADE_BASE/STEP, placeFromPersistedLocation's
-    // "popped-out" case, controller.svelte.ts's REHYDRATE_FLOAT_BASE/STEP) so
+    // at the other degraded/rehydrated-position sites —
+    // `layout/tree`'s SHEET_CASCADE_BASE/STEP, `placeFromPersistedLocation`'s
+    // "popped-out" case, `PanelsController`'s own REHYDRATE_FLOAT_BASE/STEP) so
     // two-or-more simultaneously-popped-out ids don't render fully
     // overlapping at the identical position under this bespoke-fallback engine.
     const maxZ = expanded.floating.reduce((m, f) => Math.max(m, f.z), -1);

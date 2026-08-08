@@ -3,6 +3,15 @@
 // points it is given, so all shape math (cone/circle/ellipse/square) lives here and is
 // headless-testable. Angles are degrees; 0° = +x, positive toward +y (scene y is down).
 
+/** Converts degrees to radians, per this file's angle convention (0° = +x, positive toward +y).
+ * @param d An angle in degrees.
+ * @returns `d` in radians.
+ * @example
+ * ```
+ * // module-private helper; not exported from @shadowcat/render
+ * deg2rad(180); // Math.PI
+ * ```
+ */
 const deg2rad = (d: number): number => (d * Math.PI) / 180;
 
 /**

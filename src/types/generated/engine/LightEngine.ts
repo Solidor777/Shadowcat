@@ -3,7 +3,7 @@ import type { Falloff } from "./Falloff";
 
 /**
  * A placed light source: position, photometric properties, and an optional
- * falloff curve (scene-docs.ts:532-541 `LightSystem`). `brightRadius`/
+ * falloff curve (mirrors the client's `LightEngine`). `brightRadius`/
  * `dimRadius` are in grid cells.
  */
 export type LightEngine = { 

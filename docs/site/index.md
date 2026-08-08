@@ -27,6 +27,9 @@ features:
 
 ## Reading these docs locally
 
-The portal does not render from `file://` (VitePress emits absolute asset paths).
-From a Shadowcat checkout run `pnpm docs:build` once, then `pnpm docs:serve` and
-open the printed URL.
+From a Shadowcat checkout run `pnpm docs:build` once, then open
+`dist-docs/index.html` directly in a browser. Static content, styling, and ordinary
+link navigation all work this way. Anything driven by the site's runtime
+JavaScript — including client-side search, the appearance toggle, and the mobile nav
+panel — needs a server instead, because browsers refuse to load module scripts from
+`file://`; for that, run `pnpm docs:serve` and open the printed URL.

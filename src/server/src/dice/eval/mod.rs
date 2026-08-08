@@ -19,7 +19,7 @@ pub mod success;
 /// Total-mode arithmetic fold (saturating).
 pub mod sum;
 
-/// Roll every die in the spec's expression, left-to-right, running each group's
+/// Roll every die in `spec`'s expression, left-to-right, running each group's
 /// pipeline. The ONLY randomness step; `evaluate` reads `raws.records` deterministically.
 pub fn roll(spec: &RollSpec, rng: &mut dyn RngSource) -> RawRoll {
     let mut raws = RawRoll::default();

@@ -11,6 +11,5 @@
     "Class", "Interface", "Enum", "EnumMember", "Function", "Method",
     "Property", "TypeAlias", "Variable"
   ],
-  "treatValidationWarningsAsErrors": false,
-  "skipErrorChecking": true
+  "treatValidationWarningsAsErrors": true
 }

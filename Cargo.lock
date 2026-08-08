@@ -2691,6 +2691,7 @@ dependencies = [
  "rust-embed",
  "serde",
  "serde_json",
+ "shadowcat-test-support",
  "sqlx",
  "subtle",
  "tempfile",
@@ -2706,6 +2707,21 @@ dependencies = [
  "url",
  "uuid",
  "winresource",
+]
+
+[[package]]
+name = "shadowcat-test-support"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "futures-util",
+ "reqwest",
+ "serde_json",
+ "shadowcat",
+ "tokio",
+ "tokio-tungstenite 0.24.0",
+ "url",
+ "uuid",
 ]
 
 [[package]]

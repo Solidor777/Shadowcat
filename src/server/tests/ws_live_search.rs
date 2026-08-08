@@ -2,7 +2,7 @@
 //! server. A subscriber receives `search_update` when a matching readable doc
 //! appears, and never receives a document it cannot read (no-op suppressed).
 //!
-//! The harness prelude mirrors `ws_convergence.rs` (each `tests/*.rs` is its own
+//! The harness prelude mirrors `ws_convergence` (each `tests/*.rs` is its own
 //! crate, so the helpers are replicated rather than imported).
 
 use std::sync::atomic::AtomicBool;

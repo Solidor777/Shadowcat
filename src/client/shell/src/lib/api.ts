@@ -2,8 +2,13 @@ import type { WorldEntry } from "@shadowcat/types";
 
 /** Local mirror of the server's MeResponse (not ts-rs-exported). */
 export interface Me {
+  /** The caller's user id. */
   id: string;
+  /** The caller's display username. */
   username: string;
+  /** Raw server-tier role string. `App.boot()` compares it against `"admin"` when
+   * deriving `AppContext.serverRole`; any other value, including absent, falls back
+   * to `"user"` (fail-closed). */
   server_role: string;
 }
 
@@ -12,7 +17,7 @@ export interface Me {
 const FETCH_TIMEOUT_MS = 15_000;
 
 /** Bounded retry for the boot chain (`withRetry`'s only caller is
- * `App.svelte`'s `boot()`): a transient backend blip (restart, single 5xx)
+ * `App`'s `boot()`): a transient backend blip (restart, single 5xx)
  * must not permanently strand the SPA on the login/worlds route with no
  * retry and no error surface. Delays are flat values, not a policy knob
  * (YAGNI). Rethrows the last error if every attempt fails.
@@ -128,8 +133,11 @@ export function listWorlds(): Promise<WorldEntry[]> {
 
 /** A world member (visible to every world member). Mirrors the server's MemberEntry. */
 export interface WorldMember {
+  /** The member's user id. */
   user: string;
+  /** The member's display username. */
   username: string;
+  /** The member's effective role in this world. */
   role: "gm" | "player" | "spectator";
 }
 
@@ -149,12 +157,27 @@ export function listWorldMembers(world: string): Promise<WorldMember[]> {
 /** Per-user UI session state. The server stores this opaquely (object + size cap);
  * the client owns the structure. */
 export interface UiState {
-  global: { locale: string; lastWorld: string | null };
-  // `panelLayout` is an opaque blob owned by @shadowcat/module-panels' persistence
-  // codec (encodeLayout/decodeLayout) — the shell never inspects its shape.
-  // `chatRead` is likewise opaque, owned by the chat module's per-channel
-  // last-read-marker tracking (unread tab badge) — the shell only stores it.
-  worlds: Record<string, { panelLayout?: unknown; chatRead?: unknown }>;
+  /** Account-wide settings, independent of any world. */
+  global: {
+    /** The active i18n locale, applied by `loadSessionState` on load and persisted
+     * whenever the `i18n` singleton's locale changes. */
+    locale: string;
+    /** The most recently entered world id, or `null`. Seeds `App.boot()`'s
+     * non-route load only — a world route always wins (see `resolveBootWorld`). */
+    lastWorld: string | null;
+  };
+  /** Per-world settings, keyed by world id. */
+  worlds: Record<
+    string,
+    {
+      /** Opaque blob owned by `@shadowcat/module-panels`' persistence codec
+       * (encodeLayout/decodeLayout) — the shell never inspects its shape. */
+      panelLayout?: unknown;
+      /** Opaque blob owned by the chat module's per-channel last-read-marker
+       * tracking (unread tab badge) — the shell only stores it. */
+      chatRead?: unknown;
+    }
+  >;
 }
 
 /** The `UiState` shape for an account with no persisted blob yet.
@@ -203,7 +226,10 @@ export async function getUiState(): Promise<UiState> {
  * same world's slice) contend only on the individual fields/keys both
  * actually write. */
 export interface UiStatePatch {
+  /** Dirty `global` fields only; absent fields are untouched server-side. */
   global?: Partial<UiState["global"]>;
+  /** Dirty per-world keys only, keyed by world id; absent keys/worlds are
+   * untouched server-side. */
   worlds?: Record<string, Partial<UiState["worlds"][string]>>;
 }
 
@@ -221,7 +247,10 @@ export interface UiStatePatch {
  */
 export async function putUiState(
   patch: UiStatePatch,
-  opts: { keepalive?: boolean } = {},
+  opts: {
+    /** See the `@param opts.keepalive` doc above. */
+    keepalive?: boolean;
+  } = {},
 ): Promise<void> {
   // `keepalive` lets the request outlive a page unload (the patch is within
   // the server's 64KB merged cap, under keepalive's body limit).

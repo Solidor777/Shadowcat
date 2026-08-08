@@ -158,13 +158,15 @@ pub fn resolve_group(
                                     push_extra(
                                         &mut recs,
                                         raws,
-                                        group.kind.clone(),
-                                        group_index,
-                                        group.label.clone(),
-                                        extra,
-                                        value,
-                                        // Reached only in the Numeric-guarded Penetrate arm.
-                                        true,
+                                        ExtraDie {
+                                            kind: group.kind.clone(),
+                                            group_index,
+                                            label: group.label.clone(),
+                                            natural: extra,
+                                            value,
+                                            // Reached only in the Numeric-guarded Penetrate arm.
+                                            ordered: true,
+                                        },
                                     );
                                 }
                                 _ => {
@@ -235,35 +237,44 @@ fn keep(recs: &mut [DieRecord], n: usize, highest: bool, keep_selected: bool) {
     }
 }
 
-/// Push one exploded/penetrated extra die into both the raw log and the per-die
-/// record vec. `natural` is the true RNG face; `value` is the post-modifier
-/// stored value, which for Penetrate differs from `natural` by the -1 penalty.
-#[allow(clippy::too_many_arguments)]
-fn push_extra(
-    recs: &mut Vec<DieRecord>,
-    raws: &mut RawRoll,
+/// One exploded/penetrated extra die, as drawn and before it is logged. The
+/// remaining `DieRecord` fields are constants for an extra die: it is always kept,
+/// never itself marks an explosion, and carries no reroll, crit or expertise state.
+struct ExtraDie {
+    /// The die's kind, matching its originating group.
     kind: DieKind,
+    /// Index of the `Dice` AST node that produced the originating group.
     group_index: usize,
+    /// The originating group's label, if any.
     label: Option<String>,
+    /// The true RNG face, recorded for the audit trail.
     natural: i32,
+    /// The post-modifier stored value, used for scoring and display. For Penetrate
+    /// this differs from `natural` by the -1 penalty and may land below the die's
+    /// `min` by design.
     value: i32,
+    /// The originating die is ordered (a `Faces` die with defined sequence).
     ordered: bool,
-) {
-    let id = raws.push(kind, natural);
+}
+
+/// Push one exploded/penetrated extra die into both the raw log and the per-die
+/// record vec.
+fn push_extra(recs: &mut Vec<DieRecord>, raws: &mut RawRoll, extra: ExtraDie) {
+    let id = raws.push(extra.kind, extra.natural);
     recs.push(DieRecord {
         id,
-        group_index,
-        natural,
-        value,
+        group_index: extra.group_index,
+        natural: extra.natural,
+        value: extra.value,
         kept: true,
         exploded: false,
         rerolled_from: None,
         crit_success: false,
         crit_fail: false,
         expertise: 0,
-        label,
+        label: extra.label,
         symbols: vec![],
-        ordered,
+        ordered: extra.ordered,
     });
 }
 

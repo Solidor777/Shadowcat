@@ -1,7 +1,7 @@
 import type { ReadableDocuments, AssetResolver } from "@shadowcat/core";
 import type { DisplayBackend } from "./backend";
 import type { VisibilityInput, LightingInput, LitCell, SceneTool, SceneToolHost, Point, ShapeNodeSpec, Polygon, MoveVisionSample } from "./types";
-import type { EasingMode } from "./easing";
+import type { TokenTweenConfig } from "./easing";
 import { computeFogBlendFactor } from "./fog-blend";
 import { Camera } from "./camera";
 import { Compositor } from "./compositor";
@@ -24,7 +24,7 @@ import { PingView } from "./ping-view";
  * @returns One 4-point rect polygon per `(i,j)` pair, in input order.
  * @example
  * ```
- * // module-private helper; not exported from @shadowcat/render's index.ts
+ * // module-private helper; not exported from @shadowcat/render
  * cellsToRects([0, 0, 1, 0], 5); // 2 rects: [0,0]-[5,5] and [5,0]-[10,5]
  * ```
  */
@@ -40,6 +40,7 @@ function cellsToRects(cells: number[], size: number): Polygon[] {
 
 /** Handle to a scene subscription (structurally matches @shadowcat/core's). */
 export interface SceneSubscription {
+  /** Cancel this subscription; no further frames are delivered. */
   unsubscribe(): void;
 }
 
@@ -47,17 +48,32 @@ export interface SceneSubscription {
  * (GM-only see-as-player) views the channel as that user; the server gates + resolves it. */
 export type SubscribeScene = (
   channel: string,
-  onUpdate: (frame: { payload: unknown; computedAtSeq: number }) => void,
-  opts?: { asUser?: string },
+  onUpdate: (frame: {
+    /** The channel-specific decoded frame data. */
+    payload: unknown;
+    /** The server document-seq this frame is valid as of; monotonic per channel. */
+    computedAtSeq: number;
+  }) => void,
+  opts?: {
+    /** GM-only see-as-player: view the channel as this user id. */
+    asUser?: string;
+  },
 ) => SceneSubscription;
 
+/** Constructor options for {@link RenderEngine}. */
 export interface RenderEngineOpts {
   /** Document source to render. The host passes the optimistic view so predicted
    * (unconfirmed) creates/moves render immediately; the authoritative store is the
    * rollback base. */
   store: ReadableDocuments;
+  /** Resolves asset ids to serve URLs for token visuals — see `ResolvedAnimatedSource`'s
+   * interface doc for the never-resolved-in-the-backend invariant. */
   assets: AssetResolver;
+  /** The injected display backend (PixiJS in production, a mock in tests) — the engine is
+   * Pixi-free itself. */
   backend: DisplayBackend;
+  /** The initial grid kind/size/diagonal-rule; swap the active grid via {@link
+   * RenderEngine.setGrid}. */
   grid: GridSpec;
   /** Grid line color (0xRRGGBB) sampled from CSS tokens by the host; default slate. */
   gridColor?: number;
@@ -66,7 +82,7 @@ export interface RenderEngineOpts {
   /** Called when a derived frame is applied (host observability hook); carries the applied
    * visibility so the host can surface the fog mode. */
   onDerivedApplied?: (input: VisibilityInput) => void;
-  /** Which scene to render/scene-filter by (M12d). From the host (Stage → `ctx.viewedSceneId`).
+  /** Which scene to render/scene-filter by. From the host (Stage → `ctx.viewedSceneId`).
    * Absent ⇒ the first scene, preserving single-scene behavior. */
   viewedSceneId?: () => string | null;
 }
@@ -74,35 +90,60 @@ export interface RenderEngineOpts {
 /** Orchestrates the render model over a DisplayBackend: layers, camera, grid, and
  * the store-driven reconciler. Framework- and Pixi-free (the backend is injected). */
 export class RenderEngine implements SceneToolHost {
+  /** Screen↔scene transform driving pan/zoom; pushed to the backend by {@link applyCamera}. */
   readonly camera = new Camera();
+  /** Owns the mask/fog compositing target the backend renders; driven by
+   * `renderVisibility`/`applyVisionSweep`. */
   readonly compositor: Compositor;
+  /** Resolves the `CORE_LAYERS` z-order the backend's containers are created in (`start`). */
   private readonly layers = new LayerRegistry();
+  /** Cosmetic band/tint overlay driven by `onSceneFrame`'s `toLighting` parse; independent of
+   * the fog secrecy gate (`compositor`). */
   private readonly lighting: Lighting;
-  /** Reassignable: the active scene's grid drives snapping + lines (M8d §15). */
+  /** Reassignable: the active scene's grid drives snapping + lines. */
   private grid: Grid;
-  /** Scene-level snap-to-grid toggle (M10f-3 §4.2); default enabled. Disabled makes `snap`
+  /** Scene-level snap-to-grid toggle; default enabled. Disabled makes `snap`
    * identity — grid RENDERING is unaffected, only the snap call chain every tool inherits
    * via `ctx.scene.snap`. */
   private snapEnabled = true;
+  /** Diffs the store's `scene`/background doc into backend nodes; one of the six views
+   * {@link start}/{@link reapplyViewedScene} re-run per store commit or scene switch. */
   private readonly reconciler: SceneReconciler;
+  /** Doc→sprite reconciler + tween driver for `token` docs; also backs the drag/animation
+   * `SceneToolHost` methods (`setDraggingToken`, `animateAlongPath`, `animateSamples`). */
   private readonly tokens: TokenView;
+  /** Doc→shape reconciler for `drawing` docs. */
   private readonly drawings: DrawingView;
+  /** Doc→shape reconciler for `template` docs. */
   private readonly templates: TemplateView;
+  /** Doc→shape reconciler for `wall` docs. */
   private readonly walls: WallView;
+  /** Doc→shape reconciler for `region` docs. */
   private readonly regions: RegionView;
+  /** Transient ping-ring state, ticked each frame; drives `DisplayBackend.drawPings`. */
   private readonly pings = new PingView();
   /** Whether ping rings were drawn last frame, so the ticker stops redrawing once idle. */
   private pingsActive = false;
+  /** Resolved grid line color (0xRRGGBB) — `opts.gridColor`, or the default slate. */
   private readonly gridColor: number;
+  /** Current CSS-pixel viewport size, set by {@link setViewport}; feeds the visible-scene-rect
+   * computation in {@link redrawGrid}. */
   private viewport = { width: 0, height: 0 };
+  /** The store-subscription teardown installed by {@link start}; `null` before `start` runs or
+   * after {@link destroy}. */
   private unsubscribe: (() => void) | null = null;
+  /** The active `vision`-channel subscription handle, re-established by `subscribeVision` on
+   * every `viewAsUser` change; `null` when unsubscribed. */
   private sceneSub: SceneSubscription | null = null;
   /** Active canvas tool (null = camera owns all gestures). */
   private activeTool: SceneTool | null = null;
   /** Gesture ownership for the in-flight pointer drag: a tool claimed the down, or
    * the camera is panning. Both false between gestures. */
   private toolGesture = false;
+  /** Whether the camera currently owns the in-flight pointer gesture (mutually exclusive with
+   * `toolGesture`). */
   private panning = false;
+  /** The previous pointer position for the in-flight camera pan, in screen coordinates. */
   private lastPan: Point = { x: 0, y: 0 };
   /** The pointer that owns the in-flight gesture; events from other pointers
    * (multi-touch / pen+mouse) are ignored until it ends. Single-pointer by design. */
@@ -111,28 +152,43 @@ export class RenderEngine implements SceneToolHost {
    * pre-filtered VisibilityInput): `toVisibility` is re-run at flush time against the THEN-current
    * viewed scene, so a scene switch between defer and flush cannot paint a stale scene's fog holes
    * onto the newly-viewed one (fog secrecy gate — fail closed). */
-  private pendingDerived: { payload: unknown; seq: number } | null = null;
+  private pendingDerived: {
+    /** The deferred frame's raw, unparsed payload. */
+    payload: unknown;
+    /** The deferred frame's `computedAtSeq`. */
+    seq: number;
+  } | null = null;
   /** Highest computed_at_seq applied to the mask; guards against regressing to an
    * older derived frame (latest-wins). */
   private lastAppliedSeq = -1;
   /** The last derived visibility, re-rendered when the GM fog preview toggles. */
   private lastInput: VisibilityInput = { mode: "all", visible: [], explored: [] };
   /** GM-only client preview: when true a no-fog (`mode:"all"`) frame renders as full fog, so the
-   * GM can preview a vision-less player's view. Only ever ADDS fog to the GM's own view (D-V3,
-   * no server path) — it can never reveal more than the frame already carries. */
+   * GM can preview a vision-less player's view. Only ever ADDS fog to the GM's own view, client-only
+   * with no server path — it can never reveal more than the frame already carries. */
   private fogPreview = false;
-  /** GM see-as-player target (M9c-2): the user whose vision the `vision` subscription requests, or
+  /** GM see-as-player target: the user whose vision the `vision` subscription requests, or
    * null for the GM's own view. The server gates + resolves it (a non-GM is rejected). */
   private viewAsUser: string | null = null;
-  /** Active mover vision-sweep overrides, keyed by token id (M2 §T6): while a mover's own
+  /** Active mover vision-sweep overrides, keyed by token id: while a mover's own
    * MoveStream plays, the `moverVision` sample with the greatest `tMs <= elapsed` feeds the fog,
    * bypassing `lastInput`. Keyed (mirrors `TokenAnimator.samplesAnim`) so a second concurrent sweep
    * for a DIFFERENT token cannot clobber an in-flight one; when non-empty, ALL active sweeps'
    * chosen samples are unioned into the rendered visible set. Empty when no sweep is in flight
    * (observers never populate this — `animateSamples` only starts a sweep when `moverVision` is
-   * non-empty, and only the mover's own MoveStream carries a non-null `moverVision`, per the M2
-   * per-recipient egress clip). */
-  private readonly visionSweeps = new Map<string, { samples: MoveVisionSample[]; elapsed: number; durationMs: number }>();
+   * non-empty, and only the mover's own MoveStream carries a non-null `moverVision`, because the
+   * server's per-recipient egress clip omits it for observers). */
+  private readonly visionSweeps = new Map<
+    string,
+    {
+      /** The sweep's ordered vision samples. */
+      samples: MoveVisionSample[];
+      /** Milliseconds elapsed since the sweep started. */
+      elapsed: number;
+      /** The sweep's total duration, in ms (mirrors the MoveStream's `durationMs`). */
+      durationMs: number;
+    }
+  >();
   /** Resolved viewed scene, falling back to the first scene so single-scene tests/hosts are
    * unaffected. The single definition every view + reconciler + fog filter reads.
    * @returns The viewed scene's document id, or `null` when no scene document exists yet.
@@ -250,7 +306,7 @@ export class RenderEngine implements SceneToolHost {
     );
   }
 
-  /** GM see-as-player (M9c-2): re-subscribe the vision channel viewing as `userId` (null = the GM's
+  /** GM see-as-player: re-subscribe the vision channel viewing as `userId` (null = the GM's
    * own view). Resets the mask watermark so the new view's first frame applies even at the same
    * world seq — a view switch is a fresh stream, not a regression of the same one.
    * @param userId The user whose vision to view as, or `null` to revert to the GM's own view.
@@ -284,13 +340,19 @@ export class RenderEngine implements SceneToolHost {
    * ```
    * // private method; not part of the public API — invoked only as the `subscribeScene`
    * // callback for the "vision" channel
+   * declare const payload: unknown;
    * this.onSceneFrame({ payload, computedAtSeq: 7 });
    * ```
    */
-  private onSceneFrame(frame: { payload: unknown; computedAtSeq: number }): void {
+  private onSceneFrame(frame: {
+    /** The opaque `vision` payload — parsed by `toVisibility`/`toLighting`. */
+    payload: unknown;
+    /** The server document-seq this frame is valid as of; monotonic per channel. */
+    computedAtSeq: number;
+  }): void {
     // Per-channel frames are monotonic in computed_at_seq and latest wins. Drop any
     // frame already superseded by an applied or a pending one — never regress the
-    // mask to an older derived state (defends the M9 consumer against reordering).
+    // mask to an older derived state (defends against out-of-order frame delivery).
     if (frame.computedAtSeq <= this.lastAppliedSeq) return;
     if (this.pendingDerived && frame.computedAtSeq <= this.pendingDerived.seq) return;
     this.lastRawPayload = frame.payload;
@@ -387,7 +449,7 @@ export class RenderEngine implements SceneToolHost {
   }
 
   /** GM-only: toggle the client-side fog preview. `on` renders a no-fog frame as full fog so the
-   * GM can preview the player view (see-as-player is M9c-2). Client-only (D-V3); only adds fog to
+   * GM can preview the player view. Client-only, with no server path; only adds fog to
    * the GM's own view, so it cannot leak.
    * @param on `true` to force a `mode:"all"` frame to render as full fog; `false` to render it as
    * received (no fog).
@@ -457,9 +519,24 @@ export class RenderEngine implements SceneToolHost {
   private toVisibility(payload: unknown): VisibilityInput {
     const p = payload as
       | {
+          /** `"all"` or `"masked"` — see the method doc for the fail-closed default. */
           mode?: string;
-          polygons?: { scene?: string; points?: number[] }[];
-          explored?: { scene?: string; cell?: number; cells?: number[] }[];
+          /** Per-token visible-polygon groups (only meaningful when `mode:"masked"`). */
+          polygons?: {
+            /** The scene id this polygon group belongs to — filtered against the active scene. */
+            scene?: string;
+            /** Flat `[x0,y0,x1,y1,…]` polygon points. */
+            points?: number[];
+          }[];
+          /** Per-token explored-cell groups (the persistent memory layer). */
+          explored?: {
+            /** The scene id this cell group belongs to — filtered against the active scene. */
+            scene?: string;
+            /** World-unit length of one cell's edge — see `cellsToRects`. */
+            cell?: number;
+            /** Flat `[i0,j0,i1,j1,…]` cell-index pairs — see `cellsToRects`. */
+            cells?: number[];
+          }[];
         }
       | null
       | undefined;
@@ -470,8 +547,12 @@ export class RenderEngine implements SceneToolHost {
     const polygons = Array.isArray(p.polygons) ? p.polygons : [];
     const visible = polygons
       .filter(
-        (g): g is { scene?: string; points: number[] } =>
-          !!g && g.scene === activeScene && Array.isArray(g.points) && g.points.length >= 6,
+        (g): g is {
+          /** The scene id this polygon group belongs to. */
+          scene?: string;
+          /** Flat `[x0,y0,x1,y1,…]` polygon points (validated `>= 6`, i.e. ≥3 vertices). */
+          points: number[];
+        } => !!g && g.scene === activeScene && Array.isArray(g.points) && g.points.length >= 6,
       )
       .map((g) => ({ points: g.points }));
     // `explored` is the dimmed memory layer: scene-tagged cell sets rasterized to rect polygons,
@@ -480,7 +561,14 @@ export class RenderEngine implements SceneToolHost {
     const exploredGroups = Array.isArray(p.explored) ? p.explored : [];
     const explored = exploredGroups
       .filter(
-        (g): g is { scene?: string; cell: number; cells: number[] } =>
+        (g): g is {
+          /** The scene id this cell group belongs to. */
+          scene?: string;
+          /** World-unit length of one cell's edge. */
+          cell: number;
+          /** Flat `[i0,j0,i1,j1,…]` cell-index pairs. */
+          cells: number[];
+        } =>
           !!g &&
           g.scene === activeScene &&
           typeof g.cell === "number" &&
@@ -507,16 +595,39 @@ export class RenderEngine implements SceneToolHost {
    */
   private toLighting(payload: unknown): LightingInput | null {
     const p = payload as {
+      /** `"masked"` required — anything else yields no overlay (see the method doc). */
       mode?: string;
-      bands?: { name?: string; min?: number }[];
+      /** Gradation bands, brightest-first. */
+      bands?: {
+        /** Band name (e.g. `"bright"`, `"dim"`, `"dark"`). */
+        name?: string;
+        /** Band floor — the minimum [0,1] illumination value admitting this band; mirrors
+         * `scene::lighting::Band.min_illumination`, wire-keyed `min` by `compute_derived`. */
+        min?: number;
+      }[];
+      /** `renderHints` lookup table; indexed by a cell's packed `hint` field. */
       renderHints?: string[];
-      lit?: { scene?: string; cell?: number; cells?: number[] }[];
+      /** Per-token lit-cell groups. */
+      lit?: {
+        /** The scene id this cell group belongs to. */
+        scene?: string;
+        /** World-unit length of one cell's edge. */
+        cell?: number;
+        /** Flat `[i,j,band,tint,hint,…]` 5-int cell tuples — see `LitCell`. */
+        cells?: number[];
+      }[];
     } | null | undefined;
     if (p?.mode !== "masked" || !Array.isArray(p.lit)) return null;
     const activeScene = this.viewedScene();
     const group = p.lit.find(
-      (g): g is { scene?: string; cell: number; cells: number[] } =>
-        !!g && g.scene === activeScene && typeof g.cell === "number" && g.cell > 0 && Array.isArray(g.cells),
+      (g): g is {
+        /** The scene id this cell group belongs to. */
+        scene?: string;
+        /** World-unit length of one cell's edge. */
+        cell: number;
+        /** Flat `[i,j,band,tint,hint,…]` 5-int cell tuples. */
+        cells: number[];
+      } => !!g && g.scene === activeScene && typeof g.cell === "number" && g.cell > 0 && Array.isArray(g.cells),
     );
     if (!group) return null;
     const cells: LitCell[] = [];
@@ -528,7 +639,14 @@ export class RenderEngine implements SceneToolHost {
     }
     const bands = Array.isArray(p.bands)
       ? p.bands
-          .filter((b): b is { name: string; min: number } => !!b && typeof b.name === "string" && typeof b.min === "number")
+          .filter(
+            (b): b is {
+              /** Band name. */
+              name: string;
+              /** Band floor. */
+              min: number;
+            } => !!b && typeof b.name === "string" && typeof b.min === "number",
+          )
           .map((b) => ({ name: b.name, min: b.min }))
       : [];
     const hints = Array.isArray(p.renderHints) ? p.renderHints.map(String) : [];
@@ -548,8 +666,8 @@ export class RenderEngine implements SceneToolHost {
    */
   toLightingForTest(p: unknown): LightingInput | null { return this.toLighting(p); }
 
-  /** Module-facing shader-filter seam (0.x). Forwards to the backend; no engine
-   * consumer in M8 — the first consumers are token fx / Phase-3 VFX.
+  /** Module-facing shader-filter seam. Forwards to the backend; no engine consumer
+   * currently calls it.
    * @param layerId The target core-layer id (e.g. `"tokens"`); the backend defines what an
    * unknown id does (`DisplayBackend.addLayerFilter`).
    * @param filter An opaque, backend-specific filter object (e.g. a PixiJS `Filter`).
@@ -568,7 +686,7 @@ export class RenderEngine implements SceneToolHost {
     return this.opts.backend.addLayerFilter(layerId, filter);
   }
 
-  // --- SceneToolHost: the canvas interaction seam (M8d §7). The host (Stage)
+  // --- SceneToolHost: the canvas interaction seam. The host (Stage)
   // feeds DOM pointer events as screen points; the engine converts to scene coords
   // and routes to the active tool first, falling back to camera pan. ---
 
@@ -624,7 +742,7 @@ export class RenderEngine implements SceneToolHost {
     return this.snapEnabled ? this.grid.snap(p) : p;
   }
 
-  /** `SceneToolHost.setSnapEnabled`: toggle the scene-level snap-to-grid axis (M10f-3 §4.2).
+  /** `SceneToolHost.setSnapEnabled`: toggle the scene-level snap-to-grid axis.
    * Disabled makes {@link snap} the identity function; grid RENDERING is unaffected (a snap-off
    * scene may still display its reference grid) — only the snap call chain every tool inherits
    * via `ctx.scene.snap` changes.
@@ -765,8 +883,8 @@ export class RenderEngine implements SceneToolHost {
    * import type { RenderEngine, GridSpec } from "@shadowcat/render";
    *
    * declare const engine: RenderEngine;
-   * const spec: GridSpec = { kind: "square", size: 70 };
-   * engine.setGrid(spec);
+   * const gridSpec: GridSpec = { kind: "square", size: 70 };
+   * engine.setGrid(gridSpec);
    * ```
    */
   setGrid(spec: GridSpec): void {
@@ -778,8 +896,6 @@ export class RenderEngine implements SceneToolHost {
   /** Push animation config (speed + easing) to the token animator. Separate from setGrid
    * so world-settings animation changes can be applied without rebuilding the grid.
    * @param cfg Animation config.
-   * @param cfg.speedCellsPerSec Token tween speed, in grid cells per second.
-   * @param cfg.easing The tween's easing curve (`EasingMode`).
    * @example
    * ```ts
    * import type { RenderEngine } from "@shadowcat/render";
@@ -788,12 +904,12 @@ export class RenderEngine implements SceneToolHost {
    * engine.setAnimation({ speedCellsPerSec: 6, easing: "linear" });
    * ```
    */
-  setAnimation(cfg: { speedCellsPerSec: number; easing: EasingMode }): void {
+  setAnimation(cfg: TokenTweenConfig): void {
     this.tokens.setAnimationConfig(cfg);
   }
 
   /** Has no production caller today (`src/modules`/`src/client/shell` drive route playback
-   * exclusively through `animateSamples`, per `controller.svelte.ts`'s own "Animation is
+   * exclusively through `animateSamples`, per `commitRoute`'s own "Animation is
    * broadcast-driven via onMoveStream ... no local animation from the moveRequest resolve value"
    * comment); this `SceneToolHost` seam is exercised only by tests. The mechanism below is the
    * contract it honors if called.
@@ -817,9 +933,10 @@ export class RenderEngine implements SceneToolHost {
 
   /** Drive server-broadcast sample-based playback (SceneToolHost seam). Forwards the position
    * samples to TokenView; `serverNow` used once at call time for catch-up alignment. When
-   * `moverVision` is present (non-empty — only the mover's own MoveStream carries it, per the M2
-   * per-recipient egress clip), also starts a fog vision-sweep keyed to the SAME clock: the
-   * override is applied immediately (T6 §Step 3) and advanced each tick by `tickVisionSweep`.
+   * `moverVision` is present (non-empty — only the mover's own MoveStream carries it, because the
+   * server's per-recipient egress clip omits it for observers), also starts a fog vision-sweep
+   * keyed to the SAME clock: the override is applied immediately and advanced each tick by
+   * `tickVisionSweep`.
    * @param id The token document id whose playback this drives.
    * @param samples Position samples, each a `{tMs, pos}` pair; interpolated between adjacent
    * samples by `tMs`.
@@ -830,8 +947,9 @@ export class RenderEngine implements SceneToolHost {
    * `Math.max(0, serverNow() - startServerMs)` to compute catch-up elapsed time for both the
    * token tween and any accompanying vision sweep; when absent, elapsed starts at `0` (no
    * catch-up assumed).
-   * @param moverVision Mover-only per-sample vision polygons (`null`/absent for observers, per the
-   * M2 per-recipient egress clip); presence starts a fog vision-sweep alongside the position tween.
+   * @param moverVision Mover-only per-sample vision polygons (`null`/absent for observers, because
+   * the server's per-recipient egress clip omits it for them); presence starts a fog vision-sweep
+   * alongside the position tween.
    * @example
    * ```ts
    * import type { RenderEngine } from "@shadowcat/render";
@@ -847,7 +965,12 @@ export class RenderEngine implements SceneToolHost {
    */
   animateSamples(
     id: string,
-    samples: { tMs: number; pos: [number, number] }[],
+    samples: {
+      /** Server-clock offset, in ms, this sample applies from. */
+      tMs: number;
+      /** Scene-coord `[x,y]` position at this sample. */
+      pos: [number, number];
+    }[],
     durationMs: number,
     startServerMs: number,
     serverNow?: () => number,
@@ -902,7 +1025,12 @@ export class RenderEngine implements SceneToolHost {
    * this.chosenSample({ samples: [], elapsed: 0 });
    * ```
    */
-  private chosenSample(sweep: { samples: MoveVisionSample[]; elapsed: number }): MoveVisionSample {
+  private chosenSample(sweep: {
+    /** The sweep's ordered vision samples. */
+    samples: MoveVisionSample[];
+    /** Milliseconds elapsed since the sweep started. */
+    elapsed: number;
+  }): MoveVisionSample {
     let chosen = sweep.samples[0];
     for (const s of sweep.samples) {
       if (s.tMs <= sweep.elapsed) chosen = s;
@@ -940,8 +1068,20 @@ export class RenderEngine implements SceneToolHost {
    * ```
    */
   private sweepBlendInputs(
-    sweep: { samples: MoveVisionSample[]; elapsed: number },
-  ): { from: VisibilityInput; to: VisibilityInput; factor: number } | null {
+    sweep: {
+      /** The sweep's ordered vision samples. */
+      samples: MoveVisionSample[];
+      /** Milliseconds elapsed since the sweep started. */
+      elapsed: number;
+    },
+  ): {
+    /** The chosen (current) sample's fog input. */
+    from: VisibilityInput;
+    /** The next sample's fog input to fade toward. */
+    to: VisibilityInput;
+    /** The cross-fade blend factor, `[0,1]` — see `computeFogBlendFactor`. */
+    factor: number;
+  } | null {
     const cur = this.chosenSample(sweep);
     let next: MoveVisionSample | null = null;
     for (const s of sweep.samples) {
@@ -1129,7 +1269,7 @@ export class RenderEngine implements SceneToolHost {
 
   /** Tears down this engine instance: unsubscribes from the document store and the `vision`
    * channel, then calls `DisplayBackend.destroy()` — which releases all GPU resources and
-   * detaches the canvas (`backend.ts:57-58`). Does not individually tear down each doc-type
+   * detaches the canvas. Does not individually tear down each doc-type
    * view (tokens/drawings/templates/walls/regions/pings); their render nodes are reclaimed as
    * part of the backend's own teardown, not by a per-view `destroy()` call here. Call once, when
    * the host unmounts the canvas; the instance is not reusable afterward.

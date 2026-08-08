@@ -4,10 +4,32 @@ import { type FormulaError, MAX_FORMULA_LENGTH } from "./types";
  * dotted reference paths (e.g. `parent.dex`) from adjacent word/op tokens. */
 export type Op = "+" | "-" | "*" | "/" | "%" | "(" | ")" | "," | ".";
 
+/** A single lexed token, tagged by `kind`. */
 export type Tok =
-  | { kind: "num"; value: number; pos: number }
-  | { kind: "word"; value: string; pos: number }
-  | { kind: "op"; value: Op; pos: number };
+  | {
+      /** Discriminant: a numeric literal. */
+      kind: "num";
+      /** The literal's parsed value — already overflow/finite-checked by `tokenize`. */
+      value: number;
+      /** UTF-16 code-unit offset of the token's first character, used in error messages. */
+      pos: number;
+    }
+  | {
+      /** Discriminant: an identifier or dotted-reference-path segment. */
+      kind: "word";
+      /** Lowercased text — identifiers are case-insensitive; casing is normalized here, at the lexer. */
+      value: string;
+      /** UTF-16 code-unit offset of the token's first character. */
+      pos: number;
+    }
+  | {
+      /** Discriminant: a single-character operator/punctuator from `Op`. */
+      kind: "op";
+      /** The matched operator. */
+      value: Op;
+      /** UTF-16 code-unit offset of the token's first character. */
+      pos: number;
+    };
 
 const OPS = new Set<string>(["+", "-", "*", "/", "%", "(", ")", ",", "."]);
 
@@ -61,7 +83,7 @@ function isWordChar(ch: string): boolean {
 }
 
 /** Single left-to-right scan into tokens. Identifiers are lowercased on read
- * (spec §3.1 case-insensitive identifiers). Never throws — unrecognized
+ * (identifiers are case-insensitive). Never throws — unrecognized
  * input returns a `FormulaError` value instead.
  * @param src Formula source text.
  * @returns The token stream on success, or a `FormulaError` — `"cap"` for a
@@ -70,8 +92,8 @@ function isWordChar(ch: string): boolean {
  * trailing `.` with no following digit) or an unrecognized character.
  * @example
  * ```
- * // not part of the public `@shadowcat/formula` surface (index.ts does not
- * // re-export this module) — internal to parser.ts.
+ * // not part of the public `@shadowcat/formula` surface (this module is not
+ * // re-exported) — internal to the `parser` module.
  * tokenize("1 + hp.max"); // [{kind:"num",...}, {kind:"op",value:"+",...}, {kind:"word",value:"hp",...}, {kind:"op",value:".",...}, {kind:"word",value:"max",...}]
  * ```
  */

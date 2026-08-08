@@ -1,24 +1,27 @@
 // Pure unread-tracking logic for the chat panel's tab badge: per-channel
 // last-read markers (persisted opaquely via ctx.uiState) and derivation of
 // the current unread count / a fresh read-state snapshot from the store's
-// messages. No Svelte/store dependency, mirrors channels.ts's shape.
+// messages. No Svelte/store dependency, mirrors the `channels` module's shape.
 import { parseMessageEngine, type WireDocument } from "@shadowcat/core";
 
 /** A channel's read frontier: the newest message the user has seen there. */
 export interface ReadMarker {
+  /** The frontier message's `created_at`, compared before `id` (see `isAfter`). */
   createdAt: number;
+  /** The frontier message's id — the tie-break when two messages share `createdAt`. */
   id: string;
 }
 
+/** Per-channel read frontier — a channel absent from this map has never been marked read. */
 export type ChatReadState = Record<string, ReadMarker>;
 
 /**
  * True when `doc` is strictly newer than `marker` (or there is no marker at
- * all): the same created_at-then-id ordering rule as `channels.ts`'s
- * `byCreation` (src/modules/chat/src/channels.ts:75) — verified condition by
- * condition, `doc.created_at > marker.createdAt`, or on a tie
- * `doc.id > marker.id`, is exactly the "greater than zero" reading of
- * `byCreation`'s tuple comparison. The two differ only in shape:
+ * all): the same created_at-then-id ordering rule as `byCreation`
+ * — verified condition by condition, `doc.created_at >
+ * marker.createdAt`, or on a tie `doc.id > marker.id`, is exactly the
+ * "greater than zero" reading of `byCreation`'s tuple comparison. The two
+ * differ only in shape:
  * `byCreation` is a three-way comparator over two `WireDocument`s (for
  * `Array.sort`); `isAfter` is a strict boolean over one `WireDocument` and a
  * lighter `ReadMarker` (not a full document). Messages share a `created_at`
@@ -30,6 +33,9 @@ export type ChatReadState = Record<string, ReadMarker>;
  * @example
  * ```
  * // private module; not reachable as a workspace import — call shape:
+ * declare const doc: WireDocument;
+ * declare const read: ChatReadState;
+ * declare const channel: string;
  * isAfter(doc, read[channel]);
  * ```
  */
@@ -44,11 +50,11 @@ function isAfter(doc: WireDocument, marker: ReadMarker | undefined): boolean {
  * message the store currently holds — NOT scoped to whichever channel view
  * is on screen, since the tab-level badge represents "unread anywhere in
  * chat", independent of the panel's own internal view switch. Excludes the
- * reading user's own posts (never "unread" to their author,
- * src/modules/chat/src/unread.ts:66); `markAllRead` below
- * (src/modules/chat/src/unread.ts:84-93) does not apply this exclusion,
- * since a channel's read frontier only needs to be the newest KNOWN
- * message, not the newest one authored by someone else.
+ * reading user's own posts (never "unread" to their author, via this
+ * function's own `sys.user_owner === selfId` check); `markAllRead` below
+ * does not apply this exclusion, since a channel's read frontier only needs
+ * to be the newest KNOWN message, not the newest one authored by someone
+ * else.
  * @param messages Every message doc the store currently holds.
  * @param read The current per-channel read frontier.
  * @param selfId The reading user's id, to exclude their own posts.
@@ -56,6 +62,9 @@ function isAfter(doc: WireDocument, marker: ReadMarker | undefined): boolean {
  * @example
  * ```
  * // private module; not reachable as a workspace import — call shape:
+ * declare const messages: readonly WireDocument[];
+ * declare const read: ChatReadState;
+ * declare const selfId: string;
  * computeUnreadCount(messages, read, selfId);
  * ```
  */
@@ -78,6 +87,7 @@ export function computeUnreadCount(messages: readonly WireDocument[], read: Chat
  * @example
  * ```
  * // private module; not reachable as a workspace import — call shape:
+ * declare const messages: readonly WireDocument[];
  * markAllRead(messages);
  * ```
  */

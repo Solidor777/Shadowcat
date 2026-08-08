@@ -1,8 +1,8 @@
 import type { WorldRole } from "@shadowcat/types";
 
-// Account + membership REST, beside module-rest.ts. Framework-neutral (no
-// Svelte in core's closure, invariant #7) so the settings module's admin
-// user-management and GM member-add surfaces can both consume it.
+// Account + membership REST, beside the `module-rest` module. Core stays framework-neutral,
+// so no Svelte in its dependency closure — the settings module's admin user-management and
+// GM member-add surfaces can both consume it.
 //
 // The server is the sole authority on who may call these: `/api/users` is
 // gated on ServerRole::Admin and membership writes on world-GM. Nothing here
@@ -12,8 +12,11 @@ import type { WorldRole } from "@shadowcat/types";
 /** A server account as the admin surface sees it. Carries no credential
  * material: the server never selects or serializes the password hash. */
 export interface ServerUser {
+  /** The account's server-assigned id. */
   id: string;
+  /** The account's login name, unique case-insensitively across the server. */
   username: string;
+  /** Server-wide tier: `"admin"` may call the admin-only user-management routes; `"user"` may not. */
   server_role: "admin" | "user";
 }
 
@@ -35,8 +38,11 @@ export async function listUsers(): Promise<ServerUser[]> {
 
 /** A world member. Visible to every member of that world. */
 export interface WorldMember {
+  /** The member's account id (`ServerUser.id`). */
   user: string;
+  /** The member's account username, as of this roster read. */
   username: string;
+  /** The member's role within this world (distinct from `ServerUser.server_role`). */
   role: WorldRole;
 }
 
@@ -45,8 +51,8 @@ export interface WorldMember {
  * a membership change it just caused re-reads through this. Any world member may
  * call it (chat resolves user ids to names for every viewer); a non-member gets a
  * 403, never a 404 — the world id is caller-supplied, so a distinguishable
- * unknown-world response would confirm existence to a non-member (`list_members`,
- * `http/routes.rs`).
+ * unknown-world response would confirm existence to a non-member
+ * (`http::routes::list_members`).
  * @param world The world id.
  * @returns The world's member roster.
  * @example
@@ -64,15 +70,22 @@ export async function listWorldMembers(world: string): Promise<WorldMember[]> {
   return (await res.json()) as WorldMember[];
 }
 
+/** Fields for `createUser`. */
+export interface CreateUserOptions {
+  /** The new account's username (server validates length/charset/uniqueness). */
+  username: string;
+  /** The new account's plaintext password, sent once. */
+  password: string;
+  /** The new account's server tier; omitted means a plain user. */
+  serverRole?: "admin" | "user";
+}
+
 /** Create an account. Admin-only. `serverRole` defaults to a plain user
  * server-side; passing "admin" mints another administrator. The plaintext
  * password is sent once and never echoed back. A case-insensitive username
  * collision surfaces as a client-actionable 409 ("username already taken"),
- * never a raw constraint-violation 500 (`create_user_unique`, `data/sqlite.rs`).
+ * never a raw constraint-violation 500 (`data::sqlite::SqliteRepository::create_user_unique`).
  * @param opts The new account's fields.
- * @param opts.username The new account's username (server validates length/charset/uniqueness).
- * @param opts.password The new account's plaintext password, sent once.
- * @param opts.serverRole The new account's server tier; omitted means a plain user.
  * @returns The created account.
  * @example
  * ```ts
@@ -81,11 +94,7 @@ export async function listWorldMembers(world: string): Promise<WorldMember[]> {
  * const user = await createUser({ username: "example-user", password: "correct-horse-battery-staple" });
  * ```
  */
-export async function createUser(opts: {
-  username: string;
-  password: string;
-  serverRole?: "admin" | "user";
-}): Promise<ServerUser> {
+export async function createUser(opts: CreateUserOptions): Promise<ServerUser> {
   const res = await fetch("/api/users", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -102,7 +111,7 @@ export async function createUser(opts: {
 /** Delete a user account (server-admin only). The server refuses self-
  * deletion and deleting the last administrator with a 409 whose message is
  * client-actionable — surface it verbatim. An unknown `id` gets a plain 404
- * (`DataError::NotFound`, `data/sqlite.rs::delete_user`). The account's
+ * (`DataError::NotFound`, `SqliteRepository::delete_user`). The account's
  * sessions are revoked inside the delete transaction, so a reconnect fails
  * authentication; after that commit, the deleted account's live connections
  * are separately evicted from every room.
@@ -122,19 +131,30 @@ export async function deleteUser(id: string): Promise<void> {
 /** A minted invite. `code` is a bearer credential the server keeps only as a
  * hash — it is returned once, at mint, and is unrecoverable afterwards. */
 export interface MintedInvite {
+  /** The invite's id, used to list/revoke it (never used to redeem it — that needs `code`). */
   id: string;
+  /** The bearer redemption credential, returned only here — the server keeps just its hash. */
   code: string;
+  /** The `WorldRole` a redeemer is seated at; cannot express a server tier. */
   role: WorldRole;
+  /** Unix-ms timestamp after which redemption fails. */
   expires_at: number;
 }
 
 /** An invite in a GM's listing. Carries no credential material. */
 export interface InviteEntry {
+  /** The invite's id, used to revoke it (not a redemption credential — see `MintedInvite.code`). */
   id: string;
+  /** The `WorldRole` a redeemer will be seated at. */
   role: WorldRole;
+  /** Unix-ms timestamp the invite was minted at. */
   created_at: number;
+  /** Unix-ms timestamp after which redemption fails, regardless of `revoked_at`/`consumed_at`. */
   expires_at: number;
+  /** Unix-ms timestamp the GM revoked it at, or `null` if never revoked. */
   revoked_at: number | null;
+  /** Unix-ms timestamp it was redeemed at, or `null` if unredeemed (single-use: a non-null value
+   * means the code can no longer be redeemed). */
   consumed_at: number | null;
 }
 
@@ -195,7 +215,7 @@ export async function listWorldInvites(world: string): Promise<InviteEntry[]> {
  * consume statement). GM of that world only, and the revoke is scoped to `world` in
  * SQL — `codeId` belonging to a DIFFERENT world 404s identically to an unknown
  * `codeId`, so this route never confirms an invite id's existence outside the
- * caller's own world (`revoke_invite`, `http/routes.rs`).
+ * caller's own world (`http::routes::revoke_invite`).
  * @param world The world id.
  * @param codeId The invite id to revoke.
  * @example
@@ -223,12 +243,13 @@ export async function revokeWorldInvite(world: string, codeId: string): Promise<
  * @example
  * ```
  * // internal helper; not part of the public API
+ * declare const res: Response;
  * await restError(res, "list users failed");
  * ```
  */
 async function restError(res: Response, fallback: string): Promise<string> {
   try {
-    const body = (await res.json()) as { error?: unknown };
+    const body = (await res.json()) as { /** The server's client-actionable error message, if the body is JSON and carries one. */ error?: unknown };
     if (typeof body.error === "string" && body.error) return body.error;
   } catch {
     // Non-JSON body — fall through to the status-only message.

@@ -25,7 +25,11 @@ describe("MergeConflictModal", () => {
     const applied: Map<string, Set<string>>[] = [];
     const context = setAppContextForTest();
     const { getByText, getAllByRole } = render(MergeConflictModal, {
-      props: { groups: [{ key: "C", label: null, conflicts }], onApply: (m) => applied.push(m), onCancel: () => {} },
+      props: {
+        groups: [{ key: "C", label: null, conflicts }],
+        onApply: (m: Map<string, Set<string>>) => applied.push(m),
+        onCancel: () => {},
+      },
       context,
     });
     // radios come in pairs (keep mine / take template) per row; switch row 0 to template.

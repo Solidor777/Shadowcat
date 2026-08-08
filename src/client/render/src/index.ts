@@ -1,6 +1,6 @@
 export type { Point, LineSeg, Polygon, CameraTransform, VisibilityInput, TokenTransform, TokenNodeSpec, ShapeNodeSpec, SceneTool, SceneToolHost, MoveVisionSample } from "./types";
 export type { LightingInput, LitCell } from "./types";
-export { Lighting, type LightingFrame, type LitDrawCell } from "./lighting";
+export { Lighting, LIGHTING_FADE_MS, type LightingFrame, type LitDrawCell } from "./lighting";
 export { TokenAnimator, type AnimationConfig } from "./token-animator";
 export type { EasingMode } from "./easing";
 export { TokenView } from "./token-view";
@@ -12,7 +12,7 @@ export { PingView, type PingRing } from "./ping-view";
 export { LayerRegistry, CORE_LAYERS, type CoreLayerId } from "./layers";
 export { Camera } from "./camera";
 export { Grid, type GridKind, type GridSpec, type DiagonalRule } from "./grid";
-export type { DisplayBackend } from "./backend";
+export type { DisplayBackend, BackgroundSpec } from "./backend";
 export { MockBackend } from "./backend.mock";
 export { SceneReconciler } from "./reconciler";
 export { Compositor } from "./compositor";

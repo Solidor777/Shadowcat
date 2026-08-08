@@ -1,6 +1,7 @@
 // Internal semver matcher for module dependency ranges and hook versions.
 // Deliberately tiny (exact / ^ / ~ / *) to avoid a runtime dependency; swap for
 // the `semver` package only if richer ranges become a real requirement.
+/** A parsed `[major, minor, patch]` version triple. */
 type V = [number, number, number];
 
 /** Parses a strict `major.minor.patch` version string (no pre-release/build metadata).
@@ -38,7 +39,7 @@ function gte(a: V, b: V): boolean {
  * `*` (any), `^` (caret, npm-semver leftmost-non-zero-component semantics — see
  * the module note), or `~` (tilde, same major+minor, patch >= the range's patch).
  * Not exported from `@shadowcat/core`'s public surface — internal to module
- * engine-compat checks (`loader.ts`, `hooks.ts`, `modules.ts`).
+ * engine-compat checks (`checkEngineCompat`, `HookBus.on`, `ModuleRegistry.depsSatisfied`).
  * @param version The version being tested.
  * @param range The range to test against.
  * @returns `true` if `version` satisfies `range`.

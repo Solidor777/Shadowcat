@@ -3,7 +3,7 @@ import type { AnimatedSource } from "./AnimatedSource";
 
 /**
  * The two kinds the render layer actually draws — the render/resolution
- * boundary (M10h). A face's own visual is always one of these — no nesting
+ * boundary. A face's own visual is always one of these — no nesting
  * (a face can never itself be `{kind:"faces"}`).
  */
 export type RenderVisual = { "kind": "image", 

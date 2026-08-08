@@ -2,7 +2,7 @@
 import type { Schema } from "./Schema";
 
 /**
- * A module's per-`(doc_type, subtree)` structural schema (M13f tier-2). Pure
+ * A module's per-`(doc_type, subtree)` structural schema. Pure
  * data — the server stores and interprets it as a shape check, never as code.
  * `subtree_pointer` is a strict `/system/…` descendant (enforced at set-time).
  * `schema_format` is the engine-owned vocabulary version; `version` is the

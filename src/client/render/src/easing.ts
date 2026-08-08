@@ -1,6 +1,15 @@
 /** Token-motion easing curves. Pure, GL-free, unit-tested. */
 export type EasingMode = "easeInOut" | "linear";
 
+/** Tween speed + easing curve for a token's motion. Shared by `TokenView.setAnimationConfig`
+ * and `RenderEngine.setAnimation`, which forwards its `cfg` straight through unchanged. */
+export interface TokenTweenConfig {
+  /** Tween speed, in grid cells per second. */
+  speedCellsPerSec: number;
+  /** The easing curve applied to polyline tweens. */
+  easing: EasingMode;
+}
+
 /**
  * Standard quadratic ease-in-out (smooth accel/decel). Source: standard easing formula
  * (Penner). Chosen over cubic for a gentle, predictable VTT feel. Symmetric about the
@@ -10,7 +19,7 @@ export type EasingMode = "easeInOut" | "linear";
  * @returns The eased progress, in `[0,1]` for `t` in `[0,1]`.
  * @example
  * ```
- * // not exported from @shadowcat/render's index.ts; internal to applyEasing
+ * // not exported from @shadowcat/render; internal to applyEasing
  * easeInOutQuad(0.5); // 0.5 (symmetric at the midpoint)
  * easeInOutQuad(0.25); // < 0.25 (slow start)
  * ```
@@ -28,7 +37,7 @@ function easeInOutQuad(t: number): number {
  * @returns The eased progress, in `[0,1]`.
  * @example
  * ```
- * // `applyEasing` itself is not exported from @shadowcat/render's index.ts (only the
+ * // `applyEasing` itself is not exported from @shadowcat/render (only the
  * // `EasingMode` type is); internal to TokenAnimator.
  * applyEasing("linear", 0.5); // 0.5
  * applyEasing("easeInOut", 0.25); // < 0.25

@@ -26,7 +26,7 @@ test("a panel opened from the launcher docks and survives a full page reload", a
   // Open it from the topbar launcher menu.
   await page.getByTestId("launcher-trigger").click();
   // The layout persist is a leading-edge debounced fire-and-forget PUT
-  // (sessionState.svelte.ts schedulePersist); register the wait before the
+  // (`schedulePersist`); register the wait before the
   // click that triggers it, then await the response before reloading, or the
   // navigation can abort the in-flight PUT before it lands.
   // The payload clause pins the wait to the PUT that carries the dock op —

@@ -112,6 +112,11 @@ export type FaceVisual = RenderVisual;
  * callers may cast to; the generated fields are plain `string` (asserted by the server's
  * unit battery, not enforced by a Rust enum). */
 export type RegionShapeKind = "rect" | "circle" | "polygon";
+/** Server-enforced movement meaning composed from
+ * `RegionBehavior`/`RegionEffect`: `"impassable"` blocks the router and the move gate
+ * (`RegionField::is_impassable`); `"arrest"` truncates a route at that
+ * cell (`RegionField::is_arrest`) without blocking it; `"terrain"` only
+ * weights pathfinding cost and never blocks or truncates a route. */
 export type RegionBehavior = "terrain" | "impassable" | "arrest";
 
 /** Recursively `Object.freeze`s `obj` and every nested plain object reachable from it, so a
@@ -134,15 +139,15 @@ function deepFreeze<T>(obj: T): T {
 }
 
 /** Fail-safe finite default scene size (grid units) when a scene has no authored `bounds`, so
- * navmesh construction never faces an unbounded plane. MUST match DEFAULT_SCENE_BOUNDS_UNITS in
- * the server `scene/mod.rs`. Deliberately a fixed constant — NOT a content AABB (content-derived
+ * navmesh construction never faces an unbounded plane. MUST match the server's
+ * `scene::DEFAULT_SCENE_BOUNDS_UNITS`. Deliberately a fixed constant — NOT a content AABB (content-derived
  * bounds were rejected: edge-drag re-mesh churn, ill-defined for open scenes). */
 export const DEFAULT_SCENE_BOUNDS: SceneDimensions = deepFreeze({ width: 100, height: 100 });
 
 /** Built-in defaults — used when no world-settings doc exists or a field is absent.
  * Deep-frozen so shared refs in resolveSceneSettings output are immutable in dev;
- * enumerable values are unchanged. MUST equal the server's `impl Default for
- * WorldSettingsEngine` (`data/engine/scene.rs`) — the client stays the authoritative
+ * enumerable values are unchanged. MUST equal the server's
+ * `data::engine::scene::WorldSettingsEngine`'s `Default` impl — the client stays the authoritative
  * source; a server-side unit test cross-checks parity. */
 export const DEFAULT_WORLD_SETTINGS: WorldSettingsEngine = deepFreeze({
   scene: {
@@ -161,26 +166,55 @@ export const DEFAULT_WORLD_SETTINGS: WorldSettingsEngine = deepFreeze({
   activeScene: null,
 });
 
-// --- Resolved settings (M10e-1) ---
+// --- Resolved settings ---
 
 /** The fully resolved per-scene settings after merging built-ins → world defaults → scene overrides. */
 export interface ResolvedSceneSettings {
+  /** Whether line-of-sight gates visibility on this scene; scene `vision` override, else the
+   * world default. */
   losRestriction: boolean;
+  /** Whether fog-of-war hides unexplored areas on this scene; scene `vision` override, else the
+   * world default. */
   fog: boolean;
+  /** Whether a player also sees through their observed tokens' own vision (observer mode);
+   * scene `vision` override, else the world default. */
   observerVision: boolean;
+  /** How movement is gated by visibility on this scene; scene `vision` override, else the world
+   * default. */
   movementRestriction: MovementRestriction;
+  /** The movement/routing engine this scene uses (grid vs continuous); scene `vision` override,
+   * else the world default. */
   movementModel: MovementModel;
-  /** Effective snap-to-grid axis (M10f-3 §4.1): an explicit scene value overrides in either
+  /** Effective snap-to-grid axis: an explicit scene value overrides in either
    * direction (including `false`); absent falls back to a derived default keyed off the
    * RESOLVED `movementModel` (false for continuous, true otherwise). */
   snapToGrid: boolean;
+  /** Whether dynamic lighting is active on this scene; scene `lighting` override, else the world
+   * default. */
   lightingEnabled: boolean;
+  /** Which lighting mode this scene uses; scene `lighting` override, else the world default. */
   lightMode: LightMode;
+  /** The ambient/environment light this scene uses; scene `lighting` override, else the world
+   * default. */
   environment: EnvironmentLight;
+  /** Whether the grid pathfinder tolerates partial-cell overlap; world-settings only — no
+   * per-scene override exists. */
   partialCellLeniency: boolean;
+  /** The grid pathfinder's diagonal-movement rule; world-settings only — no per-scene override
+   * exists. */
   diagonalRule: DiagonalRule;
-  animation: { speedCellsPerSec: number; easing: EasingMode };
+  /** Token movement animation timing; world-settings only — no per-scene override exists. */
+  animation: {
+    /** Animated movement speed, grid cells per second. */
+    speedCellsPerSec: number;
+    /** The easing curve applied to the animation. */
+    easing: EasingMode;
+  };
+  /** The scene's grid-to-real-world distance mapping; scene `grid.distance`, else a built-in
+   * `{ perCell: 5, unit: "ft" }` default (5e scale). */
   gridDistance: GridDistance;
+  /** The scene's playable-area dimensions in grid units; scene `bounds`, else
+   * `DEFAULT_SCENE_BOUNDS`. */
   bounds: SceneDimensions;
 }
 
@@ -431,7 +465,7 @@ export function resolveSceneSettings(scene: WireDocument | undefined, store: Rea
     observerVision: v?.observerVision ?? d.scene.observerVision,
     movementRestriction: v?.movementRestriction ?? d.scene.movementRestriction,
     movementModel,
-    // Derived default keyed off the RESOLVED movementModel (M10f-3 §4.1) — `??` only falls
+    // Derived default keyed off the RESOLVED movementModel — `??` only falls
     // through on null/undefined, never on `false`, so an explicit stored boolean (including
     // false) always overrides the derived default in either direction.
     snapToGrid: eng?.snapToGrid ?? (movementModel === "continuous" ? false : true),
@@ -446,8 +480,8 @@ export function resolveSceneSettings(scene: WireDocument | undefined, store: Rea
   };
 }
 
-/** The single client-side answer to "which scene does THIS client render/subscribe to"
- * (M12d). Resolution order: a resolvable `gmViewedScene` (GM local roam) → a resolvable
+/** The single client-side answer to "which scene does THIS client render/subscribe to".
+ * Resolution order: a resolvable `gmViewedScene` (GM local roam) → a resolvable
  * `world-settings.activeScene` (players follow) → the first scene (legacy). `null` ONLY when
  * no scene exists. Fail-closed by construction: an id that no longer names a scene is ignored
  * (never renders nothing while scenes exist, never leaks a nonexistent scene's channel).
@@ -467,7 +501,7 @@ export function resolveSceneSettings(scene: WireDocument | undefined, store: Rea
  */
 export function resolveViewedScene(
   store: ReadableDocuments,
-  opts: { gmViewedScene?: string | null } = {},
+  opts: { /** The GM's local-roam scene id override, or `undefined`/`null` for a player. */ gmViewedScene?: string | null } = {},
 ): string | null {
   const scenes = store.query("scene");
   if (scenes.length === 0) return null;
@@ -504,7 +538,7 @@ export function buildActorDoc(worldId: string, name: string | null, engine: Acto
   return envelope(worldId, "actor", null, {}, id, engine, name);
 }
 
-/** Client-only `item` doc_type (M12c): NOT engine-defined (`data::engine::is_engine_doc_type`
+/** Client-only `item` doc_type: NOT engine-defined (`data::engine::is_engine_doc_type`
  * excludes "item") — the server stays fully structural for an item's body, same as every
  * other doc_type's `system` blob: `validate_system_size` caps it (`MAX_SYSTEM_BYTES`) and
  * `validate_system_schema_tree` enforces any module-registered tier-2 schema for `"item"`
@@ -518,7 +552,21 @@ export function buildActorDoc(worldId: string, name: string | null, engine: Acto
  * editor. */
 export const ITEM_DOC_TYPE = "item";
 
+/** An item's opaque body — the game-system-owned `system` band, editable via the tree editor.
+ * Any key may legitimately appear; the client's tree editor writes whatever the user enters.
+ * The server enforces an overall size cap unconditionally
+ * (`data::validation::validate_system_size`).
+ * A game-system module may ADDITIONALLY register a
+ * tier-2 JSON Schema for `doc_type: "item"`; when one is registered,
+ * `data::validation::validate_system_schema_tree`
+ * validates the shape of the subtree it names — but a
+ * subtree it names and this document omits is not a violation (the schema governs shape only when
+ * the field is present; it never compels a field to exist). With no schema registered for
+ * `"item"`, nothing validates any individual field's shape or semantics — only the size cap
+ * applies. */
 export interface ItemSystem {
+  /** An arbitrary field written by the tree editor; a module-registered schema may validate its
+   * shape if present, but never requires it — see the interface doc above. */
   [key: string]: unknown;
 }
 
@@ -543,7 +591,7 @@ export function buildItemDoc(worldId: string, name: string | null, system: ItemS
 
 /** Build a token from an actor. `link` references the shared actor; `instance` embeds an
  * independent copy with `source` provenance (the deferred merge engine consumes it). Size/
- * shape resolve from the actor (M10d); `w`/`h` seed the rendered cell size now.
+ * shape resolve from the actor; `w`/`h` seed the rendered cell size now.
  * `doc_type: "token"` is engine-defined — the transform/visual/link body lands in `engine`.
  * @param worldId The owning world's id.
  * @param sceneId The scene document this token is parented to.
@@ -571,13 +619,13 @@ export function buildTokenFromActor(
   sceneId: string,
   actor: WireDocument,
   mode: "link" | "instance",
-  pos: { x: number; y: number },
+  pos: { /** Initial x coordinate, scene units. */ x: number; /** Initial y coordinate, scene units. */ y: number },
   cellSize: number,
   id?: string,
 ): WireDocument {
-  // `w`/`h` are seeded solely as the dangling-link fallback: resolveTokenBox (actor.ts)
-  // uses this ONLY when the linked/instanced actor is missing (actor.ts's missing-actor
-  // branch, `eng?.w ?? 0`). The actor-backed render path never reads these — size resolves
+  // `w`/`h` are seeded solely as the dangling-link fallback: `resolveTokenBox`
+  // uses this ONLY when the linked/instanced actor is missing (`resolveTokenBox`'s
+  // missing-actor branch, `eng?.w ?? 0`). The actor-backed render path never reads these — size resolves
   // through EffectiveActor.size x grid-cell instead. This is an explicit, documented
   // fallback rather than a lazy derivation from the token's last-known actor size, which
   // would introduce a second size-derivation path.
@@ -691,8 +739,8 @@ export function buildConditionRegistryDoc(worldId: string, conditions: Record<st
 }
 
 /** A generic scene-entity document (wall/drawing/template/…) parented to `sceneId`; every
- * doc_type this builder is used for (`wall`, `drawing`, `template` — see call sites in
- * `src/modules/scene-tools/src/controller.svelte.ts`) is engine-defined, so the caller's shape
+ * doc_type this builder is used for (`wall`, `drawing`, `template` — see the call sites in
+ * `makeWallTool`, `makeDrawTool`, and `makeTemplateTool`) is engine-defined, so the caller's shape
  * lands in `engine` — `system` stays `{}`. `region` documents use the dedicated
  * `buildRegionDoc` instead (it calls `envelope` directly), not this generic builder.
  * @param worldId The owning world's id.
@@ -717,7 +765,7 @@ export function buildSceneEntityDoc(worldId: string, sceneId: string, docType: s
   return envelope(worldId, docType, sceneId, {}, id, engine, null);
 }
 
-// --- Light-gradation registry (M10e-1) ---
+// --- Light-gradation registry ---
 
 /** Built-in three-band gradation (bright → dim → dark).
  * Stored unsorted; `resolveGradation` returns a sorted copy.
@@ -770,7 +818,7 @@ export function resolveGradation(store: ReadableDocuments): GradationBand[] {
   return [...bands].sort((a, b) => b.minIllumination - a.minIllumination);
 }
 
-// --- Vision-modes registry (M10e-1) ---
+// --- Vision-modes registry ---
 
 /** Built-in two-mode seed: normal sight + darkvision.
  * Deep-frozen so shared refs returned by resolveVisionModes cannot be mutated by consumers. */
@@ -817,7 +865,7 @@ export function resolveVisionModes(store: ReadableDocuments): Record<string, Vis
   return eng?.modes ?? SEED_VISION_MODES;
 }
 
-// --- Light source doc type (M10e-1) ---
+// --- Light source doc type ---
 
 /** A light-source document parented to `sceneId`. The caller supplies the full `engine`
  * body (no default constant — no aliasing concern). `doc_type: "light"` is engine-defined.
@@ -842,7 +890,7 @@ export function buildLightDoc(worldId: string, sceneId: string, engine: LightEng
   return envelope(worldId, "light", sceneId, {}, id, engine, null);
 }
 
-// --- Region doc type (M10g) ---
+// --- Region doc type ---
 
 /** A region document parented to `sceneId`. Visible to all by default; use
  * `setRegionVisibility` to make it a secret trap. `doc_type: "region"` is engine-defined.

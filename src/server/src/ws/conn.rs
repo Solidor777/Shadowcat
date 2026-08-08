@@ -111,7 +111,7 @@ struct Sub {
 /// A derived scene-channel subscription's stored state. `fingerprint` is the
 /// last delivered payload; a re-eval pushes only when it changes. `view_ctx` is the effective
 /// context the channel is computed for: the connection's own ctx, or — for a GM see-as-player
-/// subscription (M9c-2) — the server-resolved target player's context.
+/// subscription — the server-resolved target player's context.
 struct SceneSub {
     /// Channel name.
     channel: String,
@@ -282,11 +282,13 @@ async fn handle_socket(
         sink,
         rx,
         erx,
-        egress_room,
-        egress_repo,
-        ctx,
-        current_seq,
-        modules_dir,
+        EgressConnState {
+            room: egress_room,
+            repo: egress_repo,
+            ctx,
+            current_seq,
+            modules_dir,
+        },
     ));
 
     // Ingress: parse client frames, forward intents to egress / publish.
@@ -301,254 +303,256 @@ async fn handle_socket(
     let preview_rate = state.ws.preview_rate.clone();
     loop {
         tokio::select! {
-            _ = &mut egress => break,
-            frame = stream.next() => {
-                let Some(Ok(frame)) = frame else { break };
-                match frame {
-                    Message::Text(t) => match serde_json::from_str::<ClientMsg>(t.as_str()) {
-                        Ok(ClientMsg::Intent { intent_id, ops }) => {
-                            // Messages are server-authored via SendMessage only;
-                            // a client-authored message op is always rejected here,
-                            // never reaching apply_intent.
-                            if crate::chat::ops_target_message(&ops) {
-                                let _ = etx
-                                    .send(Egress::Frame(Arc::new(ServerMsg::Reject {
-                                        intent_id,
-                                        reason: RejectReason::Forbidden,
-                                    })))
-                                    .await;
-                                continue;
-                            }
-                            // Success is confirmed by the broadcast echo of the
-                            // authored Event; only a rejection is sent directly.
-                            match room.publish(repo.as_ref(), &ctx, ops, now_millis(), WriteOrigin::Client).await {
-                                Ok(_cmd) => {}
-                                Err(e) => {
-                                    let reason = reject_reason(&e);
-                                    tracing::debug!(world = %world_id, %intent_id, ?reason, "intent rejected");
+                    _ = &mut egress => break,
+                    frame = stream.next() => {
+                        let Some(Ok(frame)) = frame else { break };
+                        match frame {
+                            Message::Text(t) => match serde_json::from_str::<ClientMsg>(t.as_str()) {
+                                Ok(ClientMsg::Intent { intent_id, ops }) => {
+                                    // Messages are server-authored via SendMessage only;
+                                    // a client-authored message op is always rejected here,
+                                    // never reaching apply_intent.
+                                    if crate::chat::ops_target_message(&ops) {
+                                        let _ = etx
+                                            .send(Egress::Frame(Arc::new(ServerMsg::Reject {
+                                                intent_id,
+                                                reason: RejectReason::Forbidden,
+                                            })))
+                                            .await;
+                                        continue;
+                                    }
+                                    // Success is confirmed by the broadcast echo of the
+                                    // authored Event; only a rejection is sent directly.
+                                    match room.publish(repo.as_ref(), &ctx, ops, now_millis(), WriteOrigin::Client).await {
+                                        Ok(_cmd) => {}
+                                        Err(e) => {
+                                            let reason = reject_reason(&e);
+                                            tracing::debug!(world = %world_id, %intent_id, ?reason, "intent rejected");
+                                            let _ = etx
+                                                .send(Egress::Frame(Arc::new(ServerMsg::Reject {
+                                                    intent_id,
+                                                    reason,
+                                                })))
+                                                .await;
+                                        }
+                                    }
+                                }
+                                Ok(ClientMsg::TimePing { client_t0 }) => {
+                                    if etx
+                                        .send(Egress::TimePong { client_t0, server_t: now_millis() })
+                                        .await
+                                        .is_err()
+                                    {
+                                        break;
+                                    }
+                                }
+                                Ok(ClientMsg::ResyncRequest { from_seq }) => {
+                                    if etx.send(Egress::Resync(from_seq)).await.is_err() {
+                                        break;
+                                    }
+                                }
+                                Ok(ClientMsg::Search { request_id, query, limit, cursor, subscribe }) => {
+                                    if subscribe {
+                                        // Subscriptions are owned by the egress task (it has
+                                        // the registry, the broadcast, and the sink).
+                                        if etx.send(Egress::Subscribe { request_id, query, limit }).await.is_err() {
+                                            break;
+                                        }
+                                    } else {
+                                        let from = cursor.as_deref().and_then(|c| c.parse::<i64>().ok());
+                                        let frame = match repo.search(&ctx, world_id, &query, limit, from).await {
+                                            Ok(page) => ServerMsg::SearchResult {
+                                                request_id,
+                                                hits: page.hits,
+                                                next_cursor: page.next_cursor.map(|n| n.to_string()),
+                                            },
+                                            Err(e) => {
+                                                tracing::debug!(world = %world_id, %request_id, error = %e, "search failed");
+                                                ServerMsg::SearchError {
+                                                    request_id,
+                                                    message: "search failed".into(),
+                                                }
+                                            }
+                                        };
+                                        if etx.send(Egress::Frame(Arc::new(frame))).await.is_err() {
+                                            break;
+                                        }
+                                    }
+                                }
+                                Ok(ClientMsg::Unsubscribe { request_id }) => {
+                                    if etx.send(Egress::Unsubscribe { request_id }).await.is_err() {
+                                        break;
+                                    }
+                                }
+                                Ok(ClientMsg::Hello { .. }) | Ok(ClientMsg::Pong) => {}
+                                Ok(ClientMsg::SceneSubscribe { request_id, channel, as_user }) => {
+                                    if etx
+                                        .send(Egress::SceneSubscribe { request_id, channel, as_user })
+                                        .await
+                                        .is_err()
+                                    {
+                                        break;
+                                    }
+                                }
+                                Ok(ClientMsg::SceneUnsubscribe { request_id }) => {
+                                    if etx
+                                        .send(Egress::SceneUnsubscribe { request_id })
+                                        .await
+                                        .is_err()
+                                    {
+                                        break;
+                                    }
+                                }
+                                Ok(ClientMsg::ScenePing { scene, x, y }) => {
+                                    // Out-of-band relay to the world room, stamped with the sender.
+                                    // Membership is already gated (a non-member never reaches here);
+                                    // coordinates are not validated. Guard order: cheap rate check
+                                    // first, then the authz lookup (one doc read per admitted ping,
+                                    // bounded at 30/min/user). Over-budget and unauthorized pings both
+                                    // drop silently — no error frame, so a non-reader never learns
+                                    // whether `scene` exists.
+                                    if ping_rate.check(user_id, now_millis(), 30)
+                                        && scene_ping_permitted(scene, &ctx, world_id, repo.as_ref())
+                                            .await
+                                    {
+                                        room.broadcast_aux(ServerMsg::ScenePing {
+                                            scene,
+                                            x,
+                                            y,
+                                            user: user_id,
+                                        });
+                                    }
+                                }
+                                Ok(ClientMsg::MoveRequest { request_id, scene, token_id, path }) => {
+                                    // Server-authoritative move execution. On success, broadcasts
+                                    // MoveStream out-of-band to the room — no etx reply to the requester.
+                                    // On failure, returns MoveError to etx only (no geometry leak).
+                                    // INVARIANT (broadcast-not-requester): the atomic position Event
+                                    // from commit_ops_locked + the MoveStream broadcast are the
+                                    // notifications; no success frame is sent to the requester's etx.
+                                    if let Some(err_frame) = handle_move_request(
+                                        &room,
+                                        repo.as_ref(),
+                                        &ctx,
+                                        scene,
+                                        token_id,
+                                        path,
+                                        request_id,
+                                    )
+                                    .await
+                                    {
+                                        if etx.send(Egress::Frame(Arc::new(err_frame))).await.is_err() {
+                                            break;
+                                        }
+                                    }
+                                }
+                                Ok(ClientMsg::SendMessage { request_id, channel, content, actor_owner, audience }) => {
+                                    // Server-authoritative chat ingest: flood-limit, validate, CONSTRUCT
+                                    // the message doc, and publish. Success is confirmed by the broadcast
+                                    // echo of the authored Event (like Intent). On rejection, a
+                                    // `ChatError` correlated by `request_id` is sent to the sender ONLY
+                                    // (never broadcast) so the failure is surfaced instead of vanishing;
+                                    // `message` is the classified, no-leak `Display` text.
+                                    if let Err(e) = crate::chat::handle_send_message(
+            crate::chat::MessageRequestCtx {
+                room: &room,
+                repo: repo.as_ref(),
+                ctx: &ctx,
+                rate: &message_rate,
+                preview: crate::chat::LinkPreviewDeps { client: &preview_client, cache: &preview_cache, rate: &preview_rate },
+                now: now_millis(),
+                budget_per_min: MESSAGE_RATE_PER_MIN,
+            },
+            channel,
+            content,
+            actor_owner,
+            audience,
+        )
+                                    .await
+                                    {
+                                        tracing::debug!(world = %world_id, user = %user_id, ?e, "message rejected");
+                                        if etx.send(Egress::Frame(Arc::new(ServerMsg::ChatError {
+                                            request_id,
+                                            message: e.to_string(),
+                                        }))).await.is_err() {
+                                            break;
+                                        }
+                                    }
+                                }
+                                Ok(ClientMsg::EditMessage { request_id, message_id, content }) => {
+                                    // Same confirm-by-broadcast-echo shape as SendMessage; a rejection is
+                                    // surfaced to the sender only via a `request_id`-correlated `ChatError`.
+                                    if let Err(e) = crate::chat::handle_edit_message(
+            crate::chat::MessageRequestCtx {
+                room: &room,
+                repo: repo.as_ref(),
+                ctx: &ctx,
+                rate: &message_rate,
+                preview: crate::chat::LinkPreviewDeps { client: &preview_client, cache: &preview_cache, rate: &preview_rate },
+                now: now_millis(),
+                budget_per_min: MESSAGE_RATE_PER_MIN,
+            },
+            message_id,
+            content,
+        )
+                                    .await
+                                    {
+                                        tracing::debug!(world = %world_id, user = %user_id, ?e, "edit rejected");
+                                        if etx.send(Egress::Frame(Arc::new(ServerMsg::ChatError {
+                                            request_id,
+                                            message: e.to_string(),
+                                        }))).await.is_err() {
+                                            break;
+                                        }
+                                    }
+                                }
+                                Ok(ClientMsg::DeleteMessage { request_id, message_id }) => {
+                                    // Same confirm-by-broadcast-echo shape as SendMessage/EditMessage; a
+                                    // rejection is surfaced to the sender only via a correlated `ChatError`.
+                                    if let Err(e) = crate::chat::handle_delete_message(
+                                        &room,
+                                        repo.as_ref(),
+                                        &ctx,
+                                        &message_rate,
+                                        message_id,
+                                        now_millis(),
+                                        MESSAGE_RATE_PER_MIN,
+                                    )
+                                    .await
+                                    {
+                                        tracing::debug!(world = %world_id, user = %user_id, ?e, "delete rejected");
+                                        if etx.send(Egress::Frame(Arc::new(ServerMsg::ChatError {
+                                            request_id,
+                                            message: e.to_string(),
+                                        }))).await.is_err() {
+                                            break;
+                                        }
+                                    }
+                                }
+                                Ok(ClientMsg::Pathfind { request_id, scene, start, waypoints, footprint_radius, token }) => {
+                                    // One-shot pathfinding: resolve GM status, fetch explored off the lock for
+                                    // non-GM Revealed, call SceneEcs::pathfind, reply to this connection only.
+                                    // INVARIANT (one-shot-to-requester): reply goes to etx only, never broadcast.
+                                    let req = PathfindRequest { request_id, scene, start, waypoints, footprint_radius, token };
+                                    let frame = handle_pathfind(req, &ctx, &room, repo.as_ref()).await;
+                                    if etx.send(Egress::Frame(Arc::new(frame))).await.is_err() {
+                                        break;
+                                    }
+                                }
+                                Err(_) => {
                                     let _ = etx
-                                        .send(Egress::Frame(Arc::new(ServerMsg::Reject {
-                                            intent_id,
-                                            reason,
+                                        .send(Egress::Frame(Arc::new(ServerMsg::Error {
+                                            code: WsErrorCode::BadMessage,
+                                            message: "malformed frame".into(),
                                         })))
                                         .await;
                                 }
-                            }
+                            },
+                            Message::Close(_) => break,
+                            _ => {}
                         }
-                        Ok(ClientMsg::TimePing { client_t0 }) => {
-                            if etx
-                                .send(Egress::TimePong { client_t0, server_t: now_millis() })
-                                .await
-                                .is_err()
-                            {
-                                break;
-                            }
-                        }
-                        Ok(ClientMsg::ResyncRequest { from_seq }) => {
-                            if etx.send(Egress::Resync(from_seq)).await.is_err() {
-                                break;
-                            }
-                        }
-                        Ok(ClientMsg::Search { request_id, query, limit, cursor, subscribe }) => {
-                            if subscribe {
-                                // Subscriptions are owned by the egress task (it has
-                                // the registry, the broadcast, and the sink).
-                                if etx.send(Egress::Subscribe { request_id, query, limit }).await.is_err() {
-                                    break;
-                                }
-                            } else {
-                                let from = cursor.as_deref().and_then(|c| c.parse::<i64>().ok());
-                                let frame = match repo.search(&ctx, world_id, &query, limit, from).await {
-                                    Ok(page) => ServerMsg::SearchResult {
-                                        request_id,
-                                        hits: page.hits,
-                                        next_cursor: page.next_cursor.map(|n| n.to_string()),
-                                    },
-                                    Err(e) => {
-                                        tracing::debug!(world = %world_id, %request_id, error = %e, "search failed");
-                                        ServerMsg::SearchError {
-                                            request_id,
-                                            message: "search failed".into(),
-                                        }
-                                    }
-                                };
-                                if etx.send(Egress::Frame(Arc::new(frame))).await.is_err() {
-                                    break;
-                                }
-                            }
-                        }
-                        Ok(ClientMsg::Unsubscribe { request_id }) => {
-                            if etx.send(Egress::Unsubscribe { request_id }).await.is_err() {
-                                break;
-                            }
-                        }
-                        Ok(ClientMsg::Hello { .. }) | Ok(ClientMsg::Pong) => {}
-                        Ok(ClientMsg::SceneSubscribe { request_id, channel, as_user }) => {
-                            if etx
-                                .send(Egress::SceneSubscribe { request_id, channel, as_user })
-                                .await
-                                .is_err()
-                            {
-                                break;
-                            }
-                        }
-                        Ok(ClientMsg::SceneUnsubscribe { request_id }) => {
-                            if etx
-                                .send(Egress::SceneUnsubscribe { request_id })
-                                .await
-                                .is_err()
-                            {
-                                break;
-                            }
-                        }
-                        Ok(ClientMsg::ScenePing { scene, x, y }) => {
-                            // Out-of-band relay to the world room, stamped with the sender.
-                            // Membership is already gated (a non-member never reaches here);
-                            // coordinates are not validated. Guard order: cheap rate check
-                            // first, then the authz lookup (one doc read per admitted ping,
-                            // bounded at 30/min/user). Over-budget and unauthorized pings both
-                            // drop silently — no error frame, so a non-reader never learns
-                            // whether `scene` exists.
-                            if ping_rate.check(user_id, now_millis(), 30)
-                                && scene_ping_permitted(scene, &ctx, world_id, repo.as_ref())
-                                    .await
-                            {
-                                room.broadcast_aux(ServerMsg::ScenePing {
-                                    scene,
-                                    x,
-                                    y,
-                                    user: user_id,
-                                });
-                            }
-                        }
-                        Ok(ClientMsg::MoveRequest { request_id, scene, token_id, path }) => {
-                            // Server-authoritative move execution. On success, broadcasts
-                            // MoveStream out-of-band to the room — no etx reply to the requester.
-                            // On failure, returns MoveError to etx only (no geometry leak).
-                            // INVARIANT (broadcast-not-requester): the atomic position Event
-                            // from commit_ops_locked + the MoveStream broadcast are the
-                            // notifications; no success frame is sent to the requester's etx.
-                            if let Some(err_frame) = handle_move_request(
-                                &room,
-                                repo.as_ref(),
-                                &ctx,
-                                scene,
-                                token_id,
-                                path,
-                                request_id,
-                            )
-                            .await
-                            {
-                                if etx.send(Egress::Frame(Arc::new(err_frame))).await.is_err() {
-                                    break;
-                                }
-                            }
-                        }
-                        Ok(ClientMsg::SendMessage { request_id, channel, content, actor_owner, audience }) => {
-                            // Server-authoritative chat ingest: flood-limit, validate, CONSTRUCT
-                            // the message doc, and publish. Success is confirmed by the broadcast
-                            // echo of the authored Event (like Intent). On rejection, a
-                            // `ChatError` correlated by `request_id` is sent to the sender ONLY
-                            // (never broadcast) so the failure is surfaced instead of vanishing;
-                            // `message` is the classified, no-leak `Display` text.
-                            if let Err(e) = crate::chat::handle_send_message(
-                                &room,
-                                repo.as_ref(),
-                                &ctx,
-                                &message_rate,
-                                crate::chat::LinkPreviewDeps { client: &preview_client, cache: &preview_cache, rate: &preview_rate },
-                                channel,
-                                content,
-                                actor_owner,
-                                audience,
-                                now_millis(),
-                                MESSAGE_RATE_PER_MIN,
-                            )
-                            .await
-                            {
-                                tracing::debug!(world = %world_id, user = %user_id, ?e, "message rejected");
-                                if etx.send(Egress::Frame(Arc::new(ServerMsg::ChatError {
-                                    request_id,
-                                    message: e.to_string(),
-                                }))).await.is_err() {
-                                    break;
-                                }
-                            }
-                        }
-                        Ok(ClientMsg::EditMessage { request_id, message_id, content }) => {
-                            // Same confirm-by-broadcast-echo shape as SendMessage; a rejection is
-                            // surfaced to the sender only via a `request_id`-correlated `ChatError`.
-                            if let Err(e) = crate::chat::handle_edit_message(
-                                &room,
-                                repo.as_ref(),
-                                &ctx,
-                                &message_rate,
-                                crate::chat::LinkPreviewDeps { client: &preview_client, cache: &preview_cache, rate: &preview_rate },
-                                message_id,
-                                content,
-                                now_millis(),
-                                MESSAGE_RATE_PER_MIN,
-                            )
-                            .await
-                            {
-                                tracing::debug!(world = %world_id, user = %user_id, ?e, "edit rejected");
-                                if etx.send(Egress::Frame(Arc::new(ServerMsg::ChatError {
-                                    request_id,
-                                    message: e.to_string(),
-                                }))).await.is_err() {
-                                    break;
-                                }
-                            }
-                        }
-                        Ok(ClientMsg::DeleteMessage { request_id, message_id }) => {
-                            // Same confirm-by-broadcast-echo shape as SendMessage/EditMessage; a
-                            // rejection is surfaced to the sender only via a correlated `ChatError`.
-                            if let Err(e) = crate::chat::handle_delete_message(
-                                &room,
-                                repo.as_ref(),
-                                &ctx,
-                                &message_rate,
-                                message_id,
-                                now_millis(),
-                                MESSAGE_RATE_PER_MIN,
-                            )
-                            .await
-                            {
-                                tracing::debug!(world = %world_id, user = %user_id, ?e, "delete rejected");
-                                if etx.send(Egress::Frame(Arc::new(ServerMsg::ChatError {
-                                    request_id,
-                                    message: e.to_string(),
-                                }))).await.is_err() {
-                                    break;
-                                }
-                            }
-                        }
-                        Ok(ClientMsg::Pathfind { request_id, scene, start, waypoints, footprint_radius, token }) => {
-                            // One-shot pathfinding: resolve GM status, fetch explored off the lock for
-                            // non-GM Revealed, call SceneEcs::pathfind, reply to this connection only.
-                            // INVARIANT (one-shot-to-requester): reply goes to etx only, never broadcast.
-                            let frame = handle_pathfind(
-                                request_id, scene, start, waypoints, footprint_radius, token,
-                                &ctx, &room, repo.as_ref(),
-                            ).await;
-                            if etx.send(Egress::Frame(Arc::new(frame))).await.is_err() {
-                                break;
-                            }
-                        }
-                        Err(_) => {
-                            let _ = etx
-                                .send(Egress::Frame(Arc::new(ServerMsg::Error {
-                                    code: WsErrorCode::BadMessage,
-                                    message: "malformed frame".into(),
-                                })))
-                                .await;
-                        }
-                    },
-                    Message::Close(_) => break,
-                    _ => {}
+                    }
                 }
-            }
-        }
     }
 
     egress.abort();
@@ -594,6 +598,35 @@ async fn scene_ping_permitted(
     access.has(crate::data::permission::cap::READ)
 }
 
+/// The `ClientMsg::Pathfind` frame's payload, carried as one value from the ingress match arm
+/// into `handle_pathfind`.
+///
+/// INVARIANT: every field is CLIENT-SUPPLIED and unauthorized at construction. `handle_pathfind`
+/// is where each earns trust: `scene` via the non-GM presence gate
+/// (`SceneEcs::user_owns_token_in_scene`), `token` via the effective-ownership plus
+/// same-scene-parent check, and `footprint_radius` only when no `token` is named — a named token
+/// REPLACES it with `SceneEcs::resolve_token_footprint`'s value, so a route preview and the
+/// authoritative gate cannot disagree about the mover's size.
+///
+/// This is deliberately NOT the same type as `scene::RouteRequester` or the parameters of
+/// `SceneEcs::pathfind`, even though `scene`/`start`/`waypoints`/`footprint_radius` reach that
+/// call: these are the pre-authorization values, and one shared type across the boundary would
+/// let a caller forward the frame straight through, skipping the token-derived footprint override.
+struct PathfindRequest {
+    /// Correlation id echoed on the `PathResult`/`PathError` reply.
+    request_id: Uuid,
+    /// The scene to route in. Not proof of presence — see the struct INVARIANT.
+    scene: Uuid,
+    /// The mover's current position, the route's first point.
+    start: (f64, f64),
+    /// Ordered leg list whose last element is the goal.
+    waypoints: Vec<(f64, f64)>,
+    /// Hypothetical footprint radius in cells; IGNORED when `token` is `Some`.
+    footprint_radius: f64,
+    /// Optional footprint source. Authorized before use, and never a presence proof.
+    token: Option<Uuid>,
+}
+
 /// Resolve and execute a one-shot grid pathfind request.
 ///
 /// INVARIANT (no-lock-across-await): the scene read guard is taken twice — once to read
@@ -607,18 +640,20 @@ async fn scene_ping_permitted(
 /// this scan. Without the scan a player can route-preview inside a scene they have never entered:
 /// an `unrestricted` scene has no visibility mask to fail closed on, and the returned polyline
 /// discloses that scene's `blocksMove` wall layout.
-#[allow(clippy::too_many_arguments)]
 async fn handle_pathfind(
-    request_id: Uuid,
-    scene: Uuid,
-    start: (f64, f64),
-    waypoints: Vec<(f64, f64)>,
-    footprint_radius: f64,
-    token: Option<Uuid>,
+    req: PathfindRequest,
     ctx: &crate::data::membership::PermissionContext,
     room: &crate::ws::room::Room,
     repo: &dyn crate::data::repository::Repository,
 ) -> ServerMsg {
+    let PathfindRequest {
+        request_id,
+        scene,
+        start,
+        waypoints,
+        footprint_radius,
+        token,
+    } = req;
     let is_gm = ctx.world_role == crate::data::document::WorldRole::Gm;
     // Step 0: non-GM presence gate, ahead of any routing work. `user_owns_token_in_scene` is a
     // document scan routed through `token_effective_owner`, so ownership is the same rule the
@@ -699,13 +734,15 @@ async fn handle_pathfind(
         None => footprint_radius,
     };
     match s.pathfind(
-        ctx.user_id,
+        crate::scene::RouteRequester {
+            user: ctx.user_id,
+            is_gm,
+            explored: explored.as_ref(),
+        },
         scene,
         start,
         &waypoints,
         footprint_radius,
-        is_gm,
-        explored.as_ref(),
     ) {
         Ok(outcome) => ServerMsg::PathResult {
             request_id,
@@ -806,6 +843,9 @@ async fn handle_move_request(
                 // nulls it per recipient at egress for a clipped observer (secrecy: see
                 // `ServerMsg::MoveStream.cost` doc).
                 cost: Some(exec.cost),
+                // Same trusted-only treatment as `cost`: full value in-process, nulled per
+                // recipient at egress for a clipped observer.
+                truncated: Some(exec.truncated),
             };
             room.broadcast_aux(frame);
             // No success frame to the requester: the broadcast is the notification.
@@ -824,7 +864,7 @@ async fn handle_move_request(
 /// after the ECS read lock is dropped (it does async DB I/O); `grid` carries each scene's cell size,
 /// captured under that lock. Explored is emitted only for scenes the player currently has vision in
 /// (the payload's polygons) — a token-less player gets no explored. `accumulate` is FALSE for a GM
-/// see-as-player view (M9c-2): it is a read-only observer that emits the target's stored explored
+/// see-as-player view: it is a read-only observer that emits the target's stored explored
 /// but must NOT grow the target's memory from the GM's session.
 async fn enrich_vision_explored(
     payload: &mut serde_json::Value,
@@ -975,6 +1015,7 @@ async fn clip_move_stream(
         samples,
         mover_vision: _, // forwarded only to the mover via msg.clone(); observers get None
         cost,
+        truncated,
     } = msg
     else {
         return None;
@@ -1001,6 +1042,7 @@ async fn clip_move_stream(
         samples: samples.clone(),
         mover_vision: None,
         cost: *cost,
+        truncated: *truncated,
     };
 
     // Choose whose authoritative vision this recipient's samples are clipped against — or
@@ -1090,13 +1132,20 @@ async fn clip_move_stream(
         // engine-agnostic (grid or continuous), because a continuous weighted cost may
         // reflect gm_only terrain.
         cost: None,
+        // INVARIANT (no-truncation-leak): same whole-move-scalar rule as `cost`. The
+        // observer's `samples` and `stop` are already clipped to what they witnessed, so a
+        // truthful `truncated` would answer a question their clipped view cannot: whether
+        // anything stopped the token BEYOND their vision. Disclosing it reveals the presence
+        // of a wall or a `gm_only` region they cannot see — and a region-arrest on the final
+        // step is invisible to geometry, so this flag is the ONLY channel carrying it.
+        truncated: None,
     })
 }
 
 /// Union `world_reqs` (GM-authored, unchanged) with the `requirements`
-/// declared by each of the world's currently ENABLED installed modules (M13-1
-/// §2 — "enabling a module publishes its manifest requirements through the
-/// capability machinery"). Non-destructive: `world_cap_requirements` itself is
+/// declared by each of the world's currently ENABLED installed modules —
+/// enabling a module publishes its manifest requirements through the
+/// capability machinery. Non-destructive: `world_cap_requirements` itself is
 /// NEVER mutated by enable/disable; this union is recomputed fresh on every
 /// `Welcome`, so a mid-session enable/disable takes effect on the affected
 /// world's next (re)connect, exactly like a `world_cap_requirements` edit
@@ -1105,9 +1154,9 @@ async fn clip_move_stream(
 /// enabled (server downgrade, on-disk manifest edit) stops contributing.
 ///
 /// ADVISORY ONLY: the returned union is the client's advisory copy for
-/// showing/hiding write controls (`worldSession.svelte.ts`'s `canEdit`). It is
+/// showing/hiding write controls (the client's `canEdit`). It is
 /// NOT the server-side write-enforcement input — `apply_intent`
-/// (`data/sqlite.rs`) consults only the GM-authored `world_cap_requirements`
+/// consults only the GM-authored `world_cap_requirements`
 /// record, never a module's declared `requirements`.
 async fn welcome_capability_requirements(
     repo: &dyn Repository,
@@ -1138,7 +1187,7 @@ async fn welcome_capability_requirements(
     };
     if !enabled.is_empty() {
         // Blocking std::fs I/O; run off the async worker on every WS-connect
-        // Welcome path, matching the spawn_blocking convention in auth/password.rs.
+        // Welcome path, matching the spawn_blocking convention in `hash_password_async`.
         // A panicked scan (JoinError) degrades to an empty Vec, matching the
         // missing-modules_dir behavior already in scan_installed_modules.
         let dir = modules_dir.to_path_buf();
@@ -1149,9 +1198,9 @@ async fn welcome_capability_requirements(
         for id in &enabled {
             // Re-check engine-compat here (not just at enable time): a module
             // enabled while compatible can go stale after a server downgrade
-            // or an on-disk manifest edit. Invariant 5 ("enforced at enable AND
-            // load") is a continuous property, not a one-time gate — a
-            // now-incompatible enabled module must not publish requirements.
+            // or an on-disk manifest edit. Engine-compat is enforced at BOTH
+            // enable and load — a continuous property, not a one-time gate —
+            // so a now-incompatible enabled module must not publish requirements.
             if let Some(m) = installed
                 .iter()
                 .find(|m| &m.id == id && crate::modules::engine_compat_ok(m))
@@ -1176,6 +1225,26 @@ async fn welcome_capability_requirements(
         .collect()
 }
 
+/// What a connection knows about its world, fixed for the connection's
+/// duration: the room it publishes/subscribes through, the document
+/// repository, the caller's resolved identity and role, the resync watermark
+/// `egress_loop` starts from, and the installed-modules directory used to
+/// build the Welcome capability requirements.
+struct EgressConnState {
+    /// The world's room — the authoritative publish/subscribe path.
+    room: Arc<Room>,
+    /// The document repository.
+    repo: Arc<SqliteRepository>,
+    /// The caller's authenticated identity and world role, resolved once at
+    /// connect time and reused for every outgoing frame's per-recipient filter.
+    ctx: PermissionContext,
+    /// The resync watermark `egress_loop` starts delivering from.
+    current_seq: i64,
+    /// The installed-modules directory scanned for the Welcome frame's
+    /// capability requirements.
+    modules_dir: std::path::PathBuf,
+}
+
 /// The egress half: fans room broadcasts into this connection with
 /// per-recipient filtering, serves resyncs/time-pongs, and owns the live
 /// search + scene-channel subscription registries (re-evaluated on events,
@@ -1186,19 +1255,21 @@ async fn welcome_capability_requirements(
 /// ```text
 /// // One egress_loop per connection; it exits when the socket or room closes.
 /// ```
-#[allow(clippy::too_many_arguments)]
 async fn egress_loop<S>(
     mut sink: S,
     mut rx: tokio::sync::broadcast::Receiver<Arc<ServerMsg>>,
     mut erx: mpsc::Receiver<Egress>,
-    room: Arc<Room>,
-    repo: Arc<SqliteRepository>,
-    ctx: PermissionContext,
-    current_seq: i64,
-    modules_dir: std::path::PathBuf,
+    conn: EgressConnState,
 ) where
     S: Sink<Message> + Unpin,
 {
+    let EgressConnState {
+        room,
+        repo,
+        ctx,
+        current_seq,
+        modules_dir,
+    } = conn;
     let world_id = room.world_id;
     // Loaded once per connection (not per event): a per-event read would contend
     // with apply_intent on the single-writer pool. A defaults change mid-session
@@ -1306,7 +1377,7 @@ async fn egress_loop<S>(
                         let f = ServerMsg::SceneError { request_id, message: "too many subscriptions".into() };
                         if sink.send(text(&f)).await.is_err() { break; }
                     } else {
-                        // Resolve the effective view context. `as_user` (see-as-player, M9c-2) is
+                        // Resolve the effective view context. `as_user` (see-as-player) is
                         // GM-ONLY, and the target's role is resolved SERVER-SIDE — a non-GM can never
                         // view as another user, and a client-supplied role/scope is never trusted.
                         // This is the player-to-player access boundary.
@@ -1400,7 +1471,7 @@ async fn egress_loop<S>(
                             ServerMsg::MoveStream { .. } => {
                                 // Resolve this connection's active see-as-player target, if any:
                                 // a `vision`-channel scene subscription whose resolved `view_ctx`
-                                // is a DIFFERENT user than the connection's own (a GM see-as, M9c-2).
+                                // is a DIFFERENT user than the connection's own (a GM see-as).
                                 // Only a GM can hold such a sub — the `SceneSubscribe` handler gates
                                 // `as_user` to a GM and server-resolves the target role — so the
                                 // `world_role == Gm` guard here is belt-and-suspenders. Vision subs
@@ -1699,11 +1770,15 @@ mod tests {
             sink,
             rx,
             erx,
-            room.clone(),
-            repo.clone(),
-            ctx,
-            current_seq,
-            std::path::PathBuf::from("nonexistent-test-modules-dir-for-egress-lag-test"),
+            EgressConnState {
+                room: room.clone(),
+                repo: repo.clone(),
+                ctx,
+                current_seq,
+                modules_dir: std::path::PathBuf::from(
+                    "nonexistent-test-modules-dir-for-egress-lag-test",
+                ),
+            },
         ));
 
         // Drain the `Welcome` (consumes the sole credit); the egress now has zero
@@ -1875,13 +1950,13 @@ mod tests {
         );
     }
 
-    /// Buddy-check Important: a module that is enabled but whose on-disk manifest
+    /// A module that is enabled but whose on-disk manifest
     /// declares an engine range the RUNNING server no longer satisfies (a version
     /// downgrade, or a manifest edited after enable) must NOT publish its
     /// requirements into the advisory Welcome union — mirroring the enable-time
-    /// `engine_compat_ok` gate in `module_routes::set_world_enabled_modules` as a
-    /// continuous property, not a one-time check (invariant 5: "enforced at enable
-    /// AND load"). Simulated by storing the id directly via `set_world_enabled_modules`
+    /// `engine_compat_ok` gate in `module_routes::set_world_enabled_modules`: engine
+    /// compatibility is enforced both at enable time and again on every Welcome load,
+    /// not just once. Simulated by storing the id directly via `set_world_enabled_modules`
     /// (bypassing the HTTP enable-time gate) against a manifest declaring `^99.0.0`.
     #[tokio::test]
     async fn welcome_excludes_requirements_from_an_enabled_but_now_incompatible_module() {
@@ -1935,7 +2010,8 @@ mod tests {
     /// red/green blocking-detection test (blocking-vs-non-blocking isn't
     /// directly unit-testable) — mirrors
     /// `welcome_unions_enabled_modules_requirements_with_gm_authored_ones`'s
-    /// setup and must pass both before and after the refactor.
+    /// setup, verifying the `spawn_blocking`-wrapped path yields results
+    /// identical to the direct (non-blocking) path.
     #[tokio::test]
     async fn welcome_capability_requirements_still_resolves_module_requirements_via_spawn_blocking()
     {
@@ -1988,7 +2064,7 @@ mod tests {
             .collect()
     }
 
-    /// The M9c dispatch-layer accumulation: a masked vision payload grows + persists the player's
+    /// The dispatch-layer accumulation: a masked vision payload grows + persists the player's
     /// explored fog and gains a scene-tagged `explored` set; a revisit re-emits without growing; a
     /// GM `mode:"all"` payload is untouched (no fog → no explored).
     #[tokio::test]
@@ -2242,12 +2318,14 @@ mod tests {
 
         // GM: unconstrained (no mask) → PathResult for any reachable goal.
         let gm_result = handle_pathfind(
-            rid,
-            scene_id,
-            (50.0, 50.0),
-            vec![(250.0, 50.0)],
-            0.1,
-            None,
+            PathfindRequest {
+                request_id: rid,
+                scene: scene_id,
+                start: (50.0, 50.0),
+                waypoints: vec![(250.0, 50.0)],
+                footprint_radius: 0.1,
+                token: None,
+            },
             &gm_ctx,
             &room,
             repo.as_ref(),
@@ -2261,12 +2339,14 @@ mod tests {
         // Non-GM in a dark scene: mask is empty → every cell is out-of-mask → PathError "unreachable".
         // This is the documented fail-closed behaviour: dark scene + visible restriction freezes movement.
         let player_result = handle_pathfind(
-            rid,
-            scene_id,
-            (50.0, 50.0),
-            vec![(250.0, 50.0)],
-            0.1,
-            None,
+            PathfindRequest {
+                request_id: rid,
+                scene: scene_id,
+                start: (50.0, 50.0),
+                waypoints: vec![(250.0, 50.0)],
+                footprint_radius: 0.1,
+                token: None,
+            },
             &player,
             &room,
             repo.as_ref(),
@@ -2512,12 +2592,14 @@ mod tests {
         let rid = Uuid::from_u128(0xF002);
 
         let leaked = handle_pathfind(
-            rid,
-            scene_b,
-            (50.0, 50.0),
-            vec![(450.0, 50.0)],
-            0.1,
-            None,
+            PathfindRequest {
+                request_id: rid,
+                scene: scene_b,
+                start: (50.0, 50.0),
+                waypoints: vec![(450.0, 50.0)],
+                footprint_radius: 0.1,
+                token: None,
+            },
             &player,
             &room,
             repo.as_ref(),
@@ -2531,12 +2613,14 @@ mod tests {
         // The same cross-scene probe, now naming a token the requester DOES own in scene A. The
         // presence gate must still refuse for scene B: naming a token is not presence in a scene.
         let leaked_with_named_token = handle_pathfind(
-            rid,
-            scene_b,
-            (50.0, 50.0),
-            vec![(250.0, 50.0)],
-            0.4,
-            Some(token_id),
+            PathfindRequest {
+                request_id: rid,
+                scene: scene_b,
+                start: (50.0, 50.0),
+                waypoints: vec![(250.0, 50.0)],
+                footprint_radius: 0.4,
+                token: Some(token_id),
+            },
             &player,
             &room,
             repo.as_ref(),
@@ -2549,12 +2633,14 @@ mod tests {
 
         // Control: the player's own scene still routes (the guard cannot break play).
         let own = handle_pathfind(
-            rid,
-            scene_a,
-            (50.0, 50.0),
-            vec![(450.0, 50.0)],
-            0.1,
-            None,
+            PathfindRequest {
+                request_id: rid,
+                scene: scene_a,
+                start: (50.0, 50.0),
+                waypoints: vec![(450.0, 50.0)],
+                footprint_radius: 0.1,
+                token: None,
+            },
             &player,
             &room,
             repo.as_ref(),
@@ -2567,12 +2653,14 @@ mod tests {
 
         // The GM routes in any scene — presence is a non-GM gate only.
         let gm = handle_pathfind(
-            rid,
-            scene_b,
-            (50.0, 50.0),
-            vec![(450.0, 50.0)],
-            0.1,
-            None,
+            PathfindRequest {
+                request_id: rid,
+                scene: scene_b,
+                start: (50.0, 50.0),
+                waypoints: vec![(450.0, 50.0)],
+                footprint_radius: 0.1,
+                token: None,
+            },
             &gm_ctx,
             &room,
             repo.as_ref(),
@@ -2710,12 +2798,14 @@ mod tests {
 
         let rid = Uuid::from_u128(0xF010);
         let res = handle_pathfind(
-            rid,
-            scene_id,
-            (50.0, 50.0),
-            vec![(250.0, 50.0)],
-            0.4,
-            Some(token_b),
+            PathfindRequest {
+                request_id: rid,
+                scene: scene_id,
+                start: (50.0, 50.0),
+                waypoints: vec![(250.0, 50.0)],
+                footprint_radius: 0.4,
+                token: Some(token_b),
+            },
             &player_a,
             &room,
             repo.as_ref(),
@@ -2850,12 +2940,14 @@ mod tests {
 
         let rid = Uuid::from_u128(0xF011);
         let res = handle_pathfind(
-            rid,
-            scene_b,
-            (50.0, 50.0),
-            vec![(250.0, 50.0)],
-            0.4,
-            Some(token_in_a),
+            PathfindRequest {
+                request_id: rid,
+                scene: scene_b,
+                start: (50.0, 50.0),
+                waypoints: vec![(250.0, 50.0)],
+                footprint_radius: 0.4,
+                token: Some(token_in_a),
+            },
             &player,
             &room,
             repo.as_ref(),
@@ -3031,12 +3123,14 @@ mod tests {
             harness_with_narrow_corridor_and_large_owned_token().await;
         let rid = Uuid::from_u128(0xF012);
         let res = handle_pathfind(
-            rid,
-            scene_id,
-            (150.0, 350.0),
-            vec![(150.0, -350.0)],
-            0.01,
-            Some(token_id),
+            PathfindRequest {
+                request_id: rid,
+                scene: scene_id,
+                start: (150.0, 350.0),
+                waypoints: vec![(150.0, -350.0)],
+                footprint_radius: 0.01,
+                token: Some(token_id),
+            },
             &player,
             &room,
             repo.as_ref(),
@@ -3056,12 +3150,14 @@ mod tests {
             harness_with_narrow_corridor_and_large_owned_token().await;
         let rid = Uuid::from_u128(0xF013);
         let res = handle_pathfind(
-            rid,
-            scene_id,
-            (150.0, 350.0),
-            vec![(150.0, -350.0)],
-            0.01,
-            None,
+            PathfindRequest {
+                request_id: rid,
+                scene: scene_id,
+                start: (150.0, 350.0),
+                waypoints: vec![(150.0, -350.0)],
+                footprint_radius: 0.01,
+                token: None,
+            },
             &player,
             &room,
             repo.as_ref(),
@@ -3198,12 +3294,14 @@ mod tests {
 
         let rid = Uuid::from_u128(0xF014);
         let res = handle_pathfind(
-            rid,
-            scene_id,
-            (50.0, 50.0),
-            vec![(250.0, 50.0)],
-            0.4,
-            Some(token_id),
+            PathfindRequest {
+                request_id: rid,
+                scene: scene_id,
+                start: (50.0, 50.0),
+                waypoints: vec![(250.0, 50.0)],
+                footprint_radius: 0.4,
+                token: Some(token_id),
+            },
             &player,
             &room,
             repo.as_ref(),
@@ -3581,6 +3679,7 @@ mod tests {
             samples: samples.clone(),
             mover_vision: mv.clone(),
             cost: Some(2.0),
+            truncated: Some(false),
         };
 
         let result = clip_move_stream(&frame, &ctx, None, &room).await;
@@ -3635,6 +3734,7 @@ mod tests {
             ],
             mover_vision: None,
             cost: Some(2.0),
+            truncated: Some(false),
         };
 
         let result = clip_move_stream(&frame, &obs_ctx, None, &room).await;
@@ -3686,6 +3786,7 @@ mod tests {
             ],
             mover_vision: None,
             cost: Some(2.0),
+            truncated: Some(false),
         };
 
         let result = clip_move_stream(&frame, &obs_ctx, None, &room).await;
@@ -3740,9 +3841,9 @@ mod tests {
     }
 
     /// Same near-side/occluded clip boundary as `clip_observer_sees_near_side_prefix`, but over
-    /// a genuinely any-angle (non-axis-aligned) path — proves the M2 per-recipient egress clip
+    /// a genuinely any-angle (non-axis-aligned) path — proves the per-recipient egress clip
     /// is engine-agnostic geometry, unaffected by whether the sampled polyline is grid-stepped or
-    /// continuous (M10f-3 §6). Wall at x=100 (unchanged); observer at (50,50) sees anything with
+    /// continuous. Wall at x=100 (unchanged); observer at (50,50) sees anything with
     /// x<100 regardless of y, so the diagonal y-offsets below don't change the visibility split.
     #[tokio::test]
     async fn clip_observer_sees_near_side_prefix_any_angle_diagonal_path() {
@@ -3780,6 +3881,7 @@ mod tests {
             ],
             mover_vision: None,
             cost: Some(3.0),
+            truncated: Some(false),
         };
 
         let result = clip_move_stream(&frame, &obs_ctx, None, &room).await;
@@ -3795,6 +3897,7 @@ mod tests {
                 stop: out_stop,
                 duration_ms: out_duration_ms,
                 cost,
+                truncated,
                 ..
             } => {
                 assert_eq!(
@@ -3818,14 +3921,19 @@ mod tests {
                     "duration_ms must be clipped to last visible sample t_ms (0 ms), got {out_duration_ms}"
                 );
                 assert_eq!(cost, None, "cost must be nulled for a clipped observer");
+                assert_eq!(
+                    truncated, None,
+                    "truncated must be nulled for a clipped observer"
+                );
             }
             other => panic!("expected MoveStream, got {other:?}"),
         }
     }
 
     /// A `gm_only` (`DocRole::None`) `blocksSight` wall bounds the observer's authoritative
-    /// vision identically to a normal wall — `sight_walls` is permission-blind (full wall set,
-    /// M9b invariant). When the mover's entire path lies behind the secret wall, the frame is
+    /// vision identically to a normal wall — `sight_walls` is permission-blind, returning
+    /// every wall regardless of visibility tier. When the mover's entire path lies behind
+    /// the secret wall, the frame is
     /// fully suppressed: the observer receives zero `MoveStream` frames, not an empty-sample one.
     #[tokio::test]
     async fn clip_gm_only_wall_suppresses_observer() {
@@ -3861,6 +3969,7 @@ mod tests {
             ],
             mover_vision: None,
             cost: Some(2.0),
+            truncated: Some(false),
         };
 
         let result = clip_move_stream(&frame, &obs_ctx, None, &room).await;
@@ -3933,6 +4042,7 @@ mod tests {
             samples: samples.clone(),
             mover_vision: mv,
             cost: Some(2.0),
+            truncated: Some(false),
         };
 
         let result = clip_move_stream(&frame, &gm_ctx, None, &room).await;
@@ -4009,6 +4119,7 @@ mod tests {
             ],
             mover_vision: None,
             cost: Some(2.0),
+            truncated: Some(false),
         };
 
         // GM previewing as `target`.
@@ -4025,6 +4136,7 @@ mod tests {
                 stop: out_stop,
                 duration_ms: out_duration_ms,
                 cost,
+                truncated,
                 ..
             } => {
                 assert_eq!(
@@ -4048,6 +4160,10 @@ mod tests {
                 assert_eq!(
                     cost, None,
                     "cost nulled for a clipped see-as preview (same secrecy as a real observer)"
+                );
+                assert_eq!(
+                    truncated, None,
+                    "truncated nulled for a clipped see-as preview (same secrecy as a real observer)"
                 );
             }
             other => panic!("expected MoveStream, got {other:?}"),
@@ -4100,6 +4216,7 @@ mod tests {
             samples: samples.clone(),
             mover_vision: None,
             cost: Some(2.0),
+            truncated: Some(false),
         };
 
         let result = clip_move_stream(&frame, &gm_ctx, Some(target_ctx), &room).await;
@@ -4162,6 +4279,7 @@ mod tests {
             ],
             mover_vision: None,
             cost: Some(2.0),
+            truncated: Some(false),
         };
 
         let result = clip_move_stream(&frame, &gm_ctx, Some(target_ctx), &room).await;

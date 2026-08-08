@@ -27,7 +27,7 @@ describe("encodeLayout / decodeLayout round-trip", () => {
   });
 });
 
-describe("decodeLayout source (B4: pre-prune blob for PanelsController)", () => {
+describe("decodeLayout source (pre-prune blob for PanelsController)", () => {
   it("returns the untouched pre-prune blob as source when valid, even with a partial known set", () => {
     const l = base(); // records both "chat" and "assets"
     const encoded = encodeLayout(l);
@@ -318,7 +318,7 @@ test("decode round-trips poppedOut ids", () => {
   expect(layout.expanded.poppedOut).toEqual(["chat"]);
 });
 
-test("decode of a pre-M12e blob (no poppedOut field) normalizes to []", () => {
+test("decode of a blob predating the poppedOut field normalizes to []", () => {
   const legacy = {
     version: 1,
     expanded: { zones: { right: { groups: [], size: 320 }, bottom: { groups: [], size: 240 }, left: { groups: [], size: 320 } }, floating: [], minimized: [] },

@@ -43,7 +43,7 @@
    *
    * The roster must come from here, not from `AppContext.members`
    * (`ctx.members`): that `SvelteMap` is refreshed only on a WS (re)connect
-   * Welcome (`src/client/shell/src/lib/worldSession.svelte.ts:706-720`), not
+   * Welcome (`WorldSession`'s `#onWelcome`), not
    * on each individual join — a seat added while this session's connection
    * stays open does not reach it until the next reconnect, and minting or
    * redeeming an invite does not itself trigger one. This surface needs the
@@ -83,6 +83,7 @@
    * @example
    * ```
    * // private function; not part of the public API — wired to the mint form's onsubmit
+   * declare const submitEvent: SubmitEvent;
    * await mint(submitEvent);
    * ```
    */
@@ -111,6 +112,7 @@
    * @example
    * ```
    * // private function; not part of the public API — wired to each invite row's revoke button
+   * declare const inviteId: string;
    * await revoke(inviteId);
    * ```
    */
@@ -131,7 +133,7 @@
    * Expiry here is a CLIENT-CLOCK GUESS (`Date.now()` against `expires_at`):
    * the server is the actual authority at redemption time, checking
    * `expires_at` against its OWN clock in one guarded UPDATE
-   * (`src/server/src/data/sqlite.rs:1398-1401`), so a clock-skewed client can
+   * (`SqliteRepository::consume_invite`), so a clock-skewed client can
    * label a row "active" moments before the server would refuse it, or
    * "expired" moments before the server would still accept it.
    *
@@ -145,6 +147,7 @@
    * @example
    * ```
    * // private function; not part of the public API — invoked from the invite list's status span
+   * declare const invite: InviteEntry;
    * status(invite);
    * ```
    */
@@ -167,6 +170,7 @@
    * @example
    * ```
    * // private function; not part of the public API — gates the revoke button in the invite list
+   * declare const invite: InviteEntry;
    * spent(invite);
    * ```
    */

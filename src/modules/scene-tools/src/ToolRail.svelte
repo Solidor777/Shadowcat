@@ -34,7 +34,7 @@
 
   // Reactive subscription mirrors GameSettingsPanel's registry-seed pattern: calling
   // subscribe() inside each $derived.by registers a reactive dependency on the document
-  // store so the snap toggle re-resolves as the active scene's doc changes (M10f-3 §4.4).
+  // store so the snap toggle re-resolves as the active scene's doc changes.
   const subscribe = createSubscriber((update) => ctx.documents.subscribe(update));
   const activeScene = $derived.by((): WireDocument | undefined => {
     subscribe();
@@ -46,7 +46,7 @@
     return resolveSceneSettings(activeScene, ctx.documents).snapToGrid;
   });
 
-  /** GM-authored scene-level snap toggle (M10f-3 §4.4): writes the engine-owned
+  /** GM-authored scene-level snap toggle: writes the engine-owned
    * `/engine/snapToGrid` field on the active scene document (shared, not local UI state).
    * No-op with no active scene.
    * @example
@@ -60,8 +60,11 @@
     // Reads the RAW stored value (not the resolved/defaulted `snapToGrid`) for optimistic-
     // concurrency `old`: the server's field-level conflict check compares against the actual
     // stored value at this path, which is only `null` while the field is genuinely absent.
-    // Mirrors controller.svelte.ts's commitMoves GM branch convention (`eng?.x ?? null`).
-    const rawSnap = (scene.engine as { snapToGrid?: boolean } | undefined)?.snapToGrid ?? null;
+    // Mirrors `commitMoves`'s GM branch convention (`eng?.x ?? null`).
+    const rawSnap = (scene.engine as {
+      /** The raw stored snap flag; absent (not merely falsy) means "use the derived default". */
+      snapToGrid?: boolean;
+    } | undefined)?.snapToGrid ?? null;
     ctx.dispatchIntent([
       { op: "update", doc_id: scene.id, changes: [{ path: "/engine/snapToGrid", old: rawSnap, new: !snapToGrid }] },
     ]);
@@ -70,10 +73,10 @@
   /** `gmOnly` marks a tool that AUTHORS scene content (creates or edits a document other
    * than a token's own position). The three ungated tools each go through a path the server
    * already polices for a non-GM — but select/move does NOT go through the same path for every
-   * role: `commitMoves` (`controller.svelte.ts`) branches on `ctx.role`. A GM writes
+   * role: `commitMoves` branches on `ctx.role`. A GM writes
    * `/engine/x,y` directly via `dispatchIntent` — an ordinary permission-checked `Update`, with
    * NO movement gate at all, since `Room::publish`'s non-GM position-refusal block
-   * (`src/server/src/ws/room.rs:285-306`) does not apply to a GM's own write. A non-GM's move is
+   * does not apply to a GM's own write. A non-GM's move is
    * request-only and never writes `/engine/x,y` directly: per selected token, `Pathfind` then
    * `MoveRequest` → `execute_move`'s per-cell wall/mask/footprint gate — the same mechanism the
    * measure tool's `commitRoute` uses. Measure previews via the per-requester-masked `Pathfind`
@@ -81,18 +84,26 @@
    * rate-limited per-user relay.
    *
    * `place` in particular MUST stay `gmOnly`, for a reason that is not fully visible from this
-   * file: `Room::publish`'s `Create` gate (`src/server/src/ws/room.rs:307-368`) authorizes a
+   * file: `Room::publish`'s `Create` gate authorizes a
    * placed token's CENTER cell against the requester's visibility mask (matching
    * `movement_restriction` — no check at all under `Unrestricted`) but NEVER checks walls: a
    * placement is a single point, not a traversal, so there is no `line_traversal`/supercover call
-   * to run a wall test against (deliberate — see the comment at that gate, and ARCHITECTURE
-   * invariant 6). A `Create` can therefore still place a token behind/through a wall the
+   * to run a wall test against. A `Create` can
+   * therefore still place a token behind/through a wall the
    * movement gate would otherwise block. The other server-side check on a player `Create` is
    * `apply_intent`'s `core:create` world-capability grant, which is world-CONFIGURABLE —
    * fail-closed by default, but a world that granted it would have a real wall-bypass placement
    * hole if this tool were ungated. Ungating an authoring tool therefore requires checking what
    * gates its op KIND, not just that some gate exists on the path. */
-  const tools: { id: ToolId; label: string; gmOnly: boolean }[] = [
+  const tools: {
+    /** The tool id, passed to `controller.toggle`. */
+    id: ToolId;
+    /** The button's visible label and title (already localized via `t`). */
+    label: string;
+    /** Whether the tool authors content and must therefore hide from non-GMs (see the doc
+     * comment above this array for the per-tool rationale). */
+    gmOnly: boolean;
+  }[] = [
     { id: "select", label: t("tools.select"), gmOnly: false },
     { id: "place", label: t("tools.place"), gmOnly: true },
     { id: "draw", label: t("tools.draw"), gmOnly: true },

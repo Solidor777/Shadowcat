@@ -19,7 +19,14 @@
     engine,
     logger,
     controller,
-  }: { engine?: EngineAdapter; logger?: Logger; controller?: PanelsController } = $props();
+  }: {
+    /** The docking engine to reconcile the layout onto; see this component's own doc. */
+    engine?: EngineAdapter;
+    /** Diagnostic sink for recoverable failures; see this component's own doc. */
+    logger?: Logger;
+    /** The layout-owning controller; see this component's own doc. */
+    controller?: PanelsController;
+  } = $props();
   const log = untrack(() => logger ?? consoleLogger());
 
   const ctx = getAppContext();
@@ -42,10 +49,15 @@
    * `"open"` is NOT narrated as a "move" here even though `applyOp`'s
    * `"open"` case can be a real placement change (surfacing a minimized or
    * closed panel into a docked group, via `placeByPlacement`) rather than a
-   * mere focus bump within an already-open group/floating window — no
-   * current UI affordance dispatches `"open"` (unreachable from any control
-   * this host renders today), so this is dead code pending a future
-   * command palette, not a narration bug against any live path.
+   * mere focus bump within an already-open group/floating window. No control
+   * THIS host renders dispatches it, but the op is reachable: `PanelsApi.open`
+   * is public, and `SceneBrowserPanel`'s per-scene configure button and
+   * `SheetsController.openDocument` both call it, reaching `describeOp`
+   * through `PanelsController.dispatch` like any other op. So a real
+   * placement change currently goes unannounced — a live narration gap, not
+   * an unreachable branch. TODO: narrate `"open"` when it changes placement
+   * (distinguish a placement change from a focus bump within an already-open
+   * group).
    * @param op The layout-changing op `PanelsController.onOp` fired.
    * @returns The `panels.moved` announcement text, or `null` for an op not
    * worth narrating.
@@ -95,7 +107,7 @@
   // `AppContext.panels` is typed as `PanelsApi & PanelsChipsView`, which
   // intentionally omits `bind` (a proxy-rebind affordance, not part of the
   // general contract other callers use). This rests on composition-root
-  // convention, not the type system: `Table.svelte` is the sole place that
+  // convention, not the type system: `Table` is the sole place that
   // constructs the concrete `PanelsBridge` and assigns it to `ctx.panels`,
   // so this is the sole binding site — guarded at runtime rather than cast
   // unchecked, so a violated convention fails loudly here instead of
@@ -159,8 +171,8 @@
   // `eng.init()` synchronously appends `stageEl` there. `$state` so the
   // adoption effect below reactively re-runs once this transitions from
   // null (mount-before-init race) to set, rather than depending on
-  // declaration/scheduling order between the two effects (buddy-check
-  // finding 1's async-completion guard: identity, not a mode string).
+  // declaration/scheduling order between the two effects — this
+  // async-completion guard keys on object identity, not a mode string.
   let stageHomeEl = $state<HTMLElement | null>(null);
   const slotEls = new Map<string, HTMLElement>();
   // Bumped only by a boundary's reload affordance — the sole sanctioned
@@ -206,6 +218,7 @@
    * ```
    * // private function; not part of the public API — passed to
    * // CompactSwitcher as its `release` prop below
+   * declare const slotEl: HTMLElement;
    * releaseToStaging(slotEl);
    * ```
    */
@@ -213,8 +226,8 @@
     if (stagingEl && el.parentElement !== stagingEl) stagingEl.appendChild(el);
   }
 
-  /** Never throws on an unknown/removed id (containment for finding 1): a bug
-   * upstream then degrades to a missing panel, not a dead reactive graph.
+  /** Never throws on an unknown/removed id: a bug upstream then degrades to a
+   * missing panel, not a dead reactive graph.
    * @param id The panel id to resolve a slot for.
    * @returns The registered slot element for `id`, or a detached placeholder
    * (never appended anywhere visible) if none is registered.
@@ -240,11 +253,17 @@
    * slot only if it is still the currently-registered one for `id`.
    * @example
    * ```
-   * <!-- not exported; a Svelte action used only in this component's own template -->
-   * <div use:registerSlot={id}></div>
+   * // not exported; used only via `use:registerSlot={id}` in this component's
+   * // own template — shown here as a direct call for typechecking purposes
+   * declare const node: HTMLElement;
+   * const action = registerSlot(node, "chat");
+   * action.destroy();
    * ```
    */
-  function registerSlot(node: HTMLElement, id: string): { destroy(): void } {
+  function registerSlot(node: HTMLElement, id: string): {
+    /** Unregisters this slot, per this function's own doc. */
+    destroy(): void;
+  } {
     slotEls.set(id, node);
     return {
       destroy() {

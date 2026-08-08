@@ -1,12 +1,28 @@
 // The core's diagnostic seam. Production hosts inject their own Logger; the
 // core never calls console.* directly (raw console output is banned). Hook /
 // module errors are isolated and reported here rather than thrown.
+/** The diagnostic sink every core function accepts instead of calling `console.*`
+ * directly — see the module note above. */
 export interface Logger {
+  /** Logs a low-severity diagnostic, not surfaced to the user.
+   * @param msg The message text.
+   * @param meta Optional structured context.
+   */
   debug(msg: string, meta?: unknown): void;
+  /** Logs a recoverable-condition diagnostic.
+   * @param msg The message text.
+   * @param meta Optional structured context.
+   */
   warn(msg: string, meta?: unknown): void;
+  /** Logs a failure diagnostic.
+   * @param msg The message text.
+   * @param meta Optional structured context.
+   */
   error(msg: string, meta?: unknown): void;
 }
 
+/** A `Logger` that discards every record. Used where a logger is structurally
+ * required but output is not wanted, such as tests and headless module loads. */
 export const silentLogger: Logger = {
   debug() {},
   warn() {},

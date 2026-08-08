@@ -1,6 +1,6 @@
-//! Movement-segment rasterization for the M10e-4 movement-restriction gate. Pure, clean-room,
+//! Movement-segment rasterization for the movement-restriction gate. Pure, clean-room,
 //! headless. INVARIANT: `supercover_cells` is the SAME cell set the gate tests against the
-//! visibility mask, so the authoritative move gate and (M10e-6) path preview agree.
+//! visibility mask, so the authoritative move gate and path preview agree.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
@@ -87,8 +87,8 @@ pub fn supercover_cells(a0: (f64, f64), a1: (f64, f64), cell: f64) -> Option<BTr
     };
 
     // Per-axis step BUDGET: the exact number of grid-line crossings still needed on each axis to
-    // reach (ei,ej). Root-cause fix for the corner-crossing drift bug (docs/OPEN_BUGS.md /
-    // formerly "Server / move-execution"): the tMax tie test alone cannot distinguish a genuine
+    // reach (ei,ej). Root-cause fix for the corner-crossing drift bug: the tMax tie test alone
+    // cannot distinguish a genuine
     // mid-path corner crossing (more path beyond, both axes still owe a step) from a tie that
     // merely COINCIDES with an axis that has already arrived at its target coordinate (e.g. the
     // segment's own endpoint sits exactly on a lattice intersection, or an earlier forced
@@ -237,13 +237,12 @@ mod tests {
 
     #[test]
     fn diagonal_leg_with_both_endpoints_on_lattice_corners_succeeds() {
-        // Regression (docs/OPEN_BUGS.md "Server / move-execution"): a diagonal king-step whose
-        // BOTH endpoints sit exactly on 4-way grid-line intersections used to spuriously
-        // fail-closed. Root cause: the corner-crossing branch stepped BOTH axes on every tMax
-        // tie without checking whether one axis had already reached its target cell — once a
-        // preceding single-axis step (forced here because a0's y-coordinate starts exactly on a
-        // grid line) put t_max_i and t_max_j into permanent lockstep, every subsequent tie
-        // re-stepped the already-arrived axis too, drifting the traversal past (ei,ej) forever.
+        // Regression test: a diagonal king-step whose BOTH endpoints sit exactly on 4-way
+        // grid-line intersections (here, a0's y-coordinate starts exactly on a grid line, forcing
+        // a preceding single-axis step that puts t_max_i and t_max_j into lockstep). The per-axis
+        // remaining-step budget (`remaining_i`/`remaining_j`) must gate the diagonal corner-step so
+        // a tMax tie that merely coincides with an axis already at its target does not re-step
+        // that axis and drift the traversal past (ei,ej).
         let c = cells((200.0, 200.0), (300.0, 100.0), 100.0);
         assert!(c.contains(&(2, 2)), "start cell present");
         assert!(c.contains(&(3, 1)), "end cell present");
@@ -284,8 +283,8 @@ mod tests {
         //
         // By simulation the traversal reaches ci=13, cj=3 where accumulated t_max_i and
         // t_max_j differ by 3.33e-16, which is GREATER than the absolute f64::EPSILON
-        // (2.22e-16). The old absolute-epsilon guard misses this corner entirely; both
-        // flanking cells (14,3) and (13,4) are silently dropped (under-include).
+        // (2.22e-16). An absolute-epsilon guard would miss this corner entirely; both
+        // flanking cells (14,3) and (13,4) would be silently dropped (under-include).
         //
         // The relative-epsilon fix (magnitude * ε * 64) produces a tolerance ≈ 4.26e-14,
         // which correctly detects the corner and emits both flankers.

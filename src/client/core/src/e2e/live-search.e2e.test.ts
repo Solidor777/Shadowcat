@@ -39,7 +39,7 @@ function createIntent(world: string, id: string, name: string, role: "observer" 
           scope: { kind: "world", world_id: world },
           doc_type: "actor",
           schema_version: 1,
-          // Universal display name (envelope, M13-0 S2) — this is what the FTS
+          // Universal display name (envelope field) — this is what the FTS
           // index and the search-hit assertions below match against.
           name,
           source: null,
@@ -53,7 +53,7 @@ function createIntent(world: string, id: string, name: string, role: "observer" 
           },
           embedded: {},
           parent_id: null,
-          // "actor" is engine-defined (M13-0 S1): a minimal valid body clears
+          // "actor" is engine-defined: a minimal valid body clears
           // the ingress gate. `system` is unused by this test.
           engine: {
             displayName: name,

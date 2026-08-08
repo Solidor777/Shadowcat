@@ -4,8 +4,12 @@ import InitiativePanel from "./InitiativePanel.svelte";
 
 /** One tracked combatant row: the actor's doc id, display name, and rolled score. */
 export interface Entry {
+  /** The rolled actor's document id — `sortEntries`' tie-break reads `name`, not this field. */
   actorId: string;
+  /** Display name captured at roll time (`InitiativePanel.roll`); not re-read from the actor
+   * document afterward, so a later rename does not retroactively relabel the tracked entry. */
   name: string;
+  /** The `rollInitiative` result for this actor; `sortEntries`' primary (descending) sort key. */
   initiative: number;
 }
 
@@ -67,13 +71,13 @@ const initiativeTracker: Module = {
       contract: PANEL_CONTRACT,
       component: InitiativePanel,
       // labelKey falls back to its literal value for keys absent from the host
-      // catalog (src/client/core/src/i18n.ts:80, src/client/ui-kit/src/i18n.svelte.ts:13-14)
+      // catalog (`I18n.t`, and the ui-kit `t` wrapping it)
       // — community modules have no i18n registration seam today: the host's
-      // catalogs are fixed at construction (src/client/ui-kit/src/i18n.svelte.ts:6),
-      // and no method on the `I18n` class (src/client/core/src/i18n.ts:13-100 — the
-      // whole class, not just its constructor: `setLocale` :59 writes `#locale`
-      // only, `t` :79 READS `#catalogs` to look up a key but neither writes nor
-      // returns it, `subscribe` :96 manages the listener set only) mutates or
+      // catalogs are fixed at construction (the ui-kit `i18n` singleton),
+      // and no method on the `I18n` class (the whole class, not just its
+      // constructor: `I18n.setLocale` writes `#locale` only, `I18n.t` READS
+      // `#catalogs` to look up a key but neither writes nor returns it,
+      // `I18n.subscribe` manages the listener set only) mutates or
       // exposes `#catalogs` — so none of them offers a way to add or extend one.
       panel: { icon: "⚔️", labelKey: "Initiative", gmOnly: true },
     });

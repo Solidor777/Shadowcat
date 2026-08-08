@@ -156,9 +156,8 @@ test("a failed first activation is re-attempted on the next Welcome (no permanen
   });
   await session.enter("w1");
   push(welcomeFrame);
-  // Pre-fix behavior: the second Welcome short-circuits the bootstrap guard and
-  // logs nothing, latching the first failure for the session's life. Fixed
-  // behavior: both Welcomes re-attempt activation and both log the failure.
+  // Pins: the bootstrap guard does not latch a failed activation as done, so a second
+  // Welcome re-attempts activation and both Welcomes log the failure.
   await vi.waitFor(() => expect(errors).toHaveLength(1));
   expect(errors[0][0]).toBe("world session welcome handling failed");
 
@@ -528,7 +527,7 @@ test("subscribeScene sends scene_subscribe and re-establishes on a reconnect Wel
   );
 });
 
-// Minimal SceneToolHost fake (mirrors @shadowcat/ui-kit's __fixtures__/fakeSceneHost.ts, not
+// Minimal SceneToolHost fake (mirrors @shadowcat/ui-kit's `fakeSceneHost` fixture, not
 // exported from the ui-kit barrel — this package only needs the one method under test here).
 function fakeMoveHost(): import("@shadowcat/render").SceneToolHost & {
   calls: Array<{ id: string; moverVision: unknown }>;
@@ -551,7 +550,11 @@ function fakeMoveHost(): import("@shadowcat/render").SceneToolHost & {
   };
 }
 
-function moveStreamFrame(scene: string, moverVision: unknown = null): Record<string, unknown> {
+function moveStreamFrame(
+  scene: string,
+  moverVision: unknown = null,
+  truncated: boolean | null = false,
+): Record<string, unknown> {
   return {
     type: "move_stream",
     request_id: "r1",
@@ -564,6 +567,7 @@ function moveStreamFrame(scene: string, moverVision: unknown = null): Record<str
     samples: [{ t_ms: 0, pos: [0, 0] }, { t_ms: 500, pos: [100, 0] }],
     mover_vision: moverVision,
     cost: 2,
+    truncated,
   };
 }
 
@@ -696,7 +700,7 @@ test("onMoveOutcome: a move_stream whose stop matches the requested goal fires '
 });
 
 test("onMoveOutcome: a region arrest landing exactly on the requested goal still fires 'executed'", async () => {
-  // move_exec.rs: an arrest region stops the walk AT cell entry (stop_index == path.len()-1
+  // `execute_move`: an arrest region stops the walk AT cell entry (stop_index == path.len()-1
   // on a final-step arrest), so `MoveOutcome.truncated = true` server-side even though `stop`
   // equals the requested goal exactly — the token DID reach the goal; only further movement
   // from there is barred. Since `truncated` never crosses the wire, this locks in that the
@@ -715,7 +719,7 @@ test("onMoveOutcome: a region arrest landing exactly on the requested goal still
   await vi.waitFor(() => expect(sent.some((m) => m.type === "move_request")).toBe(true));
   const reqId = sent.find((m) => m.type === "move_request")!.request_id as string;
   // stop exactly at the requested goal, as an arrest-on-final-cell outcome would report.
-  push({ ...moveStreamFrame("s1"), request_id: reqId, stop: [100, 0] });
+  push({ ...moveStreamFrame("s1", null, true), request_id: reqId, stop: [100, 0] });
   await resolved;
   await vi.waitFor(() => expect(got).toHaveLength(1));
   expect(got[0]).toEqual({ tokenId: "tok1", outcome: "executed" });
@@ -736,7 +740,7 @@ test("onMoveOutcome: a move_stream whose stop falls short of the requested goal 
   const reqId = sent.find((m) => m.type === "move_request")!.request_id as string;
   // The server stopped short of the requested goal (wall/mask/region gate) — no separate
   // `truncated` flag rides the wire, so the client infers it from the stop mismatch.
-  push({ ...moveStreamFrame("s1"), request_id: reqId, stop: [50, 0] });
+  push({ ...moveStreamFrame("s1", null, true), request_id: reqId, stop: [50, 0] });
   await resolved;
   await vi.waitFor(() => expect(got).toHaveLength(1));
   expect(got[0]).toEqual({ tokenId: "tok1", outcome: "truncated" });
@@ -842,7 +846,7 @@ test("Welcome warns (but still enters the world) when an enabled id is not insta
 });
 
 test("resolves an enabled folder id to its installed entry even when the manifest declares a different id", async () => {
-  // Regression: the enabled-module set (T6) is keyed on the install FOLDER
+  // Regression: the enabled-module set is keyed on the install FOLDER
   // id, never the manifest's author-declared id — the two may legitimately
   // differ. A lookup keyed on `manifest.id` would (wrongly) treat this
   // entry as "not installed" and skip it.

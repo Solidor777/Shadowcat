@@ -1,8 +1,10 @@
-//! M10f-1 continuous (navmesh) pathfinding adapter. Pure geometry: builds a footprint-inflated
+//! Continuous (navmesh) pathfinding adapter. Pure geometry: builds a footprint-inflated
 //! `polyanya::Mesh` from a scene's bounds + `blocksMove` wall segments, and queries any-angle
-//! routes over it. Engine-owned geometry (ARCHITECTURE §6 exception), mirroring the grid A*
-//! router's fail-closed discipline (`scene/pathfinding.rs`) — this checkpoint carries WALLS ONLY;
-//! impassable/terrain regions land in M10f-4 (parent spec §7/§10).
+//! routes over it. Engine-owned geometry, mirroring the grid A*
+//! router's fail-closed discipline (`pathfinding::find`) — the mesh itself carries WALLS ONLY;
+//! impassable/terrain region weighting is handled separately, via `SceneEcs::pathfind`'s dispatch
+//! to the weighted grid A* plus this module's `los_smooth`/`truncate_at_arrest`, never baked into
+//! the mesh.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
@@ -41,8 +43,8 @@ mod smoke {
         );
     }
 
-    // A later checkpoint caches `polyanya::Mesh` behind a `std::sync::Mutex` on `SceneEcs`, which
-    // itself lives behind a `tokio::sync::RwLock` shared across connection tasks — this requires
+    // `SceneEcs::navmesh_cache` caches `polyanya::Mesh` behind a `std::sync::Mutex`, which itself
+    // lives behind a `tokio::sync::RwLock` shared across connection tasks — this requires
     // `Mesh: Send + Sync`. Assert the bound at the point the dependency enters the tree so a
     // violation surfaces here, not after a cache is already built on top of it.
     #[test]
@@ -224,7 +226,7 @@ pub(crate) fn build_navmesh(
 /// calling `Mesh::path` directly with oversized/infinite coordinates. The guard is kept anyway to
 /// bound an untrusted wire magnitude before it reaches a third-party numeric library, and gives a
 /// more precise `PathFail::Invalid` instead of an indistinguishable `Unreachable`. Any leg with no
-/// route ⇒ `Unreachable`. `arrested` is always `false` — this checkpoint's navmesh carries no
+/// route ⇒ `Unreachable`. `arrested` is always `false` — this navmesh carries walls only, no
 /// region field.
 pub(crate) fn navmesh_find(
     nav: &NavMesh,
@@ -296,17 +298,17 @@ pub(crate) fn navmesh_find(
 /// previous retained sample) either (a) touches a cell outside `mask` (footprint disc ∪ the
 /// step's line traversal) or (b) crosses a `blocksMove` wall. `mask: None` skips check (a) — this
 /// reuses the same `footprint_cells` ∪ `line_traversal` union `pathfinding::cell_enterable`'s
-/// mask check applies (component #2), adapted to a continuous sample position rather than a grid
+/// mask check applies, adapted to a continuous sample position rather than a grid
 /// cell center; no forked visibility decision, so a continuous preview is fog-safe and
-/// `route ⊆ gate-allowed` holds across both engines (parent spec §6.3). Every cell index here is
+/// `route ⊆ gate-allowed` holds across both engines. Every cell index here is
 /// produced by `grid` (`cell_of`/`footprint_cells`/`line_traversal`), NEVER by square
 /// `floor(p/cell)` math: `mask` is built in the scene's own `GridShape` coordinate space, and
 /// grid kind and movement model are independent axes, so a hex + continuous scene tested with
 /// square indices compares two different affine maps into the same `(i32,i32)` space — an
 /// arbitrary membership answer in BOTH directions (an occluded hex admitted, a visible one
 /// refused). `grid` MUST be the same `resolve_grid_shape`-derived shape `mask` was built with.
-/// Check (b) always runs, independent of `mask`. **Two checks, both secrecy-relevant — do not
-/// reuse the pre-D10 framing.** The mask check is a secrecy gate (route ⊆ gate-allowed). The wall
+/// Check (b) always runs, independent of `mask`. **Two checks, both secrecy-relevant, neither
+/// substitutes for the other.** The mask check is a secrecy gate (route ⊆ gate-allowed). The wall
 /// check is a router-FIDELITY guarantee for PUBLIC walls (the navmesh's true polyline may detour
 /// around a wall corner, but once downsampled to at most `MAX_VISION_SAMPLES` arc-length samples,
 /// a chord between two samples straddling that corner could otherwise cross the wall the true
@@ -413,7 +415,7 @@ pub(crate) fn clip_to_visible_mask(
     }
 }
 
-/// Line-of-sight smoothing (string-pull) for a WEIGHTED continuous route (M10f-4). Input is the
+/// Line-of-sight smoothing (string-pull) for a WEIGHTED continuous route. Input is the
 /// cell-center polyline `pathfinding::find` produced over the region field; output restores
 /// any-angle geometry by straightening spans that pass ONLY through plain, visible, unobstructed
 /// cells. A span `path[i]..path[j]` (j >= i+2) is straightened only when every cell its chord
@@ -425,8 +427,8 @@ pub(crate) fn clip_to_visible_mask(
 /// `path[i] -> path[i+1]` is ALWAYS kept unconditionally (it already passed `find`'s per-cell
 /// gate), so progress to the goal is guaranteed and cells adjacent to special terrain stay
 /// grid-stepped. `cost` and `arrested` are carried through unchanged (the grid weighted cost is a
-/// valid, slightly-conservative budget for the straighter geometry — same preview-vs-execution
-/// divergence class already logged for the grid engine in `docs/TODO.md`). "Entered cells" = the
+/// valid, slightly-conservative budget for the straighter geometry — the same preview-vs-execution
+/// divergence already present on the grid engine's own route cost). "Entered cells" = the
 /// destination footprint disc ∪ the step line traversal, the SAME union
 /// `pathfinding::cell_enterable` and `clip_to_visible_mask` apply, indexed through `grid` — which
 /// MUST be the shape both `mask` and `field` were built with (`resolve_grid_shape`), since the
@@ -528,7 +530,7 @@ pub(crate) fn los_smooth(
 }
 
 /// Truncate a continuous (polyanya) route at the first VISIBLE arrest cell TRANSITION, mirroring
-/// `pathfinding::find`'s arrest truncation (spec §5, "arrest is honest in preview") for the
+/// `pathfinding::find`'s arrest truncation ("arrest is honest in preview") for the
 /// walls-only continuous path — which does not go through `find`. Arc-length-samples the route
 /// (`move_stream::sample_path`'s `SAMPLES_PER_CELL` density puts several consecutive samples in
 /// the same cell) and cuts at the first sample whose cell differs from the last distinct cell seen
@@ -828,9 +830,9 @@ mod tests {
     fn los_smooth_refuses_shortcut_with_coincident_endpoints_in_impassable_cell() {
         // A and C are coincident (distance 0 < sample_path's 1e-9 zero-length threshold), both
         // sitting in cell (0,0), which is entirely impassable. B is a distinct, unrelated
-        // vertex the smoothing loop should not be able to skip over. Pre-fix, `chord_ok`
-        // collapsed to a single sample and fell through to `true` without checking cell (0,0)
-        // at all; post-fix it refuses a degenerate chord outright.
+        // vertex the smoothing loop should not be able to skip over. Pins: `chord_ok` refuses a
+        // degenerate (zero-length) chord outright rather than collapsing it to a single sample
+        // and falling through to `true` without checking cell (0,0) at all.
         let mut b = RegionField::builder();
         b.add(
             &RegionShape::Rect {
@@ -1072,7 +1074,7 @@ mod tests {
             "expected ~900, got {}",
             outcome.cost
         );
-        assert!(!outcome.arrested, "M10f-1 navmesh carries no regions");
+        assert!(!outcome.arrested, "the navmesh carries no regions");
         assert_eq!(outcome.path.first(), Some(&(50.0, 50.0)));
         let last = *outcome.path.last().unwrap();
         assert!((last.0 - 950.0).abs() < 1.0 && (last.1 - 50.0).abs() < 1.0);
@@ -1376,8 +1378,9 @@ mod tests {
     // so `grid.kind:"hex"` + `movementModel:"continuous"` is a live scene). Each test pairs the
     // hex assertion with the SAME call driven by a `SquareGrid` of the same cell size: `SquareGrid`
     // delegates verbatim to the free `pathfinding::footprint_cells` / `movement::supercover_cells`
-    // / `floor(p/cell)` math these three sites used before, so the square arm IS the pre-fix
-    // behavior and pins each test's non-vacuity permanently rather than only at authoring time.
+    // / `floor(p/cell)` math, so the square arm demonstrates the exact square-on-hex defect shape
+    // these tests guard against, pinning each test's non-vacuity permanently rather than only at
+    // authoring time.
 
     use crate::scene::grid_shape::{GridShape, HexGrid, SquareGrid};
 
@@ -1448,7 +1451,7 @@ mod tests {
         let sq_last = *squared.path.last().unwrap();
         assert!(
             (sq_last.0 - goal.0).abs() < 1e-6 && (sq_last.1 - goal.1).abs() < 1e-6,
-            "square indexing admits the whole route into the occluded hex (the pre-fix leak), \
+            "square indexing admits the whole route into the occluded hex, \
              last = {sq_last:?}"
         );
     }
@@ -1495,7 +1498,7 @@ mod tests {
             squared.path,
             vec![path[0], path[2]],
             "square indexing never queries axial (2,-1) and wrongly straightens straight through \
-             the impassable hex (the pre-fix behavior)"
+             the impassable hex"
         );
     }
 
@@ -1539,7 +1542,7 @@ mod tests {
         assert!(
             sq_last.0 < 200.0,
             "square indexing cuts at square cell (3,0) = x∈[150,200), a different location on \
-             the map (the pre-fix behavior), last x = {}",
+             the map, last x = {}",
             sq_last.0
         );
     }

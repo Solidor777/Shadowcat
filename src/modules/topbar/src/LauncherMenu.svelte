@@ -61,12 +61,13 @@
    * Selects menu item `id`: toggles that panel via `AppContext.panels`
    * (`ctx.panels.toggle`) — the only way this module reaches the panel
    * manager; `topbar`'s own `package.json` declares no dependency on
-   * `@shadowcat/module-panels` (`src/modules/topbar/package.json:7-10`) —
-   * then closes the menu, returning focus to the trigger.
+   * `@shadowcat/module-panels` — then closes the menu, returning focus to
+   * the trigger.
    * @param id The panel id to toggle (a `shadowcat.panel` contribution id).
    * @returns Nothing; toggles the panel and closes the menu as side effects.
    * @example
    * ```
+   * declare const panelId: string;
    * // private function; not part of the public API — wired to each menu item's onclick
    * activate(panelId);
    * ```
@@ -86,6 +87,7 @@
    * @returns Nothing; may move focus among `itemEls` as a side effect.
    * @example
    * ```
+   * declare const keyboardEvent: KeyboardEvent;
    * // private function; not part of the public API — wired to each menu item's onkeydown
    * onItemKeydown(keyboardEvent, 0);
    * ```
@@ -103,6 +105,7 @@
    * @returns Nothing; opens/closes the menu as a side effect.
    * @example
    * ```
+   * declare const keyboardEvent: KeyboardEvent;
    * // private function; not part of the public API — wired to the trigger's onkeydown
    * onTriggerKeydown(keyboardEvent);
    * ```

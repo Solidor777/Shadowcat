@@ -1,6 +1,6 @@
 // Node<->Rust end-to-end: the real client's Create intents against the real
-// server's strict `engine` ingress gate (M13-0 S1/S3). The gate runs ahead of
-// the create-authorization check (data/sqlite.rs Phase 1), so any
+// server's strict `engine` ingress gate. The gate runs ahead of
+// the create-authorization check (Phase 1 of `SqliteRepository::apply_intent`), so any
 // authenticated connection sees the same rejection; the GM login is used only
 // to keep the fixture free of unrelated core:create floor considerations.
 import { afterAll, beforeAll, expect, test } from "vitest";
@@ -128,7 +128,7 @@ test("Create item with an engine body is rejected (item is not engine-defined)",
   const { world } = server.fixture;
 
   const doc = baseDoc("44444444-4444-4444-4444-444444444444", world, "item", {
-    // "item" is a client-only doc_type (M12c) — the server has no engine
+    // "item" is a client-only doc_type — the server has no engine
     // struct for it, so ANY populated `engine` body is rejected.
     engine: {},
   });

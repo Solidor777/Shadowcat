@@ -1,5 +1,5 @@
-// Pure animated-token frame math (M10h). Extracted for the same reason as
-// `computeFogBlendFactor` in `fog-blend.ts` — `pixi-backend.ts` itself is Playwright-covered
+// Pure animated-token frame math. Extracted for the same reason as
+// `computeFogBlendFactor` — `PixiBackend` itself is Playwright-covered
 // only (no WebGL in jsdom), so the frame-selection logic lives here where it's unit-testable.
 // A `//` header, not a `/** */` block: a doc block preceding another doc block rather
 // than a declaration binds to nothing, since every consumer takes the NEAREST one.
@@ -17,7 +17,7 @@
  * @returns A valid index in `[0, frameCount)`, or `0` on degenerate input.
  * @example
  * ```
- * // not exported from @shadowcat/render's index.ts; internal to TokenView/PixiBackend
+ * // not exported from @shadowcat/render; internal to TokenView/PixiBackend
  * computeAnimatedFrame(250, 8, 4, true); // 2 (0.25s × 8fps = 2 frames elapsed, into a 4-frame loop)
  * computeAnimatedFrame(10000, 8, 4, false); // 3 (clamped: the one-shot sequence has completed)
  * ```

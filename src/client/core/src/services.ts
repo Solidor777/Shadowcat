@@ -1,8 +1,20 @@
 // Named singletons modules provide for others to consume. Duplicate names are a
 // hard error (no silent override); a module's services are removed on unload.
-interface Entry {
-  impl: unknown;
+/** Registration options for `ServiceRegistry.provide`. */
+export interface ServiceProvideOptions {
+  /** The owning module id, for later `removeModule` teardown. */
+  module?: string;
+  /** The service's version, returned by `versionOf`. */
   version: string;
+}
+
+/** One registered service, tagged with its owning module for bulk teardown. */
+interface Entry {
+  /** The registered singleton, type-erased to `unknown` for uniform storage. */
+  impl: unknown;
+  /** The version string passed to `provide`, returned verbatim by `versionOf`. */
+  version: string;
+  /** The registering module's id, for `removeModule` teardown; absent for host-registered services. */
   module?: string;
 }
 
@@ -17,14 +29,13 @@ interface Entry {
  * ```
  */
 export class ServiceRegistry {
+  /** Registered services, keyed by lookup name. */
   private entries = new Map<string, Entry>();
 
   /** Registers a named singleton.
    * @param name The service's lookup name.
    * @param impl The singleton instance.
    * @param opts Registration options.
-   * @param opts.module The owning module id, for later `removeModule` teardown.
-   * @param opts.version The service's version, returned by `versionOf`.
    * @example
    * ```ts
    * import { ServiceRegistry } from "@shadowcat/core";
@@ -33,7 +44,7 @@ export class ServiceRegistry {
    * services.provide("dice-roller", { roll: () => 4 }, { module: "m1", version: "1.0.0" });
    * ```
    */
-  provide<T>(name: string, impl: T, opts: { module?: string; version: string }): void {
+  provide<T>(name: string, impl: T, opts: ServiceProvideOptions): void {
     if (this.entries.has(name)) {
       throw new Error(`service ${name} already provided`);
     }

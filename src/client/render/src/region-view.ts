@@ -18,6 +18,7 @@ const STROKE_WIDTH = 2;
  * regions the viewer is permitted to see ever reach `store` (server-side egress filtering, spec
  * §3) — there is no client-side hide check to get wrong. */
 export class RegionView {
+  /** Document ids currently tracked in the backend, refreshed each `reconcile()`. */
   private readonly ids = new Set<string>();
 
   /**
@@ -90,7 +91,8 @@ export class RegionView {
  * @returns A `ShapeNodeSpec` for the `regions` layer, or `null` if it can't be rendered.
  * @example
  * ```
- * // not exported from @shadowcat/render's index.ts; internal to RegionView.reconcile
+ * // not exported from @shadowcat/render; internal to RegionView.reconcile
+ * declare const doc: WireDocument;
  * const spec = toSpec(doc); // null if doc.engine.shape is absent or malformed
  * ```
  */

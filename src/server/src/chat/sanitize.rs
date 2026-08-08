@@ -201,7 +201,7 @@ mod tests {
     }
 
     /// The shortcode pre-pass runs identically on the plain-text early-return
-    /// path (the enriched path is exercised via `shortcodes.rs`'s own tests).
+    /// path (the enriched path is exercised via `shortcodes`'s own tests).
     #[test]
     fn sanitize_replaces_shortcodes_in_plain_text_mode() {
         let policy = ChatContentPolicy::default(); // everything off

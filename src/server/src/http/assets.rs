@@ -450,7 +450,7 @@ mod tests {
             Some("image/webp")
         );
         assert_eq!(detect_image_type(b"%PDF-1.7"), None);
-        assert_eq!(detect_image_type(b"<svg"), None); // SVG excluded in M8
+        assert_eq!(detect_image_type(b"<svg"), None); // XML text, matches no magic number
         assert_eq!(detect_image_type(&[0x89]), None); // too short to decide
     }
 

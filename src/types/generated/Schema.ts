@@ -2,12 +2,13 @@
 import type { SchemaType } from "./SchemaType";
 
 /**
- * A structural (shape-only) type-tree node (M13f tier-2). By construction cannot
- * express a value rule (no enum/bounds/pattern/combinators) — invariant 6 holds
- * by construction. `deny_unknown_fields` makes a malformed schema fail to
+ * A structural (shape-only) type-tree node. By construction cannot
+ * express a value rule (no enum/bounds/pattern/combinators), so a schema built
+ * from this type can only ever check shape, never a value.
+ * `deny_unknown_fields` makes a malformed schema fail to
  * deserialize at the set endpoint. An all-absent node (`{}`) matches any JSON.
  * Cross-field legality (e.g. `items` only on an array) is not enforced by serde;
- * `validate_schema` (routes.rs) enforces it at set-time.
+ * `validate_schema` enforces it at set-time.
  */
 export type Schema = { 
 /**

@@ -3,8 +3,8 @@ import type { Seg } from "./Seg";
 
 /**
  * A wall's segment + sight/light/movement-blocking flags. Absent/false
- * flags exclude the wall from that gate exactly as the pre-M13-0 pointer
- * read did (read-side backstop unchanged).
+ * flags exclude the wall from that gate, matching how each gate
+ * (`move_exec`/`pathfinding`/`lighting`) already reads these fields.
  */
 export type WallEngine = { 
 /**

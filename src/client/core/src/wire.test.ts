@@ -14,10 +14,33 @@ import {
   DocumentSchema,
   SchemaTypeSchema,
   SchemaDeclarationSchema,
+  actorOwnerRefSchemaImpl,
+  audienceSchemaImpl,
+  capabilityGrantsSchemaImpl,
+  capabilityRequirementSchemaImpl,
+  contractProvideSchemaImpl,
+  contractDeclarationSchemaImpl,
+  schemaDeclarationSchemaImpl,
+  permissionSetSchemaImpl,
+  fieldChangeSchemaImpl,
+  operationSchemaImpl,
+  commandSchemaImpl,
+  searchHitSchemaImpl,
+  serverMsgSchemaImpl,
   type ServerMsg,
   type ClientMsg,
   type WireOperation,
   type WireAudience,
+  type WireActorOwnerRef,
+  type WireCapabilityGrants,
+  type WireCapabilityRequirement,
+  type WireContractProvide,
+  type WireContractDeclaration,
+  type WireSchemaDeclaration,
+  type WirePermissionSet,
+  type WireFieldChange,
+  type WireCommand,
+  type WireSearchHit,
 } from "./wire";
 
 // Drift guard. Exact field-by-field type equality fights Zod's inference
@@ -83,6 +106,63 @@ describe("wire drift guard — message discriminants", () => {
     type W = Extract<ServerMsg, { type: "welcome" }>;
     type T = Extract<Ts.ServerMsg, { type: "welcome" }>;
     expectTypeOf<W["schema_declarations"]>().toEqualTypeOf<T["schema_declarations"]>();
+  });
+});
+
+// Non-vacuous schema/type guard: asserts each unannotated `xImpl` const's OWN inferred type
+// against its hand-written type, rather than `z.infer<typeof XSchema>` (which reads back the
+// exported const's own `z.ZodType<T>` annotation and would trivially pass regardless of what the
+// schema actually validates). A dropped discriminated-union arm or a field narrowed to a
+// literal subtype fails `toEqualTypeOf` here — see `wire.ts`'s module-level note above the `z`
+// import for why the split exists.
+describe("wire drift guard — non-vacuous schema/type assertions", () => {
+  it("ActorOwnerRef", () => {
+    expectTypeOf<z.infer<typeof actorOwnerRefSchemaImpl>>().toEqualTypeOf<WireActorOwnerRef>();
+  });
+  it("Audience", () => {
+    expectTypeOf<z.infer<typeof audienceSchemaImpl>>().toEqualTypeOf<WireAudience>();
+  });
+  it("CapabilityGrants", () => {
+    expectTypeOf<z.infer<typeof capabilityGrantsSchemaImpl>>().toEqualTypeOf<WireCapabilityGrants>();
+  });
+  it("CapabilityRequirement", () => {
+    expectTypeOf<
+      z.infer<typeof capabilityRequirementSchemaImpl>
+    >().toEqualTypeOf<WireCapabilityRequirement>();
+  });
+  it("ContractProvide", () => {
+    expectTypeOf<z.infer<typeof contractProvideSchemaImpl>>().toEqualTypeOf<WireContractProvide>();
+  });
+  it("ContractDeclaration", () => {
+    expectTypeOf<
+      z.infer<typeof contractDeclarationSchemaImpl>
+    >().toEqualTypeOf<WireContractDeclaration>();
+  });
+  it("SchemaDeclaration", () => {
+    expectTypeOf<
+      z.infer<typeof schemaDeclarationSchemaImpl>
+    >().toEqualTypeOf<WireSchemaDeclaration>();
+  });
+  it("PermissionSet", () => {
+    expectTypeOf<z.infer<typeof permissionSetSchemaImpl>>().toEqualTypeOf<WirePermissionSet>();
+  });
+  it("FieldChange", () => {
+    expectTypeOf<z.infer<typeof fieldChangeSchemaImpl>>().toEqualTypeOf<WireFieldChange>();
+  });
+  it("Operation", () => {
+    expectTypeOf<z.infer<typeof operationSchemaImpl>>().toEqualTypeOf<WireOperation>();
+  });
+  it("Command", () => {
+    expectTypeOf<z.infer<typeof commandSchemaImpl>>().toEqualTypeOf<WireCommand>();
+  });
+  it("SearchHit", () => {
+    expectTypeOf<z.infer<typeof searchHitSchemaImpl>>().toEqualTypeOf<WireSearchHit>();
+  });
+  // The finding's worked example: this is the one whose non-vacuity was hand-verified by
+  // temporarily deleting the "reject" arm from `serverMsgSchemaImpl` and confirming this
+  // assertion fails (see the buddy-fix report for the pasted failure/restore).
+  it("ServerMsg", () => {
+    expectTypeOf<z.infer<typeof serverMsgSchemaImpl>>().toEqualTypeOf<ServerMsg>();
   });
 });
 
@@ -204,6 +284,7 @@ describe("parseServerMsg", () => {
         { t_ms: 0.0, polygons: [[[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]]] },
       ],
       cost: 3.5,
+      truncated: true,
     };
     const m = parseServerMsg(JSON.stringify(frame));
     expect(m).not.toBeNull();
@@ -212,6 +293,9 @@ describe("parseServerMsg", () => {
       expect(m.stop).toEqual([100.0, 200.0]);
       expect(m.samples).toHaveLength(2);
       expect(m.mover_vision).toHaveLength(1);
+      // A field absent from the schema is stripped by `z.object`, silently and with no parse
+      // error, so asserting the VALUE survived is the only thing that catches an omitted key.
+      expect(m.truncated).toBe(true);
       const vision = m.mover_vision;
       if (vision) expect(vision[0].polygons[0]).toHaveLength(3);
     }
@@ -230,6 +314,7 @@ describe("parseServerMsg", () => {
       samples: [{ t_ms: 0.0, pos: [0.0, 0.0] }],
       mover_vision: null,
       cost: 1.0,
+      truncated: false,
     };
     const m = parseServerMsg(JSON.stringify(frame));
     expect(m).not.toBeNull();
@@ -254,12 +339,16 @@ describe("parseServerMsg", () => {
       // A clipped observer never learns the authoritative cost — it may reflect
       // secret-region terrain their clipped samples don't reveal.
       cost: null,
+      // Withheld on the same grounds: their samples and stop are already clipped, so the flag
+      // would disclose whether something stopped the token beyond their vision.
+      truncated: null,
     };
     const m = parseServerMsg(JSON.stringify(frame));
     expect(m).not.toBeNull();
     expect(m?.type).toBe("move_stream");
     if (m?.type === "move_stream") {
       expect(m.cost).toBeNull();
+      expect(m.truncated).toBeNull();
     }
   });
 
@@ -325,6 +414,72 @@ describe("parseServerMsg", () => {
       if (sceneOp.op === "create") expect(sceneOp.doc.parent_id).toBeNull();
     }
   });
+});
+
+// Table-driven exhaustiveness: keyed on `Record<ServerMsg["type"], unknown>`, so a future
+// `ServerMsg` tag fails to COMPILE here until a fixture is added — coverage cannot silently
+// fall behind the union again the way it did for `reject`/`resync_begin`/`time_pong`/`error`/
+// `ping`. Each fixture is the smallest frame that satisfies `ServerMsgSchema` for its tag.
+describe("parseServerMsg — exhaustive per-tag coverage", () => {
+  const minimalFrames: Record<ServerMsg["type"], unknown> = {
+    welcome: {
+      type: "welcome",
+      world: "w",
+      current_seq: 0,
+      server_time: 0,
+      server_version: "0.0.0-test",
+      world_default_grants: { by_role: {}, by_user: {} },
+      user_role: "player",
+      capability_requirements: [],
+      contract_declarations: [],
+      schema_declarations: [],
+    },
+    event: {
+      type: "event",
+      intent_id: null,
+      command: { seq: 1, world_id: "w", author: "a", ts: 0, ops: [] },
+    },
+    reject: { type: "reject", intent_id: "i1", reason: "forbidden" },
+    resync_begin: { type: "resync_begin", from_seq: 0, to_seq: 0, source: "buffer" },
+    resync_end: { type: "resync_end", current_seq: 0 },
+    time_pong: { type: "time_pong", client_t0: 0, server_t: 0 },
+    ping: { type: "ping" },
+    error: { type: "error", code: "internal", message: "x" },
+    search_result: { type: "search_result", request_id: "r", hits: [], next_cursor: null },
+    search_error: { type: "search_error", request_id: "r", message: "x" },
+    search_update: { type: "search_update", request_id: "r", hits: [] },
+    scene_derived: { type: "scene_derived", request_id: "r", channel: "c", computed_at_seq: 0 },
+    scene_error: { type: "scene_error", request_id: "r", message: "x" },
+    asset_changed: { type: "asset_changed", uuid: "u", op: "replaced" },
+    scene_ping: { type: "scene_ping", scene: "s", x: 0, y: 0, user: "u" },
+    path_result: { type: "path_result", request_id: "r", path: [], cost: 0, arrested: false },
+    path_error: { type: "path_error", request_id: "r", message: "x" },
+    move_error: { type: "move_error", request_id: "r", message: "x" },
+    chat_error: { type: "chat_error", request_id: "r", message: "x" },
+    move_stream: {
+      type: "move_stream",
+      request_id: "r",
+      token_id: "t",
+      mover: "m",
+      scene: "s",
+      start_server_ms: 0,
+      duration_ms: 0,
+      stop: [0, 0],
+      samples: [{ t_ms: 0, pos: [0, 0] }],
+      mover_vision: null,
+      cost: null,
+      truncated: null,
+    },
+    evicted: { type: "evicted", user: null },
+  };
+
+  for (const [type, frame] of Object.entries(minimalFrames)) {
+    it(`parses a minimal "${type}" frame`, () => {
+      const m = parseServerMsg(JSON.stringify(frame));
+      expect(m).not.toBeNull();
+      expect(m?.type).toBe(type);
+    });
+  }
 });
 
 describe("DocumentSchema — envelope name + engine band", () => {

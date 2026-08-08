@@ -8,7 +8,7 @@ afterEach(() => cleanup());
 
 // The default test `t` (`(k) => k`, no interpolation) can't prove the
 // fallback is a real translated string rather than the raw id — use the
-// real catalog-backed `i18n.t`, mirroring PanelHost.test.ts's live-region
+// real catalog-backed `i18n.t`, mirroring `PanelHost.test`'s live-region
 // tests.
 test("DockChips shows a translated fallback for an id missing from meta, not the raw id", () => {
   const context = setAppContextForTest({ t: (k, p) => i18n.t(k, p) });

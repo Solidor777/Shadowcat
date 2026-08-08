@@ -30,11 +30,17 @@
    * ```
    * // private function; not part of the public API — used for the checkbox's
    * // label/aria-label below
+   * declare const info: InstalledModuleInfo;
    * displayName(info);
    * ```
    */
   function displayName(info: InstalledModuleInfo): string {
-    const id = (info.manifest as { id?: unknown }).id;
+    const id = (info.manifest as {
+      /** The manifest's own author-declared module id, read structurally since
+       * `InstalledModuleInfo.manifest` is untyped JSON — see the function doc above for
+       * why this is display-only and never a toggle/save key. */
+      id?: unknown;
+    }).id;
     return typeof id === "string" ? id : info.id;
   }
 
@@ -99,6 +105,7 @@
    * @example
    * ```
    * // private function; not part of the public API — wired to each checkbox's onchange
+   * declare const info: InstalledModuleInfo;
    * toggle(info.id);
    * ```
    */
@@ -114,7 +121,7 @@
    * set (`setEnabledModules(world, [...enabled])` — a whole-set replace, not
    * a diff). There is no optimistic-concurrency pre-image and no merge: the
    * server-side write is a plain settings overwrite
-   * (`set_world_enabled_modules`, `src/server/src/data/sqlite.rs:1139-1146`,
+   * (`SqliteRepository::set_world_enabled_modules`,
    * calls `set_setting` with no read-then-check-then-write guard). Two GMs
    * saving concurrently is last-write-wins — the second save silently
    * clobbers whatever the first enabled, including modules the second GM

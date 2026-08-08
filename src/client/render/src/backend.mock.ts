@@ -1,27 +1,74 @@
-import type { DisplayBackend } from "./backend";
+import type { DisplayBackend, BackgroundSpec } from "./backend";
 import type { LineSeg, CameraTransform, VisibilityInput, TokenNodeSpec, ShapeNodeSpec, Point } from "./types";
 import type { LightingFrame } from "./lighting";
+import type { PingRing } from "./ping-view";
 
 /** A recording DisplayBackend for unit tests — never touches Pixi/GL. */
 export class MockBackend implements DisplayBackend {
+  /** Last `ensureLayers` z-order, recorded verbatim — see `ensureLayers`'s doc for the
+   * shrinking-set divergence from `PixiBackend`. */
   layers: string[] = [];
-  background: { url: string } | null = null;
+  /** Last `setBackground` spec, recorded verbatim; `null` before the first call, or after a
+   * clear (`setBackground(null)`). */
+  background: BackgroundSpec | null = null;
+  /** Count of lines passed to the last `drawGrid` call — the geometry itself is discarded. */
   gridLineCount = 0;
+  /** Color passed to the last `drawGrid` call, `0xRRGGBB`. */
   gridColor: number | null = null;
+  /** Last `setCameraTransform` value, recorded verbatim. */
   camera: CameraTransform | null = null;
+  /** Last applied visibility mask — either the last `setVisibility` input, or the
+   * snapped-to endpoint of the last `setVisibilityBlend` call; `null` before either has ever
+   * been called (the fog layer has no default mask to fall back on). */
   visibility: VisibilityInput | null = null;
   /** Last `setVisibilityBlend` call recorded verbatim (from/to/factor), for asserting the
-   * M2 §T7 cross-fade advances 0→1 across a sample interval. */
-  visibilityBlend: { from: VisibilityInput; to: VisibilityInput; factor: number } | null = null;
-  size: { width: number; height: number } | null = null;
-  filters: Array<{ layerId: string; filter: unknown }> = [];
+   * cross-fade advances 0→1 across a sample interval. */
+  visibilityBlend: {
+    /** See `DisplayBackend.setVisibilityBlend`'s `from` param. */
+    from: VisibilityInput;
+    /** See `DisplayBackend.setVisibilityBlend`'s `to` param. */
+    to: VisibilityInput;
+    /** See `DisplayBackend.setVisibilityBlend`'s `factor` param. */
+    factor: number;
+  } | null = null;
+  /** Last `resize` call, recorded verbatim. */
+  size: {
+    /** See `DisplayBackend.resize`'s `width` param. */
+    width: number;
+    /** See `DisplayBackend.resize`'s `height` param. */
+    height: number;
+  } | null = null;
+  /** Every `addLayerFilter` registration not yet disposed, in call order. */
+  filters: Array<{
+    /** Target core-layer id, as given (not validated). */
+    layerId: string;
+    /** The opaque filter value passed to `addLayerFilter`. */
+    filter: unknown;
+  }> = [];
+  /** Every token render node, keyed by document id, reflecting the last `setToken` spec. */
   tokens = new Map<string, TokenNodeSpec>();
+  /** Every shape render node, keyed by document id, reflecting the last `setShape` spec. */
   shapes = new Map<string, ShapeNodeSpec>();
+  /** Last `drawOverlay` shapes, recorded verbatim (empty after `clearOverlay`). */
   overlay: Omit<ShapeNodeSpec, "layer">[] = [];
-  measure: { from: Point; to: Point; label: string } | null = null;
-  pings: { x: number; y: number; radius: number; alpha: number }[] = [];
+  /** Last `drawMeasure` call, recorded verbatim (`null` after `clearMeasure`). */
+  measure: {
+    /** See `DisplayBackend.drawMeasure`'s `from` param. */
+    from: Point;
+    /** See `DisplayBackend.drawMeasure`'s `to` param. */
+    to: Point;
+    /** See `DisplayBackend.drawMeasure`'s `label` param. */
+    label: string;
+  } | null = null;
+  /** Last `drawPings` rings, recorded verbatim. */
+  pings: PingRing[] = [];
+  /** Last `setLighting` frame, recorded verbatim. */
   lighting: LightingFrame | null = null;
+  /** The callback recorded by `startTicker`, driven manually via `runTicker` — see
+   * `startTicker`'s doc for the overwrite-on-repeat-call divergence from `PixiBackend`. */
   tick: ((dtMs: number) => void) | undefined;
+  /** Set `true` by `destroy` — see `destroy`'s doc for the idempotent-vs-throwing divergence
+   * from `PixiBackend`. */
   destroyed = false;
 
   /** `DisplayBackend.ensureLayers`: records the requested z-order verbatim into `this.layers`,
@@ -60,7 +107,7 @@ export class MockBackend implements DisplayBackend {
    * backend.background; // { url: "https://example.test/map.png" }
    * ```
    */
-  setBackground(spec: { url: string } | null): void {
+  setBackground(spec: BackgroundSpec | null): void {
     this.background = spec;
   }
   /** `DisplayBackend.drawGrid`: records only `lines.length` (as `gridLineCount`) and `color` — NOT
@@ -320,7 +367,7 @@ export class MockBackend implements DisplayBackend {
    * backend.drawPings([{ x: 0, y: 0, radius: 20, alpha: 0.8 }]);
    * ```
    */
-  drawPings(rings: { x: number; y: number; radius: number; alpha: number }[]): void {
+  drawPings(rings: PingRing[]): void {
     this.pings = rings;
   }
   /** `DisplayBackend.setLighting`: records `frame` verbatim into `this.lighting`.

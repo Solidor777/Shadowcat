@@ -6,6 +6,7 @@ import { sceneScopedDocs } from "./scene-scope";
 
 /** Reconciles `doc_type:"drawing"` documents into the `drawings` layer as shape nodes. */
 export class DrawingView {
+  /** Document ids currently tracked in the backend, refreshed each `reconcile()`. */
   private readonly ids = new Set<string>();
 
   /**
@@ -77,13 +78,14 @@ export class DrawingView {
  * layer draws the OPTIMISTIC view (`AppContext.documents`), so a scene-tool bug that builds a
  * Create op with a missing or non-numeric coordinate reaches `toSpec` on the authoring client
  * before the server has validated anything. Guarded on the RAW authored points, before
- * tessellation, matching `region-view.ts` and `wall-view.ts` — see the guard's own comment for
+ * tessellation, matching `RegionView.toSpec` and `WallView.toSpec` — see the guard's own comment for
  * why the placement, not just the presence, is load-bearing.
  * @param doc The `drawing` document to convert.
  * @returns A `ShapeNodeSpec` for the `drawings` layer, or `null` if it can't be rendered.
  * @example
  * ```
- * // not exported from @shadowcat/render's index.ts; internal to DrawingView.reconcile
+ * // not exported from @shadowcat/render; internal to DrawingView.reconcile
+ * declare const doc: WireDocument;
  * const spec = toSpec(doc); // null if doc.engine.shape is absent or malformed
  * ```
  */
@@ -91,8 +93,8 @@ function toSpec(doc: WireDocument): ShapeNodeSpec | null {
   const s = doc.engine as DrawingEngine | undefined;
   if (!s?.shape) return null;
   const { kind, points } = s.shape;
-  // Checked on the RAW authored points, before tessellation — matching `region-view.ts` and
-  // `wall-view.ts`. Post-tessellation would be too late: JS coerces `null` to 0 in arithmetic,
+  // Checked on the RAW authored points, before tessellation — matching `RegionView.toSpec` and
+  // `WallView.toSpec`. Post-tessellation would be too late: JS coerces `null` to 0 in arithmetic,
   // so `ellipsePoints`'s midpoint averaging turns a null corner into finite, plausible-looking
   // geometry that a later check cannot distinguish from an authored shape.
   if (!Array.isArray(points) || !points.every((n) => Number.isFinite(n))) return null;

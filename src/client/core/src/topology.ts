@@ -5,7 +5,10 @@
 import type { Logger } from "./logger";
 import type { ContractDeclaration } from "./manifest";
 
+/** The minimal shape `reconcileTopology` needs from a remote declaration —
+ * looser than `ContractDeclaration` since only presence-by-id is compared. */
 interface WireLike {
+  /** The declaring module's id, the sole field `reconcileTopology` compares. */
   module_id: string;
 }
 
@@ -13,7 +16,7 @@ interface WireLike {
  * Presence-only reconciliation: warn for each module present on exactly one
  * side, keyed by `module_id`. Version and the `provides`/`requires` payload are
  * NOT compared — a same-id/different-contract-set drift reconciles silently.
- * Richer mismatch detection is deferred to module management (see TODO.md).
+ * TODO: Detect version/`provides`/`requires` mismatches beyond presence-only comparison.
  * @param local This client's own loaded module contract declarations.
  * @param remote The server-broadcast `Welcome.contract_declarations`.
  * @param logger Diagnostic sink for each presence mismatch.

@@ -57,7 +57,7 @@ describe("dice settings editor", () => {
   });
 
   // Insurance: pins the panel's rendered option VALUES to the exact DiceSettingsSystem literal
-  // unions (chat-docs.ts DiceSettingsSystem.mode / .direction). A drift here (e.g. a new mode
+  // unions (`DiceSettingsSystem.mode` / `.direction`). A drift here (e.g. a new mode
   // added to the server body but not the panel, or vice versa) must fail loudly rather than
   // silently omit an option.
   it("mode/direction selects expose exactly the DiceSettingsSystem literal option sets", () => {

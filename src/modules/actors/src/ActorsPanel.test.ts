@@ -535,8 +535,9 @@ describe("ActorsPanel — live search + open sheet", () => {
     await screen.findByText("Goliath");
 
     // First (stale, abandoned) query's results arrive late. Flush reactivity via `tick()` after
-    // the call so a pre-fix regression (searchHits overwritten but not yet re-rendered) can't
-    // hide behind an un-flushed DOM and pass this assertion for the wrong reason.
+    // the call: without it, a still-in-flight DOM update could mask a re-introduced
+    // `searchHits`-overwritten-but-not-yet-rendered bug and pass this assertion for the wrong
+    // reason.
     first.onUpdate([
       { document: { id: "a-g", doc_type: "actor", name: "Ghoul", engine: { displayName: "Ghoul" } }, score: 1, snippet: "" },
     ]);

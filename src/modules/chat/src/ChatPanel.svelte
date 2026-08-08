@@ -31,7 +31,7 @@
   // last RENDER_CAP for render — the store may hold more via search/resync.
   // `derivationCache` carries sort/parse state across reactive re-runs so a
   // mutation to one message only re-derives that message, not the whole
-  // history (see channels.ts's deriveVisibleDocs); it is reset whenever the
+  // history (see `deriveVisibleDocs`); it is reset whenever the
   // active view changes, since membership is view-scoped.
   let view = $state<ChatView>({ kind: "all" });
   let derivationCache = createChatDerivationCache();
@@ -45,7 +45,7 @@
     return deriveVisibleDocs(derivationCache, ctx.documents.query("message"), view, RENDER_CAP);
   });
 
-  // Unread tab badge (I3): a per-channel read frontier persisted opaquely via
+  // Unread tab badge: a per-channel read frontier persisted opaquely via
   // ctx.uiState (chat owns the blob's shape, the shell only stores it). A
   // persisted marker from a prior session is preferred as-is (so genuinely
   // new messages since last visit count as unread even before this mount's
@@ -101,9 +101,9 @@
   // a channel value should never be null in a doc this client wrote, but a
   // directly-edited or legacy doc could still contain one; filter defensively
   // rather than crash on render.
-  const channelEntries = $derived.by((): [string, { name: string }][] => {
+  const channelEntries = $derived.by((): [string, { /** The channel's GM-authored display name. */ name: string }][] => {
     const sys = registry?.engine as ChannelRegistryEngine | undefined;
-    return Object.entries(sys?.channels ?? {}).filter((e): e is [string, { name: string }] => e[1] != null);
+    return Object.entries(sys?.channels ?? {}).filter((e): e is [string, { /** The channel's GM-authored display name. */ name: string }] => e[1] != null);
   });
 
   /**
@@ -202,34 +202,43 @@
     const cur = sys.channels[id];
     if (!cur) return;
     if (view.kind === "channel" && view.id === id) view = { kind: "all" };
-    // Whole-field replace (FactionsPanel idiom, see FactionsPanel.svelte's
-    // own `remove`): set_pointer cannot delete an object key
-    // (src/server/src/data/command.rs:277-332, `set_pointer` only ever
+    // Whole-field replace (FactionsPanel idiom, see FactionsPanel's
+    // own `remove`): `set_pointer` cannot delete an object key (it only ever
     // inserts/replaces a key, never removes one), so this dispatches the
     // full channel map minus the removed key as one update on the parent
     // path, OCC pre-image included. A single-key remove is also available
-    // server-side (`FieldChange.remove` + `remove_pointer`,
-    // src/server/src/data/command.rs:363) via the client dispatcher
-    // `unsetField` (src/client/ui-kit/src/sheetEdit.ts:35) — not what this
-    // function uses.
+    // server-side (`FieldChange.remove` + `remove_pointer`) via the client
+    // dispatcher `unsetField` — not what this function uses.
     const next = { ...sys.channels };
     delete next[id];
     ctx.dispatchIntent([{ op: "update", doc_id: registry.id, changes: [{ path: "/engine/channels", old: sys.channels, new: next }] }]);
   }
 
   // Card + composer instantiation: read the singleton contributions directly
-  // (the Surface.svelte subscribe/snapshot idiom, NOT <Surface>) so per-instance
+  // (the Surface subscribe/snapshot idiom, NOT <Surface>) so per-instance
   // reactive props (message, showChannel, channel/audience) can be passed.
   const cardComp = $derived.by(() => {
     subscribeContributions();
     return ctx.contributions.contributionsFor("shadowcat.surface:chat.message")[0]?.component as
-      | Component<{ message: WireDocument; showChannel: boolean }>
+      | Component<{
+          /** The message document to render — passed straight through to whichever card module is contributed. */
+          message: WireDocument;
+          /** Forwarded to the card so it can show the channel chip only in the "All" view. */
+          showChannel: boolean;
+        }>
       | undefined;
   });
   const composerComp = $derived.by(() => {
     subscribeContributions();
     return ctx.contributions.contributionsFor("shadowcat.surface:chat.composer")[0]?.component as
-      | Component<{ channel: string; audience: WireAudience; placeholderName: string }>
+      | Component<{
+          /** Post-target channel label, from `postTarget(view)`. */
+          channel: string;
+          /** Post-target audience, from `postTarget(view)`. */
+          audience: WireAudience;
+          /** The active view's display name, forwarded for the composer's placeholder text. */
+          placeholderName: string;
+        }>
       | undefined;
   });
 
@@ -321,21 +330,20 @@
   /**
    * Cheap display:none check: the panel host hides an inactive or
    * compact-mode-inactive panel via `display: none` on an ancestor — the
-   * `.staging` container a released slot returns to
-   * (`src/modules/panels/src/PanelHost.svelte:212-213,337,417-419`) — rather
-   * than unmounting it with `{#if}`; checked both `PanelHost.svelte` and
-   * `CompactSwitcher.svelte`, neither ever `{#if}`-removes a mounted panel
+   * `.staging` container (`PanelHost`'s `stagingEl`, written back into by
+   * `releaseToStaging`) a released slot returns to — rather than unmounting
+   * it with `{#if}`; checked both `PanelHost` and
+   * `CompactSwitcher`, neither ever `{#if}`-removes a mounted panel
    * slot. This forces every descendant's `offsetParent` to `null`, the proxy
    * this function relies on. `offsetParent` is also `null` for a
    * `position: fixed` element; no CSS rule in `src/modules/panels`'s own
    * styles or the vendored `dockview-core` stylesheet sets `position: fixed`
    * (checked both — CSS only). The pinned `dockview-core@7.0.2` DOES apply
-   * `position: fixed` via inline JS style in two places —
-   * `dnd/pointer/pointerGhost.js:14` (a drag ghost) and
-   * `dockview/components/titlebar/tabGroups.js:142` (a drag-clone wrapper) —
-   * but both style a transient drag-ghost/drag-clone element, never the live
-   * panel-content element this function's `el` is drawn from; re-check this
-   * on any `dockview-core` version bump.
+   * `position: fixed` via inline JS style in two places — `PointerGhost`'s
+   * constructor (a drag ghost) and `TabGroupManager.setGroupDragImage` (a
+   * drag-clone wrapper) — but both style a transient drag-ghost/drag-clone
+   * element, never the live panel-content element this function's `el` is
+   * drawn from; re-check this on any `dockview-core` version bump.
    * @param el The element to test.
    * @returns `true` if `el` is laid out (has an `offsetParent`), `false` if
    * hidden via `display: none` on an ancestor.
@@ -344,7 +352,7 @@
    * // private function; not part of the public API — invoked from the
    * // visibility $effect (which gates markRead) and the message-count/
    * // IntersectionObserver effects below
-   * isVisible(container);
+   * if (container) isVisible(container);
    * ```
    */
   function isVisible(el: HTMLElement): boolean {

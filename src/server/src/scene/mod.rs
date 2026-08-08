@@ -1,6 +1,6 @@
-//! Per-world derived scene ECS. Hydrated from documents (#5); never persisted,
+//! Per-world derived scene ECS. Hydrated from documents; never persisted,
 //! never authoritative. Holds one hecs entity per scene-entity document so
-//! engine-owned systems (M9 vision, M10 pathfinding) can query spatial state.
+//! engine-owned systems (vision, pathfinding) can query spatial state.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
@@ -34,8 +34,8 @@ use crate::data::engine as eng;
 use crate::data::membership::PermissionContext;
 use crate::scene::lighting::Band;
 
-/// Resolved per-scene lighting mode. Mirrors `LightMode` in `scene-docs.ts`
-/// (wire twin: `eng::LightMode` — see the module-header alias note).
+/// Resolved per-scene lighting mode. The client's wire twin is generated from
+/// `eng::LightMode` (see the module-header alias note).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum LightMode {
     /// Every LOS cell is fully bright; per-light raycasts are skipped
@@ -46,7 +46,7 @@ pub enum LightMode {
     EnvironmentLight,
 }
 
-/// Per-scene movement gate mode. Mirrors `MovementRestriction` in `scene-docs.ts`.
+/// Per-scene movement gate mode. The client's wire twin is generated from `eng::MovementRestriction`.
 /// Selects the VISION-MASK arm of the gate only (`move_exec::execute_move`'s
 /// `check_mask`); the wall and region gates apply to every non-GM move
 /// regardless of mode.
@@ -61,9 +61,9 @@ pub enum MovementRestriction {
     Unrestricted,
 }
 
-/// Per-scene movement/pathfinding engine choice (M10f-1). Mirrors `MovementModel` in
-/// `scene-docs.ts`. `GridStepped` = the existing grid A* router; `Continuous` = the polyanya
-/// navmesh router.
+/// Per-scene movement/pathfinding engine choice. The client's wire twin is generated
+/// from `eng::MovementModel`. `GridStepped` = the existing grid A* router; `Continuous` = the
+/// polyanya navmesh router.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MovementModel {
     /// Grid A* router (`pathfinding::find`).
@@ -73,7 +73,7 @@ pub enum MovementModel {
 }
 
 /// Fail-safe finite default scene size (grid units) when a scene has no authored `bounds`.
-/// MUST match `DEFAULT_SCENE_BOUNDS` in the client `scene-docs.ts` (client/server parity).
+/// MUST match the client's `DEFAULT_SCENE_BOUNDS` (client/server parity).
 pub const DEFAULT_SCENE_BOUNDS_UNITS: (f64, f64) = (100.0, 100.0);
 
 /// The resolved per-scene lighting/vision/movement settings (subset of the client
@@ -97,7 +97,7 @@ pub struct ResolvedScene {
     pub env_intensity: f64,
     /// Resolved movement gate mode (see `MovementRestriction`).
     pub movement_restriction: MovementRestriction,
-    /// Per-scene/world-default pathfinding engine choice (M10f-1). `GridStepped` dispatches to
+    /// Per-scene/world-default pathfinding engine choice. `GridStepped` dispatches to
     /// `pathfinding::find`; `Continuous` dispatches to `navmesh::navmesh_find`.
     pub movement_model: MovementModel,
     /// Lenient cell sampling: a cell qualifies if its center or a sampled
@@ -105,12 +105,12 @@ pub struct ResolvedScene {
     /// is the shared per-point decision for all arms).
     pub partial_cell_leniency: bool,
     /// Scene dimensions (width, height) in grid units. Always finite `> 0`
-    /// (default `DEFAULT_SCENE_BOUNDS_UNITS`). The M10f navmesh's outer rectangle.
+    /// (default `DEFAULT_SCENE_BOUNDS_UNITS`). The navmesh's outer rectangle.
     pub bounds: (f64, f64),
 }
 
 /// A resolved vision mode (subset of the client `VisionMode`). `default_range` is in cells.
-/// `render_hint` mirrors `SEED_VISION_MODES` in `scene-docs.ts` (e.g. `"desaturate"` for
+/// `render_hint` mirrors the client's `SEED_VISION_MODES` (e.g. `"desaturate"` for
 /// darkvision); absent in seed → `None`, absent in an authored doc entry → `None`.
 #[derive(Clone, Debug)]
 pub struct VisionMode {
@@ -143,9 +143,9 @@ fn parse_hex_color(s: &str) -> u32 {
 
 /// Deserialize a document's ingress-validated `engine` body into `T`; `None` when the document
 /// carries no `engine` (non-engine doc type, or an engine doc type whose entity predates ingress
-/// validation in a test fixture) or the stored value fails to parse. Mirrors the pre-M13-0
-/// per-field `sys_f64`/pointer-walk contract (a `None` result, not a struct default) so every
-/// caller keeps applying its own existing field-level fail-closed backstop unchanged.
+/// validation in a test fixture) or the stored value fails to parse. Returns `None`, not a struct
+/// default, so every caller keeps applying its own existing field-level fail-closed backstop
+/// unchanged.
 fn engine_as<T: serde::de::DeserializeOwned>(doc: &Document) -> Option<T> {
     doc.engine
         .as_ref()
@@ -237,7 +237,7 @@ const VISION_BOUND_MARGIN: f64 = 100.0;
 /// via `SceneEcs::player_vision_inputs`; each sample then calls the cheaper `polygons_at`
 /// (one moving-token raycast only, no repeated O(entities) ECS or wall scan).
 pub(crate) struct VisionMoveInputs {
-    /// Full `blocksSight` wall set (includes `gm_only` walls — full-wall-set invariant, M9b).
+    /// Full `blocksSight` wall set (includes `gm_only` walls — full-wall-set invariant).
     walls: Vec<vision::Seg>,
     /// Vision polygons for every owned token in the scene EXCEPT the moving token, at their
     /// committed (stationary) positions. Constant across all samples of one move.
@@ -253,7 +253,7 @@ impl VisionMoveInputs {
     /// Per-sample: compute the moving token's visibility polygon at `viewpoint` and prepend it
     /// to the precomputed static polygons. Returns empty when `empty == true` (no owned token
     /// in this scene — fail-closed). Uses the same `sight_walls` set and raycast primitives as
-    /// `player_vision_polygons` (full-wall-set invariant, M9b; no fork).
+    /// `player_vision_polygons` (full-wall-set invariant; no fork).
     pub(crate) fn polygons_at(&self, viewpoint: (f64, f64)) -> Vec<Vec<vision::P>> {
         if self.empty {
             return Vec::new();
@@ -273,6 +273,32 @@ impl VisionMoveInputs {
     }
 }
 
+/// Who is asking `SceneEcs::pathfind` for a route, and what they are allowed to see. These three
+/// values decide every per-requester filter the router applies: the visibility mask
+/// (`SceneEcs::visible_cells`), the routing wall set (`SceneEcs::move_walls`) and the region field
+/// (`SceneEcs::region_field`).
+///
+/// INVARIANT: this describes the requester ONLY. The route itself (`scene`, `start`, `waypoints`,
+/// `footprint_radius`) stays in `pathfind`'s own parameters, and the wire frame that ultimately
+/// supplies those values has its own type — `ws::conn`'s `PathfindRequest`, which is
+/// client-controlled and unauthorized. The two are deliberately not one type: `PathfindRequest`
+/// crosses into this layer only after the presence gate and the named-token ownership check have
+/// run, and `footprint_radius` is REPLACED with the token-derived value on the way through.
+pub struct RouteRequester<'a> {
+    /// The requesting user. Selects the per-requester wall/region view via
+    /// `move_walls(scene, Some(user))` / `region_field(scene, Some(user))`, and the visibility
+    /// mask via `visible_cells(user, ..)`.
+    pub user: Uuid,
+    /// Whether the requester is a GM. Skips the mask entirely and selects the AUTHORITATIVE
+    /// (`None`-viewer) wall set and region field — callers must never pass a GM's id as the
+    /// viewer, per `move_walls`/`region_field`'s two-value contract.
+    pub is_gm: bool,
+    /// The requester's fog memory for this scene, pre-fetched by the caller off the scene read
+    /// lock. Consulted ONLY under `MovementRestriction::Revealed`, where it is unioned into the
+    /// mask; `None` degrades `Revealed` to visible-only, which is the fail-closed direction.
+    pub explored: Option<&'a crate::scene::explored::ExploredSet>,
+}
+
 /// The per-world derived world. Writes are serialized by the caller
 /// (`Room::publish` under `publish_guard`); reads (derived recompute) take a
 /// shared borrow.
@@ -285,10 +311,10 @@ pub struct SceneEcs {
     /// the same `scene.write()` lock as the entities in `Room::publish`, so a
     /// reader holding the read lock sees a consistent `(entities, seq)` pair and
     /// the derived `computed_at_seq` watermark can never be below the state it
-    /// describes (#2).
+    /// describes.
     committed_seq: i64,
-    /// World config-docs (singletons) + actors, hydrated for the lighting-aware vision mask
-    /// (M10e-2). Held outside the hecs `world` because they are NOT scene entities
+    /// World config-docs (singletons) + actors, hydrated for the lighting-aware vision mask.
+    /// Held outside the hecs `world` because they are NOT scene entities
     /// (`is_scene_entity` excludes them); they are maintained by `apply_op` and the room setters.
     world_settings: Option<Document>,
     /// The `light-gradation` singleton config-doc, or `None` (built-in bands).
@@ -298,23 +324,22 @@ pub struct SceneEcs {
     /// Point-lookup table keyed by actor doc id. Used only for `actors.get(id)` joins; must
     /// not be iterated for ordered or wire output (HashMap iteration order is non-deterministic).
     actors: HashMap<Uuid, Document>,
-    /// M10f-1 footprint-inflated navmesh cache, keyed by `(scene, quantized footprint-radius
+    /// Footprint-inflated navmesh cache, keyed by `(scene, quantized footprint-radius
     /// millicells, wall-set key)`. `std::sync::Mutex` (not `RefCell`) + `Arc` (not `Rc`):
     /// `SceneEcs` sits behind a `tokio::sync::RwLock` shared across connection tasks, so
     /// concurrent readers may call `pathfind`/`navmesh_for` simultaneously — the cache needs
     /// `Sync` interior mutability. Never held across an `.await` (lookup + build are
-    /// synchronous). Radius quantized to the nearest 1/1000 cell (Buddy-check finding,
-    /// 2026-07-02, Important: the design spec explicitly calls for "quantized footprintRadius"
-    /// so the cache "stays bounded" given token sizes are a small discrete set — exact f64-bit
-    /// keying was an unjustified departure from that, vulnerable to floating-point noise in a
-    /// client-computed radius producing distinct bit-patterns for what is logically the same
-    /// size). The wall-set component (`wall_set_key`) is an exact sorted key over the included
+    /// synchronous). Radius quantized to the nearest 1/1000 cell so the cache stays bounded,
+    /// since token sizes are a small discrete set — exact f64-bit keying would be vulnerable to
+    /// floating-point noise in a client-computed radius producing distinct bit-patterns for what
+    /// is logically the same size. The wall-set component (`wall_set_key`) is an exact sorted key
+    /// over the included
     /// segments, not a hash: `build_navmesh` inflates walls into obstacles, so a mesh is valid
     /// only for the wall set it was built from — two requesters share an entry exactly when they
     /// see the same walls, and a hash collision here would leak one requester's mesh (and its
     /// wall geometry) to another with a differing view.
     navmesh_cache: std::sync::Mutex<HashMap<NavmeshCacheKey, std::sync::Arc<navmesh::NavMesh>>>,
-    /// Per-document decoded-`engine`-field cache (A2 perf item, `docs/TODO.md`), keyed on the
+    /// Per-document decoded-`engine`-field cache, keyed on the
     /// owning document's own id. `engine_as` fully re-`serde_json::from_value`-decodes on every
     /// call; this cache lets the ~19 vision/lighting/pathfinding hot-path call sites in this file
     /// reuse a prior decode instead. `Mutex` (not `RefCell`), matching `navmesh_cache` above, for
@@ -327,7 +352,7 @@ pub struct SceneEcs {
     /// (a best-effort trim, not load-bearing for correctness) so a deleted document's stale entry
     /// doesn't linger indefinitely.
     engine_cache: std::sync::Mutex<HashMap<Uuid, CachedEngine>>,
-    /// `visible_cells_cached`'s per-`(user, scene)` mask cache for the M10e-4 movement gate.
+    /// `visible_cells_cached`'s per-`(user, scene)` mask cache for the movement gate.
     /// Keyed `(user, scene)`, NOT `(user, scene, lenient)` — a `lenient` flip is just another
     /// fingerprint field, so it naturally invalidates the entry rather than needing a wider key
     /// (see `VisibilityInputsSnapshot`). Self-verifying like `engine_cache` above, generalized
@@ -439,8 +464,8 @@ fn reapply_changes(doc: &mut Document, changes: &[FieldChange]) {
 /// absent) against `user`'s access, via `permission::resolve_access` + `effective_owner(doc,
 /// None)` — the no-actor-join form, exact for any doc type that never carries an actor link
 /// (wall, region). `move_walls` and `region_field` both call this rather than keep a private
-/// copy: the plan's anti-fork rule requires one shared symbol wherever two paths must agree on
-/// the same decision. Do not re-inline this at a new call site.
+/// copy: two paths that must agree on the same decision share one symbol rather than each keeping
+/// its own copy (anti-fork). Do not re-inline this at a new call site.
 fn engine_tier_visible(doc: &Document, viewer: Option<Uuid>) -> bool {
     let Some(user) = viewer else {
         return true;
@@ -463,8 +488,8 @@ fn engine_tier_visible(doc: &Document, viewer: Option<Uuid>) -> bool {
 /// Exact, order-independent key for a routing wall set — the third component of
 /// `NavmeshCacheKey`. A mesh is only valid for the wall set it was inflated from, so two
 /// requesters share a mesh exactly when they see the same walls. An EXACT sorted key rather than
-/// a hash: a collision would serve one requester a mesh built from another's wall set, which is
-/// the leak D10 exists to close, and wall counts here are bounded by
+/// a hash: a collision would serve one requester a mesh built from another's wall set — the leak
+/// this key exists to close — and wall counts here are bounded by
 /// `MAX_NAVMESH_OBSTACLE_SEGMENTS` so the cost is irrelevant. Sorted on the raw bit patterns so
 /// `hecs`'s unstable iteration order cannot cause a miss.
 fn wall_set_key(walls: &[vision::Seg]) -> Vec<(u64, u64, u64, u64)> {
@@ -488,11 +513,10 @@ fn wall_set_key(walls: &[vision::Seg]) -> Vec<(u64, u64, u64, u64)> {
 type NavmeshCacheKey = (Uuid, i64, Vec<(u64, u64, u64, u64)>);
 
 /// The footprint radius used when no effective actor resolves. Mirrors the client's
-/// `resolveFootprint` fallback (`src/modules/scene-tools/src/controller.svelte.ts:403`).
+/// `resolveFootprint` fallback.
 /// PARITY-BOUND, not a fail-closed choice: it is more permissive than a 1×1 square's 0.707, and
 /// changing it here without changing the client re-forks the router and the gate. Change both or
 /// neither.
-#[allow(dead_code)] // consumed by the future footprint-aware gate; parity-pinned by tests now
 pub(crate) const DEFAULT_FOOTPRINT_RADIUS_CELLS: f64 = 0.4;
 
 impl SceneEcs {
@@ -751,12 +775,12 @@ impl SceneEcs {
     /// The validated world-settings engine body, or `None` when the doc is absent or its stored
     /// `engine` fails to deserialize into `WorldSettingsEngine`. Ingress validation
     /// (`data::engine::validate_engine`) already requires every persisted "world-settings" doc's
-    /// `engine` to be a complete, `deny_unknown_fields`-checked `WorldSettingsEngine` — this is
-    /// the direct successor of the pre-M13-0 `scene`+`pathfinding`+`animation`-all-present
-    /// structural guard (mirrors the TS `ws?.scene && ws?.pathfinding && ws?.animation` check),
-    /// now enforced at write time instead of read time. A doc that predates that guard (e.g. a
-    /// test fixture built without going through the ingress gate) still falls back to built-in
-    /// defaults exactly as before. Used by every resolver that reads world-settings so partial/
+    /// `engine` to be a complete, `deny_unknown_fields`-checked `WorldSettingsEngine` — this
+    /// enforces, at write time, the same `scene`+`pathfinding`+`animation`-all-present structural
+    /// completeness the TS mirror (`ws?.scene && ws?.pathfinding && ws?.animation`) still checks
+    /// at read time. A doc that never passed that ingress gate (e.g. a
+    /// test fixture built directly) falls back to built-in
+    /// defaults. Used by every resolver that reads world-settings so partial/
     /// malformed-doc handling stays consistent across all of them.
     fn validated_world_settings_engine(&self) -> Option<eng::WorldSettingsEngine> {
         let doc = self.world_settings.as_ref()?;
@@ -766,9 +790,9 @@ impl SceneEcs {
     /// Resolve a scene's effective lighting/vision settings: built-in defaults < world-settings doc
     /// < per-scene override. Fail-closed and `null ⇒ inherit` (mirrors `resolveSceneSettings`).
     pub fn resolve_scene(&self, scene: Uuid) -> ResolvedScene {
-        // World layer: `validated_world_settings_engine` already enforces the pre-M13-0
+        // World layer: `validated_world_settings_engine` already enforces the
         // scene+pathfinding+animation-all-present structural guard at write time (ingress),
-        // so a `None` here means the same "fall back to built-ins" case the old guard covered.
+        // so a `None` here means the same "fall back to built-ins" case this guard covers.
         let ws = self.validated_world_settings_engine();
         let ws_scene = ws.as_ref().map(|w| &w.scene);
         // Built-in defaults (mirror DEFAULT_WORLD_SETTINGS.scene / WorldSettingsEngine::default).
@@ -816,7 +840,7 @@ impl SceneEcs {
             .unwrap_or(d_move);
         let mmodel = vision_ov.and_then(|v| v.movement_model).unwrap_or(d_model);
 
-        // Scene bounds (M10f-0): per-scene, no world default — a fixed finite fallback. A
+        // Scene bounds: per-scene, no world default — a fixed finite fallback. A
         // non-finite or non-positive axis is degenerate for a navmesh rectangle → fail closed.
         let bounds = s
             .and_then(|s| s.bounds.as_ref())
@@ -888,9 +912,9 @@ impl SceneEcs {
     /// `resolve_grid_shape` with an explicit `SquareGrid` diagonal rule instead of the world-resolved
     /// one. The continuous (navmesh) engine's weighted grid sub-path passes `DiagonalRule::Euclidean`
     /// here so the grid it routes on uses the Euclidean base metric (its cost and its admissible
-    /// heuristic both come from the shape), never the world's configured diagonal rule (M10f-4:
-    /// continuous ignores the world diagonal rule; only cell topology + terrain multiplier come from
-    /// the grid). `rule` is inert on a hex scene — `HexGrid` uses uniform 1-cost steps and the
+    /// heuristic both come from the shape), never the world's configured diagonal rule
+    /// (continuous ignores the world diagonal rule; only cell topology + terrain multiplier come
+    /// from the grid). `rule` is inert on a hex scene — `HexGrid` uses uniform 1-cost steps and the
     /// axial heuristic regardless.
     pub(crate) fn resolve_grid_shape_with_rule(
         &self,
@@ -898,7 +922,7 @@ impl SceneEcs {
         cell: f64,
         rule: pathfinding::DiagonalRule,
     ) -> Box<dyn grid_shape::GridShape + Send + Sync> {
-        // `+ Send + Sync`: `enrich_vision_explored`'s post-lock explored write (conn.rs) holds a
+        // `+ Send + Sync`: `enrich_vision_explored`'s post-lock explored write holds a
         // per-scene map of resolved shapes by shared reference across the spawned egress task's
         // `.await` boundary (a `&Map` is `Send` only when the values are `Sync`). The bound only
         // widens the returned value's capability; every synchronous caller (publish gate, executor)
@@ -918,7 +942,7 @@ impl SceneEcs {
 
     /// The resolved `GridShape` for every scene entity, keyed by scene id — the grid-shape
     /// companion to `scene_grid_sizes`. Captured under the ECS read lock so the post-lock explored
-    /// accumulation (`enrich_vision_explored`, conn.rs) can index each scene's fog through its own
+    /// accumulation (`enrich_vision_explored`) can index each scene's fog through its own
     /// hex/square geometry without re-borrowing the ECS. Each shape resolves via
     /// `resolve_grid_shape(scene, size)` with the scene's own resolved cell size, so it matches the
     /// movement gate and vision mask exactly.
@@ -944,8 +968,8 @@ impl SceneEcs {
             .max(0.001)
     }
 
-    /// Resolved vision-mode registry. Returns a `BTreeMap` for deterministic key order (mirrors
-    /// the plan's Global Constraint on determinism; `.get(id)` works identically for callers).
+    /// Resolved vision-mode registry. Returns a `BTreeMap` for deterministic key order
+    /// (`.get(id)` works identically for callers).
     /// Fail-closed to the built-in `normal`+`darkvision` seed ONLY when no doc/`modes` is present
     /// (mirrors TS `sys?.modes ?? SEED`). A GM-authored modes doc with all-malformed entries is
     /// returned as-is rather than silently re-granting built-in modes the GM may have removed.
@@ -971,8 +995,8 @@ impl SceneEcs {
                 }
             }
             None => {
-                // Mirrors `SEED_VISION_MODES` in scene-docs.ts: normal has no hint;
-                // darkvision desaturates (faithful-darkvision render, M10e-3).
+                // Mirrors the client's `SEED_VISION_MODES`: normal has no hint;
+                // darkvision desaturates.
                 out.insert(
                     "normal".into(),
                     VisionMode {
@@ -994,7 +1018,7 @@ impl SceneEcs {
         out
     }
 
-    /// Count of hydrated scene entities (the M8a identity payload source).
+    /// Count of hydrated scene entities. Feeds the debug-only `"identity"` channel's payload.
     pub fn entity_count(&self) -> usize {
         self.index.len()
     }
@@ -1014,10 +1038,10 @@ impl SceneEcs {
         Some((t.x, t.y))
     }
 
-    /// `Room::publish`'s sole caller: the D9 refusal predicate compares this call's pre- and
+    /// `Room::publish`'s sole caller: the refusal predicate compares this call's pre- and
     /// post-image to reject any non-GM `Update` that changes a token's position (players move
     /// only via `MoveRequest` → `execute_move`). A `/system/x` write on a token is structurally
-    /// inert against this `/engine`-only read; see room.rs's
+    /// inert against this `/engine`-only read; see the
     /// `system_field_write_bypasses_the_move_gate_and_does_not_desync_the_engine_band` test.
     ///
     /// Resolve a token move from an `Update`'s `changes`: `(scene, committed_start,
@@ -1067,10 +1091,10 @@ impl SceneEcs {
         Some((scene, (cx, cy), (nx, ny)))
     }
 
-    /// Per-player visibility polygons (M9b), each tagged with the scene it belongs to: one
+    /// Per-player visibility polygons, each tagged with the scene it belongs to: one
     /// star-shaped polygon per token the user owns, computed against that token's scene's
     /// `blocksSight` walls. The server raycasts the FULL wall set (so a `gm_only` wall the player
-    /// never receives still occludes); the player only ever gets their own polygons (#4). The
+    /// never receives still occludes); the player only ever gets their own polygons. The
     /// scene tag lets the client cut fog holes only for the scene it is rendering — a token in
     /// scene B must not punch a hole into scene A's fog (scene coordinates are scene-local).
     /// Empty when the player controls no tokens.
@@ -1174,7 +1198,7 @@ impl SceneEcs {
         inputs.polygons_at(viewpoint)
     }
 
-    /// Each scene's grid cell size (`engine.grid.size`), defaulting to 100 — the unit the M9c
+    /// Each scene's grid cell size (`engine.grid.size`), defaulting to 100 — the unit the
     /// explored-fog accumulation quantizes vision into. Read once per dispatch (cheap doc scan).
     pub fn scene_grid_sizes(&self) -> std::collections::HashMap<Uuid, f64> {
         let mut out = std::collections::HashMap::new();
@@ -1248,7 +1272,7 @@ impl SceneEcs {
     /// for a GM requester.
     ///
     /// Scope: this is the ROUTING wall set only. `sight_walls`/`light_walls` deliberately carry the
-    /// full set including `gm_only` walls (M9b full-wall-set invariant) — a wall you cannot see
+    /// full set including `gm_only` walls (full-wall-set invariant) — a wall you cannot see
     /// still blocks your sight, which under-reveals and is correct. Do not unify the two.
     pub(crate) fn move_walls(&self, scene: Uuid, viewer: Option<Uuid>) -> Vec<vision::Seg> {
         let mut out = Vec::new();
@@ -1326,31 +1350,29 @@ impl SceneEcs {
         Some(arc)
     }
 
-    /// Plan a route for `user`'s token in `scene` (M10e-6). Reuses the M10e-4 `visible_cells`
-    /// mask so the preview agrees with the movement gate (spec §13). `is_gm`/`unrestricted` ⇒
-    /// no mask; `visible` ⇒ `visible_cells`; `revealed` ⇒ `visible_cells ∪ explored`. `explored`
-    /// is the caller's pre-fetched `ExploredSet` (only consulted under `revealed`; the handler
-    /// fetches it off the lock). An empty non-GM mask ⇒ `find` returns Unreachable (fail-closed —
+    /// Plan a route for `requester`'s token in `scene`. Reuses the `visible_cells`
+    /// mask so the preview agrees with the movement gate. `requester.is_gm`/`unrestricted` ⇒
+    /// no mask; `visible` ⇒ `visible_cells`; `revealed` ⇒ `visible_cells ∪ requester.explored`.
+    /// An empty non-GM mask ⇒ `find` returns Unreachable (fail-closed —
     /// the dark-scene freeze that mirrors the movement gate, by design).
     ///
-    /// Coupling (spec §13): `visible_cells` is the ONE canonical mask shared between this
-    /// method, the M10e-4 movement gate (`move_exec::execute_move`, reached via
+    /// Coupling: `visible_cells` is the ONE canonical mask shared between this
+    /// method, the movement gate (`move_exec::execute_move`, reached via
     /// `Room::execute_move`), and `Room::publish`'s token-placement gate. Do NOT fork the
     /// per-cell decision here.
-    // Eight args mirrors the flat ECS-assembly signature; the handler that calls this already
-    // holds all inputs separately (user, scene, start, waypoints, footprint, is_gm, explored)
-    // so a wrapper struct would only obscure the coupling to the movement gate.
-    #[allow(clippy::too_many_arguments)]
     pub fn pathfind(
         &self,
-        user: Uuid,
+        requester: RouteRequester<'_>,
         scene: Uuid,
         start: (f64, f64),
         waypoints: &[(f64, f64)],
         footprint_radius: f64,
-        is_gm: bool,
-        explored: Option<&crate::scene::explored::ExploredSet>,
     ) -> Result<pathfinding::PathOutcome, pathfinding::PathFail> {
+        let RouteRequester {
+            user,
+            is_gm,
+            explored,
+        } = requester;
         // Scene-existence admissibility, ahead of any routing work and for every requester
         // including a GM. Coupling: both movement gates (`Room::publish`, `Room::execute_move`)
         // refuse a scene with no document, so the router agrees with them on which scenes are
@@ -1363,7 +1385,7 @@ impl SceneEcs {
             return Err(pathfinding::PathFail::Invalid);
         };
         let grid_shape = self.resolve_grid_shape(scene, cell);
-        // Per-requester routing wall set (D10): a non-GM's route omits `gm_only` walls, so their
+        // Per-requester routing wall set: a non-GM's route omits `gm_only` walls, so their
         // geometry cannot be inferred from route shape. The executor always reads the authoritative
         // set (`None`) and springs a secret wall at execution, exactly as a secret region springs.
         // Hoisted above the engine dispatch so BOTH engines receive the SAME slice — never a forked
@@ -1396,7 +1418,7 @@ impl SceneEcs {
 
         match settings.movement_model {
             MovementModel::GridStepped => {
-                // Per-requester region field (spec §4): GM (or `is_gm`) sees the authoritative
+                // Per-requester region field: GM (or `is_gm`) sees the authoritative
                 // field; a non-GM requester's field silently omits any region they cannot see, so
                 // a secret region never influences their route or budget (it "springs" only at
                 // execution, `move_exec`, which always reads the authoritative field).
@@ -1407,17 +1429,19 @@ impl SceneEcs {
                 pathfinding::find(
                     start,
                     waypoints,
-                    footprint_radius,
-                    cell,
-                    &walls,
-                    mask.as_ref(),
-                    Some(&regions),
-                    &*grid_shape,
+                    pathfinding::PathInputs {
+                        footprint_radius_cells: footprint_radius,
+                        cell,
+                        walls: &walls,
+                        mask: mask.as_ref(),
+                        regions: Some(&regions),
+                        shape: &*grid_shape,
+                    },
                 )
             }
             MovementModel::Continuous => {
-                // M10f-4: the per-requester region field is the SINGLE weighting authority for the
-                // continuous engine too (polyanya cannot weight — design spec §2). Terrain or
+                // The per-requester region field is the SINGLE weighting authority for the
+                // continuous engine too (polyanya cannot weight). Terrain or
                 // impassable present ⇒ route via the weighted grid A* forced to Euclidean
                 // (continuous base metric), then LOS-smooth back to any-angle geometry. Otherwise
                 // the unchanged pure polyanya route + an arrest post-filter. Arrest applies on both
@@ -1428,7 +1452,7 @@ impl SceneEcs {
                     return Err(pathfinding::PathFail::Invalid);
                 };
                 if regions.has_terrain_or_impassable() {
-                    // Euclidean base metric (M10f-4): the grid's step cost AND its admissible
+                    // Euclidean base metric: the grid's step cost AND its admissible
                     // heuristic both come from this shape, so the weighted continuous route ignores
                     // the world's configured diagonal rule — only cell topology + terrain multiplier
                     // come from the grid. A hex scene's shape is rule-agnostic (uniform 1-cost).
@@ -1440,12 +1464,14 @@ impl SceneEcs {
                     let weighted = pathfinding::find(
                         start,
                         waypoints,
-                        footprint_radius,
-                        cell,
-                        &walls,
-                        mask.as_ref(),
-                        Some(&regions),
-                        &*euclid_shape,
+                        pathfinding::PathInputs {
+                            footprint_radius_cells: footprint_radius,
+                            cell,
+                            walls: &walls,
+                            mask: mask.as_ref(),
+                            regions: Some(&regions),
+                            shape: &*euclid_shape,
+                        },
                     )?;
                     // `find` reports cost in CELLS; the continuous engine reports SCENE UNITS
                     // (parity with the polyanya path below). Convert before smoothing carries it
@@ -1515,8 +1541,8 @@ impl SceneEcs {
     /// PER-REQUESTER view used by the grid A* router: a region is included only when `user` can
     /// see the visibility tier declared on its `/engine` (defaults to `All` when undeclared) —
     /// the SAME `resolve_access`/`property_overrides` mechanism that already gates every other
-    /// document's egress (spec §3: "no new secrecy machinery"). A secret region's whole geometry
-    /// lives in the `engine` band (M13-0), so the visibility-tier lookup targets the `/engine`
+    /// document's egress — no new secrecy machinery. A secret region's whole geometry
+    /// lives in the `engine` band, so the visibility-tier lookup targets the `/engine`
     /// property-override pointer, not `/system`. Callers MUST pass `None` for a GM requester (a
     /// GM always sees the authoritative field, mirroring `visible_cells`'s GM-skips-the-mask
     /// convention in `pathfind`).
@@ -1670,8 +1696,8 @@ impl SceneEcs {
 
     /// The token's effective vision modes as `(floor_min_illumination, range_cells, render_hint)`
     /// triples. `range_cells == 0.0` ⇒ unlimited. `render_hint` mirrors `VisionMode.render_hint`
-    /// (e.g. `Some("desaturate")` for darkvision). Precedence (mirrors `resolveTokenActor` in
-    /// actor.ts): a LINKED token (`actor_id` present) resolves the shared actor and applies
+    /// (e.g. `Some("desaturate")` for darkvision). Precedence (mirrors `resolveTokenActor`):
+    /// a LINKED token (`actor_id` present) resolves the shared actor and applies
     /// `overrides.vision` as a wholesale replacement when present; a dangling link (actor absent)
     /// yields normal, ignoring overrides. An INSTANCED token (no `actor_id`) uses its
     /// `embedded.actor[0].engine.vision` without overrides. An unknown mode id is dropped
@@ -1683,7 +1709,7 @@ impl SceneEcs {
 
         let token_eng = self.engine_as_cached::<eng::TokenEngine>(token.id, token);
 
-        // Mirror actor.ts resolveTokenActor: a LINKED token (actor_id) resolves the shared actor and
+        // Mirror `resolveTokenActor`: a LINKED token (actor_id) resolves the shared actor and
         // applies the per-token override whitelist (overrides.vision REPLACES the actor's vision); a
         // dangling link (actor absent) yields normal, ignoring overrides. An INSTANCED token (no
         // actor_id) uses its embedded copy's vision; overrides do not apply to instanced tokens.
@@ -1774,7 +1800,7 @@ impl SceneEcs {
     }
 
     /// A token's bounding-disc radius in GRID UNITS (cells). Mirrors the client's `footprintRadius`
-    /// formula (`src/client/core/src/actor.ts:177`): a circle uses `max(w,h)/2`, any other shape
+    /// formula: a circle uses `max(w,h)/2`, any other shape
     /// its half-diagonal `hypot(w,h)/2` (conservative enclosure). Effective-actor resolution
     /// mirrors `resolveTokenActor` via the SAME join `token_vision_floors` implements: a LINKED
     /// token resolves the shared actor and applies the per-token override whitelist; a dangling
@@ -1821,7 +1847,7 @@ impl SceneEcs {
 
     /// Scene-shared lighting/wall inputs for the visibility mask. Computed once per scene per
     /// dispatch and reused for every vision source via `lighting_inputs`. `all_bright`
-    /// short-circuits light raycasts under lighting-off or globalIllumination (spec §3/§6).
+    /// short-circuits light raycasts under lighting-off or globalIllumination.
     pub(crate) fn lighting_inputs(
         &self,
         scene: Uuid,
@@ -1871,7 +1897,7 @@ impl SceneEcs {
                 vision::visibility_polygon(l.pos, light_walls, b)
             })
             .collect();
-        // Boundary-projected environment occlusion (M10f/C1). Empty under all_bright (env is not
+        // Boundary-projected environment occlusion. Empty under all_bright (env is not
         // the mechanism there); occluded by the SAME blocksLight walls as the placed lights.
         let env_polys = if all_bright {
             Vec::new()
@@ -2042,7 +2068,7 @@ impl SceneEcs {
                     if !crate::scene::vision::point_in_poly(&poly, (cx, cy)) {
                         continue;
                     }
-                    // Spec §3/§6: lighting OFF ⇒ all-bright untinted; globalIllumination ⇒
+                    // Lighting OFF ⇒ all-bright untinted; globalIllumination ⇒
                     // all-bright tinted by the environment. level=1.0 so every vision floor
                     // (incl. normal "dim") passes — every LOS cell is visible.
                     let cl = if li.all_bright {
@@ -2069,7 +2095,7 @@ impl SceneEcs {
                         (((cx - src.vp.0).powi(2) + (cy - src.vp.1).powi(2)).sqrt()) / cell;
                     // Lowest applicable floor decides visibility; highest applicable floor decides the hint.
                     // `cell_visible` computes the same min-floor-over-in-range-modes decision
-                    // and is reused verbatim by the movement gate (spec §13 anti-drift).
+                    // and is reused verbatim by the movement gate (anti-drift).
                     let mut admit_floor = f64::NEG_INFINITY; // max admitting floor → which mode's hint wins
                     let mut admit_hint: Option<String> = None;
                     for (fmin, range, hint) in &src.floors {
@@ -2128,7 +2154,7 @@ impl SceneEcs {
 
     /// The set of cells visible to `user` in `scene` for the movement gate. Reuses the exact
     /// egress primitives (`lighting_inputs`, `source_los_poly`, `cell_visible`) so it agrees with
-    /// the secrecy mask (spec §13). `lenient` selects the rasterization rule: strict samples the
+    /// the secrecy mask. `lenient` selects the rasterization rule: strict samples the
     /// cell CENTER only (≡ `player_lit_mask`); lenient also samples the four corners, so a cell
     /// whose vision polygon merely overlaps it counts — a superset, never extending past polygon
     /// overlap. Empty ⇒ no in-scene vision source for this user (fail closed).
@@ -2161,8 +2187,8 @@ impl SceneEcs {
         out
     }
 
-    /// Cached variant of `visible_cells` for the M10e-4 movement gate (the ONLY intended caller —
-    /// `visible_cells` itself and every other existing caller, incl. the pathfinder and the §13
+    /// Cached variant of `visible_cells` for the movement gate (the ONLY intended caller —
+    /// `visible_cells` itself and every other existing caller, incl. the pathfinder and the
     /// parity tests, are UNCHANGED and keep calling the uncached primitive). Reuses the mask from
     /// a prior call for the same `(user, scene)` only when a freshly rebuilt
     /// `VisibilityInputsSnapshot` — built from the SAME `gather_vision_sources_in_scene` call and
@@ -2311,8 +2337,8 @@ impl SceneEcs {
         sources
     }
 
-    /// Engine-owned movement collision (M9a, the second ARCHITECTURE #6 geometric
-    /// exception). True if the move segment `a0→a1` crosses any `blocksMove` wall in `scene`.
+    /// Engine-owned movement collision. True if the move segment `a0→a1` crosses any `blocksMove`
+    /// wall in `scene`.
     /// A no-op move (`a0 == a1`) never blocks.
     pub fn blocks_move(&self, scene: Uuid, a0: (f64, f64), a1: (f64, f64)) -> bool {
         if a0 == a1 {
@@ -2343,7 +2369,7 @@ impl SceneEcs {
 
 /// Scene-shared lighting/wall inputs for the visibility mask. Computed once per scene per
 /// dispatch and reused for every vision source. `all_bright` short-circuits light raycasts
-/// under lighting-off or globalIllumination (spec §3/§6).
+/// under lighting-off or globalIllumination.
 pub(crate) struct LightingInputs {
     /// Skip per-light raycasts: lighting off or `GlobalIllumination`.
     pub(crate) all_bright: bool,
@@ -2459,9 +2485,8 @@ type VisibleCellsCacheEntry = (
 );
 
 /// The per-source LOS raycast + per-cell scan shared by `visible_cells` and
-/// `visible_cells_cached` on a cache miss — extracted verbatim (no logic change) from
-/// `visible_cells`'s prior inline loop so there is exactly one implementation of the expensive
-/// half of the computation for both entry points to call.
+/// `visible_cells_cached` on a cache miss — the sole implementation of the expensive half of the
+/// computation, so both entry points share identical behavior.
 fn accumulate_visible_cells(
     out: &mut std::collections::BTreeSet<(i32, i32)>,
     sources: &[VisSrc],
@@ -2491,10 +2516,10 @@ fn accumulate_visible_cells(
         // Candidate cells via GridShape. Lenient samples corners, so a cell just outside the
         // center-bbox can still qualify: expand the scan by one cell each side under leniency.
         // `cells_in_bounds` takes PIXEL bounds, so the pad is applied in pixel space
-        // (`pad_px = pad * cell`) BEFORE the call. For SQUARE this is byte-identical to the old
-        // integer-index pad: with integer `pad`, `floor((min - pad*cell)/cell) == floor(min/cell)
-        // - pad` (and likewise `+ pad` on max), so the enumerated row-major index rectangle is
-        // unchanged. For HEX the padded pixel AABB feeds the axial-bounds superset. `None`
+        // (`pad_px = pad * cell`) BEFORE the call. For SQUARE, with integer `pad`,
+        // `floor((min - pad*cell)/cell) == floor(min/cell) - pad` (and likewise `+ pad` on max), so
+        // this pixel-space pad and an equivalent integer-index pad enumerate the same row-major
+        // index rectangle. For HEX the padded pixel AABB feeds the axial-bounds superset. `None`
         // (over-cap / degenerate) maps to the pre-existing skip-with-warn (same message +
         // `continue`), so `MAX_CELLS_PER_POLYGON` stays enforced.
         let pad_px = if lenient { cell } else { 0.0 };
@@ -2558,7 +2583,7 @@ fn accumulate_visible_cells(
 
 /// Per-cell visibility decision shared by `player_lit_mask` (egress/secrecy gate) and
 /// `visible_cells` (movement gate). INVARIANT: identical for both so the move gate never
-/// forbids a shipped-visible cell nor permits an unshipped one (spec §13). A cell is visible iff
+/// forbids a shipped-visible cell nor permits an unshipped one. A cell is visible iff
 /// some in-range vision mode's illumination floor is met. `floors`: `(floor_min, range_cells,
 /// hint)`; `range == 0.0` ⇒ unbounded. Returns false when no mode is in range (fail closed).
 fn cell_visible(floors: &[(f64, f64, Option<String>)], cl_level: f64, dist_cells: f64) -> bool {
@@ -2572,7 +2597,7 @@ fn cell_visible(floors: &[(f64, f64, Option<String>)], cl_level: f64, dist_cells
 }
 
 /// The LOS polygon for one vision source: the raycast visibility polygon when `los_restriction`
-/// is on, else the whole bound box as a rectangle (whole-scene visible). Source: M9 raycast
+/// is on, else the whole bound box as a rectangle (whole-scene visible). Source: raycast
 /// (`vision::visibility_polygon`). `scene_bounds` (`ResolvedScene.bounds`) is unioned into the
 /// wall-derived bound so a wall-less (or sparsely-walled) scene reveals its own full authored
 /// extent instead of a degenerate `viewpoint±VISION_BOUND_MARGIN` box — the same
@@ -2641,7 +2666,7 @@ impl Default for SceneEcs {
 
 /// Compute a derived payload for `channel` from the scene ECS, for one
 /// recipient. Returns `None` for unknown channels (→ SceneError). `ctx` is
-/// accepted so M9 vision can derive per recipient; the identity payload is
+/// accepted so vision can derive per recipient; the identity payload is
 /// non-sensitive and global.
 pub fn compute_derived(
     channel: &str,
@@ -2652,8 +2677,8 @@ pub fn compute_derived(
         // Debug seam proof (non-sensitive, global); absent in release.
         #[cfg(debug_assertions)]
         "identity" => Some(serde_json::json!({ "entity_count": ecs.entity_count() })),
-        // Per-player vision (M9b): the GM sees all; a player gets ONLY their own visibility
-        // polygons (#4 per-recipient). A token-less player gets empty polygons → full fog (the
+        // Per-player vision: the GM sees all; a player gets ONLY their own visibility
+        // polygons, per-recipient. A token-less player gets empty polygons → full fog (the
         // client masks everything outside `polygons`, so empty = see nothing, never see-all).
         // Each polygon carries its `scene` so the client cuts fog holes only for the scene it
         // renders — a token in another scene must not punch a hole into the active scene's fog.
@@ -2669,11 +2694,11 @@ pub fn compute_derived(
                         serde_json::json!({ "scene": scene, "points": points })
                     })
                     .collect();
-                // M10e-2: the secrecy-safe lighting-aware mask — only currently-visible cells, each
+                // The secrecy-safe lighting-aware mask — only currently-visible cells, each
                 // tagged with its illumination band + tint. Carries the resolved gradation `bands`
                 // so the client maps band indices → treatment. Additive: `polygons`/`explored` are
-                // unchanged (the client consumes `lit` from M10e-3).
-                // M10e-3: `renderHints` is a deterministic string table (first-seen order over the
+                // unchanged (the client consumes `lit` alongside them).
+                // `renderHints` is a deterministic string table (first-seen order over the
                 // BTreeMap-ordered mask); each cell emits 5 ints: [i,j,band,tint,hint_idx] where
                 // hint_idx is the index into `renderHints`, or -1 for None.
                 // TODO: thread the bands player_lit_mask already resolved to avoid this second resolve.
@@ -3273,13 +3298,15 @@ mod tests {
         // can account for the refusal — with the default restored this routes successfully.
         let ecs = SceneEcs::new();
         let out = ecs.pathfind(
-            Uuid::from_u128(7),
+            RouteRequester {
+                user: Uuid::from_u128(7),
+                is_gm: true,
+                explored: None,
+            },
             Uuid::from_u128(404),
             (50.0, 50.0),
             &[(450.0, 50.0)],
             0.1,
-            true,
-            None,
         );
         assert!(
             matches!(out, Err(pathfinding::PathFail::Invalid)),
@@ -3394,7 +3421,7 @@ mod tests {
         // What the AUTHORITATIVE store reaches. Calls the hoisted rule
         // (`command::apply_field_change`) that `apply_intent` Phase 2 itself calls, so
         // this oracle cannot drift from the store — hand-copying the remove/set branch
-        // here would silently go stale the moment `sqlite.rs` changed. NOT tautological
+        // here would silently go stale the moment `apply_intent` changed. NOT tautological
         // with respect to what this test pins: reverting the ECS mirror to an
         // unconditional `set_pointer` still diverges from this oracle and still fails.
         let db_token: Document = {
@@ -4009,7 +4036,7 @@ mod tests {
 
     #[test]
     fn footprint_radius_mirrors_the_client_formula() {
-        // Mirrors footprintRadius (src/client/core/src/actor.ts:177-180):
+        // Mirrors the client's `footprintRadius`:
         //   circle ⇒ max(w,h)/2 ; square (and any other shape) ⇒ hypot(w,h)/2
         // Representative + boundary cases; `Size` is a free {w,h} pair, so there is no finite
         // domain to enumerate exhaustively.
@@ -4229,7 +4256,7 @@ mod tests {
         );
 
         // all_bright: a scene with lighting disabled makes every LOS cell visible at the bright
-        // band even for a normal-vision token with NO lights present (spec §3/§6).
+        // band even for a normal-vision token with NO lights present.
         let mut bright_scene = doc(10, None, "scene");
         bright_scene.engine = Some(
             json!({ "grid": { "kind": "square", "size": 100 }, "background": null,
@@ -4409,7 +4436,7 @@ mod tests {
     #[test]
     fn vision_modes_carry_render_hint() {
         use serde_json::json;
-        // Absent doc → built-in seed mirrors scene-docs.ts: darkvision desaturates, normal does not.
+        // Absent doc → built-in seed mirrors the client's `SEED_VISION_MODES`: darkvision desaturates, normal does not.
         let seeded = SceneEcs::from_documents(vec![doc(10, None, "scene")], 0);
         let m = seeded.resolved_vision_modes();
         assert_eq!(m["normal"].render_hint, None);
@@ -4465,7 +4492,8 @@ mod tests {
     // --- Test helpers for movement-restriction resolution tests ---
 
     /// Set `world_settings` to a doc whose `engine` is `json_engine` (test-only).
-    /// Mirrors how `room.rs` builds a world-settings config doc.
+    /// Mirrors `document::tests::world_scoped_doc`, the same test helper `ws::room`'s own tests
+    /// use to build a world-settings config doc.
     #[cfg(test)]
     impl SceneEcs {
         pub(crate) fn set_world_settings_for_test(&mut self, json_engine: serde_json::Value) {
@@ -4771,7 +4799,7 @@ mod tests {
     #[test]
     fn lit_mask_suppresses_hint_when_normal_floor_wins_in_bright_cell() {
         use serde_json::json;
-        // Combined-token suppression (buddy-check A1): an owned token whose embedded actor has
+        // Combined-token suppression: an owned token whose embedded actor has
         // BOTH normal (floor=dim 0.34) AND darkvision (floor=dark 0.0).  Standing in a brightly-lit
         // cell (light placed at the token), normal's floor (0.34) is higher than darkvision's (0.0),
         // so normal is the highest-admitting mode → its hint (None) wins → lit cells carry no hint.
@@ -5525,7 +5553,8 @@ mod tests {
     }
 
     /// One public blocksMove wall at x=100 and one `gm_only` blocksMove wall at x=150.
-    /// Both also carry blocksSight+blocksLight so the I5 test can observe them in the vision sets.
+    /// Both also carry blocksSight+blocksLight so the wall-set-parity test below can observe them
+    /// in the vision sets.
     fn scene_with_public_and_secret_move_walls() -> (SceneEcs, Uuid, Uuid) {
         let (mut ecs, scene) = scene_with_grid(100.0);
         let player = Uuid::new_v4();
@@ -5588,7 +5617,7 @@ mod tests {
         );
     }
 
-    /// I5 anti-drift: vision and lighting keep the FULL wall set; only routing filters. This is a
+    /// Anti-drift: vision and lighting keep the FULL wall set; only routing filters. This is a
     /// must-NOT-converge constraint, so it gets a test rather than only a doc comment.
     #[test]
     fn vision_and_lighting_keep_a_gm_only_wall_that_routing_drops() {
@@ -5596,12 +5625,12 @@ mod tests {
         assert_eq!(
             ecs.sight_walls(scene).len(),
             2,
-            "sight_walls keeps the gm_only wall (M9b)"
+            "sight_walls keeps the gm_only wall"
         );
         assert_eq!(
             ecs.light_walls(scene).len(),
             2,
-            "light_walls keeps the gm_only wall (M9b)"
+            "light_walls keeps the gm_only wall"
         );
         assert_eq!(
             ecs.move_walls(scene, Some(player)).len(),
@@ -5845,13 +5874,15 @@ mod tests {
         // GM (is_gm=true): no mask; an open scene routes start→goal at chebyshev cost.
         let (ecs, _user, scene) = scene_with_lit_player_token();
         let r = ecs.pathfind(
-            Uuid::from_u128(1),
+            RouteRequester {
+                user: Uuid::from_u128(1),
+                is_gm: true,
+                explored: None,
+            },
             scene,
             (50.0, 50.0),
             &[(250.0, 50.0)],
             0.1,
-            true,
-            None,
         );
         let outcome = r.expect("GM route");
         assert!((outcome.cost - 2.0).abs() < 1e-9);
@@ -5884,13 +5915,16 @@ mod tests {
         }));
         let outcome = ecs
             .pathfind(
-                Uuid::from_u128(1),
+                RouteRequester {
+user: Uuid::from_u128(1),
+is_gm: true,
+explored: // GM: unrestricted mask
+                None,
+},
                 Uuid::from_u128(10),
                 (50.0, 50.0),
                 &[(950.0, 50.0)],
                 0.1,
-                true, // GM: unrestricted mask
-                None,
             )
             .expect("continuous route over an open bounded scene");
         // Euclidean straight line ≈ 900, unlike a grid diagonal-rule cost — proves the navmesh
@@ -5932,13 +5966,16 @@ mod tests {
         }));
         let outcome = ecs
             .pathfind(
-                Uuid::from_u128(1),
+                RouteRequester {
+user: Uuid::from_u128(1),
+is_gm: true,
+explored: // GM: unrestricted mask
+                None,
+},
                 Uuid::from_u128(10),
                 (50.0, 50.0),
                 &[(50.0, 50.0)],
                 0.1,
-                true, // GM: unrestricted mask
-                None,
             )
             .expect("start == goal must succeed, not Unreachable");
         assert_eq!(outcome.path, vec![(50.0, 50.0)]);
@@ -6004,22 +6041,27 @@ mod tests {
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
+    /// A rect region's corners in scene units, ordered as the `points` array the
+    /// `"rect"` shape expects.
+    struct RegionRect {
+        x0: f64,
+        y0: f64,
+        x1: f64,
+        y1: f64,
+    }
+
     fn region_doc_top(
         id: u128,
         parent: u128,
         behavior: &str,
         cost: f64,
-        x0: f64,
-        y0: f64,
-        x1: f64,
-        y1: f64,
+        rect: RegionRect,
     ) -> Document {
         entity_doc_eng(
             id,
             parent,
             "region",
-            json!({ "shape": { "kind": "rect", "points": [x0, y0, x1, y1] },
+            json!({ "shape": { "kind": "rect", "points": [rect.x0, rect.y0, rect.x1, rect.y1] },
                     "behavior": behavior, "cost": cost, "enabled": true }),
         )
     }
@@ -6033,25 +6075,36 @@ mod tests {
         // that cost is in scene units.
         let mut docs = continuous_scene_docs();
         docs.push(region_doc_top(
-            12, 10, "terrain", 5.0, 100.0, 0.0, 200.0, 100.0,
+            12,
+            10,
+            "terrain",
+            5.0,
+            RegionRect {
+                x0: 100.0,
+                y0: 0.0,
+                x1: 200.0,
+                y1: 100.0,
+            },
         ));
         let mut ecs = SceneEcs::from_documents(docs, 0);
         ecs.set_world_settings_for_test(continuous_world_settings());
         let out = ecs
             .pathfind(
-                Uuid::from_u128(1),
+                RouteRequester {
+                    user: Uuid::from_u128(1),
+                    is_gm: true,
+                    explored: None,
+                },
                 Uuid::from_u128(10),
                 (50.0, 50.0),
                 &[(250.0, 50.0)],
                 0.1,
-                true,
-                None,
             )
             .expect("weighted continuous route");
         // Tight pin (not a loose range): the forced-Euclidean detour is exactly 2 diagonal steps
         // (each √2 cells) around the mult-5 cell, so the cost is 2·√2·cell = ~282.84 scene units. A
         // loose bound here would silently pass a regression to the world diagonal rule (Chebyshev
-        // diagonals cost 1 → 200 units) — that reversion is precisely the M10f-4 forced-Euclidean gap
+        // diagonals cost 1 → 200 units) — that reversion is precisely the forced-Euclidean gap
         // this pin guards, so the expected value must be the Euclidean one, epsilon-tight.
         let expected = 2.0 * std::f64::consts::SQRT_2 * 100.0;
         assert!(
@@ -6090,7 +6143,16 @@ mod tests {
         let g = grid_shape::HexGrid { size: 50.0 };
         let mut docs = hex_continuous_scene_docs();
         docs.push(region_doc_top(
-            12, 10, "arrest", 1.0, 285.0, 55.0, 320.0, 95.0,
+            12,
+            10,
+            "arrest",
+            1.0,
+            RegionRect {
+                x0: 285.0,
+                y0: 55.0,
+                x1: 320.0,
+                y1: 95.0,
+            },
         ));
         let mut ecs = SceneEcs::from_documents(docs, 0);
         ecs.set_world_settings_for_test(continuous_world_settings());
@@ -6106,13 +6168,15 @@ mod tests {
 
         let out = ecs
             .pathfind(
-                Uuid::from_u128(1),
+                RouteRequester {
+                    user: Uuid::from_u128(1),
+                    is_gm: true,
+                    explored: None,
+                },
                 Uuid::from_u128(10),
                 g.cell_center((0, 1)),
                 &[g.cell_center((4, 1))],
                 0.1,
-                true,
-                None,
             )
             .expect("hex continuous route");
         assert!(out.arrested, "the arrest hex truncates the preview");
@@ -6137,13 +6201,15 @@ mod tests {
         ecs.set_world_settings_for_test(continuous_world_settings());
         let out = ecs
             .pathfind(
-                Uuid::from_u128(1),
+                RouteRequester {
+                    user: Uuid::from_u128(1),
+                    is_gm: true,
+                    explored: None,
+                },
                 Uuid::from_u128(10),
                 (50.0, 50.0),
                 &[(250.0, 50.0)],
                 0.1,
-                true,
-                None,
             )
             .expect("polyanya route");
         assert!(
@@ -6163,22 +6229,26 @@ mod tests {
             10,
             "impassable",
             1.0,
-            100.0,
-            0.0,
-            200.0,
-            300.0,
+            RegionRect {
+                x0: 100.0,
+                y0: 0.0,
+                x1: 200.0,
+                y1: 300.0,
+            },
         ));
         let mut ecs = SceneEcs::from_documents(docs, 0);
         ecs.set_world_settings_for_test(continuous_world_settings());
         let out = ecs
             .pathfind(
-                Uuid::from_u128(1),
+                RouteRequester {
+                    user: Uuid::from_u128(1),
+                    is_gm: true,
+                    explored: None,
+                },
                 Uuid::from_u128(10),
                 (50.0, 50.0),
                 &[(250.0, 350.0)],
                 0.1,
-                true,
-                None,
             )
             .expect("route around impassable");
         // No route point falls inside an impassable cell (column 1, y in [0,300)).
@@ -6196,10 +6266,22 @@ mod tests {
         // gm_only terrain (mult 5) on cell (1,0). A player (non-GM) never sees it: their route is
         // the straight polyanya line (no bend, ~200 scene units). The GM's route bends (weighted).
         let mut docs = continuous_scene_docs();
-        let mut secret = region_doc_top(12, 10, "terrain", 5.0, 100.0, 0.0, 200.0, 100.0);
+        let mut secret = region_doc_top(
+            12,
+            10,
+            "terrain",
+            5.0,
+            RegionRect {
+                x0: 100.0,
+                y0: 0.0,
+                x1: 200.0,
+                y1: 100.0,
+            },
+        );
         // Mark the region gm_only via the SAME `/engine` property-visibility override
-        // `region_field`'s per-requester filter checks (`move_exec.rs` uses the identical
-        // convention for its own gm_only region fixtures).
+        // `region_field`'s per-requester filter checks
+        // (`move_exec::authoritative_field_springs_a_secret_region_a_player_was_routed_through`
+        // uses the identical convention for its own gm_only region fixture).
         secret
             .permissions
             .property_overrides
@@ -6211,13 +6293,15 @@ mod tests {
         // Player (non-GM, unrestricted movement => no mask): secret terrain absent => straight route.
         let p = ecs
             .pathfind(
-                player,
+                RouteRequester {
+                    user: player,
+                    is_gm: false,
+                    explored: None,
+                },
                 Uuid::from_u128(10),
                 (50.0, 50.0),
                 &[(250.0, 50.0)],
                 0.1,
-                false,
-                None,
             )
             .expect("player route");
         assert!(
@@ -6228,13 +6312,15 @@ mod tests {
         // GM sees the authoritative field => bends.
         let g = ecs
             .pathfind(
-                Uuid::from_u128(1),
+                RouteRequester {
+                    user: Uuid::from_u128(1),
+                    is_gm: true,
+                    explored: None,
+                },
                 Uuid::from_u128(10),
                 (50.0, 50.0),
                 &[(250.0, 50.0)],
                 0.1,
-                true,
-                None,
             )
             .expect("gm route");
         assert!(
@@ -6264,7 +6350,17 @@ mod tests {
         // bounds rect itself never fails — only the visibility clip should stop the route short.
         let far_goal = (9500.0, 9500.0);
         let outcome = ecs
-            .pathfind(user, scene, (50.0, 50.0), &[far_goal], 0.1, false, None)
+            .pathfind(
+                RouteRequester {
+                    user,
+                    is_gm: false,
+                    explored: None,
+                },
+                scene,
+                (50.0, 50.0),
+                &[far_goal],
+                0.1,
+            )
             .expect(
                 "clip truncates the route short of the unseen goal rather than failing outright",
             );
@@ -6286,7 +6382,7 @@ mod tests {
 
     #[test]
     fn pathfind_continuous_weighted_nongm_route_clips_to_the_visible_mask() {
-        // Whole-branch buddy-check Finding 3: the test above only drives the PURE-POLYANYA
+        // The test above only drives the PURE-POLYANYA
         // sub-path (no terrain/impassable region present, so `has_terrain_or_impassable()` is
         // false). This test adds a terrain region so `pathfind`'s `Continuous` dispatch takes
         // the WEIGHTED sub-path (`pathfinding::find` forced Euclidean + `navmesh::los_smooth`)
@@ -6322,7 +6418,18 @@ mod tests {
         // deliberately placed off the requester's route so this test isolates "does the weighted
         // sub-path correctly enforce the mask" from "does terrain bend the route" (already
         // covered by `pathfind_continuous_terrain_bends_the_route_and_costs_scene_units`).
-        let terrain = region_doc_top(12, 10, "terrain", 5.0, 5000.0, 5000.0, 5100.0, 5100.0);
+        let terrain = region_doc_top(
+            12,
+            10,
+            "terrain",
+            5.0,
+            RegionRect {
+                x0: 5000.0,
+                y0: 5000.0,
+                x1: 5100.0,
+                y1: 5100.0,
+            },
+        );
         let ecs = SceneEcs::from_documents(vec![scene, tok, light, terrain], 0);
         let scene_id = Uuid::from_u128(10);
         let cell = 100.0;
@@ -6339,10 +6446,20 @@ mod tests {
 
         // Near goal, still within the small visible mask: the weighted route must succeed and
         // stay entirely inside the mask (the grid A* mask check IS the enforcement mechanism for
-        // this sub-path — Finding 1 — so a route can never even be found outside the mask).
+        // this sub-path, so a route can never even be found outside the mask).
         let near_goal = (150.0, 50.0);
         let near = ecs
-            .pathfind(user, scene_id, (50.0, 50.0), &[near_goal], 0.1, false, None)
+            .pathfind(
+                RouteRequester {
+                    user,
+                    is_gm: false,
+                    explored: None,
+                },
+                scene_id,
+                (50.0, 50.0),
+                &[near_goal],
+                0.1,
+            )
             .expect("weighted route to a visible goal succeeds");
         for &(px, py) in &near.path {
             let c = ((px / cell).floor() as i32, (py / cell).floor() as i32);
@@ -6357,7 +6474,17 @@ mod tests {
         // search itself, not a post-hoc clip), so it fails closed (`Unreachable`) rather than
         // returning a route that threads unseen cells.
         let far_goal = (9500.0, 9500.0);
-        let far = ecs.pathfind(user, scene_id, (50.0, 50.0), &[far_goal], 0.1, false, None);
+        let far = ecs.pathfind(
+            RouteRequester {
+                user,
+                is_gm: false,
+                explored: None,
+            },
+            scene_id,
+            (50.0, 50.0),
+            &[far_goal],
+            0.1,
+        );
         assert!(
             far.is_err(),
             "weighted route to an unseen goal fails closed rather than routing through fog: {far:?}"
@@ -6375,7 +6502,18 @@ mod tests {
         // always reads the authoritative field regardless of requester, so committing the
         // player's own (untruncated) preview still arrests at the same cell.
         let mut docs = continuous_scene_docs();
-        let mut secret = region_doc_top(12, 10, "arrest", 1.0, 200.0, 0.0, 300.0, 100.0);
+        let mut secret = region_doc_top(
+            12,
+            10,
+            "arrest",
+            1.0,
+            RegionRect {
+                x0: 200.0,
+                y0: 0.0,
+                x1: 300.0,
+                y1: 100.0,
+            },
+        );
         secret
             .permissions
             .property_overrides
@@ -6399,13 +6537,15 @@ mod tests {
         // preview is the full, untruncated straight polyanya route.
         let p = ecs
             .pathfind(
-                player,
+                RouteRequester {
+                    user: player,
+                    is_gm: false,
+                    explored: None,
+                },
                 scene,
                 (50.0, 50.0),
                 &[(450.0, 50.0)],
                 0.1,
-                false,
-                None,
             )
             .expect("player route");
         assert!(
@@ -6421,13 +6561,15 @@ mod tests {
         // GM: authoritative field truncates the route at the arrest cell entry.
         let g = ecs
             .pathfind(
-                Uuid::from_u128(1),
+                RouteRequester {
+                    user: Uuid::from_u128(1),
+                    is_gm: true,
+                    explored: None,
+                },
                 scene,
                 (50.0, 50.0),
                 &[(450.0, 50.0)],
                 0.1,
-                true,
-                None,
             )
             .expect("gm route");
         assert!(
@@ -6440,12 +6582,14 @@ mod tests {
         let visible: std::collections::BTreeSet<(i32, i32)> = std::collections::BTreeSet::new();
         let exec_out = crate::scene::move_exec::execute_move(
             &ecs,
-            scene,
+            crate::scene::move_exec::MoveGateInputs {
+                scene,
+                restriction: MovementRestriction::Unrestricted,
+                visible: &visible,
+                cell: 100.0,
+            },
             token,
             &p.path,
-            MovementRestriction::Unrestricted,
-            &visible,
-            100.0,
             false,
             0.4,
         )
@@ -6504,13 +6648,15 @@ mod tests {
         let (ecs, scene, player, token) = scene_with_secret_wall_between_two_cells(false);
         let out = ecs
             .pathfind(
-                player,
+                RouteRequester {
+                    user: player,
+                    is_gm: false,
+                    explored: None,
+                },
                 scene,
                 (50.0, 50.0),
                 &[(250.0, 50.0)],
                 0.4,
-                false,
-                None,
             )
             .expect("the player's route ignores a wall it cannot see");
         assert!(
@@ -6521,12 +6667,14 @@ mod tests {
         let visible = ecs.visible_cells(player, scene, false);
         let exec = crate::scene::move_exec::execute_move(
             &ecs,
-            scene,
+            crate::scene::move_exec::MoveGateInputs {
+                scene,
+                restriction: MovementRestriction::Unrestricted,
+                visible: &visible,
+                cell: 100.0,
+            },
             token,
             &out.path,
-            MovementRestriction::Unrestricted,
-            &visible,
-            100.0,
             false,
             0.4,
         )
@@ -6545,7 +6693,17 @@ mod tests {
         // necessarily crosses (and which, at cell size 100, every column-1 cell center sits exactly on).
         let (ecs, scene, gm, _token) = scene_with_secret_wall_between_two_cells(true);
         let out = ecs
-            .pathfind(gm, scene, (50.0, 50.0), &[(250.0, 50.0)], 0.4, true, None)
+            .pathfind(
+                RouteRequester {
+                    user: gm,
+                    is_gm: true,
+                    explored: None,
+                },
+                scene,
+                (50.0, 50.0),
+                &[(250.0, 50.0)],
+                0.4,
+            )
             .expect("a GM route exists (bounds admit a detour around the wall's endpoint)");
         let wall = ((150.0, 0.0), (150.0, 100.0));
         for seg in out.path.windows(2) {
@@ -6560,16 +6718,19 @@ mod tests {
     #[test]
     fn pathfind_grid_stepped_scene_is_byte_for_byte_unchanged() {
         // Same fixture/assertions as the existing `pathfind_gm_unconstrained_routes_without_a_mask`
-        // test, proving the default (grid-stepped) dispatch branch is untouched by this checkpoint.
+        // test, proving the default (grid-stepped) dispatch branch is unaffected by the
+        // continuous-engine dispatch.
         let (ecs, _user, scene) = scene_with_lit_player_token();
         let r = ecs.pathfind(
-            Uuid::from_u128(1),
+            RouteRequester {
+                user: Uuid::from_u128(1),
+                is_gm: true,
+                explored: None,
+            },
             scene,
             (50.0, 50.0),
             &[(250.0, 50.0)],
             0.1,
-            true,
-            None,
         );
         let outcome = r.expect("GM route");
         assert!(
@@ -6587,13 +6748,15 @@ mod tests {
         assert!(!mask.is_empty(), "the lit token has a non-empty mask");
         // A far goal well outside the lit radius → Unreachable.
         let far = ecs.pathfind(
-            user,
+            RouteRequester {
+                user,
+                is_gm: false,
+                explored: None,
+            },
             scene,
             (50.0, 50.0),
             &[(5000.0, 5000.0)],
             0.1,
-            false,
-            None,
         );
         assert_eq!(far, Err(crate::scene::pathfinding::PathFail::Unreachable));
     }
@@ -6616,13 +6779,15 @@ mod tests {
             cell,
         );
         let r = ecs.pathfind(
-            user,
+            RouteRequester {
+                user,
+                is_gm: false,
+                explored: Some(&explored),
+            },
             scene,
             (50.0, 50.0),
             &[(350.0, 50.0)],
             0.1,
-            false,
-            Some(&explored),
         );
         assert!(
             r.is_ok(),
@@ -6733,7 +6898,7 @@ mod tests {
         );
     }
 
-    // --- wall-less scene full intrascene vision (C2) ---
+    // --- wall-less scene full intrascene vision ---
 
     /// A wall-less 40x40-unit scene must reveal its own full bounded extent, not a small
     /// `VISION_BOUND_MARGIN` box around the viewpoint.
@@ -6863,11 +7028,11 @@ mod tests {
         );
     }
 
-    // --- source_los_poly wall-less degenerate box (C2 follow-up: player_lit_mask/visible_cells) ---
+    // --- source_los_poly wall-less degenerate box (player_lit_mask/visible_cells) ---
 
     /// A wall-less 500x500-unit scene, all-bright lighting (isolates the bound-box defect from
-    /// illumination), `losRestriction` off (so `source_los_poly` takes the plain-rectangle branch
-    /// — the same branch the original C2 bug hit). Cell (4,4) — center (450,450) — lies within the
+    /// illumination), `losRestriction` off (so `source_los_poly` takes the plain-rectangle branch,
+    /// the branch susceptible to the bound-box defect). Cell (4,4) — center (450,450) — lies within the
     /// scene's authored bounds but strictly outside a degenerate
     /// `viewpoint±VISION_BOUND_MARGIN(100)` box around the token at (50,50): `[-50,-50]..[150,150]`.
     fn wall_less_large_scene_all_bright() -> (SceneEcs, Uuid, Uuid) {
@@ -6904,7 +7069,7 @@ mod tests {
     }
 
     /// `player_lit_mask` (the egress/secrecy gate) must cover a wall-less scene's full authored
-    /// bounds, not a degenerate box around the viewpoint — the same C2 defect class fixed in
+    /// bounds, not a degenerate box around the viewpoint — the same bound-box defect class fixed in
     /// `player_vision_polygons`/`player_vision_inputs`, applied here to `source_los_poly`, the
     /// primitive `player_lit_mask` shares with `visible_cells`.
     #[test]
@@ -6936,8 +7101,8 @@ mod tests {
 
     /// No-fork parity: `source_los_poly`'s bound (as exercised via `visible_cells`) must agree
     /// with `player_vision_polygons`'s bound (via `vision::bound_for_scene` directly) on the same
-    /// wall-less scene — closing the "two/three vision paths diverge" defect class the original
-    /// C2 fix's brief warned about, generalized to this third path.
+    /// wall-less scene — closing the "two/three vision paths diverge" defect class, generalized to
+    /// this third path.
     #[test]
     fn visible_cells_agrees_with_player_vision_polygons_bound_on_wall_less_scene() {
         let (ecs, user, scene_id) = wall_less_large_scene_all_bright();
@@ -6982,7 +7147,7 @@ mod tests {
     /// so a regression to non-square center math in that function diverges from this frozen set
     /// immediately. Companion to `accumulate_visible_cells_routes_through_grid_shape_cell_center_not_hardcoded`,
     /// applied to the OTHER (separate) secrecy-egress call site; the pinned set matches the strict
-    /// movement-gate set (spec §13: `visible_cells` strict ≡ `player_lit_mask` cells). Reuses
+    /// movement-gate set (`visible_cells` strict ≡ `player_lit_mask` cells). Reuses
     /// `wall_less_large_scene_all_bright` (one owned token, no walls, all-bright, 500x500/cell-100).
     #[test]
     fn player_lit_mask_routes_through_grid_shape_cell_center_not_hardcoded() {
@@ -7097,12 +7262,14 @@ mod tests {
         let lenient_mask = ecs.visible_cells(user, scene, true);
         let out = crate::scene::move_exec::execute_move(
             &ecs,
-            scene,
+            crate::scene::move_exec::MoveGateInputs {
+                scene,
+                restriction: MovementRestriction::Visible,
+                visible: &lenient_mask,
+                cell,
+            },
             token,
             &[(0.0, 0.0), dest],
-            MovementRestriction::Visible,
-            &lenient_mask,
-            cell,
             false,
             0.4,
         )
@@ -7116,12 +7283,14 @@ mod tests {
         let strict_mask = ecs.visible_cells(user, scene, false);
         let out = crate::scene::move_exec::execute_move(
             &ecs,
-            scene,
+            crate::scene::move_exec::MoveGateInputs {
+                scene,
+                restriction: MovementRestriction::Visible,
+                visible: &strict_mask,
+                cell,
+            },
             token,
             &[(0.0, 0.0), dest],
-            MovementRestriction::Visible,
-            &strict_mask,
-            cell,
             false,
             0.4,
         )

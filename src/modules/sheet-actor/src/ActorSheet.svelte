@@ -11,7 +11,19 @@
   // (top-level `/system`, or `/embedded/actor/0/system` for an instanced token) — the
   // engine/name bands live at the SAME node, so `basePrefix` (the prefix with the trailing
   // `/system` stripped) is the sibling root for `/engine` and `/name`.
-  let { docId, systemPrefix, close }: { docId: string; systemPrefix: string; close: () => void } = $props();
+  let {
+    docId,
+    systemPrefix,
+    close,
+  }: {
+    /** The actor document (or its parent token, for an instanced actor) this sheet edits. */
+    docId: string;
+    /** The write root for the opaque `system` tree; `basePrefix`/`enginePrefix`/`namePrefix`
+     * below are all derived from it — see the module-level comment. */
+    systemPrefix: string;
+    /** Closes the hosting panel; wired to the header close button. */
+    close: () => void;
+  } = $props();
 
   const ctx = getAppContext();
   const t = ctx.t;
@@ -37,7 +49,10 @@
   const sysBody = $derived.by((): unknown => (doc ? getPointer(doc, systemPrefix) : undefined));
   const readOnly = $derived(!doc || !ctx.canEdit(doc, systemPrefix));
 
-  const factions = $derived.by((): [string, { name: string }][] => {
+  const factions = $derived.by((): [string, {
+    /** The faction's display label, shown in the `<select>` option below. */
+    name: string;
+  }][] => {
     subscribe();
     const reg = ctx.documents.query("faction-registry")[0]?.engine as FactionRegistryEngine | undefined;
     return Object.entries(reg?.factions ?? {});
@@ -46,7 +61,12 @@
   // Inventory: only embedded items directly under an actor doc (systemPrefix "/system")
   // are one-level openable via openDocument; a deeply-nested (instanced-token) actor fails
   // safe and shows no inventory section. `/embedded/item/<i>` is the openDocument embedded ref.
-  const inventory = $derived.by((): { name: string; path: string }[] => {
+  const inventory = $derived.by((): {
+    /** The embedded item's display label, or a fallback i18n string when unnamed. */
+    name: string;
+    /** The `openDocument` embedded ref (`/embedded/item/<i>`) — see the comment above. */
+    path: string;
+  }[] => {
     subscribe();
     if (!doc || systemPrefix !== "/system") return [];
     return (doc.embedded?.item ?? []).map((it, i) => ({

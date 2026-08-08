@@ -5,7 +5,7 @@ import type { SceneLightingOverrides } from "./SceneLightingOverrides";
 import type { SceneVisionOverrides } from "./SceneVisionOverrides";
 
 /**
- * A scene's engine-owned config (scene-docs.ts:63-73 `SceneSystem`).
+ * A scene's engine-owned config (mirrors the client's `SceneEngine`).
  * `bounds` = the navmesh's outer rectangle in grid units; absent ⇒
  * `DEFAULT_SCENE_BOUNDS_UNITS` (read-side backstop, unchanged).
  */

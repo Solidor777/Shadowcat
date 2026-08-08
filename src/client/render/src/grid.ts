@@ -1,33 +1,41 @@
 import type { Point, LineSeg } from "./types";
 
+/** The two supported grid geometries; a `Grid` instance is fixed to one for its lifetime. */
 export type GridKind = "square" | "hex";
 
-/** Cost rule for diagonal movement on square grids. Mirrors `DiagonalRule` in
- * `scene-docs.ts` and the server's `pathfinding.rs` `DiagonalRule` enum — see
+/** Cost rule for diagonal movement on square grids. Mirrors the client `DiagonalRule` type
+ * and the server's `DiagonalRule` enum — see
  * {@link Grid.distance} for the exact per-rule formulas and the scope of the parity
  * they match (unweighted routes; terrain regions can raise the server's real cost
  * above what this client-side distance reports). */
 export type DiagonalRule = "chebyshev" | "manhattan" | "euclidean" | "alternating";
 
+/** A grid's fixed geometry: kind, cell size, and (square-only) diagonal-cost rule. */
 export interface GridSpec {
   /** "square": `size` = edge length. "hex": `size` = outer radius. */
   kind: GridKind;
+  /** Cell edge length (square) or outer radius/circumradius (hex), in scene (px) units. */
   size: number;
   /** Square grids only. Diagonal cost rule for `distance()`. Defaults to `"chebyshev"`.
    * Source: the world-settings `pathfinding.diagonalRule` resolved via `resolveSceneSettings`. */
   diagonalRule?: DiagonalRule;
 }
 
+/** A scene-coordinate rectangle (e.g. the visible viewport) to cover with grid lines. */
 interface SceneRect {
+  /** Left edge, scene x-coordinate. */
   x: number;
+  /** Top edge, scene y-coordinate. */
   y: number;
+  /** Width, in scene (px) units. */
   w: number;
+  /** Height, in scene (px) units. */
   h: number;
 }
 
 /** Engine-owned grid model + coordinate math (square + pointy-top hex). Pure: the
  * engine draws `lines(...)` into the grid layer and uses `snap`/`cellOf` for
- * placement (M8d). Hex uses axial coords (Red Blob Games). */
+ * placement. Hex uses axial coords (Red Blob Games). */
 export class Grid {
   /**
    * Constructs a grid from a fixed spec — the grid's kind, size, and diagonal rule
@@ -45,8 +53,8 @@ export class Grid {
   /**
    * Snaps a scene point to the active grid's nearest CELL CENTER — never a
    * vertex/corner, on either grid kind. Square: the containing cell's center. Hex: the
-   * nearest hex's center, via {@link axialRound}-then-{@link axialToPixel} — the same
-   * `axialToPixel` call {@link hexLines} uses as the origin it draws the six corners
+   * nearest hex's center, via `axialRound`-then-`axialToPixel` — the same
+   * `axialToPixel` call `hexLines` uses as the origin it draws the six corners
    * around, so this is provably a center, not a vertex.
    * @param p A scene-coordinate point.
    * @returns `p` snapped to the nearest cell center.
@@ -80,12 +88,12 @@ export class Grid {
    *     recurrence instead, but this method always measures a single fresh pair, so parity
    *     0 is the only case that applies here).
    * All four mirror the server's per-rule step costs: chebyshev/manhattan/euclidean
-   * match `pathfinding.rs`'s `heuristic()` exactly (an admissible AND tight bound for a
-   * direct route with no obstacles AND no terrain weighting — `pathfinding.rs:453-457`
-   * notes the heuristic bounds only the UNWEIGHTED step cost, so a terrain region's
-   * `terrain_multiplier > 1.0` can raise the server's real A* cost above what this
-   * client-side `distance()` reports, even on an otherwise-direct, wall-free route);
-   * alternating matches `grid_shape.rs`'s `step_cost`'s 1,2,1,2… parity-threaded
+   * match `pathfinding::heuristic` exactly (an admissible AND tight bound for a
+   * direct route with no obstacles AND no terrain weighting — that function's
+   * ADMISSIBILITY WITH TERRAIN note records that it bounds only the UNWEIGHTED step
+   * cost, so a terrain region's `terrain_multiplier > 1.0` can raise the server's real
+   * A* cost above what this client-side `distance()` reports, even on an otherwise-direct,
+   * wall-free route); alternating matches `grid_shape::step_cost`'s 1,2,1,2… parity-threaded
    * diagonal cost starting at parity 0, whose closed-form sum over `dmin` diagonal
    * steps is `dmin + floor(dmin/2)` (odd `dmin` diverges from this if the parity
    * sequence didn't start fresh; even `dmin` agrees regardless of starting parity).
@@ -138,7 +146,12 @@ export class Grid {
    * grid.cellOf({ x: 12, y: 34 }); // { col: 0, row: 0 }
    * ```
    */
-  cellOf(p: Point): { col: number; row: number } {
+  cellOf(p: Point): {
+    /** Square column index, or hex axial q. */
+    col: number;
+    /** Square row index, or hex axial r. */
+    row: number;
+  } {
     if (this.spec.kind === "square") {
       return {
         col: Math.floor(p.x / this.spec.size),
@@ -212,7 +225,12 @@ export class Grid {
    * // private — not constructible/callable outside Grid.
    * ```
    */
-  private pixelToAxial(p: Point): { q: number; r: number } {
+  private pixelToAxial(p: Point): {
+    /** Fractional axial q. */
+    q: number;
+    /** Fractional axial r. */
+    r: number;
+  } {
     const size = this.spec.size;
     const q = ((Math.sqrt(3) / 3) * p.x - (1 / 3) * p.y) / size;
     const r = ((2 / 3) * p.y) / size;
@@ -254,7 +272,17 @@ export class Grid {
    * // private — not constructible/callable outside Grid.
    * ```
    */
-  private axialRound(a: { q: number; r: number }): { q: number; r: number } {
+  private axialRound(a: {
+    /** Fractional axial q. */
+    q: number;
+    /** Fractional axial r. */
+    r: number;
+  }): {
+    /** Nearest integer axial q. */
+    q: number;
+    /** Nearest integer axial r. */
+    r: number;
+  } {
     // Round in cube space then fix the largest-drift component.
     let rx = Math.round(a.q);
     let ry = Math.round(-a.q - a.r);
@@ -275,8 +303,8 @@ export class Grid {
    * {@link pixelToAxial}'s `q = (√3/3·x − 1/3·y)/size` mixes x and y with OPPOSITE
    * signs, so q's extrema sit on the top-right/bottom-left diagonal while r (a
    * function of y alone) peaks on the other diagonal; sampling only one diagonal
-   * understates q's true range and silently drops in-viewport hexes (fixed; see
-   * `docs/CLOSED_BUGS.md`). Adjacent hex outlines overlap (each edge is drawn twice,
+   * understates q's true range and silently drops in-viewport hexes. Adjacent hex
+   * outlines overlap (each edge is drawn twice,
    * once per flanking hex) — acceptable for a grid overlay, not deduplicated.
    * @param rect The visible scene rectangle to cover.
    * @returns The hex grid's line segments.

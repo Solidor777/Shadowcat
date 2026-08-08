@@ -1,5 +1,5 @@
 /**
- * The scene the game-settings per-scene section edits (M12d "Configure"). A stable instance
+ * The scene the game-settings per-scene "Configure" section edits. A stable instance
  * created by the shell and shared via AppContext: the scene browser sets it, GameSettingsPanel
  * reads it to preset its picker. Distinct from `activeScene` (global render target) and
  * `gmViewedScene` (GM local camera) — configuring a scene never moves any camera. Reactive
@@ -12,6 +12,7 @@
  * `TokenSelection.set`'s behavior of re-triggering on any call that starts non-empty.
  */
 export class SceneSelection {
+  /** Backing store for {@link SceneSelection.configureSceneId}. */
   #id = $state<string | null>(null);
 
   /** The scene id currently targeted for configuration, or `null` when none is selected.

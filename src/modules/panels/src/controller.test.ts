@@ -283,7 +283,7 @@ test("rehydratePoppedOut: a persisted popped-out id comes back as floating + a n
 
   expect(ctrl.layout.expanded.poppedOut).toEqual([]);
   expect(ctrl.layout.expanded.floating.map((f) => f.id)).toEqual(["chat"]);
-  // Finding 4 (buddy-check): the notice is QUEUED, not fired, at construction
+  // The notice is QUEUED, not fired, at construction
   // — `deps.onNotice` must not be invoked until a post-mount caller (`PanelHost`'s
   // `$effect`) calls `flushPendingNotice()`. Firing it here, synchronously
   // alongside construction, would set the a11y live region's text before its
@@ -341,12 +341,13 @@ test("rehydratePoppedOut: two persisted popped-out ids cascade to distinct float
   expect(setPanelLayout).toHaveBeenCalledWith(encodeLayout(ctrl.layout));
 });
 
-// Anti-drift gate for a deliberately-forked constant pair. `tree.ts`'s
-// SHEET_CASCADE_BASE/STEP and `controller.svelte.ts`'s REHYDRATE_FLOAT_BASE/STEP
+// Anti-drift gate for a deliberately-forked constant pair. `layout/tree`'s
+// SHEET_CASCADE_BASE/STEP and `PanelsController`'s own REHYDRATE_FLOAT_BASE/STEP
 // are intentionally NOT a shared import (the pure layout tree stays decoupled
 // from the controller), so nothing structural stops one from drifting; both
 // comments promise only that they stay numerically identical. Every other
-// cascade test — here, in tree.test.ts, and in fake.test.ts — asserts only that
+// cascade test — here, in `layout/tree`'s own test suite, and `engine/fake`'s —
+// asserts only that
 // a given side's own offsets differ FROM EACH OTHER, which stays green if
 // either pair changes. This is the one test that fails on divergence: it drives
 // both call sites to the same floating index and demands the identical rect.

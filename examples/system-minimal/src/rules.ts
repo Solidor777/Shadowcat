@@ -26,14 +26,12 @@ export function abilityMod(score: number): number {
  * throws) on parse or evaluation failure — degenerate sheet data must not crash
  * the sheet. This function itself has no `try`; the guarantee is inherited from
  * `@shadowcat/formula`. Verified against the source `parseFormula` and
- * `evaluate` reach: `parseFormula`'s own module (src/client/formula/src/parser.ts)
- * and its lexer (src/client/formula/src/lexer.ts) contain no `throw` statement
- * anywhere, nor does `evaluate`'s module (src/client/formula/src/evaluate.ts),
- * which additionally catches a throwing resolver callback itself rather than
- * propagating it (src/client/formula/src/evaluate.ts:39-49) — covering the
- * resolver below. This does NOT extend to `@shadowcat/formula`'s
- * dependency-graph module (src/client/formula/src/graph.ts:122,128, which DO
- * throw) — `evalFormula` never calls into it.
+ * `evaluate` reach: `parseFormula`'s own `parser` module and the `lexer` module
+ * contain no `throw` statement anywhere, nor does `evaluate`'s own module,
+ * which additionally catches a throwing resolver callback in its `ref` case
+ * rather than propagating it — covering the resolver below. This does NOT
+ * extend to `@shadowcat/formula`'s dependency-graph `graph` module, which DOES
+ * throw — `evalFormula` never calls into it.
  * @param formula - The formula source text (e.g. `"attributes.str + 2"`).
  * @param system - The opaque `system` body to resolve dotted references against.
  * @returns The evaluated number, or `null` on any parse/evaluation failure.
@@ -48,10 +46,9 @@ export function evalFormula(formula: string, system: unknown): number | null {
   const expr = parseFormula(formula);
   if ("error" in expr) return null;
   // This resolver reports a missing/non-numeric stat using "unknown-ref", one of
-  // @shadowcat/formula's own FormulaErrorKind values (src/client/formula/src/types.ts:5)
-  // — the library only validates the tag and passes it through unchanged; it does
-  // not detect the missing/non-numeric condition itself
-  // (src/client/formula/src/internal.ts:76-83).
+  // @shadowcat/formula's own `FormulaErrorKind` values — the library only validates
+  // the tag and passes it through unchanged; it does not detect the missing/non-numeric
+  // condition itself (`validateResolverOutput`).
   const value: FormulaValue = evaluate(expr, (path) => {
     let node: unknown = system;
     for (const key of path) node = (node as Record<string, unknown> | undefined)?.[key];

@@ -11,7 +11,7 @@ Server is the source of truth; the client only mirrors the wire shape.
 ## Purpose
 
 A document is a typed envelope (id, type, owner, permissions, `schema_version`, display `name`)
-carrying **three bands (M13-0)**: the envelope `name: Option<String>` itself, a typed `engine`
+carrying **three bands**: the envelope `name: Option<String>` itself, a typed `engine`
 JSONB body (present only for engine-defined `doc_type`s, strictly ingress-validated), and an
 opaque `system` JSONB body the engine never interprets semantically. Permissions are enforced
 server-side **per recipient**: hidden fields are stripped before transmission, never
@@ -19,17 +19,17 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
 
 ## Key files & seams
 
-- `src/server/src/data/document.rs` — the `Document` envelope: `name: Option<String>` (universal
+- `data::document` — the `Document` envelope: `name: Option<String>` (universal
   display name, `#[serde(default)]`) and `engine: Option<serde_json::Value>` (`#[ts(type =
   "unknown")]`, present iff `doc_type` is engine-defined) alongside the pre-existing `system`
   body; `enum Visibility { All, GmOnly, OwnerOrGm }` (the per-property visibility tiers);
   `PermissionSet.gm_role: Option<DocRole>` (`#[serde(default)]`, ts-rs exported) — see Hard
   Invariants below.
-  - `base: Option<serde_json::Value>` (M13e, `#[serde(default)]`, `#[ts(type = "unknown")]`) —
+  - `base: Option<serde_json::Value>` (`#[serde(default)]`, `#[ts(type = "unknown")]`) —
     the opaque 3-way-merge snapshot the generic templates system stamps onto an instance at
     stamp/pull/push/revert time (see `shadowcat-codebase-templates` for the client-side
     `MergeBase` shape/algorithm). Purely a client-owned blob: the server never interprets it.
-    `required_cap_for_path` (`permission.rs`) maps `/base` (and any subtree under it, e.g.
+    `data::permission::required_cap_for_path` maps `/base` (and any subtree under it, e.g.
     `/base/system/hp`) to `cap::WRITE_FIELDS`, the same capability that gates `/name`/`/engine`/
     `/system` — no dedicated capability. `/source` (the sibling field naming what a document is
     an instance OF) stays unmapped/immutable — `required_cap_for_path` returns `None` for it, so
@@ -38,30 +38,30 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
     "which world does this doc scope to" (`Scope::World { world_id } => Some(world_id)`,
     `Scope::Compendium => None`). Two call shapes: (1) a caller that already knows the world it
     scopes to PINS a doc reference by comparing `world_of(&doc)` against that known `world_id` —
-    `ws/conn.rs`'s `scene_ping_permitted` (refuses a scene doc from another world even for a
+    `ws::conn::scene_ping_permitted` (refuses a scene doc from another world even for a
     member of both) and `chat::handle_send_message`'s actor-attribution gate
     (`shadowcat-codebase-chat`). (2) an HTTP by-id route with no caller-known world instead
-    DERIVES `world` from the doc itself — `http/routes.rs`'s `get_document`/`patch_document`/
+    DERIVES `world` from the doc itself — `http::routes`'s `get_document`/`patch_document`/
     `delete_document` do `let world = world_of(&doc).ok_or(AppError::NotFound)?`, then use that
     extracted world as the authority for the subsequent `permission_context` lookup; `None`
-    (a compendium doc) 404s uniformly with the missing-doc case, matching the behavior
-    routes.rs's own now-deleted local copy used to return (existence-hiding). No remaining
+    (a compendium doc) 404s uniformly with the missing-doc case (existence-hiding). No
     by-id/relay call site duplicates this "derive the world from the doc" decision — the ONE
     place to extend THAT specific pattern is here. A separate, narrower match exists at
-    `data/sqlite.rs`'s `check_command_scope`: given a caller-ALREADY-known `world_id` (the
+    `data::sqlite::check_command_scope`: given a caller-ALREADY-known `world_id` (the
     world a command is being applied to), it asserts `doc.scope` is `Scope::World` for that
     SAME id, rejecting any other scope — a guard inside `apply_intent`/`apply_command`, not a
     `world_of`-style derivation, so it does not duplicate `world_of` itself.
-- `src/server/src/data/engine/` (M13-0) — the typed `engine`-band structs + the ingress-validation
-  registry, one module per doc-type family (`token.rs`, `scene.rs`, `geometry.rs`,
-  `registries.rs`) plus `mod.rs`: `is_engine_doc_type(doc_type) -> bool` (the 17-entry registry:
+- `data::engine` — the typed `engine`-band structs + the ingress-validation
+  registry, one submodule per doc-type family (`data::engine::token`, `data::engine::scene`,
+  `data::engine::geometry`, `data::engine::registries`) plus the `data::engine` module itself:
+  `is_engine_doc_type(doc_type) -> bool` (the 17-entry registry:
   `token`/`scene`/`wall`/`region`/`light`/`drawing`/`template`/`actor`/`message`/
   `world-settings`/`vision-modes`/`light-gradation`/`chat-settings`/`dice-settings`/
   `channel-registry`/`faction-registry`/`condition-registry`), `validate_engine(doc_type, engine)
   -> Result<(), DataError>` (deserializes the body against that doc_type's typed struct;
   `deny_unknown_fields` on every struct — engine-defined types WITHOUT an `engine` body error, and
   non-engine types WITH one error too, so a non-engine `doc_type` can never smuggle a typed body
-  in). `src/server/src/data/command.rs`'s `validate_engine_tree` is the recursive ingress
+  in). `data::command::validate_engine_tree` is the recursive ingress
   chokepoint — called on every Create/Update POST-IMAGE (after all `FieldChange`s apply),
   including embedded children, so a wholesale `/engine` replacement, a leaf `/engine/x` write, and
   an embedded child's engine write are all covered by one call site. `normalize_engine` also
@@ -71,8 +71,8 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
   input. A per-doc_type struct can add real semantic validation beyond shape (not just
   `deny_unknown_fields`) — see `TokenEngine::validate` in `shadowcat-codebase-actors-tokens`
   (shares the movement gate's coordinate bound structurally, not by copied literal).
-- **Token ownership is EFFECTIVE, and it lives in THIS subsystem's files.** `effective_owner`
-  (`data/permission.rs`) and `load_effective_owner` (`data/sqlite.rs`) resolve
+- **Token ownership is EFFECTIVE, and it lives in THIS subsystem's files.** `data::permission::effective_owner`
+  and `data::sqlite::load_effective_owner` resolve
   `token's own /owner, else the LINKED actor's owner` at authz time — never stamped. `/owner` is
   Update-writable under `cap::EDIT_PERMISSIONS`; `DocRole::Owner`'s BUILT-IN floor is
   `{READ, WRITE_FIELDS}` and excludes it, but the floored role also selects additive
@@ -85,51 +85,51 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
   (`effective_owner: Option<Uuid>`), not read internally from `doc.owner`; the old literal-owner
   wrapper functions are gone, so a new egress call site must state where its owner comes from or
   it fails to compile. Three join sources, one per hot-path shape:
-  - **WS hot path** (`send_filtered`'s `Event` branch, `ws/conn.rs`; `write_ops`'s HTTP-write
-    receive, `http/routes.rs`) — `filter_command` (`data/permission.rs`) is a SYNC core over
+  - **WS hot path** (`ws::conn::send_filtered`'s `Event` branch; `http::routes::write_ops`'s
+    HTTP-write receive) — `data::permission::filter_command` is a SYNC core over
     `load_update_docs` (Update pre-images, awaited ONCE per event before the sync core runs — no
     lock held across that await) and an `actor_lookup` closure backed by the room's in-memory
     `SceneEcs` actor table (`|id| ecs.actor(id)`). No pool read on this path at all — the join is
-    entirely in-memory, preserving the C1 no-pool-query-on-the-hot-path property. The scene read
+    entirely in-memory, preserving the no-pool-query-on-the-hot-path property. The scene read
     guard around `filter_command` itself is short (sync core, no await inside it), the same
     discipline `clip_move_stream` uses.
-  - **`list_documents`** (`http/routes.rs`) — one batched `query_documents(world, "actor")` fetch
+  - **`http::routes::list_documents`** — one batched `query_documents(world, "actor")` fetch
     up front when listing tokens, folded into a `HashMap<Uuid, Document>` and joined in-memory via
     `effective_owner_via` per doc; every other `doc_type` never triggers the actor query
     (`token_actor_link` returns `None`, so the map goes unused).
   - **Single-doc routes and search** (`get_document`, `search`'s per-hit gate) —
     `Repository::effective_owner_of` (`effective_owner_of` on the trait, `load_effective_owner` in
-    `sqlite.rs`), one pool-backed join per document, bounded by `MAX_SCAN` on the search path.
+    `data::sqlite`), one pool-backed join per document, bounded by `MAX_SCAN` on the search path.
   The scope check (rejecting an `actor_id` link that resolves to a document of the wrong type or a
-  different `Scope`) lives INSIDE `effective_owner` itself (`data/permission.rs`), not duplicated
+  different `Scope`) lives INSIDE `data::permission::effective_owner` itself, not duplicated
   at any join site — every join source above calls the one function, so the reachable owner set is
   identical regardless of which source resolved it.
 - **`command::apply_field_change(v, ch)` is THE store-equal mutation rule — every store of document
   state, authoritative or derived, applies a `FieldChange` through it. Never hand-write a
-  `remove`/`set` branch.** One function, one statement of the rule, repo-wide (client mirror:
-  `store.ts`'s `applyOperation`, shared by `DocumentStore` and `OptimisticClient`). Callers split
-  only on error handling, and the split is meaningful: the two AUTHORITATIVE loops
-  (`sqlite.rs`'s `apply_command` and `apply_intent` Phase 2) propagate with `?` so a bad change
-  aborts before commit; the DERIVED mirrors in `scene/mod.rs` go through `mirror_field_change`
+  `remove`/`set` branch.** One function, one statement of the rule, repo-wide (client mirror: the
+  `store` module's `applyOperation`, shared by `DocumentStore` and `OptimisticClient`). Callers
+  split only on error handling, and the split is meaningful: the two AUTHORITATIVE loops
+  (`data::sqlite`'s `apply_command` and `apply_intent` Phase 2) propagate with `?` so a bad change
+  aborts before commit; the DERIVED mirrors in the `scene` module go through `mirror_field_change`
   (logs) / `reapply_changes` (adds the `Document` round-trip), because `apply_op` runs on the
   already-committed broadcast/replay path where the ECS has no authority to reject. **Why this is a
-  hard invariant (Task 14i, `[sec]`, fixed a Critical):** `SceneEcs::apply_op` once mirrored with an
-  unconditional `set_pointer`, ignoring `ch.remove`, while the store honoured it — so a `remove:
-  true` change left the DB with the key ABSENT and the ECS holding the caller's unconstrained
-  `new`. With `WRITE_FIELDS` alone, a player removing `/engine/actor_id` with a foreign actor id in
-  `new` made the DB read "unowned" (nobody may write) while the ECS resolved ownership to another
-  actor's owner — who then gained the token as a vision source. **Vision widened exactly where
-  write authz refused.** Note the two call-site trust levels through one helper: `apply_op` sees
+  hard invariant:** an `apply_op` that mirrored with an unconditional `set_pointer`, ignoring
+  `ch.remove`, would leave the DB with the key ABSENT (a `remove: true` change) while the ECS holds
+  the caller's unconstrained `new` — so with `WRITE_FIELDS` alone, a player removing
+  `/engine/actor_id` with a foreign actor id in `new` makes the DB read "unowned" (nobody may write)
+  while the ECS resolves ownership to another actor's owner, who then gains the token as a vision
+  source. **Vision widens exactly where write authz refuses.** Note the two call-site trust levels
+  through one helper: `apply_op` sees
   committed changes, `token_move` sees CLIENT-PROPOSED, not-yet-authorized ones. `MirrorInput::
   {Committed, Proposed}` carries that and decides the LOG LEVEL, not the mutation: `error!` on a
   committed failure (an invariant breach), `debug!` on a proposed one (routine malformed input).
   Backwards in either direction is a real defect — `error!` on the proposed path is an
   attacker-controllable log channel. Both pinned by mutation-checked tests; rationale in full at
-  `scene/mod.rs`'s `MirrorInput`.
-- `src/server/src/data/validation.rs`'s `validate_field_change` — ingress shape rule: `remove: true`
+  `scene::MirrorInput`.
+- `data::validation::validate_field_change` — ingress shape rule: `remove: true`
   must carry a null `new`. Defense-in-depth only; the mirror is correct independently, which
   matters because replay and broadcast can carry shapes ingress never validated.
-- `src/server/src/data/command.rs`'s `FieldChange.remove: bool` — a leaf-level object-key-removal
+- `data::command::FieldChange.remove: bool` — a leaf-level object-key-removal
   discriminator on the existing `Operation::Update`/`FieldChange` wire shape, not a new `Command`
   variant: it reuses the same OCC pre-image check (`old`) and capability check
   (`required_cap_for_path`) as an ordinary `set` change. `remove: true` deletes the object key at
@@ -144,7 +144,7 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
   can create or overwrite a key/index but can never delete a key or resize an array) — the pair
   covers set vs. remove, with array resize handled exclusively by whole-array replacement, not by
   either pointer op. **INVARIANT — all three pointer ops treat a `null` INTERMEDIATE as absent, in
-  lockstep on both the server (`command.rs`) and the client mirror (`store.ts`):** `set_pointer`
+  lockstep on both the server (`data::command`) and the client mirror (the `store` module):** `set_pointer`
   descends by replacing a `null` intermediate with a fresh object (`Option<T>` engine fields with no
   `skip_serializing_if` serialize as `null`, so this is the common case — e.g. a scene's
   `/engine/vision` override on a default-built scene doc); `remove_pointer` no-ops through it; reads
@@ -152,7 +152,7 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
   `None` — there is no bespoke server `get_pointer`). The LEAF null-vs-absent distinction is preserved (`null !=
   absent` for a leaf value). Forking this null-handling across the two languages is the never-fork
   defect class — parity is pinned by matching tests on each side.
-- `src/server/src/data/permission.rs` — the redaction core:
+- `data::permission` — the redaction core:
   - `resolve_access(user, world_role, doc) -> Access` (and `resolve_access_world`) builds the
     per-connection `Access { caps, all, see_gm_only, is_owner }`.
   - `effective_role(user, world_role, doc) -> Option<DocRole>` — the shared floor-resolution
@@ -164,7 +164,7 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
   - `filter_properties(doc, access)` strips hidden **properties** from an outgoing doc — a
     PROPERTY-visibility gate only (see Hard Invariants: it does NOT decide whole-document
     withholding). `/system`, `/engine`, and `/name` overrides all **null the field rather than
-    strip the key** (M13-0 generalized this from a `/system`-only special case) — dropping the key
+    strip the key** (generalized from a `/system`-only special case) — dropping the key
     would either fail re-deserialization (`system`) or be indistinguishable from a doc that never
     had a name/engine body, breaking the client's stable envelope shape; nested pointers one level
     down still strip normally. `/base` gets the same null-not-strip treatment, but its visibility
@@ -172,37 +172,37 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
   - `redact_change(change, gm_only)` redacts field-level change events on the broadcast path;
     `collect_hidden` (its companion that builds the `gm_only`/hidden-path list for embedded-depth
     redaction) applies the same unconditional `/base` policy at every embedded depth.
-- `src/server/src/data/search.rs` — `index_content` (full) vs `index_content_public` (redacted):
+- `data::search` — `index_content` (full) vs `index_content_public` (redacted):
   the index is **partitioned by visibility**, not redacted after the fact. Indexes `name ∪ engine
-  ∪ system` (M13-0 added `name` and `engine` as leaf sources alongside `system`, same
+  ∪ system` (`name` and `engine` are leaf sources alongside `system`, same
   string-leaf-walk treatment; `index_content_public` needs no structural change — it re-runs
   `filter_properties` first, and a nulled `/engine`/`/name` band simply contributes nothing).
-- `src/server/src/data/{repository.rs,validation.rs}` — `Repository` trait (storage seam; SQLite today, Postgres-capable later) +
-  structural validation (size caps, field-path validity, `deny_unknown_fields`); `validation.rs`
-  applies the same `MAX_SYSTEM_BYTES` (256 KiB) cap to `engine` as to `system` (M13-0), checked
-  independently per block. `base` (M13e) gets the SAME independent size cap
+- `data::repository`/`data::validation` — `Repository` trait (storage seam; SQLite today, Postgres-capable later) +
+  structural validation (size caps, field-path validity, `deny_unknown_fields`); `data::validation`
+  applies the same `MAX_SYSTEM_BYTES` (256 KiB) cap to `engine` as to `system`, checked
+  independently per block. `base` gets the SAME independent size cap
   (`validate_system_size`'s cap function, shared across all three blocks) but is explicitly
   `EXEMPT` from `validate_engine_tree` — the tree walker only ever visits `/engine`, never
   `/base`, because `base` is a historical snapshot that may legitimately hold a stale
   `engine`/`system` shape from before the current schema (a template edited after an instance
   stamped from it); running current-schema validation against a deliberately-historical blob
   would be wrong, not defense-in-depth.
-- `data/validation.rs::validate_system_schema_tree` (M13f, tier-2) — a read-only recursive
+- `data::validation::validate_system_schema_tree` (tier-2) — a read-only recursive
   `system`-band structural gate, run beside (not instead of) `validate_engine_tree`.
   `validate_value_against_schema(value, schema) -> Result<(), SchemaMismatch>` is the pure
   accept/reject matcher over the type-tree grammar. Types: `Schema`/`SchemaType`/
-  `AdditionalProperties`/`SchemaDeclaration` (`data/document.rs`). Set-time authority:
-  `http/routes.rs::validate_schema_declarations` (strict `/system/…`-descendant
+  `AdditionalProperties`/`SchemaDeclaration` (`data::document`). Set-time authority:
+  `http::routes::validate_schema_declarations` (strict `/system/…`-descendant
   `subtree_pointer`, per-`doc_type` overlap/dup rejection, `schema_format` version gate via
   `SCHEMA_FORMAT_V1`, and resource bounds `MAX_SCHEMA_DECLARATIONS`/`MAX_SCHEMA_NODES`/
   `MAX_SCHEMA_DEPTH`), reached only through the GM-only `GET`/`PUT /api/worlds/{id}/schemas`
   pair (`routes::get_world_schema_declarations`/
   `set_world_schema_declarations`). Registry storage: `Repository::world_schema_declarations`/
-  `set_world_schema_declarations` (`data/sqlite.rs`), a per-world settings row keyed by
+  `set_world_schema_declarations` (`data::sqlite`), a per-world settings row keyed by
   `world_schemas_key(world)` — same storage shape as other world-settings singletons, not a new
   table. Broadcast: `ServerMsg::Welcome.schema_declarations` (parity only; the client never
   enforces from it, see the Hard Invariants entry below).
-- `src/server/src/data/sqlite.rs`'s `apply_intent` — the singleton-`doc_type` create-gate:
+- `data::sqlite::apply_intent` — the singleton-`doc_type` create-gate:
   `SINGLETON_DOC_TYPES` (world-settings/faction-registry/condition-registry/chat-settings/
   dice-settings — 5 entries; `light-gradation`/`vision-modes` are real engine doc_types but are
   NOT singleton-gated, and `channel-registry` has no gated const at all) + a tx-scoped
@@ -216,8 +216,8 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
   regardless of N or ordering. A rejection unwinds the WHOLE `apply_intent` call (no partial insert of
   the batch's other ops) — this is the same whole-batch-rollback semantics every other
   `apply_intent` validation failure already has, not a new rollback path.
-- `src/server/src/data/sqlite.rs`'s `apply_intent` — Phase-1 OCC pre-image comparison
-  (`values_semantically_eq`) is **numeric-variant-aware, not raw equality** (M13-0). Same-variant
+- `data::sqlite::apply_intent` — Phase-1 OCC pre-image comparison
+  (`values_semantically_eq`) is **numeric-variant-aware, not raw equality**. Same-variant
   integer pairs (both `PosInt`/`NegInt`) compare EXACTLY as `i128`, no magnitude limit — this never
   touches `f64`, so two distinct large integers past 2^53 never alias into a false match. Only a
   genuinely-mixed pair (one integer variant, one `Float`) falls back to an `f64` comparison, gated
@@ -232,10 +232,10 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
   transaction commits, so the per-world seq counter is NOT consumed on rejection, and surfaces
   to the client via the pre-existing rejected-intent path (`DataError::SchemaViolation { pointer,
   reason }`) — no new wire frame.
-- `src/client/core/src/wire.ts` — Zod mirror: `VisibilitySchema = z.enum(["all","gm_only",
+- The client `wire` module — Zod mirror: `VisibilitySchema = z.enum(["all","gm_only",
   "owner_or_gm"])`, `property_overrides`. ts-rs generates the TS types from the Rust source.
-- `src/client/core/src/scene-docs.ts` — `ITEM_DOC_TYPE = "item"`, `ItemSystem`, `buildItemDoc`
-  (M12c): a **client-only doc_type** — the server has NO Rust-side knowledge of `item` and
+- The client `scene-docs` module — `ITEM_DOC_TYPE = "item"`, `ItemSystem`, `buildItemDoc`:
+  a **client-only doc_type** — the server has NO Rust-side knowledge of `item` and
   requires none, since `doc_type` is an unconstrained wire string and `system` is opaque JSONB the
   server never interprets. An item document lives standalone (top-level, `parent_id: null`) or
   embedded in an actor's inventory (`actor.embedded.item[]`); write-site resolution for an embedded
@@ -275,10 +275,10 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
     so promotion/demotion to `WorldRole::Gm` takes effect immediately, not a frozen snapshot.
   - `resolve_access_world` deliberately reuses this SAME `effective_role` helper (not
     `doc.permissions.default`) to layer world-level capability grants, so a world-default grant
-    for the GM's fallback role applies consistently even when that GM is `gm_role`-capped — the
-    original (pre-refactor) sketch would have recomputed the role independently from
-    `doc.permissions.default` here and silently diverged for a capped GM; this was a real bug
-    caught before it shipped, not a hypothetical.
+    for the GM's fallback role applies consistently even when that GM is `gm_role`-capped.
+    Recomputing the role independently from `doc.permissions.default` here would silently
+    diverge for a capped GM — this is a real, caught-before-shipping bug class, not a
+    hypothetical, which is why the two call sites must share one `effective_role`.
   - First (and so far only) consumer: `shadowcat-codebase-chat`'s `Audience`→`PermissionSet`
     mapping (`Whisper` sets `Some(DocRole::None)`, `GmOnly` sets `Some(DocRole::Observer)`,
     `Public` leaves it `None`).
@@ -296,13 +296,13 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
   conflate the two bands' authority models when reasoning about what the server does and doesn't
   validate.
 - **OCC pre-image comparison at `apply_intent` is numeric-variant-aware, not raw equality.** A
-  naive raw-`==` assumption is now wrong: `values_semantically_eq` (`data/sqlite.rs`) exists
+  naive raw-`==` assumption is now wrong: `data::sqlite::values_semantically_eq` exists
   because JS clients cannot preserve the whole-number-vs-float distinction through a JSON
   round-trip (e.g. a server-computed `100.0` comes back over the wire and reparses as `PosInt(100)`,
   which raw `==` would treat as unequal to a stored `100`, causing a spurious `Conflict` on an
-  otherwise up-to-date write). See the `sqlite.rs` seam entry above for the exact comparison rule.
+  otherwise up-to-date write). See the `data::sqlite` seam entry above for the exact comparison rule.
 - **`/base`'s egress visibility is hardcoded `OwnerOrGm`, UNCONDITIONAL — never driven by
-  `property_overrides` (M13e).** `filter_properties` and `collect_hidden`/`redact_change` both
+  `property_overrides`.** `filter_properties` and `collect_hidden`/`redact_change` both
   independently hide `/base` from any recipient who is neither the document's owner nor a GM,
   regardless of what `permissions.property_overrides` says (a doc author cannot loosen or
   tighten `/base`'s visibility by setting an override on it — there is none to set). This is
@@ -312,7 +312,7 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
   recipient — leaking the snapshot would bypass that override. Any future change to `base`'s
   redaction must keep both call sites (whole-doc `filter_properties`, broadcast-delta
   `collect_hidden`) in sync; they are two independent code paths, not one shared chokepoint.
-- **Tier-2 (M13f) validates the `system` band's SHAPE only, never values — it EXTENDS invariant 6
+- **Tier-2 validates the `system` band's SHAPE only, never values — it EXTENDS invariant 6
   (three-band document shape), it does not replace it.** `engine`-band validation
   (`validate_engine`/`validate_engine_tree`) remains the separate, pre-existing REAL semantic
   ingress gate for the 17 engine-defined doc types (see the `engine ingress validation` invariant
@@ -343,7 +343,7 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
   closes that second gap; do not remove either mechanism assuming the other already covers it.
 - **Check-then-act across two queries needs one transaction** — TOCTOU-racy even at
   `max_connections(1)` [[two-query-guard-needs-tx]].
-- **`delete_document_tx` (`data/sqlite.rs`) is the SINGLE SOURCE for document-delete
+- **`data::sqlite::delete_document_tx` is the SINGLE SOURCE for document-delete
   side-effects** — the row, both FTS tables, and the document's `explored_fog` rows (scene fog
   purge, unconditional by id: only scenes ever appear as `explored_fog.scene_id`, so there is no
   doc_type predicate to drift). BOTH authoritative loops (`apply_intent`, `apply_command`) call
@@ -360,21 +360,21 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
 
 ## Gotchas
 
-- **Docs-ratchet covers the ENTIRE `data/` tree (docs sweeps 2a+2b):** every file —
-  `data/{mod,document,command,permission,repository,membership,validation,search,asset,sqlite}.rs`
-  AND `data/engine/{mod,geometry,registries,scene,token}.rs` — carries `#![deny(missing_docs)]` +
-  `#![deny(clippy::missing_docs_in_private_items)]` (`data/mod.rs`'s inner attrs cascade to all
-  children, all now swept; its former item-scoped exception is retired). A new undocumented item
+- **Docs-ratchet covers the ENTIRE `data` module tree:** every module —
+  `data::{document,command,permission,repository,membership,validation,search,asset,sqlite}`
+  AND `data::engine::{geometry,registries,scene,token}` — carries `#![deny(missing_docs)]` +
+  `#![deny(clippy::missing_docs_in_private_items)]` (the `data` module's inner attrs cascade to all
+  children, with no item-scoped exception anywhere in the tree). A new undocumented item
   fails the 3-OS CI clippy step. Doc comments on ts-rs types flow into `src/types/generated` —
   editing them means regenerating (`cargo test`) and committing the bindings, and doc claims about
-  authz/redaction must cite the enforcing function (Sweep-1 lesson: a review caught a factually
-  wrong doc).
+  authz/redaction must cite the enforcing function — an uncited claim can state a wrong function
+  and go undetected by any gate.
 - **Wire types are generated** — change the Rust `Visibility`/`Document`, regenerate ts-rs, then
   mirror in the Zod schema (a drift guard enforces parity). Never hand-edit `src/types/generated`.
-- **A naive raw-equality assumption about OCC pre-images is wrong (M13-0).** Any code (or reviewer)
+- **A naive raw-equality assumption about OCC pre-images is wrong.** Any code (or reviewer)
   reasoning about `apply_intent`'s Phase-1 conflict check must account for
   `values_semantically_eq`'s numeric-variant awareness — see the Hard Invariants entry above and
-  the `sqlite.rs` seam. Treating pre-image comparison as plain `serde_json::Value` `==` will
+  the `data::sqlite` seam. Treating pre-image comparison as plain `serde_json::Value` `==` will
   misdiagnose both false-conflict and false-pass scenarios.
 - **Embedded copies need a deep clone** — `{...doc}` aliases nested `system`/`permissions`/
   `embedded` until the wire round-trip; use `structuredClone` at construction
@@ -384,11 +384,15 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
 
 ## Pointers
 
+- **Generated API** — `/api/rust/shadowcat/data/` (rustdoc, private items included — the
+  `Document`/`permission`/`command`/`engine`/`repository`/`search`/`membership`/`validation`
+  submodule tree), `/api/ts/modules/_shadowcat_core.html` (TypeDoc — the `wire` Zod mirror),
+  `/api/ts/modules/_shadowcat_types.html` (TypeDoc — the ts-rs generated bindings the Zod mirror
+  is checked against). Produce with `pnpm build:all`.
 - Rationale: `docs/design/M2-data-foundation.md`; invariants in `docs/design/ARCHITECTURE.md`
   §2 invariant 4 (per-recipient permissions) + invariant 6 (three-band document shape) + §6 (data
-  model). M13-0 design: `docs/superpowers/specs/2026-07-15-m13-0-document-shape-design.md`. M13f
-  (tier-2 structural schema registry) design:
-  `docs/superpowers/specs/2026-07-18-m13f-server-schema-registry-design.md`.
+  model). Design rationale for the three-band document shape and the tier-2 structural schema
+  registry lives under `docs/superpowers/specs/`.
 - Relationships: `graphify query "document permissions redaction filter_properties can_see"`,
   `graphify path "permission.rs" "search.rs"`.
 - Deferred merge model: [[document-inheritance-merge-model]].

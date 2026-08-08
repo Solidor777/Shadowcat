@@ -3,7 +3,13 @@
   import { listWorlds, createWorld, acceptInvite, deleteWorld } from "../entryApi";
   import { t } from "@shadowcat/ui-kit";
 
-  let { onEnter }: { onEnter: (worldId: string) => void } = $props();
+  let {
+    onEnter,
+  }: {
+    /** Invoked to enter a world, whether picked from the list, just created, or just
+     * redeemed via invite — `Entry` hands this straight through to the shell. */
+    onEnter: (worldId: string) => void;
+  } = $props();
   let worlds = $state<WorldEntry[]>([]);
   let newName = $state("");
   let inviteCode = $state("");
@@ -21,6 +27,7 @@
    * @example
    * ```
    * // module-private; not part of the public API — bound to the delete button
+   * declare const world: WorldEntry;
    * armDelete(world.id);
    * ```
    */
@@ -42,6 +49,7 @@
    * @example
    * ```
    * // module-private; not part of the public API — bound to the confirm form
+   * declare const world: WorldEntry;
    * confirmDelete(world);
    * ```
    */
@@ -89,6 +97,7 @@
    * @example
    * ```
    * // module-private; not part of the public API — bound to <form onsubmit>
+   * declare const event: SubmitEvent;
    * create(event);
    * ```
    */
@@ -110,7 +119,7 @@
    * Handle the invite-redemption form submit. Unlike `refresh`/`create`/
    * `confirmDelete`, this has no `try`/`catch`: `acceptInvite` collapses every
    * HTTP-level rejection to `null` one layer down, so there is no thrown
-   * message to discard. See `../entryApi.ts`'s `acceptInvite` doc — the
+   * message to discard. See `acceptInvite`'s doc — the
    * statement of record for the no-oracle rationale, and the only place that
    * enumerates the rejection cases. The generic error shown here
    * (`worlds.errorRedeem`) reflects that collapse; it is not a choice this
@@ -123,6 +132,7 @@
    * @example
    * ```
    * // module-private; not part of the public API — bound to <form onsubmit>
+   * declare const event: SubmitEvent;
    * redeem(event);
    * ```
    */

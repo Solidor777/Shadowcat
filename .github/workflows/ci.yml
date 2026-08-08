@@ -116,7 +116,9 @@ jobs:
 
   # Browser end-to-end: the built `shadowcat` binary serves the embedded SPA + /api
   # on one origin; Playwright drives the entry flow against it. Needs both
-  # toolchains (global-setup builds dist/ + the binary), so its own single-OS job.
+  # toolchains: the `e2e` script itself runs `vite build && cargo build` before
+  # invoking Playwright, because Playwright starts its `webServer` ahead of any
+  # setup hook, so the binary must already exist. Hence its own single-OS job.
   ui-e2e:
     runs-on: ubuntu-latest
     steps:
@@ -132,11 +134,30 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @shadowcat/shell exec playwright install --with-deps chromium
       - run: pnpm --filter @shadowcat/shell e2e
+      # The traces this uploads are the only forensic channel for a failure that
+      # reproduces on the runner but not locally; `playwright.config.ts` retains
+      # them on failure solely because this step collects them. `if: failure()`
+      # (not `always()`) keeps green runs from uploading an empty directory.
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-results
+          path: src/client/shell/test-results/
+          retention-days: 7
+          if-no-files-found: ignore
 
   # Docs pipeline: portal + generated references assembled and link-checked.
   # Single-OS: the docs site is a build artifact, not platform-gated code; the
-  # rust matrix already proves the crate compiles per-OS. The two report steps
-  # are warn-tier (exit 0) until the sweep phases ratchet lints to deny.
+  # rust matrix already proves the crate compiles per-OS.
+  #
+  # Every step here is a gate. None is warn-tier: a check that reports a violation
+  # without failing grandfathers whatever existed when it was added, and a
+  # grandfathered violation is indistinguishable to every later reader from code
+  # that was checked and passed. The one non-gating output is the documentation
+  # exemption count printed at the tail of build:all, which reports rather than
+  # fails — it exists so an exemption cannot be active and uncounted, and the
+  # exemptions it names are themselves gated: an entry that stops matching becomes
+  # an unused-exemption warning, and warnings here are fatal.
   docs:
     runs-on: ubuntu-latest
     steps:
@@ -150,21 +171,34 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - uses: dtolnay/rust-toolchain@stable
-      # docs:build starts with the client build (rust-embed needs dist/ before
-      # cargo doc), then typedoc, cargo doc, vitepress, assembly + link check.
-      - run: pnpm docs:build
-      - name: Doc-coverage report (TS, informational)
+      # build:all starts with the client build (rust-embed needs dist/ before
+      # cargo doc), then typedoc, cargo doc, vitepress, assembly + link check,
+      # and finally the active documentation-exemption count. cargo doc runs
+      # through scripts/cargo-doc-strict.mjs, which sets RUSTDOCFLAGS itself —
+      # the same flag a local `pnpm build:all` carries, so this step and a
+      # contributor's own machine see the same gate.
+      - run: pnpm build:all
+      - name: Skill doc-pointer references resolve
+        run: node scripts/check-skill-api-refs-cli.mjs
+      - name: Function doc coverage (TS)
         run: pnpm lint:docs
-      - name: Doc-coverage report (Rust, informational)
-        run: cargo clippy --manifest-path src/server/Cargo.toml --all-targets -- -W missing-docs -W clippy::missing-docs-in-private-items
-      # Example-presence report: rustdoc's missing_doc_code_examples lint is
-      # nightly-only; -W keeps it warn-tier (exit 0). continue-on-error covers
-      # nightly toolchain breakage (spec degradation clause: non-blocking until repaired).
+      - name: Property and type doc coverage (TS)
+        run: pnpm lint:props
+      - name: No ephemeral references in code comments
+        run: pnpm lint:comments
+      - name: No dead-code or unused-item suppressions
+        run: pnpm lint:allowances
+      - name: Doc examples typecheck (TS)
+        run: pnpm docs:check-examples
+      - name: Doc coverage (Rust)
+        run: cargo clippy --manifest-path src/server/Cargo.toml --all-targets -- -D missing-docs -D clippy::missing-docs-in-private-items
+      # rustdoc's missing_doc_code_examples lint is nightly-only, so this step needs the nightly
+      # toolchain. It denies rather than warns: the lint being nightly-gated bears on which
+      # toolchain runs it, not on whether a missing example is acceptable.
       - uses: dtolnay/rust-toolchain@nightly
-      - name: Example-presence report (Rust, nightly, informational)
-        continue-on-error: true
+      - name: Doc examples present (Rust)
         env:
-          RUSTDOCFLAGS: "-W rustdoc::missing_doc_code_examples"
+          RUSTDOCFLAGS: "-D rustdoc::missing_doc_code_examples"
         run: cargo +nightly doc --manifest-path src/server/Cargo.toml --document-private-items --no-deps --target-dir target/nightly-doc
       - name: Upload docs site
         uses: actions/upload-artifact@v4

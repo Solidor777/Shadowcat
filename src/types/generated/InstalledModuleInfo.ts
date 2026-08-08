@@ -5,8 +5,8 @@
  * name (`crate::modules::InstalledModule::id`) — the SAME key
  * `set_world_enabled_modules`/`world_enabled_modules` validate and store
  * against. `manifest` is the raw, author-declared manifest (opaque to the
- * server beyond structural discovery, ARCHITECTURE invariant 2 — the
- * client's own Zod schema re-validates it) and may declare a DIFFERENT `id`
+ * server beyond structural discovery — the client's own Zod schema
+ * re-validates it) and may declare a DIFFERENT `id`
  * than the folder it's installed under; callers must key enabled-set
  * membership on this `id` field, never `manifest.id`, or toggle state and
  * save requests silently diverge from the server's authoritative key space.

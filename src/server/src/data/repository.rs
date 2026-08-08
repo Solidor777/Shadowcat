@@ -13,7 +13,7 @@ use crate::data::document::{
 };
 use crate::data::DataError;
 
-/// Storage contract. The only implementation in M2 is `SqliteRepository`;
+/// Storage contract. The only implementation today is `SqliteRepository`;
 /// the trait exists so Postgres can be added later behind the same surface.
 #[async_trait]
 pub trait Repository: Send + Sync {
@@ -210,7 +210,7 @@ pub trait Repository: Send + Sync {
     ) -> Result<crate::data::search::SearchPage, DataError>;
 
     /// The player's serialized explored-cell blob for a scene, or `None` when unexplored.
-    /// Per-(scene, user) secret memory — never broadcast; used by the M10e-4 movement gate
-    /// (`Revealed` mode) to union the explored set with the live visibility mask.
+    /// Per-(scene, user) secret memory — never broadcast; used by the movement gate's
+    /// `Revealed` mode to union the explored set with the live visibility mask.
     async fn get_explored(&self, scene: Uuid, user: Uuid) -> Result<Option<Vec<u8>>, DataError>;
 }

@@ -3,7 +3,54 @@ import { defaultLayout, applyOp, type LayoutOp, type PanelLayoutV1 } from "../la
 import { DockviewEngine } from "./dockview";
 import { STAGE_ID } from "./policy";
 import { silentLogger, type PanelMeta } from "@shadowcat/core";
-import type { DockviewApi, DockviewWillDropEvent, IDockviewGroupPanel } from "dockview-core";
+import type {
+  DockviewApi,
+  DockviewWillDropEvent,
+  IDockviewGroupPanel,
+  IDockviewPanel,
+} from "dockview-core";
+
+/** A dockview-core internal event emitter. These are regular (non-`#`-private) class
+ * fields, so a structural declaration reaches them without the library exposing them. */
+interface InternalEmitter<T> {
+  fire(payload: T): void;
+}
+
+/** The subset of `DockviewWillDropEvent` the engine's own drop listener reads. Tests
+ * construct exactly this and push it through the internal emitter, exercising the same
+ * listener path a real drop takes. */
+interface WillDropProbe {
+  kind: DockviewWillDropEvent["kind"];
+  position: DockviewWillDropEvent["position"];
+  panel: IDockviewPanel | undefined;
+  group: IDockviewGroupPanel | undefined;
+  getData: () => { viewId: string; groupId: string; panelId: string | null };
+  readonly defaultPrevented: boolean;
+  preventDefault: () => void;
+}
+
+/** `DockviewComponent` internals. Declaring the reached members narrowly keeps the
+ * dependency checkable: a dockview upgrade that renames one fails at this declaration
+ * rather than passing an untyped value through every call site. */
+interface ComponentInternals {
+  _onWillDrop: InternalEmitter<WillDropProbe>;
+  _bufferOnDidLayoutChange: InternalEmitter<void>;
+}
+
+/** Group-level internals, reached per group rather than through the component. */
+interface GroupModelInternals {
+  _onWillDrop: InternalEmitter<WillDropProbe>;
+}
+interface GroupApiInternals {
+  _onDidDimensionChange: InternalEmitter<{ width: number; height: number }>;
+}
+
+const componentOf = (api: DockviewApi): ComponentInternals =>
+  (api as unknown as { component: ComponentInternals }).component;
+const modelOf = (group: IDockviewGroupPanel): GroupModelInternals =>
+  group.model as unknown as GroupModelInternals;
+const apiOf = (group: IDockviewGroupPanel): GroupApiInternals =>
+  group.api as unknown as GroupApiInternals;
 
 let engine: DockviewEngine | null = null;
 // Hosts appended to `document.body` for focus-management tests (jsdom only
@@ -79,7 +126,7 @@ test("apply() is idempotent: applying the same tree twice adds no duplicate pane
   expect(afterSecond).toBe(2);
 });
 
-test("W3: programmatic removal of the stage panel leaves a live stage panel", () => {
+test("programmatic removal of the stage panel leaves a live stage panel", () => {
   const host = document.createElement("div");
   const stageEl = document.createElement("div");
   const slotFor = makeSlots([]);
@@ -95,7 +142,7 @@ test("W3: programmatic removal of the stage panel leaves a live stage panel", ()
   // Simulates an external actor calling the underlying dockview API directly
   // against the stage panel id — a path the wrapper's own op vocabulary
   // never exposes (no registration ever contributes id "stage"), but which
-  // W3 must still survive.
+  // the `#restoreStage` guard must still survive.
   api!.removePanel(stagePanel!);
 
   const restored = api!.getPanel(STAGE_ID);
@@ -103,7 +150,7 @@ test("W3: programmatic removal of the stage panel leaves a live stage panel", ()
   expect(restored!.id).toBe(STAGE_ID);
 });
 
-test("focus() and apply() ignore the stage id (W2 adapter-level guard)", () => {
+test("focus() and apply() ignore the stage id (adapter-level guard)", () => {
   const host = document.createElement("div");
   const stageEl = document.createElement("div");
   const slotFor = makeSlots(["chat"]);
@@ -162,11 +209,11 @@ function fireWillDrop(
     position: DockviewWillDropEvent["position"];
     panelId: string | null;
     groupId: string;
-    group: unknown;
+    group: IDockviewGroupPanel;
   }>,
 ): { defaultPrevented: boolean } {
   let prevented = false;
-  const event = {
+  const event: WillDropProbe = {
     kind: overrides.kind ?? "edge",
     position: overrides.position ?? "top",
     panel: undefined,
@@ -179,12 +226,11 @@ function fireWillDrop(
       prevented = true;
     },
   };
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (engine.debugApi as any).component._onWillDrop.fire(event);
+  componentOf(engine.debugApi!)._onWillDrop.fire(event);
   return event;
 }
 
-test("Finding 1+2: a whole-group transfer (panelId null) at the container's TOP edge is vetoed", () => {
+test("a whole-group transfer (panelId null) at the container's TOP edge is vetoed", () => {
   const host = document.createElement("div");
   const stageEl = document.createElement("div");
   const slotFor = makeSlots(["chat"]);
@@ -197,7 +243,7 @@ test("Finding 1+2: a whole-group transfer (panelId null) at the container's TOP 
   expect(event.defaultPrevented).toBe(true);
 });
 
-test("Finding 1+2: a whole-group transfer at a zone-edge position is ALSO vetoed (v1 vetoes every group transfer, not just top)", () => {
+test("a whole-group transfer at a zone-edge position is ALSO vetoed (every group transfer is vetoed, not just top)", () => {
   const host = document.createElement("div");
   const stageEl = document.createElement("div");
   const slotFor = makeSlots(["chat"]);
@@ -256,7 +302,7 @@ test("a whole-group drag onto an unclassifiable target still vetoes (fail-closed
   const ops: LayoutOp[] = [];
   engine.onOp((op) => ops.push(op));
 
-  // The container's TOP edge: no "top" ZoneId exists (spec D4) — genuinely
+  // The container's TOP edge: no "top" `ZoneId` variant exists — genuinely
   // unclassifiable regardless of whether the transfer is a single tab or a
   // whole group.
   const event = fireWillDrop(engine, { kind: "edge", position: "top", panelId: null, groupId: "sc-group:tab-1" });
@@ -265,7 +311,7 @@ test("a whole-group drag onto an unclassifiable target still vetoes (fail-closed
   expect(ops).toHaveLength(0);
 });
 
-test("Finding 5: a will-drop event before any apply() fails closed (defaultPrevented)", () => {
+test("a will-drop event before any apply() fails closed (defaultPrevented)", () => {
   const host = document.createElement("div");
   const stageEl = document.createElement("div");
   const slotFor = makeSlots(["chat"]);
@@ -278,7 +324,7 @@ test("Finding 5: a will-drop event before any apply() fails closed (defaultPreve
   expect(event.defaultPrevented).toBe(true);
 });
 
-test("Finding 4: a tree naming the stage id in a zone group applies without throwing, and the real stage stays alive in its own locked group", () => {
+test("a tree naming the stage id in a zone group applies without throwing, and the real stage stays alive in its own locked group", () => {
   const host = document.createElement("div");
   const stageEl = document.createElement("div");
   const slotFor = makeSlots(["chat"]);
@@ -309,7 +355,7 @@ test("Finding 4: a tree naming the stage id in a zone group applies without thro
   expect(stagePanel!.group.id).toBe("sc-stage-group");
 });
 
-test("Finding 4 (mixed): a zone group naming BOTH the stage id and a real panel places the real panel and leaves the stage untouched", () => {
+test("a zone group naming BOTH the stage id and a real panel places the real panel and leaves the stage untouched", () => {
   const host = document.createElement("div");
   const stageEl = document.createElement("div");
   const slotFor = makeSlots(["chat"]);
@@ -320,7 +366,7 @@ test("Finding 4 (mixed): a zone group naming BOTH the stage id and a real panel 
   let layout = defaultLayout([{ id: "chat" }]);
   layout = applyOp(layout, { op: "dock", id: "chat", zone: "right", group: "new" });
   // A MIXED group — the stage id sits alongside a real panel id in the same
-  // group's tabs, unlike Finding 4's all-stage case (which skips the whole
+  // group's tabs, unlike the all-stage case above (which skips the whole
   // group). The per-tab STAGE_ID skip must fire for "stage" only; "chat"
   // still gets placed normally in the same (real, non-stage) group.
   layout = {
@@ -346,11 +392,11 @@ test("Finding 4 (mixed): a zone group naming BOTH the stage id and a real panel 
 });
 
 test("group-onto-group: a whole-group transfer targeting an existing group's content is intercepted (defaultPrevented) and translated into a dock op per tab of the dragged group, via the per-group onWillDrop wire", () => {
-  // Regression test for the residual the fix-confirmation buddy-check
-  // flagged: `DockviewApi.onWillDrop` (subscribed once in `init()`) NEVER
+  // `DockviewApi.onWillDrop` (subscribed once in `init()`) NEVER
   // fires for a drop targeting an existing group — the component only
   // forwards a group model's own `onWillDrop` through the permanently-unwired
-  // `_advancedDnDService` optional chain (`dockviewComponent.js:3652-3654`).
+  // `_advancedDnDService` optional chain (in `DockviewComponent.createGroup`'s
+  // `onWillDrop` wiring).
   // This exercises the mechanism that actually closes the gap: a per-group
   // subscription to `group.model.onWillDrop` (`#groupWillDropSubs`, wired in
   // `apply()`), fired here via the group model's own private `_onWillDrop`
@@ -373,7 +419,7 @@ test("group-onto-group: a whole-group transfer targeting an existing group's con
   engine.onOp((op) => ops.push(op));
 
   let prevented = false;
-  const event = {
+  const event: WillDropProbe = {
     kind: "content",
     position: "center",
     panel: undefined,
@@ -388,8 +434,7 @@ test("group-onto-group: a whole-group transfer targeting an existing group's con
       prevented = true;
     },
   };
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (chatGroup.model as any)._onWillDrop.fire(event);
+  modelOf(chatGroup)._onWillDrop.fire(event);
 
   expect(prevented).toBe(true);
   expect(ops).toEqual([{ op: "dock", id: "assets", zone: "right", group: 0, tabIndex: 1 }]);
@@ -424,7 +469,7 @@ test("group-onto-group: a whole-group transfer targeting a SPECIFIC tab-strip po
   engine.onOp((op) => ops.push(op));
 
   let prevented = false;
-  const event = {
+  const event: WillDropProbe = {
     kind: "tab",
     position: "center",
     // A real tab-strip drop target: "p2" is the tab the pointer is hovering
@@ -441,8 +486,7 @@ test("group-onto-group: a whole-group transfer targeting a SPECIFIC tab-strip po
       prevented = true;
     },
   };
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (chatGroup.model as any)._onWillDrop.fire(event);
+  modelOf(chatGroup)._onWillDrop.fire(event);
 
   expect(prevented).toBe(true);
   // Both dragged tabs land at consecutive indices starting at "p2"'s
@@ -478,7 +522,7 @@ test("group-onto-group: an ALLOWED single-panel drop onto an existing group's co
   engine.onOp((op) => ops.push(op));
 
   let prevented = false;
-  const event = {
+  const event: WillDropProbe = {
     kind: "content",
     position: "center",
     panel: undefined,
@@ -493,8 +537,7 @@ test("group-onto-group: an ALLOWED single-panel drop onto an existing group's co
       prevented = true;
     },
   };
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (chatGroup.model as any)._onWillDrop.fire(event);
+  modelOf(chatGroup)._onWillDrop.fire(event);
 
   expect(prevented).toBe(true);
   expect(ops).toHaveLength(1);
@@ -538,7 +581,7 @@ test("no spurious close op: an ALLOWED cross-group drop, applied through the red
   const ops: LayoutOp[] = [];
   engine.onOp((op) => ops.push(op));
 
-  const event = {
+  const event: WillDropProbe = {
     kind: "content",
     position: "center",
     panel: undefined,
@@ -549,8 +592,7 @@ test("no spurious close op: an ALLOWED cross-group drop, applied through the red
     },
     preventDefault() {},
   };
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (chatGroup.model as any)._onWillDrop.fire(event);
+  modelOf(chatGroup)._onWillDrop.fire(event);
 
   // Apply the emitted op, mirroring the real controller — this drives the
   // reconcile that actually performs the cross-group move.
@@ -562,7 +604,7 @@ test("no spurious close op: an ALLOWED cross-group drop, applied through the red
   expect(ops.some((o) => o.op === "close")).toBe(false);
 });
 
-test("Finding 3: a group's live dimension change emits resizeZone + resizeGroup ops with sane values", () => {
+test("a group's live dimension change emits resizeZone + resizeGroup ops with sane values", () => {
   const host = document.createElement("div");
   const stageEl = document.createElement("div");
   const slotFor = makeSlots(["chat", "notes"]);
@@ -581,10 +623,8 @@ test("Finding 3: a group's live dimension change emits resizeZone + resizeGroup 
   const chatGroup = engine.debugApi!.getPanel("chat")!.group;
   const notesGroup = engine.debugApi!.getPanel("notes")!.group;
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (notesGroup.api as any)._onDidDimensionChange.fire({ width: 320, height: 150 });
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (chatGroup.api as any)._onDidDimensionChange.fire({ width: 320, height: 300 });
+  apiOf(notesGroup)._onDidDimensionChange.fire({ width: 320, height: 150 });
+  apiOf(chatGroup)._onDidDimensionChange.fire({ width: 320, height: 300 });
 
   const resizeZoneOps = ops.filter((o): o is Extract<LayoutOp, { op: "resizeZone" }> => o.op === "resizeZone");
   const resizeGroupOps = ops.filter((o): o is Extract<LayoutOp, { op: "resizeGroup" }> => o.op === "resizeGroup");
@@ -598,7 +638,7 @@ test("Finding 3: a group's live dimension change emits resizeZone + resizeGroup 
   expect(chatResize).toBeDefined();
 });
 
-test("Finding 3: dimension changes synchronously triggered from inside apply() are NOT emitted (guarded by #applying)", () => {
+test("dimension changes synchronously triggered from inside apply() are NOT emitted (guarded by #applying)", () => {
   const host = document.createElement("div");
   const stageEl = document.createElement("div");
   const slotFor = makeSlots(["chat", "notes"]);
@@ -620,8 +660,7 @@ test("Finding 3: dimension changes synchronously triggered from inside apply() a
   // a genuine mid-`apply()` window, not merely "nothing happened to fire".
   const unsub = engine.debugApi!.onDidActivePanelChange((event) => {
     if (event.panel?.id !== "notes") return;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (event.panel.group.api as any)._onDidDimensionChange.fire({ width: 500, height: 500 });
+    apiOf(event.panel.group)._onDidDimensionChange.fire({ width: 500, height: 500 });
   });
 
   layout = applyOp(layout, { op: "dock", id: "notes", zone: "right", group: 0 });
@@ -631,7 +670,7 @@ test("Finding 3: dimension changes synchronously triggered from inside apply() a
   expect(ops.filter((o) => o.op === "resizeZone" || o.op === "resizeGroup")).toHaveLength(0);
 });
 
-test("F3: a live drag/resize of an already-floating panel emits a resizeFloating op syncing its new Rect", async () => {
+test("a live drag/resize of an already-floating panel emits a resizeFloating op syncing its new Rect", async () => {
   const host = document.createElement("div");
   const stageEl = document.createElement("div");
   const slotFor = makeSlots(["chat"]);
@@ -653,8 +692,7 @@ test("F3: a live drag/resize of an already-floating panel emits a resizeFloating
   groupEl.getBoundingClientRect = () =>
     ({ left: 50, top: 60, width: 220, height: 160, right: 270, bottom: 220, x: 50, y: 60, toJSON: () => ({}) }) as DOMRect;
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (engine.debugApi as any).component._bufferOnDidLayoutChange.fire();
+  componentOf(engine.debugApi!)._bufferOnDidLayoutChange.fire();
   // `onDidLayoutChange` is dockview's `AsapEvent` — listeners run on the next microtask.
   await Promise.resolve();
   await Promise.resolve();
@@ -662,7 +700,7 @@ test("F3: a live drag/resize of an already-floating panel emits a resizeFloating
   expect(ops).toContainEqual({ op: "resizeFloating", id: "chat", rect: { x: 50, y: 60, w: 220, h: 160 } });
 });
 
-test("F3: a resizeFloating op's own round trip through apply() does not re-emit (self-caused churn is suppressed)", async () => {
+test("a resizeFloating op's own round trip through apply() does not re-emit (self-caused churn is suppressed)", async () => {
   const host = document.createElement("div");
   const stageEl = document.createElement("div");
   const slotFor = makeSlots(["chat"]);
@@ -687,8 +725,7 @@ test("F3: a resizeFloating op's own round trip through apply() does not re-emit 
   groupEl.getBoundingClientRect = () =>
     ({ left: 10, top: 10, width: 200, height: 150, right: 210, bottom: 160, x: 10, y: 10, toJSON: () => ({}) }) as DOMRect;
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (engine.debugApi as any).component._bufferOnDidLayoutChange.fire();
+  componentOf(engine.debugApi!)._bufferOnDidLayoutChange.fire();
   await Promise.resolve();
   await Promise.resolve();
 
@@ -944,7 +981,7 @@ test("Tab on a panel-menu item closes the popup but does NOT force focus back to
   expect(document.activeElement).not.toBe(menuBtn);
 });
 
-test("Finding 1 (T9 review): docked->floating preserves the #floatInvokers entry across the transient remove/re-add; a later close returns focus to it once the invoker is live again, and degrades gracefully when it stays detached (the self-referential case)", async () => {
+test("docked->floating preserves the #floatInvokers entry across the transient remove/re-add; a later close returns focus to it once the invoker is live again, and degrades gracefully when it stays detached (the self-referential case)", async () => {
   attachedHost = document.createElement("div");
   document.body.appendChild(attachedHost);
   const stageEl = document.createElement("div");
@@ -976,8 +1013,9 @@ test("Finding 1 (T9 review): docked->floating preserves the #floatInvokers entry
   // menu button) synchronously as part of the docked->floating transient
   // remove/re-add, BEFORE `onDidRemovePanel` even fires — the self-
   // referential trigger's invoker is therefore already gone by the time any
-  // teardown logic runs, regardless of this fix. This is the graceful-
-  // degradation half of the finding, not a regression to guard against.
+  // teardown logic runs, regardless of the `#floatTransitionIds` guard. This
+  // is the graceful-degradation half of the self-referential case, not a
+  // regression to guard against.
   expect(document.contains(menuBtn)).toBe(false);
 
   // Simulate a hypothetical non-self-referential invoker (e.g. a future
@@ -985,9 +1023,10 @@ test("Finding 1 (T9 review): docked->floating preserves the #floatInvokers entry
   // destroys) by reattaching the SAME element reference the engine
   // recorded. This only lands on a LIVE element at close time if
   // `#floatInvokers`'s entry for "chat" actually survived the transient
-  // churn intact: before the fix, `#teardownFloatingA11y` deleted that
-  // entry mid-churn (see `#floatTransitionIds`'s doc comment), and no later
-  // close could ever recover the reference to reattach here.
+  // churn intact: without the `#floatTransitionIds` guard, `#teardownFloatingA11y`
+  // would delete that entry mid-churn (see `#floatTransitionIds`'s doc
+  // comment), and no later close could ever recover the reference to
+  // reattach here.
   document.body.appendChild(menuBtn);
 
   const dialogEl = attachedHost.querySelector<HTMLElement>('[role="dialog"]')!;
@@ -1000,7 +1039,7 @@ test("Finding 1 (T9 review): docked->floating preserves the #floatInvokers entry
   expect(document.activeElement).toBe(menuBtn);
 });
 
-test("Finding 3 (T9 review): destroy() clears #floatInvokers and disposes+clears #floatingEscapeSubs", async () => {
+test("destroy() clears #floatInvokers and disposes+clears #floatingEscapeSubs", async () => {
   attachedHost = document.createElement("div");
   document.body.appendChild(attachedHost);
   const stageEl = document.createElement("div");
@@ -1039,7 +1078,7 @@ test("Finding 3 (T9 review): destroy() clears #floatInvokers and disposes+clears
   expect(ops.filter((o) => o.op === "close")).toHaveLength(0);
 });
 
-test("Finding 4b (T9 review): the stage's own tab never renders a .sc-tab-menu-btn — no menu-command affordance exists for it to invoke", () => {
+test("the stage's own tab never renders a .sc-tab-menu-btn — no menu-command affordance exists for it to invoke", () => {
   const host = document.createElement("div");
   const stageEl = document.createElement("div");
   const slotFor = makeSlots(["chat"]);
@@ -1050,7 +1089,7 @@ test("Finding 4b (T9 review): the stage's own tab never renders a .sc-tab-menu-b
 
   const stagePanel = engine.debugApi!.getPanel(STAGE_ID)!;
   expect(stagePanel.group.id).toBe("sc-stage-group");
-  // The stage group is headerless (W1): no tab strip renders for it at all,
+  // The stage group is headerless: no tab strip renders for it at all,
   // so no `.sc-tab-menu-btn` for the stage exists anywhere in the host.
   const stageGroupEl = stagePanel.group.element;
   expect(stageGroupEl.querySelector(".sc-tab-menu-btn")).toBeNull();
@@ -1094,7 +1133,7 @@ test("pop-out: a successful driver emits a popOut op (no float, no notice)", asy
   expect(notices).toEqual([]);
 });
 
-test("pop-out blocked: a false driver falls back to a float op + a notice (spec §10)", async () => {
+test("pop-out blocked: a false driver falls back to a float op + a notice", async () => {
   const { ops, notices } = await popOutViaMenu(() => Promise.resolve(false));
   expect(ops.some((o) => o.op === "float" && o.id === "chat")).toBe(true);
   expect(ops.some((o) => o.op === "popOut")).toBe(false);
@@ -1213,9 +1252,9 @@ test("a successful pop-out seeds its origin group so the next apply() does not o
  * no real `window.open`/popout-window lifecycle to drive this event from a
  * genuine drag-out-a-window gesture, so — mirroring the existing
  * `component.removePanel(...)` reach-in used above for the origin-group-seed
- * test — this drives the SAME event shape (`{id, group, window}`,
- * `dockviewComponent.js:444-448`) dockview's `popoutWindowService.onDidRemove`
- * would fire, directly at `DockviewEngine#handleRemovePopoutGroup`. */
+ * test — this drives the SAME event shape (`{id, group, window}`, built by
+ * `DockviewComponent`'s constructor's `popoutWindowService.onDidRemove`
+ * wiring) that wiring itself would fire, directly at `DockviewEngine#handleRemovePopoutGroup`. */
 function fireRemovePopoutGroup(api: DockviewApi, id: string, group: IDockviewGroupPanel): void {
   (
     api as unknown as {
@@ -1224,7 +1263,7 @@ function fireRemovePopoutGroup(api: DockviewApi, id: string, group: IDockviewGro
   ).component._onDidRemovePopoutGroup.fire({ id, group, window: null });
 }
 
-test("Finding 1: onDidRemovePopoutGroup (user-closed) emits one popIn per tracked member and clears tracking maps", async () => {
+test("onDidRemovePopoutGroup (user-closed) emits one popIn per tracked member and clears tracking maps", async () => {
   const { ops } = await popOutViaMenu(() => Promise.resolve(true));
   const api = engine!.debugApi!;
   const groupId = "sc-group:chat";
@@ -1243,7 +1282,7 @@ test("Finding 1: onDidRemovePopoutGroup (user-closed) emits one popIn per tracke
   expect(engine!.debugPoppedOutOriginGroups.has("chat")).toBe(false);
 });
 
-test("Finding 1: onDidRemovePopoutGroup falls back to live group membership for an untracked group id", () => {
+test("onDidRemovePopoutGroup falls back to live group membership for an untracked group id", () => {
   const host = document.createElement("div");
   const stageEl = document.createElement("div");
   const slotFor = makeSlots(["chat"]);
@@ -1267,7 +1306,7 @@ test("Finding 1: onDidRemovePopoutGroup falls back to live group membership for 
   expect(ops).toEqual([{ op: "popIn", id: "chat" }]);
 });
 
-test("Finding 1: onDidRemovePopoutGroup skips a group whose sole (fallback-resolved) member is the stage panel", () => {
+test("onDidRemovePopoutGroup skips a group whose sole (fallback-resolved) member is the stage panel", () => {
   const host = document.createElement("div");
   const stageEl = document.createElement("div");
   const slotFor = makeSlots([]);
@@ -1278,8 +1317,10 @@ test("Finding 1: onDidRemovePopoutGroup skips a group whose sole (fallback-resol
   engine.onOp((op) => ops.push(op));
 
   const api = engine.debugApi!;
-  // The stage's own group id (not exported by `dockview.ts`; mirrors the
-  // literal already asserted against at dockview.test.ts:309). The stage's
+  // The stage's own group id (`STAGE_GROUP_ID`, not exported by the `dockview` module; mirrors the
+  // literal already asserted against in "a tree naming the stage id in a
+  // zone group applies without throwing, and the real stage stays alive in its own
+  // locked group"). The stage's
   // group is never tracked in `#poppedOutGroupPanels` (the stage is never
   // poppable), so this also exercises the fallback lookup — resolving to
   // `[STAGE_ID]` — which the loop's `id === STAGE_ID` guard must then skip
@@ -1290,14 +1331,14 @@ test("Finding 1: onDidRemovePopoutGroup skips a group whose sole (fallback-resol
   expect(ops).toEqual([]);
 });
 
-test("Finding 1: onDidRemovePopoutGroup fired mid-apply() (our own reconcile) suppresses popIn but still clears tracking maps", async () => {
+test("onDidRemovePopoutGroup fired mid-apply() (our own reconcile) suppresses popIn but still clears tracking maps", async () => {
   const { ops } = await popOutViaMenu(() => Promise.resolve(true));
   const api = engine!.debugApi!;
   const groupId = "sc-group:chat";
   const group = api.getGroup(groupId)!;
   ops.length = 0;
 
-  // Simulates the top-risk scenario named by the plan: a "dock" command on a
+  // Simulates the top-risk scenario: a "dock" command on a
   // popped-out panel causes dockview to remove the popout group as a side
   // effect of `apply()`'s own reconcile. `#applying` is true for the whole
   // synchronous duration of `apply()`, so patching `api.addGroup` (which the

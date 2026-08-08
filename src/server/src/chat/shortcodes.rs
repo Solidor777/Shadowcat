@@ -1,9 +1,8 @@
 //! `:shortcode:` → unicode emoji, applied to raw chat input BEFORE any
-//! markdown/html processing (sanitize.rs pre-pass) so stored content is final
+//! markdown/html processing (`chat::sanitize` pre-pass) so stored content is final
 //! and identical under every content policy. Always-on typing sugar — output is
-//! plain unicode text with no security surface. v1 limitation (documented in the
-//! design spec): replacement is pre-parse, so a shortcode inside a markdown code
-//! span is also replaced.
+//! plain unicode text with no security surface. Limitation: replacement is
+//! pre-parse, so a shortcode inside a markdown code span is also replaced.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]

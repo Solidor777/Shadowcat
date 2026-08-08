@@ -62,7 +62,7 @@ describe("formula properties", () => {
     // 20-node DAG over add/mul: node i (i >= 2) depends on two strictly-earlier
     // nodes (j < i, k < i), guaranteeing acyclicity by construction; the rest
     // are leaves. Resolved with 3 different key-order shuffles; the Nightfox
-    // permutation invariant (spec D3/D12) requires identical results.
+    // permutation invariant requires identical results regardless of key order.
     const r = rng(3);
     const n = 20;
     type Node =

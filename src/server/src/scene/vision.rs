@@ -1,5 +1,5 @@
-//! Clean-room 2D visibility-polygon raycaster (M9b). Engine-owned geometry (#6 exception),
-//! server-authoritative (#3). No proprietary VTT/engine source consulted.
+//! Clean-room 2D visibility-polygon raycaster. Engine-owned geometry, server-authoritative.
+//! No proprietary VTT/engine source consulted.
 //!
 //! Algorithm: the "ray casting to endpoints" angular sweep — for a viewpoint and a set of
 //! occluding segments, cast rays toward every segment endpoint (and ±epsilon, to slip past
@@ -233,7 +233,7 @@ mod tests {
 
     #[test]
     fn point_segment_distance_degenerate_segment_uses_geometry_scale_epsilon() {
-        // A segment with near-zero (but not exactly zero) length, below the old
+        // A segment with near-zero (but not exactly zero) length, below the plain
         // f64::EPSILON threshold but meaningfully non-degenerate at scene scale.
         let a = (0.0, 0.0);
         let b = (1e-9, 0.0); // len2 = 1e-18, well below both thresholds — still degenerate

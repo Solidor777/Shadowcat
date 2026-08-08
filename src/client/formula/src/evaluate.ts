@@ -4,7 +4,7 @@ import { finite, validateResolverOutput } from "./internal";
 
 /** Structural recursion over `Expr`. Resolver errors and non-finite arithmetic
  * results both short-circuit as `FormulaValue` errors — the evaluator never
- * throws and never returns `NaN`/`Infinity` (spec §5.2). Operands evaluate
+ * throws and never returns `NaN`/`Infinity`. Operands evaluate
  * left-to-right; the FIRST error encountered wins. Recursion depth is bounded
  * indirectly by `MAX_AST_NODES`, not `MAX_PARSE_DEPTH`: a flat additive/
  * multiplicative chain (e.g. `a + b + c + ...`) builds one `evaluate` stack
@@ -39,8 +39,8 @@ export function evaluate(
       try {
         v = resolve(expr.path);
       } catch {
-        // Never interpolate the caught exception's message: `detail` is
-        // player-presentable (types.ts), and a consumer resolver's thrown
+        // Never interpolate the caught exception's message: `FormulaError.detail` is
+        // player-presentable, and a consumer resolver's thrown
         // message is an internal implementation detail, not for players.
         return {
           error: "resolver-error",
@@ -82,8 +82,8 @@ export function evaluate(
  * @returns The arithmetic result, or a `"div-zero"`/`"non-finite"` error.
  * @example
  * ```
- * // not part of the public `@shadowcat/formula` surface (index.ts does not
- * // re-export this module).
+ * // not part of the public `@shadowcat/formula` surface (this module is not
+ * // re-exported).
  * evalBin("%", -7, 2); // -1 (truncated, not floored)
  * evalBin("/", 1, 0);  // { error: "div-zero", detail: "..." }
  * ```
@@ -136,8 +136,8 @@ function evalBin(
  * arguments, or a `"non-finite"` error (see the arity note above).
  * @example
  * ```
- * // not part of the public `@shadowcat/formula` surface (index.ts does not
- * // re-export this module) — reachable only through `evaluate`'s "call" case.
+ * // not part of the public `@shadowcat/formula` surface (this module is not
+ * // re-exported) — reachable only through `evaluate`'s "call" case.
  * evalCall("round", [{ kind: "num", value: -2.5 }], () => 0); // -2 (ties toward +Infinity)
  * ```
  */

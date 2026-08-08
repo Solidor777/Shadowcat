@@ -7,7 +7,7 @@
 //! be replayed as a credential, and the row lookup keys on a non-secret
 //! column — no secret is ever compared by SQLite's index machinery.
 //!
-//! Entropy: the verifier is [`SECRET_BYTES`] = 16 CSPRNG bytes = 128 bits, so a
+//! Entropy: the verifier is `SECRET_BYTES` = 16 CSPRNG bytes = 128 bits, so a
 //! blind guess succeeds with probability 2^-128 per attempt. Even at an absurd
 //! 10^9 online attempts per second against a server that did no rate limiting
 //! at all, the expected time to a first hit is 2^127 / 10^9 s ≈ 5.4 x 10^21

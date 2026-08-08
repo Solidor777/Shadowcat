@@ -177,7 +177,7 @@ pub(crate) async fn sweep_spent_invites(
 /// Spawn a background task that periodically deletes expired session rows
 /// and spent world-invite rows. Housekeeping, not correctness: expired rows
 /// are already unloadable/unredeemable; the sweep bounds unbounded table
-/// growth. Sweeps once at startup, then every [`SESSION_SWEEP_PERIOD`]. A
+/// growth. Sweeps once at startup, then every `SESSION_SWEEP_PERIOD`. A
 /// failed sweep is logged and retried next tick — it never aborts the server.
 pub fn spawn_session_sweep(repo: &SqliteRepository) {
     let store = SqlxSqliteStore::new(repo.pool().clone());

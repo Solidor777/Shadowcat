@@ -1,5 +1,5 @@
-//! Typed `engine` band structs + the doc_type registry (S1/S3): the engine
-//! band exists iff `doc_type` is engine-defined, and its stored JSON must
+//! Typed `engine` band structs + the doc_type registry: the engine band
+//! exists iff `doc_type` is engine-defined, and its stored JSON must
 //! deserialize into that doc_type's struct — a strict ingress gate rather
 //! than an opaque pointer-walked body.
 
@@ -786,8 +786,7 @@ mod tests {
     }
 
     /// Drift guard: `WorldSettingsEngine::default()` must serialize to the
-    /// SAME values as the client's `DEFAULT_WORLD_SETTINGS`
-    /// (scene-docs.ts:104-119), field-by-field.
+    /// SAME values as the client's `DEFAULT_WORLD_SETTINGS`, field-by-field.
     #[test]
     fn world_settings_default_matches_client_default() {
         let v = serde_json::to_value(WorldSettingsEngine::default()).unwrap();

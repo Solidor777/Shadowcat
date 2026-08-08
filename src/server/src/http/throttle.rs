@@ -91,7 +91,7 @@ impl Default for AuthThrottle {
 }
 
 /// Infallible client-IP extractor: `Some` when the server is served with
-/// connect-info (production `main.rs`), `None` under the axum-test mock
+/// connect-info (production, via `into_make_service_with_connect_info`), `None` under the axum-test mock
 /// transport — IP throttling degrades to identity-only there, never a 500.
 pub struct ClientIp(pub Option<std::net::IpAddr>);
 

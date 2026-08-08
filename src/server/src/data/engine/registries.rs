@@ -1,11 +1,12 @@
 //! Singleton config-document engine bands: `channel-registry`,
 //! `faction-registry`, `condition-registry`, `chat-settings`, `dice-settings`.
-//! Field shapes transcribed verbatim from `chat-docs.ts` / `scene-docs.ts`.
+//! Field shapes mirror the client's re-exported `Channel`, `FactionStance`,
+//! `Faction`, `Condition`, `ChatSettingsEngine`, and `DiceSettingsEngine`.
 //!
 //! `chat::settings::ChatContentPolicy` is a type alias onto
 //! `ChatSettingsEngine`; `chat::rolls`/`chat::settings` read `DiceSettingsEngine`
 //! directly. Both bodies live on the `engine` band, ingress-validated same as
-//! every other engine-defined doc_type (see `chat/settings.rs`).
+//! every other engine-defined doc_type (see `chat::settings::ChatContentPolicy`).
 
 // Ratchet: every item in this module must carry a doc comment, enforced by
 // the two deny attributes below.
@@ -17,7 +18,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-/// A chat channel's display config (chat-docs.ts:131-133 `ChatChannel`).
+/// A chat channel's display config (mirrors the client's `Channel`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
@@ -37,8 +38,7 @@ pub struct ChannelRegistryEngine {
     pub channels: BTreeMap<String, Channel>,
 }
 
-/// A faction's stance toward the party (scene-docs.ts:409-414
-/// `FactionStance`).
+/// A faction's stance toward the party (mirrors the client's `FactionStance`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(rename_all = "lowercase")]
@@ -51,7 +51,7 @@ pub enum FactionStance {
     Hostile,
 }
 
-/// A faction's display + stance (scene-docs.ts:410-414 `Faction`). `color`
+/// A faction's display + stance (mirrors the client's `Faction`). `color`
 /// is "#rrggbb" (the token border color).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
@@ -76,7 +76,7 @@ pub struct FactionRegistryEngine {
     pub factions: BTreeMap<String, Faction>,
 }
 
-/// A status condition's display (scene-docs.ts:429-432 `Condition`). `icon`
+/// A status condition's display (mirrors the client's `Condition`). `icon`
 /// is a short glyph (emoji) rendered as a token badge.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
@@ -99,9 +99,8 @@ pub struct ConditionRegistryEngine {
     pub conditions: BTreeMap<String, Condition>,
 }
 
-/// GM-configured chat content policy (chat-docs.ts:176-183
-/// `ChatSettingsSystem`). Every field optional/absent-safe; a partial body
-/// is a valid engine band.
+/// GM-configured chat content policy (mirrors the client's `ChatSettingsEngine`).
+/// Every field optional/absent-safe; a partial body is a valid engine band.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields, default)]
@@ -116,8 +115,9 @@ pub struct ChatSettingsEngine {
     pub hyperlinks: Option<bool>,
     /// Allow mailto links.
     pub emails: Option<bool>,
-    /// Tri-state: absent is the spec'd default-on-when-hyperlinks-on
-    /// behavior; `Some(true)`/`Some(false)` are an explicit GM override.
+    /// Tri-state: absent defaults ON whenever `hyperlinks` is also on, per
+    /// `ChatSettingsEngine::previews_enabled`; `Some(true)`/`Some(false)` are
+    /// an explicit GM override.
     pub link_previews: Option<bool>,
 }
 
@@ -145,8 +145,8 @@ pub enum DiceDirectionSetting {
     LowWins,
 }
 
-/// GM-configured ambient dice-notation context (chat-docs.ts:154-157
-/// `DiceSettingsSystem`). `#[serde(default)]` on the struct means a partial
+/// GM-configured ambient dice-notation context (mirrors the client's
+/// `DiceSettingsEngine`). `#[serde(default)]` on the struct means a partial
 /// or absent body fills the rest with the safe default (Total + HighWins).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]

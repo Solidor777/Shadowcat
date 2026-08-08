@@ -2,8 +2,8 @@ import { MAX_FORMULA_LENGTH, type FormulaError, type FormulaValue, isFormulaErro
 import { validateResolverOutput } from "./internal";
 
 /** Identifier words whose leading-alpha prefix means dice notation, not a stat.
- * Mirrors src/server/src/dice/notation/parser.rs keyword match (kh/kl/dh/dl/r/ro/cs/cf/t/e)
- * plus the 'd' dice operator. M13b's authoring validation imports this list. */
+ * Mirrors `P::modifiers`'s keyword match (kh/kl/dh/dl/r/ro/cs/cf/t/e)
+ * plus the 'd' dice operator. Nightfox's stat-key authoring validation imports this list. */
 export const NOTATION_KEYWORDS: readonly string[] =
   ["d", "kh", "kl", "dh", "dl", "r", "ro", "cs", "cf", "t", "e"];
 
@@ -11,7 +11,7 @@ const I32_MAX = 2147483647;
 
 /**
  * True for a character that may START a notation keyword or identifier:
- * a letter or `_`. Distinct from `lexer.ts`'s `isWordStart` (a separate
+ * a letter or `_`. Distinct from `isWordStart` (a separate
  * scanner over a separate grammar — this module rewrites dice-notation
  * template text, not formula source).
  * @param ch A single character.
@@ -107,8 +107,8 @@ function substituteIdentifier(
     return { error: "resolver-error", detail: `resolver threw for '${originalText}'` };
   }
   // Trust-boundary validation: `resolve` is a consumer-supplied callback and is not
-  // guaranteed to honor the `FormulaValue` contract (same boundary evaluate.ts's `ref`
-  // case and graph.ts's `evalNode` call already cross via this shared helper).
+  // guaranteed to honor the `FormulaValue` contract (same boundary `evaluate`'s `ref`
+  // case and the `evalNode` callback already cross via this shared helper).
   const value = validateResolverOutput(rawValue);
   if (isFormulaError(value)) return value;
   if (!Number.isInteger(value)) {
@@ -119,7 +119,7 @@ function substituteIdentifier(
   }
   // Intentionally asymmetric: spec formula is `abs(value) > i32::MAX`, so the true i32
   // minimum (-2147483648) is rejected as a cap error even though it IS representable in
-  // an i32. This mirrors the spec literally — do not "fix" it into a symmetric range check.
+  // an i32. This asymmetry is intentional — do not "fix" it into a symmetric range check.
   if (Math.abs(value) > I32_MAX) {
     return { error: "cap", detail: `'${originalText}' = ${value}: out of i32 range` };
   }
@@ -131,18 +131,19 @@ function substituteIdentifier(
   // `x + N`.
   //
   // It does have one observable consequence, in the roll breakdown rather than
-  // the total: `collect_labeled_consts` (src/server/src/dice/eval/sum.rs) emits
+  // the total: `collect_labeled_consts` emits
   // a ConstTerm only for a `Const` carrying a label, and it RECURSES through
   // `Expr::Neg` — so a labeled `-N[label]` would still contribute a signed chip,
   // while this form's two unlabeled `Const`s contribute none. A negative
   // substitution therefore shows no `[label]` chip in the breakdown.
-  // See docs/TODO.md — whether that is intended has not been established.
+  // TODO: decide whether that is intended; if the chip is wanted, emit `-N[originalText]`
+  // instead (arithmetically identical per the fold above).
   if (value < 0) return `(0 - ${-value})`;
   return `${value}[${originalText}]`;
 }
 
 /** Rewrites a dice-notation template: identifiers resolve to labeled constants, existing
- * dice-notation atoms (and `[label]` spans) pass through untouched. Spec §3 template mode.
+ * dice-notation atoms (and `[label]` spans) pass through untouched.
  * INVARIANT: never throws; every failure path returns a FormulaError.
  * @param src Template text, e.g. `"1d20 + str"` — a mix of dice-notation atoms
  * (numbers, the `d` operator, `NOTATION_KEYWORDS` modifiers, `[label]` spans)
@@ -161,7 +162,10 @@ function substituteIdentifier(
 export function resolveNotationTemplate(
   src: string,
   resolve: (path: string[]) => FormulaValue,
-): { notation: string } | FormulaError {
+): {
+  /** The rewritten notation string, ready to post to `chat::rolls`. */
+  notation: string;
+} | FormulaError {
   if (src.length > MAX_FORMULA_LENGTH) {
     return { error: "cap", detail: `template exceeds ${MAX_FORMULA_LENGTH} characters` };
   }
@@ -202,7 +206,7 @@ export function resolveNotationTemplate(
       // by a digit or another keyword-shaped run (e.g. "t1", "d2mod") cannot be resolved
       // as an identifier here: `readAlphaPrefix` stops at the first non-alpha char, so
       // the keyword letter alone matches NOTATION_KEYWORDS and the remainder re-lexes as
-      // dice-notation atoms, not a continued identifier. M13b's tier-1 authoring
+      // dice-notation atoms, not a continued identifier. Nightfox's stat-key authoring
       // validation (reserved-key checking) must reject this compound shape too, not just
       // literal keyword collisions.
       if (NOTATION_KEYWORDS.includes(lower)) {

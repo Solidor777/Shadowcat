@@ -6,7 +6,14 @@
   import Assets from "../Assets.svelte";
 
   let { onAssetChanged = () => () => {} }: {
-    onAssetChanged?: (cb: (m: { uuid: string; op: "replaced" | "deleted" }) => void) => () => void;
+    /** Fixture stand-in for `AppContext.onAssetChanged`; defaults to a subscriber that never
+     * fires, since no real `AssetChanged` broadcast reaches this harness. */
+    onAssetChanged?: (cb: (m: {
+      /** The changed asset's stable id, mirroring `ServerMsg::AssetChanged.uuid`. */
+      uuid: string;
+      /** Which mutation fired, mirroring `ServerMsg::AssetChanged.op` (`AssetOp`). */
+      op: "replaced" | "deleted";
+    }) => void) => () => void;
   } = $props();
   // svelte-ignore state_referenced_locally
   setAppContext({

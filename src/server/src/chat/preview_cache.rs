@@ -1,5 +1,5 @@
 //! Per-URL result cache and per-user fetch rate limiter for the link-preview
-//! fetcher (`link_preview.rs`). Kept as a separate module because the cache
+//! fetcher (`link_preview`). Kept as a separate module because the cache
 //! has NO SSRF-guard responsibility of its own — it only remembers outcomes
 //! already produced by the guarded fetcher, keyed on the CANDIDATE URL the
 //! ingest stage extracted from the message (`enrich` gets and inserts under
@@ -43,7 +43,7 @@ pub const PREVIEW_FETCH_PER_MIN: usize = 20;
 
 /// Reused verbatim: `PingRateLimiter` is already a generic per-user
 /// sliding-window hit budget (user, now_ms, per_min) with no ping-specific
-/// logic in it. See `shadowcat-codebase-chat` / `ws/mod.rs` for the shared
+/// logic in it. See `shadowcat-codebase-chat` / `PingRateLimiter` for the shared
 /// implementation.
 pub type PreviewRateLimiter = PingRateLimiter;
 

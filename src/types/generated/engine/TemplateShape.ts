@@ -7,7 +7,7 @@
  */
 export type TemplateShape = { 
 /**
- * "circle" | "cone" | "rect" | "line" (`template-view.ts`'s tessellation
+ * "circle" | "cone" | "rect" | "line" (`TemplateView.toSpec`'s tessellation
  * vocabulary; kept a `String` in v1).
  */
 kind: string, 
@@ -25,6 +25,6 @@ y: number,
 size: number, 
 /**
  * Orientation in degrees; the render layer converts via standard radian
- * math (`template-view.ts`).
+ * math (`TemplateView.toSpec`).
  */
 direction: number, };

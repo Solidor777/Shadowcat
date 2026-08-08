@@ -1,7 +1,7 @@
 //! E2E: scene-entity creation and the cascade-delete-as-events invariant over
 //! the real WS server.
 
-mod common;
+use shadowcat_test_support as common;
 
 use common::*;
 use futures_util::{SinkExt, StreamExt};

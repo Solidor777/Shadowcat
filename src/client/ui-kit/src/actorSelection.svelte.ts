@@ -15,7 +15,9 @@
  * {@link ActorSelection.select}).
  */
 export class ActorSelection {
+  /** Backing store for {@link ActorSelection.selectedId}. */
   #id = $state<string | null>(null);
+  /** Backing store for {@link ActorSelection.keepAfterPlace}. */
   #keepAfterPlace = $state(false);
 
   /** The selected actor's id, or `null` when nothing is selected. Not validated against

@@ -1,16 +1,25 @@
 // Transport abstraction so the WS client is testable without a real socket.
 // Production supplies a `WebSocket`-backed connector; tests supply an in-memory
-// paired connector (see mock-server.ts).
+// paired connector (see `MockServer`).
 
+/** The connector surface `WsClient` sends/closes through, independent of the
+ * backing implementation (real `WebSocket` or an in-memory test pair). */
 export interface Transport {
-  /** Send a text frame. */
+  /** Send a text frame.
+   * @param data The frame payload to send.
+   */
   send(data: string): void;
   /** Close the connection (triggers `onClose`). */
   close(): void;
 }
 
+/** Callbacks `Connect` invokes for events on the opened `Transport`. */
 export interface TransportHandlers {
+  /** Called with each inbound text frame.
+   * @param data The received frame payload.
+   */
   onMessage(data: string): void;
+  /** Called once the transport closes, after a successful open. */
   onClose(): void;
 }
 

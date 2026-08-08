@@ -1,5 +1,5 @@
 import { getContext, setContext } from "svelte";
-import type { ContributionRegistry, DocumentStore, ReadableDocuments, AssetResolver, SceneFrame, SceneSubscription, WireOperation, WireDocument, PathResult, MoveStream, WireActorOwnerRef, WireAudience, SheetRef, SubscriptionHandle, WireSearchHit, StampOpts, SyncState } from "@shadowcat/core";
+import type { ContributionRegistry, DocumentStore, ReadableDocuments, AssetResolver, SceneFrame, SceneSubscription, WireOperation, WireDocument, PathResult, MoveStream, ChatSendOptions, SheetRef, SubscriptionHandle, WireSearchHit, StampOpts, SyncState } from "@shadowcat/core";
 import type { WorldRole } from "@shadowcat/types";
 import type { SceneInteraction } from "./sceneInteraction";
 import type { ActorSelection } from "./actorSelection.svelte";
@@ -11,55 +11,86 @@ import type { SceneSelection } from "./sceneSelection.svelte";
  * reactive implementation). */
 export type TFunc = (key: string, params?: Record<string, string | number>) => string;
 
+/** Options for `AppContext.subscribeScene`. */
+export interface AppSubscribeSceneOptions {
+  /** Userid to view the channel as; GM-only, server-rejected otherwise. */
+  asUser?: string;
+}
+
 /** Chat transport seam (see `AppContext.chat`). Each call resolves when the op
  * is accepted (success-assumed after a short window with no error), and rejects
  * with the server's player-presentable reason on a correlated rejection so the
  * caller can surface it instead of the op silently vanishing. */
 export interface ChatApi {
-  send(opts: {
-    channel: string;
-    content: string;
-    actorOwner?: WireActorOwnerRef | null;
-    audience?: WireAudience;
-  }): Promise<void>;
+  /** Post a new chat message. Resolves per the class doc's success/rejection contract.
+   * @param opts - Message content plus optional attribution/audience.
+   * @returns Resolves (void) once the send is accepted; rejects with the server's
+   * player-presentable reason otherwise. */
+  send(opts: ChatSendOptions): Promise<void>;
+  /** Edit an existing message's content. The server enforces edit ownership and
+   * rejects via the same correlated-rejection path as `send`.
+   * @param messageId - Id of the message to edit.
+   * @param content - The replacement body.
+   * @returns Resolves once the edit is accepted; rejects on ownership/server refusal. */
   edit(messageId: string, content: string): Promise<void>;
+  /** Delete an existing message. The server enforces delete ownership and
+   * rejects via the same correlated-rejection path as `send`.
+   * @param messageId - Id of the message to delete.
+   * @returns Resolves once the delete is accepted; rejects on ownership/server refusal. */
   delete(messageId: string): Promise<void>;
 }
 
 /** Template pull/push/revert/stamp seam (§6.3). Thin orchestration over `store`/`documents` +
  * `dispatchIntent`; the controller opens the conflict modal when needed. */
 export interface TemplatesApi {
-  /** Deep-clone `source` into a new stamped instance; the caller dispatches the Create. */
+  /** Deep-clone `source` into a new stamped instance; the caller dispatches the Create.
+   * @param source - The template document to stamp from.
+   * @param opts - Stamping options (placement exclusions, etc.).
+   * @returns The new instance document, not yet dispatched. */
   stampInstance(source: WireDocument, opts: StampOpts): WireDocument;
-  /** Merge the template into the child; opens the modal on conflicts, else dispatches directly. */
+  /** Merge the template into the child; opens the modal on conflicts, else dispatches directly.
+   * @param childId - Id of the instance document to pull into. */
   pull(childId: string): void;
-  /** Push the template to every in-store instance the pusher can see + write. */
+  /** Push the template to every in-store instance the pusher can see + write.
+   * @param templateId - Id of the template document to push from. */
   push(templateId: string): void;
-  /** Reset the child's mergeable bands to the template (keeping placement); refresh base. */
+  /** Reset the child's mergeable bands to the template (keeping placement); refresh base.
+   * @param childId - Id of the instance document to revert. */
   revert(childId: string): void;
-  /** In-store instances stamped from `templateId`. */
+  /** In-store instances stamped from `templateId`.
+   * @param templateId - Id of the template document.
+   * @returns The matching in-store instance documents. */
   findInstances(templateId: string): WireDocument[];
-  /** Provenance/sync state for the sheet badge. */
+  /** Provenance/sync state for the sheet badge.
+   * @param childId - Id of the instance document.
+   * @returns The child's current sync state relative to its template. */
   syncState(childId: string): SyncState;
-  /** Whether the current user may pull/revert this child (owner-or-GM + write caps). */
+  /** Whether the current user may pull/revert this child (owner-or-GM + write caps).
+   * @param childId - Id of the instance document.
+   * @returns Whether the pull/revert controls should be shown. */
   canPull(childId: string): boolean;
-  /** Whether the current user may push this template (owner-or-GM). */
+  /** Whether the current user may push this template (owner-or-GM).
+   * @param templateId - Id of the template document.
+   * @returns Whether the push control should be shown. */
   canPush(templateId: string): boolean;
 }
 
 /**
  * Ambient app state contributed components read via Svelte context. Carries the
  * contribution registry the host renders plus the in-world session essentials
- * (document store, world id, user role). M7d adds the i18n `t`.
+ * (document store, world id, user role, and the i18n `t` function).
  */
 export interface AppContext {
+  /** The registry the panel/surface host renders contributed UI from. */
   contributions: ContributionRegistry;
   /** Authoritative (confirmed-only) document mirror — the rollback base. */
   store: DocumentStore;
   /** Optimistic (predicted) document view — the canvas render source, so a placed or
    * dragged document shows immediately. */
   documents: ReadableDocuments;
+  /** The current world's id. */
   world: string;
+  /** The current user's world-scoped role. */
   role: WorldRole;
   /** The caller's SERVER tier, orthogonal to `role` (per-world). Only
    * `"admin"` reaches the server-administration routes, and no world role
@@ -75,30 +106,47 @@ export interface AppContext {
    * `doc.permissions.gm_role`, while the server's GM bypass IS conditional on it. So this can
    * over-permit a GM's write affordances on a `gm_role`-capped document; see the caveat on the
    * implementation for the reachability bound. Advisory-only — never treat a `true` here as
-   * authorization. */
+   * authorization.
+   * @param doc - The document the caller wants to write to.
+   * @param path - The field path within `doc` being edited.
+   * @returns Whether write controls for that path should render as enabled. */
   canEdit(doc: WireDocument, path: string): boolean;
   /** Open (or focus) a document as a floating sheet panel. `docId` targets a top-level
    * document (optionally one embedded child via `embeddedPath`); `tokenId` resolves to the
    * token's linked actor or embedded actor copy. Fail-closed: a dangling/raw ref opens
-   * nothing (logged), never a crash. */
+   * nothing (logged), never a crash.
+   * @param ref - The document/token/embedded-child reference to open. */
   openDocument(ref: SheetRef): void;
   /** userId → username for the world's members (all roles; used for chat name resolution + GM see-as labels). */
   members: Map<string, string>;
+  /** Translate a key to the active locale's string. */
   t: TFunc;
   /** Resolves asset UUIDs to serve URLs, cache-busting on replace. */
   assets: AssetResolver;
-  /** Subscribe to asset replace/delete notices; returns an unsubscribe. */
-  onAssetChanged(cb: (msg: { uuid: string; op: "replaced" | "deleted" }) => void): () => void;
+  /** Subscribe to asset replace/delete notices; returns an unsubscribe.
+   * @param cb - Called with the changed asset's uuid and the operation kind.
+   * @returns Unsubscribe function. */
+  onAssetChanged(cb: (msg: {
+    /** Id of the asset that changed. */
+    uuid: string;
+    /** Whether the asset was replaced (new content, same id) or deleted. */
+    op: "replaced" | "deleted";
+  }) => void): () => void;
   /** Subscribe to a SceneDerived channel; the session re-establishes it across
    * reconnects. Returns a synchronous unsubscribe handle. `opts.asUser` (GM-only see-as-player)
-   * views the channel as that user; the server rejects it for non-GMs. */
+   * views the channel as that user; the server rejects it for non-GMs.
+   * @param channel - The SceneDerived channel name.
+   * @param onUpdate - Called with each pushed frame.
+   * @param opts - Optional GM see-as-player override.
+   * @returns A subscription handle carrying a synchronous unsubscribe. */
   subscribeScene(
     channel: string,
     onUpdate: (f: SceneFrame) => void,
-    opts?: { asUser?: string },
+    opts?: AppSubscribeSceneOptions,
   ): SceneSubscription;
   /** Predict + transmit document operations as one correlated optimistic intent
-   * (the module write path). `ctx.client`/`store` reflect the prediction. */
+   * (the module write path). `ctx.client`/`store` reflect the prediction.
+   * @param ops - The wire operations to apply as one intent. */
   dispatchIntent(ops: WireOperation[]): void;
   /** Canvas interaction seam: set the active tool, snap to grid, mark a dragged
    * token. No-ops until the Stage attaches the render engine. */
@@ -107,21 +155,26 @@ export interface AppContext {
   actorSelection: ActorSelection;
   /** Selected token ids for group-select; set by the factions panel, read by the select tool. */
   tokenSelection: TokenSelection;
-  /** The scene THIS client renders + subscribes to (M12d). Players follow
+  /** The scene THIS client renders + subscribes to. Players follow
    * `world-settings.activeScene`; a GM roaming via `setGmViewedScene` overrides locally. Getter —
    * reactive when read through a `documents.subscribe` bridge. */
   viewedSceneId: string | null;
-  /** GM local roam (M12d): view any scene without moving players. No-op for a non-GM. */
+  /** GM local roam: view any scene without moving players. No-op for a non-GM. */
   setGmViewedScene: (id: string | null) => void;
-  /** Live full-text document search (M6c seam). Resolves once the initial page arrives (and fires
+  /** Live full-text document search seam. Resolves once the initial page arrives (and fires
    * `onUpdate` for it); subsequent pushes fire `onUpdate`. Ephemeral — NOT reconnect-resilient;
    * re-subscribe per query. Rejects when there is no transport. */
   searchDocuments: (
     query: string,
-    opts: { limit?: number; timeoutMs?: number },
+    opts: {
+      /** Max hits per page; server-defaulted when omitted. */
+      limit?: number;
+      /** Milliseconds to wait for the initial page before rejecting; server-defaulted when omitted. */
+      timeoutMs?: number;
+    },
     onUpdate: (hits: WireSearchHit[]) => void,
   ) => Promise<SubscriptionHandle>;
-  /** Which scene the game-settings per-scene section edits (M12d "Configure"); set by the scene
+  /** Which scene the game-settings per-scene section edits ("Configure"); set by the scene
    * browser, read by GameSettingsPanel. */
   sceneSelection: SceneSelection;
   /** Broadcast a transient location ping at scene coords on the active scene. */
@@ -148,18 +201,33 @@ export interface AppContext {
     path: [number, number][],
   ) => Promise<MoveStream>;
   /** Subscribe to relayed location pings (incl. our own echo); returns an unsubscribe. */
-  onPing: (cb: (msg: { scene: string; x: number; y: number; user: string }) => void) => () => void;
+  onPing: (cb: (msg: {
+    /** Scene the ping was placed on. */
+    scene: string;
+    /** Scene-space x coordinate. */
+    x: number;
+    /** Scene-space y coordinate. */
+    y: number;
+    /** Userid of the pinging user. */
+    user: string;
+  }) => void) => () => void;
   /** Subscribe to THIS client's own `moveRequest` outcomes (executed/truncated/rejected) — a
    * read-only observability signal, not a broadcast of every scene viewer's moves. Returns an
    * unsubscribe. */
-  onMoveOutcome: (cb: (msg: { tokenId: string; outcome: "executed" | "truncated" | "rejected" }) => void) => () => void;
+  onMoveOutcome: (cb: (msg: {
+    /** Token the move was requested for. */
+    tokenId: string;
+    /** `truncated` means the server stopped the move short (e.g. a movement-gate rejection
+     * mid-path); `rejected` means no move happened at all. */
+    outcome: "executed" | "truncated" | "rejected";
+  }) => void) => () => void;
   /** Chat transport seam: send/edit/delete a chat message. NOT fire-and-forget — each frame
    * carries a `request_id` and a rejection correlates back to REJECT this promise with the
    * server's player-presentable reason (which the composer surfaces). Success is the
    * asymmetric case: the broadcast Event echo carries no `request_id`, so an accepted op is
    * never acknowledged and resolution is assumed from silence. See `ChatApi` above. */
   chat: ChatApi;
-  /** Template merge seam: stamp + pull/push/revert (M13e). */
+  /** Template merge seam: stamp + pull/push/revert. */
   templates: TemplatesApi;
   /** Leave the current world and return to world-select. */
   leaveWorld: () => void;
@@ -170,11 +238,18 @@ export interface AppContext {
    * `setPanelLayout` persist the panel host's dock/size/order blob (opaque to
    * this seam — the panel host owns its shape). */
   uiState: {
+    /** Read the persisted panel-layout blob.
+     * @returns The persisted panel-layout blob, or `null` if never saved. */
     getPanelLayout(): unknown | null;
+    /** Persist the panel-layout blob.
+     * @param blob - The panel host's dock/size/order blob to persist. */
     setPanelLayout(blob: unknown): void;
     /** Opaque per-channel chat read-marker blob, owned by the chat module
-     * (unread tab badge). */
+     * (unread tab badge).
+     * @returns The persisted read-marker blob, or `null` if never saved. */
     getChatRead(): unknown | null;
+    /** Persist the chat read-marker blob.
+     * @param blob - The chat module's read-marker blob to persist. */
     setChatRead(blob: unknown): void;
   };
   /** Imperative panel-host seam (open/close/focus/toggle by panel id) plus a

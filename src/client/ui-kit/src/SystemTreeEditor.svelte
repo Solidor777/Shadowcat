@@ -11,8 +11,19 @@
   // INVARIANT: `doc` must be sourced from `ctx.documents` (the optimistic view), never
   // `ctx.store` (the rollback base) — otherwise every OCC pre-image read here is stale and
   // edits spuriously conflict [[render-from-optimistic-view]].
-  let { doc, basePath, root, readOnly }: { doc: WireDocument; basePath: string; root: unknown; readOnly: boolean } =
-    $props();
+  let { doc, basePath, root, readOnly }: {
+    /** The document edits dispatch against. Must come from the optimistic view (see the
+     * INVARIANT above); the editor never reads or writes this itself, only forwards it. */
+    doc: WireDocument;
+    /** The JSON-pointer path from `doc`'s write root to `root`; a leaf edit targets
+     * `basePath + "/" + key`. */
+    basePath: string;
+    /** The resolved value at `basePath` on `doc` — an object, array, or leaf to render. */
+    root: unknown;
+    /** Advisory `canEdit` result for `basePath`; `true` disables every control (the server
+     * remains authoritative regardless). */
+    readOnly: boolean;
+  } = $props();
 
   const ctx = getAppContext();
   const t = ctx.t;

@@ -7,10 +7,11 @@ import type { EngineAdapter } from "./engine/adapter";
 import { applyOp, defaultLayout } from "./layout/tree";
 import { PanelsController } from "./controller.svelte";
 
-/** Minimal fake MediaQueryList (mirrors ui-kit's sizeClass.test.ts) so
+/** Minimal fake MediaQueryList (mirrors `@shadowcat/ui-kit`'s own
+ * `FakeMediaQueryList`) so
  * PanelHost's sizeClass()-driven presentation switch is deterministic under
  * jsdom, which has no real `matchMedia`. Must be stubbed before the
- * file-scoped dynamic import below, since `sizeClass.svelte.ts` reads
+ * file-scoped dynamic import below, since `sizeClass()`'s module reads
  * `matchMedia` once at module load. */
 class FakeMediaQueryList {
   matches: boolean;
@@ -39,7 +40,7 @@ const { default: ThrowingPanel } = await import("./__fixtures__/ThrowingPanel.sv
 const { default: CrashOnceCountingPanel } = await import("./__fixtures__/CrashOnceCountingPanel.svelte");
 // Dynamic, alongside the imports above: a static top-level `import { i18n }
 // from "@shadowcat/ui-kit"` would pull in the whole ui-kit barrel (including
-// `sizeClass.svelte.ts`, which reads `matchMedia` at module load) BEFORE the
+// `sizeClass()`'s module, which reads `matchMedia` at module load) BEFORE the
 // `vi.stubGlobal` call above runs, breaking the ordering that comment warns about.
 const { i18n } = await import("@shadowcat/ui-kit");
 
@@ -141,7 +142,7 @@ test("mount-counter: a docked panel's component mounts exactly once across the f
   await Promise.resolve();
   expect(mounts).toBe(1);
 
-  // Pop-out leg (M12e): dock⇄float⇄...⇄pop-out⇄pop-in never re-mounts. The
+  // Pop-out leg: dock⇄float⇄...⇄pop-out⇄pop-in never re-mounts. The
   // FakeEngine degrades pop-out to a floating window, so the slot is re-parented
   // (adopted), never recreated.
   engine.emitOp({ op: "popOut", id: "chat:panel" });
@@ -175,7 +176,7 @@ test("gmOnly: a gmOnly registration is absent from the compact switcher and dock
   // Compact switcher: the gmOnly panel never reaches `compact.order` either.
   // (The dock-chip strip is now rendered solely by the statusbar's
   // `panel-dock` Surface; its gmOnly filtering is enforced upstream by
-  // `regsForRole`, covered in `controller.test.ts`.)
+  // `regsForRole`, covered in "regsForRole: a gmOnly registration is invisible to a non-GM role".)
   mql.fire(false);
   await Promise.resolve();
   expect(screen.queryByTestId("compact-switch-game-settings:panel")).toBeNull();
@@ -445,7 +446,7 @@ test("live region: an engine notice announces the resolved i18n text", async () 
   expect(liveRegion.textContent).toBe(i18n.t("panels.popoutRestoredFloating"));
 });
 
-test("Finding 4 (buddy-check): a reload-restored popout's notice reaches the live region", async () => {
+test("a reload-restored popout's notice reaches the live region", async () => {
   const registry = new ContributionRegistry();
   registry.contribute({
     id: "chat:panel",
@@ -456,8 +457,8 @@ test("Finding 4 (buddy-check): a reload-restored popout's notice reaches the liv
   });
 
   // A persisted layout with "chat:panel" popped-out — `PanelsController`
-  // rehydrates it to floating + queues (but, per Finding 4's fix, does not
-  // yet FIRE) `panels.popoutRestoredFloating` at construction.
+  // rehydrates it to floating + queues (but does not yet FIRE)
+  // `panels.popoutRestoredFloating` at construction.
   let saved = defaultLayout([{ id: "chat:panel", placement: { kind: "docked", zone: "right" } }]);
   saved = applyOp(saved, { op: "dock", id: "chat:panel", zone: "right", group: "new" });
   saved = applyOp(saved, { op: "popOut", id: "chat:panel" });
@@ -473,15 +474,16 @@ test("Finding 4 (buddy-check): a reload-restored popout's notice reaches the liv
   await Promise.resolve();
 
   // Proves the notice is actually OBSERVABLE by the live region a screen
-  // reader watches (not merely that some callback fired) — the gap Finding
-  // 4 named. `controller.test.ts` proves the narrower claim (construction
+  // reader watches, not merely that some callback fired.
+  // "rehydratePoppedOut: a persisted popped-out id comes back as
+  // floating + a notice" proves the narrower claim (construction
   // alone must not call `onNotice`); the test below proves `PanelHost` is
   // what performs the flush that makes this text appear.
   const liveRegion = container.querySelector('[role="status"]')!;
   expect(liveRegion.textContent).toBe(i18n.t("panels.popoutRestoredFloating"));
 });
 
-test("Finding 4 (buddy-check): PanelHost's post-mount effect — not PanelsController's constructor — is what flushes the reload notice", async () => {
+test("PanelHost's post-mount effect — not PanelsController's constructor — is what flushes the reload notice", async () => {
   const registry = new ContributionRegistry();
   registry.contribute({
     id: "chat:panel",

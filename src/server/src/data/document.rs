@@ -87,7 +87,7 @@ pub enum Visibility {
     /// Visible only to recipients whose `Access` carries GM sight.
     GmOnly,
     /// Readable by the document's owner and the GM; redacted from everyone else.
-    /// The recipient's owner-status is `Access::is_owner` (see permission.rs).
+    /// The recipient's owner-status is `Access::is_owner`.
     OwnerOrGm,
 }
 
@@ -112,9 +112,10 @@ impl Default for DocRole {
     }
 }
 
-/// Additive capability grants beyond the built-in `DocRole` floor, keyed by
-/// namespaced capability string (e.g. `core:manage_embedded`). Grants widen
-/// what a role/user may do on a document; they never revoke the floor.
+/// Additive capability grants beyond the built-in `DocRole` floor. Each map is
+/// keyed by grantee — a `DocRole` or a user id — and its values are namespaced
+/// capability strings (e.g. `core:manage_embedded`). Grants widen what a
+/// role/user may do on a document; they never revoke the floor.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 pub struct CapabilityGrants {
@@ -283,8 +284,9 @@ pub struct ContractDeclaration {
     pub requires: Vec<String>,
 }
 
-/// A single JSON type tag for a schema node (M13f tier-2). Shape only — never a
-/// value discriminator (invariant 6).
+/// A single JSON type tag for a schema node. Shape only — never a value
+/// discriminator, keeping schema validation built from this type structural
+/// rather than semantic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 #[serde(rename_all = "snake_case")]
@@ -308,8 +310,7 @@ pub enum SchemaType {
 /// the hand-written `Deserialize` routes a JSON object straight into `Schema` via
 /// `MapAccessDeserializer` so the inner schema's `deny_unknown_fields` is enforced
 /// (an untagged/internally-tagged derive would buffer through `Content` and drop
-/// that check — the same serde limitation documented for `TokenVisual` in
-/// `validation.rs`).
+/// that check — the same serde limitation documented for `TokenVisual`).
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum AdditionalProperties {
@@ -346,12 +347,13 @@ impl<'de> Deserialize<'de> for AdditionalProperties {
     }
 }
 
-/// A structural (shape-only) type-tree node (M13f tier-2). By construction cannot
-/// express a value rule (no enum/bounds/pattern/combinators) — invariant 6 holds
-/// by construction. `deny_unknown_fields` makes a malformed schema fail to
+/// A structural (shape-only) type-tree node. By construction cannot
+/// express a value rule (no enum/bounds/pattern/combinators), so a schema built
+/// from this type can only ever check shape, never a value.
+/// `deny_unknown_fields` makes a malformed schema fail to
 /// deserialize at the set endpoint. An all-absent node (`{}`) matches any JSON.
 /// Cross-field legality (e.g. `items` only on an array) is not enforced by serde;
-/// `validate_schema` (routes.rs) enforces it at set-time.
+/// `validate_schema` enforces it at set-time.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 #[serde(deny_unknown_fields)]
@@ -387,7 +389,7 @@ pub struct Schema {
     pub nullable: Option<bool>,
 }
 
-/// A module's per-`(doc_type, subtree)` structural schema (M13f tier-2). Pure
+/// A module's per-`(doc_type, subtree)` structural schema. Pure
 /// data — the server stores and interprets it as a shape check, never as code.
 /// `subtree_pointer` is a strict `/system/…` descendant (enforced at set-time).
 /// `schema_format` is the engine-owned vocabulary version; `version` is the
@@ -419,7 +421,7 @@ pub struct PermissionSet {
     /// makes the document invisible by default (fail-closed).
     pub default: DocRole,
     /// Per-user role that REPLACES `default` for that user — it can demote as
-    /// well as promote (`effective_role`, permission.rs).
+    /// well as promote (`effective_role`).
     pub users: BTreeMap<Uuid, DocRole>,
     /// Per-JSON-pointer visibility tiers; enforced per recipient by
     /// `Access::can_see` inside `filter_properties` before transmission.
@@ -452,7 +454,7 @@ pub struct Document {
     pub doc_type: String,
     /// Envelope schema version for forward migration.
     pub schema_version: u32,
-    /// Universal display name (S2). Redacts to `null` under a `/name` override.
+    /// Universal display name. Redacts to `null` under a `/name` override.
     #[serde(default)]
     pub name: Option<String>,
     /// Provenance of a stamped instance; `None` = not an instance. Immutable:
@@ -471,7 +473,7 @@ pub struct Document {
     #[ts(type = "unknown")]
     pub base: Option<serde_json::Value>,
     /// Owning user. On tokens, ownership is EFFECTIVE — the token's own owner,
-    /// else the linked actor's (`effective_owner`, permission.rs); on every
+    /// else the linked actor's (`effective_owner`); on every
     /// other doc_type this is provenance only and grants no capability.
     #[serde(default)]
     pub owner: Option<Uuid>,
@@ -487,7 +489,7 @@ pub struct Document {
     /// scenes themselves). Immutable via field-path Update (envelope field).
     #[serde(default)]
     pub parent_id: Option<Uuid>,
-    /// Engine band (S1/S3): present iff `doc_type` is engine-defined; validated
+    /// Engine band: present iff `doc_type` is engine-defined; validated
     /// against the doc_type's typed struct at ingress (data/engine). Stored
     /// post-validation. `None` for community/system doc types.
     #[serde(default)]
@@ -542,7 +544,7 @@ pub(crate) mod tests {
         let doc: Document = serde_json::from_value(bare).unwrap();
         assert!(doc.name.is_none() && doc.engine.is_none());
 
-        // S4 reservation: unknown root key `modules` is rejected
+        // Unknown root key `modules` is rejected: reserved for future module-scoped storage.
         let with_modules = serde_json::json!({
             "id": Uuid::from_u128(1), "scope": {"kind": "world", "world_id": Uuid::from_u128(9)},
             "doc_type": "note", "schema_version": 1, "system": {}, "modules": {},
@@ -600,7 +602,7 @@ pub(crate) mod tests {
         // The custom AdditionalProperties Deserialize preserves deny_unknown_fields
         // on the inner Schema (MapAccessDeserializer, not a buffered Content), so a
         // smuggled key inside an additionalProperties subschema is REJECTED, not
-        // silently dropped (mirrors the TokenVisual tagged-enum hole in validation.rs).
+        // silently dropped (mirrors the TokenVisual tagged-enum hole).
         assert!(serde_json::from_value::<super::Schema>(serde_json::json!({
             "type": "object",
             "additionalProperties": { "type": "string", "enum": ["a"] }
@@ -761,7 +763,7 @@ pub(crate) mod tests {
                 "size": { "w": 1.0, "h": 1.0 }, "shape": "square",
                 "faction": null, "conditions": [], "prototype": true
             })),
-            "message" => None, // chat's own re-root builds this doc directly; see chat/mod.rs
+            "message" => None, // chat's own re-root builds this doc directly; see `chat::build_message_doc`
             "world-settings" => Some(
                 serde_json::to_value(crate::data::engine::WorldSettingsEngine::default()).unwrap(),
             ),

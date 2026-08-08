@@ -1,8 +1,8 @@
-//! Illumination field + gradation banding (M10e-2). Pure, engine-owned (ARCHITECTURE #6),
-//! server-authoritative (#3). Clean-room: standard radial light falloff plus threshold banding of a
-//! continuous [0,1] illumination field. No proprietary VTT/engine source consulted.
+//! Illumination field + gradation banding. Pure, engine-owned, server-authoritative.
+//! Clean-room: standard radial light falloff plus threshold banding of a
+//! continuous `[0,1]` illumination field. No proprietary VTT/engine source consulted.
 //!
-//! Mirrors the client `light-gradation`/`light`/`vision-modes` shapes in scene-docs.ts; the server
+//! Mirrors the client `light-gradation`/`light`/`vision-modes` shapes in the `scene-docs` module; the server
 //! stays structural-only (callers parse documents and pass these plain structs).
 
 #![deny(missing_docs)]
@@ -26,13 +26,13 @@ pub enum Falloff {
     /// Smooth quadratic taper (faster than linear).
     Quadratic,
     /// No gradient: a flat dim-band step (`0.5 × intensity`) — bright/dim radii feed the gradation
-    /// bands directly (spec §5.4). With the default gradation this lands a unit-intensity light's
+    /// bands directly. With the default gradation this lands a unit-intensity light's
     /// dim band at 0.5 ∈ [dim 0.34, bright 0.67).
     None,
 }
 
 /// A placed light's photometric inputs. Radii are in GRID CELLS; `color` is packed `0xRRGGBB`.
-/// Mirrors the client `LightSystem` (scene-docs.ts).
+/// Mirrors the client `LightEngine`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Light {
     /// Position in scene units.
@@ -80,17 +80,17 @@ pub fn light_illumination(light: &Light, dist_cells: f64) -> f64 {
     light.intensity * f
 }
 
-/// A named illumination band. `min_illumination` is the minimum [0,1] light level a cell must reach
+/// A named illumination band. `min_illumination` is the minimum `[0,1]` light level a cell must reach
 /// to qualify for this band. Mirrors the client `GradationBand`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Band {
     /// Band name (matched against `VisionMode::illumination_floor`).
     pub name: String,
-    /// INVARIANT: must be finite and in [0,1]; non-finite values are dropped by `sorted_bands`.
+    /// INVARIANT: must be finite and in `[0,1]`; non-finite values are dropped by `sorted_bands`.
     pub min_illumination: f64,
 }
 
-/// Built-in three-band gradation (bright → dim → dark). Mirrors `DEFAULT_GRADATION` in scene-docs.ts.
+/// Built-in three-band gradation (bright → dim → dark). Mirrors `DEFAULT_GRADATION` in the `scene-docs` module.
 pub fn default_bands() -> Vec<Band> {
     vec![
         Band {
@@ -150,7 +150,7 @@ pub fn floor_min(bands: &[Band], floor_name: &str) -> f64 {
         .unwrap_or_else(|| bands.first().map(|b| b.min_illumination).unwrap_or(1.0))
 }
 
-/// A composed per-cell illumination result: a [0,1] `level` and a packed-RGB `tint` (the dominant
+/// A composed per-cell illumination result: a `[0,1]` `level` and a packed-RGB `tint` (the dominant
 /// contributor's color; `0x000000` when only an unset environment contributes).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CellLight {
@@ -236,7 +236,7 @@ fn env_lit(env_polys: &[Vec<P>], center: P) -> bool {
 }
 
 /// Compose illumination at a cell center from a boundary-projected environment ambient plus each
-/// light, taking the MAX contributor (no over-brightening, spec §6); `tint` follows the dominant
+/// light, taking the MAX contributor (no over-brightening); `tint` follows the dominant
 /// contributor.
 /// `lit_polys[k]` is `lights[k]`'s `blocksLight` visibility polygon — a light contributes only if the
 /// cell center lies inside it (an EMPTY polygon means "no occluder computed" → never occludes).

@@ -2,5 +2,15 @@
   "extends": "../../typedoc.base.json",
   "entryPoints": [
     "index.ts"
+  ],
+  "intentionallyNotDocumented": [
+    "AnimatedSource.__type.type",
+    "Audience.__type.kind",
+    "ClientMsg.__type.type",
+    "Operation.__type.op",
+    "RenderVisual.__type.kind",
+    "Scope.__type.kind",
+    "ServerMsg.__type.type",
+    "TokenVisual.__type.kind"
   ]
 }

@@ -44,7 +44,7 @@ describe("SystemTreeEditor", () => {
 
   it("removeField round-trips through the real store: the key is genuinely absent", async () => {
     // End-to-end guard (not just the dispatched wire message): the emitted op, applied by the
-    // real DocumentStore, must DELETE the key — proving store.ts honors `remove: true`, the
+    // real DocumentStore, must DELETE the key — proving `DocumentStore` honors `remove: true`, the
     // client-visible half of the null != absent guarantee.
     const ops: WireCommand["ops"][] = [];
     const context = setAppContextForTest({ dispatchIntent: (o) => ops.push(o), canEdit: () => true });
@@ -129,7 +129,8 @@ describe("SystemTreeEditor", () => {
 
   it("the text/number/checkbox leaf inputs carry the shared coarse-pointer touch-sizing rule", () => {
     // jsdom doesn't evaluate @media (pointer: coarse), so assert the rule's
-    // presence directly in the component's source styles instead (mirrors ToolRail.test.ts).
+    // presence directly in the component's source styles instead (mirrors the "select/input
+    // controls get a 44px coarse-pointer min-height" test).
     const ruleMatch = systemTreeEditorSource.match(/\.node input\s*\{([^}]*@media[^}]*\{[^}]*\}[^}]*)\}/);
     expect(ruleMatch).toBeTruthy();
     expect(ruleMatch?.[1]).toMatch(/@media \(pointer: coarse\)\s*\{\s*min-height:\s*var\(--input-height-coarse\);\s*\}/);

@@ -1,6 +1,6 @@
 // Framework-neutral live counter backing the chat panel's `PanelMeta.badge`
 // (the panel-manager tab renderer's subscribe/get seam — see `PanelBadge` in
-// @shadowcat/core's contributions.ts). A `PanelMeta` object is registered
+// `@shadowcat/core`). A `PanelMeta` object is registered
 // once at module install; this instance is that registration's `badge`
 // field, so its count can change on every message arrival without ever
 // touching the panel-manager's own layout/meta reconcile.
@@ -8,9 +8,9 @@ import type { PanelBadge } from "@shadowcat/core";
 
 /**
  * A `PanelBadge` implementation: a live count with get/set/subscribe, so a
- * `PanelTabRenderer` (src/modules/panels/src/engine/dockview.ts:308) can
- * re-render a tab's badge on every count change without the panel-manager's
- * own layout/meta reconcile ever running.
+ * `PanelTabRenderer` (subscribed in its constructor) can re-render a tab's
+ * badge on every count change without the panel-manager's own layout/meta
+ * reconcile ever running.
  * @example
  * ```
  * // private module; not reachable as a workspace import — call shape:
@@ -20,7 +20,9 @@ import type { PanelBadge } from "@shadowcat/core";
  * ```
  */
 export class ChatUnreadBadge implements PanelBadge {
+  /** The current unread count; written only by `set`. */
   #count = 0;
+  /** Callbacks registered via `subscribe`, notified in insertion order by `set`. */
   #listeners = new Set<() => void>();
 
   /**
@@ -29,6 +31,7 @@ export class ChatUnreadBadge implements PanelBadge {
    * @example
    * ```
    * // private method; not reachable as a workspace import — call shape:
+   * declare const badge: ChatUnreadBadge;
    * badge.get();
    * ```
    */
@@ -44,6 +47,7 @@ export class ChatUnreadBadge implements PanelBadge {
    * @example
    * ```
    * // private method; not reachable as a workspace import — call shape:
+   * declare const badge: ChatUnreadBadge;
    * badge.set(3);
    * ```
    */
@@ -60,6 +64,7 @@ export class ChatUnreadBadge implements PanelBadge {
    * @example
    * ```
    * // private method; not reachable as a workspace import — call shape:
+   * declare const badge: ChatUnreadBadge;
    * const unsubscribe = badge.subscribe(() => {});
    * ```
    */
@@ -70,16 +75,14 @@ export class ChatUnreadBadge implements PanelBadge {
 }
 
 /**
- * Module-singleton: `index.ts` contributes it as the chat panel's
- * `PanelMeta.badge`; `src/modules/chat/src/ChatPanel.svelte:63` is the only
+ * Module-singleton: the `chat` module's `register` contributes it as the
+ * chat panel's `PanelMeta.badge`; `ChatPanel`'s unread-count `$effect` is the only
  * production writer (verified: `.set(` has no other call site in this
  * package outside test files). Its subscribers are whichever
- * `PanelTabRenderer`s are currently mounted for this tab
- * (src/modules/panels/src/engine/dockview.ts:308); each disposes its own
- * subscription in its own `dispose()`
- * (src/modules/panels/src/engine/dockview.ts:405-408), so a tab close/reopen
- * does not accumulate listeners here as long as dockview-core calls that
- * lifecycle hook on every teardown — a third-party guarantee this file does
- * not itself enforce or verify.
+ * `PanelTabRenderer`s are currently mounted for this tab (subscribed in
+ * the constructor); each disposes its own subscription in its own
+ * `dispose()`, so a tab close/reopen does not accumulate listeners here as
+ * long as dockview-core calls that lifecycle hook on every teardown — a
+ * third-party guarantee this file does not itself enforce or verify.
  */
 export const chatUnreadBadge = new ChatUnreadBadge();

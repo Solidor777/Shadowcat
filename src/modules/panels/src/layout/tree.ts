@@ -1,4 +1,4 @@
-// Pure layout tree + reducer for the M12a panel-manager host. Engine-agnostic: no Svelte,
+// Pure layout tree + reducer for the panel-manager host. Engine-agnostic: no Svelte,
 // no dockview, no ui-kit — a host component maps this state onto whatever docking widget
 // it renders (dockview-core, in this codebase). All mutating functions return a NEW object;
 // unchanged-input calls return the SAME reference so a host can cheaply skip a re-render.
@@ -8,25 +8,36 @@ import type { ZoneId, DefaultPlacement } from "@shadowcat/core";
  * container (not the viewport). Carried on `floating` entries and on the `float`/
  * `resizeFloating` ops; the reducer never reads a viewport, so these stay whatever the
  * caller supplied. `x`/`y` may be negative (a panel legitimately dragged partway
- * off-screen); `w`/`h` are never negative (see `persist.ts`'s `isRect`, which enforces
+ * off-screen); `w`/`h` are never negative (see `isRect`, which enforces
  * this on decode). */
 export interface Rect {
+  /** Host-relative CSS px (see this interface's own doc); may be negative (dragged partway off-screen). */
   x: number;
+  /** Host-relative CSS px (see this interface's own doc); may be negative (dragged partway off-screen). */
   y: number;
+  /** CSS px; never negative — enforced by `isRect` on decode. */
   w: number;
+  /** CSS px; never negative — enforced by `isRect` on decode. */
   h: number;
 }
 
 /** One tab strip within a zone. `size` is this group's fraction (0..1) of the zone. */
 export interface GroupNode {
+  /** Panel ids in this group, in tab-strip order. */
   tabs: string[];
+  /** The currently-selected tab. INVARIANT: must be a member of `tabs` — checked by
+   * `isReferentiallyConsistent` on decode; the type does not enforce it. */
   active: string;
+  /** This group's fraction (0..1) of the zone; see this interface's own doc. */
   size: number;
 }
 
 /** A dock zone. `size` is the zone's own px basis (independent of its groups' fractions). */
 export interface ZoneNode {
+  /** The zone's tab groups, in display order. */
   groups: GroupNode[];
+  /** The zone's own px basis, independent of its groups' fractions; see this interface's
+   * own doc. */
   size: number;
 }
 
@@ -35,16 +46,26 @@ export interface ZoneNode {
  * "closed" as mutually exclusive and exhaustive for a given panel id (see `detach`'s own doc
  * comment). */
 export interface ExpandedLayout {
-  // All three ZoneId keys are always present, even with empty groups — callers never
-  // guard a missing zone.
+  /** All three `ZoneId` keys are always present, even with empty groups — callers never
+   * guard a missing zone. */
   zones: Record<ZoneId, ZoneNode>;
-  floating: { id: string; rect: Rect; z: number }[];
+  /** Floating (undocked, freely positioned) panels; order is not display-significant, z is
+   * carried per-entry. */
+  floating: {
+    /** The floating panel's id. */
+    id: string;
+    /** Its on-screen position and size. */
+    rect: Rect;
+    /** Stacking order among floating panels; kept contiguous 0..n-1 by `compactZ`. */
+    z: number;
+  }[];
+  /** Minimized panel ids; order is not display-significant. */
   minimized: string[];
-  // Ids currently rendered in a same-heap child window (dockview popout). PERSISTED
-  // as ids only — the live `Window` handle is dockview's, never serialized. A page
-  // load cannot reopen a popup (no user gesture), so a persisted entry rehydrates to
-  // floating at controller construction; during a live session an id lands here only
-  // after a gesture-time `addPopoutGroup` succeeds.
+  /** Ids currently rendered in a same-heap child window (dockview popout). PERSISTED
+   * as ids only — the live `Window` handle is dockview's, never serialized. A page
+   * load cannot reopen a popup (no user gesture), so a persisted entry rehydrates to
+   * floating at controller construction; during a live session an id lands here only
+   * after a gesture-time `addPopoutGroup` succeeds. */
   poppedOut: string[];
 }
 
@@ -52,17 +73,24 @@ export interface ExpandedLayout {
  * and which one is currently shown. Independent of `ExpandedLayout` — a panel's docked/
  * floating/minimized/popped-out location does not change when the host switches views. */
 export interface CompactLayout {
+  /** The currently-shown panel id; `null` when `order` is empty or nothing is selected. */
   activeView: string | null;
+  /** Panel ids in display order for the compact (narrow-viewport) view. */
   order: string[];
 }
 
 /** The persisted root: a fixed schema `version` tag (for future migrations) plus the
  * expanded and compact views' independent state. The sole value type every reducer
  * function (`applyOp`, `prune`, `placeNewRegistrations`) and the persistence codec
- * (`persist.ts`) operate on. */
+ * (`encodeLayout`/`decodeLayout`) operate on. */
 export interface PanelLayoutV1 {
+  /** Fixed schema tag (see this interface's own doc) — a marker for a future migration path
+   * to key off, not evidence one exists yet. */
   version: 1;
+  /** The non-compact (wide-viewport) view's state. */
   expanded: ExpandedLayout;
+  /** The compact (narrow-viewport) view's state; independent of `expanded` — see
+   * `CompactLayout`'s own doc. */
   compact: CompactLayout;
 }
 
@@ -70,33 +98,158 @@ export interface PanelLayoutV1 {
  * it translates a gesture (engine event, menu command, persisted rehydration) into one of
  * these and dispatches it through `applyOp`. */
 export type LayoutOp =
-  | { op: "open"; id: string; placement?: DefaultPlacement }
-  | { op: "close"; id: string }
-  | { op: "dock"; id: string; zone: ZoneId; group: number | "new"; tabIndex?: number }
-  | { op: "float"; id: string; rect: Rect }
-  | { op: "minimize"; id: string }
-  | { op: "restore"; id: string }
-  | { op: "activeTab"; zone: ZoneId; group: number; id: string }
-  | { op: "resizeZone"; zone: ZoneId; size: number }
-  | { op: "resizeGroup"; zone: ZoneId; group: number; size: number }
-  | { op: "resizeFloating"; id: string; rect: Rect }
-  | { op: "compactView"; id: string }
-  | { op: "popOut"; id: string }
-  | { op: "popIn"; id: string };
+  | {
+      /** Surface `id`: activates it if already docked, bumps it to front if already
+       * floating, otherwise detaches (if minimized) and places it — see `applyOp`'s
+       * `"open"` case. */
+      op: "open";
+      /** The panel to surface. */
+      id: string;
+      /** Where to place `id` when it is currently minimized or closed; ignored when `id`
+       * is already docked or floating. Absent falls back to a new docked group in zone
+       * `"right"` (see `placeByPlacement`). */
+      placement?: DefaultPlacement;
+    }
+  | {
+      /** Detach `id` from wherever it currently lives. */
+      op: "close";
+      /** The panel to close. */
+      id: string;
+    }
+  | {
+      /** Move `id` into a docked group. The one case with no no-op path: it always
+       * reconstructs its target zone, even when nothing actually moved. */
+      op: "dock";
+      /** The panel to dock. */
+      id: string;
+      /** The target dock zone. */
+      zone: ZoneId;
+      /** The target group's index in `zone` AS IT STOOD BEFORE this op runs — see
+       * `applyOp`'s `"dock"` case for why pre-detach indexing matters — or `"new"` to
+       * open a fresh group. */
+      group: number | "new";
+      /** Insertion index within the target group's `tabs`; absent appends at the end. */
+      tabIndex?: number;
+    }
+  | {
+      /** Float `id`; a no-op (same-reference) if `id` is already floating — see
+       * `applyOp`'s `"float"` case. */
+      op: "float";
+      /** The panel to float. */
+      id: string;
+      /** The floating position/size to place it at. */
+      rect: Rect;
+    }
+  | {
+      /** Minimize `id`; a no-op if already minimized. */
+      op: "minimize";
+      /** The panel to minimize. */
+      id: string;
+    }
+  | {
+      /** Restore a minimized `id` to a new docked `"right"` group; a no-op if `id` is not
+       * currently minimized. */
+      op: "restore";
+      /** The panel to restore. */
+      id: string;
+    }
+  | {
+      /** Activate one tab within a docked group; a no-op if `id` is not a member of that
+       * group or already active. */
+      op: "activeTab";
+      /** The zone containing the target group. */
+      zone: ZoneId;
+      /** The target group's index within `zone`. */
+      group: number;
+      /** The tab within that group to activate. */
+      id: string;
+    }
+  | {
+      /** Set a zone's own px basis; a no-op if unchanged. */
+      op: "resizeZone";
+      /** The zone to resize. */
+      zone: ZoneId;
+      /** The zone's new px basis. */
+      size: number;
+    }
+  | {
+      /** Set one group's fraction of its zone; a no-op if unchanged. */
+      op: "resizeGroup";
+      /** The zone containing the target group. */
+      zone: ZoneId;
+      /** The target group's index within `zone`. */
+      group: number;
+      /** The group's new fraction (0..1) of the zone. */
+      size: number;
+    }
+  | {
+      /** Live re-drag/resize sync of an ALREADY-floating panel (mirrors `"resizeZone"`/
+       * `"resizeGroup"`'s in-place update, not `"float"`'s detach-and-reinsert); a no-op
+       * if `id` is not currently floating. */
+      op: "resizeFloating";
+      /** The floating panel to update. */
+      id: string;
+      /** The panel's new position/size. */
+      rect: Rect;
+    }
+  | {
+      /** Select `id` as the compact view's shown panel; a no-op if `id` is not in
+       * `CompactLayout.order` or already active. */
+      op: "compactView";
+      /** The panel to show. */
+      id: string;
+    }
+  | {
+      /** Mark `id` as rendered in a popped-out child window; a no-op if already
+       * popped-out — see `applyOp`'s `"popOut"` case. */
+      op: "popOut";
+      /** The panel being popped out. */
+      id: string;
+    }
+  | {
+      /** Return a popped-out `id` to a new docked `"right"` group; a no-op if `id` is not
+       * currently popped-out. */
+      op: "popIn";
+      /** The panel returning from a popped-out window. */
+      id: string;
+    };
 
 /** Where a single panel id currently lives, as returned by `locate`. Mutually exclusive
  * and exhaustive: a panel is in exactly one of these five states at any time (see
  * `detach`'s own doc comment for the invariant this relies on). */
 export type PanelLocation =
-  | { where: "docked"; zone: ZoneId; group: number; tabIndex: number }
-  | { where: "floating"; index: number }
-  | { where: "minimized" }
-  | { where: "popped-out" }
-  | { where: "closed" };
+  | {
+      /** The panel is docked. */
+      where: "docked";
+      /** The zone it is docked in. */
+      zone: ZoneId;
+      /** Its group's index within `zone`. */
+      group: number;
+      /** Its tab's index within that group. */
+      tabIndex: number;
+    }
+  | {
+      /** The panel is floating. */
+      where: "floating";
+      /** Its index into `ExpandedLayout.floating`. */
+      index: number;
+    }
+  | {
+      /** The panel is minimized. */
+      where: "minimized";
+    }
+  | {
+      /** The panel is rendered in a popped-out child window. */
+      where: "popped-out";
+    }
+  | {
+      /** The panel is not present anywhere in the layout. */
+      where: "closed";
+    };
 
 // The fixed dock-zone set every `ExpandedLayout.zones` record always has an entry for
 // (see `ExpandedLayout`'s own doc comment) — an iteration order for the loops in this file,
-// not a priority. Mirrored (not shared) by `dockview.ts`'s own `ZONE_IDS`, which walks the
+// not a priority. Mirrored (not shared) by `DockviewEngine`'s own `ZONE_IDS`, which walks the
 // same three zones for its dockview-side reconciliation.
 const ZONE_IDS: readonly ZoneId[] = ["right", "bottom", "left"];
 
@@ -107,13 +260,14 @@ const ZONE_DEFAULT_SIZE: Record<ZoneId, number> = { right: 320, bottom: 240, lef
 // Floating-sheet cascade: a fixed base rect, offset a step per already-floating panel,
 // wrapping every 6 so a burst of sheets never marches off-screen. Deterministic + pure
 // so the reducer stays unit-testable (no viewport read). Value aligned with
-// controller.svelte.ts's REHYDRATE_FLOAT_BASE/STEP (kept as a separate constant, not a
+// `PanelsController`'s own `REHYDRATE_FLOAT_BASE`/`REHYDRATE_FLOAT_STEP` (kept as a separate constant, not a
 // shared import, so the two modules stay decoupled) — the same logical operation
 // (reload -> float a persisted popout) must land at the same screen position
 // regardless of which of the two call sites handles a given panel's registration timing.
 // Nothing in either file's types enforces this pairing; the two constants can drift
 // silently unless something exercises both call sites and compares their output. That
-// enforcement is `controller.test.ts:390-394`'s parity test, not a runtime assertion here.
+// enforcement is the "cascade parity at index %i: a floating placement and
+// a rehydrated popout land on the identical rect" test, not a runtime assertion here.
 const SHEET_CASCADE_BASE: Rect = { x: 96, y: 96, w: 420, h: 520 };
 const SHEET_CASCADE_STEP = 28;
 
@@ -400,8 +554,8 @@ export function applyOp(l: PanelLayoutV1, o: LayoutOp): PanelLayoutV1 {
       // `opForMenuCommand`), silently discarding whatever rect the user
       // already dragged/resized it to. Drag gestures never reach this branch
       // for an already-floating panel in the first place: `classifyDrop`'s
-      // `kind: "floating"` case has no producer in `dockview.ts`'s
-      // `#toDropSite` translation (only `"edge"`/`"group"` sites are ever
+      // `kind: "floating"` case has no producer in `DockviewEngine.#toDropSite`'s
+      // translation (only `"edge"`/`"group"` sites are ever
       // built from a real drag), so every `float` op in this codebase is
       // menu-originated — this guard changes no drag-originated behavior.
       const loc = locate(l, o.id);
@@ -707,9 +861,9 @@ function insertPersistedOrder(order: string[], id: string, persistedSource: Pane
  * When `persistedSource` is non-null (the PRE-`prune` structurally-validated blob this
  * session's user actually saved — see `decodeLayout`'s `source` field) and records a real
  * location for a registration's id, that persisted location is reconstructed exactly via
- * `placeFromPersistedLocation` INSTEAD of `reg.placement`'s static default — this is the
- * fix for the M12a boot race where every panel beyond the first-registering ones raced
- * `defaultLayout` against their own module's registration and got default-placed (and
+ * `placeFromPersistedLocation` INSTEAD of `reg.placement`'s static default — this prevents a
+ * boot race where every panel beyond the first-registering ones would race
+ * `defaultLayout` against their own module's registration and get default-placed (and
  * `#persist`ed), silently discarding the user's saved layout on every reload. An id present
  * in `persistedSource.compact.order` but located nowhere (closed-but-known) is added to
  * `compact.order` and left otherwise unplaced — never re-opened via `reg.placement`. An id
@@ -737,7 +891,13 @@ function insertPersistedOrder(order: string[], id: string, persistedSource: Pane
  */
 export function placeNewRegistrations(
   l: PanelLayoutV1,
-  regs: { id: string; placement?: DefaultPlacement }[],
+  regs: {
+    /** The panel id being registered. */
+    id: string;
+    /** Its static default placement; see `placeByPlacement`. Consulted only when `id` is
+     * genuinely absent from `persistedSource` (never seen by the user's saved session). */
+    placement?: DefaultPlacement;
+  }[],
   persistedSource: PanelLayoutV1 | null = null,
 ): PanelLayoutV1 {
   let out = l;
@@ -778,7 +938,14 @@ export function placeNewRegistrations(
  * defaultLayout([{ id: "chat", placement: { kind: "docked", zone: "right" } }]);
  * ```
  */
-export function defaultLayout(regs: { id: string; placement?: DefaultPlacement }[]): PanelLayoutV1 {
+export function defaultLayout(
+  regs: {
+    /** The panel id being registered. */
+    id: string;
+    /** Its static default placement; see `placeByPlacement`. */
+    placement?: DefaultPlacement;
+  }[],
+): PanelLayoutV1 {
   const empty: PanelLayoutV1 = {
     version: 1,
     expanded: { zones: emptyZones(), floating: [], minimized: [], poppedOut: [] },

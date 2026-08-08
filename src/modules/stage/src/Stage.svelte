@@ -15,6 +15,7 @@
     createBackend = (canvas: HTMLCanvasElement): Promise<DisplayBackend> =>
       createPixiBackend(canvas, { background: readColor("--surface-base", 0x101014) }),
   }: {
+    /** See the doc comment on the destructured default above. */
     createBackend?: (canvas: HTMLCanvasElement) => Promise<DisplayBackend>;
   } = $props();
 
@@ -29,7 +30,7 @@
   /** Live engine handle for the GM vision control (set after async init). */
   let engineRef: RenderEngine | null = null;
   /** GM vision mode: "all" (no fog), "fog" (client-only full-fog preview), or "as:<userId>"
-   * (M9c-2 see-as-player: re-subscribe vision as that user — server-gated to GMs). */
+   * (see-as-player: re-subscribe vision as that user — server-gated to GMs). */
   let gmView = $state("all");
   /** Candidate see-as targets: distinct token owners the GM sees (best-effort; usernames need a
    * members source — labeled by short id for now). */
@@ -38,7 +39,7 @@
   /** Applies the current `gmView` selection to the live engine. `"all"` and `"fog"` are
    * client-only — `"fog"` layers a local full-fog preview overlay, no server round-trip —
    * while `"as:<userId>"` re-subscribes the vision channel as that user and is a
-   * server-gated operation: `ws/conn.rs`'s `SceneSubscribe` handler rejects an `as_user`
+   * server-gated operation: `egress_loop`'s `SceneSubscribe` arm rejects an `as_user`
    * from a non-GM connection outright. Called again after an `$effect` re-run (below,
    * `if (gmView !== "all") applyGmView()`) so a non-default view survives teardown/re-init.
    * @example
@@ -144,7 +145,7 @@
         });
       });
       wirePointer(e, controller.signal);
-      // Drive the grid from the viewed scene's engine.grid (M8d §15), updating only on
+      // Drive the grid from the viewed scene's `engine.grid`, updating only on
       // a real change so a token drag does not rebuild the grid each frame; also expose
       // the rendered token count as a test/observability signal (mirrors render-ready).
       let lastGridKey = "";
@@ -154,7 +155,17 @@
         const activeSceneDoc = vsid ? documents.get(vsid) : documents.query("scene")[0];
         // Resolved once so both diagonalRule and animation read from the same snapshot.
         const settings = resolveSceneSettings(activeSceneDoc, documents);
-        const g = (activeSceneDoc?.engine as { grid?: { kind: "square" | "hex"; size: number } } | undefined)?.grid;
+        const g = (activeSceneDoc?.engine as {
+          /** Mirrors the server's `data::engine::scene::Grid`; absent on a scene doc that
+           * predates a grid write, falling back to the square/100 default below. */
+          grid?: {
+            /** `"square"` or `"hex"` — kept a string in v1, mirroring `Grid.kind`. */
+            kind: "square" | "hex";
+            /** Cell size in scene units; for hex grids the OUTER radius
+             * (center-to-vertex circumradius), mirroring `Grid.size`. */
+            size: number;
+          };
+        } | undefined)?.grid;
         // Diagonal rule is world-scoped (world-settings.pathfinding.diagonalRule); resolved
         // here so the ruler reflects the GM's active rule choice without requiring a page reload.
         const diagonalRule = settings.diagonalRule;
@@ -164,7 +175,7 @@
           lastGridKey = key;
           e.setGrid(spec);
         }
-        // Snap-to-grid is per-scene (M10f-3 §4.2-4.3). Pushed unconditionally each pass — a
+        // Snap-to-grid is per-scene. Pushed unconditionally each pass — a
         // cheap flag assignment (unlike setGrid's Grid rebuild or setAnimation's config
         // object), so no change-detection gate is needed here.
         e.setSnapEnabled(settings.snapToGrid);
@@ -186,7 +197,13 @@
         // which a position-less count cannot express.
         host.dataset.tokenPositions = sceneTokens
           .map((t) => {
-            const e = t.engine as { x?: number; y?: number } | undefined;
+            const e = t.engine as {
+              /** Committed center X in scene units, mirroring `TokenEngine.x`; absent on
+               * a token doc that predates placement. */
+              x?: number;
+              /** Committed center Y in scene units, mirroring `TokenEngine.y`. */
+              y?: number;
+            } | undefined;
             return `${t.id}:${e?.x ?? 0},${e?.y ?? 0}`;
           })
           .sort()
@@ -208,9 +225,9 @@
         e.addPing(m.x, m.y);
         host.dataset.lastPing = `${m.x},${m.y}`;
       });
-      // Read-only observability signal for the local player's own move requests
-      // (M14b) — no behavior change to movement, just an outcome the client already
-      // receives via moveRequest's resolution (see worldSession.moveRequest).
+      // Read-only observability signal for the local player's own move requests —
+      // no behavior change to movement, just an outcome the client already
+      // receives via `WorldSession.moveRequest`'s resolution.
       offMoveOutcome = onMoveOutcome((m) => {
         host.dataset.lastMoveOutcome = m.outcome;
       });
@@ -254,6 +271,8 @@
    * function registers in one `abort()` call.
    * @example
    * ```
+   * declare const engine: RenderEngine;
+   * declare const controller: AbortController;
    * // private function; not part of the public API — invoked once per mount $effect run
    * wirePointer(engine, controller.signal);
    * ```

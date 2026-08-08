@@ -75,7 +75,7 @@ test("PanelsBridge.minimized/metaMap read through to the bound implementation", 
   expect(bridge.metaMap.get("a")).toEqual({ icon: "a", labelKey: "a.tab" });
 });
 
-// Buddy-check finding 4: the panel host mounts (and calls `bind()`) LATER
+// The panel host mounts (and calls `bind()`) LATER
 // than other AppContext readers, so a `$derived` over `bridge.minimized` can
 // evaluate first, while `#impl` is still null. A plain field would freeze
 // that derived at `[]` forever; `#impl` must be reactive so a later `bind()`

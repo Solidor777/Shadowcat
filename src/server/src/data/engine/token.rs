@@ -1,6 +1,6 @@
-//! `token`/`actor` engine bands (M13-0 S1/S3). Field shapes are transcribed
-//! verbatim from the client's `scene-docs.ts` `TokenSystem`/`ActorSystem`
-//! (minus `name`, which moved to the envelope per S2).
+//! `token`/`actor` engine bands. Field shapes mirror the
+//! client's re-exported `TokenEngine`/`ActorEngine` (minus `name`, which
+//! lives on the envelope instead).
 
 // Ratchet: every item in this module must carry a doc comment, enforced by
 // the two deny attributes below.
@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
 
-/// A token's transform + visual (scene-docs.ts:146-162 `TokenSystem`). `(x,y)`
+/// A token's transform + visual (mirrors the client's `TokenEngine`). `(x,y)`
 /// is the token CENTER. `visual` is set only on raw (actorless) tokens —
 /// actor-backed tokens resolve their visual via the linked/embedded actor.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
@@ -191,7 +191,7 @@ pub struct VisionAssignment {
     pub range: f64,
 }
 
-/// The client-owned token/actor visual union (M10h). Internally tagged on
+/// The client-owned token/actor visual union. Internally tagged on
 /// `kind`; serde does not support `deny_unknown_fields` on an internally
 /// tagged enum (a documented limitation — NOT applied here).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
@@ -228,7 +228,7 @@ pub enum TokenVisual {
 }
 
 /// The two kinds the render layer actually draws — the render/resolution
-/// boundary (M10h). A face's own visual is always one of these — no nesting
+/// boundary. A face's own visual is always one of these — no nesting
 /// (a face can never itself be `{kind:"faces"}`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
@@ -277,24 +277,24 @@ pub enum AnimatedSource {
     },
 }
 
-/// An actor's engine-owned body (scene-docs.ts:197-209 `ActorSystem`, minus
-/// `name` which moves to the envelope). Every other field of `ActorSystem`
+/// An actor's engine-owned body (mirrors the client's `ActorEngine`, minus
+/// `name` which moves to the envelope). Every other field of `ActorEngine`
 /// (inventory, stats, …) lives in `system` — this is a SPLIT type.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
 pub struct ActorEngine {
-    /// scene-docs.ts:199 `displayName: string` — required, non-nullable.
+    /// The client's `ActorEngine.displayName: string` — required, non-nullable.
     #[serde(rename = "displayName")]
     pub display_name: String,
     /// The actor's visual, inherited by linked tokens (raw-token/override
-    /// visuals take precedence per the resolution order in `actor.ts`).
+    /// visuals take precedence per `resolveTokenVisual`'s resolution order).
     pub visual: TokenVisual,
     /// Default token size for this actor, scene units.
     pub size: Size,
     /// "square" | "circle" — kept a `String` in v1 (asserted by the battery).
     pub shape: String,
-    /// scene-docs.ts:203 `faction: string | null`. INVARIANT: `Option<T>`
+    /// The client's `ActorEngine.faction: string | null`. INVARIANT: `Option<T>`
     /// always accepts a missing key as `None` (serde special-cases `Option`
     /// regardless of `#[serde(default)]`) — absent and explicit `null` are
     /// ingress-equivalent here, not distinguishable. The re-serialized,
@@ -302,7 +302,7 @@ pub struct ActorEngine {
     /// exact parity with the client's `faction: string | null` contract on
     /// the stored/broadcast side.
     pub faction: Option<String>,
-    /// scene-docs.ts:204 `conditions: string[]` — the key is required.
+    /// The client's `ActorEngine.conditions: string[]` — the key is required.
     pub conditions: Vec<String>,
     /// Default place-mode: true ⇒ instance (independent copy) on drop; false
     /// ⇒ link (shared).

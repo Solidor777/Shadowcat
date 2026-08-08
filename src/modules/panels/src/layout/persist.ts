@@ -133,7 +133,7 @@ function isZoneNode(v: unknown): v is ZoneNode {
 }
 
 /** Type guard for an `ExpandedLayout`. `poppedOut` is back-compat-optional (see the inline
- * comment below): its ABSENCE is valid (a pre-M12e blob), normalized to `[]` by
+ * comment below): its ABSENCE is valid (a blob predating the `poppedOut` field), normalized to `[]` by
  * `withPoppedOut` after this guard passes; a PRESENT-but-malformed value instead fails this
  * guard, which fails the WHOLE blob via `isPanelLayoutV1` — the two cases are opposites, not
  * the same leniency applied twice.
@@ -170,7 +170,7 @@ function isExpandedLayout(v: unknown): v is ExpandedLayout {
     return false;
   }
   if (!isStringArray(e.minimized)) return false;
-  // Back-compat: a pre-M12e blob has no `poppedOut`; absent normalizes to []
+  // Back-compat: a blob predating the `poppedOut` field has none; absent normalizes to []
   // in `decodeLayout`. A present-but-malformed value fails the whole blob.
   return e.poppedOut === undefined || isStringArray(e.poppedOut);
 }
@@ -238,7 +238,7 @@ function isReferentiallyConsistent(l: PanelLayoutV1): boolean {
   return l.compact.activeView === null || l.compact.order.includes(l.compact.activeView);
 }
 
-/** Fills an absent `poppedOut` (pre-M12e blob) with `[]` so reducer arithmetic
+/** Fills an absent `poppedOut` (a blob predating the field) with `[]` so reducer arithmetic
  * (`prune`/`locate`/`detach`) never dereferences `undefined`. Returns the input
  * untouched when the field is already an array (the common, current-version path).
  * @param l A structurally-valid, referentially-consistent `PanelLayoutV1` (its
@@ -270,7 +270,7 @@ function withPoppedOut(l: PanelLayoutV1): PanelLayoutV1 {
  * `source` carries the SAME guard-validated blob `layout` was pruned FROM — `null` on
  * `reset`, otherwise the normalized blob (`withPoppedOut(raw)`: `raw` itself, by reference,
  * when `expanded.poppedOut` is already an array; a NEW object with `poppedOut: []` filled in
- * when a pre-M12e blob omits it — so `source` is `raw` by reference only in the
+ * when a blob predating the `poppedOut` field omits it — so `source` is `raw` by reference only in the
  * common/current-version case, not unconditionally), already known to satisfy
  * `isPanelLayoutV1` + `isReferentiallyConsistent`, before `known`-membership pruning ever ran.
  * `known` here is necessarily whatever the CALLER already had registered at decode time
@@ -303,7 +303,17 @@ export function decodeLayout(
   raw: unknown,
   known: ReadonlySet<string>,
   fallback: () => PanelLayoutV1,
-): { layout: PanelLayoutV1; reset: boolean; source: PanelLayoutV1 | null } {
+): {
+  /** The layout to use — `raw` decoded and pruned against `known`, or `fallback()`'s result
+   * on any validation failure. */
+  layout: PanelLayoutV1;
+  /** `true` iff `raw` failed structural or referential validation (see this function's own
+   * doc); pruning alone never sets this. */
+  reset: boolean;
+  /** The pre-prune normalized blob, or `null` on `reset`; see this function's own doc for
+   * why later-registering panels need it. */
+  source: PanelLayoutV1 | null;
+} {
   if (!isPanelLayoutV1(raw) || !isReferentiallyConsistent(raw)) return { layout: fallback(), reset: true, source: null };
   const normalized = withPoppedOut(raw);
   return { layout: prune(normalized, known), reset: false, source: normalized };

@@ -13,7 +13,7 @@ export type Grid = {
 kind: string, 
 /**
  * Cell size in scene units. For hex grids this is the OUTER radius
- * (center-to-vertex circumradius) — `HexGrid` and the client `grid.ts`
+ * (center-to-vertex circumradius) — `HexGrid` and the client's `GridSpec.size`
  * share this convention so cell indices always agree.
  */
 size: number, 

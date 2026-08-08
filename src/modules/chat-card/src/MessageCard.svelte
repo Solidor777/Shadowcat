@@ -12,17 +12,27 @@
   } from "@shadowcat/core";
   import RollTooltip from "./RollTooltip.svelte";
 
-  type RollEmbedSegment = Extract<ChatSegment, { kind: "roll_embed" }>;
-  type RollButtonSegment = Extract<ChatSegment, { kind: "roll_button" }>;
+  /** A message's whole content narrowed to its one executed roll. */
+  type RollEmbedSegment = Extract<ChatSegment, { /** Discriminant. */ kind: "roll_embed" }>;
+  /** A clickable "reroll this formula" segment, narrowed from `ChatSegment`. */
+  type RollButtonSegment = Extract<ChatSegment, { /** Discriminant. */ kind: "roll_button" }>;
 
-  let { message, showChannel }: { message: WireDocument; showChannel: boolean } = $props();
+  let {
+    message,
+    showChannel,
+  }: {
+    /** The stored message document; its `engine` body is parsed below via `parseMessageEngine`. */
+    message: WireDocument;
+    /** Whether to render the `channel` chip — true only in the "All" view, where channel is otherwise ambiguous. */
+    showChannel: boolean;
+  } = $props();
 
   const ctx = getAppContext();
   const t = ctx.t;
 
-  // Fail-closed body parse: `parseMessageEngine` (src/client/core/src/chat-docs.ts:164-168)
-  // returns null on a wrong doc_type or ANY schema-mismatched `engine` body, so a
-  // malformed/foreign-shaped body renders nothing rather than a partially-broken card.
+  // Fail-closed body parse: `parseMessageEngine` returns null on a wrong
+  // doc_type or ANY schema-mismatched `engine` body, so a malformed/
+  // foreign-shaped body renders nothing rather than a partially-broken card.
   const sys = $derived(parseMessageEngine(message));
 
   const authorName = $derived(sys ? (ctx.members.get(sys.user_owner) ?? sys.user_owner.slice(0, 8)) : "");
@@ -32,8 +42,8 @@
   // name-redaction and dangling-reference fail-closed behavior are inherited, not
   // reimplemented here — true for BOTH branches: `actor_owner.kind === "actor"` has no token
   // to read, so a synthetic link-mode wrapper stands in for one (its `overrides: {}` is a
-  // verified no-op — `resolveTokenActor`/`project`, src/client/core/src/actor.ts:93-103 and
-  // :36-50, read only `engine.actor_id`/`engine.overrides` off the wrapper, and every
+  // verified no-op — `resolveTokenActor`/`project` read only
+  // `engine.actor_id`/`engine.overrides` off the wrapper, and every
   // `overrides?.X` on an empty object falls through to the real actor's own field); a
   // `token_instance` ref resolves the real placed token through the identical function,
   // unmodified.
@@ -44,15 +54,21 @@
   });
 
   // The actor name becomes an openDocument link when the referenced document is present in
-  // the per-recipient OPTIMISTIC store (`ctx.documents` is the OptimisticClient view —
-  // src/client/core/src/optimistic.ts — base confirmed by the server, plus this client's own
-  // pending intents): normally presence implies READ, since server-side redaction withholds
+  // the per-recipient OPTIMISTIC store (`ctx.documents` is the `OptimisticClient` view —
+  // base confirmed by the server, plus this client's own pending intents): normally presence
+  // implies READ, since server-side redaction withholds
   // an unauthorized doc from `base` entirely, EXCEPT a doc present only via this client's own
   // not-yet-confirmed `applyIntent` prediction (e.g. an actor this user just tried to create)
   // hasn't cleared that check yet — the link briefly reflects the local guess until the
   // confirm/reject echo settles. A `token_instance` ref opens the token (its embedded actor);
   // an `actor` ref opens the actor doc. Absent ⇒ plain text, no link.
-  const actorOpenRef = $derived.by((): { tokenId: string } | { docId: string } | null => {
+  const actorOpenRef = $derived.by((): {
+    /** A live placed-token id to open (`token_instance` owner ref). */
+    tokenId: string;
+  } | {
+    /** A live actor-document id to open (`actor` owner ref). */
+    docId: string;
+  } | null => {
     const owner = sys?.actor_owner;
     if (!owner) return null;
     if (owner.kind === "actor") return ctx.documents.get(owner.actor_id) ? { docId: owner.actor_id } : null;
@@ -103,11 +119,11 @@
   }
 
   /** The clickable href for a `link_preview` card, or `undefined` to render it non-clickable.
-   * The server only ever stores an `http`/`https` preview URL: `validate_url`
-   * (src/server/src/chat/link_preview.rs:705-728) rejects any other scheme, and is called on
-   * both the initial URL (`:627`) and every redirect hop's resolved `Location` (`:648`), before
-   * a `LinkPreview` is ever constructed (`:684-691`). This function does
-   * not trust that invariant across the wire boundary and independently re-checks the scheme —
+   * The server only ever stores an `http`/`https` preview URL: `validate_url` rejects any
+   * other scheme, and `fetch_preview_inner` calls it on both the initial URL and every
+   * redirect hop's resolved `Location`, before a `LinkPreview` is ever constructed. This
+   * function does not trust that invariant across the wire boundary and independently
+   * re-checks the scheme —
    * a stored `javascript:`/`data:` URL (from a future path bypassing `fetch_preview`, or a
    * serialization bug) must never become a live anchor: Svelte performs no scheme filtering on
    * a dynamic `href` at runtime, so this check is the only thing standing between a bad stored
@@ -162,14 +178,13 @@
    * ```
    */
   function textOf(content: (ChatSegment | UnknownSegment)[]): string {
-    return content.filter(isKnownSegment).filter((s) => s.kind === "text").map((s) => (s as Extract<ChatSegment, { kind: "text" }>).text).join("");
+    return content.filter(isKnownSegment).filter((s) => s.kind === "text").map((s) => (s as Extract<ChatSegment, { /** Discriminant, already matched by the preceding filter. */ kind: "text" }>).text).join("");
   }
 
   // The two explicit roll-command prefixes `chat::parse_command` accepts via its
-  // `for tok in ["/roll ", "/r "]` loop (src/server/src/chat/commands.rs:39-46) — exact,
-  // case-sensitive match, same trailing space on each. The server ALSO accepts a bare `/NdM`
-  // shorthand as a separate roll-triggering form (src/server/src/chat/commands.rs:48-56,
-  // matched via
+  // `for tok in ["/roll ", "/r "]` loop — exact, case-sensitive match, same
+  // trailing space on each. The server ALSO accepts a bare `/NdM` shorthand
+  // as a separate roll-triggering form (also inside `parse_command`, matched via
   // `strip_prefix('/')` + `is_dice_shorthand`, not this loop) — omitted here on purpose, so a
   // bare `/NdM` matches neither entry and `rollFormula` below displays it verbatim (leading
   // slash included) rather than stripping a prefix. This is a display-scope statement about
@@ -190,8 +205,9 @@
 
   // Block form only when the WHOLE RAW content is exactly one segment and that segment is a
   // roll_embed (server invariant: a successful roll's content is built as exactly one
-  // RollEmbed — src/server/src/chat/mod.rs:651-654 constructs it, pinned by the test at
-  // :3499-3513). The length check runs against `sys.content` (raw, pre-filter) rather than the
+  // RollEmbed — `handle_send_message` constructs it, pinned by the test
+  // `roll_message_never_gets_a_link_preview_even_when_previews_enabled`).
+  // The length check runs against `sys.content` (raw, pre-filter) rather than the
   // known-segment-filtered list — filtering first would let an extra UNKNOWN segment silently
   // vanish and the lone roll_embed still render as a block, contradicting this guard's own
   // "additional/other segments fall back to the pending shell" intent.
@@ -204,8 +220,7 @@
   });
 
   /** Roll-button click: a fresh, public, sender-attributed `/roll` on the carrying message's
-   * channel — never re-executes the carrying message's own roll
-   * (docs/superpowers/specs/2026-07-13-m11d-2-dice-chat-wire-design.md §2 item 3, §7).
+   * channel — never re-executes the carrying message's own roll.
    * @param s The clicked `roll_button` segment.
    * @example
    * ```
@@ -218,8 +233,8 @@
   }
 
   // Advisory only — the server independently re-authorizes every edit/delete against its own
-  // owner-or-GM check (src/server/src/chat/mod.rs:860-863 for edit, :1018-1020 for delete);
-  // this gate only decides whether to SHOW the actions, never whether one succeeds.
+  // owner-or-GM check (in `handle_edit_message` for edit, `handle_delete_message` for
+  // delete); this gate only decides whether to SHOW the actions, never whether one succeeds.
   const canModerate = $derived(!!sys && (sys.user_owner === ctx.selfId || ctx.role === "gm"));
 
   let editing = $state(false);
@@ -262,14 +277,13 @@
     editing = false;
   }
   /** Sends chat's dedicated delete frame (`ctx.chat.delete`) after a native confirm dialog.
-   * The server applies this as a soft-tombstoning `Operation::Update` on `/engine`
-   * (src/server/src/chat/mod.rs:1033), published under `WriteOrigin::ServerMessageRevision`
-   * (`:1042`) — never a hard `Operation::Delete`; the doc stays in the sequenced log at its
-   * original seq. A client-authored hard delete of a `message` doc is independently rejected
-   * at both transport ingress points (`ops_target_message`, src/server/src/chat/mod.rs:78-83),
-   * so this frame is the only client-reachable way a STORED message doc's content is ever
-   * removed — it does not cover a world delete, which removes message docs wholesale outside
-   * this path entirely.
+   * The server applies this as a soft-tombstoning `Operation::Update` on `/engine` in
+   * `handle_delete_message`, published under `WriteOrigin::ServerMessageRevision` — never a
+   * hard `Operation::Delete`; the doc stays in the sequenced log at its original seq. A
+   * client-authored hard delete of a `message` doc is independently rejected at both
+   * transport ingress points (`ops_target_message`), so this frame is the only
+   * client-reachable way a STORED message doc's content is ever removed — it does not cover a
+   * world delete, which removes message docs wholesale outside this path entirely.
    * @example
    * ```
    * // internal; called from the delete action button
@@ -401,7 +415,7 @@
                   {s.label ?? s.formula}
                 </button>
               {:else if s.kind === "link_preview"}
-                <!-- Server-fetched preview (SSRF-guarded, M11d-3). The client NEVER fetches
+                <!-- Server-fetched preview (SSRF-guarded). The client NEVER fetches
                 `s.url` or any remote resource — only stored title/description/url strings are
                 rendered, all as escaped text. No <img>: an <img src> would make the viewer's
                 browser fetch a remote resource, leaking their IP to a URL an attacker chose. -->
@@ -545,8 +559,7 @@
     color: var(--danger, crimson);
   }
   .roll-btn {
-    // Touch floor: matches `.actions button` below. The 44px target for a roll_button is
-    // specified in docs/superpowers/specs/2026-07-13-m11d-2-dice-chat-wire-design.md §7.
+    // Touch floor: matches `.actions button` below. The 44px target applies to a roll_button too.
     min-height: 44px;
     min-width: 44px;
     padding: 0 var(--space-1);
@@ -602,16 +615,14 @@
     display: flex;
     gap: var(--space-1);
   }
-  // Images size to the card and sit on their own line —
-  // docs/superpowers/specs/2026-07-03-m11-chat-system-design.md §5 :165 ("forced to a new line,
-  // sized to the card"). `max-width` caps the width; `display: block` forces the break an inline
-  // <img> would not take.
+  // Images size to the card and sit on their own line, forced to a new line rather than
+  // flowing inline with surrounding text. `max-width` caps the width; `display: block` forces
+  // the break an inline <img> would not take.
   .seg-html :global(img) {
     max-width: 100%;
     display: block;
   }
-  // Link-preview card (docs/superpowers/specs/2026-07-13-m11d-3-link-previews-design.md §7,
-  // "Card rendering"). No <img> — server-fetched title/description/host
+  // Link-preview card. No <img> — server-fetched title/description/host
   // only, all escaped text; the whole card is the link (44px touch floor on the anchor itself).
   .link-preview {
     display: flex;

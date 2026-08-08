@@ -11,7 +11,7 @@ use crate::data::DataError;
 
 /// Maximum serialized size of EACH opaque body block (`system`, `engine`,
 /// `base`) independently. Region/drawing point arrays make `engine`
-/// size-unbounded without this cap (spec S6); the name is kept as
+/// size-unbounded without this cap; the name is kept as
 /// `MAX_SYSTEM_BYTES` since it is referenced by that name across the
 /// codebase, but it now bounds every block, not just `system`.
 pub const MAX_SYSTEM_BYTES: usize = 256 * 1024;
@@ -132,9 +132,9 @@ fn escape_token(key: &str) -> String {
     key.replace('~', "~0").replace('/', "~1")
 }
 
-/// Shape-only match of a JSON value against a schema type-tree node (M13f
-/// tier-2). NEVER inspects a value's magnitude/content (invariant 6): scalars
-/// match on JSON type alone. `additionalProperties` defaults to closed (F2).
+/// Shape-only match of a JSON value against a schema type-tree node.
+/// NEVER inspects a value's magnitude/content: scalars
+/// match on JSON type alone. `additionalProperties` defaults to closed.
 pub fn validate_value_against_schema(
     value: &serde_json::Value,
     schema: &Schema,
@@ -228,7 +228,7 @@ fn check_value(
                     }
                 }
                 // Key not in `properties`: governed by additionalProperties,
-                // which defaults to closed (F2) when absent.
+                // which defaults to closed when absent.
                 match &schema.additional_properties {
                     None | Some(AdditionalProperties::Bool(false)) => {
                         return Err(SchemaMismatch {
@@ -248,7 +248,7 @@ fn check_value(
 }
 
 /// Validate the POST-IMAGE `system` band against the world's registered
-/// structural schemas (M13f tier-2), recursing embedded descendants — each
+/// structural schemas, recursing embedded descendants — each
 /// looked up by its OWN `doc_type`. READ-ONLY: unlike `validate_engine_tree`,
 /// there is no normalization; tier-2 only accepts/rejects and must not reshape
 /// the opaque `system` body. A subtree registered but absent in this document is
@@ -684,7 +684,7 @@ mod tests {
         );
     }
 
-    // --- validate_value_against_schema: accept/reject matrix (M13f tier-2) ---
+    // --- validate_value_against_schema: accept/reject matrix ---
     // `Schema` is already in scope via `use super::*` (top-of-file import).
 
     fn obj_schema(props: serde_json::Value) -> Schema {

@@ -46,15 +46,15 @@ source of truth. The ones agents break most:
 - **NEVER FORK A DECISION ACROSS TWO PATHS — the defect class this codebase produces most.**
   Whenever two code paths are *documented* to agree on something, they eventually disagree on an
   input nobody thought to check, and the disagreement is a security defect rather than a bug. Six
-  instances found in one branch (the 2026-07-22 hex-grid campaign), across four subsystems:
+  instances found in one branch, across four subsystems:
   | Forked on | Where | Consequence |
   |---|---|---|
-  | Cell indexing | `ws/room.rs`, `navmesh.rs` | square indices tested against a hex-axial mask |
+  | Cell indexing | `Room::publish`, `clip_to_visible_mask` | square indices tested against a hex-axial mask |
   | Contract completeness in a SHARED primitive (not a fork — included because it is the same *consequence* from the opposite cause) | `HexGrid::line_traversal` | a thin line, not a supercover — ~55% of segments omitted a crossed hex the gate then never checked; see `scene-rendering`'s "a fixed-count cube lerp is a THIN LINE" gotcha |
   | Input admissibility | `Room::publish` vs `gate_walk` | one bounded coordinate magnitude, the other did not |
   | **Scene identity** | `MoveRequest` vs `Room::publish` | one took the scene from the client, the other derived it from the token ⇒ total movement-gate bypass |
   | **`remove` semantics** | `SceneEcs::apply_op` vs `apply_intent` | ECS ignored `FieldChange.remove` while the DB honoured it ⇒ vision widened where write authz refused |
-  | Fail-open defaults | `execute_move` vs `publish` vs `pathfind` | a `unwrap_or(100.0)` cell size removed from ONE gate, left in the other two — created by the commit that fixed the row above. **Now removed from all three gates AND all six non-gate siblings** (`navmesh_for`, `region_field`, `player_lit_mask`, `visible_cells`, `visible_cells_cached` in `scene/mod.rs` — an absent `scene_grid_sizes()` entry now returns `None`/empty instead of synthesizing a 100-unit grid; `region_field`'s signature changed to `-> Option<RegionField>`, its three callers (`pathfind`'s two branches, `move_exec::execute_move`) refuse via `let-else` on `None`, and `MoveReject` gained a `SceneUnknown` variant mirroring `Degenerate`; `enrich_vision_explored` (`ws/conn.rs`) now `continue`s past a scene absent from either its `grid` or `grid_shapes` map, never synthesizing a fallback `SquareGrid`). The fail-open default is now removed at ALL sites — `scene_grid_sizes` remains the sole intentional defaulting SOURCE, not a survivor. |
+  | Fail-open defaults | `execute_move` vs `publish` vs `pathfind` | a `unwrap_or(100.0)` cell size removed from ONE gate, left in the other two — created by the commit that fixed the row above. **Now removed from all three gates AND all six non-gate siblings** (`SceneEcs::navmesh_for`, `SceneEcs::region_field`, `SceneEcs::player_lit_mask`, `SceneEcs::visible_cells`, `SceneEcs::visible_cells_cached` — an absent `scene_grid_sizes()` entry now returns `None`/empty instead of synthesizing a 100-unit grid; `region_field`'s signature changed to `-> Option<RegionField>`, its three callers (`pathfind`'s two branches, `move_exec::execute_move`) refuse via `let-else` on `None`, and `MoveReject` gained a `SceneUnknown` variant mirroring `Degenerate`; `conn::enrich_vision_explored` now `continue`s past a scene absent from either its `grid` or `grid_shapes` map, never synthesizing a fallback `SquareGrid`). The fail-open default is now removed at ALL sites — `scene_grid_sizes` remains the sole intentional defaulting SOURCE, not a survivor. |
   **How to apply.** (1) When you find two paths that must agree, do not verify they agree today —
   make one *derive* from the other, or have both read one shared symbol, so agreement is structural.
   (2) When you fix one instance, grep for the other copies **in the same commit**; the last row
@@ -68,7 +68,7 @@ source of truth. The ones agents break most:
 - **`dist/` must be built before any `cargo` build of the server** — `rust-embed` validates
   `../../dist/` at COMPILE time. [[embed-dist-compile-ordering]]
 - **Capability/permission model** layered server/world/document roles. [[capability-permissions]]
-- **Three-band document shape (M13-0): envelope `name` + typed `engine` + opaque `system`.**
+- **Three-band document shape: envelope `name` + typed `engine` + opaque `system`.**
   Server runs no third-party code; authority over the opaque `system` body is structural only
   (size/field-path/`deny_unknown_fields`) — no semantic validation, ever. The typed `engine` body
   (present only for the 17 engine-defined doc types: tokens, actors, scenes, walls, regions,
@@ -79,17 +79,110 @@ source of truth. The ones agents break most:
   (ARCHITECTURE §2 invariant 6). See `shadowcat-codebase-documents-permissions` for the
   `data/engine/` registry and `shadowcat-codebase-scene-rendering`/`-chat`/`-actors-tokens` for
   the per-subsystem re-root.
+- **A type built via `Extract<SomeUnion, { type: "x" }>` cannot be documented.** TypeDoc cannot
+  project such a projection into a documentable reflection, so a comment on it is unfixable no
+  matter how it's placed. The resolution is structural: declare the member as its own named
+  exported interface and make it a member of the union directly, rather than extracting it back
+  out afterwards. `WireWelcome` follows this shape — a named member of `ServerMsg`, not an
+  `Extract<>` projection of it. Follow the same precedent wherever this shape recurs.
+- **`WirePermissionSet` exists because one anonymous access-control type spans a file boundary.**
+  `WireDocument.permissions` and `StampOpts.permissions` share the same shape across two files; a
+  single exported name is structurally required there — the alternative duplicates the
+  access-control shape inline in both places, the forked-decision defect this codebase produces
+  most (see above). Nothing became newly reachable when the name was introduced:
+  `WireDocument["permissions"]` already exposed the identical shape.
 
 ## Gotchas
 
-- **No data migrations pre-customers (user directive 2026-07-30).** Until a PLAN.md milestone
+- **No data migrations pre-customers (user directive).** Until a milestone
   explicitly marks live customer databases, there is no upgrade path to preserve: SQL schema
   changes EDIT `src/server/migrations/0001_init.sql` (the single baseline) in place — never add
-  an incremental migration file — and document-schema changes keep `data/migrate.rs` step-free
+  an incremental migration file — and document-schema changes keep `data::migrate` step-free
   (`CURRENT_SCHEMA_VERSION` machinery only). The sqlx/`migrate()` machinery itself MUST stay, so
   real migrations can begin at that milestone. A dev DB predating a baseline edit fails the sqlx
   checksum — delete the dev DB file and restart. Any migration files that accumulate anyway are
   deleted on sight (squashed into the baseline).
+- **NEVER work around a rule — follow its INTENT; if unsure, ASK (user directive).**
+  Verbatim: *"we do not try to work around rules, ever. we accept the intent of the rule and follow
+  it. if we are unsure of the intent, ask the user."* Reworking text or code until a rule stops
+  applying is never acceptable — not when the result is technically true, not when the gate goes
+  green. Every rule here was written after a defect, so the letter encodes one instance and the
+  intent covers the class; honoring the letter against the intent reproduces the original defect in
+  a new shape while reporting clean. Related shapes: an empty `/** */` that satisfies a docs gate, a
+  test that asserts nothing, reading a rule narrowly to shrink scope (also a descope — see
+  [[never-descope-without-consulting-user]]). A rule that is genuinely wrong gets raised and
+  changed, never quietly routed around. [[never-work-around-a-rule-follow-its-intent]]
+- **Comments cite SYMBOLS, never file names or line numbers (user directive).** Write
+  ``see `egress_loop`'s `SceneSubscribe` arm ``, never ``see conn.rs:1313`` and never ``the handler in
+  `conn.rs` ``. Qualify by owner (`AssetResolver.url`, `chat::broadcast`), not location. Applies to
+  all committed prose — doc comments and the live tracking docs. A line number is invalidated by any
+  insertion above it and **no gate catches the rot**; a symbol breaks only on rename, which a grep
+  finds. Carve-outs: config/build files (no symbols to cite), filenames used as *values*, and dated
+  records under `docs/superpowers/`. Full rule: `docs/design/doc-sweep-truthfulness-rules.md`
+  RULE 15. [[cite-symbols-not-file-lines]]
+- **As far as code is concerned, ephemeral documents, plans, dates, history and tasks DO NOT EXIST**
+  (user directive, iron-clad; RULE 16). This is an ontology, not a style preference: the test is
+  never "is this reference useful?" but "is this thing visible from the code?" Every exception
+  argues from usefulness, and usefulness was never the test — so there are none.
+  **Banned in `.ts`/`.rs`/`.svelte` comments**, and in code-facing strings (`assert!` messages, test
+  names — ruled in scope by the user; program data like a fixture's world name is untouched):
+  - milestone/task ids in ANY form — `M13-0`, `M11d-3`, `T1/T3`, and the bare `M8`  <!-- EXAMPLE: RULE 16 specimen -->
+  - phase, workstream and numbered-invariant ids — `post-D9`, `W1`, `I4` — **including local  <!-- EXAMPLE: RULE 16 specimen -->
+    numbering defined only in a sibling comment**, ruled in scope by the user: a number no
+    compiler, test or tool binds to anything still forces the reader to go find it
+  - repo document pointers — `` `docs/TODO.md` ``, `ARCHITECTURE §2 invariant 4`, bare `invariant 6`  <!-- EXAMPLE: RULE 16 specimen -->
+  - dated plan/spec files, and unnamed spec references (`per spec §3.2`, `the spec'd default`)  <!-- EXAMPLE: RULE 16 specimen -->
+  - sweep / fix-round / `buddy-check finding N` markers, `POST_WORK:`, and date stamps  <!-- EXAMPLE: RULE 16 specimen -->
+  - **history narration** — `previously`, `formerly`, `before the fix`, "used to return X"  <!-- EXAMPLE: RULE 16 specimen -->
+
+  **These are one class: each names something outside the code whose identity a process assigns** —
+  milestones get renumbered, bug entries move `OPEN_BUGS` → `CLOSED_BUGS`, specs get superseded,
+  a past version stops being anyone's reference point. The comment then points at nothing, and
+  unlike a stale claim *about code*, **no reader and no tool can tell**, because the referent's
+  disappearance is invisible from the code.
+  The conversion is always **state the CONSTRAINT, drop the POINTER** — and where the pointer
+  carried nothing (`(M13e)` appended to a true sentence), **delete the token and change nothing  <!-- EXAMPLE: RULE 16 specimen -->
+  else**; RULE 4 prefers deletion, and inventing a plausible replacement constraint is the single
+  worst outcome available. `TODO:` itself stays (a code marker); what goes is the "see `TODO.md`"  <!-- EXAMPLE: RULE 16 specimen -->
+  tail. **Direction of dependency: doc → code, never code → doc** — the backlog or bug entry cites
+  the SYMBOL (RULE 15) and points inward, so closing it cannot rot a comment.
+  Stronger than RULE 15 and wins where they touch: RULE 15 says how to cite, this says what may be
+  referred to at all. Ordinary Markdown docs and `.superpowers/` artifacts remain exempt — they may
+  cite documents by path + section anchor. **This skill family (`.claude/skills/**/*.md`) is now
+  IN SCOPE for a narrower subset** (owner ruling): a skill may still cite a durable document by
+  path + section anchor, but may not carry a milestone/task id (`M13-0`, `M10e-4`), a phase/  <!-- EXAMPLE: RULE 16 specimen -->
+  workstream/invariant id (`D9`, `D16`), a sweep/round/review marker (`sweep 12`, `fix-round`,  <!-- EXAMPLE: RULE 16 specimen -->
+  `buddy-check`), or a date bare or narrative (`2026-07-30`, `(user directive 2026-08-05)`) —  <!-- EXAMPLE: RULE 16 specimen -->
+  including a dated plan/spec filename, which is a superseded-by-construction record and not a
+  durable citation regardless of its `docs/` path. Repo-document pointers to non-durable trackers,
+  unnamed spec references and history narration are ALSO ruled in for skills; process markers are not;
+  do not widen the skill subset further without a ruling.
+  **Enforced retroactively with no grandfathering** (user directive) by
+  `node scripts/check-comment-refs.mjs` — no baseline, no side-car allowlist, every legacy hit
+  fails. The ONE exemption is an `EXAMPLE` marker (that word, then a colon) on a line that
+  deliberately exhibits a banned
+  form in order to DEFINE it — the use-vs-mention collision a pattern cannot see, and the reason
+  this rule's own statement below is marked. It is owner-approved per instance, sits on the line
+  it exempts (so no position to rot), and the gate prints its active count, because an uncounted
+  exemption is a backdoor. It covers specimens only: a genuine pointer gets converted, never
+  marked. But
+  **a green detector is not a satisfied rule**: history narration is only partly detectable (`no
+  longer` usually describes runtime data, not the code's past), so it is a review obligation.
+  Rewording to evade a pattern while still speaking of something outside the code violates RULE 0.
+  Full rule: `docs/design/doc-sweep-truthfulness-rules.md` RULE 16.
+- **There are NO justified keeps, exemptions or carve-outs unless the user explicitly signs off**
+  (user directive, iron-clad). A well-argued keep is still a decision about *what the work covers*,
+  which is the user's, never yours or a subagent's — ratifying one is a silent descope wearing
+  technical clothes. Report a candidate as unconverted and awaiting a ruling; never as `kept`,
+  never as "the carve-out covers this". **The first move is to remove the NEED for the exemption:**
+  a fixture named `"W1"` that forced a comment to name a banned shape became `"token-world"`, and  <!-- EXAMPLE: RULE 16 specimen -->
+  the comment then said what it meant with nothing to exempt. Any exemption that does exist must
+  print its active count in its own output — an uncounted exemption is a backdoor, and a silent one
+  is indistinguishable from a rule that does not apply.
+- **No ratchets, only gates** (user directive) — nothing is grandfathered. Every doc/comment check
+  is `error` and fails CI: `pnpm lint:docs`, `lint:props`, `lint:comments`, `docs:check-examples`,
+  and Rust `-D missing-docs`. A warn tier is an exemption spread across a whole codebase, and a
+  reported-but-passing violation is indistinguishable to a later reader from code that was checked.
 - **`CLAUDE.md` is git-ignored** — it is local-only; durable rules live in `ARCHITECTURE.md` §2,
   the real source of truth. [[claude-md-is-git-ignored]]
 - **ts-rs types are generated** — change the Rust enum/struct, regenerate, then mirror in the
@@ -97,6 +190,46 @@ source of truth. The ones agents break most:
 - **Decide on technical merits, not "how Foundry does it."** [[decide-on-merits-not-foundry]]
 - **Tests yield to correct code** — fix code only if objectively wrong; else fix the test.
   [[tests-yield-to-correct-code]]
+- **TypeDoc silently drops a `/** */` doc comment written on the same line as its target** inside
+  a single-line object literal or a single-line union arm. A multi-line sibling in the same file
+  documents correctly. The comment is present in the source and absent from the output, so a
+  reader checking the source concludes the symbol is documented while the coverage gate reports
+  it undocumented — the two disagree and the source looks right. Fix: move the comment onto its
+  own line above the member.
+- **TypeDoc's `entryPointStrategy: "packages"` makes most root-level `typedoc.json` settings
+  inert.** `Options.copyForPackage` builds a FRESH options object per package, resets every value
+  to its default, applies only the root's `packageOptions` map, then reads that package's own
+  `typedoc.json` and its `extends` chain — nothing else from the root config reaches a package
+  conversion.
+  - `skipErrorChecking` and `intentionallyNotDocumented` set at the root are inert; only the
+    per-package config (`typedoc.base.json`, which every package extends, or a specific package's
+    own file) has any effect.
+  - **The split is: per-package config decides WHAT is validated, the ROOT config alone decides
+    whether a warning is FATAL.** `treatValidationWarningsAsErrors` only counts at the root.
+    Measured: with it removed from the root and left `true` in `typedoc.base.json`, a real
+    coverage warning still PRINTS and the run exits 0; restored at the root, the same warning
+    exits 4. A per-package copy cannot make any gate real, so never reach for one to harden a
+    check — there is exactly one place that does it.
+  - A per-package `validation` override that forces `invalidLink` off is a MERGE, not a replace,
+    so `notDocumented` inherited from the shared base survives it — that's what keeps the
+    per-package coverage check running at all (its escalation to an error still comes from root).
+  - An exemption belongs in the config of the ONE package whose reflections need it; putting it
+    in the shared base makes every other package flag all of its names as unused.
+  Same class as the two separate ESLint config blocks above: a setting that looks authoritative,
+  reports success, and does nothing.
+- **The ONLY documented-coverage exemption is eight ts-rs synthesized discriminants, enumerated by
+  name in `src/types/typedoc.json`'s `intentionallyNotDocumented`.** ts-rs propagates a Rust field's
+  doc comment into the generated TS, but drops the doc on the enum VARIANT, and the discriminant key
+  itself (`"kind"`, `"type"`, `"op"`) is synthesized by serde's `tag` attribute — there is no
+  declaration anywhere to attach a doc comment to, so these cannot be fixed at the source. A new
+  discriminated wire union adds a new such reflection: add it BY NAME. Never widen the list to a path
+  glob — a glob silently absorbs every future synthesized discriminant, whereas an enumerated list
+  fails the gate until someone adds a name deliberately, which is the point. Adding a name needs the
+  owner's per-instance sign-off like any other exemption. `scripts/report-doc-exemptions.mjs`
+  derives the active set by scanning every `typedoc*.json` in the repo (never one hardcoded
+  path — an exemption added to a config the scan doesn't read would otherwise be invisible to
+  the count), and `report-doc-exemptions-cli.mjs` prints the total plus a per-source breakdown
+  on each `docs:generate` run, because an uncounted exemption is a backdoor.
 
 ## Pointers
 
@@ -106,46 +239,90 @@ source of truth. The ones agents break most:
 - **docs site** (`docs/site/` → `pnpm docs:build` → `dist-docs/`, `pnpm docs:serve` to view) —
   the user-facing layer: guides (hosting / creating-a-module / creating-a-system), per-module
   pages, wire-protocol page, and the generated API references (TypeDoc under `/api/ts/`, rustdoc
-  with private items under `/api/rust/`). Guides code-import the CI-built `examples/*` packages.
+  with private items under `/api/rust/shadowcat/` — `/api/rust/` itself has no index page, since
+  rustdoc emits none under `--no-deps`). Guides code-import the CI-built `examples/*` packages.
 - **graphify** (`graphify-out/`) — relationships: `graphify query "<q>"`,
   `graphify path "<A>" "<B>"`, `graphify explain "<concept>"`.
-- **`docs/design/`** — rationale: `ARCHITECTURE.md` (invariants/tech), `M2-data-foundation.md`,
-  per-system docs; `docs/PLAN.md` = milestone roadmap.
+- **`docs/design/`** — rationale: `ARCHITECTURE.md` (invariants/tech), `docs/design/M2-data-foundation.md`,
+  per-system docs.
 - **memory** (`~/.claude/projects/C--Dev-Shadowcat/memory/`) — cross-session lessons + resume state.
+
+- **Generated API root** — `/api/rust/shadowcat/` (rustdoc, private items included), `/api/ts/`
+  (TypeDoc, one entry point per workspace package). Produce with `pnpm build:all`; open
+  `dist-docs/index.html` directly over `file://` or serve with `pnpm docs:serve`. Each subsystem
+  skill below points to its own package/crate-module pages under this root.
 
 **Build / test / lint commands:**
 - Client build (produces `dist/`): `pnpm build` (= `pnpm --filter @shadowcat/shell build`).
 - Client tests: `pnpm -r test` (Vitest). Typecheck: `pnpm -r typecheck`. Lint: `pnpm lint` (ESLint).
 - Server (from `src/server/`): `cargo test`, `cargo fmt`, `cargo clippy`.
-- Docs: `pnpm docs:build` (full site → `dist-docs/`; runs `pnpm build` first — embed ordering),
-  `pnpm docs:serve` (view; file:// unsupported), `pnpm docs:check-examples` (`@example` ```ts
-  blocks must typecheck — CI-blocking in the web job), `pnpm lint:docs` (doc-coverage gate;
-  `eslint.docs.config.js` holds one rule set via `rulesAt(severity)`, applied at `warn` repo-wide
-  and at `error` for ratcheted packages. **Ratcheted today: `@shadowcat/core`, `@shadowcat/render`,
-  `@shadowcat/shell`, `@shadowcat/ui-kit`, `@shadowcat/formula`, `@shadowcat/module-panels` — a
-  missing doc comment in any of them fails the command**; everything else — the remaining module
-  packages, `src/types`, `examples` — is still advisory. A sweep flips its package only after reaching zero. **A package WITH COMPONENTS
-  is ratcheted in TWO blocks, not one** (`formula` is pure TS and needs only the first): `.ts` and
-  `.svelte` need
-  different parsers and one flat-config block cannot carry both, so a package with components has a
-  `.ts` entry AND a separate `svelteParser` block — ratcheting only the first silently leaves every
-  component advisory. Both `.ts` ignore lists must also stay byte-identical; they exempt test files
-  under BOTH runners' conventions (`**/*.test.ts` and `**/*.spec.ts`), while a test HELPER MODULE
-  that is not itself a test file stays covered.)
-- **An `@example` that imports a workspace package by name compiles that package's own source.**
-  `scripts/extract-ts-examples.mjs` builds one scratch program over `src/types`, `src/client`,
-  `src/modules`, `examples`; a tagged ```ts fence naming a package pulls that package's internals
-  into the compiled graph, so `docs:check-examples` can fail at a line the author never touched.
-  This is why the generated `*.svelte` ambient shim types default exports `any`, not `unknown`: a
-  package whose source passes one of its own `.svelte` imports to Svelte's `mount()` needs the shim
-  freely assignable, and `unknown` is not. Expect the first example to name a not-yet-exercised
-  package to surface latent breakage of this shape.
+- `pnpm build:all` is the full build entry point: the client build, then `docs:generate`
+  (TypeDoc, `cargo doc`, the VitePress portal, assembly with its link check, and the
+  documentation-exemption count). `pnpm docs:build` is a delegating alias for `build:all`, and
+  `docs:generate` is the single place the chain is spelled out — don't re-enumerate its stages
+  anywhere else. The client build must run first: `rust-embed` validates `dist/` at compile
+  time, so `cargo doc` fails without it.
+- Docs: `pnpm docs:serve` (view; the assembled `dist-docs/index.html` also opens directly over
+  `file://` for static content, styling, and link navigation — anything driven by the site's
+  runtime JavaScript, including search, the appearance toggle, and the mobile nav panel, needs the
+  server instead), `pnpm docs:check-examples` (`@example` ```ts
+  blocks must typecheck — CI-blocking), `pnpm lint:docs` (function doc coverage),
+  `pnpm lint:props` (property/type/named-arrow doc coverage), `pnpm lint:comments` (no ephemeral
+  references). **All are errors repo-wide with no per-package staging** — see the no-ratchets rule
+  above; there is no `rulesAt(severity)` and no advisory tier anywhere in these configs.
+  Two structural constraints survive and still bite:
+  **(1) A package with COMPONENTS is covered by TWO blocks, not one.** `.ts` and `.svelte` need
+  different parsers and one flat-config block cannot carry both, so each config has a `.ts` block
+  AND a separate `svelteParser` block; a rule added to only the first silently skips every
+  component. **(2) `eslint.docs.config.js` and `eslint.props.config.js` are separate INVOCATIONS
+  and must stay that way** — both set the same rule KEYS with different `contexts` lists, and flat
+  config resolves a key to the last block that sets it, so merging them would silently replace one
+  config's context list with the other's, dropping that coverage with no error and no output
+  change. Their `.ts` ignore lists must stay byte-identical; they exempt test files under BOTH
+  runners' conventions (`**/*.test.ts` and `**/*.spec.ts`) plus `src/types/generated/**`, while a
+  test HELPER MODULE that is not itself a test file stays covered.
+- **`@example` blocks compile INSIDE the module that documents them, not in a scratch file.**
+  `scripts/extract-ts-examples.mjs` compiles each example through the TypeScript compiler API with
+  an in-memory virtual overlay of its host module, under that host's OWN package `tsconfig` — so
+  the host's imports, private helpers and `this` resolve exactly as in real code, and an example on
+  a class member is injected into the host class body. `.svelte` hosts join the same path via their
+  extracted `<script>`/`<script module>` block; runes type correctly because svelte's own
+  `types/index.d.ts` declares them as ambient globals (it also declares `module '*.svelte'`, so a
+  host's own component imports resolve for free — this script generates no shim of its own).
+  Consequences: an example naming a workspace package pulls that package's internals into the
+  graph, so `docs:check-examples` can fail at a line the author never touched; and both tagged and
+  untagged fences are checked, so an untagged fence is not an escape hatch. A diagnostic is
+  attributed by WHERE it lands, not by which example triggered compilation: `classifyCompiledResult`
+  counts a result as an example-content failure only when at least one diagnostic maps to
+  `"example body"`; a result whose diagnostics are ALL host-attributable (`"host line N"`) is
+  reported in its own bucket and still fails the gate (a broken host is real information), but is
+  never folded into the example-failure count or blamed on the example's own content.
+- **The compilation contract is explicit and named — do not re-derive it per package.**
+  `EXAMPLE_HYGIENE_OVERRIDES` turns `noUnusedLocals`/`noUnusedParameters` OFF while leaving every
+  correctness check on. Production-hygiene lints are a category error on documentation:
+  `const x = await upload(...)` is the CORRECT shape for an example and is not a defect. Inheriting
+  those two flags implicitly from a package config once manufactured 95 phantom failures out of
+  197 — a wrong ruler is applied uniformly, so every result looks self-consistent and the diff
+  reviews clean.
+- **`bind:this` targets are resolved, not left as an instrument gap.** A `.svelte` host's
+  extracted script never sees the template, so a `let el: T;` a template `bind:this={el}`
+  assigns would otherwise read as "used before being assigned". `extractSvelteHost` parses
+  `bind:this={name}` out of the raw SFC text (template only — a match inside a `<script>` block
+  is excluded) via `extractBindThisSimpleIdentifiers`, then `markBindThisAssigned` adds a real
+  TypeScript definite-assignment assertion (`let el!: T;`) to that exact declaration — never a
+  suppression: the declared TYPE is untouched, so a genuine type error against the binding still
+  fails, and a host variable that is truly read before assignment (not a `bind:this` target)
+  still fails too. Only a BARE-IDENTIFIER target is rewritten this way; a member/element-access
+  target (`bind:this={refs.foo}`, `bind:this={itemEls[i]}`) needs no rewrite at all, because
+  Svelte can only assign into an object/array that already exists — its base identifier's
+  declaration necessarily already carries an initializer. Do not restructure a `.svelte`
+  component to satisfy this checker.
 - **A green `pnpm lint:docs` is NOT evidence the docs are correct.** The `jsdoc/require-*` rules
   gate on tag PRESENCE only: they cannot see a vacuous tag (`@returns The result.`), a false
   statement, or a second doc block appended below an existing one. That last case actively
   misleads — jsdoc, TypeDoc, and editor hover all bind to the NEAREST preceding block, so an
-  appended block satisfies the linter while ORPHANING the richer one above it (found in
-  `transport.ts` during the client/core sweep, at 0 warnings the whole time). Detecting it needs a
+  appended block satisfies the linter while ORPHANING the richer one above it (found on
+  `webSocketConnect` during the client/core sweep, at 0 warnings the whole time). Detecting it needs a
   manual scan for a `*/` line immediately followed by `/**`. Truthfulness and placement are review
   concerns, not gate concerns: `docs/design/doc-sweep-truthfulness-rules.md`.
 - CI builds the client **before** `cargo` (embed ordering) across the three-OS matrix.

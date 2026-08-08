@@ -4,31 +4,62 @@
 // stays environment-neutral so a future sandboxed delivery is another importFn.
 // Every entry loads in isolation: a parse/compat/import/id-mismatch failure on
 // one entry never aborts the batch — a broken community module must degrade to
-// a reported failure, never brick every other module in the load list (M13-1 §3).
+// a reported failure, never brick every other module in the load list.
 import { ModuleRegistry, type Module } from "./modules";
 import { parseManifest, type ModuleManifest } from "./manifest";
 import { satisfies } from "./semver";
 
-export type ImportFn = (entry: string) => Promise<{ default: Module } | Module>;
+/** The environment's dynamic import, resolving either a bare `Module` or an ESM
+ * `{ default: Module }` shape (see `normalize`). */
+export type ImportFn = (entry: string) => Promise<{
+  /** The module, when the imported entry uses a default export. */
+  default: Module;
+} | Module>;
 
+/** One discovered (manifest, entry) pair `loadModules` will attempt to load. */
 export interface ModuleEntry {
+  /** The entry's discovered manifest, re-validated by `loadModules` before import. */
   manifest: ModuleManifest;
+  /** The importable specifier/URL passed to `ImportFn`. */
   entry: string;
 }
 
 /** One entry that failed to load, with its declared id and the failure reason. */
 export interface ModuleLoadFailure {
+  /** The failing entry's declared manifest id. */
   id: string;
+  /** The failing entry's importable specifier/URL. */
   entry: string;
+  /** The failure reason (an `Error`'s message, or `String(e)` for a non-`Error` throw). */
   error: string;
 }
 
+/** Options for `loadModules`. */
+export interface LoadModulesOptions {
+  /** The discovered manifest/entry pairs to load, in order. */
+  entries: ModuleEntry[];
+  /** The environment's dynamic import. */
+  importFn: ImportFn;
+  /** The registry successful imports are added to. */
+  registry: ModuleRegistry;
+  /** When provided, each entry's `engines.shadowcat` (if declared) is checked
+   * against this version before import (load-time gate). */
+  shadowcatVersion?: string;
+}
+
+/** The per-batch outcome of `loadModules` — every entry is contained; a batch never throws. */
 export interface ModuleLoadResult {
   /** Module ids successfully imported and added to the registry. */
   loaded: string[];
   /** Entries that failed at any stage (manifest parse, engine compat, import, id mismatch). */
   failed: ModuleLoadFailure[];
 }
+
+/** The ESM default-export shape `normalize` unwraps. */
+type DefaultExport = {
+  /** The module, when the imported entry uses a default export. */
+  default: Module;
+};
 
 /** Unwraps a default-exported module from a `ModuleEntry`'s raw import result.
  * @param imported The value resolved by `ImportFn` — either a `Module` or an `{ default: Module }` ESM shape.
@@ -38,9 +69,9 @@ export interface ModuleLoadResult {
  * normalize({ default: { manifest: { id: "example", version: "1.0.0", dependencies: {} }, register() {} } });
  * ```
  */
-function normalize(imported: { default: Module } | Module): Module {
-  return "default" in imported && (imported as { default: Module }).default
-    ? (imported as { default: Module }).default
+function normalize(imported: DefaultExport | Module): Module {
+  return "default" in imported && (imported as DefaultExport).default
+    ? (imported as DefaultExport).default
     : (imported as Module);
 }
 
@@ -48,7 +79,7 @@ function normalize(imported: { default: Module } | Module): Module {
  * not satisfy it. A missing `engines.shadowcat` is NOT an error here — the
  * field is optional on the shared manifest shape (first-party modules never
  * set it); the modules-folder pipeline's enable/load gate is what makes it
- * effectively required for community modules (T6).
+ * effectively required for community modules.
  * @param manifest The module's manifest.
  * @param shadowcatVersion The running host's version, checked against `manifest.engines.shadowcat`.
  * @example
@@ -70,10 +101,6 @@ function checkEngineCompat(manifest: ModuleManifest, shadowcatVersion: string): 
  * contained: a manifest-parse, engine-compat, import, or id-mismatch failure
  * on one entry is collected in `failed` and never aborts the batch.
  * @param opts Load options.
- * @param opts.entries The discovered manifest/entry pairs.
- * @param opts.importFn The environment's dynamic import.
- * @param opts.registry The `ModuleRegistry` to add successful imports to.
- * @param opts.shadowcatVersion Optional running host version, for the T6 load-time engine-compat gate.
  * @returns The ids that loaded, and the entries that failed with a reason.
  * @example
  * ```ts
@@ -108,14 +135,7 @@ function checkEngineCompat(manifest: ModuleManifest, shadowcatVersion: string): 
  * });
  * ```
  */
-export async function loadModules(opts: {
-  entries: ModuleEntry[];
-  importFn: ImportFn;
-  registry: ModuleRegistry;
-  /** When provided, each entry's `engines.shadowcat` (if declared) is checked
-   * against this version before import (T6 load-time gate). */
-  shadowcatVersion?: string;
-}): Promise<ModuleLoadResult> {
+export async function loadModules(opts: LoadModulesOptions): Promise<ModuleLoadResult> {
   const loaded: string[] = [];
   const failed: ModuleLoadFailure[] = [];
   for (const { manifest, entry } of opts.entries) {
@@ -126,7 +146,7 @@ export async function loadModules(opts: {
       parseManifest(manifest);
       // typeof-check (not truthy-check): an empty-string shadowcatVersion must still
       // run the gate, failing closed via `satisfies("", range)`'s semver parse error,
-      // rather than being treated as "omitted" and silently skipping the T6 gate.
+      // rather than being treated as "omitted" and silently skipping the gate.
       if (typeof opts.shadowcatVersion === "string") {
         checkEngineCompat(manifest, opts.shadowcatVersion);
       }

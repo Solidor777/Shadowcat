@@ -115,7 +115,7 @@ contract-based (`provides`/`requires`) dependencies resolved on the existing M6b
 module system. Core owns contract resolution; the ui package hosts surfaces via a
 framework-neutral `ui.surfaces` service (preserves whole-UI replacement).
 - Full entry flow: first-run setup → login → world select → in-world table shell.
-  Vite bundle replaces `src/server/static/`; `embed.rs` seam flips to `dist/`.
+  Vite bundle replaces `src/server/static/`; the `embed` module's seam flips to `dist/`.
 - Fixed VTT-standard region layout (top bar · tool rail · stage · sidebar ·
   status bar) provided by a first-party `core-ui` module; default panels are
   contributions. Stage is an M8 canvas placeholder.
@@ -273,7 +273,7 @@ framework-neutral `ui.surfaces` service (preserves whole-UI replacement).
 > merged --no-ff to LOCAL main; full client gate green. **M10e-2 DONE** (server lighting-aware
 > vision, Rust): `scene/lighting.rs` (pure illumination — gradation bands, light falloff, per-cell
 > max-compose with `blocksLight` occlusion) + `SceneEcs` config-doc/actor side-tables + fail-closed
-> server resolvers (mirror scene-docs.ts + actor.ts `resolveTokenActor`) + `player_lit_mask` (the
+> server resolvers (mirror the `scene-docs` and `actor` modules' `resolveTokenActor`) + `player_lit_mask` (the
 > per-(user,scene) `LOS ∩ (lit ∨ darkvision)` secrecy gate, fail-closed) + additive `lit` vision
 > payload (`{mode, polygons, bands, lit}`; GM stays `mode:"all"`) + room cold-start hydration.
 > SDD-executed (10 tasks, per-task two-reviewer gate + whole-branch buddy-check CONVERGED PASS; a
@@ -284,8 +284,8 @@ framework-neutral `ui.surfaces` service (preserves whole-UI replacement).
 > lighting render): faithful per-cell darkvision `renderHint` threaded through the server vision
 > frame (`VisionMode.render_hint`, `player_lit_mask` highest-floor-wins per-cell hint resolve); wire
 > `vision` payload extended to 5-int cells `[i,j,band,tint,hint_idx]` + top-level
-> `renderHints:[String]` table; client `Lighting` class (`src/client/render/src/lighting.ts`:
-> band→darkening alpha + tint + desaturate hint + day/night interpolation); engine-owned `lighting`
+> `renderHints:[String]` table; client `Lighting` class (
+> band→darkening alpha + tint + desaturate hint + day/night interpolation) — engine-owned `lighting`
 > core layer (CORE_LAYERS index 7, between `templates` and `mask`); `PixiBackend.setLighting`
 > (per-cell darkening/tint + `BlurFilter` soft edges, gray-wash desaturate approximation). Lighting
 > is COSMETIC — fog stays the secrecy gate; hint never widens visibility. Two deferrals logged to
@@ -296,7 +296,7 @@ framework-neutral `ui.surfaces` service (preserves whole-UI replacement).
 > mask is rejected (`DataError::Forbidden`, before the write, no seq) — `visible` (current mask) /
 > `revealed` (mask ∪ `get_explored`) / `unrestricted` (walls only); GM exempt; entire-move
 > (supercover) not just endpoint; `partialCellLeniency` selects strict(center) vs lenient(corner)
-> rasterization. New `scene/movement.rs` `supercover_cells` (DoS-capped, fail-closed); `visible_cells`
+> rasterization. New `movement` module's `supercover_cells` (DoS-capped, fail-closed); `visible_cells`
 > gate mask reuses the egress `player_lit_mask` primitives (`cell_visible`/`lighting_inputs`/
 > `source_los_poly`/`point_qualifies`) so the gate mask **equals** the egress secrecy mask (spec §13,
 > parity-tested across env/global-illumination/darkvision/LOS+wall); `get_explored` lifted to the
@@ -304,7 +304,7 @@ framework-neutral `ui.surfaces` service (preserves whole-UI replacement).
 > CONVERGED PASS, zero Critical/Important); merged --no-ff to LOCAL main; full server suite green.
 > Plan: `docs/superpowers/plans/2026-06-25-m10e-4-movement-restriction.md`.
 > **M10e-6 DONE** (grid A* pathfinder): server-authoritative pure grid A* in
-> `scene/pathfinding.rs` (`DiagonalRule` + `resolved_diagonal_rule` world-only resolver;
+> the `pathfinding` module (`DiagonalRule` + `resolved_diagonal_rule` world-only resolver;
 > `PathGrid`; `cell_enterable` — full geometric footprint-disc clearance vs `blocksMove` walls
 > + ALL footprint cells in the non-GM mask + center-step; `astar_leg` — king-moves, 4 diagonal
 > rules, 5-10-5 parity tracked in the `(cell,parity)` node and carried across waypoint legs,
@@ -317,7 +317,7 @@ framework-neutral `ui.surfaces` service (preserves whole-UI replacement).
 > (fail-closed). New `move_walls(scene)` accessor (the `blocksMove` segments). `Pathfind`/
 > `PathResult`/`PathError` one-shot wire frames (to the requesting connection only; `get_explored`
 > fetched off the scene read lock — no lock across await). Client: `WsClient.pathfind` +
-> `AppContext.pathfind` correlated-request seam (via `WorldSession` + `Table.svelte`); measure-tool
+> `AppContext.pathfind` correlated-request seam (via `WorldSession` + `Table`); measure-tool
 > route mode with path-preview overlay + movement-budget readout; ruler `Grid.distance()` gains
 > the `alternating` (5-10-5) rule wired from `resolveSceneSettings(...).diagonalRule` into the
 > `Stage GridSpec`. `cost_field` accepted but inert (uniform weight=1; activates in M10g). SDD-
@@ -337,17 +337,17 @@ framework-neutral `ui.surfaces` service (preserves whole-UI replacement).
 >
 > **M1 DONE** (branch `m10e-5-movement-animation`, commits `98bf191..15076ca`, all green, NOT
 > pushed/merged — push gate = full M10): `MoveRequest`/`MoveExecuted`/`MoveError` protocol; pure
-> `scene/move_exec.rs` executor (per-step walls + vision-mask + region-arrest hook; §13 per-cell
+> the `move_exec` module's executor (per-step walls + vision-mask + region-arrest hook; §13 per-cell
 > mask-parity with the `publish` gate, no fork; stricter on path-shape via king-step adjacency;
 > new `token_position` + `resolved_animation_speed`); `commit_ops_locked` (gate-free `publish`
 > tail) + `Room::execute_move` (`publish_guard` held across the whole validate→commit = atomic;
 > Revealed = `visible_cells ∪ explored`; `moving` lazy-expiry lock; OCC pre-image defense-in-depth;
 > GM bypasses every gameplay gate (walls, mask, impassable, arrest, footprint) on `execute_move`
 > exactly as it always has on `publish`, per M9 §5 — no resource guard is exempted for a GM on
-> either path (Phase D-alpha `I1`)); `conn.rs handle_move_request`
+> either path (Phase D-alpha `I1`)); `handle_move_request`
 > (mover-only `etx` reply, generic `MoveError` — no geometry leak); client `WsClient.moveRequest` +
 > `AppContext.moveRequest` + request-only measure-tool route-commit (the M10e-5 animator drives the
-> returned render-path; `collinearRuns` + `path-runs.ts` removed). SDD-executed (8 tasks, per-task
+> returned render-path; `collinearRuns` + the `path-runs` module removed). SDD-executed (8 tasks, per-task
 > two-reviewer gate + whole-branch buddy-check scoped Tasks 2,3,4 CONVERGED — 1 Critical refuted by
 > ground truth, 5 Minors fixed; reviewed skill-update gate PASS).
 > Plan: `docs/superpowers/plans/2026-06-25-m1-server-authoritative-move-execution.md`.
@@ -355,16 +355,16 @@ framework-neutral `ui.surfaces` service (preserves whole-UI replacement).
 > **M2 DONE** (branch `m10e-5-movement-animation`, commits `f403ff1..d748219`, all green, NOT
 > pushed/merged — push gate = full M10): streamed continuous vision, server-precomputed and
 > strictly leak-free. `PosSample`/`VisionSample`/`ServerMsg::MoveStream` protocol (ts-rs + Zod
-> mirror); `scene/move_stream.rs` pure path sampler (`sample_path`, arc-length parameterization,
+> mirror); the `move_stream` module's pure path sampler (`sample_path`, arc-length parameterization,
 > `MAX_VISION_SAMPLES`=96 shared cap); `SceneEcs::player_vision_inputs`/`VisionMoveInputs::polygons_at`
 > (mover vision trajectory — full-wall-set raycast per path sample, reusing `sight_walls` +
-> `vision::visibility_polygon`, no new vision model); `conn.rs egress_loop`'s dedicated `MoveStream`
+> `vision::visibility_polygon`, no new vision model); `egress_loop`'s dedicated `MoveStream`
 > branch (`clip_move_stream`/`observer_vision_polys_for_scene`) — THE secrecy boundary: mover gets
 > the full trajectory + `mover_vision`, an observer gets only the samples their OWN authoritative
 > vision admits with `mover_vision` nulled, a wholly-occluded move is suppressed (zero frames, not
 > an empty-`samples` frame); client `WsClient.onMoveStream` broadcast-driven playback (`MoveExecuted`
 > fully retired) + `TokenAnimator.animateSamples` (time-synced tween, gap/occlusion detection,
-> catch-up) + engine `visionSweeps` fog-sweep (snap, then `fog-blend.ts`/`setVisibilityBlend`
+> catch-up) + engine `visionSweeps` fog-sweep (snap, then the `fog-blend` module's `setVisibilityBlend`
 > render-texture cross-fade) + `worldSession`'s active-scene filter on `onMoveStream` (cross-scene
 > leak guard). SDD-executed (8 tasks, per-task two-reviewer gate; reviewed skill-update gate DONE:
 > scene-rendering, realtime-sync, client-shell). Whole-branch buddy-check (2 independent blind
@@ -380,12 +380,12 @@ framework-neutral `ui.surfaces` service (preserves whole-UI replacement).
 > **M3 DONE** (branch `m10e-5-movement-animation`, commits `7043419..fb8b7dd`): closes buddy-check
 > P1 at the root by making the M10e-6 grid-A* router's vision-mask predicate a superset of the M1
 > move executor's — `cell_enterable` now unions `movement::supercover_cells(from, to, cell)` (the
-> same primitive `move_exec.rs`/`ws/room.rs::publish` use per step, including diagonal
+> same primitive `move_exec`/`Room::publish` use per step, including diagonal
 > corner-flankers) into its mask check alongside the existing footprint-disc test, and fails closed
 > on a degenerate/over-cap `None` result exactly like the gate. Restores `route ⊆ gate-allowed` for
 > the sub-0.5-cell-footprint diagonal case the P1 buddy-check exposed. Also adds a same-shaped inert
 > region-arrest hook (`fn region_arrests(_to: Cell) -> bool { false }`) to the router, mirroring
-> `move_exec.rs`'s M1 stub, so M10g wires real region data into one hook shape in both places
+> `move_exec`'s M1 stub, so M10g wires real region data into one hook shape in both places
 > instead of discovering the router needs one later. Plan-level buddy-check (two reviewers, PHASE
 > = spec) converged after one round (1 Important + 3 Minor folded into the plan before execution).
 > Task 1 (the mask-parity fix) was itself pre-authorized for a per-task buddy check (two reviewers,
@@ -409,7 +409,7 @@ framework-neutral `ui.surfaces` service (preserves whole-UI replacement).
 > vector-shape authoring (rect/circle/polygon, rasterized to cells); precedence+MAX overlap
 > compose; honest arrest preview (`PathResult.arrested` truncation); GM region-authoring tool +
 > `RegionView` render layer. Lit up the planted inert `region_arrests()` hooks in
-> `scene/move_exec.rs` + `scene/pathfinding.rs` as a matched pair. No new crate (cargo-bloat
+> the `move_exec` and `pathfinding` modules as a matched pair. No new crate (cargo-bloat
 > untouched). SDD-executed (13 tasks, per-task two-reviewer gate incl. 4 buddy-checked tasks +
 > whole-branch review). **Three items EXPLICITLY DEFERRED from M10g and homed below so they are not
 > lost:** (a) Polyanya/navmesh cost-layers → **M10f-4**; (b) per-actor/faction movement exemptions →
@@ -433,8 +433,8 @@ framework-neutral `ui.surfaces` service (preserves whole-UI replacement).
 >
 > **M10f-0 DONE** (branch `m10f-0-scene-bounds`, commits `7afd610..2401783`, all green, NOT
 > merged/pushed — merge gate = full M10f) — scene bounds primitive: `scene.system.bounds
-> {width,height}` (grid units), mirrored client (`scene-docs.ts` `SceneDimensions`/
-> `DEFAULT_SCENE_BOUNDS`, deep-frozen) + server (`scene/mod.rs` `ResolvedScene.bounds`/
+> {width,height}` (grid units), mirrored client (the `scene-docs` module's `SceneDimensions`/
+> `DEFAULT_SCENE_BOUNDS`, deep-frozen) + server (`ResolvedScene.bounds`/
 > `DEFAULT_SCENE_BOUNDS_UNITS`), both fail-closed to a `100×100` grid-unit default (non-finite or
 > ≤0-on-either-axis never produces a degenerate rectangle); per-scene only, no world-settings layer,
 > deliberately NOT content-derived (rejected at design time: edge-drag re-mesh churn, ill-defined
@@ -452,7 +452,7 @@ framework-neutral `ui.surfaces` service (preserves whole-UI replacement).
 > (`grid-stepped` default, `continuous` opt-in; server `MovementModel`/`parse_movement_model` +
 > client `MovementModel` type, world-default + per-scene override, resolved exactly like
 > `movement_restriction`, fail-closed to `grid-stepped`) + a headless `polyanya`-navmesh router
-> dispatched alongside the existing grid A*. `scene/navmesh.rs` (new): `build_navmesh` (bounds +
+> dispatched alongside the existing grid A*. New `navmesh` module: `build_navmesh` (bounds +
 > `blocksMove`-wall footprint-inflated obstacles, `geo::Buffer` + `polyanya::Triangulation`),
 > `navmesh_find` (any-angle multi-leg routing, Euclidean cost), `clip_to_visible_mask` (the
 > security-critical fog-safe + wall-safe route-preview post-filter — arc-length-samples the route
@@ -466,7 +466,7 @@ framework-neutral `ui.surfaces` service (preserves whole-UI replacement).
 > polyanya pulls it transitively) — binary-size delta ~0.94 MiB, well under the 60 MiB CI budget.
 > **Preview-only checkpoint, by design:** continuous scenes get the router + an honest fog-safe
 > route preview + Euclidean budget; committing (executing) a continuous-scene move is explicitly
-> disabled client-side (`commitRoute` gate in `controller.svelte.ts`, checked via
+> disabled client-side (`commitRoute` gate, checked via
 > `resolveSceneSettings`) — no grid-snap fallback — since continuous move *execution* is a later
 > checkpoint (M10f-2/3). SDD-executed (10 tasks; Tasks 4/5/6/7 buddy-checked per the plan's
 > pre-authorization, Tasks 1-3/8-10 the standard two-reviewer gate). **Buddy-checking found and
@@ -520,7 +520,7 @@ framework-neutral `ui.surfaces` service (preserves whole-UI replacement).
 > magnitude-scaled tolerance matching `supercover_cells`'s existing 64-ULP convention; and a
 > **second-order defect the first fix itself introduced** — the magnitude-scaled tolerance grew
 > unbounded with coordinate magnitude and, at extreme-but-reachable magnitudes (~3.5e13+, within
-> `navmesh.rs`'s own `MAX_NAVMESH_COORD=1e15` legitimate-input band), could silently misclassify a
+> `MAX_NAVMESH_COORD=1e15`'s own legitimate-input band), could silently misclassify a
 > genuinely-multi-cell segment as a single identity step — a silent gate-skip — closed by the new
 > `MAX_GATE_WALK_COORD=1e9` bound (~35,000x margin below the crossover). Task 3's refactor buddy
 > check found zero functional defects, only 3 doc-only Minors (one requiring a real severity
@@ -546,16 +546,16 @@ framework-neutral `ui.surfaces` service (preserves whole-UI replacement).
 > egress clip have had NO `movementModel` branch anywhere since M10f-2, so the entire move-
 > execution/streaming/secrecy-clip path already gated, executed, and clipped any polyline (grid or
 > any-angle) correctly. The only thing blocking continuous execution was a client-side refusal:
-> `controller.svelte.ts`'s `commitRoute` removed its M10f-1 preview-only early-return, so committing
+> `commitRoute` removed its M10f-1 preview-only early-return, so committing
 > a route now proceeds identically for grid-stepped and continuous scenes. M10f-3's own server work
 > is therefore TEST-ONLY (Tasks 7-9): new `Room::execute_move`/`sample_path`/`clip_move_stream`
 > coverage empirically proving the already-engine-agnostic path handles any-angle geometry. New
-> **`snapToGrid`** scene axis (`scene-docs.ts`, opaque `system`-body JSON, no ts-rs type): a
+> **`snapToGrid`** scene axis (the `scene-docs` module, opaque `system`-body JSON, no ts-rs type): a
 > `resolveSceneSettings`-derived default keyed off `movementModel` (`false` for continuous, `true`
 > otherwise, unless explicitly overridden in either direction — nullish-coalescing, never a truthy
 > check), enforced at a SINGLE chokepoint (`RenderEngine.snap`, gated by a new
 > `SceneToolHost.setSnapEnabled` seam forwarded through `SceneInteractionBridge` and pushed
-> unconditionally from `Stage.svelte`'s existing per-pass scene-settings effect) that every scene
+> unconditionally from `Stage`'s existing per-pass scene-settings effect) that every scene
 > tool inherits automatically via `ctx.scene.snap`; authored via a new GM-only tool-rail toggle
 > button. SDD-executed (9 tasks; Tasks 6-9 buddy-checked per the plan's pre-authorization, Tasks
 > 1-5 the standard two-reviewer gate, plus a mandatory whole-branch buddy-check before merge).
@@ -607,9 +607,9 @@ framework-neutral `ui.surfaces` service (preserves whole-UI replacement).
 > (crate-source-verified, not README-derived; the only cost-affecting knob, `detailed-layers`'
 > `Layer.scale`, is off in this build and semantically wrong as a per-unit multiplier anyway), so
 > the "terrain → polyanya cost-layer (Split-Mesh)" plan is struck as infeasible, not deferred.
-> `SceneEcs::pathfind`'s `Continuous` branch (`mod.rs`) now computes the per-requester
+> `SceneEcs::pathfind`'s `Continuous` branch now computes the per-requester
 > `region_field` once and dispatches on the new `RegionField::has_terrain_or_impassable()`
-> predicate (`regions.rs`): **terrain/impassable present** → the existing `pathfinding::find`
+> predicate: **terrain/impassable present** → the existing `pathfinding::find`
 > forced to `DiagonalRule::Euclidean` (continuous base metric; only cell topology + the terrain
 > multiplier come from the grid), cost converted from CELLS to SCENE UNITS (`× cell`, matching the
 > polyanya path's unit contract), then **cost-guarded LOS smoothing** (`navmesh::los_smooth`, new)
@@ -663,8 +663,8 @@ framework-neutral `ui.surfaces` service (preserves whole-UI replacement).
 > precedence manual `token.system.face` > first `faceMap` match against the token's raw
 > `conditions[]` (array order) > `default` > first key, and fails closed (`null`) on an empty
 > `faces` map, a malformed `AnimatedSource`, or a resolved kind outside `image`/`animated`. New
-> pure `computeAnimatedFrame` (`token-animation.ts`, mirrors the `fog-blend.ts` extraction
-> precedent — `pixi-backend.ts` has no jsdom GL context) drives tick-based `AnimatedSprite`
+> pure `computeAnimatedFrame` (in its own `token-animation` module, mirroring the `fog-blend`
+> module's extraction precedent — the `pixi-backend` module has no jsdom GL context) drives tick-based `AnimatedSprite`
 > playback via the new `DisplayBackend.tickTokenAnimations(dtMs)` seam, called from
 > `TokenView.tick` alongside the existing tween ticker. `TokenNodeSpec.visual` becomes a
 > discriminated union (`{kind:"image",url} | {kind:"animated",source: ResolvedAnimatedSource,fps,
@@ -677,7 +677,7 @@ framework-neutral `ui.surfaces` service (preserves whole-UI replacement).
 > object multiple times in rapid succession (an A→B→A visual-cycling scenario could let a stale
 > promise write into an already-`.destroy()`'d Pixi object) — fixed by also requiring object
 > identity (`node.visual === sprite`), now a load-bearing invariant for this async-completion
-> pattern generally. Authoring UI in `ActorsPanel.svelte`: a visual-kind editor (image/faces/
+> pattern generally. Authoring UI in `ActorsPanel`: a visual-kind editor (image/faces/
 > animated) in the actor-creation form with full per-face-row/name-uniqueness/`defaultFace`
 > validation, plus a separate per-token face-swap palette (reading raw `token.system.face` for
 > `old`, mirroring the M10f-3 `snapToGrid` raw-`old` convention). A Playwright e2e test proves an
@@ -804,7 +804,7 @@ Decomposed **M11a–d**:
   > constructs one, only sends `ClientMsg::SendMessage`; validates empty/`MAX_MESSAGE_CHARS=4096`/
   > a per-user-per-minute flood budget (`PingRateLimiter`) before publishing. Authz is a COUPLED
   > two-chokepoint seam: (1) a Player-baseline `core:create` exemption in `apply_intent`
-  > (`sqlite.rs`) lets a Player create a message doc only when self-owned, made sound ONLY because
+  > lets a Player create a message doc only when self-owned, made sound ONLY because
   > (2) `chat::ops_target_message` rejects any client-authored `message` Create/Delete at BOTH the
   > WS `Intent` and HTTP `write_ops` ingress boundaries before that exemption is ever reached —
   > weakening either chokepoint alone reopens forgery. A third, independent chokepoint
@@ -873,7 +873,7 @@ Decomposed **M11a–d**:
   > within Task 6) was a resource-amplification ordering bug in `/w` recipient-cap checking
   > (usernames were resolved via sequential DB round-trips BEFORE the recipient cap was checked).
   > A final whole-branch review additionally caught stale pre-c-1-only doc comments in
-  > `chat/mod.rs` describing the old three-chokepoint invariant, corrected to the current
+  > the `chat` module describing the old three-chokepoint invariant, corrected to the current
   > four-chokepoint state. `shadowcat-codebase-chat` skill updated + reviewed by
   > `shadowcat-spec-reviewer` per the reviewed skill-update gate.
   > Design: [`superpowers/specs/2026-07-09-m11c-3-sanitizer-commands-edit-design.md`](superpowers/specs/2026-07-09-m11c-3-sanitizer-commands-edit-design.md).
@@ -905,7 +905,7 @@ Decomposed **M11a–d**:
   > hidden-tab safety) / `module-chat-composer` (trimmed-length cap, IME guard, no client
   > command parsing) / `module-chat-card` (fail-closed render; the single `{@html}` sink
   > proven to render only ammonia-produced html segments; per-viewer actor names via
-  > `resolveTokenActor`; edit/delete affordances); client body mirror `chat-docs.ts`
+  > `resolveTokenActor`; edit/delete affordances); client body mirror, the `chat-docs` module
   > (fail-closed Zod, unknown-segment forward-compat that REFUSES known kinds);
   > `WsClient`/`AppContext.chat` + `uiState` seams. Shipped, server:
   > `MessageSystem.source` (edit prefill; whisper-stripped; CLEARED on delete tombstone),
@@ -917,7 +917,7 @@ Decomposed **M11a–d**:
   > tombstone-vs-real-deletion, pill false-positive, hidden-tab scroll corruption,
   > trimmed-cap mismatch, IME guard, roll-formula-empty-on-enriched-worlds). Also fixed
   > pre-existing red gates found on main: the M11c-3 `edit/delete_message` ClientMsg variants
-  > were never mirrored into wire.ts (core typecheck red since that merge) and eslint choked
+  > were never mirrored into `ClientMsg` (core typecheck red since that merge) and eslint choked
   > on a stale worktree's dist bundle. Both codebase skills updated + reviewed per the gate.
   > Spec: [`superpowers/specs/2026-07-13-m11d-1-tabbed-sidebar-chat-display-design.md`](superpowers/specs/2026-07-13-m11d-1-tabbed-sidebar-chat-display-design.md).
   > Plan: [`superpowers/plans/2026-07-13-m11d-1-tabbed-sidebar-chat-display.md`](superpowers/plans/2026-07-13-m11d-1-tabbed-sidebar-chat-display.md).
@@ -928,7 +928,7 @@ Decomposed **M11a–d**:
   > **M11d-2 DONE** (branch `m11d-2-dice-chat-wire`, SDD — Sonnet implementers, per-task
   > two-reviewer gates, 1 pre-authorized buddy-check on the roll-execution unit) — **rolls
   > execute at chat ingest; every dice wire-boundary TODO closed.**
-  > Shipped, server: `chat/rolls.rs` (the ONLY untrusted-notation execution path — caps
+  > Shipped, server: the `rolls` module (the ONLY untrusted-notation execution path — caps
   > `MAX_ROLL_DICE=100`/`MAX_ROLL_RECORDS=1000`/`MAX_EXPERTISE=100`/`MAX_DIE_SIDES=10000`/
   > `MAX_INLINE_ROLLS=8`, per-roll OS-entropy seeds via `Uuid::new_v4` fold, the BALANCED
   > `[[…]]` span scanner that survives notation `[label]`s, first production
@@ -942,7 +942,7 @@ Decomposed **M11a–d**:
   > — the whole re-roll-by-edit cheat class closed); attribution authz at ingest
   > (`ActorNotSpeakable`: Actor refs owner-or-GM-validated, TokenInstance rejected until
   > speak-as-token ships); the `dice-settings` ambient config doc (fail-closed Total/HighWins).
-  > Shipped, client: `chat-docs.ts` roll mirrors (fail-closed, unknown-fallback refuses the new
+  > Shipped, client: the `chat-docs` module's roll mirrors (fail-closed, unknown-fallback refuses the new
   > kinds, i64-saturation precision documented); card roll rendering (block form, inline chips
   > + tooltips, buttons posting fresh public `/roll`s to the carrying channel, real System
   > styling — all escaped, the `{@html}` single-sink untouched); the composer "Speak as" actor
@@ -965,12 +965,12 @@ Decomposed **M11a–d**:
   > link previews; the final M11 checkpoint. M11 IS COMPLETE.**
   > Shipped: the server's FIRST outbound HTTP (`reqwest` promoted to a production dep with
   > `rustls-tls`, ~1.1 MiB binary delta, far under the 60 MiB budget) behind a full SSRF guard in
-  > `chat/link_preview.rs` — `validate_url` (http/https only, no userinfo, literal-IP hosts
+  > the `link_preview` module — `validate_url` (http/https only, no userinfo, literal-IP hosts
   > `is_blocked_ip`-checked directly), a `GuardedResolver` validating every resolved IP against a
   > clean-room RFC-cited v4+v6 blocklist (all-or-nothing → the DNS-rebind close), manual
   > per-hop-revalidated redirects (≤5), one wall-clock 5s deadline over the whole chain, a 512 KiB
   > streamed size cap, an HTML content-type gate, and a bounded title/OpenGraph extractor; an
-  > in-memory URL cache + per-user fetch rate limiter (`preview_cache.rs`); synchronous
+  > in-memory URL cache + per-user fetch rate limiter, in the `preview_cache` module; synchronous
   > ingest enrichment (`enrich`, extracting hrefs from GENUINE `<a>` tags) gated on
   > `previews_enabled()` (default-ON within a hyperlink-enabled world) + an explicit `kind != Roll`
   > guard; the `Segment::LinkPreview` model + client Zod mirror + a card that renders title/
@@ -1011,7 +1011,7 @@ Decomposed **M11a–d**:
 > level) — the unified dockable panel system: `@shadowcat/module-panels` with a PURE layout
 > tree (`PanelLayoutV1` + `LayoutOp` reducer `applyOp`, same-reference no-op contract) as the
 > single source of truth; dockview-core@7.0.2 (EXACT pin, source-verified spike) behind the
-> project-owned `EngineAdapter` seam — imports confined to `engine/dockview.ts`, now
+> project-owned `EngineAdapter` seam — imports confined to the `dockview` module, now
 > ESLint-enforced (`no-restricted-imports`); every engine gesture intercept-and-redispatched
 > through the reducer (dockview never owns state); stage well inviolable (W1–W3 + STAGE_ID
 > vetoes at policy AND handler layers, defense-in-depth verified unbreakable by the final spec
@@ -1034,7 +1034,7 @@ Decomposed **M11a–d**:
 > defaults; panel defaults flip from "chat docked, all else minimized to chips" to
 > launcher-closed for everything but chat; the core-ui grid drives compact/expanded off the
 > single `sizeClass` 48rem axis (the old 40rem toolrail media query is removed —
-> `Layout.svelte`/`sizeClass.svelte.ts` now share one breakpoint); statusbar row is 2rem; the
+> `Layout` and the `sizeClass` module now share one breakpoint); statusbar row is 2rem; the
 > scene-tools `ToolRail` renders as a compact bottom strip below 48rem. Token re-audit
 > (bounded raw-color scan + token-existence check across the new/changed chrome): one new
 > semantic token, `--z-popover`, added to close a stacking-context gap between the launcher
@@ -1632,12 +1632,13 @@ Trusted local modding hardening → freeze the module API on evidence (≥1 exte
     223-comment inline-`//` inventory across the six packages (task 6) found 0 orphans and verified
     every load-bearing claim true.
   - **Ratchet mutation-proven per block:** dropping `footprintFor`'s doc comment
-    (`src/modules/scene-tools/src/controller.svelte.ts`) fails at line 96 (`.ts` block); dropping
-    `toggleSnap`'s (`src/modules/scene-tools/src/ToolRail.svelte`) fails at line 49 (`.svelte`
-    block). All twelve globs (six packages × two blocks) verified individually at `error` severity.
+    (`src/modules/scene-tools/src/controller.svelte.ts`) fails the `.ts` block; dropping
+    `toggleSnap`'s (`src/modules/scene-tools/src/ToolRail.svelte`) fails the `.svelte`
+    block. All twelve globs (six packages × two blocks) verified individually at `error` severity.
   - **Carried forward, not fixed here:** the dead `sendMoves` shorthand still appears in two SERVER
-    test comments, `src/server/src/ws/room.rs:3441` and `:3471` — different crate, different gate,
-    left alone deliberately.
+    test comments, both inside
+    `client_update_with_posint_pre_image_after_execute_move_is_accepted` — different crate,
+    different gate, left alone deliberately.
   Plan: `docs/superpowers/plans/2026-08-01-docs-sweep11-scene-modules.md`.
 - **Sweep 10 — `@shadowcat/module-panels`: COMPLETE (2026-08-01).** 217-item backlog → 0 across 3
   content tasks (dockview engine 73; layout tree+persist 71; controller+policy+fake+3 components 73),
@@ -1663,9 +1664,9 @@ Trusted local modding hardening → freeze the module API on evidence (≥1 exte
     index and demand the identical rect, at n=0/1/3/5/7 — **3 and 5 are the load-bearing indices**,
     since 0/1/7 share residues under `% 6`, `% 3` and `% 2` and so cannot pin the modulus at all.
     Mutation-proven per leg (BASE, STEP, and modulus).
-  - **Ratchet mutation-proven per block:** dropping `classifyDrop`'s doc comment fails at
-    `policy.ts:122` (`.ts` block); dropping `onKeydown`'s fails at `PanelMenu.svelte:39` (`.svelte`
-    block). Whole-package vendored-citation audit: 26 citations, 26 resolve.
+  - **Ratchet mutation-proven per block:** dropping `classifyDrop`'s doc comment fails the
+    `.ts` block; dropping `PanelMenu`'s `onKeydown`'s fails the `.svelte`
+    block. Whole-package vendored-citation audit: 26 citations, 26 resolve.
   Plan: `docs/superpowers/plans/2026-08-01-docs-sweep10-panels.md`.
 - **Sweep 9 — client/shell + ui-kit + formula: COMPLETE (2026-07-31).** 276-item backlog → 0 across
   4 tasks (worldSession 72; shell remainder 50; ui-kit's 16 files 93; formula's 7 files 61). All
@@ -1701,7 +1702,8 @@ Trusted local modding hardening → freeze the module API on evidence (≥1 exte
   Every fix round this sweep was again triggered by a FALSE sentence, never a missing one, and the
   recurring shape was SCOPE WIDENING during relay: a narrow true finding restated one level broader
   becomes false. Four instances, including one in a `docs/TODO.md` entry written by this sweep
-  ("no test covers a negative substitution" — `template.test.ts:32-35` covers exactly that).
+  ("no test covers a negative substitution" — the test "negative values emit parenthesized
+  zero-minus form (no label)" covers exactly that).
   Plan: `docs/superpowers/plans/2026-08-01-docs-sweep9-shell-uikit-formula.md`.
 - **Buddy-check convergence — after the last sweep (user directive 2026-07-30).** The completed
   first-pass documentation is buddy-checked (superpowers two-reviewer cross-check debate)

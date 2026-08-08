@@ -3,7 +3,7 @@ import type { AnimatedSource } from "./AnimatedSource";
 import type { RenderVisual } from "./RenderVisual";
 
 /**
- * The client-owned token/actor visual union (M10h). Internally tagged on
+ * The client-owned token/actor visual union. Internally tagged on
  * `kind`; serde does not support `deny_unknown_fields` on an internally
  * tagged enum (a documented limitation — NOT applied here).
  */

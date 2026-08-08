@@ -1,10 +1,10 @@
-//! `wall`, `region`, `drawing`, `template` engine bands (M13-0 S1/S3). Field
-//! shapes transcribed verbatim from the server's existing pointer-walk
-//! consumers (wall/region: scene-docs.ts has no dedicated wall type — the
-//! shape below mirrors `scene/mod.rs`'s current reads) and the render
-//! layer's local shapes (`drawing-view.ts:9-13`, `template-view.ts:9-11`) —
-//! the only authoritative shapes today; scene-tools writers must round-trip
-//! byte-identically against these.
+//! `wall`, `region`, `drawing`, `template` engine bands. The
+//! wall/region shapes match what `SceneEcs::engine_as_cached::<WallEngine>`/
+//! `<RegionEngine>` read (the client has no separately-declared wall/region
+//! type to mirror); the drawing/template shapes mirror the client's
+//! re-exported `DrawingEngine`/`TemplateEngine` — the only authoritative
+//! shapes today; scene-tools writers must round-trip byte-identically
+//! against these.
 
 // Ratchet: every item in this module must carry a doc comment, enforced by
 // the two deny attributes below.
@@ -31,8 +31,8 @@ pub struct Seg {
 }
 
 /// A wall's segment + sight/light/movement-blocking flags. Absent/false
-/// flags exclude the wall from that gate exactly as the pre-M13-0 pointer
-/// read did (read-side backstop unchanged).
+/// flags exclude the wall from that gate, matching how each gate
+/// (`move_exec`/`pathfinding`/`lighting`) already reads these fields.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -52,7 +52,7 @@ pub struct WallEngine {
     pub blocks_move: Option<bool>,
 }
 
-/// A region's vector geometry (M8d-3a shape vocabulary). `points` layout by
+/// A region's vector geometry. `points` layout by
 /// kind: rect: `[x0,y0,x1,y1]`; circle: `[cx,cy,r]`; polygon:
 /// `[x0,y0,x1,y1,...]` (>=3 vertices, even length).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
@@ -149,7 +149,7 @@ pub struct DrawingEngine {
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
 pub struct TemplateShape {
-    /// "circle" | "cone" | "rect" | "line" (`template-view.ts`'s tessellation
+    /// "circle" | "cone" | "rect" | "line" (`TemplateView.toSpec`'s tessellation
     /// vocabulary; kept a `String` in v1).
     pub kind: String,
     /// Anchor x, scene units.
@@ -159,7 +159,7 @@ pub struct TemplateShape {
     /// Radius/length, scene units.
     pub size: f64,
     /// Orientation in degrees; the render layer converts via standard radian
-    /// math (`template-view.ts`).
+    /// math (`TemplateView.toSpec`).
     pub direction: f64,
 }
 

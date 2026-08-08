@@ -30,6 +30,7 @@
    * @example
    * ```
    * // private function; not part of the public API — wired to each row's delete button
+   * declare const user: ServerUser;
    * await removeUser(user);
    * ```
    */
@@ -92,6 +93,7 @@
    * ```
    * // private function; not part of the public API — wired to the create-user form's onsubmit;
    * // reads username/password/makeAdmin from component state, not from this event
+   * declare const submitEvent: SubmitEvent;
    * await submit(submitEvent);
    * ```
    */

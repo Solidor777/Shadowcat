@@ -623,7 +623,8 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn login_rejects_user_without_password_hash() {
         let state = initialized_state().await;
-        // A credential-less user (e.g. an M2-era row) must never authenticate.
+        // A credential-less user (a row with no password hash set) must
+        // never authenticate.
         state
             .repo
             .create_user("hashless", None, ServerRole::User, 0)
@@ -642,7 +643,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn headless_bootstrap_closes_setup_and_allows_login() {
-        // Mirror main.rs: bootstrap seeds the admin, then the gate is open.
+        // Mirror `auth::setup::bootstrap_admin`: bootstrap seeds the admin, then the gate is open.
         let state = test_state().await;
         let cfg = crate::config::Config {
             admin_user: Some("ops".into()),
@@ -697,7 +698,7 @@ pub(crate) mod tests {
             .assert_status(axum::http::StatusCode::FORBIDDEN);
     }
 
-    // --- M5: world/document CRUD + permission HTTP surface ---
+    // --- World/document CRUD + permission HTTP surface ---
 
     use axum::http::StatusCode;
     use uuid::Uuid;

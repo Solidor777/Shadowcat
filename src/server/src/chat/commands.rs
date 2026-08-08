@@ -118,7 +118,7 @@ mod tests {
     fn roll_sets_roll_kind_and_keeps_expression_verbatim() {
         let p = parse_command("/roll 2d6+3");
         assert_eq!(p.kind, MessageKind::Roll);
-        assert_eq!(p.body, "2d6+3"); // stored unparsed/unexecuted (M11d runs it)
+        assert_eq!(p.body, "2d6+3"); // stored unparsed; `rolls::execute_roll` evaluates it
         let short = parse_command("/1d20");
         assert_eq!(short.kind, MessageKind::Roll);
         assert_eq!(short.body, "1d20");

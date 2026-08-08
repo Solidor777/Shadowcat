@@ -4,13 +4,16 @@ import type { DisplayBackend } from "./backend";
 import type { TokenNodeSpec, ResolvedAnimatedSource } from "./types";
 import { parseColor } from "./geometry";
 import { TokenAnimator, type MoveSample } from "./token-animator";
-import type { EasingMode } from "./easing";
+import type { EasingMode, TokenTweenConfig } from "./easing";
 import { sceneScopedDocs } from "./scene-scope";
 
 /** Renders `doc_type:"token"` docs as backend token nodes, tweening transforms via a
  * TokenAnimator. The visual (size + image) applies immediately; the transform tweens. */
 export class TokenView {
+  /** Drives every tracked token's tween/sample-playback transform. */
   private readonly animator = new TokenAnimator();
+  /** Last resolved `TokenNodeSpec` per token id, from `toSpec` — the visual/size/border/badges
+   * `push` applies immediately, distinct from the tweened transform `animator` owns. */
   private readonly specs = new Map<string, TokenNodeSpec>();
   /** Tracks tokens that were hidden on the previous push call, to detect visible↔hidden
    * transitions and call removeToken only once per gap entry (not every tick). */
@@ -20,8 +23,11 @@ export class TokenView {
   private dragging: string | null = null;
 
   // Animation config fields; kept in sync with the animator via pushAnimConfig().
+  /** Active grid's pixel-per-cell size — see `setCellSize`. */
   private cellSize = 100;
+  /** Tween speed, in grid cells per second — see `setAnimationConfig`. */
   private animSpeed = 6;
+  /** Easing curve applied to polyline tweens — see `setAnimationConfig`. */
   private animEasing: EasingMode = "easeInOut";
 
   /** Constructs a view bound to `store`/`assets`/`backend`; call `reconcile()` once to populate it.
@@ -87,8 +93,6 @@ export class TokenView {
   /** Update the speed + easing used to compute tween durations. Affects only FUTURE tweens, same
    * as `setCellSize`.
    * @param cfg The new tween speed/easing.
-   * @param cfg.speedCellsPerSec Tween speed, in grid cells per second.
-   * @param cfg.easing The easing curve applied to polyline tweens.
    * @example
    * ```ts
    * import { TokenView, MockBackend } from "@shadowcat/render";
@@ -99,7 +103,7 @@ export class TokenView {
    * view.setAnimationConfig({ speedCellsPerSec: 6, easing: "easeInOut" });
    * ```
    */
-  setAnimationConfig(cfg: { speedCellsPerSec: number; easing: EasingMode }): void {
+  setAnimationConfig(cfg: TokenTweenConfig): void {
     this.animSpeed = cfg.speedCellsPerSec;
     this.animEasing = cfg.easing;
     this.pushAnimConfig();
@@ -119,7 +123,7 @@ export class TokenView {
   }
 
   /** Has no production caller today (`src/modules`/`src/client/shell` drive route playback
-   * exclusively through `animateSamples`, per `controller.svelte.ts`'s own "Animation is
+   * exclusively through `animateSamples`, per `commitRoute`'s own "Animation is
    * broadcast-driven via onMoveStream ... no local animation from the moveRequest resolve value"
    * comment); exercised only by tests and this passthrough's own caller (`RenderEngine`'s
    * `SceneToolHost` seam). The mechanism below is the contract it honors if called.
@@ -218,7 +222,7 @@ export class TokenView {
   /** Advance both independent per-frame facilities: `animator.tick` (transform tweens — polyline
    * walks and sample playback) pushes each changed id's latest transform to the backend, and
    * `backend.tickTokenAnimations` (frame-index playback for a token's `kind:"animated"` visual —
-   * see `computeAnimatedFrame` in `token-animation.ts`) advances independently of any transform
+   * see `computeAnimatedFrame`) advances independently of any transform
    * tween, so an animated-sprite token still cycles frames while stationary.
    * @param dtMs Elapsed render-frame time in ms since the last tick.
    * @example
@@ -299,6 +303,7 @@ export class TokenView {
    * @example
    * ```
    * // private method; not part of the public API
+   * declare const doc: WireDocument;
    * this.toSpec(doc);
    * ```
    */

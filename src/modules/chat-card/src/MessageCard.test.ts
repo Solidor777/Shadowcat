@@ -116,9 +116,10 @@ describe("MessageCard — fail-closed body parse", () => {
   });
 
   it("renders nothing for a malformed roll_embed segment (missing outcome)", () => {
-    // chat-docs.ts's fail-closed pattern: a known-kind segment with a malformed payload
-    // fails BOTH the strict schema AND the unknown-segment rescue (which refuses known
-    // kinds), so the whole message parse fails, not just the one segment.
+    // `parseMessageEngine`'s and `isKnownSegment`'s combined fail-closed pattern: a known-kind
+    // segment with a malformed payload fails BOTH the strict schema AND the unknown-segment
+    // rescue (which refuses known kinds), so the whole message parse fails, not just the one
+    // segment.
     const doc = msgDoc("m1", baseSystem({ kind: "roll", content: [{ kind: "roll_embed", formula: "1d6" }] }));
     const { container } = render(MessageCard, { props: { message: doc, showChannel: false }, context: setAppContextForTest({ documents: storeWith(doc) }) });
     expect(container.querySelector("article")).toBeNull();
@@ -148,9 +149,9 @@ describe("MessageCard — the {@html} boundary", () => {
   });
 
   it("filters out an unknown segment kind without crashing, rendering only known segments", () => {
-    // "preview_card" is a genuinely unknown kind (per chat-docs.ts's fail-closed pattern, a
-    // malformed roll_embed/roll_button/text/html segment would fail the WHOLE message parse
-    // instead of being rescued here).
+    // "preview_card" is a genuinely unknown kind (per `parseMessageEngine`'s and
+    // `isKnownSegment`'s fail-closed pattern, a malformed roll_embed/roll_button/text/html
+    // segment would fail the WHOLE message parse instead of being rescued here).
     const doc = msgDoc("m1", baseSystem({ content: [{ kind: "text", text: "a" }, { kind: "preview_card", url: "x" }] }));
     const { container } = render(MessageCard, { props: { message: doc, showChannel: false }, context: setAppContextForTest({ documents: storeWith(doc) }) });
     expect(container.querySelectorAll(".seg-text, .seg-html").length).toBe(1);
@@ -158,7 +159,7 @@ describe("MessageCard — the {@html} boundary", () => {
   });
 });
 
-describe("MessageCard — link preview (M11d-3)", () => {
+describe("MessageCard — link preview", () => {
   it("renders title/description/host as text, with no img", () => {
     const doc = msgDoc("m1", baseSystem({
       content: [

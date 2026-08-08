@@ -3,7 +3,7 @@
   import type { MenuCommand } from "./engine/policy";
 
   /** The per-tab/floating-header command menu. Framework-only: no dockview
-   * import here — `dockview.ts` mounts this component imperatively via
+   * import here — `mountPanelMenu` mounts this component imperatively via
    * Svelte's `mount()` and translates its `onCommand` callback into a
    * `LayoutOp` via `opForMenuCommand` on its own side, so this component
    * never needs to know an engine exists at all. */
@@ -11,13 +11,19 @@
     onCommand,
     onClose,
   }: {
+    /** Called once with the chosen command, right before the popover closes itself. */
     onCommand: (cmd: MenuCommand) => void;
-    // `returnFocus` (default true) lets Tab close the popup WITHOUT forcing
-    // focus back to the invoking tab — see the Tab case below.
+    /** Closes the popover. `returnFocus` (default true) lets Tab close it WITHOUT forcing
+     * focus back to the invoking tab — see the Tab case below. */
     onClose: (returnFocus?: boolean) => void;
   } = $props();
 
-  const items: { cmd: MenuCommand; labelKey: string }[] = [
+  const items: {
+    /** The command this item dispatches on activation. */
+    cmd: MenuCommand;
+    /** The i18n key for this item's visible label. */
+    labelKey: string;
+  }[] = [
     { cmd: "dockRight", labelKey: "panels.dockRight" },
     { cmd: "dockBottom", labelKey: "panels.dockBottom" },
     { cmd: "dockLeft", labelKey: "panels.dockLeft" },
@@ -33,8 +39,8 @@
   // DOM focus directly — no separate "activate" step, since a menuitem's own
   // activation IS selecting it via Enter/Space/click. Escape here closes the
   // MENU POPUP only — distinct from a floating PANEL's own Escape-to-close
-  // (wired in `dockview.ts` against the floating dialog element, unrelated to
-  // this popup).
+  // (wired in `DockviewEngine.#wireFloatingA11y` against the floating dialog
+  // element, unrelated to this popup).
   const menuKeyboard = createMenuKeyboard(() => itemEls, (returnFocus) => onClose(returnFocus));
   /** Forwards a menu item's keydown to the shared APG menu-keyboard handler.
    * @param event The keydown event.
@@ -43,6 +49,7 @@
    * ```
    * // private function; not part of the public API — used only in this
    * // component's own menu-item template below
+   * declare const event: KeyboardEvent;
    * onKeydown(event, 0);
    * ```
    */

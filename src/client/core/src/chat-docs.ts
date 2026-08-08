@@ -1,4 +1,4 @@
-// Client mirror of the chat message content model (src/server/src/chat/mod.rs).
+// Client mirror of the chat message content model (`chat::MessageEngine` et al).
 // `MessageEngine` is deliberately NOT ts-rs-exported (server comment: "Opaque on the
 // WIRE" — the server enforces `deny_unknown_fields` structurally, the exact segment/
 // outcome union is the client's own concern) — this file is the manually-kept-in-sync
@@ -6,57 +6,144 @@
 // not parse renders as nothing, never partially. Re-rooted onto the three-band
 // document shape: the message body lives in `doc.engine`, `doc.system` stays `{}`.
 import { z } from "zod";
-import { ActorOwnerRefSchema, AudienceSchema, type WireDocument } from "./wire";
+import {
+  ActorOwnerRefSchema,
+  AudienceSchema,
+  type WireActorOwnerRef,
+  type WireAudience,
+  type WireDocument,
+} from "./wire";
 import { envelope } from "./scene-docs";
 import type { ChannelRegistryEngine, ChatSettingsEngine, DiceSettingsEngine } from "@shadowcat/types";
 export type { ChannelRegistryEngine, ChatSettingsEngine, DiceSettingsEngine };
 
+/** The `doc_type` identifying a stored chat message document. */
 export const MESSAGE_DOC_TYPE = "message";
+/** The `doc_type` identifying the world's singleton channel-registry config document. */
 export const CHANNEL_REGISTRY_DOC_TYPE = "channel-registry";
-/** Server-enforced content cap (chat/mod.rs MAX_MESSAGE_CHARS) — composer pre-validates. */
+/** Server-enforced content cap (`chat::MAX_MESSAGE_CHARS`) — composer pre-validates. */
 export const MAX_MESSAGE_CHARS = 4096;
 
+/** Validates a message's `kind` tag. `"system"` is reserved for server-authored
+ * notices — no client-reachable parse path can ever produce it. */
 export const MessageKindSchema = z.enum(["normal", "emote", "roll", "system"]);
+/** The inferred TS shape of `MessageKindSchema`. */
 export type MessageKind = z.infer<typeof MessageKindSchema>;
 
-/** Mirror of dice::outcome::DieRecord (M11d-2). Only the fields the roll card
- * renders are validated; `.passthrough()` tolerates server-only audit fields
- * (id, rerolled_from, ordered, ...) the client doesn't read, so an additive
- * server-side field never breaks this mirror. */
-export const DieRecordSchema = z
-  .object({
-    value: z.number(),
-    natural: z.number(),
-    kept: z.boolean(),
-    exploded: z.boolean(),
-    crit_success: z.boolean(),
-    crit_fail: z.boolean(),
-    expertise: z.number(),
-    group_index: z.number(),
-    label: z.string().nullish(),
-    symbols: z.array(z.string()),
-  })
-  .passthrough();
-export type DieRecord = z.infer<typeof DieRecordSchema>;
+/** A single die's post-pipeline result within a roll outcome. Mirrors
+ * `dice::outcome::DieRecord`; only the fields the roll card renders are
+ * modeled here — server-only audit fields (id, rerolled_from, ordered, ...)
+ * pass through unvalidated (see `DieRecordSchema`'s `.passthrough()`). */
+export type DieRecord = {
+  /** Post-modifier face (the pipeline's final value for this die). */
+  value: number;
+  /** The original natural (unmodified) RNG face. */
+  natural: number;
+  /** Survived keep/drop selection. */
+  kept: boolean;
+  /** This die triggered an explosion. */
+  exploded: boolean;
+  /** Crit-success event fired on this die. */
+  crit_success: boolean;
+  /** Crit-fail event fired on this die (can coexist with `crit_success`). */
+  crit_fail: boolean;
+  /** Expertise points allocated to this die; 0 when the roll has no expertise budget. */
+  expertise: number;
+  /** Index of the AST node that produced this die, in left-to-right walk order. */
+  group_index: number;
+  /** Tag copied from the producing group's label; absent if the group is unlabeled. */
+  label?: string | null;
+  /** Resolved symbols for a `Faces` die's drawn face; empty for a `Numeric` die. */
+  symbols: string[];
+};
 
-/** Mirror of dice::spec::ConstTerm — a labeled bare constant. Display/
- * provenance decoration only (never fed into a dice-pool comparison); only
- * ever populated in Total mode. */
-export const ConstTermSchema = z.object({
+// Unannotated impl const: typed `z.ZodType<T> = expr` only requires `expr`'s inferred output be
+// ASSIGNABLE to `T`, so a field narrowed to a literal subtype would pass silently under the
+// exported annotation alone. Kept unannotated so the drift-guard test can assert
+// `z.infer<typeof dieRecordSchemaImpl>` against `DieRecord` directly (see `wire.ts`'s module note
+// for the full rationale, shared across both files). Deliberately WITHOUT `.passthrough()` here —
+// that call adds a `[k: string]: unknown` index signature to the inferred output, which is a
+// real (intentional) WIDENING of `DieRecord` that a strict `toEqualTypeOf` would always flag as
+// a mismatch, defeating the guard for a reason unrelated to drift. `.passthrough()` is applied
+// only at the exported `DieRecordSchema`, so runtime validation is unchanged.
+export const dieRecordSchemaImpl = z.object({
+  value: z.number(),
+  natural: z.number(),
+  kept: z.boolean(),
+  exploded: z.boolean(),
+  crit_success: z.boolean(),
+  crit_fail: z.boolean(),
+  expertise: z.number(),
+  group_index: z.number(),
+  label: z.string().nullish(),
+  symbols: z.array(z.string()),
+});
+/** Validator for a `DieRecord`. Only the fields the roll card renders are
+ * validated; `.passthrough()` tolerates server-only audit fields (id,
+ * rerolled_from, ordered, ...) the client doesn't read, so an additive
+ * server-side field never breaks this mirror. */
+export const DieRecordSchema: z.ZodType<DieRecord> = dieRecordSchemaImpl.passthrough();
+
+/** A labeled bare constant term in a roll expression. Mirrors
+ * `dice::spec::ConstTerm`. Display/provenance decoration only — never fed
+ * into a dice-pool comparison; only ever populated in Total mode. */
+export type ConstTerm = {
+  /** The constant's numeric value. */
+  value: number;
+  /** Display-only tag (never a pool-comparison label). */
+  label?: string | null;
+};
+
+// Unannotated impl const — see `dieRecordSchemaImpl`'s note above / `wire.ts`'s module note.
+export const constTermSchemaImpl = z.object({
   value: z.number(),
   label: z.string().nullish(),
 });
-export type ConstTerm = z.infer<typeof ConstTermSchema>;
+/** Validator for a `ConstTerm`. */
+export const ConstTermSchema: z.ZodType<ConstTerm> = constTermSchemaImpl;
 
-/** Mirror of dice::outcome::RollOutcome (M11d-2). `successes`/`pass`/`margin`/
- * `tier_label`/`tier_value` are `None` in Total mode with no `difficulty`.
- * PRECISION: `total`/`margin` are i64 and — unlike wire.ts's seq/timestamp
- * fields — CAN legitimately reach i64::MAX/MIN (the evaluator saturates
+/** A roll's fully-derived, deterministic result. Mirrors
+ * `dice::outcome::RollOutcome`. `successes`/`pass`/`margin`/`tier_label`/
+ * `tier_value` are `None` in Total mode with no `difficulty`.
+ * PRECISION: `total`/`margin` are i64 and — unlike this package's other wire-protocol
+ * seq/timestamp fields — CAN legitimately reach i64::MAX/MIN (the evaluator saturates
  * overflowing constant/multiplication folds), beyond Number.MAX_SAFE_INTEGER;
  * JSON.parse rounds such extremes before Zod runs, so display precision
  * degrades past 2^53. Accepted tradeoff (no crash/security effect).
  * TODO: string-encode these two i64 fields if exact extreme totals matter. */
-export const RollOutcomeSchema = z.object({
+export type RollOutcome = {
+  /** Total-mode fold result; in SuccessCount mode, the reference sum of kept-die values. */
+  total: number;
+  /** Per-die results, AST left-to-right then roll order. */
+  records: DieRecord[];
+  /** Net successes (SuccessCount mode only). */
+  successes?: number | null;
+  /** Pass/fail against the margin reference, when one exists. */
+  pass?: boolean | null;
+  /** Oriented margin against difficulty/required successes. */
+  margin?: number | null;
+  /** Ladder rung label `margin` classified into. */
+  tier_label?: string | null;
+  /** Ladder rung numeric payload. */
+  tier_value?: number | null;
+  /** Count of crit-success events across kept dice. */
+  crit_successes: number;
+  /** Count of crit-fail events across kept dice. */
+  crit_fails: number;
+  /** Sum of fired crit-success `positive_counter` values. */
+  positive_counter: number;
+  /** Sum of fired crit-fail `negative_counter` values. */
+  negative_counter: number;
+  /** Per-symbol tallies over kept dice, computed unconditionally. */
+  symbol_counts: Record<string, number>;
+  /** Every labeled `Const` term in the expression; empty in SuccessCount mode
+   * (arithmetic is ignored there). `.default([])` supplies empty for a stored roll
+   * whose record carries no `labeled_consts` key. */
+  labeled_consts: ConstTerm[];
+};
+
+// Unannotated impl const — see `dieRecordSchemaImpl`'s note above / `wire.ts`'s module note.
+export const rollOutcomeSchemaImpl = z.object({
   total: z.number(),
   records: z.array(DieRecordSchema),
   successes: z.number().nullish(),
@@ -69,30 +156,77 @@ export const RollOutcomeSchema = z.object({
   positive_counter: z.number(),
   negative_counter: z.number(),
   symbol_counts: z.record(z.string(), z.number()),
-  /** Every labeled `Const` term in the expression; empty in SuccessCount mode
-   * (arithmetic is ignored there) and defaults to empty for any roll
-   * persisted before this field existed. */
   labeled_consts: z.array(ConstTermSchema).default([]),
 });
-export type RollOutcome = z.infer<typeof RollOutcomeSchema>;
+/** Validator for a `RollOutcome`. Input type is widened to `unknown` because
+ * `labeled_consts.default([])` makes that key optional on input while the
+ * hand-written `RollOutcome` output type keeps it required. */
+export const RollOutcomeSchema: z.ZodType<RollOutcome, z.ZodTypeDef, unknown> = rollOutcomeSchemaImpl;
 
-/** Known segment kinds. `html.sanitized_html` is innerHTML-safe ONLY because the
- * server's chat::sanitize (ammonia) produced it — no client code may construct one.
- * `roll_embed.outcome` is a completed, immutable roll's full deterministic result
- * (chat/mod.rs Segment::RollEmbed); `roll_button` renders an unexecuted formula the
- * user can click to send a fresh `/roll` (chat/mod.rs Segment::RollButton).
- * `link_preview` mirrors chat/mod.rs Segment::LinkPreview — a server-fetched,
- * SSRF-guarded preview of a link in the message; the client renders ONLY the
- * stored `url`/`title`/`description` strings (escaped, never innerHTML) and never
- * fetches `url` itself (M11d-3). */
-export const ChatSegmentSchema = z.discriminatedUnion("kind", [
+/** One piece of a message's sanitized content model — one of the five known segment
+ * kinds. Mirrors `chat::Segment`. `html.sanitized_html` is innerHTML-safe ONLY because
+ * the server's `chat::sanitize` (ammonia) produced it — no client code may construct one.
+ * `roll_embed.outcome` is a completed, immutable roll's full deterministic result;
+ * `roll_button` renders an unexecuted formula the user can click to send a fresh `/roll`.
+ * `link_preview` is a server-fetched, SSRF-guarded preview of a link in the message; the
+ * client renders ONLY the stored `url`/`title`/`description` strings (escaped, never
+ * innerHTML) and never fetches `url` itself. */
+export type ChatSegment =
+  | {
+      /** Literal text; rendered as a DOM text node by the client (never innerHTML),
+       * so any markup it contains is inert. */
+      kind: "text";
+      /** The literal text. */
+      text: string;
+    }
+  | {
+      /** A run of already-sanitized HTML, produced only by `chat::sanitize::sanitize`. */
+      kind: "html";
+      /** The ammonia-sanitized run (safe for innerHTML by construction). */
+      sanitized_html: string;
+    }
+  | {
+      /** A completed roll: the formula plus its full deterministic outcome. */
+      kind: "roll_embed";
+      /** The formula as the author wrote it. */
+      formula: string;
+      /** The full deterministic outcome, natural faces included. */
+      outcome: RollOutcome;
+    }
+  | {
+      /** An unexecuted, validated formula the client renders as a button; clicking it
+       * sends a fresh `/roll <formula>` `SendMessage` (a new, independently-attributed roll). */
+      kind: "roll_button";
+      /** The validated-but-unexecuted formula the button re-sends. */
+      formula: string;
+      /** Optional display label (plain data, never markup). */
+      label?: string | null;
+    }
+  | {
+      /** A server-fetched, SSRF-guarded preview of a link in the message. */
+      kind: "link_preview";
+      /** The previewed URL as posted. */
+      url: string;
+      /** Server-extracted title. */
+      title: string;
+      /** Server-extracted description (may be empty). */
+      description: string;
+    };
+
+// Unannotated impl const — see `dieRecordSchemaImpl`'s note above / `wire.ts`'s module note.
+// The union-narrowing case this pattern guards against is exactly what a segment-kind arm
+// removal or a `kind: z.literal(...)` narrowing inside one would be.
+export const chatSegmentSchemaImpl = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("text"), text: z.string() }),
   z.object({ kind: z.literal("html"), sanitized_html: z.string() }),
   z.object({ kind: z.literal("roll_embed"), formula: z.string(), outcome: RollOutcomeSchema }),
   z.object({ kind: z.literal("roll_button"), formula: z.string(), label: z.string().nullish() }),
   z.object({ kind: z.literal("link_preview"), url: z.string(), title: z.string(), description: z.string() }),
 ]);
-export type ChatSegment = z.infer<typeof ChatSegmentSchema>;
+/** Validator for a `ChatSegment`. Input type is widened to `unknown` because the
+ * `roll_embed` arm's `outcome: RollOutcomeSchema` inherits `RollOutcomeSchema`'s
+ * own widened input (see that schema's doc). */
+export const ChatSegmentSchema: z.ZodType<ChatSegment, z.ZodTypeDef, unknown> = chatSegmentSchemaImpl;
 /** Forward-compat: a segment kind this client doesn't know (e.g. a future server's
  * DocLink) parses as opaque and renders as nothing — the message still shows.
  * INVARIANT: refuses every KNOWN kind — without this, a malformed
@@ -110,6 +244,7 @@ const UnknownSegmentSchema = z
       s.kind !== "roll_button" &&
       s.kind !== "link_preview",
   );
+/** The inferred TS shape of `UnknownSegmentSchema` — a forward-compat, not-yet-known segment kind. */
 export type UnknownSegment = z.infer<typeof UnknownSegmentSchema>;
 const SegmentListSchema = z.array(z.union([ChatSegmentSchema, UnknownSegmentSchema]));
 
@@ -136,7 +271,38 @@ export function isKnownSegment(s: ChatSegment | UnknownSegment): s is ChatSegmen
   );
 }
 
-export const ChatMessageEngineSchema = z.object({
+/** A stored chat message document's `engine` body. Mirrors `chat::MessageEngine`. */
+export type ChatMessageEngine = {
+  /** Client-chosen channel label; never validated, and audience never derives from it. */
+  channel: string;
+  /** The owning user's id (== `Document.owner`). */
+  user_owner: string;
+  /** Actor attribution, if the sender spoke as an actor (world-pinned and
+   * ownership-checked at send). */
+  actor_owner?: WireActorOwnerRef | null;
+  /** Message subtype (normal/emote/roll/system). */
+  kind: MessageKind;
+  /** Readership beyond world-readable; drives the doc's `PermissionSet`. */
+  audience: WireAudience;
+  /** The sanitized segment list the client renders. Includes forward-compat
+   * `UnknownSegment` entries for a segment kind this client doesn't yet know
+   * (see `isKnownSegment`); those never trip a whole-message parse failure. */
+  content: (ChatSegment | UnknownSegment)[];
+  /** The author's raw input (post-`/w`-strip), kept for client edit-prefill —
+   * sanitized `html` segments cannot be reversed to author input. Data only,
+   * never rendered as markup; cleared by the delete tombstone alongside
+   * `content` (a retained source would leak deleted content). */
+  source?: string | null;
+  /** Set when the message has been edited. Absent (not `null`) on the wire
+   * for an unedited message. */
+  edited_at?: number | null;
+  /** Set when the message has been soft-deleted. Absent (not `null`) on the
+   * wire for a live message. */
+  deleted_at?: number | null;
+};
+
+// Unannotated impl const — see `dieRecordSchemaImpl`'s note above / `wire.ts`'s module note.
+export const chatMessageEngineSchemaImpl = z.object({
   channel: z.string(),
   user_owner: z.string(),
   actor_owner: ActorOwnerRefSchema.nullish(),
@@ -147,7 +313,11 @@ export const ChatMessageEngineSchema = z.object({
   edited_at: z.number().nullish(),
   deleted_at: z.number().nullish(),
 });
-export type ChatMessageEngine = z.infer<typeof ChatMessageEngineSchema>;
+/** Validator for a `ChatMessageEngine`. Input type is widened to `unknown` because
+ * `audience.default(...)` makes that key optional on input while the hand-written
+ * `ChatMessageEngine` output type keeps it required. */
+export const ChatMessageEngineSchema: z.ZodType<ChatMessageEngine, z.ZodTypeDef, unknown> =
+  chatMessageEngineSchemaImpl;
 
 /** Fail-closed body parse: null unless `doc` is a message with a valid `engine` body.
  * @param doc The candidate document.
@@ -190,7 +360,7 @@ export function buildChannelRegistryDoc(
 }
 
 /** Doc_type for the single per-world dice-settings config `Document`
- * (server: chat/settings.rs DICE_SETTINGS_DOC_TYPE). `doc_type: "dice-settings"` is
+ * (server: `chat::settings::DICE_SETTINGS_DOC_TYPE`). `doc_type: "dice-settings"` is
  * engine-defined — the body lands in `engine`, `DiceSettingsEngine` mirrors
  * data::engine::registries::DiceSettingsEngine 1:1 (both fields serde-default on the server:
  * Total / high_wins), so a partial body is still safe — the panel always writes the
@@ -218,12 +388,13 @@ export function buildDiceSettingsDoc(
 }
 
 /** Doc_type for the single per-world chat-settings config `Document`
- * (server: chat/settings.rs CHAT_SETTINGS_DOC_TYPE). `doc_type: "chat-settings"` is
+ * (server: `chat::settings::CHAT_SETTINGS_DOC_TYPE`). `doc_type: "chat-settings"` is
  * engine-defined — the body lands in `engine`, `ChatSettingsEngine` mirrors
  * chat::settings::ChatContentPolicy: every field `#[serde(default)]` on the server
- * (false), except `link_previews` which is tri-state: absent/`null` is the spec'd
- * default-on-when-hyperlinks-on behavior (`ChatContentPolicy::previews_enabled`),
- * `true`/`false` is an explicit GM override. The panel writes single fields via
+ * (false), except `link_previews` which is tri-state: absent/`null` defaults previews ON
+ * whenever `hyperlinks` is also on (`ChatContentPolicy::previews_enabled`), and OFF when
+ * `hyperlinks` is off regardless of this field; `true`/`false` is an explicit GM override.
+ * The panel writes single fields via
  * JSON-pointer update, never the whole doc. */
 export const CHAT_SETTINGS_DOC_TYPE = "chat-settings";
 

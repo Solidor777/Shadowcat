@@ -4,7 +4,10 @@
   import MergeConflictModal from "./MergeConflictModal.svelte";
   import type { TemplatesController } from "./templatesController.svelte";
 
-  let { controller }: { controller: TemplatesController } = $props();
+  let { controller }: {
+    /** The shell's `TemplatesController` instance whose `pending` session drives the modal. */
+    controller: TemplatesController;
+  } = $props();
 </script>
 
 {#if controller.pending}

@@ -4,7 +4,10 @@
   import { listAssets } from "@shadowcat/core";
   import type { ToolController } from "./controller.svelte";
 
-  let { controller }: { controller: ToolController } = $props();
+  let { controller }: {
+    /** The shared tool-controller instance; clicking a tile sets `controller.selectedAsset`. */
+    controller: ToolController;
+  } = $props();
   const { world, assets, t } = getAppContext();
 
   let items = $state<Asset[]>([]);

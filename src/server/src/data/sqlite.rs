@@ -465,8 +465,8 @@ impl SqliteRepository {
     /// `users`, so a surviving row keeps a deleted account authenticated until
     /// cookie expiry. Refuses to delete the last administrator.
     /// Implicit coupling: `tower_sessions` is created by `SqlxSqliteStore::
-    /// migrate` at boot (main.rs), before any route can reach this; repo-level
-    /// tests must run that migrate themselves.
+    /// migrate`, called from `session_layer` at boot, before any route can reach this;
+    /// repo-level tests must run that migrate themselves.
     pub async fn delete_user(&self, target: Uuid) -> Result<(), DataError> {
         let mut tx = self.pool.begin().await?;
         if Self::is_last_admin(&mut tx, target).await? {
@@ -808,7 +808,7 @@ impl SqliteRepository {
         Ok(())
     }
 
-    /// The player's serialized explored-cell blob for a scene (M9c), or `None` when unexplored.
+    /// The player's serialized explored-cell blob for a scene, or `None` when unexplored.
     /// Per-(scene, user) SECRET memory — never broadcast; dispatched per-recipient over `vision`.
     pub async fn get_explored(
         &self,
@@ -828,7 +828,7 @@ impl SqliteRepository {
     /// FTS AFTER DELETE triggers fire under cascade (pinned by test).
     /// `explored_fog` and the per-world `settings` blobs have no FK and are
     /// purged explicitly. Files on disk are the caller's concern — delete
-    /// ordering is rows-first, files-second (http/assets.rs delete convention).
+    /// ordering is rows-first, files-second (`http::assets` delete convention).
     pub async fn delete_world(&self, world: Uuid) -> Result<(), DataError> {
         let mut tx = self.pool.begin().await?;
         let res = sqlx::query("DELETE FROM worlds WHERE id = ?")
@@ -1134,8 +1134,9 @@ impl SqliteRepository {
 
     /// Replace a world's enabled installed-module set (stored as JSON in
     /// settings, beside `world_cap_requirements`/`world_contract_declarations`
-    /// — enable/disable never mutates either of those; see the plan's
-    /// non-destructive-union decision for the `Welcome` broadcast).
+    /// — enable/disable never mutates either of those; `welcome_capability_requirements` unions
+    /// the enabled modules' declared requirements with the stored GM-authored record fresh on
+    /// every `Welcome`, leaving the stored record the GM's own edit alone).
     pub async fn set_world_enabled_modules(
         &self,
         world: Uuid,
@@ -1513,10 +1514,9 @@ impl SqliteRepository {
         // A dangling link loads `None` and `effective_owner` fails closed to no owner.
         //
         // `load_document` is keyed on id alone (no `world_id` filter), so a cross-world
-        // `actor_id` would otherwise resolve. The scope check that used to live here is
-        // now inside `permission::effective_owner` itself — see that function's doc
-        // comment for the rationale (keeps the reachable set equal to `SceneEcs.actors`
-        // by construction).
+        // `actor_id` would otherwise resolve. The cross-world scope check lives inside
+        // `permission::effective_owner` itself — see that function's doc comment for the
+        // rationale (keeps the reachable set equal to `SceneEcs.actors` by construction).
         let actor = Self::load_document(executor, actor_id).await?;
         Ok(crate::data::permission::effective_owner(
             doc,
@@ -1756,8 +1756,8 @@ fn check_command_scope(doc: &Document, world_id: Uuid) -> Result<(), DataError> 
 /// falling back to `as f64` would silently equate genuinely different values.
 const MAX_EXACT_F64_INT: i128 = 1i128 << 53;
 
-/// Structural equality used ONLY at the `apply_intent` Phase-1 OCC pre-image
-/// comparison (`data/sqlite.rs`, `actual != ch.old`). `serde_json::Value::Number`
+/// Structural equality used ONLY at `SqliteRepository::apply_intent`'s Phase-1 OCC pre-image
+/// comparison (`actual != ch.old`). `serde_json::Value::Number`
 /// splits whole numbers into `PosInt`/`NegInt` and non-whole numbers into `Float`;
 /// an engine field stored as a whole-number `f64` (e.g. `100.0`) serializes to
 /// `Float(100.0)`, but a JS client cannot preserve "this was a float" through
@@ -1920,7 +1920,7 @@ impl Repository for SqliteRepository {
                     let mut value: serde_json::Value =
                         serde_json::from_str(row.get::<String, _>("json").as_str())?;
                     for ch in changes {
-                        // THE store-equal mutation rule (data/command.rs). Never
+                        // THE `apply_field_change` mutation rule. Never
                         // re-derive the remove/set branch here: the derived scene ECS
                         // mirrors these same changes and must land the same value.
                         apply_field_change(&mut value, ch)?;
@@ -2008,7 +2008,7 @@ impl Repository for SqliteRepository {
         // Welcome union, see `ws::conn::welcome_capability_requirements`) are
         // advisory client-side UX only and are intentionally NOT consulted here —
         // server authority over write policy stays with the GM/operator, never
-        // community module code (ARCHITECTURE invariant 6).
+        // community module code.
         let world_reqs = self.world_cap_requirements(world_id).await?;
         // Loaded before the transaction (like `world_cap_requirements` above):
         // the single-writer pool would deadlock on a mid-tx settings query.
@@ -2212,16 +2212,15 @@ impl Repository for SqliteRepository {
                     //
                     // Grant only READ + WRITE_FIELDS (never `all: true`) —
                     // both existing handlers construct a single `/engine`
-                    // FieldChange (M13-0: re-rooted from `/system`) and never
-                    // touch `/permissions` or `/embedded`, so the exemption is
+                    // FieldChange and never touch `/permissions` or
+                    // `/embedded`, so the exemption is
                     // scoped to exactly what it is used for. This still
                     // authorizes the GM-not-addressed moderation edit/delete
                     // of `/engine` while denying `/permissions`/`/embedded`
                     // writes by construction, closing the gap even for a
                     // hypothetical future `ServerMessageRevision` caller with
                     // a broader op.
-                    // CAVEAT: unlike the prior unconditional `all: true`, this
-                    // concrete cap set does NOT auto-satisfy an ADDITIVE
+                    // CAVEAT: this concrete cap set does NOT auto-satisfy an ADDITIVE
                     // `declared_caps_for_path` world/module requirement on a
                     // message `/engine` (sub-)path (checked further below).
                     // No first-party module declares one today, so this is
@@ -2257,11 +2256,16 @@ impl Repository for SqliteRepository {
                     let whole = serde_json::to_value(&cur)?;
                     for ch in changes {
                         validation::validate_field_change(ch)?;
-                        // Each field path requires its capability; an immutable
-                        // envelope field (id, scope, owner, source, ...) maps to
-                        // no capability and is rejected for everyone. /system ->
-                        // write_fields, /embedded -> manage_embedded,
-                        // /permissions -> edit_permissions.
+                        // Each field path requires its capability
+                        // (`permission::required_cap_for_path`): an
+                        // immutable envelope field (id, scope, source, ...) maps
+                        // to no capability and is rejected for everyone.
+                        // /system, /engine, /name, /base -> write_fields;
+                        // /embedded -> manage_embedded; /permissions AND /owner
+                        // -> edit_permissions. /owner is NOT immutable — it is
+                        // an access-control field, writable by a GM (or an
+                        // explicit edit_permissions grant) but never by an owner,
+                        // since the DocRole::Owner floor excludes that cap.
                         let need = required_cap_for_path(&ch.path).ok_or(DataError::Forbidden)?;
                         if !access.has(need) {
                             tracing::debug!(
@@ -2391,7 +2395,7 @@ impl Repository for SqliteRepository {
                     let mut value: serde_json::Value =
                         serde_json::from_str(row.get::<String, _>("json").as_str())?;
                     for ch in changes {
-                        // THE store-equal mutation rule (data/command.rs). Never
+                        // THE `apply_field_change` mutation rule. Never
                         // re-derive the remove/set branch here: the derived scene ECS
                         // mirrors these same changes and must land the same value.
                         apply_field_change(&mut value, ch)?;
@@ -5777,9 +5781,9 @@ mod tests {
         // ranking would shift when the query term ALSO appears in GM-only
         // text they can never see — leaking the existence of a hidden match
         // through score/rank even though row selection and snippets are
-        // already correctly redacted. Pre-dates this task (present since
-        // M6c-1); widened by the M13-0 /engine+/name FTS re-root because
-        // `content_all` now also carries name/engine content.
+        // already correctly redacted. `content_all` carries name/engine
+        // content in addition to system content, widening the surface this
+        // affects.
         use crate::auth::role::ServerRole;
         use crate::data::command::Operation;
         use crate::data::document::{DocRole, PermissionSet, Scope, Visibility};
@@ -6319,12 +6323,14 @@ mod tests {
         let msg = crate::chat::build_message_doc(
             w.id,
             player,
-            "all".into(),
-            None,
-            crate::chat::Audience::Public,
-            crate::chat::MessageKind::Normal,
-            crate::chat::plain_text_content("hi"),
-            None,
+            crate::chat::MessageDraft {
+                channel: "all".into(),
+                actor_owner: None,
+                audience: crate::chat::Audience::Public,
+                kind: crate::chat::MessageKind::Normal,
+                content: crate::chat::plain_text_content("hi"),
+                source: None,
+            },
             1,
         );
         r.apply_intent(
@@ -6341,12 +6347,14 @@ mod tests {
         let mut other = crate::chat::build_message_doc(
             w.id,
             player,
-            "all".into(),
-            None,
-            crate::chat::Audience::Public,
-            crate::chat::MessageKind::Normal,
-            vec![],
-            None,
+            crate::chat::MessageDraft {
+                channel: "all".into(),
+                actor_owner: None,
+                audience: crate::chat::Audience::Public,
+                kind: crate::chat::MessageKind::Normal,
+                content: vec![],
+                source: None,
+            },
             2,
         );
         other.doc_type = "note".into();
@@ -6391,12 +6399,14 @@ mod tests {
         let msg = crate::chat::build_message_doc(
             w.id,
             spec,
-            "all".into(),
-            None,
-            crate::chat::Audience::Public,
-            crate::chat::MessageKind::Normal,
-            vec![],
-            None,
+            crate::chat::MessageDraft {
+                channel: "all".into(),
+                actor_owner: None,
+                audience: crate::chat::Audience::Public,
+                kind: crate::chat::MessageKind::Normal,
+                content: vec![],
+                source: None,
+            },
             1,
         );
         let err = r
@@ -6442,12 +6452,14 @@ mod tests {
         let mut msg = crate::chat::build_message_doc(
             w.id,
             player,
-            "all".into(),
-            None,
-            crate::chat::Audience::Public,
-            crate::chat::MessageKind::Normal,
-            crate::chat::plain_text_content("hi"),
-            None,
+            crate::chat::MessageDraft {
+                channel: "all".into(),
+                actor_owner: None,
+                audience: crate::chat::Audience::Public,
+                kind: crate::chat::MessageKind::Normal,
+                content: crate::chat::plain_text_content("hi"),
+                source: None,
+            },
             1,
         );
         msg.owner = Some(other);
@@ -6491,12 +6503,14 @@ mod tests {
         let msg = crate::chat::build_message_doc(
             w.id,
             player,
-            "all".into(),
-            None,
-            crate::chat::Audience::Public,
-            crate::chat::MessageKind::Normal,
-            crate::chat::plain_text_content("hi"),
-            None,
+            crate::chat::MessageDraft {
+                channel: "all".into(),
+                actor_owner: None,
+                audience: crate::chat::Audience::Public,
+                kind: crate::chat::MessageKind::Normal,
+                content: crate::chat::plain_text_content("hi"),
+                source: None,
+            },
             1,
         );
         let msg_id = msg.id;
@@ -6565,12 +6579,14 @@ mod tests {
         let msg = crate::chat::build_message_doc(
             w.id,
             player,
-            "all".into(),
-            None,
-            crate::chat::Audience::Public,
-            crate::chat::MessageKind::Normal,
-            crate::chat::plain_text_content("hi"),
-            None,
+            crate::chat::MessageDraft {
+                channel: "all".into(),
+                actor_owner: None,
+                audience: crate::chat::Audience::Public,
+                kind: crate::chat::MessageKind::Normal,
+                content: crate::chat::plain_text_content("hi"),
+                source: None,
+            },
             1,
         );
         let msg_id = msg.id;
@@ -8514,7 +8530,7 @@ mod tests {
         let denied = try_move(&r, w, p1, token.id, (6.0, 6.0), (8.0, 8.0), 5).await;
         assert!(
             matches!(denied, Err(DataError::Forbidden)),
-            "the actor's FORMER owner must lose the token, got {denied:?}"
+            "the actor's ORIGINAL owner must lose the token, got {denied:?}"
         );
     }
 
@@ -8761,18 +8777,20 @@ mod tests {
             .create_user("player-one", None, ServerRole::User, 0)
             .await
             .unwrap();
-        let w1 = r.create_world_owned("W1", gm, 0).await.unwrap();
-        let w2 = r.create_world_owned("W2", gm, 0).await.unwrap();
+        let token_world = r.create_world_owned("token-world", gm, 0).await.unwrap();
+        let actor_world = r.create_world_owned("actor-world", gm, 0).await.unwrap();
 
-        // The actor lives in W2 and is owned by p1; the token lives in W1.
-        let foreign_actor = actor_doc_owned_by(w2.id, Some(p1));
-        gm_create(&r, gm, w2.id, vec![foreign_actor.clone()], 1).await;
-        let token = owned_token_doc(w1.id, Some(foreign_actor.id));
-        gm_create(&r, gm, w1.id, vec![token.clone()], 2).await;
+        // The actor is owned by p1 but lives in a different world from the token it is linked to.
+        let foreign_actor = actor_doc_owned_by(actor_world.id, Some(p1));
+        gm_create(&r, gm, actor_world.id, vec![foreign_actor.clone()], 1).await;
+        let token = owned_token_doc(token_world.id, Some(foreign_actor.id));
+        gm_create(&r, gm, token_world.id, vec![token.clone()], 2).await;
 
-        // p1 is a member of W1 too, so only the scope check can deny this.
-        r.add_member(w1.id, p1, WorldRole::Player).await.unwrap();
-        let denied = try_move(&r, w1.id, p1, token.id, (0.0, 0.0), (3.0, 3.0), 3).await;
+        // p1 is a member of the token's world too, so only the scope check can deny this.
+        r.add_member(token_world.id, p1, WorldRole::Player)
+            .await
+            .unwrap();
+        let denied = try_move(&r, token_world.id, p1, token.id, (0.0, 0.0), (3.0, 3.0), 3).await;
         assert!(
             matches!(denied, Err(DataError::Forbidden)),
             "a cross-world actor link must not confer ownership, got {denied:?}"
@@ -8781,11 +8799,26 @@ mod tests {
         // Non-vacuity: the identical setup with the actor in the TOKEN's own world
         // succeeds — proving the denial is the scope check, not the membership or
         // the link machinery.
-        let local_actor = actor_doc_owned_by(w1.id, Some(p1));
-        let local_token = owned_token_doc(w1.id, Some(local_actor.id));
-        gm_create(&r, gm, w1.id, vec![local_actor, local_token.clone()], 4).await;
-        try_move(&r, w1.id, p1, local_token.id, (0.0, 0.0), (3.0, 3.0), 5)
-            .await
-            .expect("a same-world actor link confers ownership");
+        let local_actor = actor_doc_owned_by(token_world.id, Some(p1));
+        let local_token = owned_token_doc(token_world.id, Some(local_actor.id));
+        gm_create(
+            &r,
+            gm,
+            token_world.id,
+            vec![local_actor, local_token.clone()],
+            4,
+        )
+        .await;
+        try_move(
+            &r,
+            token_world.id,
+            p1,
+            local_token.id,
+            (0.0, 0.0),
+            (3.0, 3.0),
+            5,
+        )
+        .await
+        .expect("a same-world actor link confers ownership");
     }
 }

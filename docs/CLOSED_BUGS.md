@@ -296,3 +296,23 @@ Confirmed-real defects that have since been fixed, kept for provenance. New fixe
   wholesale — no deep merge), and `sessionState.svelte.ts` tracks dirty fields/keys instead of
   whole slices. `flushOnUnload()` also now re-marks on a rejected keepalive PUT (it previously
   cleared its dirty tracking unconditionally, silently dropping the write on failure).
+
+- **[Type incompleteness] `ClientMsg`'s `scene_subscribe` variant omitted the `as_user` field the
+  client actually sends.** `WsClient.subscribeScene` sends
+  `{ type: "scene_subscribe", request_id, channel, ...(opts.asUser ? { as_user: opts.asUser } : {}) }`,
+  but the `ClientMsg` variant declared only `type`, `request_id` and `channel`. The spread bypasses
+  TypeScript's excess-property check, so it compiled and there was **never any runtime
+  misbehaviour** — the server accepts and gates the field. The defect was that `ClientMsg` is the
+  client's statement of record for the protocol and under-described it: a reader could not see that
+  `scene_subscribe` carries `as_user`, and any call site constructing the message without a spread
+  would have been rejected by the compiler for sending a field the protocol does support.
+  **Resolution:** added `as_user?: string;` to that variant, documented with the server's actual
+  authorization semantics rather than a paraphrase — GM-only, with a non-GM caller receiving
+  `scene_error` "not authorized to view as another user" and a non-member target receiving
+  `scene_error` "target user is not a member of this world", the target's role resolved from the
+  server's own membership record so a client-supplied role or scope is never trusted
+  (`egress_loop`'s `SceneSubscribe` handling). Type-only change; verified zero runtime effect —
+  typecheck 0 errors, `@shadowcat/core` 392/392 tests pass, `lint:props` unchanged at 1266 (the new
+  field carries its own doc, so it adds no finding). Found by the docs sweep 13 Task 2 implementer
+  and deliberately held out of that task, which is comment-only and whose diff was under review;
+  fixed immediately once that review closed.

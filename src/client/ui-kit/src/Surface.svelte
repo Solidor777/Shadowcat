@@ -3,7 +3,10 @@
   import { createSubscriber } from "svelte/reactivity";
   import { getAppContext } from "./appContext";
 
-  let { contract }: { contract: string } = $props();
+  let { contract }: {
+    /** The contract id to render every current contribution for (e.g. `"shadowcat.panel"`). */
+    contract: string;
+  } = $props();
 
   const { contributions } = getAppContext();
 

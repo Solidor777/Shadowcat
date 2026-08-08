@@ -1,4 +1,4 @@
-// Template merge orchestration (M13e). Thin glue: pure core functions → the conflict modal →
+// Template merge orchestration. Thin glue: pure core functions → the conflict modal →
 // `dispatchIntent`. Holds a reactive `pending` conflict session the `TemplateModalHost` renders.
 // Constructed by the shell alongside `SheetsController`; imports no module.
 import {
@@ -9,31 +9,56 @@ import {
 } from "@shadowcat/core";
 import type { ConflictGroup } from "./mergeConflict";
 
+/** The child/template/plan triple a conflict group's key resolves back to, so
+ * `#openSession`'s `resolve` callback can find what to merge and dispatch once the
+ * modal reports its per-group "theirs" choices. */
+interface ConflictEntry {
+  /** The instance document a conflict group's resolution applies to. */
+  child: WireDocument;
+  /** The child's template document, already resolved via `#templateOf`. */
+  template: WireDocument;
+  /** The precomputed merge plan (`mergedBands` + `conflicts`) from `computePull`. */
+  plan: MergePlan;
+}
+
+/** The controller's collaborators, supplied once at construction. */
 export interface TemplatesControllerDeps {
+  /** Authoritative document mirror `findInstances` snapshots from. */
   store: DocumentStore;
+  /** Optimistic document view `#get`/`#templateOf` resolve ids against. */
   documents: ReadableDocuments;
+  /** Transmits the merge/stamp/revert operations the controller computes. */
   dispatchIntent: (ops: WireOperation[]) => void;
+  /** The current user's world-scoped role; `"gm"` short-circuits `#isOwnerOrGm`. */
   role: "gm" | "player" | "spectator";
+  /** The current user's id, compared against `effectiveOwner` in `#isOwnerOrGm`. */
   selfId: string;
   /** Advisory write gate (mirrors the server). */
   canEdit: (doc: WireDocument, path: string) => boolean;
+  /** Sink for the warnings logged on an unresolvable child/template. */
   logger: Logger;
 }
 
 /** An open conflict-resolution session: the grouped conflicts + a resolver the modal calls. */
 export interface PendingSession {
+  /** The conflict groups to present, one per instance. */
   groups: ConflictGroup[];
+  /** Applies the modal's per-group "theirs" choices and dispatches the resulting Update(s). */
   resolve: (theirsByGroup: Map<string, Set<string>>) => void;
 }
 
 /**
- * Template pull/push/revert/stamp orchestration (M13e), backing `AppContext.templates`. Thin
+ * Template pull/push/revert/stamp orchestration, backing `AppContext.templates`. Thin
  * glue: pure core merge functions → the conflict modal → `dispatchIntent`. Holds a reactive
  * `pending` conflict session that `TemplateModalHost` renders. Constructed by the shell
  * alongside `SheetsController`; imports no module.
  */
 export class TemplatesController {
+  /** The controller's collaborators, fixed at construction. */
   #deps: TemplatesControllerDeps;
+  /** The open conflict session, or `null` when no modal is pending. Reassigned (not
+   * mutated in place) on open/resolve/cancel — a `$state` reassignment, so readers must
+   * re-read `pending` itself rather than caching the object. */
   pending = $state<PendingSession | null>(null);
 
   /** Build a controller wired to its collaborators.
@@ -115,7 +140,7 @@ export class TemplatesController {
   canPull(childId: string): boolean {
     const child = this.#get(childId);
     if (!child || !this.#templateOf(child)) return false;
-    // Advisory client-side mirror of the server cap union (spec §4.2): WRITE_FIELDS
+    // Advisory client-side mirror of the server cap union: WRITE_FIELDS
     // (base/system) ∪ MANAGE_EMBEDDED. A merge plan is not computed here (expensive/premature —
     // it isn't computed until the user clicks pull), so a user missing MANAGE_EMBEDDED is
     // withheld even for a merge that happens to touch no embedded content (false negative, safe
@@ -137,13 +162,13 @@ export class TemplatesController {
    * separately inside `push`, on `/base` + `/system` — but `planToUpdate` emits paths that
    * filter never checks, notably `/embedded/<coll>` (a different capability). An instance the
    * pusher can write base/system but not `/embedded` on is therefore included, and its ENTIRE
-   * Update is refused: `apply_intent` returns `Forbidden` at the first uncapped path and aborts
-   * the whole intent (`data/sqlite.rs`), so that instance receives none of the push — not even
+   * Update is refused: `Repository::apply_intent` returns `Forbidden` at the first uncapped path and aborts
+   * the whole intent, so that instance receives none of the push — not even
    * the `/name`/`/engine`/`/system` merge — and its `/base` is not refreshed, so it stays
    * `template_changed`. Nothing in the push path retries; it stays stale until someone holding
    * `/embedded` on THAT instance pulls or reverts (both terminate in `planToUpdate`, which always
    * re-emits `/base`). Each instance is its own intent, so this is contained to that one
-   * instance. Tracked in `docs/TODO.md`.
+   * instance.
    * @param templateId - The template document's id.
    * @returns Whether push is currently permitted.
    * @example templates.canPush(templateId);
@@ -224,7 +249,7 @@ export class TemplatesController {
       (inst) => this.#deps.canEdit(inst, "/base") && this.#deps.canEdit(inst, "/system"),
     );
     const groups: ConflictGroup[] = [];
-    const conflicted = new Map<string, { child: WireDocument; template: WireDocument; plan: MergePlan }>();
+    const conflicted = new Map<string, ConflictEntry>();
     for (const inst of instances) {
       const plan = computePull(inst, template);
       if (plan.conflicts.length === 0) {
@@ -254,7 +279,7 @@ export class TemplatesController {
    */
   #openSession(
     groups: ConflictGroup[],
-    byKey: Map<string, { child: WireDocument; template: WireDocument; plan: MergePlan }>,
+    byKey: Map<string, ConflictEntry>,
   ): void {
     this.pending = {
       groups,

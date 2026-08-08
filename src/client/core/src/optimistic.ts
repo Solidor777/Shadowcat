@@ -9,15 +9,18 @@
 // by us confirms the oldest pending intent (FIFO) — its effect is now in base,
 // so it leaves pending. A reject simply drops the pending entry. Rollback is
 // therefore "recompute view from base + remaining pending"; no inverse ops are
-// needed on the client (the M2 reversible representation backs server-side
+// needed on the client (a reversible operation representation backs server-side
 // rollback / undo, not this local prediction). The server stays authoritative:
 // optimism is a prediction, replaced by `base` on confirm or discarded on reject.
 import { applyOperation, type Listener, type ReadableDocuments } from "./store";
 import type { WireCommand, WireDocument, WireOperation } from "./wire";
 import { silentLogger, type Logger } from "./logger";
 
+/** One unconfirmed local prediction, queued FIFO awaiting its authored echo or a reject. */
 interface Pending {
+  /** The id the matching Intent frame was sent under. */
   intentId: string;
+  /** The predicted operations, applied in order to build the view. */
   ops: WireOperation[];
 }
 
@@ -38,10 +41,15 @@ interface Pending {
  * ```
  */
 export class OptimisticClient implements ReadableDocuments {
+  /** Documents built from confirmed authoritative commands only. */
   private base = new Map<string, WireDocument>();
+  /** `base` with every remaining `pending` intent applied, in order — what callers read. */
   private view = new Map<string, WireDocument>();
+  /** Unconfirmed local predictions, oldest first. */
   private pending: Pending[] = [];
+  /** Registered view-change subscribers. */
   private listeners = new Set<Listener>();
+  /** The highest confirmed-seq applied to `base`; never advanced by a pending prediction. */
   appliedSeq = 0;
 
   /** `self` is the actor id used to recognize our own authored echoes.

@@ -58,7 +58,7 @@
   }
 
   /* Compact (<48rem): single column; the toolrail is a full-width bottom tool
-   * strip (real mobile tooling per spec §4.4/§8) sized by an `auto` row —
+   * strip sized by an `auto` row —
    * content-height when the GM-gated rail renders tools, otherwise the
    * hairline `border-top` below is the row's only height. */
   .layout.compact {

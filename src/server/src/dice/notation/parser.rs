@@ -13,7 +13,7 @@ use crate::dice::spec::{
 /// there is no explicit depth counter or recursion-depth cap in this parser.
 /// A caller exposing `parse` to untrusted input relies entirely on its own
 /// length cap to keep worst-case nesting (and therefore stack usage) bounded.
-/// Chat's `MAX_MESSAGE_CHARS = 4096` (`chat/mod.rs`) caps a single formula at
+/// Chat's `chat::MAX_MESSAGE_CHARS = 4096` caps a single formula at
 /// well under that, so worst-case nesting is roughly ~2k levels (each `(` or
 /// unary `-` costs at least 2 input chars) -- a few thousand light recursive-
 /// descent frames, safe on all three target OSes' default thread stacks.
@@ -31,7 +31,7 @@ struct P {
     /// `TotalConfig::difficulty` in Total mode, or a direction-derived
     /// `SuccessRule` in SuccessCount mode.
     t_target: Option<i32>,
-    /// Roll-level expertise budget from an `e<N>` token (design §8/R4). Shared state,
+    /// Roll-level expertise budget from an `e<N>` token. Shared state,
     /// not per-`DiceGroup`; applied only when the resolved mode is SuccessCount.
     expertise: Option<u32>,
 }
@@ -201,12 +201,11 @@ impl P {
                 if matches!(self.peek(), Some(Token::D)) {
                     self.bump();
                     let sides = self.expect_int()?;
-                    // Adaptation: reject a non-positive sides count at parse time.
+                    // Reject a non-positive sides count at parse time.
                     // `DieKind::Numeric { min, max }` with `min > max` (or a
                     // non-positive span) is only `debug_assert!`-guarded deep in
                     // `rng::roll_uniform`, a no-op in release builds. Never construct
-                    // that variant here for an invalid range (docs/TODO.md
-                    // "Server / dice (M11a)" min>max validation gap).
+                    // that variant here for an invalid range.
                     if sides < 1 {
                         return Err(ParseError::InvalidDieSides(sides));
                     }
@@ -290,8 +289,9 @@ impl P {
                             self.expertise = Some(n as u32);
                         }
                         "cf" => {
-                            // Failure-counting parsed as success on the inverted comparator
-                            // (single count path in M11a; dedicated fail-count is M11b).
+                            // Failure-counting is parsed as success on the inverted
+                            // comparator — the grammar has no separate fail-count
+                            // representation.
                             let (comp, target) = self.cmp_target_required()?;
                             if self.success.is_some() {
                                 return Err(ParseError::DuplicateSuccessRule);
@@ -461,8 +461,7 @@ mod tests {
     #[test]
     fn rejects_zero_sides() {
         // sides < 1 must be a parse-time Err, never a constructed DieKind::Numeric
-        // with a degenerate (non-positive-span) range (Adaptation 1 / TODO.md
-        // "Server / dice (M11a)" min>max validation gap).
+        // with a degenerate (non-positive-span) range.
         match parse("4d0", ParseContext::default()) {
             Err(ParseError::InvalidDieSides(0)) => {}
             other => panic!("expected InvalidDieSides(0), got {other:?}"),
@@ -584,7 +583,7 @@ mod tests {
 
     #[test]
     fn e_token_is_discarded_under_total_ambient_without_error() {
-        // R4: a stray e<N> where the mode can't use it must NOT fail the roll.
+        // A stray e<N> where the mode can't use it must NOT fail the roll.
         let spec = parse("1d20t10e3", ParseContext::default()).unwrap(); // ambient Total
         match spec.mode {
             Mode::Total(c) => assert_eq!(c.difficulty, Some(10)),

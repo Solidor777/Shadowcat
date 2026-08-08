@@ -10,6 +10,7 @@ const STROKE_WIDTH = 2;
 
 /** Reconciles `doc_type:"template"` documents into the `templates` layer. */
 export class TemplateView {
+  /** Document ids currently tracked in the backend, refreshed each `reconcile()`. */
   private readonly ids = new Set<string>();
 
   /**
@@ -74,7 +75,7 @@ export class TemplateView {
  * is always the anchor and `size` a radius/length (never a second corner): `circle` and
  * `cone` tessellate via `circlePoints`/`conePoints`; `rect` tessellates via `squarePoints`
  * — an axis-**rotated** square of side `2*size` centered at `(x,y)`, unlike
- * `drawing-view.ts`'s and `region-view.ts`'s `"rect"` kind, which is an axis-aligned bbox
+ * `DrawingView.toSpec`'s and `RegionView.toSpec`'s `"rect"` kind, which is an axis-aligned bbox
  * between two authored corners (the `"rect"` string means different geometry in each
  * file). `line` builds a 2-point open segment from `(x,y)` at `direction` degrees, length
  * `size`, and is the only kind that returns `closed:false` (and therefore no `fill`).
@@ -83,14 +84,15 @@ export class TemplateView {
  * upstream conversion: the render layer draws the OPTIMISTIC view (`AppContext.documents`), so
  * a scene-tool bug that builds a Create op with a missing or non-numeric coordinate reaches
  * `toSpec` on the authoring client before the server has validated anything. Guarded on the RAW
- * authored scalars, before tessellation, matching `drawing-view.ts`, `region-view.ts`, and
- * `wall-view.ts` — see the guard's own comment for why the placement, not just the presence, is
+ * authored scalars, before tessellation, matching `DrawingView.toSpec`, `RegionView.toSpec`, and
+ * `WallView.toSpec` — see the guard's own comment for why the placement, not just the presence, is
  * load-bearing.
  * @param doc The `template` document to convert.
  * @returns A `ShapeNodeSpec` for the `templates` layer, or `null` if it can't be rendered.
  * @example
  * ```
- * // not exported from @shadowcat/render's index.ts; internal to TemplateView.reconcile
+ * // not exported from @shadowcat/render; internal to TemplateView.reconcile
+ * declare const doc: WireDocument;
  * const spec = toSpec(doc); // null if doc.engine.shape is absent or malformed
  * ```
  */
@@ -98,8 +100,8 @@ function toSpec(doc: WireDocument): ShapeNodeSpec | null {
   const s = doc.engine as TemplateEngine | undefined;
   if (!s?.shape) return null;
   const { kind, x, y, size, direction } = s.shape;
-  // Checked on the RAW authored scalars, before tessellation — matching `region-view.ts` and
-  // `wall-view.ts`. Post-tessellation would be too late: JS coerces `null` to 0 in arithmetic,
+  // Checked on the RAW authored scalars, before tessellation — matching `RegionView.toSpec` and
+  // `WallView.toSpec`. Post-tessellation would be too late: JS coerces `null` to 0 in arithmetic,
   // so a null `x` on a circle yields finite, plausible-looking geometry no later check can
   // distinguish from an authored shape. `direction` is included because `cone`/`rect`/`line`
   // route it through `cos`/`sin`.

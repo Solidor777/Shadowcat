@@ -4,7 +4,7 @@
   /** Test fixture: reports one mount per instance via `onMountFn`, and throws
    * during a reactive re-render triggered by a click — each fresh instance
    * starts un-boomed, so a genuine remount recovers without throwing again. */
-  let { onMountFn }: { onMountFn: () => void } = $props();
+  let { onMountFn }: { /** Called once per mount. */ onMountFn: () => void } = $props();
 
   let boom = $state(false);
 

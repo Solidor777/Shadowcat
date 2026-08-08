@@ -25,15 +25,15 @@
   });
 
   // Idempotent GM seed: a generic emoji set, created once when the registry is absent — this
-  // default content is replaceable, per index.ts's modding contract: a game-system module can
-  // supply its own seed/editor instead. The optimistic dispatch adds it to the store
-  // immediately, so a second reactive run sees it and this effect no-ops.
-  // Divergence from the sibling faction-registry seed (seedFactionRegistryIfAbsent, in
-  // ./seed.ts): that seed dispatches its Create under a `deterministicId(worldId, ...)` id so
+  // default content is replaceable, per the `conditions` module's own modding contract: a
+  // game-system module can supply its own seed/editor instead. The optimistic dispatch adds it
+  // to the store immediately, so a second reactive run sees it and this effect no-ops.
+  // Divergence from the sibling faction-registry seed (`factions`'s `seedFactionRegistryIfAbsent`):
+  // that seed dispatches its Create under a `deterministicId(worldId, ...)` id so
   // two racing GMs converge on the same id; this one calls `buildConditionRegistryDoc` with no
   // explicit id, so two racing GMs' Creates carry two DIFFERENT random ids. This is still
   // correctness-safe — CONDITION_REGISTRY_DOC_TYPE is in the server's doc_type-scoped
-  // `SINGLETON_DOC_TYPES` list (`data/sqlite.rs`), so the loser's Create is rejected regardless
+  // `data::sqlite`'s `SINGLETON_DOC_TYPES` list, so the loser's Create is rejected regardless
   // of id, and `OptimisticClient.reject` rolls its local prediction back the same way — but it
   // means this seed doesn't need (and doesn't use) the id-convergence property the faction
   // seed's own doc comment relies on.

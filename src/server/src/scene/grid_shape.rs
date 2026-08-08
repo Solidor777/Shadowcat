@@ -1,7 +1,7 @@
 //! `GridShape` abstracts the per-cell geometry every movement/vision/pathfinding module needs,
 //! so square and hex scenes share one code path instead of two. `SquareGrid` is a byte-identical
 //! port of the pre-existing hardcoded square math; a later `HexGrid` will be the pointy-top axial
-//! implementation mirroring the client's `grid.ts` exactly.
+//! implementation mirroring the client's `Grid` class exactly.
 //!
 //! `cell_center`/`cells_in_bounds` are wired into `accumulate_visible_cells`, `player_lit_mask`,
 //! `explored::mark_polygons`, and `regions::rasterize`;
@@ -13,7 +13,6 @@
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
-#![allow(dead_code)]
 
 use crate::scene::pathfinding::{self, Cell, DiagonalRule};
 use crate::scene::vision;
@@ -84,9 +83,9 @@ pub(crate) trait GridShape {
 /// axis. Source: Red Blob Games axial/cube coordinates (public-domain computational geometry).
 const HEX_BOUNDS_PAD: i32 = 1;
 
-/// Byte-identical port of the pre-existing hardcoded square-grid math (`pathfinding.rs`'s
-/// `cell_center`/`footprint_cells`, `movement.rs`'s `supercover_cells`, `pathfinding.rs`'s
-/// `astar_leg`'s 8-directional `dirs` + `step_cost`). `cell` and `rule` are the scene's resolved
+/// Byte-identical port of the pre-existing hardcoded square-grid math (`cell_center`/
+/// `footprint_cells`, `movement::supercover_cells`, `astar_leg`'s 8-directional `dirs` +
+/// `step_cost`). `cell` and `rule` are the scene's resolved
 /// cell size and diagonal-cost rule.
 pub(crate) struct SquareGrid {
     /// Cell size in scene units.
@@ -135,8 +134,8 @@ impl GridShape for SquareGrid {
         pathfinding::footprint_cells(anchor, ctr, r_scene, cell)
     }
 
-    /// Byte-identical to the per-site square scans in `accumulate_visible_cells`/`explored.rs`/
-    /// `player_lit_mask`: `floor(min/cell)..=floor(max/cell)` on each axis, row-major
+    /// Byte-identical to the per-site square scans in `accumulate_visible_cells`/
+    /// `ExploredSet::mark_polygons`/`player_lit_mask`: `floor(min/cell)..=floor(max/cell)` on each axis, row-major
     /// (`for i { for j }`). `f64 as i32` saturates on an extreme coordinate; the `saturating_mul`
     /// span check then fails closed against the caller-supplied `max_cells` bound.
     fn cells_in_bounds(
@@ -203,11 +202,11 @@ impl GridShape for SquareGrid {
 }
 
 /// Pointy-top axial hex grid (Red Blob Games convention), mirroring
-/// `src/client/render/src/grid.ts`'s `Grid` class's hex math exactly — same coordinate formulas,
+/// the client's `Grid` class's hex math exactly — same coordinate formulas,
 /// same `size` = outer-radius convention, so client and server cell indices always agree.
 pub(crate) struct HexGrid {
     /// Hex size = OUTER radius (circumradius, center to vertex) in scene
-    /// units — the client `grid.ts` convention, not the across-flats width.
+    /// units — the client's `Grid.size` convention, not the across-flats width.
     pub size: f64,
 }
 
@@ -268,7 +267,7 @@ impl GridShape for HexGrid {
     }
 
     /// Uniform 1-per-step cost, 6 axial neighbors — hex has no diagonal-rule analog, so `parity`
-    /// is passed through unchanged (per the design doc's H4/H5 decisions).
+    /// is passed through unchanged.
     fn neighbors_with_cost(&self, c: Cell, parity: u8) -> Vec<(Cell, f64, u8)> {
         const AXIAL_DIRS: [(i32, i32); 6] = [(1, 0), (1, -1), (0, -1), (-1, 0), (-1, 1), (0, 1)];
         AXIAL_DIRS
@@ -280,7 +279,7 @@ impl GridShape for HexGrid {
     /// Hex equivalent of `movement::supercover_cells`, and conservative in the same direction:
     /// over-inclusion can only over-restrict a move, omission would let a move graze an unseen hex.
     ///
-    /// Method (public-domain computational geometry, ARCHITECTURE §7; Red Blob Games cube
+    /// Method (public-domain computational geometry; Red Blob Games cube
     /// coordinates for the axial↔cube map). `cell_of` is cube-rounding, i.e. nearest-center
     /// assignment, so a hex is the Voronoi cell of its center: the intersection of the six
     /// perpendicular-bisector half-planes against its six neighbors. Writing the fractional cube
@@ -314,9 +313,9 @@ impl GridShape for HexGrid {
         let ay = -ax - az;
         let (bx, bz) = (bq, br);
         let by = -bx - bz;
-        // DoS bound on the hex-distance span, unchanged from the pre-supercover sampler. What it
-        // bounds changed: the boundary-crossing count is `Σ|Δψₖ| + 3 ≤ 4n + 3` rather than the old
-        // `n + 1` samples — same order, so the worst case is ~16k crossings at the same n cap.
+        // DoS bound on the hex-distance span: the boundary-crossing count is
+        // `Σ|Δψₖ| + 3 ≤ 4n + 3`, the same order as an `n + 1`-sample bound, so the worst case is
+        // ~16k crossings at the same n cap.
         const MAX_HEX_LINE_SAMPLES: i64 = 4096;
         let n = ((ax - bx).abs().max((ay - by).abs()).max((az - bz).abs())).round() as i64;
         if !(0..=MAX_HEX_LINE_SAMPLES).contains(&n) {
@@ -489,7 +488,7 @@ impl GridShape for HexGrid {
     }
 
     /// The 6 pointy-top hex vertices around `cell_center(c)`, vertex `k` at angle `60·k − 30`
-    /// degrees, radius = `self.size`. Mirrors `src/client/render/src/grid.ts`'s `hexLines` vertex
+    /// degrees, radius = `self.size`. Mirrors the client's `hexLines` vertex
     /// convention exactly (Red Blob Games pointy-top) so client and server hex geometry agree.
     fn cell_vertices(&self, c: Cell, _cell: f64) -> Vec<vision::P> {
         let center = self.cell_center(c);
@@ -505,8 +504,8 @@ impl GridShape for HexGrid {
     }
 
     /// Admissible axial (cube) hex distance `(|dq| + |dr| + |dq+dr|)/2` — the exact minimum number
-    /// of uniform 1-cost steps (`neighbors_with_cost`) between two hexes (Red Blob Games; ARCHITECTURE
-    /// §7 public-source computational geometry), so it never overestimates the true path cost and A*
+    /// of uniform 1-cost steps (`neighbors_with_cost`) between two hexes (Red Blob Games;
+    /// public-source computational geometry), so it never overestimates the true path cost and A*
     /// stays optimal. Deltas widen to `i64` before the sum so a large-coordinate pair can't overflow
     /// `i32`. The square `DiagonalRule` distance the pre-trait code used here OVERESTIMATES this for
     /// opposite-sign deltas (e.g. Manhattan is 2× on the `(1,-1)` axial line), which is what made the
@@ -524,10 +523,10 @@ impl GridShape for HexGrid {
 /// only `Alternating` consumes parity, charging 1.0/2.0 on alternate diagonals and flipping
 /// the bit so the caller must thread the returned parity through consecutive steps.
 ///
-/// The sole definition of this rule — `pathfinding.rs` reaches it through the `GridShape`
+/// The sole definition of this rule — `pathfinding::astar_leg` reaches it through the `GridShape`
 /// trait's neighbor enumeration rather than duplicating it, so the A* cost and any other
 /// consumer cannot drift apart. The client mirrors the same four rules in
-/// `src/client/render/src/grid.ts`'s `Grid.distance`.
+/// the client's `Grid.distance`.
 fn step_cost(rule: DiagonalRule, di: i32, dj: i32, parity: u8) -> (f64, u8) {
     let diagonal = di != 0 && dj != 0;
     if !diagonal {
@@ -719,7 +718,7 @@ mod tests {
     #[test]
     fn hex_grid_cell_of_matches_axial_round_for_a_known_point() {
         // size=50: cell (0,0)'s center is (0,0) in pointy-top axial pixel space (Red Blob Games
-        // convention, matching client/src/render/src/grid.ts's pixelToAxial/axialToPixel exactly).
+        // convention, matching the client's `pixelToAxial`/`axialToPixel` exactly).
         let g = HexGrid { size: 50.0 };
         assert_eq!(g.cell_of((0.0, 0.0)), (0, 0));
         // A point well inside cell (1,0)'s hex (center at axial (1,0) -> pixel via axialToPixel)
@@ -1085,7 +1084,7 @@ mod tests {
         // contract is proven on both grid kinds against their own neighbor functions. `Alternating`
         // is excluded: its step cost depends on the carried parity, so a parity-blind uniform-cost
         // search is not its true cost function (its admissibility is pinned by the square parity
-        // tests in `pathfinding.rs`).
+        // tests in `pathfinding::alternating_five_ten_five_parity`).
         const R: i32 = 4;
         let cells: Vec<Cell> = (-R..=R)
             .flat_map(|i| (-R..=R).map(move |j| (i, j)))
@@ -1375,8 +1374,10 @@ mod tests {
     fn hex_line_traversal_includes_the_far_endpoint_hex_on_a_sub_hex_step() {
         // Reduced counterexample. A step short enough that the max cube-axis delta rounds to 0 still
         // crosses a hex boundary: (-40, 0) sits in hex (0,0) (inradius 43.3), (-50, 0) in hex (-1,0).
-        // The pre-fix fixed-count cube lerp took `n = 0` and returned ONLY the start hex, omitting
-        // even the far endpoint's own hex — an unseen hex a token could step into ungated.
+        // A naive fixed-sample-count line-draw (sampling `n+1` points, `n` = max cube-axis delta)
+        // takes `n = 0` here and would return ONLY the start hex, omitting even the far endpoint's
+        // own hex — an unseen hex a token could step into ungated. The ψ-crossing supercover below
+        // must still catch it.
         let g = HexGrid { size: 50.0 };
         let (a, b) = ((-40.0, 0.0), (-50.0, 0.0));
         assert_eq!(g.cell_of(a), (0, 0));
@@ -1392,8 +1393,8 @@ mod tests {
     #[test]
     fn hex_line_traversal_includes_a_corner_clipped_hex() {
         // Reduced counterexample. This segment clips a short sliver of hex (-1,0) near the vertex it
-        // shares with (0,0)/(0,-1); the pre-fix sampler's one-hex-pitch spacing straddled the sliver
-        // entirely and never named it.
+        // shares with (0,0)/(0,-1); a fixed one-hex-pitch sample spacing would straddle the sliver
+        // entirely and never name it. The ψ-crossing supercover below must still catch it.
         let g = HexGrid { size: 50.0 };
         let a = (-51.640_685_867_085_56, 82.356_123_493_857_9);
         let b = (-32.076_474_134_396_726, -54.002_821_619_560_066);

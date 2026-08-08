@@ -16,24 +16,25 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
 
 ## Key files & seams
 
-- `src/client/core/src/contributions.ts` — `Contribution`, `ContributionRegistry` (modules
-  contribute UI into named surfaces). `Contribution.panel?` (M12a, replaced `tab`) is optional
+- `Contribution`, `ContributionRegistry` (modules
+  contribute UI into named surfaces). `Contribution.panel?` is optional
   plain-data panel metadata (`icon`, `labelKey`, `gmOnly?`, `defaultPlacement`) the panel host
-  renders; `labelKey` is an i18n key the HOST resolves (locale-reactive).
-- **Panels replaced the tabbed sidebar** (M12a): the sidebar module and ui-kit
-  `TabbedSurface` are DELETED. `@shadowcat/module-panels` provides the multi
+  renders; `labelKey` is an i18n key the HOST resolves (locale-reactive). There is no `tab`
+  field — a `Contribution` describes only a panel.
+- **Panels are the sidebar**: the sidebar module and ui-kit
+  `TabbedSurface` do not exist. `@shadowcat/module-panels` provides the multi
   `shadowcat.panel` contract every panel module contributes into, hosts `PanelHost` in
   core-ui's singleton `shadowcat.surface:panel-host` region and the minimized-chips strip in
   statusbar's `shadowcat.surface:panel-dock`. Keep-mounted rule carries over: panels hide via
   CSS/slot adoption, never `{#if}`; hidden content reads `scrollHeight = 0` (module-chat's
   IntersectionObserver pattern still applies). Internals → [[shadowcat-codebase-panels]].
-- `src/client/core/src/modules.ts` — `ModuleRegistry`; `services.ts` — `ServiceRegistry`;
-  `topology.ts` — `reconcileTopology(...)` resolves `provides`/`requires` contracts (singleton
-  loud-fail). Contract schemas in `wire.ts` (`ContractProvideSchema`).
-- `src/client/ui-kit/src/Surface.svelte` — the `<Surface>` host that renders contributions for a
-  surface id; `appContext.ts` — `AppContext`, `setAppContext`/`getAppContext`, `__APP_CONTEXT_KEY__`.
-- `src/client/ui-kit/src/i18n.svelte.ts` — `t(key, params)`, `locale()`, the `i18n` adapter over
-  core `i18n.ts` `I18n`; catalogs in `ui-kit/src/locales/`.
+- `ModuleRegistry`; `ServiceRegistry`;
+  `reconcileTopology(...)` resolves `provides`/`requires` contracts (singleton
+  loud-fail). Contract schemas: `ContractProvideSchema`.
+- `<Surface>` is the host that renders contributions for a
+  surface id; `AppContext`, `setAppContext`/`getAppContext`, `__APP_CONTEXT_KEY__`.
+- `t(key, params)`, `locale()`, the `i18n` adapter over
+  core's `I18n`; catalogs in `ui-kit/src/locales/`.
 - `src/client/ui-kit/src/{sceneInteraction,actorSelection,tokenSelection}.*` — AppContext seams.
 - **The three selection classes share a shape but NOT their repeat-set reactivity.** All of
   `ActorSelection`, `TokenSelection`, `SceneSelection` are stable instances mutated in place (never
@@ -50,33 +51,33 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
   without bumping its version when already empty, so that case alone is a genuine no-op. Do not
   reason from "they're siblings" to "they behave alike" — an effect keyed off `TokenSelection` runs
   on repeat-sets that an `ActorSelection`-keyed one skips.
-- **`AppContext.serverRole`** (`appContext.ts`) — the caller's SERVER tier (`"admin" | "user"`),
+- **`AppContext.serverRole`** — the caller's SERVER tier (`"admin" | "user"`),
   distinct from the per-world `role`. Gates admin-only UI (the settings module's user manager).
-  Derived in `App.svelte` from `/api/me` as `me?.server_role === "admin" ? "admin" : "user"`, so an
+  Derived in `App` from `/api/me` as `me?.server_role === "admin" ? "admin" : "user"`, so an
   absent or unrecognized value yields `"user"` — fail-closed. **It is COSMETIC**: the server
   re-checks every admin route through the `AdminUser` extractor, so a forged client gains nothing.
   Never gate an admin surface on the per-world `role` instead: `permission_context` maps
   `ServerRole::Admin → WorldRole::Gm`, so a world-role check is satisfied by any GM. All three
   `setAppContext` fixture sites default it to `"user"` so no existing test silently gains admin UI.
-- `AppContext.pathfind` (`src/client/ui-kit/src/appContext.ts`) — correlated-request seam: issues a
+- `AppContext.pathfind` — correlated-request seam: issues a
   `Pathfind` frame via `WsClient.pathfind` and resolves with `PathResult` or rejects with
   `PathError`; wired through `WorldSession` and consumed by `scene-tools` measure-tool route mode.
-- `WsClient.moveRequest(scene, tokenId, path) → Promise<MoveStream>` (`src/client/core/src/ws-client.ts`,
-  M2 — `MoveExecuted` is FULLY RETIRED, server + Zod + client) — correlated-request mirror of
+- `WsClient.moveRequest(scene, tokenId, path) → Promise<MoveStream>` (`MoveExecuted`
+  is FULLY RETIRED, server + Zod + client) — correlated-request mirror of
   `pathfind`: sends `MoveRequest`, resolves with the broadcast `MoveStream` when the matching
   `move_stream` frame arrives (mover's `request_id` correlates; the resolved value signals success
   only — it does NOT drive animation), rejects on `move_error` or timeout (default 10 s). Pure
   transport — no client-side movement logic. Keyed in the shared `pending` map alongside search and
   pathfind.
-- `WsClient.onMoveStream(cb) -> unsubscribe` (M2) — the actual playback seam: fires for EVERY scene
+- `WsClient.onMoveStream(cb) -> unsubscribe` — the actual playback seam: fires for EVERY scene
   viewer (mover + observers) on every broadcast `MoveStream`, independent of the `moveRequest`
   promise. Listeners survive reconnects (not cleared by `failPending`).
-- `AppContext.moveRequest` (`src/client/ui-kit/src/appContext.ts`) — AppContext seam wired through
+- `AppContext.moveRequest` — AppContext seam wired through
   `WorldSession`; consumed by scene-tools measure-tool route-commit (sends `MoveRequest`, awaits the
-  signal-only resolution, does NOT locally animate — the M10e-5 `TokenAnimator` plays back from the
+  signal-only resolution, does NOT locally animate — the `TokenAnimator` plays back from the
   broadcast, not the promise). Optimistic dispatch + `collinearRuns` chaining were removed;
   route-commit is request-only.
-- `onMoveStream` wiring (M2 Tasks 5-6, `worldSession.svelte.ts`): subscribes once at session start,
+- `onMoveStream` wiring (`WorldSession.enter`): subscribes once at session start,
   **filters `stream.scene` against the active scene** (`this.#optimistic.query("scene")[0]?.id`)
   before forwarding — a room-wide `MoveStream` broadcast for a DIFFERENT scene must not animate a
   token or feed a fog sweep in the one currently rendered (cross-scene leak/flicker guard, mirrors
@@ -85,20 +86,20 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
   forwards through `RenderEngine` to `TokenView`/`TokenAnimator` (position tween) and, when
   `moverVision` is present (mover only), the engine's `visionSweeps` fog-sweep playback (see
   `shadowcat-codebase-scene-rendering`).
-- **External-module loading (M13-1)** — `worldSession.svelte.ts`'s `#loadExternalModules(world,
+- **External-module loading** — `WorldSession`'s `#loadExternalModules(world,
   serverVersion)` runs after `Welcome` (`serverVersion` = `w.server_version`): fetches the world's
   enabled set (keyed on the install FOLDER id, `InstalledModuleInfo.id`, never manifest id), calls
   core `loadModules` (per-module-contained, non-throwing `ModuleLoadResult`), then activates. The
-  shell serves ONE runtime instance of `svelte`/`@shadowcat/*` via `vite.config.ts` `RUNTIME_ENTRIES`
+  shell serves ONE runtime instance of `svelte`/`@shadowcat/*` via `RUNTIME_ENTRIES`
   + `preserveEntrySignatures:"strict"` + the `index.html` import map. GM management UI =
-  `src/modules/settings/src/ModuleManager.svelte`. Full subsystem (server discovery/serving/enablement,
+  `ModuleManager`. Full subsystem (server discovery/serving/enablement,
   engine-compat gate) → [[shadowcat-codebase-module-toolchain]].
 - **`boot()` resolves the world route-first, not `lastWorld`-first (silent-hang-startup fix)** —
-  `App.svelte`'s `boot()` reads `currentRoute()` once, AFTER the `getMe`/`getUiState` awaits and
+  `App`'s `boot()` reads `currentRoute()` once, AFTER the `getMe`/`getUiState` awaits and
   BEFORE both the `withRetry(() => listWorlds())` await and consulting `ui.global.lastWorld` (a
-  hash change during the `listWorlds` await is ignored — see `docs/TODO.md`).
+  hash change during the `listWorlds` await is ignored — see TODO).
   The rule lives in one pure, directly-testable helper, `resolveBootWorld(route, lastWorld,
-  worlds)` (`lib/bootResolution.ts`): a world route (`#/world/<id>`) always wins — `lastWorld` is
+  worlds)`: a world route (`#/world/<id>`) always wins — `lastWorld` is
   NOT consulted at all while a world route is present, even if it would resolve to a different,
   still-valid world; `lastWorld` seeds ONLY a bare/non-world load. A route's world id absent from
   `listWorlds()` (deleted/revoked) clears `lastWorld` ONLY if `lastWorld` is ALSO stale — a dead
@@ -109,20 +110,19 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
   network trace: under the shared-account parallel e2e suite, a reload's `boot()` ignoring the URL
   restored whichever world a DIFFERENT concurrent worker entered last — a real product defect
   (a deep-linked reload in production would teleport away from its own URL the same way), not an
-  e2e-only artifact. See `docs/CLOSED_BUGS.md` "Client / silent-hang startup paths".
-- **Bounded + retried boot fetches (silent-hang-startup fix)** — `lib/api.ts`'s `FETCH_TIMEOUT_MS`
-  (15s) covers every fetch in the file, not only the session/boot trio: `getMe`, `getUiState`,
+  e2e-only artifact. See CLOSED_BUGS, the "Client / silent-hang startup paths" entry.
+- **Bounded + retried boot fetches (silent-hang-startup fix)** — `FETCH_TIMEOUT_MS`
+  (15s) covers every fetch in its module, not only the session/boot trio: `getMe`, `getUiState`,
   `listWorlds`, `postJson` (login/logout), and `putUiState` (including the unload keepalive PUT)
   all carry `AbortSignal.timeout(FETCH_TIMEOUT_MS)`, so a hung backend rejects instead of leaving
-  any of them unsettled forever. `App.svelte`'s
-  `boot()` wraps each of the three awaits in `withRetry` (3 attempts, flat delays) before
+  any of them unsettled forever. `App.boot()` wraps each of the three awaits in `withRetry` (3 attempts, flat delays) before
   degrading to the login/worlds route — a transient non-2xx or connection reset during startup no
   longer permanently strands the SPA on that fallback route with no retry.
-- **`WorldSession`'s activation latch is split, and the split order is load-bearing
-  (silent-hang-startup fix)** — a single `#bootstrapped` boolean used to latch BEFORE
-  `await #modules.activate()`, so a failed/hung first activation (e.g. a manifest dependency
-  cycle) cached "done" for the session's life: reconnect Welcomes short-circuited, `role` was set,
-  but every Surface stayed empty. It is now two fields: `#modulesAdded` (latches once per
+- **`WorldSession`'s activation latch is split, and the split order is load-bearing** —
+  latching a single `#bootstrapped` boolean BEFORE `await #modules.activate()` would let a
+  failed/hung first activation (e.g. a manifest dependency cycle) cache "done" for the
+  session's life: reconnect Welcomes would short-circuit, `role` would be set, but every
+  Surface would stay empty. It is instead two fields: `#modulesAdded` (latches once per
   session — re-adding modules would duplicate registrations) and `#activated` (latches only on a
   successful `activate()`, reverted to `false` in the `catch` on a thrown activation, so the NEXT
   Welcome retries instead of caching the failure). **`#activated` is still set to `true`
@@ -135,7 +135,7 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
   **`leave()` is a PARTIAL teardown, and the latches are what makes that dangerous.** It stops and
   drops the `WsClient` and resets `state`/`role`/`world`/`#gmViewedScene`, but does NOT clear
   `store`/`documents`, module registrations, or EITHER latch. That is correct only because
-  `App.svelte`'s `leaveWorld` discards the instance and constructs a fresh `WorldSession`. Reuse one
+  `App.leaveWorld` discards the instance and constructs a fresh `WorldSession`. Reuse one
   across `leave()` → `enter()` and it carries the PREVIOUS world's state into the new one: `store`/
   `documents`, module registrations, and the `contributions` registry all survive (nothing clears
   them — `ContributionRegistry` drops entries only via a contribution's own dispose or
@@ -153,37 +153,37 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
   reconcile, scene re-establishment, the GM first-scene seed — so a failed activation also costs
   that Welcome's scene re-subscription, not just its modules. An outer catch means the method
   itself never rejects, so neither failure surfaces to a caller.
-- `src/client/shell/src/` — `App.svelte`, `main.ts`, `lib/` (hash router, api client, session,
-  WorldSession controller, default-module wiring). `sessionState.svelte.ts` owns the
-  `ui_state` blob: `getPanelLayout(world)`/`setPanelLayout(world, blob)` (M12a, replaced
-  activeTab) persist the per-world panel layout into `UiState.worlds[world].panelLayout` via
+- The shell package — `App`, the `main` entry module, and its `lib/` directory (hash router, api client, session,
+  WorldSession controller, default-module wiring). The `sessionState` module owns the
+  `ui_state` blob: `getPanelLayout(world)`/`setPanelLayout(world, blob)` persist the
+  per-world panel layout into `UiState.worlds[world].panelLayout` via
   the existing leading-edge-debounced PUT. The blob is OPAQUE to the shell — the panel host
   owns its shape/validation. **Leaf-key dirty tracking (fixes the same-user cross-session
-  clobber, `docs/CLOSED_BUGS.md` "Server + client / ui-state persistence")**: a `dirty` structure
+  clobber — see CLOSED_BUGS, the "Server + client / ui-state persistence" entry)**: a `dirty` structure
   (`Set<GlobalField>` + a `Map<worldId, Set<WorldKey>>`) tracks which individual FIELDS/KEYS
   changed since the last successful write — `global.locale`/`global.lastWorld` and
   `worlds.<id>.panelLayout`/`worlds.<id>.chatRead` each track independently, so two owners of the
   same slice (the panels module writing `panelLayout`, the chat module writing `chatRead` inside
   the same `worlds.<id>`) no longer clobber each other. `persist()`/`flushOnUnload()` build a
-  `UiStatePatch` (`api.ts`) covering only those dirty leaves — never the whole slice, and never
+  `UiStatePatch` covering only those dirty leaves — never the whole slice, and never
   the whole `{global, worlds}` blob — clearing them before the write and re-marking on failure
   (both functions snapshot the dirty structure, clear it, attempt the write, and on rejection
   re-add every snapshotted field/key) so a retry doesn't lose the write. Server-side,
-  `SqliteRepository::merge_ui_state` (`data/sqlite.rs`) merges the patch one level inside
+  `SqliteRepository::merge_ui_state` merges the patch one level inside
   `worlds.<id>` and inside any other top-level object key — a leaf blob (`panelLayout`, etc.)
   still replaces wholesale, never deep-merged — in one transaction; the HTTP surface and size cap
-  live in `http/routes.rs::put_ui_state`. The client never sends the whole `{global, worlds}` blob.
+  live in `http::routes::put_ui_state`. The client never sends the whole `{global, worlds}` blob.
   Concurrent same-user sessions (two tabs) now contend only on the individual fields/keys both
   sessions actually write, instead of last-writer-wins on a whole slice or the whole blob.
-- **Multi-scene / viewed-scene seams (M12d)** — `AppContext.viewedSceneId: string | null`
-  (a live getter, `Table.svelte`: `get viewedSceneId() { return session.viewedSceneId; }` —
+- **Multi-scene / viewed-scene seams** — `AppContext.viewedSceneId: string | null`
+  (a live getter, `Table`: `get viewedSceneId() { return session.viewedSceneId; }` —
   NEVER destructure a snapshot of it), `AppContext.setGmViewedScene(id): void` (GM-only local
   roam; no-ops+warns for a non-GM), `AppContext.searchDocuments(query, opts, onUpdate) ->
-  Promise<SubscriptionHandle>` (the M6c live-FTS subscription seam, newly exposed through
+  Promise<SubscriptionHandle>` (the live-FTS subscription seam, newly exposed through
   `AppContext`/`WorldSession` — wraps `WsClient.subscribeSearch`, ephemeral/NOT
   reconnect-resilient), `AppContext.sceneSelection: SceneSelection`
-  (`src/client/ui-kit/src/sceneSelection.svelte.ts` — a small stable-ref class, `configureSceneId`
-  + `select(id)`, shell-constructed in `Table.svelte` like `panels`/`sheets`; distinct from BOTH
+  (a small stable-ref class, `configureSceneId`
+  + `select(id)`, shell-constructed in `Table` like `panels`/`sheets`; distinct from BOTH
   `viewedSceneId`/`activeScene` — configuring a scene's per-scene settings never moves any
   camera/render target). `WorldSession.viewedSceneId` (getter) resolves via `resolveViewedScene`
   (`@shadowcat/core`): a resolvable `gmViewedScene` (GM local roam, `WorldSession`-private
@@ -195,13 +195,12 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
   per-scene section via `ctx.sceneSelection.select(id)` +
   `ctx.panels.open("game-settings:panel")` — the exact `"<module>:panel"` contribution-id
   convention every `PANEL_CONTRACT` registration uses; a bare module id silently no-ops the open
-  call, found in M12d Task 8 review), "View" (`ctx.setGmViewedScene`), "Activate" (writes
+  call), "View" (`ctx.setGmViewedScene`), "Activate" (writes
   `activeScene` via `ctx.dispatchIntent` with the REAL current value as OCC `old`). Scenes have
-  no `name` field — the browser labels rows by index + thumbnail, deliberately (not in the M12
-  spec).
-- AppContext seams (wired in `Table.svelte`): `uiState {getPanelLayout, setPanelLayout}`
+  no `name` field — the browser labels rows by index + thumbnail, deliberately.
+- AppContext seams (wired in `Table`): `uiState {getPanelLayout, setPanelLayout}`
   (narrow; the shell owns storage), `panels: PanelsApi & PanelsChipsView` — the shell
-  constructs ONE `PanelsBridge` (`ui-kit/src/panelsBridge.svelte.ts`, `$state`-backed so
+  constructs ONE `PanelsBridge` (`$state`-backed so
   pre-bind readers unfreeze at bind; details → [[shadowcat-codebase-panels]]) — and
   `chat: ChatApi {send, edit, delete}`
   (over `WsClient.sendChatMessage`/`editChatMessage`/`deleteChatMessage`. These frames DO carry a
@@ -237,8 +236,9 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
   side rail into a horizontal bottom strip (`sizeClass()`-driven, same axis).
   `game-settings` = `@shadowcat/module-game-settings` (GM-only): idempotently seeds + edits
   the world's singleton config-docs — the vision/lighting trio
-  (`world-settings`/`light-gradation`/`vision-modes`, resolvers in `core/scene-docs.ts`),
-  plus `dice-settings` (M11d-2) and `chat-settings` (M11d-3: the `hyperlinks` +
+  (`world-settings`/`light-gradation`/`vision-modes`, resolved by
+  `resolveSceneSettings`/`resolveGradation`/`resolveVisionModes`),
+  plus `dice-settings` and `chat-settings` (the `hyperlinks` +
   `link_previews` tri-state toggles). Each section uses the same reactive-seed + real-OCC-
   pre-image `set()` idiom. The chat/dice server resolvers + segments are covered by
   `shadowcat-codebase-chat`/`-dice`.
@@ -268,26 +268,26 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
   **There is NO cross-locale fallback:** a key missing from the ACTIVE locale's catalog renders as
   the raw key string, even when another loaded locale defines it. A partial translation therefore
   ships visible key text rather than English, so a new key must land in every shipped catalog.
-- **`setAppContextForTest` does not emulate optimistic behavior** (`ui-kit/src/__fixtures__/
-  appContextTest.ts`) — `documents` defaults to `over.documents ?? over.store ?? new
+- **`setAppContextForTest` does not emulate optimistic behavior** —
+  `documents` defaults to `over.documents ?? over.store ?? new
   DocumentStore()`, so a test overriding only `store` gets that SAME plain store as `documents`.
   Predicted-op overlay and rollback-on-reject are absent; reads through `documents` are plain
   authoritative reads. In production the two are INDEPENDENT siblings fed the same `applyCommand`.
   A test asserting optimistic semantics must supply its own `documents`, or it is asserting
   nothing. (Same fixture-fidelity class as the nightfox `t: (k) => k` gotcha.)
 - **`WorldSession.canEdit` is an affordance mirror, and it diverges from server authz in BOTH
-  directions** (`worldSession.svelte.ts`) — treat it as "which controls to show", never as the
+  directions** — treat it as "which controls to show", never as the
   authority. It can over-permit: the `role === "gm"` short-circuit returns `true` unconditionally and
   never consults `doc.permissions.gm_role`, while the server's GM bypass is CONDITIONAL — a doc
   carrying `gm_role: Some(role)` floors even a GM to ordinary `DocRole` resolution
-  (`data/permission.rs`'s `effective_role`/`resolve_access`). It can also over-restrict: the Welcome
+  (`data::permission::effective_role`/`data::permission::resolve_access`). It can also over-restrict: the Welcome
   union mixes GM-authored `world_cap_requirements` with module-declared manifest requirements, and
   the server does NOT reject a write merely because a module declared a requirement on that path.
   **The two halves are unobservable today for UNRELATED reasons, and arm on unrelated triggers —
-  do not give them a shared bound.** The over-permit is neutralized by the server: `apply_intent`
+  do not give them a shared bound.** The over-permit is neutralized by the server: `SqliteRepository::apply_intent`
   re-checks independently, and `gm_role` is currently written only by chat-message construction
-  (`chat/mod.rs`), whose `message` doc_type the server rejects ordinary client Updates to outright
-  regardless of role (`data/sqlite.rs`; only the server-set `WriteOrigin::ServerMessageRevision`
+  (`chat::build_message_doc`), whose `message` doc_type the server rejects ordinary client Updates to outright
+  regardless of role (`SqliteRepository::apply_intent`; only the server-set `WriteOrigin::ServerMessageRevision`
   bypasses it, which no wire message can name). It arms if `gm_role` is ever set on another
   doc_type. The over-restrict is NOT neutralized by that re-check at all — hiding a control means
   the user never reaches `apply_intent` — it is merely unobservable while no enabled installed
@@ -295,16 +295,16 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
   GM-authored record. It arms when an ENABLED, ENGINE-COMPATIBLE module declares a non-empty
   `requirements` — compatibility is re-checked on every Welcome, not just at enable time, so a
   module that has gone stale stops publishing — with no `gm_role` involvement whatsoever
-  (`ws/conn.rs`'s `welcome_capability_requirements`, whose own doc marks the union ADVISORY ONLY,
-  vs. `data/sqlite.rs`'s enforcement reading only `world_cap_requirements`).
+  (`ws::conn::welcome_capability_requirements`, whose own doc marks the union ADVISORY ONLY,
+  vs. `SqliteRepository::apply_intent`'s enforcement reading only `world_cap_requirements`).
 - **`listWorldMembers` is FORKED — two implementations of one endpoint, already diverged.** The
-  shell's (`shell/src/lib/api.ts`) goes through `getJson`: it has a request timeout, does NOT
+  shell's `api` module's `listWorldMembers` goes through `getJson`: it has a request timeout, does NOT
   `encodeURIComponent` the world id, and raises status-only errors. Core's public
-  (`core/src/user-rest.ts`, exported from `index.ts`) encodes the id and surfaces the server's error
+  `user-rest` module's `listWorldMembers` (re-exported from `@shadowcat/core`'s public entry) encodes the id and surfaces the server's error
   text, but has no timeout. The shell's `members` seam calls its own copy
-  (`worldSession.svelte.ts`), so the two can drift further with nothing failing. This is the
+  (`WorldSession`'s), so the two can drift further with nothing failing. This is the
   never-fork-a-decision class from `shadowcat-codebase-core`; do not add a third caller to either
-  copy without collapsing them. Fix logged in `docs/TODO.md`.
+  copy without collapsing them.
 - **Refactors across a callback boundary must preserve decision branches, not just await ordering**
   [[refactor-preserve-decision-branches]].
 - UI packaging target: swappable entry package + per-element packages + thin shell
@@ -312,8 +312,13 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
 
 ## Pointers
 
-- Rationale: `docs/design/ARCHITECTURE.md` §1 (client UI packaging) + §2 invariant 7 (framework-neutral API);
-  `docs/PLAN.md` (M7/M8.5 milestones).
+- **Generated API** — `/api/ts/modules/_shadowcat_shell.html`, `_shadowcat_ui-kit.html` (TypeDoc),
+  plus the shell/UI module pages `_shadowcat_module-core-ui.html`, `_shadowcat_module-entry.html`,
+  `_shadowcat_module-topbar.html`, `_shadowcat_module-statusbar.html`,
+  `_shadowcat_module-scene-browser.html`, `_shadowcat_module-settings.html`,
+  `_shadowcat_module-game-settings.html`. Produce with `pnpm build:all`. `@shadowcat/module-settings`
+  and `@shadowcat/module-game-settings` are distinct packages with distinct pages.
+- Rationale: `docs/design/ARCHITECTURE.md` §1 (client UI packaging) + §2 invariant 7 (framework-neutral API).
 - Relationships:
   `graphify query "contribution registry surface appContext shell router i18n locale panel"`.
 - History: [[m7-brainstorm]], [[m6b-modules-capabilities]].

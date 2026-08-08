@@ -792,8 +792,8 @@ test("a concurrent derived frame does not clobber an in-flight vision-sweep (no 
 });
 
 test("animateSamples' moverVision seeds a server-aligned catch-up mid-sample (startServerMs in the past)", () => {
-  // Mirrors token-animator.test.ts's "catch-up: jumps to the server-aligned position when
-  // startServerMs is in the past" — exercises the highest-risk untested path: initialElapsed
+  // Mirrors the "catch-up: jumps to the server-aligned position when startServerMs is in the
+  // past" test — exercises the highest-risk untested path: initialElapsed
   // computed from a non-zero serverNow()-startServerMs delta, not always 0.
   const store = new DocumentStore();
   store.applyCommand(sceneCmd(1, "s1"));
@@ -954,8 +954,8 @@ describe("multi-scene render filtering", () => {
     expect(backend.visibility).toEqual({ mode: "masked", visible: [], explored: [] });
 
     // Store advances past seq 5 → the deferred frame flushes. It must re-filter against the CURRENT
-    // scene (sB), NOT replay the stale sA-filtered input. Assert scene B's fog still stands (no sA
-    // hole leaking through). This assertion fails against the pre-fix code and passes after.
+    // scene (sB), NOT replay the stale sA-filtered input. Pins: scene B's fog still stands (no sA
+    // hole leaking through) once the deferred frame is applied.
     store.applyCommand({
       seq: 5, world_id: "w1", author: "u", ts: 0,
       ops: [{ op: "create", doc: buildSceneDoc("w1", {}, "sC") }],

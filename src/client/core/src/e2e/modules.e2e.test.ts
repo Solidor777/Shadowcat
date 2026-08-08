@@ -28,7 +28,7 @@ function nodeConnect(wsUrl: string, world: string, cookie: string) {
 /**
  * Reads `server_version` off the real `Welcome` frame. `/api/config` is
  * deliberately pre-auth and does not expose the version
- * (`ws/protocol.rs` `server_version` doc comment), so a WS round-trip is the
+ * (see `ws::protocol::ServerMsg::Welcome.server_version`'s own doc comment), so a WS round-trip is the
  * only clean way to read the running server's version from this test.
  */
 async function fetchRunningServerVersion(server: TestServer, cookie: string): Promise<string> {

@@ -6,7 +6,14 @@
   import TemplateControls from "./TemplateControls.svelte";
 
   let { docId, systemPrefix, close, inner }: {
-    docId: string; systemPrefix: string; close: () => void; inner: Component<Record<string, unknown>>;
+    /** The write-target document id, forwarded to `TemplateControls` and `inner`. */
+    docId: string;
+    /** The write-target's system-body prefix, forwarded to `inner`. */
+    systemPrefix: string;
+    /** Closes this sheet's panel; forwarded to `inner` for its own Close control. */
+    close: () => void;
+    /** The doc_type-picked sheet component this host wraps with template chrome. */
+    inner: Component<Record<string, unknown>>;
   } = $props();
 
   const Inner = $derived(inner);

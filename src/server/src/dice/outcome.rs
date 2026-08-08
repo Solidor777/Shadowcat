@@ -88,20 +88,20 @@ pub struct DieRecord {
     pub crit_success: bool,
     /// Crit-fail event fired on this die (can coexist with `crit_success`).
     pub crit_fail: bool,
-    /// Expertise points allocated to this die by `eval::expertise` (M11b-2);
+    /// Expertise points allocated to this die by `eval::expertise`;
     /// 0 for every die when the roll has no expertise budget. Audit trail:
     /// `value` is the post-expertise face, `natural`/base `value` the pre-expertise one.
     #[serde(default)]
     pub expertise: i32,
-    /// Tag copied from the producing `DiceGroup.label` (M11b-3); `None` if the
+    /// Tag copied from the producing `DiceGroup.label`; `None` if the
     /// group is unlabeled. Read by `RollOutcome::by_label`/`compare_labels`.
     #[serde(default)]
     pub label: Option<String>,
-    /// Resolved symbols for a `Faces` die's drawn face (M11b-3); empty for `Numeric`.
+    /// Resolved symbols for a `Faces` die's drawn face; empty for `Numeric`.
     #[serde(default)]
     pub symbols: Vec<Symbol>,
     /// Whether the producing group's `DieKind` was ordered (`DieKind::is_ordered`) at
-    /// construction time (M11b-3). `Numeric` is always `true`; a `Faces` die is `true`
+    /// construction time. `Numeric` is always `true`; a `Faces` die is `true`
     /// only if every face in its group had `value: Some`. `compare_labels` uses this to
     /// detect an unordered (symbolic) label — it cannot be inferred from `value` alone,
     /// since a genuine ordered value of `0` is indistinguishable from an unordered
@@ -110,9 +110,9 @@ pub struct DieRecord {
     pub ordered: bool,
 }
 
-/// `serde(default)` fallback for `ordered`: pre-M11b-3 records (and any deserialized
-/// data predating this field) had no unordered dice at all, so `true` preserves their
-/// prior (fully-ordered) behavior.
+/// `serde(default)` fallback for `ordered`: a record deserialized without this
+/// field on the wire had no unordered dice, so `true` (fully ordered)
+/// preserves its actual shape.
 fn default_ordered() -> bool {
     true
 }
@@ -121,7 +121,7 @@ fn default_ordered() -> bool {
 /// SuccessCount mode it still holds a reference kept-die sum, while
 /// `successes`/`pass`/`margin` (all `None` in Total mode with no `difficulty`)
 /// carry that mode's primary output. `tier_label`/`tier_value` classify `margin`
-/// against the spec's tier ladder; the crit/counter fields are SuccessCount-only
+/// against `RollSpec`'s tier ladder; the crit/counter fields are SuccessCount-only
 /// aggregates (0 in Total mode).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RollOutcome {
@@ -158,8 +158,8 @@ pub struct RollOutcome {
     /// labeled `DiceGroup`'s dice show up in `records`; a bare constant has no
     /// dice pool, so this is NEVER read by `by_label`/`compare_labels`. Always
     /// empty in SuccessCount mode (arithmetic is ignored there) and for an
-    /// unlabeled constant. `#[serde(default)]`: absent on any roll persisted
-    /// before this field existed.
+    /// unlabeled constant. `#[serde(default)]` supplies empty for a stored roll
+    /// whose record carries no `labeled_consts` key.
     #[serde(default)]
     pub labeled_consts: Vec<ConstTerm>,
 }
@@ -175,7 +175,7 @@ impl RollOutcome {
 
     /// Compares two labels by the sum of their KEPT records' `value`s.
     /// `None` if either label has no records, or either label's records are
-    /// unordered (a symbolic group with no numeric value — M11b-3 §9).
+    /// unordered (a symbolic group with no numeric value).
     /// Direction-independent: purely "which summed higher."
     pub fn compare_labels(&self, a: &str, b: &str) -> Option<std::cmp::Ordering> {
         let sum_of = |label: &str| -> Option<i64> {
@@ -364,8 +364,7 @@ mod tests {
     #[test]
     fn roll_outcome_missing_defaulted_keys_deserializes() {
         // Pins `#[serde(default)]` on labeled_consts + symbol_counts against a
-        // pre-M11d/pre-M13d stored RollOutcome shape (no such Rust-side test
-        // existed; the chat_rolls back-compat test carries no RollOutcome).
+        // stored RollOutcome JSON shape missing both fields.
         let j = serde_json::json!({
             "total": 7, "records": [], "successes": null, "pass": null,
             "margin": null, "tier_label": null, "tier_value": null,

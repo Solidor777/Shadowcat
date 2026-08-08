@@ -9,6 +9,7 @@ import type { DocumentStore, WireDocument } from "@shadowcat/core";
  *   `$effect`) whenever `store` emits an update.
  * @example
  * ```
+ * declare const store: DocumentStore;
  * const reactive = makeReactiveStore(store);
  * const docs = $derived(reactive.query("token"));
  * ```

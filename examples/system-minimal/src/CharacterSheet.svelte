@@ -4,7 +4,19 @@
   import { getPointer, type WireDocument } from "@shadowcat/core";
   import { abilityMod, evalFormula } from "./rules";
 
-  let { docId, systemPrefix, close }: { docId: string; systemPrefix: string; close: () => void } = $props();
+  let {
+    docId,
+    systemPrefix,
+    close,
+  }: {
+    /** The actor document this sheet edits — the `setField`/`ctx.documents.get` key. */
+    docId: string;
+    /** The write root within `docId` for this sheet's fields (e.g. `/system` for a top-level
+     * actor); every `getPointer`/`setField` call below is relative to it. */
+    systemPrefix: string;
+    /** Closes the hosting panel; wired to this sheet's header close button. */
+    close: () => void;
+  } = $props();
 
   const ctx = getAppContext();
   const subscribe = createSubscriber((update) => ctx.documents.subscribe(update));
@@ -39,7 +51,7 @@
 
   // #region sheet-write
   /** Writes one attribute via `setField`'s OCC contract — see
-   * src/client/ui-kit/src/sheetEdit.ts:4-10 for the pre-image invariant this
+   * `setField` for the pre-image invariant this
    * call must satisfy; not restated here to avoid a second, driftable copy.
    * @param attr - The attribute key (e.g. `"str"`).
    * @param value - The new numeric score to write.

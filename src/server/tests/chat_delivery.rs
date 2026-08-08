@@ -1,7 +1,7 @@
-//! Proof (M11c-1 checkpoint): a server-authored `message` document rides the
+//! Proof: a server-authored `message` document rides the
 //! existing create -> sequence -> broadcast path over a real two-client WS
 //! connection, with no message-specific transport code. Mirrors the
-//! `ws_convergence.rs` harness (spawn/login/connect/add_member).
+//! `ws_convergence` harness (spawn/login/connect/add_member).
 
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -171,7 +171,7 @@ async fn send_message_is_broadcast_as_message_document_event() {
 
 /// A rejected `send_message` (empty content) is surfaced to the SENDER as a
 /// `chat_error` frame correlated by `request_id`, instead of vanishing silently.
-/// End-to-end proof of the conn.rs dispatch + `SendMessageError` Display wiring.
+/// End-to-end proof of `conn::handle_socket`'s dispatch + `SendMessageError` Display wiring.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn rejected_send_returns_a_correlated_chat_error_to_the_sender() {
     let h = spawn().await;

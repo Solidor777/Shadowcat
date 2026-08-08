@@ -448,7 +448,7 @@ pub async fn delete_user(
     Ok(StatusCode::NO_CONTENT)
 }
 
-// --- Worlds, membership, and documents (M5) ---
+// --- Worlds, membership, and documents ---
 
 /// Run `ops` through the one authoritative write path for `world`, broadcasting
 /// to live WS subscribers, and return the author's filtered view of the command.
@@ -462,7 +462,7 @@ async fn write_ops(
         .repo
         .permission_context(world, user.id, user.role)
         .await?;
-    // Messages are server-authored via SendMessage only (chat/mod.rs); reject
+    // Messages are server-authored via `SendMessage` only; reject
     // any client-authored message op before it reaches apply_intent.
     if crate::chat::ops_target_message(&ops) {
         return Err(AppError::Forbidden);
@@ -1002,7 +1002,7 @@ pub async fn get_document(
         .get_document(id)
         .await?
         .ok_or(AppError::NotFound)?;
-    // 404 for a compendium document (compendium CRUD is out of M5 scope) —
+    // 404 for a compendium document (`world_of` returns `None` for one) —
     // same NotFound this route already returns for a missing doc, existence
     // hiding via a uniform not-found rather than a distinct error shape.
     let world = crate::data::document::world_of(&doc).ok_or(AppError::NotFound)?;
@@ -1046,7 +1046,7 @@ pub async fn patch_document(
         .get_document(id)
         .await?
         .ok_or(AppError::NotFound)?;
-    // 404 for a compendium document (compendium CRUD is out of M5 scope) —
+    // 404 for a compendium document (`world_of` returns `None` for one) —
     // same NotFound this route already returns for a missing doc, existence
     // hiding via a uniform not-found rather than a distinct error shape.
     let world = crate::data::document::world_of(&doc).ok_or(AppError::NotFound)?;
@@ -1081,7 +1081,7 @@ pub async fn delete_document(
         .get_document(id)
         .await?
         .ok_or(AppError::NotFound)?;
-    // 404 for a compendium document (compendium CRUD is out of M5 scope) —
+    // 404 for a compendium document (`world_of` returns `None` for one) —
     // same NotFound this route already returns for a missing doc, existence
     // hiding via a uniform not-found rather than a distinct error shape.
     let world = crate::data::document::world_of(&doc).ok_or(AppError::NotFound)?;
@@ -1343,12 +1343,12 @@ const MAX_SCHEMA_DECLARATIONS: usize = 256;
 const MAX_SCHEMA_NODES: usize = 512;
 /// Upper bound on schema type-tree nesting depth.
 const MAX_SCHEMA_DEPTH: usize = 16;
-/// The single schema-format vocabulary version this server understands (F7). A
+/// The single schema-format vocabulary version this server understands. A
 /// future vocabulary bump increments this and the set endpoint rejects formats
 /// it does not know, so a format bump can never be silently half-enforced.
 const SCHEMA_FORMAT_V1: u32 = 1;
 
-/// Structurally validate one schema type-tree node (M13f tier-2), fail-closed:
+/// Structurally validate one schema type-tree node, fail-closed:
 /// bounded depth/node-count and cross-field legality (a node's non-`type` keys
 /// must match its `type`). serde's `deny_unknown_fields` already rejected unknown
 /// keys and bad `type` values at deserialize; this rejects a well-typed-but-
@@ -1416,7 +1416,7 @@ fn validate_schema(s: &Schema, depth: usize, budget: &mut usize) -> Result<(), A
     Ok(())
 }
 
-/// Validate a world's schema declaration set (M13f tier-2 set-time gate),
+/// Validate a world's schema declaration set at set-time,
 /// fail-closed — the server is the consistency authority. Mirrors
 /// `validate_contract_declarations` on bounded count and non-empty
 /// module_id/version, but a `SchemaDeclaration` is NOT a per-module bundle

@@ -2,10 +2,11 @@ import type { DisplayBackend } from "./backend";
 import type { VisibilityInput } from "./types";
 
 /** Owns the mask slot. A thin pass-through to the backend's fog rendering
- * (`PixiBackend.setVisibility`/`setVisibilityBlend` paint the actual sheet+hole fog graphics —
- * see `pixi-backend.ts`) plus a `last`-applied cache so `current()` can answer without a
+ * (`PixiBackend.setVisibility`/`setVisibilityBlend` paint the actual sheet+hole fog graphics)
+ * plus a `last`-applied cache so `current()` can answer without a
  * backend round-trip. This class has no fog-drawing logic of its own. */
 export class Compositor {
+  /** The most recently applied visibility mask — see `current()`. */
   private last: VisibilityInput = { mode: "all", visible: [], explored: [] };
 
   /**
@@ -39,7 +40,7 @@ export class Compositor {
     this.backend.setVisibility(input);
   }
 
-  /** Cross-fade the mask between two consecutive vision samples (M2 §T7). `current()`
+  /** Cross-fade the mask between two consecutive vision samples. `current()`
    * tracks the nearer endpoint (< 0.5 ⇒ `from`, else `to`) as a best-effort snapshot — the
    * backend, not this value, owns the actual blended visual. Falls back to a plain
    * `setVisibility` nearest-sample snap when the backend has no cross-fade support.

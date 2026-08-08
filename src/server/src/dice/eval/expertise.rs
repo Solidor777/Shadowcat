@@ -74,7 +74,7 @@ fn add(a: (i32, i32), b: (i32, i32)) -> (i32, i32) {
 /// loop scans `k` ascending and replaces only on STRICTLY `better`, so the smallest
 /// `k` wins a tie at each die; backtracking runs from the LAST die, where later dice
 /// take the smallest optimal `k` (passing budget down), so points concentrate on the
-/// earliest dice whenever spending is actually needed to reach the optimum — the R3
+/// earliest dice whenever spending is actually needed to reach the optimum — the
 /// lowest-index-first canonical allocation. (When no `k` changes a die's value at all,
 /// e.g. every allocation ties, this degrades to `k=0` everywhere — never spend a point
 /// that provably does nothing, even to satisfy "concentrate on the earliest die".)
@@ -116,7 +116,7 @@ fn run_dp(
 
 /// Distribute `cfg.expertise` points across the pooled kept dice to maximize the
 /// VISIBLE outcome: primary key = clamped net successes (`max(net,0)` unless
-/// `allow_negative`), secondary = net counters (§R1). Mutates each chosen die's
+/// `allow_negative`), secondary = net counters. Mutates each chosen die's
 /// `value` (adjusted face) and `expertise` (points spent). No-op if budget is 0 or
 /// there are no kept dice.
 ///
@@ -124,8 +124,8 @@ fn run_dp(
 /// If `allow_negative` OR the achieved net ≥ 1, that pass equals the clamped-lex
 /// optimum (clamp is identity there). Otherwise every allocation clamps to net 0, so
 /// successes tie and the objective degenerates to pure counter-maximization — a second
-/// pass with the first key dropped. Both passes use the same R3 tie-break, so the
-/// result matches the brute-force oracle exactly.
+/// pass with the first key dropped. Both passes use the same lowest-index-first
+/// tie-break, so the result matches the brute-force oracle exactly.
 pub fn allocate(
     direction: Direction,
     cfg: &SuccessConfig,
@@ -398,7 +398,7 @@ mod tests {
 
     #[test]
     fn allocate_all_failed_region_maximizes_counters() {
-        // R1 fork: base success target is unreachable (target 100 on a d6), so net is
+        // Unreachable-target fork: base success target is unreachable (target 100 on a d6), so net is
         // always <= 0 (0 with no crit fired, -1 if crit_fail fires) for EVERY allocation
         // -> the objective degenerates to pure counter-maximization.
         // Two dice at face 1 on a d6: crit_fail at <=1 (lost 1, negative_counter 1) fires

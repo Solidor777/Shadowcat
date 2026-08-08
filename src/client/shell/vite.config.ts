@@ -6,7 +6,7 @@ import { svelte } from "@sveltejs/vite-plugin-svelte";
 // `vite dev` runs against a real backend. SHADOWCAT_SERVER overrides the target.
 const target = process.env.SHADOWCAT_SERVER ?? "http://127.0.0.1:30000";
 
-// Shared-runtime ESM entry chunks (M13-1 T1/T3): each bare specifier below is
+// Shared-runtime ESM entry chunks: each bare specifier below is
 // ALSO a genuine Rollup entry point in this same multi-entry build, so Rollup's
 // standard entry-sharing dedup makes the app's own first-party bundle AND any
 // future external module import the SAME runtime instance — but ONLY because
