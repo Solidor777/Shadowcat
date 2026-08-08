@@ -91,9 +91,36 @@ unannotated `ChatMessageEngineSchema` produces **188**. The explicit annotation
 stops the expansion, because TypeDoc documents the named type instead of the
 anonymous inferred one.
 
-So: every exported schema constant in `wire.ts`, `chat-docs.ts`, and
-`manifest.ts` gains a documented named type plus an explicit `z.ZodType<T>`
-annotation and a doc comment on the constant itself.
+So: every exported schema constant that TypeDoc expands gains a documented named
+type plus an explicit `z.ZodType<T>` annotation and a doc comment on the
+constant itself.
+
+**The named types do not already exist.** Today they are derived *from* the
+schemas — `export type WireAudience = z.infer<typeof AudienceSchema>` — so
+annotating a schema with its own inferred type is circular and does not
+compile. Each affected schema needs a hand-written type declaration whose
+members carry the documentation, in the shape `WireDocument` already uses. This
+is the cost of the class: roughly ten type declarations, not ten annotations.
+
+Hand-writing both a schema and its type does **not** create a forked decision.
+`z.ZodType<T>` is checked by the compiler: a schema that stops producing exactly
+`T` fails to build. The agreement is structural, which is the property the
+architecture asks for, and `DocumentSchema` / `WireDocument` is the established
+in-repo precedent.
+
+**The work cascades, so the entry counts overstate it.** Functions whose return
+type is an inferred schema output are re-reported against that anonymous shape:
+`parseServerMsg` (79 entries), `parseMessageEngine` (47), and `isKnownSegment`
+(33) carry no warnings of their own. Naming `ServerMsgSchema`,
+`ChatMessageEngineSchema`, and `ChatSegmentSchema` clears all three. Likewise
+`computeRevert` and `planToUpdate` (8 each) follow `OperationSchema`, and
+`SearchPage` follows `SearchHitSchema`.
+
+Root schemas requiring a hand-written documented type: `ServerMsgSchema`,
+`ChatMessageEngineSchema`, `ChatSegmentSchema`, `RollOutcomeSchema`,
+`CommandSchema`, `DieRecordSchema`, `OperationSchema`, `SearchHitSchema`,
+`CapabilityRequirementSchema`, `ManifestSchema`. `MessageKindSchema` and
+`DocumentSchema` need only a doc comment on the constant.
 
 This is worth doing independently of the warning count. The architecture names
 *forked decisions* — two paths documented to agree, which later disagree on an
@@ -105,12 +132,13 @@ Inline object shapes on function signatures (`computeRevert`, `planToUpdate`,
 `StampOpts.permissions`, `parseServerMsg`) are extracted into named documented
 types by the same reasoning.
 
-**Implementation risk.** `z.ZodType<T>` erases the schema's own surface: a call
-site using `.shape`, `.extend()`, `.partial()`, or `.omit()` on an annotated
-constant stops compiling. Every schema must have its call sites checked before
-annotation. Where a call site genuinely needs the schema surface, use a
-`satisfies`-based annotation instead, which constrains the type without erasing
-it. Choosing per schema is an implementation decision, not a design one.
+**Implementation risk, measured and closed.** `z.ZodType<T>` erases the schema's
+own surface, so a call site using `.shape`, `.extend()`, `.partial()`, `.pick()`,
+`.omit()`, or `.merge()` on an annotated constant would stop compiling. A
+repo-wide search across `src`, `examples`, and `scripts` finds **zero** such call
+sites, so the annotation is safe everywhere and no `satisfies`-based fallback is
+needed. If a future change introduces one, the build fails loudly rather than
+silently, which is the correct failure mode.
 
 #### B. Undocumented named symbols — 17 distinct entries
 
@@ -324,7 +352,8 @@ apply.
 
 | Risk | Handling |
 |---|---|
-| `z.ZodType<T>` erases the schema surface and breaks `.shape` / `.extend()` call sites | Check call sites per schema before annotating; use a `satisfies`-based annotation where the surface is needed |
+| `z.ZodType<T>` erases the schema surface and would break `.shape` / `.extend()` call sites | Measured: zero such call sites exist across `src`, `examples`, `scripts`. Risk closed, not mitigated |
+| Hand-writing a type beside its schema lets the two drift | The compiler is the shared symbol: `z.ZodType<T>` fails to build if the schema stops producing `T` |
 | The `file://` directory-link detail passes over HTTP and fails only on double-click | Covered by an explicit unit-test case, not by manual inspection |
 | Warnings-as-errors makes an unrelated future change fail the docs job | Intended. It is the point of the change |
 | Classes A and C touch the wire surface across `wire.ts` and `chat-docs.ts` | Wire types are mirrored by a parity guard against the Rust source; `pnpm -r test` and `pnpm -r typecheck` must both pass, not typecheck alone |
