@@ -460,3 +460,15 @@ Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one de
   ("See the `@param opts.channel` doc above.") that conveys nothing to a reader of the
   generated output. These emit no TypeDoc warning today — `WorldSession` is not reached by the
   documented entry points — which is why the warning-driven sweep did not cover them.
+
+## Actionable now — the surviving-absolute-ref check cannot see an inline `<style>` block
+- TODO: Scan `<style>` block contents inside portal HTML with the same root-absolute
+  `url(...)` predicate `hasSurvivingAbsoluteRef` applies to `.css` files. It currently routes
+  HTML through the attribute predicate only, so a `url(/…)` inside an inline `<style>` is
+  rewritten by neither `rewriteAbsolutePaths` nor caught by the structural check — it would
+  ship as a broken `file://` reference with the build green. **Not currently reachable**: the
+  VitePress build emits no inline `<style>`, so nothing triggers it today. Do NOT close this by
+  applying the CSS predicate to whole HTML files: this is a documentation site, so a guide page
+  with a fenced CSS example containing `url(/assets/x.png)` would fail the build spuriously, and
+  the obvious repair for that is narrowing the detector — which is what hides the real misses.
+  The fix has to parse out the `<style>` regions and test those.

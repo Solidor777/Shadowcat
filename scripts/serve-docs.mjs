@@ -1,9 +1,9 @@
 // Minimal static server for dist-docs/. Static content, styling, and ordinary link
 // navigation already work by opening the assembled site directly over file://; this
 // server exists for full fidelity, since anything driven by the site's runtime
-// JavaScript — client-side search, the appearance toggle, the mobile nav panel —
-// depends on a module script, and browsers refuse to load module scripts from
-// file://. No dependencies.
+// JavaScript — including client-side search, the appearance toggle, and the mobile
+// nav panel — depends on a module script, and browsers refuse to load module scripts
+// from file://. No dependencies.
 import { createServer } from "node:http";
 import { createReadStream, existsSync, statSync } from "node:fs";
 import { extname, join, normalize, resolve, sep } from "node:path";
