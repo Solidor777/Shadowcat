@@ -53,8 +53,8 @@ export class Grid {
   /**
    * Snaps a scene point to the active grid's nearest CELL CENTER — never a
    * vertex/corner, on either grid kind. Square: the containing cell's center. Hex: the
-   * nearest hex's center, via {@link axialRound}-then-{@link axialToPixel} — the same
-   * `axialToPixel` call {@link hexLines} uses as the origin it draws the six corners
+   * nearest hex's center, via `axialRound`-then-`axialToPixel` — the same
+   * `axialToPixel` call `hexLines` uses as the origin it draws the six corners
    * around, so this is provably a center, not a vertex.
    * @param p A scene-coordinate point.
    * @returns `p` snapped to the nearest cell center.

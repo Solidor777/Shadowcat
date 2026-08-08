@@ -199,7 +199,9 @@ export type WireDocument = {
   updated_at: number;
 };
 
-// `embedded` holds child documents, so the schema is recursive (z.lazy).
+/** Validates a `WireDocument` envelope. `embedded` holds child documents, so the
+ * schema is recursive (`z.lazy`); a value that fails this parse is treated as
+ * absent by every caller, never partially trusted. */
 export const DocumentSchema: z.ZodType<WireDocument> = z.lazy(() =>
   z.object({
     id: z.string(),

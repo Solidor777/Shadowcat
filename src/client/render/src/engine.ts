@@ -92,8 +92,8 @@ export interface RenderEngineOpts {
 export class RenderEngine implements SceneToolHost {
   /** Screen↔scene transform driving pan/zoom; pushed to the backend by {@link applyCamera}. */
   readonly camera = new Camera();
-  /** Owns the mask/fog compositing target the backend renders; driven by {@link
-   * renderVisibility}/{@link applyVisionSweep}. */
+  /** Owns the mask/fog compositing target the backend renders; driven by
+   * `toVisibility`/`applyVisionSweep`. */
   readonly compositor: Compositor;
   /** Resolves the `CORE_LAYERS` z-order the backend's containers are created in (`start`). */
   private readonly layers = new LayerRegistry();

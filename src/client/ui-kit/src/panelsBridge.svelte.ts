@@ -52,7 +52,7 @@ export class PanelsBridge implements PanelsApi, PanelsChipsView {
    * bound implementation once it arrives — a plain field carries no reactive signal, so a
    * derived that already ran with `#impl === null` would stay frozen at `[]`/empty forever. */
   #impl = $state<(PanelsApi & PanelsChipsView) | null>(null);
-  /** Whether {@link PanelsBridge.#warnOnce} has already logged for this instance. */
+  /** Whether `#warnOnce` has already logged for this instance. */
   #warned = false;
 
   /** Build an unbound bridge; every call/read no-ops until {@link PanelsBridge.bind} runs.
@@ -78,7 +78,7 @@ export class PanelsBridge implements PanelsApi, PanelsChipsView {
     this.logger.warn("PanelsBridge used before bind(); calls are no-ops until the panel host binds");
   }
 
-  /** Forward to the bound host; warns once (see {@link PanelsBridge.#warnOnce}) and no-ops
+  /** Forward to the bound host; warns once (see `#warnOnce`) and no-ops
    * before `bind()`.
    * @param id - The panel id to open.
    * @returns Nothing.

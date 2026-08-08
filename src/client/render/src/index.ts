@@ -1,6 +1,6 @@
 export type { Point, LineSeg, Polygon, CameraTransform, VisibilityInput, TokenTransform, TokenNodeSpec, ShapeNodeSpec, SceneTool, SceneToolHost, MoveVisionSample } from "./types";
 export type { LightingInput, LitCell } from "./types";
-export { Lighting, type LightingFrame, type LitDrawCell } from "./lighting";
+export { Lighting, LIGHTING_FADE_MS, type LightingFrame, type LitDrawCell } from "./lighting";
 export { TokenAnimator, type AnimationConfig } from "./token-animator";
 export type { EasingMode } from "./easing";
 export { TokenView } from "./token-view";

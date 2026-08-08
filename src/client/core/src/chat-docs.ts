@@ -11,11 +11,15 @@ import { envelope } from "./scene-docs";
 import type { ChannelRegistryEngine, ChatSettingsEngine, DiceSettingsEngine } from "@shadowcat/types";
 export type { ChannelRegistryEngine, ChatSettingsEngine, DiceSettingsEngine };
 
+/** The `doc_type` identifying a stored chat message document. */
 export const MESSAGE_DOC_TYPE = "message";
+/** The `doc_type` identifying the world's singleton channel-registry config document. */
 export const CHANNEL_REGISTRY_DOC_TYPE = "channel-registry";
 /** Server-enforced content cap (`chat::MAX_MESSAGE_CHARS`) — composer pre-validates. */
 export const MAX_MESSAGE_CHARS = 4096;
 
+/** Validates a message's `kind` tag. `"system"` is reserved for server-authored
+ * notices — no client-reachable parse path can ever produce it. */
 export const MessageKindSchema = z.enum(["normal", "emote", "roll", "system"]);
 /** The inferred TS shape of `MessageKindSchema`. */
 export type MessageKind = z.infer<typeof MessageKindSchema>;

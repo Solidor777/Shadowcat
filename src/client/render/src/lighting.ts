@@ -25,8 +25,10 @@ export interface LightingFrame {
   cells: LitDrawCell[];
 }
 
-/** Cosmetic only — fog/lit-mask is the secrecy gate; this layer is purely visual. */
-const LIGHTING_FADE_MS = 250;
+/** Duration, in ms, of the day/night fade `Lighting.setTarget` starts and
+ * `Lighting.tick` advances. Cosmetic only — fog/lit-mask is the secrecy gate;
+ * this layer is purely visual. */
+export const LIGHTING_FADE_MS = 250;
 /** Maximum darkening opacity applied at the darkest gradation band. */
 const MAX_DARK_ALPHA = 0.6;
 /** Tint overlay opacity when a packed color is present (tint !== 0). */

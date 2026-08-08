@@ -63,7 +63,23 @@ export function isFormulaError(v: FormulaValue): v is FormulaError {
   return typeof v !== "number";
 }
 
+/** Maximum accepted source length of a formula, in characters. Rejected before
+ * lexing (`tokenize`'s length check runs before the scan loop), so a hostile
+ * input cannot force tokenization work. */
 export const MAX_FORMULA_LENGTH = 512;
+/** Maximum node count of a parsed formula AST, charged once per node
+ * constructed (the parser's `node()` chokepoint counts every node regardless
+ * of kind). Bounds evaluator work directly, since evaluation cost scales with
+ * AST size rather than raw source length. */
 export const MAX_AST_NODES = 256;
+/** Maximum structural-nesting depth accepted by the parser — parenthesization,
+ * call arguments, and unary-minus descents only; a flat operator chain (e.g.
+ * `a+b+c+...`) passes depth through unchanged and never counts against it.
+ * Bounds recursion so a deeply nested expression cannot exhaust the call
+ * stack. */
 export const MAX_PARSE_DEPTH = 32;
+/** Maximum distinct node keys visited during dependency-graph resolution,
+ * charged once per key at first discovery (a retried evaluation of an
+ * already-charged key costs nothing further). Bounds resolution of an
+ * arbitrarily large or cyclic dependency graph to a fixed amount of work. */
 export const MAX_GRAPH_VISITS = 2048;

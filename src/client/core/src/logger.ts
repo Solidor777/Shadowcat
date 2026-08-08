@@ -21,6 +21,8 @@ export interface Logger {
   error(msg: string, meta?: unknown): void;
 }
 
+/** A `Logger` that discards every record. Used where a logger is structurally
+ * required but output is not wanted, such as tests and headless module loads. */
 export const silentLogger: Logger = {
   debug() {},
   warn() {},
