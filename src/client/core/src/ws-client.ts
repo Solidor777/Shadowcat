@@ -7,12 +7,16 @@ import type { RejectReason } from "@shadowcat/types";
 import {
   parseServerMsg,
   type ClientMsg,
-  type ServerWelcomeMsg,
+  type WireWelcome,
   type WireCommand,
   type WireSearchHit,
   type WireActorOwnerRef,
   type WireAudience,
 } from "./wire";
+
+// Re-exported so consumers importing `WireWelcome` from this module keep resolving — its
+// canonical declaration lives alongside `ServerMsg`'s other hand-written wire shapes.
+export type { WireWelcome };
 
 /** A resolved page of search results (Core.search). */
 export interface SearchPage {
@@ -113,10 +117,6 @@ export interface SceneSubscription {
   unsubscribe(): void;
 }
 
-/** The `Welcome` server frame (capability fields included). Alias of `ServerWelcomeMsg`, the
- * `welcome` arm of `ServerMsg` — named so TypeDoc resolves its members directly rather than
- * through an `Extract<>` projection (which would otherwise strip their doc comments). */
-export type WireWelcome = ServerWelcomeMsg;
 import type { Connect, Transport } from "./transport";
 
 /** The handler set a `WsClient` dispatches inbound frames to; every member is a callback the

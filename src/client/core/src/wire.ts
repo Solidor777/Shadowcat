@@ -479,12 +479,11 @@ export type WireMoveStreamVisionSample = {
 /** The `welcome` server frame, sent right after a successful join. Carries the world's default
  * capability grants, the connecting user's world role, and the declarative capability
  * requirements so the client can replicate access resolution for advisory UI gating (the server
- * remains authoritative). Named (rather than an inline `ServerMsg` union arm) so a TypeDoc
- * consumer that reaches it via `Extract<ServerMsg, {type:"welcome"}>` (see `WireWelcome` in the
- * `ws-client` module) resolves to a real declaration instead of a synthesized type stripped of
- * its member docs. */
-export interface ServerWelcomeMsg {
-  /** Discriminates this frame within `ServerMsg`. */
+ * remains authoritative). A named `ServerMsg` union arm (rather than an inline object literal)
+ * so it resolves to one documented declaration wherever it is referenced, including through the
+ * `ws-client` module's re-export. */
+export type WireWelcome = {
+  /** Discriminant literal selecting the `welcome` variant of `ServerMsg`. */
   type: "welcome";
   /** The joined world. */
   world: string;
@@ -510,12 +509,12 @@ export interface ServerWelcomeMsg {
    * expectations. Informational/parity only — tier-1 Zod validates client-side; this is
    * NOT a client enforcement gate. */
   schema_declarations: WireSchemaDeclaration[];
-}
+};
 
 /** Validator for every frame the server sends, discriminated by `type`. Mirrors
  * `crate::ws::protocol::ServerMsg`. */
 export type ServerMsg =
-  | ServerWelcomeMsg
+  | WireWelcome
   | {
       /** A sequenced broadcast carrying the authoritative command. */
       type: "event";
