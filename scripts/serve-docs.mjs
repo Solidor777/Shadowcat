@@ -1,5 +1,6 @@
-// Minimal static server for dist-docs/ (VitePress output needs a server; its
-// absolute asset paths do not render from file://). No dependencies.
+// Minimal static server for dist-docs/. The assembled site is directly openable
+// over file://; this server exists for full fidelity, since client-side search
+// relies on module scripts the browser refuses to load from file://. No dependencies.
 import { createServer } from "node:http";
 import { createReadStream, existsSync, statSync } from "node:fs";
 import { extname, join, normalize, resolve, sep } from "node:path";

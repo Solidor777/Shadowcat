@@ -3,8 +3,8 @@
 // references guarantee their own internal integrity; portal links INTO them are
 // validated because the copied files are on disk by check time).
 // Cross-platform invariant: node:path/node:fs only — no shell, no separators.
-import { cpSync, existsSync, readdirSync, readFileSync, statSync, mkdirSync } from "node:fs";
-import { dirname, join, resolve, sep } from "node:path";
+import { cpSync, existsSync, readdirSync, readFileSync, statSync, mkdirSync, writeFileSync } from "node:fs";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import process from "node:process";
 
@@ -38,8 +38,9 @@ export function checkLinks(rootDir, htmlFiles) {
   return broken;
 }
 
-/** Recursively list .html files under dir, skipping the given top-level subtrees. */
-export function htmlFilesUnder(dir, skipSubtrees = []) {
+/** Recursively list files with the given extension under dir, skipping the given
+ * top-level subtrees. Shared walk backing htmlFilesUnder and cssFilesUnder. */
+function filesUnder(dir, ext, skipSubtrees) {
   const out = [];
   const skip = new Set(skipSubtrees.map((s) => resolve(dir, s)));
   const walk = (d) => {
@@ -47,11 +48,60 @@ export function htmlFilesUnder(dir, skipSubtrees = []) {
     for (const entry of readdirSync(d, { withFileTypes: true })) {
       const p = join(d, entry.name);
       if (entry.isDirectory()) walk(p);
-      else if (entry.name.endsWith(".html")) out.push(p);
+      else if (entry.name.endsWith(ext)) out.push(p);
     }
   };
   walk(dir);
   return out;
+}
+
+/** Recursively list .html files under dir, skipping the given top-level subtrees. */
+export function htmlFilesUnder(dir, skipSubtrees = []) {
+  return filesUnder(dir, ".html", skipSubtrees);
+}
+
+/** Recursively list .css files under dir, skipping the given top-level subtrees. */
+export function cssFilesUnder(dir, skipSubtrees = []) {
+  return filesUnder(dir, ".css", skipSubtrees);
+}
+
+/** Rewrite one root-absolute local link to a path relative to a page at `depth`
+ * directories below the site root. Scheme-prefixed, protocol-relative, fragment-only
+ * and already-relative links pass through untouched.
+ * A directory target is expanded to its index.html: file:// does not resolve a bare
+ * directory, unlike an HTTP server. */
+export function toRelativeHref(link, depth) {
+  if (SKIP_SCHEMES.test(link) || !link.startsWith("/")) return link;
+  const hash = link.indexOf("#");
+  const frag = hash === -1 ? "" : link.slice(hash);
+  let path = hash === -1 ? link : link.slice(0, hash);
+  if (path.endsWith("/")) path += "index.html";
+  const prefix = depth === 0 ? "./" : "../".repeat(depth);
+  return prefix + path.slice(1) + frag;
+}
+
+/** Root-absolute href/src attribute, or CSS url(...) reference, still present in a
+ * portal file after rewriteAbsolutePaths — used to fail the build on a surviving
+ * reference rather than silently shipping a broken file:// link. */
+const ROOT_ABSOLUTE_REF = /(?:(?:href|src)="\/(?!\/)[^"]*"|url\(("|')?\/(?!\/)[^"')]*\1?\))/;
+
+/** Rewrite root-absolute local refs in the given portal files to depth-relative
+ * ones, so the assembled site resolves under file:// as well as over HTTP.
+ * Returns the number of files changed. */
+export function rewriteAbsolutePaths(rootDir, files) {
+  let changed = 0;
+  for (const file of files) {
+    const depth = relative(rootDir, dirname(file)).split(sep).filter(Boolean).length;
+    const before = readFileSync(file, "utf8");
+    const after = file.endsWith(".css")
+      ? before.replace(/url\(("|')?(\/[^"')]+)\1?\)/g, (m, q = "", p) => `url(${q}${toRelativeHref(p, depth)}${q})`)
+      : before.replace(/(href|src)="([^"]+)"/g, (m, attr, link) => `${attr}="${toRelativeHref(link, depth)}"`);
+    if (after !== before) {
+      writeFileSync(file, after);
+      changed += 1;
+    }
+  }
+  return changed;
 }
 
 /** Copy portal/ts/rust trees into out (portal at root, refs under api/). */
@@ -78,8 +128,16 @@ if (isMain) {
     }
   }
   assemble(paths);
-  // Portal pages only; api/ subtrees are excluded as link SOURCES, present as targets.
-  const portalPages = htmlFilesUnder(paths.out, [join("api", "ts"), join("api", "rust")]);
+  // Portal only; api/ subtrees are already relative (TypeDoc/rustdoc output) and untouched.
+  const apiSubtrees = [join("api", "ts"), join("api", "rust")];
+  const portalPages = htmlFilesUnder(paths.out, apiSubtrees);
+  const portalStyles = cssFilesUnder(paths.out, apiSubtrees);
+  rewriteAbsolutePaths(paths.out, [...portalPages, ...portalStyles]);
+  const stillAbsolute = portalPages.filter((f) => ROOT_ABSOLUTE_REF.test(readFileSync(f, "utf8")));
+  if (stillAbsolute.length > 0) {
+    for (const f of stillAbsolute) console.error(`root-absolute reference survived rewrite: ${f}`);
+    process.exit(1);
+  }
   const broken = checkLinks(paths.out, portalPages);
   if (broken.length > 0) {
     for (const b of broken) console.error(`dead link: ${b.source} -> ${b.target}`);
