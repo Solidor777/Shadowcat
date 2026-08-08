@@ -443,3 +443,20 @@ Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one de
   consumes `.snippet` yet, which is exactly why the note should land before the first
   search-UI consumer exists rather than after. Surfaced while naming the chat schema types,
   when the Rust field doc was ported and its exposure note was dropped as out-of-scope.
+
+## Actionable now — `check-comment-refs.mjs` cannot see a skill-name repo pointer
+- TODO: Extend `check-comment-refs.mjs`'s repo-document-pointer pattern to match
+  `shadowcat-codebase-*` skill names. The current pattern matches `docs/...md` paths,
+  `ARCHITECTURE` section refs, and bare `invariant N`, so a comment citing a skill by name
+  passes clean while being exactly the class of external, process-assigned referent RULE 16
+  exists to remove. Found when a previously-unbound `@param` tag carrying such a pointer
+  started rendering live in the generated API docs. A green `lint:comments` is therefore not
+  evidence of RULE 16 compliance for this shape.
+
+## Actionable now — `WorldSession` repeats the unbound-`@param` defect
+- TODO: Give `WorldSession.subscribeScene` and `WorldSession.sendChatMessage` named options
+  types, the same treatment applied across the client API surface. Their field docs sit on an
+  undestructured parameter, so they bind to nothing, and one carries a self-referential comment
+  ("See the `@param opts.channel` doc above.") that conveys nothing to a reader of the
+  generated output. These emit no TypeDoc warning today — `WorldSession` is not reached by the
+  documented entry points — which is why the warning-driven sweep did not cover them.
