@@ -4,13 +4,13 @@
     "name": "emper"
   },
   "metadata": {
-    "description": "Shadowcat codebase skills, agents, and the skill-routing hook, shared with downstream consumers of the engine.",
+    "description": "Shadowcat codebase skills, agents, and the skill-routing hook, sourced from the Shadowcat repo's .claude/ directory and shared with downstream consumers of the engine.",
     "version": "1.0.0"
   },
   "plugins": [
     {
       "name": "shadowcat-codebase",
-      "description": "Shadowcat subsystem orientation skills, the coder/reviewer agent set, and the codebase-skill routing hook.",
+      "description": "Plugin root is Shadowcat's .claude/ directory; only its skills/, agents/, and hooks/ subdirectories are consumed. Includes the 15 shadowcat-codebase-* subsystem orientation skills plus the git-ignored graphify skill, the coder/reviewer agent set, and the codebase-skill routing hook.",
       "source": "./.claude"
     }
   ]
