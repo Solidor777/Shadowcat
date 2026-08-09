@@ -57,3 +57,7 @@ dist-docs/
 .docs-tmp/
 docs/site/.vitepress/cache/
 docs/site/.vitepress/dist/
+
+# Kimi Code plugin shim + per-repo agent copies (local install artifacts)
+.claude/kimi.plugin.json
+.kimi-code/
