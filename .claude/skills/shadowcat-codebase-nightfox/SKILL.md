@@ -1,18 +1,20 @@
 ---
 name: shadowcat-codebase-nightfox
-description: "Use when touching `@shadowcat/formula` (the framework-neutral expression library: lexer/parser/evaluator, dependency-graph resolution, dice-notation-template mode), the Nightfox rules engine it feeds (the `nightfox-docs`/`contributions`/`resolve` modules), or the Nightfox sheets layer (`src/sheets/*` — the `sheet-model` module, StatRow/StatTable/ModifiersEditor, ActorSheet/ItemSheet/EffectSheet, the `nf-i18n` module), a separate external repo checked out alongside this one and nested for dev at `src/modules/nightfox/`. Covers src/client/formula/ (in-repo) and the Nightfox repo's src/ (out-of-repo). Invoke shadowcat-codebase-core first."
+description: "Use when touching `@shadowcat/formula` (the framework-neutral expression library: lexer/parser/evaluator, dependency-graph resolution, dice-notation-template mode), the Nightfox rules engine it feeds (the `nightfox-docs`/`contributions`/`resolve` modules), or the Nightfox sheets layer (`src/sheets/*` — the `sheet-model` module, StatRow/StatTable/ModifiersEditor, ActorSheet/ItemSheet/EffectSheet, the `nf-i18n` module). Two repos: the Shadowcat engine repo owns src/client/formula/, and the separate Nightfox module repo owns its own src/, nested for dev into a Shadowcat checkout at src/modules/nightfox/. Invoke shadowcat-codebase-core first."
 ---
 
 # Shadowcat — Nightfox / `@shadowcat/formula`
 
-Orientation for the shared formula library and the Nightfox rules engine consuming it — the
-formula library lives in this repo; the rules engine, sheets layer, and roll wire live in the
-external Nightfox repo. This skill covers the whole surface (library + rules engine + sheets +
-roll wire), extended in place rather than forking a new skill per checkpoint.
+Orientation for the shared formula library and the Nightfox rules engine consuming it. Two
+repositories are in play and this skill ships into both, so every path below names its owner
+explicitly: the **Shadowcat engine repo** owns the formula library, and the **Nightfox module
+repo** owns the rules engine, sheets layer, and roll wire. This skill covers the whole surface
+(library + rules engine + sheets + roll wire), extended in place rather than forking a new skill
+per checkpoint.
 
 ## Purpose
 
-`@shadowcat/formula` (`src/client/formula/`, **in this repo**) is a pure-TS,
+`@shadowcat/formula` (`src/client/formula/` **in the Shadowcat engine repo**) is a pure-TS,
 zero-runtime-dependency expression library: text → tokens → AST → number, plus generic
 cycle-guarded dependency-graph resolution and a dice-notation-template rewrite mode. It has
 **zero Nightfox concepts** — no stat types, no modifier buckets, no `parent`/`base` vocabulary.
@@ -21,12 +23,12 @@ Nightfox is the first consumer but any game system may use or replace this libra
 its dependency closure — it is usable from server-side validators and other headless contexts,
 not just the client.
 
-Nightfox itself is a **standalone external repository** checked out alongside this one (its own git
-history, no remote — never pushed by an agent), nested a second time into a
-Shadowcat checkout at `src/modules/nightfox/` purely so the pnpm workspace resolves
-`@shadowcat/core`/`@shadowcat/formula` for dev. All Nightfox source paths
-below are Nightfox-repo-relative (`src/...` under that checkout), not in-tree Shadowcat
-paths — never edit them from a Shadowcat-repo working tree.
+Nightfox itself is a **standalone repository, separate from the Shadowcat engine repo** — its own
+git history and its own public remote, which an agent never pushes to. It is nested a second time
+into a Shadowcat checkout at `src/modules/nightfox/` purely so the pnpm workspace resolves
+`@shadowcat/core`/`@shadowcat/formula` for dev. Every Nightfox source path below is relative to
+the **Nightfox module repo's** own root (`src/...`), never to the Shadowcat engine repo's — do not
+edit them from a Shadowcat working tree.
 
 ## The Nightfox rules engine
 
@@ -222,7 +224,7 @@ producer, not consumer.
   above — a pure-unit test against the `roll` module alone would never have exercised the server's actual
   grammar.
 
-## The `@shadowcat/formula` graph-resolver contract (the `graph` module, in this repo)
+## The `@shadowcat/formula` graph-resolver contract (the `graph` module, Shadowcat engine repo)
 
 Load-bearing for anyone writing a new `evalNode` consumer (Nightfox's `resolve` module is the first,
 not the only, expected caller):
@@ -244,7 +246,7 @@ not the only, expected caller):
   The visiting/stack pairing invariant that makes this safe fails loudly (not silently) on
   violation.
 
-## Key files & seams (`@shadowcat/formula`, in this repo)
+## Key files & seams (`@shadowcat/formula`, Shadowcat engine repo)
 
 - The `types` module — `FormulaError`/`FormulaErrorKind`/`FormulaValue`, `isFormulaError`, the four
   cap constants. Everything else imports from here.
@@ -292,8 +294,8 @@ not the only, expected caller):
   trampoline and silently memoize a wrong result. Documented in `graph`'s own JSDoc; treat any
   PR touching `resolveAll` or its consumers as needing that invariant re-verified.
 - **Zero Nightfox vocabulary in this package.** If a change introduces a Nightfox-specific concept
-  (stat, bucket, effect, etc.) into `src/client/formula/`, that is a layering violation — it
-  belongs in the Nightfox repo, not here.
+  (stat, bucket, effect, etc.) into the Shadowcat engine repo's `src/client/formula/`, that is a
+  layering violation — it belongs in the Nightfox module repo, not in `@shadowcat/formula`.
 - **The grammar has no exponent notation.** `1e999` lexes as `num(1)` followed by `word("e999")` —
   a parse error, not a cap error. This is a deliberate grammar boundary, not a lexer defect; do
   not "fix" the lexer to accept exponents without a grammar change.
@@ -311,8 +313,8 @@ not the only, expected caller):
 - Arithmetic semantics (`/`, `%`, rounding, `finite()` gating, `.5`) → see the
   `@shadowcat/formula` arithmetic bullet under **Key files & seams** — stated once there, so the
   two copies cannot drift apart.
-- Property/fuzz tests (`property.test` in this repo; `permutation.test` in the Nightfox
-  repo) use a hand-rolled seeded PRNG — do not add `fast-check` or any other new dependency to
+- Property/fuzz tests (`property.test` in the Shadowcat engine repo; `permutation.test` in the
+  Nightfox module repo) use a hand-rolled seeded PRNG — do not add `fast-check` or any other new dependency to
   either package (Global Constraint).
 - **Nested for dev, the Nightfox repo is inside Shadowcat's gate perimeter.** `check-lint-allowances`
   walks Shadowcat's `src` tree recursively and skips only `node_modules`/`dist`/`target`/`.git`/
@@ -351,13 +353,15 @@ not the only, expected caller):
 ## Pointers
 
 - **Generated API** — `/api/ts/modules/_shadowcat_formula.html` (TypeDoc — `@shadowcat/formula`,
-  in-repo). The Nightfox rules engine, sheets layer, and roll wire live in the external Nightfox
-  repo and have no page under this repo's `dist-docs/`. Produce with `pnpm build:all`.
+  Shadowcat engine repo). The Nightfox rules engine, sheets layer, and roll wire live in the
+  Nightfox module repo and have no page under the Shadowcat engine repo's `dist-docs/`. Produce
+  with `pnpm build:all` from a Shadowcat checkout.
 - `docs/design/ARCHITECTURE.md` §6 — the `system.stats`/`system.mechanics` reserved-directory
   premise as a durable engine invariant, independent of Nightfox as a specific system.
 - `shadowcat-codebase-sheets` — the sheet registry (`shadowcat.sheet:<doc_type>` contract,
   `pickSheet`/`resolveDocRef`, the `basePrefix` derivation pattern) that Nightfox's sheets
   register into; read it alongside this skill for any sheet-registration work.
-- This skill is scoped to the whole Nightfox surface (in-repo formula library + out-of-repo
-  rules engine + sheets + roll wire), not just the formula library. Any future Nightfox work
-  should extend here too rather than forking a new skill.
+- This skill is scoped to the whole Nightfox surface — the formula library in the Shadowcat
+  engine repo plus the rules engine, sheets and roll wire in the Nightfox module repo — not just
+  the formula library. Any future Nightfox work should extend this skill rather than forking a
+  new one, from either repo.
