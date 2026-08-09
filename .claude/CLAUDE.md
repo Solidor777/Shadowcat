@@ -448,7 +448,10 @@ Here is the optimized guidelines set for workflow, documentation, and source con
 
 <!-- Sync-paired with the Nightfox repo's .claude/CLAUDE.md. The RULES are shared: a change to what
      the rule requires must be mirrored there. The EXAMPLES, covered sets, tracking files and stack
-     specifics are ADAPTED per repo and deliberately differ — never mirror those across. -->
+     specifics are ADAPTED per repo and deliberately differ — never mirror those across.
+     ONE RULE in this block is also deliberately per-repo and must NOT be mirrored: the push / CI
+     policy. Shadowcat pushes autonomously on a completed milestone and then watches CI; Nightfox
+     never pushes at all, milestone or not. Reconciling the two undoes an intentional divergence. -->
 ## Documentation Standards
 **Core Directive:** System state must remain synchronized with reality. Documentation updates are mandatory prerequisites for context clearing. Artifacts must remain hygienic, and source control operations must proceed autonomously based on CI triggers.
 
@@ -622,9 +625,11 @@ Rules:
 Project-scoped codebase knowledge lives in `shadowcat-codebase-*` skills (`.claude/skills/`):
 orientation+index briefs (Purpose / Key files / Hard invariants / Gotchas / Pointers) that route
 INTO graphify, `docs/design/`, and memory rather than duplicating them. `shadowcat-codebase-core`
-is the always-relevant base; domain skills cover documents-permissions, actors-tokens,
-scene-rendering, realtime-sync, client-shell, and assets. A scoped `Edit|Write` hook reminds the
-main-thread agent which skill applies; subagents must invoke skills explicitly (below).
+is the always-relevant base, and one `shadowcat-codebase-<subsystem>` skill exists per subsystem
+alongside it. Read the current set from core's **Subsystem skills** list or from the skill
+listing itself — never from an enumeration kept elsewhere, which goes stale the moment a skill is
+added. A scoped `Edit|Write` hook reminds the main-thread agent which skill applies; subagents
+must invoke skills explicitly (below).
 
 ### 1. Reviewed Skill-Update Gate (mandatory, doc-sync tier)
 Whenever a plan finishes execution — and whenever an inline change alters a subsystem's seam,

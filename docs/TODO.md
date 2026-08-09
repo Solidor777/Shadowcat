@@ -486,7 +486,9 @@ Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one de
   `Record<string, string[]>`: its keys are user ids, which are genuinely open.
 
 ## Actionable now — the `shadowcat-codebase` plugin has never been registered or exercised
-- TODO: Run `/plugin marketplace add C:\Dev\Shadowcat` once per machine, then open a fresh
+- TODO: Run `/plugin marketplace add <your Shadowcat checkout>` once per machine — the argument is
+  the path to your own clone of this repo, whose root holds `.claude-plugin/marketplace.json`;
+  registration is per-machine state, so no committed file can carry it. Then open a fresh
   session on the Nightfox repo and confirm the 15 `shadowcat-codebase-*` skills and the six
   `shadowcat-*` agents resolve. Until this runs, the branch's central claim is unobserved: an
   `enabledPlugins` entry naming an unregistered marketplace is silently inert, so a Nightfox
@@ -505,7 +507,7 @@ Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one de
   detectable; the skill-update gate requires bumping it.
 
 ## Actionable now — Kimi Code parity is written but never installed
-- TODO: In the Kimi TUI run `/plugins install C:/Dev/Shadowcat/.claude` then `/reload` (the
+- TODO: In the Kimi TUI run `/plugins install <your Shadowcat checkout>/.claude` then `/reload` (the
   third-party trust prompt defaults to cancel — approve it). CLI/prompt-mode install does not
   exist. Then confirm all six agents register: the twelve ported copies carry Claude-native
   `tools:` names including `Skill`, and whether Kimi recognizes them is unverified — if
