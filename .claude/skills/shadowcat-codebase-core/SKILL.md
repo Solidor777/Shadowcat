@@ -183,8 +183,12 @@ source of truth. The ones agents break most:
   is `error` and fails CI: `pnpm lint:docs`, `lint:props`, `lint:comments`, `docs:check-examples`,
   and Rust `-D missing-docs`. A warn tier is an exemption spread across a whole codebase, and a
   reported-but-passing violation is indistinguishable to a later reader from code that was checked.
-- **`CLAUDE.md` is git-ignored** — it is local-only; durable rules live in `ARCHITECTURE.md` §2,
-  the real source of truth. [[claude-md-is-git-ignored]]
+- **`.claude/CLAUDE.md` is TRACKED and shared** — edits there reach other contributors and the
+  open-source repo. `.gitignore`'s `/CLAUDE.md` rule is root-anchored and matches no file (no
+  root-level `CLAUDE.md` exists); the genuinely-ignored entries under `.claude/` are
+  `settings.json`, `settings.local.json`, and `skills/graphify/`. `ARCHITECTURE.md` §2 remains
+  the invariant source of truth, but not because `CLAUDE.md` is unshared.
+  [[claude-md-is-git-ignored]]
 - **ts-rs types are generated** — change the Rust enum/struct, regenerate, then mirror in the
   client Zod schema (a drift guard enforces parity).
 - **Decide on technical merits, not "how Foundry does it."** [[decide-on-merits-not-foundry]]
