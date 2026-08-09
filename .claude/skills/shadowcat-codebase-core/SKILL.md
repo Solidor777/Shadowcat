@@ -347,6 +347,31 @@ When adding one:
    and keep it orientation+index: point INTO graphify, `docs/design/`, and memory; never duplicate
    them. Cite each invariant's memory slug or design-doc section.
 2. Add it to the **Subsystem skills** list above, and add its path globs to the activation hook
-   (`.claude/hooks/codebase-skill-reminder.py` `SUBSYSTEMS` map).
+   (`.claude/hooks/codebase-skill-reminder.py` `SUBSYSTEMS` map). Every hook entry is an
+   UNANCHORED substring match, because the Edit/Write payload's `file_path` is always absolute; a
+   `^`-anchored pattern is inert while still passing repo-relative test fixtures. Pair each new
+   entry with at least one absolute-path assertion in the hook's self-test.
 3. This creation step is part of the reviewed skill-update gate (see CLAUDE.md
    `## Codebase Skills & Agents`): a new subsystem with no skill is itself a gate violation.
+
+### Keeping the plugin current
+
+This directory is also a Claude Code plugin source (`.claude-plugin/marketplace.json` at the repo
+root points at `./.claude`; `.claude/.claude-plugin/plugin.json` names and versions the plugin).
+A consuming repo — the Nightfox module repo is the first — reaches these skills, agents and the
+routing hook through that plugin rather than through a second copy.
+
+**A directory-sourced plugin is COPIED into the consumer's plugin cache, not read live.** Editing
+a skill, an agent body, or the hook updates this repo and reaches nobody else until the plugin is
+refreshed: the consumer keeps serving the frozen snapshot it installed, so the repo and the
+running session disagree with no error anywhere. "Stored exactly once" is true of the source of
+truth on disk; it is not true of what a consumer session executes.
+
+So the skill-update gate has a third obligation alongside updating the skill and getting the diff
+reviewed: **bump `version` in `.claude/.claude-plugin/plugin.json` and re-run the marketplace
+update in each consuming repo.** The version bump is what makes the staleness detectable — an
+unversioned plugin caches as `unknown`, where a refreshed copy and a stale one are
+indistinguishable.
+
+Consumers also see these skills under a plugin prefix (`shadowcat-codebase:shadowcat-codebase-core`)
+rather than the bare id. Take the exact name from the skill listing.
