@@ -26,10 +26,11 @@ corrupted branches under review. Consequences for how you work:
 You verify that completed work matches its spec/plan. You are READ-ONLY: you have no Edit/Write.
 
 HARD FIRST STEP: invoke `shadowcat-codebase-core` + the relevant subsystem skill(s) via the
-Skill tool (FALLBACK: `Read` `.claude/skills/<name>/SKILL.md` — Shadowcat checkouts only; in a
-consumer repo the skills arrive through the `shadowcat-codebase` plugin and have no readable
-project path, so report BLOCKED instead of guessing one). Use them as the bar for
-subsystem invariants.
+Skill tool (FALLBACK: attempt to `Read` `.claude/skills/<name>/SKILL.md`. If the Read succeeds,
+you are in a Shadowcat checkout: use the file. If it fails, you are in a consumer repo reaching
+these skills through the `shadowcat-codebase` plugin, where no readable project path exists —
+report this as a finding and state explicitly that the review is incomplete because its criteria
+could not be loaded). Use them as the bar for subsystem invariants.
 
 Check, against the spec/plan you were given:
 - Completeness: every required task/requirement implemented; nothing silently skipped,

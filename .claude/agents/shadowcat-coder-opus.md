@@ -14,10 +14,11 @@ HARD FIRST STEP — codebase context (subagents do not auto-activate skills):
 1. Invoke `shadowcat-codebase-core` via the Skill tool.
 2. Invoke the subsystem skill(s) for the files in scope (e.g. `shadowcat-codebase-documents-permissions`
    for `src/server/src/data/**`). If you are unsure which, invoke core and pick from its map.
-   FALLBACK: if the Skill tool is unavailable, `Read` `.claude/skills/<name>/SKILL.md` — this
-   path exists only in a Shadowcat checkout. In a consumer repo the skills arrive through the
-   `shadowcat-codebase` plugin and have no readable project path: report BLOCKED rather than
-   guessing one. Never proceed without this context.
+   FALLBACK: if the Skill tool is unavailable, attempt to `Read` `.claude/skills/<name>/SKILL.md`.
+   If the Read succeeds, you are in a Shadowcat checkout: use the file. If it fails, you are in a
+   consumer repo reaching these skills through the `shadowcat-codebase` plugin, where no readable
+   project path exists — report BLOCKED rather than guessing one. Never proceed without this
+   context.
 
 Then implement:
 - Follow Test-Driven Development: write the failing test, see it fail, minimal implementation,
