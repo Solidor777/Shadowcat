@@ -716,13 +716,23 @@ cd /c/Dev/Shadowcat && git ls-files .claude/ | wc -l
 ```
 Expected: `26`.
 
-- [ ] **2. No machine-local path in any tracked file, either repo**
+- [ ] **2. No machine-local path introduced by this branch, either repo**
+
+Scope the check to files this branch changed. A whole-tree grep is wrong: 10 tracked Shadowcat files already contain `C:\Dev` — including `.claude/skills/shadowcat-codebase-nightfox/SKILL.md`, `docs/PLAN.md`, six older plans, and this branch's own spec and plan documents, where naming the sibling repo is legitimate. A whole-tree check therefore fails on content this branch never touched.
 
 ```bash
-cd /c/Dev/Shadowcat && git grep -n "C:/Dev\|C:\\\\Dev" -- . || echo "SHADOWCAT CLEAN"
-cd /c/Dev/Nightfox  && git grep -n "C:/Dev\|C:\\\\Dev" -- . || echo "NIGHTFOX CLEAN"
+cd /c/Dev/Shadowcat
+git diff --name-only main...HEAD -- . ':!docs/superpowers/*' \
+  | xargs -r git grep -n -F -e 'C:\Dev' -e 'C:/Dev' -- \
+  || echo "SHADOWCAT CLEAN"
+
+cd /c/Dev/Nightfox
+git diff --name-only main...HEAD \
+  | xargs -r git grep -n -F -e 'C:\Dev' -e 'C:/Dev' -- \
+  || echo "NIGHTFOX CLEAN"
 ```
-Expected: both CLEAN. Nightfox's `.claude/CLAUDE.md` Project block already references the nested dev path in prose — if that pre-existing line is the only hit, it is acceptable; any *new* hit is not.
+
+Expected: both CLEAN. `-F` is required — `\D` in a regex is not a literal backslash-D. The `:!docs/superpowers/*` exclusion covers this branch's spec and plan, which legitimately name both repo paths. Git-ignored files (`settings.local.json`, `.kimi-code/`, `kimi.plugin.json`) never appear in `git diff --name-only`, so the Task 4 fallback's absolute path is out of scope by construction.
 
 - [ ] **3. Hook suite green**
 
