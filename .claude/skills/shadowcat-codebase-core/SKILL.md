@@ -186,7 +186,8 @@ source of truth. The ones agents break most:
 - **`.claude/CLAUDE.md` is TRACKED and shared** — edits there reach other contributors and the
   open-source repo. `.gitignore`'s `/CLAUDE.md` rule is root-anchored and matches no file (no
   root-level `CLAUDE.md` exists); the genuinely-ignored entries under `.claude/` are
-  `settings.json`, `settings.local.json`, and `skills/graphify/`. `ARCHITECTURE.md` §2 remains
+  `settings.json`, `settings.local.json`, `skills/graphify/`, and `kimi.plugin.json`.
+  `ARCHITECTURE.md` §2 remains
   the invariant source of truth, but not because `CLAUDE.md` is unshared.
   [[claude-md-is-git-ignored]]
 - **ts-rs types are generated** — change the Rust enum/struct, regenerate, then mirror in the
