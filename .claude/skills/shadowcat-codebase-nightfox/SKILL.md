@@ -1,6 +1,6 @@
 ---
 name: shadowcat-codebase-nightfox
-description: "Use when touching `@shadowcat/formula` (the framework-neutral expression library: lexer/parser/evaluator, dependency-graph resolution, dice-notation-template mode), the Nightfox rules engine it feeds (the `nightfox-docs`/`contributions`/`resolve` modules), or the Nightfox sheets layer (`src/sheets/*` — the `sheet-model` module, StatRow/StatTable/ModifiersEditor, ActorSheet/ItemSheet/EffectSheet, the `nf-i18n` module), external repo `C:\\Dev\\Nightfox`, nested for dev at `src/modules/nightfox/`. Covers src/client/formula/ (in-repo) and the Nightfox repo's src/ (out-of-repo). Invoke shadowcat-codebase-core first."
+description: "Use when touching `@shadowcat/formula` (the framework-neutral expression library: lexer/parser/evaluator, dependency-graph resolution, dice-notation-template mode), the Nightfox rules engine it feeds (the `nightfox-docs`/`contributions`/`resolve` modules), or the Nightfox sheets layer (`src/sheets/*` — the `sheet-model` module, StatRow/StatTable/ModifiersEditor, ActorSheet/ItemSheet/EffectSheet, the `nf-i18n` module), a separate external repo checked out alongside this one and nested for dev at `src/modules/nightfox/`. Covers src/client/formula/ (in-repo) and the Nightfox repo's src/ (out-of-repo). Invoke shadowcat-codebase-core first."
 ---
 
 # Shadowcat — Nightfox / `@shadowcat/formula`
@@ -21,11 +21,11 @@ Nightfox is the first consumer but any game system may use or replace this libra
 its dependency closure — it is usable from server-side validators and other headless contexts,
 not just the client.
 
-Nightfox itself is a **standalone external repository** (`C:\Dev\Nightfox`, own git
-history, never pushed by an agent — the user owns that remote), nested a second time into a
+Nightfox itself is a **standalone external repository** checked out alongside this one (its own git
+history, no remote — never pushed by an agent), nested a second time into a
 Shadowcat checkout at `src/modules/nightfox/` purely so the pnpm workspace resolves
 `@shadowcat/core`/`@shadowcat/formula` for dev. All Nightfox source paths
-below are Nightfox-repo-relative (`src/...` under `C:\Dev\Nightfox`), not in-tree Shadowcat
+below are Nightfox-repo-relative (`src/...` under that checkout), not in-tree Shadowcat
 paths — never edit them from a Shadowcat-repo working tree.
 
 ## The Nightfox rules engine
