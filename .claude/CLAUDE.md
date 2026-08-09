@@ -92,6 +92,7 @@ Every served HTML page declares a responsive viewport; layouts reflow to a phone
 </head>
 ```
 
+<!-- Sync-paired with the Nightfox repo's .claude/CLAUDE.md — mirror any edit to this block there. -->
 ## Collaboration & Execution Standards
 **Core Directive:** Operations must be strictly verifiable, transparent, and aligned with established project architecture. Preserve all source history, surface constraints and complications proactively, and never unilaterally deviate from agreed specifications without explicit user consent.
 
@@ -196,6 +197,7 @@ Communicate with load-bearing facts. Strip sycophantic language and redundant ex
 
 ---
 
+<!-- Sync-paired with the Nightfox repo's .claude/CLAUDE.md — mirror any edit to this block there. -->
 ## Lint Suppressions Require Explicit User Approval
 **Core Directive:** A suppression silences a diagnostic without fixing what it describes. Every
 suppression requires the user's explicit, per-instance sign-off. Enforced by the
@@ -248,6 +250,7 @@ Here is the optimized guidelines set for data privacy, security, and intellectua
 
 ---
 
+<!-- Sync-paired with the Nightfox repo's .claude/CLAUDE.md — mirror any edit to this block there. -->
 ## Agent-Optimized Security & IP Standards
 **Core Directive:** Zero-tolerance for intellectual property infringement and data leaks. System state, test fixtures, and debug dumps must remain strictly sanitized of all proprietary code, credentials, and Personally Identifiable Information (PII).
 
@@ -327,6 +330,7 @@ If the provided workspace context, logs, or user instructions inadvertently cont
 - [Crash] API failed when querying mock customer record due to malformed date parser. [PII Redacted from original log].
 ```
 
+<!-- Sync-paired with the Nightfox repo's .claude/CLAUDE.md — mirror any edit to this block there. -->
 ## Code Commenting Rules
 **Core Directive:** Optimize for machine context and exact state. Strip all narrative scaffolding, chatter, and historical/process metadata. Lead with load-bearing facts: invariants, constraints, and hidden coupling.
 
@@ -434,6 +438,7 @@ Here is the optimized guidelines set for workflow, documentation, and source con
 
 ---
 
+<!-- Sync-paired with the Nightfox repo's .claude/CLAUDE.md — mirror any edit to this block there. -->
 ## Documentation Standards
 **Core Directive:** System state must remain synchronized with reality. Documentation updates are mandatory prerequisites for context clearing. Artifacts must remain hygienic, and source control operations must proceed autonomously based on CI triggers.
 
