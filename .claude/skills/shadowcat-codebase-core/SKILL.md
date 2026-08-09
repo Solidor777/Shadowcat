@@ -356,22 +356,30 @@ When adding one:
 
 ### Keeping the plugin current
 
-This directory is also a Claude Code plugin source (`.claude-plugin/marketplace.json` at the repo
-root points at `./.claude`; `.claude/.claude-plugin/plugin.json` names and versions the plugin).
-A consuming repo — the Nightfox module repo is the first — reaches these skills, agents and the
-routing hook through that plugin rather than through a second copy.
+Shadowcat's `.claude/` directory is also a Claude Code plugin source (`.claude-plugin/
+marketplace.json` at the Shadowcat repo root points at `./.claude`; `.claude/.claude-plugin/
+plugin.json` names and versions the plugin). A consuming repo — the Nightfox module repo is the
+first — reaches these skills, agents and the routing hook through that plugin rather than through
+a second copy.
 
-**A directory-sourced plugin is COPIED into the consumer's plugin cache, not read live.** Editing
-a skill, an agent body, or the hook updates this repo and reaches nobody else until the plugin is
-refreshed: the consumer keeps serving the frozen snapshot it installed, so the repo and the
-running session disagree with no error anywhere. "Stored exactly once" is true of the source of
-truth on disk; it is not true of what a consumer session executes.
+**A directory-sourced plugin is COPIED into the consumer's plugin cache rather than read live.**
+Structurally verified, not yet empirically confirmed: an install lands under
+`~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/` as real copied files, and every
+directory-sourced entry observed so far records a `lastUpdated` equal to its `installedAt`. The
+consequence still awaiting confirmation is the one that matters — that editing a skill, an agent
+body, or the hook in the Shadowcat engine repo reaches nobody else until the plugin is refreshed,
+because the consumer keeps serving the snapshot it installed and the two disagree with no error
+anywhere. The confirming test: edit one line of a skill here, then diff the copy under that cache
+path. Until it runs, work as if the snapshot semantics hold — the cheap assumption is the safe
+one, since assuming a live read is what ships stale skills silently.
 
 So the skill-update gate has a third obligation alongside updating the skill and getting the diff
-reviewed: **bump `version` in `.claude/.claude-plugin/plugin.json` and re-run the marketplace
-update in each consuming repo.** The version bump is what makes the staleness detectable — an
-unversioned plugin caches as `unknown`, where a refreshed copy and a stale one are
-indistinguishable.
+reviewed: **bump the `version` key in `.claude/.claude-plugin/plugin.json`** — that file's
+`version`, NOT `marketplace.json`'s `metadata.version`, which versions the marketplace listing and
+does not identify a cached plugin copy — **then refresh the plugin in each consuming repo**, from a
+shell: `claude plugin marketplace update shadowcat`, then `claude plugin update shadowcat-codebase`
+(a restart applies it). The version bump is what makes the staleness detectable — an unversioned
+plugin caches as `unknown`, where a refreshed copy and a stale one are indistinguishable.
 
 Consumers also see these skills under a plugin prefix (`shadowcat-codebase:shadowcat-codebase-core`)
 rather than the bare id. Take the exact name from the skill listing.
