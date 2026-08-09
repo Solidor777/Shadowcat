@@ -314,6 +314,11 @@ not the only, expected caller):
 - Property/fuzz tests (`property.test` in this repo; `permutation.test` in the Nightfox
   repo) use a hand-rolled seeded PRNG — do not add `fast-check` or any other new dependency to
   either package (Global Constraint).
+- **Nested for dev, the Nightfox repo is inside Shadowcat's gate perimeter.** `check-lint-allowances`
+  walks Shadowcat's `src` tree recursively and skips only `node_modules`/`dist`/`target`/`.git`/
+  `dist-docs`, so `pnpm lint:allowances` scans `src/modules/nightfox/**` and fails on a covered
+  suppression there — even though Nightfox standalone has no ESLint and no lint script. Nesting is
+  the only configuration Nightfox is developed in, so treat the gate as always applying to it.
 - **Item-in-item nesting silently drops modifiers.** `contributions`'s embed walk is exactly
   host → items → each item's effects (+ host's own effects) — an item embedded inside another
   item is never visited, so its modifiers vanish with no warning. Not yet a spec-covered case;
