@@ -40,4 +40,13 @@ check m6 "src/server/src/data/asset.rs"                   "shadowcat-codebase-as
 check m7 "src/server/src/http/assets.rs"                  "shadowcat-codebase-assets"
 check m8 "src/server/src/data/permission.rs"             "shadowcat-codebase-documents-permissions"
 
+# Standalone-Nightfox paths (the Nightfox repo opened on its own, not nested under
+# src/modules/nightfox/) must route to the nightfox skill.
+check n1 "src/roll.ts"                                    "shadowcat-codebase-nightfox"
+check n2 "src/resolve.ts"                                 "shadowcat-codebase-nightfox"
+check n3 "src/contributions.ts"                           "shadowcat-codebase-nightfox"
+check n4 "src/nightfox-docs.ts"                           "shadowcat-codebase-nightfox"
+check n5 "src/sheets/StatRow.svelte"                      "shadowcat-codebase-nightfox"
+check n6 "src/sheets/sheet-model.ts"                      "shadowcat-codebase-nightfox"
+
 echo "ALL HOOK TESTS PASS"

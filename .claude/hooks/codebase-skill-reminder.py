@@ -10,7 +10,14 @@ import sys, json, os, tempfile, re
 # (subsystem-id, [path regexes]). Order = priority; first match wins.
 SUBSYSTEMS = [
     ("dice",                 [r"src/server/src/dice/"]),
-    ("nightfox",             [r"src/client/formula/", r"src/modules/nightfox"]),
+    # Standalone-Nightfox paths are repo-root-relative (`src/roll.ts`), so they are listed
+    # alongside the nested form, anchored with `^` to the START of the path — Shadowcat has its
+    # own nested `.../src/contributions.ts` (src/client/core/src) whose tail an unanchored
+    # `src/contributions\.ts` would also match. This entry is second in SUBSYSTEMS and
+    # first-match-wins, so a broader pattern here would hijack routing for every subsystem below it.
+    ("nightfox",             [r"src/client/formula/", r"src/modules/nightfox",
+                              r"^src/(roll|resolve|contributions|nightfox-docs)\.ts",
+                              r"^src/sheets/"]),
     ("chat",                 [r"src/server/src/chat/", r"src/client/core/src/chat-docs\.ts", r"src/modules/chat/", r"src/modules/chat-composer/", r"src/modules/chat-card/"]),
     ("assets",               [r"src/modules/assets/", r"src/server/src/data/asset\.rs", r"src/server/src/http/assets\.rs"]),
     ("module-toolchain",     [r"src/server/src/modules\.rs", r"src/server/src/http/module_routes\.rs", r"src/client/core/src/(loader|module-rest)\.ts", r"src/modules/settings/src/ModuleManager"]),
