@@ -637,3 +637,22 @@ are observations awaiting triage, not committed work.
   Status: Needs Review — determine whether `App.enterWorld` is reachable without
   `App.leaveWorld` running first. If it is not, the warning is a false positive and the
   capture should be documented as deliberate rather than changed.
+
+- Title: Deletion deny-list may only block the naive invocation. Summary: the
+  `permissions.deny` block in `.claude/settings.json` (Shadowcat, and the
+  byte-identical copy added to the Nightfox repo on the `nightfox-agent-parity`
+  branch) lists `Bash(rm *)`, `Bash(sudo rm *)`, `PowerShell(Remove-Item *)` and
+  the shell aliases. If Claude Code matches these as literal prefixes, the rules
+  catch `rm -rf build` but NOT a chained invocation (`echo ok && rm -rf build`),
+  a path-qualified one (`/bin/rm -rf build`), or PowerShell's fully-qualified
+  `Microsoft.PowerShell.Management\Remove-Item`. The user directive states `rm`
+  "is banned and denied via permissions" — if that is intended as a hard
+  backstop rather than a guard against the obvious case, the gap defeats it.
+  Predates the branch that surfaced it: the block was already present in
+  Shadowcat before any of that work began, and `.claude/settings.json` is
+  git-ignored, so `git log -S` cannot date it. UNVERIFIED: the reviewer that
+  raised this had no shell, and the only direct test is attempting a banned
+  destructive command, which was deliberately not run. Status: Needs Review —
+  first establish Claude Code's actual pattern-matching semantics (literal
+  prefix vs. tokenized), ideally against a harmless command shaped the same way;
+  only widen the deny list if the literal-prefix reading is confirmed.

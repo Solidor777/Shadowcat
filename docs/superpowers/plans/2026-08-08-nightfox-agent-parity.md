@@ -309,12 +309,20 @@ subsystem invariants.
 ```bash
 cd /c/Dev/Shadowcat/.claude/agents
 grep -c "consumer repo" *.md
-diff <(tail -n +8 shadowcat-coder.md) <(tail -n +8 shadowcat-coder-opus.md) && echo "CODER TWINS MATCH"
-diff <(tail -n +8 shadowcat-code-reviewer.md) <(tail -n +8 shadowcat-code-reviewer-opus.md) && echo "CODE-REVIEWER TWINS MATCH"
-diff <(tail -n +8 shadowcat-spec-reviewer.md) <(tail -n +8 shadowcat-spec-reviewer-opus.md) && echo "SPEC-REVIEWER TWINS MATCH"
+diff <(tail -n +10 shadowcat-coder.md) <(tail -n +10 shadowcat-coder-opus.md) && echo "CODER TWINS MATCH"
+diff <(tail -n +10 shadowcat-code-reviewer.md) <(tail -n +10 shadowcat-code-reviewer-opus.md) && echo "CODE-REVIEWER TWINS MATCH"
+diff <(tail -n +10 shadowcat-spec-reviewer.md) <(tail -n +10 shadowcat-spec-reviewer-opus.md) && echo "SPEC-REVIEWER TWINS MATCH"
 ```
 
-Expected: every file reports `1`, and all three MATCH lines print. `tail -n +8` skips the 7-line frontmatter, which legitimately differs between twins (`model`, `effort`, `name`, `description`). If a diff prints, the bodies drifted — reconcile before committing.
+Expected: every file reports `1`, and all three MATCH lines print. If a diff prints, the bodies drifted — reconcile before committing.
+
+**The offset is `+10`, not `+8`.** Frontmatter is 7 lines, but line 8 is blank and **line 9 is the `<!-- Sync-paired with ... -->` comment, which names the OTHER twin and therefore legitimately differs in every pair.** At `+8` the diff always reports that one line and can never print MATCH, no matter how correct the edit is. Do not "resolve" such a diff by making the two sync comments identical — each must keep pointing at its own counterpart; a matching pair of comments would point one file at itself.
+
+Afterwards, restore the working directory before running any further git command — a `cd` here persists into later steps and silently re-roots relative paths like `.claude/`:
+
+```bash
+cd /c/Dev/Shadowcat
+```
 
 - [ ] **Step 5: Commit**
 
