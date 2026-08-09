@@ -30,6 +30,11 @@ check() { # <session-suffix> <path> <expected-skill>
   o=$(printf '{"session_id":"%s%s","tool_name":"Write","tool_input":{"file_path":"%s"}}' "$SID" "$1" "$2" | $H)
   echo "$o" | grep -q "$3" || { echo "FAIL: $2 did not map to $3 (got: $o)"; exit 1; }
 }
+checknot() { # <session-suffix> <path> <skill-that-must-NOT-match>
+  o=$(printf '{"session_id":"%s%s","tool_name":"Write","tool_input":{"file_path":"%s"}}' "$SID" "$1" "$2" | $H)
+  echo "$o" | grep -q "$3" && { echo "FAIL: $2 incorrectly mapped to $3 (got: $o)"; exit 1; }
+  true
+}
 check m1 "src/modules/assets/src/Assets.svelte"          "shadowcat-codebase-assets"
 check m2 "src/modules/actors/src/ActorsPanel.svelte"     "shadowcat-codebase-actors-tokens"
 check m3 "src/server/src/scene/vision.rs"                 "shadowcat-codebase-scene-rendering"
@@ -48,5 +53,11 @@ check n3 "src/contributions.ts"                           "shadowcat-codebase-ni
 check n4 "src/nightfox-docs.ts"                           "shadowcat-codebase-nightfox"
 check n5 "src/sheets/StatRow.svelte"                      "shadowcat-codebase-nightfox"
 check n6 "src/sheets/sheet-model.ts"                      "shadowcat-codebase-nightfox"
+
+# Regression pin: an UNANCHORED nightfox `.ts` alternative would match this real Shadowcat file
+# as a substring (`core/src/contributions.ts` contains the tail `src/contributions.ts`). It must
+# never route to nightfox. No existing SUBSYSTEMS entry matches this path today (verified against
+# the table directly), so only the negative is asserted here.
+checknot n7 "src/client/core/src/contributions.ts"        "shadowcat-codebase-nightfox"
 
 echo "ALL HOOK TESTS PASS"
