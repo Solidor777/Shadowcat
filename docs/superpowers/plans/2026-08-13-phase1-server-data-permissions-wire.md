@@ -46,6 +46,8 @@ fails **closed**: withhold, never guess, never panic.
 - **Plan authored mainline** at Opus / effort high, by user decision, rather than dispatched to
   `sdd-plan-writer-opus` — the plan needed the code verifications and fork reasoning held in the
   authoring session that did not all survive into the spec text.
+- **Execution loop:** Opus 5 at effort high, by user decision — this phase rewrites a
+  per-recipient secrecy boundary and carries two buddy-check debates to broker to convergence.
 - **Implementation:** `shadowcat-coder`, `effort: medium`. On BLOCKED, re-dispatch to
   `shadowcat-coder-opus` (`effort: high`) before escalating to the human.
 - **Review:** `shadowcat-spec-reviewer` + `shadowcat-code-reviewer`, `effort: high`, as a pair at
@@ -59,6 +61,15 @@ Pre-authorized by the user:
 
 - **This plan document** is buddy-checked before Task 1 begins (PHASE = spec). Two blind reviewers,
   then a brokered debate to convergence. Findings fold into the plan before any code is written.
+- **Directed question for that buddy-check: PW19.** The user has deferred the replay-redaction
+  ruling to the reviewers rather than taking it on one analysis. Both reviewers argue independently
+  whether resolving an `Update`'s visibility against the CURRENT permission set can leak in either
+  direction; their convergence — or their stalemate, stated as such — goes to the user, who rules
+  before Task 6 runs. Neither reviewer is told the other's position, and neither is told the
+  authoring session's conclusion, which was that no leak exists either way.
+- **Second directed question: Task 3's spec deviation.** The plan refines the spec's "error" policy
+  for `list_documents` and `search` into "omit the item and log". Reviewers accept or reject it
+  explicitly rather than passing over it.
 - **Tasks 1 and 3** are buddy-checked (PHASE = code) — the classifier and the fail-closed egress
   conversion are the security boundary.
 - Tasks 2, 4, 5, 6 take the standard two-reviewer gate.
@@ -1039,10 +1050,11 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>" -- src/client/core/src/wi
 
 **Ledger id:** PW19.
 
-**This task's content depends on a ruling the user gives at dispatch time.** Both branches are
-specified here so the executing agent needs no further input. The dispatcher records which branch
-is authorized in the task brief; an agent that finds no branch recorded **stops and asks** rather
-than choosing.
+**This task is BLOCKED until the user rules.** The user has deferred the ruling to the plan
+buddy-check: two blind reviewers argue the leak question independently, and their convergence or
+stalemate goes to the user, who then authorizes a branch. Both branches are specified here so the
+executing agent needs no further input once one is recorded in its task brief. **An agent that
+finds no branch recorded stops and asks — it does not choose.**
 
 **Background.** `filter_command`'s Update arm loads each op's document to resolve visibility, so on
 resync or replay a property whose visibility was flipped after the event is redacted under the
