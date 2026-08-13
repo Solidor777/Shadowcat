@@ -239,8 +239,13 @@ pub enum RedactionTarget {
 /// can silently diverge on an input neither author checked, and reading one shared
 /// function is what prevents that.
 ///
-/// `/name` is a leaf: `/name/...` has no sub-path and classifies as `None`, mirroring
-/// `required_cap_for_path`.
+/// `/name` is a leaf: `/name/...` has no sub-path and classifies as `None` — the same
+/// leaf-versus-container treatment `required_cap_for_path` gives the `name` band. Beyond
+/// that one shared point, the two functions classify different input domains:
+/// `required_cap_for_path` classifies a field-change path, `redaction_target` classifies
+/// a `property_overrides` map key. Same JSON-pointer syntax, different fields on
+/// different structures, gated by different validators — they are not required to agree
+/// on any given string.
 /// # Examples
 ///
 /// ```
@@ -3245,6 +3250,8 @@ mod tests {
             "/system/a/b/c",
             "/engine/vision",
             "/base/system/hp",
+            // An empty middle segment still lands inside the untyped body.
+            "/system//hp",
         ] {
             assert_eq!(
                 redaction_target(pointer),
@@ -3282,7 +3289,7 @@ mod tests {
     }
 
     #[test]
-    fn redaction_target_refuses_the_exact_reported_panic_inputs() {
+    fn redaction_target_refuses_permissions_subpaths_lacking_serde_default() {
         // A nested pointer into `permissions` strips a field carrying no serde default,
         // leaving a value that cannot deserialize as a `PermissionSet`.
         for pointer in [
@@ -3297,7 +3304,21 @@ mod tests {
 
     #[test]
     fn redaction_target_refuses_malformed_and_unknown_pointers() {
-        for pointer in ["", "/", "system/hp", "/unknown", "/systemx", "/nameless"] {
+        for pointer in [
+            "",
+            "/",
+            "system/hp",
+            "/unknown",
+            "/systemx",
+            "/nameless",
+            // A band name followed by a non-separator character is a collision, not a
+            // match, for every band the shared prefix path handles — not just `system`.
+            "/enginex",
+            "/basex",
+            // A band name plus a trailing separator leaves an empty residual segment,
+            // which the guard refuses rather than treating as `Within`.
+            "/system/",
+        ] {
             assert_eq!(redaction_target(pointer), None, "{pointer:?}");
         }
     }

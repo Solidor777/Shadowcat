@@ -218,7 +218,7 @@ fn redaction_target_refuses_every_structural_envelope_field() {
 }
 
 #[test]
-fn redaction_target_refuses_the_exact_reported_panic_inputs() {
+fn redaction_target_refuses_permissions_subpaths_lacking_serde_default() {
     // A nested pointer into `permissions` strips a field carrying no serde default,
     // leaving a value that cannot deserialize as a `PermissionSet`.
     for pointer in [
