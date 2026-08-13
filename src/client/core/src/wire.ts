@@ -118,15 +118,17 @@ export const SourceSchema = z.object({
  * (e.g. `core:manage_embedded`). Grants widen what a role/user may do on a document; they
  * never revoke the floor. Mirrors `crate::data::document::CapabilityGrants`. */
 export type WireCapabilityGrants = {
-  /** Extra capabilities granted to everyone holding a given `DocRole`, keyed by role. */
-  by_role: Record<string, string[]>;
-  /** Extra capabilities granted to specific users (by id), regardless of role. */
+  /** Extra capabilities granted to everyone holding a given `DocRole`, keyed by role. The
+   * Rust source is a map that may omit any role, so every key is optional. */
+  by_role: Partial<Record<z.infer<typeof DocRoleSchema>, string[]>>;
+  /** Extra capabilities granted to specific users (by id), regardless of role. User ids are
+   * genuinely open, so this map stays string-keyed. */
   by_user: Record<string, string[]>;
 };
 
 // Unannotated impl const — see the module-level note above the `z` import.
 export const capabilityGrantsSchemaImpl = z.object({
-  by_role: z.record(z.array(z.string())),
+  by_role: z.record(DocRoleSchema, z.array(z.string())),
   by_user: z.record(z.array(z.string())),
 });
 /** Validator for a `CapabilityGrants`. */
@@ -515,7 +517,10 @@ export type WireSearchHit = {
   document: WireDocument;
   /** BM25 relevance as SQLite returns it (lower = more relevant). */
   score: number;
-  /** Highlighted match snippet from the recipient's own index partition. */
+  /** Highlighted match snippet from the recipient's own index partition. Every `engine` AND
+   * `system` string leaf, plus the document's `name`, is swept into the full-text index and
+   * can surface here and in `document` — `index_content` walks all three — so a consumer must
+   * render this as inert text and never as innerHTML. */
   snippet: string;
 };
 

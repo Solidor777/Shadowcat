@@ -15,6 +15,7 @@ import {
   SchemaTypeSchema,
   SchemaDeclarationSchema,
   FieldChangeSchema,
+  CapabilityGrantsSchema,
   actorOwnerRefSchemaImpl,
   audienceSchemaImpl,
   capabilityGrantsSchemaImpl,
@@ -553,6 +554,38 @@ describe("FieldChangeSchema", () => {
     expect(
       FieldChangeSchema.safeParse({ path: "/system/hp", old: 1, new: null, remove: true })
         .success,
+    ).toBe(true);
+  });
+});
+
+describe("CapabilityGrantsSchema", () => {
+  it("accepts the three document roles as grant keys", () => {
+    expect(
+      CapabilityGrantsSchema.safeParse({
+        by_role: { owner: ["core:manage_embedded"], observer: [], none: [] },
+        by_user: {},
+      }).success,
+    ).toBe(true);
+  });
+
+  it("accepts a partial role map, matching a Rust map that omits roles", () => {
+    expect(
+      CapabilityGrantsSchema.safeParse({ by_role: { owner: [] }, by_user: {} }).success,
+    ).toBe(true);
+  });
+
+  it("rejects an unknown role key", () => {
+    expect(
+      CapabilityGrantsSchema.safeParse({ by_role: { admin: [] }, by_user: {} }).success,
+    ).toBe(false);
+  });
+
+  it("still accepts an arbitrary user id as a by_user key", () => {
+    expect(
+      CapabilityGrantsSchema.safeParse({
+        by_role: {},
+        by_user: { "00000000-0000-0000-0000-000000000001": ["core:delete"] },
+      }).success,
     ).toBe(true);
   });
 });
