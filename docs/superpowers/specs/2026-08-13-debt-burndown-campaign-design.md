@@ -136,7 +136,7 @@ that no later phase should be built on the current shape.
 | Phase | Branch scope | Ledger ids |
 |---|---|---|
 | 1 | Server — data, permissions, wire boundary | OB2, TD26, TD27, TD31, PW19 |
-| 1b | Server — point-in-time replay redaction (event/command visibility snapshot) | PW19 |
+| 1b | Server — point-in-time replay redaction (event/command visibility snapshot) | PW19, NEW-2 |
 | 2 | Server — scene geometry, movement, vision | PW1, PW2, PW3, PW4, PW5, PW31, TD17, TD18, TD19, TD48 |
 | 3 | Server — ops, performance, asset staleness | OB4, TD4a, TD5, TD9, TD10, TD49 |
 | 4 | Client — shell, session, boot, ui-state | TD3, TD4b, TD6, TD7, TD8, TD12, TD13, TD14, TD15, TD16, TD20, TD29, PW16, PW17 |
@@ -280,19 +280,38 @@ this campaign.
 | PW22 | Config-doc seeds race resync and can double-create; deferred to a milestone that **has now shipped** | Stale deferral; Phase 5 |
 | PW23 | The world-defaults editor authors only a subset of the settings that resolve at world level | Phase 5 |
 | PW31 | A lenient-mode near-corner move can be spuriously rejected by an over-firing corner epsilon | Phase 2 — re-verify against the shipped corner-drift fix first |
-| NEW-1 | PW19 was reached by exactly one analyst's single-pass "accepted, no action" reasoning and turned out to be a live secrecy defect on buddy-check. The same reasoning shape produced every item in the batch below, so the whole batch — not only the secrecy-adjacent entries — gets the same two-blind-reviewer adversarial treatment. Runs as its own review activity in parallel with Phase 1, completing **before Phase 2 merges** — a re-triage finding belonging to a later phase must reach that phase's plan before that phase merges, which is exactly what §2.4's parked-item rule exists to guarantee. Any entry the pass overturns is routed into its owning phase as a normal ledger item with a `NEW-n` id. Until this pass completes, the batch below is **unverified**, not triaged. | Phase 1 (parallel review activity) |
+| NEW-1 | PW19 was reached by exactly one analyst's single-pass "accepted, no action" reasoning and turned out to be a live secrecy defect on buddy-check. The same reasoning shape produced every item in the batch below, so the whole batch — not only the secrecy-adjacent entries — got the same two-blind-reviewer adversarial treatment. Complete: 13 findings re-triaged, converging after three rounds, both reviewers independently passing the embedded PW19 positive control (RT-7). Result: 10 closing arguments STAND (verified against real code); 3 OVERTURNED — PW19 itself (already tracked above), a newly confirmed defect (NEW-2), and one entry closed as a stale record describing a lint-config shape that no longer exists. | Complete |
+| NEW-2 | An `Update` to a since-deleted document is redacted against a NEW document that later reuses the freed id, not dropped as the original closing analysis assumed — final-state convergence survives (the corrective Delete/Create frames follow in the same resync batch), but the stale `Update` is redacted against the wrong document's permission set in the window before those frames land, producing an over-reveal or under-reveal. Shares its root cause and its ruled fix with PW19 (point-in-time state snapshot at commit time). | Confirmed defect (NEW-1 adversarial re-triage); Phase 1b |
 
-**Provisionally accepted, pending NEW-1** — not yet re-confirmed — with the reasoning as first
-argued, so the reviewers have it to test rather than rediscover from nothing: the replay-drop of an
-update to a since-deleted document (end state converges); per-leg-greedy multi-leg parity (cost
-display only); owner delete requiring an explicit grant (documented behavior change); grants
-targeting the no-access role (GM-authored, coherent); offline-intent flush ordering (eventually
-consistent); both world-delete entries (matches the project-wide delete convention); the dark-scene
-movement freeze (**working as designed — do not soften the defaults**); the five-versus-six
-invite-rejection enumeration (caller-indistinguishable by construction); the `Promise.all` in
-module management (**correct — "harmonizing" it to `allSettled` would let one click disable every
-module in the world**); the four pairwise-identical ignore arrays; and every resolved e2e flake
-class. These are listed for the user to object to at spec review rather than silently absorbed.
+**Re-triaged by NEW-1 — verified dispositions, not provisional ones.** Two blind reviewers checked
+each closing argument against real code rather than against the entry's own summary, converging
+after three rounds. Ten **STAND**:
+
+- The movement-gate ECS-hydration shape — unreachable: `SqliteRepository::apply_intent`'s Phase 1
+  rejects any same-batch Create+Update before commit, and `Room::publish`'s `publish_guard`
+  serializes every `publish` call for a room end-to-end, so a racing publish cannot land mid-hydration
+  either.
+- The lenient-mode near-corner over-rejection — over-inclusion can only ever over-reject, never
+  admit a forbidden move.
+- Capability grants targeting the no-access role — GM-authored, and no non-GM path reaches it.
+- `core:delete` defaulting GM-only — a documented behavior change; nothing depends on the prior
+  default.
+- The dark-scene movement freeze (**working as designed — do not soften the defaults**).
+- Offline-intent flush ordering ahead of the async Welcome body (eventually consistent, no
+  correctness impact).
+- Per-leg-greedy multi-leg parity (cost-display only; the route itself stays valid).
+- The `Promise.all` in module management (**correct — "harmonizing" it to `allSettled` would let
+  one click disable every module in the world**).
+- The five-versus-six invite-rejection enumeration (caller-indistinguishable by construction).
+- Both world-delete entries (matches the project-wide delete convention).
+
+Two did **not** stand: the replay-drop of an update to a since-deleted document was overturned as a
+confirmed defect (NEW-2, promoted to `OPEN_BUGS.md`) — final-state convergence survives, but the
+stale op is redacted against the wrong document's permission set, not simply dropped. The
+four-`ignores`-array entry was overturned as a stale record: the lint-config shape it described no
+longer exists. Both closures are recorded in `docs/POST_WORK_FINDINGS.md`. The third overturned
+entry, PW19 itself, was the embedded positive control and was already tracked as a confirmed defect
+before this pass ran; every resolved e2e flake class remains unaffected by this re-triage.
 
 ---
 
@@ -332,6 +351,9 @@ TD26, TD27 and TD31 tighten the client wire boundary against its Rust source. TD
 runtime accept/reject, which is why they were deferred out of documentation work and belong here
 with real tests. PW19 is confirmed here — its buddy-check ran with this phase's plan — and its
 promotion to `OPEN_BUGS.md` happens in this phase, but its ruled fix is scoped to Phase 1b (§3).
+NEW-1's adversarial re-triage overturned a second entry sharing PW19's root cause — an `Update` to
+a since-deleted document redacted against a reused id's new document rather than dropped (NEW-2) —
+and it is promoted to `OPEN_BUGS.md` alongside PW19, with its fix scoped to Phase 1b as well.
 
 ### Phase 2 — Server: scene geometry, movement, vision
 

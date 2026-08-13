@@ -555,18 +555,16 @@ are observations awaiting triage, not committed work.
   Promise.all, pending Task 5 confirmation" runtime follow-up item: confirmed NOT a defect, and the
   code comment now carries the rationale so it is not re-litigated. Status: RESOLVED — no action.
 
-- Title: `eslint.docs.config.js`'s four `ignores` arrays are pair-identical, not four-way identical,
-  and that asymmetry pre-dates and survives Docs Sweep 12 Task 8. Summary: the two `.ts` blocks
-  (warn-tier and ratcheted) carry an identical five-entry ignore list including the test-file
-  exemptions (`**/*.test.ts`, `**/*.spec.ts`, `**/vitest.setup.ts`) and `src/types/generated/**`;
-  the two `.svelte` blocks carry an identical two-entry list (`**/node_modules/**`, `**/dist/**`)
-  with neither the test-file entries nor the generated-types entry, because no `.svelte` file can
-  match `*.test.ts`/`*.spec.ts`/`vitest.setup.ts`/`src/types/generated/**` in the first place —
-  those patterns are inert against the `.svelte` glob, so their absence changes nothing observable.
-  Task 8 verified the pairwise symmetry (`.ts` warn === `.ts` ratcheted; `.svelte` warn === `.svelte`
-  ratcheted) is preserved byte-for-byte after widening the ratcheted blocks' `files` globs to match
-  the warn tier's — the `ignores` arrays themselves were not touched. Status: No action needed —
-  recorded so a future reviewer does not read the four-array asymmetry as a Task 8 regression.
+- Title: `eslint.docs.config.js`'s warn-tier-versus-ratcheted `ignores`-array split is a stale
+  record. Summary: this entry described a four-`ignores`-array structure (a `.ts` warn block, a
+  `.ts` ratcheted block, and their `.svelte` counterparts) inside a single lint config that no
+  longer exists — `eslint.docs.config.js` now carries exactly two `ignores` arrays, one for `.ts`
+  and one for `.svelte`, and its own header states there is no advisory tier and no per-package
+  staging; a later ratchet collapsed the warn/ratcheted split this entry was reasoning about. The
+  entry also miscounted its own `.ts` array as five entries where six exist. The cross-file
+  property this repo still enforces — `eslint.docs.config.js`'s and `eslint.props.config.js`'s
+  `.ts` `ignores` arrays staying byte-identical — is a DIFFERENT, separately documented invariant
+  that this entry was never about. Status: Closed — stale record, not a re-verified disposition.
 
 - Title: `ui-e2e` failed 15 of 16 Playwright tests on `main` @ `11cac8f`, then passed on an
   unmodified re-run of the same commit — a whole-suite flake mode with no captured evidence.

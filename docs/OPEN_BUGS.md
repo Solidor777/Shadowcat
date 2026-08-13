@@ -22,6 +22,41 @@ Currently open, confirmed-real defects. Deferrals belong in `TODO.md`, not here.
   - **Reachability/impact:** no data loss, no authz effect; degrades accessibility only. Both
     call sites are GM-reachable, and `openDocument` is reachable by any role.
 
+- **A stale `Update` from before a document's deletion is redacted against a NEW document that
+  later reuses the same id, not dropped as the closing analysis assumed.** Document ids are
+  client-supplied: `envelope` accepts an optional explicit id and falls back to
+  `crypto.randomUUID()`, and both server-side authoritative write loops
+  (`Operation::Create`'s arms in `SqliteRepository::apply_command` and
+  `SqliteRepository::apply_intent`) accept it verbatim — their validation covers scope, system
+  size, property overrides, engine tree, system schema, self-parent and capabilities, never the
+  id. `SqliteRepository::upsert_document` inserts with `ON CONFLICT(id) DO UPDATE`, so nothing on
+  the Create path checks whether an id was ever used before, and `SqliteRepository::delete_document_tx`
+  performs a genuine hard delete, freeing the id for reuse.
+  `permission::load_update_docs` builds the `current` map `filter_command` consults via a
+  present-tense `get_document` lookup with no sequence parameter. Its call site,
+  `ws::conn::send_filtered`'s Event branch, serves both live broadcast and historical replay
+  (`conn::replay`, driven by `Room::resync_range`), and replay redacts every event identically to
+  live delivery.
+  - **Reachable sequence:** a user deletes their own document at some id, then creates an
+    unrelated document that happens to reuse that id — an ordinary two-call sequence needing no id
+    guessing and no cross-user interaction. A client resyncing through history then meets the
+    stale `Update` for that id; `permission::load_update_docs`'s lookup now resolves to the NEW
+    document, so the drop branch never fires and the stale op is redacted and delivered.
+  - **What actually breaks — and what does not.** Final-state convergence DOES survive: the
+    corrective Delete and Create frames follow in the same resync batch, so the client's
+    persisted end state is correct — the original closing argument answered that question and it
+    was the wrong one to ask. What fails is that the stale `Update` is redacted against the
+    **wrong document's** permission set: in the window before the corrective frames land, a
+    recipient can receive a field from the deleted generation that only its GM was meant to see
+    (over-reveal), or have the update dropped entirely because the new document's owner differs
+    from the old one's (under-reveal).
+  - **Root cause shared with `filter_command`'s current-permission-set replay redaction:** both
+    are a chokepoint needing point-in-time state — "what did this document's permission set look
+    like when the historical event was committed" — served instead by a current-state lookup. The
+    already-ruled remediation for that defect (snapshotting the relevant state into the event or
+    command at commit time) is expected to close this one too; fixed together in the same phase
+    rather than forked across phases.
+
 - **`property_overrides` keys are not restricted to the four egress-special-cased fields; a
   self-targeting `/permissions` key silently substitutes the fail-closed default permissions
   object for a redacted viewer.** `validate_property_overrides`
