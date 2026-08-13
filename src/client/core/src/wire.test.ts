@@ -14,6 +14,7 @@ import {
   DocumentSchema,
   SchemaTypeSchema,
   SchemaDeclarationSchema,
+  FieldChangeSchema,
   actorOwnerRefSchemaImpl,
   audienceSchemaImpl,
   capabilityGrantsSchemaImpl,
@@ -526,6 +527,33 @@ describe("DocumentSchema — envelope name + engine band", () => {
   it("parses a document with base absent or null (unstamped)", () => {
     expect(DocumentSchema.parse({ ...base, name: null, engine: null }).base).toBeUndefined();
     expect(DocumentSchema.parse({ ...base, name: null, engine: null, base: null }).base).toBeNull();
+  });
+});
+
+describe("FieldChangeSchema", () => {
+  it("rejects a frame that omits the pre-image key", () => {
+    expect(FieldChangeSchema.safeParse({ path: "/system/hp", new: 3 }).success).toBe(false);
+  });
+
+  it("rejects a frame that omits the new-value key", () => {
+    expect(FieldChangeSchema.safeParse({ path: "/system/hp", old: 1 }).success).toBe(false);
+  });
+
+  it("rejects a frame carrying only a path", () => {
+    expect(FieldChangeSchema.safeParse({ path: "/system/hp" }).success).toBe(false);
+  });
+
+  it("accepts an explicit null pre-image, which is a real value for a new key", () => {
+    expect(
+      FieldChangeSchema.safeParse({ path: "/system/hp", old: null, new: 3 }).success,
+    ).toBe(true);
+  });
+
+  it("accepts a removal, where new is conventionally null", () => {
+    expect(
+      FieldChangeSchema.safeParse({ path: "/system/hp", old: 1, new: null, remove: true })
+        .success,
+    ).toBe(true);
   });
 });
 

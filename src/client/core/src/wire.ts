@@ -407,9 +407,13 @@ export const DocumentSchema: z.ZodType<WireDocument> = z.lazy(() =>
 
 /** One field-level change with its pre-image. Mirrors `crate::data::command::FieldChange`.
  * `old`/`new` are always present on the wire (the Rust struct has no
- * `skip_serializing_if` on either); they are typed optional here only because
- * `z.unknown()` accepts an absent key at parse time (same reasoning as `WireDocument`'s
- * `engine`/`system`), not because the server may omit them. */
+ * `skip_serializing_if` on either) and `fieldChangeSchemaImpl` rejects a frame that omits
+ * either key at runtime. They stay typed optional here only because Zod v3 infers an object
+ * field's declared optionality structurally: any field whose output type admits `undefined`
+ * — which `z.unknown()`'s output always does — is inferred optional regardless of what a
+ * `.refine()` on the whole object enforces at runtime, so the declared type cannot be
+ * tightened to "required key, unknown value" against that inference rule. This is a Zod v3
+ * inference limit, not a claim that the server may omit either key. */
 export type WireFieldChange = {
   /** JSON pointer to the field, e.g. `/system/hp`. */
   path: string;
@@ -426,12 +430,19 @@ export type WireFieldChange = {
 };
 
 // Unannotated impl const — see the module-level note above the `z` import.
-export const fieldChangeSchemaImpl = z.object({
-  path: z.string(),
-  old: z.unknown(),
-  new: z.unknown(),
-  remove: z.boolean().optional(),
-});
+export const fieldChangeSchemaImpl = z
+  .object({
+    path: z.string(),
+    // `z.unknown()` alone would accept an ABSENT key, because `undefined` satisfies
+    // `unknown`. The Rust source never omits either value key, so a frame lacking one is
+    // malformed. `.refine` on the whole object is what sees absence — a per-key schema
+    // cannot distinguish "absent" from "present and undefined".
+    old: z.unknown(),
+    new: z.unknown(),
+    remove: z.boolean().optional(),
+  })
+  .refine((v) => "old" in v, { message: "field change must carry an `old` pre-image", path: ["old"] })
+  .refine((v) => "new" in v, { message: "field change must carry a `new` value", path: ["new"] });
 /** Validator for a single field change carried by an `Operation`. */
 export const FieldChangeSchema: z.ZodType<WireFieldChange> = fieldChangeSchemaImpl;
 
