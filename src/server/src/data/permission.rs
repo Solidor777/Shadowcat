@@ -207,6 +207,69 @@ pub fn required_cap_for_path(path: &str) -> Option<&'static str> {
     }
 }
 
+/// The four CONTENT bands of a `Document`. Redaction operates on these and never on
+/// the structural envelope (`id`, `scope`, `doc_type`, `schema_version`, `source`,
+/// `owner`, `permissions`, `parent_id`, `embedded`, `created_at`, `updated_at`), whose
+/// fields are either required or carry access-control meaning. Exactly the set
+/// `required_cap_for_path` maps to `cap::WRITE_FIELDS`.
+pub const REDACTABLE_BANDS: [&str; 4] = ["name", "engine", "system", "base"];
+
+/// What a `property_overrides` pointer targets, and therefore how egress removes it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RedactionTarget {
+    /// A whole band. Nulled in place: dropping the key would fail re-deserialization
+    /// for a required field, and for an `Option` field would be indistinguishable from
+    /// a document that never carried one, breaking the client's stable envelope shape.
+    Band,
+    /// A path inside a band, landing in an untyped `serde_json::Value` or an `Option`.
+    /// Removed with a pointer strip, where callers rely on true key absence.
+    Within,
+}
+
+/// Classify a `property_overrides` pointer, or `None` when nothing may redact it.
+///
+/// INVARIANT: a `Within` result guarantees the STRIP lands in untyped or optional data,
+/// never on a required field — that is what makes it provably non-destructive to
+/// deserialization. A `Band` result carries no such guarantee and does not need one: it
+/// nulls the field in place, which is precisely why `system` (required, not an `Option`)
+/// is handled that way rather than stripped.
+///
+/// Both properties are what the ingress gate and the egress filter must agree on. They
+/// agree by reading THIS function: two implementations kept in sync only by inspection
+/// can silently diverge on an input neither author checked, and reading one shared
+/// function is what prevents that.
+///
+/// `/name` is a leaf: `/name/...` has no sub-path and classifies as `None`, mirroring
+/// `required_cap_for_path`.
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::permission::{redaction_target, RedactionTarget};
+///
+/// assert_eq!(redaction_target("/system"), Some(RedactionTarget::Band));
+/// assert_eq!(redaction_target("/system/hp"), Some(RedactionTarget::Within));
+/// assert_eq!(redaction_target("/permissions/default"), None);
+/// ```
+pub fn redaction_target(pointer: &str) -> Option<RedactionTarget> {
+    let rest = pointer.strip_prefix('/')?;
+    for band in REDACTABLE_BANDS {
+        if rest == band {
+            return Some(RedactionTarget::Band);
+        }
+        // `/name` carries no interior; every other band is a container.
+        if band != "name" {
+            if let Some(inner) = rest.strip_prefix(band) {
+                if let Some(tail) = inner.strip_prefix('/') {
+                    if !tail.is_empty() {
+                        return Some(RedactionTarget::Within);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod required_cap_tests {
     use super::*;
@@ -3149,5 +3212,101 @@ mod tests {
             out_capped.ops.is_empty(),
             "a gm_role-capped GM must still be denied — the owner plumb must not widen the cap"
         );
+    }
+
+    #[test]
+    fn redaction_target_classifies_each_whole_band() {
+        // The expectation is a HARDCODED list, never `REDACTABLE_BANDS` itself. Deriving the
+        // expected value from the constant under test makes the assertion definitionally true
+        // for any array contents — it would stay green if a band were renamed, which is the
+        // exact "both paths wrong the same way" shape this suite exists to refuse.
+        for band in ["name", "engine", "system", "base"] {
+            let pointer = format!("/{band}");
+            assert_eq!(
+                redaction_target(&pointer),
+                Some(RedactionTarget::Band),
+                "{pointer} must classify as a whole band"
+            );
+        }
+        // Pins the constant's contents independently, so a band added or renamed fails HERE
+        // with a message naming the obligation, rather than silently widening what egress
+        // is willing to remove.
+        assert_eq!(
+            REDACTABLE_BANDS,
+            ["name", "engine", "system", "base"],
+            "the band list changed: re-audit every redaction call site and this suite"
+        );
+    }
+
+    #[test]
+    fn redaction_target_classifies_within_a_band() {
+        for pointer in [
+            "/system/hp",
+            "/system/a/b/c",
+            "/engine/vision",
+            "/base/system/hp",
+        ] {
+            assert_eq!(
+                redaction_target(pointer),
+                Some(RedactionTarget::Within),
+                "{pointer} must classify as within a band"
+            );
+        }
+    }
+
+    #[test]
+    fn redaction_target_refuses_every_structural_envelope_field() {
+        // The eleven non-content fields of `Document`. Nothing may redact these: a
+        // whole-key strip either substitutes a defaulted value or leaves a shape that
+        // cannot deserialize.
+        for field in [
+            "id",
+            "scope",
+            "doc_type",
+            "schema_version",
+            "source",
+            "owner",
+            "permissions",
+            "parent_id",
+            "embedded",
+            "created_at",
+            "updated_at",
+        ] {
+            assert_eq!(redaction_target(&format!("/{field}")), None, "/{field}");
+            assert_eq!(
+                redaction_target(&format!("/{field}/anything")),
+                None,
+                "/{field}/anything"
+            );
+        }
+    }
+
+    #[test]
+    fn redaction_target_refuses_the_exact_reported_panic_inputs() {
+        // A nested pointer into `permissions` strips a field carrying no serde default,
+        // leaving a value that cannot deserialize as a `PermissionSet`.
+        for pointer in [
+            "/permissions",
+            "/permissions/default",
+            "/permissions/users",
+            "/permissions/property_overrides",
+        ] {
+            assert_eq!(redaction_target(pointer), None, "{pointer}");
+        }
+    }
+
+    #[test]
+    fn redaction_target_refuses_malformed_and_unknown_pointers() {
+        for pointer in ["", "/", "system/hp", "/unknown", "/systemx", "/nameless"] {
+            assert_eq!(redaction_target(pointer), None, "{pointer:?}");
+        }
+    }
+
+    #[test]
+    fn name_is_a_leaf_band_with_no_interior() {
+        // `/name` is a display string, not a container — mirrors the same rule in
+        // `required_cap_for_path`.
+        assert_eq!(redaction_target("/name"), Some(RedactionTarget::Band));
+        assert_eq!(redaction_target("/name/first"), None);
     }
 }
