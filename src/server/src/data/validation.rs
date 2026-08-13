@@ -321,17 +321,30 @@ pub fn validate_field_change(ch: &crate::data::command::FieldChange) -> Result<(
     Ok(())
 }
 
-/// Reject a `property_overrides` key that is not a well-formed non-empty JSON
-/// pointer: it must start with `/` and must NOT end with `/`. A trailing
-/// slash (e.g. `/engine/`) fails to exact-match its intended target AND fails
-/// to match as a valid nested pointer under it, so the override silently
-/// no-ops — a fail-OPEN footgun where a GM/author believes a property is
-/// hidden but `can_see` never consults the malformed key. Recurses into every
-/// embedded descendant's own `property_overrides`, mirroring
-/// `validate_system_size`'s embedded-tree walk.
+/// Reject a `property_overrides` key that either is not a well-formed
+/// non-empty JSON pointer, or names something redaction cannot classify.
+///
+/// A well-formed pointer must start with `/` and must NOT end with `/`. A
+/// trailing slash (e.g. `/engine/`) fails to exact-match its intended target
+/// AND fails to match as a valid nested pointer under it, so the override
+/// silently no-ops — a fail-OPEN footgun where a GM/author believes a
+/// property is hidden but `can_see` never consults the malformed key.
+///
+/// A well-formed pointer is then checked against
+/// `crate::data::permission::redaction_target`: redaction operates on
+/// content bands (`name`/`engine`/`system`/`base`) only, never on the
+/// structural envelope (`id`, `owner`, `permissions` itself, etc). A pointer
+/// `redaction_target` cannot classify is refused here so no stored override
+/// can later ask egress to remove a field it must not touch.
+///
+/// Recurses into every embedded descendant's own `property_overrides`,
+/// mirroring `validate_system_size`'s embedded-tree walk.
 pub fn validate_property_overrides(doc: &Document) -> Result<(), DataError> {
     for key in doc.permissions.property_overrides.keys() {
         if key.is_empty() || !key.starts_with('/') || key.ends_with('/') {
+            return Err(DataError::BadPath(key.clone()));
+        }
+        if crate::data::permission::redaction_target(key).is_none() {
             return Err(DataError::BadPath(key.clone()));
         }
     }
@@ -534,6 +547,74 @@ mod tests {
             .property_overrides
             .insert("/system/secret/".into(), Visibility::GmOnly);
         parent.embedded.insert("items".into(), vec![child]);
+        assert!(matches!(
+            validate_property_overrides(&parent),
+            Err(DataError::BadPath(_))
+        ));
+    }
+
+    fn doc_with_override(pointer: &str) -> Document {
+        let mut d = doc_with_system(serde_json::json!({ "hp": 1 }));
+        d.permissions.property_overrides.insert(
+            pointer.to_string(),
+            crate::data::document::Visibility::GmOnly,
+        );
+        d
+    }
+
+    #[test]
+    fn override_naming_an_envelope_field_is_rejected() {
+        for pointer in [
+            "/permissions",
+            "/permissions/default",
+            "/permissions/users",
+            "/permissions/property_overrides",
+            "/owner",
+            "/id",
+            "/scope",
+            "/doc_type",
+            "/schema_version",
+            "/source",
+            "/parent_id",
+            "/embedded",
+            "/embedded/items/0",
+            "/created_at",
+            "/updated_at",
+        ] {
+            assert!(
+                matches!(
+                    validate_property_overrides(&doc_with_override(pointer)),
+                    Err(DataError::BadPath(_))
+                ),
+                "{pointer} must be rejected at ingress"
+            );
+        }
+    }
+
+    #[test]
+    fn override_naming_a_content_band_is_accepted() {
+        for pointer in [
+            "/name",
+            "/engine",
+            "/engine/vision",
+            "/system",
+            "/system/hp",
+            "/system/a/b/c",
+            "/base",
+            "/base/system/hp",
+        ] {
+            assert!(
+                validate_property_overrides(&doc_with_override(pointer)).is_ok(),
+                "{pointer} must be accepted at ingress"
+            );
+        }
+    }
+
+    #[test]
+    fn an_embedded_child_override_is_classified_too() {
+        let mut parent = doc_with_system(serde_json::json!({}));
+        let child = doc_with_override("/permissions/default");
+        parent.embedded.insert("items".to_string(), vec![child]);
         assert!(matches!(
             validate_property_overrides(&parent),
             Err(DataError::BadPath(_))
