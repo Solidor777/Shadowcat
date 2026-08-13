@@ -8,14 +8,23 @@ effort: medium
 
 <!-- Sync-paired with shadowcat-coder-opus.md — any body edit here must be mirrored there. -->
 
-You implement a single scoped task in the Shadowcat codebase.
+You implement a single scoped task in the Shadowcat codebase, or in a repo that consumes it and
+reaches these skills through the `shadowcat-codebase` plugin — work against the project you are
+actually in, not the one the skill names suggest.
 
 HARD FIRST STEP — codebase context (subagents do not auto-activate skills):
 1. Invoke `shadowcat-codebase-core` via the Skill tool.
 2. Invoke the subsystem skill(s) for the files in scope (e.g. `shadowcat-codebase-documents-permissions`
-   for `src/server/src/data/**`). If you are unsure which, invoke core and pick from its map.
-   FALLBACK: if the Skill tool is unavailable to you, `Read` the file(s) directly at
-   `.claude/skills/<name>/SKILL.md`. Never proceed without this context.
+   for Shadowcat's server-side document/permission code, `shadowcat-codebase-nightfox` for the
+   Nightfox rules engine and sheets). If you are unsure which, invoke core and pick from its map.
+   In a consumer repo these skills are listed under a PLUGIN PREFIX
+   (`shadowcat-codebase:shadowcat-codebase-core`) rather than the bare id — take the exact name
+   from your skill listing before concluding a skill is unavailable.
+   FALLBACK: if the Skill tool is unavailable, attempt to `Read` `.claude/skills/<name>/SKILL.md`.
+   If the Read succeeds, you are in a Shadowcat checkout: use the file. If it fails, you are in a
+   consumer repo reaching these skills through the `shadowcat-codebase` plugin, where no readable
+   project path exists — report BLOCKED rather than guessing one. Never proceed without this
+   context.
 
 Then implement:
 - Follow Test-Driven Development: write the failing test, see it fail, minimal implementation,

@@ -92,6 +92,9 @@ Every served HTML page declares a responsive viewport; layouts reflow to a phone
 </head>
 ```
 
+<!-- Sync-paired with the Nightfox repo's .claude/CLAUDE.md. The RULES are shared: a change to what
+     the rule requires must be mirrored there. The EXAMPLES, covered sets, tracking files and stack
+     specifics are ADAPTED per repo and deliberately differ — never mirror those across. -->
 ## Collaboration & Execution Standards
 **Core Directive:** Operations must be strictly verifiable, transparent, and aligned with established project architecture. Preserve all source history, surface constraints and complications proactively, and never unilaterally deviate from agreed specifications without explicit user consent.
 
@@ -196,6 +199,9 @@ Communicate with load-bearing facts. Strip sycophantic language and redundant ex
 
 ---
 
+<!-- Sync-paired with the Nightfox repo's .claude/CLAUDE.md. The RULES are shared: a change to what
+     the rule requires must be mirrored there. The EXAMPLES, covered sets, tracking files and stack
+     specifics are ADAPTED per repo and deliberately differ — never mirror those across. -->
 ## Lint Suppressions Require Explicit User Approval
 **Core Directive:** A suppression silences a diagnostic without fixing what it describes. Every
 suppression requires the user's explicit, per-instance sign-off. Enforced by the
@@ -248,6 +254,9 @@ Here is the optimized guidelines set for data privacy, security, and intellectua
 
 ---
 
+<!-- Sync-paired with the Nightfox repo's .claude/CLAUDE.md. The RULES are shared: a change to what
+     the rule requires must be mirrored there. The EXAMPLES, covered sets, tracking files and stack
+     specifics are ADAPTED per repo and deliberately differ — never mirror those across. -->
 ## Agent-Optimized Security & IP Standards
 **Core Directive:** Zero-tolerance for intellectual property infringement and data leaks. System state, test fixtures, and debug dumps must remain strictly sanitized of all proprietary code, credentials, and Personally Identifiable Information (PII).
 
@@ -327,6 +336,9 @@ If the provided workspace context, logs, or user instructions inadvertently cont
 - [Crash] API failed when querying mock customer record due to malformed date parser. [PII Redacted from original log].
 ```
 
+<!-- Sync-paired with the Nightfox repo's .claude/CLAUDE.md. The RULES are shared: a change to what
+     the rule requires must be mirrored there. The EXAMPLES, covered sets, tracking files and stack
+     specifics are ADAPTED per repo and deliberately differ — never mirror those across. -->
 ## Code Commenting Rules
 **Core Directive:** Optimize for machine context and exact state. Strip all narrative scaffolding, chatter, and historical/process metadata. Lead with load-bearing facts: invariants, constraints, and hidden coupling.
 
@@ -434,6 +446,12 @@ Here is the optimized guidelines set for workflow, documentation, and source con
 
 ---
 
+<!-- Sync-paired with the Nightfox repo's .claude/CLAUDE.md. The RULES are shared: a change to what
+     the rule requires must be mirrored there. The EXAMPLES, covered sets, tracking files and stack
+     specifics are ADAPTED per repo and deliberately differ — never mirror those across.
+     ONE RULE in this block is also deliberately per-repo and must NOT be mirrored: the push / CI
+     policy. Shadowcat pushes autonomously on a completed milestone and then watches CI; Nightfox
+     never pushes at all, milestone or not. Reconciling the two undoes an intentional divergence. -->
 ## Documentation Standards
 **Core Directive:** System state must remain synchronized with reality. Documentation updates are mandatory prerequisites for context clearing. Artifacts must remain hygienic, and source control operations must proceed autonomously based on CI triggers.
 
@@ -599,14 +617,19 @@ Rules:
 - Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
 - After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).
 
+<!-- Sync-paired with the Nightfox repo's .claude/CLAUDE.md. The RULES are shared: a change to what
+     the rule requires must be mirrored there. The EXAMPLES, covered sets, tracking files and stack
+     specifics are ADAPTED per repo and deliberately differ — never mirror those across. -->
 ## Codebase Skills & Agents
 
 Project-scoped codebase knowledge lives in `shadowcat-codebase-*` skills (`.claude/skills/`):
 orientation+index briefs (Purpose / Key files / Hard invariants / Gotchas / Pointers) that route
 INTO graphify, `docs/design/`, and memory rather than duplicating them. `shadowcat-codebase-core`
-is the always-relevant base; domain skills cover documents-permissions, actors-tokens,
-scene-rendering, realtime-sync, client-shell, and assets. A scoped `Edit|Write` hook reminds the
-main-thread agent which skill applies; subagents must invoke skills explicitly (below).
+is the always-relevant base, and one `shadowcat-codebase-<subsystem>` skill exists per subsystem
+alongside it. Read the current set from core's **Subsystem skills** list or from the skill
+listing itself — never from an enumeration kept elsewhere, which goes stale the moment a skill is
+added. A scoped `Edit|Write` hook reminds the main-thread agent which skill applies; subagents
+must invoke skills explicitly (below).
 
 ### 1. Reviewed Skill-Update Gate (mandatory, doc-sync tier)
 Whenever a plan finishes execution — and whenever an inline change alters a subsystem's seam,
@@ -616,9 +639,19 @@ skill** (fixed shape; add its globs to the activation hook). The update/creation
 reviewed: dispatch `shadowcat-spec-reviewer` to confirm each skill diff accurately captures the
 change (no omission, drift, or broken pointer). This gate blocks completion at the same tier as
 the documentation-sync gate. Trivial changes that touch no subsystem knowledge need no edit, but
-you must state so explicitly. Same rule applies to escalation-twin agents: if a change touches
-`shadowcat-coder`, `shadowcat-code-reviewer`, or `shadowcat-spec-reviewer`'s body, mirror it to
-that agent's `-opus` twin.
+you must state so explicitly.
+
+Two propagation obligations ride on the same gate:
+
+- **Agent-body mirrors.** A change to `shadowcat-coder`, `shadowcat-code-reviewer`, or
+  `shadowcat-spec-reviewer`'s body must be mirrored to that agent's `-opus` twin **and** to both
+  `.kimi-code/agents/` trees (this repo's and the consuming Nightfox repo's), each of which keeps
+  its own `model`/`effort` frontmatter and an otherwise byte-identical body.
+- **Plugin refresh.** `.claude/` is a plugin source, and a directory-sourced plugin is COPIED into
+  a consumer's plugin cache rather than read live — so a skill/agent/hook edit reaches a consuming
+  repo only after the plugin is refreshed. Bump `version` in `.claude/.claude-plugin/plugin.json`
+  and re-run the marketplace update in each consuming repo; an unbumped version caches as the same
+  value, making a stale copy indistinguishable from a current one.
 
 #### ❌ Bad (Silent drift)
 ```text
@@ -627,7 +660,8 @@ that agent's `-opus` twin.
 #### ✅ Good (Reviewed update)
 ```text
 "Plan done. Updated shadowcat-codebase-actors-tokens (new faction-border seam + invariant).
-Dispatched shadowcat-spec-reviewer on the skill diff: PASS. Merging."
+Dispatched shadowcat-spec-reviewer on the skill diff: PASS. Bumped plugin.json to 1.1.0 and
+refreshed the marketplace in the consuming repo. Merging."
 ```
 
 ### 2. Agent Dispatch in Superpowers Workflows

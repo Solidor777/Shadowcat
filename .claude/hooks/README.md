@@ -45,8 +45,17 @@ hook itself needs only `python3`, but the test needs bash).
   would mis-attribute it to one subsystem. Such files surface via description-match activation for
   the main-thread agent instead; the path hook intentionally stays silent on them.
 
+- **`file_path` is always ABSOLUTE.** The tool payload carries a full path, so every pattern in
+  `SUBSYSTEMS` is a substring match and none may be `^`-anchored — an anchored pattern is inert
+  yet still satisfies any repo-relative test fixture, so the test suite would certify it green.
+  Collisions between a substring pattern and a real file elsewhere are resolved by ORDERING
+  (claim the file explicitly in an earlier entry), never by anchoring.
+
 ## Maintenance
 
 When a new `shadowcat-codebase-<subsystem>` skill is added, add its path globs to the
 `SUBSYSTEMS` map in `codebase-skill-reminder.py` (most-specific subsystems first) and a routing
-check to the test. See the `shadowcat-codebase-core` skill's "Maintaining this skill family".
+check to the test. Any new entry needs at least one ABSOLUTE-path assertion (Windows-drive,
+POSIX, and backslash forms are all exercised in the suite) — a repo-relative fixture alone cannot
+tell a live entry from an inert one. See the `shadowcat-codebase-core` skill's "Maintaining this
+skill family".

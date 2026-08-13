@@ -30,6 +30,11 @@ check() { # <session-suffix> <path> <expected-skill>
   o=$(printf '{"session_id":"%s%s","tool_name":"Write","tool_input":{"file_path":"%s"}}' "$SID" "$1" "$2" | $H)
   echo "$o" | grep -q "$3" || { echo "FAIL: $2 did not map to $3 (got: $o)"; exit 1; }
 }
+checknot() { # <session-suffix> <path> <skill-that-must-NOT-match>
+  o=$(printf '{"session_id":"%s%s","tool_name":"Write","tool_input":{"file_path":"%s"}}' "$SID" "$1" "$2" | $H)
+  echo "$o" | grep -q "$3" && { echo "FAIL: $2 incorrectly mapped to $3 (got: $o)"; exit 1; }
+  true
+}
 check m1 "src/modules/assets/src/Assets.svelte"          "shadowcat-codebase-assets"
 check m2 "src/modules/actors/src/ActorsPanel.svelte"     "shadowcat-codebase-actors-tokens"
 check m3 "src/server/src/scene/vision.rs"                 "shadowcat-codebase-scene-rendering"
@@ -39,5 +44,52 @@ check m5 "src/modules/topbar/src/index.ts"               "shadowcat-codebase-cli
 check m6 "src/server/src/data/asset.rs"                   "shadowcat-codebase-assets"
 check m7 "src/server/src/http/assets.rs"                  "shadowcat-codebase-assets"
 check m8 "src/server/src/data/permission.rs"             "shadowcat-codebase-documents-permissions"
+check m9 "src/modules/conditions/src/index.ts"           "shadowcat-codebase-actors-tokens"
+check m10 "src/modules/game-settings/src/index.ts"       "shadowcat-codebase-client-shell"
+check m11 "examples/system-minimal/src/index.ts"         "shadowcat-codebase-module-toolchain"
+check m12 "src/client/core/src/index.ts"                 "shadowcat-codebase-client-shell"
+
+# Standalone-Nightfox paths (the Nightfox repo opened on its own, not nested under
+# src/modules/nightfox/) must route to the nightfox skill.
+check n1 "src/roll.ts"                                    "shadowcat-codebase-nightfox"
+check n2 "src/resolve.ts"                                 "shadowcat-codebase-nightfox"
+check n3 "src/contributions.ts"                           "shadowcat-codebase-nightfox"
+check n4 "src/nightfox-docs.ts"                           "shadowcat-codebase-nightfox"
+check n5 "src/sheets/StatRow.svelte"                      "shadowcat-codebase-nightfox"
+check n6 "src/sheets/sheet-model.ts"                      "shadowcat-codebase-nightfox"
+
+# The nightfox alternation covers the barrel and the root-level test siblings too.
+check n8 "src/index.ts"                                   "shadowcat-codebase-nightfox"
+check n9 "src/roll.test.ts"                               "shadowcat-codebase-nightfox"
+check n10 "src/permutation.test.ts"                       "shadowcat-codebase-nightfox"
+
+# The NESTED form (Nightfox cloned into a Shadowcat checkout for dev) routes through the earlier
+# `nightfox` entry, both relative and absolute.
+check n11 "src/modules/nightfox/src/roll.ts"              "shadowcat-codebase-nightfox"
+
+# THE REAL PAYLOAD SHAPE. Edit/Write always deliver an ABSOLUTE `file_path`; every fixture above
+# is repo-relative and therefore cannot distinguish a live entry from an inert one. A `^src/`
+# anchor satisfies all of them and matches NOTHING here. The prefixes below are deliberately
+# arbitrary: routing must not depend on what the checkout directory is called.
+check a1 "C:/checkouts/nightfox/src/roll.ts"              "shadowcat-codebase-nightfox"
+check a2 "/srv/checkouts/nightfox/src/resolve.ts"         "shadowcat-codebase-nightfox"
+check a3 "C:/checkouts/nightfox/src/index.ts"             "shadowcat-codebase-nightfox"
+check a4 "C:/checkouts/nightfox/src/sheets/sheet-model.ts" "shadowcat-codebase-nightfox"
+# Backslash payload: the hook normalizes `\` to `/` before matching. The backslashes MUST be
+# doubled so the JSON stays valid — an unescaped `\c` is a JSON syntax error, the hook fails open
+# and emits nothing, which a negative assertion would silently read as a pass.
+check a5 'C:\\checkouts\\nightfox\\src\\sheets\\StatRow.svelte' "shadowcat-codebase-nightfox"
+check a6 'C:\\checkouts\\nightfox\\src\\roll.ts'          "shadowcat-codebase-nightfox"
+# Absolute Shadowcat paths still reach their own subsystem, not the last-position nightfox entry.
+check a7 "/srv/checkouts/shadowcat/src/server/src/data/permission.rs" "shadowcat-codebase-documents-permissions"
+check a8 "C:/checkouts/shadowcat/src/modules/nightfox/src/roll.ts"    "shadowcat-codebase-nightfox"
+
+# Ordering, not anchoring, resolves the one real collision: `src/client/core/src/contributions.ts`
+# ends in the tail `src/contributions.ts` that the unanchored nightfox alternative matches.
+# `client-shell` claims the path explicitly and sits far earlier, so first-match-wins gives it the
+# tie.
+check n7 "src/client/core/src/contributions.ts"           "shadowcat-codebase-client-shell"
+check n12 "C:/checkouts/shadowcat/src/client/core/src/contributions.test.ts" "shadowcat-codebase-client-shell"
+checknot n13 "src/client/core/src/contributions.ts"       "shadowcat-codebase-nightfox"
 
 echo "ALL HOOK TESTS PASS"

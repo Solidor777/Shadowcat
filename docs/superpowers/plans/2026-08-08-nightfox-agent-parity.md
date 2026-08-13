@@ -10,7 +10,9 @@
 
 ## Global Constraints
 
-- **Nothing leaves Shadowcat's git history.** All 26 files currently tracked under `.claude/` stay tracked at their current paths. Verified by `git ls-files .claude/ | wc -l` returning 26 at the end.
+- **Nothing leaves Shadowcat's git history.** All 26 files currently tracked under `.claude/` stay tracked at their current paths. `git ls-files .claude/ | wc -l` returns **26 through Task 3**, and **27 from Task 4 onward** — Task 4 Step 6 deliberately adds one new tracked file, `.claude/hooks/hooks.json`. The invariant is that nothing is ever *removed* or *moved*; additions this plan specifies are expected.
+- **The two repos' base branches are named differently.** Shadowcat's is `main`; **Nightfox's is `master`** (verified — Nightfox has no branch named `main`). Any `main...HEAD` range must be written `master...HEAD` when run in Nightfox, or git aborts with "unknown revision".
+- **Every command and regex in this plan was executed against the real tree before the plan was committed.** Anything that could not be run at authoring time is labeled UNVERIFIED at its step. Treat an unlabeled command as tested and a labeled one as a draft to validate — do not assume a snippet works because it appears here.
 - **The plugin is enabled in Nightfox only.** Enabling it in Shadowcat too would double-register every skill and agent name.
 - **No machine-local absolute path may enter a committed file in either public repo.** `C:/Dev/Shadowcat/...` may appear only in git-ignored files.
 - **Agent bodies are sync-paired.** Every edit to a `shadowcat-*` agent body is mirrored verbatim to its `-opus` twin, per the `<!-- Sync-paired with ... -->` marker each file already carries. Frontmatter (`model`, `effort`) is NOT mirrored — it is what distinguishes the twins.
@@ -309,12 +311,20 @@ subsystem invariants.
 ```bash
 cd /c/Dev/Shadowcat/.claude/agents
 grep -c "consumer repo" *.md
-diff <(tail -n +8 shadowcat-coder.md) <(tail -n +8 shadowcat-coder-opus.md) && echo "CODER TWINS MATCH"
-diff <(tail -n +8 shadowcat-code-reviewer.md) <(tail -n +8 shadowcat-code-reviewer-opus.md) && echo "CODE-REVIEWER TWINS MATCH"
-diff <(tail -n +8 shadowcat-spec-reviewer.md) <(tail -n +8 shadowcat-spec-reviewer-opus.md) && echo "SPEC-REVIEWER TWINS MATCH"
+diff <(tail -n +10 shadowcat-coder.md) <(tail -n +10 shadowcat-coder-opus.md) && echo "CODER TWINS MATCH"
+diff <(tail -n +10 shadowcat-code-reviewer.md) <(tail -n +10 shadowcat-code-reviewer-opus.md) && echo "CODE-REVIEWER TWINS MATCH"
+diff <(tail -n +10 shadowcat-spec-reviewer.md) <(tail -n +10 shadowcat-spec-reviewer-opus.md) && echo "SPEC-REVIEWER TWINS MATCH"
 ```
 
-Expected: every file reports `1`, and all three MATCH lines print. `tail -n +8` skips the 7-line frontmatter, which legitimately differs between twins (`model`, `effort`, `name`, `description`). If a diff prints, the bodies drifted — reconcile before committing.
+Expected: every file reports `1`, and all three MATCH lines print. If a diff prints, the bodies drifted — reconcile before committing.
+
+**The offset is `+10`, not `+8`.** Frontmatter is 7 lines, but line 8 is blank and **line 9 is the `<!-- Sync-paired with ... -->` comment, which names the OTHER twin and therefore legitimately differs in every pair.** At `+8` the diff always reports that one line and can never print MATCH, no matter how correct the edit is. Do not "resolve" such a diff by making the two sync comments identical — each must keep pointing at its own counterpart; a matching pair of comments would point one file at itself.
+
+Afterwards, restore the working directory before running any further git command — a `cd` here persists into later steps and silently re-roots relative paths like `.claude/`:
+
+```bash
+cd /c/Dev/Shadowcat
+```
 
 - [ ] **Step 5: Commit**
 
@@ -382,9 +392,11 @@ with:
     # repo — this entry is second in SUBSYSTEMS and first-match-wins, so a broader pattern here
     # would hijack routing for every subsystem below it.
     ("nightfox",             [r"src/client/formula/", r"src/modules/nightfox",
-                              r"src/(roll|resolve|contributions|nightfox-docs)\.ts",
-                              r"src/sheets/"]),
+                              r"^src/(roll|resolve|contributions|nightfox-docs)\.ts",
+                              r"^src/sheets/"]),
 ```
+
+**The `^` anchors are mandatory, not stylistic.** The hook matches with `re.search`, which finds the pattern anywhere in the path. Unanchored, `src/(…|contributions|…)\.ts` matches Shadowcat's real `src/client/core/src/contributions.ts` — the substring `src/contributions.ts` occurs inside it — and because the `nightfox` entry is second in `SUBSYSTEMS` and matching is first-match-wins, that file would be routed to the nightfox skill instead of its own. Verified: unanchored matches that path, anchored does not, and anchored still matches Nightfox's repo-root-relative `src/contributions.ts`.
 
 - [ ] **Step 4: Run the suite and watch everything pass**
 
@@ -714,15 +726,31 @@ Run after all six tasks. These are the spec's acceptance criteria.
 ```bash
 cd /c/Dev/Shadowcat && git ls-files .claude/ | wc -l
 ```
-Expected: `26`.
+Expected: `27` — the original 26 plus `.claude/hooks/hooks.json` added by Task 4 Step 6. Confirm by name that the 26 originals are all still present, since a count alone would mask one file leaving and another arriving:
+```bash
+git ls-files .claude/ | grep -c "^.claude/skills/shadowcat-codebase-"   # expect 15
+git ls-files .claude/ | grep -c "^.claude/agents/"                       # expect 6
+```
 
-- [ ] **2. No machine-local path in any tracked file, either repo**
+- [ ] **2. No machine-local path introduced by this branch, either repo**
+
+Scope the check to files this branch changed. A whole-tree grep is wrong: 10 tracked Shadowcat files already contain `C:\Dev` — including `.claude/skills/shadowcat-codebase-nightfox/SKILL.md`, `docs/PLAN.md`, six older plans, and this branch's own spec and plan documents, where naming the sibling repo is legitimate. A whole-tree check therefore fails on content this branch never touched.
 
 ```bash
-cd /c/Dev/Shadowcat && git grep -n "C:/Dev\|C:\\\\Dev" -- . || echo "SHADOWCAT CLEAN"
-cd /c/Dev/Nightfox  && git grep -n "C:/Dev\|C:\\\\Dev" -- . || echo "NIGHTFOX CLEAN"
+cd /c/Dev/Shadowcat
+git diff --name-only main...HEAD -- . ':!docs/superpowers/*' \
+  | xargs -r git grep -n -F -e 'C:\Dev' -e 'C:/Dev' -- \
+  || echo "SHADOWCAT CLEAN"
+
+cd /c/Dev/Nightfox
+git diff --name-only master...HEAD \
+  | xargs -r git grep -n -F -e 'C:\Dev' -e 'C:/Dev' -- \
+  || echo "NIGHTFOX CLEAN"
 ```
-Expected: both CLEAN. Nightfox's `.claude/CLAUDE.md` Project block already references the nested dev path in prose — if that pre-existing line is the only hit, it is acceptable; any *new* hit is not.
+
+Note the range is `master...HEAD` here, not `main...HEAD` — Nightfox's base branch is `master` and it has no `main`, so the `main` form aborts with "unknown revision".
+
+Expected: both CLEAN. `-F` is required — `\D` in a regex is not a literal backslash-D. The `:!docs/superpowers/*` exclusion covers this branch's spec and plan, which legitimately name both repo paths. Git-ignored files (`settings.local.json`, `.kimi-code/`, `kimi.plugin.json`) never appear in `git diff --name-only`, so the Task 4 fallback's absolute path is out of scope by construction.
 
 - [ ] **3. Hook suite green**
 

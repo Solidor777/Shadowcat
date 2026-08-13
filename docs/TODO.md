@@ -484,3 +484,35 @@ Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one de
   it. Tightening it changes runtime accept/reject at the wire boundary, which needs its own
   consent rather than riding along with a documentation change. `by_user` is correctly
   `Record<string, string[]>`: its keys are user ids, which are genuinely open.
+
+## Actionable now — the `shadowcat-codebase` plugin has never been registered or exercised
+- TODO: Run `/plugin marketplace add <your Shadowcat checkout>` once per machine — the argument is
+  the path to your own clone of this repo, whose root holds `.claude-plugin/marketplace.json`;
+  registration is per-machine state, so no committed file can carry it. Then open a fresh
+  session on the Nightfox repo and confirm the 15 `shadowcat-codebase-*` skills and the six
+  `shadowcat-*` agents resolve. Until this runs, the branch's central claim is unobserved: an
+  `enabledPlugins` entry naming an unregistered marketplace is silently inert, so a Nightfox
+  session with a dead plugin is indistinguishable from a healthy one. Two predicted defects
+  surface in that session's first minute if they are real — plugin skills are addressed under a
+  `<plugin>:<skill>` prefix, and the agents' hard-first-step names the bare id; and the
+  reminder hook must fire exactly once, not twice, in a Shadowcat session.
+- TODO: Confirm whether a directory-sourced plugin serves a cached SNAPSHOT rather than the live
+  repo. Verified structurally: installs land in `~/.claude/plugins/cache/<marketplace>/<plugin>/
+  <version>/` as real copied files, and every directory-sourced entry on this machine shows
+  `version: "unknown"` with `lastUpdated == installedAt`. If confirmed, editing a skill in
+  Shadowcat does NOT reach Nightfox until the plugin is refreshed, and the "stored exactly once,
+  drift-free" property holds on disk but not at runtime. Test: after registering, edit one line
+  in `.claude/skills/shadowcat-codebase-core/SKILL.md` and diff the copy under the cache path.
+  A `version` now exists in `.claude/.claude-plugin/plugin.json` so updates are at least
+  detectable; the skill-update gate requires bumping it.
+
+## Actionable now — Kimi Code parity is written but never installed
+- TODO: In the Kimi TUI run `/plugins install <your Shadowcat checkout>/.claude` then `/reload` (the
+  third-party trust prompt defaults to cancel — approve it). CLI/prompt-mode install does not
+  exist. Then confirm all six agents register: the twelve ported copies carry Claude-native
+  `tools:` names including `Skill`, and whether Kimi recognizes them is unverified — if
+  unrecognized entries reject the frontmatter, the agents will not load at all. Separately,
+  their bodies say "invoke via the Skill tool", but Kimi's config sets
+  `merge_all_available_skills = true`, suggesting skills may be merged into context rather than
+  invoked; if so the bodies' BLOCKED branch could fire in Nightfox even when the context is
+  already present. Both need one real dispatch in a Nightfox workspace to settle.
