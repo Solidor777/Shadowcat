@@ -1173,10 +1173,14 @@ mod tests {
             ("/engine", "engine"),
             ("/name", "name"),
         ] {
-            let d = doc(
+            let mut d = doc(
                 perms_with_override(pointer),
                 serde_json::json!({ "secret": "MOCK_SECRET_A", "public": 1 }),
             );
+            // A real name, so the "name" sub-case discriminates: `doc()` always
+            // constructs `name: None`, and asserting `None` after redaction would
+            // pass even if `/name` redaction never ran.
+            d.name = Some("MOCK_NAME_A".into());
             let out = filter_properties(&d, &non_gm())
                 .unwrap_or_else(|e| panic!("{pointer} must still redact cleanly: {e}"));
             match check {
@@ -1970,6 +1974,57 @@ mod tests {
             author: gm,
             ts: 0,
             ops: vec![Operation::Create { doc: d.clone() }],
+        };
+        let player = PermissionContext {
+            user_id: Uuid::from_u128(77),
+            world_role: WorldRole::Player,
+        };
+        let current = load_update_docs(&r, &cmd).await;
+        let out = filter_command(
+            &cmd,
+            &player,
+            &WorldCapDefaults::default(),
+            &current,
+            |_| None,
+        );
+        assert!(
+            out.ops.is_empty(),
+            "the op must be withheld, not shipped half-redacted"
+        );
+        assert_eq!(
+            out.seq, cmd.seq,
+            "seq is preserved so the sequence guard sees no gap"
+        );
+    }
+
+    #[tokio::test]
+    async fn filter_command_drops_a_delete_whose_redaction_cannot_be_classified() {
+        // Mirrors `filter_command_drops_a_create_whose_redaction_cannot_be_classified`
+        // for the Delete arm, which has no other test poisoning its document.
+        use crate::auth::role::ServerRole;
+        use crate::data::command::{Command, Operation};
+        use crate::data::membership::PermissionContext;
+        use crate::data::sqlite::SqliteRepository;
+
+        let r = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+
+        let mut d = doc(
+            perms_with_override("/permissions/default"),
+            serde_json::json!({ "hp": 1 }),
+        );
+        d.scope = Scope::World { world_id: w.id };
+
+        let cmd = Command {
+            seq: 6,
+            world_id: w.id,
+            author: gm,
+            ts: 0,
+            ops: vec![Operation::Delete { doc: d.clone() }],
         };
         let player = PermissionContext {
             user_id: Uuid::from_u128(77),
