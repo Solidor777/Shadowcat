@@ -2793,8 +2793,15 @@ impl Repository for SqliteRepository {
                 if !access.has(cap::READ) {
                     continue;
                 }
+                let document = match crate::data::permission::filter_properties(&doc, &access) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        tracing::warn!(doc_id = %doc.id, error = %e, "omitting search hit");
+                        continue;
+                    }
+                };
                 hits.push(SearchHit {
-                    document: crate::data::permission::filter_properties(&doc, &access),
+                    document,
                     score: row.get("score"),
                     snippet: row.get("snippet"),
                 });

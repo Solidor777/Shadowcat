@@ -736,8 +736,27 @@ pub fn project_grants_for(grants: &CapabilityGrants, user: Uuid) -> CapabilityGr
     }
 }
 
+/// A redaction input the classifier could not place in a content band. Egress
+/// withholds rather than guessing: the alternatives are shipping a document whose
+/// structural envelope was silently rewritten, or panicking the request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RedactionError {
+    /// The pointer that could not be classified.
+    pub pointer: String,
+}
+
+impl std::fmt::Display for RedactionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "unclassifiable redaction pointer {}", self.pointer)
+    }
+}
+
+impl std::error::Error for RedactionError {}
+
 /// Produce the recipient's view of a document: when `access.see_gm_only` is
-/// false, strip every property whose override is `GmOnly`.
+/// false, strip every property whose override is `GmOnly`. Fails closed with
+/// `RedactionError` when a `property_overrides` pointer cannot be classified by
+/// `redaction_target` — withholding, never guessing at what the pointer meant.
 /// # Examples
 ///
 /// ```
@@ -762,14 +781,14 @@ pub fn project_grants_for(grants: &CapabilityGrants, user: Uuid) -> CapabilityGr
 /// })).unwrap();
 ///
 /// let observer = Access { caps: Default::default(), all: false, see_gm_only: false, is_owner: false };
-/// let filtered = filter_properties(&doc, &observer);
+/// let filtered = filter_properties(&doc, &observer).unwrap();
 /// assert!(filtered.system.get("secret").is_none()); // stripped BEFORE transmission
 /// assert_eq!(filtered.system["public"], 1);
 /// ```
-pub fn filter_properties(doc: &Document, access: &Access) -> Document {
+pub fn filter_properties(doc: &Document, access: &Access) -> Result<Document, RedactionError> {
     let mut out = doc.clone();
     if access.see_gm_only {
-        return out;
+        return Ok(out);
     }
     // Each embedded child carries its own `property_overrides`, independent of the
     // parent's. A non-GM recipient must not see any GmOnly field at any depth, so
@@ -778,15 +797,14 @@ pub fn filter_properties(doc: &Document, access: &Access) -> Document {
     let embedded = std::mem::take(&mut out.embedded);
     out.embedded = embedded
         .into_iter()
-        .map(|(k, v)| {
-            (
-                k,
-                v.into_iter()
-                    .map(|c| filter_properties(&c, access))
-                    .collect(),
-            )
+        .map(|(k, v)| -> Result<_, RedactionError> {
+            let children = v
+                .into_iter()
+                .map(|c| filter_properties(&c, access))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok((k, children))
         })
-        .collect();
+        .collect::<Result<_, _>>()?;
     let mut hidden: Vec<String> = doc
         .permissions
         .property_overrides
@@ -803,24 +821,19 @@ pub fn filter_properties(doc: &Document, access: &Access) -> Document {
     }
     let mut whole = serde_json::to_value(&out).expect("document serializes");
     for pointer in hidden {
-        // `/system`, `/engine`, `/name`, and `/base` target `Document` fields directly:
-        // dropping the key would (for `system`, a required field) fail
-        // re-deserialization, or (for the `Option` fields `engine`/`name`/`base`) be
-        // indistinguishable from a doc that never carried one, breaking the
-        // client's stable envelope shape. Null them instead; nested pointers
-        // (e.g. `/system/name`, `/engine/vision`) target an arbitrary body one
-        // level down, where callers rely on true key absence, so those keep
-        // the normal strip.
-        match pointer.as_str() {
-            "/system" | "/engine" | "/name" | "/base" => {
+        match redaction_target(&pointer) {
+            Some(RedactionTarget::Band) => {
                 if let Some(f) = whole.get_mut(&pointer[1..]) {
                     *f = serde_json::Value::Null;
                 }
             }
-            _ => strip_pointer(&mut whole, &pointer),
+            Some(RedactionTarget::Within) => strip_pointer(&mut whole, &pointer),
+            None => return Err(RedactionError { pointer }),
         }
     }
-    serde_json::from_value(whole).expect("filtered document deserializes")
+    serde_json::from_value(whole).map_err(|_| RedactionError {
+        pointer: "<document>".to_string(),
+    })
 }
 
 /// Collect every property pointer in `doc` (and embedded descendants) that `access`
@@ -828,10 +841,22 @@ pub fn filter_properties(doc: &Document, access: &Access) -> Document {
 /// expressed absolute to `doc` (call with `prefix = ""` for parent-absolute paths: a
 /// child at `embedded[key][i]` contributes `/embedded/<key>/<i>{pointer}`). Lets
 /// `Update`-delta redaction honor hidden fields at any embedded depth — the same
-/// coverage `filter_properties` gives whole-document egress.
-fn collect_hidden(doc: &Document, access: &Access, prefix: &str, out: &mut Vec<String>) {
+/// coverage `filter_properties` gives whole-document egress. Classifies each
+/// UNPREFIXED override key via `redaction_target` before the prefix is applied
+/// (the same classifier `filter_properties` runs on whole-document egress), and
+/// fails closed with `RedactionError` on a pointer it cannot place — that is what
+/// keeps the change-delta path from diverging from whole-document egress.
+fn collect_hidden(
+    doc: &Document,
+    access: &Access,
+    prefix: &str,
+    out: &mut Vec<String>,
+) -> Result<(), RedactionError> {
     for (p, v) in &doc.permissions.property_overrides {
         if !access.can_see(*v) {
+            if redaction_target(p).is_none() {
+                return Err(RedactionError { pointer: p.clone() });
+            }
             out.push(format!("{prefix}{p}"));
         }
     }
@@ -850,9 +875,10 @@ fn collect_hidden(doc: &Document, access: &Access, prefix: &str, out: &mut Vec<S
                 access,
                 &format!("{prefix}/embedded/{key}/{idx}"),
                 out,
-            );
+            )?;
         }
     }
+    Ok(())
 }
 
 /// Whether a change path writes into any document's envelope `permissions` (top-level
@@ -899,9 +925,14 @@ pub fn filter_command<'a>(
                     owner,
                 );
                 if access.has(cap::READ) {
-                    out_ops.push(Operation::Create {
-                        doc: filter_properties(doc, &access),
-                    });
+                    // Withhold rather than guess: a recipient who cannot be given a
+                    // correctly redacted document is given none.
+                    match filter_properties(doc, &access) {
+                        Ok(filtered) => out_ops.push(Operation::Create { doc: filtered }),
+                        Err(e) => {
+                            tracing::warn!(doc_id = %doc.id, error = %e, "redaction failed; dropping Create op for recipient");
+                        }
+                    }
                 }
             }
             Operation::Delete { doc } => {
@@ -915,9 +946,12 @@ pub fn filter_command<'a>(
                     owner,
                 );
                 if access.has(cap::READ) {
-                    out_ops.push(Operation::Delete {
-                        doc: filter_properties(doc, &access),
-                    });
+                    match filter_properties(doc, &access) {
+                        Ok(filtered) => out_ops.push(Operation::Delete { doc: filtered }),
+                        Err(e) => {
+                            tracing::warn!(doc_id = %doc.id, error = %e, "redaction failed; dropping Delete op for recipient");
+                        }
+                    }
                 }
             }
             Operation::Update { doc_id, changes } => {
@@ -945,7 +979,10 @@ pub fn filter_command<'a>(
                     // `/embedded/<child>/...` is redacted against the child's own
                     // overrides — not just the parent's. Matches filter_properties.
                     let mut hidden = Vec::new();
-                    collect_hidden(cur, &access, "", &mut hidden);
+                    if let Err(e) = collect_hidden(cur, &access, "", &mut hidden) {
+                        tracing::warn!(doc_id = %doc_id, error = %e, "redaction failed; dropping Update op for recipient");
+                        continue;
+                    }
                     let mut kept: Vec<FieldChange> = changes
                         .iter()
                         .filter_map(|ch| redact_change(ch, &hidden))
@@ -1083,6 +1120,94 @@ mod tests {
         p
     }
 
+    /// Build a `PermissionSet` carrying one override at `pointer`, hidden from non-GMs.
+    fn perms_with_override(pointer: &str) -> PermissionSet {
+        let mut p = PermissionSet {
+            default: crate::data::document::DocRole::Observer,
+            ..Default::default()
+        };
+        p.property_overrides.insert(
+            pointer.to_string(),
+            crate::data::document::Visibility::GmOnly,
+        );
+        p
+    }
+
+    fn non_gm() -> Access {
+        Access {
+            caps: Default::default(),
+            all: false,
+            see_gm_only: false,
+            is_owner: false,
+        }
+    }
+
+    #[test]
+    fn filter_properties_errors_instead_of_panicking_on_a_nested_permissions_override() {
+        // A nested `/permissions/...` override strips a `PermissionSet` field carrying
+        // no serde default, so the value cannot re-deserialize.
+        let d = doc(
+            perms_with_override("/permissions/default"),
+            serde_json::json!({ "hp": 1 }),
+        );
+        let err = filter_properties(&d, &non_gm()).expect_err("must not deserialize");
+        assert_eq!(err.pointer, "/permissions/default");
+    }
+
+    #[test]
+    fn filter_properties_errors_on_a_whole_permissions_override() {
+        // A whole `/permissions` override is refused as unclassifiable rather than
+        // substituting the fail-closed default permission set for the real one: that
+        // substitution does not panic, it ships a wrong document.
+        let d = doc(
+            perms_with_override("/permissions"),
+            serde_json::json!({ "hp": 1 }),
+        );
+        assert!(filter_properties(&d, &non_gm()).is_err());
+    }
+
+    #[test]
+    fn filter_properties_still_redacts_every_content_band() {
+        for (pointer, check) in [
+            ("/system/secret", "system"),
+            ("/engine", "engine"),
+            ("/name", "name"),
+        ] {
+            let d = doc(
+                perms_with_override(pointer),
+                serde_json::json!({ "secret": "MOCK_SECRET_A", "public": 1 }),
+            );
+            let out = filter_properties(&d, &non_gm())
+                .unwrap_or_else(|e| panic!("{pointer} must still redact cleanly: {e}"));
+            match check {
+                "system" => {
+                    assert!(out.system.get("secret").is_none());
+                    assert_eq!(out.system["public"], 1);
+                }
+                "engine" => assert!(out.engine.is_none()),
+                "name" => assert!(out.name.is_none()),
+                _ => unreachable!(),
+            }
+        }
+    }
+
+    #[test]
+    fn a_gm_recipient_is_unaffected_by_an_unclassifiable_override() {
+        // The GM short-circuit returns before any classification runs, so a GM never
+        // loses a document to a poisoned override.
+        let d = doc(
+            perms_with_override("/permissions/default"),
+            serde_json::json!({ "hp": 1 }),
+        );
+        let gm = Access {
+            caps: Default::default(),
+            all: true,
+            see_gm_only: true,
+            is_owner: false,
+        };
+        assert!(filter_properties(&d, &gm).is_ok());
+    }
+
     #[test]
     fn owner_or_gm_visible_to_owner_and_gm_not_other_player() {
         let owner = Uuid::from_u128(1);
@@ -1096,20 +1221,20 @@ mod tests {
         // Owner (non-GM) sees the real name.
         let a_owner = resolve_access(owner, WorldRole::Player, &d, d.owner);
         assert_eq!(
-            filter_properties(&d, &a_owner).system["name"],
+            filter_properties(&d, &a_owner).unwrap().system["name"],
             "Goblin Skirmisher"
         );
 
         // Another player does NOT (falls back to the non-secret displayName).
         let a_other = resolve_access(other, WorldRole::Player, &d, d.owner);
-        let v_other = filter_properties(&d, &a_other);
+        let v_other = filter_properties(&d, &a_other).unwrap();
         assert!(v_other.system.get("name").is_none());
         assert_eq!(v_other.system["displayName"], "Goblin");
 
         // GM sees it.
         let a_gm = resolve_access(other, WorldRole::Gm, &d, d.owner);
         assert_eq!(
-            filter_properties(&d, &a_gm).system["name"],
+            filter_properties(&d, &a_gm).unwrap().system["name"],
             "Goblin Skirmisher"
         );
     }
@@ -1127,7 +1252,7 @@ mod tests {
         d.owner = Some(owner);
 
         let a_owner = resolve_access(owner, WorldRole::Player, &d, d.owner);
-        let v = filter_properties(&d, &a_owner);
+        let v = filter_properties(&d, &a_owner).unwrap();
         assert_eq!(v.system["name"], "PC"); // owner sees OwnerOrGm
         assert!(v.system.get("secret").is_none()); // owner still denied GmOnly
     }
@@ -1145,11 +1270,11 @@ mod tests {
         parent.embedded.insert("actor".into(), vec![child]);
 
         let a_other = resolve_access(other, WorldRole::Player, &parent, parent.owner);
-        let v = filter_properties(&parent, &a_other);
+        let v = filter_properties(&parent, &a_other).unwrap();
         assert!(v.embedded["actor"][0].system.get("name").is_none());
 
         let a_owner = resolve_access(owner, WorldRole::Player, &parent, parent.owner);
-        let vo = filter_properties(&parent, &a_owner);
+        let vo = filter_properties(&parent, &a_owner).unwrap();
         assert_eq!(vo.embedded["actor"][0].system["name"], "Hidden");
     }
 
@@ -1298,13 +1423,13 @@ mod tests {
         let d = doc(perms, serde_json::json!({ "secret": 42, "public": 1 }));
 
         let player = resolve_access(Uuid::from_u128(7), WorldRole::Player, &d, d.owner);
-        let view = filter_properties(&d, &player);
+        let view = filter_properties(&d, &player).unwrap();
         assert_eq!(view.system.get("secret"), None);
         assert_eq!(view.system["public"], serde_json::json!(1));
 
         let gm = resolve_access(Uuid::from_u128(7), WorldRole::Gm, &d, d.owner);
         assert_eq!(
-            filter_properties(&d, &gm).system["secret"],
+            filter_properties(&d, &gm).unwrap().system["secret"],
             serde_json::json!(42)
         );
     }
@@ -1325,12 +1450,12 @@ mod tests {
         let d = doc(perms, serde_json::json!({ "secret": 42 }));
 
         let player = resolve_access(Uuid::from_u128(7), WorldRole::Player, &d, d.owner);
-        let view = filter_properties(&d, &player);
+        let view = filter_properties(&d, &player).unwrap();
         assert_eq!(view.system, serde_json::Value::Null);
 
         let gm = resolve_access(Uuid::from_u128(7), WorldRole::Gm, &d, d.owner);
         assert_eq!(
-            filter_properties(&d, &gm).system["secret"],
+            filter_properties(&d, &gm).unwrap().system["secret"],
             serde_json::json!(42)
         );
     }
@@ -1353,12 +1478,12 @@ mod tests {
         d.engine = Some(serde_json::json!({ "x": 1.0, "y": 2.0 }));
 
         let player = resolve_access(Uuid::from_u128(7), WorldRole::Player, &d, d.owner);
-        let view = filter_properties(&d, &player);
+        let view = filter_properties(&d, &player).unwrap();
         assert_eq!(view.engine, None);
 
         let gm = resolve_access(Uuid::from_u128(7), WorldRole::Gm, &d, d.owner);
         assert_eq!(
-            filter_properties(&d, &gm).engine,
+            filter_properties(&d, &gm).unwrap().engine,
             Some(serde_json::json!({ "x": 1.0, "y": 2.0 }))
         );
     }
@@ -1379,12 +1504,15 @@ mod tests {
         d.engine = Some(serde_json::json!({ "vision": 30, "visionmode": "dark" }));
 
         let player = resolve_access(Uuid::from_u128(7), WorldRole::Player, &d, d.owner);
-        let view = filter_properties(&d, &player);
+        let view = filter_properties(&d, &player).unwrap();
         assert!(view.engine.as_ref().unwrap().get("vision").is_none());
         assert_eq!(view.engine.as_ref().unwrap()["visionmode"], "dark");
 
         let gm = resolve_access(Uuid::from_u128(7), WorldRole::Gm, &d, d.owner);
-        assert_eq!(filter_properties(&d, &gm).engine.unwrap()["vision"], 30);
+        assert_eq!(
+            filter_properties(&d, &gm).unwrap().engine.unwrap()["vision"],
+            30
+        );
     }
 
     #[test]
@@ -1403,16 +1531,16 @@ mod tests {
 
         let a_owner = resolve_access(owner, WorldRole::Player, &d, d.owner);
         assert_eq!(
-            filter_properties(&d, &a_owner).name.as_deref(),
+            filter_properties(&d, &a_owner).unwrap().name.as_deref(),
             Some("Goblin Skirmisher")
         );
 
         let a_other = resolve_access(other, WorldRole::Player, &d, d.owner);
-        assert_eq!(filter_properties(&d, &a_other).name, None);
+        assert_eq!(filter_properties(&d, &a_other).unwrap().name, None);
 
         let a_gm = resolve_access(other, WorldRole::Gm, &d, d.owner);
         assert_eq!(
-            filter_properties(&d, &a_gm).name.as_deref(),
+            filter_properties(&d, &a_gm).unwrap().name.as_deref(),
             Some("Goblin Skirmisher")
         );
     }
@@ -1430,10 +1558,13 @@ mod tests {
         d.name = Some("Strahd".into());
 
         let player = resolve_access(Uuid::from_u128(7), WorldRole::Player, &d, d.owner);
-        assert_eq!(filter_properties(&d, &player).name, None);
+        assert_eq!(filter_properties(&d, &player).unwrap().name, None);
 
         let gm = resolve_access(Uuid::from_u128(7), WorldRole::Gm, &d, d.owner);
-        assert_eq!(filter_properties(&d, &gm).name.as_deref(), Some("Strahd"));
+        assert_eq!(
+            filter_properties(&d, &gm).unwrap().name.as_deref(),
+            Some("Strahd")
+        );
     }
 
     #[test]
@@ -1450,15 +1581,15 @@ mod tests {
 
         // Non-owner, non-GM: base is nulled.
         let a_other = resolve_access(other, WorldRole::Player, &d, d.owner);
-        assert_eq!(filter_properties(&d, &a_other).base, None);
+        assert_eq!(filter_properties(&d, &a_other).unwrap().base, None);
 
         // Owner (non-GM): sees the real base.
         let a_owner = resolve_access(owner, WorldRole::Player, &d, d.owner);
-        assert_eq!(filter_properties(&d, &a_owner).base, d.base);
+        assert_eq!(filter_properties(&d, &a_owner).unwrap().base, d.base);
 
         // GM: sees the real base.
         let a_gm = resolve_access(other, WorldRole::Gm, &d, d.owner);
-        assert_eq!(filter_properties(&d, &a_gm).base, d.base);
+        assert_eq!(filter_properties(&d, &a_gm).unwrap().base, d.base);
     }
 
     #[tokio::test]
@@ -1595,7 +1726,7 @@ mod tests {
 
         let player = resolve_access(Uuid::from_u128(7), WorldRole::Player, &parent, parent.owner);
         let mut hidden = Vec::new();
-        collect_hidden(&parent, &player, "", &mut hidden);
+        collect_hidden(&parent, &player, "", &mut hidden).unwrap();
         assert!(hidden.contains(&"/embedded/actor/0/engine/x".to_string()));
     }
 
@@ -1619,7 +1750,7 @@ mod tests {
         parent.embedded.insert("items".into(), vec![child]);
 
         let player = resolve_access(Uuid::from_u128(7), WorldRole::Player, &parent, parent.owner);
-        let view = filter_properties(&parent, &player);
+        let view = filter_properties(&parent, &player).unwrap();
         let child_view = &view.embedded.get("items").unwrap()[0];
         assert_eq!(
             child_view.system.get("secret"),
@@ -1630,7 +1761,7 @@ mod tests {
 
         // The GM sees the embedded child's gm-only field.
         let gm = resolve_access(Uuid::from_u128(7), WorldRole::Gm, &parent, parent.owner);
-        let gm_view = filter_properties(&parent, &gm);
+        let gm_view = filter_properties(&parent, &gm).unwrap();
         assert_eq!(
             gm_view.embedded.get("items").unwrap()[0].system["secret"],
             serde_json::json!(9)
@@ -1808,6 +1939,58 @@ mod tests {
             panic!("expected Create");
         };
         assert_eq!(doc.system.get("behavior").unwrap(), "arrest");
+    }
+
+    #[tokio::test]
+    async fn filter_command_drops_a_create_whose_redaction_cannot_be_classified() {
+        // A poisoned document is withheld through `filter_command`, the per-recipient
+        // broadcast egress path — not merely through the `filter_properties` unit
+        // called directly by the other tests above.
+        use crate::auth::role::ServerRole;
+        use crate::data::command::{Command, Operation};
+        use crate::data::membership::PermissionContext;
+        use crate::data::sqlite::SqliteRepository;
+
+        let r = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+
+        let mut d = doc(
+            perms_with_override("/permissions/default"),
+            serde_json::json!({ "hp": 1 }),
+        );
+        d.scope = Scope::World { world_id: w.id };
+
+        let cmd = Command {
+            seq: 5,
+            world_id: w.id,
+            author: gm,
+            ts: 0,
+            ops: vec![Operation::Create { doc: d.clone() }],
+        };
+        let player = PermissionContext {
+            user_id: Uuid::from_u128(77),
+            world_role: WorldRole::Player,
+        };
+        let current = load_update_docs(&r, &cmd).await;
+        let out = filter_command(
+            &cmd,
+            &player,
+            &WorldCapDefaults::default(),
+            &current,
+            |_| None,
+        );
+        assert!(
+            out.ops.is_empty(),
+            "the op must be withheld, not shipped half-redacted"
+        );
+        assert_eq!(
+            out.seq, cmd.seq,
+            "seq is preserved so the sequence guard sees no gap"
+        );
     }
 
     #[tokio::test]
