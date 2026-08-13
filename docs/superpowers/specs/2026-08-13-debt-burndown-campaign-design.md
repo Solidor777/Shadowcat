@@ -163,6 +163,18 @@ phases makes the plan un-writable until it runs. Phases consume these ids as fix
 | OB4 | A connection that misses an out-of-band `AssetChanged{replaced}` frame keeps a stale image forever with no self-healing path, and an ordinary reconnect is enough to miss it | 3 |
 | OB5 | The GM Settings hyperlinks checkbox is permanently non-functional on every world: it sends `?? false` as the optimistic-concurrency pre-image where the stored value is a literal `null`, so the server rejects every click and the field never self-heals | 5 |
 
+**Phase 1 disposition — OB2.** DONE. Redaction now operates on content bands, never the structural
+envelope, through one shared classifier (`REDACTABLE_BANDS`, `redaction_target`,
+`RedactionTarget`) in the `data::permission` module. Ingress (`validate_property_overrides`)
+rejects an unclassifiable pointer at all four write paths — `apply_intent`'s Create and Update,
+`apply_command`'s Create and Update. Egress (`filter_properties`) returns `Result<Document,
+RedactionError>`; both former panicking `.expect()`s are gone, and every caller fails closed.
+Evidence: `docs/CLOSED_BUGS.md` "Server / data — unrestricted `property_overrides` pointer
+substituted or panicked the envelope"; the mutation-checked test suite in `data::permission` and
+`data::validation` (per-pointer ingress rejection for each envelope field, acceptance for the four
+bands and their nested forms, the exact nested-permissions regression, and the
+`REDACTABLE_BANDS`-removal mutation check).
+
 ### 4.2 To-dos — built this campaign
 
 | Id | Item | Phase |
@@ -209,6 +221,23 @@ phases makes the plan un-writable until it runs. Phases consume these ids as fix
 | TD48 | Stored explored-fog blobs carry no grid-kind tag, so switching a live scene between square and hex reinterprets the blob | 2 |
 | TD49 | Server shortcode replacement also fires inside markdown code spans | 3 |
 | TD50 | External modules cannot register i18n keys, so a community module's label renders as its literal key and the authoring guide instructs authors around the gap | 6 |
+
+**Phase 1 disposition — TD26.** DONE. `WireFieldChange`'s `old`/`new` are now required keys on the
+client's inbound wire schema (`FieldChangeSchema`), rejecting a frame that omits either while still
+permitting an explicit `null`/`undefined` value — matching the Rust `FieldChange` source, which
+never omits them. Removed from `TODO.md`.
+
+**Phase 1 disposition — TD27.** DONE. `WireSearchHit.snippet`'s doc gained the inert-text exposure
+note ported from `crate::chat::MessageEngine`'s `source` field: every `engine` string leaf swept
+into the FTS index can surface through a search hit's snippet or document, so a consumer must
+render it as inert text, never innerHTML. Removed from `TODO.md`.
+
+**Phase 1 disposition — TD31.** DONE. `WireCapabilityGrants.by_role` is narrowed from
+`Record<string, string[]>` to a partial map keyed by `DocRole`
+(`Partial<Record<z.infer<typeof DocRoleSchema>, string[]>>`), matching
+`crate::data::document::CapabilityGrants`'s `BTreeMap<DocRole, BTreeSet<String>>`. `by_user` stays
+`Record<string, string[]>` deliberately — its keys are user ids, which are genuinely open. Removed
+from `TODO.md`.
 
 ### 4.3 To-dos — adjudicated
 
@@ -312,6 +341,18 @@ four-`ignores`-array entry was overturned as a stale record: the lint-config sha
 longer exists. Both closures are recorded in `docs/POST_WORK_FINDINGS.md`. The third overturned
 entry, PW19 itself, was the embedded positive control and was already tracked as a confirmed defect
 before this pass ran; every resolved e2e flake class remains unaffected by this re-triage.
+
+**Phase 1 disposition — PW19.** Confirmed and promoted to `OPEN_BUGS.md` in this phase, as scoped;
+its ruled fix (snapshotting the relevant visibility into the event/command at commit time) is
+Phase 1b's, not this phase's. `OPEN_BUGS.md` still carries the PW19 entry, unmodified from the
+promoting commit, per this task's carry-forward instruction not to touch it. No further action in
+Phase 1.
+
+| Id | Item | Phase |
+|---|---|---|
+| NEW-3 | `SqliteRepository::apply_command`'s Create and Update branches did not call `validate_property_overrides` at all — only `apply_intent`'s two branches did, so the band classifier's ingress gate would not have bound the trusted undo/replay substrate. Structural classification, not a capability/schema/size check, and the same class the pre-existing `/engine` normalization gate was already extended to `apply_command` to close. | 1 — folded into the same task, DONE: `apply_command`'s Create and Update now both call `validate_property_overrides` alongside `apply_intent`'s two call sites, closing the gap at all four write paths. |
+| NEW-4 | The comment-reference checker (`check-comment-refs.mjs`) reports clean both before and after a test name narrating an external incident by allusion ("the reported panic"), on the same instrument fingerprint — a detection gap, not instrument drift. History narration by allusion carries no fixed lexical marker the pattern can anchor on. | 7 — pairs with the existing item teaching the same checker to see a skill-name repo pointer; recorded in `docs/TODO.md`. Whoever builds it must positive-control against a known-violating name before trusting a green run, because a false positive is visible while a false negative is not, and that asymmetry is exactly what invites re-narrowing a widened detector. |
+| NEW-5 | The repo-wide `property_overrides` key survey (verifying every constructed key already falls inside the classifier's whitelist) greps the literal field name, so a key built through a helper function is invisible to the method. The one such helper in the repo was hand-audited and found compliant, so OB2's closing conclusion holds — but the method itself has a blind spot a future survey of this shape would repeat. | Not phase-scoped (method note, no code defect); recorded in `docs/TODO.md` for the next survey of this shape. |
 
 ---
 

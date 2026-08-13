@@ -333,6 +333,38 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
   `schema_declarations` is informational parity only (lets a client preemptively validate/UX-hint)
   and carries zero enforcement authority; the server-side `apply_intent` load is the only copy
   that matters.
+- **Redaction operates on content bands, never on the structural envelope — and ingress and egress
+  read ONE classifier, never agree by inspection.** `data::permission::REDACTABLE_BANDS: [&str; 4]`
+  (`name`, `engine`, `system`, `base` — the same set `filter_properties` special-cases and the same
+  set `required_cap_for_path` maps to `cap::WRITE_FIELDS`) and
+  `redaction_target(pointer) -> Option<RedactionTarget>` are the single shared symbol: `Band` (the
+  pointer names a whole band — null the field in place, never strip the key), `Within` (the pointer
+  descends into a band — `strip_pointer`, now provably landing inside untyped `serde_json::Value` or
+  an `Option`, never a required struct field), or `None` (unclassifiable — everything outside the
+  four bands, including the structural remainder: `id`, `scope`, `doc_type`, `schema_version`,
+  `source`, `owner`, `permissions`, `parent_id`, `embedded`, `created_at`, `updated_at`).
+  `collect_hidden` reads the same classifier, so the change-delta broadcast path cannot diverge from
+  whole-document egress.
+  - **Ingress rejects an unclassifiable `property_overrides` pointer, at all four write paths.**
+    `data::validation::validate_property_overrides` calls `redaction_target` and returns
+    `DataError::BadPath` on `None`, keeping its prior well-formedness checks. Called from
+    `SqliteRepository::apply_intent`'s Create and Update branches AND
+    `SqliteRepository::apply_command`'s Create and Update branches — `apply_command` needs the gate
+    too, despite being the trusted, capability/schema/size-skipping undo/replay substrate, because
+    this is a structural data-integrity invariant (a redaction pointer must always name something
+    redaction can classify), not an authorization check, and trust level doesn't exempt it. A
+    pointer naming `/permissions`, `/permissions/default`, `/owner`, `/id`, or `/embedded/items/0`
+    is rejected before it is ever stored.
+  - **Egress fails closed on an unclassifiable pointer — withhold, never guess, never panic.**
+    `filter_properties(doc, access) -> Result<Document, RedactionError>` returns `Err` instead of
+    panicking when a stored `property_overrides` pointer (from data written before this gate
+    existed, or from a future band added to `Document` without updating the classifier) cannot be
+    classified. Every caller fails CLOSED on `Err`, never open: `filter_command`'s broadcast path
+    drops delivery to that one recipient; `list_documents`/`search` omit the offending item from the
+    result rather than erroring the whole call; the single-document read (`get_document`) errors the
+    request; the search-index builder (`index_content_public`) writes empty public content for that
+    document rather than failing the write. Same posture as the fog invariant: a secrecy gate that
+    meets an input it cannot classify withholds, it does not guess.
 - **Path-prefix authz covers ancestor (subtree-replacing) writes AND whole-doc Create**, not just
   descendant field updates [[path-prefix-authz-covers-ancestor-and-create]].
 - **The singleton create-gate must close BOTH cross-call and intra-batch duplicate-`Create` races,

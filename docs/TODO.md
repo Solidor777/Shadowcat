@@ -418,34 +418,6 @@ Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one de
   `OPEN_BUGS.md` in sweep 11 Task 6 because the divergence never produces an incorrect state,
   server-authoritative or otherwise — only a possibly-confusing no-op click.)
 
-## Actionable now — `FieldChangeSchema` accepts a frame that omits `old`/`new`
-- TODO: Tighten `FieldChangeSchema` so a server frame missing the `old` or `new` key is
-  rejected rather than parsed. `z.unknown()` accepts an absent key (`undefined` satisfies
-  `unknown`), so `FieldChangeSchema.safeParse({ path })` succeeds today with both value keys
-  gone. The Rust `crate::data::command::FieldChange` never omits them — only `remove` carries
-  `#[serde(skip_serializing_if)]` — so a frame lacking them is malformed, and the client's
-  validation boundary currently admits it. **Not a live defect**: the server never omits either
-  key, so no real frame exercises the laxity. (An outbound writer such as the `templates`
-  module's `pushIfChanged` is irrelevant here — `FieldChangeSchema` validates INBOUND frames,
-  and values constructed on the client never pass through it.) The correct shape is likely a
-  required-key validator that still
-  permits an explicit `null`/`undefined` VALUE, since `old` is genuinely absent-valued for a
-  key that did not previously exist. Deferred because tightening a wire validator changes
-  runtime accept/reject behavior, which is outside a documentation-only change and needs its
-  own consent. Made visible by splitting `WireFieldChange` from its schema: the hand-written
-  type surfaced the optionality that `z.infer` had silently absorbed.
-
-## Actionable now — `WireSearchHit.snippet` carries no inert-text exposure note
-- TODO: Port the exposure note from `crate::chat::MessageEngine`'s `source` field onto the
-  client wire types. Every `engine` string leaf — `source` included — is swept into the FTS
-  index and can surface through `WireSearchHit.snippet` and `WireSearchHit.document`, so a
-  consumer must render it as inert text and never as innerHTML. `WireSearchHit.snippet`'s
-  current doc ("Highlighted match snippet from the recipient's own index partition.") states
-  the provenance but not the handling constraint. **Not currently reachable**: no UI module
-  consumes `.snippet` yet, which is exactly why the note should land before the first
-  search-UI consumer exists rather than after. Surfaced while naming the chat schema types,
-  when the Rust field doc was ported and its exposure note was dropped as out-of-scope.
-
 ## Actionable now — `check-comment-refs.mjs` cannot see a skill-name repo pointer
 - TODO: Extend `check-comment-refs.mjs`'s repo-document-pointer pattern to match
   `shadowcat-codebase-*` skill names. The current pattern matches `docs/...md` paths,
@@ -454,6 +426,26 @@ Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one de
   exists to remove. Found when a previously-unbound `@param` tag carrying such a pointer
   started rendering live in the generated API docs. A green `lint:comments` is therefore not
   evidence of RULE 16 compliance for this shape.
+- TODO: Teach the same checker to see history narration by allusion. It reports clean both
+  before and after a test name narrating an external incident ("the reported panic"), on the
+  same instrument fingerprint — a detection gap, not instrument drift, because a name referring
+  to an incident by allusion carries no fixed lexical marker the pattern can anchor on. Pairs
+  with the skill-name-pointer item above: one instrument, two blind spots, one pass. **Care
+  required when building it:** widening a detector this way is the right direction, but a false
+  positive is visible while a false negative is invisible, so all the feedback pressure pushes
+  toward narrowing it back. Positive-control the detector against a known-violating name before
+  trusting a green run.
+
+## Actionable now — a literal-field-name key survey misses keys built through a helper
+- TODO: When surveying every constructed value of a specific document field (e.g. every
+  `property_overrides` pointer key ever set, to confirm none falls outside an allow-listed set),
+  a repo-wide grep for the literal field name misses a key built through a helper function whose
+  call site never spells the field name itself — the helper's return value is what actually
+  reaches the field. Such a survey must also grep the constructing type/helper names, not only
+  the literal field. Same family as scoping a search to the shape you imagined rather than the
+  shape that exists. No known live miss today — the one such helper found during the
+  `property_overrides` band-classifier work was hand-audited and confirmed compliant — but the
+  method gap persists for the next survey of this shape.
 
 ## Actionable now — `WorldSession` repeats the unbound-`@param` defect
 - TODO: Give `WorldSession.subscribeScene` and `WorldSession.sendChatMessage` named options
@@ -474,16 +466,6 @@ Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one de
   with a fenced CSS example containing `url(/assets/x.png)` would fail the build spuriously, and
   the obvious repair for that is narrowing the detector — which is what hides the real misses.
   The fix has to parse out the `<style>` regions and test those.
-
-## Actionable now — `WireCapabilityGrants` maps are typed wider than the Rust source
-- TODO: Narrow `WireCapabilityGrants.by_role` from `Record<string, string[]>` to a partial map
-  keyed by `DocRole`, matching `crate::data::document::CapabilityGrants`' `BTreeMap<DocRole,
-  BTreeSet<String>>`. The client type admits any string key, so a frame carrying an unknown role
-  name parses clean. **Not a live defect**: the validator was always this wide — naming the type
-  did not change what it accepts — and the server is the only writer, so no unknown role reaches
-  it. Tightening it changes runtime accept/reject at the wire boundary, which needs its own
-  consent rather than riding along with a documentation change. `by_user` is correctly
-  `Record<string, string[]>`: its keys are user ids, which are genuinely open.
 
 ## Registered and exercised — plugin distribution properties
 Registration is per-machine state no committed file can carry. The supported non-interactive path
