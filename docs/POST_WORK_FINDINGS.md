@@ -194,23 +194,16 @@ are observations awaiting triage, not committed work.
   credit-gated sink (`ws::conn::tests::egress_lag_triggers_resync_and_converges`).
   Full ws_convergence suite now ~2s locally.
 
-- Title: `filter_command` redacts replayed history against the *current*
-  PermissionSet. Summary: `filter_command` loads each
-  `Update` op's document via `get_document` to resolve visibility, so on
-  resync/replay a property whose `GmOnly`↔`All` visibility was flipped after the
-  event is redacted under the *new* policy, not the policy in force at the
-  command's seq. Acceptable for M5 (visibility flips are rare; replay is
-  recovery, not audit) but the redaction is not point-in-time faithful. Status:
-  Needs triage — if audit-grade replay is ever required, snapshot the relevant
-  permissions into the event or attach them to the broadcast.
-
 - Title: an `Update` to a since-deleted document is silently dropped on replay.
   Summary: `filter_command`'s `Update` arm does `let Ok(Some(cur)) =
   get_document(..) else { continue }`; if the doc was later deleted the op is
-  skipped. seq/command ordering is preserved and the later `Delete` still
-  replays, so final-state convergence and the sequence guard are unaffected — a
-  client just sees Create → (missing Update) → Delete. Harmless for end state;
-  noted as a replay-fidelity limitation. Status: Accepted.
+  skipped. Document ids are client-supplied and reused after a hard delete, so
+  the lookup can resolve to an unrelated NEW document rather than finding none
+  at all, redacting the stale `Update` against the wrong permission set —
+  neither the "op is skipped" premise nor the "harmless for end state"
+  conclusion above holds in general. This is a confirmed, reachable secrecy
+  defect, not a replay-fidelity limitation. Status: Moved — do not re-file
+  here.
 
 - Title: no smaller "caption" text-size token in the M7d token set. Summary: the
   M8b-2 asset panel's tile filename (`Assets`'s `.name`) renders at inherited

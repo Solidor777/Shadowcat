@@ -22,6 +22,37 @@ Currently open, confirmed-real defects. Deferrals belong in `TODO.md`, not here.
   - **Reachability/impact:** no data loss, no authz effect; degrades accessibility only. Both
     call sites are GM-reachable, and `openDocument` is reachable by any role.
 
+- **`filter_command`'s `Update` arm and `collect_hidden` resolve replay visibility against a
+  document's CURRENT permission set, not the policy in force at the historical seq being
+  replayed.** `collect_hidden` derives the hidden-pointer set from
+  `cur.permissions.property_overrides`, with no knowledge of what the override was when a given
+  historical `FieldChange` was committed, and `redact_change` drops a change only if its path is
+  CURRENTLY hidden. So if a pointer was `GmOnly` while its value changed several times, and a GM
+  later makes it visible, every historical `FieldChange` for that pointer — including intermediate
+  values never intended for release — replays unredacted once any recipient gains visibility of
+  the current value. Reading the current value as public does not make its whole secret evolution
+  public; those are different disclosures. The reverse direction (visible → later hidden) is
+  correctly safe: those changes are dropped against current policy, which is over-redaction only.
+  - **The same shape recurs for the `OwnerOrGm` tier under ownership reassignment:** a
+    newly-assigned owner's replay discloses the previous owner's historical `OwnerOrGm` values.
+  - **Reachability:** `world_events` has no compaction or expiry (removed only via world/user
+    delete cascades), and `ResyncRequest{from_seq}` is entirely client-supplied with no lower
+    bound (`Room::resync_range` → `Repository::events_since` queries `seq > from_seq - 1`), so any
+    client can pull a document's entire history at any time.
+  - **Fix shape DECIDED (ruled, not yet built): snapshot the relevant visibility into the
+    event/command at commit time**, so replay redacts against the policy in force at that sequence
+    rather than against today's policy — the redaction decision is made once, at commit, and
+    stored with the event, rather than re-derived on every replay: the same shape as any two paths
+    required to agree deriving from one, instead of separately re-verifying agreement. Two other
+    shapes were considered and rejected: an
+    append-only "ever hidden" set permanently over-redacts history once a pointer is ever
+    restricted; current-state snapshots for non-GM resync sidestep the problem rather than solve
+    it, and change resync semantics for every document carrying an override.
+  - **Scheduling:** its own phase — its own branch, its own brainstorm → spec → plan cycle,
+    scheduled immediately after this phase merges and before the next. The next phase does not
+    depend on it, but the fix changes the command representation, the event log, and resync, which
+    is foundational enough that no later phase should be built on the current shape.
+
 - **A stale `Update` from before a document's deletion is redacted against a NEW document that
   later reuses the same id, not dropped as the closing analysis assumed.** Document ids are
   client-supplied: `envelope` accepts an optional explicit id and falls back to
