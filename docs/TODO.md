@@ -485,19 +485,16 @@ Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one de
   consent rather than riding along with a documentation change. `by_user` is correctly
   `Record<string, string[]>`: its keys are user ids, which are genuinely open.
 
-## Registered and exercised — remaining gap is workspace trust
-Registration is per-machine state no committed file can carry; do the first item on any new
-machine. The supported non-interactive path is the `claude plugin` CLI, not only the TUI command:
+## Registered and exercised — plugin distribution properties
+Registration is per-machine state no committed file can carry. The supported non-interactive path
+is the `claude plugin` CLI, not only the TUI command:
 `claude plugin marketplace add <your Shadowcat checkout>`, then
 `claude plugin install shadowcat-codebase@shadowcat --scope project` run from the consumer repo.
 Scope matters — `user` scope would enable it in Shadowcat too and double-register every skill and
 agent name.
 
-- TODO: Accept the trust dialog once in the Nightfox workspace. Until then Claude Code reports
-  `Ignoring 2 permissions.allow entries from .claude/settings.json: this workspace has not been
-  trusted`, so the `trash *` allowances that repo ships are inert. Whether the `rm` deny entries
-  are equally inert is UNVERIFIED and matters more than the allowances — do not assume the
-  deletion guard is active there.
+Per-machine setup actions inside a CONSUMING repo's workspace belong to that repo, not here: the
+Nightfox workspace's trust dialog is tracked in the Nightfox repo's own backlog.
 
 Settled by direct observation, kept because each is a property to re-check after a refresh:
 - A directory-sourced plugin serves a cached SNAPSHOT, not the live repo — CONFIRMED. The payload

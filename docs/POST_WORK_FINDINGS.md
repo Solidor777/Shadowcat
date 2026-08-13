@@ -381,23 +381,12 @@ are observations awaiting triage, not committed work.
   author→equip→toggle→revert flow (M13c Task 11) is covered by a component-level integration
   test instead. Status: Needs Review (Playwright harness is a toolchain follow-up).
 
-- Title: StatTable drag/drop reorder has no touch-triggerable fallback on iOS Safari. Summary:
-  the reorder mechanism is pure native HTML5 Drag-and-Drop (`draggable` + `ondragstart`/
-  `ondragover`/`ondrop`); WebKit on iOS does not fire `dragstart` from touch on `draggable`
-  elements (a long-standing WebKit gap, distinct from desktop/Android Chrome). 44px sizing
-  satisfies touch target SIZE but not touch TRIGGERING. This violates the CLAUDE.md
-  cross-platform touch directive and the spec's own "touch-friendly... cross-platform directive"
-  framing for this exact feature, on a named target platform, with zero test signal (tests only
-  fire synthetic dragStart/drop events). A pointer-events-based (or long-press) reorder
-  implementation is needed. Status: Needs Review (buddy-check Important, deferred with explicit
-  reviewer sign-off).
-
-- Title: StatRow's numeric field edits silently no-op on invalid input with no visible feedback.
-  Summary: `editNumber` returns early on non-finite input with no dispatch and no error
-  indicator; because numeric inputs use one-way `value={...}` bindings (not `bind:value`), the
-  DOM is never forced back to the last valid value, so stale/invalid typed text can persist
-  indefinitely with no chip or signal. No invalid value is ever dispatched (no
-  correctness/security impact) — a UX papercut only. Status: Needs Review.
+- Title: Two Nightfox sheet-layer findings moved to the Nightfox repo. Summary: the `StatTable`
+  touch-reorder gap on iOS Safari and the `StatRow` silent numeric no-op were recorded here while
+  Nightfox's packages were being built from this repo. Nightfox owns its own source and its own
+  trackers, so both are now open bugs in that repo instead. Engine-API friction stays here — the
+  split is by which repo's SOURCE carries the defect, not by which repo surfaced it.
+  Status: Moved — do not re-file here.
 
 - Title: M13d dice-label fix (`bf494c1`) — no Rust-side test for `RollOutcome` missing the
   `labeled_consts` key. Summary: the report's cited backward-compat regression test
@@ -650,9 +639,15 @@ are observations awaiting triage, not committed work.
   backstop rather than a guard against the obvious case, the gap defeats it.
   Predates the branch that surfaced it: the block was already present in
   Shadowcat before any of that work began, and `.claude/settings.json` is
-  git-ignored, so `git log -S` cannot date it. UNVERIFIED: the reviewer that
-  raised this had no shell, and the only direct test is attempting a banned
-  destructive command, which was deliberately not run. Status: Needs Review —
-  first establish Claude Code's actual pattern-matching semantics (literal
-  prefix vs. tokenized), ideally against a harmless command shaped the same way;
-  only widen the deny list if the literal-prefix reading is confirmed.
+  git-ignored, so `git log -S` cannot date it. The gap remains UNVERIFIED and
+  will stay that way: **`rm` is universally banned in every form, and that
+  includes running it as a PROBE** (owner ruling). A harmless-looking lookalike
+  such as `rm --help` would indeed reveal the matching semantics without touching
+  the filesystem, and it is still forbidden — a rule whose enforcement you test by
+  performing the banned act is a rule you have already broken, and "it was only a
+  probe" is precisely the reasoning the ban exists to refuse.
+  Status: Actionable — resolve by WIDENING, never by testing. Knowing whether the
+  literal-prefix reading holds is not a precondition for closing the gap: adding
+  the chained, path-qualified and fully-qualified forms to the deny list costs
+  nothing, is correct under either reading, and needs no experiment. Treat the
+  unverifiability as settled, not as pending work.
