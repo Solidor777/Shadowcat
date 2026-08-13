@@ -20,6 +20,11 @@ fails **closed**: withhold, never guess, never panic.
 
 **Ledger ids covered:** OB2, TD26, TD27, TD31, PW19.
 
+**NEW-1** (the two-blind-reviewer adversarial pass over the provisionally-accepted findings batch)
+runs as its own review activity in parallel with this phase, outside this plan's tasks. Its
+completion gates the Phase 2 merge, not this phase's — no task here depends on it or produces
+its output.
+
 ## Global Constraints
 
 - **The campaign directive in the spec's §1 is copied verbatim into every subagent's first prompt.**
@@ -74,6 +79,34 @@ Pre-authorized by the user:
   conversion are the security boundary.
 - Tasks 2, 4, 5, 6 take the standard two-reviewer gate.
 - A **whole-branch** review runs before merge regardless.
+
+**Outcome.** The plan buddy-check ran and converged, with no stalemate; its findings are folded
+into this document. Both reviewers independently concluded PW19's premise was false in the
+opposite direction from the authoring session's stated conclusion — see Task 6 — and both
+converged AGAINST that pre-stated conclusion, so its presence in the document did not anchor this
+round's result. That convergence is a property of this round, not of the setup: the setup itself
+carried a process defect, recorded below as a forward correction.
+
+**Task 3's spec deviation converged as accepted.** Both reviewers explicitly accepted refining the
+spec's "error" policy to "omit and log" for the collection-returning callers, on the reasoning
+that erroring a whole list or search over one poisoned document would reproduce a denial of
+service inside the fix for one, while both policies still withhold. This verdict is resolved, not
+open — Task 3's callout and the Self-Review note below record it as such.
+
+**Process defect found in the setup itself.** The directive above promised reviewers would not be
+told the authoring session's conclusion, but Task 6, as originally drafted, stated that conclusion
+verbatim inside the document the directive told reviewers to read in full — the exposure the
+directive was written to prevent was present in the material handed to them. Structural fix for
+any future point-in-time-sensitive buddy check: exclude the recommended-branch reasoning from what
+reviewers are handed, or withhold it until after both independent verdicts land, rather than
+relying on a same-document instruction not to attend to it.
+
+**One Minor accepted as a non-blocking forward note, not a change to Task 3's policy.** Under
+Task 3's fail-closed egress policy, an omission caused by an unclassifiable override is logged
+only at `warn`, with no operator-visible signal distinguishing "omitted because redaction could
+not classify the override" from ordinary permission filtering that omits a document a recipient
+simply cannot see. Recorded here as a forward note for a future observability pass; Task 3's
+policy is unchanged.
 
 ---
 
@@ -252,8 +285,9 @@ pub enum RedactionTarget {
 /// is handled that way rather than stripped.
 ///
 /// Both properties are what the ingress gate and the egress filter must agree on. They
-/// agree by reading THIS function; two independent implementations verified to agree by
-/// inspection is what drifted into a panic.
+/// agree by reading THIS function: two implementations kept in sync only by inspection
+/// can silently diverge on an input neither author checked, and reading one shared
+/// function is what prevents that.
 ///
 /// `/name` is a leaf: `/name/...` has no sub-path and classifies as `None`, mirroring
 /// `required_cap_for_path`.
@@ -300,17 +334,18 @@ verify the test suite actually depends on the constant.
 Temporarily edit `REDACTABLE_BANDS` to `["name", "engine", "system", "base"]` → `["name", "engine", "system", "unused"]`, then run:
 
 Run: `cd src/server && cargo test --lib data::permission`
-Expected: FAIL, in **three** distinct places — count them rather than accepting an aggregate
-red. (1) `redaction_target_classifies_each_whole_band`'s loop fails on `/base`, which no longer
-classifies. (2) That same test's `assert_eq!` on `REDACTABLE_BANDS` fails, naming the changed
-list. (3) `redaction_target_classifies_within_a_band` fails on `/base/system/hp`.
 
-If you see fewer than three, the suite is weaker than it looks and the mutation check has not
-done its job — stop and report rather than proceeding on an aggregate FAIL.
+Do not predict which assertions fail or how many — `assert_eq!` panics unwind the whole
+`#[test]` function it runs in, so two assertions in the same test function can never both be
+observed to fail in one run; only the runner's actual output is evidence. Instead:
 
-**Revert the edit and re-run to confirm green before proceeding.** Confirm the revert
-landed by diffing — a mutation that never took effect and a test that does not gate
-produce identical output.
+- Record the observed failures (failing test names and their messages) in the task report.
+- Confirm the mutation is detected **at all**. If the suite stays green, the band list is
+  decorative rather than load-bearing, and that is the finding to report — stop and report
+  rather than proceeding.
+- Revert the edit and re-run to confirm green.
+- Confirm the revert actually landed by diffing the file against its pre-mutation state — a
+  mutation that never took effect and a test that does not gate produce identical output.
 
 - [ ] **Step 6: Run the full server gate**
 
@@ -324,8 +359,9 @@ git add src/server/src/data/permission.rs
 git commit -m "feat(permission): classify redaction pointers by content band
 
 One shared classifier decides what a property_overrides pointer means, so
-ingress and egress stop duplicating the judgement. A Some result guarantees
-the removal lands in untyped or optional data.
+ingress and egress stop duplicating the judgement. A Within result guarantees
+the removal lands in untyped or optional data; a Band result nulls the field
+in place and needs no such guarantee.
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>" -- src/server/src/data/permission.rs
 ```
@@ -522,12 +558,13 @@ never guess:
 | `search` hit construction (`sqlite.rs`) | omit that hit, log at `warn` |
 | `index_content` (`search.rs`) | index **empty** public content for that document, log at `warn`. This is the write path: never fail the write, and never index unredacted text |
 
-> **Deviation from the spec's §5 phrasing, flagged for the reviewer.** The spec said
+> **Deviation from the spec's §5 phrasing, accepted by the buddy check.** The spec said
 > `get_document`/`search` "error rather than ship a half-redacted document". This plan refines
 > that: collection-returning callers (`list_documents`, `search`) **omit the item**, and only the
 > single-document caller errors. Both are the same fail-closed direction — withhold — and omission
 > keeps one poisoned document from denying an entire list or search to every reader, which would
-> recreate a denial of service in the fix for one.
+> recreate a denial of service in the fix for one. Both buddy-check reviewers explicitly accepted
+> this refinement on that reasoning; see the Outcome paragraph above.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -847,8 +884,10 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>" -- src/server/src/data/pe
 
 **Interfaces:**
 - Consumes: nothing from earlier tasks.
-- Produces: `FieldChangeSchema` rejects a frame omitting `old` or `new`; `WireFieldChange`'s
-  `old`/`new` become required properties of type `unknown`.
+- Produces: `FieldChangeSchema` rejects a frame omitting `old` or `new` at runtime.
+  `WireFieldChange`'s `old`/`new` stay declared-optional properties of type `unknown` — Zod v3's
+  type-level inference cannot express "required key, unknown value", so the runtime and
+  declared-type guarantees diverge here by construction; see Step 3.
 
 **Why this is not cosmetic.** `z.unknown()` accepts an *absent* key, because `undefined`
 satisfies `unknown` — so `FieldChangeSchema.safeParse({ path })` succeeds today with both value
@@ -916,15 +955,25 @@ export const fieldChangeSchemaImpl = z.object({
   .refine((v) => "new" in v, { message: "field change must carry a `new` value", path: ["new"] });
 ```
 
-Then update `WireFieldChange` so `old` and `new` are **required** properties (drop the `?` and
-the doc-comment sentence explaining why they were typed optional — that sentence describes the
-laxity this task removes, and leaving it makes the comment false).
+**`WireFieldChange.old`/`new` stay optional in the declared type — do not drop the `?`.** Zod v3
+computes an object field's declared optionality structurally: any field whose output type admits
+`undefined` — which `z.unknown()`'s output always does — is inferred as an optional key,
+regardless of what a `.refine()` on the whole object enforces at runtime. A type-level annotation
+cannot express "present, but any value" against that inference rule, so the declared type cannot
+be tightened to match the runtime guarantee this task adds. This is a Zod v3 inference limit, not
+a claim that the server may omit either key: the Rust source never does, and the `.refine()` calls
+above are what actually reject a frame that omits one.
 
-> If the `z.ZodType<WireFieldChange>` annotation on `FieldChangeSchema` no longer accepts the
-> refined schema (a `ZodEffects` is not a `ZodObject`), keep the annotation on the exported
-> const and let the impl const stay unannotated — the file already establishes that convention.
-> If the annotation cannot be satisfied at all, **stop and report**; do not reach for a
-> `@ts-ignore`, which is a forbidden suppression.
+Rewrite the existing doc comment on `old`/`new` to state that reason directly, rather than
+deleting it: the fields are typed optional because Zod cannot express "required key, unknown
+value" in its inferred type, not because an absent key is a valid frame.
+
+> **Do not edit `src/client/core/src/wire.test.ts`'s existing exact-equality drift guard**
+> (`expectTypeOf<z.infer<typeof fieldChangeSchemaImpl>>().toEqualTypeOf<WireFieldChange>()`) to
+> accommodate this change. Declaring `old`/`new` optional in `WireFieldChange` is what keeps that
+> guard green, because it already matches what Zod infers for `fieldChangeSchemaImpl`. If it goes
+> red, the change made here is wrong — stop and report rather than editing the guard, which exists
+> to catch exactly this class of drift.
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
@@ -1034,11 +1083,12 @@ export const capabilityGrantsSchemaImpl = z.object({
 so it is already in scope. Zod v3's `ZodRecord` parses each key with the key schema, which is
 what makes an unknown role fail.
 
-> Zod v3 infers a **non-partial** `Record` from an enum-keyed record, so the
-> `z.ZodType<WireCapabilityGrants>` annotation may or may not accept it. If it errors, keep the
-> exported annotation and leave the impl const unannotated, per the file's existing convention.
-> Do **not** widen the declared type back to `Record<string, string[]>` to make the annotation
-> compile — that reinstates the defect. If neither shape works, stop and report.
+> Zod v3 infers a **`Partial<Record<...>>`** from an enum-keyed record, matching the declared
+> `by_role: Partial<Record<...>>` above, so the `z.ZodType<WireCapabilityGrants>` annotation is
+> expected to compile cleanly. If it does not, keep the exported annotation and leave the impl
+> const unannotated, per the file's existing convention. Do **not** widen the declared type back
+> to `Record<string, string[]>` to make the annotation compile — that reinstates the defect. If
+> neither shape works, stop and report.
 
 For TD27, replace the `snippet` doc comment on `WireSearchHit`:
 
@@ -1075,66 +1125,96 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>" -- src/client/core/src/wi
 
 ---
 
-### Task 6: Record the replay-redaction ruling
+### Task 6: Promote PW19 to a confirmed open bug; record the ruled fix direction and its Phase 1b home
 
 **Ledger id:** PW19.
 
-**This task is BLOCKED until the user rules.** The user has deferred the ruling to the plan
-buddy-check: two blind reviewers argue the leak question independently, and their convergence or
-stalemate goes to the user, who then authorizes a branch. Both branches are specified here so the
-executing agent needs no further input once one is recorded in its task brief. **An agent that
-finds no branch recorded stops and asks — it does not choose.**
+**The buddy-check converged: PW19 is a confirmed secrecy defect, not a candidate keep.**
+`filter_command`'s Update arm resolves access against `cur` — the document's CURRENT stored state
+fetched at redaction time. `collect_hidden` derives the hidden-pointer set from
+`cur.permissions.property_overrides`, with no knowledge of what the override was when a given
+historical `FieldChange` was committed. `redact_change` drops a change only if its path is
+CURRENTLY hidden. So if a pointer was `GmOnly` while its value changed several times, and a GM
+later makes it visible, every historical `FieldChange` for that pointer — including intermediate
+values never intended for release — replays unredacted. Reading the current value as public does
+not make the value's whole secret evolution public; those are different disclosures. It is
+reachable, not theoretical: `world_events` has no compaction or expiry (removed only via
+world/user delete cascades), and `ResyncRequest{from_seq}` is entirely client-supplied with no
+lower bound (`Room::resync_range` → `Repository::events_since` queries `seq > from_seq - 1`), so
+any client can pull a document's entire history at any time. The same shape recurs for the
+`OwnerOrGm` tier under ownership reassignment: a newly-assigned owner's replay discloses the
+previous owner's historical `OwnerOrGm` values. The reverse direction (visible → later hidden) is
+correctly safe: those changes are dropped against current policy, which is over-redaction only.
 
-**Background.** `filter_command`'s Update arm loads each op's document to resolve visibility, so on
-resync or replay a property whose visibility was flipped after the event is redacted under the
-*new* policy, not the policy in force at that sequence.
+**The user has ruled the fix shape.** Snapshot the relevant visibility into the event/command at
+commit time, so replay redacts against the policy in force at that sequence rather than against
+today's policy. This makes the redaction decision once, at commit, and stores it with the event —
+re-deriving that decision on every replay is what produced the defect, and this is the same
+never-fork-a-decision shape the campaign applies elsewhere. Two other shapes were considered and
+not chosen: an append-only "ever hidden" set permanently over-redacts history once a pointer is
+ever restricted; current-state snapshots for non-GM resync sidestep the problem rather than solve
+it, and change resync semantics for every document carrying an override.
 
-**Branch A — accept, with the reasoning recorded in code (the recommendation).**
+**This task does not implement the fix.** The fix is scoped to its own phase, **Phase 1b** — its
+own branch, its own brainstorm → spec → plan cycle, scheduled immediately after this phase merges
+and before Phase 2. Phase 2 does not depend on it, but the fix changes the command representation,
+the event log, and resync, which is foundational enough that no later phase should be built on the
+current shape. Do not attempt the fix inline in this task.
 
-The analysis: a field that was hidden and is now visible is public anyway, and one that was
-visible and is now hidden is over-redacted. Neither direction leaks. So the only thing at stake is
-audit-grade replay fidelity, which nothing consumes.
+- [ ] **Step 1: Promote the entry to `docs/OPEN_BUGS.md`**
 
-- [ ] **Step A1: Extend `filter_command`'s doc comment**
+Add a new entry to `docs/OPEN_BUGS.md`, following the file's existing entry style (symbols cited,
+never file names or line numbers; no milestone ids, sweep markers, dates, or history narration).
+State:
+- The mechanism: `filter_command`'s Update arm and `collect_hidden` resolve replay visibility
+  against the document's CURRENT permission set, not the policy in force at the historical seq
+  being replayed.
+- The direction of the leak: a pointer hidden at write time and later made visible replays every
+  intermediate historical value unredacted, once any recipient gains visibility of the CURRENT
+  value. The reverse direction (visible → later hidden) is safe — over-redaction only.
+- Reachability: `world_events` has no compaction or expiry; `ResyncRequest{from_seq}` is
+  client-supplied with no lower bound, so any client can replay a document's full history at any
+  time.
+- The sibling recurrence: the same shape applies to the `OwnerOrGm` tier under ownership
+  reassignment.
+- **The ruled fix direction**, so the entry is self-describing: snapshot the relevant visibility
+  into the event/command at commit time, so replay redacts against the policy in force at that
+  sequence rather than against today's policy — the redaction decision is made once, at commit,
+  and stored with the event, rather than re-derived on every replay. Two other shapes were
+  considered and rejected: an append-only "ever hidden" set permanently over-redacts history; a
+  non-GM current-state resync sidesteps the problem and changes resync semantics for every
+  document carrying an override.
+- **The fix's home:** Phase 1b — its own branch, its own brainstorm → spec → plan cycle, scheduled
+  immediately after this phase merges and before Phase 2. It changes the command representation,
+  the event log, and resync, which is foundational enough that no later phase should be built on
+  the current shape.
 
-Add to the existing doc comment on `filter_command`, in the project's present-tense
-constraint style — no history narration, no document pointers:
+- [ ] **Step 2: Remove the superseded entry from `docs/POST_WORK_FINDINGS.md`**
 
-```rust
-/// CONSTRAINT: an `Update`'s visibility is resolved against the document's CURRENT
-/// permission set, not the set in force at that seq. Replay is recovery, not audit, and
-/// neither direction leaks: a field since made visible is public anyway, and one since
-/// hidden is over-redacted. Point-in-time fidelity would require snapshotting the
-/// relevant permissions into the event, and nothing consumes an audit-grade replay.
-```
+If a "Needs triage" PW19 entry exists there, remove it — `docs/OPEN_BUGS.md` is now the single
+tracker for this confirmed defect, and `POST_WORK_FINDINGS.md` is a living review record, not a
+duplicate bug list.
 
-- [ ] **Step A2: Update the tracking docs**
+- [ ] **Step 3: Commit**
 
-Change that entry's status in `docs/POST_WORK_FINDINGS.md` from "Needs triage" to accepted,
-stating the no-leak-either-direction reasoning and that the constraint now lives on the symbol.
-
-- [ ] **Step A3: Run the gate and commit**
-
-Run: `cd src/server && cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test`
+This is a documentation-only change; no server gate applies.
 
 ```bash
-git add src/server/src/data/permission.rs docs/POST_WORK_FINDINGS.md
-git commit -m "docs(permission): state the replay-redaction constraint on the symbol
+git add docs/OPEN_BUGS.md docs/POST_WORK_FINDINGS.md
+git commit -m "docs(bugs): promote PW19 to a confirmed replay-redaction defect
 
-Replayed history resolves visibility against the current permission set.
-Neither direction leaks, so the behavior stands and the constraint is now
-recorded where a maintainer reads it.
+filter_command's Update arm and collect_hidden resolve replay visibility
+against the document's current permission set, so a pointer once hidden and
+later made visible replays its whole historical value sequence unredacted.
+The ruled fix snapshots visibility into the event/command at commit time;
+it is scoped to Phase 1b, its own branch and design cycle.
 
-Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>" -- src/server/src/data/permission.rs docs/POST_WORK_FINDINGS.md
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>" -- docs/OPEN_BUGS.md docs/POST_WORK_FINDINGS.md
 ```
 
-**Branch B — implement point-in-time redaction.**
-
-If the user rules that replay must be point-in-time faithful, this is **not** a step in this task:
-it changes the event record's shape (the relevant permissions must be snapshotted into the event
-or attached to the broadcast), which touches the command representation, the event log, and
-resync. Open it as its own ledger item, assign it to Phase 1 as a new task, and re-plan that task
-before writing code. Do not attempt it inline.
+**This task is complete at Step 3 — it is not blocked.** The ruling has arrived: the fix direction
+is recorded above and its implementation is scoped to Phase 1b, which is out of this task's scope
+by design rather than by an open question.
 
 ---
 
@@ -1228,7 +1308,7 @@ test that asserts on it (Task 3 Step 1). `REDACTABLE_BANDS` is `[&str; 4]` in bo
 and the test that iterates it. `filter_properties`' new signature is stated once in Task 3's
 Interfaces block and used consistently at all five call sites.
 
-**One deviation flagged, not absorbed:** Task 3's per-caller policy refines the spec's §5 phrasing
+**One deviation flagged, and resolved:** Task 3's per-caller policy refines the spec's §5 phrasing
 for `list_documents` and `search` from "error" to "omit the item and log". Both are fail-closed;
-omission prevents one poisoned document from denying an entire list to every reader. Called out in
-Task 3's policy table for the reviewer to accept or reject.
+omission prevents one poisoned document from denying an entire list to every reader. The buddy
+check explicitly accepted this refinement — see the Outcome paragraph above.

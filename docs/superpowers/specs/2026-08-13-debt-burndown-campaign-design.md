@@ -94,11 +94,27 @@ drops sites that were named to it, and the resulting report reads as complete. E
 **per-id disposition line**; a phase is complete when every id in its input list has one. "Category
 complete" is not an accepted report shape.
 
+### 2.6 Repo boundary: Shadowcat engine versus Nightfox module
+
+The user has ruled that Nightfox is its own project, out of scope for this campaign; any
+Nightfox-specific item belongs in the Nightfox repo's own trackers, not here. The split is **by
+which repo's source carries the defect, not by which repo surfaced it** — a rule the Nightfox
+backlog itself states. An item found while exercising a Nightfox sheet is still a Shadowcat item
+if the code that must change is Shadowcat's own engine or toolchain; only an item whose fix lives
+in Nightfox's own source moves.
+
+This direction is non-obvious, so four items name the worked example of a symptom surfaced through
+Nightfox that stays here because the fix is Shadowcat's: PW8 (module registration cannot reach the
+app context), PW10/TD50 (the module-facing i18n registration seam), PW11 (the effect
+document-type constant has no engine home), and PW12 (no browser e2e harness for external
+modules). All four are defects in Shadowcat's own source or toolchain that a Nightfox module
+merely surfaced, so none of them move.
+
 ---
 
 ## 3. Campaign structure
 
-**Sub-project 1 — Debt burndown.** Eight sequenced phases, one branch each. This document specs it
+**Sub-project 1 — Debt burndown.** Nine sequenced phases, one branch each. This document specs it
 in full.
 
 **Sub-projects 2–8 — the seven follow-on features** recorded in `TODO.md` under "Follow-on feature
@@ -112,13 +128,19 @@ phases read; the client phases consume Phase 1's wire changes; Phase 7's suppres
 late because grouping arguments into the structs they already form rewrites server signatures that
 earlier phases edit.
 
+**Phase 1b** is its own branch and its own brainstorm → spec → plan cycle, scheduled immediately
+after Phase 1 merges and before Phase 2 begins. Phase 2 does not depend on it, but it changes the
+command representation, the event log, and resync — an event-schema change foundational enough
+that no later phase should be built on the current shape.
+
 | Phase | Branch scope | Ledger ids |
 |---|---|---|
 | 1 | Server — data, permissions, wire boundary | OB2, TD26, TD27, TD31, PW19 |
+| 1b | Server — point-in-time replay redaction (event/command visibility snapshot) | PW19 |
 | 2 | Server — scene geometry, movement, vision | PW1, PW2, PW3, PW4, PW5, PW31, TD17, TD18, TD19, TD48 |
 | 3 | Server — ops, performance, asset staleness | OB4, TD4a, TD5, TD9, TD10, TD49 |
 | 4 | Client — shell, session, boot, ui-state | TD3, TD4b, TD6, TD7, TD8, TD12, TD13, TD14, TD15, TD16, TD20, TD29, PW16, PW17 |
-| 5 | Client — modules, UI, render | OB1, OB3, OB5, TD11, TD21, TD22, TD23, TD24, TD25, TD37, TD38, TD45, TD47, PW6, PW7, PW13, PW14, PW15, PW21, PW22, PW23 |
+| 5 | Client — modules, UI, render | OB1, OB3, OB5, TD11, TD21, TD22, TD23, TD24, TD25, TD37, TD38, TD45, TD47, PW6, PW7, PW15, PW21, PW22, PW23 |
 | 6 | Module toolchain — i18n seam, live module management | TD39, TD40, TD50, PW8, PW10, PW11 |
 | 7 | Tooling, gates, test infrastructure | TD1, TD2, TD28, TD30, TD44, PW9, PW12, PW18, PW20 |
 | 8 | Closeout — doc sync, skill gate, plugin, merge, CI | — |
@@ -215,14 +237,17 @@ hold. The user has ruled that all four unscoped items below are built:
 - TD39/TD40 are blocked on live module management. Per-world enable/disable exists; runtime
   install/uninstall does not. Built in Phase 6.
 
-**User action, not agent-doable.** Two items are per-machine clicks inside another program's UI
-and cannot be closed by any agent. They are surfaced to the user rather than claimed:
+**User action, not agent-doable.** A per-machine click inside another program's UI cannot be
+closed by any agent. It is surfaced to the user rather than claimed:
 
-- TD32 — accept the trust dialog once in the Nightfox workspace. Until then that repo's permission
-  entries are inert, and whether its deletion guards are equally inert is **unverified** and
-  matters more.
 - TD33 — install the plugin in the Kimi TUI and confirm all six agents register; two specific
-  failure modes are predicted and need one real dispatch to settle.
+  failure modes are predicted and need one real dispatch to settle. TD33 stays here: the plugin is
+  Shadowcat's own artifact, and the fact that verifying it happens inside a Nightfox workspace does
+  not make the item Nightfox's, per §2.6.
+
+TD32 — accept the trust dialog once in the Nightfox workspace — moved to the Nightfox repo's own
+backlog as a per-machine setup entry, per §2.6: the trust dialog gates a Nightfox workspace, not
+Shadowcat's own toolchain.
 
 ### 4.4 Post-work findings — triaged
 
@@ -243,30 +268,31 @@ this campaign.
 | PW10 | External-module i18n registration seam missing | Phase 6 (with TD50) |
 | PW11 | The effect document-type constant has no engine home and is defined in a module's own barrel | Phase 6 |
 | PW12 | No browser e2e harness for external modules | Phase 7 |
-| PW13 | Drag reorder is pure HTML5 drag-and-drop, which iOS Safari does not fire from touch — a **named-platform violation of the cross-platform directive** with zero test signal | Phase 5 (Nightfox repo) |
-| PW14 | Numeric field edits silently no-op on invalid input, and one-way bindings leave stale text with no signal | Phase 5 (Nightfox repo) |
+| PW13 | Drag reorder is pure HTML5 drag-and-drop, which iOS Safari does not fire from touch — a **named-platform violation of the cross-platform directive** with zero test signal | Moved to the Nightfox repo as an open bug, per §2.6 — the affected source is Nightfox's own sheet component |
+| PW14 | Numeric field edits silently no-op on invalid input, and one-way bindings leave stale text with no signal | Moved to the Nightfox repo as an open bug, per §2.6 — the affected source is Nightfox's own sheet component |
 | PW15 | Two comments state opposite server orderings, each citing the other as rationale; exactly one is wrong and a maintainer reasoning from it could remove the load-bearing guard | Phase 5 |
 | PW16 | Invite redemption has no network-exception path, unlike its three siblings, so an offline attempt shows the user nothing | Phase 4 |
 | PW17 | A controller captures session sub-objects at construction; the leave-then-enter path is proven safe, but world-to-world switching without passing through null is untraced | Phase 4 |
 | PW18 | A whole-suite e2e failure mode with no captured evidence and an unknown cause; mitigated by trace retention, not fixed | Phase 7 — bounded investigation; see §7 |
-| PW19 | Replayed history is redacted against the *current* permission set rather than the set in force at that sequence | Phase 1 — see §7 |
+| PW19 | Replayed history is redacted against the *current* permission set rather than the set in force at that sequence | Confirmed defect (buddy-check convergence); ruled fix: snapshot the relevant visibility into the event/command at commit time, so replay redacts against the policy in force at that sequence; Phase 1b |
 | PW20 | The deletion deny-list may only block the naive invocation shape; the pattern-matching semantics are unverified and the only direct test is running a banned destructive command | Phase 7 |
 | PW21 | No smaller caption text-size token exists; deferred to a milestone that **has now shipped** | Stale deferral; Phase 5 |
 | PW22 | Config-doc seeds race resync and can double-create; deferred to a milestone that **has now shipped** | Stale deferral; Phase 5 |
 | PW23 | The world-defaults editor authors only a subset of the settings that resolve at world level | Phase 5 |
 | PW31 | A lenient-mode near-corner move can be spuriously rejected by an over-firing corner epsilon | Phase 2 — re-verify against the shipped corner-drift fix first |
+| NEW-1 | PW19 was reached by exactly one analyst's single-pass "accepted, no action" reasoning and turned out to be a live secrecy defect on buddy-check. The same reasoning shape produced every item in the batch below, so the whole batch — not only the secrecy-adjacent entries — gets the same two-blind-reviewer adversarial treatment. Runs as its own review activity in parallel with Phase 1, completing **before Phase 2 merges** — a re-triage finding belonging to a later phase must reach that phase's plan before that phase merges, which is exactly what §2.4's parked-item rule exists to guarantee. Any entry the pass overturns is routed into its owning phase as a normal ledger item with a `NEW-n` id. Until this pass completes, the batch below is **unverified**, not triaged. | Phase 1 (parallel review activity) |
 
-**Re-confirmed as no action**, with the reasoning restated so it is not rediscovered as a defect:
-the replay-drop of an update to a since-deleted document (end state converges); per-leg-greedy
-multi-leg parity (cost display only); owner delete requiring an explicit grant (documented
-behavior change); grants targeting the no-access role (GM-authored, coherent); offline-intent
-flush ordering (eventually consistent); both world-delete entries (matches the project-wide
-delete convention); the dark-scene movement freeze (**working as designed — do not soften the
-defaults**); the five-versus-six invite-rejection enumeration (caller-indistinguishable by
-construction); the `Promise.all` in module management (**correct — "harmonizing" it to
-`allSettled` would let one click disable every module in the world**); the four pairwise-identical
-ignore arrays; and every resolved e2e flake class. These are listed for the user to object to at
-spec review rather than silently absorbed.
+**Provisionally accepted, pending NEW-1** — not yet re-confirmed — with the reasoning as first
+argued, so the reviewers have it to test rather than rediscover from nothing: the replay-drop of an
+update to a since-deleted document (end state converges); per-leg-greedy multi-leg parity (cost
+display only); owner delete requiring an explicit grant (documented behavior change); grants
+targeting the no-access role (GM-authored, coherent); offline-intent flush ordering (eventually
+consistent); both world-delete entries (matches the project-wide delete convention); the dark-scene
+movement freeze (**working as designed — do not soften the defaults**); the five-versus-six
+invite-rejection enumeration (caller-indistinguishable by construction); the `Promise.all` in
+module management (**correct — "harmonizing" it to `allSettled` would let one click disable every
+module in the world**); the four pairwise-identical ignore arrays; and every resolved e2e flake
+class. These are listed for the user to object to at spec review rather than silently absorbed.
 
 ---
 
@@ -304,7 +330,8 @@ parity test that passes because both paths are wrong the same way proves nothing
 
 TD26, TD27 and TD31 tighten the client wire boundary against its Rust source. TD26 and TD31 change
 runtime accept/reject, which is why they were deferred out of documentation work and belong here
-with real tests. PW19 is triaged in §7.
+with real tests. PW19 is confirmed here — its buddy-check ran with this phase's plan — and its
+promotion to `OPEN_BUGS.md` happens in this phase, but its ruled fix is scoped to Phase 1b (§3).
 
 ### Phase 2 — Server: scene geometry, movement, vision
 
@@ -385,9 +412,9 @@ picker plus one concurrency-correct dispatch using the raw stored value as the p
 the same convention whose absence caused OB5. TD37 adds the control and the wrap-aware
 shortest-signed-delta lerp that the existing animator's raw-scalar tween needs.
 
-PW13 is a cross-platform directive violation on a named target platform and is fixed with a
-pointer-based reorder, not a larger touch target — size is not triggering. It and PW14 live in the
-Nightfox repo, so this phase spans two repositories.
+PW13 and PW14 were originally scoped to this phase but have moved to the Nightfox repo's own
+trackers, per §2.6: both are defects in Nightfox's own sheet component, not in Shadowcat's engine
+or toolchain. This phase does not span two repositories.
 
 ### Phase 6 — Module toolchain
 
@@ -451,15 +478,8 @@ shape in keeping with our plans and goals?".
 
 ## 7. Requires the user's ruling
 
-Two items where "what is the best long-term shape?" genuinely does not answer the question. Both
-are surfaced rather than decided, per §2.3.
-
-**PW19 — point-in-time redaction of replayed history.** Replay redacts against the current
-permission set, not the set in force at that sequence. My analysis finds **no secrecy defect in
-either direction**: a field that was hidden and is now visible is public anyway, and one that was
-visible and is now hidden is over-redacted, which is safe. So the only thing at stake is
-audit-grade replay fidelity, which nothing currently needs. My recommendation is to record it as
-accepted with that reasoning stated in code — but that is a **keep**, and keeps need your sign-off.
+One item where "what is the best long-term shape?" genuinely does not answer the question. It is
+surfaced rather than decided, per §2.3.
 
 **PW18 — the undiagnosed whole-suite e2e failure.** Fifteen of sixteen tests failed on an
 unmodified commit and then passed on re-run, which establishes non-determinism and rules out a code
@@ -471,8 +491,9 @@ connection, under a constrained-CPU repro — and, if that does not reproduce it
 with its evidence capture rather than being closed on a green re-run. **Do not treat the green
 re-run as evidence the cause is gone** is the entry's own standing instruction.
 
-Also surfaced, not decided: TD32 and TD33 are per-machine actions inside another program's UI and
-cannot be closed by any agent (§4.3).
+Also surfaced, not decided: TD33 is a per-machine action inside another program's UI and cannot be
+closed by any agent (§4.3). TD32 moved to the Nightfox repo's own backlog (§2.6) and is no longer
+this campaign's item to surface.
 
 ---
 
@@ -534,8 +555,10 @@ Sub-project 1 is complete when:
   recording what was done, with evidence.
 - `OPEN_BUGS.md` contains no entry that is not validly blocked under §2.1.
 - `TODO.md` contains only the seven validly-blocked items of §4.3, each naming its blocking phase,
-  plus the two user-action items and the seven follow-on sub-projects.
+  plus the one user-action item and the seven follow-on sub-projects.
 - `POST_WORK_FINDINGS.md` contains no untriaged entry.
+- NEW-1's adversarial pass over the provisionally-accepted findings batch (§4.4) has completed,
+  and every finding it overturned has been folded into its owning phase.
 - No parked new item (§2.4) has an unblocking phase that has already merged.
 - Every affected `shadowcat-codebase-*` skill is updated and its diff reviewer-confirmed; the
   plugin version is bumped and refreshed in each consuming repo.
