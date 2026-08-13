@@ -35,8 +35,12 @@ Currently open, confirmed-real defects. Deferrals belong in `TODO.md`, not here.
   correctly safe: those changes are dropped against current policy, which is over-redaction only.
   - **The same shape recurs for the `OwnerOrGm` tier under ownership reassignment:** a
     newly-assigned owner's replay discloses the previous owner's historical `OwnerOrGm` values.
-  - **Reachability:** `world_events` has no compaction or expiry (removed only via world/user
-    delete cascades), and `ResyncRequest{from_seq}` is entirely client-supplied with no lower
+  - **Reachability:** `world_events` has no compaction or expiry. Its rows outlive even the user
+    who authored them: `world_events.author_id` is `ON DELETE SET NULL`, and
+    `SqliteRepository::delete_user` never deletes event rows, so a deleted user's authored events
+    persist with the author nulled. Only world deletion removes them, via
+    `SqliteRepository::delete_world`'s `world_id` FK cascade. `ResyncRequest{from_seq}` is
+    entirely client-supplied with no lower
     bound (`Room::resync_range` → `Repository::events_since` queries `seq > from_seq - 1`), so any
     client can pull a document's entire history at any time.
   - **Fix shape DECIDED (ruled, not yet built): snapshot the relevant visibility into the
@@ -56,13 +60,16 @@ Currently open, confirmed-real defects. Deferrals belong in `TODO.md`, not here.
 - **A stale `Update` from before a document's deletion is redacted against a NEW document that
   later reuses the same id, not dropped as the closing analysis assumed.** Document ids are
   client-supplied: `envelope` accepts an optional explicit id and falls back to
-  `crypto.randomUUID()`, and both server-side authoritative write loops
-  (`Operation::Create`'s arms in `SqliteRepository::apply_command` and
-  `SqliteRepository::apply_intent`) accept it verbatim — their validation covers scope, system
-  size, property overrides, engine tree, system schema, self-parent and capabilities, never the
-  id. `SqliteRepository::upsert_document` inserts with `ON CONFLICT(id) DO UPDATE`, so nothing on
-  the Create path checks whether an id was ever used before, and `SqliteRepository::delete_document_tx`
-  performs a genuine hard delete, freeing the id for reuse.
+  `crypto.randomUUID()`. The two server-side authoritative write loops treat a reused id
+  differently, and neither stops reuse: `SqliteRepository::apply_command`'s `Operation::Create`
+  arm calls `SqliteRepository::upsert_document` with `ON CONFLICT(id) DO UPDATE` and performs no
+  existence check at all — genuinely id-blind. `SqliteRepository::apply_intent`'s
+  `Operation::Create` arm does check first — it loads the document by id inside the transaction
+  and rejects a currently-live duplicate as a conflict ("Create is non-clobbering: an existing id
+  is a conflict, not a silent overwrite (unlike upsert in apply_command)") — but that check only
+  sees PRESENT table state: a hard-deleted id is absent from it, so reuse after
+  `SqliteRepository::delete_document_tx`'s genuine hard delete passes the check exactly as a
+  never-used id would.
   `permission::load_update_docs` builds the `current` map `filter_command` consults via a
   present-tense `get_document` lookup with no sequence parameter. Its call site,
   `ws::conn::send_filtered`'s Event branch, serves both live broadcast and historical replay

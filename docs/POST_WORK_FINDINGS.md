@@ -195,14 +195,11 @@ are observations awaiting triage, not committed work.
   Full ws_convergence suite now ~2s locally.
 
 - Title: an `Update` to a since-deleted document is silently dropped on replay.
-  Summary: `filter_command`'s `Update` arm does `let Ok(Some(cur)) =
-  get_document(..) else { continue }`; if the doc was later deleted the op is
-  skipped. Document ids are client-supplied and reused after a hard delete, so
-  the lookup can resolve to an unrelated NEW document rather than finding none
-  at all, redacting the stale `Update` against the wrong permission set —
-  neither the "op is skipped" premise nor the "harmless for end state"
-  conclusion above holds in general. This is a confirmed, reachable secrecy
-  defect, not a replay-fidelity limitation. Status: Moved — do not re-file
+  Summary: this was believed dropped on replay, with the resulting end state accepted as
+  harmless. Neither premise holds: the same lookup can instead resolve to an unrelated document
+  that has since reoccupied the deleted document's id, so the stale `Update` is delivered,
+  redacted against the wrong document's permission set, rather than dropped. This is a confirmed,
+  reachable secrecy defect, not a replay-fidelity limitation. Status: Moved — do not re-file
   here.
 
 - Title: no smaller "caption" text-size token in the M7d token set. Summary: the
