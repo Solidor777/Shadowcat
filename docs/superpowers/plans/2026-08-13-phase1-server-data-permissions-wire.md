@@ -119,7 +119,11 @@ Add to the existing `mod tests` in `src/server/src/data/permission.rs`:
 ```rust
 #[test]
 fn redaction_target_classifies_each_whole_band() {
-    for band in REDACTABLE_BANDS {
+    // The expectation is a HARDCODED list, never `REDACTABLE_BANDS` itself. Deriving the
+    // expected value from the constant under test makes the assertion definitionally true
+    // for any array contents — it would stay green if a band were renamed, which is the
+    // exact "both paths wrong the same way" shape this suite exists to refuse.
+    for band in ["name", "engine", "system", "base"] {
         let pointer = format!("/{band}");
         assert_eq!(
             redaction_target(&pointer),
@@ -127,6 +131,14 @@ fn redaction_target_classifies_each_whole_band() {
             "{pointer} must classify as a whole band"
         );
     }
+    // Pins the constant's contents independently, so a band added or renamed fails HERE
+    // with a message naming the obligation, rather than silently widening what egress
+    // is willing to remove.
+    assert_eq!(
+        REDACTABLE_BANDS,
+        ["name", "engine", "system", "base"],
+        "the band list changed: re-audit every redaction call site and this suite"
+    );
 }
 
 #[test]
@@ -233,11 +245,15 @@ pub enum RedactionTarget {
 
 /// Classify a `property_overrides` pointer, or `None` when nothing may redact it.
 ///
-/// INVARIANT: a `Some` result guarantees the removal lands in untyped or optional
-/// data — never on a required field. That is what makes a strip provably
-/// non-destructive to deserialization, and it is the property the ingress gate and
-/// the egress filter must agree on. They agree by reading THIS function; verifying
-/// two independent implementations agree today is what drifted into a panic.
+/// INVARIANT: a `Within` result guarantees the STRIP lands in untyped or optional data,
+/// never on a required field — that is what makes it provably non-destructive to
+/// deserialization. A `Band` result carries no such guarantee and does not need one: it
+/// nulls the field in place, which is precisely why `system` (required, not an `Option`)
+/// is handled that way rather than stripped.
+///
+/// Both properties are what the ingress gate and the egress filter must agree on. They
+/// agree by reading THIS function; two independent implementations verified to agree by
+/// inspection is what drifted into a panic.
 ///
 /// `/name` is a leaf: `/name/...` has no sub-path and classifies as `None`, mirroring
 /// `required_cap_for_path`.
@@ -284,8 +300,13 @@ verify the test suite actually depends on the constant.
 Temporarily edit `REDACTABLE_BANDS` to `["name", "engine", "system", "base"]` → `["name", "engine", "system", "unused"]`, then run:
 
 Run: `cd src/server && cargo test --lib data::permission`
-Expected: FAIL — `redaction_target_classifies_each_whole_band` fails on `/unused`, and
-`redaction_target_classifies_within_a_band` fails on `/base/system/hp`.
+Expected: FAIL, in **three** distinct places — count them rather than accepting an aggregate
+red. (1) `redaction_target_classifies_each_whole_band`'s loop fails on `/base`, which no longer
+classifies. (2) That same test's `assert_eq!` on `REDACTABLE_BANDS` fails, naming the changed
+list. (3) `redaction_target_classifies_within_a_band` fails on `/base/system/hp`.
+
+If you see fewer than three, the suite is weaker than it looks and the mutation check has not
+done its job — stop and report rather than proceeding on an aggregate FAIL.
 
 **Revert the edit and re-run to confirm green before proceeding.** Confirm the revert
 landed by diffing — a mutation that never took effect and a test that does not gate
@@ -538,8 +559,8 @@ fn non_gm() -> Access {
 
 #[test]
 fn filter_properties_errors_instead_of_panicking_on_a_nested_permissions_override() {
-    // The exact reported input. Before this change it stripped a `PermissionSet` field
-    // carrying no serde default and panicked inside the re-deserialize.
+    // The exact reported input: a nested `/permissions/...` override strips a
+    // `PermissionSet` field carrying no serde default, so the value cannot re-deserialize.
     let d = doc(
         perms_with_override("/permissions/default"),
         serde_json::json!({ "hp": 1 }),
@@ -550,8 +571,9 @@ fn filter_properties_errors_instead_of_panicking_on_a_nested_permissions_overrid
 
 #[test]
 fn filter_properties_errors_on_a_whole_permissions_override() {
-    // Before this change this silently substituted the fail-closed default permission
-    // set for the real one — no panic, a wrong document.
+    // A whole `/permissions` override is refused as unclassifiable rather than
+    // substituting the fail-closed default permission set for the real one: that
+    // substitution does not panic, it ships a wrong document.
     let d = doc(
         perms_with_override("/permissions"),
         serde_json::json!({ "hp": 1 }),
@@ -755,11 +777,17 @@ editing; the snippet above shows the shape, not a literal drop-in.
 
 - [ ] **Step 6: Run the tests to verify they pass**
 
+**Expect roughly two dozen compile errors on the first run, and do not read them as a design
+problem.** Two distinct families of pre-existing test call this function directly: the
+`filter_command_*` family, and a larger set that indexes straight into the returned document
+(`filter_properties(&d, &a_owner).system["name"]` and similar — `owner_or_gm_visible_to_owner_and_gm_not_other_player`,
+`owner_cannot_see_gm_only`, `embedded_owner_or_gm_redacted_for_non_owner`, and more). **Every**
+one needs a trailing `.unwrap()`. That is expected mechanical fallout from the signature change.
+
 Run: `cd src/server && cargo test --lib data::permission`
-Expected: PASS, including every pre-existing `filter_command_*` test. Those tests are the real
-regression net for this change — if any of them needed editing beyond adding `.unwrap()` or `?`
-to a `filter_properties` call, **stop and report it**: a behavior change in a redaction test is
-not a mechanical fixup.
+Expected: PASS, including every pre-existing test in both families. Those tests are the real
+regression net for this change — if any of them needed editing **beyond** adding `.unwrap()` or
+`?`, **stop and report it**: a behavior change in a redaction test is not a mechanical fixup.
 
 - [ ] **Step 7: Prove the fail-closed path is reachable end to end**
 
@@ -1015,9 +1043,10 @@ what makes an unknown role fail.
 For TD27, replace the `snippet` doc comment on `WireSearchHit`:
 
 ```ts
-  /** Highlighted match snippet from the recipient's own index partition. Every `engine`
-   * string leaf is swept into the full-text index and can surface here and in `document`,
-   * so a consumer must render this as inert text and never as innerHTML. */
+  /** Highlighted match snippet from the recipient's own index partition. Every `engine` AND
+   * `system` string leaf, plus the document's `name`, is swept into the full-text index and
+   * can surface here and in `document` — `index_content` walks all three — so a consumer must
+   * render this as inert text and never as innerHTML. */
   snippet: string;
 ```
 
