@@ -3701,6 +3701,28 @@ Record each against real code, citing the symbols:
 If any of the four does not hold, **stop and report**: this task's premise is then wrong and PW4
 is real work, which is a scope question for the human and not something to build inline.
 
+- [ ] **Step 1b: Answer whether the raycast margin can disclose anything outside the authored block**
+
+`env_light_polys` builds its raycast bound as the scene envelope grown by a margin, so the
+environment reaches cells OUTSIDE the authored block. Square has always had this; hex reaches parity
+with it once the envelope carries a real minimum, and the change is measurable — one extra ring of
+lit cells on the origin side of a hex scene.
+
+Parity is not the question. The question the parity change surfaced, which nobody has answered, is:
+
+> Can a cell outside the authored block, being lit and reachable, expose the existence or the
+> position of a document a GM placed outside the bounds?
+
+Answer it **from the code**, tracing what a client actually receives: whether a cell outside the
+block can enter a player visible-cell mask, what an egressed mask discloses about a cell nothing
+authored occupies, and whether any document outside the bounds becomes reachable through that path.
+State the answer either way with the symbols that establish it.
+
+**If the answer is that it can disclose**, stop and report. That is a live secrecy defect predating
+this phase and applying equally to square, and its fix is a scope question rather than something to
+build inside a documentation task. **If it cannot**, say so with the mechanism that prevents it, so
+the margin stops being an open question the next reader has to re-derive.
+
 - [ ] **Step 2: Correct the record**
 
 In `docs/POST_WORK_FINDINGS.md`, replace the environment-light entry's `Status:` with a resolved
