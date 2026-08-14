@@ -6,8 +6,9 @@ import type { SceneVisionOverrides } from "./SceneVisionOverrides";
 
 /**
  * A scene's engine-owned config (mirrors the client's `SceneEngine`).
- * `bounds` = the navmesh's outer rectangle in grid units; absent ⇒
- * `DEFAULT_SCENE_BOUNDS_UNITS` (read-side backstop, unchanged).
+ * `bounds` = the authored play-area rectangle in grid units, which the
+ * continuous router and the per-player vision/lighting path both read;
+ * absent ⇒ `DEFAULT_SCENE_BOUNDS_UNITS` (read-side backstop, unchanged).
  */
 export type SceneEngine = { 
 /**
@@ -19,7 +20,14 @@ grid: Grid,
  */
 background: string | null, 
 /**
- * Navmesh outer rectangle in grid units; absent = the read-side default.
+ * The authored play-area rectangle in grid units; absent = the read-side
+ * default. `GridShape::world_extent` converts it to world units for TWO
+ * consumer families, not one: `navmesh::build_navmesh` triangulates that
+ * rectangle, and the per-player secrecy path bounds itself with it —
+ * `SceneEcs::lighting_inputs`, `SceneEcs::player_lit_mask`,
+ * `SceneEcs::visible_cells_cached`, `accumulate_visible_cells` and
+ * `vision::bound_for_scene`. So a change here moves what a player is told
+ * they can see, not only where a route may run.
  */
 bounds: SceneDimensions | null, 
 /**

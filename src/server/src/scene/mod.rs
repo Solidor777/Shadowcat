@@ -2900,18 +2900,22 @@ mod tests {
         d
     }
 
-    /// The grid size every hex fixture in this module declares, and the size every test that
-    /// derives hex COORDINATES from a `HexGrid` builds that shape at — `hex_open_scene`,
-    /// `hex_env_lit_scene_with_room`, `hex_continuous_scene_docs`, and the three continuous hex
-    /// tests that author their own scene inline. A test whose expectations come from
-    /// `cell_center`/`cell_vertices` is measuring the scene it declared only while the two agree,
-    /// and nothing else makes them agree.
+    /// The one value read at every site in this module where a hex scene's declared `grid.size`
+    /// and the `HexGrid` a test derives COORDINATES from have to be the SAME number: the scene's
+    /// own `grid.size`, the shape the test builds, and any gate `cell` it passes alongside them.
+    /// A test whose expectations come from `cell_center`/`cell_vertices` is measuring the scene it
+    /// declared only while those agree, and nothing else makes them agree.
     ///
-    /// The two `resolve_grid_shape_*` tests deliberately do NOT read it: their subject is that
-    /// shape resolution keys on `grid.kind` and takes its SIZE from the caller's parameter, so the
-    /// scene's declared size has to be stated independently of the shape they compare against — it
-    /// is in fact never read by the code under test, and a mismatch between the parameter and the
-    /// expected shape fails their `cell_center` comparison outright rather than silently.
+    /// That scope is a PREDICATE, not a list, so a hex scene outside it is outside it because the
+    /// predicate does not hold, never by exemption. Two are worth naming only because they read
+    /// like members. The two `resolve_grid_shape_*` tests do build a shape and compare cell
+    /// centres, but their subject is that shape resolution takes its SIZE from the caller's
+    /// parameter and never from the document, so the declared size and the compared shape are
+    /// required to be INDEPENDENT — binding them would assert away the property under test, and a
+    /// parameter/expectation mismatch fails their `cell_center` comparison outright rather than
+    /// silently. `the_resolved_shape_reports_the_resolved_kind` declares three scenes — hex,
+    /// square and unrecognised — but asserts only the resolved KIND and derives no coordinates at
+    /// all, so no assertion of its reads the size it authors.
     const HEX_FIXTURE_SIZE: f64 = 50.0;
 
     #[test]
@@ -6522,13 +6526,21 @@ explored: // GM: unrestricted mask
         // Call-site wiring proof for `navmesh::truncate_at_arrest`: `pathfind` must hand the
         // continuous engine the SAME `resolve_grid_shape`-derived shape `region_field` rasterized
         // the arrest region with. Arrest-only ⇒ `has_terrain_or_impassable()` is false ⇒ the pure
-        // polyanya branch. Route runs along the r=1 hex row from hex (0,1) to hex (4,1); the arrest
-        // region covers ONLY hex (3,1) (center x ≈303.1), whose entry boundary from (2,1) is
-        // x ≈259.8. Reading the same axial key (3,1) as a SQUARE cell would place it at
-        // x∈[150,200) — a different location — cutting the preview roughly a full hex early.
+        // polyanya branch. Route runs along the r=1 hex row from hex (0,1) to hex (4,1); the
+        // arrest region covers ONLY hex (3,1). Reading the same axial key (3,1) as a SQUARE cell
+        // would place it at `[3·size, 4·size)` — a different location, short of the hex — cutting
+        // the preview roughly a full hex early.
+        //
+        // The region rect is the arrest hex's own centre padded by half a size on each axis, so it
+        // moves with the shape rather than having to be re-derived by hand; the pad stays well
+        // inside the hex's inradius (`√3/2·size`), which is what keeps exactly one centre inside
+        // it, and the neighbour loop asserts that rather than leaving it to the pad's arithmetic.
         let g = grid_shape::HexGrid {
             size: HEX_FIXTURE_SIZE,
         };
+        let arrest_cell = (3, 1);
+        let arrest_ctr = g.cell_center(arrest_cell);
+        let pad = g.size / 2.0;
         let mut docs = hex_continuous_scene_docs();
         docs.push(region_doc_top(
             12,
@@ -6536,23 +6548,31 @@ explored: // GM: unrestricted mask
             "arrest",
             1.0,
             RegionRect {
-                x0: 285.0,
-                y0: 55.0,
-                x1: 320.0,
-                y1: 95.0,
+                x0: arrest_ctr.0 - pad,
+                y0: arrest_ctr.1 - pad,
+                x1: arrest_ctr.0 + pad,
+                y1: arrest_ctr.1 + pad,
             },
         ));
         let mut ecs = SceneEcs::from_documents(docs, 0);
         ecs.set_world_settings_for_test(continuous_world_settings());
         // Fixture guard: exactly one hex arrests, and it is the axial cell the assertions name.
+        // The truncation assertions are only about the arrest hex's own boundary while no
+        // neighbour arrests too, so the whole ring is checked rather than the two cells the route
+        // happens to pass through.
         let field = ecs
             .region_field(Uuid::from_u128(10), None)
             .expect("scene exists");
-        assert!(field.is_arrest((3, 1)), "fixture: arrest is on axial (3,1)");
         assert!(
-            !field.is_arrest((2, 1)) && !field.is_arrest((4, 1)),
-            "fixture: exactly one hex arrests"
+            field.is_arrest(arrest_cell),
+            "fixture: arrest is on axial {arrest_cell:?}"
         );
+        for (n, _, _) in g.neighbors_with_cost(arrest_cell, 0) {
+            assert!(
+                !field.is_arrest(n),
+                "fixture: hex {n:?} neighbours the arrest hex and must stay clear"
+            );
+        }
 
         let out = ecs
             .pathfind(
@@ -6571,13 +6591,20 @@ explored: // GM: unrestricted mask
         let last = *out.path.last().unwrap();
         assert_eq!(
             g.cell_of(last),
-            (3, 1),
+            arrest_cell,
             "truncation lands on the arrest hex itself, last = {last:?}"
         );
+        // Arrest stops AT ENTRY, so the cut sits in the near half of the arrest hex rather than
+        // anywhere inside it — the only claim about `last`'s position that the landing-cell
+        // assertion does not already imply, since `cell_of` is nearest-centre and therefore
+        // already bounds `last` to that hex's own span. Both bounds come from `cell_center`, so a change
+        // to the fixture size relocates them with the hex instead of leaving a threshold a
+        // truncation one hex early would still satisfy.
         assert!(
-            last.0 > 259.8,
-            "truncation is at the hex (2,1)/(3,1) boundary, not the square cell (3,1) at \
-             x∈[150,200), last x = {}",
+            last.0 < arrest_ctr.0,
+            "truncation is at the arrest hex's ENTRY boundary, not past its centre \
+             ({}), last x = {}",
+            arrest_ctr.0,
             last.0
         );
     }
@@ -7631,15 +7658,18 @@ explored: // GM: unrestricted mask
         assert_eq!(got, expected);
     }
 
-    /// A wall-less pointy-top hex scene (size 50), all-bright, LOS off, one owned instanced token
-    /// at hex (0,0) = pixel (0,0) with unlimited "normal" vision.
+    /// A wall-less pointy-top hex scene at `HEX_FIXTURE_SIZE`, all-bright, LOS off, one owned
+    /// instanced token at hex (0,0) = pixel (0,0) with unlimited "normal" vision.
     ///
     /// The authored block is 3.2 x 3.0 hexes, which is fractional because a hex block's world
     /// rectangle is a shear-dependent function of the block rather than a per-axis product.
-    /// `HexGrid { size: 50 }::world_extent((3.2, 3.0))` evaluates
-    /// `(√3·50·(2.2 + 1.0) + √3/2·50, 50·1.5·2 + 50)` to `(320.429…, 200)`, so `source_los_poly`
-    /// is the rectangle `[-100, 320.429…] x [-100, 200]` — `bound_for_scene` takes
-    /// `min(0-100, 0) = -100` on each low edge and `max(0+100, extent) = extent` on each high edge.
+    /// `HexGrid::world_extent((3.2, 3.0))` evaluates `(√3·size·(2.2 + 1.0) + √3/2·size,
+    /// size·1.5·2 + size)`, which collapses to `(3.7·√3·size, 4·size)` — so along axial row 0,
+    /// where a hex's centre sits `q` PITCHES (`√3·size`) from the origin and its left vertices
+    /// half a pitch nearer, the rectangle reaches `q = 3.7`. Pitches are the unit its dependants
+    /// name cells in, so none of them carries a coordinate this size could invalidate.
+    /// `source_los_poly` is then `[min(-VISION_BOUND_MARGIN, 0), max(VISION_BOUND_MARGIN, extent)]`
+    /// per axis — the extent is the larger term on both axes at this fixture's size.
     fn hex_open_scene() -> (SceneEcs, Uuid, Uuid) {
         let user = Uuid::from_u128(7);
         let scene_id = Uuid::from_u128(10);
@@ -7674,10 +7704,10 @@ explored: // GM: unrestricted mask
     }
 
     /// REJECT direction on a hex scene: a hex cell whose HEX CENTER falls outside the vision mask
-    /// is excluded from `visible_cells`. Hex (2,0) center (~173.2, 0) is inside the
-    /// [-100, 320.429…] x [-100, 200] LOS rectangle and visible; hex (5,0) center (~433.0, 0) is
-    /// well outside (x > 320.429…) — and its nearest (left) vertices at x ~389.7 are also outside —
-    /// so it is excluded under BOTH strict and lenient sampling. Guards that the hex candidate
+    /// is excluded from `visible_cells`. Measured in pitches along axial row 0, where
+    /// `hex_open_scene`'s LOS rectangle reaches 3.7: hex (2,0)'s centre sits at 2 and is visible;
+    /// hex (5,0)'s centre sits at 5 and its nearest (left) vertices at 4.5, both past 3.7, so it
+    /// is excluded under BOTH strict and lenient sampling. Guards that the hex candidate
     /// enumeration cannot admit an out-of-mask hex cell.
     #[test]
     fn visible_cells_hex_excludes_cell_whose_center_is_outside_the_mask() {
@@ -7700,10 +7730,10 @@ explored: // GM: unrestricted mask
     }
 
     /// Leniency on a hex scene samples the SIX hex vertices (`GridShape::cell_vertices`), not four
-    /// square corners. Hex (4,0) center (~346.4, 0) is just outside the
-    /// [-100, 320.429…] x [-100, 200] LOS rectangle (x > 320.429…), so strict excludes it; its left
-    /// vertices (~303.1, ±25) are inside, so lenient includes it. The strict->lenient flip proves
-    /// the hex corner geometry is wired.
+    /// square corners. In pitches along axial row 0, against `hex_open_scene`'s reach of 3.7: hex
+    /// (4,0)'s centre sits at 4, just outside, so strict excludes it; its left vertices sit at
+    /// 3.5, inside, so lenient includes it. The strict->lenient flip proves the hex corner
+    /// geometry is wired.
     #[test]
     fn visible_cells_hex_lenient_includes_cell_whose_vertex_clips_the_mask() {
         let (ecs, user, scene) = hex_open_scene();
@@ -8074,29 +8104,32 @@ explored: // GM: unrestricted mask
 
     #[test]
     fn hex_continuous_navmesh_spans_the_authored_play_area() {
-        // A hex scene authored 20 × 20 grid units at size 50 must route to a hex near the far
-        // edge of that authored area. Hex (18,1)'s centre sits well beyond the product of the
-        // authored bound and the cell size, so a rectangle built from that product excludes the
-        // destination and the route reports unreachable.
+        // A hex scene authored a square block of grid units must route to a hex near the far edge
+        // of that authored area. Hex (18,1)'s centre sits beyond the product of the authored bound
+        // and the cell size, so a rectangle built from that product excludes the destination and
+        // the route reports unreachable.
         // Discrimination: fails if `world_extent` returns the bounds×size product on hex, because
-        // the destination is derived from `cell_center`, not from the extent.
+        // the destination is derived from `cell_center`, not from the extent. The guard's product
+        // is computed from the block and the shape's own size rather than restated, so raising
+        // either cannot leave it expressing a smaller bound than the scene actually declares.
         let g = grid_shape::HexGrid {
             size: HEX_FIXTURE_SIZE,
         };
+        let block_cells = 20.0_f64;
         let docs = vec![entity_doc_top_eng(
             10,
             "scene",
             json!({ "grid": { "kind": "hex", "size": g.size }, "background": null,
-                    "bounds": { "width": 20.0, "height": 20.0 },
+                    "bounds": { "width": block_cells, "height": block_cells },
                     "vision": { "movementModel": "continuous" } }),
         )];
         let mut ecs = SceneEcs::from_documents(docs, 0);
         ecs.set_world_settings_for_test(continuous_world_settings());
         let dest = g.cell_center((18, 1));
+        let product = block_cells * g.size;
         assert!(
-            dest.0 > 20.0 * 50.0,
-            "fixture: the destination must sit beyond the bounds×size product ({}), got {}",
-            20.0 * 50.0,
+            dest.0 > product,
+            "fixture: the destination must sit beyond the bounds×size product ({product}), got {}",
             dest.0
         );
         let out = ecs

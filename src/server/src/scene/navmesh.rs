@@ -1409,8 +1409,11 @@ mod tests {
             "the clipped route must never reach the occluded hex, last = {last:?}"
         );
         let gap = ((last.0 - goal.0).powi(2) + (last.1 - goal.1).powi(2)).sqrt();
+        // Expressed as a fraction of the hex's own size rather than as a distance: the clearance
+        // the footprint disc ∪ traversal union buys is proportional to the geometry, so a literal
+        // would silently become a weaker claim at a larger size.
         assert!(
-            gap > 40.0,
+            gap > HEX_SIZE * 0.8,
             "the route must stop clear of the occluded hex (footprint disc ∪ traversal), gap = {gap}"
         );
 
@@ -1432,15 +1435,30 @@ mod tests {
         // center. Square indexing of that same chord yields (0,0),(0,-1),(1,-1),(1,-2),(2,-2),
         // (3,-2),(3,-3),(4,-3),(5,-3) — the axial key (2,-1) is never queried at all.
         let g = hexg();
-        let field = hex_region(RegionBehavior::Impassable, 110.0, -95.0, 150.0, -55.0);
-        assert!(
-            field.is_impassable((2, -1)),
-            "fixture: the impassable cell is axial (2,-1)"
+        // The region rect is the target hex's own centre padded by half a size on each axis, so
+        // it moves with the shape; the pad stays inside the hex's inradius (`√3/2·size`), which
+        // is what keeps exactly one centre inside it, and the neighbour loop asserts that rather
+        // than leaving it to the pad's arithmetic.
+        let blocked = (2, -1);
+        let ctr = g.cell_center(blocked);
+        let pad = HEX_SIZE / 2.0;
+        let field = hex_region(
+            RegionBehavior::Impassable,
+            ctr.0 - pad,
+            ctr.1 - pad,
+            ctr.0 + pad,
+            ctr.1 + pad,
         );
         assert!(
-            !field.is_impassable((2, -2)) && !field.is_impassable((1, -1)),
-            "fixture: exactly one hex is impassable"
+            field.is_impassable(blocked),
+            "fixture: the impassable cell is axial {blocked:?}"
         );
+        for (n, _, _) in g.neighbors_with_cost(blocked, 0) {
+            assert!(
+                !field.is_impassable(n),
+                "fixture: hex {n:?} neighbours the impassable hex and must stay clear"
+            );
+        }
 
         let path = vec![
             g.cell_center((0, 0)),
@@ -1472,17 +1490,33 @@ mod tests {
 
     #[test]
     fn truncate_at_arrest_on_hex_cuts_at_the_axial_arrest_cell_not_the_square_one() {
-        // Straight route along the r=0 hex row: hex (0,0) center -> hex (4,0) center. Arrest on
-        // hex (3,0) (center x ~259.8); the (2,0)/(3,0) boundary is x ~216.5. Square indexing reads
-        // the same axial key (3,0) as the square cell x∈[150,200) — a DIFFERENT place on the map —
-        // so it cuts the preview roughly a full hex early.
+        // Straight route along the r=0 hex row: hex (0,0) center -> hex (4,0) center, arresting on
+        // hex (3,0). Square indexing reads the same axial key (3,0) as the square cell
+        // `[3·size, 4·size)` — a DIFFERENT place on the map, short of the hex — so it cuts the
+        // preview roughly a full hex early. Every coordinate here comes from the shape, so the two
+        // arms' landing cells are compared rather than two hand-derived x thresholds, which at a
+        // larger size would both stay satisfied by a cut a full hex early.
         let g = hexg();
-        let field = hex_region(RegionBehavior::Arrest, 240.0, -20.0, 280.0, 20.0);
-        assert!(field.is_arrest((3, 0)), "fixture: arrest is on axial (3,0)");
-        assert!(
-            !field.is_arrest((2, 0)) && !field.is_arrest((4, 0)),
-            "fixture: exactly one hex arrests"
+        let arrest_cell = (3, 0);
+        let arrest_ctr = g.cell_center(arrest_cell);
+        let pad = HEX_SIZE / 2.0;
+        let field = hex_region(
+            RegionBehavior::Arrest,
+            arrest_ctr.0 - pad,
+            arrest_ctr.1 - pad,
+            arrest_ctr.0 + pad,
+            arrest_ctr.1 + pad,
         );
+        assert!(
+            field.is_arrest(arrest_cell),
+            "fixture: arrest is on axial {arrest_cell:?}"
+        );
+        for (n, _, _) in g.neighbors_with_cost(arrest_cell, 0) {
+            assert!(
+                !field.is_arrest(n),
+                "fixture: hex {n:?} neighbours the arrest hex and must stay clear"
+            );
+        }
 
         let route = crate::scene::pathfinding::PathOutcome {
             path: vec![g.cell_center((0, 0)), g.cell_center((4, 0))],
@@ -1495,22 +1529,27 @@ mod tests {
         let last = *hexed.path.last().unwrap();
         assert_eq!(
             g.cell_of(last),
-            (3, 0),
+            arrest_cell,
             "truncation lands ON the arrest hex's own cell, last = {last:?}"
         );
+        // Arrest stops AT ENTRY, so the cut sits in the near half of the arrest hex — the one
+        // claim about `last`'s position the cell assertion does not already imply, `cell_of`
+        // being nearest-centre and therefore already bounding `last` to that hex's span.
         assert!(
-            last.0 > 216.5,
-            "truncation is at the hex (2,0)/(3,0) boundary (x ~216.5), not the square one, \
+            last.0 < arrest_ctr.0,
+            "truncation is at the arrest hex's ENTRY boundary, not past its centre ({}), \
              last x = {}",
+            arrest_ctr.0,
             last.0
         );
 
         let squared = truncate_at_arrest(route, &field, HEX_SIZE, &sq_same_size());
         let sq_last = *squared.path.last().unwrap();
-        assert!(
-            sq_last.0 < 200.0,
-            "square indexing cuts at square cell (3,0) = x∈[150,200), a different location on \
-             the map, last x = {}",
+        assert_ne!(
+            g.cell_of(sq_last),
+            arrest_cell,
+            "square indexing cuts inside square cell {arrest_cell:?}, which is not even the \
+             arrest HEX — a different location on the map, last x = {}",
             sq_last.0
         );
     }

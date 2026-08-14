@@ -807,7 +807,7 @@ mod tests {
         };
         assert_eq!(
             g.cell_center((2, 3)),
-            crate::scene::pathfinding::cell_center((2, 3), 100.0)
+            crate::scene::pathfinding::cell_center((2, 3), g.cell)
         );
     }
 
@@ -926,7 +926,7 @@ mod tests {
         let g = HexGrid { size: 50.0 };
         let a_center = g.cell_center((0, 0));
         let b_center = g.cell_center((3, 0));
-        let cells = g.line_traversal(a_center, b_center, 50.0).unwrap();
+        let cells = g.line_traversal(a_center, b_center, g.size).unwrap();
         assert!(cells.contains(&(0, 0)));
         assert!(cells.contains(&(3, 0)));
         // A straight 3-cell traversal along one axial direction crosses exactly cells (0,0)..(3,0).
@@ -937,26 +937,27 @@ mod tests {
     fn hex_grid_line_traversal_degenerate_same_point_returns_single_cell() {
         let g = HexGrid { size: 50.0 };
         let p = g.cell_center((2, -1));
-        let cells = g.line_traversal(p, p, 50.0).unwrap();
+        let cells = g.line_traversal(p, p, g.size).unwrap();
         assert_eq!(cells.len(), 1);
         assert!(cells.contains(&(2, -1)));
     }
 
     #[test]
     fn hex_footprint_reaches_a_cell_the_disc_touches_near_a_shared_vertex() {
-        // A pointy-top hex of size 50 centred at the origin has a vertex at
-        // (√3/2·50, -25) = (43.301, -25), shared with hexes (1,0) and (1,-1) — both of whose
-        // centres sit exactly 50 (the circumradius) from that vertex. A disc of radius 2 centred
-        // one unit inside the origin hex from that vertex overlaps all three by a clear margin,
-        // so no assertion here sits on the overlap boundary.
+        // A pointy-top hex centred at the origin has a vertex at `(√3/2·size, -size/2)`, shared
+        // with hexes (1,0) and (1,-1) — both of whose centres sit exactly `size` (the
+        // circumradius) from that vertex. A disc of radius 2 centred one unit inside the origin
+        // hex from that vertex overlaps all three by a clear margin at this fixture's size, so
+        // no assertion here sits on the overlap boundary.
         //
         // Discrimination: a predicate comparing the CELL CENTRE distance against
-        // `r_scene + inradius` computes about 50.5 against a bound of 45.3 for both neighbours and
-        // emits only the anchor. The assertion is the presence of the two neighbours, which no
-        // centre-distance-against-inradius test can produce at this radius.
+        // `r_scene + inradius` compares roughly `size` against `2 + √3/2·size` for both
+        // neighbours, which fails for every size above about 15, and emits only the anchor. The
+        // assertion is the presence of the two neighbours, which no centre-distance-against-
+        // inradius test can produce at this radius.
         let g = HexGrid { size: 50.0 };
-        let half_x = 50.0 * 3.0_f64.sqrt() / 2.0;
-        let vertex = (half_x, -25.0);
+        let half_x = g.size * 3.0_f64.sqrt() / 2.0;
+        let vertex = (half_x, -g.size / 2.0);
         // One unit from the vertex along the direction back to the origin hex's centre.
         let p = (vertex.0 - 0.866, vertex.1 + 0.5);
         assert_eq!(
@@ -964,7 +965,7 @@ mod tests {
             (0, 0),
             "fixture: the sample sits in the origin hex"
         );
-        let cells = g.footprint_cells((0, 0), p, 2.0, 50.0);
+        let cells = g.footprint_cells((0, 0), p, 2.0, g.size);
         assert!(cells.contains(&(0, 0)), "the anchor hex, got {cells:?}");
         assert!(
             cells.contains(&(1, 0)),
@@ -989,12 +990,12 @@ mod tests {
         // exercises, and the property that makes this change inert for them.
         let g = HexGrid { size: 50.0 };
         let ctr = g.cell_center((0, 0));
-        let inradius = 50.0 * 3.0_f64.sqrt() / 2.0;
+        let inradius = g.size * 3.0_f64.sqrt() / 2.0;
         assert_eq!(
-            g.footprint_cells((0, 0), ctr, inradius - 0.5, 50.0),
+            g.footprint_cells((0, 0), ctr, inradius - 0.5, g.size),
             vec![(0, 0)]
         );
-        let over = g.footprint_cells((0, 0), ctr, inradius + 0.5, 50.0);
+        let over = g.footprint_cells((0, 0), ctr, inradius + 0.5, g.size);
         assert_eq!(
             over.len(),
             7,
@@ -1010,7 +1011,7 @@ mod tests {
         // dropped, or if the predicate admits a cell the disc does not reach.
         let g = HexGrid { size: 50.0 };
         let ctr = g.cell_center((2, -1));
-        assert_eq!(g.footprint_cells((2, -1), ctr, 0.0, 50.0), vec![(2, -1)]);
+        assert_eq!(g.footprint_cells((2, -1), ctr, 0.0, g.size), vec![(2, -1)]);
     }
 
     #[test]
@@ -1019,7 +1020,7 @@ mod tests {
         let anchor = (2, -1);
         let ctr = g.cell_center(anchor);
         // Zero-radius footprint: only the anchor cell.
-        let cells = g.footprint_cells(anchor, ctr, 0.0, 50.0);
+        let cells = g.footprint_cells(anchor, ctr, 0.0, g.size);
         assert_eq!(cells, vec![anchor]);
     }
 
@@ -1028,8 +1029,9 @@ mod tests {
         let g = HexGrid { size: 50.0 };
         let anchor = (0, 0);
         let ctr = g.cell_center(anchor);
-        // A footprint radius comparable to the hex's own size should pull in at least one neighbor.
-        let cells = g.footprint_cells(anchor, ctr, 60.0, 50.0);
+        // A footprint radius comparable to the hex's own size should pull in at least one neighbor:
+        // any radius past the inradius `√3/2·size` reaches the shared edge.
+        let cells = g.footprint_cells(anchor, ctr, g.size * 1.2, g.size);
         assert!(
             cells.len() > 1,
             "a large-enough footprint overlaps more than just the anchor"
@@ -1193,7 +1195,7 @@ mod tests {
         let g = HexGrid { size: 50.0 };
         let (min, max) = ((0.0, 0.0), (200.0, 200.0));
         let got = g
-            .cells_in_bounds(min, max, 50.0, CAP)
+            .cells_in_bounds(min, max, g.size, CAP)
             .expect("bounded, not over-cap");
         let got_set: BTreeSet<Cell> = got.iter().copied().collect();
         // The candidate set must be a SUPERSET of every hex whose center lies in the AABB.
@@ -1242,15 +1244,17 @@ mod tests {
     #[test]
     fn hex_cell_bounds_contains_a_cell_a_square_floor_window_would_clip() {
         // Hex (70,-70): the "off the square diagonal" axial (1,-1) direction. Its pixel x is
-        // ~0.866·70·size, so a square `floor(x/cell)` q-bound (=60) sits far BELOW its axial q
-        // (=70) — a square floor window would clip it here, spuriously reporting a reachable
-        // route Unreachable. `cell_bounds`'s axial bounding box must not.
+        // `√3/2·70·size`, so a square `floor(x/cell)` q-bound sits far BELOW its axial q (=70) —
+        // a square floor window would clip it here, spuriously reporting a reachable route
+        // Unreachable. `cell_bounds`'s axial bounding box must not. The window margin is read from
+        // `pathfinding::WINDOW_MARGIN` rather than restated, since the clipping this fixture
+        // demonstrates is a property of that value.
         let g = HexGrid { size: 100.0 };
         let goal = (70, -70);
-        let gc = g.cell_center(goal); // (~6062, -10500)
-                                      // AABB of start (0,0) and the goal center.
+        let gc = g.cell_center(goal);
+        // AABB of start (0,0) and the goal center.
         let (min, max) = ((0.0, gc.1), (gc.0, 0.0));
-        let (i0, j0, i1, j1) = g.cell_bounds(min, max, 100.0);
+        let (i0, j0, i1, j1) = g.cell_bounds(min, max, g.size);
         assert!(
             i0 <= goal.0 && goal.0 <= i1,
             "axial q {} must lie in [{i0},{i1}]",
@@ -1264,7 +1268,7 @@ mod tests {
         // The square floor of the pixel-x max caps the q-bound strictly below the goal's axial q:
         // this is exactly the clipping the hex-correct bounds avoid.
         assert!(
-            (gc.0 / 100.0).floor() as i32 + 8 < goal.0,
+            (gc.0 / g.size).floor() as i32 + pathfinding::WINDOW_MARGIN < goal.0,
             "a square floor(max_x/cell)+margin window would clip axial q={}",
             goal.0
         );
@@ -1272,17 +1276,25 @@ mod tests {
 
     #[test]
     fn square_cell_vertices_returns_four_corners_in_order() {
+        // The four corners are the cell's own centre offset by half a cell on each axis, in
+        // (top-left, top-right, bottom-left, bottom-right) order. Expressed against `cell_center`
+        // rather than as a literal table, so it pins the RELATIONSHIP between the two primitives
+        // instead of restating the corner formula the impl already has.
+        // Discrimination: fails if the order changes, if a corner picks up an asymmetry, or if
+        // the vertices stop being centred on `cell_center`'s point.
         let g = SquareGrid {
             cell: 100.0,
             rule: DiagonalRule::Chebyshev,
         };
+        let c = g.cell_center((2, 3));
+        let h = g.cell / 2.0;
         assert_eq!(
-            g.cell_vertices((2, 3), 100.0),
+            g.cell_vertices((2, 3), g.cell),
             vec![
-                (200.0, 300.0),
-                (300.0, 300.0),
-                (200.0, 400.0),
-                (300.0, 400.0)
+                (c.0 - h, c.1 - h),
+                (c.0 + h, c.1 - h),
+                (c.0 - h, c.1 + h),
+                (c.0 + h, c.1 + h)
             ]
         );
     }
@@ -1750,11 +1762,13 @@ mod tests {
         // over-inclusion the square supercover documents for a shared corner, so a move cannot
         // thread an unseen hex by riding a boundary.
         let g = HexGrid { size: 50.0 };
-        // Hexes (0,0) (center (0,0)) and (-1,0) (center (-86.6,0)) share the vertical edge x = -43.3
-        // spanning y in [-25, 25].
-        let x = -50.0 * 3.0_f64.sqrt() / 2.0;
+        // Hexes (0,0) (centred on the origin) and (-1,0) (one pitch to its left) share the
+        // vertical edge at `x = -√3/2·size`, spanning `y` in `[-size/2, size/2]`; the probe runs
+        // along it, stopping short of both ends.
+        let x = -g.size * 3.0_f64.sqrt() / 2.0;
+        let y = g.size * 0.4;
         let cells = g
-            .line_traversal((x, -20.0), (x, 20.0), 50.0)
+            .line_traversal((x, -y), (x, y), g.size)
             .expect("finite, in-bounds");
         assert!(cells.contains(&(0, 0)), "{cells:?}");
         assert!(cells.contains(&(-1, 0)), "{cells:?}");
@@ -1780,13 +1794,13 @@ mod tests {
     fn hex_cell_vertices_returns_six_points_at_radius_size() {
         let g = HexGrid { size: 50.0 };
         let center = g.cell_center((1, -2));
-        let verts = g.cell_vertices((1, -2), 50.0);
+        let verts = g.cell_vertices((1, -2), g.size);
         assert_eq!(verts.len(), 6, "a hex has 6 vertices");
         for &(x, y) in &verts {
             let d = ((x - center.0).powi(2) + (y - center.1).powi(2)).sqrt();
             assert!(
-                (d - 50.0).abs() < 1e-9,
-                "each hex vertex sits at radius = size from center"
+                (d - g.size).abs() < 1e-9,
+                "each hex vertex sits at radius = size from center, got {d}"
             );
         }
     }
@@ -1835,23 +1849,28 @@ mod tests {
         };
         let (w, h) = (8.0_f64, 5.0_f64);
         let (ex, ey) = g.world_extent((w, h));
+        let half = g.cell / 2.0;
         for i in 0..w as i32 {
             for j in 0..h as i32 {
                 let c = g.cell_center((i, j));
                 assert!(
-                    c.0 + 10.0 <= ex + 1e-9,
+                    c.0 + half <= ex + 1e-9,
                     "cell ({i},{j}) exceeds extent x {ex}"
                 );
                 assert!(
-                    c.1 + 10.0 <= ey + 1e-9,
+                    c.1 + half <= ey + 1e-9,
                     "cell ({i},{j}) exceeds extent y {ey}"
                 );
                 assert!(
-                    c.0 - 10.0 >= -1e-9 && c.1 - 10.0 >= -1e-9,
+                    c.0 - half >= -1e-9 && c.1 - half >= -1e-9,
                     "cell ({i},{j}) starts below the origin"
                 );
             }
         }
+        // The closed form, stated as a NUMBER rather than as `w · cell`: written as the product it
+        // would restate the impl's own arithmetic and pin nothing. A change to `cell` fails it
+        // loudly, which is the whole reason a literal is admissible for it and not for the
+        // per-cell containment checks, where a stale half-cell would silently weaken them instead.
         assert_eq!((ex, ey), (160.0, 100.0));
     }
 
@@ -1866,7 +1885,7 @@ mod tests {
         let g = HexGrid { size: 50.0 };
         let (w, h) = (9.0_f64, 7.0_f64);
         let (ex, ey) = g.world_extent((w, h));
-        let half_x = 50.0 * 3.0_f64.sqrt() / 2.0;
+        let half_x = g.size * 3.0_f64.sqrt() / 2.0;
         for q in 0..w as i32 {
             for r in 0..h as i32 {
                 let c = g.cell_center((q, r));
@@ -1886,7 +1905,7 @@ mod tests {
             "the far hex's right vertex exceeds extent x {ex}"
         );
         assert!(
-            far.1 + 50.0 <= ey + 1e-9,
+            far.1 + g.size <= ey + 1e-9,
             "the far hex's bottom vertex exceeds extent y {ey}"
         );
     }
@@ -1902,14 +1921,14 @@ mod tests {
         // consumer that assumes the origin corner.
         let g = HexGrid { size: 50.0 };
         let (ex, ey) = g.world_extent((9.0, 7.0));
-        let half_x = 50.0 * 3.0_f64.sqrt() / 2.0;
+        let half_x = g.size * 3.0_f64.sqrt() / 2.0;
         let inside = |p: (f64, f64)| p.0 >= 0.0 && p.1 >= 0.0 && p.0 <= ex && p.1 <= ey;
         assert!(
-            !inside((0.0, -50.0)),
+            !inside((0.0, -g.size)),
             "the origin hex's lower vertex is outside"
         );
         assert!(
-            !inside((-half_x, -25.0)),
+            !inside((-half_x, -g.size / 2.0)),
             "the origin hex's left vertex is outside"
         );
         assert!(
@@ -1926,8 +1945,16 @@ mod tests {
         let g = HexGrid { size: 50.0 };
         let (w, h) = (40.0_f64, 40.0_f64);
         let (ex, ey) = g.world_extent((w, h));
-        assert!(ex > w * 50.0, "hex extent x {ex} must exceed {}", w * 50.0);
-        assert!(ey > h * 50.0, "hex extent y {ey} must exceed {}", h * 50.0);
+        assert!(
+            ex > w * g.size,
+            "hex extent x {ex} must exceed {}",
+            w * g.size
+        );
+        assert!(
+            ey > h * g.size,
+            "hex extent y {ey} must exceed {}",
+            h * g.size
+        );
     }
 
     #[test]
@@ -1949,14 +1976,17 @@ mod tests {
         // - the cover-refutations fail if either impl starts rounding a fractional bound up to a
         //   whole cell, which makes the square rectangle cover cell (0,0) and widens the hex
         //   rectangle past a pitch.
+        // - the square exclusion fails if `SquareGrid::world_extent` ever grows its rectangle to
+        //   half a cell or more at this bound, which the cover-refutation alone still admits.
         // - the INVARIANCE assertion fails if hex's clamp is replaced by anything that still
         //   varies with a sub-one-cell bound (`if w < 1 { w } else { w - 1 }` keeps the rectangle
         //   positive and under one pitch, so no other assertion here notices). No positivity or
         //   cover claim can make it: it is about two bounds producing ONE rectangle.
-        // - the rule/measurement DISAGREEMENT fails if `extent_rule_predicate`'s hex column arm
+        // - the rule/measurement DISAGREEMENT fails if `extent_rule_says_inside`'s hex column arm
         //   drops its `− 1` term, which makes the rule answer "covered" and agree.
-        // - the square exclusion fails if `SquareGrid::world_extent` ever grows its rectangle to
-        //   half a cell or more at this bound, which the cover-refutation alone still admits.
+        // The two new assertions are the last two the test evaluates, in that order, so each
+        // witness's run exercises every other assertion first rather than leaving that to be
+        // argued.
         let sq = SquareGrid {
             cell: 20.0,
             rule: DiagonalRule::Chebyshev,
@@ -1968,11 +1998,20 @@ mod tests {
                 "extent must stay positive, got ({ex}, {ey})"
             );
         }
-        // Square cell (0,0) spans [0,20) per axis, so a 5×5 rectangle does not contain it.
+        // Square cell (0,0) spans one cell per axis, so a quarter-cell rectangle cannot contain it.
         let (sx, sy) = sq.world_extent((0.25, 0.25));
         assert!(
-            sx < 20.0 && sy < 20.0,
-            "the square rectangle ({sx}, {sy}) must not cover cell (0,0)'s own 20-unit span"
+            sx < sq.cell && sy < sq.cell,
+            "the square rectangle ({sx}, {sy}) must not cover cell (0,0)'s own {} span",
+            sq.cell
+        );
+        // The stronger square claim, paired with the one it strengthens: the rectangle does not
+        // even reach cell (0,0)'s CENTRE, which the cover-refutation alone still admits. Square
+        // has no clamped term and therefore no excluded regime, so its rule describes this bound
+        // exactly as it describes any other.
+        assert!(
+            sq.cell_center((0, 0)).0 > sx,
+            "square excludes cell (0,0)'s centre at the same sub-one-cell bound"
         );
         // The hex rectangle is narrower than one hex pitch (`√3·size`), so no hex's full width
         // fits inside it. Its HEIGHT does reach the origin hex's far vertex — `max_y` is exactly
@@ -1980,7 +2019,7 @@ mod tests {
         // shows that no whole hex is covered.
         let (hxx, _) = hx.world_extent((1.25, 0.25));
         assert!(
-            hxx < 20.0 * 3.0_f64.sqrt(),
+            hxx < hx.size * 3.0_f64.sqrt(),
             "the hex rectangle's width {hxx} must be under one hex pitch"
         );
         // Below one cell on BOTH axes, which is the regime `extent_rule_says_inside` excludes for
@@ -1988,7 +2027,7 @@ mod tests {
         // under one hex tall (a hex spans `2·size` vertically), so it still covers no whole hex.
         let (subx, suby) = hx.world_extent((0.25, 0.25));
         assert!(
-            subx < 20.0 * 3.0_f64.sqrt() && suby < 2.0 * 20.0,
+            subx < hx.size * 3.0_f64.sqrt() && suby < 2.0 * hx.size,
             "the sub-one-cell hex rectangle ({subx}, {suby}) must fit inside one hex's own span"
         );
         // What the clamp DOES, stated as its observable consequence rather than as positivity:
@@ -2004,25 +2043,25 @@ mod tests {
         );
         // The disagreement itself, pinned rather than only fenced off: the linear rule answers
         // EXCLUDED for the origin hex while the rectangle covers its centre, the origin hex being
-        // centred ON the origin corner. `extent_rule_predicate` is the rule without its domain
-        // guard, so this reads the same arithmetic the sweep enforces rather than a second copy of
-        // it. Probed at `(0.25, 1.0)`, where the ROW axis is inside the rule's domain and only the
-        // COLUMN axis is out, so the exclusion is attributable to one arm; at `(0.25, 0.25)` both
-        // arms exclude and a mutation to either would leave the conjunction unchanged. Square,
-        // whose rule has no clamped term and therefore no excluded regime, excludes cell (0,0)'s
-        // centre at the same sub-one-cell bound.
+        // centred ON the origin corner. Reached through `extent_rule_says_inside`'s
+        // `BelowTheHexClamp` arm, which is the same body the sweep evaluates — one rule, with the
+        // regime named at the call instead of a second entry point that could be reached without
+        // naming one. Probed at `(0.25, 1.0)`, where the ROW axis is inside the rule's stated
+        // domain and only the COLUMN axis is out, so the exclusion is attributable to one arm; at
+        // `(0.25, 0.25)` both arms exclude and a mutation to either would leave the conjunction
+        // unchanged.
         let (clamped_x, clamped_y) = hx.world_extent((0.25, 1.0));
         let origin = hx.cell_center((0, 0));
         assert!(
-            !extent_rule_predicate(GridKind::Hex, (0.25, 1.0), (0, 0))
-                && origin.0 <= clamped_x
+            !extent_rule_says_inside(
+                GridKind::Hex,
+                (0.25, 1.0),
+                (0, 0),
+                ExtentRuleDomain::BelowTheHexClamp
+            ) && origin.0 <= clamped_x
                 && origin.1 <= clamped_y,
             "the linear rule must exclude the origin hex {origin:?} where the rectangle \
              ({clamped_x}, {clamped_y}) covers it"
-        );
-        assert!(
-            sq.cell_center((0, 0)).0 > sx,
-            "square excludes cell (0,0)'s centre at the same sub-one-cell bound"
         );
     }
 
@@ -2106,7 +2145,7 @@ mod tests {
         }
         // The row-0 pair: the SAME column at the SAME row flips on the block's height alone,
         // which no row-independent extent can produce. Both halves clear the integer-block loop's
-        // own strongest bound, so each fails on its own rather than behind it.
+        // own strongest bound, so each fails on its own rather than being masked by it.
         let (short_x, _) = hx.world_extent((w, short_h));
         assert!(
             hx.cell_center((partial, 0)).0 <= hxx,
@@ -2143,26 +2182,37 @@ mod tests {
     /// the rectangle then stops varying linearly with the bound — at `w = 0.25, h = 1.0` this rule
     /// answers false for cell `(0,0)` while the measurement covers it. That hex regime is pinned
     /// by `world_extent_stays_positive_for_a_bound_below_one_cell_and_covers_no_whole_cell`.
-    fn extent_rule_says_inside(kind: GridKind, bounds: (f64, f64), c: Cell) -> bool {
+    ///
+    /// The regime is an ARGUMENT rather than a second entry point, so every caller states which
+    /// side of the domain it is asking about and each side is guarded on its own terms: a bound
+    /// inside the stated domain cannot reach the out-of-domain arm, and an out-of-domain call
+    /// cannot be made without saying so at the call. The rule's arithmetic has a single body that
+    /// both guarded arms fall through to.
+    fn extent_rule_says_inside(
+        kind: GridKind,
+        bounds: (f64, f64),
+        c: Cell,
+        domain: ExtentRuleDomain,
+    ) -> bool {
         let (w, h) = bounds;
-        let floor = match kind {
-            GridKind::Square => 0.0,
-            GridKind::Hex => 1.0,
-        };
-        assert!(
-            w > 0.0 && h > 0.0 && w >= floor && h >= floor,
-            "fixture: {kind:?}'s rule is stated for w, h >= {floor} (and > 0), got {bounds:?}"
-        );
-        extent_rule_predicate(kind, bounds, c)
-    }
-
-    /// The rule's arithmetic alone, without `extent_rule_says_inside`'s domain guard. Split out so
-    /// the one regime the rule does NOT describe can be pinned AGAINST the measurement — see
-    /// `world_extent_stays_positive_for_a_bound_below_one_cell_and_covers_no_whole_cell`, which
-    /// asserts that the rule and the rectangle disagree there — while the rule itself still has a
-    /// single body. Every ordinary caller goes through the guarded entry point.
-    fn extent_rule_predicate(kind: GridKind, bounds: (f64, f64), c: Cell) -> bool {
-        let (w, h) = bounds;
+        match domain {
+            ExtentRuleDomain::Stated => {
+                let floor = match kind {
+                    GridKind::Square => 0.0,
+                    GridKind::Hex => 1.0,
+                };
+                assert!(
+                    w > 0.0 && h > 0.0 && w >= floor && h >= floor,
+                    "fixture: {kind:?}'s rule is stated for w, h >= {floor} (and > 0), \
+                     got {bounds:?}"
+                );
+            }
+            ExtentRuleDomain::BelowTheHexClamp => assert!(
+                kind == GridKind::Hex && (w < 1.0 || h < 1.0) && w > 0.0 && h > 0.0,
+                "fixture: the out-of-domain arm is hex's clamped regime only, got {kind:?} \
+                 {bounds:?}"
+            ),
+        }
         // A tolerance in index units, so a bound sitting exactly on a threshold (`f = 0.5` on
         // square, `f = 1/3` on the hex row axis) resolves inclusively on this side exactly as the
         // caller's own `<= extent + tol` resolves it on the measured side.
@@ -2172,6 +2222,20 @@ mod tests {
             GridKind::Square => i <= w - 0.5 + TOL && j <= h - 0.5 + TOL,
             GridKind::Hex => i <= w - 1.0 + (h - j) / 2.0 + TOL && j <= h - 1.0 / 3.0 + TOL,
         }
+    }
+
+    /// Which side of `extent_rule_says_inside`'s stated domain a caller is asking about. The rule
+    /// describes one regime and deliberately mispredicts the other, and an out-of-domain answer is
+    /// plausible rather than obviously wrong, so the choice is made at the call rather than
+    /// inherited from whichever entry point happened to be reached.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum ExtentRuleDomain {
+        /// The bounds the rule is stated for — every positive bound on square, `w, h >= 1` on hex.
+        Stated,
+        /// Hex below one cell on either axis, where `HexGrid::world_extent`'s clamps make the
+        /// rectangle stop varying with the bound and the rule's prediction is known to be wrong.
+        /// The only legitimate use is pinning that disagreement against the measurement.
+        BelowTheHexClamp,
     }
 
     #[test]
@@ -2234,8 +2298,12 @@ mod tests {
                                     for j in 0..=bounds.1.floor() as i32 {
                                         let c = shape.cell_center((i, j));
                                         let actual = c.0 <= ex + tol && c.1 <= ey + tol;
-                                        let predicted =
-                                            extent_rule_says_inside(kind, bounds, (i, j));
+                                        let predicted = extent_rule_says_inside(
+                                            kind,
+                                            bounds,
+                                            (i, j),
+                                            ExtentRuleDomain::Stated,
+                                        );
                                         checked += 1;
                                         covered += usize::from(actual);
                                         if predicted != actual {
@@ -2259,7 +2327,7 @@ mod tests {
             covered > 0 && covered < checked,
             "fixture: the swept cells must span both answers, {covered} of {checked} covered"
         );
-        // The sweep SIZE, bound so the two mismatch counts stated above stay falsifiable.
+        // The sweep SIZE, bound so the two stated mismatch counts stay falsifiable.
         assert_eq!(
             checked, 8136,
             "fixture: the swept cell count the stated mismatch counts are measured against"

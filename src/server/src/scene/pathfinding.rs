@@ -595,7 +595,10 @@ pub(crate) const MAX_WAYPOINTS: usize = 32;
 /// Max footprint radius in cells (DoS guard on the per-cell footprint scan).
 pub(crate) const MAX_FOOTPRINT_CELLS: f64 = 64.0;
 /// Search-window margin (cells) added around the point/wall AABB so detours around walls stay reachable.
-const WINDOW_MARGIN: i32 = 8;
+/// `pub(crate)` because `grid_shape`'s own window-clipping fixture states the same margin: the
+/// clipping it demonstrates is a property of THIS value, so the fixture must read it rather than
+/// restate it.
+pub(crate) const WINDOW_MARGIN: i32 = 8;
 
 /// The result of a `find()` route: scene points — `path[0]` is the mover's LITERAL start
 /// position, every later point a cell center through the goal (or truncated at an arrest
