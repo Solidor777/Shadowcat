@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent, within } from "@testing-library/svelte";
 import { tick } from "svelte";
 import { setAppContextForTest } from "@shadowcat/ui-kit/test";
-import { DocumentStore, buildActorDoc, buildTokenFromActor, type WireDocument, type WireOperation } from "@shadowcat/core";
+import { DocumentStore, buildActorDoc, buildItemDoc, buildTokenFromActor, type WireDocument, type WireOperation } from "@shadowcat/core";
 import { TokenSelection } from "@shadowcat/ui-kit";
 import ActorsPanel from "./ActorsPanel.svelte";
 
@@ -444,14 +444,20 @@ describe("ActorsPanel — live search + open sheet", () => {
   // describes in this file rely on has no space between "open" and "Sheet").
   const realT = (k: string): string => ({ "actors.openSheet": "Open sheet", "actors.search": "Search actors" })[k as "actors.openSheet" | "actors.search"] ?? k;
 
-  function actorDoc(id: string): WireDocument {
+  function actorDoc(id: string, name = "Goblin"): WireDocument {
     return buildActorDoc(
       "w1",
-      "Goblin",
-      { displayName: "Goblin", visual: { kind: "image", asset: "a1" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null },
+      name,
+      { displayName: name, visual: { kind: "image", asset: "a1" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null },
       id,
     );
   }
+
+  // A search hit's `document` is a full `WireDocument` clone, permissions envelope included —
+  // the panel reads `permissions.property_overrides` off every row it renders, search-sourced
+  // or store-resolved alike. Fixtures go through the real builders so they cannot describe a
+  // document shape the wire never produces.
+  const hit = (document: WireDocument) => ({ document, score: 1, snippet: "" });
 
   it("opens a sheet for an actor row via ctx.openDocument", async () => {
     const opened: unknown[] = [];
@@ -488,10 +494,7 @@ describe("ActorsPanel — live search + open sheet", () => {
       }),
     });
     await fireEvent.input(getByLabelText(/search/i), { target: { value: "gob" } });
-    capturedOnUpdate!([
-      { document: { id: "a9", doc_type: "actor", name: "Goblin", engine: { displayName: "Goblin" } }, score: 1, snippet: "" },
-      { document: { id: "i9", doc_type: "item", name: "Gob-stopper", system: {} }, score: 1, snippet: "" },
-    ]);
+    capturedOnUpdate!([hit(actorDoc("a9")), hit(buildItemDoc("w1", "Gob-stopper", {}, "i9"))]);
     await findByText("Goblin");
     expect(screen.queryByText("Gob-stopper")).toBeNull();
   });
@@ -529,18 +532,14 @@ describe("ActorsPanel — live search + open sheet", () => {
     expect(second.q).toBe("go");
 
     // Second (current) query's results arrive first.
-    second.onUpdate([
-      { document: { id: "a-go", doc_type: "actor", name: "Goliath", engine: { displayName: "Goliath" } }, score: 1, snippet: "" },
-    ]);
+    second.onUpdate([hit(actorDoc("a-go", "Goliath"))]);
     await screen.findByText("Goliath");
 
     // First (stale, abandoned) query's results arrive late. Flush reactivity via `tick()` after
     // the call: without it, a still-in-flight DOM update could mask a re-introduced
     // `searchHits`-overwritten-but-not-yet-rendered bug and pass this assertion for the wrong
     // reason.
-    first.onUpdate([
-      { document: { id: "a-g", doc_type: "actor", name: "Ghoul", engine: { displayName: "Ghoul" } }, score: 1, snippet: "" },
-    ]);
+    first.onUpdate([hit(actorDoc("a-g", "Ghoul"))]);
     await tick();
 
     expect(screen.queryByText("Ghoul")).toBeNull();
