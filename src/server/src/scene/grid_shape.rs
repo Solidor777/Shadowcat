@@ -8,8 +8,8 @@
 //! `neighbors_with_cost`/`footprint_cells`/`line_traversal` are wired into
 //! `pathfinding::astar_leg`/`cell_enterable`; `line_traversal` is also wired into
 //! `move_exec::execute_move`; `cell_of` is wired into `move_exec::execute_move`'s region-cell
-//! lookup (and `HexGrid::cells_in_bounds`'s corner mapping). `cell_vertices` is proven only by the
-//! tests below until the leniency corner-clip cutover calls it — allowed dead code until then.
+//! lookup (and `HexGrid::cells_in_bounds`'s corner mapping); `cell_vertices` is wired into
+//! `accumulate_visible_cells`'s lenient corner-sampling branch.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
@@ -109,10 +109,10 @@ pub(crate) fn exceeds_cell_cap(bounds: (i32, i32, i32, i32), max_cells: i64) -> 
     candidate_span(bounds) > max_cells
 }
 
-/// Byte-identical port of the pre-existing hardcoded square-grid math (`cell_center`/
-/// `footprint_cells`, `movement::supercover_cells`, `astar_leg`'s 8-directional `dirs` +
-/// `step_cost`). `cell` and `rule` are the scene's resolved
-/// cell size and diagonal-cost rule.
+/// The ordinary square-grid formulas: `cell_center` is `((i+0.5)*cell, (j+0.5)*cell)`;
+/// `footprint_cells` is disc-vs-cell overlap; `line_traversal` delegates to
+/// `movement::supercover_cells`; `neighbors_with_cost` is the 8-directional `dirs` array +
+/// `step_cost`. `cell` and `rule` are the scene's resolved cell size and diagonal-cost rule.
 pub(crate) struct SquareGrid {
     /// Cell size in scene units.
     pub cell: f64,
@@ -194,9 +194,8 @@ impl GridShape for SquareGrid {
         Some(out)
     }
 
-    /// Byte-identical to the pre-hex window computation (`floor(min/cell)`/`floor(max/cell)` per
-    /// axis) so square routes are unchanged. `f64 as i32` saturates on an extreme coordinate,
-    /// matching `cells_in_bounds`' own overflow behavior.
+    /// `floor(min/cell)`/`floor(max/cell)` per axis. `f64 as i32` saturates on an extreme
+    /// coordinate, matching `cells_in_bounds`' own overflow behavior.
     fn cell_bounds(&self, min: vision::P, max: vision::P, cell: f64) -> (i32, i32, i32, i32) {
         (
             (min.0 / cell).floor() as i32,
@@ -218,9 +217,8 @@ impl GridShape for SquareGrid {
         ]
     }
 
-    /// Byte-identical to the pre-existing free `pathfinding::heuristic(self.rule, ...)` — the same
-    /// admissible+consistent `DiagonalRule`-based square estimate `astar_leg` used before the trait
-    /// dispatch, so every square route (all 4 diagonal rules) is unchanged.
+    /// Delegates to `pathfinding::heuristic(self.rule, ...)` — the admissible+consistent
+    /// `DiagonalRule`-based square estimate, covering all 4 diagonal rules.
     fn heuristic(&self, from: Cell, to: Cell) -> f64 {
         pathfinding::heuristic(self.rule, from, to)
     }
@@ -876,6 +874,18 @@ mod tests {
     }
 
     #[test]
+    fn exceeds_cell_cap_is_strictly_greater_than_at_the_boundary() {
+        // Anti-drift on the predicate's own polarity, pinned exactly at the boundary: a `>` → `>=`
+        // flip would refuse an otherwise-legal exactly-at-cap scan at every one of the three sites
+        // that call this predicate — the total mask loss this file exists to remove. `bounds =
+        // (0, 0, w-1, 0)` gives `candidate_span` exactly `w` (h = 1), so setting `w` to `CAP` and
+        // to `CAP + 1` isolates the boundary through the span formula itself.
+        // Discrimination: fails if `exceeds_cell_cap`'s `>` becomes `>=`.
+        assert!(!exceeds_cell_cap((0, 0, (CAP - 1) as i32, 0), CAP));
+        assert!(exceeds_cell_cap((0, 0, CAP as i32, 0), CAP));
+    }
+
+    #[test]
     fn cells_in_bounds_fails_closed_on_degenerate_input() {
         let g = SquareGrid {
             cell: 100.0,
@@ -934,8 +944,8 @@ mod tests {
 
     #[test]
     fn square_cell_bounds_is_the_corner_floor_box() {
-        // Byte-identical to the pre-hex A* window's `floor(min/cell)`/`floor(max/cell)` computation,
-        // so square routes are unchanged.
+        // Discrimination: pins `floor(min/cell)`/`floor(max/cell)` per axis, on signed-straddling
+        // and wholly-negative input.
         let g = SquareGrid {
             cell: 100.0,
             rule: DiagonalRule::Chebyshev,

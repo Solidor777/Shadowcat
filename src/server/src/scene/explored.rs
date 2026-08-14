@@ -88,10 +88,13 @@ pub(crate) fn pad_box(bbox: (vision::P, vision::P), pad: f64) -> (vision::P, vis
 /// regardless of `mode`: it is the largest box ANY mode would scan for this source, so every
 /// mode's own box, padded or not, is intersected against the SAME window. `Strict`'s unpadded box
 /// is a subset of `Lenient`'s padded one (`A ⊆ A'`), and intersecting both with one window `W`
-/// gives `A ∩ W ⊆ A' ∩ W` — `strict ⊆ lenient` holds structurally, not by argument about which
-/// branch ran. Deciding independently per mode instead leaves a reachable band where the smaller
-/// unpadded box sits at or under the cap (returned whole) while the larger padded box exceeds it
-/// (windowed), so the unclamped result can hold a cell the windowed one does not.
+/// gives `A ∩ W ⊆ A' ∩ W` — GIVEN the precondition below, `strict ⊆ lenient` holds structurally,
+/// not by argument about which branch ran; `clamp_scan_window`'s inverted-window fallback is the
+/// one branch this does NOT hold across, since it returns `actual` unchanged rather than
+/// `actual ∩ W` and is reachable only when the precondition fails (see PRECONDITION). Deciding
+/// independently per mode instead leaves a reachable band where the smaller unpadded box sits at
+/// or under the cap (returned whole) while the larger padded box exceeds it (windowed), so the
+/// unclamped result can hold a cell the windowed one does not.
 ///
 /// This is also why `player_lit_mask`'s scan — which has no lenient counterpart of its own — must
 /// still call this with `Strict` rather than compute its box directly: its decision is the SAME
@@ -102,11 +105,21 @@ pub(crate) fn pad_box(bbox: (vision::P, vision::P), pad: f64) -> (vision::P, vis
 /// movement gate's own strict scan for the same source, an under-permissive divergence between
 /// what a player is shown and what they may move through.
 ///
+/// `mark_polygons` has no lenient counterpart at all — its one call always asks for `Strict` with
+/// its own box as `bbox` — so the "largest box any mode would scan" it shares a decision with is
+/// hypothetical, never actually scanned. For it, sharing the decision means: in the band where its
+/// own unpadded box sits at or under the cap but the padded box does not, it clamps and marks a
+/// bounded subset of the cells its own box alone would have covered. This is deliberate — uniform
+/// treatment across all three callers is worth more than the narrow band it costs, and the
+/// direction is under-reveal (fewer cells remembered), the same fail-safe direction every other
+/// clamp outcome in this module takes.
+///
 /// PRECONDITION: `focus` lies inside `bbox` (and therefore inside the padded box, which only grows
 /// it). Every caller satisfies it: a visibility source sits inside its own LOS polygon's bbox, and
 /// `mark_polygons` uses that bbox's own centre. A focus far enough outside `bbox` that the window
 /// misses the box being scanned returns that box unchanged and lets the callee's own cap decide,
-/// rather than yielding an inverted, enumerates-nothing rectangle.
+/// rather than yielding an inverted, enumerates-nothing rectangle — this is the inverted-window
+/// fallback named above.
 ///
 /// Returns the mode's own box unchanged for a degenerate `cell`, `focus`, or `bbox` as well — the
 /// callee's fail-closed `None` on a degenerate input is the correct outcome there and must not be
@@ -646,10 +659,11 @@ mod tests {
         // Discrimination: fails if `SCAN_WINDOW_HALF_CELLS` is raised such that
         // `(2*half + 1)^2 > MAX_CELLS_PER_POLYGON`.
         let side = 2 * SCAN_WINDOW_HALF_CELLS + 1;
+        let bounds = (0, 0, (side - 1) as i32, (side - 1) as i32);
         assert!(
-            side * side <= MAX_CELLS_PER_POLYGON,
+            !exceeds_cell_cap(bounds, MAX_CELLS_PER_POLYGON),
             "the window enumerates {} cells against a {MAX_CELLS_PER_POLYGON} cap",
-            side * side
+            candidate_span(bounds)
         );
     }
 
@@ -664,10 +678,10 @@ mod tests {
         let g = HexGrid { size };
         let half_px = SCAN_WINDOW_HALF_CELLS as f64 * size;
         let bounds = g.cell_bounds((-half_px, -half_px), (half_px, half_px), size);
-        let span = candidate_span(bounds);
         assert!(
-            span <= MAX_CELLS_PER_POLYGON,
-            "a clamped hex window enumerates {span} cells against a {MAX_CELLS_PER_POLYGON} cap"
+            !exceeds_cell_cap(bounds, MAX_CELLS_PER_POLYGON),
+            "a clamped hex window enumerates {} cells against a {MAX_CELLS_PER_POLYGON} cap",
+            candidate_span(bounds)
         );
     }
 
@@ -699,9 +713,20 @@ mod tests {
             MAX_CELLS_PER_POLYGON,
             ScanMode::Strict,
         );
-        assert_ne!(
-            strict, bbox,
-            "the strict box must be windowed because its padded counterpart is over cap"
+        let half_px = SCAN_WINDOW_HALF_CELLS as f64 * cell;
+        let expected = (
+            (
+                bbox.0 .0.max(focus.0 - half_px),
+                bbox.0 .1.max(focus.1 - half_px),
+            ),
+            (
+                bbox.1 .0.min(focus.0 + half_px),
+                bbox.1 .1.min(focus.1 + half_px),
+            ),
+        );
+        assert_eq!(
+            strict, expected,
+            "the strict box must be the window itself, not merely a different box"
         );
     }
 

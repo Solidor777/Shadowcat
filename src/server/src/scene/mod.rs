@@ -7543,9 +7543,10 @@ explored: // GM: unrestricted mask
     /// `(100, 100)` (grid size 1, authored bounds 1999×1999), so `source_los_poly`'s bound
     /// rectangle is exactly `[0, 0]–[1999, 1999]` (`VISION_BOUND_MARGIN` cancels against the
     /// token's own offset on the low edge; the authored bounds dominate the high edge).
-    fn strict_lenient_clamp_band_scene() -> (SceneEcs, Uuid, Uuid) {
+    fn strict_lenient_clamp_band_scene() -> (SceneEcs, Uuid, Uuid, Uuid) {
         let user = Uuid::from_u128(8);
         let scene_id = Uuid::from_u128(20);
+        let token_id = Uuid::from_u128(21);
         let mut tok = entity_doc_eng(
             21,
             20,
@@ -7573,25 +7574,38 @@ explored: // GM: unrestricted mask
             "pathfinding": { "diagonalRule": "chebyshev" },
             "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
         }));
-        (ecs, user, scene_id)
+        (ecs, user, scene_id, token_id)
     }
 
-    /// The scan box `strict_lenient_clamp_band_scene`'s single source produces, computed the SAME
-    /// way `source_los_poly` + the movement/egress scans do (`vision::bound_for_scene` at
-    /// `VISION_BOUND_MARGIN`, unioned with the authored bounds), so the band assertion is checked
-    /// against the real box rather than the doc comment's claimed one.
-    fn strict_lenient_band_span() -> (i64, i64) {
-        let vp = (100.0, 100.0);
-        let bound = crate::scene::vision::bound_for_scene(vp, &[], (1999.0, 1999.0), 100.0);
-        let bbox_min = (bound.minx, bound.miny);
-        let bbox_max = (bound.maxx, bound.maxy);
-        let g = grid_shape::SquareGrid {
-            cell: 1.0,
-            rule: crate::scene::pathfinding::DiagonalRule::Chebyshev,
-        };
-        let padded = crate::scene::explored::pad_box((bbox_min, bbox_max), 1.0);
-        let strict_span = grid_shape::candidate_span(g.cell_bounds(bbox_min, bbox_max, 1.0));
-        let lenient_span = grid_shape::candidate_span(g.cell_bounds(padded.0, padded.1, 1.0));
+    /// The scan box `strict_lenient_clamp_band_scene`'s single source produces, and the strict/
+    /// lenient spans that box's candidate scan enumerates. Every input is READ from the fixture —
+    /// the resolved scene settings, the scene's own grid size, the resolved grid shape, the
+    /// token's own position, and `source_los_poly` itself — rather than restated as a literal, so
+    /// a change to `VISION_BOUND_MARGIN`, the fixture's authored bounds, its token position, or
+    /// its grid size changes what this computes too, instead of leaving it stale.
+    fn strict_lenient_band_span(ecs: &SceneEcs, scene: Uuid, token: Uuid) -> (i64, i64) {
+        let settings = ecs.resolve_scene(scene);
+        let cell = *ecs
+            .scene_grid_sizes()
+            .get(&scene)
+            .expect("the fixture's scene has a grid size");
+        let grid = ecs.resolve_grid_shape(scene, cell);
+        let vp = ecs
+            .token_position(token)
+            .expect("the fixture's token has a position");
+        let walls = ecs.sight_walls(scene);
+        let poly = source_los_poly(vp, &walls, settings.los_restriction, settings.bounds);
+        let (mut minx, mut miny, mut maxx, mut maxy) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+        for &(x, y) in &poly {
+            minx = minx.min(x);
+            miny = miny.min(y);
+            maxx = maxx.max(x);
+            maxy = maxy.max(y);
+        }
+        let bbox = ((minx, miny), (maxx, maxy));
+        let padded = crate::scene::explored::pad_box(bbox, cell);
+        let strict_span = grid_shape::candidate_span(grid.cell_bounds(bbox.0, bbox.1, cell));
+        let lenient_span = grid_shape::candidate_span(grid.cell_bounds(padded.0, padded.1, cell));
         (strict_span, lenient_span)
     }
 
@@ -7603,11 +7617,13 @@ explored: // GM: unrestricted mask
         // unclamped strict result then reaches a candidate column the clamped lenient result's
         // own (independently-decided) window never enumerates, and `is_subset` catches it.
         //
-        // The fixture's whole value depends on actually landing in the band — computed and
-        // asserted here rather than trusted from the fixture's doc comment, so a future change to
-        // `VISION_BOUND_MARGIN` or the authored bounds that silently moves the scene out of the
-        // band fails this test instead of leaving every assertion below vacuously true.
-        let (strict_span, lenient_span) = strict_lenient_band_span();
+        // The fixture's whole value depends on actually landing in the band — `strict_lenient_band_span`
+        // reads every input from the fixture itself rather than restating one, so a change to
+        // `VISION_BOUND_MARGIN`, the authored bounds, the token position, or the grid size that
+        // moves the scene out of the band fails the two assertions below instead of leaving them
+        // vacuously true.
+        let (ecs, user, scene, token) = strict_lenient_clamp_band_scene();
+        let (strict_span, lenient_span) = strict_lenient_band_span(&ecs, scene, token);
         assert!(
             strict_span <= crate::scene::explored::MAX_CELLS_PER_POLYGON,
             "fixture: the strict span must sit at or under the cap ({strict_span})"
@@ -7616,7 +7632,6 @@ explored: // GM: unrestricted mask
             lenient_span > crate::scene::explored::MAX_CELLS_PER_POLYGON,
             "fixture: the padded span must exceed the cap ({lenient_span})"
         );
-        let (ecs, user, scene) = strict_lenient_clamp_band_scene();
         let strict = ecs.visible_cells(user, scene, false);
         let lenient = ecs.visible_cells(user, scene, true);
         assert!(
@@ -7640,7 +7655,7 @@ explored: // GM: unrestricted mask
         // sets for the same source (`cell_visible`'s own doc states this as an invariant); pinned
         // specifically inside the clamp band, not only in the scenes outside it the other
         // `assert_strict_parity` call sites already cover.
-        let (ecs, user, scene) = strict_lenient_clamp_band_scene();
+        let (ecs, user, scene, _token) = strict_lenient_clamp_band_scene();
         assert_strict_parity(&ecs, user, scene);
     }
 }
