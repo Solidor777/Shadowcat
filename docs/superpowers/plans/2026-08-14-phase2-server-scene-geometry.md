@@ -3710,8 +3710,23 @@ lit cells on the origin side of a hex scene.
 
 Parity is not the question. The question the parity change surfaced, which nobody has answered, is:
 
-> Can a cell outside the authored block, being lit and reachable, expose the existence or the
-> position of a document a GM placed outside the bounds?
+> **Limb 1 — what a lit cell outside the block reveals.** Can a cell outside the authored block,
+> being lit and reachable, expose the existence or the position of a document a GM placed outside
+> the bounds?
+>
+> **Limb 2 — what a player can step onto there.** `visible_cells` and `visible_cells_cached` reach
+> the same environment-light path, so the movement gate's mask carries the same ring. Under
+> `movementRestriction: "visible"` a non-GM can enter it. Is a play area a player can leave by one
+> ring the intended contract, on either shape?
+
+Answer limb 2 as well as limb 1. The review that surfaced this found the fog consequence stated and
+the gate consequence unstated, which is how a gate change gets ratified as a fog change.
+
+Note what IS already established, so it is not re-derived: `gm_only` walls and regions are filtered
+per recipient and never delivered, so no secret geometry reaches the ring. What is NOT established is
+the non-secret case — a token, drawing or template a GM placed there is delivered and hidden only by
+fog, so lighting the ring renders it. That half is derived from the fog model rather than tested, and
+no server-side test can assert it, which is itself worth stating in the answer.
 
 Answer it **from the code**, tracing what a client actually receives: whether a cell outside the
 block can enter a player visible-cell mask, what an egressed mask discloses about a cell nothing
@@ -4687,7 +4702,22 @@ line numbers, no milestone ids, sweep markers, dates, or history narration. Cite
 `build_navmesh`, `env_light_polys` and `bound_for_scene`. If either has an entry in
 `docs/OPEN_BUGS.md`, remove it in the same commit.
 
+- [ ] **Step 1a: Record the environment-light leak the envelope closed**
+
+Add to `docs/CLOSED_BUGS.md`, in the file's existing entry style: `env_light_polys` sampled its
+perimeter from a rectangle anchored at the origin, so on hex its bottom edge ran along `y = 0` —
+**through** axial row 0 of the authored block rather than outside it. A boundary sample could
+therefore land inside a `blocksLight`-sealed room on that row and project environment light into a
+space the seal was supposed to keep dark. Sampling now walks the block's true envelope, so every
+sample sits strictly outside it.
+
+Cite `lighting::env_light_polys`, `lighting::perimeter_point`, and `grid_shape::WorldExtent`. Hex
+only — a square block's minimum is the origin, so its walk was always outside. State that it was
+unexercised: no fixture placed a sealed room on the origin row, which is why the leak survived to be
+found by reasoning about the walk's geometry rather than by a failing test.
+
 - [ ] **Step 2: Close the to-do entries**
+
 
 Remove the TD17, TD18, TD19 and TD48 entries from `docs/TODO.md`.
 
