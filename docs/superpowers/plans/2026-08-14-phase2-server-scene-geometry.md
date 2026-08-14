@@ -4732,6 +4732,31 @@ data.
 
 - [ ] **Step 4: Update the subsystem skill (reviewed skill-update gate)**
 
+**Method requirement, learned during this phase.** A skill claim can be stale in SUBSTANCE while the
+symbol it is stale about never appears in the text. An implementer reported
+`shadowcat-codebase-scene-rendering` untouched by the extent work because it never names
+`GridShape::world_extent` — literally true, and the skill nonetheless documents `build_navmesh` with a
+signature it has not had for some time and describes it as triangulating "the scene's bounds
+rectangle", which is precisely the origin anchoring this phase removed. **Audit the skill's CLAIMS
+against the code, never the skill's symbol list against the diff** — a grep for changed symbol names
+reports clean on exactly the drift that matters most, because the staleness lives in a description
+whose subject was renamed or restructured out of it.
+
+Corrections this phase makes mandatory, beyond the additions listed after them:
+
+- `build_navmesh`'s documented signature is wrong independently of this phase and must be corrected to
+  what it takes now.
+- The bounds-to-world conversion returns a `grid_shape::WorldExtent` carrying BOTH corners, and the
+  minimum is the origin only on square — a pointy-top hex block reaches below and left of it. Any
+  sentence describing a scene rectangle as anchored at the origin is wrong for half the shapes.
+- `grid_shape::REFUSED_EXTENT` is the single zero-area refusal every extent guard rejects, and
+  `SceneEcs::scene_world_extent_at` is the single body performing the conversion.
+- `world_extent`'s guarantees hold over the INTEGER block, not over an arbitrary authored bound: a
+  fractional bound leaves a partial column or row outside on a shape-dependent condition, which an
+  executable membership rule and its sweep enforce rather than prose. The "CENTRE cover with a
+  documented origin-side truncation" phrasing below is superseded and must not be carried forward.
+
+
 `shadowcat-codebase-scene-rendering` gains, as Hard Invariants:
 - the three-role distinction for the `cell` scalar — indexing scale, per-cell world distance,
   subdivision density — with `GridShape::world_units_per_cell` as the second, the two gate-facing
