@@ -927,10 +927,10 @@ mod tests {
 
     #[test]
     fn oversized_footprint_scene_fails_closed_not_panic() {
-        // Reproducer independently verified by two reviewers: a tiny-but-finite extent stays well
-        // under `MAX_NAVMESH_COORD`, and the wall's raw endpoints are ordinary, yet a footprint
-        // distance of `64.0 * 1e37` overflows `f32::MAX` and would saturate the buffered ring's
-        // vertices to infinity on cast, panicking inside `spade`.
+        // A tiny-but-finite extent stays well under `MAX_NAVMESH_COORD`, and the wall's raw
+        // endpoints are ordinary, yet a footprint distance of `64.0 * 1e37` overflows `f32::MAX`
+        // and would saturate the buffered ring's vertices to infinity on cast, panicking inside
+        // `spade`.
         let walls = vec![Seg {
             a: (0.0, 0.0),
             b: (1.0, 1.0),

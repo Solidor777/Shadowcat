@@ -2269,13 +2269,19 @@ cell: 100.0,
     // module's square-scene wall/mask tests above.
     // -----------------------------------------------------------------------
 
-    /// Pointy-top axial hex center, matching `grid_shape::HexGrid`'s own formula exactly
-    /// (size=100, Red Blob Games convention).
+    /// The grid size every fixture in this hex block authors, shared with `hex_cell_center` so a
+    /// scene's declared size and the endpoints computed against it cannot drift apart.
+    const HEX_SIZE: f64 = 100.0;
+
+    /// Pointy-top axial hex center, delegating to the shape rather than restating its formula:
+    /// these fixtures now derive a scene's authored bounds from this helper as well as its
+    /// endpoints, so a second expression of `HexGrid::axial_to_pixel` would mis-author the extent
+    /// and the token position together.
     fn hex_cell_center(q: i32, r: i32) -> (f64, f64) {
-        let size = 100.0;
-        let x = size * (3.0_f64.sqrt() * q as f64 + 3.0_f64.sqrt() / 2.0 * r as f64);
-        let y = size * (1.5 * r as f64);
-        (x, y)
+        crate::scene::grid_shape::GridShape::cell_center(
+            &crate::scene::grid_shape::HexGrid { size: HEX_SIZE },
+            (q, r),
+        )
     }
 
     /// Hex scene (`grid.kind: "hex"`, size=100) with a token at axial (0,0), no walls.
@@ -2479,8 +2485,9 @@ cell: 100.0,
     /// token, user, start, goal)`. Vision is unlimited (no vision override) so the whole corridor
     /// is visible to `user`, isolating the wall/footprint interaction under test.
     ///
-    /// The authored bounds are a CELL COUNT, so the corridor's world span is divided by `SIZE`
-    /// (the same constant the scene's own grid declares, read once rather than restated). On
+    /// The authored bounds are a CELL COUNT, so the corridor's world span is divided by
+    /// `HEX_SIZE` — the same constant the scene's own grid declares and `hex_cell_center` builds
+    /// its shape from, read once rather than restated at any of the three. On
     /// square that reproduces the corridor rectangle exactly; on hex the block's world rectangle
     /// is a shear-dependent function that is strictly LARGER than the corridor span, which
     /// preserves the fixture's intent — the play area covers the corridor and the gap with room to
@@ -2489,9 +2496,6 @@ cell: 100.0,
         kind: &str,
         model: MovementModel,
     ) -> (SceneEcs, Uuid, Uuid, Uuid, (f64, f64), (f64, f64)) {
-        /// The scene's authored grid size, shared between the grid declaration and the cell-count
-        /// conversion of the corridor's world span so the two cannot drift apart.
-        const SIZE: f64 = 100.0;
         let scene_id = Uuid::from_u128(10);
         let token_id = Uuid::from_u128(11);
         let user = Uuid::from_u128(1);
@@ -2502,7 +2506,10 @@ cell: 100.0,
         let (start, goal) = if kind == "hex" {
             (hex_cell_center(0, 2), hex_cell_center(4, 2))
         } else {
-            ((0.5 * SIZE, 2.5 * SIZE), (4.5 * SIZE, 2.5 * SIZE))
+            (
+                (0.5 * HEX_SIZE, 2.5 * HEX_SIZE),
+                (4.5 * HEX_SIZE, 2.5 * HEX_SIZE),
+            )
         };
         // Both grids place `start`/`goal` on the same row (`y` depends only on the row index, not
         // the column), so a single wall gap centered on that shared `y` clears both kinds.
@@ -2528,9 +2535,9 @@ cell: 100.0,
             10,
             0,
             "scene",
-            json!({ "grid": { "kind": kind, "size": SIZE }, "background": null,
-                    "bounds": { "width": (goal.0 + 400.0) / SIZE,
-                                "height": (row_y + 400.0) / SIZE } }),
+            json!({ "grid": { "kind": kind, "size": HEX_SIZE }, "background": null,
+                    "bounds": { "width": (goal.0 + 400.0) / HEX_SIZE,
+                                "height": (row_y + 400.0) / HEX_SIZE } }),
         );
         let mut ecs = SceneEcs::from_documents(
             vec![

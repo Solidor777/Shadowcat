@@ -71,11 +71,11 @@ pub(crate) trait GridShape {
     /// World-space distance represented by ONE unit of grid distance on this shape — the
     /// distance between two adjacent cell centres.
     ///
-    /// This is the conversion for a quantity a GM authors in CELLS that the engine must measure
-    /// in world units: light bright/dim radii, a vision mode's `default_range`, animation speed,
-    /// and the router's reported cost. Square returns its own cell size, so nothing changes
-    /// there; pointy-top hex returns `√3 · size`, because all six axial neighbours sit that far
-    /// from a hex's centre while `size` is only its circumradius.
+    /// This is the conversion for the CLASS of quantity a GM authors in cells that the engine must
+    /// measure in world units — light bright/dim radii, a vision mode's `default_range`, animation
+    /// speed, and the router's reported cost all belong to it. Square returns its own cell size, so
+    /// nothing changes there; pointy-top hex returns `√3 · size`, because all six axial neighbours
+    /// sit that far from a hex's centre while `size` is only its circumradius.
     ///
     /// NOT the cell INDEXING scale. `cell_of`, `cell_center`, `cells_in_bounds`, `cell_bounds`,
     /// `footprint_cells` and `line_traversal` index against the shape's own stored scale and must
@@ -87,33 +87,59 @@ pub(crate) trait GridShape {
     /// indexing scale — scaling it here would give a 1×1 token a disc past the hex inradius and
     /// make a medium creature occupy seven hexes, which is a rules change rather than a unit fix.
     fn world_units_per_cell(&self) -> f64;
-    /// The origin-anchored world rectangle `(0,0)–result` for the authored index block
-    /// `[0, bounds_cells.0) × [0, bounds_cells.1)`, whose units are GRID units.
+    /// The origin-anchored world rectangle `(0,0)–result` for `bounds_cells`, a continuous
+    /// per-axis dimension measured in GRID units — not a cell count, and not required to be
+    /// integral.
     ///
-    /// The guarantee differs by grid kind and consumers must not assume the stronger one:
-    /// - **Square** — an exact COVER. Cell `(i,j)` occupies `[i·cell,(i+1)·cell)` per axis, so
-    ///   the block occupies exactly `(w·cell, h·cell)` with no shear and no overhang.
-    /// - **Hex** — a CENTRE cover. Every cell's centre lies inside, and the extreme cell
-    ///   `(w-1, h-1)`'s far vertices lie inside, but the axial block is a rhombus whose origin
-    ///   row reaches `y = -size` and whose origin cell reaches `x = -√3/2·size`; those margins
-    ///   are OUTSIDE the rectangle. Claiming a full cover here would be false.
+    /// **Both guarantees below are stated for the INTEGER block `[0, ⌊w⌋) × [0, ⌊h⌋)`**, and
+    /// consumers must not assume the stronger one:
+    /// - **Square** — an exact COVER of that block. Cell `(i,j)` occupies `[i·cell,(i+1)·cell)`
+    ///   per axis, so `⌊w⌋ × ⌊h⌋` cells occupy `(⌊w⌋·cell, ⌊h⌋·cell) ≤ (w·cell, h·cell)` with no
+    ///   shear and no overhang.
+    /// - **Hex** — a CENTRE cover of that block. Every such cell's centre lies inside, and the
+    ///   extreme cell's far vertices lie inside, but the axial block is a rhombus whose origin row
+    ///   reaches `y = -size` and whose origin cell reaches `x = -√3/2·size`; those margins are
+    ///   OUTSIDE the rectangle. Claiming a full cover here would be false.
     ///
-    /// What the hex truncation costs each consumer, since over-covering is NOT free for all of
-    /// them:
-    /// - `navmesh::build_navmesh` triangulates this rectangle, so a continuous position inside
-    ///   the origin row's negative-y margin is off-mesh and routes as unreachable. Every cell
-    ///   CENTRE — the only position a grid-snapped token occupies — is on-mesh.
-    /// - `lighting::env_light_polys` walks this rectangle's perimeter, so the truncated margin
-    ///   gets no boundary sample of its own and is lit only through neighbouring samples:
-    ///   under-reveal.
+    /// **A fractional axis leaves its last partial column or row outside**, on both shapes, under
+    /// the same condition on the fractional part `f` — **`f ≠ 0` and `f < 0.5`** — reached by
+    /// different arithmetic:
+    /// - **Square**, row-independent: the partial cell's centre sits at `(⌊w⌋+0.5)·cell` against an
+    ///   extent of `w·cell`. Square additionally never FULLY covers a partial cell for ANY
+    ///   `f ≠ 0`, since that cell always overhangs.
+    /// - **Hex**, row-DEPENDENT: the axial shear puts column `q`'s centre at
+    ///   `size·(√3·q + √3/2·r)` while the extent reaches `size·√3·(w−1) + size·√3/2·h`, so the
+    ///   shortfall at row `r` is `size·√3·(1−f) + size·√3/2·(r−h)` — decreasing in `r`. At the last
+    ///   row of the integer block it reduces to `size·√3·[(1−f) − 1/2]`, positive iff `f < 0.5`;
+    ///   at row `0` the same column is INSIDE, because the shear grants x-slack proportional to
+    ///   the row index.
+    ///
+    /// This is authorable through the ordinary settings editor, which marks a fractional width
+    /// invalid without sanitizing it.
+    ///
+    /// What that exclusion, and the hex truncation, cost each consumer — over-covering is NOT free
+    /// for all of them:
+    /// - `navmesh::build_navmesh` triangulates this rectangle, so a position outside it is off-mesh
+    ///   and routes as unreachable: an excluded partial column, and the origin row's negative-y
+    ///   margin on hex. Every integer-block cell CENTRE — the only position a grid-snapped token
+    ///   occupies — is on-mesh, INCLUDING axial row `r = 0`, whose centres sit exactly on the
+    ///   rectangle's bottom edge and whose origin cell is the corner vertex itself: the mesh's
+    ///   containment test admits an exactly-on-boundary point.
+    /// - `lighting::env_light_polys` walks this rectangle's perimeter, so an excluded margin gets
+    ///   no boundary sample of its own and is lit only through neighbouring samples: under-reveal.
     /// - `vision::bound_for_scene` unions this rectangle after clamping its low edges to `≤ 0`
-    ///   and expanding by its own `margin`, so the truncation shows only where that margin is
-    ///   smaller than the circumradius: under-reveal again.
+    ///   and expanding by its own `margin`, so the shortfall shows only where that margin is
+    ///   smaller than it: under-reveal again.
     ///
-    /// Growing the rectangle is not a free hedge in the other direction: the vision bound and the
-    /// lit mask are BUILT from it rather than merely gated by it, so a larger rectangle widens
-    /// what a player is told they can see, and the environment-light perimeter walk is not
-    /// mask-gated at all.
+    /// Growing the rectangle — by rounding a fractional bound UP, say — is not a free hedge in the
+    /// other direction, which is why neither impl does: the vision bound and the lit mask are
+    /// BUILT from it rather than merely gated by it, so a larger rectangle widens what a player is
+    /// told they can see, and the environment-light perimeter walk is not mask-gated at all.
+    /// Rounding up would also make two distinct authored dimensions produce one rectangle, so a
+    /// stored setting would stop determining its own effect.
+    ///
+    /// A non-finite axis is normalised to `0.0` by both impls, so it yields a rectangle the
+    /// extent guards refuse rather than two shapes disagreeing about degenerate input.
     fn world_extent(&self, bounds_cells: (f64, f64)) -> (f64, f64);
     /// Admissible A* heuristic (lower bound on the true `neighbors_with_cost` path cost) from cell
     /// `from` to cell `to`. Guides search ORDER only — never gates a cell — so it cannot affect the
@@ -281,8 +307,10 @@ impl GridShape for SquareGrid {
     fn world_extent(&self, bounds_cells: (f64, f64)) -> (f64, f64) {
         // Cell (i,j) covers [i*cell,(i+1)*cell) on each axis, so a w × h block anchored at the
         // origin spans exactly (w*cell, h*cell) with no shear and no overhang.
-        let (w, h) = bounds_cells;
-        (w.max(0.0) * self.cell, h.max(0.0) * self.cell)
+        let Some((w, h)) = normalize_bounds_cells(bounds_cells) else {
+            return (0.0, 0.0);
+        };
+        (w * self.cell, h * self.cell)
     }
 
     fn kind(&self) -> GridKind {
@@ -652,7 +680,9 @@ impl GridShape for HexGrid {
         // increasing in q on x, and in r on BOTH axes (the shear), so that cell maximises each
         // coordinate. Add the pointy-top half-extents — √3/2·size across the flats (x) and the
         // circumradius `size` to a vertex (y) — so that hex's far vertices are inside.
-        let (w, h) = bounds_cells;
+        let Some((w, h)) = normalize_bounds_cells(bounds_cells) else {
+            return (0.0, 0.0);
+        };
         let qmax = (w - 1.0).max(0.0);
         let rmax = (h - 1.0).max(0.0);
         let sqrt3 = 3.0_f64.sqrt();
@@ -664,6 +694,28 @@ impl GridShape for HexGrid {
     fn kind(&self) -> GridKind {
         GridKind::Hex
     }
+}
+
+/// Clamp an authored `bounds_cells` pair to the non-negative finite range every `world_extent`
+/// impl computes over, or `None` when either axis is non-finite.
+///
+/// `None` is the ONE degenerate answer both impls give, and both return `(0.0, 0.0)` for it — a
+/// rectangle the extent guards (`navmesh::build_navmesh`, `lighting::env_light_polys`) already
+/// refuse. Clamping a non-finite axis to `0.0` and continuing is NOT sufficient and is why this
+/// returns an `Option`: `SquareGrid` then yields `0.0` on that axis, but `HexGrid` adds the
+/// pointy-top half-extents afterwards and yields a positive rectangle that BUILDS. The divergence,
+/// not either answer, is the defect — a mesh that small makes everything outside it unreachable,
+/// so the direction is under-permissive rather than a leak, but one trait method must not have two
+/// answers.
+///
+/// A non-finite axis zeroes BOTH, since the guards refuse on either axis and a single degenerate
+/// answer is what keeps the two impls comparable.
+fn normalize_bounds_cells(bounds_cells: (f64, f64)) -> Option<(f64, f64)> {
+    let (w, h) = bounds_cells;
+    if !w.is_finite() || !h.is_finite() {
+        return None;
+    }
+    Some((w.max(0.0), h.max(0.0)))
 }
 
 /// Per-step move cost under `rule`, plus the carried parity for the next step.
@@ -1733,8 +1785,10 @@ mod tests {
     }
 
     #[test]
-    fn square_world_extent_wholly_contains_every_cell_of_the_authored_block() {
-        // Square's guarantee is a FULL cover: every cell's own rectangle lies inside the extent.
+    fn square_world_extent_wholly_contains_every_cell_of_the_integer_block() {
+        // Square's guarantee is a FULL cover of the INTEGER block: every such cell's own rectangle
+        // lies inside the extent. The authored dimensions here are already integral, so this
+        // exercises the integer block only; the fractional case is separate.
         // Discrimination: fails if the square extent gains a margin, loses a cell through a
         // `w - 1` term, or picks up a per-axis asymmetry — the containment check is per cell and
         // the closed form is asserted separately.
@@ -1766,8 +1820,9 @@ mod tests {
 
     #[test]
     fn hex_world_extent_contains_every_cell_centre_and_the_far_cells_vertices() {
-        // Hex's guarantee is a CENTRE cover plus the extreme cell's far vertices — not a full
-        // cover; the origin-side truncation is asserted by the next test.
+        // Hex's guarantee over the INTEGER block is a CENTRE cover plus the extreme cell's far
+        // vertices — not a full cover; the origin-side truncation is asserted by the next test.
+        // The authored dimensions here are integral, so this exercises the integer block only.
         // Discrimination: fails for a `w*size`/`h*size` reading, for a per-axis pitch that omits
         // the axial shear, and for any formula that leaves the far cell's own far vertex outside
         // — every check is derived from `cell_center` plus the pointy-top half-extents.
@@ -1839,10 +1894,15 @@ mod tests {
     }
 
     #[test]
-    fn world_extent_is_positive_for_a_sub_single_cell_block() {
-        // A fractional authored bound below one cell must not produce a negative or zero
-        // rectangle through a `w - 1` term. Discrimination: fails if either impl subtracts one
-        // cell without clamping.
+    fn world_extent_stays_positive_for_a_bound_below_one_cell_and_covers_no_whole_cell() {
+        // A bound below one cell must not produce a negative or zero rectangle through a `w - 1`
+        // term — but the rectangle it does produce covers NO whole cell, because the integer block
+        // `[0, ⌊0.25⌋)` is empty. Both halves are asserted so the positivity guard cannot be read
+        // as a cover claim.
+        // Discrimination: the first assertion fails if either impl subtracts one cell without
+        // clamping; the second fails if either starts rounding a fractional bound up to a whole
+        // cell, which would make the rectangle cover cell (0,0) and two distinct authored
+        // dimensions yield one rectangle.
         let sq = SquareGrid {
             cell: 20.0,
             rule: DiagonalRule::Chebyshev,
@@ -1853,6 +1913,113 @@ mod tests {
                 ex > 0.0 && ey > 0.0,
                 "extent must stay positive, got ({ex}, {ey})"
             );
+        }
+        // Square cell (0,0) spans [0,20) per axis, so a 5×5 rectangle does not contain it.
+        let (sx, sy) = sq.world_extent((0.25, 0.25));
+        assert!(
+            sx < 20.0 && sy < 20.0,
+            "the square rectangle ({sx}, {sy}) must not cover cell (0,0)'s own 20-unit span"
+        );
+        // The hex rectangle is narrower than one hex pitch (`√3·size`), so no hex's full width
+        // fits inside it. Its HEIGHT does reach the origin hex's far vertex — `max_y` is exactly
+        // `size` once `rmax` clamps to zero — which is why the width, not the height, is what
+        // shows that no whole hex is covered.
+        let (hxx, _) = hx.world_extent((0.25, 0.25));
+        assert!(
+            hxx < 20.0 * 3.0_f64.sqrt(),
+            "the hex rectangle's width {hxx} must be under one hex pitch"
+        );
+    }
+
+    #[test]
+    fn a_fractional_bound_below_half_a_cell_leaves_its_partial_column_outside() {
+        // The documented fractional condition, on both arms, with `w = 3.2` (f = 0.2 < 0.5) and an
+        // INTEGRAL height so the predicate is exercised on one axis at a time.
+        //
+        // Square is row-independent: the partial column's centre sits at `(⌊w⌋+0.5)·cell` against
+        // an extent of `w·cell`, so it is outside iff `f < 0.5`.
+        //
+        // Hex is row-DEPENDENT, and the predicate names the LAST row of the integer block. The
+        // axial shear puts column `q`'s centre at `size·(√3·q + √3/2·r)` while the extent reaches
+        // `size·√3·(w−1) + size·√3/2·h`, so the shortfall at row `r` is
+        // `size·√3·(1−f) + size·√3/2·(r−h)` — decreasing in `r`. At `r = h−1` it reduces to the
+        // documented `size·√3·[(1−f) − 1/2]`, positive iff `f < 0.5`. At row 0 the same column is
+        // INSIDE, because the shear grants x-slack proportional to the row index. A test that
+        // probed row 0 would report the partial column as covered and quietly pass.
+        //
+        // Discrimination: every expectation is computed from `cell_center` and the extent, not
+        // restated, so this fails if either impl rounds a fractional bound up (pulling column ⌊w⌋
+        // inside on both arms) and equally if either loses a column of the integer block. The
+        // row-0 assertion below fails if the hex shear term is dropped.
+        let w = 3.2_f64;
+        let h = 4.0_f64;
+        let f = w - w.floor();
+        assert!(
+            f != 0.0 && f < 0.5,
+            "fixture: {w} must satisfy the exclusion predicate, f = {f}"
+        );
+        assert_eq!(h, h.floor(), "fixture: the height must be integral");
+        let partial = w.floor() as i32;
+        let last_row = h as i32 - 1;
+
+        let sq = SquareGrid {
+            cell: 20.0,
+            rule: DiagonalRule::Chebyshev,
+        };
+        let (sx, _) = sq.world_extent((w, h));
+        for i in 0..partial {
+            assert!(
+                sq.cell_center((i, last_row)).0 <= sx + 1e-9,
+                "square column {i} of the integer block must be covered"
+            );
+        }
+        assert!(
+            sq.cell_center((partial, last_row)).0 > sx,
+            "square's partial column {partial} sits outside the extent {sx}"
+        );
+
+        let hx = HexGrid { size: 50.0 };
+        let (hxx, _) = hx.world_extent((w, h));
+        for q in 0..partial {
+            assert!(
+                hx.cell_center((q, last_row)).0 <= hxx + 1e-9,
+                "hex column {q} of the integer block must be covered at the last row"
+            );
+        }
+        assert!(
+            hx.cell_center((partial, last_row)).0 > hxx,
+            "hex's partial column {partial} sits outside the extent {hxx} at row {last_row}"
+        );
+        assert!(
+            hx.cell_center((partial, 0)).0 <= hxx,
+            "the same hex column is INSIDE at row 0 — the exclusion is row-dependent on hex"
+        );
+    }
+
+    #[test]
+    fn both_shapes_answer_a_non_finite_bound_with_the_same_refused_rectangle() {
+        // One trait method, one answer to degenerate input. Without the shared normalisation the
+        // square arm collapses to `(0,0)` (which every extent guard refuses) while the hex arm
+        // still adds its pointy-top half-extents and returns a positive rectangle that BUILDS — a
+        // tiny mesh that makes everything outside it unreachable. Under-permissive rather than a
+        // leak, but the two impls disagreeing is the defect.
+        // Discrimination: fails if either impl stops normalising, since the assertion compares the
+        // two arms against each other AND against the refused value.
+        let sq = SquareGrid {
+            cell: 50.0,
+            rule: DiagonalRule::Chebyshev,
+        };
+        let hx = HexGrid { size: 50.0 };
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            for pair in [(bad, 5.0), (5.0, bad), (bad, bad)] {
+                let s = sq.world_extent(pair);
+                let h = hx.world_extent(pair);
+                assert_eq!(s, h, "the two shapes disagree on {pair:?}: {s:?} vs {h:?}");
+                assert!(
+                    s.0 <= 0.0 || s.1 <= 0.0,
+                    "a non-finite axis must yield a rectangle the extent guards refuse, got {s:?}"
+                );
+            }
         }
     }
 }

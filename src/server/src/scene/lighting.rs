@@ -186,7 +186,8 @@ fn perimeter_point(w: f64, h: f64, d: f64) -> P {
 /// `extent` is the scene rectangle `(0,0)–extent` in WORLD units, produced by
 /// `GridShape::world_extent` from the scene's authored grid-unit bounds. `cell_size` is the grid's
 /// INDEXING scale and plays two roles that are both discretization, not measurement: it sets the
-/// sample count (one per cell of perimeter, clamped to `[4, MAX_ENV_LIGHT_SAMPLES]`) and the
+/// sample count (one per indexing unit of perimeter, clamped to `[4, MAX_ENV_LIGHT_SAMPLES]` —
+/// on hex the indexing unit is the circumradius, so that is about 1.73 samples per cell pitch) and the
 /// raycast bound's margin, so boundary samples sit strictly inside it. Sample count is a
 /// convergence knob, not a secrecy one: the sampled union approaches the true boundary-reachable
 /// set FROM BELOW, so a coarser count under-reveals and a finer one is strictly more faithful —

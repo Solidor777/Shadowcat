@@ -1173,10 +1173,24 @@ impl SceneEcs {
                 viewpoints.push((scene, (t.x, t.y)));
             }
         }
+        // `scene_grid_sizes` is a full entity scan, so it is read ONCE here rather than per
+        // viewpoint. The extent is then memoised PER SCENE ID, never hoisted to a single value:
+        // this loop spans every scene the user owns a token in, so one extent applied across it
+        // would measure one scene's vision bound against another scene's rectangle.
+        let grid_sizes = self.scene_grid_sizes();
+        let mut extents: std::collections::HashMap<Uuid, (f64, f64)> =
+            std::collections::HashMap::new();
         let mut out = Vec::with_capacity(viewpoints.len());
         for (scene, vp) in viewpoints {
             let walls = self.sight_walls(scene);
-            let scene_extent = self.scene_world_extent(scene);
+            let scene_extent = *extents.entry(scene).or_insert_with(|| {
+                // An absent entry means the scene has no live document — contribute nothing rather
+                // than synthesize a grid, matching `scene_world_extent`'s own refusal.
+                grid_sizes.get(&scene).copied().map_or((0.0, 0.0), |cell| {
+                    self.resolve_grid_shape(scene, cell)
+                        .world_extent(self.resolve_scene(scene).bounds)
+                })
+            });
             let bound = vision::bound_for_scene(vp, &walls, scene_extent, VISION_BOUND_MARGIN);
             out.push((scene, vision::visibility_polygon(vp, &walls, bound)));
         }
@@ -5040,6 +5054,13 @@ mod tests {
             .find(|(i, j, _, _, _)| (*i, *j) == token_cell)
             .map(|(_, _, b, _, _)| *b)
             .expect("the cell holding both the token and the light is lit");
+        // Derived, not merely read back: bands are ordered brightest-first and the fixture's light
+        // sits on the token, so the brightest band is index 0. Without this the comparison below
+        // would be output-against-output and a uniform band shift would stay green.
+        assert_eq!(
+            bright_band, 0,
+            "the cell holding the light must resolve to the brightest band"
+        );
         // Every brightly-lit cell must carry None: normal's floor (0.34) > darkvision's floor
         // (0.0), so normal is the highest-admitting mode there and its None hint suppresses
         // desaturate.
@@ -5281,6 +5302,100 @@ mod tests {
         assert!(
             after.contains(&(0, 0)),
             "the open exterior (the token's own cell) stays lit and visible"
+        );
+    }
+
+    /// The hex analogue of `env_lit_scene_with_room`: an `environmentLight` scene on a pointy-top
+    /// hex grid, with a player-owned normal-vision token at hex `(0,0)` and the six edges of hex
+    /// `SEALED_HEX` walled off. The seal's segments are derived from `HexGrid::cell_vertices`
+    /// rather than restated, so the box is exactly that hex's own boundary on both toggles.
+    ///
+    /// This is the only fixture that reaches `lighting::env_light_polys` on a hex scene: the
+    /// remaining hex fixtures either disable lighting or route as an unrestricted GM, so no mask
+    /// is built and the environment-light path never runs on hex without it. The extent that path
+    /// walks the perimeter of is now grid-kind-dependent, and grid kind and movement model are
+    /// independent axes that combine.
+    fn hex_env_lit_scene_with_room(blocks_light: bool) -> (SceneEcs, Uuid, Uuid) {
+        let user = Uuid::from_u128(7);
+        let scene_id = Uuid::from_u128(10);
+        let g = grid_shape::HexGrid { size: 50.0 };
+        let mut tok = entity_doc_eng(
+            11,
+            10,
+            "token",
+            json!({ "x": 0.0, "y": 0.0, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+        );
+        tok.owner = Some(user);
+        let verts = grid_shape::GridShape::cell_vertices(&g, HEX_SEALED_CELL, 50.0);
+        let mut docs = vec![
+            entity_doc_top_eng(
+                10,
+                "scene",
+                json!({ "grid": { "kind": "hex", "size": 50 }, "background": null,
+                        "bounds": { "width": 6.0, "height": 4.0 } }),
+            ),
+            tok,
+        ];
+        for (k, a) in verts.iter().enumerate() {
+            let b = verts[(k + 1) % verts.len()];
+            docs.push(entity_doc_eng(
+                31 + k as u128,
+                10,
+                "wall",
+                json!({ "seg": {"x1": a.0, "y1": a.1, "x2": b.0, "y2": b.1},
+                        "blocksSight": true, "blocksMove": false, "blocksLight": blocks_light }),
+            ));
+        }
+        let mut ecs = SceneEcs::from_documents(docs, 0);
+        ecs.set_world_settings_for_test(json!({
+            "scene": {
+                "losRestriction": false, "fog": true,
+                "lightingEnabled": true, "lightMode": "environmentLight",
+                "environment": { "color": "#ffffff", "intensity": 1.0 },
+                "observerVision": false,
+                "movementRestriction": "visible",
+                "movementModel": "grid-stepped",
+                "partialCellLeniency": false
+            },
+            "pathfinding": { "diagonalRule": "chebyshev" },
+            "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
+        }));
+        (ecs, user, scene_id)
+    }
+
+    /// The hex whose six edges `hex_env_lit_scene_with_room` seals, and whose drop-out the test
+    /// asserts. Named once so the fixture and its assertion cannot name different cells.
+    const HEX_SEALED_CELL: (i32, i32) = (3, 1);
+
+    #[test]
+    fn hex_env_light_occlusion_seals_the_interior_like_the_square_path() {
+        // The hex arm of the environment-occlusion property, which no other fixture reaches. It
+        // depends on the hex extent: `env_light_polys` walks the perimeter of the rectangle
+        // `world_extent` produces, so a wrong hex extent moves every boundary sample and changes
+        // which cells the environment reaches.
+        // Discrimination: the baseline assertion fails if the sealed hex is never lit in the first
+        // place (a vacuous seal), the sealed assertion fails if `blocksLight` stops occluding, and
+        // the subset assertion fails if occlusion ever ADDS a cell. Under a mutation of the hex
+        // extent formula the perimeter walk changes and this test moves.
+        let (ecs_after, user, scene) = hex_env_lit_scene_with_room(true);
+        let (ecs_before, _, _) = hex_env_lit_scene_with_room(false);
+        let after = mask_cells(&ecs_after, user, scene);
+        let before = mask_cells(&ecs_before, user, scene);
+        assert!(
+            before.contains(&HEX_SEALED_CELL),
+            "baseline (blocksLight:false) still lights hex {HEX_SEALED_CELL:?}"
+        );
+        assert!(
+            !after.contains(&HEX_SEALED_CELL),
+            "a blocksLight-sealed hex must drop out of a normal-vision player's mask"
+        );
+        assert!(
+            after.is_subset(&before),
+            "env occlusion is strictly narrowing on hex too: it only removes cells"
+        );
+        assert!(
+            after.contains(&(0, 0)),
+            "the open exterior (the token's own hex) stays lit and visible"
         );
     }
 
@@ -7152,6 +7267,80 @@ explored: // GM: unrestricted mask
         );
     }
 
+    /// Each scene's vision bound uses ITS OWN extent, never a neighbour's. The viewpoint loop
+    /// spans every scene the user owns a token in, so an extent resolved once above that loop
+    /// would measure one scene's bound against another scene's rectangle — and the memoisation
+    /// that avoids re-scanning the entity table per viewpoint is exactly where that mistake fits.
+    #[test]
+    fn each_scenes_vision_bound_uses_its_own_extent_not_a_neighbours() {
+        // Two wall-less scenes with deliberately mismatched extents: scene 10 is a 5x5 block at
+        // cell 100 (a 500-unit square), scene 20 a 1x1 block at cell 100 (a 100-unit square). The
+        // probe points are read from each scene's OWN resolved extent, so neither is a literal.
+        // Discrimination: with a single hoisted extent both scenes answer with the same rectangle,
+        // so whichever scene is not the source of that value fails one of its two assertions —
+        // the small scene reveals a point beyond its own extent, or the large scene stops short of
+        // one inside its own.
+        let user = Uuid::from_u128(7);
+        let mut docs = Vec::new();
+        for (scene_id, token_id, block) in [(10u128, 11u128, 5.0_f64), (20, 21, 1.0)] {
+            let mut tok = entity_doc_eng(
+                token_id,
+                scene_id,
+                "token",
+                json!({ "x": 5.0, "y": 5.0, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+            );
+            tok.owner = Some(user);
+            docs.push(entity_doc_top_eng(
+                scene_id,
+                "scene",
+                json!({ "grid": { "kind": "square", "size": 100 }, "background": null,
+                        "bounds": { "width": block, "height": block } }),
+            ));
+            docs.push(tok);
+        }
+        let ecs = SceneEcs::from_documents(docs, 0);
+        let polys = ecs.player_vision_polygons(user);
+        assert_eq!(
+            polys.len(),
+            2,
+            "one polygon per scene the user owns a token in"
+        );
+
+        let extents: Vec<(f64, f64)> = [10u128, 20]
+            .iter()
+            .map(|&s| ecs.scene_world_extent(Uuid::from_u128(s)))
+            .collect();
+        assert!(
+            extents[0].0 > extents[1].0,
+            "fixture: the two scenes must have different extents, got {extents:?}"
+        );
+
+        for (i, scene_id) in [10u128, 20].iter().enumerate() {
+            let (_, poly) = polys
+                .iter()
+                .find(|(sid, _)| *sid == Uuid::from_u128(*scene_id))
+                .expect("scene present");
+            let (ex, ey) = extents[i];
+            // Just inside this scene's own extent, on the diagonal from the viewpoint.
+            let inside = (ex - 10.0, ey - 10.0);
+            assert!(
+                vision::point_in_poly(poly, inside),
+                "scene {scene_id} must reveal {inside:?}, inside its own extent {:?}",
+                extents[i]
+            );
+            // Beyond this scene's own extent AND beyond the wall-less margin box around (5,5).
+            let outside = (
+                ex + VISION_BOUND_MARGIN + 10.0,
+                ey + VISION_BOUND_MARGIN + 10.0,
+            );
+            assert!(
+                !vision::point_in_poly(poly, outside),
+                "scene {scene_id} must not reveal {outside:?}, beyond its own extent {:?}",
+                extents[i]
+            );
+        }
+    }
+
     /// The wall-less-scene vision fix must stay bounded to the scene's own extent — never
     /// unbounded, never leaking beyond `bounds`.
     #[test]
@@ -7751,11 +7940,76 @@ explored: // GM: unrestricted mask
         // Discrimination: fails if either shape starts reading a different bounds value or a
         // different shape, which is the only way the two can disagree.
         let (ecs, _user, scene) = hex_open_scene();
-        let cell = 50.0;
+        // The cell is read from the grid-size lookup, not restated: that is the resolution the
+        // production sites perform, so an inline arm using a literal would not be the arm that
+        // runs in production.
+        let cell = *ecs
+            .scene_grid_sizes()
+            .get(&scene)
+            .expect("the fixture's scene has a grid size");
         let inline = ecs
             .resolve_grid_shape(scene, cell)
             .world_extent(ecs.resolve_scene(scene).bounds);
         assert_eq!(ecs.scene_world_extent(scene), inline);
+    }
+
+    #[test]
+    fn hex_continuous_routes_along_axial_row_zero_including_the_mesh_corner() {
+        // Every hex in axial row `r = 0` has centre `y` exactly `0`, which is the triangulated
+        // rectangle's bottom EDGE, and `cell_center((0,0))` is the corner vertex itself. Those
+        // centres are on-mesh only because the mesh's point-in-polygon test admits an
+        // exactly-on-boundary point — a containment convention of the routing library, not of this
+        // codebase. Pinned rather than assumed: without this, a change to that convention would
+        // make an entire authored hex row unroutable with nothing in the tree failing.
+        // Discrimination: the endpoints are `cell_center` values with `y == 0.0` asserted, so the
+        // test cannot drift onto an interior row and keep passing; and the cost is bounded on both
+        // sides by the straight-line distance, so a route that detoured off the edge fails too.
+        let g = grid_shape::HexGrid { size: 50.0 };
+        let docs = vec![entity_doc_top_eng(
+            10,
+            "scene",
+            json!({ "grid": { "kind": "hex", "size": 50 }, "background": null,
+                    "bounds": { "width": 20.0, "height": 20.0 },
+                    "vision": { "movementModel": "continuous" } }),
+        )];
+        let mut ecs = SceneEcs::from_documents(docs, 0);
+        ecs.set_world_settings_for_test(continuous_world_settings());
+        let corner = g.cell_center((0, 0));
+        let far = g.cell_center((5, 0));
+        assert_eq!(
+            (corner.1, far.1),
+            (0.0, 0.0),
+            "fixture: both endpoints must sit on the rectangle's bottom edge"
+        );
+        assert_eq!(
+            corner,
+            (0.0, 0.0),
+            "fixture: the origin hex IS the mesh corner"
+        );
+        let straight = far.0 - corner.0;
+        for (from, to, label) in [
+            (corner, far, "the corner vertex outward"),
+            (far, corner, "inward to the corner vertex"),
+        ] {
+            let out = ecs
+                .pathfind(
+                    RouteRequester {
+                        user: Uuid::from_u128(1),
+                        is_gm: true,
+                        explored: None,
+                    },
+                    Uuid::from_u128(10),
+                    from,
+                    &[to],
+                    0.1,
+                )
+                .unwrap_or_else(|e| panic!("routing {label} along row 0 must succeed, got {e:?}"));
+            assert!(
+                out.cost >= straight * 0.99 && out.cost <= straight * 1.01,
+                "routing {label} must cost the straight-line distance {straight}, got {}",
+                out.cost
+            );
+        }
     }
 
     #[test]
@@ -7834,6 +8088,16 @@ explored: // GM: unrestricted mask
         ));
         let mut ecs = SceneEcs::from_documents(docs, 0);
         ecs.set_world_settings_for_test(continuous_world_settings());
+        // The whole test is about the WEIGHTED sub-path, which only runs when the dispatch
+        // predicate fires. Asserted rather than assumed: with an empty field the pure-polyanya
+        // path runs instead and the cost below would be measuring a different function.
+        let field = ecs
+            .region_field(Uuid::from_u128(10), None)
+            .expect("the fixture's scene resolves a region field");
+        assert!(
+            field.has_terrain_or_impassable(),
+            "fixture: the terrain region must select the weighted sub-path"
+        );
         let a = g.cell_center((1, 1));
         let b = g.cell_center((10, 1));
         let straight = ((b.0 - a.0).powi(2) + (b.1 - a.1).powi(2)).sqrt();
@@ -7850,9 +8114,12 @@ explored: // GM: unrestricted mask
                 0.1,
             )
             .expect("hex continuous weighted route");
+        // Bounded on BOTH sides. The endpoints are nine collinear hex steps apart with no terrain
+        // between them, so the true scene-unit cost is exactly the straight-line distance; a
+        // lower bound alone also passes for any wrong-but-larger factor, `2·size` included.
         assert!(
-            out.cost >= straight * 0.99,
-            "cost {} must be at least the straight-line scene distance {straight}",
+            out.cost >= straight * 0.99 && out.cost <= straight * 1.01,
+            "cost {} must equal the straight-line scene distance {straight}",
             out.cost
         );
     }
