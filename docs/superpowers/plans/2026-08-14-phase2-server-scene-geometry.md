@@ -206,6 +206,10 @@ derivations rather than recollections:
 - **Task 6 runs after Task 5**, which produces the symbol it converts four further sites onto.
 - **Task 7 runs after Tasks 4, 5 and 6**, because the hex scene it exercises runs through all
   three; **Task 8 runs after Task 5**, because it verifies the post-conversion environment light.
+- **Task 5c (three comment/fixture classes) runs after Task 5b**, not because it depends on the
+  envelope but because both edit the same test modules and two agents editing one module is the
+  clobber hazard. It is comments and test-local constants only; no production behaviour changes, and
+  a changed test outcome under it is a finding rather than something to accommodate.
 - **Task 5b (the envelope) runs between Tasks 5 and 6**, and before Tasks 7 and 8. It changes the
   return type of the symbol Task 5 introduced, so running it after Task 6 would convert four further
   sites onto a signature that then changes under them, and Task 8's environment-light verification
@@ -2964,6 +2968,117 @@ clamping to zero, so axial row zero's centres are strictly interior rather than
 on the mesh boundary.
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>" -- src/server/src/scene/grid_shape.rs src/server/src/scene/navmesh.rs src/server/src/scene/lighting.rs src/server/src/scene/vision.rs src/server/src/scene/mod.rs src/server/src/scene/grid_shape_parity_tests.rs
+```
+
+---
+
+### Task 5c: three comment/fixture classes the scene subsystem carries, enumerated and closed
+
+**Ledger ids:** surfaced by Task 5's fix rounds and held for their own task. **Numbered `5c` for the
+same reason as `5b`:** Tasks 6–12 are already cited by dispatched briefs and ledger entries.
+
+**Depends on:** Task 5 closing. Independent of Task 5b — it touches comments and test fixtures, not
+`world_extent`'s signature — but run it after 5b to avoid two agents editing the same test module.
+
+---
+
+#### Why these are one task and not three
+
+All three are the same shape: **a value or a reference that exists in two places, where the copy is
+not checked against its source.** They are separated from Task 5 only because Task 5's fix rounds
+would have had to sweep them while mid-way through a different subject, and a sweep inside a fix
+round is how a class gets scoped to whatever the fix happened to touch.
+
+They are explicitly NOT ruled acceptable by having been held. Each has a measured population and
+none is grandfathered.
+
+#### The method requirement, which is the point of the task
+
+**Enumerate SUBJECTS, not markers.** Every prior attempt at these classes searched for a spelling —
+`below`, `§`, `cell count` — and every one undercounted, the last by roughly sevenfold. A search
+finds the shape you already imagined; the members that matter are the ones spelled differently.
+
+So: for each file in scope, enumerate **every comment in the file**, one row each, and adjudicate it
+against the criterion. Report the row count per file. A file's row count that is obviously below its
+comment count is the tell that the enumeration was a search wearing an enumeration's clothes.
+
+**Derive from the criterion's wording, never from examples of it.** A round-4 enumeration missed six
+members because it enumerated three *forms* of its criterion and matched against those; the wording
+covered all six. Enumerating the forms of a criterion narrows the criterion.
+
+---
+
+**Files:** every file under `src/server/src/scene/`, plus `src/server/src/data/engine/` for class C.
+
+**Interfaces:** none. This task changes comments and test-local constants only. No production
+behaviour changes; the test suite's pass/fail set must be identical before and after, and a changed
+test outcome is a finding to report, not a thing to accommodate.
+
+---
+
+- [ ] **Step 1: Class A — positional references**
+
+A comment that locates something by where it sits rather than by what it is: `below`, `above`,
+`the loop below`, `placed ahead of`, `the line following`. Roughly 30 are known to survive; `explored`
+alone carries four, and `pathfinding::cell_enterable` carries one.
+
+**The conversion is: keep the DESCRIPTIVE name, drop the POSITIONAL word.** "the integer-block loop
+below" → "the integer-block loop". The name is what makes a reference findable; the position is the
+part that rots, silently, on any reordering — and no gate catches it.
+
+Where a reference has no descriptive name to fall back on, that is the finding: name the thing, or
+state the constraint directly instead of pointing at it.
+
+- [ ] **Step 2: Class B — section-style and unnamed-document pointers**
+
+Comments carrying a bare `§N` or an unnamed spec reference — a pointer whose referent cannot be
+identified from the code. Around 11 are known to survive.
+
+These pass `check-comment-refs`, which is a fact about the gate's coverage and not a licence. State
+the constraint the sentence is about; where the pointer carried nothing, delete the token and change
+nothing else — inventing a plausible replacement constraint is the worst outcome available.
+
+- [ ] **Step 3: Class C — configuration-only size restatements**
+
+Around 14 test sites author a grid size in scene JSON and separately restate it as a literal, without
+deriving coordinates from a shape. Their failure mode is loud rather than silent — the literal
+assertions break — which is why they were separated from the drift class Task 5 closed.
+
+**The shape is minimal: each fixture's authored size gets ONE expression within that test.** Do NOT
+build a shared fixture constructor across these — they are diverse scenes, and forcing them through
+one constructor would couple unrelated fixtures to make a comment true, which is worse than the
+restatement.
+
+- [ ] **Step 4: Verify no behaviour moved**
+
+Run the full server gate and confirm the pass/fail set is unchanged: `cargo fmt --check`,
+`cargo clippy --all-targets -- -D warnings`, `cargo test`, then `node scripts/check-comment-refs.mjs`
+from the repo root.
+
+**A test that changes outcome under a comment-and-constant task is a finding.** It means a literal
+this task replaced was load-bearing in a way nobody had recorded. Report it; do not adjust the test
+to restore green.
+
+- [ ] **Step 5: Report the measured populations**
+
+Per class: the enumerated population, the number converted, and every member left unconverted with
+its reason. **Do not report a class as "complete"** — report what was enumerated and what was done
+with each member. A class whose population matches an earlier estimate exactly is worth a second
+look; every earlier estimate here was an undercount.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git commit -m "docs(scene): replace positional and unnamed-document references, single-source fixture sizes
+
+A positional reference rots on any reordering with nothing to catch it, and a
+section pointer naming no document names nothing at all. Each is replaced by the
+symbol or the constraint it was pointing at.
+
+Test fixtures that authored a grid size twice now express it once, so a changed
+size cannot leave a fixture configuring one scene and asserting about another.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>" -- src/server/src/scene src/server/src/data/engine
 ```
 
 ---
