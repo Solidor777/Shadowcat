@@ -1,6 +1,6 @@
-//! `GridShape` abstracts the per-cell geometry every movement/vision/pathfinding module needs,
-//! so square and hex scenes share one code path instead of two. `SquareGrid` is a byte-identical
-//! port of the pre-existing hardcoded square math; a later `HexGrid` will be the pointy-top axial
+//! `GridShape` abstracts the per-cell geometry every movement/vision/pathfinding module needs, so
+//! square and hex scenes share one code path rather than each caller branching on grid kind.
+//! `SquareGrid` implements the ordinary square-grid formulas; `HexGrid` is the pointy-top axial
 //! implementation mirroring the client's `Grid` class exactly.
 //!
 //! `cell_center`/`cells_in_bounds` are wired into `accumulate_visible_cells`, `player_lit_mask`,
@@ -160,10 +160,11 @@ impl GridShape for SquareGrid {
         pathfinding::footprint_cells(anchor, ctr, r_scene, cell)
     }
 
-    /// Byte-identical to the per-site square scans in `accumulate_visible_cells`/
-    /// `ExploredSet::mark_polygons`/`player_lit_mask`: `floor(min/cell)..=floor(max/cell)` on each axis, row-major
-    /// (`for i { for j }`). `f64 as i32` saturates on an extreme coordinate; the `saturating_mul`
-    /// span check then fails closed against the caller-supplied `max_cells` bound.
+    /// `floor(min/cell)..=floor(max/cell)` on each axis, row-major (`for i { for j }`). `f64 as
+    /// i32` saturates on an extreme coordinate; the `saturating_mul` span check then fails closed
+    /// against the caller-supplied `max_cells` bound. `accumulate_visible_cells`,
+    /// `ExploredSet::mark_polygons`, and `player_lit_mask` all reach this through the `GridShape`
+    /// trait rather than scanning a square grid themselves.
     fn cells_in_bounds(
         &self,
         min: vision::P,
@@ -205,8 +206,10 @@ impl GridShape for SquareGrid {
         )
     }
 
-    /// The 4 corners of cell `(i, j)`, in the exact order `accumulate_visible_cells`'s `corners`
-    /// array uses so leniency corner-clip tests stay byte-identical.
+    /// The 4 corners of cell `(i, j)`: `(i,j)`, `(i+1,j)`, `(i,j+1)`, `(i+1,j+1)` — bottom-left,
+    /// bottom-right, top-left, top-right. `accumulate_visible_cells`'s lenient corner-probe loop
+    /// iterates the result unordered, so this fixed order exists for deterministic tests
+    /// (`square_cell_vertices_returns_four_corners_in_order`), not a functional dependency on it.
     fn cell_vertices(&self, c: Cell, cell: f64) -> Vec<vision::P> {
         let (i, j) = c;
         vec![
@@ -533,9 +536,9 @@ impl GridShape for HexGrid {
     /// of uniform 1-cost steps (`neighbors_with_cost`) between two hexes (Red Blob Games;
     /// public-source computational geometry), so it never overestimates the true path cost and A*
     /// stays optimal. Deltas widen to `i64` before the sum so a large-coordinate pair can't overflow
-    /// `i32`. The square `DiagonalRule` distance the pre-trait code used here OVERESTIMATES this for
-    /// opposite-sign deltas (e.g. Manhattan is 2× on the `(1,-1)` axial line), which is what made the
-    /// old shared heuristic non-admissible on hex.
+    /// `i32`. A square `DiagonalRule` distance OVERESTIMATES this for opposite-sign axial deltas
+    /// (e.g. Manhattan is 2× on the `(1,-1)` axial line), which is why hex needs its own admissible
+    /// heuristic rather than reusing a square one.
     fn heuristic(&self, from: Cell, to: Cell) -> f64 {
         let dq = to.0 as i64 - from.0 as i64;
         let dr = to.1 as i64 - from.1 as i64;
@@ -963,8 +966,9 @@ mod tests {
     #[test]
     fn hex_cell_bounds_contains_a_cell_a_square_floor_window_would_clip() {
         // Hex (70,-70): the "off the square diagonal" axial (1,-1) direction. Its pixel x is
-        // ~0.866·70·size, so a square `floor(x/cell)` q-bound (=60) sits far BELOW its axial q (=70)
-        // — the pre-hex window clipped it, spuriously reporting a reachable route Unreachable.
+        // ~0.866·70·size, so a square `floor(x/cell)` q-bound (=60) sits far BELOW its axial q
+        // (=70) — a square floor window would clip it here, spuriously reporting a reachable
+        // route Unreachable. `cell_bounds`'s axial bounding box must not.
         let g = HexGrid { size: 100.0 };
         let goal = (70, -70);
         let gc = g.cell_center(goal); // (~6062, -10500)
@@ -1166,9 +1170,10 @@ mod tests {
 
     #[test]
     fn square_manhattan_overestimates_the_true_hex_distance_on_opposite_sign_deltas() {
-        // Documents WHY the shared square heuristic was non-admissible on hex: on the (1,-1) axial
-        // line the true hex distance is `max(|dq|,|dr|)` but the square Manhattan distance is
-        // `|dq|+|dr|` — a 2× overestimate. The hex heuristic returns the admissible value instead.
+        // Documents why a square-grid distance is not admissible as a hex heuristic: on the
+        // (1,-1) axial line the true hex distance is `max(|dq|,|dr|)` but the square Manhattan
+        // distance is `|dq|+|dr|` — a 2× overestimate. `HexGrid::heuristic` returns the
+        // admissible value instead.
         let hex = HexGrid { size: 50.0 };
         let sq_manhattan = SquareGrid {
             cell: 50.0,
@@ -1186,8 +1191,9 @@ mod tests {
 
     #[test]
     fn square_heuristic_is_byte_identical_to_the_free_pathfinding_heuristic() {
-        // The trait dispatch must not change square scenes: `SquareGrid::heuristic` returns exactly
-        // the free `pathfinding::heuristic(self.rule, ...)` `astar_leg` called before.
+        // `astar_leg` calls `SquareGrid::heuristic` (via the `GridShape` trait) for every square
+        // route; this pins it equal to the free `pathfinding::heuristic(self.rule, ...)` for every
+        // rule, including `Alternating` (excluded from the admissibility test above).
         for rule in [
             DiagonalRule::Chebyshev,
             DiagonalRule::Manhattan,
