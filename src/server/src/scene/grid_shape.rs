@@ -87,9 +87,9 @@ pub(crate) trait GridShape {
     /// indexing scale — scaling it here would give a 1×1 token a disc past the hex inradius and
     /// make a medium creature occupy seven hexes, which is a rules change rather than a unit fix.
     fn world_units_per_cell(&self) -> f64;
-    /// The origin-anchored world rectangle `(0,0)–result` for `bounds_cells`, a continuous
-    /// per-axis dimension measured in GRID units — not a cell count, and not required to be
-    /// integral.
+    /// The origin-anchored world rectangle `(0,0)–result` for `bounds_cells`, a per-axis
+    /// dimension measured in grid units (cells), continuous — never world units, and not required
+    /// to be integral.
     ///
     /// **Both guarantees below are stated for the INTEGER block `[0, ⌊w⌋) × [0, ⌊h⌋)`**, and
     /// consumers must not assume the stronger one:
@@ -101,13 +101,16 @@ pub(crate) trait GridShape {
     ///   reaches `y = -size` and whose origin cell reaches `x = -√3/2·size`; those margins are
     ///   OUTSIDE the rectangle. Claiming a full cover here would be false.
     ///
-    /// **Which cells the rectangle covers is a per-axis rule, and the two shapes do not share
-    /// it.** Writing `f_w`/`f_h` for the fractional parts of `w`/`h`, and stating the rule over
-    /// `w ≥ 1` and `h ≥ 1` (below one cell the `w−1`/`h−1` terms clamp at zero — a different
-    /// closed form), cell `(i, j)`'s CENTRE is inside exactly when:
-    /// - **Square** — `i ≤ w − 0.5` and `j ≤ h − 0.5`, each axis independent of the other, so the
-    ///   partial cell `⌊w⌋` is left outside exactly when `f_w < 0.5`, and likewise on `h`. Square
-    ///   additionally never FULLY covers a partial cell for any `f ≠ 0`, since it always overhangs.
+    /// **Which cells the rectangle covers is a per-axis rule, and the two shapes share neither the
+    /// rule nor its DOMAIN.** Writing `f_w`/`f_h` for the fractional parts of `w`/`h`, cell
+    /// `(i, j)`'s CENTRE is inside exactly when:
+    /// - **Square**, for every `w > 0` and `h > 0` — `i ≤ w − 0.5` and `j ≤ h − 0.5`, each axis
+    ///   independent of the other, so the partial cell `⌊w⌋` is left outside exactly when
+    ///   `f_w < 0.5`, and likewise on `h`. Square additionally never FULLY covers a partial cell
+    ///   for any `f ≠ 0`, since it always overhangs. `SquareGrid::world_extent` is `w·cell` with
+    ///   no subtraction and nothing clamped, so the same rule describes a sub-one-cell bound: at
+    ///   `w = 0.25` the rectangle is `0.25·cell` and cell 0's centre at `0.5·cell` is outside,
+    ///   which is what `i ≤ w − 0.5` predicts.
     /// - **Hex x**, row-DEPENDENT — `i ≤ w − 1 + (h − j)/2`. The axial shear grants `(h − j)/2`
     ///   columns of extra reach at row `j`, so the reach SHRINKS as the row index rises, and the
     ///   partial column `⌊w⌋` falls outside from row `h − 2·(1 − f_w)` upward. At row `0` that
@@ -117,11 +120,20 @@ pub(crate) trait GridShape {
     ///   exactly when `f_h < 1/3`, NOT when `f_h < 1/2`: at `h = 4.4` row 4 is covered, at
     ///   `h = 4.2` it is not.
     ///
+    /// **Both hex axes are stated for `w ≥ 1` and `h ≥ 1`, and that restriction is hex's alone.**
+    /// `HexGrid::world_extent` clamps its `w − 1` and `h − 1` terms at zero, so below one cell the
+    /// rectangle stops shrinking with the bound and no longer varies linearly with it: at
+    /// `w = 0.25, h = 1.0` the x rule predicts column 0 excluded while the measurement covers it,
+    /// the origin hex being centred ON the origin corner. That regime is pinned separately by
+    /// `world_extent_stays_positive_for_a_bound_below_one_cell_and_covers_no_whole_cell`.
+    ///
     /// That rule is EXECUTABLE, not merely stated: `extent_rule_says_inside` is it, and
     /// `the_extent_membership_rule_predicts_every_cells_coverage_over_a_bounds_sweep` asserts its
     /// prediction against the measured comparison for every cell of the integer block plus the
-    /// partial column and the partial row, across both shapes and both axes' fractional parts. A
-    /// misstatement of it fails a run instead of surviving a reading.
+    /// partial column and the partial row, across both shapes and both axes' fractional parts —
+    /// and, on the square arm, over sub-one-cell bounds as well, so the regime hex has to fence
+    /// off is proved on the shape that does not. A misstatement of the rule fails a run instead of
+    /// surviving a reading.
     ///
     /// A fractional bound is authorable through the ordinary settings editor, which marks a
     /// fractional width invalid without sanitizing it.
@@ -1919,15 +1931,19 @@ mod tests {
         // `[0, ⌊0.25⌋)` is empty. Both halves are asserted so the positivity guard cannot be read
         // as a cover claim.
         //
-        // The hex cover-refutation runs at `w = 1.25`, not `0.25`: hex clamps `qmax` at zero, so
+        // The hex ROUNDING-refutation runs at `w = 1.25`, not `0.25`: hex clamps `qmax` at zero, so
         // rounding `0.25` up to a whole cell leaves `qmax = 0` and the rectangle unmoved, and the
         // assertion would hold either way. `1.25` takes `qmax` from `0.25` to `1` under rounding,
         // which pushes the rectangle past one hex pitch. It still covers no whole hex, so it
-        // refutes the same claim.
+        // refutes the same claim. The `(0.25, 0.25)` hex arm is separate and covers what `1.25`
+        // cannot: sub-one-cell on BOTH axes, the regime `extent_rule_says_inside` excludes for hex,
+        // pinned here on width, height, and the origin centre the rule cannot predict.
         // Discrimination: the first assertion fails if either impl subtracts one cell without
         // clamping; the cover-refutations fail if either starts rounding a fractional bound up to a
         // whole cell — which would make the square rectangle cover cell (0,0), widen the hex
-        // rectangle past a pitch, and make two distinct authored dimensions yield one rectangle.
+        // rectangle past a pitch, and make two distinct authored dimensions yield one rectangle;
+        // the origin-centre pair fails if hex ever stops clamping (the centre would leave the
+        // rectangle) or if square ever starts (its cell (0,0) would enter one).
         let sq = SquareGrid {
             cell: 20.0,
             rule: DiagonalRule::Chebyshev,
@@ -1954,6 +1970,27 @@ mod tests {
             hxx < 20.0 * 3.0_f64.sqrt(),
             "the hex rectangle's width {hxx} must be under one hex pitch"
         );
+        // Below one cell on BOTH axes, which is the regime `extent_rule_says_inside` excludes for
+        // hex and the sweep therefore never reaches: the rectangle is under one pitch wide and
+        // under one hex tall (a hex spans `2·size` vertically), so it still covers no whole hex.
+        let (subx, suby) = hx.world_extent((0.25, 0.25));
+        assert!(
+            subx < 20.0 * 3.0_f64.sqrt() && suby < 2.0 * 20.0,
+            "the sub-one-cell hex rectangle ({subx}, {suby}) must fit inside one hex's own span"
+        );
+        // The property that makes the linear rule inapplicable here, pinned rather than merely
+        // fenced off: `qmax`/`rmax` clamp at zero, so the rectangle stops shrinking with the bound
+        // and still contains the origin hex's CENTRE — where `i ≤ w − 1 + (h − j)/2` answers false.
+        // Square, whose rule has no clamped term, excludes cell (0,0) at the same bound.
+        let origin = hx.cell_center((0, 0));
+        assert!(
+            origin.0 <= subx && origin.1 <= suby,
+            "the origin hex's centre {origin:?} stays inside the sub-one-cell rectangle"
+        );
+        assert!(
+            sq.cell_center((0, 0)).0 > sx,
+            "square excludes cell (0,0)'s centre at the same sub-one-cell bound"
+        );
     }
 
     #[test]
@@ -1965,25 +2002,35 @@ mod tests {
         //
         // Hex's column axis is row-DEPENDENT (`i ≤ w − 1 + (h − j)/2`): the shear's `(h − j)/2`
         // reach SHRINKS as the row index rises, so column 3 is outside at the LAST row of the
-        // integer block and inside at row 0. Row 0 is not unconditionally inside — it holds here
-        // because `h = 4 ≥ 2·(1 − f_w) = 1.6`, and a one-row-tall block of the same width would
-        // exclude column 3 at row 0 too. Both rows are probed so neither reading can pass alone.
+        // integer block and inside at row 0. Row 0 is not unconditionally inside — it holds at
+        // `h = 4 ≥ 2·(1 − f_w) = 1.6` and fails at `h = 1`, and BOTH heights are probed at row 0,
+        // because that pair is what makes the reach depend on the block's height at all.
         //
-        // Discrimination: every expectation is computed from `cell_center` and the extent, not
-        // restated, so this fails if either impl rounds a fractional bound up (pulling column ⌊w⌋
-        // inside on both arms) and equally if either loses a column of the integer block. The
-        // row-0 assertion fails if the hex shear term is dropped, and the last-row assertion fails
-        // if the shear is applied with the wrong sign.
+        // Discrimination, per assertion, each naming a mutation that breaks THAT assertion:
+        // - the row-0 height PAIR fails if `HexGrid::world_extent`'s `√3/2·rmax` term is dropped
+        //   or negated, since the rectangle then stops widening with the row count and the tall
+        //   block reaches no further than the short one. The pair is what discriminates: the tall
+        //   block's row-0 assertion alone cannot fail while the integer-block loop below passes,
+        //   because column ⌊w⌋'s row-0 centre lies left of column ⌊w⌋−1's last-row centre.
+        // - the integer-block loop fails if either impl loses a column of the block it must cover.
+        // - the last-row assertion fails if `HexGrid::axial_to_pixel`'s own shear is dropped, since
+        //   the centre then stops moving right as the row index rises and column ⌊w⌋ falls back
+        //   inside. Negating `world_extent`'s shear cannot fail it — a smaller rectangle only makes
+        //   `centre > extent` hold harder — which is why the two halves name different symbols.
+        // - both shapes' partial-column assertions fail if either impl rounds a fractional bound
+        //   up, which pulls column ⌊w⌋ inside on every arm.
+        // Every expectation is computed from `cell_center` and the extent, never restated.
         let w = 3.2_f64;
         let h = 4.0_f64;
+        let short_h = 1.0_f64;
         let f = w - w.floor();
         assert!(
             f != 0.0 && f < 0.5,
             "fixture: {w} must leave its partial column outside at the last row, f = {f}"
         );
         assert!(
-            h >= 2.0 * (1.0 - f),
-            "fixture: the hex row-0 assertion needs h >= 2*(1 - f_w) = {}, got {h}",
+            h >= 2.0 * (1.0 - f) && short_h < 2.0 * (1.0 - f),
+            "fixture: the row-0 pair needs the heights to straddle 2*(1 - f_w) = {}, got {h} and {short_h}",
             2.0 * (1.0 - f)
         );
         assert_eq!(h, h.floor(), "fixture: the height must be integral");
@@ -2008,6 +2055,17 @@ mod tests {
 
         let hx = HexGrid { size: 50.0 };
         let (hxx, _) = hx.world_extent((w, h));
+        // The row-0 pair, placed ahead of the loop so it reports for a shear the rectangle lost:
+        // the SAME column at the SAME row flips on the block's height alone.
+        let (short_x, _) = hx.world_extent((w, short_h));
+        assert!(
+            hx.cell_center((partial, 0)).0 <= hxx,
+            "the tall block's shear reaches hex column {partial} at row 0, extent {hxx}"
+        );
+        assert!(
+            hx.cell_center((partial, 0)).0 > short_x,
+            "a {short_h}-row block of the same width does NOT reach it, extent {short_x}"
+        );
         for q in 0..partial {
             assert!(
                 hx.cell_center((q, last_row)).0 <= hxx + 1e-9,
@@ -2017,11 +2075,6 @@ mod tests {
         assert!(
             hx.cell_center((partial, last_row)).0 > hxx,
             "hex's partial column {partial} sits outside the extent {hxx} at row {last_row}"
-        );
-        assert!(
-            hx.cell_center((partial, 0)).0 <= hxx,
-            "the same hex column is INSIDE at row 0 — the shear's reach is largest at row 0 and \
-             this block is tall enough to earn it"
         );
     }
 
@@ -2039,14 +2092,22 @@ mod tests {
     /// - **Hex y**, independent of the column: `r ≤ h − 1/3`. The partial row `r = ⌊h⌋` is
     ///   covered exactly when `f_h ≥ 1/3` — a different threshold from every other axis here.
     ///
-    /// Domain: `w ≥ 1` and `h ≥ 1`. Below one cell both impls clamp their `w − 1`/`h − 1` term at
-    /// zero, which is a different closed form; that regime is pinned by
-    /// `world_extent_stays_positive_for_a_bound_below_one_cell_and_covers_no_whole_cell`.
+    /// **The domain is SHAPE-DEPENDENT, not shared.** Square holds for every `w > 0`, `h > 0`:
+    /// `SquareGrid::world_extent` is `w·cell` with no subtraction and nothing clamped, so a
+    /// sub-one-cell bound is the same rule, not a second regime. Hex is stated for `w ≥ 1` and
+    /// `h ≥ 1` only, because `HexGrid::world_extent` clamps its `w − 1`/`h − 1` terms at zero and
+    /// the rectangle then stops varying linearly with the bound — at `w = 0.25, h = 1.0` this rule
+    /// answers false for cell `(0,0)` while the measurement covers it. That hex regime is pinned
+    /// by `world_extent_stays_positive_for_a_bound_below_one_cell_and_covers_no_whole_cell`.
     fn extent_rule_says_inside(kind: GridKind, bounds: (f64, f64), c: Cell) -> bool {
         let (w, h) = bounds;
+        let floor = match kind {
+            GridKind::Square => 0.0,
+            GridKind::Hex => 1.0,
+        };
         assert!(
-            w >= 1.0 && h >= 1.0,
-            "fixture: the rule is stated for w >= 1 and h >= 1, got {bounds:?}"
+            w > 0.0 && h > 0.0 && w >= floor && h >= floor,
+            "fixture: {kind:?}'s rule is stated for w, h >= {floor} (and > 0), got {bounds:?}"
         );
         // A tolerance in index units, so a bound sitting exactly on a threshold (`f = 0.5` on
         // square, `f = 1/3` on the hex row axis) resolves inclusively on this side exactly as the
@@ -2070,13 +2131,18 @@ mod tests {
         // `0, 0.2, 1/3, 0.4, 0.5, 0.6, 0.8` — 1/3 is the hex row-axis threshold and 0.5 the square
         // one, so a shared-threshold reading of the two axes fails — and includes one-row-tall
         // blocks (`⌊h⌋ = 1`) alongside three-row ones, which exercises the hex partial column's
-        // row-0 condition `h ≥ 2·(1 − f_w)` on both sides.
+        // row-0 condition `h ≥ 2·(1 − f_w)` on both sides. The square arm additionally sweeps
+        // sub-one-cell bounds (`⌊w⌋ = 0`), the regime hex has to fence off and square does not.
         //
         // Discrimination: every expectation comes from `extent_rule_says_inside` and every measured
         // value from `cell_center`/`world_extent`, so this fails if the rule is misstated on either
-        // axis of either shape and equally if either impl's closed form moves. A rule that shares
-        // one threshold across both hex axes, or that calls the hex partial column covered at row 0
-        // unconditionally, disagrees with hundreds of the 7056 cells this sweeps.
+        // axis of either shape and equally if either impl's closed form moves. The two wrong
+        // readings worth naming do NOT fail at the same size, so their counts are stated
+        // separately rather than as one magnitude: seeding the hex row axis with the `1/2`
+        // threshold the other axes use disagrees with 232 of the 8136 cells swept, while seeding
+        // the hex partial column as covered at row 0 unconditionally disagrees with 60. Both are
+        // measured against this sweep as written; either count falls if its swept range shrinks,
+        // which is what the fixture guard below is for.
         const TOL_CELLS: f64 = 1e-9;
         let fracs = [0.0, 0.2, 1.0 / 3.0, 0.4, 0.5, 0.6, 0.8];
         let mut checked = 0usize;
@@ -2091,11 +2157,22 @@ mod tests {
                     }),
                     GridKind::Hex => Box::new(HexGrid { size: scale }),
                 };
-                for wi in [1.0_f64, 3.0] {
+                // The integer part `0` is swept on SQUARE only, because the domain is
+                // shape-dependent: square's rule holds for every positive bound, while hex's
+                // clamped `w − 1`/`h − 1` terms make it inapplicable below one cell. A `0 + 0`
+                // pair is degenerate, refused by `world_extent` itself and outside both rules.
+                let integer_parts: &[f64] = match kind {
+                    GridKind::Square => &[0.0, 1.0, 3.0],
+                    GridKind::Hex => &[1.0, 3.0],
+                };
+                for &wi in integer_parts {
                     for fw in fracs {
-                        for hi in [1.0_f64, 3.0] {
+                        for &hi in integer_parts {
                             for fh in fracs {
                                 let bounds = (wi + fw, hi + fh);
+                                if bounds.0 <= 0.0 || bounds.1 <= 0.0 {
+                                    continue;
+                                }
                                 let (ex, ey) = shape.world_extent(bounds);
                                 let tol = TOL_CELLS * scale;
                                 for i in 0..=bounds.0.floor() as i32 {
@@ -2163,7 +2240,7 @@ mod tests {
                 assert_eq!(s, h, "the two shapes disagree on {pair:?}: {s:?} vs {h:?}");
                 assert!(
                     s.0 <= 0.0 || s.1 <= 0.0,
-                    "a non-finite axis must yield a rectangle the extent guards refuse, got {s:?}"
+                    "a degenerate axis must yield a rectangle the extent guards refuse, got {s:?}"
                 );
             }
         }

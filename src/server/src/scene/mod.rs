@@ -129,8 +129,10 @@ pub struct ResolvedScene {
     /// corner qualifies; strict samples the center only (`point_qualifies`
     /// is the shared per-point decision for all arms).
     pub partial_cell_leniency: bool,
-    /// Scene dimensions (width, height) in grid units. Always finite `> 0`
-    /// (default `DEFAULT_SCENE_BOUNDS_UNITS`). The navmesh's outer rectangle.
+    /// Scene dimensions (width, height) measured in grid units (cells), continuous — never world
+    /// units, and not required to be integral. Always finite `> 0` (default
+    /// `DEFAULT_SCENE_BOUNDS_UNITS`). The navmesh's outer rectangle, after
+    /// `GridShape::world_extent` converts it.
     pub bounds: (f64, f64),
     /// The scene's cell geometry family. Decides the `GridShape` implementation, the coordinate
     /// system of persisted explored fog, and — because it is part of `ResolvedScene` — the
@@ -273,7 +275,8 @@ pub(crate) struct VisionMoveInputs {
     static_polys: Vec<Vec<vision::P>>,
     /// The scene's own WORLD-unit rectangle (`SceneEcs::scene_world_extent`) — so `polygons_at`'s
     /// per-sample bound stays scene-extent-aware identically to `player_vision_polygons` (no
-    /// fork). Never the raw authored bounds, which are a cell COUNT.
+    /// fork). Never the raw authored bounds, which are measured in grid units (cells),
+    /// continuous — never world units, and not required to be integral.
     scene_extent: (f64, f64),
     /// True when the user owns no token in this scene: `polygons_at` returns empty (fail-closed).
     empty: bool,
@@ -943,32 +946,51 @@ impl SceneEcs {
     /// The scene's authored bounds converted to a world-unit rectangle through its own
     /// `GridShape`, for a caller holding only a scene id — so the raw grid-unit value never
     /// reaches a comparison against world coordinates. Reads the grid-size map itself and defers
-    /// to `world_extent_from`, which is the single expression of the conversion; a caller that
-    /// already holds that map (`player_vision_polygons`, whose loop spans several scenes) calls
+    /// to `world_extent_from`, which carries the vision paths' refusal policy over
+    /// `scene_world_extent_at`, the single expression of the conversion; a caller that already
+    /// holds that map (`player_vision_polygons`, whose loop spans several scenes) calls
     /// `world_extent_from` directly rather than paying for the scan per scene.
     pub(crate) fn scene_world_extent(&self, scene: Uuid) -> (f64, f64) {
         self.world_extent_from(&self.scene_grid_sizes(), scene)
     }
 
-    /// The conversion itself: `scene`'s authored bounds through its own resolved `GridShape`,
-    /// against an ALREADY-READ `scene_grid_sizes` map. Every vision-bound consumer that does not
-    /// already hold a resolved shape and settings reaches the conversion through this, directly or
-    /// through `scene_world_extent`, so the two cannot drift into disagreeing about a scene's
-    /// vision bound.
+    /// The vision paths' REFUSAL policy over `scene_world_extent_at`: the conversion against an
+    /// ALREADY-READ `scene_grid_sizes` map, substituting the zero rectangle for a scene that map
+    /// does not carry. `scene_world_extent` and `player_vision_polygons`' per-scene memo both
+    /// reach the conversion through this, so the two cannot drift into disagreeing about either
+    /// the extent or what an absent scene means.
     ///
     /// `(0.0, 0.0)` when `grid_sizes` has no entry for the scene: it carries one for every live
     /// scene, so an absent entry means the scene is gone and no extent may be synthesised. A zero
     /// extent contributes nothing to `vision::bound_for_scene`'s union, leaving the wall-derived
-    /// bound — the under-reveal direction.
+    /// bound — the under-reveal direction. `navmesh_for` shares the conversion but NOT this
+    /// policy: it refuses with `None`, because a navmesh cannot be triangulated over a rectangle
+    /// that contributes nothing.
     fn world_extent_from(
         &self,
         grid_sizes: &std::collections::HashMap<Uuid, f64>,
         scene: Uuid,
     ) -> (f64, f64) {
-        grid_sizes.get(&scene).copied().map_or((0.0, 0.0), |cell| {
-            self.resolve_grid_shape(scene, cell)
-                .world_extent(self.resolve_scene(scene).bounds)
-        })
+        grid_sizes
+            .get(&scene)
+            .copied()
+            .map_or((0.0, 0.0), |cell| self.scene_world_extent_at(scene, cell))
+    }
+
+    /// The conversion itself, and its ONLY expression: `scene`'s authored bounds through its own
+    /// resolved `GridShape`, at a grid size the caller has already resolved. Refuses nothing —
+    /// the caller that looked `cell` up owns the policy for a scene that has none, and the two
+    /// policies genuinely differ (`world_extent_from` substitutes the zero rectangle every extent
+    /// guard already refuses; `navmesh_for` returns `None`).
+    ///
+    /// A caller that ALREADY holds both the scene's resolved settings and its grid size —
+    /// `lighting_inputs`, `player_lit_mask`, `visible_cells_cached`, `accumulate_visible_cells` —
+    /// calls `GridShape::world_extent` on the shape it holds instead, and must: routing through
+    /// here would re-read `scene_grid_sizes` and `resolve_scene` per dispatch, and the re-read
+    /// values could disagree with the ones its own caller resolved and is gating on.
+    fn scene_world_extent_at(&self, scene: Uuid, cell: f64) -> (f64, f64) {
+        self.resolve_grid_shape(scene, cell)
+            .world_extent(self.resolve_scene(scene).bounds)
     }
 
     /// The scene's `GridKind`, for a caller that holds no decoded scene engine. Performs exactly
@@ -1188,9 +1210,10 @@ impl SceneEcs {
         // `scene_grid_sizes` is a full entity scan, so it is read ONCE here rather than per
         // viewpoint. The extent is then memoised PER SCENE ID, never hoisted to a single value:
         // this loop spans every scene the user owns a token in, so one extent applied across it
-        // would measure one scene's vision bound against another scene's rectangle. The conversion
-        // itself stays `world_extent_from` — the body `scene_world_extent` calls — so this path and
-        // the streamed one in `player_vision_inputs` share it by construction, not by convention.
+        // would measure one scene's vision bound against another scene's rectangle. Both the
+        // conversion (`scene_world_extent_at`) and the absent-scene policy (`world_extent_from`)
+        // stay shared with the streamed path in `player_vision_inputs`, which reaches the same two
+        // bodies through `scene_world_extent` — by construction, not by convention.
         let grid_sizes = self.scene_grid_sizes();
         let mut extents: std::collections::HashMap<Uuid, (f64, f64)> =
             std::collections::HashMap::new();
@@ -1427,10 +1450,11 @@ impl SceneEcs {
         }
         // An absent `scene_grid_sizes` entry means the scene has no live document — refuse
         // rather than synthesize a grid (`scene_grid_sizes`'s own doc comment is the source
-        // of this invariant; every reader here keys off it).
+        // of this invariant; every reader here keys off it). This `?` is this path's OWN refusal
+        // policy: the conversion below is shared with the vision-bound paths, which substitute the
+        // zero rectangle instead, and a navmesh has no use for a rectangle of zero area.
         let cell = self.scene_grid_sizes().get(&scene).copied()?;
-        let grid = self.resolve_grid_shape(scene, cell);
-        let extent = grid.world_extent(self.resolve_scene(scene).bounds);
+        let extent = self.scene_world_extent_at(scene, cell);
         // The footprint radius is authored against the INDEXING scale (a square block's
         // half-diagonal in cells), not the per-cell world distance — see
         // `GridShape::world_units_per_cell`'s own note on why scaling it is a rules change.
@@ -1978,8 +2002,9 @@ impl SceneEcs {
     /// split.
     ///
     /// `extent` is the scene's WORLD-unit rectangle `(0,0)–extent`, produced by
-    /// `GridShape::world_extent` from the scene's authored grid-unit bounds — the raw bounds are a
-    /// cell COUNT and must never reach `env_light_polys`, which measures against wall coordinates.
+    /// `GridShape::world_extent` from the scene's authored bounds — those are measured in grid
+    /// units (cells), continuous, and must never reach `env_light_polys`, which measures against
+    /// wall coordinates in world units.
     fn lighting_inputs_from(
         all_bright: bool,
         lights: Vec<lighting::Light>,
@@ -7731,14 +7756,13 @@ explored: // GM: unrestricted mask
 
     /// REQUIREMENT this scene has to satisfy, which is what every test reading it depends on: a
     /// single source's candidate scan must exceed `MAX_CELLS_PER_POLYGON`. The width supplies that
-    /// over-cap product with an enormous margin — the authored block is a CELL COUNT that
-    /// `GridShape::world_extent` multiplies by the cell size, so the scan clears the cap by two
-    /// further orders of magnitude than the authored number alone suggests. A scan under the cap
-    /// never engages the clamp, and the assertions would then hold for a reason they do not name.
-    /// The
-    /// height is small so the CLAMPED scan is a few thousand cells and the tests run in a unit
-    /// suite. Wall-less, all-bright, LOS off, one owned token at the origin cell, so the whole
-    /// scan is a single source's.
+    /// over-cap product with an enormous margin — the authored block is measured in grid units
+    /// (cells), which `GridShape::world_extent` multiplies by the cell size, so the scan clears
+    /// the cap by two further orders of magnitude than the authored number alone suggests. A scan
+    /// under the cap never engages the clamp, and the assertions would then hold for a reason they
+    /// do not name. The height is small so the CLAMPED scan is a few thousand cells and the tests
+    /// run in a unit suite. Wall-less, all-bright, LOS off, one owned token at the origin cell, so
+    /// the whole scan is a single source's.
     fn over_cap_scan_scene() -> (SceneEcs, Uuid, Uuid) {
         let user = Uuid::from_u128(7);
         let scene_id = Uuid::from_u128(10);
@@ -7816,10 +7840,11 @@ explored: // GM: unrestricted mask
     /// product 4,008,004, clamped by itself) — the band where the two invocations' own spans
     /// straddle the cap on either side of it. Wall-less, all-bright, LOS off, one owned token at
     /// `(100, 100)`. The grid size is 1, so a `1999 × 1999` authored block converts to a
-    /// `1999 × 1999` world rectangle — the one grid size at which the cell count and the world
-    /// span coincide, which is what keeps the spans below exactly at the cap. `source_los_poly`'s
-    /// bound rectangle is therefore exactly `[0, 0]–[1999, 1999]` (`VISION_BOUND_MARGIN` cancels
-    /// against the token's own offset on the low edge; the scene's extent dominates the high edge).
+    /// `1999 × 1999` world rectangle — the one grid size at which a block measured in grid units
+    /// and its world span coincide, which is what keeps the spans below exactly at the cap.
+    /// `source_los_poly`'s bound rectangle is therefore exactly `[0, 0]–[1999, 1999]`
+    /// (`VISION_BOUND_MARGIN` cancels against the token's own offset on the low edge; the scene's
+    /// extent dominates the high edge).
     fn strict_lenient_clamp_band_scene() -> (SceneEcs, Uuid, Uuid, Uuid) {
         let user = Uuid::from_u128(8);
         let scene_id = Uuid::from_u128(20);

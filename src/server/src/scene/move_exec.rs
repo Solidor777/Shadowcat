@@ -842,13 +842,13 @@ mod tests {
         let out = execute_move(
             &ecs,
             MoveGateInputs {
-scene,
-restriction: // 5 cells in one authored jump
-            MovementRestriction::Visible,
-visible: &visible,
-cell: 100.0,
-},
+                scene,
+                restriction: MovementRestriction::Visible,
+                visible: &visible,
+                cell: 100.0,
+            },
             token,
+            // 5 cells in one authored jump
             &[(0.0, 0.0), (500.0, 0.0)],
             false,
             0.4,
@@ -1148,6 +1148,8 @@ cell: 100.0,
         // enclosing ONLY hex cell (1,0)'s center must (a) rasterize onto hex (1,0), and (b) stop a
         // move from (0,0) toward (1,0) before entry. A square-on-hex enumeration or lookup would
         // rasterize onto the wrong axial cell and the move would sail straight through.
+        // The scene's declared grid size and the gate's `cell` below are both read off the shape
+        // whose `cell_center` supplies this test's coordinates, so the three cannot drift apart.
         let hex = HexGrid { size: 50.0 };
         let c10 = hex.cell_center((1, 0)); // (50·√3, 0) ≈ (86.6, 0)
 
@@ -1159,7 +1161,7 @@ cell: 100.0,
                     10,
                     0,
                     "scene",
-                    json!({ "grid": { "kind": "hex", "size": 50.0 }, "background": null }),
+                    json!({ "grid": { "kind": "hex", "size": hex.size }, "background": null }),
                 ),
                 entity_doc(
                     11,
@@ -1193,7 +1195,7 @@ cell: 100.0,
                 scene: scene_id,
                 restriction: MovementRestriction::Unrestricted,
                 visible: &visible,
-                cell: 50.0,
+                cell: hex.size,
             },
             token_id,
             &[(0.0, 0.0), c10],
@@ -1221,6 +1223,9 @@ cell: 100.0,
         // no arrest there and the move sails through. The mask is the exact hex traversal
         // {(0,0),(1,0),(2,0),(3,0)}; the square supercover of the same segment reaches (5,0), so a
         // square-indexed mask gate would instead truncate early, for the wrong reason.
+        // The scene's declared grid size, the square supercover's cell size, and the gate's `cell`
+        // below are all read off the shape whose `cell_center` supplies this test's coordinates,
+        // so none of the four can drift apart.
         let hex = HexGrid { size: 50.0 };
         let c30 = hex.cell_center((3, 0)); // (150·√3, 0) ≈ (259.8, 0)
 
@@ -1232,7 +1237,7 @@ cell: 100.0,
                     10,
                     0,
                     "scene",
-                    json!({ "grid": { "kind": "hex", "size": 50.0 }, "background": null }),
+                    json!({ "grid": { "kind": "hex", "size": hex.size }, "background": null }),
                 ),
                 entity_doc(
                     11,
@@ -1257,7 +1262,7 @@ cell: 100.0,
         );
 
         let visible: BTreeSet<(i32, i32)> = [(0, 0), (1, 0), (2, 0), (3, 0)].into_iter().collect();
-        let square_cells = crate::scene::movement::supercover_cells((0.0, 0.0), c30, 50.0)
+        let square_cells = crate::scene::movement::supercover_cells((0.0, 0.0), c30, hex.size)
             .expect("bounded square supercover");
         assert!(
             square_cells.iter().any(|c| !visible.contains(c)),
@@ -1270,7 +1275,7 @@ cell: 100.0,
                 scene: scene_id,
                 restriction: MovementRestriction::Visible,
                 visible: &visible,
-                cell: 50.0,
+                cell: hex.size,
             },
             token_id,
             &[(0.0, 0.0), c30],
@@ -2269,20 +2274,29 @@ cell: 100.0,
     // module's square-scene wall/mask tests above.
     // -----------------------------------------------------------------------
 
-    /// The grid size authored by every fixture whose coordinates are DERIVED from a `GridShape`
-    /// built at that size — `hex_clear_scene`, `hex_walled_scene`, and both grid-kind arms of
-    /// `scene_with_narrow_gap_and_wide_token` — shared with `hex_cell_center` so a scene's declared
-    /// size and the endpoints computed against it cannot drift apart. Not hex-only: the corridor
+    /// The grid size shared by every scene in this module whose coordinates are DERIVED from a
+    /// `GridShape` built at that size — `hex_clear_scene`, `hex_walled_scene`, and both grid-kind
+    /// arms of `scene_with_narrow_gap_and_wide_token` — read by `hex_cell_center` for the shape it
+    /// builds, by each of those scenes for its declared grid size, by the corridor fixture for its
+    /// authored bounds, and by every test that gates a shape-derived path through
+    /// `MoveGateInputs.cell`, so no two of them can drift apart. Not hex-only: the corridor
     /// fixture's square arm authors it too, and reads it for its own cell centres.
     ///
-    /// The other fixtures in this module author their own literal size. They place tokens at
-    /// coordinates that come from no shape, so they have nothing to drift against.
+    /// It does NOT cover every shape-derived scene here.
+    /// `impassable_hex_region_stops_a_hex_move_at_the_correct_hex_cell` and
+    /// `arrest_hex_region_stops_at_entry_composed_with_a_hex_visibility_mask` build their own
+    /// `HexGrid` at a size this constant does not carry, and bind their declared and gated sizes
+    /// to that shape's own `size` field instead — the same no-restatement rule, expressed against
+    /// a different shape rather than against this value. Every remaining fixture authors a literal
+    /// size and places tokens at coordinates that come from no shape, so it has nothing to drift
+    /// against.
     const FIXTURE_GRID_SIZE: f64 = 100.0;
 
-    /// Pointy-top axial hex center, delegating to the shape rather than restating its formula:
-    /// these fixtures derive a scene's authored bounds from this helper as well as its endpoints,
-    /// so a second expression of `HexGrid::axial_to_pixel` would mis-author the extent and the
-    /// token position together.
+    /// Pointy-top axial hex center, delegating to the shape rather than restating its formula. The
+    /// scenes reading it declare `FIXTURE_GRID_SIZE` as their own grid size, and
+    /// `scene_with_narrow_gap_and_wide_token` divides by that same constant to author its bounds,
+    /// so a second expression of `HexGrid::axial_to_pixel` here would move a token position out
+    /// from under the grid it is indexed against.
     fn hex_cell_center(q: i32, r: i32) -> (f64, f64) {
         crate::scene::grid_shape::GridShape::cell_center(
             &crate::scene::grid_shape::HexGrid {
@@ -2366,7 +2380,7 @@ cell: 100.0,
                 scene,
                 restriction: MovementRestriction::Unrestricted,
                 visible: &empty,
-                cell: 100.0,
+                cell: FIXTURE_GRID_SIZE,
             },
             token,
             &[(0.0, 0.0), c1, c2],
@@ -2399,7 +2413,7 @@ cell: 100.0,
                 scene,
                 restriction: MovementRestriction::Visible,
                 visible: &visible,
-                cell: 100.0,
+                cell: FIXTURE_GRID_SIZE,
             },
             token,
             &[(0.0, 0.0), c1, c2],
@@ -2495,11 +2509,11 @@ cell: 100.0,
     /// token, user, start, goal)`. Vision is unlimited (no vision override) so the whole corridor
     /// is visible to `user`, isolating the wall/footprint interaction under test.
     ///
-    /// The authored bounds are a continuous per-axis dimension in GRID units — not a cell count,
-    /// and not required to be integral (the hex arm's width is `12.660254`) — so the corridor's
-    /// world span is divided by `FIXTURE_GRID_SIZE`, the same constant the scene's own grid
-    /// declares and `hex_cell_center` builds its shape from, read once rather than restated at any
-    /// of the three. On square that reproduces the corridor rectangle exactly; on hex the block's
+    /// The authored bounds are a per-axis dimension measured in grid units (cells), continuous —
+    /// never world units, and not required to be integral (the hex arm's width is `12.660254`) —
+    /// so the corridor's world span is divided by `FIXTURE_GRID_SIZE`, the same constant the
+    /// scene's own grid declares and `hex_cell_center` builds its shape from, read once rather
+    /// than restated at any of the three. On square that reproduces the corridor rectangle exactly; on hex the block's
     /// world rectangle is a shear-dependent function that is strictly LARGER than the corridor
     /// span, which preserves the fixture's intent — the play area covers the corridor and the gap
     /// with room to spare — a fortiori.
@@ -2757,7 +2771,7 @@ cell: 100.0,
                     scene,
                     restriction: MovementRestriction::Visible,
                     visible: &mask,
-                    cell: 100.0,
+                    cell: FIXTURE_GRID_SIZE,
                 },
                 token,
                 &route.path,
@@ -2809,7 +2823,7 @@ cell: 100.0,
                 scene,
                 restriction: MovementRestriction::Visible,
                 visible: &mask,
-                cell: 100.0,
+                cell: FIXTURE_GRID_SIZE,
             },
             token,
             &route.path,
@@ -2990,7 +3004,7 @@ cell: 100.0,
                 scene,
                 restriction: MovementRestriction::Unrestricted,
                 visible: &empty_mask(),
-                cell: 100.0,
+                cell: FIXTURE_GRID_SIZE,
             },
             token,
             &[start, goal],
