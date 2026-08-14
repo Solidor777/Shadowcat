@@ -444,8 +444,8 @@ with zero message-specific plumbing in any of those subsystems.
   change). SSRF docs state BOTH guard arms (literal-IP in `validate_url`, domain resolution in
   `GuardedResolver`) — keep the arm citations true when touching the preview pipeline.
 - **The three chat frames carry `request_id`, NOT `intent_id`, and correlate to `ChatError`, not
-  `Reject`.** A rejected send/edit/delete is now surfaced to the sender via a `request_id`-
-  correlated `ServerMsg::ChatError` (sender-only, never broadcast) — no longer log-only. Client
+  `Reject`.** A rejected send/edit/delete is surfaced to the sender via a `request_id`-
+  correlated `ServerMsg::ChatError` (sender-only, never broadcast). Client
   side: `WsClient.sendChatMessage`/`editChatMessage`/`deleteChatMessage` return `Promise<void>`
   tracked in a `chatPending` map. Chat correlation is ASYMMETRIC: only a rejection replies, so the
   promise RESOLVES on a `CHAT_ERROR_WINDOW_MS` (15s) timeout (success-assumed) and REJECTS on a
@@ -458,13 +458,13 @@ with zero message-specific plumbing in any of those subsystems.
   existence/internal-class (`ActorNotSpeakable`/`Forbidden`/`NotFound`/`Data`) return a FIXED
   generic string that ignores the inner value. `NotFound`==`Forbidden` (existence-oracle close);
   `Data(_)` never echoes the inner `DataError`. Adding a variant means classifying it here.
-- **`Segment` now has `Html` alongside `Text`.** The assumption that `content` is always
-  literal, inert text no longer holds — `sanitize()` produces `Segment::Html{sanitized_html}`
+- **`Segment` has two variants, `Text` and `Html`; content is not always literal, inert text.**
+  `sanitize()` produces `Segment::Html{sanitized_html}`
   whenever the world's `chat-settings` policy has `markdown` or `html` enabled, and the client is
   expected to render that variant via `innerHTML` (it is safe by construction ONLY because it
   passed through `ammonia`; never innerHTML-render a `Text` segment or a `Html` segment your code
   produced by any path other than `chat::sanitize`).
-- **The Update blanket-rejection is no longer absolute — it is conditional on `WriteOrigin`.** Any
+- **The Update blanket-rejection is conditional on `WriteOrigin`, not absolute.** Any
   code that reasons about `apply_intent`'s message-Update behavior must account for the
   `WriteOrigin::ServerMessageRevision` exemption (see Hard Invariants); treating the rejection as
   unconditional will misdiagnose why an edit/delete succeeds.
@@ -539,8 +539,7 @@ Three independently replaceable modules (UI-is-modules; swap any one without the
   (`/`-commands ride verbatim — the server parses); the "Speak as" picker sends
   `actor_owner` `Actor` refs, server-ownership-validated at ingest (see Dice wire above).
 - **`@shadowcat/module-chat-card`** — fail-closed render (`parseMessageEngine` null ⇒ nothing).
-  **`RollTooltip`:** an accessible focus/hover-triggered popover
-  replacing the earlier native `title` tooltip on a roll segment, showing the full
+  **`RollTooltip`:** an accessible focus/hover-triggered popover on a roll segment, showing the full
   `outcome.records[]` table with dropped dice distinguished. Popover `id` is derived per-instance
   (`$props.id()`, the `LauncherMenu` convention) — never hardcoded, since a message can
   contain multiple inline rolls and many `MessageCard`s render simultaneously in the chat log.

@@ -155,10 +155,13 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
   absent` for a leaf value). Forking this null-handling across the two languages is the never-fork
   defect class — parity is pinned by matching tests on each side.
 - `data::permission` — the redaction core:
-  - `resolve_access(user, world_role, doc) -> Access` (and `resolve_access_world`) builds the
-    per-connection `Access { caps, all, see_gm_only, is_owner }`.
-  - `effective_role(user, world_role, doc) -> Option<DocRole>` — the shared floor-resolution
-    helper both `resolve_access` and `resolve_access_world` call; `None` means the unconditional
+  - `resolve_access` (and `resolve_access_world`) builds the per-connection `Access { caps, all,
+    see_gm_only, is_owner }`. Both take `effective_owner: Option<Uuid>` as an explicit parameter
+    alongside `user`/`world_role`/`doc` — see the "Egress ownership is unified with write
+    ownership" bullet above for why there is no internal `doc.owner` fallback.
+  - `effective_role` — the shared floor-resolution helper both `resolve_access` and
+    `resolve_access_world` call, taking the SAME `user`/`world_role`/`doc`/`effective_owner`
+    parameters; `None` means the unconditional
     GM/admin short-circuit applies (see `gm_role` invariant below), `Some(role)` means the caller
     must resolve capabilities from that per-document role floor like any other actor.
   - `Access::can_see(v: Visibility)` is the single predicate: `GmOnly => see_gm_only`,

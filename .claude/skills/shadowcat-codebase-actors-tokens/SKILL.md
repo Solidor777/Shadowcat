@@ -54,7 +54,7 @@ token/actor name from non-owners via the `OwnerOrGm` visibility tier. Conditions
   - `VisionAssignment { mode, range }` (mode = a `vision-modes` registry id, range in grid cells);
     `ActorEngine.vision?` + `TokenOverrides.vision?` carry `VisionAssignment[]`.
   - `setNameHidden(doc, hidden)` — sets/clears the `OwnerOrGm` override on `/name` (the envelope
-    field — was `/system/name`).
+    field).
   - `FactionStance = "friendly"|"neutral"|"hostile"`, `Faction { name, color, stance }`,
     `FactionRegistryEngine`, `buildFactionRegistryDoc(worldId, factions, id?)` (param
     `factions: Record<string, Faction>`) — a
@@ -213,7 +213,7 @@ token/actor name from non-owners via the `OwnerOrGm` visibility tier. Conditions
   advisory mirror of the server's Update-path check (GM bypasses; a non-GM needs the doc-role
   write cap). The server stays authoritative; the gate only shows/hides the control.
 - **Name privacy rides the existing redaction layer** — `setNameHidden` flips `/name` (the
-  envelope field — was `/system/name`) to `OwnerOrGm`; the owner still sees it,
+  envelope field) to `OwnerOrGm`; the owner still sees it,
   others get the `actorDisplayName` fallback. Enforcement is server-side and fail-closed (see
   `shadowcat-codebase-documents-permissions`).
 - **`TokenEngine::validate` shares ONE coordinate bound with the
