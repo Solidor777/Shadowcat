@@ -72,6 +72,31 @@ pub enum MovementModel {
     Continuous,
 }
 
+/// A scene's cell geometry family, resolved from its `engine.grid.kind`. The single decision
+/// behind which `GridShape` implementation a scene uses, which coordinate system its persisted
+/// fog is indexed in, and which cached masks a change to it must invalidate. Anything other than
+/// the hex spelling resolves to `Square` — the hardened default an absent or malformed scene
+/// document falls back to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GridKind {
+    /// Axis-aligned square cells.
+    Square,
+    /// Pointy-top axial hexes.
+    Hex,
+}
+
+/// The grid kind a decoded scene engine declares. Pure, so the two readers that each already hold
+/// a decoded `SceneEngine` — `resolve_scene` and `SceneEcs::resolve_grid_kind` — read ONE
+/// implementation of the comparison rather than repeating it, and neither pays a second decode to
+/// reach it.
+fn grid_kind_from(eng: Option<&eng::SceneEngine>) -> GridKind {
+    if eng.map(|s| s.grid.kind.as_str()) == Some("hex") {
+        GridKind::Hex
+    } else {
+        GridKind::Square
+    }
+}
+
 /// Fail-safe finite default scene size (grid units) when a scene has no authored `bounds`.
 /// MUST match the client's `DEFAULT_SCENE_BOUNDS` (client/server parity).
 pub const DEFAULT_SCENE_BOUNDS_UNITS: (f64, f64) = (100.0, 100.0);
@@ -107,6 +132,10 @@ pub struct ResolvedScene {
     /// Scene dimensions (width, height) in grid units. Always finite `> 0`
     /// (default `DEFAULT_SCENE_BOUNDS_UNITS`). The navmesh's outer rectangle.
     pub bounds: (f64, f64),
+    /// The scene's cell geometry family. Decides the `GridShape` implementation, the coordinate
+    /// system of persisted explored fog, and — because it is part of `ResolvedScene` — the
+    /// visibility cache's own invalidation key.
+    pub grid_kind: GridKind,
 }
 
 /// A resolved vision mode (subset of the client `VisionMode`). `default_range` is in cells.
@@ -862,6 +891,7 @@ impl SceneEcs {
             movement_model: conv_movement_model(mmodel),
             partial_cell_leniency: d_lenient,
             bounds,
+            grid_kind: grid_kind_from(s),
         }
     }
 
@@ -909,13 +939,31 @@ impl SceneEcs {
         self.resolve_grid_shape_with_rule(scene, cell, self.resolved_diagonal_rule())
     }
 
+    /// The scene's `GridKind`, for a caller that holds no decoded scene engine. Performs exactly
+    /// the lookup `resolve_grid_shape_with_rule` already performed inline, and defers the
+    /// comparison to `grid_kind_from`, so the shape path pays nothing new and the decision has
+    /// one implementation.
+    ///
+    /// Deliberately NOT routed through `resolve_scene`: that resolver reads the world-settings
+    /// document and resolves the full settings set, a cost the shape path runs in per-scene and
+    /// per-move loops (`scene_grid_shapes`, `pathfind`, `execute_move`) and does not need.
+    pub(crate) fn resolve_grid_kind(&self, scene: Uuid) -> GridKind {
+        let eng = self
+            .index
+            .get(&scene)
+            .and_then(|&e| self.world.get::<&SceneEntity>(e).ok())
+            .and_then(|c| self.engine_as_cached::<eng::SceneEngine>(scene, &c.doc));
+        grid_kind_from(eng.as_ref())
+    }
+
     /// `resolve_grid_shape` with an explicit `SquareGrid` diagonal rule instead of the world-resolved
     /// one. The continuous (navmesh) engine's weighted grid sub-path passes `DiagonalRule::Euclidean`
     /// here so the grid it routes on uses the Euclidean base metric (its cost and its admissible
     /// heuristic both come from the shape), never the world's configured diagonal rule
     /// (continuous ignores the world diagonal rule; only cell topology + terrain multiplier come
     /// from the grid). `rule` is inert on a hex scene — `HexGrid` uses uniform 1-cost steps and the
-    /// axial heuristic regardless.
+    /// axial heuristic regardless. Reads `resolve_grid_kind` for the hex-vs-square decision, so a
+    /// resolved shape's `GridShape::kind()` can never disagree with it.
     pub(crate) fn resolve_grid_shape_with_rule(
         &self,
         scene: Uuid,
@@ -927,16 +975,9 @@ impl SceneEcs {
         // `.await` boundary (a `&Map` is `Send` only when the values are `Sync`). The bound only
         // widens the returned value's capability; every synchronous caller (publish gate, executor)
         // is unaffected, and both concrete impls hold only `f64`/enum fields (trivially `Send + Sync`).
-        let kind = self
-            .index
-            .get(&scene)
-            .and_then(|&e| self.world.get::<&SceneEntity>(e).ok())
-            .and_then(|c| self.engine_as_cached::<eng::SceneEngine>(scene, &c.doc))
-            .map(|s| s.grid.kind);
-        if kind.as_deref() == Some("hex") {
-            Box::new(grid_shape::HexGrid { size: cell })
-        } else {
-            Box::new(grid_shape::SquareGrid { cell, rule })
+        match self.resolve_grid_kind(scene) {
+            GridKind::Hex => Box::new(grid_shape::HexGrid { size: cell }),
+            GridKind::Square => Box::new(grid_shape::SquareGrid { cell, rule }),
         }
     }
 
@@ -4794,6 +4835,102 @@ mod tests {
         );
         let r = ecs.resolve_scene(scene_id);
         assert_eq!(r.bounds, (100.0, 100.0));
+    }
+
+    #[test]
+    fn the_resolved_shape_reports_the_resolved_kind() {
+        // The three readers of the same decision — the shape a scene resolves to, the kind its
+        // settings carry, and the ECS resolver — must not be able to disagree.
+        // Discrimination: fails if `resolve_grid_shape_with_rule` stops constructing its shape
+        // from `resolve_grid_kind`, or if `resolve_scene` stops reading the same pure helper,
+        // which are the only ways the three can diverge. The unrecognised spelling pins the
+        // fail-closed default in the same loop.
+        for (engine, expect) in [
+            (
+                json!({ "grid": { "kind": "hex", "size": 50 }, "background": null }),
+                GridKind::Hex,
+            ),
+            (
+                json!({ "grid": { "kind": "square", "size": 50 }, "background": null }),
+                GridKind::Square,
+            ),
+            (
+                json!({ "grid": { "kind": "wobbly", "size": 50 }, "background": null }),
+                GridKind::Square,
+            ),
+        ] {
+            let ecs = SceneEcs::from_documents(vec![entity_doc_top_eng(10, "scene", engine)], 0);
+            let scene = Uuid::from_u128(10);
+            assert_eq!(ecs.resolve_grid_kind(scene), expect);
+            assert_eq!(ecs.resolve_scene(scene).grid_kind, expect);
+            assert_eq!(ecs.resolve_grid_shape(scene, 50.0).kind(), expect);
+        }
+    }
+
+    #[test]
+    fn changing_a_scenes_grid_kind_invalidates_the_cached_visibility_mask() {
+        // The cache is value-comparison based, so any input the mask depends on must appear in
+        // the snapshot. The grid kind decides every cell index in the mask.
+        // Discrimination: fails if `ResolvedScene` carries no kind or the snapshot omits it,
+        // because the snapshot then compares equal across the mutation and the stale mask is
+        // returned. It cannot pass vacuously: the fixture asserts the two masks differ, so a
+        // scene whose kind change produced no geometric difference fails the guard.
+        let user = Uuid::from_u128(7);
+        let scene_id = Uuid::from_u128(10);
+        let scene = entity_doc_top_eng(
+            10,
+            "scene",
+            json!({ "grid": { "kind": "square", "size": 20 }, "background": null }),
+        );
+        let mut tok = entity_doc_eng(
+            11,
+            10,
+            "token",
+            json!({ "x": 10, "y": 10, "w": 20.0, "h": 20.0, "rotation": 0.0 }),
+        );
+        tok.owner = Some(user);
+        let light = entity_doc_eng(
+            20,
+            10,
+            "light",
+            json!({
+                "x": 10.0, "y": 10.0, "color": "#ffffff", "intensity": 1.0,
+                "brightRadius": 5.0, "dimRadius": 8.0, "enabled": true
+            }),
+        );
+        let mut ecs = SceneEcs::from_documents(vec![scene, tok, light], 0);
+        ecs.set_world_settings_for_test(json!({
+            "scene": {
+                "losRestriction": true, "fog": true,
+                "lightingEnabled": true, "lightMode": "environmentLight",
+                "environment": { "color": "#000000", "intensity": 0.0 },
+                "observerVision": false,
+                "movementRestriction": "visible",
+                "partialCellLeniency": false
+            },
+            "pathfinding": { "diagonalRule": "chebyshev" },
+            "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
+        }));
+
+        let before = ecs.visible_cells_cached(user, scene_id, false);
+
+        // Mutate the scene document's grid kind through apply_op, matching how a real write
+        // would reach the ECS.
+        ecs.apply_op(&Operation::Update {
+            doc_id: scene_id,
+            changes: vec![FieldChange {
+                path: "/engine/grid/kind".to_string(),
+                old: json!("square"),
+                new: json!("hex"),
+                remove: false,
+            }],
+        });
+
+        let after = ecs.visible_cells_cached(user, scene_id, false);
+        assert_ne!(
+            before, after,
+            "a grid-kind change must produce a different mask"
+        );
     }
 
     #[test]

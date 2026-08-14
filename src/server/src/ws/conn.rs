@@ -684,18 +684,27 @@ async fn handle_pathfind(
             };
         }
     }
-    // Step 1: check movement_restriction under a short read guard, then drop it.
-    let need_explored = !is_gm && {
+    // Step 1: check movement_restriction under a short read guard, then drop it. The grid kind is
+    // captured in the SAME guard from the `ResolvedScene` already being resolved, so the decode
+    // below never re-acquires the lock for it.
+    let (need_explored, grid_kind) = {
         let s = room.scene().read().await;
-        matches!(
-            s.resolve_scene(scene).movement_restriction,
-            crate::scene::MovementRestriction::Revealed
+        let resolved = s.resolve_scene(scene);
+        (
+            !is_gm
+                && matches!(
+                    resolved.movement_restriction,
+                    crate::scene::MovementRestriction::Revealed
+                ),
+            resolved.grid_kind,
         )
     };
     // Step 2: fetch explored (if needed) after the lock is dropped.
     let explored = if need_explored {
         match repo.get_explored(scene, ctx.user_id).await {
-            Ok(Some(blob)) => Some(crate::scene::explored::ExploredSet::from_bytes(&blob)),
+            Ok(Some(blob)) => Some(crate::scene::explored::ExploredSet::from_bytes(
+                &blob, grid_kind,
+            )),
             // Fail closed: Revealed degrades to visible-only on any error/miss.
             _ => None,
         }
@@ -924,11 +933,13 @@ async fn enrich_vision_explored(
             continue;
         };
         let mut set = match repo.get_explored(scene, user).await {
-            Ok(Some(blob)) => crate::scene::explored::ExploredSet::from_bytes(&blob),
+            Ok(Some(blob)) => crate::scene::explored::ExploredSet::from_bytes(&blob, shape.kind()),
             _ => crate::scene::explored::ExploredSet::new(),
         };
         if accumulate && set.mark_polygons(&scene_polys, shape, cell) > 0 {
-            let _ = repo.set_explored(world, scene, user, &set.to_bytes()).await;
+            let _ = repo
+                .set_explored(world, scene, user, &set.to_bytes(shape.kind()))
+                .await;
         }
         let cells: Vec<i32> = set.iter().flat_map(|(i, j)| [i, j]).collect();
         explored_out.push(serde_json::json!({ "scene": scene, "cell": cell, "cells": cells }));
@@ -2093,6 +2104,7 @@ mod tests {
         // It persisted: a fresh read returns the same 9 cells.
         let stored = crate::scene::explored::ExploredSet::from_bytes(
             &repo.get_explored(scene, user).await.unwrap().unwrap(),
+            crate::scene::GridKind::Square,
         );
         assert_eq!(stored.len(), 9);
 
@@ -2108,7 +2120,8 @@ mod tests {
         );
         assert_eq!(
             crate::scene::explored::ExploredSet::from_bytes(
-                &repo.get_explored(scene, user).await.unwrap().unwrap()
+                &repo.get_explored(scene, user).await.unwrap().unwrap(),
+                crate::scene::GridKind::Square,
             )
             .len(),
             9,
@@ -2175,9 +2188,14 @@ mod tests {
             },
             100.0,
         );
-        repo.set_explored(world, scene, target, &seed.to_bytes())
-            .await
-            .unwrap();
+        repo.set_explored(
+            world,
+            scene,
+            target,
+            &seed.to_bytes(crate::scene::GridKind::Square),
+        )
+        .await
+        .unwrap();
 
         // The GM views as the target over a polygon covering a 3×3 block (would mark 9 cells if it
         // accumulated). Read-only: emits the stored 1 cell, persists nothing new.
@@ -2202,7 +2220,8 @@ mod tests {
         );
         assert_eq!(
             crate::scene::explored::ExploredSet::from_bytes(
-                &repo.get_explored(scene, target).await.unwrap().unwrap()
+                &repo.get_explored(scene, target).await.unwrap().unwrap(),
+                crate::scene::GridKind::Square,
             )
             .len(),
             1,

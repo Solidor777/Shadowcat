@@ -11,7 +11,26 @@
 #![deny(clippy::missing_docs_in_private_items)]
 
 use crate::scene::grid_shape::GridShape;
+use crate::scene::GridKind;
 use std::collections::BTreeSet;
+
+/// Magic prefix of a serialized `ExploredSet`. A blob without it states no coordinate system for
+/// its records and is unusable rather than assumed.
+const EXPLORED_MAGIC: [u8; 4] = *b"SCEF";
+
+/// Serialization format version. A blob at any other version is not decoded.
+const EXPLORED_VERSION: u8 = 1;
+
+/// Header length: magic, version, grid-kind tag.
+const EXPLORED_HEADER_LEN: usize = EXPLORED_MAGIC.len() + 2;
+
+/// Grid-kind tag byte for `kind`.
+fn kind_tag(kind: GridKind) -> u8 {
+    match kind {
+        GridKind::Square => 0,
+        GridKind::Hex => 1,
+    }
+}
 
 /// A grid-cell coordinate. `BTreeSet` ordering gives a deterministic serialization.
 pub type Cell = (i32, i32);
@@ -115,9 +134,16 @@ impl ExploredSet {
         self.cells.len() - before
     }
 
-    /// Serialize to 8 bytes per cell (i32 i, i32 j, little-endian), in ascending order.
-    pub fn to_bytes(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(self.cells.len() * 8);
+    /// Serialize as `SCEF`, a version byte, a grid-kind tag, then 8 bytes per cell (i32 i, i32 j,
+    /// little-endian) in ascending order. `kind` is the grid family the cell indices are
+    /// expressed in; `from_bytes` refuses a blob whose tag disagrees with the scene's current
+    /// kind, because a square index and a hex axial index are different coordinate systems that
+    /// share a representation.
+    pub fn to_bytes(&self, kind: GridKind) -> Vec<u8> {
+        let mut out = Vec::with_capacity(EXPLORED_HEADER_LEN + self.cells.len() * 8);
+        out.extend_from_slice(&EXPLORED_MAGIC);
+        out.push(EXPLORED_VERSION);
+        out.push(kind_tag(kind));
         for &(i, j) in &self.cells {
             out.extend_from_slice(&i.to_le_bytes());
             out.extend_from_slice(&j.to_le_bytes());
@@ -125,11 +151,20 @@ impl ExploredSet {
         out
     }
 
-    /// Deserialize from the `to_bytes` layout. A trailing partial record (corrupt/truncated blob)
-    /// is dropped rather than erroring — explored memory is best-effort, and dropping under-reveals.
-    pub fn from_bytes(b: &[u8]) -> Self {
+    /// Deserialize the `to_bytes` layout, refusing anything that is not this format at this
+    /// version indexed in `kind`. Every refusal yields an EMPTY set: explored memory is
+    /// best-effort and an empty set under-reveals, which is the safe direction for a fog gate. A
+    /// trailing partial record is likewise dropped rather than erroring.
+    pub fn from_bytes(b: &[u8], kind: GridKind) -> Self {
+        if b.len() < EXPLORED_HEADER_LEN
+            || b[..EXPLORED_MAGIC.len()] != EXPLORED_MAGIC
+            || b[EXPLORED_MAGIC.len()] != EXPLORED_VERSION
+            || b[EXPLORED_MAGIC.len() + 1] != kind_tag(kind)
+        {
+            return Self::default();
+        }
         let mut cells = BTreeSet::new();
-        for rec in b.chunks_exact(8) {
+        for rec in b[EXPLORED_HEADER_LEN..].chunks_exact(8) {
             let i = i32::from_le_bytes([rec[0], rec[1], rec[2], rec[3]]);
             let j = i32::from_le_bytes([rec[4], rec[5], rec[6], rec[7]]);
             cells.insert((i, j));
@@ -203,20 +238,25 @@ mod tests {
             &sq(100.0),
             100.0,
         );
-        let bytes = set.to_bytes();
-        assert_eq!(bytes.len(), set.len() * 8);
-        let back = ExploredSet::from_bytes(&bytes);
+        let bytes = set.to_bytes(crate::scene::GridKind::Square);
+        assert_eq!(bytes.len(), EXPLORED_HEADER_LEN + set.len() * 8);
+        let back = ExploredSet::from_bytes(&bytes, crate::scene::GridKind::Square);
         assert_eq!(set, back);
     }
 
     #[test]
     fn from_bytes_drops_a_truncated_trailing_record() {
-        let mut bytes = ((1_i32).to_le_bytes()).to_vec();
-        bytes.extend_from_slice(&(2_i32).to_le_bytes()); // one valid cell (1,2)
-        bytes.extend_from_slice(&[0xAB, 0xCD]); // a 2-byte truncated tail
-        let set = ExploredSet::from_bytes(&bytes);
-        assert_eq!(set.len(), 1);
-        assert!(set.contains((1, 2)));
+        let mut set = ExploredSet::new();
+        set.mark_polygons(
+            &[vec![0.0, 0.0, 100.0, 0.0, 100.0, 100.0, 0.0, 100.0]],
+            &sq(100.0),
+            100.0,
+        );
+        // One cell, via the real encoder, then a 2-byte truncated tail appended by hand.
+        let mut bytes = set.to_bytes(crate::scene::GridKind::Square);
+        bytes.extend_from_slice(&[0xAB, 0xCD]);
+        let decoded = ExploredSet::from_bytes(&bytes, crate::scene::GridKind::Square);
+        assert_eq!(decoded, set);
     }
 
     #[test]
@@ -238,6 +278,63 @@ mod tests {
             0
         ); // bad size
         assert!(set.is_empty());
+    }
+
+    #[test]
+    fn a_blob_written_under_one_grid_kind_does_not_decode_under_the_other() {
+        // Discrimination: fails if the header is absent, ignored on read, or compared loosely —
+        // the assertion is that the SAME bytes yield cells under one kind and none under the
+        // other, which no format lacking the tag can satisfy.
+        let mut set = ExploredSet::new();
+        set.mark_polygons(
+            &[vec![0.0, 0.0, 250.0, 0.0, 250.0, 250.0, 0.0, 250.0]],
+            &sq(100.0),
+            100.0,
+        );
+        let bytes = set.to_bytes(crate::scene::GridKind::Square);
+        assert_eq!(
+            ExploredSet::from_bytes(&bytes, crate::scene::GridKind::Square),
+            set
+        );
+        assert!(
+            ExploredSet::from_bytes(&bytes, crate::scene::GridKind::Hex).is_empty(),
+            "square-indexed fog must not be reinterpreted as hex axial cells"
+        );
+    }
+
+    #[test]
+    fn a_headerless_blob_decodes_to_nothing() {
+        // A blob with no header states no coordinate system for its records, so it is unusable
+        // rather than assumed. Under-reveal is the safe direction for fog memory.
+        // Discrimination: fails if `from_bytes` parses bare 8-byte records.
+        let mut bare = (1_i32).to_le_bytes().to_vec();
+        bare.extend_from_slice(&(2_i32).to_le_bytes());
+        assert!(ExploredSet::from_bytes(&bare, crate::scene::GridKind::Square).is_empty());
+    }
+
+    #[test]
+    fn a_hex_blob_round_trips_under_its_own_kind() {
+        // Discrimination: fails if the header is written but the record payload is mis-offset,
+        // which a square-only round-trip test would not catch.
+        let g = HexGrid { size: 100.0 };
+        let (cx, cy) = g.cell_center((1, 0));
+        let poly = vec![
+            cx - 10.0,
+            cy - 10.0,
+            cx + 10.0,
+            cy - 10.0,
+            cx + 10.0,
+            cy + 10.0,
+            cx - 10.0,
+            cy + 10.0,
+        ];
+        let mut set = ExploredSet::new();
+        set.mark_polygons(&[poly], &g, 100.0);
+        let bytes = set.to_bytes(crate::scene::GridKind::Hex);
+        assert_eq!(
+            ExploredSet::from_bytes(&bytes, crate::scene::GridKind::Hex),
+            set
+        );
     }
 
     /// On a hex grid, `mark_polygons` indexes HEX axial cells (through `GridShape`), not square

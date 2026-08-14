@@ -284,7 +284,8 @@ impl Room {
             // cells, visible_set). Revealed mode requires an async get_explored call which
             // cannot occur while holding the scene read lock.
             type CellSet = std::collections::BTreeSet<(i32, i32)>;
-            let mut revealed_pending: Vec<(uuid::Uuid, CellSet, CellSet)> = Vec::new();
+            let mut revealed_pending: Vec<(uuid::Uuid, CellSet, CellSet, crate::scene::GridKind)> =
+                Vec::new();
             {
                 let scene = self.scene.read().await;
                 // Memoize the visible mask per (scene, leniency) within this publish so a
@@ -354,11 +355,14 @@ impl Room {
                                     })
                                     .clone();
                                 // Explored needs an async fetch, which must not run under the
-                                // scene read guard — defer exactly as the movement gate did.
+                                // scene read guard — defer exactly as the movement gate did. The
+                                // grid kind is captured here, under the same guard `settings` was
+                                // resolved in, since decoding runs after the guard is dropped.
                                 revealed_pending.push((
                                     scene_id,
                                     [target].into_iter().collect(),
                                     mask,
+                                    settings.grid_kind,
                                 ));
                             }
                         }
@@ -373,13 +377,13 @@ impl Room {
                 uuid::Uuid,
                 crate::scene::explored::ExploredSet,
             > = std::collections::HashMap::new();
-            for (scene_id, move_cells, visible) in revealed_pending {
+            for (scene_id, move_cells, visible, grid_kind) in revealed_pending {
                 let explored = match explored_cache.entry(scene_id) {
                     std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
                     std::collections::hash_map::Entry::Vacant(e) => {
                         let set = match repo.get_explored(scene_id, ctx.user_id).await {
                             Ok(Some(blob)) => {
-                                crate::scene::explored::ExploredSet::from_bytes(&blob)
+                                crate::scene::explored::ExploredSet::from_bytes(&blob, grid_kind)
                             }
                             _ => crate::scene::explored::ExploredSet::new(),
                         };
@@ -538,6 +542,7 @@ impl Room {
         let is_revealed;
         let is_gm;
         let footprint;
+        let grid_kind;
         {
             let scene = self.scene.read().await;
 
@@ -567,6 +572,9 @@ impl Room {
             footprint = fp;
 
             let settings = scene.resolve_scene(token_scene);
+            // Captured under this same read guard for the same reason `cell` is: the explored
+            // decode below runs after the guard is dropped.
+            grid_kind = settings.grid_kind;
             // Fail-closed on a `parent_id` with no scene document: `scene_grid_sizes` carries an
             // entry (defaulting to 100) for every live scene, so an absent entry means the scene
             // itself is gone — no authored cell size exists to index the visibility mask, the
@@ -608,7 +616,7 @@ impl Room {
         let visible = if is_revealed {
             let mut union = visible_cells;
             let explored = match repo.get_explored(token_scene, ctx.user_id).await {
-                Ok(Some(blob)) => crate::scene::explored::ExploredSet::from_bytes(&blob),
+                Ok(Some(blob)) => crate::scene::explored::ExploredSet::from_bytes(&blob, grid_kind),
                 _ => crate::scene::explored::ExploredSet::new(),
             };
             // Union: insert every explored cell into the visible set.
@@ -2298,7 +2306,12 @@ mod room_tests {
             cell,
         );
         h.repo
-            .set_explored(h.world, h.scene, h.player_ctx.user_id, &seed.to_bytes())
+            .set_explored(
+                h.world,
+                h.scene,
+                h.player_ctx.user_id,
+                &seed.to_bytes(crate::scene::GridKind::Square),
+            )
             .await
             .unwrap();
 
@@ -3765,7 +3778,12 @@ mod room_tests {
             cell,
         );
         h.repo
-            .set_explored(h.world_id, h.scene_id, h.player.user_id, &seed.to_bytes())
+            .set_explored(
+                h.world_id,
+                h.scene_id,
+                h.player.user_id,
+                &seed.to_bytes(crate::scene::GridKind::Square),
+            )
             .await
             .unwrap();
 

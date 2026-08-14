@@ -16,6 +16,7 @@
 
 use crate::scene::pathfinding::{self, Cell, DiagonalRule};
 use crate::scene::vision;
+use crate::scene::GridKind;
 use std::collections::BTreeSet;
 
 /// Per-scene cell geometry: cell-center point, point-to-cell mapping, neighbor+cost enumeration,
@@ -72,6 +73,11 @@ pub(crate) trait GridShape {
     /// square distance; `HexGrid` returns the axial (cube) hex distance, which the square distance
     /// OVERESTIMATES for opposite-sign axial deltas (non-admissible on hex → suboptimal routes).
     fn heuristic(&self, from: Cell, to: Cell) -> f64;
+    /// This shape's geometry family. Lets any holder of a resolved shape reach the kind without a
+    /// second per-scene map that could disagree with it: `resolve_grid_shape_with_rule` builds
+    /// the shape FROM `SceneEcs::resolve_grid_kind`, so the two are the same decision by
+    /// construction rather than by convention.
+    fn kind(&self) -> GridKind;
 }
 
 /// Axial-box padding for `HexGrid::cells_in_bounds`. The axial↔pixel map is affine, so a pixel-space
@@ -198,6 +204,10 @@ impl GridShape for SquareGrid {
     /// dispatch, so every square route (all 4 diagonal rules) is unchanged.
     fn heuristic(&self, from: Cell, to: Cell) -> f64 {
         pathfinding::heuristic(self.rule, from, to)
+    }
+
+    fn kind(&self) -> GridKind {
+        GridKind::Square
     }
 }
 
@@ -515,6 +525,10 @@ impl GridShape for HexGrid {
         let dr = to.1 as i64 - from.1 as i64;
         ((dq.abs() + dr.abs() + (dq + dr).abs()) as f64) / 2.0
     }
+
+    fn kind(&self) -> GridKind {
+        GridKind::Hex
+    }
 }
 
 /// Per-step move cost under `rule`, plus the carried parity for the next step.
@@ -547,6 +561,19 @@ fn step_cost(rule: DiagonalRule, di: i32, dj: i32, parity: u8) -> (f64, u8) {
 mod tests {
     use super::*;
     use crate::scene::pathfinding::DiagonalRule;
+
+    #[test]
+    fn each_shape_reports_its_own_kind() {
+        // Discrimination: fails if either impl returns the other's kind, which would make the
+        // explored blob's tag disagree with the geometry that wrote it.
+        let sq = SquareGrid {
+            cell: 100.0,
+            rule: DiagonalRule::Chebyshev,
+        };
+        let hx = HexGrid { size: 100.0 };
+        assert_eq!(sq.kind(), crate::scene::GridKind::Square);
+        assert_eq!(hx.kind(), crate::scene::GridKind::Hex);
+    }
 
     #[test]
     fn square_grid_cell_center_matches_pathfinding_cell_center() {
