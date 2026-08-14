@@ -245,7 +245,9 @@ pub enum RedactionTarget {
     /// a document that never carried one, breaking the client's stable envelope shape.
     Band,
     /// A path inside a band, landing in an untyped `serde_json::Value` or an `Option`.
-    /// Removed with a pointer strip, where callers rely on true key absence.
+    /// Redacted with a pointer strip, whose terminal step differs by container: an object
+    /// key is removed, where callers rely on true key absence; an array element is nulled in
+    /// place, because removal would renumber every later element. See `strip_pointer`.
     Within,
 }
 

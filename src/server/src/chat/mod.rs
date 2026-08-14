@@ -257,13 +257,13 @@ pub struct MessageEngine {
     /// raw-text instance of that pattern.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
-    /// Set when the message has been edited (c-3's edit path). Absent (not
-    /// `null`) on the wire for an unedited message, so a stored c-1 message
-    /// with no marker still round-trips unchanged.
+    /// Set by `handle_edit_message`. Absent (not `null`) on the wire for an
+    /// unedited message, so a stored message carrying no marker still
+    /// round-trips unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub edited_at: Option<i64>,
-    /// Set when the message has been soft-deleted (c-3's delete path). Absent
-    /// (not `null`) on the wire for a live message.
+    /// Set by `handle_delete_message`'s soft tombstone. Absent (not `null`) on
+    /// the wire for a live message.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deleted_at: Option<i64>,
 }
