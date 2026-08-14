@@ -1462,7 +1462,15 @@ Combat tracker (initiative, hidden combatants, turn-event triggers; depends on M
 Audio (mixer, channels, playlists, world-clock sync; then spatial + wall occlusion; transcode via `symphonia` + `opus`/`vorbis_rs`) → VFX (sprite effects, concurrent SFX) → multi-level maps + portals → 3D dice (decide the rendering context up front: reuse the PixiJS WebGL context vs a separate three.js/WebGL + physics layer) → Discord audio-ducking module (OS audio-session monitoring — PipeWire / WASAPI / CoreAudio — never the proprietary Discord Game SDK; requires a dependency / licensing review before integration).
 
 ## Phase 4 — Platform & scale
-Trusted local modding hardening → freeze the module API on evidence (≥1 external module ships without core patches, **or N internal modules across M independent systems exercise the full API surface** — whichever comes first, so the freeze is not deadlocked on an external author who may never appear) → [only if a marketplace is pursued] WASM sandbox + registry + signing / SRI / CSP + package browser → native wrappers (Tauri 2, Capacitor) → hardening + distribution (backup scheduling / automation, world snapshots, WS load + resync stress tests, rate limiting, rustls-acme TLS, Steam OpenID + plain-executable distribution).
+**Audit-grade point-in-time replay** — a state-as-of-sequence facility: what a document, its
+permissions, its effective owner and the world's capability grants were at any past sequence, so a
+replayed event can be redacted against the policy that actually applied. Today every such decision
+is served by a current-state lookup, which is the root cause behind two confirmed redaction defects.
+The phase that closes those establishes a commit-time redaction context carried on the operation;
+this milestone generalizes it into a queryable history. **When it lands it must become the single
+producer feeding the existing redaction-context interface — a second, independently-derived source
+for the same decision is the fork-a-decision class this codebase produces most.**
+→ Trusted local modding hardening → freeze the module API on evidence (≥1 external module ships without core patches, **or N internal modules across M independent systems exercise the full API surface** — whichever comes first, so the freeze is not deadlocked on an external author who may never appear) → [only if a marketplace is pursued] WASM sandbox + registry + signing / SRI / CSP + package browser → native wrappers (Tauri 2, Capacitor) → hardening + distribution (backup scheduling / automation, world snapshots, WS load + resync stress tests, rate limiting, rustls-acme TLS, Steam OpenID + plain-executable distribution).
 
 ## Documentation campaign (cross-phase, runs alongside feature work)
 - **Phase 1 — infrastructure + guides: COMPLETE (2026-07-30, `docs-phase1-infrastructure` branch).**
