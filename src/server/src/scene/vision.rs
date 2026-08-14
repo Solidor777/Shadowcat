@@ -108,8 +108,11 @@ pub fn bound_for(viewpoint: P, walls: &[Seg], margin: f64) -> Rect {
 /// wall placed beyond the authored bounds) is left unchanged there: this only ever grows the bound.
 ///
 /// Union, never replacement, on every edge — a degenerate envelope (the refused zero-area one) has
-/// its `min` and `max` both at the origin, so it contributes nothing and cannot SHRINK the
-/// wall-derived bound on any side.
+/// its `min` and `max` both at the origin, so it cannot SHRINK the wall-derived bound on any side.
+/// It does not leave that bound untouched either: the low edges are still `min`ed against `(0.0,
+/// 0.0)`, so a wall-derived bound sitting wholly clear of the origin is pulled back to it on both
+/// low axes — the same clamp a square scene's own minimum applies, and the reason a refused
+/// envelope is a widening of the bound rather than an absence from it.
 pub(crate) fn bound_for_scene(
     viewpoint: P,
     walls: &[Seg],
@@ -380,6 +383,8 @@ mod tests {
         //   cannot detect.
         // - the refused-envelope assertions fail if the union becomes a replacement, which the
         //   real-envelope assertions still tolerate, their corners being the outer ones anyway.
+        // - the far-from-the-origin refused arm fails if the union starts SKIPPING a zero-area
+        //   envelope, which every other assertion here tolerates.
         let g = HexGrid { size: 400.0 };
         let envelope = g.world_extent((3.0, 3.0));
         let margin = 100.0;
@@ -402,20 +407,57 @@ mod tests {
             b.maxx,
             b.maxy
         );
-        // A refused (zero-area) envelope contributes nothing: the wall-derived bound survives
-        // intact on every edge, rather than being replaced by a collapsed rectangle.
+        // A refused (zero-area) envelope cannot SHRINK the bound: it is unioned like any other,
+        // never substituted for the wall-derived one. Its corners are the ORIGIN, though, so it is
+        // not inert — which takes two arms to state, because a wall-derived bound that already
+        // spans the origin cannot tell "untouched" from "clamped to the origin".
         let walls = [Seg {
             a: (-500.0, -500.0),
             b: (500.0, 500.0),
         }];
         let wall_only = bound_for(vp, &walls, margin);
+        assert!(
+            wall_only.minx < 0.0 && wall_only.miny < 0.0,
+            "fixture: these walls must already span the origin, got ({}, {})",
+            wall_only.minx,
+            wall_only.miny
+        );
         let refused = bound_for_scene(vp, &walls, REFUSED_EXTENT, margin);
         assert!(
             refused.minx == wall_only.minx
                 && refused.miny == wall_only.miny
                 && refused.maxx == wall_only.maxx
                 && refused.maxy == wall_only.maxy,
-            "a refused envelope must leave the wall-derived bound untouched"
+            "a refused envelope must leave a bound that already spans the origin untouched"
+        );
+        // The other side of the same union: a wall-derived bound sitting wholly clear of the
+        // origin IS moved, its low edges landing on the refused envelope's own corners rather than
+        // on the wall-derived values. This is the arm a union that skipped a zero-area envelope
+        // would fail while every other assertion here still passed.
+        let far_walls = [Seg {
+            a: (1000.0, 1000.0),
+            b: (2000.0, 2000.0),
+        }];
+        let far_vp = (1500.0, 1500.0);
+        let far_wall_only = bound_for(far_vp, &far_walls, margin);
+        assert!(
+            far_wall_only.minx > 0.0 && far_wall_only.miny > 0.0,
+            "fixture: these walls must sit clear of the origin, got ({}, {})",
+            far_wall_only.minx,
+            far_wall_only.miny
+        );
+        let far_refused = bound_for_scene(far_vp, &far_walls, REFUSED_EXTENT, margin);
+        assert!(
+            far_refused.minx == 0.0 && far_refused.miny == 0.0,
+            "a refused envelope still pulls the low edges to the origin, got ({}, {})",
+            far_refused.minx,
+            far_refused.miny
+        );
+        assert!(
+            far_refused.maxx == far_wall_only.maxx && far_refused.maxy == far_wall_only.maxy,
+            "the high edges keep their wall-derived values, got ({}, {})",
+            far_refused.maxx,
+            far_refused.maxy
         );
     }
 

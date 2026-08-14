@@ -962,11 +962,12 @@ impl SceneEcs {
     ///
     /// The zero-AREA envelope (both corners at the origin) when `grid_sizes` has no entry for the
     /// scene: it carries one for every live
-    /// scene, so an absent entry means the scene is gone and no extent may be synthesised. A
-    /// zero-area envelope contributes nothing to `vision::bound_for_scene`'s union, leaving the
-    /// wall-derived bound — the under-reveal direction. `navmesh_for` shares the conversion but NOT
-    /// this policy: it refuses with `None`, because a navmesh cannot be triangulated over an
-    /// envelope that contributes nothing.
+    /// scene, so an absent entry means the scene is gone and no extent may be synthesised. Both
+    /// corners at the origin cannot SHRINK `vision::bound_for_scene`'s union on any edge; they do
+    /// still clamp its low edges to the origin, exactly as a square scene's own minimum does, so
+    /// the substitute widens the bound rather than dropping out of it. `navmesh_for` shares the
+    /// conversion but NOT this policy: it refuses with `None`, because a navmesh cannot be
+    /// triangulated over a zero-area envelope.
     fn world_extent_from(
         &self,
         grid_sizes: &std::collections::HashMap<Uuid, f64>,
@@ -2744,7 +2745,7 @@ fn cell_visible(floors: &[(f64, f64, Option<String>)], cl_level: f64, dist_cells
 
 /// The LOS polygon for one vision source: the raycast visibility polygon when `los_restriction`
 /// is on, else the whole bound box as a rectangle (whole-scene visible). Source: raycast
-/// (`vision::visibility_polygon`). `scene_extent` is the scene's WORLD-unit rectangle
+/// (`vision::visibility_polygon`). `scene_extent` is the scene's WORLD-unit envelope
 /// (`GridShape::world_extent` of the authored grid-unit bounds), unioned into the wall-derived
 /// bound so a wall-less (or sparsely-walled) scene reveals its own full authored extent instead of
 /// a degenerate `viewpoint±VISION_BOUND_MARGIN` box — the same `vision::bound_for_scene` the
@@ -7714,14 +7715,20 @@ explored: // GM: unrestricted mask
     ///
     /// The authored block is 3.2 x 3.0 hexes, which is fractional because a hex block's world
     /// rectangle is a shear-dependent function of the block rather than a per-axis product.
-    /// `HexGrid::world_extent((3.2, 3.0))` evaluates `(√3·size·(2.2 + 1.0) + √3/2·size,
-    /// size·1.5·2 + size)`, which collapses to `(3.7·√3·size, 4·size)` — so along axial row 0,
-    /// where a hex's centre sits `q` PITCHES (`√3·size`) from the origin and its left vertices
-    /// half a pitch nearer, the rectangle reaches `q = 3.7`. Pitches are the unit its dependants
+    /// `HexGrid::world_extent((3.2, 3.0))` answers a two-corner envelope. Its `max` evaluates
+    /// `(√3·size·(2.2 + 1.0) + √3/2·size, size·1.5·2 + size)`, which collapses to
+    /// `(3.7·√3·size, 4·size)` — so along axial row 0, where a hex's centre sits `q` PITCHES
+    /// (`√3·size`) from the origin and its left vertices half a pitch nearer, the envelope reaches
+    /// `q = 3.7`. Its `min` is the origin hex's own lower-left extreme, `(-√3/2·size, -size)` =
+    /// `(-43.3, -50)` at this fixture's size. Pitches are the unit its dependants
     /// name cells in; a dependant that states a coordinate rather than a pitch must re-derive it
     /// against this fixture's own size.
-    /// `source_los_poly` is then `[min(-VISION_BOUND_MARGIN, 0), max(VISION_BOUND_MARGIN, extent)]`
-    /// per axis — the extent is the larger term on both axes at this fixture's size.
+    /// `source_los_poly` is then `[min(-VISION_BOUND_MARGIN, extent.min),
+    /// max(VISION_BOUND_MARGIN, extent.max)]` per axis, and the two sides are dominated by
+    /// different terms at this fixture's size: the envelope's maximum wins on the high side, while
+    /// the margin (100) wins on the low side, the envelope's own minimum reaching only -43.3 and
+    /// -50. That dominance is why this fixture's dependants measure the same mask an
+    /// origin-anchored rectangle would give — a property of this size, not of the conversion.
     fn hex_open_scene() -> (SceneEcs, Uuid, Uuid) {
         let user = Uuid::from_u128(7);
         let scene_id = Uuid::from_u128(10);

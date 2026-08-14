@@ -778,8 +778,13 @@ impl GridShape for HexGrid {
 /// The ONE envelope that stands for "no usable rectangle here": zero AREA, not merely a zero far
 /// corner. Every consumer refuses it on span (`WorldExtent::width`/`height`), so the refusal
 /// survives the envelope carrying a `min` a caller could otherwise have subtracted a positive
-/// width out of, and its `min`/`max` both sitting at the origin is what makes it contribute
-/// nothing to `vision::bound_for_scene`'s union.
+/// width out of.
+///
+/// Both corners sitting at the origin is what keeps it from SHRINKING
+/// `vision::bound_for_scene`'s union on any edge — the one consumer that unions it rather than
+/// refusing it. It is not inert there: that union still pulls a low edge down to the origin
+/// whenever the wall-derived bound does not already span it, exactly as a square scene's own
+/// minimum does.
 ///
 /// Two callers reach it for two different reasons and must not spell it two ways: both
 /// `world_extent` impls answer a degenerate `bounds_cells` with it (via
@@ -2085,7 +2090,9 @@ mod tests {
         // because the integer block `[0, ⌊0.25⌋)` is empty. The two shapes answer that differently
         // and both answers are asserted: square covers NO cell at all (its origin cell's own span
         // does not fit), while hex's clamped envelope is exactly the origin hex's own bounding
-        // box, so it covers that hex wholly and nothing beyond it.
+        // box. "At most the origin cell" then follows from that equality rather than needing its
+        // own assertion — a hex's bounding box is one hex across, and every neighbour's centre
+        // sits a full pitch away.
         //
         // The hex ROUNDING-refutation runs at `w = 1.25`, not `0.25`: hex clamps `qmax` at zero, so
         // rounding `0.25` up to a whole cell leaves `qmax = 0` and the envelope unmoved, and the
@@ -2103,12 +2110,11 @@ mod tests {
         //   whole cell, which pushes that corner past one pitch.
         // - the origin-hex bounding-box equality fails if either half-extent changes on either
         //   side, which no square assertion here and no far-corner assertion notices.
-        // - the neighbour-exclusion fails if the clamped envelope grows by a whole pitch on either
-        //   axis, which the bounding-box equality would catch only for the min side.
-        // - the INVARIANCE assertion fails if hex's clamp is replaced by anything that still
-        //   varies with a sub-one-cell bound (`if w < 1 { w } else { w - 1 }` keeps the envelope
-        //   positive and its far corner under one pitch, so no other assertion here notices). No
-        //   positivity or cover claim can make it: it is about two bounds producing ONE envelope.
+        // - the INVARIANCE assertion is the only one here stated over TWO different sub-one-cell
+        //   bounds, so it is the only one that can see the clamp stop being a clamp; no positivity
+        //   or cover claim can make that statement. It does not stand alone under every such
+        //   mutation — one that varies the envelope at `(0.25, 0.25)` moves the bounding-box
+        //   equality too — and what it adds is the second bound.
         // - the rule/measurement DISAGREEMENT fails if `extent_rule_says_inside`'s hex column arm
         //   drops its `− 1` term, which makes the rule answer "covered" and agree.
         // The invariance assertion and the rule/measurement disagreement each run after every
@@ -2171,15 +2177,6 @@ mod tests {
             "the clamped hex envelope {sub:?} must be the origin hex's own bounding box \
              ({vmin:?}, {vmax:?})"
         );
-        // And nothing beyond it: no neighbouring hex's centre lies inside, so "at most the origin
-        // cell" is a bound on the set rather than only a statement about the origin cell.
-        for n in [(1, 0), (1, -1), (0, -1), (-1, 0), (-1, 1), (0, 1)] {
-            let c = hx.cell_center(n);
-            assert!(
-                c.0 < sub.min.0 || c.0 > sub.max.0 || c.1 < sub.min.1 || c.1 > sub.max.1,
-                "neighbour hex {n:?}'s centre {c:?} must lie outside the clamped envelope {sub:?}"
-            );
-        }
         // What the clamp DOES, stated as its observable consequence rather than as positivity:
         // `qmax`/`rmax` clamp at zero, so below one cell the envelope stops varying with the
         // bound at all. Two different sub-one-cell bounds must therefore yield ONE envelope — a
@@ -2522,8 +2519,10 @@ mod tests {
             checked, 8136,
             "fixture: the swept cell count the stated mismatch counts are measured against"
         );
-        // The min side is visited once per bound, and its count is asserted for the same reason:
-        // a sweep that stopped reaching it would otherwise leave the corner unmeasured silently.
+        // The min side is visited once per bound, and its count pins that PER-BOUND rate rather
+        // than the sweep size the cell count already pins: moving this probe inside the per-cell
+        // loop leaves `checked` at 8136 while this count explodes, and a sweep that stopped
+        // reaching the corner at all would otherwise leave it unmeasured silently.
         assert_eq!(
             min_side_checked, MIN_SIDE_SWEEP_BOUNDS,
             "fixture: every swept bound must have its envelope minimum measured"
