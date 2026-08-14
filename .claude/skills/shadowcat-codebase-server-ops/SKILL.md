@@ -43,7 +43,7 @@ and restore as a deployment-operator tool, not an in-app feature.
   own short-lived `SqlitePool` directly (does not reuse `SqliteRepository`/`AppState`) — pure
   file I/O + one SQL statement, deliberately decoupled from the rest of the server so it works
   even when `main()`'s normal startup path never runs.
-- `POST /api/admin/backup` (Phase A, `http::routes::admin_backup`, admin-only via `AdminUser`)
+- `POST /api/admin/backup` (`http::routes::admin_backup`, admin-only via `AdminUser`)
   — in-server backup trigger, layered ABOVE `backup`. Writes into
   `Config::backups_path()` (`config`, `None` → sibling `backups/` beside the db file, mirroring
   `assets_path()`'s convention), one timestamped subdirectory per run. Holds `AppState.write_barrier`
@@ -66,7 +66,7 @@ and restore as a deployment-operator tool, not an in-app feature.
 - **Two backup surfaces, not one.** The CLI one-shot mode (`--backup-to`/`--restore-from`,
   cross-process, invokable from cron/Task Scheduler/systemd-timer with no running server) remains
   the ONLY restore path — restore never runs in-server (see below). Backup ALSO has an in-server
-  admin route (`POST /api/admin/backup`, Phase A) because a cross-process CLI invocation cannot
+  admin route (`POST /api/admin/backup`) because a cross-process CLI invocation cannot
   reach the live process's `write_barrier` to quiesce concurrent asset writes; the in-server route
   can. Anything needing a write-quiesced backup (e.g. a future scheduled-backup feature) must use
   the admin route, not the CLI mode.

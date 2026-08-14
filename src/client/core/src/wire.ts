@@ -118,15 +118,17 @@ export const SourceSchema = z.object({
  * (e.g. `core:manage_embedded`). Grants widen what a role/user may do on a document; they
  * never revoke the floor. Mirrors `crate::data::document::CapabilityGrants`. */
 export type WireCapabilityGrants = {
-  /** Extra capabilities granted to everyone holding a given `DocRole`, keyed by role. */
-  by_role: Record<string, string[]>;
-  /** Extra capabilities granted to specific users (by id), regardless of role. */
+  /** Extra capabilities granted to everyone holding a given `DocRole`, keyed by role. The
+   * Rust source is a map that may omit any role, so every key is optional. */
+  by_role: Partial<Record<z.infer<typeof DocRoleSchema>, string[]>>;
+  /** Extra capabilities granted to specific users (by id), regardless of role. User ids are
+   * genuinely open, so this map stays string-keyed. */
   by_user: Record<string, string[]>;
 };
 
 // Unannotated impl const — see the module-level note above the `z` import.
 export const capabilityGrantsSchemaImpl = z.object({
-  by_role: z.record(z.array(z.string())),
+  by_role: z.record(DocRoleSchema, z.array(z.string())),
   by_user: z.record(z.array(z.string())),
 });
 /** Validator for a `CapabilityGrants`. */
@@ -407,9 +409,13 @@ export const DocumentSchema: z.ZodType<WireDocument> = z.lazy(() =>
 
 /** One field-level change with its pre-image. Mirrors `crate::data::command::FieldChange`.
  * `old`/`new` are always present on the wire (the Rust struct has no
- * `skip_serializing_if` on either); they are typed optional here only because
- * `z.unknown()` accepts an absent key at parse time (same reasoning as `WireDocument`'s
- * `engine`/`system`), not because the server may omit them. */
+ * `skip_serializing_if` on either) and `fieldChangeSchemaImpl` rejects a frame that omits
+ * either key at runtime. They stay typed optional here only because Zod v3 infers an object
+ * field's declared optionality structurally: any field whose output type admits `undefined`
+ * — which `z.unknown()`'s output always does — is inferred optional regardless of what a
+ * `.refine()` on the whole object enforces at runtime, so the declared type cannot be
+ * tightened to "required key, unknown value" against that inference rule. This is a Zod v3
+ * inference limit, not a claim that the server may omit either key. */
 export type WireFieldChange = {
   /** JSON pointer to the field, e.g. `/system/hp`. */
   path: string;
@@ -426,12 +432,19 @@ export type WireFieldChange = {
 };
 
 // Unannotated impl const — see the module-level note above the `z` import.
-export const fieldChangeSchemaImpl = z.object({
-  path: z.string(),
-  old: z.unknown(),
-  new: z.unknown(),
-  remove: z.boolean().optional(),
-});
+export const fieldChangeSchemaImpl = z
+  .object({
+    path: z.string(),
+    // `z.unknown()` alone would accept an ABSENT key, because `undefined` satisfies
+    // `unknown`. The Rust source never omits either value key, so a frame lacking one is
+    // malformed. `.refine` on the whole object is what sees absence — a per-key schema
+    // cannot distinguish "absent" from "present and undefined".
+    old: z.unknown(),
+    new: z.unknown(),
+    remove: z.boolean().optional(),
+  })
+  .refine((v) => "old" in v, { message: "field change must carry an `old` pre-image", path: ["old"] })
+  .refine((v) => "new" in v, { message: "field change must carry a `new` value", path: ["new"] });
 /** Validator for a single field change carried by an `Operation`. */
 export const FieldChangeSchema: z.ZodType<WireFieldChange> = fieldChangeSchemaImpl;
 
@@ -504,7 +517,11 @@ export type WireSearchHit = {
   document: WireDocument;
   /** BM25 relevance as SQLite returns it (lower = more relevant). */
   score: number;
-  /** Highlighted match snippet from the recipient's own index partition. */
+  /** Highlighted match snippet from the recipient's own index partition. `index_content` sweeps
+   * the `doc_type` unconditionally, the document's `name`, and — through `collect_leaves` —
+   * every string AND number leaf of both `engine` and `system`, so any of them can surface here
+   * and in `document`. `doc_type` is client-supplied on `Create` and no charset validation
+   * constrains it, so a consumer must render this as inert text and never as innerHTML. */
   snippet: string;
 };
 

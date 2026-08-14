@@ -115,7 +115,7 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   invalidated by a token-level mutation that changes `/embedded/actor/0/...` — this is the same
   failure shape as the two test bugs above, generalized to a case with no test coverage to catch
   it, so it stays on the direct, uncached `engine_as` path.
-  **`visible_cells_cached` (Phase-1 perf item, resolved):** `SceneEcs::visible_cells_cached(user,
+  **`visible_cells_cached`:** `SceneEcs::visible_cells_cached(user,
   scene, lenient) -> BTreeSet<(i32,i32)>` is a per-`(user, scene)` memoized wrapper around the same
   mask `visible_cells` computes for the movement gate — `visible_cells` itself and every
   other existing caller (pathfinder, §13 parity tests) are unchanged and still call the uncached
@@ -1024,19 +1024,19 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   the truncation point" would be wrong whenever the truncation falls mid-leg; the cost-replay
   technique (walk the surviving cell sequence from parity 0, re-run `step_cost` per pair) is the
   only correct way to get an accurate truncated cost.
-- **A whole-`/system` `GmOnly` override must NULL the field, not remove the key, in
-  `filter_properties`.** `Document::system` is a required serde field — dropping
-  the `"system"` key from the redacted JSON before re-deserializing into `Document` panics.
-  `filter_properties` special-cases the exact pointer `"/system"` (as opposed to a nested pointer
-  like `"/system/name"`, which keeps the normal key-strip) to null the value instead. This branch
-  is exercised only by a doc type that declares a whole-`/system` (or, after the generalization
-  below, whole-`/engine`/whole-`/name`) visibility override — currently, secret regions are the
-  only doc type that does. Any future doc type that wants whole-body secrecy (vs. per-field) must
-  go through this same branch, not a new one.
-  **This same null-not-strip branch also covers `/engine` and `/name`**
-  (`filter_properties` special-cases all three top-level pointers identically) — a secret
-  region's declared override lives at `/engine`, not `/system` (see
-  `shadowcat-codebase-documents-permissions` for the generalized rule).
+- **A whole-BAND `GmOnly` override must NULL the field, not remove the key, in
+  `filter_properties`.** `Document::system` is a required serde field — dropping the `"system"`
+  key from the redacted JSON before re-deserializing into `Document` panics; dropping an optional
+  band's key is instead indistinguishable from a document that never carried one, breaking the
+  client's stable envelope shape. One shared classifier decides this, not a per-pointer arm:
+  `redaction_target` reads the band set stated exactly once in `permission::REDACTABLE_BANDS`,
+  classifying an override that names a whole band as `Band` (nulled in place) and one that
+  descends into a band as `Within`. A new redactable band is therefore a new entry in that
+  constant, never a hand-written branch here. Nested redaction is container-dependent — an object
+  key is stripped, an array element is nulled in place; see
+  `shadowcat-codebase-documents-permissions` for that within-band rule. A whole-band override is
+  currently declared only by secret regions, at `/engine` rather than `/system`; any future doc
+  type wanting whole-body secrecy (vs. per-field) rides the same classifier.
 - **A fixed-count cube lerp is a THIN LINE, not a supercover.** The standard Red Blob hex
   line-draw samples `n+1` points with `n = max cube-axis delta`, spaced one full hex PITCH
   apart — a hex's minimum width — so corner slivers fall between samples: it omits a

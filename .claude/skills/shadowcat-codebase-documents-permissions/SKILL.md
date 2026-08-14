@@ -30,11 +30,13 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
     stamp/pull/push/revert time (see `shadowcat-codebase-templates` for the client-side
     `MergeBase` shape/algorithm). Purely a client-owned blob: the server never interprets it.
     `data::permission::required_cap_for_path` maps `/base` (and any subtree under it, e.g.
-    `/base/system/hp`) to `cap::WRITE_FIELDS`, the same capability that gates `/name`/`/engine`/
-    `/system` — no dedicated capability. `/source` (the sibling field naming what a document is
-    an instance OF) stays unmapped/immutable — `required_cap_for_path` returns `None` for it, so
-    no write path can ever re-target an existing document at a different template.
-  - `world_of(doc: &Document) -> Option<Uuid>` (`pub(crate)`, Phase A) — the single chokepoint for
+    `/base/system/hp`) to `cap::WRITE_FIELDS` — no dedicated capability, and not a per-band
+    decision either: it derives the whole write-fields branch from the shared band set via
+    `writes_a_content_band` (see the redaction-classifier invariant below). `/source` (the
+    sibling field naming what a document is an instance OF) stays unmapped/immutable —
+    `required_cap_for_path` returns `None` for it, so no write path can ever re-target an
+    existing document at a different template.
+  - `world_of(doc: &Document) -> Option<Uuid>` (`pub(crate)`) — the single chokepoint for
     "which world does this doc scope to" (`Scope::World { world_id } => Some(world_id)`,
     `Scope::Compendium => None`). Two call shapes: (1) a caller that already knows the world it
     scopes to PINS a doc reference by comparing `world_of(&doc)` against that known `world_id` —
@@ -79,12 +81,12 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
   `by_role[Owner]` grants. **State the precedence rule exactly ONCE** — duplicating it via a
   short-circuit in the DB join let an inverted-precedence mutation survive. Full rule, the
   fail-closed list, and the instanced-token exclusion: `shadowcat-codebase-actors-tokens`.
-  **Egress ownership is unified with write ownership (Phase C).** Every egress site resolves
+  **Egress ownership is unified with write ownership.** Every egress site resolves
   `is_owner` through the same `effective_owner`/`effective_owner_via` rule the write path uses —
-  the owner is now an EXPLICIT parameter of `resolve_access`/`resolve_access_world`
-  (`effective_owner: Option<Uuid>`), not read internally from `doc.owner`; the old literal-owner
-  wrapper functions are gone, so a new egress call site must state where its owner comes from or
-  it fails to compile. Three join sources, one per hot-path shape:
+  the owner is an EXPLICIT parameter of `resolve_access`/`resolve_access_world`
+  (`effective_owner: Option<Uuid>`), never read internally from `doc.owner`, and no literal-owner
+  wrapper exists, so a new egress call site must state where its owner comes from or it fails to
+  compile. Three join sources, one per hot-path shape:
   - **WS hot path** (`ws::conn::send_filtered`'s `Event` branch; `http::routes::write_ops`'s
     HTTP-write receive) — `data::permission::filter_command` is a SYNC core over
     `load_update_docs` (Update pre-images, awaited ONCE per event before the sync core runs — no
@@ -153,30 +155,39 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
   absent` for a leaf value). Forking this null-handling across the two languages is the never-fork
   defect class — parity is pinned by matching tests on each side.
 - `data::permission` — the redaction core:
-  - `resolve_access(user, world_role, doc) -> Access` (and `resolve_access_world`) builds the
-    per-connection `Access { caps, all, see_gm_only, is_owner }`.
-  - `effective_role(user, world_role, doc) -> Option<DocRole>` — the shared floor-resolution
-    helper both `resolve_access` and `resolve_access_world` call; `None` means the unconditional
+  - `resolve_access` (and `resolve_access_world`) builds the per-connection `Access { caps, all,
+    see_gm_only, is_owner }`. Both take `effective_owner: Option<Uuid>` as an explicit parameter
+    alongside `user`/`world_role`/`doc` — see the "Egress ownership is unified with write
+    ownership" bullet above for why there is no internal `doc.owner` fallback.
+  - `effective_role` — the shared floor-resolution helper both `resolve_access` and
+    `resolve_access_world` call, taking the SAME `user`/`world_role`/`doc`/`effective_owner`
+    parameters; `None` means the unconditional
     GM/admin short-circuit applies (see `gm_role` invariant below), `Some(role)` means the caller
     must resolve capabilities from that per-document role floor like any other actor.
   - `Access::can_see(v: Visibility)` is the single predicate: `GmOnly => see_gm_only`,
     `OwnerOrGm => see_gm_only || is_owner`, `All => true`.
   - `filter_properties(doc, access)` strips hidden **properties** from an outgoing doc — a
     PROPERTY-visibility gate only (see Hard Invariants: it does NOT decide whole-document
-    withholding). `/system`, `/engine`, and `/name` overrides all **null the field rather than
-    strip the key** (generalized from a `/system`-only special case) — dropping the key
-    would either fail re-deserialization (`system`) or be indistinguishable from a doc that never
-    had a name/engine body, breaking the client's stable envelope shape; nested pointers one level
-    down still strip normally. `/base` gets the same null-not-strip treatment, but its visibility
-    is NOT driven by `property_overrides` at all — see the `base` egress invariant below.
+    withholding). It decides nothing about what a pointer MEANS: every hidden pointer goes through
+    `redaction_target`, whose two outcomes are the two redaction mechanisms. A `Band` result nulls
+    the field in place and never strips the key (that variant's own doc states why: dropping the
+    key would fail re-deserialization for a required field and, for an `Option` field, be
+    indistinguishable from a document that never carried one, breaking the client's stable
+    envelope shape); a `Within` result redacts through `strip_pointer`. The band set itself is
+    stated in exactly one place — see the redaction-classifier invariant below.
+    `/base` takes the whole-band treatment, but its visibility is NOT driven by
+    `property_overrides` at all — see the `base` egress invariant below.
   - `redact_change(change, gm_only)` redacts field-level change events on the broadcast path;
     `collect_hidden` (its companion that builds the `gm_only`/hidden-path list for embedded-depth
     redaction) applies the same unconditional `/base` policy at every embedded depth.
 - `data::search` — `index_content` (full) vs `index_content_public` (redacted):
-  the index is **partitioned by visibility**, not redacted after the fact. Indexes `name ∪ engine
-  ∪ system` (`name` and `engine` are leaf sources alongside `system`, same
-  string-leaf-walk treatment; `index_content_public` needs no structural change — it re-runs
-  `filter_properties` first, and a nulled `/engine`/`/name` band simply contributes nothing).
+  the index is **partitioned by visibility**, not redacted after the fact. `index_content` sweeps
+  the `doc_type` unconditionally, the envelope `name` when present, and — through `collect_leaves`,
+  which recurses objects and arrays — every STRING **and NUMBER** leaf of both the `engine` band
+  and the `system` body; keys, booleans and nulls are excluded. `index_content_public` re-runs
+  `filter_properties` first (a nulled band contributes nothing) and matches on its `Result`: an
+  unclassifiable override makes it write EMPTY public content rather than fail the index write or
+  index unredacted text.
 - `data::repository`/`data::validation` — `Repository` trait (storage seam; SQLite today, Postgres-capable later) +
   structural validation (size caps, field-path validity, `deny_unknown_fields`); `data::validation`
   applies the same `MAX_SYSTEM_BYTES` (256 KiB) cap to `engine` as to `system`, checked
@@ -234,6 +245,32 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
   reason }`) — no new wire frame.
 - The client `wire` module — Zod mirror: `VisibilitySchema = z.enum(["all","gm_only",
   "owner_or_gm"])`, `property_overrides`. ts-rs generates the TS types from the Rust source.
+  Three boundary rules the mirror carries that a plain shape copy would not:
+  - **`WireFieldChange.old`/`new` are DECLARED optional but REQUIRED at runtime, and that
+    mismatch is structural — do not "correct" it in either direction.** `fieldChangeSchemaImpl`
+    `.refine()`s the WHOLE object to reject a frame omitting either key (a per-key schema cannot
+    distinguish "absent" from "present and `undefined`"), because the Rust `FieldChange` carries
+    no `skip_serializing_if` on either value, so a frame lacking one is malformed. The declared
+    type nevertheless stays optional because **Zod v3 infers an object field's declared
+    optionality STRUCTURALLY**: any field whose output type admits `undefined` — which
+    `z.unknown()`'s always does — is inferred optional regardless of what a whole-object
+    `.refine()` enforces, so the declared type cannot be tightened to "required key, unknown
+    value" while the impl still satisfies `z.ZodType<WireFieldChange>`. Tightening the type
+    breaks that annotation; dropping the refine restores the hole. An explicit `null` is valid on
+    both keys — a real pre-image for a new key, and the conventional `new` of a removal.
+  - **`WireCapabilityGrants.by_role` is a ROLE-KEYED PARTIAL map; `by_user` stays open by
+    design.** `capabilityGrantsSchemaImpl` keys `by_role` by `DocRoleSchema`, so a frame naming an
+    unknown role is rejected and adding a `DocRole` variant requires adding it to that schema
+    before any grant can name it; the map is partial because the Rust source may omit any role.
+    `by_user` keys are user ids — genuinely unconstrained — so it remains a string-keyed record,
+    and narrowing it would be wrong.
+  - **`WireSearchHit.snippet`, and the `document` beside it, carry indexed text that a consumer
+    must render as INERT TEXT, never as innerHTML.** The exposed set is everything
+    `index_content` sweeps (see the `data::search` seam above): the `doc_type`, the envelope
+    `name`, and every string and number leaf of `engine` and `system`. `doc_type` is
+    client-supplied on `Create` and no charset validation constrains it anywhere in
+    `data::validation`, so the hostile-input surface includes the envelope, not just the two
+    opaque bodies.
 - The client `scene-docs` module — `ITEM_DOC_TYPE = "item"`, `ItemSystem`, `buildItemDoc`:
   a **client-only doc_type** — the server has NO Rust-side knowledge of `item` and
   requires none, since `doc_type` is an unconstrained wire string and `system` is opaque JSONB the
@@ -309,9 +346,12 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
   load-bearing: `base` is the merge-engine's raw pre-image snapshot of a document's
   `name`/`engine`/`system`/`embedded` bands, which can itself contain content an ordinary
   `GmOnly`/`OwnerOrGm` property override elsewhere on the doc was hiding from this same
-  recipient — leaking the snapshot would bypass that override. Any future change to `base`'s
-  redaction must keep both call sites (whole-doc `filter_properties`, broadcast-delta
-  `collect_hidden`) in sync; they are two independent code paths, not one shared chokepoint.
+  recipient — leaking the snapshot would bypass that override. Be precise about which decision the
+  two paths share: the BAND CLASSIFICATION is shared structurally (both read `redaction_target`,
+  per the classifier invariant below), but `/base`'s unconditional owner-or-GM policy is NOT —
+  `filter_properties` and `collect_hidden` each append `/base` to their own hidden list from their
+  own `can_see(Visibility::OwnerOrGm)` test. That one decision is genuinely duplicated, so any
+  change to `base`'s visibility must land at both call sites.
 - **Tier-2 validates the `system` band's SHAPE only, never values — it EXTENDS invariant 6
   (three-band document shape), it does not replace it.** `engine`-band validation
   (`validate_engine`/`validate_engine_tree`) remains the separate, pre-existing REAL semantic
@@ -333,6 +373,74 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
   `schema_declarations` is informational parity only (lets a client preemptively validate/UX-hint)
   and carries zero enforcement authority; the server-side `apply_intent` load is the only copy
   that matters.
+- **Redaction operates on content bands, never on the structural envelope — and ingress and egress
+  read ONE classifier, never agree by inspection.** `data::permission::REDACTABLE_BANDS: [&str; 4]`
+  (`name`, `engine`, `system`, `base`) is the ONE statement of the band set, and THREE paths derive
+  from it rather than re-spelling it: whole-document egress (`filter_properties`), the change-delta
+  broadcast path (`collect_hidden`) — both via `redaction_target` — and the write-capability rule
+  (`required_cap_for_path`, via `writes_a_content_band`). Adding a fifth band therefore cannot make
+  a path redactable without also making it writable under `cap::WRITE_FIELDS`, and cannot let the
+  delta path diverge from whole-document egress. A second symbol is shared the same way:
+  `band_has_interior`, the leaf rule stating that `name` is a display string with no interior.
+  What is deliberately NOT shared is the residual-segment rule, because the two classify different
+  input domains — `required_cap_for_path` classifies a `FieldChange` path, `redaction_target`
+  classifies a `property_overrides` map key, different fields on different structures behind
+  different validators — so `/system/` is a writable path there and unclassifiable here, and they
+  are not required to agree string-for-string.
+  `redaction_target(pointer) -> Option<RedactionTarget>` returns `Band` (the pointer names a whole
+  band — null the field in place, never strip the key), `Within` (the pointer descends into a band,
+  landing inside untyped `serde_json::Value` or an `Option`, never a required struct field — which
+  is what makes the removal provably non-destructive to deserialization), or `None`
+  (unclassifiable). `None` covers two distinct populations, and the second one bites at authoring
+  time: everything outside the band set — the structural remainder (`id`, `scope`, `doc_type`,
+  `schema_version`, `source`, `owner`, `permissions`, `parent_id`, `embedded`, `created_at`,
+  `updated_at`) — AND any pointer descending into a LEAF band, since `band_has_interior` gives
+  `name` no interior. So `/name` classifies `Band` while `/name/first` classifies `None` and is
+  REJECTED at ingress: an override naming a sub-path of `name` is not authorable at all.
+  - **`Within` is NOT uniformly a pointer strip: an ARRAY ELEMENT is nulled in place.**
+    `strip_pointer` handles an array container by index at BOTH the descent step and the terminal
+    step, because a pointer segment carries no evidence of which container it names
+    (`/system/inventory/0` is an object key for one document and an array index for the next) — so
+    refusing index segments at ingress is undecidable, and skipping them at egress ships the
+    hidden value. The terminal step then differs by container deliberately: an object key is
+    REMOVED (true absence, which is what `Within`'s callers rely on), while an array element is
+    set to `Null` and never removed, because removal renumbers every later element and the
+    recipient's copy would then disagree with the authoritative array about which index holds
+    which value. Same rule `remove_pointer` enforces by refusing a leaf index removal: an array
+    changes length only by whole-array replacement.
+  - **Ingress rejects an unclassifiable `property_overrides` pointer, at all four write paths.**
+    `data::validation::validate_property_overrides` calls `redaction_target` and returns
+    `DataError::BadPath` on `None`, alongside its well-formedness checks. Called from
+    `SqliteRepository::apply_intent`'s Create and Update branches AND
+    `SqliteRepository::apply_command`'s Create and Update branches — `apply_command` needs the gate
+    too, despite being the trusted, capability/schema/size-skipping undo/replay substrate, because
+    this is a structural data-integrity invariant (a redaction pointer must always name something
+    redaction can classify), not an authorization check, and trust level doesn't exempt it. A
+    pointer naming `/permissions`, `/permissions/default`, `/owner`, `/id`, or `/embedded/items/0`
+    is rejected before it is ever stored.
+  - **Egress fails closed on an unclassifiable pointer — withhold, never guess.**
+    `filter_properties(doc, access) -> Result<Document, RedactionError>`. Two redaction-driven
+    failure modes return `Err`, both meaning "this recipient's view cannot be computed": a stored
+    `property_overrides` pointer that `redaction_target` cannot classify on whole-document egress
+    (`filter_properties`, at the document's own overrides or at any embedded depth it recurses
+    through), and the same unclassifiable pointer met on the change-delta path (`collect_hidden`).
+    No write that passes the ingress gate can store such a pointer, so an `Err` here means either
+    stored data the gate never saw or a band added to `Document` without updating the classifier.
+    A THIRD `Err` is defensive rather than redaction-driven and does NOT carry a pointer:
+    `filter_properties`' final re-deserialize of the redacted value back into a `Document` yields
+    `RedactionError { pointer: "<document>" }`, a sentinel. It is unreachable while the
+    classifier's `Within`-lands-in-untyped-or-optional-data guarantee holds, but any caller
+    matching on `RedactionError.pointer` will meet it, so that field must not be assumed to be a
+    JSON pointer. The one `expect` remaining in the function is the SERIALIZE of an owned
+    `Document` into a `Value` — infallible by construction, and not a redaction outcome; it is not
+    an assertion about redaction and removing it proves nothing.
+    Every caller fails CLOSED on `Err`, never open: `filter_command`'s broadcast path
+    drops delivery to that one recipient; `list_documents`/`search` omit the offending item from the
+    result rather than erroring the whole call; the single-document read (`get_document`) errors the
+    request; the search-index builder (`index_content_public`) writes empty public content for that
+    document rather than failing the write. Same posture as fog's fail-closed secrecy gate
+    [[fog-is-the-secrecy-gate-fail-closed]]: a gate that meets an input it cannot classify
+    withholds, it does not guess.
 - **Path-prefix authz covers ancestor (subtree-replacing) writes AND whole-doc Create**, not just
   descendant field updates [[path-prefix-authz-covers-ancestor-and-create]].
 - **The singleton create-gate must close BOTH cross-call and intra-batch duplicate-`Create` races,

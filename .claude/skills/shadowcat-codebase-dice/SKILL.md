@@ -56,7 +56,7 @@ on.
   `value: None` means the face has no numeric meaning, only symbols. `DieKind::validate() ->
   Result<(), DieKindError>` rejects `Faces{faces: []}` (`DieKindError::EmptyFaces`) — called in
   production by `chat::rolls::validate_pre_roll` on every parsed group.
-  `recalc::RecalcOp::ReplaceDie` onto a `Faces` die is bounds-checked in `dice::recalc` (Phase A): an
+  `recalc::RecalcOp::ReplaceDie` onto a `Faces` die is bounds-checked in `dice::recalc`: an
   out-of-range `natural` (negative or `>= faces.len()`) is silently ignored rather than written,
   matching an unknown `id`'s existing no-op semantics — closes the index-out-of-bounds panic
   surface `face_value_and_symbols` would otherwise hit. `DieKind::is_ordered()`: `Numeric` always
@@ -432,9 +432,9 @@ on.
   empty-`faces` die can no longer arrive via chat (notation still can't construct `Faces`
   anyway). The crate itself remains unvalidated by design — any future non-chat caller that
   hand-builds a `RollSpec` must run the same validation. `ReplaceDie`-onto-`Faces` is separately
-  bounds-checked inside `dice::recalc` itself (Phase A, see the `dice::spec` entry above), so it
+  bounds-checked inside `dice::recalc` itself (see the `dice::spec` entry above), so it
   needed no wire-boundary gate.
-- **`validate_tiers` (`chat::rolls`, Phase A) guards `SuccessConfig`/`TotalConfig.tiers`
+- **`validate_tiers` (`chat::rolls`) guards `SuccessConfig`/`TotalConfig.tiers`
   uniqueness at the wire boundary**, ahead of any untrusted construction path existing —
   `classify::classify`'s `max_by_key`/`min_by_key` tie on a duplicate `margin_offset` is
   caller-order-dependent (documented on `dice::eval::classify`), so a malformed ladder with a

@@ -14,6 +14,8 @@ import {
   DocumentSchema,
   SchemaTypeSchema,
   SchemaDeclarationSchema,
+  FieldChangeSchema,
+  CapabilityGrantsSchema,
   actorOwnerRefSchemaImpl,
   audienceSchemaImpl,
   capabilityGrantsSchemaImpl,
@@ -526,6 +528,65 @@ describe("DocumentSchema — envelope name + engine band", () => {
   it("parses a document with base absent or null (unstamped)", () => {
     expect(DocumentSchema.parse({ ...base, name: null, engine: null }).base).toBeUndefined();
     expect(DocumentSchema.parse({ ...base, name: null, engine: null, base: null }).base).toBeNull();
+  });
+});
+
+describe("FieldChangeSchema", () => {
+  it("rejects a frame that omits the pre-image key", () => {
+    expect(FieldChangeSchema.safeParse({ path: "/system/hp", new: 3 }).success).toBe(false);
+  });
+
+  it("rejects a frame that omits the new-value key", () => {
+    expect(FieldChangeSchema.safeParse({ path: "/system/hp", old: 1 }).success).toBe(false);
+  });
+
+  it("rejects a frame carrying only a path", () => {
+    expect(FieldChangeSchema.safeParse({ path: "/system/hp" }).success).toBe(false);
+  });
+
+  it("accepts an explicit null pre-image, which is a real value for a new key", () => {
+    expect(
+      FieldChangeSchema.safeParse({ path: "/system/hp", old: null, new: 3 }).success,
+    ).toBe(true);
+  });
+
+  it("accepts a removal, where new is conventionally null", () => {
+    expect(
+      FieldChangeSchema.safeParse({ path: "/system/hp", old: 1, new: null, remove: true })
+        .success,
+    ).toBe(true);
+  });
+});
+
+describe("CapabilityGrantsSchema", () => {
+  it("accepts the three document roles as grant keys", () => {
+    expect(
+      CapabilityGrantsSchema.safeParse({
+        by_role: { owner: ["core:manage_embedded"], observer: [], none: [] },
+        by_user: {},
+      }).success,
+    ).toBe(true);
+  });
+
+  it("accepts a partial role map, matching a Rust map that omits roles", () => {
+    expect(
+      CapabilityGrantsSchema.safeParse({ by_role: { owner: [] }, by_user: {} }).success,
+    ).toBe(true);
+  });
+
+  it("rejects an unknown role key", () => {
+    expect(
+      CapabilityGrantsSchema.safeParse({ by_role: { admin: [] }, by_user: {} }).success,
+    ).toBe(false);
+  });
+
+  it("still accepts an arbitrary user id as a by_user key", () => {
+    expect(
+      CapabilityGrantsSchema.safeParse({
+        by_role: {},
+        by_user: { "00000000-0000-0000-0000-000000000001": ["core:delete"] },
+      }).success,
+    ).toBe(true);
   });
 });
 

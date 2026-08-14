@@ -22,16 +22,54 @@ Currently open, confirmed-real defects. Deferrals belong in `TODO.md`, not here.
   - **Reachability/impact:** no data loss, no authz effect; degrades accessibility only. Both
     call sites are GM-reachable, and `openDocument` is reachable by any role.
 
+- **`filter_command`'s `Update` arm and `collect_hidden` resolve replay visibility against a
+  document's CURRENT permission set, not the policy in force at the historical seq being
+  replayed.** `collect_hidden` derives the hidden-pointer set from
+  `cur.permissions.property_overrides`, with no knowledge of what the override was when a given
+  historical `FieldChange` was committed, and `redact_change` drops a change only if its path is
+  CURRENTLY hidden. So if a pointer was `GmOnly` while its value changed several times, and a GM
+  later makes it visible, every historical `FieldChange` for that pointer — including intermediate
+  values never intended for release — replays unredacted once any recipient gains visibility of
+  the current value. Reading the current value as public does not make its whole secret evolution
+  public; those are different disclosures. The reverse direction (visible → later hidden) is
+  correctly safe: those changes are dropped against current policy, which is over-redaction only.
+  - **The same shape recurs for the `OwnerOrGm` tier under ownership reassignment:** a
+    newly-assigned owner's replay discloses the previous owner's historical `OwnerOrGm` values.
+  - **Reachability:** `world_events` has no compaction or expiry. Its rows outlive even the user
+    who authored them: `world_events.author_id` is `ON DELETE SET NULL`, and
+    `SqliteRepository::delete_user` never deletes event rows, so a deleted user's authored events
+    persist with the author nulled. Only world deletion removes them, via
+    `SqliteRepository::delete_world`'s `world_id` FK cascade. `ResyncRequest{from_seq}` is
+    entirely client-supplied with no lower
+    bound (`Room::resync_range` → `Repository::events_since` queries `seq > from_seq - 1`), so any
+    client can pull a document's entire history at any time.
+  - **Fix shape DECIDED (ruled, not yet built): snapshot the relevant visibility into the
+    event/command at commit time**, so replay redacts against the policy in force at that sequence
+    rather than against today's policy — the redaction decision is made once, at commit, and
+    stored with the event, rather than re-derived on every replay: the same shape as any two paths
+    required to agree deriving from one, instead of separately re-verifying agreement. Two other
+    shapes were considered and rejected: an
+    append-only "ever hidden" set permanently over-redacts history once a pointer is ever
+    restricted; current-state snapshots for non-GM resync sidestep the problem rather than solve
+    it, and change resync semantics for every document carrying an override.
+  - **Scheduling:** its own phase — its own branch, its own brainstorm → spec → plan cycle,
+    scheduled immediately after this phase merges and before the next. The next phase does not
+    depend on it, but the fix changes the command representation, the event log, and resync, which
+    is foundational enough that no later phase should be built on the current shape.
+
 - **A stale `Update` from before a document's deletion is redacted against a NEW document that
   later reuses the same id, not dropped as the closing analysis assumed.** Document ids are
   client-supplied: `envelope` accepts an optional explicit id and falls back to
-  `crypto.randomUUID()`, and both server-side authoritative write loops
-  (`Operation::Create`'s arms in `SqliteRepository::apply_command` and
-  `SqliteRepository::apply_intent`) accept it verbatim — their validation covers scope, system
-  size, property overrides, engine tree, system schema, self-parent and capabilities, never the
-  id. `SqliteRepository::upsert_document` inserts with `ON CONFLICT(id) DO UPDATE`, so nothing on
-  the Create path checks whether an id was ever used before, and `SqliteRepository::delete_document_tx`
-  performs a genuine hard delete, freeing the id for reuse.
+  `crypto.randomUUID()`. The two server-side authoritative write loops treat a reused id
+  differently, and neither stops reuse: `SqliteRepository::apply_command`'s `Operation::Create`
+  arm calls `SqliteRepository::upsert_document` with `ON CONFLICT(id) DO UPDATE` and performs no
+  existence check at all — genuinely id-blind. `SqliteRepository::apply_intent`'s
+  `Operation::Create` arm does check first — it loads the document by id inside the transaction
+  and rejects a currently-live duplicate as a conflict ("Create is non-clobbering: an existing id
+  is a conflict, not a silent overwrite (unlike upsert in apply_command)") — but that check only
+  sees PRESENT table state: a hard-deleted id is absent from it, so reuse after
+  `SqliteRepository::delete_document_tx`'s genuine hard delete passes the check exactly as a
+  never-used id would.
   `permission::load_update_docs` builds the `current` map `filter_command` consults via a
   present-tense `get_document` lookup with no sequence parameter. Its call site,
   `ws::conn::send_filtered`'s Event branch, serves both live broadcast and historical replay
@@ -56,84 +94,6 @@ Currently open, confirmed-real defects. Deferrals belong in `TODO.md`, not here.
     already-ruled remediation for that defect (snapshotting the relevant state into the event or
     command at commit time) is expected to close this one too; fixed together in the same phase
     rather than forked across phases.
-
-- **`property_overrides` keys are not restricted to the four egress-special-cased fields; a
-  self-targeting `/permissions` key silently substitutes the fail-closed default permissions
-  object for a redacted viewer.** `validate_property_overrides`
-  (gated on both Create and Update ingress inside `SqliteRepository::apply_intent`) checks only
-  that a key is a well-formed non-empty JSON pointer (starts with `/`, no trailing `/`) — nothing
-  restricts which top-level `Document` field it names. `filter_properties` special-cases only
-  `/system`, `/engine`, `/name`, `/base` (nulled in place); any other hidden `property_overrides`
-  pointer — including one naming `/permissions` or `/permissions/...` itself —
-  falls through to the generic `strip_pointer`, which
-  does a plain `Map::remove` on whatever top-level key the pointer names. For a single-token
-  `/permissions` pointer, this removes the entire `permissions` object from the serialized document
-  before `serde_json::from_value` re-deserializes it. Because `Document.permissions` carries
-  `#[serde(default)]` and `PermissionSet` derives
-  `Default` with `default: DocRole::None` (via `DocRole`'s own `Default` impl —
-  fail-closed), re-deserialization does not panic; it silently substitutes the fail-closed default
-  `PermissionSet` for the real one.
-  - **A NESTED `/permissions/...` key is worse: it PANICS the request.** `PermissionSet`'s `default`,
-    `users` and `property_overrides` fields carry **no** `#[serde(default)]` — only `capabilities`
-    and `gm_role` do. So an override naming
-    `/permissions/default`, `/permissions/users` or `/permissions/property_overrides` strips a
-    REQUIRED field while the enclosing `permissions` object survives, leaving a value that cannot
-    deserialize as `PermissionSet` — and the tail of `filter_properties` is
-    `serde_json::from_value(whole).expect("filtered document deserializes")`. The `expect` is not a
-    cold-path assertion:
-    `filter_properties` runs per-recipient on the WS broadcast egress path (`filter_command`),
-    on FTS search hits (`SqliteRepository::search`), and on the HTTP get-document routes
-    (`list_documents` and `get_document`). Any recipient who cannot see the offending tier
-    crashes the request handling their read — i.e. a denial-of-service against every such reader of
-    that document, authorable by one holder of `cap::EDIT_PERMISSIONS`.
-  - **Reachability:** requires `cap::EDIT_PERMISSIONS` on the document's `doc_type` — every GM has
-    this; a non-GM could hold it only via an explicit `by_role`/`users` capability grant. No UI path
-    in this codebase constructs a `property_overrides` key outside `/system`, `/engine`, `/name`,
-    `/base` today; a raw protocol Update/Create message is not otherwise blocked from doing so.
-  - **Effect:** a viewer who cannot see the offending override tier receives a document whose
-    `permissions` field is the fail-closed default rather than the real one — a data-integrity
-    defect (e.g. a client computing `isHidden`-style checks from the received `permissions` would
-    misreport). **Not an authorization bypass**: write authorization always re-resolves server-side
-    against the stored row, never against a redacted client-facing copy, and the substituted default
-    is strictly more restrictive than the real value, never less.
-  - **Fix shape DECIDED (user-directed, 2026-08-01): redaction operates on content bands, never on
-    the envelope.** `Document`'s fields split into four CONTENT bands — `name`, `engine`, `system`,
-    `base`, already the exact set `filter_properties` special-cases
-    and the exact set `required_cap_for_path` maps to
-    `cap::WRITE_FIELDS` — and the STRUCTURAL remainder (`id`, `scope`, `doc_type`,
-    `schema_version`, `source`, `owner`, `permissions`, `parent_id`, `embedded`, `created_at`,
-    `updated_at`), which nothing may redact. Three parts:
-    1. **One shared classifier** in the `data::permission` module — `REDACTABLE_BANDS: [&str; 4]` plus
-       `redaction_target(pointer) -> Option<RedactionTarget>` returning `Band` (null in place —
-       today's four-arm match) or `Within` (`strip_pointer`, now provably landing inside an
-       untyped `serde_json::Value` or an `Option`, never a required field). Ingress and egress
-       currently duplicate the judgement of what a pointer means; this panic is what that fork
-       looks like when it drifts, so the two paths must read ONE symbol, not agree by inspection.
-       `collect_hidden` uses it too, so the change-delta path cannot diverge from whole-document
-       egress.
-    2. **Ingress rejects an unclassifiable pointer.** `validate_property_overrides`
-       keeps its well-formedness checks and adds the
-       classifier, at both existing call sites in `SqliteRepository::apply_intent` (Create and
-       Update). `/permissions`, `/permissions/default`, `/owner`, `/id`,
-       `/embedded/items/0` all become `DataError::BadPath`.
-    3. **`filter_properties` returns `Result<Document, RedactionError>`**, deleting both
-       `.expect()`s. Callers fail CLOSED: `filter_command` drops delivery to that recipient;
-       `get_document`/`search` error rather than ship a half-redacted document. The whitelist
-       alone closes the reachable bug; the `Result` covers what a whitelist structurally cannot —
-       a band added to `Document` without updating the classifier, or a future nested pointer
-       landing in a required field. A secrecy gate that meets an input it cannot classify must
-       withhold, never panic and never guess (same posture as the fog invariant).
-    **No migration and no compatibility shim**: no worlds or users exist yet, and every
-    `property_overrides` key constructed anywhere in the repo — server, client, and tests — is
-    already inside the whitelist (`/name`, `/engine`, `/engine/vision`, `/system/*`; verified by
-    repo-wide grep 2026-08-01).
-    **Tests required:** per-pointer ingress rejection for each envelope field; acceptance for the
-    four bands and their nested forms; a regression test that the exact `/permissions/default`
-    input returns `BadPath` instead of panicking; and a mutation check that removing a band from
-    `REDACTABLE_BANDS` fails the suite — a parity test that passes because both paths are wrong
-    the same way proves nothing.
-    **Scheduling:** own branch, after Sweep 11 merges — a server fix does not belong batched into
-    a docs sweep.
 
 - **`makeTemplateTool`'s near-zero-drag fallback effectively never fires in a snapping scene, so a
   plain click places an arbitrarily-sized template instead of the intended one-cell default.**
@@ -187,7 +147,7 @@ Currently open, confirmed-real defects. Deferrals belong in `TODO.md`, not here.
   - **Fix shape:** make the two `sizeDir` call sites agree on a frame — either snap the pointer
     point alongside the anchor, or compare the raw pointer against the raw pointer-down point.
     Then add the extent guard its three siblings already carry. Belongs on the runtime follow-up
-    branch with the `property_overrides` fix above; found by the Sweep 11 whole-branch review,
+    branch; found by the Sweep 11 whole-branch review,
     which is comment-only and cannot carry a behavior change.
 
 - **A WS connection that misses an `AssetChanged{replaced}` frame keeps a stale image forever, with
@@ -270,6 +230,6 @@ Currently open, confirmed-real defects. Deferrals belong in `TODO.md`, not here.
   - **Fix shape:** change the `old` argument to `chatsys.hyperlinks ?? null`. The
     `checked={chatsys.hyperlinks ?? false}` display expression is correct and stays — it
     mirrors `ChatContentPolicy::hyperlinks()`'s `unwrap_or(false)` on the read path. Add a test
-    seeding `hyperlinks: null`. Runtime change; belongs on the follow-up branch with
-    `property_overrides` and `makeTemplateTool`. Found during Sweep 12 Task 6 by the dispatcher and
+    seeding `hyperlinks: null`. Runtime change; belongs on the follow-up branch with the
+    `makeTemplateTool` fix above. Found during Sweep 12 Task 6 by the dispatcher and
     independently confirmed by both reviewers, from writing the doc comment that sits above it.

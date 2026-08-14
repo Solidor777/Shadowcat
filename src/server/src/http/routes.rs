@@ -970,9 +970,16 @@ pub async fn list_documents(
             let owner = crate::data::permission::effective_owner_via(&d, &|id| actors.get(id));
             let access =
                 resolve_access_world(ctx.user_id, ctx.world_role, &d, &world_grants, owner);
-            access
-                .has(cap::READ)
-                .then(|| filter_properties(&d, &access))
+            if !access.has(cap::READ) {
+                return None;
+            }
+            match filter_properties(&d, &access) {
+                Ok(filtered) => Some(filtered),
+                Err(e) => {
+                    tracing::warn!(doc_id = %d.id, error = %e, "omitting document from list");
+                    None
+                }
+            }
         })
         .collect();
     Ok(Json(visible))
@@ -1023,7 +1030,11 @@ pub async fn get_document(
     if !access.has(cap::READ) {
         return Err(AppError::NotFound);
     }
-    Ok(Json(filter_properties(&doc, &access)))
+    let filtered = filter_properties(&doc, &access).map_err(|e| {
+        tracing::warn!(doc_id = %doc.id, error = %e, "refusing to serve a document redaction cannot classify");
+        AppError::Internal
+    })?;
+    Ok(Json(filtered))
 }
 
 /// `PATCH /api/documents/{id}` body.

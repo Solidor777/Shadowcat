@@ -102,7 +102,7 @@ guarded, per `validate_url` below).
   deliberately UNCONDITIONAL because `kind: Roll` + `audience: Whisper` IS reachable via the
   frame `audience` field (no `/w` token ⇒ `parse_command` still runs). Edits never call
   `scan_body` — `[[…]]` in an edit stays literal text.
-- **Attribution authz (world-pinned since Phase A):** `handle_send_message`
+- **Attribution authz (world-pinned):** `handle_send_message`
   fail-closed-validates `actor_owner` BEFORE `build_message_doc` — an `Actor` ref must resolve to
   an existing `doc_type=="actor"` doc, IN THE SENDING ROOM'S WORLD
   (`crate::data::document::world_of(d) == Some(room.world_id)`), owned by the sender (GM: any
@@ -178,11 +178,12 @@ with zero message-specific plumbing in any of those subsystems.
     mirroring send's literal-body semantics for a whisper — a non-whisper edit still rejects `/w`);
     **CLEARED (`None`) by
     the delete tombstone alongside `content`** — a retained source would leak deleted content.
-    EXPOSURE NOTE: like every `system` string leaf (incl. `channel`), `source` is swept into
-    the content-agnostic FTS index and can surface in `SearchHit.snippet`/`.document` — any
-    search-UI consumer must treat message snippet/`source` strings as inert text, never
-    innerHTML (documented at the field — a high-volume instance of a pre-existing pattern, not a
-    new leak class).
+    EXPOSURE NOTE: like everything `index_content` sweeps — the `doc_type`, the envelope `name`,
+    and every string and number leaf of `engine` (the band `source` and `channel` both live in)
+    and `system` — `source` is swept into the content-agnostic FTS index and can surface in
+    `SearchHit.snippet`/`.document` — any search-UI consumer must treat message snippet/`source`
+    strings as inert text, never innerHTML (documented at the field — a high-volume instance of
+    that pattern, not a new leak class).
   - `build_message_doc(...) -> Document` — constructs the whole `Document`: `owner = Some(user)`;
     `audience` maps onto `PermissionSet{default, gm_role, users}` (see
     `shadowcat-codebase-documents-permissions` for what `gm_role` does at `resolve_access` time):
@@ -443,8 +444,8 @@ with zero message-specific plumbing in any of those subsystems.
   change). SSRF docs state BOTH guard arms (literal-IP in `validate_url`, domain resolution in
   `GuardedResolver`) — keep the arm citations true when touching the preview pipeline.
 - **The three chat frames carry `request_id`, NOT `intent_id`, and correlate to `ChatError`, not
-  `Reject`.** A rejected send/edit/delete is now surfaced to the sender via a `request_id`-
-  correlated `ServerMsg::ChatError` (sender-only, never broadcast) — no longer log-only. Client
+  `Reject`.** A rejected send/edit/delete is surfaced to the sender via a `request_id`-
+  correlated `ServerMsg::ChatError` (sender-only, never broadcast). Client
   side: `WsClient.sendChatMessage`/`editChatMessage`/`deleteChatMessage` return `Promise<void>`
   tracked in a `chatPending` map. Chat correlation is ASYMMETRIC: only a rejection replies, so the
   promise RESOLVES on a `CHAT_ERROR_WINDOW_MS` (15s) timeout (success-assumed) and REJECTS on a
@@ -457,13 +458,13 @@ with zero message-specific plumbing in any of those subsystems.
   existence/internal-class (`ActorNotSpeakable`/`Forbidden`/`NotFound`/`Data`) return a FIXED
   generic string that ignores the inner value. `NotFound`==`Forbidden` (existence-oracle close);
   `Data(_)` never echoes the inner `DataError`. Adding a variant means classifying it here.
-- **`Segment` now has `Html` alongside `Text`.** The assumption that `content` is always
-  literal, inert text no longer holds — `sanitize()` produces `Segment::Html{sanitized_html}`
+- **`Segment` has two variants, `Text` and `Html`; content is not always literal, inert text.**
+  `sanitize()` produces `Segment::Html{sanitized_html}`
   whenever the world's `chat-settings` policy has `markdown` or `html` enabled, and the client is
   expected to render that variant via `innerHTML` (it is safe by construction ONLY because it
   passed through `ammonia`; never innerHTML-render a `Text` segment or a `Html` segment your code
   produced by any path other than `chat::sanitize`).
-- **The Update blanket-rejection is no longer absolute — it is conditional on `WriteOrigin`.** Any
+- **The Update blanket-rejection is conditional on `WriteOrigin`, not absolute.** Any
   code that reasons about `apply_intent`'s message-Update behavior must account for the
   `WriteOrigin::ServerMessageRevision` exemption (see Hard Invariants); treating the rejection as
   unconditional will misdiagnose why an edit/delete succeeds.
@@ -494,8 +495,8 @@ Three independently replaceable modules (UI-is-modules; swap any one without the
 
 - **`@shadowcat/module-chat`** (the host) — contributes the sidebar tab
   (order 0 = the default tab; `settings` uses order 6, keeping 0 unique) and DECLARES
-  the singleton surfaces `shadowcat.surface:chat.composer` / `chat.message`. **Unread badge
-  (Phase-1 cleanup):** the chat tab is dockview-rendered imperatively via `PanelTabRenderer`, not a
+  the singleton surfaces `shadowcat.surface:chat.composer` / `chat.message`. **Unread badge:**
+  the chat tab is dockview-rendered imperatively via `PanelTabRenderer`, not a
   Svelte component, so the badge is a new `PanelBadge` subscribe/get LIVE-BINDING seam on
   `PanelMeta` (a plain static count field would go stale, since `DockviewEngine.apply()` reassigns
   the whole `#meta` map to a fresh `Map` on every rebuild while `PanelMeta` object references
@@ -538,8 +539,7 @@ Three independently replaceable modules (UI-is-modules; swap any one without the
   (`/`-commands ride verbatim — the server parses); the "Speak as" picker sends
   `actor_owner` `Actor` refs, server-ownership-validated at ingest (see Dice wire above).
 - **`@shadowcat/module-chat-card`** — fail-closed render (`parseMessageEngine` null ⇒ nothing).
-  **`RollTooltip` (Phase-1 cleanup):** an accessible focus/hover-triggered popover
-  replacing the earlier native `title` tooltip on a roll segment, showing the full
+  **`RollTooltip`:** an accessible focus/hover-triggered popover on a roll segment, showing the full
   `outcome.records[]` table with dropped dice distinguished. Popover `id` is derived per-instance
   (`$props.id()`, the `LauncherMenu` convention) — never hardcoded, since a message can
   contain multiple inline rolls and many `MessageCard`s render simultaneously in the chat log.

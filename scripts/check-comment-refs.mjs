@@ -378,7 +378,7 @@ const ACKNOWLEDGED = [
     re: /\b[Ss]teps?[ -]?\d+[a-z]?(?:-\d+)?\b|\bB[0-3]\b/,
   },
   {
-    name: "the two-phase validate-then-commit structural label reused across subsystem skills",
+    name: "the two-phase validate-then-commit structural label naming apply_intent's Phase 1 validate / Phase 2 insert split",
     re: /\bPhase[ -]?\d+\b/,
   },
   {

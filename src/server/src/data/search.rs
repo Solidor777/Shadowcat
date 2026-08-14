@@ -113,7 +113,16 @@ pub fn index_content_public(doc: &Document) -> String {
         see_gm_only: false,
         is_owner: false,
     };
-    index_content(&crate::data::permission::filter_properties(doc, &non_gm))
+    // This is a write-path call (the index build): it must never fail the write,
+    // and must never index unredacted text, so an unclassifiable override falls
+    // back to empty public content rather than propagating the error.
+    match crate::data::permission::filter_properties(doc, &non_gm) {
+        Ok(redacted) => index_content(&redacted),
+        Err(e) => {
+            tracing::warn!(doc_id = %doc.id, error = %e, "indexing empty public content");
+            String::new()
+        }
+    }
 }
 
 /// Append every string and number leaf of `value` (recursing objects/arrays)

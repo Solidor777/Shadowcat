@@ -1902,6 +1902,10 @@ impl Repository for SqliteRepository {
                 Operation::Create { doc } => {
                     check_command_scope(doc, sequenced.world_id)?;
                     let mut doc = doc.clone();
+                    // Same band-classification gate as apply_intent: no stored override
+                    // can name a pointer redaction cannot classify (data integrity, not
+                    // authz — see the /engine gate below for the same rationale).
+                    crate::data::validation::validate_property_overrides(&doc)?;
                     crate::data::validation::validate_engine_tree(&mut doc)?;
                     Self::upsert_document(&mut tx, &doc, seq).await?;
                     normalized_ops.push(Operation::Create { doc });
@@ -1935,6 +1939,10 @@ impl Repository for SqliteRepository {
                         ));
                     }
                     check_command_scope(&doc, sequenced.world_id)?;
+                    // Same band-classification gate as apply_intent: no
+                    // stored override can name a pointer redaction cannot
+                    // classify (data integrity, not authz -- see below).
+                    crate::data::validation::validate_property_overrides(&doc)?;
                     // Same /engine gate as apply_intent (the trusted
                     // substrate skips capability/schema/size checks by
                     // design, but the engine band's normalize-then-store
@@ -2785,8 +2793,15 @@ impl Repository for SqliteRepository {
                 if !access.has(cap::READ) {
                     continue;
                 }
+                let document = match crate::data::permission::filter_properties(&doc, &access) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        tracing::warn!(doc_id = %doc.id, error = %e, "omitting search hit");
+                        continue;
+                    }
+                };
                 hits.push(SearchHit {
-                    document: crate::data::permission::filter_properties(&doc, &access),
+                    document,
                     score: row.get("score"),
                     snippet: row.get("snippet"),
                 });
@@ -5242,6 +5257,80 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, DataError::BadEngine(_)));
+    }
+
+    #[tokio::test]
+    async fn apply_command_create_with_envelope_naming_override_is_rejected() {
+        use crate::data::document::{DocRole, PermissionSet, Scope, Visibility};
+
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let mut perms = PermissionSet::default();
+        perms.users.insert(gm, DocRole::Owner);
+        perms
+            .property_overrides
+            .insert("/permissions".into(), Visibility::GmOnly);
+        let mut d = tests_doc(perms, serde_json::json!({}));
+        d.scope = Scope::World { world_id: w.id };
+        let err = r
+            .apply_command(UnsequencedCommand {
+                world_id: w.id,
+                author: gm,
+                ts: 1,
+                ops: vec![Operation::Create { doc: d }],
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DataError::BadPath(_)));
+    }
+
+    #[tokio::test]
+    async fn apply_command_update_with_envelope_naming_override_is_rejected() {
+        use crate::data::command::FieldChange;
+        use crate::data::document::{DocRole, PermissionSet, Scope};
+
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let mut perms = PermissionSet::default();
+        perms.users.insert(gm, DocRole::Owner);
+        let mut d = tests_doc(perms, serde_json::json!({}));
+        d.scope = Scope::World { world_id: w.id };
+        let doc_id = d.id;
+        r.apply_command(UnsequencedCommand {
+            world_id: w.id,
+            author: gm,
+            ts: 1,
+            ops: vec![Operation::Create { doc: d }],
+        })
+        .await
+        .unwrap();
+
+        let err = r
+            .apply_command(UnsequencedCommand {
+                world_id: w.id,
+                author: gm,
+                ts: 2,
+                ops: vec![Operation::Update {
+                    doc_id,
+                    changes: vec![FieldChange {
+                        remove: false,
+                        path: "/permissions/property_overrides".into(),
+                        old: serde_json::json!({}),
+                        new: serde_json::json!({ "/permissions": "gm_only" }),
+                    }],
+                }],
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DataError::BadPath(_)));
     }
 
     #[tokio::test]

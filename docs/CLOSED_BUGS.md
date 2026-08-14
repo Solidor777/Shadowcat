@@ -3,6 +3,32 @@
 Confirmed-real defects that have since been fixed, kept for provenance. New fixes append a new
 `##` section (or bullet under an existing one); do not delete resolved entries.
 
+## Server / data — unrestricted `property_overrides` pointer substituted or panicked the envelope
+
+- [Critical, FIXED] A `property_overrides` pointer was unrestricted to the four content bands the
+  egress path special-cased, so a self-targeting `/permissions` pointer silently substituted the
+  fail-closed default `PermissionSet` for a redacted viewer, and a nested `/permissions/...`
+  pointer stripped a required field and panicked the redacting request — a denial of service
+  against every reader of that document, reachable by any holder of `cap::EDIT_PERMISSIONS`.
+  Fixed by making redaction operate on content bands, never the structural envelope, through one
+  shared classifier: `REDACTABLE_BANDS` names the four redactable bands, and `redaction_target`
+  maps a pointer to `RedactionTarget::Band` (null in place), `RedactionTarget::Within` (pointer
+  strip, now provably landing inside untyped or optional data), or `None`. Ingress
+  (`validate_property_overrides`, enforced at all four write paths — `apply_intent`'s Create and
+  Update, `apply_command`'s Create and Update) rejects an unclassifiable pointer as `BadPath`
+  before it is ever stored. Egress (`filter_properties`) now returns `Result<Document,
+  RedactionError>`; the single panicking assertion this bug tripped — the re-deserialize of the
+  redacted value back into a `Document` — is gone, while the function's other `.expect()`, the
+  serialize of an owned document into a `Value`, is infallible by construction, is not a redaction
+  outcome, and stays. Every caller fails closed
+  on `Err` — broadcast drops delivery to that recipient, `list_documents`/`search` omit the item,
+  the single-document read errors, and the search-index builder writes empty public content rather
+  than failing the write. `collect_hidden` reads the same classifier, so the change-delta path
+  cannot diverge from whole-document egress. Regression coverage: per-pointer ingress rejection for
+  every structural envelope field, acceptance for the four bands and their nested forms, a
+  regression test pinning the exact nested-permissions input to `RedactionError` instead of a
+  panic, and a mutation check that removing a band from `REDACTABLE_BANDS` fails the suite.
+
 ## Client / render-layer sibling divergence on non-numeric coordinates (2026-07-31 docs sweep 8)
 
 - [Render] `drawing-view.ts` and `template-view.ts`'s `toSpec` accepted non-numeric coordinates

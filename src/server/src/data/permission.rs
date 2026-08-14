@@ -167,6 +167,45 @@ pub async fn load_update_docs(
     out
 }
 
+/// The four CONTENT bands of a `Document`. Redaction operates on these and never on
+/// the structural envelope (`id`, `scope`, `doc_type`, `schema_version`, `source`,
+/// `owner`, `permissions`, `parent_id`, `embedded`, `created_at`, `updated_at`), whose
+/// fields are either required or carry access-control meaning. Exactly the set
+/// `required_cap_for_path` maps to `cap::WRITE_FIELDS` — which reads THIS array rather
+/// than re-spelling it, so the writable set and the redactable set cannot drift apart.
+pub const REDACTABLE_BANDS: [&str; 4] = ["name", "engine", "system", "base"];
+
+/// Whether a content band is a CONTAINER, i.e. has an interior a JSON pointer can descend
+/// into. `name` is a display string — a leaf — so `/name/...` names nothing at all. Both
+/// the write-capability rule (`required_cap_for_path`) and the egress classifier
+/// (`redaction_target`) read this one statement of the rule; each then applies its own
+/// boundary handling to the residual segment, which is where the two legitimately differ.
+fn band_has_interior(band: &str) -> bool {
+    band != "name"
+}
+
+/// Whether `path` writes a content band whole, or writes into one.
+///
+/// Derived from `REDACTABLE_BANDS`: the band SET is stated once, so adding a fifth band
+/// cannot make a path redactable without also making it writable under `cap::WRITE_FIELDS`.
+/// Only the set and the leaf rule are shared with `redaction_target`; the residual-segment
+/// rule is not, and must not be — an empty residual (`/system/`) is a writable path here and
+/// an unclassifiable override key there, because a `FieldChange` path and a
+/// `property_overrides` key are different fields on different structures with different
+/// validators.
+fn writes_a_content_band(path: &str) -> bool {
+    let Some(rest) = path.strip_prefix('/') else {
+        return false;
+    };
+    REDACTABLE_BANDS.iter().any(|band| {
+        rest == *band
+            || (band_has_interior(band)
+                && rest
+                    .strip_prefix(*band)
+                    .is_some_and(|tail| tail.starts_with('/')))
+    })
+}
+
 /// The capability required to write a document field at `path`, or `None` when
 /// the path targets an immutable envelope field (not patchable via `Update`).
 /// # Examples
@@ -179,16 +218,7 @@ pub async fn load_update_docs(
 /// assert_eq!(required_cap_for_path("/source"), None); // immutable: no cap reaches it
 /// ```
 pub fn required_cap_for_path(path: &str) -> Option<&'static str> {
-    // `/name` is a leaf (a display string, not a container): `/name/...`
-    // does NOT match — there is no sub-path to write.
-    if path == "/system"
-        || path.starts_with("/system/")
-        || path == "/engine"
-        || path.starts_with("/engine/")
-        || path == "/name"
-        || path == "/base"
-        || path.starts_with("/base/")
-    {
+    if writes_a_content_band(path) {
         Some(cap::WRITE_FIELDS)
     } else if path == "/embedded" || path.starts_with("/embedded/") {
         Some(cap::MANAGE_EMBEDDED)
@@ -205,6 +235,70 @@ pub fn required_cap_for_path(path: &str) -> Option<&'static str> {
     } else {
         None
     }
+}
+
+/// What a `property_overrides` pointer targets, and therefore how egress removes it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RedactionTarget {
+    /// A whole band. Nulled in place: dropping the key would fail re-deserialization
+    /// for a required field, and for an `Option` field would be indistinguishable from
+    /// a document that never carried one, breaking the client's stable envelope shape.
+    Band,
+    /// A path inside a band, landing in an untyped `serde_json::Value` or an `Option`.
+    /// Redacted with a pointer strip, whose terminal step differs by container: an object
+    /// key is removed, where callers rely on true key absence; an array element is nulled in
+    /// place, because removal would renumber every later element. See `strip_pointer`.
+    Within,
+}
+
+/// Classify a `property_overrides` pointer, or `None` when nothing may redact it.
+///
+/// INVARIANT: a `Within` result guarantees the STRIP lands in untyped or optional data,
+/// never on a required field — that is what makes it provably non-destructive to
+/// deserialization. A `Band` result carries no such guarantee and does not need one: it
+/// nulls the field in place, which is precisely why `system` (required, not an `Option`)
+/// is handled that way rather than stripped.
+///
+/// Both properties are what the ingress gate and the egress filter must agree on. They
+/// agree by reading THIS function: two implementations kept in sync only by inspection
+/// can silently diverge on an input neither author checked, and reading one shared
+/// function is what prevents that.
+///
+/// Two things are shared with `required_cap_for_path` as symbols rather than by
+/// inspection: the band set (`REDACTABLE_BANDS`) and the leaf rule (`band_has_interior`,
+/// which is why `/name/...` classifies as `None`). Everything else is deliberately
+/// unshared, because the two classify different input domains: `required_cap_for_path`
+/// classifies a `FieldChange` path, `redaction_target` classifies a `property_overrides`
+/// map key. Same JSON-pointer syntax, different fields on different structures, gated by
+/// different validators — so they are NOT required to agree string-for-string, and do not
+/// (`/system/` is a writable path there and unclassifiable here). Only the band set and
+/// the leaf rule must agree, and those are single symbols.
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::permission::{redaction_target, RedactionTarget};
+///
+/// assert_eq!(redaction_target("/system"), Some(RedactionTarget::Band));
+/// assert_eq!(redaction_target("/system/hp"), Some(RedactionTarget::Within));
+/// assert_eq!(redaction_target("/permissions/default"), None);
+/// ```
+pub fn redaction_target(pointer: &str) -> Option<RedactionTarget> {
+    let rest = pointer.strip_prefix('/')?;
+    for band in REDACTABLE_BANDS {
+        if rest == band {
+            return Some(RedactionTarget::Band);
+        }
+        if band_has_interior(band) {
+            if let Some(inner) = rest.strip_prefix(band) {
+                if let Some(tail) = inner.strip_prefix('/') {
+                    if !tail.is_empty() {
+                        return Some(RedactionTarget::Within);
+                    }
+                }
+            }
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -260,6 +354,52 @@ mod required_cap_tests {
         assert_eq!(required_cap_for_path("/owner"), Some(cap::EDIT_PERMISSIONS));
         assert_eq!(required_cap_for_path("/owner/id"), None);
         assert_eq!(required_cap_for_path("/owners"), None);
+    }
+
+    #[test]
+    fn the_write_fields_band_set_equals_the_redactable_band_set() {
+        // The two functions are not per-string equal and must not be tested that way
+        // (`/system/` is `WRITE_FIELDS` for one and unclassifiable for the other). What
+        // must hold is that they admit the same BAND SET, so a fifth band cannot become
+        // redactable without also becoming writable under the same capability.
+        //
+        // The universe is HARDCODED, never derived from `REDACTABLE_BANDS`: probing only
+        // the constant's own contents would make the assertion definitionally true for any
+        // contents, and would not notice a band silently added to one side.
+        let universe = [
+            "name",
+            "engine",
+            "system",
+            "base",
+            "id",
+            "scope",
+            "doc_type",
+            "schema_version",
+            "source",
+            "owner",
+            "permissions",
+            "parent_id",
+            "embedded",
+            "created_at",
+            "updated_at",
+        ];
+        let writable: Vec<&str> = universe
+            .into_iter()
+            .filter(|f| required_cap_for_path(&format!("/{f}")) == Some(cap::WRITE_FIELDS))
+            .collect();
+        let redactable: Vec<&str> = universe
+            .into_iter()
+            .filter(|f| redaction_target(&format!("/{f}")).is_some())
+            .collect();
+        assert_eq!(
+            writable, redactable,
+            "the WRITE_FIELDS set and the redactable set diverged"
+        );
+        assert_eq!(
+            writable,
+            ["name", "engine", "system", "base"],
+            "both sets changed together but are no longer the four content bands"
+        );
     }
 
     #[test]
@@ -668,8 +808,27 @@ pub fn project_grants_for(grants: &CapabilityGrants, user: Uuid) -> CapabilityGr
     }
 }
 
+/// A redaction input the classifier could not place in a content band. Egress
+/// withholds rather than guessing: the alternatives are shipping a document whose
+/// structural envelope was silently rewritten, or panicking the request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RedactionError {
+    /// The pointer that could not be classified.
+    pub pointer: String,
+}
+
+impl std::fmt::Display for RedactionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "unclassifiable redaction pointer {}", self.pointer)
+    }
+}
+
+impl std::error::Error for RedactionError {}
+
 /// Produce the recipient's view of a document: when `access.see_gm_only` is
-/// false, strip every property whose override is `GmOnly`.
+/// false, strip every property whose override is `GmOnly`. Fails closed with
+/// `RedactionError` when a `property_overrides` pointer cannot be classified by
+/// `redaction_target` — withholding, never guessing at what the pointer meant.
 /// # Examples
 ///
 /// ```
@@ -694,14 +853,14 @@ pub fn project_grants_for(grants: &CapabilityGrants, user: Uuid) -> CapabilityGr
 /// })).unwrap();
 ///
 /// let observer = Access { caps: Default::default(), all: false, see_gm_only: false, is_owner: false };
-/// let filtered = filter_properties(&doc, &observer);
+/// let filtered = filter_properties(&doc, &observer).unwrap();
 /// assert!(filtered.system.get("secret").is_none()); // stripped BEFORE transmission
 /// assert_eq!(filtered.system["public"], 1);
 /// ```
-pub fn filter_properties(doc: &Document, access: &Access) -> Document {
+pub fn filter_properties(doc: &Document, access: &Access) -> Result<Document, RedactionError> {
     let mut out = doc.clone();
     if access.see_gm_only {
-        return out;
+        return Ok(out);
     }
     // Each embedded child carries its own `property_overrides`, independent of the
     // parent's. A non-GM recipient must not see any GmOnly field at any depth, so
@@ -710,15 +869,14 @@ pub fn filter_properties(doc: &Document, access: &Access) -> Document {
     let embedded = std::mem::take(&mut out.embedded);
     out.embedded = embedded
         .into_iter()
-        .map(|(k, v)| {
-            (
-                k,
-                v.into_iter()
-                    .map(|c| filter_properties(&c, access))
-                    .collect(),
-            )
+        .map(|(k, v)| -> Result<_, RedactionError> {
+            let children = v
+                .into_iter()
+                .map(|c| filter_properties(&c, access))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok((k, children))
         })
-        .collect();
+        .collect::<Result<_, _>>()?;
     let mut hidden: Vec<String> = doc
         .permissions
         .property_overrides
@@ -735,24 +893,19 @@ pub fn filter_properties(doc: &Document, access: &Access) -> Document {
     }
     let mut whole = serde_json::to_value(&out).expect("document serializes");
     for pointer in hidden {
-        // `/system`, `/engine`, `/name`, and `/base` target `Document` fields directly:
-        // dropping the key would (for `system`, a required field) fail
-        // re-deserialization, or (for the `Option` fields `engine`/`name`/`base`) be
-        // indistinguishable from a doc that never carried one, breaking the
-        // client's stable envelope shape. Null them instead; nested pointers
-        // (e.g. `/system/name`, `/engine/vision`) target an arbitrary body one
-        // level down, where callers rely on true key absence, so those keep
-        // the normal strip.
-        match pointer.as_str() {
-            "/system" | "/engine" | "/name" | "/base" => {
+        match redaction_target(&pointer) {
+            Some(RedactionTarget::Band) => {
                 if let Some(f) = whole.get_mut(&pointer[1..]) {
                     *f = serde_json::Value::Null;
                 }
             }
-            _ => strip_pointer(&mut whole, &pointer),
+            Some(RedactionTarget::Within) => strip_pointer(&mut whole, &pointer),
+            None => return Err(RedactionError { pointer }),
         }
     }
-    serde_json::from_value(whole).expect("filtered document deserializes")
+    serde_json::from_value(whole).map_err(|_| RedactionError {
+        pointer: "<document>".to_string(),
+    })
 }
 
 /// Collect every property pointer in `doc` (and embedded descendants) that `access`
@@ -760,10 +913,22 @@ pub fn filter_properties(doc: &Document, access: &Access) -> Document {
 /// expressed absolute to `doc` (call with `prefix = ""` for parent-absolute paths: a
 /// child at `embedded[key][i]` contributes `/embedded/<key>/<i>{pointer}`). Lets
 /// `Update`-delta redaction honor hidden fields at any embedded depth — the same
-/// coverage `filter_properties` gives whole-document egress.
-fn collect_hidden(doc: &Document, access: &Access, prefix: &str, out: &mut Vec<String>) {
+/// coverage `filter_properties` gives whole-document egress. Classifies each
+/// UNPREFIXED override key via `redaction_target` before the prefix is applied
+/// (the same classifier `filter_properties` runs on whole-document egress), and
+/// fails closed with `RedactionError` on a pointer it cannot place — that is what
+/// keeps the change-delta path from diverging from whole-document egress.
+fn collect_hidden(
+    doc: &Document,
+    access: &Access,
+    prefix: &str,
+    out: &mut Vec<String>,
+) -> Result<(), RedactionError> {
     for (p, v) in &doc.permissions.property_overrides {
         if !access.can_see(*v) {
+            if redaction_target(p).is_none() {
+                return Err(RedactionError { pointer: p.clone() });
+            }
             out.push(format!("{prefix}{p}"));
         }
     }
@@ -782,9 +947,10 @@ fn collect_hidden(doc: &Document, access: &Access, prefix: &str, out: &mut Vec<S
                 access,
                 &format!("{prefix}/embedded/{key}/{idx}"),
                 out,
-            );
+            )?;
         }
     }
+    Ok(())
 }
 
 /// Whether a change path writes into any document's envelope `permissions` (top-level
@@ -831,9 +997,14 @@ pub fn filter_command<'a>(
                     owner,
                 );
                 if access.has(cap::READ) {
-                    out_ops.push(Operation::Create {
-                        doc: filter_properties(doc, &access),
-                    });
+                    // Withhold rather than guess: a recipient who cannot be given a
+                    // correctly redacted document is given none.
+                    match filter_properties(doc, &access) {
+                        Ok(filtered) => out_ops.push(Operation::Create { doc: filtered }),
+                        Err(e) => {
+                            tracing::warn!(doc_id = %doc.id, error = %e, "redaction failed; dropping Create op for recipient");
+                        }
+                    }
                 }
             }
             Operation::Delete { doc } => {
@@ -847,9 +1018,12 @@ pub fn filter_command<'a>(
                     owner,
                 );
                 if access.has(cap::READ) {
-                    out_ops.push(Operation::Delete {
-                        doc: filter_properties(doc, &access),
-                    });
+                    match filter_properties(doc, &access) {
+                        Ok(filtered) => out_ops.push(Operation::Delete { doc: filtered }),
+                        Err(e) => {
+                            tracing::warn!(doc_id = %doc.id, error = %e, "redaction failed; dropping Delete op for recipient");
+                        }
+                    }
                 }
             }
             Operation::Update { doc_id, changes } => {
@@ -877,7 +1051,10 @@ pub fn filter_command<'a>(
                     // `/embedded/<child>/...` is redacted against the child's own
                     // overrides — not just the parent's. Matches filter_properties.
                     let mut hidden = Vec::new();
-                    collect_hidden(cur, &access, "", &mut hidden);
+                    if let Err(e) = collect_hidden(cur, &access, "", &mut hidden) {
+                        tracing::warn!(doc_id = %doc_id, error = %e, "redaction failed; dropping Update op for recipient");
+                        continue;
+                    }
                     let mut kept: Vec<FieldChange> = changes
                         .iter()
                         .filter_map(|ch| redact_change(ch, &hidden))
@@ -955,7 +1132,21 @@ fn redact_change(ch: &FieldChange, gm_only: &[String]) -> Option<FieldChange> {
     }
 }
 
-/// Remove the value at a JSON pointer, if present.
+/// Remove the value a `RedactionTarget::Within` pointer names, if present.
+///
+/// Both the descent and the terminal step handle an ARRAY container by index, because a
+/// pointer segment carries no evidence of which it names: `/system/inventory/0` is an
+/// object key `"0"` for one document and an array index for the next, so refusing index
+/// segments at ingress is not decidable and skipping them at egress ships the hidden value.
+/// A no-op here is a silent fail-open — this is a secrecy gate, so every classified pointer
+/// must actually be acted on.
+///
+/// The terminal step differs by container, deliberately:
+/// - an object key is REMOVED (true absence, which is what `Within`'s callers rely on);
+/// - an array element is set to `Null` in place, never removed. Removal renumbers every
+///   later element, so a recipient's copy would disagree with the authoritative array on
+///   what index a value lives at; `remove_pointer` refuses leaf index removal for that same
+///   reason, leaving whole-array replacement as the only way an array changes length.
 fn strip_pointer(root: &mut serde_json::Value, pointer: &str) {
     let tokens: Vec<String> = pointer
         .split('/')
@@ -967,13 +1158,32 @@ fn strip_pointer(root: &mut serde_json::Value, pointer: &str) {
     }
     let mut cur = root;
     for tok in &tokens[..tokens.len() - 1] {
-        match cur.get_mut(tok) {
-            Some(next) => cur = next,
+        let next = match cur {
+            serde_json::Value::Object(m) => m.get_mut(tok),
+            serde_json::Value::Array(a) => match tok.parse::<usize>() {
+                Ok(idx) => a.get_mut(idx),
+                Err(_) => return,
+            },
+            _ => return,
+        };
+        match next {
+            Some(v) => cur = v,
             None => return,
         }
     }
-    if let serde_json::Value::Object(m) = cur {
-        m.remove(&tokens[tokens.len() - 1]);
+    let last = &tokens[tokens.len() - 1];
+    match cur {
+        serde_json::Value::Object(m) => {
+            m.remove(last);
+        }
+        serde_json::Value::Array(a) => {
+            if let Ok(idx) = last.parse::<usize>() {
+                if let Some(slot) = a.get_mut(idx) {
+                    *slot = serde_json::Value::Null;
+                }
+            }
+        }
+        _ => {}
     }
 }
 
@@ -1015,6 +1225,98 @@ mod tests {
         p
     }
 
+    /// Build a `PermissionSet` carrying one override at `pointer`, hidden from non-GMs.
+    fn perms_with_override(pointer: &str) -> PermissionSet {
+        let mut p = PermissionSet {
+            default: crate::data::document::DocRole::Observer,
+            ..Default::default()
+        };
+        p.property_overrides.insert(
+            pointer.to_string(),
+            crate::data::document::Visibility::GmOnly,
+        );
+        p
+    }
+
+    fn non_gm() -> Access {
+        Access {
+            caps: Default::default(),
+            all: false,
+            see_gm_only: false,
+            is_owner: false,
+        }
+    }
+
+    #[test]
+    fn filter_properties_errors_instead_of_panicking_on_a_nested_permissions_override() {
+        // A nested `/permissions/...` override strips a `PermissionSet` field carrying
+        // no serde default, so the value cannot re-deserialize.
+        let d = doc(
+            perms_with_override("/permissions/default"),
+            serde_json::json!({ "hp": 1 }),
+        );
+        let err = filter_properties(&d, &non_gm()).expect_err("must not deserialize");
+        assert_eq!(err.pointer, "/permissions/default");
+    }
+
+    #[test]
+    fn filter_properties_errors_on_a_whole_permissions_override() {
+        // A whole `/permissions` override is refused as unclassifiable rather than
+        // substituting the fail-closed default permission set for the real one: that
+        // substitution does not panic, it ships a wrong document.
+        let d = doc(
+            perms_with_override("/permissions"),
+            serde_json::json!({ "hp": 1 }),
+        );
+        assert!(filter_properties(&d, &non_gm()).is_err());
+    }
+
+    #[test]
+    fn filter_properties_still_redacts_every_content_band() {
+        for (pointer, check) in [
+            ("/system/secret", "system"),
+            ("/engine", "engine"),
+            ("/name", "name"),
+        ] {
+            let mut d = doc(
+                perms_with_override(pointer),
+                serde_json::json!({ "secret": "MOCK_SECRET_A", "public": 1 }),
+            );
+            // A real name, so the "name" sub-case discriminates: `doc()` always
+            // constructs `name: None`, and asserting `None` after redaction would
+            // pass even if `/name` redaction never ran.
+            d.name = Some("MOCK_NAME_A".into());
+            let out = filter_properties(&d, &non_gm())
+                .unwrap_or_else(|e| panic!("{pointer} must still redact cleanly: {e}"));
+            match check {
+                "system" => {
+                    assert!(out.system.get("secret").is_none());
+                    assert_eq!(out.system["public"], 1);
+                }
+                "engine" => assert!(out.engine.is_none()),
+                "name" => assert!(out.name.is_none()),
+                _ => unreachable!(),
+            }
+        }
+    }
+
+    #[test]
+    fn a_gm_recipient_is_unaffected_by_an_unclassifiable_override() {
+        // The GM short-circuit returns before any classification runs, so a GM never
+        // loses a document to a poisoned override.
+        let d = doc(
+            perms_with_override("/permissions/default"),
+            serde_json::json!({ "hp": 1 }),
+        );
+        let gm = Access {
+            caps: Default::default(),
+            all: true,
+            see_gm_only: true,
+            is_owner: false,
+        };
+        assert!(filter_properties(&d, &gm).is_ok());
+    }
+
     #[test]
     fn owner_or_gm_visible_to_owner_and_gm_not_other_player() {
         let owner = Uuid::from_u128(1);
@@ -1028,20 +1330,20 @@ mod tests {
         // Owner (non-GM) sees the real name.
         let a_owner = resolve_access(owner, WorldRole::Player, &d, d.owner);
         assert_eq!(
-            filter_properties(&d, &a_owner).system["name"],
+            filter_properties(&d, &a_owner).unwrap().system["name"],
             "Goblin Skirmisher"
         );
 
         // Another player does NOT (falls back to the non-secret displayName).
         let a_other = resolve_access(other, WorldRole::Player, &d, d.owner);
-        let v_other = filter_properties(&d, &a_other);
+        let v_other = filter_properties(&d, &a_other).unwrap();
         assert!(v_other.system.get("name").is_none());
         assert_eq!(v_other.system["displayName"], "Goblin");
 
         // GM sees it.
         let a_gm = resolve_access(other, WorldRole::Gm, &d, d.owner);
         assert_eq!(
-            filter_properties(&d, &a_gm).system["name"],
+            filter_properties(&d, &a_gm).unwrap().system["name"],
             "Goblin Skirmisher"
         );
     }
@@ -1059,7 +1361,7 @@ mod tests {
         d.owner = Some(owner);
 
         let a_owner = resolve_access(owner, WorldRole::Player, &d, d.owner);
-        let v = filter_properties(&d, &a_owner);
+        let v = filter_properties(&d, &a_owner).unwrap();
         assert_eq!(v.system["name"], "PC"); // owner sees OwnerOrGm
         assert!(v.system.get("secret").is_none()); // owner still denied GmOnly
     }
@@ -1077,11 +1379,11 @@ mod tests {
         parent.embedded.insert("actor".into(), vec![child]);
 
         let a_other = resolve_access(other, WorldRole::Player, &parent, parent.owner);
-        let v = filter_properties(&parent, &a_other);
+        let v = filter_properties(&parent, &a_other).unwrap();
         assert!(v.embedded["actor"][0].system.get("name").is_none());
 
         let a_owner = resolve_access(owner, WorldRole::Player, &parent, parent.owner);
-        let vo = filter_properties(&parent, &a_owner);
+        let vo = filter_properties(&parent, &a_owner).unwrap();
         assert_eq!(vo.embedded["actor"][0].system["name"], "Hidden");
     }
 
@@ -1230,13 +1532,13 @@ mod tests {
         let d = doc(perms, serde_json::json!({ "secret": 42, "public": 1 }));
 
         let player = resolve_access(Uuid::from_u128(7), WorldRole::Player, &d, d.owner);
-        let view = filter_properties(&d, &player);
+        let view = filter_properties(&d, &player).unwrap();
         assert_eq!(view.system.get("secret"), None);
         assert_eq!(view.system["public"], serde_json::json!(1));
 
         let gm = resolve_access(Uuid::from_u128(7), WorldRole::Gm, &d, d.owner);
         assert_eq!(
-            filter_properties(&d, &gm).system["secret"],
+            filter_properties(&d, &gm).unwrap().system["secret"],
             serde_json::json!(42)
         );
     }
@@ -1257,12 +1559,12 @@ mod tests {
         let d = doc(perms, serde_json::json!({ "secret": 42 }));
 
         let player = resolve_access(Uuid::from_u128(7), WorldRole::Player, &d, d.owner);
-        let view = filter_properties(&d, &player);
+        let view = filter_properties(&d, &player).unwrap();
         assert_eq!(view.system, serde_json::Value::Null);
 
         let gm = resolve_access(Uuid::from_u128(7), WorldRole::Gm, &d, d.owner);
         assert_eq!(
-            filter_properties(&d, &gm).system["secret"],
+            filter_properties(&d, &gm).unwrap().system["secret"],
             serde_json::json!(42)
         );
     }
@@ -1285,12 +1587,12 @@ mod tests {
         d.engine = Some(serde_json::json!({ "x": 1.0, "y": 2.0 }));
 
         let player = resolve_access(Uuid::from_u128(7), WorldRole::Player, &d, d.owner);
-        let view = filter_properties(&d, &player);
+        let view = filter_properties(&d, &player).unwrap();
         assert_eq!(view.engine, None);
 
         let gm = resolve_access(Uuid::from_u128(7), WorldRole::Gm, &d, d.owner);
         assert_eq!(
-            filter_properties(&d, &gm).engine,
+            filter_properties(&d, &gm).unwrap().engine,
             Some(serde_json::json!({ "x": 1.0, "y": 2.0 }))
         );
     }
@@ -1311,12 +1613,118 @@ mod tests {
         d.engine = Some(serde_json::json!({ "vision": 30, "visionmode": "dark" }));
 
         let player = resolve_access(Uuid::from_u128(7), WorldRole::Player, &d, d.owner);
-        let view = filter_properties(&d, &player);
+        let view = filter_properties(&d, &player).unwrap();
         assert!(view.engine.as_ref().unwrap().get("vision").is_none());
         assert_eq!(view.engine.as_ref().unwrap()["visionmode"], "dark");
 
         let gm = resolve_access(Uuid::from_u128(7), WorldRole::Gm, &d, d.owner);
-        assert_eq!(filter_properties(&d, &gm).engine.unwrap()["vision"], 30);
+        assert_eq!(
+            filter_properties(&d, &gm).unwrap().engine.unwrap()["vision"],
+            30
+        );
+    }
+
+    #[test]
+    fn gm_only_array_element_is_nulled_in_place_for_non_gm() {
+        // An override may name an ARRAY element inside a band (`/system/inventory/0`);
+        // the classifier accepts it, so egress must actually redact it. The element is
+        // nulled, never removed: removal shifts every later index, and an array shrinks
+        // only by whole-array replacement (`remove_pointer` refuses index removal for the
+        // same reason). Length and sibling positions are therefore part of the contract.
+        let mut perms = PermissionSet {
+            default: DocRole::Observer,
+            ..Default::default()
+        };
+        perms
+            .property_overrides
+            .insert("/system/inventory/0".into(), Visibility::GmOnly);
+        let d = doc(
+            perms,
+            serde_json::json!({ "inventory": ["MOCK_SECRET_A", "visible"] }),
+        );
+
+        let player = resolve_access(Uuid::from_u128(7), WorldRole::Player, &d, d.owner);
+        let view = filter_properties(&d, &player).unwrap();
+        assert_eq!(
+            view.system["inventory"],
+            serde_json::json!([null, "visible"]),
+            "the hidden element must be nulled without shifting its siblings"
+        );
+
+        let gm = resolve_access(Uuid::from_u128(7), WorldRole::Gm, &d, d.owner);
+        assert_eq!(
+            filter_properties(&d, &gm).unwrap().system["inventory"],
+            serde_json::json!(["MOCK_SECRET_A", "visible"])
+        );
+    }
+
+    #[test]
+    fn gm_only_key_beneath_an_array_element_is_stripped_for_non_gm() {
+        // The same fail-open reaches the DESCENT step: an override may traverse an array
+        // index on its way to an object key (`/system/inventory/0/secret`). The terminal
+        // container is an object, so the key is genuinely removed; the sibling key and the
+        // sibling element stay intact.
+        let mut perms = PermissionSet {
+            default: DocRole::Observer,
+            ..Default::default()
+        };
+        perms
+            .property_overrides
+            .insert("/system/inventory/0/secret".into(), Visibility::GmOnly);
+        let d = doc(
+            perms,
+            serde_json::json!({
+                "inventory": [
+                    { "secret": "MOCK_SECRET_A", "public": 1 },
+                    { "secret": "MOCK_SECRET_B" }
+                ]
+            }),
+        );
+
+        let player = resolve_access(Uuid::from_u128(7), WorldRole::Player, &d, d.owner);
+        let view = filter_properties(&d, &player).unwrap();
+        assert_eq!(
+            view.system["inventory"],
+            serde_json::json!([{ "public": 1 }, { "secret": "MOCK_SECRET_B" }]),
+            "only the pointed-at key is removed; the sibling element is untouched"
+        );
+
+        let gm = resolve_access(Uuid::from_u128(7), WorldRole::Gm, &d, d.owner);
+        assert_eq!(
+            filter_properties(&d, &gm).unwrap().system["inventory"][0]["secret"],
+            serde_json::json!("MOCK_SECRET_A")
+        );
+    }
+
+    #[test]
+    fn a_gm_receives_every_band_unredacted_whatever_the_overrides_name() {
+        // Whole-document equality, not per-pointer assertions: every band, including the
+        // unconditional `/base` policy and an array-index override, must survive intact.
+        //
+        // This pins the OUTPUT rule, which is the part a change can break. It cannot pin
+        // `filter_properties`' `see_gm_only` early return, because that return is not
+        // observable: `can_see` yields `true` for a GM at every tier, so the hidden-pointer
+        // set is empty and the loop is a no-op regardless. The early return is a hot-path
+        // guard against the serialize/deserialize round-trip, not a visibility decision.
+        let mut perms = PermissionSet {
+            default: DocRole::Observer,
+            ..Default::default()
+        };
+        for ptr in ["/system/inventory/0", "/system", "/engine/vision", "/name"] {
+            perms
+                .property_overrides
+                .insert(ptr.into(), Visibility::GmOnly);
+        }
+        let mut d = doc(
+            perms,
+            serde_json::json!({ "inventory": ["MOCK_SECRET_A", "visible"] }),
+        );
+        d.name = Some("MOCK_NAME_A".into());
+        d.engine = Some(serde_json::json!({ "vision": 30 }));
+        d.base = Some(serde_json::json!({ "system": { "hp": 1 } }));
+
+        let gm = resolve_access(Uuid::from_u128(7), WorldRole::Gm, &d, d.owner);
+        assert_eq!(filter_properties(&d, &gm).unwrap(), d);
     }
 
     #[test]
@@ -1335,16 +1743,16 @@ mod tests {
 
         let a_owner = resolve_access(owner, WorldRole::Player, &d, d.owner);
         assert_eq!(
-            filter_properties(&d, &a_owner).name.as_deref(),
+            filter_properties(&d, &a_owner).unwrap().name.as_deref(),
             Some("Goblin Skirmisher")
         );
 
         let a_other = resolve_access(other, WorldRole::Player, &d, d.owner);
-        assert_eq!(filter_properties(&d, &a_other).name, None);
+        assert_eq!(filter_properties(&d, &a_other).unwrap().name, None);
 
         let a_gm = resolve_access(other, WorldRole::Gm, &d, d.owner);
         assert_eq!(
-            filter_properties(&d, &a_gm).name.as_deref(),
+            filter_properties(&d, &a_gm).unwrap().name.as_deref(),
             Some("Goblin Skirmisher")
         );
     }
@@ -1362,10 +1770,13 @@ mod tests {
         d.name = Some("Strahd".into());
 
         let player = resolve_access(Uuid::from_u128(7), WorldRole::Player, &d, d.owner);
-        assert_eq!(filter_properties(&d, &player).name, None);
+        assert_eq!(filter_properties(&d, &player).unwrap().name, None);
 
         let gm = resolve_access(Uuid::from_u128(7), WorldRole::Gm, &d, d.owner);
-        assert_eq!(filter_properties(&d, &gm).name.as_deref(), Some("Strahd"));
+        assert_eq!(
+            filter_properties(&d, &gm).unwrap().name.as_deref(),
+            Some("Strahd")
+        );
     }
 
     #[test]
@@ -1382,15 +1793,15 @@ mod tests {
 
         // Non-owner, non-GM: base is nulled.
         let a_other = resolve_access(other, WorldRole::Player, &d, d.owner);
-        assert_eq!(filter_properties(&d, &a_other).base, None);
+        assert_eq!(filter_properties(&d, &a_other).unwrap().base, None);
 
         // Owner (non-GM): sees the real base.
         let a_owner = resolve_access(owner, WorldRole::Player, &d, d.owner);
-        assert_eq!(filter_properties(&d, &a_owner).base, d.base);
+        assert_eq!(filter_properties(&d, &a_owner).unwrap().base, d.base);
 
         // GM: sees the real base.
         let a_gm = resolve_access(other, WorldRole::Gm, &d, d.owner);
-        assert_eq!(filter_properties(&d, &a_gm).base, d.base);
+        assert_eq!(filter_properties(&d, &a_gm).unwrap().base, d.base);
     }
 
     #[tokio::test]
@@ -1527,7 +1938,7 @@ mod tests {
 
         let player = resolve_access(Uuid::from_u128(7), WorldRole::Player, &parent, parent.owner);
         let mut hidden = Vec::new();
-        collect_hidden(&parent, &player, "", &mut hidden);
+        collect_hidden(&parent, &player, "", &mut hidden).unwrap();
         assert!(hidden.contains(&"/embedded/actor/0/engine/x".to_string()));
     }
 
@@ -1551,7 +1962,7 @@ mod tests {
         parent.embedded.insert("items".into(), vec![child]);
 
         let player = resolve_access(Uuid::from_u128(7), WorldRole::Player, &parent, parent.owner);
-        let view = filter_properties(&parent, &player);
+        let view = filter_properties(&parent, &player).unwrap();
         let child_view = &view.embedded.get("items").unwrap()[0];
         assert_eq!(
             child_view.system.get("secret"),
@@ -1562,7 +1973,7 @@ mod tests {
 
         // The GM sees the embedded child's gm-only field.
         let gm = resolve_access(Uuid::from_u128(7), WorldRole::Gm, &parent, parent.owner);
-        let gm_view = filter_properties(&parent, &gm);
+        let gm_view = filter_properties(&parent, &gm).unwrap();
         assert_eq!(
             gm_view.embedded.get("items").unwrap()[0].system["secret"],
             serde_json::json!(9)
@@ -1740,6 +2151,109 @@ mod tests {
             panic!("expected Create");
         };
         assert_eq!(doc.system.get("behavior").unwrap(), "arrest");
+    }
+
+    #[tokio::test]
+    async fn filter_command_drops_a_create_whose_redaction_cannot_be_classified() {
+        // A poisoned document is withheld through `filter_command`, the per-recipient
+        // broadcast egress path — not merely through the `filter_properties` unit
+        // called directly by the other tests above.
+        use crate::auth::role::ServerRole;
+        use crate::data::command::{Command, Operation};
+        use crate::data::membership::PermissionContext;
+        use crate::data::sqlite::SqliteRepository;
+
+        let r = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+
+        let mut d = doc(
+            perms_with_override("/permissions/default"),
+            serde_json::json!({ "hp": 1 }),
+        );
+        d.scope = Scope::World { world_id: w.id };
+
+        let cmd = Command {
+            seq: 5,
+            world_id: w.id,
+            author: gm,
+            ts: 0,
+            ops: vec![Operation::Create { doc: d.clone() }],
+        };
+        let player = PermissionContext {
+            user_id: Uuid::from_u128(77),
+            world_role: WorldRole::Player,
+        };
+        let current = load_update_docs(&r, &cmd).await;
+        let out = filter_command(
+            &cmd,
+            &player,
+            &WorldCapDefaults::default(),
+            &current,
+            |_| None,
+        );
+        assert!(
+            out.ops.is_empty(),
+            "the op must be withheld, not shipped half-redacted"
+        );
+        assert_eq!(
+            out.seq, cmd.seq,
+            "seq is preserved so the sequence guard sees no gap"
+        );
+    }
+
+    #[tokio::test]
+    async fn filter_command_drops_a_delete_whose_redaction_cannot_be_classified() {
+        // Mirrors `filter_command_drops_a_create_whose_redaction_cannot_be_classified`
+        // for the Delete arm, which has no other test poisoning its document.
+        use crate::auth::role::ServerRole;
+        use crate::data::command::{Command, Operation};
+        use crate::data::membership::PermissionContext;
+        use crate::data::sqlite::SqliteRepository;
+
+        let r = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+
+        let mut d = doc(
+            perms_with_override("/permissions/default"),
+            serde_json::json!({ "hp": 1 }),
+        );
+        d.scope = Scope::World { world_id: w.id };
+
+        let cmd = Command {
+            seq: 6,
+            world_id: w.id,
+            author: gm,
+            ts: 0,
+            ops: vec![Operation::Delete { doc: d.clone() }],
+        };
+        let player = PermissionContext {
+            user_id: Uuid::from_u128(77),
+            world_role: WorldRole::Player,
+        };
+        let current = load_update_docs(&r, &cmd).await;
+        let out = filter_command(
+            &cmd,
+            &player,
+            &WorldCapDefaults::default(),
+            &current,
+            |_| None,
+        );
+        assert!(
+            out.ops.is_empty(),
+            "the op must be withheld, not shipped half-redacted"
+        );
+        assert_eq!(
+            out.seq, cmd.seq,
+            "seq is preserved so the sequence guard sees no gap"
+        );
     }
 
     #[tokio::test]
@@ -2204,6 +2718,101 @@ mod tests {
             panic!("expected Update");
         };
         assert_eq!(changes.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn filter_command_nulls_a_gm_only_array_element_inside_an_ancestor_change() {
+        // The delta path and whole-document egress must reach the same verdict on an
+        // array-index override: a change writing the whole array carries the hidden element
+        // in both `old` and `new`, so `redact_change` must null it in place there exactly as
+        // `filter_properties` does on the whole document. Length and sibling positions are
+        // preserved, so the recipient's indices still agree with the authoritative array.
+        use crate::auth::role::ServerRole;
+        use crate::data::command::{Command, FieldChange, Operation, WriteOrigin};
+        use crate::data::membership::PermissionContext;
+        use crate::data::sqlite::SqliteRepository;
+
+        let r = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let gm_ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+
+        let mut d = doc(
+            PermissionSet {
+                default: DocRole::Observer,
+                ..Default::default()
+            },
+            serde_json::json!({ "inventory": ["MOCK_SECRET_A", "visible"] }),
+        );
+        d.scope = Scope::World { world_id: w.id };
+        d.permissions
+            .property_overrides
+            .insert("/system/inventory/0".into(), Visibility::GmOnly);
+        // Ingress accepts the override, which is what obliges egress to act on it.
+        r.apply_intent(
+            &gm_ctx,
+            w.id,
+            vec![Operation::Create { doc: d.clone() }],
+            1,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+        let cmd = Command {
+            seq: 2,
+            world_id: w.id,
+            author: gm,
+            ts: 0,
+            ops: vec![Operation::Update {
+                doc_id: d.id,
+                changes: vec![FieldChange {
+                    remove: false,
+                    path: "/system/inventory".into(),
+                    old: serde_json::json!(["MOCK_SECRET_A", "visible"]),
+                    new: serde_json::json!(["MOCK_SECRET_B", "also visible"]),
+                }],
+            }],
+        };
+
+        let current = load_update_docs(&r, &cmd).await;
+        let player = PermissionContext {
+            user_id: Uuid::from_u128(77),
+            world_role: WorldRole::Player,
+        };
+        let filtered = filter_command(
+            &cmd,
+            &player,
+            &WorldCapDefaults::default(),
+            &current,
+            |_| None,
+        );
+        let Operation::Update { changes, .. } = &filtered.ops[0] else {
+            panic!("expected Update");
+        };
+        assert_eq!(changes[0].new, serde_json::json!([null, "also visible"]));
+        assert_eq!(changes[0].old, serde_json::json!([null, "visible"]));
+
+        let gm_view = filter_command(
+            &cmd,
+            &gm_ctx,
+            &WorldCapDefaults::default(),
+            &current,
+            |_| None,
+        );
+        let Operation::Update { changes, .. } = &gm_view.ops[0] else {
+            panic!("expected Update");
+        };
+        assert_eq!(
+            changes[0].new,
+            serde_json::json!(["MOCK_SECRET_B", "also visible"])
+        );
     }
 
     #[test]
@@ -3149,5 +3758,123 @@ mod tests {
             out_capped.ops.is_empty(),
             "a gm_role-capped GM must still be denied — the owner plumb must not widen the cap"
         );
+    }
+
+    #[test]
+    fn redaction_target_classifies_each_whole_band() {
+        // The expectation is a HARDCODED list, never `REDACTABLE_BANDS` itself. Deriving the
+        // expected value from the constant under test makes the assertion definitionally true
+        // for any array contents — it would stay green if a band were renamed, which is the
+        // exact "both paths wrong the same way" shape this suite exists to refuse.
+        for band in ["name", "engine", "system", "base"] {
+            let pointer = format!("/{band}");
+            assert_eq!(
+                redaction_target(&pointer),
+                Some(RedactionTarget::Band),
+                "{pointer} must classify as a whole band"
+            );
+        }
+        // Pins the constant's contents independently, so a band added or renamed fails HERE
+        // with a message naming the obligation, rather than silently widening what egress
+        // is willing to remove.
+        assert_eq!(
+            REDACTABLE_BANDS,
+            ["name", "engine", "system", "base"],
+            "the band list changed: re-audit every redaction call site and this suite"
+        );
+    }
+
+    #[test]
+    fn redaction_target_classifies_within_a_band() {
+        for pointer in [
+            "/system/hp",
+            "/system/a/b/c",
+            "/engine/vision",
+            "/base/system/hp",
+            // An empty middle segment still lands inside the untyped body.
+            "/system//hp",
+            // An index segment is indistinguishable from an object key named "0" from the
+            // pointer alone, so it classifies as `Within` and egress must be able to act on
+            // it — narrowing the classifier to refuse index-shaped segments would hide an
+            // array element from redaction instead of redacting it.
+            "/system/inventory/0",
+            "/system/inventory/0/secret",
+        ] {
+            assert_eq!(
+                redaction_target(pointer),
+                Some(RedactionTarget::Within),
+                "{pointer} must classify as within a band"
+            );
+        }
+    }
+
+    #[test]
+    fn redaction_target_refuses_every_structural_envelope_field() {
+        // The eleven non-content fields of `Document`. Nothing may redact these: a
+        // whole-key strip either substitutes a defaulted value or leaves a shape that
+        // cannot deserialize.
+        for field in [
+            "id",
+            "scope",
+            "doc_type",
+            "schema_version",
+            "source",
+            "owner",
+            "permissions",
+            "parent_id",
+            "embedded",
+            "created_at",
+            "updated_at",
+        ] {
+            assert_eq!(redaction_target(&format!("/{field}")), None, "/{field}");
+            assert_eq!(
+                redaction_target(&format!("/{field}/anything")),
+                None,
+                "/{field}/anything"
+            );
+        }
+    }
+
+    #[test]
+    fn redaction_target_refuses_permissions_subpaths_lacking_serde_default() {
+        // A nested pointer into `permissions` strips a field carrying no serde default,
+        // leaving a value that cannot deserialize as a `PermissionSet`.
+        for pointer in [
+            "/permissions",
+            "/permissions/default",
+            "/permissions/users",
+            "/permissions/property_overrides",
+        ] {
+            assert_eq!(redaction_target(pointer), None, "{pointer}");
+        }
+    }
+
+    #[test]
+    fn redaction_target_refuses_malformed_and_unknown_pointers() {
+        for pointer in [
+            "",
+            "/",
+            "system/hp",
+            "/unknown",
+            "/systemx",
+            "/nameless",
+            // A band name followed by a non-separator character is a collision, not a
+            // match, for every band the shared prefix path handles — not just `system`.
+            "/enginex",
+            "/basex",
+            // A band name plus a trailing separator leaves an empty residual segment,
+            // which the guard refuses rather than treating as `Within`.
+            "/system/",
+        ] {
+            assert_eq!(redaction_target(pointer), None, "{pointer:?}");
+        }
+    }
+
+    #[test]
+    fn name_is_a_leaf_band_with_no_interior() {
+        // `/name` is a display string, not a container — mirrors the same rule in
+        // `required_cap_for_path`.
+        assert_eq!(redaction_target("/name"), Some(RedactionTarget::Band));
+        assert_eq!(redaction_target("/name/first"), None);
     }
 }

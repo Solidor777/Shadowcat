@@ -124,16 +124,15 @@
     return Object.entries(reg?.factions ?? {});
   });
 
-  // A search-hit's document (WireSearchHit.document) is a full `Document`/`WireDocument` clone —
-  // `filter_properties` (server) special-cases only
-  // `/system`, `/engine`, `/name`, `/base` (nulled in place); every other hidden property_overrides
-  // pointer falls through to a generic strip. No current UI path (here or elsewhere) ever sets an
-  // override key outside those four, so in practice `a.permissions` is always present for both a
-  // search-sourced and a store-resolved row — but ingress only checks a property_overrides key's
-  // JSON-pointer SHAPE (`validation::validate_property_overrides`), not which field it targets, so
-  // this is a today-true observation, not a structural guarantee. The
-  // optional chaining below is defensive style, not required by any known gap between the two.
-  const isHidden = (a: WireDocument): boolean => a.permissions?.property_overrides["/name"] === "owner_or_gm";
+  // Rows come from two sources — a store-resolved document and a search hit
+  // (`WireSearchHit.document`, a full `WireDocument` clone) — and `permissions` is non-optional on
+  // both. Structural guarantee at each end: server-side, ingress
+  // (`validation::validate_property_overrides`) rejects any override pointer
+  // `permission::redaction_target` cannot classify, which is everything outside the four content
+  // bands (`/name`, `/engine`, `/system`, `/base`), so no stored override can ask egress to null or
+  // strip the permissions envelope off a redacted copy; client-side, `SearchHitSchema` parses the
+  // hit through `DocumentSchema`, whose `permissions` key is required. No hedge is warranted here.
+  const isHidden = (a: WireDocument): boolean => a.permissions.property_overrides["/name"] === "owner_or_gm";
 
   /**
    * Toggles the `OwnerOrGm` visibility override on `/permissions/property_overrides["/name"]` —

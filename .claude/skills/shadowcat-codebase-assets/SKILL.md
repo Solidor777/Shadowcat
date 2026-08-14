@@ -38,8 +38,7 @@ and serves uploads unconverted (the conversion pipeline is deferred).
   `Asset.created_by` (`data::asset`) records the uploader but is **never read by any authz
   check** — it is provenance, not authority, so uploading a file grants no subsequent rights over
   it and there is no per-asset permission check. `serve` is the odd one out: membership-gated, not
-  GM-gated. Corrected in the client/core doc sweep, where all three route comments had claimed
-  "GM/owner-gated" — treat any surviving "owner" language about asset mutation as stale.
+  GM-gated. Treat any "owner"-gated language about asset mutation as stale.
 - **`replace` commits the source-of-truth/cache-key row BEFORE swapping the file** (row-first).
   The inverse strands new bytes under a stale ETag/version — a silent 304 of changed content;
   `replace` has prior bytes to preserve and an existing ETag to protect, so the failure that
