@@ -444,7 +444,7 @@ mod tests {
     #[test]
     fn cell_illumination_takes_max_and_respects_occlusion() {
         let l = lamp(); // at origin, bright 2 / dim 6 cells, intensity 1, linear
-                        // No env, cell at the light center, cell_size 100 (world units per cell) → full + light tint.
+                        // No env, cell at the light center, `world_units_per_cell` 100 → full + light tint.
         let c = cell_illumination(
             (0.0, 0.0),
             0.0,

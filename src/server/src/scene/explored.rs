@@ -247,8 +247,10 @@ impl ExploredSet {
     }
 
     /// Mark every cell whose center lies inside any polygon in `polys` (flat `[x,y,…]` coords),
-    /// indexed through `grid` at `cell_size` world units per cell. Returns the count of newly-added
-    /// cells (0 ⇒ no growth). `grid` supplies both the candidate-cell enumeration
+    /// indexed through `grid` at the `cell_size` INDEXING scale — the scalar `GridShape::cell_of`
+    /// and `GridShape::cell_center` index against, never `GridShape::world_units_per_cell`, which
+    /// measures an authored distance and is the larger of the two on hex. Returns the count of
+    /// newly-added cells (0 ⇒ no growth). `grid` supplies both the candidate-cell enumeration
     /// (`GridShape::cells_in_bounds`) and each candidate's center (`GridShape::cell_center`), so a
     /// hex scene indexes hex axial cells while a square scene's candidate enumeration and cell-center
     /// math reduce to exactly `floor(min/cell)..=floor(max/cell)` and `(i+0.5)*cell`.

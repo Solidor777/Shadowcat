@@ -2132,7 +2132,7 @@ impl SceneEcs {
         // (i, j) -> (best_level, band_index, tint, hint_floor, hint). hint_floor seeds NEG_INFINITY so the
         // first admitting mode always sets it; brightness (level/band/tint) and hint reduce independently.
         type CellEntry = BTreeMap<(i32, i32), (f64, usize, u32, f64, Option<String>)>;
-        // scene -> (cell_size, per-cell best)
+        // scene -> (the scene's `cell` indexing scale, per-cell best)
         let mut per_scene: BTreeMap<Uuid, (f64, CellEntry)> = BTreeMap::new();
 
         // Distinct scenes among the sources.
@@ -2156,6 +2156,9 @@ impl SceneEcs {
                 continue;
             }
             let cell_grid = self.resolve_grid_shape(scene, cell);
+            // One grid step's world distance, resolved once per scene: it is a property of the
+            // shape, so every candidate cell of every source in this scene shares the value.
+            let world_units_per_cell = cell_grid.world_units_per_cell();
             // Lighting inputs: under globalIllumination or lighting-off, every LOS cell is bright;
             // else compute per-cell from lights (occluded by blocksLight) + environment.
             let li = self.lighting_inputs(scene, settings, cell);
@@ -2232,14 +2235,14 @@ impl SceneEcs {
                             &li.lights,
                             &li.lit_polys,
                             &li.env_polys,
-                            cell_grid.world_units_per_cell(),
+                            world_units_per_cell,
                         )
                     };
                     // Both a light's radii and a vision mode's range are authored in cells, so
                     // each measures against the shape's per-cell world distance, never its
                     // indexing scale — the two coincide on square and differ by √3 on hex.
                     let dist_cells = (((cx - src.vp.0).powi(2) + (cy - src.vp.1).powi(2)).sqrt())
-                        / cell_grid.world_units_per_cell();
+                        / world_units_per_cell;
                     // Lowest applicable floor decides visibility; highest applicable floor decides the hint.
                     // `cell_visible` computes the same min-floor-over-in-range-modes decision
                     // and is reused verbatim by the movement gate (anti-drift).
@@ -2650,6 +2653,9 @@ fn accumulate_visible_cells(
     lenient: bool,
     grid: &dyn grid_shape::GridShape,
 ) {
+    // One grid step's world distance, resolved once: it is a property of the shape, so every
+    // sample of every candidate cell of every source shares the value.
+    let world_units_per_cell = grid.world_units_per_cell();
     for src in sources {
         let poly = source_los_poly(
             src.vp,
@@ -2718,7 +2724,7 @@ fn accumulate_visible_cells(
                         &src.floors,
                         settings,
                         li,
-                        grid.world_units_per_cell(),
+                        world_units_per_cell,
                     )
                 {
                     found = true;
@@ -2733,7 +2739,7 @@ fn accumulate_visible_cells(
                                 &src.floors,
                                 settings,
                                 li,
-                                grid.world_units_per_cell(),
+                                world_units_per_cell,
                             )
                         {
                             found = true;
@@ -2750,7 +2756,7 @@ fn accumulate_visible_cells(
                         &src.floors,
                         settings,
                         li,
-                        grid.world_units_per_cell(),
+                        world_units_per_cell,
                     )
                 {
                     found = true;

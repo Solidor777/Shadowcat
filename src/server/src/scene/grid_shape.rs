@@ -72,11 +72,15 @@ pub(crate) trait GridShape {
     /// distance between two adjacent cell centres.
     ///
     /// This is the conversion for the CLASS of quantity a GM authors as a DISTANCE in cells that
-    /// the engine must measure in world units — light bright/dim radii, a vision mode's
-    /// `default_range`, animation speed, and the router's reported cost all belong to it. Square
-    /// returns its own cell size, so nothing changes there; pointy-top hex returns `√3 · size`,
-    /// because all six axial neighbours sit that far from a hex's centre while `size` is only its
-    /// circumradius.
+    /// the engine must measure in world units — light bright/dim radii, a token's
+    /// `VisionAssignment::range`, animation speed, and the router's reported cost all belong to it.
+    /// `VisionMode::default_range` belongs to the class as an AUTHORED quantity but is not measured
+    /// here: no mask reads it, `token_vision_floors` builds every floor from the assignment's own
+    /// `range`.
+    ///
+    /// Square returns its own cell size, so nothing changes there; pointy-top hex returns
+    /// `√3 · size`, because all six axial neighbours sit that far from a hex's centre while `size`
+    /// is only its circumradius.
     ///
     /// A whole-RECTANGLE quantity is authored in cells too and does NOT convert through this
     /// scalar: the scene's authored bounds go through `world_extent` instead, because a hex block's
