@@ -41,11 +41,12 @@ pub(crate) trait GridShape {
     /// Every candidate cell whose geometry could overlap the pixel-space AABB
     /// `[min.0, max.0] × [min.1, max.1]`. A SUPERSET filter, not an exact one — the caller's own
     /// per-cell center/vertex membership test narrows it. `None` on a degenerate input (non-finite
-    /// `min`/`max`/`cell`, `cell <= 0.0`) or an over-cap span (> `max_cells`), mirroring the
-    /// existing per-site scans' fail-closed `skip` — callers fail closed on `None`. `max_cells` is
-    /// the caller's own DoS bound (vision/explored scans pass `explored::MAX_CELLS_PER_POLYGON`,
-    /// region rasterization passes the 40× tighter `regions::MAX_REGION_CELLS`) — never hardcoded
-    /// here, so routing a tighter-capped caller through this primitive can't LOOSEN its bound.
+    /// `min`/`max`/`cell`, `cell <= 0.0`) or an over-cap span (> `max_cells`); every caller
+    /// (`accumulate_visible_cells`, `player_lit_mask`, `explored::mark_polygons`,
+    /// `regions::rasterize`) fails closed on `None`. `max_cells` is the caller's own DoS bound
+    /// (vision/explored scans pass `explored::MAX_CELLS_PER_POLYGON`, region rasterization passes
+    /// the 40× tighter `regions::MAX_REGION_CELLS`) — never hardcoded here, so routing a
+    /// tighter-capped caller through this primitive can't LOOSEN its bound.
     /// MUST never MISS a cell whose center lies inside the AABB (proven by test).
     fn cells_in_bounds(
         &self,
@@ -280,7 +281,8 @@ impl HexGrid {
         (x, y)
     }
 
-    /// Exposed for the round-trip test above; not part of the `GridShape` trait.
+    /// Exposed for `hex_grid_axial_round_trip_pixel_to_axial_to_pixel`; not part of the
+    /// `GridShape` trait.
     fn pixel_to_axial(&self, p: vision::P) -> (i32, i32) {
         let (qf, rf) = self.pixel_to_axial_frac(p);
         self.axial_round(qf, rf)
