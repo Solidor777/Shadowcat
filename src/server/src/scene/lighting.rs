@@ -178,36 +178,41 @@ fn perimeter_point(w: f64, h: f64, d: f64) -> P {
 
 /// Boundary-projected environment-light occlusion polygons. Environment light enters the scene
 /// from OUTSIDE its boundary; a cell is lit iff an unobstructed line reaches it from some point on
-/// the scene-bounds rectangle past the `blocksLight` walls. The rectangle perimeter is sampled at
-/// ~one point per grid-unit (clamped to `[4, MAX_ENV_LIGHT_SAMPLES]`), and each sample's
-/// visibility polygon is computed with the SAME `vision::visibility_polygon` primitive placed
-/// lights and vision use (never a second, forked occlusion computation). A cell is environment-lit
-/// iff it lies inside ANY sample's polygon (composed by `env_lit`).
+/// the scene rectangle past the `blocksLight` walls. The rectangle perimeter is sampled, and each
+/// sample's visibility polygon is computed with the SAME `vision::visibility_polygon` primitive
+/// placed lights and vision use (never a second, forked occlusion computation). A cell is
+/// environment-lit iff it lies inside ANY sample's polygon (composed by `env_lit`).
 ///
-/// `bounds_grid` is the scene bounds in GRID units (`ResolvedScene.bounds`); `cell_size` is scene
-/// units per cell, so the rectangle in scene units is `(0,0)–(width×cell, height×cell)`. The
-/// raycast bound is that rectangle expanded by one cell so boundary samples sit strictly inside it.
-/// Fail-closed: non-finite or non-positive bounds/`cell_size` ⇒ empty (environment reaches
+/// `extent` is the scene rectangle `(0,0)–extent` in WORLD units, produced by
+/// `GridShape::world_extent` from the scene's authored grid-unit bounds. `cell_size` is the grid's
+/// INDEXING scale and plays two roles that are both discretization, not measurement: it sets the
+/// sample count (one per cell of perimeter, clamped to `[4, MAX_ENV_LIGHT_SAMPLES]`) and the
+/// raycast bound's margin, so boundary samples sit strictly inside it. Sample count is a
+/// convergence knob, not a secrecy one: the sampled union approaches the true boundary-reachable
+/// set FROM BELOW, so a coarser count under-reveals and a finer one is strictly more faithful —
+/// which is why the indexing scale, the smaller of the two scalars on hex, is the right input here
+/// and `world_units_per_cell` is not.
+///
+/// Fail-closed: a non-finite or non-positive `extent` or `cell_size` ⇒ empty (environment reaches
 /// nothing — under-reveal, never over-reveal). The boundary itself never occludes (only interior
 /// `blocksLight` walls do): light enters freely across the scene edge.
 pub fn env_light_polys(
-    bounds_grid: (f64, f64),
+    extent: (f64, f64),
     cell_size: f64,
     light_walls: &[vision::Seg],
 ) -> Vec<Vec<P>> {
-    let (wg, hg) = bounds_grid;
-    if !wg.is_finite()
-        || !hg.is_finite()
-        || wg <= 0.0
-        || hg <= 0.0
+    let (w, h) = extent;
+    if !w.is_finite()
+        || !h.is_finite()
+        || w <= 0.0
+        || h <= 0.0
         || !cell_size.is_finite()
         || cell_size <= 0.0
     {
         return Vec::new();
     }
-    let w = wg * cell_size;
-    let h = hg * cell_size;
-    let n = (2.0 * (wg + hg)).round() as usize;
+    let perim = 2.0 * (w + h);
+    let n = (perim / cell_size).round() as usize;
     let n = n.clamp(4, MAX_ENV_LIGHT_SAMPLES);
     let margin = cell_size.max(1.0);
     let bound = vision::Rect {
@@ -216,7 +221,6 @@ pub fn env_light_polys(
         maxx: w + margin,
         maxy: h + margin,
     };
-    let perim = 2.0 * (w + h);
     (0..n)
         .map(|i| {
             let d = (i as f64) / (n as f64) * perim;
@@ -511,7 +515,7 @@ mod tests {
     #[test]
     fn env_light_polys_open_scene_reaches_every_interior_cell() {
         // No walls: every boundary sample sees the whole scene, so every interior point is env-lit.
-        let polys = env_light_polys((5.0, 5.0), 100.0, &[]);
+        let polys = env_light_polys((500.0, 500.0), 100.0, &[]);
         assert!(!polys.is_empty());
         for p in [(50.0, 50.0), (250.0, 250.0), (450.0, 450.0), (10.0, 490.0)] {
             assert!(env_lit(&polys, p), "open scene lights interior point {p:?}");
@@ -520,9 +524,10 @@ mod tests {
 
     #[test]
     fn env_light_polys_open_scene_equals_global_illumination_at_the_sample_cap() {
-        // bounds (100,100): raw n = round(2*(100+100)) = 400, clamped to MAX_ENV_LIGHT_SAMPLES
-        // (256) — confirm the clamp actually engages (one polygon per sample).
-        let polys = env_light_polys((100.0, 100.0), 100.0, &[]);
+        // A 10000 × 10000 rectangle at cell size 100: raw n = round(perimeter / cell) = 400,
+        // clamped to MAX_ENV_LIGHT_SAMPLES (256) — confirm the clamp actually engages (one
+        // polygon per sample).
+        let polys = env_light_polys((10_000.0, 10_000.0), 100.0, &[]);
         assert_eq!(polys.len(), MAX_ENV_LIGHT_SAMPLES);
         // No walls: even capped at 256 samples over a 40000-unit perimeter, every interior and
         // near-boundary cell is still reached — the wall-less-equals-global-illumination
@@ -565,7 +570,7 @@ mod tests {
                 b: (200.0, 200.0),
             },
         ];
-        let polys = env_light_polys((5.0, 5.0), 100.0, &walls);
+        let polys = env_light_polys((500.0, 500.0), 100.0, &walls);
         assert!(
             !env_lit(&polys, (250.0, 250.0)),
             "sealed interior is not env-lit"
@@ -576,9 +581,9 @@ mod tests {
     #[test]
     fn env_light_polys_fail_closed_on_degenerate_bounds() {
         // Degenerate bounds/cell ⇒ empty ⇒ env reaches nothing (under-reveal).
-        assert!(env_light_polys((0.0, 5.0), 100.0, &[]).is_empty());
-        assert!(env_light_polys((5.0, f64::NAN), 100.0, &[]).is_empty());
-        assert!(env_light_polys((5.0, 5.0), 0.0, &[]).is_empty());
+        assert!(env_light_polys((0.0, 500.0), 100.0, &[]).is_empty());
+        assert!(env_light_polys((500.0, f64::NAN), 100.0, &[]).is_empty());
+        assert!(env_light_polys((500.0, 500.0), 0.0, &[]).is_empty());
         assert!(
             !env_lit(&[], (10.0, 10.0)),
             "empty env_polys is fail-closed (dark)"

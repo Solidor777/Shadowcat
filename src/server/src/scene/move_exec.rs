@@ -2478,10 +2478,20 @@ cell: 100.0,
     /// requires `path[0]` to equal the token's committed position exactly. Returns `(ecs, scene,
     /// token, user, start, goal)`. Vision is unlimited (no vision override) so the whole corridor
     /// is visible to `user`, isolating the wall/footprint interaction under test.
+    ///
+    /// The authored bounds are a CELL COUNT, so the corridor's world span is divided by `SIZE`
+    /// (the same constant the scene's own grid declares, read once rather than restated). On
+    /// square that reproduces the corridor rectangle exactly; on hex the block's world rectangle
+    /// is a shear-dependent function that is strictly LARGER than the corridor span, which
+    /// preserves the fixture's intent — the play area covers the corridor and the gap with room to
+    /// spare — a fortiori.
     fn scene_with_narrow_gap_and_wide_token(
         kind: &str,
         model: MovementModel,
     ) -> (SceneEcs, Uuid, Uuid, Uuid, (f64, f64), (f64, f64)) {
+        /// The scene's authored grid size, shared between the grid declaration and the cell-count
+        /// conversion of the corridor's world span so the two cannot drift apart.
+        const SIZE: f64 = 100.0;
         let scene_id = Uuid::from_u128(10);
         let token_id = Uuid::from_u128(11);
         let user = Uuid::from_u128(1);
@@ -2492,7 +2502,7 @@ cell: 100.0,
         let (start, goal) = if kind == "hex" {
             (hex_cell_center(0, 2), hex_cell_center(4, 2))
         } else {
-            (((0.5) * 100.0, 2.5 * 100.0), (4.5 * 100.0, 2.5 * 100.0))
+            ((0.5 * SIZE, 2.5 * SIZE), (4.5 * SIZE, 2.5 * SIZE))
         };
         // Both grids place `start`/`goal` on the same row (`y` depends only on the row index, not
         // the column), so a single wall gap centered on that shared `y` clears both kinds.
@@ -2518,8 +2528,9 @@ cell: 100.0,
             10,
             0,
             "scene",
-            json!({ "grid": { "kind": kind, "size": 100 }, "background": null,
-                    "bounds": { "width": goal.0 + 400.0, "height": row_y + 400.0 } }),
+            json!({ "grid": { "kind": kind, "size": SIZE }, "background": null,
+                    "bounds": { "width": (goal.0 + 400.0) / SIZE,
+                                "height": (row_y + 400.0) / SIZE } }),
         );
         let mut ecs = SceneEcs::from_documents(
             vec![
@@ -2571,7 +2582,7 @@ cell: 100.0,
             0,
             "scene",
             json!({ "grid": { "kind": "square", "size": 100 }, "background": null,
-                    "bounds": { "width": 300.0, "height": 300.0 } }),
+                    "bounds": { "width": 3.0, "height": 3.0 } }),
         );
         let mut ecs = SceneEcs::from_documents(vec![scene, tok, wall], 0);
         ecs.set_world_settings_for_test(footprint_world_settings("grid-stepped"));
@@ -2613,7 +2624,7 @@ cell: 100.0,
             0,
             "scene",
             json!({ "grid": { "kind": "square", "size": 100 }, "background": null,
-                    "bounds": { "width": 300.0, "height": 300.0 } }),
+                    "bounds": { "width": 3.0, "height": 3.0 } }),
         );
         let mut ecs = SceneEcs::from_documents(vec![scene, tok], 0);
         ecs.set_world_settings_for_test(footprint_world_settings("grid-stepped"));
@@ -2639,7 +2650,7 @@ cell: 100.0,
             0,
             "scene",
             json!({ "grid": { "kind": "square", "size": 100 }, "background": null,
-                    "bounds": { "width": 300.0, "height": 300.0 } }),
+                    "bounds": { "width": 3.0, "height": 3.0 } }),
         );
         let mut ecs = SceneEcs::from_documents(vec![scene, tok], 0);
         ecs.set_world_settings_for_test(footprint_world_settings("grid-stepped"));
@@ -2667,7 +2678,7 @@ cell: 100.0,
             0,
             "scene",
             json!({ "grid": { "kind": "square", "size": 100 }, "background": null,
-                    "bounds": { "width": 300.0, "height": 300.0 } }),
+                    "bounds": { "width": 3.0, "height": 3.0 } }),
         );
         let mut ecs = SceneEcs::from_documents(
             vec![

@@ -68,6 +68,53 @@ pub(crate) trait GridShape {
     /// The cell's polygon vertices in scene coordinates (for leniency corner-clip tests): 4 for a
     /// square, 6 for a pointy-top hex.
     fn cell_vertices(&self, c: Cell, cell: f64) -> Vec<vision::P>;
+    /// World-space distance represented by ONE unit of grid distance on this shape — the
+    /// distance between two adjacent cell centres.
+    ///
+    /// This is the conversion for a quantity a GM authors in CELLS that the engine must measure
+    /// in world units: light bright/dim radii, a vision mode's `default_range`, animation speed,
+    /// and the router's reported cost. Square returns its own cell size, so nothing changes
+    /// there; pointy-top hex returns `√3 · size`, because all six axial neighbours sit that far
+    /// from a hex's centre while `size` is only its circumradius.
+    ///
+    /// NOT the cell INDEXING scale. `cell_of`, `cell_center`, `cells_in_bounds`, `cell_bounds`,
+    /// `footprint_cells` and `line_traversal` index against the shape's own stored scale and must
+    /// never be re-scaled by this value. The two coincide on square, which is exactly why a site
+    /// that confuses them stays invisible until a hex scene runs through it.
+    ///
+    /// NOT the token footprint scale either. A token's footprint radius is a square block's
+    /// half-diagonal in cells, and its model is a square block, so it converts through the
+    /// indexing scale — scaling it here would give a 1×1 token a disc past the hex inradius and
+    /// make a medium creature occupy seven hexes, which is a rules change rather than a unit fix.
+    fn world_units_per_cell(&self) -> f64;
+    /// The origin-anchored world rectangle `(0,0)–result` for the authored index block
+    /// `[0, bounds_cells.0) × [0, bounds_cells.1)`, whose units are GRID units.
+    ///
+    /// The guarantee differs by grid kind and consumers must not assume the stronger one:
+    /// - **Square** — an exact COVER. Cell `(i,j)` occupies `[i·cell,(i+1)·cell)` per axis, so
+    ///   the block occupies exactly `(w·cell, h·cell)` with no shear and no overhang.
+    /// - **Hex** — a CENTRE cover. Every cell's centre lies inside, and the extreme cell
+    ///   `(w-1, h-1)`'s far vertices lie inside, but the axial block is a rhombus whose origin
+    ///   row reaches `y = -size` and whose origin cell reaches `x = -√3/2·size`; those margins
+    ///   are OUTSIDE the rectangle. Claiming a full cover here would be false.
+    ///
+    /// What the hex truncation costs each consumer, since over-covering is NOT free for all of
+    /// them:
+    /// - `navmesh::build_navmesh` triangulates this rectangle, so a continuous position inside
+    ///   the origin row's negative-y margin is off-mesh and routes as unreachable. Every cell
+    ///   CENTRE — the only position a grid-snapped token occupies — is on-mesh.
+    /// - `lighting::env_light_polys` walks this rectangle's perimeter, so the truncated margin
+    ///   gets no boundary sample of its own and is lit only through neighbouring samples:
+    ///   under-reveal.
+    /// - `vision::bound_for_scene` unions this rectangle after clamping its low edges to `≤ 0`
+    ///   and expanding by its own `margin`, so the truncation shows only where that margin is
+    ///   smaller than the circumradius: under-reveal again.
+    ///
+    /// Growing the rectangle is not a free hedge in the other direction: the vision bound and the
+    /// lit mask are BUILT from it rather than merely gated by it, so a larger rectangle widens
+    /// what a player is told they can see, and the environment-light perimeter walk is not
+    /// mask-gated at all.
+    fn world_extent(&self, bounds_cells: (f64, f64)) -> (f64, f64);
     /// Admissible A* heuristic (lower bound on the true `neighbors_with_cost` path cost) from cell
     /// `from` to cell `to`. Guides search ORDER only — never gates a cell — so it cannot affect the
     /// `route ⊆ gate-allowed` invariant. `SquareGrid` returns the existing `DiagonalRule`-based
@@ -225,6 +272,17 @@ impl GridShape for SquareGrid {
     /// `DiagonalRule`-based square estimate, covering all 4 diagonal rules.
     fn heuristic(&self, from: Cell, to: Cell) -> f64 {
         pathfinding::heuristic(self.rule, from, to)
+    }
+
+    fn world_units_per_cell(&self) -> f64 {
+        self.cell
+    }
+
+    fn world_extent(&self, bounds_cells: (f64, f64)) -> (f64, f64) {
+        // Cell (i,j) covers [i*cell,(i+1)*cell) on each axis, so a w × h block anchored at the
+        // origin spans exactly (w*cell, h*cell) with no shear and no overhang.
+        let (w, h) = bounds_cells;
+        (w.max(0.0) * self.cell, h.max(0.0) * self.cell)
     }
 
     fn kind(&self) -> GridKind {
@@ -581,6 +639,26 @@ impl GridShape for HexGrid {
         let dq = to.0 as i64 - from.0 as i64;
         let dr = to.1 as i64 - from.1 as i64;
         ((dq.abs() + dr.abs() + (dq + dr).abs()) as f64) / 2.0
+    }
+
+    fn world_units_per_cell(&self) -> f64 {
+        // Every axial neighbour is √3·size away: (1,0) → (√3·size, 0); (0,1) →
+        // (√3/2·size, 3/2·size), whose length is size·√(3/4 + 9/4) = √3·size.
+        self.size * 3.0_f64.sqrt()
+    }
+
+    fn world_extent(&self, bounds_cells: (f64, f64)) -> (f64, f64) {
+        // The far corner of the axial block is cell (w-1, h-1): `axial_to_pixel` is monotone
+        // increasing in q on x, and in r on BOTH axes (the shear), so that cell maximises each
+        // coordinate. Add the pointy-top half-extents — √3/2·size across the flats (x) and the
+        // circumradius `size` to a vertex (y) — so that hex's far vertices are inside.
+        let (w, h) = bounds_cells;
+        let qmax = (w - 1.0).max(0.0);
+        let rmax = (h - 1.0).max(0.0);
+        let sqrt3 = 3.0_f64.sqrt();
+        let max_x = self.size * (sqrt3 * qmax + sqrt3 / 2.0 * rmax) + self.size * sqrt3 / 2.0;
+        let max_y = self.size * 1.5 * rmax + self.size;
+        (max_x, max_y)
     }
 
     fn kind(&self) -> GridKind {
@@ -1620,6 +1698,160 @@ mod tests {
             assert!(
                 (d - 50.0).abs() < 1e-9,
                 "each hex vertex sits at radius = size from center"
+            );
+        }
+    }
+
+    #[test]
+    fn square_world_units_per_cell_is_the_cell_size() {
+        // Discrimination: fails if the square implementation returns anything other than its own
+        // `cell` — including a hex-shaped formula accidentally shared between the two impls.
+        let g = SquareGrid {
+            cell: 37.5,
+            rule: DiagonalRule::Chebyshev,
+        };
+        assert_eq!(g.world_units_per_cell(), 37.5);
+    }
+
+    #[test]
+    fn hex_world_units_per_cell_equals_the_distance_between_adjacent_centers() {
+        // Derived from the geometry, not from the implementation: the value must equal the
+        // measured distance from a hex's centre to each of its six neighbours' centres.
+        // Discrimination: fails for `size`, `1.5*size`, or any constant other than `√3*size`,
+        // because the expectation is computed from `cell_center` rather than restated.
+        let g = HexGrid { size: 50.0 };
+        let origin = g.cell_center((0, 0));
+        for (dq, dr) in [(1, 0), (1, -1), (0, -1), (-1, 0), (-1, 1), (0, 1)] {
+            let n = g.cell_center((dq, dr));
+            let d = ((n.0 - origin.0).powi(2) + (n.1 - origin.1).powi(2)).sqrt();
+            assert!(
+                (d - g.world_units_per_cell()).abs() < 1e-9,
+                "neighbour ({dq},{dr}) sits {d} away, world_units_per_cell reports {}",
+                g.world_units_per_cell()
+            );
+        }
+    }
+
+    #[test]
+    fn square_world_extent_wholly_contains_every_cell_of_the_authored_block() {
+        // Square's guarantee is a FULL cover: every cell's own rectangle lies inside the extent.
+        // Discrimination: fails if the square extent gains a margin, loses a cell through a
+        // `w - 1` term, or picks up a per-axis asymmetry — the containment check is per cell and
+        // the closed form is asserted separately.
+        let g = SquareGrid {
+            cell: 20.0,
+            rule: DiagonalRule::Chebyshev,
+        };
+        let (w, h) = (8.0_f64, 5.0_f64);
+        let (ex, ey) = g.world_extent((w, h));
+        for i in 0..w as i32 {
+            for j in 0..h as i32 {
+                let c = g.cell_center((i, j));
+                assert!(
+                    c.0 + 10.0 <= ex + 1e-9,
+                    "cell ({i},{j}) exceeds extent x {ex}"
+                );
+                assert!(
+                    c.1 + 10.0 <= ey + 1e-9,
+                    "cell ({i},{j}) exceeds extent y {ey}"
+                );
+                assert!(
+                    c.0 - 10.0 >= -1e-9 && c.1 - 10.0 >= -1e-9,
+                    "cell ({i},{j}) starts below the origin"
+                );
+            }
+        }
+        assert_eq!((ex, ey), (160.0, 100.0));
+    }
+
+    #[test]
+    fn hex_world_extent_contains_every_cell_centre_and_the_far_cells_vertices() {
+        // Hex's guarantee is a CENTRE cover plus the extreme cell's far vertices — not a full
+        // cover; the origin-side truncation is asserted by the next test.
+        // Discrimination: fails for a `w*size`/`h*size` reading, for a per-axis pitch that omits
+        // the axial shear, and for any formula that leaves the far cell's own far vertex outside
+        // — every check is derived from `cell_center` plus the pointy-top half-extents.
+        let g = HexGrid { size: 50.0 };
+        let (w, h) = (9.0_f64, 7.0_f64);
+        let (ex, ey) = g.world_extent((w, h));
+        let half_x = 50.0 * 3.0_f64.sqrt() / 2.0;
+        for q in 0..w as i32 {
+            for r in 0..h as i32 {
+                let c = g.cell_center((q, r));
+                assert!(
+                    c.0 >= -1e-9 && c.1 >= -1e-9,
+                    "hex ({q},{r}) centre is below the origin"
+                );
+                assert!(
+                    c.0 <= ex + 1e-9 && c.1 <= ey + 1e-9,
+                    "hex ({q},{r}) centre exceeds the extent"
+                );
+            }
+        }
+        let far = g.cell_center((w as i32 - 1, h as i32 - 1));
+        assert!(
+            far.0 + half_x <= ex + 1e-9,
+            "the far hex's right vertex exceeds extent x {ex}"
+        );
+        assert!(
+            far.1 + 50.0 <= ey + 1e-9,
+            "the far hex's bottom vertex exceeds extent y {ey}"
+        );
+    }
+
+    #[test]
+    fn hex_world_extent_leaves_the_origin_cells_negative_margin_outside() {
+        // The truncation the extent's doc states, pinned so the doc cannot drift into claiming a
+        // full cover: the origin hex is centred ON the origin, so its lower vertex sits at
+        // `(0, -size)` and its left vertices at `x = -√3/2·size`, both outside an origin-anchored
+        // rectangle. A consumer that treats the rectangle as the whole play area excludes them.
+        // Discrimination: fails if `world_extent` ever starts returning a rectangle with a
+        // negative origin, which would silently change what `(0,0)–extent` means for every
+        // consumer that assumes the origin corner.
+        let g = HexGrid { size: 50.0 };
+        let (ex, ey) = g.world_extent((9.0, 7.0));
+        let half_x = 50.0 * 3.0_f64.sqrt() / 2.0;
+        let inside = |p: (f64, f64)| p.0 >= 0.0 && p.1 >= 0.0 && p.0 <= ex && p.1 <= ey;
+        assert!(
+            !inside((0.0, -50.0)),
+            "the origin hex's lower vertex is outside"
+        );
+        assert!(
+            !inside((-half_x, -25.0)),
+            "the origin hex's left vertex is outside"
+        );
+        assert!(
+            inside(g.cell_center((0, 0))),
+            "the origin hex's centre is inside"
+        );
+    }
+
+    #[test]
+    fn hex_world_extent_exceeds_the_bounds_size_product_on_both_axes() {
+        // The axial shear makes a w×h block a rhombus, so its covering rectangle is wider than a
+        // per-axis pitch product on both axes.
+        // Discrimination: fails if the hex impl falls back to the square formula.
+        let g = HexGrid { size: 50.0 };
+        let (w, h) = (40.0_f64, 40.0_f64);
+        let (ex, ey) = g.world_extent((w, h));
+        assert!(ex > w * 50.0, "hex extent x {ex} must exceed {}", w * 50.0);
+        assert!(ey > h * 50.0, "hex extent y {ey} must exceed {}", h * 50.0);
+    }
+
+    #[test]
+    fn world_extent_is_positive_for_a_sub_single_cell_block() {
+        // A fractional authored bound below one cell must not produce a negative or zero
+        // rectangle through a `w - 1` term. Discrimination: fails if either impl subtracts one
+        // cell without clamping.
+        let sq = SquareGrid {
+            cell: 20.0,
+            rule: DiagonalRule::Chebyshev,
+        };
+        let hx = HexGrid { size: 20.0 };
+        for (ex, ey) in [sq.world_extent((0.25, 0.25)), hx.world_extent((0.25, 0.25))] {
+            assert!(
+                ex > 0.0 && ey > 0.0,
+                "extent must stay positive, got ({ex}, {ey})"
             );
         }
     }

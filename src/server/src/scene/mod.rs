@@ -271,9 +271,10 @@ pub(crate) struct VisionMoveInputs {
     /// Vision polygons for every owned token in the scene EXCEPT the moving token, at their
     /// committed (stationary) positions. Constant across all samples of one move.
     static_polys: Vec<Vec<vision::P>>,
-    /// The scene's own bounded extent (`ResolvedScene.bounds`) — so `polygons_at`'s per-sample
-    /// bound stays scene-bounds-aware identically to `player_vision_polygons` (no fork).
-    scene_bounds: (f64, f64),
+    /// The scene's own WORLD-unit rectangle (`SceneEcs::scene_world_extent`) — so `polygons_at`'s
+    /// per-sample bound stays scene-extent-aware identically to `player_vision_polygons` (no
+    /// fork). Never the raw authored bounds, which are a cell COUNT.
+    scene_extent: (f64, f64),
     /// True when the user owns no token in this scene: `polygons_at` returns empty (fail-closed).
     empty: bool,
 }
@@ -290,7 +291,7 @@ impl VisionMoveInputs {
         let bound = vision::bound_for_scene(
             viewpoint,
             &self.walls,
-            self.scene_bounds,
+            self.scene_extent,
             VISION_BOUND_MARGIN,
         );
         let moving_poly = vision::visibility_polygon(viewpoint, &self.walls, bound);
@@ -939,6 +940,25 @@ impl SceneEcs {
         self.resolve_grid_shape_with_rule(scene, cell, self.resolved_diagonal_rule())
     }
 
+    /// The scene's authored bounds converted to a world-unit rectangle through its own
+    /// `GridShape` — the conversion every vision-bound consumer that does not already hold a
+    /// resolved shape and settings reads, so the raw grid-unit value never reaches a comparison
+    /// against world coordinates. Equal by construction to
+    /// `resolve_grid_shape(scene, cell).world_extent(resolve_scene(scene).bounds)`, which is what
+    /// the sites already holding both compute inline.
+    ///
+    /// `(0.0, 0.0)` when the scene has no live document: `scene_grid_sizes` carries an entry for
+    /// every live scene, so an absent entry means the scene is gone and no extent may be
+    /// synthesised. A zero extent contributes nothing to `vision::bound_for_scene`'s union,
+    /// leaving the wall-derived bound — the under-reveal direction.
+    pub(crate) fn scene_world_extent(&self, scene: Uuid) -> (f64, f64) {
+        let Some(cell) = self.scene_grid_sizes().get(&scene).copied() else {
+            return (0.0, 0.0);
+        };
+        self.resolve_grid_shape(scene, cell)
+            .world_extent(self.resolve_scene(scene).bounds)
+    }
+
     /// The scene's `GridKind`, for a caller that holds no decoded scene engine. Performs exactly
     /// the lookup `resolve_grid_shape_with_rule` already performed inline, and defers the
     /// comparison to `grid_kind_from`, so the shape path pays nothing new and the decision has
@@ -1156,8 +1176,8 @@ impl SceneEcs {
         let mut out = Vec::with_capacity(viewpoints.len());
         for (scene, vp) in viewpoints {
             let walls = self.sight_walls(scene);
-            let scene_bounds = self.resolve_scene(scene).bounds;
-            let bound = vision::bound_for_scene(vp, &walls, scene_bounds, VISION_BOUND_MARGIN);
+            let scene_extent = self.scene_world_extent(scene);
+            let bound = vision::bound_for_scene(vp, &walls, scene_extent, VISION_BOUND_MARGIN);
             out.push((scene, vision::visibility_polygon(vp, &walls, bound)));
         }
         out
@@ -1195,12 +1215,12 @@ impl SceneEcs {
                 static_vps.push((t.x, t.y));
             }
         }
-        let scene_bounds = self.resolve_scene(scene).bounds;
+        let scene_extent = self.scene_world_extent(scene);
         if !has_owned {
             return VisionMoveInputs {
                 walls: Vec::new(),
                 static_polys: Vec::new(),
-                scene_bounds,
+                scene_extent,
                 empty: true,
             };
         }
@@ -1210,14 +1230,14 @@ impl SceneEcs {
         let static_polys = static_vps
             .iter()
             .map(|&vp| {
-                let bound = vision::bound_for_scene(vp, &walls, scene_bounds, VISION_BOUND_MARGIN);
+                let bound = vision::bound_for_scene(vp, &walls, scene_extent, VISION_BOUND_MARGIN);
                 vision::visibility_polygon(vp, &walls, bound)
             })
             .collect();
         VisionMoveInputs {
             walls,
             static_polys,
-            scene_bounds,
+            scene_extent,
             empty: false,
         }
     }
@@ -1341,8 +1361,9 @@ impl SceneEcs {
     /// Build-or-fetch the footprint-inflated navmesh for `(scene, footprint_radius_cells,
     /// walls)`, memoized in `navmesh_cache` keyed on a quantized radius (nearest 1/1000 cell —
     /// see the field doc comment) plus an exact wall-set key (`wall_set_key`). Returns `None`
-    /// when `navmesh::build_navmesh` fails closed (degenerate bounds/cell/footprint, or an
-    /// over-cap obstacle count) — callers must treat this exactly like the grid router's
+    /// when `navmesh::build_navmesh` fails closed (a degenerate world extent — which is what a
+    /// degenerate cell size becomes — a degenerate footprint distance, or an over-cap obstacle
+    /// count) — callers must treat this exactly like the grid router's
     /// `Unreachable` (no silent all-pass). A failed build is intentionally NOT cached: caching a
     /// failure under a mutable key would either mask a later successful build once the scene's
     /// geometry is fixed up (stale-failure, never re-attempted without an unrelated
@@ -1366,9 +1387,10 @@ impl SceneEcs {
         // saturates NaN to 0 and rounds a tiny negative (e.g. -0.0001) to -0, which also casts to
         // 0 — colliding with the legitimate key for `footprint_radius_cells == 0.0`. Without this
         // upfront guard a degenerate radius would silently hit that cached entry and return a
-        // valid-looking `Some` mesh instead of failing closed, bypassing `build_navmesh`'s own
-        // range check entirely on any call after the 0.0 radius has already been cached. Mirrors
-        // `build_navmesh`'s guard exactly so the two stay consistent.
+        // valid-looking `Some` mesh instead of failing closed. This is the SOLE site of the
+        // radius-RANGE refusal: `build_navmesh` receives the already-converted world distance and
+        // refuses only on that distance's own magnitude, so the range check cannot be re-derived
+        // downstream and must not be dropped here.
         if !(0.0..=crate::scene::pathfinding::MAX_FOOTPRINT_CELLS).contains(&footprint_radius_cells)
         {
             return None;
@@ -1380,12 +1402,17 @@ impl SceneEcs {
         if let Some(cached) = self.navmesh_cache.lock().unwrap().get(&key) {
             return Some(cached.clone());
         }
-        let bounds = self.resolve_scene(scene).bounds;
         // An absent `scene_grid_sizes` entry means the scene has no live document — refuse
         // rather than synthesize a grid (`scene_grid_sizes`'s own doc comment is the source
         // of this invariant; every reader here keys off it).
         let cell = self.scene_grid_sizes().get(&scene).copied()?;
-        let built = navmesh::build_navmesh(bounds, cell, walls, footprint_radius_cells)?;
+        let grid = self.resolve_grid_shape(scene, cell);
+        let extent = grid.world_extent(self.resolve_scene(scene).bounds);
+        // The footprint radius is authored against the INDEXING scale (a square block's
+        // half-diagonal in cells), not the per-cell world distance — see
+        // `GridShape::world_units_per_cell`'s own note on why scaling it is a rules change.
+        let footprint_scene = footprint_radius_cells * cell;
+        let built = navmesh::build_navmesh(extent, footprint_scene, walls)?;
         let arc = std::sync::Arc::new(built);
         self.navmesh_cache.lock().unwrap().insert(key, arc.clone());
         Some(arc)
@@ -1515,10 +1542,12 @@ impl SceneEcs {
                         },
                     )?;
                     // `find` reports cost in CELLS; the continuous engine reports SCENE UNITS
-                    // (parity with the polyanya path below). Convert before smoothing carries it
-                    // through.
+                    // (parity with the polyanya path below, which measures Euclidean length).
+                    // The conversion is the shape's own per-cell world distance, not the cell
+                    // size: on hex those differ by the √3 factor between a hex's circumradius
+                    // and the distance to its neighbours.
                     let weighted = pathfinding::PathOutcome {
-                        cost: weighted.cost * cell,
+                        cost: weighted.cost * grid_shape.world_units_per_cell(),
                         ..weighted
                     };
                     // `grid_shape`, not `euclid_shape`: the smoother's cell indexing must match the
@@ -1912,7 +1941,8 @@ impl SceneEcs {
             lights,
             &light_walls,
             self.sight_walls(scene),
-            settings.bounds,
+            self.resolve_grid_shape(scene, cell)
+                .world_extent(settings.bounds),
             cell,
         )
     }
@@ -1923,12 +1953,16 @@ impl SceneEcs {
     /// then call this to do the raycast only on a fingerprint mismatch. `lighting_inputs` itself
     /// is unchanged behavior — it always gathers then immediately raycasts, same as before this
     /// split.
+    ///
+    /// `extent` is the scene's WORLD-unit rectangle `(0,0)–extent`, produced by
+    /// `GridShape::world_extent` from the scene's authored grid-unit bounds — the raw bounds are a
+    /// cell COUNT and must never reach `env_light_polys`, which measures against wall coordinates.
     fn lighting_inputs_from(
         all_bright: bool,
         lights: Vec<lighting::Light>,
         light_walls: &[vision::Seg],
         sight_walls: Vec<vision::Seg>,
-        bounds: (f64, f64),
+        extent: (f64, f64),
         cell: f64,
     ) -> LightingInputs {
         let lit_polys: Vec<Vec<vision::P>> = lights
@@ -1943,7 +1977,7 @@ impl SceneEcs {
         let env_polys = if all_bright {
             Vec::new()
         } else {
-            lighting::env_light_polys(bounds, cell, light_walls)
+            lighting::env_light_polys(extent, cell, light_walls)
         };
         LightingInputs {
             all_bright,
@@ -2074,7 +2108,7 @@ impl SceneEcs {
                     src.vp,
                     &li.sight_walls,
                     settings.los_restriction,
-                    settings.bounds,
+                    cell_grid.world_extent(settings.bounds),
                 );
                 if poly.len() < 3 {
                     continue;
@@ -2317,15 +2351,15 @@ impl SceneEcs {
         self.visible_cells_recompute_count
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
+        let grid = self.resolve_grid_shape(scene, cell);
         let li = Self::lighting_inputs_from(
             all_bright,
             lights,
             &light_walls,
             sight_walls,
-            settings.bounds,
+            grid.world_extent(settings.bounds),
             cell,
         );
-        let grid = self.resolve_grid_shape(scene, cell);
         let mut mask = BTreeSet::new();
         accumulate_visible_cells(&mut mask, &sources, &settings, cell, &li, lenient, &*grid);
 
@@ -2550,7 +2584,7 @@ fn accumulate_visible_cells(
             src.vp,
             &li.sight_walls,
             settings.los_restriction,
-            settings.bounds,
+            grid.world_extent(settings.bounds),
         );
         if poly.len() < 3 {
             continue;
@@ -2654,19 +2688,20 @@ fn cell_visible(floors: &[(f64, f64, Option<String>)], cl_level: f64, dist_cells
 
 /// The LOS polygon for one vision source: the raycast visibility polygon when `los_restriction`
 /// is on, else the whole bound box as a rectangle (whole-scene visible). Source: raycast
-/// (`vision::visibility_polygon`). `scene_bounds` (`ResolvedScene.bounds`) is unioned into the
-/// wall-derived bound so a wall-less (or sparsely-walled) scene reveals its own full authored
-/// extent instead of a degenerate `viewpoint±VISION_BOUND_MARGIN` box — the same
-/// `vision::bound_for_scene` fix `player_vision_polygons`/`player_vision_inputs` already apply,
-/// generalized to this shared source (feeds both `player_lit_mask` and `visible_cells`/
-/// `visible_cells_cached`, never a forked bound computation).
+/// (`vision::visibility_polygon`). `scene_extent` is the scene's WORLD-unit rectangle
+/// (`GridShape::world_extent` of the authored grid-unit bounds), unioned into the wall-derived
+/// bound so a wall-less (or sparsely-walled) scene reveals its own full authored extent instead of
+/// a degenerate `viewpoint±VISION_BOUND_MARGIN` box — the same `vision::bound_for_scene` the
+/// `player_vision_polygons`/`player_vision_inputs` paths apply, generalized to this shared source
+/// (feeds both `player_lit_mask` and `visible_cells`/`visible_cells_cached`, never a forked bound
+/// computation).
 fn source_los_poly(
     vp: vision::P,
     sight_walls: &[vision::Seg],
     los_restriction: bool,
-    scene_bounds: (f64, f64),
+    scene_extent: (f64, f64),
 ) -> Vec<vision::P> {
-    let b = vision::bound_for_scene(vp, sight_walls, scene_bounds, VISION_BOUND_MARGIN);
+    let b = vision::bound_for_scene(vp, sight_walls, scene_extent, VISION_BOUND_MARGIN);
     if los_restriction {
         vision::visibility_polygon(vp, sight_walls, b)
     } else {
@@ -4984,6 +5019,7 @@ mod tests {
                 "brightRadius": 3.0, "dimRadius": 6.0, "enabled": true
             }),
         );
+        let scene_id = Uuid::from_u128(10);
         let ecs = SceneEcs::from_documents(vec![doc(10, None, "scene"), tok, light], 0);
         let mask = ecs.player_lit_mask(player);
         let lit_cells: Vec<_> = mask.iter().flat_map(|s| s.cells.iter()).collect();
@@ -4991,11 +5027,39 @@ mod tests {
             !lit_cells.is_empty(),
             "token with normal+darkvision under bright light must see at least one cell"
         );
-        // Every lit cell must carry None: normal's floor (0.34) > darkvision's floor (0.0),
-        // so normal is the highest-admitting mode and its None hint suppresses desaturate.
+        // Which cells are BRIGHT is read from the data, not restated: the light sits at the
+        // token's own position, so that cell's own illumination band names the brightest band
+        // present, and every cell sharing it is a brightly-lit cell.
+        let cell = *ecs
+            .scene_grid_sizes()
+            .get(&scene_id)
+            .expect("the fixture's scene has a grid size");
+        let token_cell = ecs.resolve_grid_shape(scene_id, cell).cell_of((50.0, 50.0));
+        let bright_band = lit_cells
+            .iter()
+            .find(|(i, j, _, _, _)| (*i, *j) == token_cell)
+            .map(|(_, _, b, _, _)| *b)
+            .expect("the cell holding both the token and the light is lit");
+        // Every brightly-lit cell must carry None: normal's floor (0.34) > darkvision's floor
+        // (0.0), so normal is the highest-admitting mode there and its None hint suppresses
+        // desaturate.
         assert!(
-            lit_cells.iter().all(|(_, _, _, _, h)| h.is_none()),
+            lit_cells
+                .iter()
+                .filter(|(_, _, b, _, _)| *b == bright_band)
+                .all(|(_, _, _, _, h)| h.is_none()),
             "normal-floor wins in bright cell: desaturate hint must be suppressed (None)"
+        );
+        // The suppression above is a per-cell DECISION, not an inert hint field: the same mask's
+        // darker cells — which only darkvision admits, since normal's floor excludes them — do
+        // carry the hint. Without this the assertion would hold just as well if hints were never
+        // emitted at all.
+        assert!(
+            lit_cells
+                .iter()
+                .any(|(_, _, b, _, h)| *b != bright_band && h.is_some()),
+            "a darker cell admitted only by darkvision must carry its hint, so the bright cell's \
+             None is a suppression rather than an absence"
         );
     }
 
@@ -6761,7 +6825,8 @@ explored: // GM: unrestricted mask
     /// blocksMove wall at x=150 spanning y∈[0,100]. Continuous movement model (so the router
     /// goes through `navmesh_for`'s per-requester obstacle set — the mechanism this fixture
     /// exercises). `movement_restriction: unrestricted` so the visibility mask is not the
-    /// variable under test. Bounds are wide (400×400) so a detour around the wall's y=100
+    /// variable under test. The authored 4x4 block of cells at cell 100 gives a 400x400 world
+    /// rectangle, wide enough that a detour around the wall's y=100
     /// endpoint exists. Returns `(ecs, scene, user, token)`; `owner_is_gm` only selects which
     /// fixed user id is returned (routing GM-ness is the separate `is_gm` argument callers pass
     /// to `pathfind` directly — this fixture places no GM/player distinction on the token or
@@ -6771,7 +6836,7 @@ explored: // GM: unrestricted mask
             10,
             "scene",
             json!({ "grid": { "kind": "square", "size": 100 }, "background": null,
-                    "bounds": { "width": 400.0, "height": 400.0 },
+                    "bounds": { "width": 4.0, "height": 4.0 },
                     "vision": { "movementModel": "continuous" } }),
         );
         let scene_id = Uuid::from_u128(10);
@@ -7052,8 +7117,9 @@ explored: // GM: unrestricted mask
 
     // --- wall-less scene full intrascene vision ---
 
-    /// A wall-less 40x40-unit scene must reveal its own full bounded extent, not a small
-    /// `VISION_BOUND_MARGIN` box around the viewpoint.
+    /// A wall-less scene authored as a 5x5 block of cells at cell 100 — a 500x500 world
+    /// rectangle — must reveal its own full extent, not a small `VISION_BOUND_MARGIN` box around
+    /// the viewpoint.
     #[test]
     fn wall_less_scene_gives_full_intrascene_vision_not_a_degenerate_box() {
         let user = Uuid::from_u128(7);
@@ -7069,7 +7135,7 @@ explored: // GM: unrestricted mask
             10,
             "scene",
             json!({ "grid": { "kind": "square", "size": 100 }, "background": null,
-                    "bounds": { "width": 500.0, "height": 500.0 } }),
+                    "bounds": { "width": 5.0, "height": 5.0 } }),
         );
         let ecs = SceneEcs::from_documents(vec![scene, tok], 0);
 
@@ -7103,7 +7169,7 @@ explored: // GM: unrestricted mask
             10,
             "scene",
             json!({ "grid": { "kind": "square", "size": 100 }, "background": null,
-                    "bounds": { "width": 500.0, "height": 500.0 } }),
+                    "bounds": { "width": 5.0, "height": 5.0 } }),
         );
         let ecs = SceneEcs::from_documents(vec![scene, tok], 0);
 
@@ -7135,7 +7201,7 @@ explored: // GM: unrestricted mask
             10,
             "scene",
             json!({ "grid": { "kind": "square", "size": 100 }, "background": null,
-                    "bounds": { "width": 500.0, "height": 500.0 } }),
+                    "bounds": { "width": 5.0, "height": 5.0 } }),
         );
         let ecs = SceneEcs::from_documents(vec![scene, tok], 0);
 
@@ -7182,10 +7248,11 @@ explored: // GM: unrestricted mask
 
     // --- source_los_poly wall-less degenerate box (player_lit_mask/visible_cells) ---
 
-    /// A wall-less 500x500-unit scene, all-bright lighting (isolates the bound-box defect from
+    /// A wall-less scene authored as a 5x5 block of cells at cell 100 — a 500x500 world
+    /// rectangle — with all-bright lighting (isolates the bound-box defect from
     /// illumination), `losRestriction` off (so `source_los_poly` takes the plain-rectangle branch,
     /// the branch susceptible to the bound-box defect). Cell (4,4) — center (450,450) — lies within the
-    /// scene's authored bounds but strictly outside a degenerate
+    /// scene's authored extent but strictly outside a degenerate
     /// `viewpoint±VISION_BOUND_MARGIN(100)` box around the token at (50,50): `[-50,-50]..[150,150]`.
     fn wall_less_large_scene_all_bright() -> (SceneEcs, Uuid, Uuid) {
         let user = Uuid::from_u128(7);
@@ -7201,7 +7268,7 @@ explored: // GM: unrestricted mask
             10,
             "scene",
             json!({ "grid": { "kind": "square", "size": 100 }, "background": null,
-                    "bounds": { "width": 500.0, "height": 500.0 } }),
+                    "bounds": { "width": 5.0, "height": 5.0 } }),
         );
         let mut ecs = SceneEcs::from_documents(vec![scene, tok], 0);
         ecs.set_world_settings_for_test(json!({
@@ -7282,7 +7349,8 @@ explored: // GM: unrestricted mask
     /// equals the hardcoded `((i+0.5)*cell,(j+0.5)*cell)` square formula, so a regression to
     /// non-square center math in that function diverges from this frozen set immediately, without
     /// depending on the broader frozen-fixture parity battery. Reuses
-    /// `wall_less_large_scene_all_bright` (one owned token, no walls, all-bright, 500x500/cell-100).
+    /// `wall_less_large_scene_all_bright` (one owned token, no walls, all-bright, a 5x5
+    /// block at cell 100).
     #[test]
     fn accumulate_visible_cells_routes_through_grid_shape_cell_center_not_hardcoded() {
         let (ecs, user, scene_id) = wall_less_large_scene_all_bright();
@@ -7300,7 +7368,8 @@ explored: // GM: unrestricted mask
     /// immediately. Companion to `accumulate_visible_cells_routes_through_grid_shape_cell_center_not_hardcoded`,
     /// applied to the OTHER (separate) secrecy-egress call site; the pinned set matches the strict
     /// movement-gate set (`visible_cells` strict ≡ `player_lit_mask` cells). Reuses
-    /// `wall_less_large_scene_all_bright` (one owned token, no walls, all-bright, 500x500/cell-100).
+    /// `wall_less_large_scene_all_bright` (one owned token, no walls, all-bright, a 5x5
+    /// block at cell 100).
     #[test]
     fn player_lit_mask_routes_through_grid_shape_cell_center_not_hardcoded() {
         let (ecs, user, scene_id) = wall_less_large_scene_all_bright();
@@ -7316,10 +7385,15 @@ explored: // GM: unrestricted mask
         assert_eq!(got, expected);
     }
 
-    /// A wall-less pointy-top hex scene (size 50), all-bright, LOS off, authored bounds 240x240,
-    /// one owned instanced token at hex (0,0) = pixel (0,0) with unlimited "normal" vision.
-    /// `source_los_poly` is the rectangle [-100,240] x [-100,240] (bound_for_scene:
-    /// min(0-100,0)=-100 on each low edge, max(0+100,240)=240 on each high edge).
+    /// A wall-less pointy-top hex scene (size 50), all-bright, LOS off, one owned instanced token
+    /// at hex (0,0) = pixel (0,0) with unlimited "normal" vision.
+    ///
+    /// The authored block is 3.2 x 3.0 hexes, which is fractional because a hex block's world
+    /// rectangle is a shear-dependent function of the block rather than a per-axis product.
+    /// `HexGrid { size: 50 }::world_extent((3.2, 3.0))` evaluates
+    /// `(√3·50·(2.2 + 1.0) + √3/2·50, 50·1.5·2 + 50)` to `(320.429…, 200)`, so `source_los_poly`
+    /// is the rectangle `[-100, 320.429…] x [-100, 200]` — `bound_for_scene` takes
+    /// `min(0-100, 0) = -100` on each low edge and `max(0+100, extent) = extent` on each high edge.
     fn hex_open_scene() -> (SceneEcs, Uuid, Uuid) {
         let user = Uuid::from_u128(7);
         let scene_id = Uuid::from_u128(10);
@@ -7334,7 +7408,7 @@ explored: // GM: unrestricted mask
             10,
             "scene",
             json!({ "grid": { "kind": "hex", "size": 50.0 }, "background": null,
-                    "bounds": { "width": 240.0, "height": 240.0 } }),
+                    "bounds": { "width": 3.2, "height": 3.0 } }),
         );
         let mut ecs = SceneEcs::from_documents(vec![scene, tok], 0);
         ecs.set_world_settings_for_test(json!({
@@ -7354,10 +7428,11 @@ explored: // GM: unrestricted mask
     }
 
     /// REJECT direction on a hex scene: a hex cell whose HEX CENTER falls outside the vision mask
-    /// is excluded from `visible_cells`. Hex (2,0) center (~173,0) is inside the [-100,240]^2 LOS
-    /// rectangle and visible; hex (4,0) center (~346,0) is well outside (x > 240) — and its nearest
-    /// vertex (~303,0) is also outside — so it is excluded under BOTH strict and lenient sampling.
-    /// Guards that the hex candidate enumeration cannot admit an out-of-mask hex cell.
+    /// is excluded from `visible_cells`. Hex (2,0) center (~173.2, 0) is inside the
+    /// [-100, 320.429…] x [-100, 200] LOS rectangle and visible; hex (5,0) center (~433.0, 0) is
+    /// well outside (x > 320.429…) — and its nearest (left) vertices at x ~389.7 are also outside —
+    /// so it is excluded under BOTH strict and lenient sampling. Guards that the hex candidate
+    /// enumeration cannot admit an out-of-mask hex cell.
     #[test]
     fn visible_cells_hex_excludes_cell_whose_center_is_outside_the_mask() {
         let (ecs, user, scene) = hex_open_scene();
@@ -7367,40 +7442,41 @@ explored: // GM: unrestricted mask
             "hex (2,0) center is inside the LOS rectangle"
         );
         assert!(
-            !strict.contains(&(4, 0)),
-            "hex (4,0) center is outside the mask -> excluded"
+            !strict.contains(&(5, 0)),
+            "hex (5,0) center is outside the mask -> excluded"
         );
-        // Even leniency (corner sampling) cannot pull (4,0) in: its nearest vertex is still outside.
+        // Even leniency (corner sampling) cannot pull (5,0) in: its nearest vertex is still outside.
         let lenient = ecs.visible_cells(user, scene, true);
         assert!(
-            !lenient.contains(&(4, 0)),
-            "hex (4,0) has no vertex inside the mask either"
+            !lenient.contains(&(5, 0)),
+            "hex (5,0) has no vertex inside the mask either"
         );
     }
 
     /// Leniency on a hex scene samples the SIX hex vertices (`GridShape::cell_vertices`), not four
-    /// square corners. Hex (3,0) center (~259.8,0) is just outside the [-100,240]^2 LOS rectangle
-    /// (x > 240), so strict excludes it; its left vertex (~216.5, 25) is inside, so lenient
-    /// includes it. The strict->lenient flip proves the hex corner geometry is wired.
+    /// square corners. Hex (4,0) center (~346.4, 0) is just outside the
+    /// [-100, 320.429…] x [-100, 200] LOS rectangle (x > 320.429…), so strict excludes it; its left
+    /// vertices (~303.1, ±25) are inside, so lenient includes it. The strict->lenient flip proves
+    /// the hex corner geometry is wired.
     #[test]
     fn visible_cells_hex_lenient_includes_cell_whose_vertex_clips_the_mask() {
         let (ecs, user, scene) = hex_open_scene();
         let strict = ecs.visible_cells(user, scene, false);
         assert!(
-            !strict.contains(&(3, 0)),
-            "hex (3,0) center is outside -> strict excludes"
+            !strict.contains(&(4, 0)),
+            "hex (4,0) center is outside -> strict excludes"
         );
         let lenient = ecs.visible_cells(user, scene, true);
         assert!(
-            lenient.contains(&(3, 0)),
-            "hex (3,0) vertex clips the mask -> lenient includes"
+            lenient.contains(&(4, 0)),
+            "hex (4,0) vertex clips the mask -> lenient includes"
         );
     }
 
     /// End-to-end composition of the hex leniency path: `GridShape::cell_vertices` (six hex corners)
     /// widens `visible_cells`, and the widened mask is what the authoritative executor gates
-    /// against. The SAME move into hex (3,0) — whose center is outside the LOS rectangle but whose
-    /// left vertex clips it — completes under leniency and truncates under strict center sampling.
+    /// against. The SAME move into hex (4,0) — whose center is outside the LOS rectangle but whose
+    /// left vertices clip it — completes under leniency and truncates under strict center sampling.
     /// This is the composed behavior no per-site test covers: leniency is only meaningful if the
     /// executor consumes the widened mask.
     #[test]
@@ -7409,7 +7485,7 @@ explored: // GM: unrestricted mask
         let cell = 50.0;
         let token = Uuid::from_u128(11);
         let grid = ecs.resolve_grid_shape(scene, cell);
-        let dest = grid.cell_center((3, 0));
+        let dest = grid.cell_center((4, 0));
 
         let lenient_mask = ecs.visible_cells(user, scene, true);
         let out = crate::scene::move_exec::execute_move(
@@ -7430,7 +7506,7 @@ explored: // GM: unrestricted mask
             !out.truncated,
             "the lenient mask admits every traversed hex cell"
         );
-        assert_eq!(grid.cell_of(out.stop), (3, 0), "the move reaches hex (3,0)");
+        assert_eq!(grid.cell_of(out.stop), (4, 0), "the move reaches hex (4,0)");
 
         let strict_mask = ecs.visible_cells(user, scene, false);
         let out = crate::scene::move_exec::execute_move(
@@ -7447,20 +7523,21 @@ explored: // GM: unrestricted mask
             0.4,
         )
         .expect("a token move on a hex scene executes");
-        assert!(out.truncated, "strict center sampling excludes hex (3,0)");
+        assert!(out.truncated, "strict center sampling excludes hex (4,0)");
         assert_ne!(
             grid.cell_of(out.stop),
-            (3, 0),
-            "the strict move never enters hex (3,0)"
+            (4, 0),
+            "the strict move never enters hex (4,0)"
         );
     }
 
     /// REQUIREMENT this scene has to satisfy, which is what every test reading it depends on: a
-    /// single source's candidate scan must exceed `MAX_CELLS_PER_POLYGON` under BOTH readings of
-    /// the authored bounds — the raw one, where `vision::bound_for_scene` compares the authored
-    /// value against world coordinates, and the converted one, where it receives that value times
-    /// the cell size. A scan under the cap never engages the clamp, and the assertions would then
-    /// hold for a reason they do not name. The width is what supplies the over-cap product; the
+    /// single source's candidate scan must exceed `MAX_CELLS_PER_POLYGON`. The width supplies that
+    /// over-cap product with an enormous margin — the authored block is a CELL COUNT that
+    /// `GridShape::world_extent` multiplies by the cell size, so the scan clears the cap by two
+    /// further orders of magnitude than the authored number alone suggests. A scan under the cap
+    /// never engages the clamp, and the assertions would then hold for a reason they do not name.
+    /// The
     /// height is small so the CLAMPED scan is a few thousand cells and the tests run in a unit
     /// suite. Wall-less, all-bright, LOS off, one owned token at the origin cell, so the whole
     /// scan is a single source's.
@@ -7540,9 +7617,11 @@ explored: // GM: unrestricted mask
     /// by itself) while the LENIENT (one-cell-padded) scan's own span exceeds it (2002×2002,
     /// product 4,008,004, clamped by itself) — the band where the two invocations' own spans
     /// straddle the cap on either side of it. Wall-less, all-bright, LOS off, one owned token at
-    /// `(100, 100)` (grid size 1, authored bounds 1999×1999), so `source_los_poly`'s bound
-    /// rectangle is exactly `[0, 0]–[1999, 1999]` (`VISION_BOUND_MARGIN` cancels against the
-    /// token's own offset on the low edge; the authored bounds dominate the high edge).
+    /// `(100, 100)`. The grid size is 1, so a `1999 × 1999` authored block converts to a
+    /// `1999 × 1999` world rectangle — the one grid size at which the cell count and the world
+    /// span coincide, which is what keeps the spans below exactly at the cap. `source_los_poly`'s
+    /// bound rectangle is therefore exactly `[0, 0]–[1999, 1999]` (`VISION_BOUND_MARGIN` cancels
+    /// against the token's own offset on the low edge; the scene's extent dominates the high edge).
     fn strict_lenient_clamp_band_scene() -> (SceneEcs, Uuid, Uuid, Uuid) {
         let user = Uuid::from_u128(8);
         let scene_id = Uuid::from_u128(20);
@@ -7594,7 +7673,12 @@ explored: // GM: unrestricted mask
             .token_position(token)
             .expect("the fixture's token has a position");
         let walls = ecs.sight_walls(scene);
-        let poly = source_los_poly(vp, &walls, settings.los_restriction, settings.bounds);
+        let poly = source_los_poly(
+            vp,
+            &walls,
+            settings.los_restriction,
+            grid.world_extent(settings.bounds),
+        );
         let (mut minx, mut miny, mut maxx, mut maxy) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
         for &(x, y) in &poly {
             minx = minx.min(x);
@@ -7657,5 +7741,211 @@ explored: // GM: unrestricted mask
         // `assert_strict_parity` call sites already cover.
         let (ecs, user, scene, _token) = strict_lenient_clamp_band_scene();
         assert_strict_parity(&ecs, user, scene);
+    }
+
+    #[test]
+    fn scene_world_extent_agrees_with_the_shapes_own_conversion() {
+        // Two call shapes exist — the ECS helper for callers holding only a scene id, and the
+        // inline `grid.world_extent(settings.bounds)` for callers already holding both — and a
+        // divergence between them would fork the vision bound from the lit mask.
+        // Discrimination: fails if either shape starts reading a different bounds value or a
+        // different shape, which is the only way the two can disagree.
+        let (ecs, _user, scene) = hex_open_scene();
+        let cell = 50.0;
+        let inline = ecs
+            .resolve_grid_shape(scene, cell)
+            .world_extent(ecs.resolve_scene(scene).bounds);
+        assert_eq!(ecs.scene_world_extent(scene), inline);
+    }
+
+    #[test]
+    fn hex_continuous_navmesh_spans_the_authored_play_area() {
+        // A hex scene authored 20 × 20 grid units at size 50 must route to a hex near the far
+        // edge of that authored area. Hex (18,1)'s centre sits well beyond the product of the
+        // authored bound and the cell size, so a rectangle built from that product excludes the
+        // destination and the route reports unreachable.
+        // Discrimination: fails if `world_extent` returns the bounds×size product on hex, because
+        // the destination is derived from `cell_center`, not from the extent.
+        let g = grid_shape::HexGrid { size: 50.0 };
+        let docs = vec![entity_doc_top_eng(
+            10,
+            "scene",
+            json!({ "grid": { "kind": "hex", "size": 50 }, "background": null,
+                    "bounds": { "width": 20.0, "height": 20.0 },
+                    "vision": { "movementModel": "continuous" } }),
+        )];
+        let mut ecs = SceneEcs::from_documents(docs, 0);
+        ecs.set_world_settings_for_test(continuous_world_settings());
+        let dest = g.cell_center((18, 1));
+        assert!(
+            dest.0 > 20.0 * 50.0,
+            "fixture: the destination must sit beyond the bounds×size product ({}), got {}",
+            20.0 * 50.0,
+            dest.0
+        );
+        let out = ecs
+            .pathfind(
+                RouteRequester {
+                    user: Uuid::from_u128(1),
+                    is_gm: true,
+                    explored: None,
+                },
+                Uuid::from_u128(10),
+                g.cell_center((1, 1)),
+                &[dest],
+                0.1,
+            )
+            .expect("a hex cell inside the authored bounds must be routable");
+        assert!(
+            out.path.len() >= 2,
+            "route must reach the destination, got {:?}",
+            out.path
+        );
+    }
+
+    #[test]
+    fn hex_continuous_weighted_cost_is_reported_in_scene_units() {
+        // A terrain region flips the continuous dispatch to the weighted grid sub-path, whose
+        // cost is converted from cells to scene units. On hex one grid step is √3·size scene
+        // units, so the reported cost must be at least the straight-line distance between the
+        // endpoints; a conversion through the size itself cannot reach that.
+        // Discrimination: the expectation is bounded below by the straight-line distance between
+        // the two endpoints, computed from `cell_center`, not from the router's own output.
+        let g = grid_shape::HexGrid { size: 50.0 };
+        let mut docs = vec![entity_doc_top_eng(
+            10,
+            "scene",
+            json!({ "grid": { "kind": "hex", "size": 50 }, "background": null,
+                    "bounds": { "width": 20.0, "height": 20.0 },
+                    "vision": { "movementModel": "continuous" } }),
+        )];
+        // A terrain region well away from the route: present only to select the weighted path.
+        docs.push(region_doc_top(
+            13,
+            10,
+            "terrain",
+            5.0,
+            RegionRect {
+                x0: 1200.0,
+                y0: 600.0,
+                x1: 1260.0,
+                y1: 660.0,
+            },
+        ));
+        let mut ecs = SceneEcs::from_documents(docs, 0);
+        ecs.set_world_settings_for_test(continuous_world_settings());
+        let a = g.cell_center((1, 1));
+        let b = g.cell_center((10, 1));
+        let straight = ((b.0 - a.0).powi(2) + (b.1 - a.1).powi(2)).sqrt();
+        let out = ecs
+            .pathfind(
+                RouteRequester {
+                    user: Uuid::from_u128(1),
+                    is_gm: true,
+                    explored: None,
+                },
+                Uuid::from_u128(10),
+                a,
+                &[b],
+                0.1,
+            )
+            .expect("hex continuous weighted route");
+        assert!(
+            out.cost >= straight * 0.99,
+            "cost {} must be at least the straight-line scene distance {straight}",
+            out.cost
+        );
+    }
+
+    #[test]
+    fn a_degenerate_authored_grid_size_never_reaches_the_extent_conversion() {
+        // Why the degenerate-`cell` refusal has no expression at `navmesh_for`: `scene_grid_sizes`
+        // filters a non-positive authored size and substitutes the positive default, so the value
+        // `navmesh_for` converts through `world_extent` is always positive and the resulting extent
+        // is never degenerate. The refusal itself lives on `build_navmesh`'s extent parameter,
+        // pinned by `navmesh::tests::degenerate_extent_fails_closed` at the level that value
+        // enters.
+        // Discrimination: fails if `scene_grid_sizes` ever starts passing a non-positive authored
+        // size through, which would make a collapsed rectangle reachable from a scene document —
+        // and the second assertion fails if the substituted size stops producing a usable mesh.
+        let scene = entity_doc_top_eng(
+            10,
+            "scene",
+            json!({ "grid": { "kind": "square", "size": 0.0 }, "background": null,
+                    "bounds": { "width": 10.0, "height": 10.0 } }),
+        );
+        let ecs = SceneEcs::from_documents(vec![scene], 0);
+        let cell = ecs
+            .scene_grid_sizes()
+            .get(&Uuid::from_u128(10))
+            .copied()
+            .expect("a live scene always carries a grid size");
+        assert!(
+            cell > 0.0,
+            "a non-positive authored grid size must be hardened before it converts, got {cell}"
+        );
+        let (ex, ey) = ecs.scene_world_extent(Uuid::from_u128(10));
+        assert!(
+            ex > 0.0 && ey > 0.0,
+            "the converted extent is therefore never degenerate, got ({ex}, {ey})"
+        );
+        assert!(ecs.navmesh_for(Uuid::from_u128(10), 0.4, &[]).is_some());
+    }
+
+    #[test]
+    fn navmesh_for_refuses_a_radius_over_the_footprint_cap() {
+        // The radius-RANGE refusal, pinned at the level it now lives: `build_navmesh` receives an
+        // already-converted world distance and refuses only on that distance's magnitude, so an
+        // over-cap radius whose converted distance stays under `MAX_NAVMESH_COORD` would build a
+        // mesh if `navmesh_for` stopped checking the range.
+        // Discrimination: the radius is derived from `MAX_FOOTPRINT_CELLS` itself, and the
+        // in-range sibling assertion below fails if the guard is widened into rejecting
+        // legitimate radii.
+        let scene = entity_doc_top_eng(
+            10,
+            "scene",
+            json!({ "grid": { "kind": "square", "size": 100 }, "background": null,
+                    "bounds": { "width": 10.0, "height": 10.0 } }),
+        );
+        let ecs = SceneEcs::from_documents(vec![scene], 0);
+        let over_cap = crate::scene::pathfinding::MAX_FOOTPRINT_CELLS + 1.0;
+        assert!(ecs
+            .navmesh_for(Uuid::from_u128(10), over_cap, &[])
+            .is_none());
+        assert!(ecs
+            .navmesh_for(
+                Uuid::from_u128(10),
+                crate::scene::pathfinding::MAX_FOOTPRINT_CELLS,
+                &[]
+            )
+            .is_some());
+    }
+
+    #[test]
+    fn navmesh_for_refuses_a_scene_whose_converted_extent_is_over_magnitude() {
+        // The magnitude bound on the CONVERSION, pinned where the conversion now happens: neither
+        // the authored bound nor the cell size alone is oversized, but `world_extent`'s product
+        // exceeds `navmesh::MAX_NAVMESH_COORD`, which saturates on the `f64 -> f32` cast and
+        // panics inside the triangulation.
+        // Discrimination: the sibling assertion uses the same cell size with a bound small enough
+        // to keep the product under the ceiling, so a guard that refused on the cell size alone
+        // fails it.
+        let over = entity_doc_top_eng(
+            10,
+            "scene",
+            json!({ "grid": { "kind": "square", "size": 1e10 }, "background": null,
+                    "bounds": { "width": 1e10, "height": 100.0 } }),
+        );
+        let ecs = SceneEcs::from_documents(vec![over], 0);
+        assert!(ecs.navmesh_for(Uuid::from_u128(10), 0.4, &[]).is_none());
+
+        let under = entity_doc_top_eng(
+            11,
+            "scene",
+            json!({ "grid": { "kind": "square", "size": 1e10 }, "background": null,
+                    "bounds": { "width": 10.0, "height": 10.0 } }),
+        );
+        let ecs = SceneEcs::from_documents(vec![under], 0);
+        assert!(ecs.navmesh_for(Uuid::from_u128(11), 0.4, &[]).is_some());
     }
 }

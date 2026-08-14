@@ -97,15 +97,17 @@ pub fn bound_for(viewpoint: P, walls: &[Seg], margin: f64) -> Rect {
     }
 }
 
-/// `bound_for`, unioned with the scene's own extent (`(0,0)` to `scene_bounds`, clamped to
-/// non-negative). A wall-derived bound smaller than the scene's extent is grown to cover the
-/// whole scene instead — a wall-less (or near-wall-less) scene reveals its own full bounded
-/// extent rather than a small `margin` box around the viewpoint. A wall-derived bound that
-/// already exceeds the scene's extent (e.g. a wall placed beyond the authored bounds) is left
-/// unchanged: this only ever grows the bound, never shrinks it.
-pub fn bound_for_scene(viewpoint: P, walls: &[Seg], scene_bounds: (f64, f64), margin: f64) -> Rect {
+/// `bound_for`, unioned with the scene's own world-unit extent (`(0,0)` to `scene_extent`,
+/// clamped to non-negative). `scene_extent` is in WORLD units — a caller passes
+/// `GridShape::world_extent` of the scene's authored grid-unit bounds, never the raw bounds,
+/// which are a cell COUNT and would otherwise be compared here against wall coordinates. A
+/// wall-derived bound smaller than the scene's extent is grown to cover the whole scene instead,
+/// so a wall-less (or near-wall-less) scene reveals its own full extent rather than a small
+/// `margin` box around the viewpoint. A wall-derived bound that already exceeds the extent (e.g. a
+/// wall placed beyond the authored bounds) is left unchanged: this only ever grows the bound.
+pub fn bound_for_scene(viewpoint: P, walls: &[Seg], scene_extent: (f64, f64), margin: f64) -> Rect {
     let wall_bound = bound_for(viewpoint, walls, margin);
-    let (width, height) = scene_bounds;
+    let (width, height) = scene_extent;
     let scene_maxx = width.max(0.0);
     let scene_maxy = height.max(0.0);
     Rect {

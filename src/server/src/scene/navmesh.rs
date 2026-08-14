@@ -64,8 +64,8 @@ use geo::Line;
 pub(crate) const MAX_NAVMESH_OBSTACLE_SEGMENTS: usize = 5_000;
 
 /// Magnitude ceiling (scene-pixel units) for any coordinate that reaches an `f64 -> f32` cast in
-/// this module: the CONSTRUCTION-side surfaces (derived `w_px`/`h_px` scene-pixel bounds, a raw
-/// wall-segment endpoint, and `footprint_scene` — the footprint-inflation distance passed to
+/// this module: the CONSTRUCTION-side surfaces (the caller-supplied world `extent` rectangle, a
+/// raw wall-segment endpoint, and `footprint_scene` — the footprint-inflation distance passed to
 /// `line.buffer(...)`), and the QUERY-side surface (`navmesh_find`'s `start`/`waypoints`). An
 /// `f64 -> f32` cast SATURATES an
 /// out-of-range-but-finite value to `f32::INFINITY` rather than panicking or producing NaN, so
@@ -93,51 +93,41 @@ pub(crate) struct NavMesh {
     pub(crate) mesh: polyanya::Mesh,
 }
 
-/// Build a footprint-inflated navmesh from a scene's bounds (grid units; converted to scene
-/// pixels via `cell`) and `blocksMove` wall segments. Fails closed (`None`) on: non-finite/
-/// non-positive bounds or cell size, a non-finite/negative/over-cap footprint radius, an obstacle
-/// count over `MAX_NAVMESH_OBSTACLE_SEGMENTS`, or a triangulation/mesh-build failure — callers
-/// MUST treat `None` as "no navmesh" (the scene reports `Unreachable`, never a silent all-pass).
+/// Build a footprint-inflated navmesh from a scene's world-unit `extent` (the rectangle
+/// `(0,0)–extent`, produced by `GridShape::world_extent` from the scene's authored grid-unit
+/// bounds) and its `blocksMove` wall segments, inflating each wall by `footprint_scene` (the
+/// mover's footprint radius in world units — the radius in cells times the shape's INDEXING
+/// scale, which is what a footprint is measured in). Fails closed (`None`) on: a
+/// non-finite/non-positive or over-magnitude extent, a non-finite/negative/over-magnitude
+/// `footprint_scene`, an obstacle count over `MAX_NAVMESH_OBSTACLE_SEGMENTS`, or a
+/// triangulation/mesh-build failure — callers MUST treat `None` as "no navmesh" (the scene
+/// reports `Unreachable`, never a silent all-pass). The radius-RANGE refusal
+/// (`0.0..=MAX_FOOTPRINT_CELLS`) lives at the caller, which must apply it before its cache key is
+/// computed; a degenerate `cell` reaches this function as a degenerate extent and is refused here.
 pub(crate) fn build_navmesh(
-    bounds: (f64, f64),
-    cell: f64,
+    extent: (f64, f64),
+    footprint_scene: f64,
     walls: &[Seg],
-    footprint_radius_cells: f64,
 ) -> Option<NavMesh> {
-    let (w, h) = bounds;
-    if !w.is_finite() || !h.is_finite() || w <= 0.0 || h <= 0.0 {
+    let (w_px, h_px) = extent;
+    if !w_px.is_finite() || !h_px.is_finite() || w_px <= 0.0 || h_px <= 0.0 {
         return None;
     }
-    if !cell.is_finite() || cell <= 0.0 {
+    // `footprint_scene` is a single scene-wide value (not per-wall), so an oversized value here
+    // fails the whole build rather than skipping one segment. Bounded before it reaches
+    // `line.buffer(...)`: an out-of-range-but-finite value saturates to infinity in the `as f32`
+    // cast below and panics inside `spade`'s triangulation.
+    if !footprint_scene.is_finite() || footprint_scene < 0.0 {
         return None;
     }
-    // The grid engine's `pathfinding::find` bounds `footprint_radius` to
-    // `0.0..=MAX_FOOTPRINT_CELLS` before doing any work; this continuous adapter reuses the SAME
-    // ceiling so an untrusted `footprintRadius` on the wire cannot drive an unbounded
-    // `geo::Buffer` inflation here, nor an unbounded footprint-cell scan downstream — no new DoS
-    // surface distinct from the grid router's.
-    if !(0.0..=crate::scene::pathfinding::MAX_FOOTPRINT_CELLS).contains(&footprint_radius_cells) {
+    let footprint_scene = footprint_scene.max(0.01);
+    if footprint_scene > MAX_NAVMESH_COORD {
         return None;
     }
     if walls.len() > MAX_NAVMESH_OBSTACLE_SEGMENTS {
         return None;
     }
-    let footprint_scene = (footprint_radius_cells * cell).max(0.01);
-    // `footprint_scene` is a single scene-wide value (not per-wall), so an oversized value here
-    // fails the whole build rather than skipping one segment. `cell` has no upper-magnitude bound
-    // elsewhere in this module (only `is_finite() && > 0.0`), so a tiny-but-finite `bounds` paired
-    // with an extreme `cell` can keep `w_px`/`h_px` under `MAX_NAVMESH_COORD` while still driving
-    // `footprint_scene` past it (e.g. `bounds=(1e-23,1e-23)`, `cell=1e37`,
-    // `footprint_radius_cells=MAX_FOOTPRINT_CELLS` -> `footprint_scene ~= 6.4e38 > f32::MAX`),
-    // which would otherwise saturate the buffered ring's vertices to infinity in the `as f32`
-    // cast below and panic inside `spade`, same hazard as `MAX_NAVMESH_COORD`'s doc comment.
-    if footprint_scene.abs() > MAX_NAVMESH_COORD {
-        return None;
-    }
-    let (w_px, h_px) = (w * cell, h * cell);
-    // Bound the DERIVED (post-multiplication) magnitude, not just the raw inputs: `w`/`cell`
-    // individually finite-and-small can still multiply into an out-of-range product. Checked
-    // before the `as f32` cast below — see `MAX_NAVMESH_COORD`'s doc comment for why.
+    // Bound the extent's magnitude before the `as f32` cast below — see `MAX_NAVMESH_COORD`.
     if w_px.abs() > MAX_NAVMESH_COORD || h_px.abs() > MAX_NAVMESH_COORD {
         return None;
     }
@@ -158,7 +148,7 @@ pub(crate) fn build_navmesh(
         {
             continue; // a malformed wall segment is skipped, never turned into a bogus obstacle
         }
-        // Same saturating-cast hazard as `bounds`/`cell`, checked BEFORE `.buffer()`/`as f32`:
+        // Same saturating-cast hazard as `extent`, checked BEFORE `.buffer()`/`as f32`:
         // an ordinarily-authored-looking but oversized coordinate (e.g. 1e70) is finite and would
         // pass the check above, but saturates to `f32::INFINITY` on cast and panics inside
         // polyanya/spade. Skip the single malformed segment, matching the non-finite branch above
@@ -885,32 +875,18 @@ mod tests {
     }
 
     #[test]
-    fn degenerate_bounds_fail_closed() {
-        assert!(build_navmesh((0.0, 100.0), 100.0, &[], 0.4).is_none());
-        assert!(build_navmesh((100.0, -1.0), 100.0, &[], 0.4).is_none());
-        assert!(build_navmesh((f64::NAN, 100.0), 100.0, &[], 0.4).is_none());
-        assert!(build_navmesh((f64::INFINITY, 100.0), 100.0, &[], 0.4).is_none());
-    }
-
-    #[test]
-    fn degenerate_cell_fails_closed() {
-        assert!(build_navmesh((100.0, 100.0), 0.0, &[], 0.4).is_none());
-        assert!(build_navmesh((100.0, 100.0), -1.0, &[], 0.4).is_none());
+    fn degenerate_extent_fails_closed() {
+        assert!(build_navmesh((0.0, 10_000.0), 40.0, &[]).is_none());
+        assert!(build_navmesh((10_000.0, -100.0), 40.0, &[]).is_none());
+        assert!(build_navmesh((f64::NAN, 10_000.0), 40.0, &[]).is_none());
+        assert!(build_navmesh((f64::INFINITY, 10_000.0), 40.0, &[]).is_none());
     }
 
     #[test]
     fn negative_or_non_finite_footprint_fails_closed() {
-        assert!(build_navmesh((100.0, 100.0), 100.0, &[], -0.1).is_none());
-        assert!(build_navmesh((100.0, 100.0), 100.0, &[], f64::NAN).is_none());
-    }
-
-    #[test]
-    fn over_cap_footprint_radius_fails_closed() {
-        // Mirrors `pathfinding::find`'s `MAX_FOOTPRINT_CELLS` ceiling — an untrusted wire
-        // `footprintRadius` must not drive an unbounded geo::Buffer inflation.
-        let over_cap = crate::scene::pathfinding::MAX_FOOTPRINT_CELLS + 1.0;
-        assert!(build_navmesh((100.0, 100.0), 100.0, &[], over_cap).is_none());
-        assert!(build_navmesh((100.0, 100.0), 100.0, &[], f64::INFINITY).is_none());
+        assert!(build_navmesh((10_000.0, 10_000.0), -10.0, &[]).is_none());
+        assert!(build_navmesh((10_000.0, 10_000.0), f64::NAN, &[]).is_none());
+        assert!(build_navmesh((10_000.0, 10_000.0), f64::INFINITY, &[]).is_none());
     }
 
     #[test]
@@ -921,12 +897,12 @@ mod tests {
                 b: (i as f64, 1.0),
             })
             .collect();
-        assert!(build_navmesh((10_000.0, 100.0), 100.0, &walls, 0.4).is_none());
+        assert!(build_navmesh((1_000_000.0, 10_000.0), 40.0, &walls).is_none());
     }
 
     #[test]
     fn empty_scene_builds_a_navmesh() {
-        assert!(build_navmesh((100.0, 100.0), 100.0, &[], 0.4).is_some());
+        assert!(build_navmesh((10_000.0, 10_000.0), 40.0, &[]).is_some());
     }
 
     #[test]
@@ -935,40 +911,34 @@ mod tests {
             a: (f64::NAN, 0.0),
             b: (10.0, 10.0),
         }];
-        assert!(build_navmesh((100.0, 100.0), 100.0, &walls, 0.4).is_some());
+        assert!(build_navmesh((10_000.0, 10_000.0), 40.0, &walls).is_some());
     }
 
     #[test]
-    fn oversized_but_finite_bounds_fail_closed_not_panic() {
-        // `1e40` is finite and positive (passes the pre-existing `is_finite`/`> 0.0` guards) but
-        // saturates an `f64 -> f32` cast to infinity, which would otherwise reach
-        // `polyanya::Triangulation::as_navmesh` and panic inside `spade`'s `.unwrap()`.
-        assert!(build_navmesh((1e40, 100.0), 1.0, &[], 0.4).is_none());
-        assert!(build_navmesh((100.0, 1e40), 1.0, &[], 0.4).is_none());
-    }
-
-    #[test]
-    fn oversized_derived_pixel_bounds_fail_closed() {
-        // Neither `w` nor `cell` alone is oversized, but their product (`w_px`) is — the bound
-        // must be checked on the DERIVED magnitude, not just the raw inputs.
-        assert!(build_navmesh((1e10, 100.0), 1e10, &[], 0.4).is_none());
+    fn oversized_but_finite_extent_fails_closed_not_panic() {
+        // `1e40` is finite and positive (passes the `is_finite`/`> 0.0` guards) but saturates an
+        // `f64 -> f32` cast to infinity, which would otherwise reach
+        // `polyanya::Triangulation::as_navmesh` and panic inside `spade`'s `.unwrap()`. The
+        // magnitude that must be bounded is the extent this function RECEIVES; the bound on the
+        // conversion that produces it is pinned at `SceneEcs::navmesh_for`.
+        assert!(build_navmesh((1e40, 100.0), 0.4, &[]).is_none());
+        assert!(build_navmesh((100.0, 1e40), 0.4, &[]).is_none());
     }
 
     #[test]
     fn oversized_footprint_scene_fails_closed_not_panic() {
-        // Reproducer independently verified by two reviewers: tiny-but-finite bounds keep
-        // `w_px`/`h_px` well under `MAX_NAVMESH_COORD`, and the wall's raw endpoints are ordinary,
-        // yet `footprint_radius_cells * cell` (64.0 * 1e37) overflows `f32::MAX` and would
-        // saturate the buffered ring's vertices to infinity on cast, panicking inside `spade`.
+        // Reproducer independently verified by two reviewers: a tiny-but-finite extent stays well
+        // under `MAX_NAVMESH_COORD`, and the wall's raw endpoints are ordinary, yet a footprint
+        // distance of `64.0 * 1e37` overflows `f32::MAX` and would saturate the buffered ring's
+        // vertices to infinity on cast, panicking inside `spade`.
         let walls = vec![Seg {
             a: (0.0, 0.0),
             b: (1.0, 1.0),
         }];
         assert!(build_navmesh(
-            (1e-23, 1e-23),
-            1e37,
+            (1e14, 1e14),
+            crate::scene::pathfinding::MAX_FOOTPRINT_CELLS * 1e37,
             &walls,
-            crate::scene::pathfinding::MAX_FOOTPRINT_CELLS,
         )
         .is_none());
     }
@@ -980,20 +950,18 @@ mod tests {
         // segment's endpoints onto the same integer point, which its degenerate-collapse guard
         // turns into an EMPTY buffer result — the wall would otherwise silently vanish from the
         // mesh (fail-open) rather than the build failing.
-        // bounds=(1e-8,1e-8), cell=1e9 -> w_px=h_px=10 (an ordinary small domain); wall (5,0)-(5,10)
-        // bisects it; footprint_radius_cells=MAX_FOOTPRINT_CELLS (64.0, within the existing cap)
-        // -> footprint_scene = 6.4e10, ratio to the wall's own length (10) = 6.4e9, past the
-        // collapse threshold.
+        // An ordinary 10 × 10 domain, bisected by the wall (5,0)-(5,10); the footprint distance is
+        // `MAX_FOOTPRINT_CELLS` (64.0, within the caller's cap) at a cell size of 1e9, giving
+        // 6.4e10 — a ratio to the wall's own length (10) of 6.4e9, past the collapse threshold.
         let walls = vec![Seg {
             a: (5.0, 0.0),
             b: (5.0, 10.0),
         }];
         assert!(
             build_navmesh(
-                (1e-8, 1e-8),
-                1e9,
+                (10.0, 10.0),
+                crate::scene::pathfinding::MAX_FOOTPRINT_CELLS * 1e9,
                 &walls,
-                crate::scene::pathfinding::MAX_FOOTPRINT_CELLS,
             )
             .is_none(),
             "a wall whose Minkowski buffer silently collapses to zero polygons must fail the \
@@ -1009,7 +977,7 @@ mod tests {
             a: (5.0, 5.0),
             b: (5.0, 5.0),
         }];
-        assert!(build_navmesh((100.0, 100.0), 100.0, &walls, 0.4).is_some());
+        assert!(build_navmesh((10_000.0, 10_000.0), 40.0, &walls).is_some());
     }
 
     #[test]
@@ -1022,9 +990,9 @@ mod tests {
             a: (5.0, 0.0),
             b: (5.0, 10.0),
         }];
-        let with_wall = build_navmesh((100.0, 100.0), 1.0, &walls, 0.4)
+        let with_wall = build_navmesh((100.0, 100.0), 0.4, &walls)
             .expect("an ordinary wall + footprint must build a navmesh");
-        let without_wall = build_navmesh((100.0, 100.0), 1.0, &[], 0.4)
+        let without_wall = build_navmesh((100.0, 100.0), 0.4, &[])
             .expect("the walls-absent baseline must also build");
         // Triangulating WITH an interior obstacle produces strictly more triangles than the empty
         // rectangle baseline — a cheap, robust proxy that the wall's obstacle ring was actually
@@ -1051,7 +1019,7 @@ mod tests {
                 b: (20.0, 20.0),
             },
         ];
-        let mesh = build_navmesh((100.0, 100.0), 100.0, &walls, 0.4);
+        let mesh = build_navmesh((10_000.0, 10_000.0), 40.0, &walls);
         assert!(
             mesh.is_some(),
             "the oversized segment must be skipped, not fail the whole build"
@@ -1060,14 +1028,14 @@ mod tests {
 
     #[test]
     fn empty_waypoints_is_invalid() {
-        let nav = build_navmesh((100.0, 100.0), 100.0, &[], 0.4).unwrap();
+        let nav = build_navmesh((10_000.0, 10_000.0), 40.0, &[]).unwrap();
         let r = navmesh_find(&nav, (50.0, 50.0), &[]);
         assert_eq!(r, Err(crate::scene::pathfinding::PathFail::Invalid));
     }
 
     #[test]
     fn straight_route_cost_is_euclidean() {
-        let nav = build_navmesh((10.0, 10.0), 100.0, &[], 0.1).unwrap();
+        let nav = build_navmesh((1000.0, 1000.0), 10.0, &[]).unwrap();
         let outcome = navmesh_find(&nav, (50.0, 50.0), &[(950.0, 50.0)]).unwrap();
         assert!(
             (outcome.cost - 900.0).abs() < 2.0,
@@ -1088,7 +1056,7 @@ mod tests {
             a: (500.0, 0.0),
             b: (500.0, 600.0),
         }];
-        let nav = build_navmesh((10.0, 10.0), 100.0, &walls, 0.1).unwrap();
+        let nav = build_navmesh((1000.0, 1000.0), 10.0, &walls).unwrap();
         let outcome = navmesh_find(&nav, (50.0, 50.0), &[(950.0, 50.0)]).unwrap();
         assert!(
             outcome.cost > 900.5,
@@ -1103,7 +1071,7 @@ mod tests {
         // the internal skip-branch that guards against it: per the real `polyanya` source,
         // `Path::path` never actually includes a leg's start point, so this test would pass
         // identically even if that dedup branch were deleted.
-        let nav = build_navmesh((10.0, 10.0), 100.0, &[], 0.1).unwrap();
+        let nav = build_navmesh((1000.0, 1000.0), 10.0, &[]).unwrap();
         let outcome = navmesh_find(&nav, (50.0, 50.0), &[(500.0, 50.0), (950.0, 50.0)]).unwrap();
         // No two consecutive vertices should be exactly equal (a duplicated leg-join point).
         for w in outcome.path.windows(2) {
@@ -1117,7 +1085,7 @@ mod tests {
 
     #[test]
     fn over_cap_waypoints_is_invalid() {
-        let nav = build_navmesh((100.0, 100.0), 100.0, &[], 0.1).unwrap();
+        let nav = build_navmesh((10_000.0, 10_000.0), 10.0, &[]).unwrap();
         let waypoints: Vec<(f64, f64)> = (0..(crate::scene::pathfinding::MAX_WAYPOINTS + 1))
             .map(|i| (i as f64, 0.0))
             .collect();
@@ -1127,7 +1095,7 @@ mod tests {
 
     #[test]
     fn non_finite_start_or_waypoint_is_invalid() {
-        let nav = build_navmesh((100.0, 100.0), 100.0, &[], 0.1).unwrap();
+        let nav = build_navmesh((10_000.0, 10_000.0), 10.0, &[]).unwrap();
         assert_eq!(
             navmesh_find(&nav, (f64::NAN, 50.0), &[(90.0, 50.0)]),
             Err(crate::scene::pathfinding::PathFail::Invalid)
@@ -1147,7 +1115,7 @@ mod tests {
         // this path) — without the guard this input would map to `PathFail::Unreachable` instead.
         // The guard just gives a more precise `Invalid` and bounds an untrusted wire magnitude
         // before it reaches a third-party numeric library.
-        let nav = build_navmesh((100.0, 100.0), 100.0, &[], 0.1).unwrap();
+        let nav = build_navmesh((10_000.0, 10_000.0), 10.0, &[]).unwrap();
         assert_eq!(
             navmesh_find(&nav, (1e40, 50.0), &[(90.0, 50.0)]),
             Err(crate::scene::pathfinding::PathFail::Invalid)
