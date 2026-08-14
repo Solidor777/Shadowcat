@@ -168,7 +168,10 @@ envelope, through one shared classifier (`REDACTABLE_BANDS`, `redaction_target`,
 `RedactionTarget`) in the `data::permission` module. Ingress (`validate_property_overrides`)
 rejects an unclassifiable pointer at all four write paths — `apply_intent`'s Create and Update,
 `apply_command`'s Create and Update. Egress (`filter_properties`) returns `Result<Document,
-RedactionError>`; both former panicking `.expect()`s are gone, and every caller fails closed.
+RedactionError>`; the one panicking assertion — the re-deserialize `.expect()` that the nested
+`/permissions/...` pointer tripped — is gone, and every caller fails closed. The remaining
+`.expect()` is the serialize of an owned document into a `Value`, infallible by construction and
+not a redaction outcome.
 Evidence: `docs/CLOSED_BUGS.md` "Server / data — unrestricted `property_overrides` pointer
 substituted or panicked the envelope"; the mutation-checked test suite in `data::permission` and
 `data::validation` (per-pointer ingress rejection for each envelope field, acceptance for the four
@@ -374,7 +377,10 @@ content bands, never on the envelope. Three parts, in order.
    from whole-document egress either.
 2. **Ingress rejects an unclassifiable pointer** at both existing call sites, so an envelope-naming
    override becomes a bad-path error rather than a stored landmine.
-3. **The egress filter returns a result** and both panicking assertions are deleted. Callers fail
+3. **The egress filter returns a result** and its one panicking assertion — the re-deserialize of
+   the redacted value back into a document — is deleted. (The filter's other `expect` is the
+   serialize of an owned document into a `Value`, infallible by construction and not a redaction
+   outcome; it stays.) Callers fail
    **closed**: broadcast drops delivery to that recipient, and the read routes error rather than
    shipping a half-redacted document. The whitelist alone closes the reachable bug; the result type
    covers what a whitelist structurally cannot — a band added to the document type without

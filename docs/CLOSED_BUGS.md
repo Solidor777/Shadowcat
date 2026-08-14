@@ -17,7 +17,10 @@ Confirmed-real defects that have since been fixed, kept for provenance. New fixe
   (`validate_property_overrides`, enforced at all four write paths — `apply_intent`'s Create and
   Update, `apply_command`'s Create and Update) rejects an unclassifiable pointer as `BadPath`
   before it is ever stored. Egress (`filter_properties`) now returns `Result<Document,
-  RedactionError>` instead of panicking on the two former `.expect()`s; every caller fails closed
+  RedactionError>`; the single panicking assertion this bug tripped — the re-deserialize of the
+  redacted value back into a `Document` — is gone, while the function's other `.expect()`, the
+  serialize of an owned document into a `Value`, is infallible by construction, is not a redaction
+  outcome, and stays. Every caller fails closed
   on `Err` — broadcast drops delivery to that recipient, `list_documents`/`search` omit the item,
   the single-document read errors, and the search-index builder writes empty public content rather
   than failing the write. `collect_hidden` reads the same classifier, so the change-delta path

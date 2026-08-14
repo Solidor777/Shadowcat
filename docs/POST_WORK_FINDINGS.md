@@ -194,7 +194,8 @@ are observations awaiting triage, not committed work.
   credit-gated sink (`ws::conn::tests::egress_lag_triggers_resync_and_converges`).
   Full ws_convergence suite now ~2s locally.
 
-- Title: an `Update` to a since-deleted document is silently dropped on replay.
+- Title: an `Update` to a since-deleted document is delivered on replay, redacted against whatever
+  document has reoccupied that id.
   Summary: this was believed dropped on replay, with the resulting end state accepted as
   harmless. Neither premise holds: the same lookup can instead resolve to an unrelated document
   that has since reoccupied the deleted document's id, so the stale `Update` is delivered,

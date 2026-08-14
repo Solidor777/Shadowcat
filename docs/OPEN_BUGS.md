@@ -147,7 +147,7 @@ Currently open, confirmed-real defects. Deferrals belong in `TODO.md`, not here.
   - **Fix shape:** make the two `sizeDir` call sites agree on a frame — either snap the pointer
     point alongside the anchor, or compare the raw pointer against the raw pointer-down point.
     Then add the extent guard its three siblings already carry. Belongs on the runtime follow-up
-    branch with the `property_overrides` fix above; found by the Sweep 11 whole-branch review,
+    branch; found by the Sweep 11 whole-branch review,
     which is comment-only and cannot carry a behavior change.
 
 - **A WS connection that misses an `AssetChanged{replaced}` frame keeps a stale image forever, with
@@ -230,6 +230,6 @@ Currently open, confirmed-real defects. Deferrals belong in `TODO.md`, not here.
   - **Fix shape:** change the `old` argument to `chatsys.hyperlinks ?? null`. The
     `checked={chatsys.hyperlinks ?? false}` display expression is correct and stays — it
     mirrors `ChatContentPolicy::hyperlinks()`'s `unwrap_or(false)` on the read path. Add a test
-    seeding `hyperlinks: null`. Runtime change; belongs on the follow-up branch with
-    `property_overrides` and `makeTemplateTool`. Found during Sweep 12 Task 6 by the dispatcher and
+    seeding `hyperlinks: null`. Runtime change; belongs on the follow-up branch with the
+    `makeTemplateTool` fix above. Found during Sweep 12 Task 6 by the dispatcher and
     independently confirmed by both reviewers, from writing the doc comment that sits above it.
