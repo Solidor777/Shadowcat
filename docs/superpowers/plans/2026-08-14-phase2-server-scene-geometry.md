@@ -3019,8 +3019,15 @@ test outcome is a finding to report, not a thing to accommodate.
 - [ ] **Step 1: Class A — positional references**
 
 A comment that locates something by where it sits rather than by what it is: `below`, `above`,
-`the loop below`, `placed ahead of`, `the line following`. Roughly 30 are known to survive; `explored`
-alone carries four, and `pathfinding::cell_enterable` carries one.
+`the loop below`, `placed ahead of`, `the line following`. **71 are measured to survive** — the
+estimate rose from four to thirty to seventy-one across three successive counts, every one of them an
+undercount, which is why this task enumerates rather than estimates.
+
+**Classify, do not sweep.** Roughly 40 further lines match the same words while being nothing of the
+kind: quantitative uses (`a bound below one cell`), temporal ones (`rejected later by`), and ordinary
+prose. A pattern narrow enough to exclude them would exclude real members spelled differently, and
+narrowing a detector hides what widening revealed — so keep the match broad and adjudicate every hit
+by hand, recording the non-members and their reason alongside the members.
 
 **The conversion is: keep the DESCRIPTIVE name, drop the POSITIONAL word.** "the integer-block loop
 below" → "the integer-block loop". The name is what makes a reference findable; the position is the
@@ -3032,7 +3039,8 @@ state the constraint directly instead of pointing at it.
 - [ ] **Step 2: Class B — section-style and unnamed-document pointers**
 
 Comments carrying a bare `§N` or an unnamed spec reference — a pointer whose referent cannot be
-identified from the code. Around 11 are known to survive.
+identified from the code. **13 lines carrying 14 tokens are measured to survive**, 11 of them one
+recurring section number.
 
 These pass `check-comment-refs`, which is a fact about the gate's coverage and not a licence. State
 the constraint the sentence is about; where the pointer carried nothing, delete the token and change
@@ -3043,6 +3051,10 @@ nothing else — inventing a plausible replacement constraint is the worst outco
 Around 14 test sites author a grid size in scene JSON and separately restate it as a literal, without
 deriving coordinates from a shape. Their failure mode is loud rather than silent — the literal
 assertions break — which is why they were separated from the drift class Task 5 closed.
+
+**Add `grid_shape.rs`'s own 11 sites**, which appear in no earlier count because that file sat outside
+the worklist that produced every other number here. Treat the totals above the same way: they are the
+measured floor, not the answer.
 
 **The shape is minimal: each fixture's authored size gets ONE expression within that test.** Do NOT
 build a shared fixture constructor across these — they are diverse scenes, and forcing them through
@@ -3059,14 +3071,34 @@ from the repo root.
 this task replaced was load-bearing in a way nobody had recorded. Report it; do not adjust the test
 to restore green.
 
-- [ ] **Step 5: Report the measured populations**
+- [ ] **Step 5: Make the class a gate, once its population is zero**
+
+Add the positional-reference and unnamed-pointer patterns to `scripts/check-comment-refs.mjs` as
+full-tree rules, in the same edit that empties their populations. **No baseline and no allowlist** —
+a warn tier or a grandfathered set is an exemption spread across the whole codebase, and a
+reported-but-passing violation is indistinguishable to a later reader from code that was checked.
+
+Two constraints on the patterns, both learned from this task's own history:
+
+- **Keep them broad and pay for it in review, never narrow them to silence a collision.** A false
+  positive is visible and gets adjudicated; a false negative is invisible forever. Where a legitimate
+  quantitative or temporal use collides, change the prose so the collision does not arise rather than
+  carving the pattern around it.
+- **The gate must print its active exemption count**, if it ends up with any. An uncounted exemption
+  is a backdoor and a silent one is indistinguishable from a rule that does not apply.
+
+Verify the gate is real before trusting it: introduce one violation of each new pattern, observe the
+gate FAIL, and revert byte-identically by `diff`. A gate that does not gate and a clean tree produce
+the same output.
+
+- [ ] **Step 6: Report the measured populations**
 
 Per class: the enumerated population, the number converted, and every member left unconverted with
 its reason. **Do not report a class as "complete"** — report what was enumerated and what was done
 with each member. A class whose population matches an earlier estimate exactly is worth a second
 look; every earlier estimate here was an undercount.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git commit -m "docs(scene): replace positional and unnamed-document references, single-source fixture sizes
