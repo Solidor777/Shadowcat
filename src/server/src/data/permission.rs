@@ -167,6 +167,45 @@ pub async fn load_update_docs(
     out
 }
 
+/// The four CONTENT bands of a `Document`. Redaction operates on these and never on
+/// the structural envelope (`id`, `scope`, `doc_type`, `schema_version`, `source`,
+/// `owner`, `permissions`, `parent_id`, `embedded`, `created_at`, `updated_at`), whose
+/// fields are either required or carry access-control meaning. Exactly the set
+/// `required_cap_for_path` maps to `cap::WRITE_FIELDS` — which reads THIS array rather
+/// than re-spelling it, so the writable set and the redactable set cannot drift apart.
+pub const REDACTABLE_BANDS: [&str; 4] = ["name", "engine", "system", "base"];
+
+/// Whether a content band is a CONTAINER, i.e. has an interior a JSON pointer can descend
+/// into. `name` is a display string — a leaf — so `/name/...` names nothing at all. Both
+/// the write-capability rule (`required_cap_for_path`) and the egress classifier
+/// (`redaction_target`) read this one statement of the rule; each then applies its own
+/// boundary handling to the residual segment, which is where the two legitimately differ.
+fn band_has_interior(band: &str) -> bool {
+    band != "name"
+}
+
+/// Whether `path` writes a content band whole, or writes into one.
+///
+/// Derived from `REDACTABLE_BANDS`: the band SET is stated once, so adding a fifth band
+/// cannot make a path redactable without also making it writable under `cap::WRITE_FIELDS`.
+/// Only the set and the leaf rule are shared with `redaction_target`; the residual-segment
+/// rule is not, and must not be — an empty residual (`/system/`) is a writable path here and
+/// an unclassifiable override key there, because a `FieldChange` path and a
+/// `property_overrides` key are different fields on different structures with different
+/// validators.
+fn writes_a_content_band(path: &str) -> bool {
+    let Some(rest) = path.strip_prefix('/') else {
+        return false;
+    };
+    REDACTABLE_BANDS.iter().any(|band| {
+        rest == *band
+            || (band_has_interior(band)
+                && rest
+                    .strip_prefix(*band)
+                    .is_some_and(|tail| tail.starts_with('/')))
+    })
+}
+
 /// The capability required to write a document field at `path`, or `None` when
 /// the path targets an immutable envelope field (not patchable via `Update`).
 /// # Examples
@@ -179,16 +218,7 @@ pub async fn load_update_docs(
 /// assert_eq!(required_cap_for_path("/source"), None); // immutable: no cap reaches it
 /// ```
 pub fn required_cap_for_path(path: &str) -> Option<&'static str> {
-    // `/name` is a leaf (a display string, not a container): `/name/...`
-    // does NOT match — there is no sub-path to write.
-    if path == "/system"
-        || path.starts_with("/system/")
-        || path == "/engine"
-        || path.starts_with("/engine/")
-        || path == "/name"
-        || path == "/base"
-        || path.starts_with("/base/")
-    {
+    if writes_a_content_band(path) {
         Some(cap::WRITE_FIELDS)
     } else if path == "/embedded" || path.starts_with("/embedded/") {
         Some(cap::MANAGE_EMBEDDED)
@@ -206,13 +236,6 @@ pub fn required_cap_for_path(path: &str) -> Option<&'static str> {
         None
     }
 }
-
-/// The four CONTENT bands of a `Document`. Redaction operates on these and never on
-/// the structural envelope (`id`, `scope`, `doc_type`, `schema_version`, `source`,
-/// `owner`, `permissions`, `parent_id`, `embedded`, `created_at`, `updated_at`), whose
-/// fields are either required or carry access-control meaning. Exactly the set
-/// `required_cap_for_path` maps to `cap::WRITE_FIELDS`.
-pub const REDACTABLE_BANDS: [&str; 4] = ["name", "engine", "system", "base"];
 
 /// What a `property_overrides` pointer targets, and therefore how egress removes it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -239,13 +262,15 @@ pub enum RedactionTarget {
 /// can silently diverge on an input neither author checked, and reading one shared
 /// function is what prevents that.
 ///
-/// `/name` is a leaf: `/name/...` has no sub-path and classifies as `None` — the same
-/// leaf-versus-container treatment `required_cap_for_path` gives the `name` band. Beyond
-/// that one shared point, the two functions classify different input domains:
-/// `required_cap_for_path` classifies a field-change path, `redaction_target` classifies
-/// a `property_overrides` map key. Same JSON-pointer syntax, different fields on
-/// different structures, gated by different validators — they are not required to agree
-/// on any given string.
+/// Two things are shared with `required_cap_for_path` as symbols rather than by
+/// inspection: the band set (`REDACTABLE_BANDS`) and the leaf rule (`band_has_interior`,
+/// which is why `/name/...` classifies as `None`). Everything else is deliberately
+/// unshared, because the two classify different input domains: `required_cap_for_path`
+/// classifies a `FieldChange` path, `redaction_target` classifies a `property_overrides`
+/// map key. Same JSON-pointer syntax, different fields on different structures, gated by
+/// different validators — so they are NOT required to agree string-for-string, and do not
+/// (`/system/` is a writable path there and unclassifiable here). Only the band set and
+/// the leaf rule must agree, and those are single symbols.
 /// # Examples
 ///
 /// ```
@@ -261,8 +286,7 @@ pub fn redaction_target(pointer: &str) -> Option<RedactionTarget> {
         if rest == band {
             return Some(RedactionTarget::Band);
         }
-        // `/name` carries no interior; every other band is a container.
-        if band != "name" {
+        if band_has_interior(band) {
             if let Some(inner) = rest.strip_prefix(band) {
                 if let Some(tail) = inner.strip_prefix('/') {
                     if !tail.is_empty() {
@@ -328,6 +352,52 @@ mod required_cap_tests {
         assert_eq!(required_cap_for_path("/owner"), Some(cap::EDIT_PERMISSIONS));
         assert_eq!(required_cap_for_path("/owner/id"), None);
         assert_eq!(required_cap_for_path("/owners"), None);
+    }
+
+    #[test]
+    fn the_write_fields_band_set_equals_the_redactable_band_set() {
+        // The two functions are not per-string equal and must not be tested that way
+        // (`/system/` is `WRITE_FIELDS` for one and unclassifiable for the other). What
+        // must hold is that they admit the same BAND SET, so a fifth band cannot become
+        // redactable without also becoming writable under the same capability.
+        //
+        // The universe is HARDCODED, never derived from `REDACTABLE_BANDS`: probing only
+        // the constant's own contents would make the assertion definitionally true for any
+        // contents, and would not notice a band silently added to one side.
+        let universe = [
+            "name",
+            "engine",
+            "system",
+            "base",
+            "id",
+            "scope",
+            "doc_type",
+            "schema_version",
+            "source",
+            "owner",
+            "permissions",
+            "parent_id",
+            "embedded",
+            "created_at",
+            "updated_at",
+        ];
+        let writable: Vec<&str> = universe
+            .into_iter()
+            .filter(|f| required_cap_for_path(&format!("/{f}")) == Some(cap::WRITE_FIELDS))
+            .collect();
+        let redactable: Vec<&str> = universe
+            .into_iter()
+            .filter(|f| redaction_target(&format!("/{f}")).is_some())
+            .collect();
+        assert_eq!(
+            writable, redactable,
+            "the WRITE_FIELDS set and the redactable set diverged"
+        );
+        assert_eq!(
+            writable,
+            ["name", "engine", "system", "base"],
+            "both sets changed together but are no longer the four content bands"
+        );
     }
 
     #[test]
