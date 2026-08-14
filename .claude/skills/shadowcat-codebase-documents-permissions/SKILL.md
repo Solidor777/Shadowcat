@@ -257,7 +257,7 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
     both keys — a real pre-image for a new key, and the conventional `new` of a removal.
   - **`WireCapabilityGrants.by_role` is a ROLE-KEYED PARTIAL map; `by_user` stays open by
     design.** `capabilityGrantsSchemaImpl` keys `by_role` by `DocRoleSchema`, so a frame naming an
-    unknown role is rejected and adding a `DocRole` variant now requires adding it to that schema
+    unknown role is rejected and adding a `DocRole` variant requires adding it to that schema
     before any grant can name it; the map is partial because the Rust source may omit any role.
     `by_user` keys are user ids — genuinely unconstrained — so it remains a string-keyed record,
     and narrowing it would be wrong.

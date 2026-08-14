@@ -52,7 +52,7 @@ optimistically and roll back on divergence.
 - `ws::protocol` — client/server message frames; `ServerMsg`, `event_seq()`.
 - `ws::conn` — per-connection loop + egress; `ws::time` — server time source +
   client offset calibration (exists before its consumer, per ARCHITECTURE §2 invariant 2).
-  `send_filtered` (Phase C: now takes `room: &Room`, not just `repo`/`ctx`) is where per-recipient
+  `send_filtered` (takes `room: &Room` alongside `repo`/`ctx`) is where per-recipient
   redaction actually happens: only the `Event` branch carries document data, so only it is
   redacted — every other frame (including `MoveStream`, clipped separately by `clip_move_stream`;
   see the invariant below) passes through unredacted via `send_filtered`. The `Event` branch's
@@ -71,7 +71,7 @@ optimistically and roll back on divergence.
   survives a while post-expiry for audit/support lookup before GC actually removes it; same timer
   as session sweep, no dedicated invite timer),
   `SessionUser`/`AuthUser`/`AdminUser`; `auth::password`, `auth::role`.
-- `http::throttle` (Phase A) — `AuthThrottle` (`check(key, now_ms, per_min) ->
+- `http::throttle` — `AuthThrottle` (`check(key, now_ms, per_min) ->
   bool`, sliding 60s window, `Mutex<HashMap<String, Vec<i64>>>`), shared by the two
   Argon2-verifying endpoints (`/api/login`, `POST /api/invites/accept`). **INVARIANT (no
   enumeration oracle):** identity keys (`login:u:<username>`, `invite:u:<uuid>`) count attempts
@@ -83,7 +83,7 @@ optimistically and roll back on divergence.
   `INVITE_PER_MIN_PER_ACCOUNT=10`/`INVITE_PER_MIN_PER_IP=30`) so identity-rotating stuffing from
   one address is bounded too. `MAX_TRACKED_KEYS=65_536` caps the map; at capacity, expired keys
   are swept first, and if still full a NEW key FAILS CLOSED (throttled) rather than evicting live
-  state. `ClientIp` (Phase A axum extractor) is infallible: `Some` under real `ConnectInfo`,
+  state. `ClientIp` (axum extractor) is infallible: `Some` under real `ConnectInfo`,
   `None` under the axum-test mock transport (IP throttling degrades to identity-only there, never
   a 500) — `AppState.auth_throttle: Arc<AuthThrottle>`. All four budgets are config-tunable
   (`Config.login_per_min_per_identity`/`login_per_min_per_ip`/`invite_per_min_per_account`/
@@ -114,7 +114,7 @@ optimistically and roll back on divergence.
   observable via `list_members`. Naming a target is the disclosure; the invite removes the naming.
   NOTE this is about the by-NAME path only: `add_member` survives (GM-gated, by user ID, 404 on an
   unknown id) — it is naming a user by a guessable identifier that was removed, not membership writes.
-- **Deletion & eviction (Phase B).** `ServerMsg::Evicted { user: Option<Uuid> }` is the terminal
+- **Deletion & eviction.** `ServerMsg::Evicted { user: Option<Uuid> }` is the terminal
   out-of-band frame: `None` addresses every connection in a room (world deletion, broadcast on the
   removed room), `Some(id)` addresses one user's connections across ALL rooms
   (`RoomRegistry::evict_user`, account deletion). The egress loop delivers the frame, sends a
@@ -211,7 +211,7 @@ optimistically and roll back on divergence.
   a REJECTION replies (`ServerMsg::ChatError`, sender-only), while success is confirmed by the
   broadcast `Event` echo. They use a separate `chatPending` map whose timer resolves
   (success-assumed) rather than rejects on timeout — see `shadowcat-codebase-chat`.
-- **`ScenePing` is gated by `scene_ping_permitted` (Phase A), not by scene
+- **`ScenePing` is gated by `scene_ping_permitted`, not by scene
   selection.** Unlike `MoveRequest`/`handle_pathfind` (which SELECT server state and so must
   derive-from-token, per the never-fork table in `shadowcat-codebase-core`), `ScenePing` relays
   only the client-supplied `scene`/`x`/`y` to the room via `broadcast_aux` — there is no server

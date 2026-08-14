@@ -102,7 +102,7 @@ guarded, per `validate_url` below).
   deliberately UNCONDITIONAL because `kind: Roll` + `audience: Whisper` IS reachable via the
   frame `audience` field (no `/w` token ⇒ `parse_command` still runs). Edits never call
   `scan_body` — `[[…]]` in an edit stays literal text.
-- **Attribution authz (world-pinned since Phase A):** `handle_send_message`
+- **Attribution authz (world-pinned):** `handle_send_message`
   fail-closed-validates `actor_owner` BEFORE `build_message_doc` — an `Actor` ref must resolve to
   an existing `doc_type=="actor"` doc, IN THE SENDING ROOM'S WORLD
   (`crate::data::document::world_of(d) == Some(room.world_id)`), owned by the sender (GM: any
@@ -495,8 +495,8 @@ Three independently replaceable modules (UI-is-modules; swap any one without the
 
 - **`@shadowcat/module-chat`** (the host) — contributes the sidebar tab
   (order 0 = the default tab; `settings` uses order 6, keeping 0 unique) and DECLARES
-  the singleton surfaces `shadowcat.surface:chat.composer` / `chat.message`. **Unread badge
-  (Phase-1 cleanup):** the chat tab is dockview-rendered imperatively via `PanelTabRenderer`, not a
+  the singleton surfaces `shadowcat.surface:chat.composer` / `chat.message`. **Unread badge:**
+  the chat tab is dockview-rendered imperatively via `PanelTabRenderer`, not a
   Svelte component, so the badge is a new `PanelBadge` subscribe/get LIVE-BINDING seam on
   `PanelMeta` (a plain static count field would go stale, since `DockviewEngine.apply()` reassigns
   the whole `#meta` map to a fresh `Map` on every rebuild while `PanelMeta` object references
@@ -539,7 +539,7 @@ Three independently replaceable modules (UI-is-modules; swap any one without the
   (`/`-commands ride verbatim — the server parses); the "Speak as" picker sends
   `actor_owner` `Actor` refs, server-ownership-validated at ingest (see Dice wire above).
 - **`@shadowcat/module-chat-card`** — fail-closed render (`parseMessageEngine` null ⇒ nothing).
-  **`RollTooltip` (Phase-1 cleanup):** an accessible focus/hover-triggered popover
+  **`RollTooltip`:** an accessible focus/hover-triggered popover
   replacing the earlier native `title` tooltip on a roll segment, showing the full
   `outcome.records[]` table with dropped dice distinguished. Popover `id` is derived per-instance
   (`$props.id()`, the `LauncherMenu` convention) — never hardcoded, since a message can

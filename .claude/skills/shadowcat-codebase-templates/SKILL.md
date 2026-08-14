@@ -105,7 +105,7 @@ interprets or merges anything itself.
   `revert`, `cancel`. `canPull(childId)` gates on the private `#isOwnerOrGm(child)` (`role ===
   "gm" || effectiveOwner(child, documents) === selfId` — from
   `@shadowcat/core`'s `effectiveOwner`, the SAME per-doc-override-else-linked-actor-owner rule the
-  server now resolves at egress (Phase C); a literal `doc.owner` read here would fork it) AND the
+  server resolves at egress; a literal `doc.owner` read here would fork it) AND the
   injected `canEdit(child, "/base")` AND `canEdit(child, "/system")` AND `canEdit(child,
   "/embedded")` (an advisory client-side mirror of the server's real authority — WRITE_FIELDS ∪
   MANAGE_EMBEDDED). **`canPush(templateId)` DOES call `canEdit`**, but only one leg of that union:
