@@ -2088,19 +2088,27 @@ impl SceneEcs {
                     maxx = maxx.max(x);
                     maxy = maxy.max(y);
                 }
-                // Candidate cells via GridShape (square: byte-identical
-                // `floor(min/cell)..=floor(max/cell)` row-major rectangle; hex: axial-bounds
-                // superset). `cells_in_bounds` enforces the same MAX_CELLS_PER_POLYGON span cap —
-                // `None` maps to the pre-existing skip-with-warn (same message + `continue`).
-                let candidates = match cell_grid.cells_in_bounds(
+                // Clamp before enumerating: a scan whose candidate count exceeds the cap is
+                // intersected with a window around this source's viewpoint, so the source
+                // contributes a bounded SUBSET of its candidate cells. Fail direction: fewer cells
+                // shipped, which under-reveals. A scan within the cap is enumerated whole.
+                let (scan_min, scan_max) = crate::scene::explored::clamp_scan_window(
+                    cell_grid.as_ref(),
+                    src.vp,
                     (minx, miny),
                     (maxx, maxy),
+                    cell,
+                    crate::scene::explored::MAX_CELLS_PER_POLYGON,
+                );
+                let candidates = match cell_grid.cells_in_bounds(
+                    scan_min,
+                    scan_max,
                     cell,
                     crate::scene::explored::MAX_CELLS_PER_POLYGON,
                 ) {
                     Some(c) => c,
                     None => {
-                        tracing::warn!("lit mask cell scan exceeds cap; skipping source");
+                        tracing::warn!("lit mask cell scan degenerate; skipping source");
                         continue;
                     }
                 };
@@ -2560,12 +2568,21 @@ fn accumulate_visible_cells(
         // (`pad_px = pad * cell`) BEFORE the call. For SQUARE, with integer `pad`,
         // `floor((min - pad*cell)/cell) == floor(min/cell) - pad` (and likewise `+ pad` on max), so
         // this pixel-space pad and an equivalent integer-index pad enumerate the same row-major
-        // index rectangle. For HEX the padded pixel AABB feeds the axial-bounds superset. `None`
-        // (over-cap / degenerate) maps to the pre-existing skip-with-warn (same message +
-        // `continue`), so `MAX_CELLS_PER_POLYGON` stays enforced.
+        // index rectangle. For HEX the padded pixel AABB feeds the axial-bounds superset.
         let pad_px = if lenient { cell } else { 0.0 };
         let min = (minx - pad_px, miny - pad_px);
         let max = (maxx + pad_px, maxy + pad_px);
+        // Pad first, then clamp: clamping the padded box keeps the lenient candidate set a
+        // superset of the strict one (equal when the clamp binds), which the strict/lenient
+        // relationship depends on.
+        let (min, max) = crate::scene::explored::clamp_scan_window(
+            grid,
+            src.vp,
+            min,
+            max,
+            cell,
+            crate::scene::explored::MAX_CELLS_PER_POLYGON,
+        );
         let candidates = match grid.cells_in_bounds(
             min,
             max,
@@ -2574,7 +2591,7 @@ fn accumulate_visible_cells(
         ) {
             Some(c) => c,
             None => {
-                tracing::warn!("visible_cells scan exceeds cap; skipping source");
+                tracing::warn!("visible_cells scan degenerate; skipping source");
                 continue;
             }
         };
@@ -7437,6 +7454,86 @@ explored: // GM: unrestricted mask
             grid.cell_of(out.stop),
             (3, 0),
             "the strict move never enters hex (3,0)"
+        );
+    }
+
+    /// REQUIREMENT this scene has to satisfy, which is what every test reading it depends on: a
+    /// single source's candidate scan must exceed `MAX_CELLS_PER_POLYGON` under BOTH readings of
+    /// the authored bounds — the raw one, where `vision::bound_for_scene` compares the authored
+    /// value against world coordinates, and the converted one, where it receives that value times
+    /// the cell size. A scan under the cap never engages the clamp, and the assertions would then
+    /// hold for a reason they do not name. The width is what supplies the over-cap product; the
+    /// height is small so the CLAMPED scan is a few thousand cells and the tests run in a unit
+    /// suite. Wall-less, all-bright, LOS off, one owned token at the origin cell, so the whole
+    /// scan is a single source's.
+    fn over_cap_scan_scene() -> (SceneEcs, Uuid, Uuid) {
+        let user = Uuid::from_u128(7);
+        let scene_id = Uuid::from_u128(10);
+        let mut tok = entity_doc_eng(
+            11,
+            10,
+            "token",
+            json!({ "x": 50.0, "y": 50.0, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+        );
+        tok.owner = Some(user);
+        let scene = entity_doc_top_eng(
+            10,
+            "scene",
+            json!({ "grid": { "kind": "square", "size": 100 }, "background": null,
+                    "bounds": { "width": 200_000_000.0, "height": 5.0 } }),
+        );
+        let mut ecs = SceneEcs::from_documents(vec![scene, tok], 0);
+        ecs.set_world_settings_for_test(json!({
+            "scene": {
+                "losRestriction": false, "fog": true,
+                "lightingEnabled": false, "lightMode": "environmentLight",
+                "environment": { "color": "#ffffff", "intensity": 1.0 },
+                "observerVision": false,
+                "movementRestriction": "visible",
+                "movementModel": "grid-stepped",
+                "partialCellLeniency": false
+            },
+            "pathfinding": { "diagonalRule": "chebyshev" },
+            "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
+        }));
+        (ecs, user, scene_id)
+    }
+
+    #[test]
+    fn an_over_cap_visibility_scan_yields_a_bounded_mask_not_an_empty_one() {
+        // Under `MovementRestriction::Visible` an empty mask refuses every move, so the
+        // over-cap outcome must be a bounded neighbourhood of the source rather than nothing.
+        // Discrimination: fails if `accumulate_visible_cells` hands the unclamped bbox to
+        // `cells_in_bounds`, because the cap then returns `None` and the source is skipped,
+        // leaving the mask empty. It cannot pass vacuously: the second assertion requires the
+        // mask to STOP somewhere, so a scan that ignored the cap entirely also fails.
+        let (ecs, user, scene) = over_cap_scan_scene();
+        let mask = ecs.visible_cells(user, scene, false);
+        assert!(mask.contains(&(0, 0)), "the source's own cell is visible");
+        let outside = crate::scene::explored::SCAN_WINDOW_HALF_CELLS as i32 + 10;
+        assert!(
+            !mask.contains(&(outside, 0)),
+            "a cell beyond the scan window is not in the mask"
+        );
+    }
+
+    #[test]
+    fn an_over_cap_lit_mask_scan_yields_a_bounded_cell_set_not_an_empty_one() {
+        // The egress half of the same scan, which is a separate call site and would otherwise be
+        // converted independently. Discrimination: identical to the mask test, applied to
+        // `player_lit_mask`'s own scan.
+        let (ecs, user, scene) = over_cap_scan_scene();
+        let cells: std::collections::BTreeSet<(i32, i32)> = ecs
+            .player_lit_mask(user)
+            .into_iter()
+            .filter(|s| s.scene == scene)
+            .flat_map(|s| s.cells.into_iter().map(|(i, j, _b, _t, _h)| (i, j)))
+            .collect();
+        assert!(cells.contains(&(0, 0)), "the source's own cell is lit");
+        let outside = crate::scene::explored::SCAN_WINDOW_HALF_CELLS as i32 + 10;
+        assert!(
+            !cells.contains(&(outside, 0)),
+            "a cell beyond the scan window is not shipped"
         );
     }
 }

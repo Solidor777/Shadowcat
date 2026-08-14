@@ -11,6 +11,7 @@
 #![deny(clippy::missing_docs_in_private_items)]
 
 use crate::scene::grid_shape::GridShape;
+use crate::scene::vision;
 use crate::scene::GridKind;
 use std::collections::BTreeSet;
 
@@ -40,6 +41,77 @@ pub type Cell = (i32, i32);
 /// grid size could otherwise span billions of cells and stall the dispatch path. Exceeding the cap
 /// skips the polygon (marks no cells → under-reveal, the fail-safe direction).
 pub(crate) const MAX_CELLS_PER_POLYGON: i64 = 4_000_000;
+
+/// Half-extent, in CELLS, of the window an over-cap candidate scan is clamped to.
+///
+/// Sized so the window itself can never be refused by `MAX_CELLS_PER_POLYGON`: a square window of
+/// `2*HALF + 1` cells per side enumerates `(2*HALF + 1)^2` cells, and `HALF` is the largest value
+/// keeping that product at or under the cap. Hex enumerates FEWER cells for the same pixel window
+/// — the axial preimage of a pixel box is a sheared parallelogram whose integer bounding box is
+/// smaller than the square index rectangle of the same box — so bounding the square case bounds
+/// both, and `a_clamped_hex_window_also_stays_inside_the_per_polygon_cap` measures that through
+/// `HexGrid::cell_bounds` rather than assuming it.
+pub(crate) const SCAN_WINDOW_HALF_CELLS: i64 = 999;
+
+/// Intersect a candidate-scan AABB with a window of `SCAN_WINDOW_HALF_CELLS` cells around `focus`,
+/// but ONLY when the AABB's own candidate count exceeds `max_cells`.
+///
+/// An over-cap scan makes `GridShape::cells_in_bounds` return `None`, and every caller of that
+/// primitive treats `None` as "skip this source/polygon" — an empty mask, which on the movement
+/// gate refuses every move and on egress ships no cells. Clamping keeps such a scan enumerable, at
+/// a bounded SUBSET of the unclamped candidate set: each caller's fail direction stays the
+/// under-revealing one (fewer cells admitted, fewer cells shipped, fewer cells remembered), and
+/// the outcome is a degradation the source survives rather than the source's whole contribution.
+///
+/// The span test is what keeps this from taking cells away from a scan that was never in trouble.
+/// The cap bounds a PRODUCT of two cell counts; the window bounds a PER-AXIS distance from a focus
+/// that sits wherever the source does, not at the box's centre. A box can therefore reach far
+/// beyond the window on both axes and still enumerate fewer cells than the cap allows, and those
+/// cells are in the mask a player moves through. So the span is computed first — through the same
+/// `cell_bounds` + `saturating_mul` arithmetic `cells_in_bounds` applies — and a span within
+/// `max_cells` returns `min`/`max` untouched.
+///
+/// PRECONDITION: `focus` lies inside `[min, max]`. All three callers satisfy it — a visibility
+/// source sits inside its own LOS polygon's bbox, and `mark_polygons` uses that bbox's own centre.
+/// A focus far enough outside that the window misses the box would otherwise yield `min > max`, an
+/// inverted rectangle that enumerates nothing, so that case returns the box unchanged and lets the
+/// callee's own cap decide.
+///
+/// Returns `min`/`max` unchanged for a degenerate `cell`, `focus` or box as well — the callee's
+/// fail-closed `None` on a degenerate input is the correct outcome there and must not be masked.
+pub(crate) fn clamp_scan_window(
+    grid: &dyn GridShape,
+    focus: vision::P,
+    min: vision::P,
+    max: vision::P,
+    cell: f64,
+    max_cells: i64,
+) -> (vision::P, vision::P) {
+    if !cell.is_finite()
+        || cell <= 0.0
+        || !focus.0.is_finite()
+        || !focus.1.is_finite()
+        || !min.0.is_finite()
+        || !min.1.is_finite()
+        || !max.0.is_finite()
+        || !max.1.is_finite()
+    {
+        return (min, max);
+    }
+    let (i0, j0, i1, j1) = grid.cell_bounds(min, max, cell);
+    let w = i1 as i64 - i0 as i64 + 1;
+    let h = j1 as i64 - j0 as i64 + 1;
+    if w.saturating_mul(h) <= max_cells {
+        return (min, max);
+    }
+    let half_px = SCAN_WINDOW_HALF_CELLS as f64 * cell;
+    let win_min = (min.0.max(focus.0 - half_px), min.1.max(focus.1 - half_px));
+    let win_max = (max.0.min(focus.0 + half_px), max.1.min(focus.1 + half_px));
+    if win_min.0 > win_max.0 || win_min.1 > win_max.1 {
+        return (min, max);
+    }
+    (win_min, win_max)
+}
 
 /// A sparse explored-cell set for one (scene, player).
 #[derive(Default, Clone, Debug, PartialEq, Eq)]
@@ -89,9 +161,11 @@ impl ExploredSet {
     /// math reduce to exactly `floor(min/cell)..=floor(max/cell)` and `(i+0.5)*cell`.
     /// Correctness (the `Revealed` gate composes this set with `GridShape::line_traversal`
     /// move-cells) requires `grid` to be the SAME resolved shape (`resolve_grid_shape`) the gate and
-    /// the vision mask use for this scene. A polygon whose bbox is over-cap
-    /// (> `MAX_CELLS_PER_POLYGON`) or degenerate (`cells_in_bounds` → `None`) is skipped
-    /// (under-reveal) to bound the dispatch-path cost.
+    /// the vision mask use for this scene. A polygon whose bbox enumerates more than
+    /// `MAX_CELLS_PER_POLYGON` candidate cells is clamped to a `SCAN_WINDOW_HALF_CELLS` window
+    /// around that bbox's centre, marking a bounded subset; a bbox within the cap is enumerated
+    /// whole. A DEGENERATE polygon (`cells_in_bounds` → `None`) is skipped (under-reveal) to bound
+    /// the dispatch-path cost.
     pub(crate) fn mark_polygons(
         &mut self,
         polys: &[Vec<f64>],
@@ -114,14 +188,24 @@ impl ExploredSet {
                 maxx = maxx.max(x);
                 maxy = maxy.max(y);
             }
-            // `cells_in_bounds` is a SUPERSET candidate filter (never misses a cell whose center is
-            // in the AABB); `None` on an over-cap/degenerate input (the same
-            // `MAX_CELLS_PER_POLYGON`/`saturating_mul` guard `cells_in_bounds` enforces) → skip
-            // (under-reveal, fail-safe).
+            // Clamp before enumerating: a bbox whose candidate count exceeds the cap is
+            // intersected with a window around its own centre, so the polygon marks a bounded
+            // SUBSET of the cells that bbox covers. Fail direction: fewer cells remembered, which
+            // under-reveals. `cells_in_bounds` still applies the cap, so a degenerate input fails
+            // closed.
+            let focus = ((minx + maxx) * 0.5, (miny + maxy) * 0.5);
+            let (scan_min, scan_max) = clamp_scan_window(
+                grid,
+                focus,
+                (minx, miny),
+                (maxx, maxy),
+                cell_size,
+                MAX_CELLS_PER_POLYGON,
+            );
             let Some(candidates) =
-                grid.cells_in_bounds((minx, miny), (maxx, maxy), cell_size, MAX_CELLS_PER_POLYGON)
+                grid.cells_in_bounds(scan_min, scan_max, cell_size, MAX_CELLS_PER_POLYGON)
             else {
-                tracing::warn!("explored cell scan over-cap or degenerate; skipping polygon");
+                tracing::warn!("explored cell scan degenerate; skipping polygon");
                 continue;
             };
             for c in candidates {
@@ -260,13 +344,27 @@ mod tests {
     }
 
     #[test]
-    fn skips_a_polygon_whose_bbox_exceeds_the_cell_cap() {
+    fn bounds_a_polygon_whose_bbox_exceeds_the_cell_cap_to_the_scan_window() {
+        // A long thin strip: bbox ~9,000,000 × 4 cells at cell_size 1, over the 4M cap. The
+        // enumeration is clamped to a window around the bbox centre rather than skipped, so
+        // the polygon does bounded work instead of none.
         let mut set = ExploredSet::new();
-        // A 3000×3000 polygon at cell_size 1 → 9,000,000 candidate cells > the 4M cap → skipped
-        // (under-reveal) rather than stalling the dispatch path.
-        let big = vec![0.0, 0.0, 3000.0, 0.0, 3000.0, 3000.0, 0.0, 3000.0];
-        assert_eq!(set.mark_polygons(&[big], &sq(1.0), 1.0), 0);
-        assert!(set.is_empty());
+        let strip = vec![0.0, 0.0, 9_000_000.0, 0.0, 9_000_000.0, 3.0, 0.0, 3.0];
+        let grew = set.mark_polygons(&[strip], &sq(1.0), 1.0);
+        assert!(
+            grew > 0,
+            "the clamped scan marks a bounded neighbourhood, not nothing"
+        );
+        // The bbox centre's own column sits at x = 4_500_000.
+        assert!(
+            set.contains((4_500_000, 0)),
+            "the cell at the bbox centre's own column is marked"
+        );
+        let outside = 4_500_000 + SCAN_WINDOW_HALF_CELLS as i32 + 10;
+        assert!(
+            !set.contains((outside, 0)),
+            "a cell far outside the window is not marked"
+        );
     }
 
     #[test]
@@ -362,6 +460,97 @@ mod tests {
         assert!(
             set.contains((1, 0)),
             "hex axial (1,0) is marked, not a square index"
+        );
+    }
+
+    #[test]
+    fn a_scan_wider_than_the_window_but_under_the_cap_is_returned_unchanged() {
+        // The property the conditional application exists for: the cap bounds a PRODUCT while the
+        // window bounds a PER-AXIS distance, so a box can reach far past the window on both axes
+        // and still enumerate fewer cells than the cap allows. Such a box must not lose a single
+        // candidate — its cells are in the mask today and a player can move to them.
+        //
+        // Discrimination: fails if the window is applied whenever the box is wider than it,
+        // because the returned max would then be the window edge rather than the box edge. The
+        // guard below keeps the test honest if `SCAN_WINDOW_HALF_CELLS` ever changes.
+        let cell = 100.0;
+        let g = sq(cell);
+        let focus = (50.0, 50.0);
+        let min = (-50.0, -50.0);
+        let max = (150_000.0, 150_000.0); // 1502 × 1502 = 2_256_004 candidates, under the cap
+        assert!(
+            max.0 - focus.0 > SCAN_WINDOW_HALF_CELLS as f64 * cell,
+            "fixture: the box must reach past the window, or the test proves nothing"
+        );
+        let (out_min, out_max) =
+            clamp_scan_window(&g, focus, min, max, cell, MAX_CELLS_PER_POLYGON);
+        assert_eq!((out_min, out_max), (min, max));
+    }
+
+    #[test]
+    fn clamp_scan_window_bounds_a_scan_that_exceeds_the_cap() {
+        // Discrimination: fails if the window is not centred on `focus`, if its half-extent is not
+        // `SCAN_WINDOW_HALF_CELLS` cells, or if it expands rather than intersects — the low edges
+        // already sit inside the window and must come back unchanged, while the high edges must
+        // come back at the window.
+        let cell = 100.0;
+        let g = sq(cell);
+        let focus = (50.0, 50.0);
+        let half_px = SCAN_WINDOW_HALF_CELLS as f64 * cell;
+        let (min, max) = ((-50.0, -50.0), (1.0e9, 1.0e9));
+        let (out_min, out_max) =
+            clamp_scan_window(&g, focus, min, max, cell, MAX_CELLS_PER_POLYGON);
+        assert_eq!(
+            out_min, min,
+            "an edge already inside the window is untouched"
+        );
+        assert_eq!(out_max, (focus.0 + half_px, focus.1 + half_px));
+    }
+
+    #[test]
+    fn a_window_that_misses_the_scan_box_leaves_it_unchanged() {
+        // The precondition `clamp_scan_window` states: `focus` lies inside the box. A focus far
+        // outside it would otherwise produce min > max — an inverted rectangle that enumerates
+        // nothing, which is the total loss this clamp exists to remove, reintroduced as a silent
+        // empty result.
+        // Discrimination: fails if the intersection is returned without the emptiness check.
+        let cell = 100.0;
+        let g = sq(cell);
+        let (min, max) = ((0.0, 0.0), (1.0e9, 1.0e9));
+        assert_eq!(
+            clamp_scan_window(&g, (-1.0e8, -1.0e8), min, max, cell, MAX_CELLS_PER_POLYGON),
+            (min, max)
+        );
+    }
+
+    #[test]
+    fn a_clamped_square_window_stays_inside_the_per_polygon_cap() {
+        // The window exists so that `cells_in_bounds` cannot refuse it.
+        // Discrimination: fails if `SCAN_WINDOW_HALF_CELLS` is raised such that
+        // `(2*half + 1)^2 > MAX_CELLS_PER_POLYGON`.
+        let side = 2 * SCAN_WINDOW_HALF_CELLS + 1;
+        assert!(
+            side * side <= MAX_CELLS_PER_POLYGON,
+            "the window enumerates {} cells against a {MAX_CELLS_PER_POLYGON} cap",
+            side * side
+        );
+    }
+
+    #[test]
+    fn a_clamped_hex_window_also_stays_inside_the_per_polygon_cap() {
+        // Square is the denser of the two shapes per unit of pixel area only if hex's axial
+        // preimage of the same pixel box enumerates fewer cells. That is a claim about
+        // `HexGrid::cell_bounds`, so it is measured through that function rather than argued in
+        // prose. Discrimination: fails if the axial padding or the preimage arithmetic changes
+        // such that a clamped hex window can be refused by the cap.
+        let size = 100.0;
+        let g = HexGrid { size };
+        let half_px = SCAN_WINDOW_HALF_CELLS as f64 * size;
+        let (q0, r0, q1, r1) = g.cell_bounds((-half_px, -half_px), (half_px, half_px), size);
+        let span = (q1 as i64 - q0 as i64 + 1) * (r1 as i64 - r0 as i64 + 1);
+        assert!(
+            span <= MAX_CELLS_PER_POLYGON,
+            "a clamped hex window enumerates {span} cells against a {MAX_CELLS_PER_POLYGON} cap"
         );
     }
 }
