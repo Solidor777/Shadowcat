@@ -8,6 +8,7 @@
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
+use crate::scene::grid_shape::WorldExtent;
 use crate::scene::vision;
 use crate::scene::vision::point_in_poly;
 use crate::scene::vision::P;
@@ -160,19 +161,23 @@ pub struct CellLight {
     pub tint: u32,
 }
 
-/// Maps arc-length `d` along the perimeter of the rectangle `(0,0)–(w,h)` to a boundary point,
-/// walking `top → right → bottom → left`. `d` is wrapped into `[0, 2(w+h))`.
-fn perimeter_point(w: f64, h: f64, d: f64) -> P {
+/// Maps arc-length `d` along the perimeter of the envelope `extent` to a boundary point, walking
+/// `top → right → bottom → left` from `extent.min`. `d` is wrapped into `[0, 2(w+h))`, `w`/`h`
+/// being the envelope's own spans. The walk starts at the envelope's MINIMUM rather than the
+/// origin, which is where a hex block's boundary actually is.
+fn perimeter_point(extent: WorldExtent, d: f64) -> P {
+    let (w, h) = (extent.width(), extent.height());
+    let (x0, y0) = extent.min;
     let perim = 2.0 * (w + h);
     let d = d.rem_euclid(perim);
     if d < w {
-        (d, 0.0)
+        (x0 + d, y0)
     } else if d < w + h {
-        (w, d - w)
+        (x0 + w, y0 + (d - w))
     } else if d < 2.0 * w + h {
-        (w - (d - (w + h)), h)
+        (x0 + w - (d - (w + h)), y0 + h)
     } else {
-        (0.0, h - (d - (2.0 * w + h)))
+        (x0, y0 + h - (d - (2.0 * w + h)))
     }
 }
 
@@ -183,8 +188,9 @@ fn perimeter_point(w: f64, h: f64, d: f64) -> P {
 /// placed lights and vision use (never a second, forked occlusion computation). A cell is
 /// environment-lit iff it lies inside ANY sample's polygon (composed by `env_lit`).
 ///
-/// `extent` is the scene rectangle `(0,0)–extent` in WORLD units, produced by
-/// `GridShape::world_extent` from the scene's authored grid-unit bounds. `cell_size` is the grid's
+/// `extent` is the scene's WORLD-unit envelope, produced by `GridShape::world_extent` from the
+/// scene's authored grid-unit bounds; its `min` is the origin only on square, so the walk is
+/// anchored on it rather than on the origin. `cell_size` is the grid's
 /// INDEXING scale and plays two roles that are both discretization, not measurement: it sets the
 /// sample count (one per indexing unit of perimeter, clamped to `[4, MAX_ENV_LIGHT_SAMPLES]` —
 /// on hex the indexing unit is the circumradius, so that is about 1.73 samples per cell pitch) and the
@@ -194,17 +200,20 @@ fn perimeter_point(w: f64, h: f64, d: f64) -> P {
 /// which is why the indexing scale, the smaller of the two scalars on hex, is the right input here
 /// and `world_units_per_cell` is not.
 ///
-/// Fail-closed: a non-finite or non-positive `extent` or `cell_size` ⇒ empty (environment reaches
+/// Fail-closed: a non-finite corner, a non-positive `width()`/`height()`, or a non-finite or
+/// non-positive `cell_size` ⇒ empty (environment reaches
 /// nothing — under-reveal, never over-reveal). The boundary itself never occludes (only interior
 /// `blocksLight` walls do): light enters freely across the scene edge.
-pub fn env_light_polys(
-    extent: (f64, f64),
+pub(crate) fn env_light_polys(
+    extent: WorldExtent,
     cell_size: f64,
     light_walls: &[vision::Seg],
 ) -> Vec<Vec<P>> {
-    let (w, h) = extent;
-    if !w.is_finite()
-        || !h.is_finite()
+    let (w, h) = (extent.width(), extent.height());
+    if !extent.min.0.is_finite()
+        || !extent.min.1.is_finite()
+        || !extent.max.0.is_finite()
+        || !extent.max.1.is_finite()
         || w <= 0.0
         || h <= 0.0
         || !cell_size.is_finite()
@@ -217,15 +226,15 @@ pub fn env_light_polys(
     let n = n.clamp(4, MAX_ENV_LIGHT_SAMPLES);
     let margin = cell_size.max(1.0);
     let bound = vision::Rect {
-        minx: -margin,
-        miny: -margin,
-        maxx: w + margin,
-        maxy: h + margin,
+        minx: extent.min.0 - margin,
+        miny: extent.min.1 - margin,
+        maxx: extent.max.0 + margin,
+        maxy: extent.max.1 + margin,
     };
     (0..n)
         .map(|i| {
             let d = (i as f64) / (n as f64) * perim;
-            vision::visibility_polygon(perimeter_point(w, h, d), light_walls, bound)
+            vision::visibility_polygon(perimeter_point(extent, d), light_walls, bound)
         })
         .collect()
 }
@@ -303,6 +312,17 @@ pub fn cell_illumination(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An origin-anchored envelope of the given world-unit spans — the shape a SQUARE scene's
+    /// `GridShape::world_extent` produces. These fixtures exercise `env_light_polys`'s own
+    /// perimeter walk and refusals on literal pixel spans, where the anchor is incidental; the
+    /// negative-minimum case a hex scene produces is exercised by the fixture that names it.
+    fn origin_extent(w: f64, h: f64) -> WorldExtent {
+        WorldExtent {
+            min: (0.0, 0.0),
+            max: (w, h),
+        }
+    }
 
     fn lamp() -> Light {
         Light {
@@ -516,7 +536,7 @@ mod tests {
     #[test]
     fn env_light_polys_open_scene_reaches_every_interior_cell() {
         // No walls: every boundary sample sees the whole scene, so every interior point is env-lit.
-        let polys = env_light_polys((500.0, 500.0), 100.0, &[]);
+        let polys = env_light_polys(origin_extent(500.0, 500.0), 100.0, &[]);
         assert!(!polys.is_empty());
         for p in [(50.0, 50.0), (250.0, 250.0), (450.0, 450.0), (10.0, 490.0)] {
             assert!(env_lit(&polys, p), "open scene lights interior point {p:?}");
@@ -528,7 +548,7 @@ mod tests {
         // A 10000 × 10000 rectangle at cell size 100: raw n = round(perimeter / cell) = 400,
         // clamped to MAX_ENV_LIGHT_SAMPLES (256) — confirm the clamp actually engages (one
         // polygon per sample).
-        let polys = env_light_polys((10_000.0, 10_000.0), 100.0, &[]);
+        let polys = env_light_polys(origin_extent(10_000.0, 10_000.0), 100.0, &[]);
         assert_eq!(polys.len(), MAX_ENV_LIGHT_SAMPLES);
         // No walls: even capped at 256 samples over a 40000-unit perimeter, every interior and
         // near-boundary cell is still reached — the wall-less-equals-global-illumination
@@ -571,7 +591,7 @@ mod tests {
                 b: (200.0, 200.0),
             },
         ];
-        let polys = env_light_polys((500.0, 500.0), 100.0, &walls);
+        let polys = env_light_polys(origin_extent(500.0, 500.0), 100.0, &walls);
         assert!(
             !env_lit(&polys, (250.0, 250.0)),
             "sealed interior is not env-lit"
@@ -582,9 +602,9 @@ mod tests {
     #[test]
     fn env_light_polys_fail_closed_on_degenerate_bounds() {
         // Degenerate bounds/cell ⇒ empty ⇒ env reaches nothing (under-reveal).
-        assert!(env_light_polys((0.0, 500.0), 100.0, &[]).is_empty());
-        assert!(env_light_polys((500.0, f64::NAN), 100.0, &[]).is_empty());
-        assert!(env_light_polys((500.0, 500.0), 0.0, &[]).is_empty());
+        assert!(env_light_polys(origin_extent(0.0, 500.0), 100.0, &[]).is_empty());
+        assert!(env_light_polys(origin_extent(500.0, f64::NAN), 100.0, &[]).is_empty());
+        assert!(env_light_polys(origin_extent(500.0, 500.0), 0.0, &[]).is_empty());
         assert!(
             !env_lit(&[], (10.0, 10.0)),
             "empty env_polys is fail-closed (dark)"

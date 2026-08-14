@@ -54,6 +54,7 @@ mod smoke {
     }
 }
 
+use crate::scene::grid_shape::WorldExtent;
 use crate::scene::vision::Seg;
 use geo::algorithm::buffer::Buffer;
 use geo::Line;
@@ -93,24 +94,32 @@ pub(crate) struct NavMesh {
     pub(crate) mesh: polyanya::Mesh,
 }
 
-/// Build a footprint-inflated navmesh from a scene's world-unit `extent` (the rectangle
-/// `(0,0)–extent`, produced by `GridShape::world_extent` from the scene's authored grid-unit
-/// bounds) and its `blocksMove` wall segments, inflating each wall by `footprint_scene` (the
-/// mover's footprint radius in world units — the radius in cells times the shape's INDEXING
-/// scale, which is what a footprint is measured in). Fails closed (`None`) on: a
-/// non-finite/non-positive or over-magnitude extent, a non-finite/negative/over-magnitude
-/// `footprint_scene`, an obstacle count over `MAX_NAVMESH_OBSTACLE_SEGMENTS`, or a
-/// triangulation/mesh-build failure — callers MUST treat `None` as "no navmesh" (the scene
-/// reports `Unreachable`, never a silent all-pass). The radius-RANGE refusal
-/// (`0.0..=MAX_FOOTPRINT_CELLS`) lives at the caller, which must apply it before its cache key is
-/// computed; a degenerate `cell` reaches this function as a degenerate extent and is refused here.
+/// Build a footprint-inflated navmesh from a scene's world-unit `extent` (the envelope
+/// `GridShape::world_extent` produces from the scene's authored grid-unit bounds, whose `min` is
+/// the origin only on square) and its `blocksMove` wall segments, inflating each wall by
+/// `footprint_scene` (the mover's footprint radius in world units — the radius in cells times the
+/// shape's INDEXING scale, which is what a footprint is measured in). Fails closed (`None`) on: a
+/// non-finite or over-magnitude corner on EITHER side, a non-positive `width()`/`height()`, a
+/// non-finite/negative/over-magnitude `footprint_scene`, an obstacle count over
+/// `MAX_NAVMESH_OBSTACLE_SEGMENTS`, or a triangulation/mesh-build failure — callers MUST treat
+/// `None` as "no navmesh" (the scene reports `Unreachable`, never a silent all-pass). The
+/// radius-RANGE refusal (`0.0..=MAX_FOOTPRINT_CELLS`) lives at the caller, which must apply it
+/// before its cache key is computed; a degenerate `cell` reaches this function as a zero-area
+/// envelope and is refused here.
 pub(crate) fn build_navmesh(
-    extent: (f64, f64),
+    extent: WorldExtent,
     footprint_scene: f64,
     walls: &[Seg],
 ) -> Option<NavMesh> {
-    let (w_px, h_px) = extent;
-    if !w_px.is_finite() || !h_px.is_finite() || w_px <= 0.0 || h_px <= 0.0 {
+    let (min_x, min_y) = extent.min;
+    let (max_x, max_y) = extent.max;
+    if !min_x.is_finite()
+        || !min_y.is_finite()
+        || !max_x.is_finite()
+        || !max_y.is_finite()
+        || extent.width() <= 0.0
+        || extent.height() <= 0.0
+    {
         return None;
     }
     // `footprint_scene` is a single scene-wide value (not per-wall), so an oversized value here
@@ -127,16 +136,22 @@ pub(crate) fn build_navmesh(
     if walls.len() > MAX_NAVMESH_OBSTACLE_SEGMENTS {
         return None;
     }
-    // Bound the extent's magnitude before the `as f32` cast below — see `MAX_NAVMESH_COORD`.
-    if w_px.abs() > MAX_NAVMESH_COORD || h_px.abs() > MAX_NAVMESH_COORD {
+    // Bound the magnitude of BOTH corners before the `as f32` cast that builds the outer
+    // rectangle — see `MAX_NAVMESH_COORD`. A finite-but-enormous minimum saturates that cast exactly as a maximum
+    // does, so neither corner may be left unchecked.
+    if min_x.abs() > MAX_NAVMESH_COORD
+        || min_y.abs() > MAX_NAVMESH_COORD
+        || max_x.abs() > MAX_NAVMESH_COORD
+        || max_y.abs() > MAX_NAVMESH_COORD
+    {
         return None;
     }
 
     let outer = [
-        glam::Vec2::new(0.0, 0.0),
-        glam::Vec2::new(w_px as f32, 0.0),
-        glam::Vec2::new(w_px as f32, h_px as f32),
-        glam::Vec2::new(0.0, h_px as f32),
+        glam::Vec2::new(min_x as f32, min_y as f32),
+        glam::Vec2::new(max_x as f32, min_y as f32),
+        glam::Vec2::new(max_x as f32, max_y as f32),
+        glam::Vec2::new(min_x as f32, max_y as f32),
     ];
     let mut tri = polyanya::Triangulation::from_outer_edges(&outer);
 
@@ -578,6 +593,17 @@ mod tests {
     use crate::scene::pathfinding::PathOutcome;
     use crate::scene::regions::{RegionBehavior, RegionField, RegionShape};
 
+    /// An origin-anchored envelope of the given world-unit spans — the shape a SQUARE scene's
+    /// `GridShape::world_extent` produces. These fixtures exercise `build_navmesh`'s own
+    /// arithmetic and refusals on literal pixel spans, where the anchor is incidental; the
+    /// negative-minimum case a hex scene produces is exercised by the fixtures that name it.
+    fn origin_extent(w: f64, h: f64) -> WorldExtent {
+        WorldExtent {
+            min: (0.0, 0.0),
+            max: (w, h),
+        }
+    }
+
     fn oc(path: Vec<(f64, f64)>) -> PathOutcome {
         PathOutcome {
             path,
@@ -876,17 +902,47 @@ mod tests {
 
     #[test]
     fn degenerate_extent_fails_closed() {
-        assert!(build_navmesh((0.0, 10_000.0), 40.0, &[]).is_none());
-        assert!(build_navmesh((10_000.0, -100.0), 40.0, &[]).is_none());
-        assert!(build_navmesh((f64::NAN, 10_000.0), 40.0, &[]).is_none());
-        assert!(build_navmesh((f64::INFINITY, 10_000.0), 40.0, &[]).is_none());
+        assert!(build_navmesh(origin_extent(0.0, 10_000.0), 40.0, &[]).is_none());
+        assert!(build_navmesh(origin_extent(10_000.0, -100.0), 40.0, &[]).is_none());
+        assert!(build_navmesh(origin_extent(f64::NAN, 10_000.0), 40.0, &[]).is_none());
+        assert!(build_navmesh(origin_extent(f64::INFINITY, 10_000.0), 40.0, &[]).is_none());
+    }
+
+    #[test]
+    fn a_degenerate_or_over_magnitude_minimum_fails_closed() {
+        // The envelope carries a minimum, so every refusal the maximum gets the minimum needs
+        // too: a non-finite corner, an inverted rectangle (which the span check catches, since a
+        // minimum past the maximum is a non-positive span rather than a negative corner), and a
+        // finite-but-enormous corner that saturates the `f64 -> f32` cast and panics inside
+        // `spade`.
+        // Discrimination: each case moves ONLY the minimum, and the last assertion pairs an
+        // over-magnitude minimum against an in-range one with the same maximum, so a guard that
+        // refused on the maximum alone, or refused every negative minimum, fails it.
+        let refuse = |min: (f64, f64)| WorldExtent {
+            min,
+            max: (10_000.0, 10_000.0),
+        };
+        assert!(build_navmesh(refuse((f64::NAN, 0.0)), 40.0, &[]).is_none());
+        assert!(build_navmesh(refuse((0.0, f64::INFINITY)), 40.0, &[]).is_none());
+        assert!(
+            build_navmesh(refuse((20_000.0, 0.0)), 40.0, &[]).is_none(),
+            "a minimum past the maximum is a non-positive span"
+        );
+        assert!(
+            build_navmesh(refuse((-1e40, 0.0)), 40.0, &[]).is_none(),
+            "an over-magnitude minimum saturates the f32 cast just as an over-magnitude maximum does"
+        );
+        assert!(
+            build_navmesh(refuse((-1000.0, -1000.0)), 40.0, &[]).is_some(),
+            "an ordinary negative minimum — what every hex block has — must still build"
+        );
     }
 
     #[test]
     fn negative_or_non_finite_footprint_fails_closed() {
-        assert!(build_navmesh((10_000.0, 10_000.0), -10.0, &[]).is_none());
-        assert!(build_navmesh((10_000.0, 10_000.0), f64::NAN, &[]).is_none());
-        assert!(build_navmesh((10_000.0, 10_000.0), f64::INFINITY, &[]).is_none());
+        assert!(build_navmesh(origin_extent(10_000.0, 10_000.0), -10.0, &[]).is_none());
+        assert!(build_navmesh(origin_extent(10_000.0, 10_000.0), f64::NAN, &[]).is_none());
+        assert!(build_navmesh(origin_extent(10_000.0, 10_000.0), f64::INFINITY, &[]).is_none());
     }
 
     #[test]
@@ -897,12 +953,12 @@ mod tests {
                 b: (i as f64, 1.0),
             })
             .collect();
-        assert!(build_navmesh((1_000_000.0, 10_000.0), 40.0, &walls).is_none());
+        assert!(build_navmesh(origin_extent(1_000_000.0, 10_000.0), 40.0, &walls).is_none());
     }
 
     #[test]
     fn empty_scene_builds_a_navmesh() {
-        assert!(build_navmesh((10_000.0, 10_000.0), 40.0, &[]).is_some());
+        assert!(build_navmesh(origin_extent(10_000.0, 10_000.0), 40.0, &[]).is_some());
     }
 
     #[test]
@@ -911,7 +967,7 @@ mod tests {
             a: (f64::NAN, 0.0),
             b: (10.0, 10.0),
         }];
-        assert!(build_navmesh((10_000.0, 10_000.0), 40.0, &walls).is_some());
+        assert!(build_navmesh(origin_extent(10_000.0, 10_000.0), 40.0, &walls).is_some());
     }
 
     #[test]
@@ -921,8 +977,8 @@ mod tests {
         // `polyanya::Triangulation::as_navmesh` and panic inside `spade`'s `.unwrap()`. The
         // magnitude that must be bounded is the extent this function RECEIVES; the bound on the
         // conversion that produces it is pinned at `SceneEcs::navmesh_for`.
-        assert!(build_navmesh((1e40, 100.0), 0.4, &[]).is_none());
-        assert!(build_navmesh((100.0, 1e40), 0.4, &[]).is_none());
+        assert!(build_navmesh(origin_extent(1e40, 100.0), 0.4, &[]).is_none());
+        assert!(build_navmesh(origin_extent(100.0, 1e40), 0.4, &[]).is_none());
     }
 
     #[test]
@@ -936,7 +992,7 @@ mod tests {
             b: (1.0, 1.0),
         }];
         assert!(build_navmesh(
-            (1e14, 1e14),
+            origin_extent(1e14, 1e14),
             crate::scene::pathfinding::MAX_FOOTPRINT_CELLS * 1e37,
             &walls,
         )
@@ -959,7 +1015,7 @@ mod tests {
         }];
         assert!(
             build_navmesh(
-                (10.0, 10.0),
+                origin_extent(10.0, 10.0),
                 crate::scene::pathfinding::MAX_FOOTPRINT_CELLS * 1e9,
                 &walls,
             )
@@ -977,7 +1033,7 @@ mod tests {
             a: (5.0, 5.0),
             b: (5.0, 5.0),
         }];
-        assert!(build_navmesh((10_000.0, 10_000.0), 40.0, &walls).is_some());
+        assert!(build_navmesh(origin_extent(10_000.0, 10_000.0), 40.0, &walls).is_some());
     }
 
     #[test]
@@ -990,9 +1046,9 @@ mod tests {
             a: (5.0, 0.0),
             b: (5.0, 10.0),
         }];
-        let with_wall = build_navmesh((100.0, 100.0), 0.4, &walls)
+        let with_wall = build_navmesh(origin_extent(100.0, 100.0), 0.4, &walls)
             .expect("an ordinary wall + footprint must build a navmesh");
-        let without_wall = build_navmesh((100.0, 100.0), 0.4, &[])
+        let without_wall = build_navmesh(origin_extent(100.0, 100.0), 0.4, &[])
             .expect("the walls-absent baseline must also build");
         // Triangulating WITH an interior obstacle produces strictly more triangles than the empty
         // rectangle baseline — a cheap, robust proxy that the wall's obstacle ring was actually
@@ -1019,7 +1075,7 @@ mod tests {
                 b: (20.0, 20.0),
             },
         ];
-        let mesh = build_navmesh((10_000.0, 10_000.0), 40.0, &walls);
+        let mesh = build_navmesh(origin_extent(10_000.0, 10_000.0), 40.0, &walls);
         assert!(
             mesh.is_some(),
             "the oversized segment must be skipped, not fail the whole build"
@@ -1028,14 +1084,14 @@ mod tests {
 
     #[test]
     fn empty_waypoints_is_invalid() {
-        let nav = build_navmesh((10_000.0, 10_000.0), 40.0, &[]).unwrap();
+        let nav = build_navmesh(origin_extent(10_000.0, 10_000.0), 40.0, &[]).unwrap();
         let r = navmesh_find(&nav, (50.0, 50.0), &[]);
         assert_eq!(r, Err(crate::scene::pathfinding::PathFail::Invalid));
     }
 
     #[test]
     fn straight_route_cost_is_euclidean() {
-        let nav = build_navmesh((1000.0, 1000.0), 10.0, &[]).unwrap();
+        let nav = build_navmesh(origin_extent(1000.0, 1000.0), 10.0, &[]).unwrap();
         let outcome = navmesh_find(&nav, (50.0, 50.0), &[(950.0, 50.0)]).unwrap();
         assert!(
             (outcome.cost - 900.0).abs() < 2.0,
@@ -1056,7 +1112,7 @@ mod tests {
             a: (500.0, 0.0),
             b: (500.0, 600.0),
         }];
-        let nav = build_navmesh((1000.0, 1000.0), 10.0, &walls).unwrap();
+        let nav = build_navmesh(origin_extent(1000.0, 1000.0), 10.0, &walls).unwrap();
         let outcome = navmesh_find(&nav, (50.0, 50.0), &[(950.0, 50.0)]).unwrap();
         assert!(
             outcome.cost > 900.5,
@@ -1071,7 +1127,7 @@ mod tests {
         // the internal skip-branch that guards against it: per the real `polyanya` source,
         // `Path::path` never actually includes a leg's start point, so this test would pass
         // identically even if that dedup branch were deleted.
-        let nav = build_navmesh((1000.0, 1000.0), 10.0, &[]).unwrap();
+        let nav = build_navmesh(origin_extent(1000.0, 1000.0), 10.0, &[]).unwrap();
         let outcome = navmesh_find(&nav, (50.0, 50.0), &[(500.0, 50.0), (950.0, 50.0)]).unwrap();
         // No two consecutive vertices should be exactly equal (a duplicated leg-join point).
         for w in outcome.path.windows(2) {
@@ -1085,7 +1141,7 @@ mod tests {
 
     #[test]
     fn over_cap_waypoints_is_invalid() {
-        let nav = build_navmesh((10_000.0, 10_000.0), 10.0, &[]).unwrap();
+        let nav = build_navmesh(origin_extent(10_000.0, 10_000.0), 10.0, &[]).unwrap();
         let waypoints: Vec<(f64, f64)> = (0..(crate::scene::pathfinding::MAX_WAYPOINTS + 1))
             .map(|i| (i as f64, 0.0))
             .collect();
@@ -1095,7 +1151,7 @@ mod tests {
 
     #[test]
     fn non_finite_start_or_waypoint_is_invalid() {
-        let nav = build_navmesh((10_000.0, 10_000.0), 10.0, &[]).unwrap();
+        let nav = build_navmesh(origin_extent(10_000.0, 10_000.0), 10.0, &[]).unwrap();
         assert_eq!(
             navmesh_find(&nav, (f64::NAN, 50.0), &[(90.0, 50.0)]),
             Err(crate::scene::pathfinding::PathFail::Invalid)
@@ -1115,7 +1171,7 @@ mod tests {
         // this path) — without the guard this input would map to `PathFail::Unreachable` instead.
         // The guard just gives a more precise `Invalid` and bounds an untrusted wire magnitude
         // before it reaches a third-party numeric library.
-        let nav = build_navmesh((10_000.0, 10_000.0), 10.0, &[]).unwrap();
+        let nav = build_navmesh(origin_extent(10_000.0, 10_000.0), 10.0, &[]).unwrap();
         assert_eq!(
             navmesh_find(&nav, (1e40, 50.0), &[(90.0, 50.0)]),
             Err(crate::scene::pathfinding::PathFail::Invalid)

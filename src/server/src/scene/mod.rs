@@ -273,11 +273,11 @@ pub(crate) struct VisionMoveInputs {
     /// Vision polygons for every owned token in the scene EXCEPT the moving token, at their
     /// committed (stationary) positions. Constant across all samples of one move.
     static_polys: Vec<Vec<vision::P>>,
-    /// The scene's own WORLD-unit rectangle (`SceneEcs::scene_world_extent`) — so `polygons_at`'s
+    /// The scene's own WORLD-unit envelope (`SceneEcs::scene_world_extent`) — so `polygons_at`'s
     /// per-sample bound stays scene-extent-aware identically to `player_vision_polygons` (no
     /// fork). Never the raw authored bounds, which are measured in grid units (cells),
     /// continuous — never world units, and not required to be integral.
-    scene_extent: (f64, f64),
+    scene_extent: grid_shape::WorldExtent,
     /// True when the user owns no token in this scene: `polygons_at` returns empty (fail-closed).
     empty: bool,
 }
@@ -950,38 +950,41 @@ impl SceneEcs {
     /// `scene_world_extent_at`, the single expression of the conversion; a caller that already
     /// holds that map (`player_vision_polygons`, whose loop spans several scenes) calls
     /// `world_extent_from` directly rather than paying for the scan per scene.
-    pub(crate) fn scene_world_extent(&self, scene: Uuid) -> (f64, f64) {
+    pub(crate) fn scene_world_extent(&self, scene: Uuid) -> grid_shape::WorldExtent {
         self.world_extent_from(&self.scene_grid_sizes(), scene)
     }
 
     /// The vision paths' REFUSAL policy over `scene_world_extent_at`: the conversion against an
-    /// ALREADY-READ `scene_grid_sizes` map, substituting the zero rectangle for a scene that map
-    /// does not carry. `scene_world_extent` and `player_vision_polygons`' per-scene memo both
+    /// ALREADY-READ `scene_grid_sizes` map, substituting `grid_shape::REFUSED_EXTENT` for a scene
+    /// that map does not carry. `scene_world_extent` and `player_vision_polygons`' per-scene memo both
     /// reach the conversion through this, so the two cannot drift into disagreeing about either
     /// the extent or what an absent scene means.
     ///
-    /// `(0.0, 0.0)` when `grid_sizes` has no entry for the scene: it carries one for every live
-    /// scene, so an absent entry means the scene is gone and no extent may be synthesised. A zero
-    /// extent contributes nothing to `vision::bound_for_scene`'s union, leaving the wall-derived
-    /// bound — the under-reveal direction. `navmesh_for` shares the conversion but NOT this
-    /// policy: it refuses with `None`, because a navmesh cannot be triangulated over a rectangle
-    /// that contributes nothing.
+    /// The zero-AREA envelope (both corners at the origin) when `grid_sizes` has no entry for the
+    /// scene: it carries one for every live
+    /// scene, so an absent entry means the scene is gone and no extent may be synthesised. A
+    /// zero-area envelope contributes nothing to `vision::bound_for_scene`'s union, leaving the
+    /// wall-derived bound — the under-reveal direction. `navmesh_for` shares the conversion but NOT
+    /// this policy: it refuses with `None`, because a navmesh cannot be triangulated over an
+    /// envelope that contributes nothing.
     fn world_extent_from(
         &self,
         grid_sizes: &std::collections::HashMap<Uuid, f64>,
         scene: Uuid,
-    ) -> (f64, f64) {
+    ) -> grid_shape::WorldExtent {
         grid_sizes
             .get(&scene)
             .copied()
-            .map_or((0.0, 0.0), |cell| self.scene_world_extent_at(scene, cell))
+            .map_or(grid_shape::REFUSED_EXTENT, |cell| {
+                self.scene_world_extent_at(scene, cell)
+            })
     }
 
     /// The conversion itself, and its ONLY expression: `scene`'s authored bounds through its own
     /// resolved `GridShape`, at a grid size the caller has already resolved. Refuses nothing —
     /// the caller that looked `cell` up owns the policy for a scene that has none, and the two
-    /// policies genuinely differ (`world_extent_from` substitutes the zero rectangle every extent
-    /// guard already refuses; `navmesh_for` returns `None`).
+    /// policies genuinely differ (`world_extent_from` substitutes `grid_shape::REFUSED_EXTENT`,
+    /// the zero-area envelope every extent guard already refuses; `navmesh_for` returns `None`).
     ///
     /// A caller that ALREADY holds the scene's resolved settings — `lighting_inputs`,
     /// `player_lit_mask`, `visible_cells_cached` — calls `GridShape::world_extent` on the shape it
@@ -993,7 +996,7 @@ impl SceneEcs {
     /// `accumulate_visible_cells` is carved out for a structural reason rather than that one: it
     /// is a free function with no `&self`, so it cannot call this method at all, and converts from
     /// the shape and settings its caller passes it.
-    fn scene_world_extent_at(&self, scene: Uuid, cell: f64) -> (f64, f64) {
+    fn scene_world_extent_at(&self, scene: Uuid, cell: f64) -> grid_shape::WorldExtent {
         self.resolve_grid_shape(scene, cell)
             .world_extent(self.resolve_scene(scene).bounds)
     }
@@ -1220,7 +1223,7 @@ impl SceneEcs {
         // stay shared with the streamed path in `player_vision_inputs`, which reaches the same two
         // bodies through `scene_world_extent` — by construction, not by convention.
         let grid_sizes = self.scene_grid_sizes();
-        let mut extents: std::collections::HashMap<Uuid, (f64, f64)> =
+        let mut extents: std::collections::HashMap<Uuid, grid_shape::WorldExtent> =
             std::collections::HashMap::new();
         let mut out = Vec::with_capacity(viewpoints.len());
         for (scene, vp) in viewpoints {
@@ -2006,7 +2009,7 @@ impl SceneEcs {
     /// is unchanged behavior — it always gathers then immediately raycasts, same as before this
     /// split.
     ///
-    /// `extent` is the scene's WORLD-unit rectangle `(0,0)–extent`, produced by
+    /// `extent` is the scene's WORLD-unit envelope, produced by
     /// `GridShape::world_extent` from the scene's authored bounds — those are measured in grid
     /// units (cells), continuous, and must never reach `env_light_polys`, which measures against
     /// wall coordinates in world units.
@@ -2015,7 +2018,7 @@ impl SceneEcs {
         lights: Vec<lighting::Light>,
         light_walls: &[vision::Seg],
         sight_walls: Vec<vision::Seg>,
-        extent: (f64, f64),
+        extent: grid_shape::WorldExtent,
         cell: f64,
     ) -> LightingInputs {
         let lit_polys: Vec<Vec<vision::P>> = lights
@@ -2752,7 +2755,7 @@ fn source_los_poly(
     vp: vision::P,
     sight_walls: &[vision::Seg],
     los_restriction: bool,
-    scene_extent: (f64, f64),
+    scene_extent: grid_shape::WorldExtent,
 ) -> Vec<vision::P> {
     let b = vision::bound_for_scene(vp, sight_walls, scene_extent, VISION_BOUND_MARGIN);
     if los_restriction {
@@ -5456,6 +5459,56 @@ mod tests {
         );
     }
 
+    #[test]
+    fn hex_env_light_walks_the_blocks_real_origin_side_edges() {
+        // What the envelope buys the environment-light perimeter walk: it starts at the block's
+        // real boundary — half the flats left of the origin hex's centre and one circumradius
+        // below it — rather than at the origin, so the origin side gets boundary samples of its
+        // own and the hexes just outside the block there fall inside the raycast bound those
+        // samples terminate on. Square has always had that one-cell margin (its own origin cell's
+        // corner IS the origin); this is hex reaching the same behaviour.
+        //
+        // Discrimination: both probes are hexes the ORIGIN-ANCHORED walk cannot reach — their
+        // centres sit outside a bound anchored at the origin and expanded by the same margin —
+        // and each names a different edge of the block, so a minimum that moved back to the origin
+        // on either axis alone fails one of them. The in-block control fails if the walk stops
+        // lighting the authored area at all, which would make both probes vacuous.
+        let (ecs, user, scene) = hex_env_lit_scene_with_room(true);
+        let lit = mask_cells(&ecs, user, scene);
+        // The fixture's own geometry, read rather than restated: the margin the raycast bound adds
+        // past the envelope is the scene's indexing scale.
+        let envelope = ecs.scene_world_extent(scene);
+        let g = grid_shape::HexGrid {
+            size: HEX_FIXTURE_SIZE,
+        };
+        for (probe, edge) in [((-1, 0), "left"), ((0, -1), "bottom")] {
+            let c = grid_shape::GridShape::cell_center(&g, probe);
+            assert!(
+                c.0 < 0.0 || c.1 < 0.0,
+                "fixture: hex {probe:?}'s centre {c:?} must sit on the block's origin side"
+            );
+            assert!(
+                c.0 < -HEX_FIXTURE_SIZE || c.1 < -HEX_FIXTURE_SIZE,
+                "fixture: hex {probe:?}'s centre {c:?} must lie outside a bound anchored at the \
+                 origin and grown by the {HEX_FIXTURE_SIZE} margin"
+            );
+            assert!(
+                c.0 >= envelope.min.0 - HEX_FIXTURE_SIZE
+                    && c.1 >= envelope.min.1 - HEX_FIXTURE_SIZE,
+                "fixture: hex {probe:?}'s centre {c:?} must lie inside the envelope \
+                 {envelope:?} grown by that same margin"
+            );
+            assert!(
+                lit.contains(&probe),
+                "hex {probe:?}, across the block's real {edge} edge, must be environment-lit"
+            );
+        }
+        assert!(
+            lit.contains(&(1, 1)),
+            "the authored block's own interior stays lit"
+        );
+    }
+
     /// A wall-less `environmentLight`/`globalIllumination` scene (env 1.0) with a player-owned
     /// normal-vision token, used to prove open-scene equivalence: with nothing to occlude, the
     /// edge-projected env light reaches every LOS cell exactly as the flat all-bright fill does.
@@ -7388,12 +7441,12 @@ explored: // GM: unrestricted mask
             "one polygon per scene the user owns a token in"
         );
 
-        let extents: Vec<(f64, f64)> = [10u128, 20]
+        let extents: Vec<grid_shape::WorldExtent> = [10u128, 20]
             .iter()
             .map(|&s| ecs.scene_world_extent(Uuid::from_u128(s)))
             .collect();
         assert!(
-            extents[0].0 > extents[1].0,
+            extents[0].max.0 > extents[1].max.0,
             "fixture: the two scenes must have different extents, got {extents:?}"
         );
 
@@ -7402,7 +7455,7 @@ explored: // GM: unrestricted mask
                 .iter()
                 .find(|(sid, _)| *sid == Uuid::from_u128(*scene_id))
                 .expect("scene present");
-            let (ex, ey) = extents[i];
+            let (ex, ey) = extents[i].max;
             // Just inside this scene's own extent, on the diagonal from the viewpoint.
             let inside = (ex - 10.0, ey - 10.0);
             assert!(
@@ -8041,16 +8094,19 @@ explored: // GM: unrestricted mask
     }
 
     #[test]
-    fn hex_continuous_routes_along_axial_row_zero_including_the_mesh_corner() {
-        // Every hex in axial row `r = 0` has centre `y` exactly `0`, which is the triangulated
-        // rectangle's bottom EDGE, and `cell_center((0,0))` is the corner vertex itself. Those
-        // centres are on-mesh only because the mesh's point-in-polygon test admits an
-        // exactly-on-boundary point — a containment convention of the routing library, not of this
-        // codebase. Pinned rather than assumed: without this, a change to that convention would
-        // make an entire authored hex row unroutable with nothing in the tree failing.
+    fn hex_continuous_routes_along_axial_row_zero_strictly_inside_the_mesh() {
+        // Every hex in axial row `r = 0` has centre `y` exactly `0`, and the envelope the mesh is
+        // triangulated from reaches `y = -size` — the origin row's own bottom circumradius — so
+        // those centres sit one circumradius ABOVE the mesh's bottom edge, strictly interior.
+        // Their routability therefore rests on the mesh containing them, not on whether the
+        // routing library's point-in-polygon test admits an exactly-on-boundary point. Pinned
+        // rather than assumed: an envelope that stopped covering the origin row would make an
+        // entire authored hex row unroutable with nothing else in the tree failing.
         // Discrimination: the endpoints are `cell_center` values with `y == 0.0` asserted, so the
-        // test cannot drift onto an interior row and keep passing; and the cost is bounded on both
-        // sides by the straight-line distance, so a route that detoured off the edge fails too.
+        // test cannot drift onto an interior row and keep passing; the interior-margin assertion
+        // is read from the scene's own converted envelope, so it fails if the minimum moves back
+        // to the origin; and the cost is bounded on both sides by the straight-line distance, so a
+        // route that detoured off the row fails too.
         let g = grid_shape::HexGrid {
             size: HEX_FIXTURE_SIZE,
         };
@@ -8068,17 +8124,24 @@ explored: // GM: unrestricted mask
         assert_eq!(
             (corner.1, far.1),
             (0.0, 0.0),
-            "fixture: both endpoints must sit on the rectangle's bottom edge"
+            "fixture: both endpoints must sit on axial row 0"
         );
         assert_eq!(
             corner,
             (0.0, 0.0),
-            "fixture: the origin hex IS the mesh corner"
+            "fixture: the origin hex is at the origin"
+        );
+        // The row is strictly interior: the envelope's bottom edge is a full circumradius below
+        // these centres, and its left edge half the flats to the left of the leftmost one.
+        let envelope = ecs.scene_world_extent(Uuid::from_u128(10));
+        assert!(
+            envelope.min.1 < corner.1 - g.size * 0.99 && envelope.min.0 < corner.0,
+            "the origin row must sit strictly inside the envelope {envelope:?}"
         );
         let straight = far.0 - corner.0;
         for (from, to, label) in [
-            (corner, far, "the corner vertex outward"),
-            (far, corner, "inward to the corner vertex"),
+            (corner, far, "outward along row 0"),
+            (far, corner, "inward along row 0"),
         ] {
             let out = ecs
                 .pathfind(
@@ -8099,6 +8162,71 @@ explored: // GM: unrestricted mask
                 out.cost
             );
         }
+    }
+
+    #[test]
+    fn hex_continuous_routes_below_the_origin_row_inside_its_own_hexes() {
+        // The behaviour the envelope buys, at the consumer that pays for it most sharply: two
+        // points strictly BELOW `y = 0`, both inside axial row 0's own hexes, are on the mesh and
+        // route between each other. A mesh triangulated from an origin-anchored rectangle starts
+        // at `y = 0`, so both endpoints would be off-mesh and the route would report unreachable.
+        // Discrimination: the endpoints are derived from `cell_center` plus a fraction of the
+        // circumradius, so they sit inside the authored hexes by construction; the fixture guards
+        // assert both are below `y = 0` and inside the hexes the envelope must cover, so the test
+        // cannot drift onto an interior row; and the cost is bounded on both sides by the
+        // straight-line distance, so a route detouring up over `y = 0` fails too. Mutating
+        // `HexGrid::world_extent`'s `min` to `(0.0, 0.0)` fails it.
+        let g = grid_shape::HexGrid {
+            size: HEX_FIXTURE_SIZE,
+        };
+        let docs = vec![entity_doc_top_eng(
+            10,
+            "scene",
+            json!({ "grid": { "kind": "hex", "size": g.size }, "background": null,
+                    "bounds": { "width": 20.0, "height": 20.0 },
+                    "vision": { "movementModel": "continuous" } }),
+        )];
+        let mut ecs = SceneEcs::from_documents(docs, 0);
+        ecs.set_world_settings_for_test(continuous_world_settings());
+        // Half a circumradius below each hex's centre is well inside that hex (the nearest edge on
+        // that bearing is the inradius, `√3/2·size`, away) and well below `y = 0`.
+        let drop = g.size * 0.5;
+        let from = {
+            let c = g.cell_center((1, 0));
+            (c.0, c.1 - drop)
+        };
+        let to = {
+            let c = g.cell_center((6, 0));
+            (c.0, c.1 - drop)
+        };
+        assert!(
+            from.1 < 0.0 && to.1 < 0.0,
+            "fixture: both endpoints must sit below the origin, got {from:?} and {to:?}"
+        );
+        assert_eq!(
+            (g.cell_of(from), g.cell_of(to)),
+            ((1, 0), (6, 0)),
+            "fixture: both endpoints must sit inside axial row 0's own hexes"
+        );
+        let out = ecs
+            .pathfind(
+                RouteRequester {
+                    user: Uuid::from_u128(1),
+                    is_gm: true,
+                    explored: None,
+                },
+                Uuid::from_u128(10),
+                from,
+                &[to],
+                0.1,
+            )
+            .expect("a position inside an authored hex must be on-mesh and routable");
+        let straight = to.0 - from.0;
+        assert!(
+            out.cost >= straight * 0.99 && out.cost <= straight * 1.01,
+            "the route must run straight below the origin row at cost {straight}, got {}",
+            out.cost
+        );
     }
 
     #[test]
@@ -8247,10 +8375,10 @@ explored: // GM: unrestricted mask
             cell > 0.0,
             "a non-positive authored grid size must be hardened before it converts, got {cell}"
         );
-        let (ex, ey) = ecs.scene_world_extent(Uuid::from_u128(10));
+        let e = ecs.scene_world_extent(Uuid::from_u128(10));
         assert!(
-            ex > 0.0 && ey > 0.0,
-            "the converted extent is therefore never degenerate, got ({ex}, {ey})"
+            e.width() > 0.0 && e.height() > 0.0,
+            "the converted envelope is therefore never degenerate, got {e:?}"
         );
         assert!(ecs.navmesh_for(Uuid::from_u128(10), 0.4, &[]).is_some());
     }

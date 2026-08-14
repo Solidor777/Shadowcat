@@ -93,22 +93,28 @@ pub(crate) trait GridShape {
     /// indexing scale — scaling it here would give a 1×1 token a disc past the hex inradius and
     /// make a medium creature occupy seven hexes, which is a rules change rather than a unit fix.
     fn world_units_per_cell(&self) -> f64;
-    /// The origin-anchored world rectangle `(0,0)–result` for `bounds_cells`, a per-axis
-    /// dimension measured in grid units (cells), continuous — never world units, and not required
-    /// to be integral.
+    /// The world-unit ENVELOPE of `bounds_cells`, a per-axis dimension measured in grid units
+    /// (cells), continuous — never world units, and not required to be integral. Both corners are
+    /// returned, because `min` is the origin only on square: a pointy-top hex block's origin cell
+    /// is centred ON the origin, so the block reaches `-√3/2·size` in x and `-size` in y.
     ///
     /// **Both guarantees below are stated for the INTEGER block `[0, ⌊w⌋) × [0, ⌊h⌋)`**, and
     /// consumers must not assume the stronger one:
     /// - **Square** — an exact COVER of that block. Cell `(i,j)` occupies `[i·cell,(i+1)·cell)`
     ///   per axis, so `⌊w⌋ × ⌊h⌋` cells occupy `(⌊w⌋·cell, ⌊h⌋·cell) ≤ (w·cell, h·cell)` with no
-    ///   shear and no overhang.
-    /// - **Hex** — a CENTRE cover of that block. Every such cell's centre lies inside, and the
-    ///   extreme cell's far vertices lie inside, but the axial block is a rhombus whose origin row
-    ///   reaches `y = -size` and whose origin cell reaches `x = -√3/2·size`; those margins are
-    ///   OUTSIDE the rectangle. Claiming a full cover here would be false.
+    ///   shear and no overhang, anchored at `min = (0, 0)`.
+    /// - **Hex** — a CENTRE cover of that block on the `max` side. Every such cell's centre lies
+    ///   inside, and the extreme cell's far vertices lie inside; the origin cell's own lower-left
+    ///   extreme is exactly `min`, so the axial rhombus's origin-side margin is INSIDE the
+    ///   envelope. A partial column or row past `max` remains outside, and claiming a full cover
+    ///   of the whole authored `w × h` would still be false.
     ///
-    /// **Which cells the rectangle covers is a per-axis rule, and the two shapes share neither the
-    /// rule nor its DOMAIN.** Writing `f_w`/`f_h` for the fractional parts of `w`/`h`, cell
+    /// **Which cells the envelope covers is decided on its `max` side alone for every cell of the
+    /// integer block, and it is a per-axis rule whose statement and DOMAIN the two shapes share
+    /// neither of.** The `min` side excludes no such cell on either shape — square's is the origin
+    /// and every block cell's centre is at least half a cell past it, hex's is the origin cell's
+    /// own lower-left extreme and no cell of the block reaches below it — so the rule is stated as
+    /// an upper bound only. Writing `f_w`/`f_h` for the fractional parts of `w`/`h`, cell
     /// `(i, j)`'s CENTRE is inside exactly when:
     /// - **Square**, for every `w > 0` and `h > 0` — `i ≤ w − 0.5` and `j ≤ h − 0.5`, each axis
     ///   independent of the other, so the partial cell `⌊w⌋` is left outside exactly when
@@ -131,7 +137,7 @@ pub(crate) trait GridShape {
     /// rectangle stops shrinking with the bound and no longer varies linearly with it: at
     /// `w = 0.25, h = 1.0` the x rule predicts column 0 excluded while the measurement covers it,
     /// the origin hex being centred ON the origin corner. That regime is pinned separately by
-    /// `world_extent_stays_positive_for_a_bound_below_one_cell_and_covers_no_whole_cell`.
+    /// `world_extent_stays_positive_below_one_cell_and_covers_at_most_the_origin_cell`.
     ///
     /// That rule is EXECUTABLE, not merely stated: `extent_rule_says_inside` is it, and
     /// `the_extent_membership_rule_predicts_every_cells_coverage_over_a_bounds_sweep` asserts its
@@ -139,36 +145,41 @@ pub(crate) trait GridShape {
     /// partial column and the partial row, across both shapes and both axes' fractional parts —
     /// and, on the square arm, over sub-one-cell bounds as well, so the regime hex has to fence
     /// off is proved on the shape that does not. A misstatement of the rule fails a run instead of
-    /// surviving a reading.
+    /// surviving a reading. That same sweep measures the `min` side on every bound it visits,
+    /// against the origin cell's own lower-left extreme derived from `cell_center`, so the corner
+    /// the rule declines to constrain is not left unmeasured.
     ///
     /// A fractional bound is authorable through the ordinary settings editor, which marks a
     /// fractional width invalid without sanitizing it.
     ///
-    /// What that exclusion, and the hex truncation, cost each consumer — over-covering is NOT free
+    /// What a partial column or row past `max` costs each consumer — over-covering is NOT free
     /// for all of them:
-    /// - `navmesh::build_navmesh` triangulates this rectangle, so a position outside it is off-mesh
-    ///   and routes as unreachable: an excluded partial column, and the origin row's negative-y
-    ///   margin on hex. Every integer-block cell CENTRE — the only position a grid-snapped token
-    ///   occupies — is on-mesh, INCLUDING axial row `r = 0`, whose centres sit exactly on the
-    ///   rectangle's bottom edge and whose origin cell is the corner vertex itself: the mesh's
-    ///   containment test admits an exactly-on-boundary point.
-    /// - `lighting::env_light_polys` walks this rectangle's perimeter, so an excluded margin gets
+    /// - `navmesh::build_navmesh` triangulates this envelope, so a position outside it is off-mesh
+    ///   and routes as unreachable: an excluded partial column. Every integer-block cell CENTRE —
+    ///   the only position a grid-snapped token occupies — is on-mesh, and on hex axial row
+    ///   `r = 0`'s centres are STRICTLY INTERIOR, one circumradius above the envelope's bottom
+    ///   edge, so their routability does not depend on whether the mesh's containment test admits
+    ///   an exactly-on-boundary point.
+    /// - `lighting::env_light_polys` walks this envelope's perimeter, so an excluded margin gets
     ///   no boundary sample of its own and is lit only through neighbouring samples: under-reveal.
-    /// - `vision::bound_for_scene` unions this rectangle after clamping its low edges to `≤ 0`
-    ///   and expanding by its own `margin`, so the shortfall shows only where that margin is
-    ///   smaller than it: under-reveal again.
+    /// - `vision::bound_for_scene` unions this envelope with the wall-derived bound and expands by
+    ///   its own `margin`, so the shortfall shows only where that margin is smaller than it:
+    ///   under-reveal again.
     ///
-    /// Growing the rectangle — by rounding a fractional bound UP, say — is not a free hedge in the
+    /// Growing the envelope — by rounding a fractional bound UP, say — is not a free hedge in the
     /// other direction, which is why neither impl does: the vision bound and the lit mask are
     /// BUILT from it rather than merely gated by it, so a larger rectangle widens what a player is
     /// told they can see, and the environment-light perimeter walk is not mask-gated at all.
     /// Rounding up would also make two distinct authored dimensions produce one rectangle, so a
-    /// stored setting would stop determining its own effect.
+    /// stored setting would stop determining its own effect. Reaching the origin cell's own
+    /// lower-left extreme is not that hedge: it covers cells the GM authored rather than inventing
+    /// any.
     ///
-    /// A degenerate axis — non-finite, zero, or negative — yields `(0.0, 0.0)` from both impls,
-    /// a rectangle the extent guards refuse, rather than two shapes disagreeing about degenerate
-    /// input. `normalize_bounds_cells` is where that whole class is refused, once, for both.
-    fn world_extent(&self, bounds_cells: (f64, f64)) -> (f64, f64);
+    /// A degenerate axis — non-finite, zero, or negative — yields the zero-AREA envelope
+    /// `min = max = (0.0, 0.0)` from both impls, which every consumer's span guard refuses, rather
+    /// than two shapes disagreeing about degenerate input. `normalize_bounds_cells` is where that
+    /// whole class is refused, once, for both.
+    fn world_extent(&self, bounds_cells: (f64, f64)) -> WorldExtent;
     /// Admissible A* heuristic (lower bound on the true `neighbors_with_cost` path cost) from cell
     /// `from` to cell `to`. Guides search ORDER only — never gates a cell — so it cannot affect the
     /// `route ⊆ gate-allowed` invariant. `SquareGrid` returns the existing `DiagonalRule`-based
@@ -180,6 +191,34 @@ pub(crate) trait GridShape {
     /// the shape FROM `SceneEcs::resolve_grid_kind`, so the two are the same decision by
     /// construction rather than by convention.
     fn kind(&self) -> GridKind;
+}
+
+/// A scene's world-unit envelope: the axis-aligned rectangle that contains every cell of the
+/// authored integer block, as both corners rather than a far corner alone.
+///
+/// `min` is not the origin on every shape. A pointy-top hex block's origin cell is CENTRED on the
+/// origin, so its own polygon reaches `-(√3/2)·size` in x and `-size` in y; a square block's origin
+/// cell has its corner there, so `min` is the origin exactly. Consumers that triangulate, walk, or
+/// bound this rectangle read both corners, which is why the type carries both — an anchor a caller
+/// supplies itself is an anchor each caller can get wrong independently.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct WorldExtent {
+    /// Lower-left corner in world units.
+    pub(crate) min: (f64, f64),
+    /// Upper-right corner in world units.
+    pub(crate) max: (f64, f64),
+}
+
+impl WorldExtent {
+    /// The envelope's x span. Zero or negative marks an envelope every consumer refuses.
+    pub(crate) fn width(&self) -> f64 {
+        self.max.0 - self.min.0
+    }
+
+    /// The envelope's y span. Zero or negative marks an envelope every consumer refuses.
+    pub(crate) fn height(&self) -> f64 {
+        self.max.1 - self.min.1
+    }
 }
 
 /// Axial-box padding for `HexGrid::cells_in_bounds`. The axial↔pixel map is affine, so a pixel-space
@@ -332,13 +371,17 @@ impl GridShape for SquareGrid {
         self.cell
     }
 
-    fn world_extent(&self, bounds_cells: (f64, f64)) -> (f64, f64) {
-        // Cell (i,j) covers [i*cell,(i+1)*cell) on each axis, so a w × h block anchored at the
-        // origin spans exactly (w*cell, h*cell) with no shear and no overhang.
+    fn world_extent(&self, bounds_cells: (f64, f64)) -> WorldExtent {
+        // Cell (i,j) covers [i*cell,(i+1)*cell) on each axis, so cell (0,0)'s own lower-left corner
+        // IS the origin and a w × h block spans exactly (w*cell, h*cell) from it, with no shear and
+        // no overhang.
         let Some((w, h)) = normalize_bounds_cells(bounds_cells) else {
-            return (0.0, 0.0);
+            return REFUSED_EXTENT;
         };
-        (w * self.cell, h * self.cell)
+        WorldExtent {
+            min: (0.0, 0.0),
+            max: (w * self.cell, h * self.cell),
+        }
     }
 
     fn kind(&self) -> GridKind {
@@ -703,20 +746,28 @@ impl GridShape for HexGrid {
         self.size * 3.0_f64.sqrt()
     }
 
-    fn world_extent(&self, bounds_cells: (f64, f64)) -> (f64, f64) {
+    fn world_extent(&self, bounds_cells: (f64, f64)) -> WorldExtent {
         // The far corner of the axial block is cell (w-1, h-1): `axial_to_pixel` is monotone
         // increasing in q on x, and in r on BOTH axes (the shear), so that cell maximises each
-        // coordinate. Add the pointy-top half-extents — √3/2·size across the flats (x) and the
-        // circumradius `size` to a vertex (y) — so that hex's far vertices are inside.
+        // coordinate. The near corner is cell (0,0), which `axial_to_pixel` places AT the origin,
+        // so it minimises each coordinate. Both corners then move out by the same pointy-top
+        // half-extents — √3/2·size across the flats (x) and the circumradius `size` to a vertex
+        // (y) — so each extreme hex's own far vertices are inside.
         let Some((w, h)) = normalize_bounds_cells(bounds_cells) else {
-            return (0.0, 0.0);
+            return REFUSED_EXTENT;
         };
         let qmax = (w - 1.0).max(0.0);
         let rmax = (h - 1.0).max(0.0);
         let sqrt3 = 3.0_f64.sqrt();
-        let max_x = self.size * (sqrt3 * qmax + sqrt3 / 2.0 * rmax) + self.size * sqrt3 / 2.0;
-        let max_y = self.size * 1.5 * rmax + self.size;
-        (max_x, max_y)
+        let half_x = self.size * sqrt3 / 2.0;
+        let half_y = self.size;
+        WorldExtent {
+            min: (-half_x, -half_y),
+            max: (
+                self.size * (sqrt3 * qmax + sqrt3 / 2.0 * rmax) + half_x,
+                self.size * 1.5 * rmax + half_y,
+            ),
+        }
     }
 
     fn kind(&self) -> GridKind {
@@ -724,17 +775,32 @@ impl GridShape for HexGrid {
     }
 }
 
+/// The ONE envelope that stands for "no usable rectangle here": zero AREA, not merely a zero far
+/// corner. Every consumer refuses it on span (`WorldExtent::width`/`height`), so the refusal
+/// survives the envelope carrying a `min` a caller could otherwise have subtracted a positive
+/// width out of, and its `min`/`max` both sitting at the origin is what makes it contribute
+/// nothing to `vision::bound_for_scene`'s union.
+///
+/// Two callers reach it for two different reasons and must not spell it two ways: both
+/// `world_extent` impls answer a degenerate `bounds_cells` with it (via
+/// `normalize_bounds_cells`), and `SceneEcs::world_extent_from` substitutes it for a scene its
+/// grid-size map no longer carries.
+pub(crate) const REFUSED_EXTENT: WorldExtent = WorldExtent {
+    min: (0.0, 0.0),
+    max: (0.0, 0.0),
+};
+
 /// Admit an authored `bounds_cells` pair to the range every `world_extent` impl computes over —
 /// both axes finite and strictly positive — or `None` for anything else.
 ///
-/// `None` is the ONE degenerate answer both impls give, and both return `(0.0, 0.0)` for it — a
-/// rectangle the extent guards (`navmesh::build_navmesh`, `lighting::env_light_polys`) already
-/// refuse. Clamping a degenerate axis to `0.0` and continuing is NOT sufficient, which is why this
-/// returns an `Option`: `SquareGrid` then yields `0.0` on that axis, but `HexGrid` adds the
-/// pointy-top half-extents afterwards and yields a positive rectangle that BUILDS. The divergence,
-/// not either answer, is the defect — a mesh that small makes everything outside it unreachable,
-/// so the direction is under-permissive rather than a leak, but one trait method must not have two
-/// answers.
+/// `None` is the ONE degenerate answer both impls give, and both return `REFUSED_EXTENT` for it — a
+/// zero-area envelope the extent guards (`navmesh::build_navmesh`, `lighting::env_light_polys`)
+/// already refuse. Clamping a degenerate axis to `0.0` and continuing is NOT sufficient, which is
+/// why this returns an `Option`: `SquareGrid` then yields a zero span on that axis, but `HexGrid`
+/// adds the pointy-top half-extents afterwards and yields a positive-area envelope that BUILDS. The
+/// divergence, not either answer, is the defect — a mesh that small makes everything outside it
+/// unreachable, so the direction is under-permissive rather than a leak, but one trait method must
+/// not have two answers.
 ///
 /// Non-finite and non-positive are the SAME input class here, not two: `0.0` and a negative axis
 /// reach the two impls exactly as `NaN` does and split them exactly as far apart. Both are
@@ -1836,6 +1902,46 @@ mod tests {
     }
 
     #[test]
+    fn each_shapes_envelope_starts_at_its_own_origin_cells_lower_left_extreme() {
+        let size = 50.0_f64;
+        let sq = SquareGrid {
+            cell: size,
+            rule: DiagonalRule::Chebyshev,
+        };
+        let hx = HexGrid { size };
+
+        // Discrimination: fails if `world_extent` returns an origin-anchored rectangle on hex, or if
+        // the square arm gains a spurious negative margin from a shared normalisation path.
+        let s = sq.world_extent((8.0, 6.0));
+        assert_eq!(
+            s.min,
+            (0.0, 0.0),
+            "a square block's origin cell starts AT the origin"
+        );
+
+        let h = hx.world_extent((8.0, 6.0));
+        let (cx, cy) = hx.cell_center((0, 0));
+        assert_eq!(
+            cy, 0.0,
+            "fixture guard: axial (0,0)'s centre is the origin row"
+        );
+        assert!(
+            (h.min.0 - (cx - 3.0_f64.sqrt() / 2.0 * size)).abs() < 1e-9,
+            "the envelope's x minimum is the origin hex's own left inradius, got {}",
+            h.min.0
+        );
+        assert!(
+            (h.min.1 - (cy - size)).abs() < 1e-9,
+            "the envelope's y minimum is the origin hex's own bottom circumradius, got {}",
+            h.min.1
+        );
+        assert!(
+            h.width() > 0.0 && h.height() > 0.0,
+            "a positive block has a positive envelope"
+        );
+    }
+
+    #[test]
     fn square_world_extent_wholly_contains_every_cell_of_the_integer_block() {
         // Square's guarantee is a FULL cover of the INTEGER block: every such cell's own rectangle
         // lies inside the extent. The authored dimensions here are already integral, so this
@@ -1848,7 +1954,8 @@ mod tests {
             rule: DiagonalRule::Chebyshev,
         };
         let (w, h) = (8.0_f64, 5.0_f64);
-        let (ex, ey) = g.world_extent((w, h));
+        let e = g.world_extent((w, h));
+        let (ex, ey) = e.max;
         let half = g.cell / 2.0;
         for i in 0..w as i32 {
             for j in 0..h as i32 {
@@ -1862,36 +1969,40 @@ mod tests {
                     "cell ({i},{j}) exceeds extent y {ey}"
                 );
                 assert!(
-                    c.0 - half >= -1e-9 && c.1 - half >= -1e-9,
-                    "cell ({i},{j}) starts below the origin"
+                    c.0 - half >= e.min.0 - 1e-9 && c.1 - half >= e.min.1 - 1e-9,
+                    "cell ({i},{j}) starts below the envelope's minimum {:?}",
+                    e.min
                 );
             }
         }
-        // The closed form, stated as a NUMBER rather than as `w · cell`: written as the product it
+        // The closed form, stated as NUMBERS rather than as `w · cell`: written as the product it
         // would restate the impl's own arithmetic and pin nothing. A change to `cell` fails it
         // loudly, which is the whole reason a literal is admissible for it and not for the
         // per-cell containment checks, where a stale half-cell would silently weaken them instead.
-        assert_eq!((ex, ey), (160.0, 100.0));
+        assert_eq!((e.min, e.max), ((0.0, 0.0), (160.0, 100.0)));
     }
 
     #[test]
     fn hex_world_extent_contains_every_cell_centre_and_the_far_cells_vertices() {
-        // Hex's guarantee over the INTEGER block is a CENTRE cover plus the extreme cell's far
-        // vertices — not a full cover; the origin-side truncation is asserted by the next test.
-        // The authored dimensions here are integral, so this exercises the integer block only.
+        // Hex's `max`-side guarantee over the INTEGER block is a CENTRE cover plus the extreme
+        // cell's far vertices — not a full cover, since a partial column or row past `max` stays
+        // outside. The authored dimensions here are integral, so this exercises the integer block
+        // only.
         // Discrimination: fails for a `w*size`/`h*size` reading, for a per-axis pitch that omits
         // the axial shear, and for any formula that leaves the far cell's own far vertex outside
         // — every check is derived from `cell_center` plus the pointy-top half-extents.
         let g = HexGrid { size: 50.0 };
         let (w, h) = (9.0_f64, 7.0_f64);
-        let (ex, ey) = g.world_extent((w, h));
+        let e = g.world_extent((w, h));
+        let (ex, ey) = e.max;
         let half_x = g.size * 3.0_f64.sqrt() / 2.0;
         for q in 0..w as i32 {
             for r in 0..h as i32 {
                 let c = g.cell_center((q, r));
                 assert!(
-                    c.0 >= -1e-9 && c.1 >= -1e-9,
-                    "hex ({q},{r}) centre is below the origin"
+                    c.0 >= e.min.0 - 1e-9 && c.1 >= e.min.1 - 1e-9,
+                    "hex ({q},{r}) centre is below the envelope's minimum {:?}",
+                    e.min
                 );
                 assert!(
                     c.0 <= ex + 1e-9 && c.1 <= ey + 1e-9,
@@ -1911,30 +2022,40 @@ mod tests {
     }
 
     #[test]
-    fn hex_world_extent_leaves_the_origin_cells_negative_margin_outside() {
-        // The truncation the extent's doc states, pinned so the doc cannot drift into claiming a
-        // full cover: the origin hex is centred ON the origin, so its lower vertex sits at
-        // `(0, -size)` and its left vertices at `x = -√3/2·size`, both outside an origin-anchored
-        // rectangle. A consumer that treats the rectangle as the whole play area excludes them.
-        // Discrimination: fails if `world_extent` ever starts returning a rectangle with a
-        // negative origin, which would silently change what `(0,0)–extent` means for every
-        // consumer that assumes the origin corner.
+    fn hex_world_extent_contains_the_origin_cells_whole_polygon() {
+        // The origin hex is centred ON the origin, so its lower vertex sits at `(0, -size)` and its
+        // left vertices at `x = -√3/2·size`. Those are cells the GM authored, and the envelope
+        // reaches them: its minimum IS that hex's own lower-left extreme. Checked through
+        // `cell_vertices`, so the claim covers the whole polygon rather than two sampled points,
+        // and the extremes come from the shape's own geometry rather than a restated formula.
+        //
+        // Discrimination, per assertion, each naming a mutation that breaks THAT assertion while
+        // the other still holds:
+        // - the origin loop fails if `HexGrid::world_extent`'s `min` moves to the origin, or if
+        //   either half-extent shrinks on the min side. The far loop is unaffected by both.
+        // - the far loop fails if `max` loses either half-extent, which leaves the far hex's own
+        //   far vertices outside while every origin vertex stays inside.
         let g = HexGrid { size: 50.0 };
-        let (ex, ey) = g.world_extent((9.0, 7.0));
-        let half_x = g.size * 3.0_f64.sqrt() / 2.0;
-        let inside = |p: (f64, f64)| p.0 >= 0.0 && p.1 >= 0.0 && p.0 <= ex && p.1 <= ey;
-        assert!(
-            !inside((0.0, -g.size)),
-            "the origin hex's lower vertex is outside"
-        );
-        assert!(
-            !inside((-half_x, -g.size / 2.0)),
-            "the origin hex's left vertex is outside"
-        );
-        assert!(
-            inside(g.cell_center((0, 0))),
-            "the origin hex's centre is inside"
-        );
+        let (w, h) = (9.0_f64, 7.0_f64);
+        let e = g.world_extent((w, h));
+        let inside = |p: (f64, f64)| {
+            p.0 >= e.min.0 - 1e-9
+                && p.1 >= e.min.1 - 1e-9
+                && p.0 <= e.max.0 + 1e-9
+                && p.1 <= e.max.1 + 1e-9
+        };
+        for v in g.cell_vertices((0, 0), g.size) {
+            assert!(
+                inside(v),
+                "the origin hex's vertex {v:?} must lie inside the envelope {e:?}"
+            );
+        }
+        for v in g.cell_vertices((w as i32 - 1, h as i32 - 1), g.size) {
+            assert!(
+                inside(v),
+                "the far hex's vertex {v:?} must lie inside the envelope {e:?}"
+            );
+        }
     }
 
     #[test]
@@ -1944,7 +2065,7 @@ mod tests {
         // Discrimination: fails if the hex impl falls back to the square formula.
         let g = HexGrid { size: 50.0 };
         let (w, h) = (40.0_f64, 40.0_f64);
-        let (ex, ey) = g.world_extent((w, h));
+        let (ex, ey) = g.world_extent((w, h)).max;
         assert!(
             ex > w * g.size,
             "hex extent x {ex} must exceed {}",
@@ -1958,30 +2079,36 @@ mod tests {
     }
 
     #[test]
-    fn world_extent_stays_positive_for_a_bound_below_one_cell_and_covers_no_whole_cell() {
-        // A bound below one cell must not produce a negative or zero rectangle through a `w - 1`
-        // term — but the rectangle it does produce covers NO whole cell, because the integer block
-        // `[0, ⌊0.25⌋)` is empty. Both halves are asserted so the positivity guard cannot be read
-        // as a cover claim.
+    fn world_extent_stays_positive_below_one_cell_and_covers_at_most_the_origin_cell() {
+        // A bound below one cell must not produce a zero-area or inverted envelope through a
+        // `w - 1` term — and the envelope it does produce reaches no cell but the origin one,
+        // because the integer block `[0, ⌊0.25⌋)` is empty. The two shapes answer that differently
+        // and both answers are asserted: square covers NO cell at all (its origin cell's own span
+        // does not fit), while hex's clamped envelope is exactly the origin hex's own bounding
+        // box, so it covers that hex wholly and nothing beyond it.
         //
         // The hex ROUNDING-refutation runs at `w = 1.25`, not `0.25`: hex clamps `qmax` at zero, so
-        // rounding `0.25` up to a whole cell leaves `qmax = 0` and the rectangle unmoved, and the
+        // rounding `0.25` up to a whole cell leaves `qmax = 0` and the envelope unmoved, and the
         // assertion would hold either way. `1.25` takes `qmax` from `0.25` to `1` under rounding,
-        // which pushes the rectangle past one hex pitch. It still covers no whole hex, so it
-        // refutes the same claim. The `(0.25, 0.25)` hex arm is separate and covers what `1.25`
-        // cannot: sub-one-cell on BOTH axes, the regime `extent_rule_says_inside` excludes for hex.
+        // which pushes the far corner past one hex pitch. The `(0.25, 0.25)` hex arm is separate
+        // and covers what `1.25` cannot: sub-one-cell on BOTH axes, the regime
+        // `extent_rule_says_inside` excludes for hex.
         // Discrimination, per assertion, each naming an input or mutation that breaks THAT
         // assertion while the rest of this test still holds:
         // - the positivity loop fails if either impl subtracts one cell without clamping.
-        // - the cover-refutations fail if the square y axis is grown past a cell, or if hex
-        //   starts rounding a fractional bound up to a whole cell, which widens the hex
-        //   rectangle past a pitch.
+        // - the square cover-refutation fails if the square y axis is grown past a cell.
         // - the square exclusion fails if `SquareGrid::world_extent` ever grows its rectangle to
         //   half a cell or more at this bound, which the cover-refutation alone still admits.
+        // - the hex far-corner assertion fails if hex starts rounding a fractional bound up to a
+        //   whole cell, which pushes that corner past one pitch.
+        // - the origin-hex bounding-box equality fails if either half-extent changes on either
+        //   side, which no square assertion here and no far-corner assertion notices.
+        // - the neighbour-exclusion fails if the clamped envelope grows by a whole pitch on either
+        //   axis, which the bounding-box equality would catch only for the min side.
         // - the INVARIANCE assertion fails if hex's clamp is replaced by anything that still
-        //   varies with a sub-one-cell bound (`if w < 1 { w } else { w - 1 }` keeps the rectangle
-        //   positive and under one pitch, so no other assertion here notices). No positivity or
-        //   cover claim can make it: it is about two bounds producing ONE rectangle.
+        //   varies with a sub-one-cell bound (`if w < 1 { w } else { w - 1 }` keeps the envelope
+        //   positive and its far corner under one pitch, so no other assertion here notices). No
+        //   positivity or cover claim can make it: it is about two bounds producing ONE envelope.
         // - the rule/measurement DISAGREEMENT fails if `extent_rule_says_inside`'s hex column arm
         //   drops its `− 1` term, which makes the rule answer "covered" and agree.
         // The invariance assertion and the rule/measurement disagreement each run after every
@@ -1992,17 +2119,17 @@ mod tests {
             rule: DiagonalRule::Chebyshev,
         };
         let hx = HexGrid { size: 20.0 };
-        for (ex, ey) in [sq.world_extent((0.25, 0.25)), hx.world_extent((0.25, 0.25))] {
+        for e in [sq.world_extent((0.25, 0.25)), hx.world_extent((0.25, 0.25))] {
             assert!(
-                ex > 0.0 && ey > 0.0,
-                "extent must stay positive, got ({ex}, {ey})"
+                e.width() > 0.0 && e.height() > 0.0,
+                "extent must stay positive, got {e:?}"
             );
         }
         // Square cell (0,0) spans one cell per axis, so a quarter-cell rectangle cannot contain it.
-        let (sx, sy) = sq.world_extent((0.25, 0.25));
+        let sq_e = sq.world_extent((0.25, 0.25));
         assert!(
-            sx < sq.cell && sy < sq.cell,
-            "the square rectangle ({sx}, {sy}) must not cover cell (0,0)'s own {} span",
+            sq_e.width() < sq.cell && sq_e.height() < sq.cell,
+            "the square envelope {sq_e:?} must not cover cell (0,0)'s own {} span",
             sq.cell
         );
         // The stronger square claim, paired with the one it strengthens: the rectangle does not
@@ -2010,39 +2137,61 @@ mod tests {
         // has no clamped term and therefore no excluded regime, so its rule describes this bound
         // exactly as it describes any other.
         assert!(
-            sq.cell_center((0, 0)).0 > sx,
+            sq.cell_center((0, 0)).0 > sq_e.max.0,
             "square excludes cell (0,0)'s centre at the same sub-one-cell bound"
         );
-        // The hex rectangle is narrower than one hex pitch (`√3·size`), so no hex's full width
-        // fits inside it. Its HEIGHT does reach the origin hex's far vertex — `max_y` is exactly
-        // `size` once `rmax` clamps to zero — which is why the width, not the height, is what
-        // shows that no whole hex is covered.
-        let (hxx, _) = hx.world_extent((1.25, 0.25));
+        // The far corner stays under one hex pitch (`√3·size`) — the clamp holds `qmax` at 0.25
+        // rather than letting a rounded 2 push it past a pitch. Measured on the corner, not the
+        // span, because the span carries the origin-side half-extent that the clamp does not
+        // govern.
+        let hx_far = hx.world_extent((1.25, 0.25)).max;
         assert!(
-            hxx < hx.size * 3.0_f64.sqrt(),
-            "the hex rectangle's width {hxx} must be under one hex pitch"
+            hx_far.0 < hx.size * 3.0_f64.sqrt(),
+            "the hex envelope's far corner x {} must be under one hex pitch",
+            hx_far.0
         );
         // Below one cell on BOTH axes, which is the regime `extent_rule_says_inside` excludes for
-        // hex and the sweep therefore never reaches: the rectangle is under one pitch wide and
-        // under one hex tall (a hex spans `2·size` vertically), so it still covers no whole hex.
-        let (subx, suby) = hx.world_extent((0.25, 0.25));
+        // hex and the sweep therefore never reaches: both clamps engage, so the envelope collapses
+        // onto the origin hex's own bounding box — half the flats across in x and the circumradius
+        // in y, on each side of the origin. Derived from `cell_vertices`, so the expectation comes
+        // from the shape's geometry rather than restating the impl's constants.
+        let sub = hx.world_extent((0.25, 0.25));
+        let verts = hx.cell_vertices((0, 0), hx.size);
+        let vmin = verts
+            .iter()
+            .fold((f64::MAX, f64::MAX), |a, v| (a.0.min(v.0), a.1.min(v.1)));
+        let vmax = verts
+            .iter()
+            .fold((f64::MIN, f64::MIN), |a, v| (a.0.max(v.0), a.1.max(v.1)));
         assert!(
-            subx < hx.size * 3.0_f64.sqrt() && suby < 2.0 * hx.size,
-            "the sub-one-cell hex rectangle ({subx}, {suby}) must fit inside one hex's own span"
+            (sub.min.0 - vmin.0).abs() < 1e-9
+                && (sub.min.1 - vmin.1).abs() < 1e-9
+                && (sub.max.0 - vmax.0).abs() < 1e-9
+                && (sub.max.1 - vmax.1).abs() < 1e-9,
+            "the clamped hex envelope {sub:?} must be the origin hex's own bounding box \
+             ({vmin:?}, {vmax:?})"
         );
+        // And nothing beyond it: no neighbouring hex's centre lies inside, so "at most the origin
+        // cell" is a bound on the set rather than only a statement about the origin cell.
+        for n in [(1, 0), (1, -1), (0, -1), (-1, 0), (-1, 1), (0, 1)] {
+            let c = hx.cell_center(n);
+            assert!(
+                c.0 < sub.min.0 || c.0 > sub.max.0 || c.1 < sub.min.1 || c.1 > sub.max.1,
+                "neighbour hex {n:?}'s centre {c:?} must lie outside the clamped envelope {sub:?}"
+            );
+        }
         // What the clamp DOES, stated as its observable consequence rather than as positivity:
-        // `qmax`/`rmax` clamp at zero, so below one cell the rectangle stops varying with the
-        // bound at all. Two different sub-one-cell bounds must therefore yield ONE rectangle — a
+        // `qmax`/`rmax` clamp at zero, so below one cell the envelope stops varying with the
+        // bound at all. Two different sub-one-cell bounds must therefore yield ONE envelope — a
         // claim no positivity or cover assertion can make, and the precise reason the linear rule
         // (which varies continuously with the bound) cannot describe this regime.
-        let (invariant_x, invariant_y) = hx.world_extent((0.75, 0.9));
         assert_eq!(
-            (subx, suby),
-            (invariant_x, invariant_y),
-            "two sub-one-cell bounds must yield one hex rectangle"
+            sub,
+            hx.world_extent((0.75, 0.9)),
+            "two sub-one-cell bounds must yield one hex envelope"
         );
         // The disagreement itself, pinned rather than only fenced off: the linear rule answers
-        // EXCLUDED for the origin hex while the rectangle covers its centre, the origin hex being
+        // EXCLUDED for the origin hex while the envelope covers its centre, the origin hex being
         // centred ON the origin corner. Reached through `extent_rule_says_inside`'s
         // `BelowTheHexClamp` arm, which is the same body the sweep evaluates — one rule, with the
         // regime named at the call instead of a second entry point that could be reached without
@@ -2050,7 +2199,7 @@ mod tests {
         // domain and only the COLUMN axis is out, so the exclusion is attributable to one arm; at
         // `(0.25, 0.25)` both arms exclude and a mutation to either would leave the conjunction
         // unchanged.
-        let (clamped_x, clamped_y) = hx.world_extent((0.25, 1.0));
+        let clamped = hx.world_extent((0.25, 1.0));
         let origin = hx.cell_center((0, 0));
         assert!(
             !extent_rule_says_inside(
@@ -2058,10 +2207,12 @@ mod tests {
                 (0.25, 1.0),
                 (0, 0),
                 ExtentRuleDomain::BelowTheHexClamp
-            ) && origin.0 <= clamped_x
-                && origin.1 <= clamped_y,
-            "the linear rule must exclude the origin hex {origin:?} where the rectangle \
-             ({clamped_x}, {clamped_y}) covers it"
+            ) && origin.0 >= clamped.min.0
+                && origin.1 >= clamped.min.1
+                && origin.0 <= clamped.max.0
+                && origin.1 <= clamped.max.1,
+            "the linear rule must exclude the origin hex {origin:?} where the envelope \
+             {clamped:?} covers it"
         );
     }
 
@@ -2123,7 +2274,7 @@ mod tests {
             cell: 20.0,
             rule: DiagonalRule::Chebyshev,
         };
-        let (sx, _) = sq.world_extent((w, h));
+        let sx = sq.world_extent((w, h)).max.0;
         for i in 0..partial {
             assert!(
                 sq.cell_center((i, last_row)).0 <= sx + 1e-9,
@@ -2136,7 +2287,7 @@ mod tests {
         );
 
         let hx = HexGrid { size: 50.0 };
-        let (hxx, _) = hx.world_extent((w, h));
+        let hxx = hx.world_extent((w, h)).max.0;
         for q in 0..partial {
             assert!(
                 hx.cell_center((q, last_row)).0 <= hxx + 1e-9,
@@ -2146,7 +2297,7 @@ mod tests {
         // The row-0 pair: the SAME column at the SAME row flips on the block's height alone,
         // which no row-independent extent can produce. Both halves clear the integer-block loop's
         // own strongest bound, so each fails on its own rather than being masked by it.
-        let (short_x, _) = hx.world_extent((w, short_h));
+        let short_x = hx.world_extent((w, short_h)).max.0;
         assert!(
             hx.cell_center((partial, 0)).0 <= hxx,
             "the tall block's shear reaches hex column {partial} at row 0, extent {hxx}"
@@ -2162,9 +2313,11 @@ mod tests {
     }
 
     /// The membership rule `GridShape::world_extent` documents, as an executable predicate:
-    /// does the rule say cell `c`'s CENTRE lies inside the origin-anchored rectangle
+    /// does the rule say cell `c`'s CENTRE lies within the `max` side of the envelope
     /// `world_extent(bounds)` returns? Stated in index units, so it is a rule about which cells a
-    /// block covers rather than a second copy of either impl's coordinate arithmetic.
+    /// block covers rather than a second copy of either impl's coordinate arithmetic. The `min`
+    /// side excludes no cell of the swept block on either shape, so it carries no term here and is
+    /// measured directly by the sweep instead.
     ///
     /// - **Square**, per axis and independent of the other: `i ≤ w − 0.5`, `j ≤ h − 0.5`. The
     ///   partial cell `i = ⌊w⌋` is covered exactly when its fractional part is `≥ 0.5`.
@@ -2181,7 +2334,7 @@ mod tests {
     /// `h ≥ 1` only, because `HexGrid::world_extent` clamps its `w − 1`/`h − 1` terms at zero and
     /// the rectangle then stops varying linearly with the bound — at `w = 0.25, h = 1.0` this rule
     /// answers false for cell `(0,0)` while the measurement covers it. That hex regime is pinned
-    /// by `world_extent_stays_positive_for_a_bound_below_one_cell_and_covers_no_whole_cell`.
+    /// by `world_extent_stays_positive_below_one_cell_and_covers_at_most_the_origin_cell`.
     ///
     /// The regime is an ARGUMENT rather than a second entry point, so every caller states which
     /// side of the domain it is asking about and each side is guarded on its own terms: a bound
@@ -2238,6 +2391,13 @@ mod tests {
         BelowTheHexClamp,
     }
 
+    /// The number of `(scale, kind, bounds)` triples
+    /// `the_extent_membership_rule_predicts_every_cells_coverage_over_a_bounds_sweep` visits, and
+    /// therefore the number of envelope minimums it measures. Two scales; square sweeps three
+    /// integer parts per axis against hex's two, and square skips the bounds whose width or height
+    /// lands on the degenerate `0 + 0` pair (21 on each axis, one of them shared).
+    const MIN_SIDE_SWEEP_BOUNDS: usize = 2 * (3 * 7 * 3 * 7 - (21 + 21 - 1)) + 2 * (2 * 7 * 2 * 7);
+
     #[test]
     fn the_extent_membership_rule_predicts_every_cells_coverage_over_a_bounds_sweep() {
         // `world_extent`'s membership rule, executed rather than asserted in prose: for every cell
@@ -2252,6 +2412,13 @@ mod tests {
         // row-0 condition `h ≥ 2·(1 − f_w)` on both sides. The square arm additionally sweeps
         // sub-one-cell bounds (`⌊w⌋ = 0`), the regime hex has to fence off and square does not.
         //
+        // The `min` side is swept too, per BOUND rather than per cell: the rule constrains only the
+        // `max` side, so a broken minimum would slip through a rule-versus-measurement comparison
+        // entirely. Each bound's envelope minimum is compared against the origin cell's own
+        // lower-left extreme, derived from `cell_vertices` — the shape's own geometry, never a
+        // restatement of the impl's constants — and the count of those comparisons is asserted
+        // alongside the cell count so the min side cannot silently stop being visited.
+        //
         // Discrimination: every expectation comes from `extent_rule_says_inside` and every measured
         // value from `cell_center`/`world_extent`, so this fails if the rule is misstated on either
         // axis of either shape and equally if either impl's closed form moves. The two wrong
@@ -2261,11 +2428,14 @@ mod tests {
         // the hex partial column as covered at row 0 unconditionally disagrees with 60. Both are
         // measured against this sweep as written, so the swept cell COUNT is asserted: dropping a
         // fractional part or an integer part would leave those two numbers describing a sweep that
-        // no longer exists, with nothing failing.
+        // no longer exists, with nothing failing. The min-side comparison fails on its own witness,
+        // `HexGrid::world_extent`'s `min` moved to the origin, which no cell-coverage comparison
+        // here notices.
         const TOL_CELLS: f64 = 1e-9;
         let fracs = [0.0, 0.2, 1.0 / 3.0, 0.4, 0.5, 0.6, 0.8];
         let mut checked = 0usize;
         let mut covered = 0usize;
+        let mut min_side_checked = 0usize;
         let mut mismatches: Vec<String> = Vec::new();
         for scale in [20.0_f64, 50.0] {
             for kind in [GridKind::Square, GridKind::Hex] {
@@ -2292,8 +2462,28 @@ mod tests {
                                 if bounds.0 <= 0.0 || bounds.1 <= 0.0 {
                                     continue;
                                 }
-                                let (ex, ey) = shape.world_extent(bounds);
+                                let e = shape.world_extent(bounds);
+                                let (ex, ey) = e.max;
                                 let tol = TOL_CELLS * scale;
+                                // The min side: the envelope's lower-left corner IS the origin
+                                // cell's own, whatever the bound. Taken from the origin cell's
+                                // vertex ring so the expectation is the shape's geometry rather
+                                // than a second copy of the impl's half-extents.
+                                let origin_verts = shape.cell_vertices((0, 0), scale);
+                                let vmin =
+                                    origin_verts.iter().fold((f64::MAX, f64::MAX), |a, v| {
+                                        (a.0.min(v.0), a.1.min(v.1))
+                                    });
+                                min_side_checked += 1;
+                                if (e.min.0 - vmin.0).abs() > tol || (e.min.1 - vmin.1).abs() > tol
+                                {
+                                    mismatches.push(format!(
+                                        "{kind:?} scale {scale} bounds {bounds:?}: envelope \
+                                         minimum {:?} is not the origin cell's own lower-left \
+                                         extreme {vmin:?}",
+                                        e.min
+                                    ));
+                                }
                                 for i in 0..=bounds.0.floor() as i32 {
                                     for j in 0..=bounds.1.floor() as i32 {
                                         let c = shape.cell_center((i, j));
@@ -2332,9 +2522,16 @@ mod tests {
             checked, 8136,
             "fixture: the swept cell count the stated mismatch counts are measured against"
         );
+        // The min side is visited once per bound, and its count is asserted for the same reason:
+        // a sweep that stopped reaching it would otherwise leave the corner unmeasured silently.
+        assert_eq!(
+            min_side_checked, MIN_SIDE_SWEEP_BOUNDS,
+            "fixture: every swept bound must have its envelope minimum measured"
+        );
         assert!(
             mismatches.is_empty(),
-            "{} of {checked} swept cells disagree with the documented rule; first 8:\n{}",
+            "{} of the {checked} cell comparisons and {min_side_checked} minimum comparisons \
+             disagree with the documented behaviour; first 8:\n{}",
             mismatches.len(),
             mismatches
                 .iter()
@@ -2346,16 +2543,21 @@ mod tests {
     }
 
     #[test]
-    fn both_shapes_answer_a_degenerate_bound_with_the_same_refused_rectangle() {
+    fn both_shapes_answer_a_degenerate_bound_with_the_same_refused_envelope() {
         // One trait method, one answer to degenerate input, over the WHOLE degenerate class:
         // non-finite, zero, and negative alike. Without the shared normalisation the square arm
-        // collapses to `(0,0)` (which every extent guard refuses) while the hex arm still adds its
-        // pointy-top half-extents and returns a positive rectangle that BUILDS — a tiny mesh that
+        // collapses to a zero-area envelope (which every extent guard refuses) while the hex arm
+        // still adds its pointy-top half-extents and returns a positive-AREA envelope that BUILDS
+        // — a tiny mesh that
         // makes everything outside it unreachable. Under-permissive rather than a leak, but the
         // two impls disagreeing is the defect, and it is the same defect for `0.0` as for `NaN`.
+        //
+        // The refusal is on AREA, not on a far corner: the envelope carries a minimum, so a
+        // shape that answered `min = (-a, -b), max = (0, 0)` would present a zero far corner and a
+        // POSITIVE span, which every guard would then accept.
         // Discrimination: fails if either impl stops normalising, and fails if the normaliser
         // narrows back to the non-finite half of the class, since the assertion compares the two
-        // arms against each other AND against the refused value on every input.
+        // arms against each other AND against the refused span on every input.
         let sq = SquareGrid {
             cell: 50.0,
             rule: DiagonalRule::Chebyshev,
@@ -2367,8 +2569,8 @@ mod tests {
                 let h = hx.world_extent(pair);
                 assert_eq!(s, h, "the two shapes disagree on {pair:?}: {s:?} vs {h:?}");
                 assert!(
-                    s.0 <= 0.0 || s.1 <= 0.0,
-                    "a degenerate axis must yield a rectangle the extent guards refuse, got {s:?}"
+                    s.width() <= 0.0 || s.height() <= 0.0,
+                    "a degenerate axis must yield an envelope the extent guards refuse, got {s:?}"
                 );
             }
         }
