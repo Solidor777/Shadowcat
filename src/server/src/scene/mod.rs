@@ -2913,9 +2913,7 @@ mod tests {
     /// parameter and never from the document, so the declared size and the compared shape are
     /// required to be INDEPENDENT — binding them would assert away the property under test, and a
     /// parameter/expectation mismatch fails their `cell_center` comparison outright rather than
-    /// silently. `the_resolved_shape_reports_the_resolved_kind` declares three scenes — hex,
-    /// square and unrecognised — but asserts only the resolved KIND and derives no coordinates at
-    /// all, so no assertion of its reads the size it authors.
+    /// silently.
     const HEX_FIXTURE_SIZE: f64 = 50.0;
 
     #[test]
@@ -7667,7 +7665,8 @@ explored: // GM: unrestricted mask
     /// size·1.5·2 + size)`, which collapses to `(3.7·√3·size, 4·size)` — so along axial row 0,
     /// where a hex's centre sits `q` PITCHES (`√3·size`) from the origin and its left vertices
     /// half a pitch nearer, the rectangle reaches `q = 3.7`. Pitches are the unit its dependants
-    /// name cells in, so none of them carries a coordinate this size could invalidate.
+    /// name cells in; a dependant that states a coordinate rather than a pitch must re-derive it
+    /// against this fixture's own size.
     /// `source_los_poly` is then `[min(-VISION_BOUND_MARGIN, 0), max(VISION_BOUND_MARGIN, extent)]`
     /// per axis — the extent is the larger term on both axes at this fixture's size.
     fn hex_open_scene() -> (SceneEcs, Uuid, Uuid) {

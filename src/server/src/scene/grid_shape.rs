@@ -980,7 +980,7 @@ mod tests {
     #[test]
     fn hex_footprint_from_a_cell_centre_brackets_the_inradius_threshold() {
         // From a hex's own centre the nearest point of every neighbour is their shared edge, at
-        // the inradius √3/2·size ≈ 43.301. A disc a clear 0.5 under that stays in one hex; a disc
+        // the inradius √3/2·size. A disc a clear 0.5 under that stays in one hex; a disc
         // a clear 0.5 over it reaches all six neighbours and nothing beyond (ring 2's nearest edge
         // is 2.598·size away). Both probes sit off the threshold, so a one-ULP difference in the
         // distance computation cannot decide either.
@@ -1973,8 +1973,8 @@ mod tests {
         // Discrimination, per assertion, each naming an input or mutation that breaks THAT
         // assertion while the rest of this test still holds:
         // - the positivity loop fails if either impl subtracts one cell without clamping.
-        // - the cover-refutations fail if either impl starts rounding a fractional bound up to a
-        //   whole cell, which makes the square rectangle cover cell (0,0) and widens the hex
+        // - the cover-refutations fail if the square y axis is grown past a cell, or if hex
+        //   starts rounding a fractional bound up to a whole cell, which widens the hex
         //   rectangle past a pitch.
         // - the square exclusion fails if `SquareGrid::world_extent` ever grows its rectangle to
         //   half a cell or more at this bound, which the cover-refutation alone still admits.
@@ -1984,9 +1984,9 @@ mod tests {
         //   cover claim can make it: it is about two bounds producing ONE rectangle.
         // - the rule/measurement DISAGREEMENT fails if `extent_rule_says_inside`'s hex column arm
         //   drops its `− 1` term, which makes the rule answer "covered" and agree.
-        // The two new assertions are the last two the test evaluates, in that order, so each
-        // witness's run exercises every other assertion first rather than leaving that to be
-        // argued.
+        // The invariance assertion and the rule/measurement disagreement each run after every
+        // other assertion in this test, so a witness's run exercises those first rather than
+        // leaving that to be argued.
         let sq = SquareGrid {
             cell: 20.0,
             rule: DiagonalRule::Chebyshev,

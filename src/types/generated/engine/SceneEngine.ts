@@ -23,9 +23,7 @@ background: string | null,
  * The authored play-area rectangle in grid units; absent = the read-side
  * default. `GridShape::world_extent` converts it to world units for TWO
  * consumer families, not one: `navmesh::build_navmesh` triangulates that
- * rectangle, and the per-player secrecy path bounds itself with it —
- * `SceneEcs::lighting_inputs`, `SceneEcs::player_lit_mask`,
- * `SceneEcs::visible_cells_cached`, `accumulate_visible_cells` and
+ * rectangle directly, and reaches the vision paths through
  * `vision::bound_for_scene`. So a change here moves what a player is told
  * they can see, not only where a route may run.
  */
