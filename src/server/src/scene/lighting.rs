@@ -259,8 +259,10 @@ fn env_lit(env_polys: &[Vec<P>], center: P) -> bool {
 /// `blocksLight`-sealed interior receives no ambient. This is strictly NARROWING: the occluded
 /// environment base is `0 ≤ env_intensity`, so the composed `level` is `≤` the pre-occlusion
 /// flat-floor level at every cell — visibility can only shrink, never widen.
-/// `cell_size` is world units per cell (light radii are in cells, so distance is divided by it);
-/// CALLER PRECONDITION: `cell_size` must be positive — a non-positive value is a caller error; the
+/// `world_units_per_cell` is the world distance one grid step represents
+/// (`GridShape::world_units_per_cell`) — light radii are authored in cells, so distance is
+/// divided by it. It is NOT the cell indexing scale; the two coincide on square and differ on
+/// hex. CALLER PRECONDITION: it must be positive — a non-positive value is a caller error; the
 /// upstream caller guards it (a release-build fallback avoids division-by-zero but the value is wrong).
 /// `env_intensity` must be finite; the document→settings resolver clamps it to `[0,1]`.
 /// Tie-break: ties (equal `level`) keep the earlier contributor — environment beats all lights at
@@ -272,14 +274,14 @@ pub fn cell_illumination(
     lights: &[Light],
     lit_polys: &[Vec<P>],
     env_polys: &[Vec<P>],
-    cell_size: f64,
+    world_units_per_cell: f64,
 ) -> CellLight {
     debug_assert!(
-        cell_size > 0.0,
-        "INVARIANT: cell_size must be positive; light radii are in cells"
+        world_units_per_cell > 0.0,
+        "INVARIANT: world_units_per_cell must be positive; light radii are authored in cells"
     );
     debug_assert!(env_intensity.is_finite(), "env_intensity must be finite");
-    // Environment ambient is now boundary-projected and blocksLight-occluded (see `env_polys`).
+    // Environment ambient is boundary-projected and blocksLight-occluded (see `env_polys`).
     let env_reaches = env_intensity > 0.0 && env_lit(env_polys, center);
     let mut best = CellLight {
         level: if env_reaches {
@@ -297,7 +299,11 @@ pub fn cell_illumination(
             }
         }
         let d = ((center.0 - light.pos.0).powi(2) + (center.1 - light.pos.1).powi(2)).sqrt();
-        let dist_cells = if cell_size > 0.0 { d / cell_size } else { d };
+        let dist_cells = if world_units_per_cell > 0.0 {
+            d / world_units_per_cell
+        } else {
+            d
+        };
         let level = light_illumination(light, dist_cells);
         if level > best.level {
             best = CellLight {

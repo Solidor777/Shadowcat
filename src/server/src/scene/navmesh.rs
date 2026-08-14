@@ -369,6 +369,10 @@ pub(crate) fn clip_to_visible_mask(
         return outcome;
     }
 
+    // Indexing scale, never `GridShape::world_units_per_cell` — that symbol's own note states why
+    // a footprint radius is not the class of authored distance that converts. The clip's whole
+    // purpose is to apply the SAME footprint predicate `pathfinding::cell_enterable` applies, so a
+    // disc sized differently here would break the `route ⊆ gate-allowed` invariant outright.
     let r_scene = footprint_radius_cells.max(0.0) * cell;
     // Dummy duration: `sample_path` is a time/arc-length sampler shared with `MoveStream`
     // playback; only `.pos` is used here, so the duration value is immaterial.
@@ -462,6 +466,10 @@ pub(crate) fn los_smooth(
     {
         return outcome;
     }
+    // Indexing scale, never `GridShape::world_units_per_cell` — that symbol's own note states why
+    // a footprint radius is not the class of authored distance that converts. A straightened chord
+    // is admitted by the same footprint predicate the weighted search already applied per cell, so
+    // this disc must be the one `pathfinding::cell_enterable` sized.
     let r_scene = footprint_radius_cells.max(0.0) * cell;
     let path = outcome.path.clone();
 

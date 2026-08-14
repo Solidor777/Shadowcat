@@ -118,6 +118,12 @@ pub(crate) fn cell_enterable(grid: &PathGrid, from: Cell, to: Cell) -> bool {
     if to.0 < i0 || to.0 > i1 || to.1 < j0 || to.1 > j1 {
         return false;
     }
+    // The footprint radius keeps the INDEXING scale rather than converting through
+    // `GridShape::world_units_per_cell` like an authored distance would — that symbol's own note
+    // states why: the radius is a square block's half-diagonal and the model behind it is a square
+    // block, so rescaling it changes what a token occupies. `move_exec::execute_move` derives its
+    // own `r_scene` the same way, and the route-vs-gate footprint comparison depends on the two
+    // agreeing.
     let r_scene = grid.inputs.footprint_radius_cells.max(0.0) * grid.inputs.cell;
     let ctr = grid.inputs.shape.cell_center(to);
     let a = grid.inputs.shape.cell_center(from);

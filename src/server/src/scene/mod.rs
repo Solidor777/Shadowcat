@@ -2232,11 +2232,14 @@ impl SceneEcs {
                             &li.lights,
                             &li.lit_polys,
                             &li.env_polys,
-                            cell,
+                            cell_grid.world_units_per_cell(),
                         )
                     };
-                    let dist_cells =
-                        (((cx - src.vp.0).powi(2) + (cy - src.vp.1).powi(2)).sqrt()) / cell;
+                    // Both a light's radii and a vision mode's range are authored in cells, so
+                    // each measures against the shape's per-cell world distance, never its
+                    // indexing scale — the two coincide on square and differ by √3 on hex.
+                    let dist_cells = (((cx - src.vp.0).powi(2) + (cy - src.vp.1).powi(2)).sqrt())
+                        / cell_grid.world_units_per_cell();
                     // Lowest applicable floor decides visibility; highest applicable floor decides the hint.
                     // `cell_visible` computes the same min-floor-over-in-range-modes decision
                     // and is reused verbatim by the movement gate (anti-drift).
@@ -2540,13 +2543,19 @@ pub(crate) struct LightingInputs {
 /// must stay identical to `player_lit_mask`'s copy. `cell_visible` reads only `level` today, but
 /// tint is passed through so the two masks can never structurally diverge even if tint gains
 /// semantics later.
+///
+/// `world_units_per_cell` is the shape-derived world distance of one grid step
+/// (`GridShape::world_units_per_cell`), NOT the cell indexing scale. Both quantities it feeds — a
+/// light's radii through `cell_illumination`, and the vision range this function's own
+/// `dist_cells` is compared against — are authored in cells, so both convert through it; the two
+/// scalars coincide on square and differ by √3 on hex.
 fn point_qualifies(
     point: (f64, f64),
     src_vp: (f64, f64),
     floors: &[(f64, f64, Option<String>)],
     settings: &ResolvedScene,
     li: &LightingInputs,
-    cell: f64,
+    world_units_per_cell: f64,
 ) -> bool {
     let cl = if li.all_bright {
         crate::scene::lighting::CellLight {
@@ -2565,10 +2574,11 @@ fn point_qualifies(
             &li.lights,
             &li.lit_polys,
             &li.env_polys,
-            cell,
+            world_units_per_cell,
         )
     };
-    let dist_cells = (((point.0 - src_vp.0).powi(2) + (point.1 - src_vp.1).powi(2)).sqrt()) / cell;
+    let dist_cells = (((point.0 - src_vp.0).powi(2) + (point.1 - src_vp.1).powi(2)).sqrt())
+        / world_units_per_cell;
     cell_visible(floors, cl.level, dist_cells)
 }
 
@@ -2702,7 +2712,14 @@ fn accumulate_visible_cells(
                 // byte-identical order, or the 6 pointy-top hex vertices) is computed ONLY on this
                 // path — the strict movement-gate mask never pays for it (6 sin/cos per hex cell).
                 if vision::point_in_poly(&poly, center)
-                    && point_qualifies(center, src.vp, &src.floors, settings, li, cell)
+                    && point_qualifies(
+                        center,
+                        src.vp,
+                        &src.floors,
+                        settings,
+                        li,
+                        grid.world_units_per_cell(),
+                    )
                 {
                     found = true;
                 }
@@ -2710,7 +2727,14 @@ fn accumulate_visible_cells(
                     let corners = grid.cell_vertices((i, j), cell);
                     for &corner in &corners {
                         if vision::point_in_poly(&poly, corner)
-                            && point_qualifies(corner, src.vp, &src.floors, settings, li, cell)
+                            && point_qualifies(
+                                corner,
+                                src.vp,
+                                &src.floors,
+                                settings,
+                                li,
+                                grid.world_units_per_cell(),
+                            )
                         {
                             found = true;
                             break;
@@ -2720,7 +2744,14 @@ fn accumulate_visible_cells(
             } else {
                 // Strict: center only (mirrors player_lit_mask exactly).
                 if vision::point_in_poly(&poly, center)
-                    && point_qualifies(center, src.vp, &src.floors, settings, li, cell)
+                    && point_qualifies(
+                        center,
+                        src.vp,
+                        &src.floors,
+                        settings,
+                        li,
+                        grid.world_units_per_cell(),
+                    )
                 {
                     found = true;
                 }
@@ -7732,8 +7763,25 @@ explored: // GM: unrestricted mask
         assert_eq!(got, expected);
     }
 
+    /// `hex_open_scene_with_vision_range` at the unlimited-range setting: a wall-less pointy-top
+    /// hex scene at `HEX_FIXTURE_SIZE`, all-bright, LOS off, one owned instanced token at hex
+    /// (0,0) = pixel (0,0) with unlimited "normal" vision. That constructor's own doc carries the
+    /// geometry every dependant of either form reads.
+    fn hex_open_scene() -> (SceneEcs, Uuid, Uuid) {
+        hex_open_scene_with_vision_range(None)
+    }
+
     /// A wall-less pointy-top hex scene at `HEX_FIXTURE_SIZE`, all-bright, LOS off, one owned
-    /// instanced token at hex (0,0) = pixel (0,0) with unlimited "normal" vision.
+    /// instanced token at hex (0,0) = pixel (0,0), with the token's sight distance under the
+    /// caller's control. `None` leaves the token with no embedded actor at all, so
+    /// `token_vision_floors` falls back to normal at unlimited range; `Some(cells)` gives it an
+    /// embedded actor whose single "normal" assignment carries that range in GRID CELLS. Nothing
+    /// else varies between the two, so a bounded and an unbounded token measure the same geometry
+    /// rather than two fixtures that have to be kept in step.
+    ///
+    /// The range rides `VisionAssignment.range`, which is the value `token_vision_floors` reads.
+    /// `VisionMode.default_range` is parsed into the resolved registry but no server-side mask
+    /// consults it, so authoring the range there would leave the token unbounded.
     ///
     /// The authored block is 3.2 x 3.0 hexes, which is fractional because a hex block's world
     /// rectangle is a shear-dependent function of the block rather than a per-axis product.
@@ -7751,7 +7799,7 @@ explored: // GM: unrestricted mask
     /// the margin (100) wins on the low side, the envelope's own minimum reaching only -43.3 and
     /// -50. That dominance is why this fixture's dependants measure the same mask an
     /// origin-anchored rectangle would give — a property of this size, not of the conversion.
-    fn hex_open_scene() -> (SceneEcs, Uuid, Uuid) {
+    fn hex_open_scene_with_vision_range(range_cells: Option<f64>) -> (SceneEcs, Uuid, Uuid) {
         let user = Uuid::from_u128(7);
         let scene_id = Uuid::from_u128(10);
         let mut tok = entity_doc_eng(
@@ -7761,6 +7809,16 @@ explored: // GM: unrestricted mask
             json!({ "x": 0.0, "y": 0.0, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
         );
         tok.owner = Some(user);
+        if let Some(range) = range_cells {
+            tok.embedded.insert(
+                "actor".into(),
+                vec![{
+                    let mut a = doc(99, None, "actor");
+                    a.engine = Some(actor_body(json!([{ "mode": "normal", "range": range }])));
+                    a
+                }],
+            );
+        }
         let scene = entity_doc_top_eng(
             10,
             "scene",
@@ -7885,6 +7943,207 @@ explored: // GM: unrestricted mask
             grid.cell_of(out.stop),
             (4, 0),
             "the strict move never enters hex (4,0)"
+        );
+    }
+
+    /// Sight distance in GRID CELLS the hex range fixtures give their token. Half a cell clear of
+    /// both probes — hex (2,0) sits 2.0 grid steps from the source and hex (3,0) sits 3.0 — so
+    /// neither assertion turns on an equality between computed floats.
+    const HEX_VISION_RANGE_CELLS: f64 = 2.5;
+
+    /// Asserts hex `(q, 0)`'s centre lies inside the scene's own world-unit envelope, so a test
+    /// asserting that hex is ABSENT from a mask is measuring the quantity it names rather than a
+    /// hex nothing reached. Fixture guard, not a property under test.
+    ///
+    /// The envelope answers for two separate reaches at once. `source_los_poly`'s scan box is a
+    /// union OVER the envelope (`vision::bound_for_scene`), so clearing the envelope's high edge
+    /// clears the scan's. And where a fixture walls its `blocksLight` room along that same
+    /// envelope, a hex inside it is inside the room, hence not cut off by the light's own
+    /// occlusion polygon. Row 0 needs the x axis only — the envelope reaches a full circumradius
+    /// below the origin on y, and the scan's margin reaches further still.
+    fn assert_hex_row_zero_is_scanned(ecs: &SceneEcs, scene: Uuid, q: i32) {
+        let grid = ecs.resolve_grid_shape(scene, HEX_FIXTURE_SIZE);
+        let centre = grid.cell_center((q, 0));
+        let extent = grid.world_extent(ecs.resolve_scene(scene).bounds);
+        assert!(
+            centre.0 < extent.max.0,
+            "fixture: hex ({q},0)'s centre {} must sit inside the scanned envelope, which reaches {}",
+            centre.0,
+            extent.max.0
+        );
+    }
+
+    #[test]
+    fn a_hex_vision_range_is_measured_in_grid_steps() {
+        // A sight range authored in cells must reach the hex two grid steps away and not the hex
+        // three steps away. On a pointy-top hex those centres are 2·√3·size and 3·√3·size scene
+        // units out, i.e. 2.0 and 3.0 grid steps; dividing by the indexing scale instead reports
+        // 3.46 and 5.20.
+        //
+        // Discrimination: under the indexing-scale divisor (2,0) reads as 3.46 cells and drops
+        // out, so the first assertion fails; under any divisor more than 20% larger than √3·size,
+        // (3,0) reads as under 2.5 cells and joins the mask, so the second fails. The pair
+        // brackets the conversion from both sides with half a cell of clearance on each, and the
+        // call path is `visible_cells`, the production movement-gate mask rather than a helper.
+        let (ecs, user, scene) = hex_open_scene_with_vision_range(Some(HEX_VISION_RANGE_CELLS));
+        assert_hex_row_zero_is_scanned(&ecs, scene, 3);
+        let mask = ecs.visible_cells(user, scene, false);
+        assert!(
+            mask.contains(&(2, 0)),
+            "two grid steps is inside a {HEX_VISION_RANGE_CELLS}-cell range, got {mask:?}"
+        );
+        assert!(
+            !mask.contains(&(3, 0)),
+            "three grid steps is outside a {HEX_VISION_RANGE_CELLS}-cell range"
+        );
+    }
+
+    #[test]
+    fn a_hex_vision_range_bounds_the_lit_egress_the_same_way() {
+        // `player_lit_mask` computes its own `dist_cells` rather than routing through
+        // `point_qualifies`, so the range conversion has two independent homes and a test through
+        // one proves nothing about the other. Under strict sampling the two masks must agree.
+        //
+        // Discrimination: fails if `player_lit_mask`'s divisor keeps the indexing scale, because
+        // (2,0) then reads as 3.46 cells and is not shipped, while
+        // `a_hex_vision_range_is_measured_in_grid_steps` still passes once its own divisor is
+        // converted. Both read `hex_open_scene_with_vision_range`, so a divergence between the
+        // gate and the egress shows up as exactly one of the two failing.
+        let (ecs, user, scene) = hex_open_scene_with_vision_range(Some(HEX_VISION_RANGE_CELLS));
+        assert_hex_row_zero_is_scanned(&ecs, scene, 3);
+        let cells = mask_cells(&ecs, user, scene);
+        assert!(
+            cells.contains(&(2, 0)),
+            "two grid steps is inside a {HEX_VISION_RANGE_CELLS}-cell range, got {cells:?}"
+        );
+        assert!(
+            !cells.contains(&(3, 0)),
+            "three grid steps is outside a {HEX_VISION_RANGE_CELLS}-cell range"
+        );
+    }
+
+    /// Bright radius, in GRID CELLS, of `hex_lit_scene`'s lamp: half a cell past hex (2,0), which
+    /// sits 2.0 grid steps out.
+    const HEX_LIGHT_BRIGHT_CELLS: f64 = 2.5;
+    /// Dim radius, in GRID CELLS, of `hex_lit_scene`'s lamp: half a cell short of hex (4,0), which
+    /// sits 4.0 grid steps out.
+    const HEX_LIGHT_DIM_CELLS: f64 = 3.5;
+
+    /// The authored block, in hexes, of `hex_lit_scene`. Row 0 of the envelope it produces reaches
+    /// well past hex (4,0), which both of that fixture's reaches depend on.
+    const HEX_LIGHT_BLOCK: (f64, f64) = (6.0, 4.0);
+
+    /// A pointy-top hex scene at `HEX_FIXTURE_SIZE` with lighting ENABLED, an environment
+    /// intensity of zero (so the lamp is the only illumination any cell receives), one
+    /// player-owned token at hex (0,0) with unlimited normal vision, and one lamp at that same
+    /// point carrying `HEX_LIGHT_BRIGHT_CELLS`/`HEX_LIGHT_DIM_CELLS` radii.
+    ///
+    /// The scene is walled as a `blocksLight` ROOM around the whole authored block, derived from
+    /// `GridShape::world_extent` so the room and the block cannot name different rectangles. That
+    /// is load-bearing rather than decoration: a light's occlusion polygon is raycast against a
+    /// `vision::bound_for` box that grows around the `blocksLight` endpoints only, so in a scene
+    /// with no such wall the polygon is a `VISION_BOUND_MARGIN` box around the lamp itself and
+    /// cuts the lamp's reach off there — short of both probes at this grid size, leaving the radii
+    /// with nothing to decide. Walling the room puts the probes inside the polygon and hands the
+    /// decision back to the radii. The walls occlude neither probe: both sit on row 0 between the
+    /// lamp and the room's far edge. `blocksSight` is off, so the LOS polygon stays the plain
+    /// rectangle and vision never gates a probe either.
+    fn hex_lit_scene() -> (SceneEcs, Uuid, Uuid) {
+        let user = Uuid::from_u128(7);
+        let scene_id = Uuid::from_u128(10);
+        let g = grid_shape::HexGrid {
+            size: HEX_FIXTURE_SIZE,
+        };
+        let room = grid_shape::GridShape::world_extent(&g, HEX_LIGHT_BLOCK);
+        let mut tok = entity_doc_eng(
+            11,
+            10,
+            "token",
+            json!({ "x": 0.0, "y": 0.0, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+        );
+        tok.owner = Some(user);
+        let light = entity_doc_eng(
+            20,
+            10,
+            "light",
+            json!({
+                "x": 0.0, "y": 0.0, "color": "#ffffff", "intensity": 1.0,
+                "brightRadius": HEX_LIGHT_BRIGHT_CELLS, "dimRadius": HEX_LIGHT_DIM_CELLS,
+                "enabled": true
+            }),
+        );
+        let scene = entity_doc_top_eng(
+            10,
+            "scene",
+            json!({ "grid": { "kind": "hex", "size": HEX_FIXTURE_SIZE }, "background": null,
+                    "bounds": { "width": HEX_LIGHT_BLOCK.0, "height": HEX_LIGHT_BLOCK.1 } }),
+        );
+        let mut docs = vec![scene, tok, light];
+        let corners = [
+            (room.min.0, room.min.1),
+            (room.max.0, room.min.1),
+            (room.max.0, room.max.1),
+            (room.min.0, room.max.1),
+        ];
+        for (k, a) in corners.iter().enumerate() {
+            let b = corners[(k + 1) % corners.len()];
+            docs.push(entity_doc_eng(
+                31 + k as u128,
+                10,
+                "wall",
+                json!({ "seg": {"x1": a.0, "y1": a.1, "x2": b.0, "y2": b.1},
+                        "blocksSight": false, "blocksMove": false, "blocksLight": true }),
+            ));
+        }
+        let mut ecs = SceneEcs::from_documents(docs, 0);
+        ecs.set_world_settings_for_test(json!({
+            "scene": {
+                "losRestriction": false, "fog": true,
+                "lightingEnabled": true, "lightMode": "environmentLight",
+                "environment": { "color": "#ffffff", "intensity": 0.0 },
+                "observerVision": false,
+                "movementRestriction": "visible",
+                "movementModel": "grid-stepped",
+                "partialCellLeniency": false
+            },
+            "pathfinding": { "diagonalRule": "chebyshev" },
+            "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
+        }));
+        (ecs, user, scene_id)
+    }
+
+    #[test]
+    fn a_hex_light_radius_is_measured_in_grid_steps() {
+        // A lamp's radii are authored in cells, so a 2.5-cell bright radius must light the hex two
+        // grid steps away and a 3.5-cell dim radius must leave the hex four steps away dark. Those
+        // distances are the same 2.0 and 4.0 grid steps as the range fixture's; the divisor is the
+        // only thing under test.
+        //
+        // Discrimination: fails whenever `cell_illumination` receives the indexing scale, because
+        // 2 grid steps then read as 3.46 cells, which is inside neither radius by enough to clear
+        // a normal token's floor, and the cell reports dark. Both masks are asserted because
+        // `cell_illumination` has two production callers — `player_lit_mask`'s per-cell closure
+        // and `point_qualifies` — and converting one without the other forks the gate from the
+        // egress.
+        let (ecs, user, scene) = hex_lit_scene();
+        assert_hex_row_zero_is_scanned(&ecs, scene, 4);
+        let cells = mask_cells(&ecs, user, scene);
+        assert!(
+            cells.contains(&(2, 0)),
+            "two grid steps is inside a {HEX_LIGHT_BRIGHT_CELLS}-cell bright radius, got {cells:?}"
+        );
+        assert!(
+            !cells.contains(&(4, 0)),
+            "four grid steps is beyond the {HEX_LIGHT_DIM_CELLS}-cell dim radius"
+        );
+        let mask = ecs.visible_cells(user, scene, false);
+        assert!(
+            mask.contains(&(2, 0)),
+            "the gate mask agrees with the egress mask, got {mask:?}"
+        );
+        assert!(
+            !mask.contains(&(4, 0)),
+            "the gate mask agrees with the egress mask"
         );
     }
 

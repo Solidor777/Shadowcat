@@ -155,7 +155,11 @@ pub struct TokenOverrides {
     /// Visual override; replaces the actor's visual for this token.
     #[serde(default)]
     pub visual: Option<TokenVisual>,
-    /// Size override, scene units.
+    /// Size override in GRID UNITS (cells), replacing the actor's own `size`: a medium creature
+    /// is `1`. `resolve_token_footprint` derives the footprint radius from the resolved value and
+    /// bounds it by `MAX_FOOTPRINT_CELLS`, and the client multiplies it by the scene's cell size
+    /// to reach scene units. Not to be confused with `TokenEngine.w`/`h`, which are the token's
+    /// rendered box in scene units.
     #[serde(default)]
     pub size: Option<Size>,
     /// "square" | "circle" — kept a `String` in v1 (the literal set is
@@ -168,14 +172,20 @@ pub struct TokenOverrides {
     pub vision: Option<Vec<VisionAssignment>>,
 }
 
-/// A width/height pair, scene units.
+/// A width/height pair in GRID UNITS (cells) — an actor's occupied block, not a pixel box.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
 pub struct Size {
-    /// Width, scene units.
+    /// Width in GRID UNITS (cells): a medium creature is `1`. `resolve_token_footprint` derives
+    /// the footprint radius from this directly and bounds it by `MAX_FOOTPRINT_CELLS`, and the
+    /// client multiplies it by the scene's cell size to reach scene units. Not to be confused
+    /// with `TokenEngine.w`, which is the token's rendered box in scene units.
     pub w: f64,
-    /// Height, scene units.
+    /// Height in GRID UNITS (cells): a medium creature is `1`. `resolve_token_footprint` derives
+    /// the footprint radius from this directly and bounds it by `MAX_FOOTPRINT_CELLS`, and the
+    /// client multiplies it by the scene's cell size to reach scene units. Not to be confused
+    /// with `TokenEngine.h`, which is the token's rendered box in scene units.
     pub h: f64,
 }
 
@@ -290,7 +300,11 @@ pub struct ActorEngine {
     /// The actor's visual, inherited by linked tokens (raw-token/override
     /// visuals take precedence per `resolveTokenVisual`'s resolution order).
     pub visual: TokenVisual,
-    /// Default token size for this actor, scene units.
+    /// Default token size for this actor in GRID UNITS (cells): a medium creature is `1`.
+    /// `resolve_token_footprint` derives the footprint radius from this directly and bounds it by
+    /// `MAX_FOOTPRINT_CELLS`, and the client multiplies it by the scene's cell size to reach scene
+    /// units. Not to be confused with `TokenEngine.w`/`h`, which are the token's rendered box in
+    /// scene units.
     pub size: Size,
     /// "square" | "circle" — kept a `String` in v1 (asserted by the battery).
     pub shape: String,

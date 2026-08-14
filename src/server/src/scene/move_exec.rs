@@ -381,8 +381,12 @@ pub(crate) fn execute_move(
     // requester's route springs here, exactly as a secret region does.
     let gate_walls = ecs.move_walls(scene, None);
 
-    // Constant for the whole walk: the footprint disc radius in scene units, mirroring
-    // `cell_enterable`'s `r_scene`.
+    // Constant for the whole walk: the footprint disc radius in world units, mirroring
+    // `cell_enterable`'s `r_scene`. The radius is a square block's half-diagonal in cells and the
+    // model behind it is a square block, so it converts through the INDEXING scale, not
+    // `GridShape::world_units_per_cell` — scaling it would give a 1×1 token a disc past the hex
+    // inradius and make a medium creature occupy seven hexes, which is a rules change rather than
+    // a unit fix.
     let r_scene = footprint_radius_cells.max(0.0) * cell;
 
     // Region-cell lookup goes through the SAME resolved grid shape as rasterization
