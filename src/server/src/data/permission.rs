@@ -1060,7 +1060,21 @@ fn redact_change(ch: &FieldChange, gm_only: &[String]) -> Option<FieldChange> {
     }
 }
 
-/// Remove the value at a JSON pointer, if present.
+/// Remove the value a `RedactionTarget::Within` pointer names, if present.
+///
+/// Both the descent and the terminal step handle an ARRAY container by index, because a
+/// pointer segment carries no evidence of which it names: `/system/inventory/0` is an
+/// object key `"0"` for one document and an array index for the next, so refusing index
+/// segments at ingress is not decidable and skipping them at egress ships the hidden value.
+/// A no-op here is a silent fail-open — this is a secrecy gate, so every classified pointer
+/// must actually be acted on.
+///
+/// The terminal step differs by container, deliberately:
+/// - an object key is REMOVED (true absence, which is what `Within`'s callers rely on);
+/// - an array element is set to `Null` in place, never removed. Removal renumbers every
+///   later element, so a recipient's copy would disagree with the authoritative array on
+///   what index a value lives at; `remove_pointer` refuses leaf index removal for that same
+///   reason, leaving whole-array replacement as the only way an array changes length.
 fn strip_pointer(root: &mut serde_json::Value, pointer: &str) {
     let tokens: Vec<String> = pointer
         .split('/')
@@ -1072,13 +1086,32 @@ fn strip_pointer(root: &mut serde_json::Value, pointer: &str) {
     }
     let mut cur = root;
     for tok in &tokens[..tokens.len() - 1] {
-        match cur.get_mut(tok) {
-            Some(next) => cur = next,
+        let next = match cur {
+            serde_json::Value::Object(m) => m.get_mut(tok),
+            serde_json::Value::Array(a) => match tok.parse::<usize>() {
+                Ok(idx) => a.get_mut(idx),
+                Err(_) => return,
+            },
+            _ => return,
+        };
+        match next {
+            Some(v) => cur = v,
             None => return,
         }
     }
-    if let serde_json::Value::Object(m) = cur {
-        m.remove(&tokens[tokens.len() - 1]);
+    let last = &tokens[tokens.len() - 1];
+    match cur {
+        serde_json::Value::Object(m) => {
+            m.remove(last);
+        }
+        serde_json::Value::Array(a) => {
+            if let Ok(idx) = last.parse::<usize>() {
+                if let Some(slot) = a.get_mut(idx) {
+                    *slot = serde_json::Value::Null;
+                }
+            }
+        }
+        _ => {}
     }
 }
 
@@ -1517,6 +1550,109 @@ mod tests {
             filter_properties(&d, &gm).unwrap().engine.unwrap()["vision"],
             30
         );
+    }
+
+    #[test]
+    fn gm_only_array_element_is_nulled_in_place_for_non_gm() {
+        // An override may name an ARRAY element inside a band (`/system/inventory/0`);
+        // the classifier accepts it, so egress must actually redact it. The element is
+        // nulled, never removed: removal shifts every later index, and an array shrinks
+        // only by whole-array replacement (`remove_pointer` refuses index removal for the
+        // same reason). Length and sibling positions are therefore part of the contract.
+        let mut perms = PermissionSet {
+            default: DocRole::Observer,
+            ..Default::default()
+        };
+        perms
+            .property_overrides
+            .insert("/system/inventory/0".into(), Visibility::GmOnly);
+        let d = doc(
+            perms,
+            serde_json::json!({ "inventory": ["MOCK_SECRET_A", "visible"] }),
+        );
+
+        let player = resolve_access(Uuid::from_u128(7), WorldRole::Player, &d, d.owner);
+        let view = filter_properties(&d, &player).unwrap();
+        assert_eq!(
+            view.system["inventory"],
+            serde_json::json!([null, "visible"]),
+            "the hidden element must be nulled without shifting its siblings"
+        );
+
+        let gm = resolve_access(Uuid::from_u128(7), WorldRole::Gm, &d, d.owner);
+        assert_eq!(
+            filter_properties(&d, &gm).unwrap().system["inventory"],
+            serde_json::json!(["MOCK_SECRET_A", "visible"])
+        );
+    }
+
+    #[test]
+    fn gm_only_key_beneath_an_array_element_is_stripped_for_non_gm() {
+        // The same fail-open reaches the DESCENT step: an override may traverse an array
+        // index on its way to an object key (`/system/inventory/0/secret`). The terminal
+        // container is an object, so the key is genuinely removed; the sibling key and the
+        // sibling element stay intact.
+        let mut perms = PermissionSet {
+            default: DocRole::Observer,
+            ..Default::default()
+        };
+        perms
+            .property_overrides
+            .insert("/system/inventory/0/secret".into(), Visibility::GmOnly);
+        let d = doc(
+            perms,
+            serde_json::json!({
+                "inventory": [
+                    { "secret": "MOCK_SECRET_A", "public": 1 },
+                    { "secret": "MOCK_SECRET_B" }
+                ]
+            }),
+        );
+
+        let player = resolve_access(Uuid::from_u128(7), WorldRole::Player, &d, d.owner);
+        let view = filter_properties(&d, &player).unwrap();
+        assert_eq!(
+            view.system["inventory"],
+            serde_json::json!([{ "public": 1 }, { "secret": "MOCK_SECRET_B" }]),
+            "only the pointed-at key is removed; the sibling element is untouched"
+        );
+
+        let gm = resolve_access(Uuid::from_u128(7), WorldRole::Gm, &d, d.owner);
+        assert_eq!(
+            filter_properties(&d, &gm).unwrap().system["inventory"][0]["secret"],
+            serde_json::json!("MOCK_SECRET_A")
+        );
+    }
+
+    #[test]
+    fn a_gm_receives_every_band_unredacted_whatever_the_overrides_name() {
+        // Whole-document equality, not per-pointer assertions: every band, including the
+        // unconditional `/base` policy and an array-index override, must survive intact.
+        //
+        // This pins the OUTPUT rule, which is the part a change can break. It cannot pin
+        // `filter_properties`' `see_gm_only` early return, because that return is not
+        // observable: `can_see` yields `true` for a GM at every tier, so the hidden-pointer
+        // set is empty and the loop is a no-op regardless. The early return is a hot-path
+        // guard against the serialize/deserialize round-trip, not a visibility decision.
+        let mut perms = PermissionSet {
+            default: DocRole::Observer,
+            ..Default::default()
+        };
+        for ptr in ["/system/inventory/0", "/system", "/engine/vision", "/name"] {
+            perms
+                .property_overrides
+                .insert(ptr.into(), Visibility::GmOnly);
+        }
+        let mut d = doc(
+            perms,
+            serde_json::json!({ "inventory": ["MOCK_SECRET_A", "visible"] }),
+        );
+        d.name = Some("MOCK_NAME_A".into());
+        d.engine = Some(serde_json::json!({ "vision": 30 }));
+        d.base = Some(serde_json::json!({ "system": { "hp": 1 } }));
+
+        let gm = resolve_access(Uuid::from_u128(7), WorldRole::Gm, &d, d.owner);
+        assert_eq!(filter_properties(&d, &gm).unwrap(), d);
     }
 
     #[test]
@@ -2512,6 +2648,101 @@ mod tests {
         assert_eq!(changes.len(), 3);
     }
 
+    #[tokio::test]
+    async fn filter_command_nulls_a_gm_only_array_element_inside_an_ancestor_change() {
+        // The delta path and whole-document egress must reach the same verdict on an
+        // array-index override: a change writing the whole array carries the hidden element
+        // in both `old` and `new`, so `redact_change` must null it in place there exactly as
+        // `filter_properties` does on the whole document. Length and sibling positions are
+        // preserved, so the recipient's indices still agree with the authoritative array.
+        use crate::auth::role::ServerRole;
+        use crate::data::command::{Command, FieldChange, Operation, WriteOrigin};
+        use crate::data::membership::PermissionContext;
+        use crate::data::sqlite::SqliteRepository;
+
+        let r = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let gm_ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+
+        let mut d = doc(
+            PermissionSet {
+                default: DocRole::Observer,
+                ..Default::default()
+            },
+            serde_json::json!({ "inventory": ["MOCK_SECRET_A", "visible"] }),
+        );
+        d.scope = Scope::World { world_id: w.id };
+        d.permissions
+            .property_overrides
+            .insert("/system/inventory/0".into(), Visibility::GmOnly);
+        // Ingress accepts the override, which is what obliges egress to act on it.
+        r.apply_intent(
+            &gm_ctx,
+            w.id,
+            vec![Operation::Create { doc: d.clone() }],
+            1,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+        let cmd = Command {
+            seq: 2,
+            world_id: w.id,
+            author: gm,
+            ts: 0,
+            ops: vec![Operation::Update {
+                doc_id: d.id,
+                changes: vec![FieldChange {
+                    remove: false,
+                    path: "/system/inventory".into(),
+                    old: serde_json::json!(["MOCK_SECRET_A", "visible"]),
+                    new: serde_json::json!(["MOCK_SECRET_B", "also visible"]),
+                }],
+            }],
+        };
+
+        let current = load_update_docs(&r, &cmd).await;
+        let player = PermissionContext {
+            user_id: Uuid::from_u128(77),
+            world_role: WorldRole::Player,
+        };
+        let filtered = filter_command(
+            &cmd,
+            &player,
+            &WorldCapDefaults::default(),
+            &current,
+            |_| None,
+        );
+        let Operation::Update { changes, .. } = &filtered.ops[0] else {
+            panic!("expected Update");
+        };
+        assert_eq!(changes[0].new, serde_json::json!([null, "also visible"]));
+        assert_eq!(changes[0].old, serde_json::json!([null, "visible"]));
+
+        let gm_view = filter_command(
+            &cmd,
+            &gm_ctx,
+            &WorldCapDefaults::default(),
+            &current,
+            |_| None,
+        );
+        let Operation::Update { changes, .. } = &gm_view.ops[0] else {
+            panic!("expected Update");
+        };
+        assert_eq!(
+            changes[0].new,
+            serde_json::json!(["MOCK_SECRET_B", "also visible"])
+        );
+    }
+
     #[test]
     fn gm_role_denies_gm_unless_individually_granted() {
         let owner = Uuid::from_u128(1);
@@ -3490,6 +3721,12 @@ mod tests {
             "/base/system/hp",
             // An empty middle segment still lands inside the untyped body.
             "/system//hp",
+            // An index segment is indistinguishable from an object key named "0" from the
+            // pointer alone, so it classifies as `Within` and egress must be able to act on
+            // it — narrowing the classifier to refuse index-shaped segments would hide an
+            // array element from redaction instead of redacting it.
+            "/system/inventory/0",
+            "/system/inventory/0/secret",
         ] {
             assert_eq!(
                 redaction_target(pointer),
