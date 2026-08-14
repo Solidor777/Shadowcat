@@ -3115,6 +3115,107 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>" -- src/server/src/scene s
 
 ---
 
+### Task 5d: close the unnamed-pointer class repo-wide and make its detector fatal
+
+**Numbered `5d` for the same reason as `5b`/`5c`.** Split out of Task 5c's Step 5, which was correctly
+held rather than decided by its implementer.
+
+---
+
+#### The ruling this task rests on, and the half it deliberately excludes
+
+Task 5c wrote two new detector rules, verified both real, and found they fire on **505 sites
+repo-wide, none in the files it enumerated**. It reverted the detector byte-identically and held.
+That was right, and the reason is sharper than the site count:
+
+- **481 of those are POSITIONAL references** (`the loop below`, `the guard above`). `RULE 15` as
+  written bans *file names, paths, and line numbers*. It does not mention positional words inside a
+  file. Extending it to cover them is defensible — "below" rots on any reordering exactly as a line
+  number rots on any insertion, and no gate catches either — **but it is a rule EXTENSION, and
+  widening a rule into a fatal repo-wide gate is the owner's call in the same way narrowing one is.**
+  That question is raised, not answered here.
+- **24 of those are unnamed-document pointers** (a bare `§N`, `per brief`, `per spec §3.2`). These are
+  **already banned** — `RULE 16` names "unnamed spec references" explicitly, and the campaign's
+  standing directive is that its gate is *a gate, never a ratchet*, applying retroactively with
+  nothing grandfathered.
+
+So this task closes the second class only. The positional class stays enumerated, unswept, and
+explicitly **not** thereby ruled acceptable.
+
+---
+
+**Files:** wherever the enumeration lands — known to include `src/server/src/ws/`, `chat/`, `dice/`,
+the client packages, `scripts/`, and the eslint configs — plus `scripts/check-comment-refs.mjs`.
+
+---
+
+- [ ] **Step 1: Enumerate the class, do not trust the count**
+
+24 is a detector's output, not an enumeration. Four successive counts of the sibling class each
+undercounted (4 → 30 → 71 → 79), every time because the subject set came from a filter rather than
+from the domain.
+
+Enumerate every comment in every file the detector flags **and in every sibling file in those
+directories**, one row each, and adjudicate against `RULE 16`'s wording — not against the three forms
+the detector happens to match. Report per-file row counts.
+
+**Expect non-members and record them.** A `§` inside a string literal, a URL fragment, or a config
+file with no symbols to cite is not a member. Adjudicate; do not carve the pattern around them.
+
+- [ ] **Step 2: Convert each member**
+
+State the constraint the sentence is about and drop the pointer. **Where the pointer carried nothing,
+delete the token and change nothing else** — inventing a plausible replacement constraint is the
+worst outcome available, worse than leaving the pointer.
+
+Some of these sit in `scripts/` and eslint configs, which `RULE 16`'s carve-out exempts as
+config/build files with no symbols to cite. Adjudicate each rather than assuming the carve-out covers
+a whole directory.
+
+- [ ] **Step 3: Fix the two items Task 5c reported and left**
+
+Both are in the scene subsystem and squarely in scope; they were reported rather than swept because
+they belong to different classes than the three that task enumerated.
+
+- `SceneEcs`'s module-header comment carries a stale plan reference **and** a now-false claim — it says
+  the pathfinding and animation fields are resolved in later checkpoints, and both resolvers exist.
+  The pointer is a `RULE 16` violation; the false claim is worse and is the reason this is not
+  cosmetic. State what the fields are and what resolves them.
+- `FIXTURE_GRID_SIZE`'s doc argued in-code that the sites it named had "nothing to drift against" —
+  they *were* the drift population. Task 5c rewrote it; verify the rewrite is true of the set as it
+  now stands.
+
+- [ ] **Step 4: Make the unnamed-pointer rule fatal, with its population at zero**
+
+Add the rule to `scripts/check-comment-refs.mjs` in the same commit that empties it. **No baseline, no
+allowlist, no warn tier** — a warn tier is an exemption spread across the codebase, and a
+reported-but-passing violation is indistinguishable to a later reader from code that was checked.
+
+If the rule needs an exemption at all, **it must print its active count** — an uncounted exemption is
+a backdoor and a silent one is indistinguishable from a rule that does not apply.
+
+**Verify the gate is real**: introduce one violation, observe the gate FAIL and name it, revert
+byte-identically by `diff`, and re-run clean. A gate that does not gate and a clean tree produce
+identical output.
+
+**Do not add the positional rule.** Task 5c's verified rule source is preserved in its report for
+whenever that question is answered.
+
+- [ ] **Step 5: Full gate**
+
+`cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` from `src/server/`;
+`pnpm -r test` if any client package was touched; `node scripts/check-comment-refs.mjs` from the root.
+
+**A test that changes outcome under a comment-only task is a finding** — it means a pointer you
+removed was load-bearing in a way nobody recorded. Report it; do not adjust the test to restore green.
+
+- [ ] **Step 6: Commit**
+
+Conventional-commits, imperative, stating the constraint and the consequence. No task ids, round
+numbers, dates, or process references.
+
+---
+
 ### Task 6: Every remaining authored-in-cells quantity reads the shared symbol; the rest are documented non-conversions
 
 **Ledger ids:** PW1, PW2 (same root cause; these are the sites the two named symptoms did not
