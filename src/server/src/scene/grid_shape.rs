@@ -478,10 +478,10 @@ impl GridShape for HexGrid {
                 let dx = center.0 - ctr.0;
                 let dy = center.1 - ctr.1;
                 let d_center = (dx * dx + dy * dy).sqrt();
-                let inscribed_disc_hit = d_center <= r + inradius;
-                let polygon_hit =
-                    d_center <= r + self.size && self.distance_to_cell_polygon(c, ctr, cell) <= r;
-                if inscribed_disc_hit || polygon_hit {
+                if d_center <= r + inradius
+                    || (d_center <= r + self.size
+                        && self.distance_to_cell_polygon(c, ctr, cell) <= r)
+                {
                     out.push(c);
                 }
             }
