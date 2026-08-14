@@ -7,6 +7,23 @@ unblocking condition, not a "someday maybe." A few headings are explicitly
 labeled "Actionable now": these are NOT blocked on anything — the underlying
 capability already exists — but are deferred as out-of-scope-for-now work.
 
+## Scheduled after the debt-burndown phases — re-brainstorm point-in-time replay redaction
+- TODO: Re-run the design pass for the commit-time redaction context that closes the two
+  replay-redaction defects in `OPEN_BUGS.md`. The first proposal was reviewed by two blind reviewers
+  and returned needs-rework; **do not restart from scratch and do not patch that proposal** — its
+  reviewed findings are the input, captured under `docs/superpowers/specs/` as the Phase-1b design
+  findings.
+  The corrected framing established by that review: redaction must be the CONJUNCTION of what was
+  permitted at commit and what is permitted now, where the commit-time view is carried by the
+  operation and the current view may only WITHHOLD visibility, never grant it. A pure snapshot
+  closes the loosening leak and opens a tightening one, because reading current state is exactly
+  what makes retroactive hiding work — both reviewers found that independently.
+  Owner rulings already taken: build the resync lower bound as well as the snapshot (the bound is
+  fail-closed, immediate, and independently valuable, since any member can currently request the
+  entire world history unvalidated); carry the context on the operation rather than a sibling map or
+  a log column; capture per COMMAND, not per op; cover all three operation arms, since create and
+  delete are not point-in-time correct despite carrying their document.
+
 ## Actionable now: suppression allowlist gate (user-specced)
 
 - TODO: Build the allowlist and its checker, then AUDIT the existing sites into it. Applies to

@@ -128,15 +128,22 @@ phases read; the client phases consume Phase 1's wire changes; Phase 7's suppres
 late because grouping arguments into the structs they already form rewrites server signatures that
 earlier phases edit.
 
-**Phase 1b** is its own branch and its own brainstorm → spec → plan cycle, scheduled immediately
-after Phase 1 merges and before Phase 2 begins. Phase 2 does not depend on it, but it changes the
-command representation, the event log, and resync — an event-schema change foundational enough
-that no later phase should be built on the current shape.
+**Phase 1b** is its own branch and its own brainstorm → spec → plan cycle. **Owner ruling: it runs
+AFTER the remaining phases, not between Phase 1 and Phase 2.** Its first design pass was reviewed by
+two blind reviewers and returned needs-rework on findings that invalidate its core, so it re-enters
+at the design stage rather than the plan stage; the reviewed findings are the input to that pass.
+
+The original ordering put it first because it changes the command representation, the event log, and
+resync — an event-schema change no later phase should be built on. **That cost is now accepted
+rather than avoided:** phases 2 through 8 will be built on the current command shape, so Phase 1b
+will have to reach into whatever they leave behind. The known contact point today is the scene
+module, which consumes `Operation` directly and which Phase 2 edits. No phase is BLOCKED by this —
+none of them changes the command representation — so the cost is rework inside Phase 1b, not
+incorrectness in the phases that precede it.
 
 | Phase | Branch scope | Ledger ids |
 |---|---|---|
 | 1 | Server — data, permissions, wire boundary | OB2, TD26, TD27, TD31, PW19 |
-| 1b | Server — point-in-time replay redaction (event/command visibility snapshot) | PW19, NEW-2 |
 | 2 | Server — scene geometry, movement, vision | PW1, PW2, PW3, PW4, PW5, PW31, TD17, TD18, TD19, TD48 |
 | 3 | Server — ops, performance, asset staleness | OB4, TD4a, TD5, TD9, TD10, TD49 |
 | 4 | Client — shell, session, boot, ui-state | TD3, TD4b, TD6, TD7, TD8, TD12, TD13, TD14, TD15, TD16, TD20, TD29, PW16, PW17 |
@@ -144,6 +151,7 @@ that no later phase should be built on the current shape.
 | 6 | Module toolchain — i18n seam, live module management | TD39, TD40, TD50, PW8, PW10, PW11 |
 | 7 | Tooling, gates, test infrastructure | TD1, TD2, TD28, TD30, TD44, PW9, PW12, PW18, PW20 |
 | 8 | Closeout — doc sync, skill gate, plugin, merge, CI | — |
+| 1b | Server — point-in-time replay redaction. **Runs LAST, after phase 8.** Re-enters at the design stage: its first proposal failed a two-reviewer design review, and the reviewed findings are the input to the re-brainstorm. | PW19, NEW-2 |
 
 ---
 
