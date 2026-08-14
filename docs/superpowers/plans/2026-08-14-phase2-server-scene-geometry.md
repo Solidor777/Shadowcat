@@ -3634,6 +3634,111 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>" -- src/server/src/scene/l
 
 ---
 
+### Task 6b: a placed light reaches what it was authored to reach
+
+**Numbered `6b` for the same reason as `5b`.** Found during Task 6, pre-existing, live on both grid
+shapes, and correctly not fixed inline — the fix widens a secrecy surface and moves every lit-mask
+fixture, which earns its own review cycle rather than a fold-in.
+
+---
+
+#### The defect
+
+`SceneEcs::lighting_inputs_from` builds each placed light's occlusion polygon by raycasting against
+`vision::bound_for(light.pos, light_walls, VISION_BOUND_MARGIN)`. That bound grows around the lamp
+and around nearby `blocksLight` wall ENDPOINTS — and around nothing else. With no such wall near the
+lamp, the polygon is a box of roughly `VISION_BOUND_MARGIN` on a side. `cell_illumination` then
+requires a cell's centre to lie inside that polygon, so **the occlusion polygon silently becomes a
+hard range cap**, independent of the light's authored radii.
+
+Demonstrated by a fixture already in the tree: `scene_with_lit_player_token` authors a dim radius of
+6 cells at cell size 100 — 600 world units of intended reach — and cannot light past roughly 100.
+
+**This is the same defect shape the `ceil` proposal was rejected for in the extent work: a setting
+whose stored value no longer determines its effect.** That argument was decisive there and is
+decisive here, which is why this is a bug rather than a tuning question.
+
+**Why nothing caught it.** The direction is under-reveal, and no test asserts a light reaching as far
+as it was told to. Every lit-mask fixture either sits inside the cap or has walls near enough to grow
+the bound past it. A test suite can only catch a cap it tries to exceed.
+
+#### Direction and blast radius, stated before the work rather than discovered during it
+
+The fix makes lights reach further, which grows `SceneEcs::player_lit_mask` and therefore the movement
+gate's `visible_cells`. That is the over-reveal direction on two secrecy-bearing consumers — but it is
+**correct** reveal: the cells becoming lit are the ones a GM authored the radius to light. The bug was
+that the authored value was being silently ignored, not that the correct value is too generous.
+
+Expect existing lit-mask fixtures to move. **A fixture whose expected set changes is evidence the fix
+works, not a regression** — but each one must be re-derived and stated, never adjusted until green.
+
+---
+
+**Files:**
+- Modify: `src/server/src/scene/vision.rs` (`bound_for`, or a light-specific sibling)
+- Modify: `src/server/src/scene/mod.rs` (`SceneEcs::lighting_inputs_from`, its tests)
+- Modify: `src/server/src/scene/lighting.rs` if the reach belongs there
+
+**Interfaces:**
+- Consumes: `GridShape::world_units_per_cell` — the authored radii are in cells, so the reach disc is
+  a second per-cell-distance conversion and must use that symbol, not the indexing scale.
+- Produces: no new public surface expected. If the fix needs one, say so before building it.
+
+---
+
+- [ ] **Step 1: Reproduce the cap before changing anything, and record it verbatim**
+
+Write a test that authors a light with a radius reaching well past `VISION_BOUND_MARGIN` on an
+otherwise wall-less scene, and asserts a cell inside the authored radius is lit. Run it. **Record the
+observed failure verbatim.** Do not predict it.
+
+Do this on **both** shapes. The implementer that found this reports it live on square; verify that
+independently rather than inheriting the claim, because a square-only or hex-only cap would mean a
+different mechanism than the one described above.
+
+- [ ] **Step 2: Union the reach into the bound, never replace it**
+
+The recommended shape, which mirrors the union-never-replace discipline already established for the
+scene extent: grow the bound to contain the lamp's reach disc as well as the wall endpoints, so the
+polygon can only get larger and occlusion still decides what inside it is actually lit.
+
+**Do not clamp, substitute, or special-case.** A bound that replaces rather than unions can shrink,
+and a shrinking bound on this path is an under-reveal defect of exactly the kind being fixed.
+
+The reach is `max(bright_radius, dim_radius) × world_units_per_cell`, since both are authored in
+cells. Handle a non-finite or negative authored radius the way the extent guards do — refuse to a
+value the consumer already rejects, rather than inventing a fallback.
+
+- [ ] **Step 3: Verify occlusion still occludes**
+
+The whole risk of growing this bound is that it stops being an occlusion polygon and becomes a disc.
+Pin that it does not: a `blocksLight` wall between the lamp and a cell inside the authored radius must
+still leave that cell unlit. Witness required — a mutation that drops the occlusion must fail this
+test and no other.
+
+- [ ] **Step 4: Re-derive every moved fixture**
+
+Enumerate every test whose expected lit set or visible-cell set changes, one row each, with the old
+set, the new set, and **why the new one is right** — derived from the authored radius and the cell
+size, not read back from the run. A fixture adjusted until it passed is the failure mode here.
+
+State the movement-gate consequence separately from the fog consequence. They are different things,
+they ride on the same mask, and reporting only the fog half is how a gate change gets ratified as a
+fog change.
+
+- [ ] **Step 5: Full gate**
+
+`cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` from `src/server/`;
+`node scripts/check-comment-refs.mjs` from the root; `pnpm -r test` if anything crosses the
+generated-type boundary.
+
+- [ ] **Step 6: Commit**
+
+Conventional-commits, imperative, stating the constraint and the consequence. No task ids, round
+numbers, dates, or process references.
+
+---
+
 ### Task 7: PW3 — exercise the hex + continuous fog clip through the real dispatch, as a non-GM
 
 **Ledger id:** PW3.
