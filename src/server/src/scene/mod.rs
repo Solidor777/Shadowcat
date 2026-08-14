@@ -941,22 +941,34 @@ impl SceneEcs {
     }
 
     /// The scene's authored bounds converted to a world-unit rectangle through its own
-    /// `GridShape` — the conversion every vision-bound consumer that does not already hold a
-    /// resolved shape and settings reads, so the raw grid-unit value never reaches a comparison
-    /// against world coordinates. Equal by construction to
-    /// `resolve_grid_shape(scene, cell).world_extent(resolve_scene(scene).bounds)`, which is what
-    /// the sites already holding both compute inline.
-    ///
-    /// `(0.0, 0.0)` when the scene has no live document: `scene_grid_sizes` carries an entry for
-    /// every live scene, so an absent entry means the scene is gone and no extent may be
-    /// synthesised. A zero extent contributes nothing to `vision::bound_for_scene`'s union,
-    /// leaving the wall-derived bound — the under-reveal direction.
+    /// `GridShape`, for a caller holding only a scene id — so the raw grid-unit value never
+    /// reaches a comparison against world coordinates. Reads the grid-size map itself and defers
+    /// to `world_extent_from`, which is the single expression of the conversion; a caller that
+    /// already holds that map (`player_vision_polygons`, whose loop spans several scenes) calls
+    /// `world_extent_from` directly rather than paying for the scan per scene.
     pub(crate) fn scene_world_extent(&self, scene: Uuid) -> (f64, f64) {
-        let Some(cell) = self.scene_grid_sizes().get(&scene).copied() else {
-            return (0.0, 0.0);
-        };
-        self.resolve_grid_shape(scene, cell)
-            .world_extent(self.resolve_scene(scene).bounds)
+        self.world_extent_from(&self.scene_grid_sizes(), scene)
+    }
+
+    /// The conversion itself: `scene`'s authored bounds through its own resolved `GridShape`,
+    /// against an ALREADY-READ `scene_grid_sizes` map. Every vision-bound consumer that does not
+    /// already hold a resolved shape and settings reaches the conversion through this, directly or
+    /// through `scene_world_extent`, so the two cannot drift into disagreeing about a scene's
+    /// vision bound.
+    ///
+    /// `(0.0, 0.0)` when `grid_sizes` has no entry for the scene: it carries one for every live
+    /// scene, so an absent entry means the scene is gone and no extent may be synthesised. A zero
+    /// extent contributes nothing to `vision::bound_for_scene`'s union, leaving the wall-derived
+    /// bound — the under-reveal direction.
+    fn world_extent_from(
+        &self,
+        grid_sizes: &std::collections::HashMap<Uuid, f64>,
+        scene: Uuid,
+    ) -> (f64, f64) {
+        grid_sizes.get(&scene).copied().map_or((0.0, 0.0), |cell| {
+            self.resolve_grid_shape(scene, cell)
+                .world_extent(self.resolve_scene(scene).bounds)
+        })
     }
 
     /// The scene's `GridKind`, for a caller that holds no decoded scene engine. Performs exactly
@@ -1176,21 +1188,18 @@ impl SceneEcs {
         // `scene_grid_sizes` is a full entity scan, so it is read ONCE here rather than per
         // viewpoint. The extent is then memoised PER SCENE ID, never hoisted to a single value:
         // this loop spans every scene the user owns a token in, so one extent applied across it
-        // would measure one scene's vision bound against another scene's rectangle.
+        // would measure one scene's vision bound against another scene's rectangle. The conversion
+        // itself stays `world_extent_from` — the body `scene_world_extent` calls — so this path and
+        // the streamed one in `player_vision_inputs` share it by construction, not by convention.
         let grid_sizes = self.scene_grid_sizes();
         let mut extents: std::collections::HashMap<Uuid, (f64, f64)> =
             std::collections::HashMap::new();
         let mut out = Vec::with_capacity(viewpoints.len());
         for (scene, vp) in viewpoints {
             let walls = self.sight_walls(scene);
-            let scene_extent = *extents.entry(scene).or_insert_with(|| {
-                // An absent entry means the scene has no live document — contribute nothing rather
-                // than synthesize a grid, matching `scene_world_extent`'s own refusal.
-                grid_sizes.get(&scene).copied().map_or((0.0, 0.0), |cell| {
-                    self.resolve_grid_shape(scene, cell)
-                        .world_extent(self.resolve_scene(scene).bounds)
-                })
-            });
+            let scene_extent = *extents
+                .entry(scene)
+                .or_insert_with(|| self.world_extent_from(&grid_sizes, scene));
             let bound = vision::bound_for_scene(vp, &walls, scene_extent, VISION_BOUND_MARGIN);
             out.push((scene, vision::visibility_polygon(vp, &walls, bound)));
         }
@@ -5307,13 +5316,13 @@ mod tests {
 
     /// The hex analogue of `env_lit_scene_with_room`: an `environmentLight` scene on a pointy-top
     /// hex grid, with a player-owned normal-vision token at hex `(0,0)` and the six edges of hex
-    /// `SEALED_HEX` walled off. The seal's segments are derived from `HexGrid::cell_vertices`
+    /// `HEX_SEALED_CELL` walled off. The seal's segments are derived from `HexGrid::cell_vertices`
     /// rather than restated, so the box is exactly that hex's own boundary on both toggles.
     ///
     /// This is the only fixture that reaches `lighting::env_light_polys` on a hex scene: the
     /// remaining hex fixtures either disable lighting or route as an unrestricted GM, so no mask
     /// is built and the environment-light path never runs on hex without it. The extent that path
-    /// walks the perimeter of is now grid-kind-dependent, and grid kind and movement model are
+    /// walks the perimeter of is grid-kind-dependent, and grid kind and movement model are
     /// independent axes that combine.
     fn hex_env_lit_scene_with_room(blocks_light: bool) -> (SceneEcs, Uuid, Uuid) {
         let user = Uuid::from_u128(7);

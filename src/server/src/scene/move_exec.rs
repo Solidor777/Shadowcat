@@ -2269,22 +2269,30 @@ cell: 100.0,
     // module's square-scene wall/mask tests above.
     // -----------------------------------------------------------------------
 
-    /// The grid size every fixture in this hex block authors, shared with `hex_cell_center` so a
-    /// scene's declared size and the endpoints computed against it cannot drift apart.
-    const HEX_SIZE: f64 = 100.0;
+    /// The grid size authored by every fixture whose coordinates are DERIVED from a `GridShape`
+    /// built at that size — `hex_clear_scene`, `hex_walled_scene`, and both grid-kind arms of
+    /// `scene_with_narrow_gap_and_wide_token` — shared with `hex_cell_center` so a scene's declared
+    /// size and the endpoints computed against it cannot drift apart. Not hex-only: the corridor
+    /// fixture's square arm authors it too, and reads it for its own cell centres.
+    ///
+    /// The other fixtures in this module author their own literal size. They place tokens at
+    /// coordinates that come from no shape, so they have nothing to drift against.
+    const FIXTURE_GRID_SIZE: f64 = 100.0;
 
     /// Pointy-top axial hex center, delegating to the shape rather than restating its formula:
-    /// these fixtures now derive a scene's authored bounds from this helper as well as its
-    /// endpoints, so a second expression of `HexGrid::axial_to_pixel` would mis-author the extent
-    /// and the token position together.
+    /// these fixtures derive a scene's authored bounds from this helper as well as its endpoints,
+    /// so a second expression of `HexGrid::axial_to_pixel` would mis-author the extent and the
+    /// token position together.
     fn hex_cell_center(q: i32, r: i32) -> (f64, f64) {
         crate::scene::grid_shape::GridShape::cell_center(
-            &crate::scene::grid_shape::HexGrid { size: HEX_SIZE },
+            &crate::scene::grid_shape::HexGrid {
+                size: FIXTURE_GRID_SIZE,
+            },
             (q, r),
         )
     }
 
-    /// Hex scene (`grid.kind: "hex"`, size=100) with a token at axial (0,0), no walls.
+    /// Hex scene on `FIXTURE_GRID_SIZE` with a token at axial (0,0), no walls.
     fn hex_clear_scene() -> (SceneEcs, Uuid, Uuid) {
         let scene_id = Uuid::from_u128(20);
         let token_id = Uuid::from_u128(21);
@@ -2294,7 +2302,8 @@ cell: 100.0,
                     20,
                     0,
                     "scene",
-                    json!({ "grid": { "kind": "hex", "size": 100 }, "background": null }),
+                    json!({ "grid": { "kind": "hex", "size": FIXTURE_GRID_SIZE },
+                            "background": null }),
                 ),
                 entity_doc(
                     21,
@@ -2308,7 +2317,7 @@ cell: 100.0,
         (ecs, scene_id, token_id)
     }
 
-    /// Hex scene with a vertical `blocksMove` wall at `wall_x`.
+    /// Hex scene on `FIXTURE_GRID_SIZE` with a vertical `blocksMove` wall at `wall_x`.
     fn hex_walled_scene(wall_x: f64) -> (SceneEcs, Uuid, Uuid) {
         let scene_id = Uuid::from_u128(20);
         let token_id = Uuid::from_u128(21);
@@ -2318,7 +2327,8 @@ cell: 100.0,
                     20,
                     0,
                     "scene",
-                    json!({ "grid": { "kind": "hex", "size": 100 }, "background": null }),
+                    json!({ "grid": { "kind": "hex", "size": FIXTURE_GRID_SIZE },
+                            "background": null }),
                 ),
                 entity_doc(
                     21,
@@ -2485,13 +2495,14 @@ cell: 100.0,
     /// token, user, start, goal)`. Vision is unlimited (no vision override) so the whole corridor
     /// is visible to `user`, isolating the wall/footprint interaction under test.
     ///
-    /// The authored bounds are a CELL COUNT, so the corridor's world span is divided by
-    /// `HEX_SIZE` — the same constant the scene's own grid declares and `hex_cell_center` builds
-    /// its shape from, read once rather than restated at any of the three. On
-    /// square that reproduces the corridor rectangle exactly; on hex the block's world rectangle
-    /// is a shear-dependent function that is strictly LARGER than the corridor span, which
-    /// preserves the fixture's intent — the play area covers the corridor and the gap with room to
-    /// spare — a fortiori.
+    /// The authored bounds are a continuous per-axis dimension in GRID units — not a cell count,
+    /// and not required to be integral (the hex arm's width is `12.660254`) — so the corridor's
+    /// world span is divided by `FIXTURE_GRID_SIZE`, the same constant the scene's own grid
+    /// declares and `hex_cell_center` builds its shape from, read once rather than restated at any
+    /// of the three. On square that reproduces the corridor rectangle exactly; on hex the block's
+    /// world rectangle is a shear-dependent function that is strictly LARGER than the corridor
+    /// span, which preserves the fixture's intent — the play area covers the corridor and the gap
+    /// with room to spare — a fortiori.
     fn scene_with_narrow_gap_and_wide_token(
         kind: &str,
         model: MovementModel,
@@ -2507,8 +2518,8 @@ cell: 100.0,
             (hex_cell_center(0, 2), hex_cell_center(4, 2))
         } else {
             (
-                (0.5 * HEX_SIZE, 2.5 * HEX_SIZE),
-                (4.5 * HEX_SIZE, 2.5 * HEX_SIZE),
+                (0.5 * FIXTURE_GRID_SIZE, 2.5 * FIXTURE_GRID_SIZE),
+                (4.5 * FIXTURE_GRID_SIZE, 2.5 * FIXTURE_GRID_SIZE),
             )
         };
         // Both grids place `start`/`goal` on the same row (`y` depends only on the row index, not
@@ -2535,9 +2546,9 @@ cell: 100.0,
             10,
             0,
             "scene",
-            json!({ "grid": { "kind": kind, "size": HEX_SIZE }, "background": null,
-                    "bounds": { "width": (goal.0 + 400.0) / HEX_SIZE,
-                                "height": (row_y + 400.0) / HEX_SIZE } }),
+            json!({ "grid": { "kind": kind, "size": FIXTURE_GRID_SIZE }, "background": null,
+                    "bounds": { "width": (goal.0 + 400.0) / FIXTURE_GRID_SIZE,
+                                "height": (row_y + 400.0) / FIXTURE_GRID_SIZE } }),
         );
         let mut ecs = SceneEcs::from_documents(
             vec![
