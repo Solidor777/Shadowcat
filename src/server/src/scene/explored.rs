@@ -88,7 +88,7 @@ pub(crate) fn pad_box(bbox: (vision::P, vision::P), pad: f64) -> (vision::P, vis
 /// regardless of `mode`: it is the largest box ANY mode would scan for this source, so every
 /// mode's own box, padded or not, is intersected against the SAME window. `Strict`'s unpadded box
 /// is a subset of `Lenient`'s padded one (`A ⊆ A'`), and intersecting both with one window `W`
-/// gives `A ∩ W ⊆ A' ∩ W` — GIVEN the precondition below, `strict ⊆ lenient` holds structurally,
+/// gives `A ∩ W ⊆ A' ∩ W` — GIVEN the PRECONDITION stated here, `strict ⊆ lenient` holds structurally,
 /// not by argument about which branch ran; `clamp_scan_window`'s inverted-window fallback is the
 /// one branch this does NOT hold across, since it returns `actual` unchanged rather than
 /// `actual ∩ W` and is reachable only when the precondition fails (see PRECONDITION). Deciding
@@ -119,7 +119,7 @@ pub(crate) fn pad_box(bbox: (vision::P, vision::P), pad: f64) -> (vision::P, vis
 /// `mark_polygons` uses that bbox's own centre. A focus far enough outside `bbox` that the window
 /// misses the box being scanned returns that box unchanged and lets the callee's own cap decide,
 /// rather than yielding an inverted, enumerates-nothing rectangle — this is the inverted-window
-/// fallback named above.
+/// fallback this doc names.
 ///
 /// Returns the mode's own box unchanged for a degenerate `cell`, `focus`, or `bbox` as well — the
 /// callee's fail-closed `None` on a degenerate input is the correct outcome there and must not be
@@ -563,7 +563,8 @@ mod tests {
         //
         // Discrimination: fails if the window is applied whenever the box is wider than it,
         // because the returned max would then be the window edge rather than the box edge. The
-        // guard below keeps the test honest if `SCAN_WINDOW_HALF_CELLS` ever changes.
+        // fixture guard on the box's reach past the window keeps the test honest if
+        // `SCAN_WINDOW_HALF_CELLS` ever changes.
         let cell = 100.0;
         let g = sq(cell);
         let focus = (50.0, 50.0);

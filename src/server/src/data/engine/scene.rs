@@ -5,7 +5,7 @@
 //! envelope instead).
 
 // Ratchet: every item in this module must carry a doc comment, enforced by
-// the two deny attributes below.
+// the two crate-level deny attributes this module declares.
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
@@ -273,7 +273,7 @@ pub struct WorldSettingsEngine {
     pub animation: AnimationSettings,
     /// The scene players render. `None`/absent/dangling ⇒ the first scene
     /// (legacy behavior). Deliberately NOT part of the structural-
-    /// completeness triple below, so a world-settings doc written before
+    /// completeness triple `resolve_scene` checks, so a world-settings doc written before
     /// this field existed is still "complete" and keeps its authored
     /// settings.
     #[serde(default)]

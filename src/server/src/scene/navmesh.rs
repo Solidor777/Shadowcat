@@ -125,7 +125,7 @@ pub(crate) fn build_navmesh(
     // `footprint_scene` is a single scene-wide value (not per-wall), so an oversized value here
     // fails the whole build rather than skipping one segment. Bounded before it reaches
     // `line.buffer(...)`: an out-of-range-but-finite value saturates to infinity in the `as f32`
-    // cast below and panics inside `spade`'s triangulation.
+    // cast that reaches `line.buffer(...)`, and panics inside `spade`'s triangulation.
     if !footprint_scene.is_finite() || footprint_scene < 0.0 {
         return None;
     }
@@ -165,8 +165,8 @@ pub(crate) fn build_navmesh(
         }
         // Same saturating-cast hazard as `extent`, checked BEFORE `.buffer()`/`as f32`:
         // an ordinarily-authored-looking but oversized coordinate (e.g. 1e70) is finite and would
-        // pass the check above, but saturates to `f32::INFINITY` on cast and panics inside
-        // polyanya/spade. Skip the single malformed segment, matching the non-finite branch above
+        // pass the `is_finite` check, but saturates to `f32::INFINITY` on cast and panics inside
+        // polyanya/spade. Skip the single malformed segment, matching the non-finite branch
         // — a whole-build failure is not warranted for one bad wall.
         if seg.a.0.abs() > MAX_NAVMESH_COORD
             || seg.a.1.abs() > MAX_NAVMESH_COORD
@@ -202,7 +202,7 @@ pub(crate) fn build_navmesh(
                 .points()
                 .map(|p| glam::Vec2::new(p.x() as f32, p.y() as f32))
                 .collect();
-            // Believed unreachable: the `inflated.0.is_empty()` check above already catches
+            // Believed unreachable: the `inflated.0.is_empty()` check already catches
             // `i_overlay`'s degenerate-collapse guard, which is all-or-nothing at the whole-buffer
             // level (either a normal `MultiPolygon` or an empty one) — not a case where the
             // `MultiPolygon` is non-empty but an individual ring within it has <3 points. Kept as
@@ -251,7 +251,7 @@ pub(crate) fn navmesh_find(
     }
     // Magnitude bound (not just finiteness) — defense-in-depth against an untrusted wire
     // magnitude reaching `Mesh::path`'s third-party point-in-polygon lookup, not a proven panic
-    // fix (see this function's doc comment above for the empirically-verified distinction from
+    // fix (see `navmesh_find`'s doc comment for the empirically-verified distinction from
     // `build_navmesh`'s construction-side guards). Reuses `MAX_NAVMESH_COORD` rather than
     // defining a second ceiling for the query side.
     let in_bounds = start.0.abs() <= MAX_NAVMESH_COORD
@@ -327,7 +327,8 @@ pub(crate) fn navmesh_find(
 /// single-point path at `outcome.path[0]` with `cost: 0.0` — the caller is responsible for
 /// treating a degenerate result as appropriate for its context. The SAME single-point-at-
 /// `path[0]`/`cost: 0.0` shape is also this function's fail-closed response to a degenerate
-/// `cell`/`footprint_radius_cells` input (see the guard below) — unlike `build_navmesh` (returns
+/// `cell`/`footprint_radius_cells` input (see this function's own range guard) — unlike
+/// `build_navmesh` (returns
 /// `Option<NavMesh>`, can simply return `None`), this function's return type has no "absent"
 /// state, so truncating to just the start point is the most restrictive output it can produce.
 pub(crate) fn clip_to_visible_mask(
@@ -351,7 +352,8 @@ pub(crate) fn clip_to_visible_mask(
     // cast (Rust's `f64 as i32` is a stable saturating cast: `Infinity -> i32::MAX`, `-Infinity ->
     // i32::MIN`, `NaN -> 0`), making the loop range `i32::MIN..=i32::MAX`. `build_navmesh` already
     // guards the identical value with the same `MAX_FOOTPRINT_CELLS` range check; reused here
-    // verbatim. Fail-closed truncates to the start point (see the doc comment above) rather than
+    // verbatim. Fail-closed truncates to the start point (see `clip_to_visible_mask`'s doc
+    // comment) rather than
     // panicking or returning the original unclipped outcome.
     if !cell.is_finite()
         || cell <= 0.0
@@ -1246,9 +1248,10 @@ mod tests {
         assert!((last_orig.0 - last_clipped.0).abs() < 1e-6);
     }
 
-    // Design §9 requires "a goal outside the mask ⇒ Unreachable" as an exercised code path; a mask
+    // "A goal outside the mask ⇒ Unreachable" must be an exercised code path, not only a
+    // reachable one; a mask
     // that excludes the ENTIRE corridor beyond the start cell (as opposed to a partial-route
-    // truncation to a still-substantial prefix, per `clip_truncates_at_the_mask_boundary` above)
+    // truncation to a still-substantial prefix, per `clip_truncates_at_the_mask_boundary`)
     // must confine the returned route to that single visible cell, never reaching the goal.
     //
     // NOTE: the route retains 2 points here, not 1 — `sample_path`'s arc-length sampling places

@@ -112,7 +112,7 @@ pub(crate) fn footprint_cells(anchor: Cell, ctr: vision::P, r_scene: f64, cell: 
 /// (2) every footprint-overlapped cell AND every cell the center-to-center step's supercover
 /// crosses (including diagonal corner-flankers) is in the mask (non-GM), (3) the center step
 /// `from→to` crosses no wall, (4) no footprint-overlapped cell is `impassable` in the region field
-/// (arrest/terrain apply elsewhere — see the region-gate comment inline below).
+/// (arrest/terrain apply elsewhere — see this function's region-gate step).
 pub(crate) fn cell_enterable(grid: &PathGrid, from: Cell, to: Cell) -> bool {
     let (i0, j0, i1, j1) = grid.window;
     if to.0 < i0 || to.0 > i1 || to.1 < j0 || to.1 > j1 {
@@ -200,7 +200,7 @@ mod astar_tests {
             }));
         PathGrid {
             inputs: PathInputs {
-                cell: 100.0,
+                cell: shape.cell,
                 footprint_radius_cells: footprint,
                 walls: &NO_WALLS,
                 mask: None,
@@ -312,7 +312,7 @@ mod astar_tests {
     }
 
     /// Hex-scene A* integration coverage: proves the fully-wired hex path behaves correctly
-    /// end-to-end, mirroring this module's square-scene coverage above. The diagonal rule is a
+    /// end-to-end, mirroring this module's square-scene coverage. The diagonal rule is a
     /// `SquareGrid`-only concept (`HexGrid` uses uniform 1-cost steps and the admissible axial
     /// heuristic), so a `HexGrid` shape carries no rule at all — see the `grid_shape` module.
     fn open_hex(footprint: f64) -> PathGrid<'static> {
@@ -321,7 +321,7 @@ mod astar_tests {
             Box::leak(Box::new(crate::scene::grid_shape::HexGrid { size: 100.0 }));
         PathGrid {
             inputs: PathInputs {
-                cell: 100.0,
+                cell: shape.size,
                 footprint_radius_cells: footprint,
                 walls: &NO_WALLS,
                 mask: None,
@@ -361,7 +361,8 @@ mod astar_tests {
 
     #[test]
     fn hex_scene_astar_respects_the_visibility_mask() {
-        // Same detour shape as the wall test above, but forced by mask exclusion instead of a
+        // Same detour shape as `hex_astar_routes_around_a_blocking_wall`, but forced by mask
+        // exclusion instead of a
         // wall: (1,0) is excluded from the mask, so the route must go around it via
         // (0,1)->(1,1), never entering the masked-out cell.
         let mut mask: BTreeSet<Cell> = BTreeSet::new();
@@ -693,7 +694,7 @@ pub fn find(
     let mut total = 0.0;
     let mut parity = 0u8;
     // Grid-correct pixel→cell mapping (square floor / hex axial-round). MUST agree with the window
-    // above: both derive from `grid.inputs.shape`, so a hex goal's axial cell always lands inside
+    // window: both derive from `grid.inputs.shape`, so a hex goal's axial cell always lands inside
     // the axial window. A square-only `to_cell` here paired with the square window would silently
     // route a hex request to the WRONG destination cell; fixing only one side would instead make
     // the goal fall outside the other's box, reading spuriously Unreachable.
@@ -950,7 +951,7 @@ mod find_tests {
         let start = hex.cell_center((0, 0));
         let goal_cell = (70, -70);
         let goal = hex.cell_center(goal_cell);
-        // This assertion documents why the hex-aware window above is load-bearing: a square-only
+        // This assertion documents why the hex-aware search window is load-bearing: a square-only
         // window would clip this goal.
         assert!(
             (goal.0 / hex.size).floor() as i32 + WINDOW_MARGIN < goal_cell.0,
@@ -1174,7 +1175,7 @@ mod tests {
             }));
         PathGrid {
             inputs: PathInputs {
-                cell: 100.0,
+                cell: shape.cell,
                 footprint_radius_cells: footprint,
                 walls,
                 mask,
@@ -1265,7 +1266,7 @@ mod tests {
         // the shared corner exactly, so supercover_cells emits BOTH flanker cells (1,0) and (0,1)
         // in addition to the two endpoint cells. A small (point-sized) footprint disc at the
         // destination (1,1) only overlaps (1,1) itself — footprint_cells alone would not catch a
-        // missing flanker. The mask below has every cell EXCEPT the (0,1) flanker: the step must
+        // missing flanker. The mask here has every cell EXCEPT the (0,1) flanker: the step must
         // be rejected once the router's mask check includes the step's supercover, even though
         // a footprint-disc-only check alone would have passed it.
         let walls: Vec<Seg> = vec![];

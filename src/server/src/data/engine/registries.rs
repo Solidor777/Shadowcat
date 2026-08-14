@@ -9,7 +9,7 @@
 //! every other engine-defined doc_type (see `chat::settings::ChatContentPolicy`).
 
 // Ratchet: every item in this module must carry a doc comment, enforced by
-// the two deny attributes below.
+// the two crate-level deny attributes this module declares.
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 

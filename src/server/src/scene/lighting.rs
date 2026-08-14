@@ -195,8 +195,8 @@ fn perimeter_point(extent: WorldExtent, d: f64) -> P {
 /// sample count (one per indexing unit of perimeter, clamped to `[4, MAX_ENV_LIGHT_SAMPLES]` —
 /// on hex the indexing unit is the circumradius, so that is about 1.73 samples per cell pitch) and the
 /// raycast bound's margin, so boundary samples sit strictly inside it. Sample count is a
-/// convergence knob, not a secrecy one: the sampled union approaches the true boundary-reachable
-/// set FROM BELOW, so a coarser count under-reveals and a finer one is strictly more faithful —
+/// convergence knob, not a secrecy one: the sampled union UNDER-APPROXIMATES the true
+/// boundary-reachable set, so a coarser count under-reveals and a finer one is strictly more faithful —
 /// which is why the indexing scale, the smaller of the two scalars on hex, is the right input here
 /// and `world_units_per_cell` is not.
 ///

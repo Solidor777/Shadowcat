@@ -98,7 +98,7 @@ pub(crate) trait GridShape {
     /// returned, because `min` is the origin only on square: a pointy-top hex block's origin cell
     /// is centred ON the origin, so the block reaches `-√3/2·size` in x and `-size` in y.
     ///
-    /// **Both guarantees below are stated for the INTEGER block `[0, ⌊w⌋) × [0, ⌊h⌋)`**, and
+    /// **Both guarantees are stated for the INTEGER block `[0, ⌊w⌋) × [0, ⌊h⌋)`**, and
     /// consumers must not assume the stronger one:
     /// - **Square** — an exact COVER of that block. Cell `(i,j)` occupies `[i·cell,(i+1)·cell)`
     ///   per axis, so `⌊w⌋ × ⌊h⌋` cells occupy `(⌊w⌋·cell, ⌊h⌋·cell) ≤ (w·cell, h·cell)` with no
@@ -424,7 +424,8 @@ impl HexGrid {
         if dx > dy && dx > dz {
             x = -y - z;
         } else if dy > dz {
-            // y-fixup intentionally omitted (see comment above).
+            // y-fixup intentionally omitted: y is not part of the returned pair, so fixing
+            // it up cannot change (x, z).
         } else {
             z = -x - y;
         }
@@ -552,7 +553,7 @@ impl GridShape for HexGrid {
             let steps = (k1 - k0) as i64;
             if steps > 4 * MAX_HEX_LINE_SAMPLES {
                 // Fail closed rather than allocate an unbounded crossing list. Unreachable as
-                // written: the `n <= MAX_HEX_LINE_SAMPLES` gate above already dominates it, since
+                // written: the `n <= MAX_HEX_LINE_SAMPLES` gate already dominates it, since
                 // |dpsi_k| <= 2n bounds `steps` at 8193 < 16384. Kept as a standalone backstop so
                 // this loop stays bounded on its own terms if that gate is ever relaxed.
                 return None;
@@ -940,8 +941,8 @@ mod tests {
         let a = (50.0, 50.0);
         let b = (250.0, 250.0);
         assert_eq!(
-            g.line_traversal(a, b, 100.0),
-            crate::scene::movement::supercover_cells(a, b, 100.0)
+            g.line_traversal(a, b, g.cell),
+            crate::scene::movement::supercover_cells(a, b, g.cell)
         );
     }
 
@@ -953,8 +954,8 @@ mod tests {
         };
         let anchor = (2, 2);
         let ctr = (250.0, 250.0);
-        let mut got = g.footprint_cells(anchor, ctr, 60.0, 100.0);
-        let mut want = crate::scene::pathfinding::footprint_cells(anchor, ctr, 60.0, 100.0);
+        let mut got = g.footprint_cells(anchor, ctr, 60.0, g.cell);
+        let mut want = crate::scene::pathfinding::footprint_cells(anchor, ctr, 60.0, g.cell);
         got.sort();
         want.sort();
         assert_eq!(got, want);
@@ -1023,7 +1024,7 @@ mod tests {
         //
         // Discrimination: a predicate comparing the CELL CENTRE distance against
         // `r_scene + inradius` compares roughly `size` against `2 + √3/2·size` for both
-        // neighbours, which fails for every size above about 15, and emits only the anchor. The
+        // neighbours, which fails for every size larger than roughly 15, and emits only the anchor. The
         // assertion is the presence of the two neighbours, which no centre-distance-against-
         // inradius test can produce at this radius.
         let g = HexGrid { size: 50.0 };
@@ -1151,20 +1152,20 @@ mod tests {
         // Origin-anchored 3×3.
         let (min, max) = ((0.0, 0.0), (250.0, 250.0));
         assert_eq!(
-            g.cells_in_bounds(min, max, 100.0, CAP),
-            Some(hand_floor_rect(min, max, 100.0))
+            g.cells_in_bounds(min, max, g.cell, CAP),
+            Some(hand_floor_rect(min, max, g.cell))
         );
         // Straddling the origin (negative coords).
         let (min, max) = ((-150.0, -50.0), (50.0, 50.0));
         assert_eq!(
-            g.cells_in_bounds(min, max, 100.0, CAP),
-            Some(hand_floor_rect(min, max, 100.0))
+            g.cells_in_bounds(min, max, g.cell, CAP),
+            Some(hand_floor_rect(min, max, g.cell))
         );
         // Wholly negative.
         let (min, max) = ((-330.0, -220.0), (-110.0, -140.0));
         assert_eq!(
-            g.cells_in_bounds(min, max, 100.0, CAP),
-            Some(hand_floor_rect(min, max, 100.0))
+            g.cells_in_bounds(min, max, g.cell, CAP),
+            Some(hand_floor_rect(min, max, g.cell))
         );
     }
 
@@ -1175,7 +1176,7 @@ mod tests {
             rule: DiagonalRule::Chebyshev,
         };
         let got = g
-            .cells_in_bounds((0.0, 0.0), (150.0, 150.0), 100.0, CAP)
+            .cells_in_bounds((0.0, 0.0), (150.0, 150.0), g.cell, CAP)
             .unwrap();
         // for i { for j } → (0,0),(0,1),(1,0),(1,1).
         assert_eq!(got, vec![(0, 0), (0, 1), (1, 0), (1, 1)]);
@@ -1189,13 +1190,13 @@ mod tests {
             rule: DiagonalRule::Chebyshev,
         };
         assert_eq!(
-            g.cells_in_bounds((0.0, 0.0), (3000.0, 3000.0), 1.0, CAP),
+            g.cells_in_bounds((0.0, 0.0), (3000.0, 3000.0), g.cell, CAP),
             None
         );
         // A hex scene with an equally-huge AABB is capped by the same span check.
         let hx = HexGrid { size: 1.0 };
         assert_eq!(
-            hx.cells_in_bounds((0.0, 0.0), (5000.0, 5000.0), 1.0, CAP),
+            hx.cells_in_bounds((0.0, 0.0), (5000.0, 5000.0), hx.size, CAP),
             None
         );
     }
@@ -1211,16 +1212,16 @@ mod tests {
             rule: DiagonalRule::Chebyshev,
         };
         let (min, max) = ((0.0, 0.0), (250.0, 250.0));
-        assert!(g.cells_in_bounds(min, max, 100.0, CAP).is_some());
+        assert!(g.cells_in_bounds(min, max, g.cell, CAP).is_some());
         assert_eq!(
-            g.cells_in_bounds(min, max, 100.0, 8),
+            g.cells_in_bounds(min, max, g.cell, 8),
             None,
             "9 cells > cap of 8"
         );
         // Same for hex — the span cap is honored on both grid kinds.
         let hx = HexGrid { size: 50.0 };
         assert_eq!(
-            hx.cells_in_bounds((0.0, 0.0), (200.0, 200.0), 50.0, 1),
+            hx.cells_in_bounds((0.0, 0.0), (200.0, 200.0), hx.size, 1),
             None
         );
     }
@@ -1244,18 +1245,18 @@ mod tests {
             rule: DiagonalRule::Chebyshev,
         };
         assert_eq!(
-            g.cells_in_bounds((f64::NAN, 0.0), (10.0, 10.0), 100.0, CAP),
+            g.cells_in_bounds((f64::NAN, 0.0), (10.0, 10.0), g.cell, CAP),
             None
         );
         assert_eq!(
-            g.cells_in_bounds((0.0, 0.0), (f64::INFINITY, 10.0), 100.0, CAP),
+            g.cells_in_bounds((0.0, 0.0), (f64::INFINITY, 10.0), g.cell, CAP),
             None
         );
         assert_eq!(g.cells_in_bounds((0.0, 0.0), (10.0, 10.0), 0.0, CAP), None);
         assert_eq!(g.cells_in_bounds((0.0, 0.0), (10.0, 10.0), -5.0, CAP), None);
         let hx = HexGrid { size: 50.0 };
         assert_eq!(
-            hx.cells_in_bounds((0.0, 0.0), (10.0, f64::NAN), 50.0, CAP),
+            hx.cells_in_bounds((0.0, 0.0), (10.0, f64::NAN), hx.size, CAP),
             None
         );
         assert_eq!(hx.cells_in_bounds((0.0, 0.0), (10.0, 10.0), 0.0, CAP), None);
@@ -1303,11 +1304,11 @@ mod tests {
             rule: DiagonalRule::Chebyshev,
         };
         assert_eq!(
-            g.cell_bounds((0.0, -250.0), (250.0, 50.0), 100.0),
+            g.cell_bounds((0.0, -250.0), (250.0, 50.0), g.cell),
             (0, -3, 2, 0)
         );
         assert_eq!(
-            g.cell_bounds((-330.0, -220.0), (-110.0, -140.0), 100.0),
+            g.cell_bounds((-330.0, -220.0), (-110.0, -140.0), g.cell),
             (-4, -3, -2, -2)
         );
     }
@@ -1370,7 +1371,7 @@ mod tests {
         );
     }
 
-    /// Independent reference for the intended axial (cube) hex distance, so the assertion below
+    /// Independent reference for the intended axial (cube) hex distance, so the assertion
     /// isn't tautological with the impl under test.
     fn axial_distance(from: Cell, to: Cell) -> f64 {
         let dq = to.0 as i64 - from.0 as i64;
@@ -1552,7 +1553,8 @@ mod tests {
     fn square_heuristic_is_byte_identical_to_the_free_pathfinding_heuristic() {
         // `astar_leg` calls `SquareGrid::heuristic` (via the `GridShape` trait) for every square
         // route; this pins it equal to the free `pathfinding::heuristic(self.rule, ...)` for every
-        // rule, including `Alternating` (excluded from the admissibility test above).
+        // rule, including `Alternating` (excluded from
+        // `square_heuristic_never_exceeds_the_true_neighbor_graph_cost`).
         for rule in [
             DiagonalRule::Chebyshev,
             DiagonalRule::Manhattan,
@@ -1772,7 +1774,7 @@ mod tests {
         for _ in 0..8000 {
             let a = (rng.range(-300.0, 300.0), rng.range(-300.0, 300.0));
             let b = (rng.range(-300.0, 300.0), rng.range(-300.0, 300.0));
-            let Some(got) = g.line_traversal(a, b, 50.0) else {
+            let Some(got) = g.line_traversal(a, b, g.size) else {
                 continue;
             };
             let want = true_hexes_crossed(&g, a, b, 1e-9 * g.size);
@@ -1796,13 +1798,13 @@ mod tests {
         // crosses a hex boundary: (-40, 0) sits in hex (0,0) (inradius 43.3), (-50, 0) in hex (-1,0).
         // A naive fixed-sample-count line-draw (sampling `n+1` points, `n` = max cube-axis delta)
         // takes `n = 0` here and would return ONLY the start hex, omitting even the far endpoint's
-        // own hex — an unseen hex a token could step into ungated. The ψ-crossing supercover below
-        // must still catch it.
+        // own hex — an unseen hex a token could step into ungated. `HexGrid::line_traversal`'s
+        // ψ-crossing supercover must still catch it.
         let g = HexGrid { size: 50.0 };
         let (a, b) = ((-40.0, 0.0), (-50.0, 0.0));
         assert_eq!(g.cell_of(a), (0, 0));
         assert_eq!(g.cell_of(b), (-1, 0));
-        let cells = g.line_traversal(a, b, 50.0).expect("finite, in-bounds");
+        let cells = g.line_traversal(a, b, g.size).expect("finite, in-bounds");
         assert!(cells.contains(&(0, 0)), "start hex: {cells:?}");
         assert!(
             cells.contains(&(-1, 0)),
@@ -1814,11 +1816,12 @@ mod tests {
     fn hex_line_traversal_includes_a_corner_clipped_hex() {
         // Reduced counterexample. This segment clips a short sliver of hex (-1,0) near the vertex it
         // shares with (0,0)/(0,-1); a fixed one-hex-pitch sample spacing would straddle the sliver
-        // entirely and never name it. The ψ-crossing supercover below must still catch it.
+        // entirely and never name it. `HexGrid::line_traversal`'s ψ-crossing supercover must
+        // still catch it.
         let g = HexGrid { size: 50.0 };
         let a = (-51.640_685_867_085_56, 82.356_123_493_857_9);
         let b = (-32.076_474_134_396_726, -54.002_821_619_560_066);
-        let cells = g.line_traversal(a, b, 50.0).expect("finite, in-bounds");
+        let cells = g.line_traversal(a, b, g.size).expect("finite, in-bounds");
         let want = true_hexes_crossed(&g, a, b, 1e-6);
         assert!(
             want.contains(&(-1, 0)),
@@ -1848,17 +1851,20 @@ mod tests {
     #[test]
     fn hex_line_traversal_still_fails_closed_on_non_finite_and_over_cap() {
         let g = HexGrid { size: 50.0 };
-        assert_eq!(g.line_traversal((f64::NAN, 0.0), (10.0, 10.0), 50.0), None);
         assert_eq!(
-            g.line_traversal((0.0, 0.0), (f64::INFINITY, 0.0), 50.0),
+            g.line_traversal((f64::NAN, 0.0), (10.0, 10.0), g.size),
             None
         );
         assert_eq!(
-            g.line_traversal((0.0, f64::NEG_INFINITY), (0.0, 0.0), 50.0),
+            g.line_traversal((0.0, 0.0), (f64::INFINITY, 0.0), g.size),
+            None
+        );
+        assert_eq!(
+            g.line_traversal((0.0, f64::NEG_INFINITY), (0.0, 0.0), g.size),
             None
         );
         // Past the 4096-hex span cap.
-        assert_eq!(g.line_traversal((0.0, 0.0), (1.0e9, 0.0), 50.0), None);
+        assert_eq!(g.line_traversal((0.0, 0.0), (1.0e9, 0.0), g.size), None);
     }
 
     #[test]
@@ -2229,7 +2235,7 @@ mod tests {
         // The block is TWO rows tall, and that is load-bearing rather than incidental: at four rows
         // the integer-block loop's own strongest bound (column ⌊w⌋−1 at the last row) already
         // exceeds what the row-0 assertion needs, so the row-0 assertion could not fail alone. At
-        // two rows the loop's strongest bound falls below column ⌊w⌋'s row-0 centre and the two
+        // two rows the loop's strongest bound falls short of column ⌊w⌋'s row-0 centre and the two
         // separate.
         //
         // Discrimination, per assertion, each naming a mutation that breaks THAT assertion while

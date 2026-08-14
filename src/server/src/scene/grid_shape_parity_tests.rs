@@ -27,6 +27,12 @@ use crate::scene::pathfinding::{find, DiagonalRule, PathInputs, PathOutcome};
 use crate::scene::regions::{rasterize, RegionBehavior, RegionField, RegionShape};
 use crate::scene::{MovementRestriction, SceneEcs};
 
+/// The ONE expression of the grid size every fixture in this module is built on: each scene
+/// declares it as its own `grid.size`, `sq()` builds its `SquareGrid` at it, and every routing
+/// or gate call passes it as its own cell size. A scene configured at one size and rasterized or
+/// gated at another would pin a grid no fixture declared.
+const FIXTURE_GRID_SIZE: f64 = 100.0;
+
 // --- Local fixture builders (this module cannot reach `mod tests`'s private helpers) ---
 
 fn doc(id: u128, parent: Option<u128>, ty: &str) -> Document {
@@ -69,7 +75,7 @@ fn cell_block(center: (f64, f64)) -> RegionShape {
 fn flanker_blocked_field() -> RegionField {
     // The diagonal-cost rule is inert for rasterization (cell_center is rule-independent).
     let grid = SquareGrid {
-        cell: 100.0,
+        cell: FIXTURE_GRID_SIZE,
         rule: DiagonalRule::Chebyshev,
     };
     let mut b = RegionField::builder();
@@ -91,11 +97,14 @@ fn route(rule: DiagonalRule, field: &RegionField) -> PathOutcome {
         &[(250.0, 250.0)],
         PathInputs {
             footprint_radius_cells: 0.1,
-            cell: 100.0,
+            cell: FIXTURE_GRID_SIZE,
             walls: &[],
             mask: None,
             regions: Some(field),
-            shape: &SquareGrid { cell: 100.0, rule },
+            shape: &SquareGrid {
+                cell: FIXTURE_GRID_SIZE,
+                rule,
+            },
         },
     )
     .expect("forced diagonal staircase is reachable under every rule")
@@ -161,7 +170,7 @@ fn clear_scene() -> (SceneEcs, Uuid, Uuid) {
                 10,
                 0,
                 "scene",
-                json!({ "grid": { "kind": "square", "size": 100 }, "background": null }),
+                json!({ "grid": { "kind": "square", "size": FIXTURE_GRID_SIZE }, "background": null }),
             ),
             entity_doc(
                 11,
@@ -188,7 +197,7 @@ fn gate_walk_mask_gate_parity_pins_diagonal_truncation_point() {
             scene,
             restriction: MovementRestriction::Visible,
             visible: &visible,
-            cell: 100.0,
+            cell: FIXTURE_GRID_SIZE,
         },
         token,
         &[(0.0, 0.0), (100.0, 100.0), (200.0, 200.0), (300.0, 300.0)],
@@ -254,7 +263,7 @@ fn gate_walk_flanker_gate_truncates_with_both_diagonal_endpoints_visible() {
             scene,
             restriction: MovementRestriction::Visible,
             visible: &visible,
-            cell: 100.0,
+            cell: FIXTURE_GRID_SIZE,
         },
         token,
         &[(0.0, 0.0), (100.0, 100.0), (200.0, 200.0), (300.0, 300.0)],
@@ -316,7 +325,7 @@ fn two_source_open_scene() -> (SceneEcs, Uuid, Uuid) {
     source_b.owner = Some(user);
     let mut scene = doc(10, None, "scene");
     scene.engine = Some(json!({
-        "grid": { "kind": "square", "size": 100 }, "background": null,
+        "grid": { "kind": "square", "size": FIXTURE_GRID_SIZE }, "background": null,
         "bounds": { "width": 5.0, "height": 5.0 }
     }));
     let mut ecs = SceneEcs::from_documents(vec![scene, source_a, source_b], 0);
@@ -350,13 +359,13 @@ fn visible_cells_parity_two_sources_pins_full_cell_set() {
 // Fixture 4: region rasterization per RegionShape variant, exact cell Vec.
 //
 // `rasterize` iterates i outer, j inner, so its output Vec is already ascending in (i,j). Each
-// shape below is chosen so no cell center lands exactly on an edge (avoiding boundary ambiguity),
+// shape is chosen so no cell center lands exactly on an edge (avoiding boundary ambiguity),
 // making the covered-center set — and thus the full Vec — independently re-derivable.
 // -------------------------------------------------------------------------------------------
 
 fn sq() -> SquareGrid {
     SquareGrid {
-        cell: 100.0,
+        cell: FIXTURE_GRID_SIZE,
         rule: DiagonalRule::Chebyshev,
     }
 }
@@ -371,7 +380,7 @@ fn rasterize_parity_rect_pins_full_cell_vec() {
         x1: 250.0,
         y1: 150.0,
     };
-    let cells = rasterize(&shape, 100.0, &sq()).unwrap();
+    let cells = rasterize(&shape, sq().cell, &sq()).unwrap();
     assert_eq!(cells, vec![(0, 0), (0, 1), (1, 0), (1, 1), (2, 0), (2, 1)],);
 }
 
@@ -384,7 +393,7 @@ fn rasterize_parity_circle_pins_full_cell_vec() {
         cy: 150.0,
         r: 60.0,
     };
-    let cells = rasterize(&shape, 100.0, &sq()).unwrap();
+    let cells = rasterize(&shape, sq().cell, &sq()).unwrap();
     assert_eq!(cells, vec![(1, 1)]);
 }
 
@@ -396,7 +405,7 @@ fn rasterize_parity_polygon_pins_full_cell_vec() {
     let shape = RegionShape::Polygon {
         points: vec![(0.0, 0.0), (350.0, 0.0), (0.0, 350.0)],
     };
-    let cells = rasterize(&shape, 100.0, &sq()).unwrap();
+    let cells = rasterize(&shape, sq().cell, &sq()).unwrap();
     assert_eq!(cells, vec![(0, 0), (0, 1), (0, 2), (1, 0), (1, 1), (2, 0)],);
 }
 
@@ -412,7 +421,7 @@ fn rasterize_parity_polygon_pins_full_cell_vec() {
 // authored as a 5.2 x 5.2 block of cells, so a 520x520 world rectangle. `source_los_poly` is
 // therefore the rectangle [-70,520] x [-70,520]
 // (bound_for_scene: min(30-100,0)=-70 on each low edge, max(30+100,520)=520 on each high edge).
-// Every coordinate below is DERIVED, none run-copied:
+// Every coordinate here is DERIVED, none run-copied:
 //   STRICT: a cell qualifies iff its CENTER ((i+0.5)*100) lies in [-70,520] -> i,j in [-1,4].
 //   LENIENT: also qualifies iff any CORNER (a multiple of 100) lies in the rectangle. A corner
 //   coordinate k*100 is inside iff -70 < k*100 < 520 -> k in {0,1,2,3,4,5}; a cell has an inside
@@ -435,7 +444,7 @@ fn lenient_corner_open_scene() -> (SceneEcs, Uuid, Uuid) {
     source.owner = Some(user);
     let mut scene = doc(10, None, "scene");
     scene.engine = Some(json!({
-        "grid": { "kind": "square", "size": 100 }, "background": null,
+        "grid": { "kind": "square", "size": FIXTURE_GRID_SIZE }, "background": null,
         "bounds": { "width": 5.2, "height": 5.2 }
     }));
     let mut ecs = SceneEcs::from_documents(vec![scene, source], 0);
