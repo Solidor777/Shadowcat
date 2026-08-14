@@ -165,8 +165,8 @@ pub(crate) fn cell_enterable(grid: &PathGrid, from: Cell, to: Cell) -> bool {
         }
     }
     // (4) Region gate: impassable footprint-overlap blocks entry, mirroring the wall-clearance
-    // rule (§4 membership: any footprint-overlapped cell counts, not just the destination
-    // center — a wide-bodied token can't fit past impassable terrain any more than a wall).
+    // rule — membership is any footprint-overlapped cell, not just the destination center, since a
+    // wide-bodied token can't fit past impassable terrain any more than a wall.
     // Arrest/terrain are NOT footprint-gated here: they represent effects on the mover's own
     // position rather than solid geometry it must clear, so they are evaluated once each, in
     // `find()`'s route assembly (arrest truncation) and in `astar_leg`'s step cost (terrain),
@@ -950,7 +950,7 @@ mod find_tests {
         // This assertion documents why the hex-aware window above is load-bearing: a square-only
         // window would clip this goal.
         assert!(
-            (goal.0 / 100.0).floor() as i32 + WINDOW_MARGIN < goal_cell.0,
+            (goal.0 / hex.size).floor() as i32 + WINDOW_MARGIN < goal_cell.0,
             "fixture must exercise the window-clipping case"
         );
         let outcome = find(
@@ -958,7 +958,7 @@ mod find_tests {
             &[goal],
             PathInputs {
                 footprint_radius_cells: 0.1,
-                cell: 100.0,
+                cell: hex.size,
                 walls: &NO_WALLS,
                 // GM / unconstrained: only the window (not a mask) can gate reachability here.
                 mask: None,

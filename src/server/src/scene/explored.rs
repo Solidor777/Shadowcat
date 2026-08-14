@@ -518,7 +518,7 @@ mod tests {
             cy + 10.0,
         ];
         let mut set = ExploredSet::new();
-        set.mark_polygons(&[poly], &g, 100.0);
+        set.mark_polygons(&[poly], &g, g.size);
         let bytes = set.to_bytes(crate::scene::GridKind::Hex);
         assert_eq!(
             ExploredSet::from_bytes(&bytes, crate::scene::GridKind::Hex),
@@ -546,7 +546,7 @@ mod tests {
             cy + 10.0,
         ];
         let mut set = ExploredSet::new();
-        let grew = set.mark_polygons(&[poly], &g, 100.0);
+        let grew = set.mark_polygons(&[poly], &g, g.size);
         assert_eq!(grew, 1, "exactly the one hex whose center the AABB covers");
         assert!(
             set.contains((1, 0)),

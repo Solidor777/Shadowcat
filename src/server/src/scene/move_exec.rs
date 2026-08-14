@@ -1148,10 +1148,15 @@ mod tests {
         // enclosing ONLY hex cell (1,0)'s center must (a) rasterize onto hex (1,0), and (b) stop a
         // move from (0,0) toward (1,0) before entry. A square-on-hex enumeration or lookup would
         // rasterize onto the wrong axial cell and the move would sail straight through.
-        // The scene's declared grid size and the gate's `cell` below are both read off the shape
-        // whose `cell_center` supplies this test's coordinates, so the three cannot drift apart.
+        // The scene's declared grid size, the gate's `cell`, and the region rect are all derived
+        // from the shape whose `cell_center` supplies this test's coordinates, so none of them can
+        // drift apart. The rect is a square of side `size` centred on hex (1,0): half a `size` is
+        // under the half-pitch (`√3/2·size ≈ 43.3`) to its axial neighbours on the row and under
+        // the row spacing (`1.5·size`) to the four off-row neighbours, so it can only ever contain
+        // that one hex's centre — a property the fixture guard asserts rather than assumes.
         let hex = HexGrid { size: 50.0 };
         let c10 = hex.cell_center((1, 0)); // (50·√3, 0) ≈ (86.6, 0)
+        let pad = hex.size / 2.0;
 
         let scene_id = Uuid::from_u128(10);
         let token_id = Uuid::from_u128(11);
@@ -1169,23 +1174,34 @@ mod tests {
                     "token",
                     json!({ "x": 0.0, "y": 0.0, "w": 50.0, "h": 50.0, "rotation": 0.0 }),
                 ),
-                // Rect around hex (1,0)'s center only — excludes (0,0) at x=0, (2,0) at x≈173.2, and
-                // every neighbor of (1,0) (their centers sit at |y|≈75, outside [-25,25]).
-                region_doc(12, 10, "impassable", 1.0, (61.0, -25.0, 112.0, 25.0)),
+                region_doc(
+                    12,
+                    10,
+                    "impassable",
+                    1.0,
+                    (c10.0 - pad, c10.1 - pad, c10.0 + pad, c10.1 + pad),
+                ),
             ],
             0,
         );
 
-        // (a) The rect rasterizes onto hex cell (1,0) via GridShape, not a square index.
+        // (a) The rect rasterizes onto hex cell (1,0) via GridShape, not a square index — and onto
+        // NOTHING else. The precondition the truncation assertion depends on is that the blocked
+        // set is exactly {(1,0)}, so the six neighbours are asserted clear rather than the one
+        // (0,0) the move happens to start in: a rect that spread to a neighbour would stop the
+        // move for a reason the test does not name, and a rect derived from the shape must be free
+        // to move without that going unnoticed.
         let field = ecs.region_field(scene_id, None).expect("scene exists");
         assert!(
             field.is_impassable((1, 0)),
             "rect rasterizes onto hex cell (1,0)"
         );
-        assert!(
-            !field.is_impassable((0, 0)),
-            "hex (0,0) is outside the rect"
-        );
+        for (n, _, _) in hex.neighbors_with_cost((1, 0), 0) {
+            assert!(
+                !field.is_impassable(n),
+                "fixture: hex {n:?} neighbours the blocked hex and must stay clear"
+            );
+        }
 
         // (b) The move stops before entering hex (1,0). Unrestricted → the vision mask is skipped.
         let visible = BTreeSet::new();
@@ -1223,11 +1239,16 @@ mod tests {
         // no arrest there and the move sails through. The mask is the exact hex traversal
         // {(0,0),(1,0),(2,0),(3,0)}; the square supercover of the same segment reaches (5,0), so a
         // square-indexed mask gate would instead truncate early, for the wrong reason.
-        // The scene's declared grid size, the square supercover's cell size, and the gate's `cell`
-        // below are all read off the shape whose `cell_center` supplies this test's coordinates,
-        // so none of the four can drift apart.
+        // The scene's declared grid size, the square supercover's cell size, the gate's `cell`, and
+        // the arrest rect are all derived from the shape whose `cell_center` supplies this test's
+        // coordinates, so none of them can drift apart. The rect is a square of side `size` centred
+        // on hex (2,0): half a `size` is under the half-pitch (`√3/2·size ≈ 43.3`) to its axial
+        // neighbours on the row and under the row spacing (`1.5·size`) to the four off-row ones, so
+        // it can only ever contain that one hex's centre — asserted, not assumed.
         let hex = HexGrid { size: 50.0 };
+        let c20 = hex.cell_center((2, 0)); // (100·√3, 0) ≈ (173.2, 0)
         let c30 = hex.cell_center((3, 0)); // (150·√3, 0) ≈ (259.8, 0)
+        let pad = hex.size / 2.0;
 
         let scene_id = Uuid::from_u128(10);
         let token_id = Uuid::from_u128(11);
@@ -1245,21 +1266,32 @@ mod tests {
                     "token",
                     json!({ "x": 0.0, "y": 0.0, "w": 50.0, "h": 50.0, "rotation": 0.0 }),
                 ),
-                region_doc(12, 10, "arrest", 1.0, (148.0, -25.0, 198.0, 25.0)),
+                region_doc(
+                    12,
+                    10,
+                    "arrest",
+                    1.0,
+                    (c20.0 - pad, c20.1 - pad, c20.0 + pad, c20.1 + pad),
+                ),
             ],
             0,
         );
 
+        // The precondition every assertion below rests on: exactly hex (2,0) arrests. Its six
+        // neighbours include axial (3,0), which is ALSO the square index of the rect's own
+        // location, so the same loop pins the square-indexing claim the test is named for — a
+        // square `floor(p/cell)` region lookup would consult (3,0) and find nothing.
         let field = ecs.region_field(scene_id, None).expect("scene exists");
         assert!(
             field.is_arrest((2, 0)),
             "rect rasterizes onto hex cell (2,0)"
         );
-        assert!(
-            !field.is_arrest((3, 0)),
-            "the SQUARE index of the arrest rect's location carries no arrest — a square-indexed \
-             region lookup would miss it entirely"
-        );
+        for (n, _, _) in hex.neighbors_with_cost((2, 0), 0) {
+            assert!(
+                !field.is_arrest(n),
+                "fixture: hex {n:?} neighbours the arrest hex and must stay clear"
+            );
+        }
 
         let visible: BTreeSet<(i32, i32)> = [(0, 0), (1, 0), (2, 0), (3, 0)].into_iter().collect();
         let square_cells = crate::scene::movement::supercover_cells((0.0, 0.0), c30, hex.size)
@@ -2278,9 +2310,9 @@ mod tests {
     /// `GridShape` built at that size — `hex_clear_scene`, `hex_walled_scene`, and both grid-kind
     /// arms of `scene_with_narrow_gap_and_wide_token` — read by `hex_cell_center` for the shape it
     /// builds, by each of those scenes for its declared grid size, by the corridor fixture for its
-    /// authored bounds, and by every test that gates a shape-derived path through
-    /// `MoveGateInputs.cell`, so no two of them can drift apart. Not hex-only: the corridor
-    /// fixture's square arm authors it too, and reads it for its own cell centres.
+    /// authored bounds, and by every test that gates one of THOSE THREE scenes' shape-derived
+    /// paths through `MoveGateInputs.cell`, so no two of them can drift apart. Not hex-only: the
+    /// corridor fixture's square arm authors it too, and reads it for its own cell centres.
     ///
     /// It does NOT cover every shape-derived scene here.
     /// `impassable_hex_region_stops_a_hex_move_at_the_correct_hex_cell` and

@@ -983,11 +983,16 @@ impl SceneEcs {
     /// policies genuinely differ (`world_extent_from` substitutes the zero rectangle every extent
     /// guard already refuses; `navmesh_for` returns `None`).
     ///
-    /// A caller that ALREADY holds both the scene's resolved settings and its grid size —
-    /// `lighting_inputs`, `player_lit_mask`, `visible_cells_cached`, `accumulate_visible_cells` —
-    /// calls `GridShape::world_extent` on the shape it holds instead, and must: routing through
-    /// here would re-read `scene_grid_sizes` and `resolve_scene` per dispatch, and the re-read
-    /// values could disagree with the ones its own caller resolved and is gating on.
+    /// A caller that ALREADY holds the scene's resolved settings — `lighting_inputs`,
+    /// `player_lit_mask`, `visible_cells_cached` — calls `GridShape::world_extent` on the shape it
+    /// holds instead, and must: routing through here would re-read `resolve_scene` per dispatch,
+    /// and those re-read settings could disagree with the ones its own caller resolved and is
+    /// gating on. The grid size is not part of that argument — this takes `cell` as a parameter
+    /// and never reads `scene_grid_sizes`.
+    ///
+    /// `accumulate_visible_cells` is carved out for a structural reason rather than that one: it
+    /// is a free function with no `&self`, so it cannot call this method at all, and converts from
+    /// the shape and settings its caller passes it.
     fn scene_world_extent_at(&self, scene: Uuid, cell: f64) -> (f64, f64) {
         self.resolve_grid_shape(scene, cell)
             .world_extent(self.resolve_scene(scene).bounds)
@@ -1451,8 +1456,8 @@ impl SceneEcs {
         // An absent `scene_grid_sizes` entry means the scene has no live document — refuse
         // rather than synthesize a grid (`scene_grid_sizes`'s own doc comment is the source
         // of this invariant; every reader here keys off it). This `?` is this path's OWN refusal
-        // policy: the conversion below is shared with the vision-bound paths, which substitute the
-        // zero rectangle instead, and a navmesh has no use for a rectangle of zero area.
+        // policy: `scene_world_extent_at` is shared with the vision-bound paths, which substitute
+        // the zero rectangle instead, and a navmesh has no use for a rectangle of zero area.
         let cell = self.scene_grid_sizes().get(&scene).copied()?;
         let extent = self.scene_world_extent_at(scene, cell);
         // The footprint radius is authored against the INDEXING scale (a square block's
@@ -2894,6 +2899,20 @@ mod tests {
         d.parent_id = parent.map(Uuid::from_u128);
         d
     }
+
+    /// The grid size every hex fixture in this module declares, and the size every test that
+    /// derives hex COORDINATES from a `HexGrid` builds that shape at — `hex_open_scene`,
+    /// `hex_env_lit_scene_with_room`, `hex_continuous_scene_docs`, and the three continuous hex
+    /// tests that author their own scene inline. A test whose expectations come from
+    /// `cell_center`/`cell_vertices` is measuring the scene it declared only while the two agree,
+    /// and nothing else makes them agree.
+    ///
+    /// The two `resolve_grid_shape_*` tests deliberately do NOT read it: their subject is that
+    /// shape resolution keys on `grid.kind` and takes its SIZE from the caller's parameter, so the
+    /// scene's declared size has to be stated independently of the shape they compare against — it
+    /// is in fact never read by the code under test, and a mismatch between the parameter and the
+    /// expected shape fails their `cell_center` comparison outright rather than silently.
+    const HEX_FIXTURE_SIZE: f64 = 50.0;
 
     #[test]
     fn hydrate_counts_scene_entities_only() {
@@ -5352,7 +5371,9 @@ mod tests {
     fn hex_env_lit_scene_with_room(blocks_light: bool) -> (SceneEcs, Uuid, Uuid) {
         let user = Uuid::from_u128(7);
         let scene_id = Uuid::from_u128(10);
-        let g = grid_shape::HexGrid { size: 50.0 };
+        let g = grid_shape::HexGrid {
+            size: HEX_FIXTURE_SIZE,
+        };
         let mut tok = entity_doc_eng(
             11,
             10,
@@ -5360,12 +5381,12 @@ mod tests {
             json!({ "x": 0.0, "y": 0.0, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
         );
         tok.owner = Some(user);
-        let verts = grid_shape::GridShape::cell_vertices(&g, HEX_SEALED_CELL, 50.0);
+        let verts = grid_shape::GridShape::cell_vertices(&g, HEX_SEALED_CELL, g.size);
         let mut docs = vec![
             entity_doc_top_eng(
                 10,
                 "scene",
-                json!({ "grid": { "kind": "hex", "size": 50 }, "background": null,
+                json!({ "grid": { "kind": "hex", "size": g.size }, "background": null,
                         "bounds": { "width": 6.0, "height": 4.0 } }),
             ),
             tok,
@@ -6491,7 +6512,7 @@ explored: // GM: unrestricted mask
         vec![entity_doc_top_eng(
             10,
             "scene",
-            json!({ "grid": { "kind": "hex", "size": 50 }, "background": null,
+            json!({ "grid": { "kind": "hex", "size": HEX_FIXTURE_SIZE }, "background": null,
                     "vision": { "movementModel": "continuous" } }),
         )]
     }
@@ -6505,7 +6526,9 @@ explored: // GM: unrestricted mask
         // region covers ONLY hex (3,1) (center x ≈303.1), whose entry boundary from (2,1) is
         // x ≈259.8. Reading the same axial key (3,1) as a SQUARE cell would place it at
         // x∈[150,200) — a different location — cutting the preview roughly a full hex early.
-        let g = grid_shape::HexGrid { size: 50.0 };
+        let g = grid_shape::HexGrid {
+            size: HEX_FIXTURE_SIZE,
+        };
         let mut docs = hex_continuous_scene_docs();
         docs.push(region_doc_top(
             12,
@@ -7630,7 +7653,7 @@ explored: // GM: unrestricted mask
         let scene = entity_doc_top_eng(
             10,
             "scene",
-            json!({ "grid": { "kind": "hex", "size": 50.0 }, "background": null,
+            json!({ "grid": { "kind": "hex", "size": HEX_FIXTURE_SIZE }, "background": null,
                     "bounds": { "width": 3.2, "height": 3.0 } }),
         );
         let mut ecs = SceneEcs::from_documents(vec![scene, tok], 0);
@@ -7705,7 +7728,7 @@ explored: // GM: unrestricted mask
     #[test]
     fn hex_lenient_mask_lets_the_executor_enter_a_cell_the_strict_mask_stops_at() {
         let (ecs, user, scene) = hex_open_scene();
-        let cell = 50.0;
+        let cell = HEX_FIXTURE_SIZE;
         let token = Uuid::from_u128(11);
         let grid = ecs.resolve_grid_shape(scene, cell);
         let dest = grid.cell_center((4, 0));
@@ -7841,7 +7864,8 @@ explored: // GM: unrestricted mask
     /// straddle the cap on either side of it. Wall-less, all-bright, LOS off, one owned token at
     /// `(100, 100)`. The grid size is 1, so a `1999 × 1999` authored block converts to a
     /// `1999 × 1999` world rectangle — the one grid size at which a block measured in grid units
-    /// and its world span coincide, which is what keeps the spans below exactly at the cap.
+    /// and its world span coincide, which is what keeps the two candidate spans this doc names
+    /// exactly at the cap.
     /// `source_los_poly`'s bound rectangle is therefore exactly `[0, 0]–[1999, 1999]`
     /// (`VISION_BOUND_MARGIN` cancels against the token's own offset on the low edge; the scene's
     /// extent dominates the high edge).
@@ -7998,11 +8022,13 @@ explored: // GM: unrestricted mask
         // Discrimination: the endpoints are `cell_center` values with `y == 0.0` asserted, so the
         // test cannot drift onto an interior row and keep passing; and the cost is bounded on both
         // sides by the straight-line distance, so a route that detoured off the edge fails too.
-        let g = grid_shape::HexGrid { size: 50.0 };
+        let g = grid_shape::HexGrid {
+            size: HEX_FIXTURE_SIZE,
+        };
         let docs = vec![entity_doc_top_eng(
             10,
             "scene",
-            json!({ "grid": { "kind": "hex", "size": 50 }, "background": null,
+            json!({ "grid": { "kind": "hex", "size": g.size }, "background": null,
                     "bounds": { "width": 20.0, "height": 20.0 },
                     "vision": { "movementModel": "continuous" } }),
         )];
@@ -8054,11 +8080,13 @@ explored: // GM: unrestricted mask
         // destination and the route reports unreachable.
         // Discrimination: fails if `world_extent` returns the bounds×size product on hex, because
         // the destination is derived from `cell_center`, not from the extent.
-        let g = grid_shape::HexGrid { size: 50.0 };
+        let g = grid_shape::HexGrid {
+            size: HEX_FIXTURE_SIZE,
+        };
         let docs = vec![entity_doc_top_eng(
             10,
             "scene",
-            json!({ "grid": { "kind": "hex", "size": 50 }, "background": null,
+            json!({ "grid": { "kind": "hex", "size": g.size }, "background": null,
                     "bounds": { "width": 20.0, "height": 20.0 },
                     "vision": { "movementModel": "continuous" } }),
         )];
@@ -8099,11 +8127,13 @@ explored: // GM: unrestricted mask
         // endpoints; a conversion through the size itself cannot reach that.
         // Discrimination: the expectation is bounded below by the straight-line distance between
         // the two endpoints, computed from `cell_center`, not from the router's own output.
-        let g = grid_shape::HexGrid { size: 50.0 };
+        let g = grid_shape::HexGrid {
+            size: HEX_FIXTURE_SIZE,
+        };
         let mut docs = vec![entity_doc_top_eng(
             10,
             "scene",
-            json!({ "grid": { "kind": "hex", "size": 50 }, "background": null,
+            json!({ "grid": { "kind": "hex", "size": g.size }, "background": null,
                     "bounds": { "width": 20.0, "height": 20.0 },
                     "vision": { "movementModel": "continuous" } }),
         )];
