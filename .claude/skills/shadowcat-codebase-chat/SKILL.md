@@ -178,11 +178,12 @@ with zero message-specific plumbing in any of those subsystems.
     mirroring send's literal-body semantics for a whisper — a non-whisper edit still rejects `/w`);
     **CLEARED (`None`) by
     the delete tombstone alongside `content`** — a retained source would leak deleted content.
-    EXPOSURE NOTE: like every `system` string leaf (incl. `channel`), `source` is swept into
-    the content-agnostic FTS index and can surface in `SearchHit.snippet`/`.document` — any
-    search-UI consumer must treat message snippet/`source` strings as inert text, never
-    innerHTML (documented at the field — a high-volume instance of a pre-existing pattern, not a
-    new leak class).
+    EXPOSURE NOTE: like everything `index_content` sweeps — the `doc_type`, the envelope `name`,
+    and every string and number leaf of `engine` (the band `source` and `channel` both live in)
+    and `system` — `source` is swept into the content-agnostic FTS index and can surface in
+    `SearchHit.snippet`/`.document` — any search-UI consumer must treat message snippet/`source`
+    strings as inert text, never innerHTML (documented at the field — a high-volume instance of
+    that pattern, not a new leak class).
   - `build_message_doc(...) -> Document` — constructs the whole `Document`: `owner = Some(user)`;
     `audience` maps onto `PermissionSet{default, gm_role, users}` (see
     `shadowcat-codebase-documents-permissions` for what `gm_role` does at `resolve_access` time):

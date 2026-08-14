@@ -248,12 +248,13 @@ pub struct MessageEngine {
     /// literal-body treatment of a whisper's content), so nested command-like
     /// text in a whisper body is never parsed on send OR on edit.
     ///
-    /// EXPOSURE NOTE: like every string leaf of `engine` (incl. `channel`),
-    /// this pre-sanitize text is swept into the content-agnostic FTS index and
-    /// can surface in `SearchHit.snippet`/`.document`. Any search-UI consumer
-    /// must treat message-doc snippet/`source` strings as inert text (never
-    /// innerHTML) — this field is the highest-volume raw-text instance of that
-    /// pre-existing pattern.
+    /// EXPOSURE NOTE: like everything `index_content` sweeps — the `doc_type`,
+    /// the envelope `name`, and every string and number leaf of `engine` and
+    /// `system` — this pre-sanitize text is swept into the content-agnostic
+    /// FTS index and can surface in `SearchHit.snippet`/`.document`. Any
+    /// search-UI consumer must treat message-doc snippet/`source` strings as
+    /// inert text (never innerHTML) — this field is the highest-volume
+    /// raw-text instance of that pattern.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
     /// Set when the message has been edited (c-3's edit path). Absent (not

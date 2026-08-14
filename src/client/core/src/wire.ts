@@ -517,10 +517,11 @@ export type WireSearchHit = {
   document: WireDocument;
   /** BM25 relevance as SQLite returns it (lower = more relevant). */
   score: number;
-  /** Highlighted match snippet from the recipient's own index partition. Every `engine` AND
-   * `system` string leaf, plus the document's `name`, is swept into the full-text index and
-   * can surface here and in `document` — `index_content` walks all three — so a consumer must
-   * render this as inert text and never as innerHTML. */
+  /** Highlighted match snippet from the recipient's own index partition. `index_content` sweeps
+   * the `doc_type` unconditionally, the document's `name`, and — through `collect_leaves` —
+   * every string AND number leaf of both `engine` and `system`, so any of them can surface here
+   * and in `document`. `doc_type` is client-supplied on `Create` and no charset validation
+   * constrains it, so a consumer must render this as inert text and never as innerHTML. */
   snippet: string;
 };
 
