@@ -911,19 +911,26 @@ mod tests {
     #[test]
     fn a_degenerate_or_over_magnitude_minimum_fails_closed() {
         // The envelope carries a minimum, so every refusal the maximum gets the minimum needs
-        // too: a non-finite corner, an inverted rectangle (which the span check catches, since a
-        // minimum past the maximum is a non-positive span rather than a negative corner), and a
-        // finite-but-enormous corner that saturates the `f64 -> f32` cast and panics inside
-        // `spade`.
+        // too: a non-finite corner on either axis, an inverted rectangle (which the span check
+        // catches, since a minimum past the maximum is a non-positive span rather than a negative
+        // corner), and a finite-but-enormous corner that saturates the `f64 -> f32` cast and
+        // panics inside `spade`.
         // Discrimination: each case moves ONLY the minimum, and the last assertion pairs an
         // over-magnitude minimum against an in-range one with the same maximum, so a guard that
-        // refused on the maximum alone, or refused every negative minimum, fails it.
+        // refused on the maximum alone, or refused every negative minimum, fails it. The two
+        // non-finite rows are isolating against a finiteness check narrowed to the OTHER axis:
+        // dropping the x-axis check leaves the `min.0` row unrefused, and narrowing it to the x
+        // axis (dropping the y-axis check) leaves the `min.1` row unrefused. Both non-finite
+        // minima reach `spade`'s triangulation as a NaN coordinate and refuse via a panic rather
+        // than a clean `None` when their finiteness guard is the one dropped — the same failure
+        // mode the guard exists to prevent, so the panic is stronger evidence than a clean
+        // refusal, not weaker.
         let refuse = |min: (f64, f64)| WorldExtent {
             min,
             max: (10_000.0, 10_000.0),
         };
         assert!(build_navmesh(refuse((f64::NAN, 0.0)), 40.0, &[]).is_none());
-        assert!(build_navmesh(refuse((0.0, f64::INFINITY)), 40.0, &[]).is_none());
+        assert!(build_navmesh(refuse((0.0, f64::NAN)), 40.0, &[]).is_none());
         assert!(
             build_navmesh(refuse((20_000.0, 0.0)), 40.0, &[]).is_none(),
             "a minimum past the maximum is a non-positive span"

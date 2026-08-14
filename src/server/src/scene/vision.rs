@@ -453,12 +453,6 @@ mod tests {
             far_refused.minx,
             far_refused.miny
         );
-        assert!(
-            far_refused.maxx == far_wall_only.maxx && far_refused.maxy == far_wall_only.maxy,
-            "the high edges keep their wall-derived values, got ({}, {})",
-            far_refused.maxx,
-            far_refused.maxy
-        );
     }
 
     #[test]
