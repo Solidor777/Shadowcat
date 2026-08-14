@@ -287,6 +287,24 @@ impl HexGrid {
         let (qf, rf) = self.pixel_to_axial_frac(p);
         self.axial_round(qf, rf)
     }
+
+    /// Distance from `p` to cell `c`'s hexagon: zero when `p` lies inside it, else the smallest
+    /// distance to any of its six edges. Reads the SAME vertex ring `cell_vertices` supplies to
+    /// the leniency corner test, so the footprint predicate and the corner sampler cannot
+    /// disagree about a hex's geometry.
+    fn distance_to_cell_polygon(&self, c: Cell, p: vision::P, cell: f64) -> f64 {
+        let verts = self.cell_vertices(c, cell);
+        if vision::point_in_poly(&verts, p) {
+            return 0.0;
+        }
+        let mut best = f64::INFINITY;
+        for k in 0..verts.len() {
+            let a = verts[k];
+            let b = verts[(k + 1) % verts.len()];
+            best = best.min(vision::point_segment_distance(p, a, b));
+        }
+        best
+    }
 }
 
 impl GridShape for HexGrid {
@@ -422,19 +440,33 @@ impl GridShape for HexGrid {
         }
         Some(out)
     }
-    /// Conservative disc-vs-hex-cell overlap: a candidate hex is included when its center is
-    /// within `r_scene + hex_inradius` of the disc center — an always-safe over-approximation
-    /// (a hex overlapping the true disc boundary is never excluded), mirroring the square
-    /// implementation's own AABB-vs-disc distance test, which is similarly conservative rather
-    /// than exact.
-    fn footprint_cells(&self, anchor: Cell, ctr: vision::P, r_scene: f64, _cell: f64) -> Vec<Cell> {
+    /// Cells whose hex geometry the footprint disc (center `ctr`, radius `r_scene`) overlaps.
+    ///
+    /// EXACT and INDEPENDENT of where `ctr` sits relative to `anchor`: a hex is included iff the
+    /// distance from `ctr` to that hex's own polygon is at most `r_scene`. A centre-distance test
+    /// against the inradius is not a safe substitute — a hex the disc reaches near one of its
+    /// VERTICES has its centre up to `r_scene + size` away, and `size > √3/2·size` — and the
+    /// callers that pass an arc-length sample point rather than a cell centre
+    /// (`navmesh::clip_to_visible_mask`, `navmesh::los_smooth`) are exactly the ones that would
+    /// lose those cells. Losing them LOOSENS the gates that read this set: a cell the token's body
+    /// covers is then never required to be visible.
+    ///
+    /// Two cheap bounds settle most candidates without the polygon walk, both exact rather than
+    /// approximate: a hex whose centre is within `r_scene + √3/2·size` necessarily overlaps
+    /// (every hex contains its own inscribed disc of that radius), and a hex whose centre is
+    /// beyond `r_scene + size` necessarily does not (every hex lies inside its circumscribed disc
+    /// of that radius). Only the annulus between them needs the six edge distances.
+    ///
+    /// The scan is a hex-shaped ring neighbourhood of `anchor`, sized so it cannot miss a
+    /// reachable hex: ring `k`'s centres are at least `1.5·size` per ring from `anchor`'s, `ctr`
+    /// is at most `size` from `anchor`'s centre, and an overlapping hex's centre is at most
+    /// `r_scene + size` from `ctr`. `anchor` is returned alone when nothing overlaps, mirroring
+    /// the square implementation's zero-radius guarantee.
+    fn footprint_cells(&self, anchor: Cell, ctr: vision::P, r_scene: f64, cell: f64) -> Vec<Cell> {
         let mut out = Vec::new();
-        // Hex inradius (center-to-edge distance) for a pointy-top hex with outer radius `size`.
+        let r = r_scene.max(0.0);
         let inradius = self.size * 3.0_f64.sqrt() / 2.0;
-        // Scan radius in hex rings: a disc of radius r_scene can overlap hexes up to
-        // ceil(r_scene / (size * 1.5)) rings out (1.5*size is the hex row/column pitch) — bounded
-        // and small for any realistic footprint (MAX_FOOTPRINT_CELLS caps r_scene upstream).
-        let ring_radius = ((r_scene / (self.size * 1.5)).ceil() as i32).max(0) + 1;
+        let ring_radius = ((r / (self.size * 1.5)).ceil() as i32).max(0) + 2;
         for dq in -ring_radius..=ring_radius {
             for dr in -ring_radius..=ring_radius {
                 let ds = -dq - dr;
@@ -445,7 +477,11 @@ impl GridShape for HexGrid {
                 let center = self.cell_center(c);
                 let dx = center.0 - ctr.0;
                 let dy = center.1 - ctr.1;
-                if (dx * dx + dy * dy).sqrt() <= r_scene + inradius {
+                let d_center = (dx * dx + dy * dy).sqrt();
+                let inscribed_disc_hit = d_center <= r + inradius;
+                let polygon_hit =
+                    d_center <= r + self.size && self.distance_to_cell_polygon(c, ctr, cell) <= r;
+                if inscribed_disc_hit || polygon_hit {
                     out.push(c);
                 }
             }
@@ -737,6 +773,77 @@ mod tests {
         let cells = g.line_traversal(p, p, 50.0).unwrap();
         assert_eq!(cells.len(), 1);
         assert!(cells.contains(&(2, -1)));
+    }
+
+    #[test]
+    fn hex_footprint_reaches_a_cell_the_disc_touches_near_a_shared_vertex() {
+        // A pointy-top hex of size 50 centred at the origin has a vertex at
+        // (√3/2·50, -25) = (43.301, -25), shared with hexes (1,0) and (1,-1) — both of whose
+        // centres sit exactly 50 (the circumradius) from that vertex. A disc of radius 2 centred
+        // one unit inside the origin hex from that vertex overlaps all three by a clear margin,
+        // so no assertion here sits on the overlap boundary.
+        //
+        // Discrimination: a predicate comparing the CELL CENTRE distance against
+        // `r_scene + inradius` computes about 50.5 against a bound of 45.3 for both neighbours and
+        // emits only the anchor. The assertion is the presence of the two neighbours, which no
+        // centre-distance-against-inradius test can produce at this radius.
+        let g = HexGrid { size: 50.0 };
+        let half_x = 50.0 * 3.0_f64.sqrt() / 2.0;
+        let vertex = (half_x, -25.0);
+        // One unit from the vertex along the direction back to the origin hex's centre.
+        let p = (vertex.0 - 0.866, vertex.1 + 0.5);
+        assert_eq!(
+            g.cell_of(p),
+            (0, 0),
+            "fixture: the sample sits in the origin hex"
+        );
+        let cells = g.footprint_cells((0, 0), p, 2.0, 50.0);
+        assert!(cells.contains(&(0, 0)), "the anchor hex, got {cells:?}");
+        assert!(
+            cells.contains(&(1, 0)),
+            "the hex across the shared edge, got {cells:?}"
+        );
+        assert!(
+            cells.contains(&(1, -1)),
+            "the third hex at that vertex, got {cells:?}"
+        );
+    }
+
+    #[test]
+    fn hex_footprint_from_a_cell_centre_brackets_the_inradius_threshold() {
+        // From a hex's own centre the nearest point of every neighbour is their shared edge, at
+        // the inradius √3/2·size ≈ 43.301. A disc a clear 0.5 under that stays in one hex; a disc
+        // a clear 0.5 over it reaches all six neighbours and nothing beyond (ring 2's nearest edge
+        // is 2.598·size away). Both probes sit off the threshold, so a one-ULP difference in the
+        // distance computation cannot decide either.
+        //
+        // Discrimination: fails if the threshold for a CENTRE-anchored disc moves in either
+        // direction by more than half a unit — the case every existing hex parity fixture
+        // exercises, and the property that makes this change inert for them.
+        let g = HexGrid { size: 50.0 };
+        let ctr = g.cell_center((0, 0));
+        let inradius = 50.0 * 3.0_f64.sqrt() / 2.0;
+        assert_eq!(
+            g.footprint_cells((0, 0), ctr, inradius - 0.5, 50.0),
+            vec![(0, 0)]
+        );
+        let over = g.footprint_cells((0, 0), ctr, inradius + 0.5, 50.0);
+        assert_eq!(
+            over.len(),
+            7,
+            "the disc reaches all six neighbours, got {over:?}"
+        );
+        assert!(over.contains(&(0, 0)) && over.contains(&(1, 0)) && over.contains(&(0, 1)));
+    }
+
+    #[test]
+    fn hex_footprint_returns_the_anchor_when_the_disc_overlaps_nothing_else() {
+        // The zero-radius guarantee the square implementation also makes: a point footprint
+        // yields exactly the anchor. Discrimination: fails if the empty-result fallback is
+        // dropped, or if the predicate admits a cell the disc does not reach.
+        let g = HexGrid { size: 50.0 };
+        let ctr = g.cell_center((2, -1));
+        assert_eq!(g.footprint_cells((2, -1), ctr, 0.0, 50.0), vec![(2, -1)]);
     }
 
     #[test]
