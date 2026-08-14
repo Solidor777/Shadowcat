@@ -10,7 +10,7 @@
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
-use crate::scene::grid_shape::GridShape;
+use crate::scene::grid_shape::{candidate_span, GridShape};
 use crate::scene::vision;
 use crate::scene::GridKind;
 use std::collections::BTreeSet;
@@ -36,10 +36,14 @@ fn kind_tag(kind: GridKind) -> u8 {
 /// A grid-cell coordinate. `BTreeSet` ordering gives a deterministic serialization.
 pub type Cell = (i32, i32);
 
-/// Hard cap on candidate cells scanned per polygon. The visibility polygon's bbox is bounded by
-/// the scene's wall/viewpoint extent, but a wall authored at an extreme coordinate with a tiny
-/// grid size could otherwise span billions of cells and stall the dispatch path. Exceeding the cap
-/// skips the polygon (marks no cells → under-reveal, the fail-safe direction).
+/// Hard cap on candidate cells scanned per polygon/source. A wall or LOS bbox authored at an
+/// extreme coordinate with a tiny grid size could otherwise span billions of cells and stall the
+/// dispatch path. Every production call site (`mark_polygons`, `accumulate_visible_cells`,
+/// `player_lit_mask`) passes its box through `clamp_scan_window` before enumerating, which
+/// intersects an over-cap box with a bounded window around the source's own focus. `cells_in_bounds`
+/// enforces this cap directly and returns `None` — the candidate set is then skipped, under-reveal
+/// — when the box it receives is still over it (a degenerate window) or for any caller that
+/// bypasses the clamp.
 pub(crate) const MAX_CELLS_PER_POLYGON: i64 = 4_000_000;
 
 /// Half-extent, in CELLS, of the window an over-cap candidate scan is clamped to.
@@ -53,8 +57,9 @@ pub(crate) const MAX_CELLS_PER_POLYGON: i64 = 4_000_000;
 /// `HexGrid::cell_bounds` rather than assuming it.
 pub(crate) const SCAN_WINDOW_HALF_CELLS: i64 = 999;
 
-/// Intersect a candidate-scan AABB with a window of `SCAN_WINDOW_HALF_CELLS` cells around `focus`,
-/// but ONLY when the AABB's own candidate count exceeds `max_cells`.
+/// Intersect a candidate-scan AABB `actual = (min, max)` with a window of `SCAN_WINDOW_HALF_CELLS`
+/// cells around `focus`, but ONLY when `decision = (decision_min, decision_max)`'s own candidate
+/// count exceeds `max_cells`.
 ///
 /// An over-cap scan makes `GridShape::cells_in_bounds` return `None`, and every caller of that
 /// primitive treats `None` as "skip this source/polygon" — an empty mask, which on the movement
@@ -67,26 +72,43 @@ pub(crate) const SCAN_WINDOW_HALF_CELLS: i64 = 999;
 /// The cap bounds a PRODUCT of two cell counts; the window bounds a PER-AXIS distance from a focus
 /// that sits wherever the source does, not at the box's centre. A box can therefore reach far
 /// beyond the window on both axes and still enumerate fewer cells than the cap allows, and those
-/// cells are in the mask a player moves through. So the span is computed first — through the same
-/// `cell_bounds` + `saturating_mul` arithmetic `cells_in_bounds` applies — and a span within
-/// `max_cells` returns `min`/`max` untouched.
+/// cells are in the mask a player moves through. So the span is computed first — through
+/// `candidate_span`, the SAME symbol `cells_in_bounds` derives its own cap check from — and a span
+/// within `max_cells` returns `min`/`max` untouched.
 ///
-/// PRECONDITION: `focus` lies inside `[min, max]`. All three callers satisfy it — a visibility
-/// source sits inside its own LOS polygon's bbox, and `mark_polygons` uses that bbox's own centre.
-/// A focus far enough outside that the window misses the box would otherwise yield `min > max`, an
-/// inverted rectangle that enumerates nothing, so that case returns the box unchanged and lets the
-/// callee's own cap decide.
+/// `decision` is separate from `actual` because `accumulate_visible_cells` runs the SAME source
+/// through two invocations (strict, then lenient) whose ACTUAL scan boxes differ by a one-cell
+/// pad, and a `strict ⊆ lenient` invariant is pinned elsewhere on their outputs. If each invocation
+/// decided whether to clamp from its OWN box, there is a reachable band where the smaller (strict)
+/// box sits at or under the cap and returns unclamped while the larger (padded/lenient) box
+/// exceeds it and gets windowed — the unclamped strict result could then hold a cell the windowed
+/// lenient result does not, breaking that invariant. Deciding from ONE shared box (the caller's
+/// largest box across every mode it calls this for) makes the window identical regardless of which
+/// mode is asking: `A ⊆ A'` intersected with the SAME window gives `A ∩ W ⊆ A' ∩ W`, so the
+/// nesting holds structurally rather than by argument about which branch ran. A caller with only
+/// one mode (`mark_polygons`, `player_lit_mask`) passes its own box as both `actual` and
+/// `decision`.
 ///
-/// Returns `min`/`max` unchanged for a degenerate `cell`, `focus` or box as well — the callee's
-/// fail-closed `None` on a degenerate input is the correct outcome there and must not be masked.
+/// PRECONDITION: `focus` lies inside `actual` and inside `decision`. Every caller satisfies it — a
+/// visibility source sits inside its own LOS polygon's bbox (and inside the padded box, which only
+/// grows it), and `mark_polygons` uses that bbox's own centre for both. A focus far enough outside
+/// `actual` that the window misses it would otherwise yield `min > max`, an inverted rectangle that
+/// enumerates nothing, so that case returns `actual` unchanged and lets the callee's own cap
+/// decide.
+///
+/// Returns `actual` unchanged for a degenerate `cell`, `focus`, or either box as well — the
+/// callee's fail-closed `None` on a degenerate input is the correct outcome there and must not be
+/// masked.
 pub(crate) fn clamp_scan_window(
     grid: &dyn GridShape,
     focus: vision::P,
-    min: vision::P,
-    max: vision::P,
+    actual: (vision::P, vision::P),
+    decision: (vision::P, vision::P),
     cell: f64,
     max_cells: i64,
 ) -> (vision::P, vision::P) {
+    let (min, max) = actual;
+    let (decision_min, decision_max) = decision;
     if !cell.is_finite()
         || cell <= 0.0
         || !focus.0.is_finite()
@@ -95,13 +117,15 @@ pub(crate) fn clamp_scan_window(
         || !min.1.is_finite()
         || !max.0.is_finite()
         || !max.1.is_finite()
+        || !decision_min.0.is_finite()
+        || !decision_min.1.is_finite()
+        || !decision_max.0.is_finite()
+        || !decision_max.1.is_finite()
     {
         return (min, max);
     }
-    let (i0, j0, i1, j1) = grid.cell_bounds(min, max, cell);
-    let w = i1 as i64 - i0 as i64 + 1;
-    let h = j1 as i64 - j0 as i64 + 1;
-    if w.saturating_mul(h) <= max_cells {
+    let bounds = grid.cell_bounds(decision_min, decision_max, cell);
+    if candidate_span(bounds) <= max_cells {
         return (min, max);
     }
     let half_px = SCAN_WINDOW_HALF_CELLS as f64 * cell;
@@ -192,16 +216,11 @@ impl ExploredSet {
             // intersected with a window around its own centre, so the polygon marks a bounded
             // SUBSET of the cells that bbox covers. Fail direction: fewer cells remembered, which
             // under-reveals. `cells_in_bounds` still applies the cap, so a degenerate input fails
-            // closed.
+            // closed. One mode only, so the decision box is the polygon's own bbox.
             let focus = ((minx + maxx) * 0.5, (miny + maxy) * 0.5);
-            let (scan_min, scan_max) = clamp_scan_window(
-                grid,
-                focus,
-                (minx, miny),
-                (maxx, maxy),
-                cell_size,
-                MAX_CELLS_PER_POLYGON,
-            );
+            let bbox = ((minx, miny), (maxx, maxy));
+            let (scan_min, scan_max) =
+                clamp_scan_window(grid, focus, bbox, bbox, cell_size, MAX_CELLS_PER_POLYGON);
             let Some(candidates) =
                 grid.cells_in_bounds(scan_min, scan_max, cell_size, MAX_CELLS_PER_POLYGON)
             else {
@@ -482,8 +501,14 @@ mod tests {
             max.0 - focus.0 > SCAN_WINDOW_HALF_CELLS as f64 * cell,
             "fixture: the box must reach past the window, or the test proves nothing"
         );
-        let (out_min, out_max) =
-            clamp_scan_window(&g, focus, min, max, cell, MAX_CELLS_PER_POLYGON);
+        let (out_min, out_max) = clamp_scan_window(
+            &g,
+            focus,
+            (min, max),
+            (min, max),
+            cell,
+            MAX_CELLS_PER_POLYGON,
+        );
         assert_eq!((out_min, out_max), (min, max));
     }
 
@@ -498,8 +523,14 @@ mod tests {
         let focus = (50.0, 50.0);
         let half_px = SCAN_WINDOW_HALF_CELLS as f64 * cell;
         let (min, max) = ((-50.0, -50.0), (1.0e9, 1.0e9));
-        let (out_min, out_max) =
-            clamp_scan_window(&g, focus, min, max, cell, MAX_CELLS_PER_POLYGON);
+        let (out_min, out_max) = clamp_scan_window(
+            &g,
+            focus,
+            (min, max),
+            (min, max),
+            cell,
+            MAX_CELLS_PER_POLYGON,
+        );
         assert_eq!(
             out_min, min,
             "an edge already inside the window is untouched"
@@ -518,8 +549,35 @@ mod tests {
         let g = sq(cell);
         let (min, max) = ((0.0, 0.0), (1.0e9, 1.0e9));
         assert_eq!(
-            clamp_scan_window(&g, (-1.0e8, -1.0e8), min, max, cell, MAX_CELLS_PER_POLYGON),
+            clamp_scan_window(
+                &g,
+                (-1.0e8, -1.0e8),
+                (min, max),
+                (min, max),
+                cell,
+                MAX_CELLS_PER_POLYGON
+            ),
             (min, max)
+        );
+    }
+
+    #[test]
+    fn clamp_scan_window_decides_from_the_decision_box_not_the_actual_box() {
+        // A thin, wide actual box: comfortably under the cap on its own (span ≈ 40,002). The
+        // decision box is far over the cap. Discrimination: fails if the clamp decision is
+        // computed from the actual box instead of the decision box — the actual box would then
+        // be returned unchanged, since it is under the cap by itself.
+        let cell = 100.0;
+        let g = sq(cell);
+        let focus = (50.0, 50.0);
+        let actual = ((-1.0e6, -50.0), (1.0e6, 50.0));
+        let decision = ((-1.0e8, -1.0e8), (1.0e8, 1.0e8));
+        let (out_min, out_max) =
+            clamp_scan_window(&g, focus, actual, decision, cell, MAX_CELLS_PER_POLYGON);
+        assert_ne!(
+            (out_min, out_max),
+            actual,
+            "an over-cap decision box must clamp the actual box even when it is small alone"
         );
     }
 

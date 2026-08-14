@@ -89,6 +89,19 @@ pub(crate) trait GridShape {
 /// axis. Source: Red Blob Games axial/cube coordinates (public-domain computational geometry).
 const HEX_BOUNDS_PAD: i32 = 1;
 
+/// The candidate-cell COUNT a `cell_bounds` rectangle `(i0, j0, i1, j1)` enumerates:
+/// `(i1-i0+1) * (j1-j0+1)`, widened to `i64` and `saturating_mul`ed so an extreme-magnitude
+/// bounding box can't overflow before a cap comparison runs. `SquareGrid::cells_in_bounds`,
+/// `HexGrid::cells_in_bounds`, and `explored::clamp_scan_window`'s pre-check all derive their span
+/// from THIS function rather than recomputing the arithmetic — a pre-check that disagrees with the
+/// enforcement it guards is a silent fork nothing else here would catch.
+pub(crate) fn candidate_span(bounds: (i32, i32, i32, i32)) -> i64 {
+    let (i0, j0, i1, j1) = bounds;
+    let w = i1 as i64 - i0 as i64 + 1;
+    let h = j1 as i64 - j0 as i64 + 1;
+    w.saturating_mul(h)
+}
+
 /// Byte-identical port of the pre-existing hardcoded square-grid math (`cell_center`/
 /// `footprint_cells`, `movement::supercover_cells`, `astar_leg`'s 8-directional `dirs` +
 /// `step_cost`). `cell` and `rule` are the scene's resolved
@@ -160,12 +173,11 @@ impl GridShape for SquareGrid {
         {
             return None;
         }
-        let (i0, j0, i1, j1) = self.cell_bounds(min, max, cell);
-        let w = i1 as i64 - i0 as i64 + 1;
-        let h = j1 as i64 - j0 as i64 + 1;
-        if w.saturating_mul(h) > max_cells {
+        let bounds = self.cell_bounds(min, max, cell);
+        if candidate_span(bounds) > max_cells {
             return None;
         }
+        let (i0, j0, i1, j1) = bounds;
         let mut out = Vec::new();
         for i in i0..=i1 {
             for j in j0..=j1 {
@@ -454,12 +466,11 @@ impl GridShape for HexGrid {
         {
             return None;
         }
-        let (q0, r0, q1, r1) = self.cell_bounds(min, max, cell);
-        let w = q1 as i64 - q0 as i64 + 1;
-        let h = r1 as i64 - r0 as i64 + 1;
-        if w.saturating_mul(h) > max_cells {
+        let bounds = self.cell_bounds(min, max, cell);
+        if candidate_span(bounds) > max_cells {
             return None;
         }
+        let (q0, r0, q1, r1) = bounds;
         let mut out = Vec::new();
         for q in q0..=q1 {
             for r in r0..=r1 {

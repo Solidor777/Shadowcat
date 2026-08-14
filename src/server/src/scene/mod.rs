@@ -2091,12 +2091,14 @@ impl SceneEcs {
                 // Clamp before enumerating: a scan whose candidate count exceeds the cap is
                 // intersected with a window around this source's viewpoint, so the source
                 // contributes a bounded SUBSET of its candidate cells. Fail direction: fewer cells
-                // shipped, which under-reveals. A scan within the cap is enumerated whole.
+                // shipped, which under-reveals. A scan within the cap is enumerated whole. One mode
+                // only, so the decision box is this source's own bbox.
+                let bbox = ((minx, miny), (maxx, maxy));
                 let (scan_min, scan_max) = crate::scene::explored::clamp_scan_window(
                     cell_grid.as_ref(),
                     src.vp,
-                    (minx, miny),
-                    (maxx, maxy),
+                    bbox,
+                    bbox,
                     cell,
                     crate::scene::explored::MAX_CELLS_PER_POLYGON,
                 );
@@ -2572,14 +2574,21 @@ fn accumulate_visible_cells(
         let pad_px = if lenient { cell } else { 0.0 };
         let min = (minx - pad_px, miny - pad_px);
         let max = (maxx + pad_px, maxy + pad_px);
-        // Pad first, then clamp: clamping the padded box keeps the lenient candidate set a
-        // superset of the strict one (equal when the clamp binds), which the strict/lenient
-        // relationship depends on.
+        // The clamp DECISION is made from the fully-padded box regardless of `lenient`, never from
+        // this invocation's own (possibly-unpadded) box: this function runs once per mode over the
+        // same source, and `visible_cells_lenient_is_a_superset_of_strict` pins `strict ⊆ lenient`
+        // on the two outputs. Deciding independently per mode lets the smaller strict box sit at or
+        // under the cap (returned whole) while the larger padded box exceeds it (windowed) — the
+        // unclamped strict result could then hold a cell the windowed lenient result does not. A
+        // shared decision box makes the window identical across both modes, so intersecting each
+        // mode's own (possibly-unpadded) box with that one window preserves `strict ⊆ lenient`
+        // structurally instead of depending on which mode ran.
+        let padded = ((minx - cell, miny - cell), (maxx + cell, maxy + cell));
         let (min, max) = crate::scene::explored::clamp_scan_window(
             grid,
             src.vp,
-            min,
-            max,
+            (min, max),
+            padded,
             cell,
             crate::scene::explored::MAX_CELLS_PER_POLYGON,
         );
@@ -7534,6 +7543,63 @@ explored: // GM: unrestricted mask
         assert!(
             !cells.contains(&(outside, 0)),
             "a cell beyond the scan window is not shipped"
+        );
+    }
+
+    /// A scene sized so the STRICT (unpadded) candidate scan's own span sits exactly at
+    /// `explored::MAX_CELLS_PER_POLYGON` (2000×2000 cells, product 4,000,000, returned unclamped
+    /// by itself) while the LENIENT (one-cell-padded) scan's own span exceeds it (2002×2002,
+    /// product 4,008,004, clamped by itself) — the band where the two invocations' own spans
+    /// straddle the cap on either side of it. Wall-less, all-bright, LOS off, one owned token at
+    /// `(100, 100)` (grid size 1, authored bounds 1999×1999), so `source_los_poly`'s bound
+    /// rectangle is exactly `[0, 0]–[1999, 1999]` (`VISION_BOUND_MARGIN` cancels against the
+    /// token's own offset on the low edge; the authored bounds dominate the high edge).
+    fn strict_lenient_clamp_band_scene() -> (SceneEcs, Uuid, Uuid) {
+        let user = Uuid::from_u128(8);
+        let scene_id = Uuid::from_u128(20);
+        let mut tok = entity_doc_eng(
+            21,
+            20,
+            "token",
+            json!({ "x": 100.0, "y": 100.0, "w": 1.0, "h": 1.0, "rotation": 0.0 }),
+        );
+        tok.owner = Some(user);
+        let scene = entity_doc_top_eng(
+            20,
+            "scene",
+            json!({ "grid": { "kind": "square", "size": 1 }, "background": null,
+                    "bounds": { "width": 1999.0, "height": 1999.0 } }),
+        );
+        let mut ecs = SceneEcs::from_documents(vec![scene, tok], 0);
+        ecs.set_world_settings_for_test(json!({
+            "scene": {
+                "losRestriction": false, "fog": true,
+                "lightingEnabled": false, "lightMode": "environmentLight",
+                "environment": { "color": "#ffffff", "intensity": 1.0 },
+                "observerVision": false,
+                "movementRestriction": "visible",
+                "movementModel": "grid-stepped",
+                "partialCellLeniency": false
+            },
+            "pathfinding": { "diagonalRule": "chebyshev" },
+            "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
+        }));
+        (ecs, user, scene_id)
+    }
+
+    #[test]
+    fn lenient_visibility_scan_stays_a_superset_of_strict_at_the_clamp_boundary() {
+        // The strict scan's own span sits exactly at the cap; the lenient scan's own (padded)
+        // span exceeds it. Discrimination: fails if the clamp decision for each invocation is
+        // computed from that invocation's own box instead of a box shared across both — the
+        // unclamped strict result then reaches a candidate column the clamped lenient result's
+        // own (independently-decided) window never enumerates, and `is_subset` catches it.
+        let (ecs, user, scene) = strict_lenient_clamp_band_scene();
+        let strict = ecs.visible_cells(user, scene, false);
+        let lenient = ecs.visible_cells(user, scene, true);
+        assert!(
+            strict.is_subset(&lenient),
+            "strict must never see a cell the lenient scan does not"
         );
     }
 }
