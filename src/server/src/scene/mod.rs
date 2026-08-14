@@ -2088,19 +2088,17 @@ impl SceneEcs {
                     maxx = maxx.max(x);
                     maxy = maxy.max(y);
                 }
-                // Clamp before enumerating: a scan whose candidate count exceeds the cap is
-                // intersected with a window around this source's viewpoint, so the source
-                // contributes a bounded SUBSET of its candidate cells. Fail direction: fewer cells
-                // shipped, which under-reveals. A scan within the cap is enumerated whole. One mode
-                // only, so the decision box is this source's own bbox.
+                // Strict mode: this scan must produce the exact box `accumulate_visible_cells`'s
+                // own strict call scans for the same source (`cell_visible`'s doc states that
+                // parity as an invariant) — `scan_box_for` is what makes the two calls agree.
                 let bbox = ((minx, miny), (maxx, maxy));
-                let (scan_min, scan_max) = crate::scene::explored::clamp_scan_window(
+                let (scan_min, scan_max) = crate::scene::explored::scan_box_for(
                     cell_grid.as_ref(),
                     src.vp,
                     bbox,
-                    bbox,
                     cell,
                     crate::scene::explored::MAX_CELLS_PER_POLYGON,
+                    crate::scene::explored::ScanMode::Strict,
                 );
                 let candidates = match cell_grid.cells_in_bounds(
                     scan_min,
@@ -2564,33 +2562,24 @@ fn accumulate_visible_cells(
             maxx = maxx.max(x);
             maxy = maxy.max(y);
         }
-        // Candidate cells via GridShape. Lenient samples corners, so a cell just outside the
-        // center-bbox can still qualify: expand the scan by one cell each side under leniency.
-        // `cells_in_bounds` takes PIXEL bounds, so the pad is applied in pixel space
-        // (`pad_px = pad * cell`) BEFORE the call. For SQUARE, with integer `pad`,
-        // `floor((min - pad*cell)/cell) == floor(min/cell) - pad` (and likewise `+ pad` on max), so
-        // this pixel-space pad and an equivalent integer-index pad enumerate the same row-major
-        // index rectangle. For HEX the padded pixel AABB feeds the axial-bounds superset.
-        let pad_px = if lenient { cell } else { 0.0 };
-        let min = (minx - pad_px, miny - pad_px);
-        let max = (maxx + pad_px, maxy + pad_px);
-        // The clamp DECISION is made from the fully-padded box regardless of `lenient`, never from
-        // this invocation's own (possibly-unpadded) box: this function runs once per mode over the
-        // same source, and `visible_cells_lenient_is_a_superset_of_strict` pins `strict ⊆ lenient`
-        // on the two outputs. Deciding independently per mode lets the smaller strict box sit at or
-        // under the cap (returned whole) while the larger padded box exceeds it (windowed) — the
-        // unclamped strict result could then hold a cell the windowed lenient result does not. A
-        // shared decision box makes the window identical across both modes, so intersecting each
-        // mode's own (possibly-unpadded) box with that one window preserves `strict ⊆ lenient`
-        // structurally instead of depending on which mode ran.
-        let padded = ((minx - cell, miny - cell), (maxx + cell, maxy + cell));
-        let (min, max) = crate::scene::explored::clamp_scan_window(
+        // Lenient samples corners, so a cell just outside the center-bbox can still qualify: this
+        // invocation's mode (whichever `lenient` selects) decides how much this call's OWN box is
+        // padded; `scan_box_for` derives both that pad and the (always fully-padded) clamp
+        // decision from the same binding, so a strict and a lenient call over the same source's
+        // bbox always meet an identical window.
+        let bbox = ((minx, miny), (maxx, maxy));
+        let mode = if lenient {
+            crate::scene::explored::ScanMode::Lenient
+        } else {
+            crate::scene::explored::ScanMode::Strict
+        };
+        let (min, max) = crate::scene::explored::scan_box_for(
             grid,
             src.vp,
-            (min, max),
-            padded,
+            bbox,
             cell,
             crate::scene::explored::MAX_CELLS_PER_POLYGON,
+            mode,
         );
         let candidates = match grid.cells_in_bounds(
             min,
@@ -7587,6 +7576,25 @@ explored: // GM: unrestricted mask
         (ecs, user, scene_id)
     }
 
+    /// The scan box `strict_lenient_clamp_band_scene`'s single source produces, computed the SAME
+    /// way `source_los_poly` + the movement/egress scans do (`vision::bound_for_scene` at
+    /// `VISION_BOUND_MARGIN`, unioned with the authored bounds), so the band assertion is checked
+    /// against the real box rather than the doc comment's claimed one.
+    fn strict_lenient_band_span() -> (i64, i64) {
+        let vp = (100.0, 100.0);
+        let bound = crate::scene::vision::bound_for_scene(vp, &[], (1999.0, 1999.0), 100.0);
+        let bbox_min = (bound.minx, bound.miny);
+        let bbox_max = (bound.maxx, bound.maxy);
+        let g = grid_shape::SquareGrid {
+            cell: 1.0,
+            rule: crate::scene::pathfinding::DiagonalRule::Chebyshev,
+        };
+        let padded = crate::scene::explored::pad_box((bbox_min, bbox_max), 1.0);
+        let strict_span = grid_shape::candidate_span(g.cell_bounds(bbox_min, bbox_max, 1.0));
+        let lenient_span = grid_shape::candidate_span(g.cell_bounds(padded.0, padded.1, 1.0));
+        (strict_span, lenient_span)
+    }
+
     #[test]
     fn lenient_visibility_scan_stays_a_superset_of_strict_at_the_clamp_boundary() {
         // The strict scan's own span sits exactly at the cap; the lenient scan's own (padded)
@@ -7594,12 +7602,45 @@ explored: // GM: unrestricted mask
         // computed from that invocation's own box instead of a box shared across both — the
         // unclamped strict result then reaches a candidate column the clamped lenient result's
         // own (independently-decided) window never enumerates, and `is_subset` catches it.
+        //
+        // The fixture's whole value depends on actually landing in the band — computed and
+        // asserted here rather than trusted from the fixture's doc comment, so a future change to
+        // `VISION_BOUND_MARGIN` or the authored bounds that silently moves the scene out of the
+        // band fails this test instead of leaving every assertion below vacuously true.
+        let (strict_span, lenient_span) = strict_lenient_band_span();
+        assert!(
+            strict_span <= crate::scene::explored::MAX_CELLS_PER_POLYGON,
+            "fixture: the strict span must sit at or under the cap ({strict_span})"
+        );
+        assert!(
+            lenient_span > crate::scene::explored::MAX_CELLS_PER_POLYGON,
+            "fixture: the padded span must exceed the cap ({lenient_span})"
+        );
         let (ecs, user, scene) = strict_lenient_clamp_band_scene();
         let strict = ecs.visible_cells(user, scene, false);
         let lenient = ecs.visible_cells(user, scene, true);
         assert!(
+            !strict.is_empty(),
+            "the strict scan must reach at least one cell"
+        );
+        assert!(
             strict.is_subset(&lenient),
             "strict must never see a cell the lenient scan does not"
         );
+        let outside = crate::scene::explored::SCAN_WINDOW_HALF_CELLS as i32 + 200;
+        assert!(
+            !strict.contains(&(outside, 0)),
+            "a cell well beyond the window is not in the strict mask — proves the clamp binds"
+        );
+    }
+
+    #[test]
+    fn parity_holds_inside_the_clamp_band() {
+        // `player_lit_mask` and the strict `visible_cells` scan must enumerate identical candidate
+        // sets for the same source (`cell_visible`'s own doc states this as an invariant); pinned
+        // specifically inside the clamp band, not only in the scenes outside it the other
+        // `assert_strict_parity` call sites already cover.
+        let (ecs, user, scene) = strict_lenient_clamp_band_scene();
+        assert_strict_parity(&ecs, user, scene);
     }
 }

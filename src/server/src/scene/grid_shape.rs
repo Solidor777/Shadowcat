@@ -91,15 +91,22 @@ const HEX_BOUNDS_PAD: i32 = 1;
 
 /// The candidate-cell COUNT a `cell_bounds` rectangle `(i0, j0, i1, j1)` enumerates:
 /// `(i1-i0+1) * (j1-j0+1)`, widened to `i64` and `saturating_mul`ed so an extreme-magnitude
-/// bounding box can't overflow before a cap comparison runs. `SquareGrid::cells_in_bounds`,
-/// `HexGrid::cells_in_bounds`, and `explored::clamp_scan_window`'s pre-check all derive their span
-/// from THIS function rather than recomputing the arithmetic — a pre-check that disagrees with the
-/// enforcement it guards is a silent fork nothing else here would catch.
+/// bounding box can't overflow before a cap comparison runs.
 pub(crate) fn candidate_span(bounds: (i32, i32, i32, i32)) -> i64 {
     let (i0, j0, i1, j1) = bounds;
     let w = i1 as i64 - i0 as i64 + 1;
     let h = j1 as i64 - j0 as i64 + 1;
     w.saturating_mul(h)
+}
+
+/// Whether a `cell_bounds` rectangle's own `candidate_span` exceeds `max_cells`. The ONE predicate
+/// symbol every cap check in this subsystem calls: `SquareGrid::cells_in_bounds`,
+/// `HexGrid::cells_in_bounds`, and `explored::scan_box_for`'s pre-check (negated) all read this
+/// rather than each writing its own `<=`/`>` comparison against `candidate_span` — a span shared but
+/// compared independently at three sites is the same fork one level down, and exactly-at-cap is the
+/// input where a flipped operator at any one of them silently disagrees with the other two.
+pub(crate) fn exceeds_cell_cap(bounds: (i32, i32, i32, i32), max_cells: i64) -> bool {
+    candidate_span(bounds) > max_cells
 }
 
 /// Byte-identical port of the pre-existing hardcoded square-grid math (`cell_center`/
@@ -174,7 +181,7 @@ impl GridShape for SquareGrid {
             return None;
         }
         let bounds = self.cell_bounds(min, max, cell);
-        if candidate_span(bounds) > max_cells {
+        if exceeds_cell_cap(bounds, max_cells) {
             return None;
         }
         let (i0, j0, i1, j1) = bounds;
@@ -467,7 +474,7 @@ impl GridShape for HexGrid {
             return None;
         }
         let bounds = self.cell_bounds(min, max, cell);
-        if candidate_span(bounds) > max_cells {
+        if exceeds_cell_cap(bounds, max_cells) {
             return None;
         }
         let (q0, r0, q1, r1) = bounds;

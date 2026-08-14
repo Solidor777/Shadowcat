@@ -10,7 +10,7 @@
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
-use crate::scene::grid_shape::{candidate_span, GridShape};
+use crate::scene::grid_shape::{exceeds_cell_cap, GridShape};
 use crate::scene::vision;
 use crate::scene::GridKind;
 use std::collections::BTreeSet;
@@ -39,11 +39,11 @@ pub type Cell = (i32, i32);
 /// Hard cap on candidate cells scanned per polygon/source. A wall or LOS bbox authored at an
 /// extreme coordinate with a tiny grid size could otherwise span billions of cells and stall the
 /// dispatch path. Every production call site (`mark_polygons`, `accumulate_visible_cells`,
-/// `player_lit_mask`) passes its box through `clamp_scan_window` before enumerating, which
-/// intersects an over-cap box with a bounded window around the source's own focus. `cells_in_bounds`
-/// enforces this cap directly and returns `None` — the candidate set is then skipped, under-reveal
-/// — when the box it receives is still over it (a degenerate window) or for any caller that
-/// bypasses the clamp.
+/// `player_lit_mask`) reaches its scan box through `scan_box_for`, which intersects an over-cap box
+/// with a bounded window around the source's own focus before any of them enumerate.
+/// `cells_in_bounds` enforces this cap directly and returns `None` — the candidate set is then
+/// skipped, under-reveal — when the box it receives is still over it (a degenerate window) or for
+/// any caller that bypasses `scan_box_for`.
 pub(crate) const MAX_CELLS_PER_POLYGON: i64 = 4_000_000;
 
 /// Half-extent, in CELLS, of the window an over-cap candidate scan is clamped to.
@@ -57,9 +57,80 @@ pub(crate) const MAX_CELLS_PER_POLYGON: i64 = 4_000_000;
 /// `HexGrid::cell_bounds` rather than assuming it.
 pub(crate) const SCAN_WINDOW_HALF_CELLS: i64 = 999;
 
+/// Which sampling mode a caller of `scan_box_for` wants for the box IT scans — never which box the
+/// clamp decision is made from; `scan_box_for` always decides from the padded box regardless of
+/// `mode` (see its doc).
+pub(crate) enum ScanMode {
+    /// The source's box as authored, unpadded: `mark_polygons`, `player_lit_mask`'s scan, and
+    /// `accumulate_visible_cells`'s strict invocation.
+    Strict,
+    /// The box padded by one cell on every side (corner-sampling headroom):
+    /// `accumulate_visible_cells`'s lenient invocation.
+    Lenient,
+}
+
+/// Pad an AABB by `pad` scene units on every side. The one place a leniency pad is spelled out —
+/// `scan_box_for` derives both the box a `Lenient` caller scans AND the (always-padded) decision
+/// box from this single call, so widening leniency is a one-line change to `scan_box_for` alone.
+pub(crate) fn pad_box(bbox: (vision::P, vision::P), pad: f64) -> (vision::P, vision::P) {
+    let (min, max) = bbox;
+    ((min.0 - pad, min.1 - pad), (max.0 + pad, max.1 + pad))
+}
+
+/// The ONE symbol that owns scan geometry for a source. Given the grid, the source's own focus
+/// (a viewpoint, or a polygon's bbox centre), its unpadded `bbox`, the cell size and the cap,
+/// returns the box a caller wanting `mode` should scan. No call site computes a pad, a decision
+/// box, a span, or a cap comparison of its own — every production caller (`mark_polygons`,
+/// `player_lit_mask`'s scan, both `accumulate_visible_cells` invocations) calls this and scans
+/// exactly what it returns.
+///
+/// The clamp DECISION is always made from `pad_box(bbox, cell)` — the one-cell-padded box —
+/// regardless of `mode`: it is the largest box ANY mode would scan for this source, so every
+/// mode's own box, padded or not, is intersected against the SAME window. `Strict`'s unpadded box
+/// is a subset of `Lenient`'s padded one (`A ⊆ A'`), and intersecting both with one window `W`
+/// gives `A ∩ W ⊆ A' ∩ W` — `strict ⊆ lenient` holds structurally, not by argument about which
+/// branch ran. Deciding independently per mode instead leaves a reachable band where the smaller
+/// unpadded box sits at or under the cap (returned whole) while the larger padded box exceeds it
+/// (windowed), so the unclamped result can hold a cell the windowed one does not.
+///
+/// This is also why `player_lit_mask`'s scan — which has no lenient counterpart of its own — must
+/// still call this with `Strict` rather than compute its box directly: its decision is the SAME
+/// padded box `accumulate_visible_cells`'s strict call decides from, so the two produce IDENTICAL
+/// candidate sets for the same source (`cell_visible`'s own doc states this parity as an
+/// invariant). A caller that instead decided from its own unpadded box alone would sit below the
+/// cap in a band where the padded decision clamps — enumerating strictly more cells than the
+/// movement gate's own strict scan for the same source, an under-permissive divergence between
+/// what a player is shown and what they may move through.
+///
+/// PRECONDITION: `focus` lies inside `bbox` (and therefore inside the padded box, which only grows
+/// it). Every caller satisfies it: a visibility source sits inside its own LOS polygon's bbox, and
+/// `mark_polygons` uses that bbox's own centre. A focus far enough outside `bbox` that the window
+/// misses the box being scanned returns that box unchanged and lets the callee's own cap decide,
+/// rather than yielding an inverted, enumerates-nothing rectangle.
+///
+/// Returns the mode's own box unchanged for a degenerate `cell`, `focus`, or `bbox` as well — the
+/// callee's fail-closed `None` on a degenerate input is the correct outcome there and must not be
+/// masked.
+pub(crate) fn scan_box_for(
+    grid: &dyn GridShape,
+    focus: vision::P,
+    bbox: (vision::P, vision::P),
+    cell: f64,
+    max_cells: i64,
+    mode: ScanMode,
+) -> (vision::P, vision::P) {
+    let padded = pad_box(bbox, cell);
+    let actual = match mode {
+        ScanMode::Strict => bbox,
+        ScanMode::Lenient => padded,
+    };
+    clamp_scan_window(grid, focus, actual, padded, cell, max_cells)
+}
+
 /// Intersect a candidate-scan AABB `actual = (min, max)` with a window of `SCAN_WINDOW_HALF_CELLS`
 /// cells around `focus`, but ONLY when `decision = (decision_min, decision_max)`'s own candidate
-/// count exceeds `max_cells`.
+/// count exceeds `max_cells`. The low-level intersection primitive `scan_box_for` builds on — see
+/// that function's doc for why `decision` and `actual` must be allowed to differ.
 ///
 /// An over-cap scan makes `GridShape::cells_in_bounds` return `None`, and every caller of that
 /// primitive treats `None` as "skip this source/polygon" — an empty mask, which on the movement
@@ -72,26 +143,11 @@ pub(crate) const SCAN_WINDOW_HALF_CELLS: i64 = 999;
 /// The cap bounds a PRODUCT of two cell counts; the window bounds a PER-AXIS distance from a focus
 /// that sits wherever the source does, not at the box's centre. A box can therefore reach far
 /// beyond the window on both axes and still enumerate fewer cells than the cap allows, and those
-/// cells are in the mask a player moves through. So the span is computed first — through
-/// `candidate_span`, the SAME symbol `cells_in_bounds` derives its own cap check from — and a span
-/// within `max_cells` returns `min`/`max` untouched.
+/// cells are in the mask a player moves through. So the span is computed first, and `exceeds_cell_cap`
+/// — the SAME predicate `cells_in_bounds` enforces against — decides whether `decision` is over the
+/// cap; a `decision` within the cap returns `actual` untouched.
 ///
-/// `decision` is separate from `actual` because `accumulate_visible_cells` runs the SAME source
-/// through two invocations (strict, then lenient) whose ACTUAL scan boxes differ by a one-cell
-/// pad, and a `strict ⊆ lenient` invariant is pinned elsewhere on their outputs. If each invocation
-/// decided whether to clamp from its OWN box, there is a reachable band where the smaller (strict)
-/// box sits at or under the cap and returns unclamped while the larger (padded/lenient) box
-/// exceeds it and gets windowed — the unclamped strict result could then hold a cell the windowed
-/// lenient result does not, breaking that invariant. Deciding from ONE shared box (the caller's
-/// largest box across every mode it calls this for) makes the window identical regardless of which
-/// mode is asking: `A ⊆ A'` intersected with the SAME window gives `A ∩ W ⊆ A' ∩ W`, so the
-/// nesting holds structurally rather than by argument about which branch ran. A caller with only
-/// one mode (`mark_polygons`, `player_lit_mask`) passes its own box as both `actual` and
-/// `decision`.
-///
-/// PRECONDITION: `focus` lies inside `actual` and inside `decision`. Every caller satisfies it — a
-/// visibility source sits inside its own LOS polygon's bbox (and inside the padded box, which only
-/// grows it), and `mark_polygons` uses that bbox's own centre for both. A focus far enough outside
+/// PRECONDITION: `focus` lies inside `actual` and inside `decision`. A focus far enough outside
 /// `actual` that the window misses it would otherwise yield `min > max`, an inverted rectangle that
 /// enumerates nothing, so that case returns `actual` unchanged and lets the callee's own cap
 /// decide.
@@ -99,7 +155,7 @@ pub(crate) const SCAN_WINDOW_HALF_CELLS: i64 = 999;
 /// Returns `actual` unchanged for a degenerate `cell`, `focus`, or either box as well — the
 /// callee's fail-closed `None` on a degenerate input is the correct outcome there and must not be
 /// masked.
-pub(crate) fn clamp_scan_window(
+fn clamp_scan_window(
     grid: &dyn GridShape,
     focus: vision::P,
     actual: (vision::P, vision::P),
@@ -125,7 +181,7 @@ pub(crate) fn clamp_scan_window(
         return (min, max);
     }
     let bounds = grid.cell_bounds(decision_min, decision_max, cell);
-    if candidate_span(bounds) <= max_cells {
+    if !exceeds_cell_cap(bounds, max_cells) {
         return (min, max);
     }
     let half_px = SCAN_WINDOW_HALF_CELLS as f64 * cell;
@@ -212,15 +268,18 @@ impl ExploredSet {
                 maxx = maxx.max(x);
                 maxy = maxy.max(y);
             }
-            // Clamp before enumerating: a bbox whose candidate count exceeds the cap is
-            // intersected with a window around its own centre, so the polygon marks a bounded
-            // SUBSET of the cells that bbox covers. Fail direction: fewer cells remembered, which
-            // under-reveals. `cells_in_bounds` still applies the cap, so a degenerate input fails
-            // closed. One mode only, so the decision box is the polygon's own bbox.
+            // The polygon's own centre is its focus; a single-mode caller, so `scan_box_for` marks
+            // a bounded SUBSET of the bbox (under-reveal) whenever the bbox itself is over cap.
             let focus = ((minx + maxx) * 0.5, (miny + maxy) * 0.5);
             let bbox = ((minx, miny), (maxx, maxy));
-            let (scan_min, scan_max) =
-                clamp_scan_window(grid, focus, bbox, bbox, cell_size, MAX_CELLS_PER_POLYGON);
+            let (scan_min, scan_max) = scan_box_for(
+                grid,
+                focus,
+                bbox,
+                cell_size,
+                MAX_CELLS_PER_POLYGON,
+                ScanMode::Strict,
+            );
             let Some(candidates) =
                 grid.cells_in_bounds(scan_min, scan_max, cell_size, MAX_CELLS_PER_POLYGON)
             else {
@@ -298,7 +357,7 @@ fn point_in_poly(poly: &[(f64, f64)], px: f64, py: f64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scene::grid_shape::{HexGrid, SquareGrid};
+    use crate::scene::grid_shape::{candidate_span, HexGrid, SquareGrid};
     use crate::scene::pathfinding::DiagonalRule;
 
     /// A square grid at `cell` size — the shape every square-parity test indexes through. The
@@ -604,11 +663,122 @@ mod tests {
         let size = 100.0;
         let g = HexGrid { size };
         let half_px = SCAN_WINDOW_HALF_CELLS as f64 * size;
-        let (q0, r0, q1, r1) = g.cell_bounds((-half_px, -half_px), (half_px, half_px), size);
-        let span = (q1 as i64 - q0 as i64 + 1) * (r1 as i64 - r0 as i64 + 1);
+        let bounds = g.cell_bounds((-half_px, -half_px), (half_px, half_px), size);
+        let span = candidate_span(bounds);
         assert!(
             span <= MAX_CELLS_PER_POLYGON,
             "a clamped hex window enumerates {span} cells against a {MAX_CELLS_PER_POLYGON} cap"
+        );
+    }
+
+    #[test]
+    fn scan_box_for_decides_from_the_padded_box_regardless_of_mode() {
+        // Discrimination: fails if `scan_box_for` decides from the mode's own box (the unpadded
+        // box for `Strict`) instead of always from the padded box — the strict box would then
+        // return unclamped in a band where its padded counterpart is over cap, so its candidate
+        // cells could reach past the (independently-windowed) lenient result's own edge.
+        let cell = 1.0;
+        let g = sq(cell);
+        let focus = (100.0, 100.0);
+        let bbox = ((0.0, 0.0), (1999.0, 1999.0));
+        let padded = pad_box(bbox, cell);
+        assert_eq!(
+            candidate_span(g.cell_bounds(bbox.0, bbox.1, cell)),
+            4_000_000,
+            "fixture: the unpadded span must sit exactly at the cap"
+        );
+        assert!(
+            candidate_span(g.cell_bounds(padded.0, padded.1, cell)) > MAX_CELLS_PER_POLYGON,
+            "fixture: the padded span must exceed the cap"
+        );
+        let strict = scan_box_for(
+            &g,
+            focus,
+            bbox,
+            cell,
+            MAX_CELLS_PER_POLYGON,
+            ScanMode::Strict,
+        );
+        assert_ne!(
+            strict, bbox,
+            "the strict box must be windowed because its padded counterpart is over cap"
+        );
+    }
+
+    #[test]
+    fn scan_box_for_lenient_mode_scans_the_padded_box() {
+        // Discrimination: fails if `Lenient` returns the unpadded box, or pads by an amount other
+        // than what `pad_box` derives.
+        let cell = 100.0;
+        let g = sq(cell);
+        let focus = (50.0, 50.0);
+        let bbox = ((0.0, 0.0), (100.0, 100.0)); // comfortably under the cap, padded or not
+        let got = scan_box_for(
+            &g,
+            focus,
+            bbox,
+            cell,
+            MAX_CELLS_PER_POLYGON,
+            ScanMode::Lenient,
+        );
+        assert_eq!(got, pad_box(bbox, cell));
+    }
+
+    #[test]
+    fn hex_strict_candidate_cells_nest_inside_lenient_candidate_cells_at_the_clamp_boundary() {
+        // Hex twin of the square band fixture: box inclusion on hex runs through the axial
+        // preimage bbox, `cube_round` and `HEX_BOUNDS_PAD` — never argued to inherit square's
+        // floor monotonicity. Discrimination: fails if `scan_box_for`'s shared-decision fix does
+        // not hold on hex, or if hex candidate-BOX inclusion does not imply candidate-CELL-set
+        // inclusion (the concern square's `floor` argument cannot settle).
+        let size = 1.0;
+        let g = HexGrid { size };
+        let focus = (0.0, 0.0);
+        let bbox = ((0.0, 0.0), (2562.0, 2562.0));
+        let padded = pad_box(bbox, size);
+        let strict_span = candidate_span(g.cell_bounds(bbox.0, bbox.1, size));
+        let lenient_span = candidate_span(g.cell_bounds(padded.0, padded.1, size));
+        assert!(
+            strict_span <= MAX_CELLS_PER_POLYGON,
+            "fixture: the unpadded span must sit at or under the cap ({strict_span})"
+        );
+        assert!(
+            lenient_span > MAX_CELLS_PER_POLYGON,
+            "fixture: the padded span must exceed the cap ({lenient_span})"
+        );
+        let (strict_min, strict_max) = scan_box_for(
+            &g,
+            focus,
+            bbox,
+            size,
+            MAX_CELLS_PER_POLYGON,
+            ScanMode::Strict,
+        );
+        let (lenient_min, lenient_max) = scan_box_for(
+            &g,
+            focus,
+            bbox,
+            size,
+            MAX_CELLS_PER_POLYGON,
+            ScanMode::Lenient,
+        );
+        let strict_cells: BTreeSet<Cell> = g
+            .cells_in_bounds(strict_min, strict_max, size, MAX_CELLS_PER_POLYGON)
+            .expect("strict window stays inside the cap by construction")
+            .into_iter()
+            .collect();
+        let lenient_cells: BTreeSet<Cell> = g
+            .cells_in_bounds(lenient_min, lenient_max, size, MAX_CELLS_PER_POLYGON)
+            .expect("lenient window stays inside the cap by construction")
+            .into_iter()
+            .collect();
+        assert!(
+            !strict_cells.is_empty(),
+            "fixture: the strict scan must reach at least one candidate cell"
+        );
+        assert!(
+            strict_cells.is_subset(&lenient_cells),
+            "strict candidate cells must nest inside lenient candidate cells on hex too"
         );
     }
 }
