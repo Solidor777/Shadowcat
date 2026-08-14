@@ -377,9 +377,20 @@ So the skill-update gate has a third obligation alongside updating the skill and
 reviewed: **bump the `version` key in `.claude/.claude-plugin/plugin.json`** — that file's
 `version`, NOT `marketplace.json`'s `metadata.version`, which versions the marketplace listing and
 does not identify a cached plugin copy — **then refresh the plugin in each consuming repo**, from a
-shell: `claude plugin marketplace update shadowcat`, then `claude plugin update shadowcat-codebase`
-(a restart applies it). The version bump is what makes the staleness detectable — an unversioned
-plugin caches as `unknown`, where a refreshed copy and a stale one are indistinguishable.
+shell run inside that repo: `claude plugin marketplace update shadowcat`, then
+`claude plugin update shadowcat-codebase@shadowcat --scope project` (a restart applies it). The
+version bump is what makes the staleness detectable — an unversioned plugin caches as `unknown`,
+where a refreshed copy and a stale one are indistinguishable.
+
+**The update subcommand needs the FULLY-QUALIFIED name and the scope, or it fails.** Bare
+`claude plugin update shadowcat-codebase` reports `Plugin "shadowcat-codebase" not found` at both
+user and project scope, even while `claude plugin list` displays that plugin as installed and
+enabled — the failure names the plugin rather than the resolution, so it reads as "not installed"
+when the install is fine. Verified against a consumer that had drifted to a version predating the
+skills it was serving; the qualified form updated it in one call. `claude plugin list` is the check
+that settles which version a consumer actually holds — the cache directory under
+`~/.claude/plugins/cache/` names its versions too, and a directory holding only an old version is
+proof the refresh never landed.
 
 Consumers also see these skills under a plugin prefix (`shadowcat-codebase:shadowcat-codebase-core`)
 rather than the bare id. Take the exact name from the skill listing.
