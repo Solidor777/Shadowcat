@@ -206,6 +206,11 @@ derivations rather than recollections:
 - **Task 6 runs after Task 5**, which produces the symbol it converts four further sites onto.
 - **Task 7 runs after Tasks 4, 5 and 6**, because the hex scene it exercises runs through all
   three; **Task 8 runs after Task 5**, because it verifies the post-conversion environment light.
+- **Task 5b (the envelope) runs between Tasks 5 and 6**, and before Tasks 7 and 8. It changes the
+  return type of the symbol Task 5 introduced, so running it after Task 6 would convert four further
+  sites onto a signature that then changes under them, and Task 8's environment-light verification
+  would be verifying a perimeter walk that this task moves. It is numbered `5b` rather than
+  renumbering Tasks 6–12, whose numbers are already cited by dispatched briefs and ledger entries.
 
 ---
 
@@ -2712,6 +2717,253 @@ indexing scale: its model is a square block, and rescaling it would change what
 a token occupies.
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>" -- src/server/src/scene/grid_shape.rs src/server/src/scene/navmesh.rs src/server/src/scene/lighting.rs src/server/src/scene/vision.rs src/server/src/scene/mod.rs src/server/src/scene/grid_shape_parity_tests.rs src/server/src/scene/move_exec.rs
+```
+
+---
+
+### Task 5b: `world_extent` returns the scene's true envelope, not a max corner
+
+**Ledger ids:** owner ruling, escalated out of Task 5's buddy check. **Numbered `5b` deliberately:**
+Tasks 6–12 are already dispatched-against and referenced by ledger entries and briefs; renumbering
+them would falsify every one of those references.
+
+**Depends on:** Task 5 (which introduced `GridShape::world_extent` and routed the three consumers
+through it). Do not start before Task 5's fix round closes.
+
+---
+
+#### The defect
+
+`GridShape::world_extent` returns a single `(f64, f64)` and every consumer reads it as the far
+corner of a rectangle anchored at the origin. On square that is exactly right. On hex it is false,
+and the trait's own doc already says so: a pointy-top hex block is not origin-anchored, because
+axial cell `(0, 0)`'s centre sits at the origin and its own polygon extends half an inradius left
+and one circumradius down. The block's true minimum is
+
+```
+min = ( -(√3/2)·size , -size )
+```
+
+Three consumers each handle that fact independently, and all three handle it the same wrong way —
+they hardcode the origin:
+
+| Consumer | How it anchors | What it costs |
+|---|---|---|
+| `navmesh::build_navmesh` | literal `glam::Vec2::new(0.0, 0.0)` as the outer rectangle's first vertex | axial row `r = 0`'s centres sit exactly ON the mesh's bottom edge; routability there depends on `polyanya::Layer::point_in_polygon` admitting an on-edge point — a third-party convention we do not control |
+| `lighting::env_light_polys` | `perimeter_point(w, h, d)` walks from `(0,0)`; the raycast `Rect` runs `-margin` to `w + margin` | environment light enters at the centre row rather than at the block's real edge — under-reveal |
+| `vision::bound_for_scene` | `minx: wall_bound.minx.min(0.0)`, `miny: …min(0.0)` | the scene's contribution to the bound starts at the origin, so under `los_restriction = false` the whole-box polygon misses the bottom half of row 0 |
+
+**This is not the usual fork.** The three do not disagree with each other; they agree in being wrong
+about the same thing. That is worse in one specific way: a fork is visible the moment two paths are
+compared, whereas unanimous agreement on a false anchor reads as a settled convention. The remedy is
+the same either way — one symbol returns the truth and nobody restates it.
+
+**Direction of the behaviour change: it reveals cells that were authored, never more than were
+authored.** The origin row's hexes are real members of the authored block. Covering their geometry
+is not a hedge and is not the growth `world_extent`'s doc warns against when it rejects rounding the
+authored bound up — that rejection stands untouched, because it is about inventing cells the GM did
+not author. This task invents nothing; it stops truncating cells the GM did author.
+
+---
+
+**Files:**
+- Modify: `src/server/src/scene/grid_shape.rs` — the `WorldExtent` type, the trait method, both impls, their tests
+- Modify: `src/server/src/scene/navmesh.rs` — `build_navmesh`
+- Modify: `src/server/src/scene/lighting.rs` — `env_light_polys`, `perimeter_point`
+- Modify: `src/server/src/scene/vision.rs` — `bound_for_scene`
+- Modify: `src/server/src/scene/mod.rs` — `SceneEcs::scene_world_extent`, `SceneEcs::player_vision_polygons`, `SceneEcs::player_vision_inputs`, `SceneEcs::navmesh_for`, `SceneEcs::lighting_inputs`, `SceneEcs::lighting_inputs_from`, `SceneEcs::visible_cells_cached`, `SceneEcs::player_lit_mask`, `accumulate_visible_cells`, `source_los_poly`, and their tests
+- Modify: `src/server/src/scene/grid_shape_parity_tests.rs` — any parity test reading the extent
+
+**Interfaces:**
+- Produces: `WorldExtent { min: (f64, f64), max: (f64, f64) }` with `width()` and `height()`;
+  `GridShape::world_extent(&self, bounds_cells: (f64, f64)) -> WorldExtent`. Task 6 consumes
+  `world_units_per_cell`, which this task does not touch.
+- Consumes: `normalize_bounds_cells`'s `Option` contract from Task 5's fix round — an unusable
+  authored bound still yields the value the guards refuse.
+
+---
+
+- [ ] **Step 1: Enumerate every subject before changing anything**
+
+Do NOT grep for a marker and call the result the worklist. Enumerate the bounded set of SUBJECTS and
+give every one a row and a disposition, in the report:
+
+1. **Every caller of `world_extent`** (production and test), read out of the source, one row each.
+2. **Every test whose assertions encode an origin-anchored rectangle** — including tests that never
+   name `world_extent`, e.g. one asserting a navmesh route's coordinates or an env-light sample's
+   position. The axis to check is not "does it mention the symbol" but "would this assertion change
+   if the hex rectangle gained a negative minimum".
+3. **Every comment stating the rectangle is `(0,0)–extent`** in the five files above. There are
+   several; the phrase varies, so read the comments rather than searching for that spelling.
+
+Two named instances that MUST appear in your table with a disposition, because both become FALSE
+under this change and neither will fail to compile:
+
+- `hex_world_extent_leaves_the_origin_cells_negative_margin_outside` — its name and its assertion
+  both state the negative margin is outside the rectangle. Under the envelope it is inside. This
+  test inverts; it does not get deleted. The property worth pinning is that the envelope's minimum
+  is exactly the origin cell's own lower-left extreme, and that square's minimum is exactly the
+  origin.
+- `hex_continuous_routes_along_axial_row_zero_including_the_mesh_corner`, and the `world_extent`
+  doc clause that explains it. Both currently say row 0's centres are on-mesh *because the mesh's
+  containment test admits an exactly-on-boundary point*. Under the envelope they are strictly
+  interior and that explanation is false. Rewrite both to state the present fact — the row's centres
+  sit one circumradius above the mesh's bottom edge — and rename the test so "mesh corner" does not
+  survive as a claim about a point that is no longer the corner. **Keep the route assertions**: the
+  test still pins that the row routes, and it now pins it without depending on a third-party
+  convention. Say in your report which of its assertions changed and why.
+
+These two are INPUTS, not examples. A disposition line for each is required.
+
+- [ ] **Step 2: Write the failing test for the envelope itself**
+
+In `grid_shape.rs`'s test module:
+
+```rust
+#[test]
+fn each_shapes_envelope_starts_at_its_own_origin_cells_lower_left_extreme() {
+    let size = 50.0_f64;
+    let sq = SquareGrid { cell: size, diagonal_rule: DiagonalRule::Chebyshev };
+    let hx = HexGrid { size };
+
+    // Discrimination: fails if `world_extent` returns an origin-anchored rectangle on hex, or if
+    // the square arm gains a spurious negative margin from a shared normalisation path.
+    let s = sq.world_extent((8.0, 6.0));
+    assert_eq!(s.min, (0.0, 0.0), "a square block's origin cell starts AT the origin");
+
+    let h = hx.world_extent((8.0, 6.0));
+    let (cx, cy) = hx.cell_center((0, 0));
+    assert_eq!(cy, 0.0, "fixture guard: axial (0,0)'s centre is the origin row");
+    assert!(
+        (h.min.0 - (cx - 3.0_f64.sqrt() / 2.0 * size)).abs() < 1e-9,
+        "the envelope's x minimum is the origin hex's own left inradius, got {}",
+        h.min.0
+    );
+    assert!(
+        (h.min.1 - (cy - size)).abs() < 1e-9,
+        "the envelope's y minimum is the origin hex's own bottom circumradius, got {}",
+        h.min.1
+    );
+    assert!(h.width() > 0.0 && h.height() > 0.0, "a positive block has a positive envelope");
+}
+```
+
+- [ ] **Step 3: Run it and record the failure verbatim**
+
+Run: `cargo test --manifest-path src/server/Cargo.toml each_shapes_envelope`
+It cannot compile until Step 4 exists. Record what you observe; do not predict it.
+
+- [ ] **Step 4: Introduce `WorldExtent` and change both impls**
+
+```rust
+/// A scene's world-unit envelope: the axis-aligned rectangle that contains every cell of the
+/// authored integer block, as both corners rather than a far corner alone.
+///
+/// `min` is not the origin on every shape. A pointy-top hex block's origin cell is CENTRED on the
+/// origin, so its own polygon reaches `-(√3/2)·size` in x and `-size` in y; a square block's origin
+/// cell has its corner there, so `min` is the origin exactly. Consumers that triangulate, walk, or
+/// bound this rectangle read both corners, which is why the type carries both — an anchor a caller
+/// supplies itself is an anchor each caller can get wrong independently.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct WorldExtent {
+    /// Lower-left corner in world units.
+    pub(crate) min: (f64, f64),
+    /// Upper-right corner in world units.
+    pub(crate) max: (f64, f64),
+}
+
+impl WorldExtent {
+    /// The envelope's x span. Zero or negative marks an envelope every consumer refuses.
+    pub(crate) fn width(&self) -> f64 {
+        self.max.0 - self.min.0
+    }
+
+    /// The envelope's y span. Zero or negative marks an envelope every consumer refuses.
+    pub(crate) fn height(&self) -> f64 {
+        self.max.1 - self.min.1
+    }
+}
+```
+
+Both impls keep their existing `max` closed forms unchanged — this task does not re-derive them; two
+reviewers derived them independently and matched. What each gains is its `min`:
+
+- `SquareGrid`: `min = (0.0, 0.0)`.
+- `HexGrid`: `min = (-(√3/2)·size, -size)` — derived from the same half-extents the `max` formula
+  already adds, so the two corners read one expression per axis rather than two.
+
+**The refusal value becomes a zero-AREA envelope**, not a zero max corner: `normalize_bounds_cells`
+returning `None` yields `WorldExtent { min: (0.0, 0.0), max: (0.0, 0.0) }` from both impls. Every
+guard below refuses it on span, so the fail-closed behaviour Task 5's fix round pinned is preserved
+by construction. Confirm that the non-finite parity test from that round still passes unchanged in
+meaning, and update it to compare envelopes rather than corners.
+
+- [ ] **Step 5: Run the new test and the full shape suite**
+
+Run: `cargo test --manifest-path src/server/Cargo.toml grid_shape`
+
+- [ ] **Step 6: Move each consumer onto both corners**
+
+`navmesh::build_navmesh` — take `WorldExtent`. The outer rectangle's four vertices become the
+envelope's corners rather than `(0,0)` and `extent`. Its refusal set must not weaken: refuse a
+non-finite corner on either axis, a non-positive `width()` or `height()`, and an over-`MAX_NAVMESH_COORD`
+magnitude on BOTH corners (today only the far corner is magnitude-checked — with a real minimum, a
+corner that is finite but enormous reaches the `as f32` cast the check exists to protect).
+
+`lighting::env_light_polys` — take `WorldExtent`. `perimeter_point` walks the envelope, so it needs
+the minimum as well as the spans; the raycast `Rect` runs `min − margin` to `max + margin`. The
+sample count stays `perimeter / cell_size`, which is now the envelope's perimeter. The doc's
+fail-closed clause stays true and its `(0,0)–extent` phrasing does not.
+
+`vision::bound_for_scene` — take `WorldExtent`. The two `.min(0.0)` clamps become clamps against the
+envelope's minimum, and the two `.max(...)` against its maximum. **The `.max(0.0)` guards on
+`scene_maxx`/`scene_maxy` are load-bearing and must be preserved in spirit**: a degenerate envelope
+must not shrink the wall-derived bound. Preserve that by unioning, never by replacing.
+
+`SceneEcs::scene_world_extent` and the eight sites in `mod.rs` — thread `WorldExtent` through.
+`source_los_poly` and `accumulate_visible_cells` pass it along unchanged.
+
+- [ ] **Step 7: Pin the behaviour change where it is observable**
+
+Three tests, each asserting a consumer now covers the hex block's negative margin:
+
+1. **Navmesh**: a hex continuous scene routes between two points BELOW `y = 0` but inside the origin
+   row's hexes — impossible today, since the mesh starts at `y = 0`. Its discrimination line is the
+   envelope's minimum; confirm by mutating `HexGrid::world_extent`'s `min` to `(0.0, 0.0)` and
+   observing this test fail. Revert by `diff`, byte-identical, and re-run.
+2. **Env light**: the hex sealed-interior fixture Task 5's fix round added gains a sibling asserting
+   a cell in the origin row is environment-lit through the block's real bottom edge.
+3. **LOS-off box**: a hex scene with `los_restriction = false` includes the origin row in the
+   visible-cell mask. If it already does today (row 0's CENTRES are at `y = 0`, which the current
+   box's edge admits), say so in your report and pin the property that actually changed instead of
+   asserting one that did not — **do not manufacture a test that passes before and after**.
+
+- [ ] **Step 8: Full gate**
+
+Run from `src/server/`: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,
+`cargo test`. Then from the repo root: `node scripts/check-comment-refs.mjs`.
+`pnpm build` first if `dist/` is stale.
+
+Report the test delta as `before → after` with the count of tests added and the count removed. **A
+removed test needs a named reason.** Fixture-coordinate churn on hex is expected and is not a reason
+to delete a test.
+
+- [ ] **Step 9: Commit**
+
+```bash
+git commit -m "fix(scene): return the scene's true envelope, not an origin-anchored corner
+
+A pointy-top hex block's origin cell is centred on the origin, so the block
+reaches below and left of it. Three consumers each hardcoded the origin as the
+rectangle's lower-left corner, truncating the origin row's geometry on the
+navmesh, the environment-light perimeter walk, and the LOS-off bound.
+
+world_extent returns both corners. The navmesh triangulates them, the perimeter
+walk starts at the minimum, and the vision bound unions the envelope instead of
+clamping to zero, so axial row zero's centres are strictly interior rather than
+on the mesh boundary.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>" -- src/server/src/scene/grid_shape.rs src/server/src/scene/navmesh.rs src/server/src/scene/lighting.rs src/server/src/scene/vision.rs src/server/src/scene/mod.rs src/server/src/scene/grid_shape_parity_tests.rs
 ```
 
 ---
