@@ -4234,6 +4234,135 @@ numbers, dates, or process references. End with the `Co-Authored-By: Claude Opus
 
 ---
 
+### Task 6g: a token occupies the hexes it is authored to occupy
+
+**Numbered `6g` for the same reason as `5b`.** The largest of this group and the only one carrying an
+owner ruling on semantics rather than a mechanical correction. Dispatch it LAST of the `6*` group —
+it consumes the shape-aware `Grid` surface Tasks 6c and 6e establish.
+
+---
+
+#### The defect, measured rather than inferred
+
+`resolveTokenBox` sizes a token's drawn footprint as `actor.size.w * cell` by
+`actor.size.h * cell`, where `cell` is `sceneCellSize` — the scene's authored `grid.size`. On hex
+that field is the cell's **circumradius**. Separately, `footprintRadius` reduces the same authored
+size to a bounding-disc radius in grid units (`hypot(w,h)/2` for a square, `max(w,h)/2` for a circle),
+which the server multiplies by the same `cell` to get `r_scene` for its collision checks.
+
+For a 1×1 token on a hex grid of circumradius `size`:
+
+| Quantity | Today | The hex it sits in |
+|---|---|---|
+| Drawn box | `size` × `size` | spans `√3·size` ≈ `1.73·size` wide, `2·size` tall |
+| Collision radius | `0.707·size` | inradius `0.866·size`, circumradius `size` |
+
+**Both are undersized, and by different factors** — so a token under-fills its hex visually while
+also colliding as something smaller than the hex, and the two errors do not even agree with each
+other. Gaps a hex would block stay passable.
+
+`resolveTokenBox` is read by three separate concerns — the rendered box, `topTokenAt`'s hit test, and
+`drawSelection`'s ring — so all three inherit it. Those are consumers, not independent defects; fixing
+the source fixes them.
+
+**The remedy is NOT a Role-A-to-Role-B substitution, and this is the trap.** Multiplying by
+`world_units_per_cell` instead of `cell` yields a `√3·size` SQUARE: correct width, wrong height,
+because a hex's height (`2·size`) and width (`√3·size`) are not in the same ratio. Any fix that
+substitutes one scalar for another is wrong before it starts.
+
+#### The owner's ruling — both halves, settled, do not re-open
+
+1. **A token's authored `size` counts HEXES.** A 1×1 token fills the hex it occupies; an N-cell token
+   spans N hexes. Its drawn geometry and its collision geometry both derive from the hex's own
+   dimensions, never from a square approximation.
+2. **One definition, both sides derive from it.** The client's drawn box and the server's collision
+   footprint must come from a single resolved geometry rather than two formulas kept in agreement by
+   review. This is the never-fork rule applied to the exact shape that produced the defect.
+
+**Ruled by me, from the existing documented convention rather than by asking again: the collision
+disc is the CIRCUMSCRIBING radius (`size` for one hex, i.e. `1.0` in cell units), not the inradius.**
+`footprintRadius`'s own doc already states the convention — *"Conservative enclosure: a square uses
+its half-diagonal, a circle its radius"* — and conservative enclosure of a hex is its circumradius.
+It over-blocks slightly rather than under-blocking, which is the fail-closed direction for a movement
+gate. Keep that sentence true by extending it, not by contradicting it.
+
+#### Direction and blast radius, stated before the work
+
+Tokens get bigger, both visually and in collision. Narrow gaps that a token previously slipped
+through will now refuse. **That is the correction, not a regression** — but every movement fixture
+whose route threads a gap may move, and each must be re-derived from the hex geometry and stated,
+never adjusted until green.
+
+---
+
+**Files:**
+- Modify: `src/client/core/src/actor.ts` (`resolveTokenBox`, `sceneCellSize`, `footprintRadius`)
+- Modify: `src/client/core/src/scene-docs.ts` (`buildTokenFromActor`'s fallback)
+- Modify: `src/modules/scene-tools/src/controller.svelte.ts` (`makePlaceTool`, both branches)
+- Modify: `src/server/src/scene/pathfinding.rs` (`footprint_cells`, `cell_enterable`) and its callers
+- Modify: the wire type carrying the resolved footprint, plus `src/types/generated/**` BY
+  REGENERATION
+- Test: the sibling tests of each, plus `src/modules/scene-tools/src/hit-test.ts`'s
+
+**Interfaces:**
+- Produces: a resolved footprint geometry carried on the wire rather than recomputed per side. State
+  its shape in your report BEFORE building the consumers, since both languages bind to it.
+- Consumes: the shape-aware `Grid` surface from Tasks 6c and 6e. If a hex corner or extent helper you
+  need already exists there, use it; a second corner formula is this task's own defect re-created.
+
+---
+
+- [ ] **Step 1: Pin today's geometry before changing it, on both sides**
+
+Write two failing tests: a client test asserting a 1×1 token's drawn box equals the hex's bounding
+box, and a server test asserting a 1×1 token's collision disc equals the hex's circumradius. Run
+both. **Record the observed failures verbatim** — the two wrong values ARE the measurement in the
+table above, and I want them confirmed by a run rather than carried from my prose.
+
+- [ ] **Step 2: Define the footprint once**
+
+Build the single resolved geometry: given a token's shape, its authored size, and the scene's grid
+shape, produce the drawn extent and the collision radius. **Square must come out byte-identical to
+today** — pin that with a test before touching hex, so the change is provably hex-only.
+
+- [ ] **Step 3: Carry it, do not recompute it**
+
+The client renders what the resolved geometry says; the server collides with the same. Neither side
+re-derives from `grid.size`. **If you find yourself writing a second expression that multiplies an
+authored size by a grid scalar, stop** — that expression is the defect, wherever it appears.
+
+Delete `sceneCellSize` if nothing legitimate still needs it. A helper whose only purpose was the
+wrong conversion should not survive the fix as dead code.
+
+- [ ] **Step 4: Witness the anti-fork property**
+
+A test must fail if either side stops deriving from the shared definition. Mutate the client to size
+from `grid.size` again and confirm it fails; revert by `diff`. Then mutate the server the same way and
+confirm it fails too. **Two mutations, two observed failures** — a test that only catches one side
+leaves the fork half-open.
+
+- [ ] **Step 5: Re-derive every moved movement fixture**
+
+Enumerate every test whose route, arrest point, or reachable set changes, one row each: old value,
+new value, and why the new one is right, derived from the hex geometry. State separately whether any
+moved fixture belongs to a SECRECY-bearing path (the movement gate, `visible_cells`) versus a
+convenience path — they ride together and reporting only the convenience half is how a gate change
+gets ratified as a rendering change.
+
+- [ ] **Step 6: Full gate**
+
+`cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` from `src/server/`;
+`pnpm -r test` and `pnpm -r typecheck` from the root; `node scripts/check-comment-refs.mjs`. Run the
+e2e hex movement spec — this changes what fits through a gap, which is what that spec exists to catch.
+
+- [ ] **Step 7: Commit**
+
+Conventional-commits, imperative, stating the constraint and the consequence. No task ids, round
+numbers, dates, or process references. End with the `Co-Authored-By: Claude Opus 5
+<noreply@anthropic.com>` trailer.
+
+---
+
 ### Task 7: PW3 — exercise the hex + continuous fog clip through the real dispatch, as a non-GM
 
 **Ledger id:** PW3.
