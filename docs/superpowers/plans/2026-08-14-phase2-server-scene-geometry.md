@@ -4089,9 +4089,13 @@ formula elsewhere is the same defect again.
 
 **Interfaces:**
 - Consumes: `GridSpec.kind`, which these paths currently cannot see. Threading it is most of the work.
-- Produces: public `Grid` geometry. **Coordinate with Task 6c**, which also adds a public method to
-  `Grid`; if 6c has already landed, follow the naming it established rather than inventing a second
-  convention.
+- Produces: public `Grid` geometry. **The convention is already set and is named here rather than
+  pointed at**: `Grid.worldUnitsPerCell()` exists, returning `size` on square and `size * √3` on hex,
+  chosen as the exact camelCase mirror of the server's `GridShape::world_units_per_cell` so the two
+  are greppable as one concept across the language boundary. Name what you add the same way — a
+  camelCase mirror of the server symbol for the same quantity, where one exists.
+  **Do not add a second per-step-distance method**; that one is done. What is missing is cell
+  POSITION and cell CORNER geometry, which `Grid` currently owns only privately.
 
 ---
 
