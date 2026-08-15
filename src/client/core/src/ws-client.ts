@@ -32,7 +32,9 @@ export interface SearchPage {
 export interface PathResult {
   /** Ordered `[x, y]` scene-coordinate waypoints of the computed route. */
   path: [number, number][];
-  /** Terrain-weighted movement cost of the route. */
+  /** Total terrain-weighted route cost in cells (multiply by `grid.distance.perCell`). Cells on
+   * every movement model — the continuous engine converts its Euclidean length back through the
+   * shape's per-step world distance, so a consumer never needs to know which engine ran. */
   cost: number;
   /** True when the route was cut short by a visible arrest region rather than reaching the
    * requested goal. */
