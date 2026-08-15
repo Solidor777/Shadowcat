@@ -3951,6 +3951,26 @@ Then pin the client side with a test that does NOT stub the cost: feed `makeMeas
 unit the server will now send and assert the label. The existing continuous test's fixed `cost: 2`
 stub is exactly why this survived; do not extend that stub, replace the coverage.
 
+- [ ] **Step 1b: The same tool labels the same quantity two different ways — fix both branches**
+
+`makeMeasureTool` has a second, non-route branch, taken whenever the user has no token selected, more
+than one selected, or no pathfind available. It labels with
+`String(ctx.scene.gridDistance(anchor, p))` — a raw whole-cell count with **no `perCell` multiply and
+no unit suffix at all** — while the route branch three hundred lines earlier renders
+`` `${budget} ${scene.unit}` ``.
+
+So measuring five cells shows `25 ft` with a token selected and `5` without one. **This is the same
+forked decision as the task's main subject, one level down**: two paths inside one tool disagreeing
+about how a distance is expressed, and the fallback is the one a player without a selected token
+actually hits.
+
+Route the label through ONE function that takes a cell count and produces the labelled string, and
+have both branches call it. Do not fix the fallback by copying the route branch's expression — a
+second copy of the formula is the fork re-created, and it is what let these two drift apart.
+
+The `⚠` arrest marker belongs to the route branch only; keep that distinction, and say in your report
+how you kept it without giving the shared function a caller-specific flag.
+
 - [ ] **Step 2: Convert once, at the boundary, in the direction that preserves the contract**
 
 Make both branches of `SceneEcs::pathfind` yield a cost in cells. Delete the multiply; convert the
