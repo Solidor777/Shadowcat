@@ -656,6 +656,29 @@ test("animateAlongPath forwards to the token view (SceneToolHost seam)", () => {
   expect(backend.lastTokenX("tok1")).toBeCloseTo(300, 0);
 });
 
+// Regression: a hex `RenderEngine` must time a token tween against `Grid.worldUnitsPerCell()`
+// (the per-step distance, `size * sqrt(3)`), not `GridSpec.size` (the indexing scale/outer
+// radius) — the two coincide on square grids, which is why `engine.test.ts`'s other tween tests
+// (all square) cannot distinguish them. This exercises the constructor's own
+// `this.tokens.setWorldUnitsPerCell(this.grid.worldUnitsPerCell())` call, the historical bug's
+// actual site (an isolated `Grid`/`TokenAnimator` unit test proves neither unit's own arithmetic,
+// which never changed — only whether the correct value reaches the animator through this wiring).
+test("a hex RenderEngine times a token tween against worldUnitsPerCell, not size", () => {
+  const store = new DocumentStore();
+  const assets = new AssetResolver();
+  const backend = new MockBackend();
+  const engine = new RenderEngine({ store, assets, backend, grid: { kind: "hex", size: 100 } });
+  store.applyCommand(tokenCmd(1, "tok1", 0));
+  engine.start();
+  const worldUnitsPerCell = 100 * Math.sqrt(3); // the true per-step distance for a hex of size 100
+  engine.animateAlongPath("tok1", [[0, 0], [worldUnitsPerCell, 0]]); // exactly one cell step
+  // Correct duration: 1 cell / 6 cells-per-sec * 1000 ≈ 166.67ms, so the tween is complete by
+  // 200ms. Dividing by `size` (100) instead computes ~1.732 cells ≈ 288.7ms duration — still
+  // short of the target at 200ms — which is what distinguishes the two.
+  backend.runTicker(200);
+  expect(backend.lastTokenX("tok1")).toBeCloseTo(worldUnitsPerCell, 5);
+});
+
 test("animateSamples' moverVision progressively sweeps the fog, reverting to derived vision on completion", () => {
   const store = new DocumentStore();
   store.applyCommand(sceneCmd(1, "s1"));
