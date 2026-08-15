@@ -7,6 +7,7 @@
 import type { WireDocument } from "./wire";
 import type { ReadableDocuments } from "./store";
 import type { ActorEngine, TokenEngine, TokenVisual, TokenOverrides, ConditionRegistryEngine, SceneEngine, VisionAssignment, RenderVisual, FaceVisual } from "./scene-docs";
+import { resolveFootprintGeometry, type GridKindLike } from "./grid-footprint";
 
 /** The projected, display-ready shape every token-decoration consumer reads: a per-token
  * `TokenOverrides` whitelist folded onto its actor's `ActorEngine` base (see `project`). */
@@ -279,11 +280,15 @@ export function conditionTarget(token: WireDocument, store: ReadableDocuments): 
 
 /** A token's resolved footprint in scene pixels + its shape — the single read-through the
  * renderer, hit-test, and selection ring share so they cannot diverge for multi-cell/circle
- * tokens. Actor-backed: size = EffectiveActor.size (grid units) × the parent scene's grid cell;
- * raw/dangling tokens fall back to their own transform + square. `(x,y)` is the token center.
- * Pass a pre-resolved `eff` (from a prior `resolveTokenActor` call) to avoid a second
- * resolution; omit (or pass `undefined`) to resolve internally. Pass `null` explicitly for a
- * known actorless token to skip resolution and fall back to the raw engine dimensions. */
+ * tokens, or between square and hex scenes. Actor-backed: the box derives from
+ * `resolveFootprintGeometry(actor.shape, actor.size, grid.kind)` × the parent scene's grid cell
+ * (the circumradius on hex) — on square this is `EffectiveActor.size × cell`, byte-identical to
+ * the pre-hex formula; on hex the box is the token's own hex-count-scaled hexagonal bounding box,
+ * never a square approximation. Raw/dangling tokens fall back to their own transform + square.
+ * `(x,y)` is the token center. Pass a pre-resolved `eff` (from a prior `resolveTokenActor` call)
+ * to avoid a second resolution; omit (or pass `undefined`) to resolve internally. Pass `null`
+ * explicitly for a known actorless token to skip resolution and fall back to the raw engine
+ * dimensions. */
 export interface TokenBox {
   /** Scene-pixel x coordinate of the token's center. */
   x: number;
@@ -297,22 +302,29 @@ export interface TokenBox {
   shape: "square" | "circle";
 }
 
-/** Grid cell size (px) of the token's parent scene; 100 when the scene is absent/garbled. Not
- * exported (folded into `resolveTokenBox`'s public surface).
- * @param token The token whose parent scene's grid cell size is needed.
+/** The token's parent scene's grid cell size (px; the circumradius on hex) + kind; size falls
+ * back to 100 and kind to `"square"` when the scene is absent/garbled. Not exported (folded into
+ * `resolveTokenBox`'s public surface).
+ * @param token The token whose parent scene's grid is needed.
  * @param store The document store to resolve the parent scene against.
- * @returns The scene's `engine.grid.size` (px), or `100` when unresolvable.
+ * @returns The scene's `engine.grid.size` (px) + `kind`, defaulted when unresolvable.
  * @example
  * ```
  * // internal helper; not part of the public API (see resolveTokenBox for the public entry point)
  * declare const token: WireDocument;
  * declare const store: ReadableDocuments;
- * sceneCellSize(token, store);
+ * sceneGrid(token, store);
  * ```
  */
-function sceneCellSize(token: WireDocument, store: ReadableDocuments): number {
+function sceneGrid(token: WireDocument, store: ReadableDocuments): {
+  /** Cell size, scene pixels (the circumradius on hex). */
+  size: number;
+  /** The scene's grid kind; `"square"` when absent/garbled. */
+  kind: GridKindLike;
+} {
   const scene = token.parent_id ? store.get(token.parent_id) : undefined;
-  return (scene?.engine as SceneEngine | undefined)?.grid?.size ?? 100;
+  const grid = (scene?.engine as SceneEngine | undefined)?.grid;
+  return { size: grid?.size ?? 100, kind: grid?.kind ?? "square" };
 }
 
 /** See the `TokenBox` doc above for the actor-backed-vs-raw resolution rule.
@@ -336,16 +348,20 @@ export function resolveTokenBox(token: WireDocument, store: ReadableDocuments, e
   const y = eng?.y ?? 0;
   const actor = eff === undefined ? resolveTokenActor(token, store) : eff;
   if (actor) {
-    const cell = sceneCellSize(token, store);
-    return { x, y, w: actor.size.w * cell, h: actor.size.h * cell, shape: actor.shape };
+    const { size: cell, kind } = sceneGrid(token, store);
+    const { boxW, boxH } = resolveFootprintGeometry(actor.shape, actor.size, kind);
+    return { x, y, w: boxW * cell, h: boxH * cell, shape: actor.shape };
   }
   return { x, y, w: eng?.w ?? 0, h: eng?.h ?? 0, shape: "square" };
 }
 
 /** Bounding-disc radius (grid units) consumed identically by both the grid A* pathfinder's
  * clearance check and the navmesh router's inflation — neither refines it per-engine.
- * Conservative enclosure: a square uses its half-diagonal, a circle its radius.
+ * Conservative enclosure: a square uses its half-diagonal, a circle its radius; on a hex grid
+ * (`gridKind === "hex"`) `shape` is inert and the enclosure is a single hex's own circumradius,
+ * scaled by the token's authored hex count — see `resolveFootprintGeometry`.
  * @param eff The `shape`/`size` slice of an `EffectiveActor`.
+ * @param gridKind The scene's grid kind; anything but `"hex"` resolves as square (the default).
  * @returns The bounding-disc radius, in grid units.
  * @example
  * ```ts
@@ -353,11 +369,11 @@ export function resolveTokenBox(token: WireDocument, store: ReadableDocuments, e
  *
  * footprintRadius({ shape: "circle", size: { w: 2, h: 2 } }); // 1
  * footprintRadius({ shape: "square", size: { w: 1, h: 1 } }); // ~0.707
+ * footprintRadius({ shape: "square", size: { w: 1, h: 1 } }, "hex"); // 1
  * ```
  */
-export function footprintRadius(eff: Pick<EffectiveActor, "shape" | "size">): number {
-  const { w, h } = eff.size;
-  return eff.shape === "circle" ? Math.max(w, h) / 2 : Math.hypot(w, h) / 2;
+export function footprintRadius(eff: Pick<EffectiveActor, "shape" | "size">, gridKind: GridKindLike = "square"): number {
+  return resolveFootprintGeometry(eff.shape, eff.size, gridKind).radius;
 }
 
 /** The effective face names for a token's `faces`-union visual (the actor's own faces, with any

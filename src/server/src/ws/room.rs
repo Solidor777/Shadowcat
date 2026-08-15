@@ -568,7 +568,7 @@ impl Room {
 
             // An out-of-range footprint refuses the move outright, never clamps — clamping
             // would gate a wider token as a narrower disc, a geometric fail-open.
-            let Some(fp) = scene.resolve_token_footprint(token) else {
+            let Some(fp) = scene.resolve_token_footprint(token, token_scene) else {
                 return Err(DataError::Forbidden);
             };
             footprint = fp;

@@ -126,7 +126,9 @@ pub enum ClientMsg {
         start: (f64, f64),
         /// Intermediate points; the LAST element is the goal, scene coords.
         waypoints: Vec<(f64, f64)>,
-        /// Mover radius in grid units; IGNORED when `token` is named.
+        /// Mover radius in grid units — the client's `footprintRadius`/`resolveFootprintGeometry`
+        /// convention (a hex scene's radius is the circumscribing radius of the authored hex
+        /// count, never a square approximation). IGNORED when `token` is named.
         footprint_radius: f64,
         /// The token the route is for; authorized server-side and the source
         /// of the authoritative footprint (see the variant doc).

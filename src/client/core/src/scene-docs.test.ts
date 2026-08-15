@@ -268,6 +268,19 @@ test("buildTokenFromActor seeds w/h=cellSize solely as the dangling-link fallbac
   expect(danglingBox.w).toBe(50); // now the seeded engine.w is what's actually used
 });
 
+test("buildTokenFromActor's dangling-link fallback box is a single hex's own bounding box on hex, not a square", () => {
+  const actor = buildActorDoc("w1", "Goblin", actorEngine, "act1");
+  const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { kind: "hex", size: 100 }, "tok1");
+  expect((token.engine as TokenEngine).w).toBeCloseTo(100 * Math.sqrt(3), 6);
+  expect((token.engine as TokenEngine).h).toBe(200);
+
+  const withoutActor = new DocumentStore();
+  withoutActor.applyCommand({ seq: 1, world_id: "w1", author: "a", ts: 0, ops: [{ op: "create", doc: token }] });
+  const danglingBox = resolveTokenBox(token, withoutActor, resolveTokenActor(token, withoutActor));
+  expect(danglingBox.w).toBeCloseTo(100 * Math.sqrt(3), 6);
+  expect(danglingBox.h).toBe(200);
+});
+
 test("setNameHidden sets and clears the OwnerOrGm override on /name", () => {
   const d = buildActorDoc("w1", "Goblin", actorEngine, "act1");
   setNameHidden(d, true);

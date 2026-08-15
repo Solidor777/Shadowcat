@@ -177,6 +177,48 @@ test("footprintRadius: circle = max(w,h)/2, square = half-diagonal", () => {
   expect(footprintRadius({ shape: "square", size: { w: 2, h: 2 } })).toBeCloseTo(Math.SQRT2, 5);
 });
 
+test("footprintRadius defaults to the square formula when gridKind is omitted", () => {
+  expect(footprintRadius({ shape: "square", size: { w: 1, h: 1 } })).toBeCloseTo(Math.SQRT2 / 2, 12);
+});
+
+test("footprintRadius on hex: the circumscribing radius is the hex count, shape is inert", () => {
+  // Owner ruling: a 1-hex token's conservative enclosure is its own circumradius, i.e. `1.0` in
+  // cell units — NOT the square half-diagonal `hypot(1,1)/2 ≈ 0.707` a square/circle formula
+  // would give if it were (wrongly) applied on hex.
+  expect(footprintRadius({ shape: "square", size: { w: 1, h: 1 } }, "hex")).toBe(1);
+  expect(footprintRadius({ shape: "circle", size: { w: 1, h: 1 } }, "hex")).toBe(1);
+  // n = max(w,h): a 2-hex token's enclosure is 2 hexes' worth of circumradius.
+  expect(footprintRadius({ shape: "square", size: { w: 2, h: 1 } }, "hex")).toBe(2);
+});
+
+test("resolveTokenBox on hex: a 1-hex token's box is the hex's own bounding box, not a square", () => {
+  const scene = buildSceneDoc("w1", { grid: { kind: "hex", size: 100, distance: null } }, "scene1");
+  const actor = buildActorDoc("w1", "Goblin", actorEngine({ size: { w: 1, h: 1 } }), "act1");
+  const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { kind: "hex", size: 100 }, "tok1");
+  const box = resolveTokenBox(token, fakeStore([scene, actor, token]));
+  // The hex a 1-hex token sits in spans √3·size ≈ 173.2 wide, 2·size = 200 tall — never a
+  // 100×100 square, which is a different (smaller) shape.
+  expect(box.w).toBeCloseTo(100 * Math.sqrt(3), 6);
+  expect(box.h).toBe(200);
+});
+
+test("resolveTokenBox on hex ignores shape (a hex tessellation has no square/circle footprint)", () => {
+  const scene = buildSceneDoc("w1", { grid: { kind: "hex", size: 100, distance: null } }, "scene1");
+  const actor = buildActorDoc("w1", "Goblin", actorEngine({ size: { w: 1, h: 1 }, shape: "circle" }), "act1");
+  const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { kind: "hex", size: 100 }, "tok1");
+  const box = resolveTokenBox(token, fakeStore([scene, actor, token]));
+  expect(box.w).toBeCloseTo(100 * Math.sqrt(3), 6);
+  expect(box.h).toBe(200);
+});
+
+test("resolveTokenBox stays byte-identical to the pre-hex square formula on a square grid", () => {
+  const scene = buildSceneDoc("w1", { grid: { kind: "square", size: 100, distance: null } }, "scene1");
+  const actor = buildActorDoc("w1", "Goblin", actorEngine({ size: { w: 2, h: 3 } }), "act1");
+  const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 50, y: 60 }, 100, "tok1");
+  const box = resolveTokenBox(token, fakeStore([scene, actor, token]));
+  expect(box).toEqual({ x: 50, y: 60, w: 200, h: 300, shape: "square" });
+});
+
 it("resolves actor vision modes onto the effective actor", () => {
   const withVision = { ...eng, vision: [{ mode: "darkvision", range: 12 }] };
   const actor = buildActorDoc("w1", NAME, withVision, "act1");

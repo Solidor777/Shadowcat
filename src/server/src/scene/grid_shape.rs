@@ -94,10 +94,12 @@ pub(crate) trait GridShape {
     /// never be re-scaled by this value. The two coincide on square, which is exactly why a site
     /// that confuses them stays invisible until a hex scene runs through it.
     ///
-    /// NOT the token footprint scale either. A token's footprint radius is a square block's
-    /// half-diagonal in cells, and its model is a square block, so it converts through the
-    /// indexing scale — scaling it here would give a 1×1 token a disc past the hex inradius and
-    /// make a medium creature occupy seven hexes, which is a rules change rather than a unit fix.
+    /// NOT the token footprint scale either. A token's footprint radius derives from its OWN
+    /// shape's model — a square block's half-diagonal on square, the circumscribing radius of the
+    /// authored hex count on hex (owner ruling: authored size counts HEXES on hex, never a square
+    /// approximation; see `resolved_footprint_radius_cells`) — and both convert through the
+    /// indexing scale, not this one: scaling a hex footprint here would give a 1-hex token a disc
+    /// past its own hex's circumradius, which is a rules change rather than a unit fix.
     fn world_units_per_cell(&self) -> f64;
     /// The world-unit ENVELOPE of `bounds_cells`, a per-axis dimension measured in grid units
     /// (cells), continuous — never world units, and not required to be integral. Both corners are

@@ -1946,13 +1946,38 @@ impl SceneEcs {
         }
     }
 
-    /// A token's bounding-disc radius in GRID UNITS (cells). Mirrors the client's `footprintRadius`
-    /// formula: a circle uses `max(w,h)/2`, any other shape
-    /// its half-diagonal `hypot(w,h)/2` (conservative enclosure). Effective-actor resolution
-    /// mirrors `resolveTokenActor` via the SAME join `token_vision_floors` implements: a LINKED
-    /// token resolves the shared actor and applies the per-token override whitelist; a dangling
-    /// link ignores overrides; an INSTANCED token uses its embedded copy and overrides do not
-    /// apply.
+    /// A token's bounding-disc radius in GRID UNITS (cells), given the resolved `(shape, size)`
+    /// and the scene's `GridKind`. Mirrors the client's `resolveFootprintGeometry` (`@shadowcat/core`'s
+    /// `grid-footprint` module) — the ONE definition both languages implement, kept in parity by
+    /// `footprint_radius_mirrors_the_client_formula`.
+    ///
+    /// Square: unchanged from the pre-hex formula — a circle uses `max(w,h)/2`, any other shape
+    /// its half-diagonal `hypot(w,h)/2` (conservative enclosure of the authored w×h block).
+    ///
+    /// Hex: a token's authored size counts HEXES, not a square block (owner ruling), so `shape` is
+    /// inert here — a hex tessellation has no "square"/"circle" footprint distinction. `n =
+    /// max(w,h)` hexes; a single hex's conservative enclosure is its own circumradius (`1.0` in
+    /// cell units — `footprintRadius`'s pre-existing "conservative enclosure" convention extended
+    /// to hex, per the owner's ruling derived from that convention rather than a re-ask), so an
+    /// n-hex footprint's radius is `n`.
+    fn resolved_footprint_radius_cells(kind: GridKind, shape: &str, w: f64, h: f64) -> f64 {
+        match kind {
+            GridKind::Hex => w.max(h),
+            GridKind::Square => {
+                if shape == "circle" {
+                    w.max(h) / 2.0
+                } else {
+                    w.hypot(h) / 2.0
+                }
+            }
+        }
+    }
+
+    /// A token's bounding-disc radius in GRID UNITS (cells), resolved against `scene`'s grid kind
+    /// via `resolved_footprint_radius_cells`. Effective-actor resolution mirrors `resolveTokenActor`
+    /// via the SAME join `token_vision_floors` implements: a LINKED token resolves the shared actor
+    /// and applies the per-token override whitelist; a dangling link ignores overrides; an
+    /// INSTANCED token uses its embedded copy and overrides do not apply.
     ///
     /// `None` means REFUSE — the derived radius is outside `[0, MAX_FOOTPRINT_CELLS]`, or the
     /// stored size is degenerate. Callers must fail closed, never substitute a default: clamping an
@@ -1962,7 +1987,7 @@ impl SceneEcs {
     /// DELIBERATE DIVERGENCE from the client on degenerate input: the client's `footprintRadius`
     /// has no finite/sign guard and propagates `NaN` (rejected later by `find`'s range check),
     /// whereas this refuses. Both fail closed; only the mechanism differs.
-    pub(crate) fn resolve_token_footprint(&self, token: Uuid) -> Option<f64> {
+    pub(crate) fn resolve_token_footprint(&self, token: Uuid, scene: Uuid) -> Option<f64> {
         let Some((shape, size)) = self.token_shape_and_size(token) else {
             return Some(DEFAULT_FOOTPRINT_RADIUS_CELLS);
         };
@@ -1976,11 +2001,7 @@ impl SceneEcs {
             );
             return None;
         }
-        let r = if shape == "circle" {
-            w.max(h) / 2.0
-        } else {
-            w.hypot(h) / 2.0
-        };
+        let r = Self::resolved_footprint_radius_cells(self.resolve_grid_kind(scene), &shape, w, h);
         if !(0.0..=pathfinding::MAX_FOOTPRINT_CELLS).contains(&r) {
             tracing::warn!(
                 ?token,
@@ -4210,12 +4231,27 @@ mod tests {
     }
 
     /// A hydrated ECS with one LINKED token (id 11) referencing an actor (id 200) of the given
-    /// `shape`/`size`, no overrides.
+    /// `shape`/`size`, no overrides. Square-kind scene (the `doc()` helper stamps no `engine` at
+    /// all, so `grid_kind_from` falls back to `GridKind::Square`).
     fn scene_with_linked_token_sized(shape: &str, w: f64, h: f64) -> (SceneEcs, Uuid) {
+        scene_with_linked_token_sized_kind("square", shape, w, h)
+    }
+
+    /// `scene_with_linked_token_sized` generalized to an explicit `grid.kind`.
+    fn scene_with_linked_token_sized_kind(
+        kind: &str,
+        shape: &str,
+        w: f64,
+        h: f64,
+    ) -> (SceneEcs, Uuid) {
         let token_id = Uuid::from_u128(11);
         let mut ecs = SceneEcs::from_documents(
             vec![
-                doc(10, None, "scene"),
+                entity_doc_top_eng(
+                    10,
+                    "scene",
+                    json!({ "grid": { "kind": kind, "size": 100.0 }, "background": null }),
+                ),
                 entity_doc_eng(
                     11,
                     10,
@@ -4278,9 +4314,14 @@ mod tests {
         (ecs, token_id)
     }
 
+    /// The scene id every `scene_with_linked_token_sized*`/`scene_with_raw_token_no_actor`
+    /// fixture in this block builds its scene document at — read once rather than restated at
+    /// every `resolve_token_footprint` call site below.
+    const FOOTPRINT_TEST_SCENE: Uuid = Uuid::from_u128(10);
+
     #[test]
     fn footprint_radius_mirrors_the_client_formula() {
-        // Mirrors the client's `footprintRadius`:
+        // Mirrors the client's `resolveFootprintGeometry` on a square scene:
         //   circle ⇒ max(w,h)/2 ; square (and any other shape) ⇒ hypot(w,h)/2
         // Representative + boundary cases; `Size` is a free {w,h} pair, so there is no finite
         // domain to enumerate exhaustively.
@@ -4296,7 +4337,31 @@ mod tests {
         ];
         for (shape, w, h, expected) in cases {
             let (ecs, token) = scene_with_linked_token_sized(shape, w, h);
-            let got = ecs.resolve_token_footprint(token).expect("in-range");
+            let got = ecs
+                .resolve_token_footprint(token, FOOTPRINT_TEST_SCENE)
+                .expect("in-range");
+            assert!(
+                (got - expected).abs() < 1e-12,
+                "shape={shape} w={w} h={h}: want {expected}, got {got}"
+            );
+        }
+    }
+
+    #[test]
+    fn footprint_radius_on_hex_is_the_circumscribing_radius_shape_is_inert() {
+        // A token's authored size counts HEXES, and the conservative enclosure of one hex is its
+        // own circumradius (`1.0` in cell units) — never the square half-diagonal `hypot(1,1)/2 ≈
+        // 0.707` a square/circle formula gives when applied on hex.
+        let cases = [
+            ("square", 1.0, 1.0, 1.0),
+            ("circle", 1.0, 1.0, 1.0), // shape is inert on hex
+            ("square", 2.0, 1.0, 2.0), // n = max(w, h)
+        ];
+        for (shape, w, h, expected) in cases {
+            let (ecs, token) = scene_with_linked_token_sized_kind("hex", shape, w, h);
+            let got = ecs
+                .resolve_token_footprint(token, FOOTPRINT_TEST_SCENE)
+                .expect("in-range");
             assert!(
                 (got - expected).abs() < 1e-12,
                 "shape={shape} w={w} h={h}: want {expected}, got {got}"
@@ -4308,7 +4373,7 @@ mod tests {
     fn footprint_radius_falls_back_to_the_client_default_for_an_actorless_token() {
         let (ecs, token) = scene_with_raw_token_no_actor();
         assert_eq!(
-            ecs.resolve_token_footprint(token),
+            ecs.resolve_token_footprint(token, FOOTPRINT_TEST_SCENE),
             Some(DEFAULT_FOOTPRINT_RADIUS_CELLS),
             "an actorless token uses the same 0.4 default the client's resolveFootprint uses"
         );
@@ -4317,7 +4382,13 @@ mod tests {
     #[test]
     fn footprint_radius_honors_a_per_token_size_override() {
         let (ecs, token) = scene_with_linked_token_overriding_size("circle", 4.0, 4.0);
-        assert!((ecs.resolve_token_footprint(token).expect("in-range") - 2.0).abs() < 1e-12);
+        assert!(
+            (ecs.resolve_token_footprint(token, FOOTPRINT_TEST_SCENE)
+                .expect("in-range")
+                - 2.0)
+                .abs()
+                < 1e-12
+        );
     }
 
     #[test]
@@ -4326,7 +4397,7 @@ mod tests {
         // map-scale token as a 64-cell disc — a geometric fail-open.
         let (ecs, token) = scene_with_linked_token_sized("square", 1000.0, 1000.0);
         assert_eq!(
-            ecs.resolve_token_footprint(token),
+            ecs.resolve_token_footprint(token, FOOTPRINT_TEST_SCENE),
             None,
             "an out-of-range footprint is refused"
         );
@@ -4337,7 +4408,7 @@ mod tests {
         let at = pathfinding::MAX_FOOTPRINT_CELLS; // 64.0
         let (ecs, token) = scene_with_linked_token_sized("circle", at * 2.0, at * 2.0);
         assert_eq!(
-            ecs.resolve_token_footprint(token),
+            ecs.resolve_token_footprint(token, FOOTPRINT_TEST_SCENE),
             Some(at),
             "AT the bound is admissible"
         );

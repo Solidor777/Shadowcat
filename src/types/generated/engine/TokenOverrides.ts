@@ -16,11 +16,12 @@ name: string | null,
  */
 visual: TokenVisual | null, 
 /**
- * Size override in GRID UNITS (cells), replacing the actor's own `size`: a medium creature
- * is `1`. `resolve_token_footprint` derives the footprint radius from the resolved value and
- * bounds it by `MAX_FOOTPRINT_CELLS`, and the client multiplies it by the scene's cell size
- * to reach scene units. Not to be confused with `TokenEngine.w`/`h`, which are the token's
- * rendered box in scene units.
+ * Size override in GRID UNITS, replacing the actor's own `size`: a medium creature is `1` —
+ * one CELL on a square scene, one HEX on a hex scene (never a square block there; the
+ * footprint derives from the hex's own dimensions). `resolve_token_footprint` derives the
+ * footprint radius from the resolved value and bounds it by `MAX_FOOTPRINT_CELLS`, and the
+ * client multiplies it by the scene's cell size to reach scene units. Not to be confused with
+ * `TokenEngine.w`/`h`, which are the token's rendered box in scene units.
  */
 size: Size | null, 
 /**

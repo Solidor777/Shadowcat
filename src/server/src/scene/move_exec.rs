@@ -2539,9 +2539,14 @@ mod tests {
         })
     }
 
-    /// A corridor split by a single vertical wall (with a 300-unit gap centered on the token's
-    /// row) between grid-aligned start/goal cells 4 columns apart, wide enough for a
-    /// footprint-1.6-cell token (r_scene=80) to clear with margin. `start`/`goal` are computed
+    /// A corridor split by a single vertical wall, gapped centered on the token's row, between
+    /// grid-aligned start/goal cells 4 columns apart. The gap is sized PER KIND from the token's
+    /// OWN resolved footprint radius (`resolve_token_footprint`), since a hex token is wider than
+    /// its square counterpart at the same authored size (owner ruling: a hex's authored size
+    /// counts HEXES, so its collision radius is the circumradius `max(w,h)`, not the square
+    /// half-diagonal `max(w,h)/2`) — square: 300-unit gap for a footprint-1.6-cell token
+    /// (r_scene=80, 70-unit margin); hex: 460-unit gap for the same actor (r_scene=160, matching
+    /// 70-unit margin). `start`/`goal` are computed
     /// from the ACTUAL grid shape's own `cell_center` (square: `(i+0.5)*cell`; hex: the axial
     /// pointy-top formula `hex_cell_center` uses) rather than a single literal shared across both
     /// kinds — hex cell centers do not fall on square-grid-aligned coordinates, and `execute_move`
@@ -2580,6 +2585,14 @@ mod tests {
         // the column), so a single wall gap centered on that shared `y` clears both kinds.
         let row_y = start.1;
         let wall_x = (start.0 + goal.0) / 2.0;
+        // Gap half-height, derived from each kind's OWN resolved footprint radius (a token's
+        // authored size counts HEXES on hex, so its collision radius is the circumscribing
+        // radius, wider than a square block's half-diagonal at the same authored size): square's
+        // r_scene is 80 (`max(w,h)/2` circle formula — 1.6/2 · FIXTURE_GRID_SIZE), so its
+        // 150-unit half-gap carries a 70-unit margin; hex's r_scene is 160 (`max(w,h)` ·
+        // FIXTURE_GRID_SIZE), so its half-gap is 230 for the same 70-unit margin — a narrower gap
+        // would correctly refuse this token.
+        let gap_half_height = if kind == "hex" { 230.0 } else { 150.0 };
         let mut tok = entity_doc(
             11,
             10,
@@ -2608,8 +2621,8 @@ mod tests {
             vec![
                 scene,
                 tok,
-                wall(12, wall_x, 0.0, wall_x, row_y - 150.0),
-                wall(13, wall_x, row_y + 150.0, wall_x, row_y + 2000.0),
+                wall(12, wall_x, 0.0, wall_x, row_y - gap_half_height),
+                wall(13, wall_x, row_y + gap_half_height, wall_x, row_y + 2000.0),
             ],
             0,
         );
@@ -2790,7 +2803,7 @@ mod tests {
         for kind in ["square", "hex"] {
             let (ecs, scene, token, user, start, goal) =
                 scene_with_narrow_gap_and_wide_token(kind, MovementModel::GridStepped);
-            let fp = ecs.resolve_token_footprint(token).expect("in-range");
+            let fp = ecs.resolve_token_footprint(token, scene).expect("in-range");
             let mask = ecs.visible_cells(user, scene, false);
             // NOT `if let Ok` — a fixture that yields no route must fail the test, not skip it.
             let route = ecs
@@ -2840,7 +2853,7 @@ mod tests {
         // vacuous pass.
         let (ecs, scene, token, user, start, goal) =
             scene_with_narrow_gap_and_wide_token("square", MovementModel::Continuous);
-        let fp = ecs.resolve_token_footprint(token).expect("in-range");
+        let fp = ecs.resolve_token_footprint(token, scene).expect("in-range");
         let mask = ecs.visible_cells(user, scene, false);
         let route = ecs
             .pathfind(
@@ -2885,7 +2898,7 @@ mod tests {
         // permissive than the router (e.g. a dropped segments_cross check).
         let (ecs, scene, token, user) =
             scene_with_wall_between_adjacent_cells_and_default_footprint();
-        let fp = ecs.resolve_token_footprint(token).expect("in-range"); // 0.4
+        let fp = ecs.resolve_token_footprint(token, scene).expect("in-range"); // 0.4
         let mask = ecs.visible_cells(user, scene, false);
         let candidates = [
             [(50.0, 50.0), (150.0, 50.0)],
@@ -2961,7 +2974,7 @@ mod tests {
     #[test]
     fn a_wide_token_cannot_enter_a_cell_whose_footprint_overlaps_fog() {
         let (ecs, scene, token, user) = scene_with_lit_center_line_only();
-        let fp = ecs.resolve_token_footprint(token).expect("in-range"); // > 0.5
+        let fp = ecs.resolve_token_footprint(token, scene).expect("in-range"); // > 0.5
         let mask = ecs.visible_cells(user, scene, false);
         let out = execute_move(
             &ecs,
@@ -3014,7 +3027,7 @@ mod tests {
         // token whose FOOTPRINT touches an arrest cell but whose CENTER does not must not be
         // arrested, or the gate becomes stricter than the router and route-gate parity breaks.
         let (ecs, scene, token, user) = scene_with_arrest_cell_beside_the_path_and_wide_token();
-        let fp = ecs.resolve_token_footprint(token).expect("in-range"); // > 0.5
+        let fp = ecs.resolve_token_footprint(token, scene).expect("in-range"); // > 0.5
         let mask = ecs.visible_cells(user, scene, false);
         let out = execute_move(
             &ecs,

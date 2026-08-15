@@ -727,7 +727,7 @@ async fn handle_pathfind(
             let derived = match s.token_scene_and_effective_owner(t) {
                 Some((t_scene, _)) if t_scene != scene => None,
                 Some((_, owner)) if !is_gm && owner != Some(ctx.user_id) => None,
-                Some(_) => s.resolve_token_footprint(t),
+                Some(_) => s.resolve_token_footprint(t, scene),
                 None => None,
             };
             match derived {

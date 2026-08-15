@@ -3,7 +3,7 @@
 // dispatchIntent for document writes); it never imports core-ui (contract-only
 // boundary). The tool factories close over the context.
 import { rectPoints, ellipsePoints, circlePoints, conePoints, squarePoints, parseColor, type SceneTool, type Point } from "@shadowcat/render";
-import { buildTokenDoc, buildTokenFromActor, buildSceneEntityDoc, resolveTokenBox, resolveTokenActor, footprintRadius, buildRegionDoc, setRegionVisibility, type ReadableDocuments, type AssetResolver, type WireOperation, type PathResult, type MoveStream } from "@shadowcat/core";
+import { buildTokenDoc, buildTokenFromActor, buildSceneEntityDoc, resolveTokenBox, resolveTokenActor, footprintRadius, resolveFootprintGeometry, buildRegionDoc, setRegionVisibility, type ReadableDocuments, type AssetResolver, type WireOperation, type PathResult, type MoveStream } from "@shadowcat/core";
 import type { SceneInteraction, ActorSelection, TokenSelection } from "@shadowcat/ui-kit";
 import type { WorldRole } from "@shadowcat/types";
 import { topTokenAt } from "./hit-test";
@@ -100,8 +100,11 @@ export interface ToolContext {
 function activeScene(ctx: ToolContext): {
   /** The active scene's document id. */
   id: string;
-  /** Grid cell size in pixels (defaults to 100 when the scene doc omits `grid.size`). */
+  /** Grid cell size in pixels (defaults to 100 when the scene doc omits `grid.size`; the
+   * circumradius on hex). */
   size: number;
+  /** The scene's grid kind; `"square"` when the scene doc omits `grid.kind`. */
+  kind: string;
   /** Distance-per-cell scale numerator (defaults to 5, matching `resolveSceneSettings`). */
   perCell: number;
   /** Distance unit label (defaults to `"ft"`, matching `resolveSceneSettings`). */
@@ -113,6 +116,8 @@ function activeScene(ctx: ToolContext): {
   const grid = (scene.engine as {
     /** Per-scene grid config; absent ⇒ the defaults below apply. */
     grid?: {
+      /** The scene's grid kind; falls back to `"square"` when absent. */
+      kind?: string;
       /** Grid cell size in pixels; falls back to 100 when absent. */
       size?: number;
       /** Distance-per-cell scale; falls back to `{ perCell: 5, unit: "ft" }` when absent. */
@@ -125,8 +130,9 @@ function activeScene(ctx: ToolContext): {
     };
   } | undefined)?.grid;
   const size = grid?.size ?? 100;
+  const kind = grid?.kind ?? "square";
   const { perCell, unit } = grid?.distance ?? { perCell: 5, unit: "ft" };
-  return { id: scene.id, size, perCell, unit };
+  return { id: scene.id, size, kind, perCell, unit };
 }
 
 /** Format a whole-cell distance as the measure tool's shared distance label:
@@ -183,7 +189,7 @@ function formatCellDistance(cells: number, scene: {
 function footprintFor(ctx: ToolContext, id: string): number {
   const doc = ctx.documents.get(id);
   const eff = doc ? resolveTokenActor(doc, ctx.documents) : null;
-  return eff ? footprintRadius(eff) : 0.4;
+  return eff ? footprintRadius(eff, activeScene(ctx)?.kind ?? "square") : 0.4;
 }
 
 /** Route color for the A* preview polyline (blue-teal, distinct from walls and selection). */
@@ -303,7 +309,7 @@ export function makePlaceTool(ctx: ToolContext, controller: ToolController): Sce
            * (embeds a frozen copy) rather than links (shares the live document). */
           prototype?: boolean;
         } | undefined)?.prototype ? "instance" : "link";
-        ctx.dispatchIntent([{ op: "create", doc: buildTokenFromActor(ctx.world, scene.id, actor, mode, c, scene.size) }]);
+        ctx.dispatchIntent([{ op: "create", doc: buildTokenFromActor(ctx.world, scene.id, actor, mode, c, { kind: scene.kind, size: scene.size }) }]);
         // A unique (linked) actor places once by default: clear the selection so repeated
         // clicks don't stamp duplicate live-views. The user can opt to keep it selected
         // (keepAfterPlace). Instanced actors always stay selected for placing many.
@@ -312,10 +318,13 @@ export function makePlaceTool(ctx: ToolContext, controller: ToolController): Sce
       }
       const asset = controller.selectedAsset;
       if (!asset) return false;
+      // A single hex's own bounding box on hex scenes, never a square approximation —
+      // `resolveFootprintGeometry` is the one definition `resolveTokenBox` also derives from.
+      const { boxW, boxH } = resolveFootprintGeometry("square", { w: 1, h: 1 }, scene.kind);
       ctx.dispatchIntent([
         {
           op: "create",
-          doc: buildTokenDoc(ctx.world, scene.id, { x: c.x, y: c.y, w: scene.size, h: scene.size, rotation: 0, visual: { kind: "image", asset }, actor_id: null, overrides: null, face: null }),
+          doc: buildTokenDoc(ctx.world, scene.id, { x: c.x, y: c.y, w: boxW * scene.size, h: boxH * scene.size, rotation: 0, visual: { kind: "image", asset }, actor_id: null, overrides: null, face: null }),
         },
       ]);
       return true;

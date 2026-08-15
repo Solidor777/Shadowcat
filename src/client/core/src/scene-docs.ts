@@ -7,6 +7,7 @@
 export type { WireDocument } from "./wire";
 import type { WireDocument } from "./wire";
 import type { ReadableDocuments } from "./store";
+import { resolveFootprintGeometry } from "./grid-footprint";
 import type {
   MovementRestriction,
   MovementModel,
@@ -591,7 +592,7 @@ export function buildItemDoc(worldId: string, name: string | null, system: ItemS
 
 /** Build a token from an actor. `link` references the shared actor; `instance` embeds an
  * independent copy with `source` provenance (the deferred merge engine consumes it). Size/
- * shape resolve from the actor; `w`/`h` seed the rendered cell size now.
+ * shape resolve from the actor; `w`/`h` seed the rendered dangling-link fallback box now.
  * `doc_type: "token"` is engine-defined — the transform/visual/link body lands in `engine`.
  * @param worldId The owning world's id.
  * @param sceneId The scene document this token is parented to.
@@ -601,8 +602,11 @@ export function buildItemDoc(worldId: string, name: string | null, system: ItemS
  * @param pos The token's initial scene-unit position.
  * @param pos.x The initial x coordinate, scene units.
  * @param pos.y The initial y coordinate, scene units.
- * @param cellSize The dangling-link fallback size (`w`/`h`); the actor-backed render path
- * resolves size through `EffectiveActor.size × grid-cell` instead (see `resolveTokenBox`).
+ * @param grid The scene's grid cell size (a bare number, treated as `{kind: "square", size}`) or
+ * its full `{kind, size}` — used for the dangling-link fallback box only, via
+ * `resolveFootprintGeometry`; the actor-backed render path resolves size through
+ * `EffectiveActor.size` + the LIVE parent scene's grid instead (see `resolveTokenBox`), so a
+ * caller who does not yet know the grid's kind may still pass the bare-number form safely.
  * @param id An explicit id, or `undefined` to generate one.
  * @returns A `WireDocument` with `doc_type: "token"`, parented to `sceneId`.
  * @example
@@ -620,17 +624,21 @@ export function buildTokenFromActor(
   actor: WireDocument,
   mode: "link" | "instance",
   pos: { /** Initial x coordinate, scene units. */ x: number; /** Initial y coordinate, scene units. */ y: number },
-  cellSize: number,
+  grid: number | { /** The scene's grid kind. */ kind: string; /** Cell size, scene units (the circumradius on hex). */ size: number },
   id?: string,
 ): WireDocument {
+  const { kind, size } = typeof grid === "number" ? { kind: "square", size: grid } : grid;
   // `w`/`h` are seeded solely as the dangling-link fallback: `resolveTokenBox`
   // uses this ONLY when the linked/instanced actor is missing (`resolveTokenBox`'s
   // missing-actor branch, `eng?.w ?? 0`). The actor-backed render path never reads these — size resolves
-  // through EffectiveActor.size x grid-cell instead. This is an explicit, documented
+  // through EffectiveActor.size + the parent scene's grid instead. This is an explicit, documented
   // fallback rather than a lazy derivation from the token's last-known actor size, which
-  // would introduce a second size-derivation path.
+  // would introduce a second size-derivation path. A single hex's own bounding box on hex
+  // scenes, never a square approximation — `resolveFootprintGeometry` is the one definition
+  // `resolveTokenBox`'s actor-backed branch also derives from.
+  const { boxW, boxH } = resolveFootprintGeometry("square", { w: 1, h: 1 }, kind);
   const base: TokenEngine = {
-    x: pos.x, y: pos.y, w: cellSize, h: cellSize, rotation: 0,
+    x: pos.x, y: pos.y, w: boxW * size, h: boxH * size, rotation: 0,
     visual: null, actor_id: null, overrides: null, face: null,
   };
   if (mode === "link") {

@@ -5,16 +5,20 @@
  */
 export type Size = { 
 /**
- * Width in GRID UNITS (cells): a medium creature is `1`. `resolve_token_footprint` derives
- * the footprint radius from this directly and bounds it by `MAX_FOOTPRINT_CELLS`, and the
- * client multiplies it by the scene's cell size to reach scene units. Not to be confused
- * with `TokenEngine.w`, which is the token's rendered box in scene units.
+ * Width in GRID UNITS: a medium creature is `1` — one CELL on square, one HEX on hex.
+ * `resolve_token_footprint` derives the footprint radius from this directly (via each grid
+ * kind's own model — a square block's half-diagonal, or a hex count's circumscribing radius)
+ * and bounds it by `MAX_FOOTPRINT_CELLS`, and the client multiplies it by the scene's cell
+ * size to reach scene units. Not to be confused with `TokenEngine.w`, which is the token's
+ * rendered box in scene units.
  */
 w: number, 
 /**
- * Height in GRID UNITS (cells): a medium creature is `1`. `resolve_token_footprint` derives
- * the footprint radius from this directly and bounds it by `MAX_FOOTPRINT_CELLS`, and the
- * client multiplies it by the scene's cell size to reach scene units. Not to be confused
- * with `TokenEngine.h`, which is the token's rendered box in scene units.
+ * Height in GRID UNITS: a medium creature is `1` — one CELL on square, one HEX on hex.
+ * `resolve_token_footprint` derives the footprint radius from this directly (via each grid
+ * kind's own model — a square block's half-diagonal, or a hex count's circumscribing radius)
+ * and bounds it by `MAX_FOOTPRINT_CELLS`, and the client multiplies it by the scene's cell
+ * size to reach scene units. Not to be confused with `TokenEngine.h`, which is the token's
+ * rendered box in scene units.
  */
 h: number, };

@@ -120,10 +120,12 @@ pub(crate) fn cell_enterable(grid: &PathGrid, from: Cell, to: Cell) -> bool {
     }
     // The footprint radius keeps the INDEXING scale rather than converting through
     // `GridShape::world_units_per_cell` like an authored distance would — that symbol's own note
-    // states why: the radius is a square block's half-diagonal and the model behind it is a square
-    // block, so rescaling it changes what a token occupies. `move_exec::execute_move` derives its
-    // own `r_scene` the same way, and the route-vs-gate footprint comparison depends on the two
-    // agreeing.
+    // states why: on square the radius is the authored block's half-diagonal; on hex (owner
+    // ruling — a token's authored size counts HEXES) it is the circumscribing radius of the
+    // authored hex count, `resolved_footprint_radius_cells`'s own model — so rescaling it through
+    // the world-unit conversion changes what a token occupies on either shape.
+    // `move_exec::execute_move` derives its own `r_scene` the same way, and the route-vs-gate
+    // footprint comparison depends on the two agreeing.
     let r_scene = grid.inputs.footprint_radius_cells.max(0.0) * grid.inputs.cell;
     let ctr = grid.inputs.shape.cell_center(to);
     let a = grid.inputs.shape.cell_center(from);
