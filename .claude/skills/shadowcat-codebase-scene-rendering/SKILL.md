@@ -155,6 +155,15 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   **`max(bright, dim)` sizes the light bound, and over-inclusion there is inert**: `light_illumination`
   returns 0 beyond `dim_radius` before the bright branch runs, so a `bright_radius` authored larger
   than `dim_radius` grows the polygon without ever lighting a cell past `dim_radius`.
+  **A FOURTH bound site exists and deliberately does NOT use any of the three** — `env_light_polys`
+  constructs its `vision::Rect` inline as `extent ± cell_size.max(1.0)`. That is correct rather than
+  an oversight, and the distinction is worth holding: the three builders above are VIEWPOINT-relative
+  (they grow around a lamp or an eye and must reach as far as that source can see), whereas
+  environment light is projected inward from the scene boundary, so its bound is the scene's own
+  envelope and wall-endpoint growth would add nothing outside it. It shares only the
+  `visibility_polygon` raycast primitive with the other paths, never the bound construction. **Do not
+  "unify" it into `bound_for_scene`** — that would make an inward-projected boundary walk depend on
+  wall placement, which is a different mechanism, not a tidier spelling of the same one.
 - `scene::lighting` — pure illumination (no I/O — callers pass parsed
   structs): gradation `Band`s (`sorted_bands`/`band_index`/`floor_min`), `Light` radial falloff
   (`light_illumination`), `cell_illumination` (max-compose env + lights, `blocksLight` occlusion via
