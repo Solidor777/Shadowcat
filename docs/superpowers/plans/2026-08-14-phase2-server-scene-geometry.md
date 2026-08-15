@@ -3764,6 +3764,433 @@ numbers, dates, or process references.
 
 ---
 
+### Task 6c: the client measures a travelled distance in the same cells the server does
+
+**Numbered `6c` for the same reason as `5b`.** Found during Task 6, pre-existing, client-side, and
+correctly not fixed inline — it crosses the language boundary and needs a parity pin, which earns its
+own review cycle.
+
+---
+
+#### The defect: the per-step distance decision is FORKED across the server and the client
+
+The server converts a travelled world distance into grid steps through
+`GridShape::world_units_per_cell` — `cell` on square, `size * √3` on hex — and uses it to compute the
+authoritative `MoveExecution::duration_ms` in `Room`'s move path, whose own doc states that contract.
+
+`TokenAnimator`'s `startAnim` makes the same decision independently and differently:
+
+```ts
+const cells = total / this.cfg.cellSize;
+// duration: (cells / this.cfg.speedCellsPerSec) * 1000
+```
+
+`AnimationConfig.cellSize` is fed by `TokenView.pushAnimConfig` from `TokenView.setCellSize`, which
+`RenderEngine.setGrid` sets from `GridSpec.size` — the scene document's authored `engine.grid.size`.
+On hex that field is the **outer radius (circumradius)**, and the client's own `Grid.axialToPixel`
+confirms adjacent centres are `√3 · size` apart. So on a hex grid the client divides by a value
+`√3` too small, computes `√3×` too many cells, and animates `√3×` too slowly.
+
+**This is the forked-decision class — the defect this codebase produces most.** Two paths documented
+to agree on "how far is one cell" disagree on an input nobody checked, namely the grid shape.
+
+**It is live in production.** `TokenView.reconcile` calls `TokenAnimator.setTarget` for every token
+document on every sync, and `setTarget` starts the `startAnim` tween. Any position change arriving as
+a document update rather than as a move-stream broadcast animates through this path. Verify the
+reachability yourself before building anything — if you conclude it is unreachable, stop and report
+that, because it changes the task.
+
+**Why nothing caught it.** `animateSamples` plays back a server-supplied `durationMs` verbatim and
+never reads `cellSize`, so the server-driven route path is correct and masks the fork on exactly the
+journeys anyone would test. Every existing animator test uses cell size 100 on an implicit square
+grid, where `world_units_per_cell == size` and the two conventions coincide.
+
+---
+
+**Files:**
+- Modify: `src/client/render/src/grid.ts` (`Grid`)
+- Modify: `src/client/render/src/token-animator.ts` (`AnimationConfig`, `TokenAnimator`)
+- Modify: `src/client/render/src/token-view.ts` (`TokenView.setCellSize`, `TokenView.pushAnimConfig`)
+- Modify: `src/client/render/src/engine.ts` (`RenderEngine.setGrid`) if the plumbing changes shape
+- Test: the sibling `.test.ts` of each modified module
+
+**Interfaces:**
+- Produces: a new public `Grid` method returning the world distance between adjacent cell centres.
+  Name it to match the server's `world_units_per_cell` in the client's casing so the two are greppable
+  as one concept.
+- Consumes: `GridSpec.kind` — the animator currently receives a bare number and cannot know the shape,
+  which is the structural reason this forked at all.
+
+---
+
+- [ ] **Step 1: Reproduce the fork before changing anything, and record it verbatim**
+
+Write a test that animates a token one hex step on a hex grid and asserts the duration equals one cell
+at the configured speed. Run it. **Record the observed failure verbatim** — do not predict it, and do
+not compute the expected number by re-deriving the formula you are about to fix.
+
+- [ ] **Step 2: Give `Grid` the per-step distance, and make the animator consume it**
+
+Add the method to `Grid` — `size` for square, `size * Math.sqrt(3)` for hex — with a doc comment
+stating the invariant (every axial neighbour is `√3 · size` away) and why it is NOT the indexing
+scale.
+
+Then **rename `AnimationConfig.cellSize`** to name the quantity it actually needs. The rename is the
+point, not cosmetic: the present name is why a reader supplied the indexing scale in good faith. Its
+doc comment currently says "Pixels per grid cell (grid.size)" — that sentence must become false and be
+rewritten, not left standing beside a new name.
+
+**Do not compute `√3` inside the animator.** One shape-aware symbol, consumed everywhere — a second
+site that knows about hexes is the same fork again in a new place.
+
+- [ ] **Step 3: Pin the parity across the language boundary**
+
+The two implementations cannot share a symbol, so pin them with a test that fails if either side
+changes. Assert the client's per-step distance for a hex grid of a stated size equals the value the
+server's `GridShape::world_units_per_cell` produces for the same size, with the constant written once
+and both conventions derived from it.
+
+**Witness required, on both sides:** mutate the client method to return `size` and confirm the parity
+test fails; revert by `diff`. A test that passes because both sides are wrong the same way proves
+nothing.
+
+- [ ] **Step 4: Enumerate every consumer of the renamed field**
+
+Grep the client for the old name and adjudicate every hit with a row and a disposition, including hits
+that are correct as they stand. A rename falsifies prose that never enters the diff, so include
+comments, not just code. State the count.
+
+- [ ] **Step 5: Full gate**
+
+`pnpm -r test`, `pnpm -r typecheck`, `pnpm lint` from the root; `node scripts/check-comment-refs.mjs`.
+Run `cargo test` from `src/server/` too if you touched anything the server reads.
+
+- [ ] **Step 6: Commit**
+
+Conventional-commits, imperative, stating the constraint and the consequence. No task ids, round
+numbers, dates, or process references. End with the `Co-Authored-By: Claude Opus 5
+<noreply@anthropic.com>` trailer.
+
+---
+
+### Task 6d: one route cost, one unit, whatever engine produced it
+
+**Numbered `6d` for the same reason as `5b`.** Found during Task 6. Server-and-client, and the fix
+changes a number a GM reads off the screen, so it earns its own review cycle.
+
+---
+
+#### The defect: the wire field's stated unit is true of one producer and false of the other
+
+`ServerMsg::PathResult`'s own doc comment states the contract for the whole field:
+
+> total cost in cells (client multiplies `grid.distance.perCell`)
+
+The grid A* router honours it — `PathOutcome.cost` is documented "Total weighted cost in cells", and
+its tests pin one cell per orthogonal step. **The `Continuous` movement model does not.**
+`SceneEcs::pathfind` deliberately rescales:
+
+```rust
+// `find` reports cost in CELLS; the continuous engine reports SCENE UNITS
+// (parity with the polyanya path, which measures Euclidean length).
+cost: weighted.cost * grid_shape.world_units_per_cell(),
+```
+
+and the pure-navmesh branch returns a Euclidean length in world units directly. `conn` forwards
+`outcome.cost` to the wire unchanged, so the same field carries cells on one model and world units on
+the other, under a doc comment that promises cells.
+
+The client cannot tell. `makeMeasureTool`'s route branch always computes
+`Math.round(result.cost * scene.perCell)` with `perCell` from `grid.distance.perCell`. On a
+`Continuous` scene it multiplies an already-world-unit cost by the game-distance scale a second time.
+At the common authoring of `size: 100`, `perCell: 5`, a five-cell move reports **2500 ft where it
+should read 25 ft**.
+
+**This is the forked-decision class again, and in its purest form:** two producers of one wire field
+disagree about its unit, and the consumer has nothing to branch on. `GridStepped` is the default
+movement model, which is why this has gone unseen.
+
+**Why nothing caught it.** The one client test covering a continuous-movement scene stubs `pathfind`
+with a fixed `cost: 2`, so it never exercises the server's unit switch, and it asserts nothing about
+the budget label.
+
+#### The design fork, and its ruling
+
+Either add a unit discriminant to `PathResult` so the client branches, or make both engines report the
+same unit.
+
+**Ruled: one unit on the wire — cells — and convert at the boundary, not at the consumer.** The
+never-fork rule is explicit that agreement must be structural rather than verified: a discriminant is
+a second decision the client can get wrong, and it preserves two units where the field's contract
+declares one. A fractional cell count is a perfectly meaningful continuous result. The internal
+computation may keep working in world units for navmesh parity — that is a good reason for the
+internal unit and no reason at all for the wire unit. Do not re-open this; implement it.
+
+---
+
+**Files:**
+- Modify: `src/server/src/scene/mod.rs` (`SceneEcs::pathfind`, both branches)
+- Modify: `src/server/src/scene/navmesh.rs` if the conversion belongs at its boundary
+- Modify: `src/server/src/ws/protocol.rs` (`PathResult`'s doc, if its wording needs sharpening)
+- Test: the server pathfind tests, and `src/modules/scene-tools/src/measure-tool.test.ts`
+
+**Interfaces:**
+- Produces: no wire SHAPE change — `cost` stays an `f64`. Its VALUE changes on continuous scenes,
+  which is the point. If you find yourself adding a field, stop and report: that is the discriminant
+  this task ruled against.
+
+---
+
+- [ ] **Step 1: Reproduce the double-multiply end to end, and record it verbatim**
+
+Pin the server side first: a continuous-movement scene whose route covers a known number of cells must
+report that number as `cost`. Run it, **record the observed failure verbatim** — it should show the
+world-unit value, and that number is your evidence, not a prediction.
+
+Then pin the client side with a test that does NOT stub the cost: feed `makeMeasureTool` a cost in the
+unit the server will now send and assert the label. The existing continuous test's fixed `cost: 2`
+stub is exactly why this survived; do not extend that stub, replace the coverage.
+
+- [ ] **Step 2: Convert once, at the boundary, in the direction that preserves the contract**
+
+Make both branches of `SceneEcs::pathfind` yield a cost in cells. Delete the multiply; convert the
+navmesh branch's Euclidean length by dividing by the shape's per-cell world distance.
+
+**Use `GridShape::world_units_per_cell`** — the authored-distance conversion, since a route length is
+a distance a GM authors expectations about. It is emphatically not the footprint radius conversion,
+which the surrounding code is careful to keep distinct; do not follow that precedent here.
+
+Guard the divisor the way the extent work guards its own: a non-finite or non-positive per-cell
+distance must refuse rather than produce an infinity the client renders as a label.
+
+- [ ] **Step 3: Make the contract un-forkable rather than merely correct**
+
+Right now the only thing binding the two engines to one unit is a doc comment. Add a test that
+exercises **both** movement models through the same assertion — same scene geometry, same expected
+cell count — so a future change to either branch fails. Witness required: mutate one branch's
+conversion and confirm the shared test fails; revert by `diff`.
+
+- [ ] **Step 4: State the GM-visible consequence**
+
+The measure tool's label changes on every continuous-movement scene. Say so plainly in the report,
+with the before and after for one concrete authoring, derived from the cell count and `perCell` —
+never read back from the run.
+
+- [ ] **Step 5: Full gate**
+
+`cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` from `src/server/`;
+`pnpm -r test` from the root; `node scripts/check-comment-refs.mjs`.
+
+- [ ] **Step 6: Commit**
+
+Conventional-commits, imperative, stating the constraint and the consequence. No task ids, round
+numbers, dates, or process references. End with the `Co-Authored-By: Claude Opus 5
+<noreply@anthropic.com>` trailer.
+
+---
+
+### Task 6e: the lighting and fog overlays land on the cells they describe
+
+**Numbered `6e` for the same reason as `5b`.** Found during Task 6, client-side, and it is a
+rendering-correctness defect on every hex scene.
+
+---
+
+#### The defect: axial indices painted at square positions
+
+On a hex scene the server sends lit cells and explored cells as **axial `(q, r)`** — they come from
+`HexGrid`'s `GridShape` implementation, whose `axial_to_pixel` places a cell at
+`x = size·(√3q + √3/2·r)`, `y = size·1.5·r`.
+
+Two client paths paint those indices as if they were square row/column:
+
+- `PixiBackend.setLighting` — `const x = c.i * cellSize, y = c.j * cellSize`, then fills an
+  axis-aligned `rect` of `cellSize` on a side.
+- `cellsToRects`, which rasterizes the fog explored-memory layer — the identical
+  `x = cells[k] * size, y = cells[k+1] * size`, emitting a square rect polygon per cell.
+
+Neither consults the grid shape. Neither has one to consult: `LightingFrame` and the explored payload
+carry a `cell` size and no kind.
+
+**The correct math is already in the same package, on the same object.** `RenderEngine` holds a
+`Grid` built from the scene's `GridSpec`, whose private `axialToPixel` is the exact mirror of the
+server's — and it is used only for grid lines, snapping and measurement. So on a hex scene the grid
+lines are right, the cursor snaps right, the currently-visible fog polygon is right (the server sends
+raw raycast vertices, so no cell math is possible), and **the lighting overlay and the explored fog
+are drawn at skewed square positions over correctly-drawn hexes.**
+
+**Why nothing caught it.** These two paths take cell indices; every other fog path takes polygons.
+The bug needs a hex scene AND an overlay to be visible at once, and the overlay tests all use square
+fixtures where the two conventions coincide.
+
+#### The design fork, and its ruling
+
+**Ruled: one shape-aware symbol on `Grid`, consumed by both paths — not shape branches at the paint
+sites.** This is the same ruling as Task 6c and for the same reason: a second site that knows how
+hexes are laid out is the forked decision reappearing. `Grid` already owns the axial math privately;
+promote what these paths need onto its public surface and have them ask for it.
+
+A hex cell is not a rectangle, so the paint sites must move from `rect` to a filled polygon. Take the
+corner geometry from `Grid` as well — `hexLines` already computes hex outlines, and a second corner
+formula elsewhere is the same defect again.
+
+---
+
+**Files:**
+- Modify: `src/client/render/src/grid.ts` (`Grid` — promote cell-centre and cell-corner geometry)
+- Modify: `src/client/render/src/pixi-backend.ts` (`PixiBackend.setLighting`)
+- Modify: `src/client/render/src/engine.ts` (`cellsToRects`, `RenderEngine.toVisibility`,
+  `RenderEngine.toLighting`)
+- Modify: `src/client/render/src/types.ts` / `lighting.ts` — the frame types must carry the shape
+- Test: the sibling `.test.ts` of each
+
+**Interfaces:**
+- Consumes: `GridSpec.kind`, which these paths currently cannot see. Threading it is most of the work.
+- Produces: public `Grid` geometry. **Coordinate with Task 6c**, which also adds a public method to
+  `Grid`; if 6c has already landed, follow the naming it established rather than inventing a second
+  convention.
+
+---
+
+- [ ] **Step 1: Reproduce the misalignment before changing anything**
+
+Write a test on a hex fixture asserting the lighting overlay's painted position for a stated axial
+cell equals that cell's true centre. Run it, **record the observed failure verbatim** — the gap
+between the square and axial positions is the measurement, not a prediction.
+
+Do the same for the explored-fog rasterization. Two paths, two reproductions; a single test covering
+both would let one stay broken.
+
+- [ ] **Step 2: Thread the shape to the paint sites**
+
+The frame types carry `cell` and no kind, which is the structural cause. Add the shape, and prefer
+carrying the resolved geometry over carrying a `kind` the paint site then branches on — a `kind`
+field invites exactly the branch this task ruled against.
+
+- [ ] **Step 3: Paint the cell, not a rectangle**
+
+Both sites emit filled polygons from `Grid`'s corner geometry. Square must keep producing an identical
+result to today: pin that with a test, so this change is provably shape-neutral on square scenes.
+
+- [ ] **Step 4: Enumerate every remaining cell-index consumer in the render layer**
+
+Both known sites are named above, and named sites have twice become the whole worklist on this branch.
+Sweep `src/client/render/` for every conversion from a cell index to a position, give each a row and a
+disposition — including the ones that are correct — and state the count. If you find a third, it is in
+scope.
+
+- [ ] **Step 5: Full gate**
+
+`pnpm -r test`, `pnpm -r typecheck`, `pnpm lint` from the root; `node scripts/check-comment-refs.mjs`.
+If any e2e fixture covers a hex scene's overlays, run it — this is a visual defect and the e2e layer
+is where a visual regression would show.
+
+- [ ] **Step 6: Commit**
+
+Conventional-commits, imperative, stating the constraint and the consequence. No task ids, round
+numbers, dates, or process references. End with the `Co-Authored-By: Claude Opus 5
+<noreply@anthropic.com>` trailer.
+
+---
+
+### Task 6f: a vision mode's authored default range stops being inert
+
+**Numbered `6f` for the same reason as `5b`.** Surfaced by Task 6's fix round, which corrected a doc
+comment that had cited this field as a live member of the converting class. It is not live at all.
+
+---
+
+#### The defect: a GM-facing control whose stored value has no effect
+
+`VisionMode::default_range` is written at exactly three sites, all inside
+`SceneEcs::resolved_vision_modes` — one copying the authored value, two seeding the built-in `normal`
+and `darkvision` modes — and is **read by nothing**. `SceneEcs::token_vision_floors` looks a mode up
+solely for its `illumination_floor` and `render_hint`, and takes the range from
+`VisionAssignment::range` unconditionally. That field is a plain `f64`, not an `Option`, so there is
+structurally nowhere for a fallback to attach.
+
+Meanwhile `GameSettingsPanel` renders a GM-only number input that patches
+`/engine/modes/<id>/defaultRange` on the vision-modes document. It persists, it round-trips, it
+validates, and it changes nothing on the table. The client's `SEED_VISION_MODES` seeds `darkvision`
+with a default range of 12, which likewise reaches no mask.
+
+**This is the same defect shape as the light-reach cap in Task 6b and as the rejected `ceil` proposal:
+a setting whose stored value no longer determines its effect.** Two independent code comments in the
+tree already state the field is dead, which makes this a documented-and-tolerated inertness rather
+than an unknown.
+
+#### The design fork, and its ruling
+
+Two shapes are available: delete the field and its control, or make the assignment's range optional so
+an omitted range inherits the mode's default.
+
+**Ruled: make it live.** The question "what is the best long-term shape in keeping with our plans and
+goals?" answers this one. A registry whose entries carry defaults that per-instance assignments may
+override is the modular shape this platform is built around, and it is what the existing GM control
+and the seeded `darkvision: 12` already promise. Deleting the field would remove an advertised
+capability and force every assignment to restate a value its mode already defines. Do not re-open
+this; implement it.
+
+---
+
+**Files:**
+- Modify: `src/server/src/data/engine/token.rs` (`VisionAssignment`)
+- Modify: `src/server/src/scene/mod.rs` (`SceneEcs::token_vision_floors`)
+- Modify: `src/types/generated/**` — by REGENERATION, never by hand
+- Modify: the client Zod mirror of the token engine schema
+- Test: `src/server/src/scene/mod.rs` tests, plus the client schema-parity tests
+
+**Interfaces:**
+- Produces: `VisionAssignment::range` becomes optional on the wire. This is a **shared wire-schema
+  change** — the generated bindings and the Zod mirror must both move, and a typecheck alone will not
+  catch a dropped Zod field.
+
+---
+
+- [ ] **Step 1: Pin the current behaviour before changing it**
+
+Write a test asserting that a token whose assignment omits a range gets the mode's default. Run it,
+**record the failure verbatim.** Confirm by reading, not by assuming, that no fallback exists today.
+
+- [ ] **Step 2: Make the range optional and resolve it against the mode**
+
+`VisionAssignment::range` becomes `Option<f64>`; `token_vision_floors` resolves
+`a.range.unwrap_or(vm.default_range)`. Both quantities are authored in CELLS — confirm that against
+the surrounding conversion work before relying on it, and make sure the resolved value flows through
+the same per-cell conversion the assignment's own range does today. A default that skips the
+conversion the override receives is this phase's whole subject repeated.
+
+**Serde note:** a missing key on an `Option` is never an error, so verify the omitted case actually
+deserializes to `None` rather than being rejected by `deny_unknown_fields` or a required-field guard.
+
+- [ ] **Step 3: Regenerate and mirror**
+
+Regenerate the ts-rs bindings — never hand-edit them — and mirror the change in the client Zod schema.
+Run `pnpm -r test`, not just a typecheck: a dropped Zod field is a runtime failure a typecheck cannot
+see.
+
+- [ ] **Step 4: Make the GM control's effect observable**
+
+The control already writes the field. Verify end-to-end that authoring a mode default now changes a
+token's vision floor when that token's assignment omits a range, and state which test proves it.
+
+- [ ] **Step 5: Full gate**
+
+`cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` from `src/server/`;
+`pnpm -r test` and `pnpm -r typecheck` from the root; `node scripts/check-comment-refs.mjs`.
+
+Both dead-field comments — on the vision-range test helper and on the grid shape's conversion doc —
+become false the moment this lands. Find them and rewrite them; a rename or a revival falsifies prose
+that never enters the diff.
+
+- [ ] **Step 6: Commit**
+
+Conventional-commits, imperative, stating the constraint and the consequence. No task ids, round
+numbers, dates, or process references. End with the `Co-Authored-By: Claude Opus 5
+<noreply@anthropic.com>` trailer.
+
+---
+
 ### Task 7: PW3 — exercise the hex + continuous fog clip through the real dispatch, as a non-GM
 
 **Ledger id:** PW3.
