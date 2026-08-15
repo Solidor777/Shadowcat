@@ -209,7 +209,7 @@ test("a masked frame rasterizes the active scene's explored cells into dimmed-me
 // Regression: on a hex scene the server sends explored cells as axial (q,r) — `HexGrid`'s
 // `axial_to_pixel` places cell (1,1) at x=150√3≈259.81, y=150, NOT the square position
 // x=1*100=100, y=1*100=100 a naive `x=i*size, y=j*size` rasterization would paint. Pins the fix
-// at `cellsToRects`'s own wiring site (via `toVisibility`), not just `Grid.cellCorners` in
+// at `cellsToRects`'s own wiring site (via `toVisibility`), not just `Grid.cellVertices` in
 // isolation — this test fails if `cellsToRects` reverts to indexing by `size` alone.
 test("a masked frame rasterizes a hex scene's explored cells at their true axial position, not a square index", () => {
   const store = new DocumentStore();
@@ -699,8 +699,8 @@ test("animateAlongPath forwards to the token view (SceneToolHost seam)", () => {
 
 // Invariant: a hex `RenderEngine` must time a token tween against `Grid.worldUnitsPerCell()`
 // (the per-step distance, `size * sqrt(3)`), not `GridSpec.size` (the indexing scale/outer
-// radius) — the two coincide on square grids, which is why `engine.test.ts`'s other tween tests
-// (all square) cannot distinguish them. This exercises the constructor's own
+// radius) — the two coincide on square grids, so a square-fixture tween test cannot distinguish
+// them however it is worded. This exercises the constructor's own
 // `this.tokens.setWorldUnitsPerCell(this.grid.worldUnitsPerCell())` call, the site where the grid
 // kind is consumed to resolve which scale reaches the animator (an isolated `Grid`/`TokenAnimator`
 // unit test proves neither unit's own arithmetic — only whether the correct value reaches the
@@ -970,7 +970,7 @@ test("toLighting parses lit cells for the active scene and fails safe", () => {
 // Regression: on a hex scene the lighting overlay's `lit` cells are also axial (q,r) — this
 // pins the fix at the RenderEngine wiring site (`toLighting` → `Lighting.setTarget/apply` →
 // `backend.setLighting`), so a revert of `PixiBackend.setLighting`'s paint math OR of the
-// `this.grid.cellCorners(i, j)` call in `toLighting` both fail this test, not just a Grid-level
+// `this.grid.cellVertices(i, j)` call in `toLighting` both fail this test, not just a Grid-level
 // unit.
 test("a masked frame paints a hex scene's lit cell at its true axial position, not a square index", () => {
   const store = new DocumentStore();
