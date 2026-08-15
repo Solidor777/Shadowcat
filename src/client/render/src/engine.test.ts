@@ -969,9 +969,10 @@ test("toLighting parses lit cells for the active scene and fails safe", () => {
 
 // Regression: on a hex scene the lighting overlay's `lit` cells are also axial (q,r) — this
 // pins the fix at the RenderEngine wiring site (`toLighting` → `Lighting.setTarget/apply` →
-// `backend.setLighting`), so a revert of `PixiBackend.setLighting`'s paint math OR of the
-// `this.grid.cellVertices(i, j)` call in `toLighting` both fail this test, not just a Grid-level
-// unit.
+// `backend.setLighting`). It builds the engine with `MockBackend`, which records the frame but
+// never invokes `PixiBackend`'s paint math, so a revert of `this.grid.cellVertices(i, j)` in
+// `toLighting` fails this test, while a revert of `PixiBackend.setLighting`'s own paint math is
+// pinned separately by `pixi-backend.test.ts`.
 test("a masked frame paints a hex scene's lit cell at its true axial position, not a square index", () => {
   const store = new DocumentStore();
   const backend = new MockBackend();
