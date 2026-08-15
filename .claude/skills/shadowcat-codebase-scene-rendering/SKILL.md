@@ -386,8 +386,9 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   shape. These are two independent wall-visibility axes serving opposite purposes on the same
   underlying wall set; a `gm_only` wall always springs at `execute_move` regardless of what the
   router's per-requester set showed. Wire frames `Pathfind`/`PathResult` (`{path, cost, arrested}` —
-  `arrested` is always disclosed to the requester, no secrecy concern: it only tells them a route
-  THEY could already see is truncating)/`PathError` — one-shot to the requesting connection only
+  `cost` is in CELLS on every movement model, which the client scales by `grid.distance.perCell` for
+  display; `arrested` is always disclosed to the requester, no secrecy concern: it only tells them a
+  route THEY could already see is truncating)/`PathError` — one-shot to the requesting connection only
   (never broadcast); `get_explored` fetched off the scene read lock (no lock across await).
   `Pathfind` also carries an optional `token: Option<Uuid>` (`ws::protocol`): when present
   the server AUTHORIZES it (effectively owned by the requester AND parented to `scene` — the same
@@ -478,9 +479,14 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   — arrest needs only a post-filter, not route-bending). **Terrain/impassable present:** the
   existing `pathfinding::find` runs forced to `DiagonalRule::Euclidean` (continuous base metric —
   only cell topology + the terrain multiplier come from the grid, never the world's configured
-  diagonal rule), its cost is converted from CELLS to SCENE UNITS (`× cell`, matching the polyanya
-  path's unit contract — the two continuous sub-paths must report cost in the same unit regardless
-  of which ran), then `navmesh::los_smooth` (new) restores any-angle geometry. The weighted sub-path
+  diagonal rule), its cost stays in CELLS, then `navmesh::los_smooth` (new) restores any-angle
+  geometry. **The unit contract is that ALL routes report cost in cells, on both movement models and
+  both continuous sub-paths** — `PathResult.cost` declares cells and the client multiplies by
+  `grid.distance.perCell` to label it, so an engine reporting scene units double-scales that label.
+  The pure-polyanya sub-path therefore converts its Euclidean world-unit length back with
+  `/ world_units_per_cell` (the authored-distance scale, not the indexing scale), and the weighted
+  sub-path performs no conversion at all because it never left cells. A parity test pins both
+  directions; the mutation it names is a `* world_units_per_cell` reappearing on either branch. The weighted sub-path
   does NOT call `clip_to_visible_mask` at all — its route⊆mask/wall safety comes entirely from
   `pathfinding::find`'s own per-cell mask gate (already fed `mask.as_ref()`) plus `los_smooth`'s
   own mask-checking `chord_ok` guard (every cell a straightened chord enters must still be in
