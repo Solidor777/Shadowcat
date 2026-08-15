@@ -3658,6 +3658,31 @@ Demonstrated by a fixture already in the tree: `scene_with_lit_player_token` aut
 whose stored value no longer determines its effect.** That argument was decisive there and is
 decisive here, which is why this is a bug rather than a tuning question.
 
+#### The cap is worse than a cap: it is a reach that varies with unrelated authoring
+
+Read `bound_for` before designing the fix. It seeds an AABB at the viewpoint and grows it over
+**every** wall endpoint in the slice it is handed, then pads by `margin` — and
+`SceneEcs::lighting_inputs_from` hands it `light_walls`, the whole scene's `blocksLight` set, not a
+neighbourhood of the lamp. Three consequences follow, and the third is the one that makes this
+unfixable by tuning:
+
+1. On a wall-less scene the AABB is the lamp ± `margin` — a hard cap at roughly `VISION_BOUND_MARGIN`
+   regardless of authored radius.
+2. Adding a `blocksLight` wall **anywhere** in the scene grows that AABB, so it raises the cap for
+   **every** lamp in the scene, including lamps on the far side of it.
+3. Therefore a lamp's maximum reach is a function of where unrelated walls were placed elsewhere.
+   Author a wall in a distant room and a lamp that was clipped starts reaching further; delete it and
+   the lamp dims — with nothing near the lamp having changed.
+
+**Do not describe this in the report as "capped at ~100".** A fixed cap reads as a tuning constant
+someone can raise. This is a reach with no stable value at all, which is why the remedy is to make
+the authored radius determine the bound rather than to enlarge `VISION_BOUND_MARGIN`.
+
+**Raising `VISION_BOUND_MARGIN` is therefore not an acceptable fix** — it moves the cap without
+making the stored radius determine the effect, leaving the same defect at a larger number and
+leaving consequence 3 fully intact. If the work reaches a point where that looks like the answer,
+that is a signal the fix has been mis-scoped; say so rather than adjusting the constant.
+
 **Why nothing caught it.** The direction is under-reveal, and no test asserts a light reaching as far
 as it was told to. Every lit-mask fixture either sits inside the cap or has walls near enough to grow
 the bound past it. A test suite can only catch a cap it tries to exceed.
