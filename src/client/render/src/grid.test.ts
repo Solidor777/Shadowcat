@@ -48,17 +48,15 @@ test("hex grid emits a non-empty line set over a viewport", () => {
   expect(lines.length).toBeGreaterThan(0);
 });
 
-// Cross-language parity pin (bug: TokenAnimator divided a travelled distance by the outer
-// radius instead of the per-step distance on hex, animating √3× too slowly). Neither side can
-// share a symbol across the Rust/TS boundary, so both are pinned independently to the same
-// stated size (50) and derive their expectation from measured geometry rather than restating
-// the `size * sqrt(3)` formula: this test measures the real distance between two adjacent hex
-// centers via `snap` (which round-trips through the production `axialToPixel`, the same call
-// `worldUnitsPerCell` itself must agree with); the server's
-// `hex_world_units_per_cell_equals_the_distance_between_adjacent_centers` test (size 50) measures
-// the same distance via its own production `cell_center`. A future change to either
-// `worldUnitsPerCell`/`world_units_per_cell` that drifts from the true inter-center distance
-// fails its own side's test.
+// Self-consistency pin (bug: TokenAnimator divided a travelled distance by the outer radius
+// instead of the per-step distance on hex, animating √3× too slowly). This measures the real
+// distance between two adjacent hex centers via `snap` (which round-trips through the production
+// `axialToPixel`, the same call `worldUnitsPerCell` itself must agree with) and derives its
+// expectation from that measured geometry rather than restating the `size * sqrt(3)` formula — but
+// the oracle is derived from `Grid`'s OWN geometry, so a formula change that updates
+// `axialToPixel`/`worldUnitsPerCell` together stays self-consistent and passes this test even if it
+// drifts from the server's convention. This test alone is NOT a cross-language parity pin; see the
+// literal-value pin below for that.
 test("hex per-step distance (worldUnitsPerCell) equals the measured distance between adjacent cell centers", () => {
   const g = new Grid({ kind: "hex", size: 50 });
   // Snap the origin to its hex's center, then snap a point known to fall inside the (1,0)
@@ -68,6 +66,19 @@ test("hex per-step distance (worldUnitsPerCell) equals the measured distance bet
   const neighbor = g.snap({ x: 90, y: 0 }); // inside the (1,0) hex for size 50
   const measured = Math.hypot(neighbor.x - origin.x, neighbor.y - origin.y);
   expect(g.worldUnitsPerCell()).toBeCloseTo(measured, 9);
+});
+
+// Cross-language parity pin. Neither side can share a symbol across the Rust/TS boundary, so both
+// this test and the server's `hex_world_units_per_cell_matches_the_cross_language_pinned_literal`
+// sibling (in `grid_shape.rs`) state the SAME literal value (`50 * sqrt(3)`) independently, rather
+// than each deriving its expectation from its own implementation as the self-consistency test
+// above does. A literal is not a decision-maker two sites can disagree over — it is the ground
+// truth both sides are checked against — so a formula change on EITHER side alone now fails that
+// side's own comparison against this literal, where two self-derived oracles could update in
+// lockstep and silently diverge from the other language.
+test("hex per-step distance (worldUnitsPerCell) equals the cross-language pinned literal", () => {
+  const g = new Grid({ kind: "hex", size: 50 });
+  expect(g.worldUnitsPerCell()).toBeCloseTo(86.60254037844386, 9);
 });
 
 // `pixelToAxial`'s q mixes x and y with opposite signs, so its extrema sit on the

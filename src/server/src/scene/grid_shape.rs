@@ -1904,7 +1904,11 @@ mod tests {
         // Derived from the geometry, not from the implementation: the value must equal the
         // measured distance from a hex's centre to each of its six neighbours' centres.
         // Discrimination: fails for `size`, `1.5*size`, or any constant other than `√3*size`,
-        // because the expectation is computed from `cell_center` rather than restated.
+        // because the expectation is computed from `cell_center` rather than restated. This is a
+        // SELF-consistency check only: the oracle is derived from `HexGrid`'s own `cell_center`, so
+        // a formula change that updates `cell_center`/`world_units_per_cell` together stays
+        // self-consistent and passes even if it drifts from the client's convention. Not a
+        // cross-language parity pin — see the literal-value pin below for that.
         let g = HexGrid { size: 50.0 };
         let origin = g.cell_center((0, 0));
         for (dq, dr) in [(1, 0), (1, -1), (0, -1), (-1, 0), (-1, 1), (0, 1)] {
@@ -1916,6 +1920,21 @@ mod tests {
                 g.world_units_per_cell()
             );
         }
+    }
+
+    #[test]
+    fn hex_world_units_per_cell_matches_the_cross_language_pinned_literal() {
+        // Cross-language parity pin. Neither side can share a symbol across the Rust/TS boundary,
+        // so both this test and the client's `hex per-step distance (worldUnitsPerCell) equals
+        // the cross-language pinned literal` sibling (in `grid.test.ts`) state the SAME literal
+        // value (`50 * sqrt(3)`) independently, rather than each deriving its expectation from its
+        // own implementation as the self-consistency test above does. A literal is not a
+        // decision-maker two sites can disagree over — it is the ground truth both sides are
+        // checked against — so a formula change on EITHER side alone now fails that side's own
+        // comparison against this literal, where two self-derived oracles could update in lockstep
+        // and silently diverge from the other language.
+        let g = HexGrid { size: 50.0 };
+        assert!((g.world_units_per_cell() - 86.60254037844386_f64).abs() < 1e-9);
     }
 
     #[test]
