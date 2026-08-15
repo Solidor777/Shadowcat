@@ -72,6 +72,15 @@ Ledger Additions section).
   only; the plan's own reading, where it has one, is recorded in a *separate* step that runs
   **after** the derivation is written down, and a disagreement between the two is a finding to
   report rather than an error to reconcile.
+- **The mechanical comment pass covers every comment in every file TOUCHED, not only added lines.**
+  The added-lines form was installed after two rule violations slipped a gate, and a third instance
+  was then found sitting in UNCHANGED CONTEXT inside the very comment block whose neighbouring lines
+  had just been fixed — invisible to the pass by construction, because a `+`-line grep cannot see a
+  line that did not change. **The check's coverage and the defect's hiding place were the same
+  property**, which is the recurring shape of every detector failure in this phase.
+  So: for each file you touch, run the pass over ALL of its comments. Report the file, the comment
+  count scanned, and the matches including zeros. A violation adjacent to your edit is yours to fix
+  — the no-grandfathering rule makes finding one a defect, not a precedent.
 - **Every test carries a discrimination line** — the production change that would make it fail,
   checked against the test **as written**, not asserted. The check is mechanical: name the edit,
   then confirm the test's own call path REACHES the edited code. A test that passes its input
