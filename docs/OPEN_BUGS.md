@@ -233,3 +233,60 @@ Currently open, confirmed-real defects. Deferrals belong in `TODO.md`, not here.
     seeding `hyperlinks: null`. Runtime change; belongs on the follow-up branch with the
     `makeTemplateTool` fix above. Found during Sweep 12 Task 6 by the dispatcher and
     independently confirmed by both reviewers, from writing the doc comment that sits above it.
+
+- **[hex] `TokenAnimator`'s tween measures a travelled distance in the indexing scale, so hex
+  token animation runs `√3` too slow.** `startAnim` computes `cells = total / cfg.cellSize` and
+  derives its duration from that. `AnimationConfig.cellSize` is fed by `TokenView.pushAnimConfig`
+  from `TokenView.setCellSize`, which `RenderEngine.setGrid` sets from `GridSpec.size` — on hex the
+  cell's OUTER RADIUS, not the distance between adjacent centres. The client's own
+  `Grid.axialToPixel` confirms neighbours are `√3 · size` apart, and the server converts the same
+  quantity through `GridShape::world_units_per_cell` when it computes the authoritative
+  `MoveExecution::duration_ms`. Two paths, one decision, opposite answers.
+  - **Reachability:** live. `TokenView.reconcile` calls `TokenAnimator.setTarget` for every token
+    document on every sync, and `setTarget` starts this tween. Any position change arriving as a
+    document update animates through it.
+  - **Why nothing caught it:** `animateSamples` replays a server-supplied duration and never reads
+    the field, so the move-stream path is correct and masks the fork on the journeys anyone tests.
+    Every animator fixture uses an implicit square grid, where the two conventions coincide.
+  - **Impact:** cosmetic. No authz or secrecy effect.
+
+- **[hex] The route cost field carries cells from one movement model and world units from the
+  other.** `ServerMsg::PathResult`'s doc states its cost is "in cells (client multiplies
+  `grid.distance.perCell`)". The grid A* router honours that. `SceneEcs::pathfind`'s `Continuous`
+  branch rescales by `GridShape::world_units_per_cell`, and its navmesh branch returns a Euclidean
+  world-unit length directly; `conn` forwards the value unchanged. `makeMeasureTool` multiplies by
+  `grid.distance.perCell` regardless, so on a continuous scene it applies the game-distance scale
+  twice.
+  - **Observable:** at the common authoring of grid `size: 100` and `perCell: 5`, a five-cell route
+    labels **2500 ft where it should read 25 ft**.
+  - **Why nothing caught it:** `GridStepped` is the default movement model. The one client test
+    covering a continuous-movement scene stubs `pathfind` with a fixed cost, so it never exercises
+    the server's unit switch, and it asserts nothing about the label.
+  - **Impact:** GM-visible wrong number on a measurement overlay. No gate consumes the value — no
+    per-turn movement budget exists — so there is no authz effect.
+
+- **[hex] The lighting overlay and the explored-fog layer paint axial indices at square
+  positions.** On a hex scene the server sends lit and explored cells as axial `(q, r)`, produced
+  through `HexGrid`'s `GridShape` implementation. `PixiBackend.setLighting` places each at
+  `x = i · cellSize, y = j · cellSize` and fills an axis-aligned rect; `cellsToRects`, which
+  rasterizes the explored-memory layer, does the identical thing. Neither consults the grid shape,
+  and the frame types carry a cell size with no kind for them to consult.
+  - **Why the scene looks half-right:** grid lines, cursor snapping and measurement all go through
+    `Grid`, which owns the correct axial math — privately, on the same `RenderEngine` instance.
+    The currently-visible fog is correct by construction, because the server sends raycast vertices
+    rather than cell indices. So correctly-drawn hexes sit under skewed square overlays.
+  - **Impact:** rendering correctness on every hex scene. The overlays misrepresent which cells are
+    lit and which are remembered, which is misleading rather than merely ugly — but the underlying
+    masks are correct, so nothing is disclosed that should not be.
+
+- **[settings] A vision mode's authored `default_range` reaches no mask, leaving its GM control
+  inert.** `VisionMode::default_range` is written at three sites, all inside
+  `SceneEcs::resolved_vision_modes`, and read by nothing. `SceneEcs::token_vision_floors` looks a
+  mode up only for its `illumination_floor` and `render_hint`, taking the range from
+  `VisionAssignment::range` unconditionally — a plain `f64` with nowhere for a fallback to attach.
+  - **Reachability:** `GameSettingsPanel` renders a GM-only number input that patches the field on
+    the vision-modes document. It persists, round-trips and validates, and changes nothing on the
+    table. The client's seeded `darkvision` default of 12 cells likewise reaches no mask.
+  - **Impact:** a setting whose stored value does not determine its effect — the same shape as the
+    light-reach cap above it in this list. No secrecy effect: the inert direction is that vision
+    stays as narrow as the assignment says.
