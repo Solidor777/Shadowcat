@@ -135,6 +135,26 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   relative-epsilon corner test (over-include is the safe direction).
 - `scene::vision` — raycast `visibility_polygon(viewpoint, walls, bound)`,
   `bound_for(...)`, `Seg`/`Rect`/`P`, `point_in_poly` (shared). Public-source computational geometry only (ARCHITECTURE §7).
+  **Three bound builders, and the two wrappers UNION onto `bound_for` rather than replacing it** —
+  each calls it first and then only `.min`s low edges / `.max`es high edges, so a bound can only ever
+  GROW. That monotonicity is the invariant: a bound that could shrink is an under-reveal defect on a
+  secrecy-bearing path.
+  - `bound_for` seeds an AABB at the viewpoint and grows it over EVERY wall endpoint in the slice it
+    is handed, then pads by `margin`. Consequence worth knowing before reusing it: on its own it
+    makes a viewpoint's reach depend on wall placement anywhere in the scene, and with no walls it
+    is just a `margin` box.
+  - `bound_for_reach(viewpoint, walls, margin, reach)` — the LIGHTING path. `reach` is a WORLD-unit
+    distance; a caller converts an authored cell radius through `GridShape::world_units_per_cell`
+    (the authored-distance scale — NOT the indexing scale, and NOT the footprint conversion) before
+    calling. A non-finite or non-positive `reach` contributes nothing rather than substituting a
+    fallback distance. This is what stops a placed light's occlusion polygon capping its reach at
+    `margin` regardless of the radius it was authored with. An axis-aligned `reach` box necessarily
+    contains the `reach`-radius disc, so the union covers the true reach in every direction.
+  - `bound_for_scene` — unions the scene's own world envelope (`GridShape::world_extent`), so a
+    wall-less scene reveals its full extent instead of a `margin` box.
+  **`max(bright, dim)` sizes the light bound, and over-inclusion there is inert**: `light_illumination`
+  returns 0 beyond `dim_radius` before the bright branch runs, so a `bright_radius` authored larger
+  than `dim_radius` grows the polygon without ever lighting a cell past `dim_radius`.
 - `scene::lighting` — pure illumination (no I/O — callers pass parsed
   structs): gradation `Band`s (`sorted_bands`/`band_index`/`floor_min`), `Light` radial falloff
   (`light_illumination`), `cell_illumination` (max-compose env + lights, `blocksLight` occlusion via
