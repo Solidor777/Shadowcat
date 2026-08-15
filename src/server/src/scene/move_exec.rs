@@ -382,11 +382,12 @@ pub(crate) fn execute_move(
     let gate_walls = ecs.move_walls(scene, None);
 
     // Constant for the whole walk: the footprint disc radius in world units, mirroring
-    // `cell_enterable`'s `r_scene`. The radius is a square block's half-diagonal in cells and the
-    // model behind it is a square block, so it converts through the INDEXING scale, not
-    // `GridShape::world_units_per_cell` — scaling it would give a 1×1 token a disc past the hex
-    // inradius and make a medium creature occupy seven hexes, which is a rules change rather than
-    // a unit fix.
+    // `cell_enterable`'s `r_scene`. The radius is already stated in the grid's OWN cells by
+    // `footprint::resolve_footprint_cells` — the authored block's half-diagonal on square, the
+    // circumscribing radius of the authored hex count on hex — so it converts through the INDEXING
+    // scale, not `GridShape::world_units_per_cell`. Scaling it through the world-unit conversion
+    // would give a 1-hex token a disc past its own hex's circumradius and make a medium creature
+    // occupy seven hexes, which is a rules change rather than a unit fix.
     let r_scene = footprint_radius_cells.max(0.0) * cell;
 
     // Region-cell lookup goes through the SAME resolved grid shape as rasterization

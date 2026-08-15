@@ -2,6 +2,7 @@ import { test, expect, describe, it } from "vitest";
 import { DocumentStore, OptimisticClient, AssetResolver, buildSceneDoc, buildTokenDoc } from "@shadowcat/core";
 import { RenderEngine, MockBackend } from "./index";
 import type { SceneTool } from "./index";
+import type { FootprintLookup } from "@shadowcat/core";
 
 const noopTool = (over: Partial<SceneTool> = {}): SceneTool => ({
   onPointerDown: () => false,
@@ -1113,4 +1114,30 @@ describe("multi-scene render filtering", () => {
     expect(backend.visibility).toEqual({ mode: "masked", visible: [{ points: [1, 1, 11, 1, 11, 11] }], explored: [] });
     engine.destroy();
   });
+});
+
+test("the engine renders a token at the footprint lookup it was constructed with, refreshed by reapplyFootprints", () => {
+  // The wiring under test is the engine passing its `footprints` accessor down to `TokenView`.
+  // The accessor is read per reconcile, so replacing the lookup and calling `reapplyFootprints`
+  // repaints without any document change.
+  const store = new DocumentStore();
+  const backend = new MockBackend();
+  let footprints: FootprintLookup = { token: () => ({ w: 173.2, h: 200 }), unit: () => null };
+  const engine = new RenderEngine({
+    store,
+    assets: new AssetResolver(),
+    backend,
+    grid: { kind: "hex", size: 100 },
+    footprints: () => footprints,
+  });
+  engine.start();
+  store.applyCommand(tokenCmd(1, "t1", 0));
+  expect(backend.tokens.get("t1")!.w).toBe(173.2);
+  expect(backend.tokens.get("t1")!.h).toBe(200);
+
+  footprints = { token: () => ({ w: 346.4, h: 400 }), unit: () => null };
+  engine.reapplyFootprints();
+  expect(backend.tokens.get("t1")!.w).toBe(346.4);
+  expect(backend.tokens.get("t1")!.h).toBe(400);
+  engine.destroy();
 });

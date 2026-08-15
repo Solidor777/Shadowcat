@@ -15,6 +15,9 @@ import {
   resolveCaps,
   ownerFloorApplies,
   canWritePath,
+  parseFootprints,
+  EMPTY_FOOTPRINTS,
+  type FootprintLookup,
   type Connect,
   type Logger,
   type Module,
@@ -151,6 +154,14 @@ export class WorldSession {
    * a player (they follow `world-settings.activeScene`). Overrides `viewedSceneId` for THIS
    * client's own render + vision + see-as channels only; the server is unaware of it. */
   #gmViewedScene = $state<string | null>(null);
+  /** The server's resolved token footprints, replaced wholesale by each `"footprints"` frame.
+   * `$state` so every consumer — canvas reconcile, hit-test, selection ring, the place tool —
+   * re-reads the same authoritative extents the moment a frame lands. `EMPTY_FOOTPRINTS` until
+   * the first frame, under which a token draws at its document's own authored `w`/`h`. */
+  #footprints = $state<FootprintLookup>(EMPTY_FOOTPRINTS);
+  /** Handle for the session-owned `"footprints"` subscription; dropped in `leave()` so a second
+   * `enter()` does not stack a duplicate record. */
+  #footprintsSub: SceneSubscription | null = null;
   /** userId → username for the world's members, fetched on every role's Welcome
    * (chat author/whisper-recipient name resolution; the GM additionally uses it
    * for see-as labels). A stable reactive Map (mutated in place, never reassigned)
@@ -198,6 +209,14 @@ export class WorldSession {
    * @returns The scene id this client renders/subscribes to, or `null` when the world has no scene yet. */
   get viewedSceneId(): string | null {
     return resolveViewedScene(this.#optimistic, { gmViewedScene: this.role === "gm" ? this.#gmViewedScene : null });
+  }
+
+  /** The server's resolved token footprints. There is no client-side footprint formula: the extent
+   * the canvas draws, the hit-test picks and the selection ring traces is the one the server's
+   * movement gate collides with, read off the `"footprints"` derived channel.
+   * @returns The current lookup; `EMPTY_FOOTPRINTS` before the first frame. */
+  get footprints(): FootprintLookup {
+    return this.#footprints;
   }
 
   /** GM local roam: view any scene without moving players. Ignored (warned) for a non-GM —
@@ -813,6 +832,13 @@ export class WorldSession {
         stream.moverVision,
       );
     });
+    // Session-owned, not engine-owned: the resolved footprints feed the canvas, the hit-test, the
+    // selection ring and the place tool, so they belong beside the document view every one of
+    // those reads rather than inside the render engine one of them happens to live in. The first
+    // attempt runs before the socket is up and is dropped; `#onWelcome` re-establishes it.
+    this.#footprintsSub = this.subscribeScene("footprints", (f) => {
+      this.#footprints = parseFootprints(f.payload);
+    });
     await this.#ws.start();
     this.state = "open";
   }
@@ -994,6 +1020,9 @@ export class WorldSession {
    * ```
    */
   leave(): void {
+    this.#footprintsSub?.unsubscribe();
+    this.#footprintsSub = null;
+    this.#footprints = EMPTY_FOOTPRINTS;
     this.#ws?.stop();
     this.#ws = null;
     this.state = "closed";

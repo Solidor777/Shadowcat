@@ -1418,7 +1418,7 @@ async fn egress_loop<S>(
                         // post-lock explored step. Computed for `view_ctx` (own, or the see-as target).
                         let (payload, seq, grid, grid_shapes) = {
                             let ecs = room.scene().read().await;
-                            (crate::scene::compute_derived(&channel, &ecs, &view_ctx), ecs.committed_seq(), ecs.scene_grid_sizes(), ecs.scene_grid_shapes())
+                            (crate::scene::compute_derived(&channel, &ecs, &view_ctx, &world_defaults), ecs.committed_seq(), ecs.scene_grid_sizes(), ecs.scene_grid_shapes())
                         };
                         match payload {
                             Some(mut p) => {
@@ -1597,7 +1597,7 @@ async fn egress_loop<S>(
                             *id,
                             s.channel.clone(),
                             s.view_ctx,
-                            crate::scene::compute_derived(&s.channel, &ecs, &s.view_ctx),
+                            crate::scene::compute_derived(&s.channel, &ecs, &s.view_ctx, &world_defaults),
                         ));
                     }
                     (ecs.committed_seq(), out, ecs.scene_grid_sizes(), ecs.scene_grid_shapes())

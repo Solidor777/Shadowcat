@@ -118,6 +118,7 @@
         gridColor: readColor("--grid-line", 0x363645),
         subscribeScene,
         viewedSceneId: () => ctx.viewedSceneId,
+        footprints: () => ctx.footprints,
         onDerivedApplied: (input) => { host.dataset.sceneDerived = "1"; host.dataset.visionMode = input.mode; },
       });
       const e = engine;
@@ -133,6 +134,9 @@
       // Re-project on a client-local viewed-scene switch (activeScene flip or GM roam). Neither
       // carries a new server frame, so the engine must re-filter its views + last vision payload.
       let lastViewed = ctx.viewedSceneId;
+      // A "footprints" frame likewise carries no store commit, so the token views need an
+      // explicit re-projection when the server states new extents.
+      let lastFootprints = ctx.footprints;
       const vsSub = createSubscriber((update) => documents.subscribe(update));
       offViewed = $effect.root(() => {
         $effect(() => {
@@ -141,6 +145,11 @@
           if (now !== lastViewed) {
             lastViewed = now;
             e.reapplyViewedScene();
+          }
+          const fp = ctx.footprints; // tracks the session's footprints $state
+          if (fp !== lastFootprints) {
+            lastFootprints = fp;
+            e.reapplyFootprints();
           }
         });
       });

@@ -1,4 +1,5 @@
-import type { ReadableDocuments, AssetResolver } from "@shadowcat/core";
+import { EMPTY_FOOTPRINTS } from "@shadowcat/core";
+import type { ReadableDocuments, AssetResolver, FootprintLookup } from "@shadowcat/core";
 import type { DisplayBackend } from "./backend";
 import type { VisibilityInput, LightingInput, LitCell, SceneTool, SceneToolHost, Point, ShapeNodeSpec, Polygon, MoveVisionSample } from "./types";
 import type { TokenTweenConfig } from "./easing";
@@ -88,6 +89,10 @@ export interface RenderEngineOpts {
   /** Which scene to render/scene-filter by. From the host (Stage → `ctx.viewedSceneId`).
    * Absent ⇒ the first scene, preserving single-scene behavior. */
   viewedSceneId?: () => string | null;
+  /** The server's resolved token footprints (Stage → `ctx.footprints`). The engine computes no
+   * footprint geometry: `TokenView` reads the extent from here. Absent ⇒ `EMPTY_FOOTPRINTS`, under
+   * which every token draws at its document's own authored `w`/`h`. */
+  footprints?: () => FootprintLookup;
 }
 
 /** Orchestrates the render model over a DisplayBackend: layers, camera, grid, and
@@ -227,7 +232,7 @@ export class RenderEngine implements SceneToolHost {
     this.grid = new Grid(opts.grid);
     this.gridColor = opts.gridColor ?? 0x3a3a4a;
     this.reconciler = new SceneReconciler(opts.store, opts.assets, opts.backend, this.viewedScene);
-    this.tokens = new TokenView(opts.store, opts.assets, opts.backend, this.viewedScene);
+    this.tokens = new TokenView(opts.store, opts.assets, opts.backend, this.viewedScene, () => opts.footprints?.() ?? EMPTY_FOOTPRINTS);
     this.tokens.setWorldUnitsPerCell(this.grid.worldUnitsPerCell());
     this.drawings = new DrawingView(opts.store, opts.backend, this.viewedScene);
     this.templates = new TemplateView(opts.store, opts.backend, this.viewedScene);
@@ -498,6 +503,23 @@ export class RenderEngine implements SceneToolHost {
       this.lastInput = this.toVisibility(this.lastRawPayload);
       this.renderVisibility();
     }
+  }
+
+  /** Re-project every token after a new `"footprints"` frame. A footprints frame carries no
+   * document change, so the store commit that would otherwise drive a reconcile has already been
+   * and gone (the server recomputes derived channels on a debounce AFTER the event that changed
+   * them). Without this the canvas would keep drawing the previous extents until the next
+   * unrelated store commit. Tokens only — no other view reads a footprint.
+   * @example
+   * ```ts
+   * import type { RenderEngine } from "@shadowcat/render";
+   *
+   * declare const engine: RenderEngine;
+   * engine.reapplyFootprints();
+   * ```
+   */
+  reapplyFootprints(): void {
+    this.tokens.reconcile();
   }
 
   /** Parse a `vision` payload into a VisibilityInput. Fail CLOSED: fog is the only client-side

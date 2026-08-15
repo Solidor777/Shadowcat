@@ -6,6 +6,7 @@
 #![deny(clippy::missing_docs_in_private_items)]
 
 pub mod explored;
+pub mod footprint;
 pub(crate) mod grid_shape;
 pub mod lighting;
 pub(crate) mod move_exec;
@@ -550,11 +551,9 @@ fn wall_set_key(walls: &[vision::Seg]) -> Vec<(u64, u64, u64, u64)> {
 /// doc comment for what each component means and why.
 type NavmeshCacheKey = (Uuid, i64, Vec<(u64, u64, u64, u64)>);
 
-/// The footprint radius used when no effective actor resolves. Mirrors the client's
-/// `resolveFootprint` fallback.
-/// PARITY-BOUND, not a fail-closed choice: it is more permissive than a 1×1 square's 0.707, and
-/// changing it here without changing the client re-forks the router and the gate. Change both or
-/// neither.
+/// The footprint radius used when no effective actor resolves. Not a fail-closed choice: it is
+/// more permissive than a 1×1 square's 0.707, and it is the value the gate, the router and a
+/// tokenless client route preview all stand on for a token nothing sizes.
 pub(crate) const DEFAULT_FOOTPRINT_RADIUS_CELLS: f64 = 0.4;
 
 impl SceneEcs {
@@ -1946,71 +1945,125 @@ impl SceneEcs {
         }
     }
 
-    /// A token's bounding-disc radius in GRID UNITS (cells), given the resolved `(shape, size)`
-    /// and the scene's `GridKind`. Mirrors the client's `resolveFootprintGeometry` (`@shadowcat/core`'s
-    /// `grid-footprint` module) — the ONE definition both languages implement, kept in parity by
-    /// `footprint_radius_mirrors_the_client_formula`.
-    ///
-    /// Square: unchanged from the pre-hex formula — a circle uses `max(w,h)/2`, any other shape
-    /// its half-diagonal `hypot(w,h)/2` (conservative enclosure of the authored w×h block).
-    ///
-    /// Hex: a token's authored size counts HEXES, not a square block (owner ruling), so `shape` is
-    /// inert here — a hex tessellation has no "square"/"circle" footprint distinction. `n =
-    /// max(w,h)` hexes; a single hex's conservative enclosure is its own circumradius (`1.0` in
-    /// cell units — `footprintRadius`'s pre-existing "conservative enclosure" convention extended
-    /// to hex, per the owner's ruling derived from that convention rather than a re-ask), so an
-    /// n-hex footprint's radius is `n`.
-    fn resolved_footprint_radius_cells(kind: GridKind, shape: &str, w: f64, h: f64) -> f64 {
-        match kind {
-            GridKind::Hex => w.max(h),
-            GridKind::Square => {
-                if shape == "circle" {
-                    w.max(h) / 2.0
-                } else {
-                    w.hypot(h) / 2.0
-                }
-            }
-        }
-    }
-
     /// A token's bounding-disc radius in GRID UNITS (cells), resolved against `scene`'s grid kind
-    /// via `resolved_footprint_radius_cells`. Effective-actor resolution mirrors `resolveTokenActor`
+    /// via `footprint::resolve_footprint_cells`. Effective-actor resolution mirrors `resolveTokenActor`
     /// via the SAME join `token_vision_floors` implements: a LINKED token resolves the shared actor
     /// and applies the per-token override whitelist; a dangling link ignores overrides; an
     /// INSTANCED token uses its embedded copy and overrides do not apply.
     ///
-    /// `None` means REFUSE — the derived radius is outside `[0, MAX_FOOTPRINT_CELLS]`, or the
-    /// stored size is degenerate. Callers must fail closed, never substitute a default: clamping an
-    /// oversized token to the bound would route and gate it as a smaller disc, letting it enter
-    /// gaps its real footprint cannot (a geometric fail-open).
-    ///
-    /// DELIBERATE DIVERGENCE from the client on degenerate input: the client's `footprintRadius`
-    /// has no finite/sign guard and propagates `NaN` (rejected later by `find`'s range check),
-    /// whereas this refuses. Both fail closed; only the mechanism differs.
+    /// `None` means REFUSE — `footprint::resolve_checked` declined, because the stored size is
+    /// degenerate or the derived radius is outside `[0, MAX_FOOTPRINT_CELLS]`. Callers must fail
+    /// closed, never substitute a default: clamping an oversized token to the bound would route
+    /// and gate it as a smaller disc, letting it enter gaps its real footprint cannot (a geometric
+    /// fail-open).
     pub(crate) fn resolve_token_footprint(&self, token: Uuid, scene: Uuid) -> Option<f64> {
         let Some((shape, size)) = self.token_shape_and_size(token) else {
             return Some(DEFAULT_FOOTPRINT_RADIUS_CELLS);
         };
-        let (w, h) = (size.w, size.h);
-        if !w.is_finite() || !h.is_finite() || w < 0.0 || h < 0.0 {
-            tracing::warn!(
-                ?token,
-                w,
-                h,
-                "token size is degenerate; refusing a footprint"
-            );
-            return None;
+        match footprint::resolve_checked(self.resolve_grid_kind(scene), &shape, size.w, size.h) {
+            Ok(f) => Some(f.radius),
+            Err(reason) => {
+                tracing::warn!(
+                    ?token,
+                    w = size.w,
+                    h = size.h,
+                    ?reason,
+                    "refusing a token footprint"
+                );
+                None
+            }
         }
-        let r = Self::resolved_footprint_radius_cells(self.resolve_grid_kind(scene), &shape, w, h);
-        if !(0.0..=pathfinding::MAX_FOOTPRINT_CELLS).contains(&r) {
-            tracing::warn!(
-                ?token,
-                r,
-                "token footprint exceeds MAX_FOOTPRINT_CELLS; refusing"
+    }
+
+    /// The resolved drawn extents the `"footprints"` derived channel carries: for every scene with
+    /// a resolvable grid, that scene's unit (1x1) extent plus one entry per token whose footprint
+    /// this ECS resolves and `ctx` may read. Scene units throughout — `footprint::FootprintCells`
+    /// is in grid units and is scaled here by the scene's own `grid.size` (the INDEXING scale,
+    /// the circumradius on hex), the one conversion a footprint takes.
+    ///
+    /// Egress rule: a token is included only when `ctx` has `cap::READ` on its document, resolved
+    /// through the SAME `resolve_access_world` + `effective_owner_via` pair document egress uses
+    /// (`filter_command`) rather than a second access decision — otherwise a hidden token's
+    /// existence and size would leak through a channel that never carries its document.
+    ///
+    /// A token with no entry has no server-resolved footprint: it carries no actor, its actor link
+    /// dangles, or `ctx` cannot read it. An entry with `extent: None` is a REFUSAL — the same
+    /// `footprint::resolve_checked` refusal `resolve_token_footprint` returns `None` for.
+    pub(crate) fn resolved_footprints(
+        &self,
+        ctx: &PermissionContext,
+        world_defaults: &crate::data::document::WorldCapDefaults,
+    ) -> footprint::FootprintsPayload {
+        let mut by_scene: BTreeMap<Uuid, (f64, footprint::SceneFootprints)> = BTreeMap::new();
+        for (scene, cell) in self.scene_grid_sizes() {
+            let kind = self.resolve_grid_kind(scene);
+            let unit = footprint::resolve_footprint_cells(kind, "square", 1.0, 1.0);
+            by_scene.insert(
+                scene,
+                (
+                    cell,
+                    footprint::SceneFootprints {
+                        scene,
+                        unit: footprint::FootprintExtent {
+                            w: unit.box_w * cell,
+                            h: unit.box_h * cell,
+                        },
+                        tokens: Vec::new(),
+                    },
+                ),
             );
-            return None;
         }
-        Some(r)
+        let grants = world_defaults.grants_for("token");
+        // Sorted so the payload is a stable value: the egress loop's change detection compares
+        // whole payloads, and `hecs` iteration order is not stable.
+        let mut tokens: Vec<(Uuid, Uuid)> = Vec::new();
+        for e in self.world.query::<&SceneEntity>().iter() {
+            let doc = &e.doc;
+            if doc.doc_type != "token" {
+                continue;
+            }
+            let Some(scene) = doc.parent_id else {
+                continue;
+            };
+            if !by_scene.contains_key(&scene) {
+                continue;
+            }
+            let owner =
+                crate::data::permission::effective_owner_via(doc, &|id: &Uuid| self.actor(id));
+            let access = crate::data::permission::resolve_access_world(
+                ctx.user_id,
+                ctx.world_role,
+                doc,
+                &grants,
+                owner,
+            );
+            if !access.has(crate::data::permission::cap::READ) {
+                continue;
+            }
+            tokens.push((scene, doc.id));
+        }
+        tokens.sort_unstable();
+        for (scene, token) in tokens {
+            let Some((cell, entry)) = by_scene.get_mut(&scene) else {
+                continue;
+            };
+            let Some((shape, size)) = self.token_shape_and_size(token) else {
+                continue; // no actor to resolve a footprint from; the document's own w/h stand
+            };
+            let kind = self.resolve_grid_kind(scene);
+            let extent = footprint::resolve_checked(kind, &shape, size.w, size.h)
+                .ok()
+                .map(|f| footprint::FootprintExtent {
+                    w: f.box_w * *cell,
+                    h: f.box_h * *cell,
+                });
+            entry
+                .tokens
+                .push(footprint::TokenFootprint { token, extent });
+        }
+        footprint::FootprintsPayload {
+            scenes: by_scene.into_values().map(|(_, s)| s).collect(),
+        }
     }
 
     /// Scene-shared lighting/wall inputs for the visibility mask. Computed once per scene per
@@ -2914,17 +2967,24 @@ impl Default for SceneEcs {
 
 /// Compute a derived payload for `channel` from the scene ECS, for one
 /// recipient. Returns `None` for unknown channels (→ SceneError). `ctx` is
-/// accepted so vision can derive per recipient; the identity payload is
-/// non-sensitive and global.
+/// accepted so vision and footprints can derive per recipient; the identity
+/// payload is non-sensitive and global. `world_defaults` supplies the same
+/// world-level capability grants document egress resolves READ against, so the
+/// footprints channel cannot disclose a token the recipient's own document
+/// stream withholds.
 pub fn compute_derived(
     channel: &str,
     ecs: &SceneEcs,
     ctx: &PermissionContext,
+    world_defaults: &crate::data::document::WorldCapDefaults,
 ) -> Option<serde_json::Value> {
     match channel {
         // Debug seam proof (non-sensitive, global); absent in release.
         #[cfg(debug_assertions)]
         "identity" => Some(serde_json::json!({ "entity_count": ecs.entity_count() })),
+        // The resolved drawn footprint of every readable token, so the client renders and
+        // hit-tests the authoritative geometry instead of re-deriving it from a second formula.
+        "footprints" => serde_json::to_value(ecs.resolved_footprints(ctx, world_defaults)).ok(),
         // Per-player vision: the GM sees all; a player gets ONLY their own visibility
         // polygons, per-recipient. A token-less player gets empty polygons → full fog (the
         // client masks everything outside `polygons`, so empty = see nothing, never see-all).
@@ -2991,6 +3051,7 @@ pub fn compute_derived(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::data::document::WorldCapDefaults;
     use grid_shape::GridShape as _;
     use serde_json::json;
 
@@ -3364,20 +3425,23 @@ mod tests {
         };
 
         // GM sees all (no fog).
-        assert_eq!(compute_derived("vision", &ecs, &gm).unwrap()["mode"], "all");
+        assert_eq!(
+            compute_derived("vision", &ecs, &gm, &WorldCapDefaults::default()).unwrap()["mode"],
+            "all"
+        );
         // The token owner gets one non-empty visibility polygon, tagged with its scene so the
         // client cuts holes only for the scene it renders (cross-scene leak guard).
-        let pv = compute_derived("vision", &ecs, &pl).unwrap();
+        let pv = compute_derived("vision", &ecs, &pl, &WorldCapDefaults::default()).unwrap();
         assert_eq!(pv["mode"], "masked");
         assert_eq!(pv["polygons"].as_array().unwrap().len(), 1);
         assert_eq!(pv["polygons"][0]["scene"], json!(Uuid::from_u128(10)));
         assert!(!pv["polygons"][0]["points"].as_array().unwrap().is_empty());
         // A player who controls no token gets empty polygons → full fog (never see-all).
-        let ov = compute_derived("vision", &ecs, &other).unwrap();
+        let ov = compute_derived("vision", &ecs, &other, &WorldCapDefaults::default()).unwrap();
         assert_eq!(ov["mode"], "masked");
         assert!(ov["polygons"].as_array().unwrap().is_empty());
         // Unknown channel → None.
-        assert!(compute_derived("nope", &ecs, &gm).is_none());
+        assert!(compute_derived("nope", &ecs, &gm, &WorldCapDefaults::default()).is_none());
     }
 
     #[test]
@@ -3406,7 +3470,7 @@ mod tests {
             user_id: player,
             world_role: WorldRole::Player,
         };
-        let pv = compute_derived("vision", &ecs, &pl).unwrap();
+        let pv = compute_derived("vision", &ecs, &pl, &WorldCapDefaults::default()).unwrap();
         assert_eq!(pv["mode"], "masked");
         let lit = pv["lit"]
             .as_array()
@@ -3435,7 +3499,7 @@ mod tests {
             user_id: Uuid::from_u128(1),
             world_role: WorldRole::Gm,
         };
-        let gv = compute_derived("vision", &ecs, &gm).unwrap();
+        let gv = compute_derived("vision", &ecs, &gm, &WorldCapDefaults::default()).unwrap();
         assert_eq!(gv["mode"], "all");
         assert!(gv.get("lit").is_none());
         assert!(gv.get("bands").is_none());
@@ -3467,7 +3531,7 @@ mod tests {
             user_id: player,
             world_role: WorldRole::Player,
         };
-        let pv = compute_derived("vision", &ecs, &pl).unwrap();
+        let pv = compute_derived("vision", &ecs, &pl, &WorldCapDefaults::default()).unwrap();
         let hints = pv["renderHints"].as_array().unwrap();
         assert!(hints.iter().any(|h| h == "desaturate"));
         let cells = pv["lit"][0]["cells"].as_array().unwrap();
@@ -4320,8 +4384,8 @@ mod tests {
     const FOOTPRINT_TEST_SCENE: Uuid = Uuid::from_u128(10);
 
     #[test]
-    fn footprint_radius_mirrors_the_client_formula() {
-        // Mirrors the client's `resolveFootprintGeometry` on a square scene:
+    fn footprint_radius_on_square_is_the_conservative_enclosure_of_the_authored_block() {
+        // On a square scene the radius is the authored block's conservative enclosure:
         //   circle ⇒ max(w,h)/2 ; square (and any other shape) ⇒ hypot(w,h)/2
         // Representative + boundary cases; `Size` is a free {w,h} pair, so there is no finite
         // domain to enumerate exhaustively.
@@ -4331,8 +4395,7 @@ mod tests {
             ("square", 1.0, 2.0, 5.0f64.sqrt() / 2.0),
             ("circle", 1.0, 1.0, 0.5),
             ("circle", 2.0, 3.0, 1.5),
-            // A shape outside {"circle","square"} takes the square branch, mirroring the client's
-            // `shape === "circle" ? … : hypot(…)` fallthrough.
+            // Any shape outside {"circle","square"} takes the half-diagonal branch.
             ("blob", 1.0, 1.0, std::f64::consts::SQRT_2 / 2.0),
         ];
         for (shape, w, h, expected) in cases {
@@ -4370,12 +4433,12 @@ mod tests {
     }
 
     #[test]
-    fn footprint_radius_falls_back_to_the_client_default_for_an_actorless_token() {
+    fn footprint_radius_falls_back_to_the_default_for_an_actorless_token() {
         let (ecs, token) = scene_with_raw_token_no_actor();
         assert_eq!(
             ecs.resolve_token_footprint(token, FOOTPRINT_TEST_SCENE),
             Some(DEFAULT_FOOTPRINT_RADIUS_CELLS),
-            "an actorless token uses the same 0.4 default the client's resolveFootprint uses"
+            "a token with no actor to size it takes the sub-cell default"
         );
     }
 
@@ -4411,6 +4474,152 @@ mod tests {
             ecs.resolve_token_footprint(token, FOOTPRINT_TEST_SCENE),
             Some(at),
             "AT the bound is admissible"
+        );
+    }
+
+    /// A GM context, for the footprint-payload tests that are not about the read filter.
+    fn footprint_gm_ctx() -> PermissionContext {
+        PermissionContext {
+            user_id: Uuid::from_u128(1),
+            world_role: crate::data::document::WorldRole::Gm,
+        }
+    }
+
+    /// The one scene entry of a footprint payload built for a GM.
+    fn only_scene_footprints(ecs: &SceneEcs) -> footprint::SceneFootprints {
+        let mut p = ecs.resolved_footprints(&footprint_gm_ctx(), &WorldCapDefaults::default());
+        assert_eq!(p.scenes.len(), 1, "fixture has exactly one scene");
+        p.scenes.remove(0)
+    }
+
+    #[test]
+    fn footprints_payload_carries_a_square_token_extent_of_the_authored_block_in_scene_units() {
+        let (ecs, token) = scene_with_linked_token_sized("square", 2.0, 3.0);
+        let s = only_scene_footprints(&ecs);
+        assert_eq!(s.unit, footprint::FootprintExtent { w: 100.0, h: 100.0 });
+        assert_eq!(
+            s.tokens,
+            vec![footprint::TokenFootprint {
+                token,
+                extent: Some(footprint::FootprintExtent { w: 200.0, h: 300.0 }),
+            }]
+        );
+    }
+
+    #[test]
+    fn footprints_payload_carries_a_hex_token_extent_of_the_hexs_own_bounding_box() {
+        // A 1-hex token on a circumradius-100 hex grid spans the hex it sits in: `√3·100` across
+        // the flats, `2·100` point to point — never the `100 × 100` square a square formula gives.
+        let (ecs, token) = scene_with_linked_token_sized_kind("hex", "square", 1.0, 1.0);
+        let s = only_scene_footprints(&ecs);
+        let want = footprint::FootprintExtent {
+            w: 3f64.sqrt() * 100.0,
+            h: 200.0,
+        };
+        assert_eq!(s.unit, want);
+        assert_eq!(
+            s.tokens,
+            vec![footprint::TokenFootprint {
+                token,
+                extent: Some(want),
+            }]
+        );
+    }
+
+    #[test]
+    fn footprints_payload_states_a_refusal_as_a_null_extent_rather_than_a_size() {
+        let (ecs, token) = scene_with_linked_token_sized("square", 1000.0, 1000.0);
+        assert_eq!(
+            ecs.resolve_token_footprint(token, FOOTPRINT_TEST_SCENE),
+            None,
+            "the gate refuses this token"
+        );
+        let s = only_scene_footprints(&ecs);
+        assert_eq!(
+            s.tokens,
+            vec![footprint::TokenFootprint {
+                token,
+                extent: None,
+            }],
+            "the wire states the same refusal rather than a drawable size"
+        );
+    }
+
+    #[test]
+    fn the_footprints_channel_serves_the_resolved_payload_and_an_unknown_channel_still_errors() {
+        let (ecs, token) = scene_with_linked_token_sized_kind("hex", "square", 1.0, 1.0);
+        let payload = compute_derived(
+            "footprints",
+            &ecs,
+            &footprint_gm_ctx(),
+            &WorldCapDefaults::default(),
+        )
+        .expect("the channel is recognized");
+        let decoded: footprint::FootprintsPayload =
+            serde_json::from_value(payload).expect("the wire payload round-trips");
+        assert_eq!(
+            decoded,
+            ecs.resolved_footprints(&footprint_gm_ctx(), &WorldCapDefaults::default())
+        );
+        assert_eq!(decoded.scenes[0].tokens[0].token, token);
+        assert!(compute_derived(
+            "footprint",
+            &ecs,
+            &footprint_gm_ctx(),
+            &WorldCapDefaults::default()
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn footprints_payload_omits_a_token_no_actor_sizes() {
+        let (ecs, _token) = scene_with_raw_token_no_actor();
+        let s = only_scene_footprints(&ecs);
+        assert!(
+            s.tokens.is_empty(),
+            "a token with no actor has no server-resolved extent; its document's own w/h stand"
+        );
+    }
+
+    #[test]
+    fn footprints_payload_withholds_a_token_the_recipient_cannot_read() {
+        let mut hidden = entity_doc_eng(
+            11,
+            10,
+            "token",
+            json!({ "x": 0.0, "y": 0.0, "w": 100.0, "h": 100.0, "rotation": 0.0,
+                    "actor_id": Uuid::from_u128(200).to_string() }),
+        );
+        hidden.permissions.default = crate::data::document::DocRole::None;
+        let mut ecs = SceneEcs::from_documents(
+            vec![
+                entity_doc_top_eng(
+                    10,
+                    "scene",
+                    json!({ "grid": { "kind": "square", "size": 100.0 }, "background": null }),
+                ),
+                hidden,
+            ],
+            0,
+        );
+        ecs.set_actors(vec![entity_doc_top_eng(
+            200,
+            "actor",
+            actor_body_shaped("square", 1.0, 1.0),
+        )]);
+        let player = PermissionContext {
+            user_id: Uuid::from_u128(77),
+            world_role: crate::data::document::WorldRole::Player,
+        };
+        let for_player = ecs.resolved_footprints(&player, &WorldCapDefaults::default());
+        assert!(
+            for_player.scenes[0].tokens.is_empty(),
+            "a token whose document the recipient may not read discloses no extent either"
+        );
+        assert_eq!(
+            only_scene_footprints(&ecs).tokens.len(),
+            1,
+            "the GM, who can read it, still receives it"
         );
     }
 

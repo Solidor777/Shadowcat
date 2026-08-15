@@ -1,5 +1,5 @@
-import { resolveTokenActor, resolveConditions, resolveTokenBox, resolveTokenVisual } from "@shadowcat/core";
-import type { ReadableDocuments, AssetResolver, WireDocument, FactionRegistryEngine, TokenEngine, AnimatedSource } from "@shadowcat/core";
+import { resolveTokenActor, resolveConditions, resolveTokenBox, resolveTokenVisual, EMPTY_FOOTPRINTS } from "@shadowcat/core";
+import type { ReadableDocuments, AssetResolver, WireDocument, FactionRegistryEngine, TokenEngine, AnimatedSource, FootprintLookup } from "@shadowcat/core";
 import type { DisplayBackend } from "./backend";
 import type { TokenNodeSpec, ResolvedAnimatedSource } from "./types";
 import { parseColor } from "./geometry";
@@ -38,6 +38,9 @@ export class TokenView {
    * @param viewedSceneId Resolves the currently-viewed scene id; `reconcile()` scopes its query to
    * this scene (falls back to unscoped — every token in the store — when it resolves to `null`).
    * Defaults to always-`null` (legacy/test callers that never pass one).
+   * @param footprints Resolves the server's current footprint lookup, read fresh per `toSpec` so a
+   * newly-arrived frame is picked up on the next reconcile. Defaults to `EMPTY_FOOTPRINTS`, under
+   * which every token draws at its document's own authored `w`/`h`.
    * @example
    * ```ts
    * import { TokenView, MockBackend } from "@shadowcat/render";
@@ -52,6 +55,7 @@ export class TokenView {
     private readonly assets: AssetResolver,
     private readonly backend: DisplayBackend,
     private readonly viewedSceneId: () => string | null = () => null,
+    private readonly footprints: () => FootprintLookup = () => EMPTY_FOOTPRINTS,
   ) {}
 
   /** Mark `id` as the locally-dragged token (its sprite snaps to the authoritative transform each
@@ -297,7 +301,8 @@ export class TokenView {
    * (`resolveTokenActor`), the visual (`resolveTokenVisual`, image or animated, URL-resolved via
    * `resolveSource`), the faction border color (via the world `faction-registry` doc; `null` when
    * the effective actor has no faction or the faction has no registered color), condition badges
-   * (`resolveConditions`), and the footprint box/shape (`resolveTokenBox`). Fails closed to `null`
+   * (`resolveConditions`), and the footprint box/shape (`resolveTokenBox`, reading the server's
+   * resolved extent rather than computing one). Fails closed to `null`
    * when the doc has no `engine` body or `resolveTokenVisual` cannot resolve a visual; `reconcile`
    * treats a `null` result as "this token is absent" and tears down any tracked state for its id.
    * @param doc The `token` document to project.
@@ -328,7 +333,7 @@ export class TokenView {
     }
     // Condition badges: resolve the actor's condition ids to registry icon glyphs.
     const badges = resolveConditions(doc, this.store).map((c) => c.icon);
-    const box = resolveTokenBox(doc, this.store, eff);
+    const box = resolveTokenBox(doc, this.store, this.footprints(), eff);
     return {
       x: box.x, y: box.y, w: box.w, h: box.h, rotation: s.rotation ?? 0,
       visual: resolvedVisual,

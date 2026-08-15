@@ -7,7 +7,7 @@
 export type { WireDocument } from "./wire";
 import type { WireDocument } from "./wire";
 import type { ReadableDocuments } from "./store";
-import { resolveFootprintGeometry } from "./grid-footprint";
+import type { FootprintExtent } from "./footprints";
 import type {
   MovementRestriction,
   MovementModel,
@@ -592,8 +592,9 @@ export function buildItemDoc(worldId: string, name: string | null, system: ItemS
 
 /** Build a token from an actor. `link` references the shared actor; `instance` embeds an
  * independent copy with `source` provenance (the deferred merge engine consumes it). Size/
- * shape resolve from the actor; `w`/`h` seed the rendered dangling-link fallback box now.
- * `doc_type: "token"` is engine-defined — the transform/visual/link body lands in `engine`.
+ * shape resolve from the actor; `w`/`h` seed the box the token draws at until the server states
+ * its own resolved extent. `doc_type: "token"` is engine-defined — the transform/visual/link body
+ * lands in `engine`.
  * @param worldId The owning world's id.
  * @param sceneId The scene document this token is parented to.
  * @param actor The source actor document to link or instance.
@@ -602,11 +603,9 @@ export function buildItemDoc(worldId: string, name: string | null, system: ItemS
  * @param pos The token's initial scene-unit position.
  * @param pos.x The initial x coordinate, scene units.
  * @param pos.y The initial y coordinate, scene units.
- * @param grid The scene's grid cell size (a bare number, treated as `{kind: "square", size}`) or
- * its full `{kind, size}` — used for the dangling-link fallback box only, via
- * `resolveFootprintGeometry`; the actor-backed render path resolves size through
- * `EffectiveActor.size` + the LIVE parent scene's grid instead (see `resolveTokenBox`), so a
- * caller who does not yet know the grid's kind may still pass the bare-number form safely.
+ * @param unit The scene's server-resolved UNIT footprint (`FootprintLookup.unit`) — the extent of
+ * a 1x1 token in this scene's grid. `null` (no `"footprints"` frame yet) seeds a zero box, which
+ * the token draws at only until its own resolved extent arrives.
  * @param id An explicit id, or `undefined` to generate one.
  * @returns A `WireDocument` with `doc_type: "token"`, parented to `sceneId`.
  * @example
@@ -614,7 +613,7 @@ export function buildItemDoc(worldId: string, name: string | null, system: ItemS
  * import { buildTokenFromActor, type WireDocument } from "@shadowcat/core";
  *
  * declare const actor: WireDocument;
- * const token = buildTokenFromActor("world-1", "scene-1", actor, "link", { x: 0, y: 0 }, 100);
+ * const token = buildTokenFromActor("world-1", "scene-1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 });
  * token.doc_type; // "token"
  * ```
  */
@@ -624,21 +623,16 @@ export function buildTokenFromActor(
   actor: WireDocument,
   mode: "link" | "instance",
   pos: { /** Initial x coordinate, scene units. */ x: number; /** Initial y coordinate, scene units. */ y: number },
-  grid: number | { /** The scene's grid kind. */ kind: string; /** Cell size, scene units (the circumradius on hex). */ size: number },
+  unit: FootprintExtent | null,
   id?: string,
 ): WireDocument {
-  const { kind, size } = typeof grid === "number" ? { kind: "square", size: grid } : grid;
-  // `w`/`h` are seeded solely as the dangling-link fallback: `resolveTokenBox`
-  // uses this ONLY when the linked/instanced actor is missing (`resolveTokenBox`'s
-  // missing-actor branch, `eng?.w ?? 0`). The actor-backed render path never reads these — size resolves
-  // through EffectiveActor.size + the parent scene's grid instead. This is an explicit, documented
-  // fallback rather than a lazy derivation from the token's last-known actor size, which
-  // would introduce a second size-derivation path. A single hex's own bounding box on hex
-  // scenes, never a square approximation — `resolveFootprintGeometry` is the one definition
-  // `resolveTokenBox`'s actor-backed branch also derives from.
-  const { boxW, boxH } = resolveFootprintGeometry("square", { w: 1, h: 1 }, kind);
+  // `w`/`h` are the extent the token draws at until the server's own resolved extent for it
+  // arrives, and the standing extent afterwards for a token no actor sizes (a dangling link).
+  // They are stamped from the scene's server-resolved UNIT footprint rather than derived from
+  // the actor's size and the grid: deriving here would be a second footprint formula, which is
+  // the defect this seam exists to remove.
   const base: TokenEngine = {
-    x: pos.x, y: pos.y, w: boxW * size, h: boxH * size, rotation: 0,
+    x: pos.x, y: pos.y, w: unit?.w ?? 0, h: unit?.h ?? 0, rotation: 0,
     visual: null, actor_id: null, overrides: null, face: null,
   };
   if (mode === "link") {

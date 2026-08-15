@@ -97,7 +97,7 @@ pub(crate) trait GridShape {
     /// NOT the token footprint scale either. A token's footprint radius derives from its OWN
     /// shape's model — a square block's half-diagonal on square, the circumscribing radius of the
     /// authored hex count on hex (owner ruling: authored size counts HEXES on hex, never a square
-    /// approximation; see `resolved_footprint_radius_cells`) — and both convert through the
+    /// approximation; see `footprint::resolve_footprint_cells`) — and both convert through the
     /// indexing scale, not this one: scaling a hex footprint here would give a 1-hex token a disc
     /// past its own hex's circumradius, which is a rules change rather than a unit fix.
     fn world_units_per_cell(&self) -> f64;

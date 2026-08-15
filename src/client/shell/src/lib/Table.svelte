@@ -93,6 +93,9 @@
     get viewedSceneId() {
       return session.viewedSceneId;
     },
+    get footprints() {
+      return session.footprints;
+    },
     setGmViewedScene: (id) => session.setGmViewedScene(id),
     searchDocuments: (query, opts, onUpdate) => session.searchDocuments(query, opts, onUpdate),
     sceneSelection,

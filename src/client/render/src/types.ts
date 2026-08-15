@@ -91,11 +91,11 @@ export interface TokenNodeSpec {
   x: number;
   /** Center's scene y-coordinate — from `resolveTokenBox`. */
   y: number;
-  /** Bounding-box width, in scene (px) units — `resolveTokenBox`'s actor-size × cell, or the
-   * raw token engine's `w` for an actorless token. */
+  /** Bounding-box width, in scene (px) units — `resolveTokenBox`'s read of the server's resolved
+   * extent, or the token engine's own `w` where the server has stated none. */
   w: number;
-  /** Bounding-box height, in scene (px) units — `resolveTokenBox`'s actor-size × cell, or the
-   * raw token engine's `h` for an actorless token. */
+  /** Bounding-box height, in scene (px) units — `resolveTokenBox`'s read of the server's resolved
+   * extent, or the token engine's own `h` where the server has stated none. */
   h: number;
   /** Facing, in degrees — see `TokenTransform.rotation`. */
   rotation: number;

@@ -3,8 +3,8 @@ import { render } from "@testing-library/svelte";
 import Stage from "./Stage.svelte";
 import type { DisplayBackend } from "@shadowcat/render";
 import { RenderEngine } from "@shadowcat/render";
-import { DocumentStore, AssetResolver, buildSceneDoc, buildTokenDoc } from "@shadowcat/core";
-import type { ReadableDocuments } from "@shadowcat/core";
+import { DocumentStore, AssetResolver, buildSceneDoc, buildTokenDoc, EMPTY_FOOTPRINTS } from "@shadowcat/core";
+import type { ReadableDocuments, FootprintLookup } from "@shadowcat/core";
 import { setAppContextForTest } from "@shadowcat/ui-kit/test";
 import { __APP_CONTEXT_KEY__ } from "@shadowcat/ui-kit";
 
@@ -318,6 +318,79 @@ test("the viewedSceneId-change watcher calls reapplyViewedScene exactly once per
 
   // A second, unrelated doc mutation with `viewed` unchanged must NOT re-trigger the watcher
   // (the `if (now !== lastViewed)` guard).
+  store.applyCommand({
+    seq: 3,
+    world_id: "w1",
+    author: "u",
+    ts: 0,
+    ops: [
+      {
+        op: "create",
+        doc: buildTokenDoc(
+          "w1",
+          "sA",
+          { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null },
+          "t2",
+        ),
+      },
+    ],
+  } as never);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  expect(spy).toHaveBeenCalledTimes(1);
+  spy.mockRestore();
+});
+
+test("a new footprints lookup re-projects the tokens exactly once per genuine change", async () => {
+  const store = new DocumentStore();
+  store.applyCommand({
+    seq: 1,
+    world_id: "w1",
+    author: "u",
+    ts: 0,
+    ops: [{ op: "create", doc: buildSceneDoc("w1", { grid: { kind: "square", size: 100, distance: null } }, "sA") }],
+  } as never);
+  const createBackend = vi.fn(async () => fakeBackend());
+  const context = setAppContextForTest({
+    documents: store,
+    store,
+    assets: new AssetResolver(),
+    viewedSceneId: "sA",
+    subscribeScene: () => ({ unsubscribe() {} }),
+  });
+  // A live getter, mirroring the session's reactive `#footprints` $state: a frame replaces the
+  // lookup wholesale, so the Stage watches the reference.
+  let footprints: FootprintLookup = EMPTY_FOOTPRINTS;
+  Object.defineProperty(context.get(__APP_CONTEXT_KEY__), "footprints", {
+    get: () => footprints,
+    configurable: true,
+  });
+  const spy = vi.spyOn(RenderEngine.prototype, "reapplyFootprints");
+  const { container } = render(Stage, { props: { createBackend }, context });
+  const host = container.querySelector(".stage-host") as HTMLElement;
+  await vi.waitFor(() => expect(host.dataset.renderReady).toBe("true"));
+  expect(spy).not.toHaveBeenCalled();
+
+  footprints = { token: () => ({ w: 173.2, h: 200 }), unit: () => null };
+  store.applyCommand({
+    seq: 2,
+    world_id: "w1",
+    author: "u",
+    ts: 0,
+    ops: [
+      {
+        op: "create",
+        doc: buildTokenDoc(
+          "w1",
+          "sA",
+          { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null },
+          "t1",
+        ),
+      },
+    ],
+  } as never);
+  await vi.waitFor(() => expect(spy).toHaveBeenCalledTimes(1));
+
+  // An unrelated doc mutation with the same lookup must not re-project.
   store.applyCommand({
     seq: 3,
     world_id: "w1",

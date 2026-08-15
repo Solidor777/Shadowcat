@@ -3,7 +3,7 @@
 // dispatchIntent for document writes); it never imports core-ui (contract-only
 // boundary). The tool factories close over the context.
 import { rectPoints, ellipsePoints, circlePoints, conePoints, squarePoints, parseColor, type SceneTool, type Point } from "@shadowcat/render";
-import { buildTokenDoc, buildTokenFromActor, buildSceneEntityDoc, resolveTokenBox, resolveTokenActor, footprintRadius, resolveFootprintGeometry, buildRegionDoc, setRegionVisibility, type ReadableDocuments, type AssetResolver, type WireOperation, type PathResult, type MoveStream } from "@shadowcat/core";
+import { buildTokenDoc, buildTokenFromActor, buildSceneEntityDoc, resolveTokenBox, EMPTY_FOOTPRINTS, buildRegionDoc, setRegionVisibility, type ReadableDocuments, type AssetResolver, type WireOperation, type PathResult, type MoveStream, type FootprintLookup } from "@shadowcat/core";
 import type { SceneInteraction, ActorSelection, TokenSelection } from "@shadowcat/ui-kit";
 import type { WorldRole } from "@shadowcat/types";
 import { topTokenAt } from "./hit-test";
@@ -77,6 +77,10 @@ export interface ToolContext {
   ) => Promise<MoveStream>;
   /** The scene the tools act on. From `ctx.viewedSceneId`; absent ⇒ the first scene. */
   viewedSceneId?: () => string | null;
+  /** The server's resolved token footprints (from `ctx.footprints`). The hit-test, the selection
+   * ring and the place tool all read their extents from here rather than computing any; absent ⇒
+   * an empty lookup, under which a token's own authored `w`/`h` stand. */
+  footprints?: () => FootprintLookup;
 }
 
 /** The active (viewed) scene + its grid cell size (default 100 when
@@ -103,8 +107,6 @@ function activeScene(ctx: ToolContext): {
   /** Grid cell size in pixels (defaults to 100 when the scene doc omits `grid.size`; the
    * circumradius on hex). */
   size: number;
-  /** The scene's grid kind; `"square"` when the scene doc omits `grid.kind`. */
-  kind: string;
   /** Distance-per-cell scale numerator (defaults to 5, matching `resolveSceneSettings`). */
   perCell: number;
   /** Distance unit label (defaults to `"ft"`, matching `resolveSceneSettings`). */
@@ -116,8 +118,6 @@ function activeScene(ctx: ToolContext): {
   const grid = (scene.engine as {
     /** Per-scene grid config; absent ⇒ the defaults below apply. */
     grid?: {
-      /** The scene's grid kind; falls back to `"square"` when absent. */
-      kind?: string;
       /** Grid cell size in pixels; falls back to 100 when absent. */
       size?: number;
       /** Distance-per-cell scale; falls back to `{ perCell: 5, unit: "ft" }` when absent. */
@@ -130,9 +130,8 @@ function activeScene(ctx: ToolContext): {
     };
   } | undefined)?.grid;
   const size = grid?.size ?? 100;
-  const kind = grid?.kind ?? "square";
   const { perCell, unit } = grid?.distance ?? { perCell: 5, unit: "ft" };
-  return { id: scene.id, size, kind, perCell, unit };
+  return { id: scene.id, size, perCell, unit };
 }
 
 /** Format a whole-cell distance as the measure tool's shared distance label:
@@ -162,34 +161,25 @@ function formatCellDistance(cells: number, scene: {
   return `${Math.round(cells * scene.perCell)} ${scene.unit}`;
 }
 
-/** Per-token footprint radius in cells (pathfind clearance), resolved from the token's
- * linked/embedded actor; falls back to 0.4 sub-cell units when unresolved. Module-level (not
- * closed over a single tool) so the measure tool's single-selection `resolveFootprint` and the
- * select/move tool's per-token drag commit (both still call this function) share one source —
- * preview and commit cannot derive different sizes.
- *
- * Every call site in this file that invokes this function also passes that same token id as
- * `ClientMsg::Pathfind`'s `token` field; when `token` is present the server AUTHORIZES it and
- * DERIVES the footprint from the token's own document, IGNORING the wire `footprint_radius`
- * value entirely (enforced in `handle_pathfind`). So the value computed here influences no production
- * outcome today. It is not dead code: the wire value IS
- * honored whenever `token` is absent, which in this file happens only when zero or multiple
- * tokens are selected — and in that branch this function is never called either (the caller
- * short-circuits to a hardcoded `0.4` instead).
- * @param ctx The tool context; reads `ctx.documents`.
- * @param id The token document id.
- * @returns The footprint radius in grid cells.
+/** The footprint radius a tokenless route preview is measured with. The server honors the wire
+ * `footprint_radius` only when the request names no token, and a request that names no token also
+ * names no actor to size a mover from — so this sub-cell value is all a hypothetical preview has,
+ * and it matches the radius the server itself falls back to for an unsized token. Every route the
+ * user actually walks names its token and is measured with the server's own resolved footprint
+ * instead. */
+const HYPOTHETICAL_PREVIEW_FOOTPRINT_CELLS = 0.4;
+
+/** The server's resolved footprints, or an empty lookup on a host that supplies none.
+ * @param ctx The tool context; reads `ctx.footprints`.
+ * @returns The current lookup.
  * @example
  * ```
  * declare const ctx: ToolContext;
- * declare const tokenId: string;
- * const radius = footprintFor(ctx, tokenId);
+ * const unit = footprintsOf(ctx).unit("scene-1");
  * ```
  */
-function footprintFor(ctx: ToolContext, id: string): number {
-  const doc = ctx.documents.get(id);
-  const eff = doc ? resolveTokenActor(doc, ctx.documents) : null;
-  return eff ? footprintRadius(eff, activeScene(ctx)?.kind ?? "square") : 0.4;
+function footprintsOf(ctx: ToolContext): FootprintLookup {
+  return ctx.footprints?.() ?? EMPTY_FOOTPRINTS;
 }
 
 /** Route color for the A* preview polyline (blue-teal, distinct from walls and selection). */
@@ -309,7 +299,7 @@ export function makePlaceTool(ctx: ToolContext, controller: ToolController): Sce
            * (embeds a frozen copy) rather than links (shares the live document). */
           prototype?: boolean;
         } | undefined)?.prototype ? "instance" : "link";
-        ctx.dispatchIntent([{ op: "create", doc: buildTokenFromActor(ctx.world, scene.id, actor, mode, c, { kind: scene.kind, size: scene.size }) }]);
+        ctx.dispatchIntent([{ op: "create", doc: buildTokenFromActor(ctx.world, scene.id, actor, mode, c, footprintsOf(ctx).unit(scene.id)) }]);
         // A unique (linked) actor places once by default: clear the selection so repeated
         // clicks don't stamp duplicate live-views. The user can opt to keep it selected
         // (keepAfterPlace). Instanced actors always stay selected for placing many.
@@ -318,13 +308,14 @@ export function makePlaceTool(ctx: ToolContext, controller: ToolController): Sce
       }
       const asset = controller.selectedAsset;
       if (!asset) return false;
-      // A single hex's own bounding box on hex scenes, never a square approximation —
-      // `resolveFootprintGeometry` is the one definition `resolveTokenBox` also derives from.
-      const { boxW, boxH } = resolveFootprintGeometry("square", { w: 1, h: 1 }, scene.kind);
+      // The scene's server-resolved unit footprint — a single hex's own bounding box on a hex
+      // scene. A raw (actorless) token has no actor for the server to size it from, so this
+      // authored extent is the one it keeps.
+      const unit = footprintsOf(ctx).unit(scene.id);
       ctx.dispatchIntent([
         {
           op: "create",
-          doc: buildTokenDoc(ctx.world, scene.id, { x: c.x, y: c.y, w: boxW * scene.size, h: boxH * scene.size, rotation: 0, visual: { kind: "image", asset }, actor_id: null, overrides: null, face: null }),
+          doc: buildTokenDoc(ctx.world, scene.id, { x: c.x, y: c.y, w: unit?.w ?? 0, h: unit?.h ?? 0, rotation: 0, visual: { kind: "image", asset }, actor_id: null, overrides: null, face: null }),
         },
       ]);
       return true;
@@ -681,33 +672,9 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
     return [eng?.x ?? 0, eng?.y ?? 0];
   }
 
-  /** Footprint radius in grid cells for the current pathfind request (`requestRoute`,
-   * `commitRoute`), via `footprintFor` on the single selected token's actor; falls back to
-   * 0.4 sub-cell units when zero/multiple tokens are selected or the actor is unresolved.
-   *
-   * Both call sites in this file also pass `selectedTokenId()` as `Pathfind`'s `token`
-   * field, and both are reached only when exactly one token is selected — so `token` is
-   * never `undefined` there and the server always DERIVES the authoritative footprint from
-   * that token document instead, ignoring this value entirely
-   * (`handle_pathfind`; mirrors `footprintFor`'s own framing above). It is
-   * not dead code: a future call site passing no `token` would fall back to this value.
-   * @returns The footprint radius in grid cells.
-   * @example
-   * ```
-   * declare function resolveFootprint(): number;
-   * const fp = resolveFootprint();
-   * ```
-   */
-  function resolveFootprint(): number {
-    const sel = ctx.tokenSelection;
-    if (!sel || sel.ids.size !== 1) return 0.4;
-    const [id] = [...sel.ids];
-    return footprintFor(ctx, id);
-  }
-
   /** The single selected token's id, or `undefined` when zero or multiple are selected. Passed
-   * as `pathfind`'s `token` so the server derives the AUTHORITATIVE footprint instead of trusting
-   * this file's own `resolveFootprint` estimate.
+   * as `pathfind`'s `token` so the server derives the AUTHORITATIVE footprint from that token
+   * rather than honoring the wire `footprint_radius` this file sends.
    * @returns The selected token id, or `undefined`.
    * @example
    * ```
@@ -757,7 +724,7 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
   }, start: [number, number], goal: Point): void {
     if (!ctx.pathfind) return;
     const seq = ++pendingSeq;
-    const fp = resolveFootprint();
+    const fp = HYPOTHETICAL_PREVIEW_FOOTPRINT_CELLS;
     const allWaypoints: [number, number][] = [...waypoints, [goal.x, goal.y]];
     ctx.pathfind(scene.id, start, allWaypoints, fp, selectedTokenId()).then(
       (result) => {
@@ -927,7 +894,7 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
     const start = tokenCenter();
     if (!scene || !start) return;
     const tokenId = [...ctx.tokenSelection.ids][0];
-    const fp = resolveFootprint();
+    const fp = HYPOTHETICAL_PREVIEW_FOOTPRINT_CELLS;
     // Set committing BEFORE capturing seq so the pointer-up guard (committing check) is
     // already in place before the async call starts. onPointerUp/Move check committing
     // and return early, so they cannot bump pendingSeq while this commit is in flight.
@@ -1380,7 +1347,7 @@ export function makeSelectMoveTool(ctx: ToolContext): SceneTool {
     const rings = [...sel.ids].map((id) => {
       const c = centerOf(id);
       const doc = ctx.documents.get(id);
-      const box = doc ? resolveTokenBox(doc, ctx.documents) : null;
+      const box = doc ? resolveTokenBox(doc, ctx.documents, footprintsOf(ctx)) : null;
       const w = (box?.w || 0) || 100;
       const h = (box?.h || 0) || 100;
       const hw = w / 2;
@@ -1456,7 +1423,7 @@ export function makeSelectMoveTool(ctx: ToolContext): SceneTool {
     const moveRequest = ctx.moveRequest;
     for (const [id, o] of origins) {
       const target = ctx.scene.snap({ x: o.x + delta.x, y: o.y + delta.y });
-      pathfind(scene.id, [o.x, o.y], [[target.x, target.y]], footprintFor(ctx, id), id)
+      pathfind(scene.id, [o.x, o.y], [[target.x, target.y]], HYPOTHETICAL_PREVIEW_FOOTPRINT_CELLS, id)
         .then((result) => {
           if (result.path.length >= 2) return moveRequest(scene.id, id, result.path);
         })
@@ -1474,7 +1441,7 @@ export function makeSelectMoveTool(ctx: ToolContext): SceneTool {
 
   return {
     onPointerDown(p: Point, ev: PointerEvent): boolean {
-      const id = topTokenAt(ctx.documents.query("token"), p, ctx.documents);
+      const id = topTokenAt(ctx.documents.query("token"), p, ctx.documents, footprintsOf(ctx));
       if (!id) {
         sel?.clear();
         ctx.scene.clearOverlay();

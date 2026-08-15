@@ -1,4 +1,4 @@
-import type { WireDocument, ReadableDocuments } from "@shadowcat/core";
+import type { WireDocument, ReadableDocuments, FootprintLookup } from "@shadowcat/core";
 import { resolveTokenBox } from "@shadowcat/core";
 import type { Point } from "@shadowcat/render";
 
@@ -15,19 +15,22 @@ import type { Point } from "@shadowcat/render";
  * ignored for picking.
  * @param tokens The candidate token documents (typically `store.query("token")`).
  * @param p The point to test (scene coords).
- * @param store Passed through to `resolveTokenBox` for actor-linked box resolution.
+ * @param store Passed through to `resolveTokenBox` for actor-linked shape resolution.
+ * @param footprints The server's resolved footprints, passed through to `resolveTokenBox` — the
+ * picked area is the authoritative extent, so a hex token picks over the hexes it occupies.
  * @returns The topmost hit token's id, or `null` when none contains `p`.
  * @example
  * ```
  * declare const store: ReadableDocuments;
+ * declare const footprints: FootprintLookup;
  * declare const p: Point;
- * const id = topTokenAt(store.query("token"), p, store);
+ * const id = topTokenAt(store.query("token"), p, store, footprints);
  * ```
  */
-export function topTokenAt(tokens: WireDocument[], p: Point, store: ReadableDocuments): string | null {
+export function topTokenAt(tokens: WireDocument[], p: Point, store: ReadableDocuments, footprints: FootprintLookup): string | null {
   let hit: string | null = null;
   for (const t of tokens) {
-    const box = resolveTokenBox(t, store);
+    const box = resolveTokenBox(t, store, footprints);
     if (box.w <= 0 || box.h <= 0) continue;
     const dx = p.x - box.x;
     const dy = p.y - box.y;

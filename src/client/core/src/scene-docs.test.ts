@@ -8,6 +8,7 @@ import { buildLightGradationDoc, resolveGradation, DEFAULT_GRADATION, buildVisio
 import { buildRegionDoc, setRegionVisibility, type RegionEngine } from "./scene-docs";
 import { DocumentStore } from "./store";
 import { resolveTokenActor, resolveTokenBox } from "./actor";
+import { EMPTY_FOOTPRINTS, type FootprintLookup } from "./footprints";
 
 function storeWith(...docs: WireDocument[]): DocumentStore {
   const s = new DocumentStore();
@@ -228,7 +229,7 @@ test("buildActorDoc makes a top-level, parentless actor document with the name o
 
 test("buildTokenFromActor link mode references the actor by id, no embedded copy", () => {
   const actor = buildActorDoc("w1", "Goblin", actorEngine, "act1");
-  const t = buildTokenFromActor("w1", "scene1", actor, "link", { x: 50, y: 50 }, 100);
+  const t = buildTokenFromActor("w1", "scene1", actor, "link", { x: 50, y: 50 }, { w: 100, h: 100 });
   expect(t.doc_type).toBe("token");
   expect(t.parent_id).toBe("scene1");
   expect((t.engine as TokenEngine).actor_id).toBe("act1");
@@ -238,7 +239,7 @@ test("buildTokenFromActor link mode references the actor by id, no embedded copy
 
 test("buildTokenFromActor instance mode embeds an independent copy with provenance", () => {
   const actor = buildActorDoc("w1", "Goblin", actorEngine, "act1");
-  const t = buildTokenFromActor("w1", "scene1", actor, "instance", { x: 0, y: 0 }, 100);
+  const t = buildTokenFromActor("w1", "scene1", actor, "instance", { x: 0, y: 0 }, { w: 100, h: 100 });
   expect((t.engine as TokenEngine).actor_id).toBeNull();
   expect(t.embedded.actor).toHaveLength(1);
   const copy = t.embedded.actor[0];
@@ -249,36 +250,28 @@ test("buildTokenFromActor instance mode embeds an independent copy with provenan
   expect(copy.engine).not.toBe(actor.engine); // independent by value, not aliased
 });
 
-test("buildTokenFromActor seeds w/h=cellSize solely as the dangling-link fallback (not consumed on the actor-backed render path)", () => {
+test("buildTokenFromActor stamps the scene's unit footprint, which stands until the server states this token's own", () => {
   const actor = buildActorDoc("w1", "Goblin", actorEngine, "act1");
-  const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, 50, "tok1");
+  const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 50, h: 50 }, "tok1");
   expect((token.engine as TokenEngine).w).toBe(50);
   expect((token.engine as TokenEngine).h).toBe(50);
 
-  // Actor-backed render path: resolveTokenBox derives size from actor.size × cellSize,
-  // NOT the seeded token.engine.w/h.
+  // The server's own resolved extent, once stated, wins over the stamped unit footprint.
   const store = storeWith(actor, token);
-  const box = resolveTokenBox(token, store, resolveTokenActor(token, store));
-  expect(box.w).toBe(1 * 100); // actorEngine.size.w=1 × the store's default 100px cell, not the seeded 50
+  const resolved: FootprintLookup = { token: () => ({ w: 100, h: 100 }), unit: () => null };
+  expect(resolveTokenBox(token, store, resolved, resolveTokenActor(token, store)).w).toBe(100);
 
-  // Dangling link (actor removed) — the seeded w/h becomes the real fallback.
-  const withoutActor = new DocumentStore();
-  withoutActor.applyCommand({ seq: 1, world_id: "w1", author: "a", ts: 0, ops: [{ op: "create", doc: token }] });
-  const danglingBox = resolveTokenBox(token, withoutActor, resolveTokenActor(token, withoutActor));
-  expect(danglingBox.w).toBe(50); // now the seeded engine.w is what's actually used
+  // Until then — and permanently for a token no actor sizes — the stamped extent is the box.
+  expect(resolveTokenBox(token, store, EMPTY_FOOTPRINTS, resolveTokenActor(token, store)).w).toBe(50);
 });
 
-test("buildTokenFromActor's dangling-link fallback box is a single hex's own bounding box on hex, not a square", () => {
+test("buildTokenFromActor stamps a zero extent when the scene's unit footprint is not yet known", () => {
+  // No `"footprints"` frame has arrived, so there is no authoritative unit extent to stamp and
+  // none is invented here. The token draws at nothing until the server states its own.
   const actor = buildActorDoc("w1", "Goblin", actorEngine, "act1");
-  const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { kind: "hex", size: 100 }, "tok1");
-  expect((token.engine as TokenEngine).w).toBeCloseTo(100 * Math.sqrt(3), 6);
-  expect((token.engine as TokenEngine).h).toBe(200);
-
-  const withoutActor = new DocumentStore();
-  withoutActor.applyCommand({ seq: 1, world_id: "w1", author: "a", ts: 0, ops: [{ op: "create", doc: token }] });
-  const danglingBox = resolveTokenBox(token, withoutActor, resolveTokenActor(token, withoutActor));
-  expect(danglingBox.w).toBeCloseTo(100 * Math.sqrt(3), 6);
-  expect(danglingBox.h).toBe(200);
+  const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, null, "tok1");
+  expect((token.engine as TokenEngine).w).toBe(0);
+  expect((token.engine as TokenEngine).h).toBe(0);
 });
 
 test("setNameHidden sets and clears the OwnerOrGm override on /name", () => {
