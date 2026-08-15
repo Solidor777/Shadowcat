@@ -76,6 +76,19 @@ Ledger Additions section).
   checked against the test **as written**, not asserted. The check is mechanical: name the edit,
   then confirm the test's own call path REACHES the edited code. A test that passes its input
   through a helper the task does not change cannot discriminate, however the line is worded.
+- **The discrimination check is performed as a REVERT, once PER FIXED SITE, and reported as one row
+  per site.** This constraint existed in the wording above and was violated three times in this
+  phase anyway, so the evaluation method is now specified rather than the property.
+  **Reading a call path cannot establish it**, because the reading is what fails: a test routed
+  through a test double reaches *a* symbol of the right name and never reaches the production one,
+  and the phrase that accompanies this defect every time is "exercised through the real wiring" —
+  true right up to the boundary where it stops being true. **A call path that terminates in a mock,
+  fake, or spy does not reach the production symbol that double replaces.** Observed instances: a
+  wiring site in the render engine, and a paint site whose mock backend recorded the frame it was
+  handed and never invoked the real implementation.
+  So: for each site you changed, revert THAT site, run the suite, record the observed failure
+  verbatim, restore by `diff`. **A site with no row has no coverage**, and a claim of coverage
+  without an observed failure is the claim this rule exists to reject — including when it is true.
 - **No test assertion sits on an exact floating-point equality boundary.** Where a test brackets a
   threshold, both sides are placed a stated distance off it, so a one-ULP difference in a correct
   implementation cannot decide the outcome. A test whose expected value is the threshold itself is
