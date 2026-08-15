@@ -144,8 +144,7 @@ function activeScene(ctx: ToolContext): {
  * @returns The formatted label string, e.g. `"25 ft"`.
  * @example
  * ```
- * declare function formatCellDistance(cells: number, scene: { perCell: number; unit: string }): string;
- * formatCellDistance(5, { perCell: 5, unit: "ft" });
+ * formatCellDistance(5, { perCell: 5, unit: "ft" }); // "25 ft"
  * ```
  */
 function formatCellDistance(cells: number, scene: {
