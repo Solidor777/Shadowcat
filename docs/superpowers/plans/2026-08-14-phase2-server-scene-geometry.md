@@ -4420,6 +4420,89 @@ numbers, dates, or process references. End with the `Co-Authored-By: Claude Opus
 
 ---
 
+### Task 6h: close the filename-citation class repo-wide
+
+**Numbered `6h` for the same reason as `5b`.** Found by a whole-tree sweep after a third instance of
+the same class surfaced inside this phase's own work. Comment-only, outside the scene subsystem, and
+it earns its own review cycle because it touches a subsystem this phase otherwise leaves alone.
+
+---
+
+#### What was found, and why the earlier sweep did not find it
+
+`RULE 15` bans citing a file name; the citation must be a symbol. A sweep of every comment in `src/`
+for a backticked source-file name returns **7 sites**, all in the chat/wire area:
+
+- `chat-docs.ts` — four occurrences of `see `dieRecordSchemaImpl`'s note above / `wire.ts`'s module
+  note`
+- `chat-docs.test.ts`, `wire.test.ts`, and one more in `chat-docs.ts` — variants of `see `wire.ts`'s
+  module-level note above its `z` import`
+
+**These are compound violations.** Each names a FILE (banned outright by `RULE 15` as written) and
+also points POSITIONALLY (`above its `z` import`, `note above`). The two halves have different
+statuses and the task must not conflate them:
+
+- The **filename** half is unambiguously in scope. No ruling is pending on it.
+- The **positional** half belongs to a population of roughly 481 sites that an earlier task
+  enumerated, verified, and deliberately left unswept because extending the rule to positional words
+  inside a file is a rule EXTENSION and the owner's call. **That question is still open. Do not
+  answer it here, and do not sweep the other 481.**
+
+The earlier repo-wide comment task closed the unnamed-DOCUMENT-pointer class (`§N`, `per spec`), a
+different class with a different vocabulary. This subclass was never in its brief, which is why a
+clean run there is consistent with these surviving.
+
+---
+
+**Files:** `src/client/core/src/chat-docs.ts`, `src/client/core/src/chat-docs.test.ts`,
+`src/client/core/src/wire.test.ts`, plus whatever the enumeration adds.
+
+---
+
+- [ ] **Step 1: Enumerate before converting**
+
+Run the whole-comment sweep yourself over `src/` — every comment in every `.ts`, `.rs` and `.svelte`
+file, not a grep for the two spellings already found. **7 is a detector's output, not an
+enumeration**, and every count handed to an agent in this phase that was derived rather than run has
+been wrong at least once. Report your own count with a row per site.
+
+Expect non-members and record them: a filename used as a VALUE (a path in a string literal, a config
+key) is not a member, and neither is a build/config file with no symbols to cite. Adjudicate; do not
+narrow the pattern around them.
+
+- [ ] **Step 2: Read what each pointer points AT, then state the constraint instead**
+
+Every one of these sites points at a module-level note. **Read that note.** The conversion is to state
+the constraint the note establishes, in the place that needs it, so the reader does not travel.
+
+Where the note's content genuinely cannot be restated locally — because it is long and shared —
+**cite the SYMBOL the note is about** (`dieRecordSchemaImpl` is already cited correctly in four of
+these, which is why only the `wire.ts` half of those lines is wrong). A symbol survives a file move
+and breaks loudly on a rename; a filename does neither.
+
+**Where a pointer carries nothing, delete the token and change nothing else.** Inventing a plausible
+replacement constraint is the worst available outcome.
+
+- [ ] **Step 3: Do NOT touch the positional class**
+
+Leave `above`, `below` and their kin alone even where they sit in a line you are editing for its
+filename. If removing the filename leaves a sentence that is still positional, **say so in your report
+and leave the positional remnant** — it belongs to the held population, and pre-empting the owner's
+ruling by sweeping a few of its members is the same descope in miniature.
+
+- [ ] **Step 4: Full gate**
+
+Use the plan's Global Constraints gate list; report each by name with its result. **A comment-only
+change that alters a test outcome is a finding** — it means a pointer you removed was load-bearing in
+a way nobody recorded. Report it; do not adjust the test.
+
+- [ ] **Step 5: Commit**
+
+Conventional-commits, imperative, stating the constraint and the consequence. End with the
+`Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>` trailer.
+
+---
+
 ### Task 7: PW3 — exercise the hex + continuous fog clip through the real dispatch, as a non-GM
 
 **Ledger id:** PW3.
