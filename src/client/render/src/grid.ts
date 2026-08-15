@@ -69,8 +69,7 @@ export class Grid {
   snap(p: Point): Point {
     if (this.spec.kind === "square") {
       const { col, row } = this.cellOf(p);
-      const s = this.spec.size;
-      return { x: col * s + s / 2, y: row * s + s / 2 };
+      return this.cellCenter(col, row);
     }
     const { q, r } = this.axialRound(this.pixelToAxial(p));
     return this.axialToPixel(q, r);
@@ -226,10 +225,10 @@ export class Grid {
    * import { Grid } from "@shadowcat/render";
    *
    * const grid = new Grid({ kind: "square", size: 100 });
-   * grid.cellCorners(0, 0); // [{x:0,y:0},{x:100,y:0},{x:100,y:100},{x:0,y:100}]
+   * grid.cellVertices(0, 0); // [{x:0,y:0},{x:100,y:0},{x:100,y:100},{x:0,y:100}]
    * ```
    */
-  cellCorners(col: number, row: number): Point[] {
+  cellVertices(col: number, row: number): Point[] {
     if (this.spec.kind === "square") {
       const s = this.spec.size;
       const x0 = col * s, y0 = row * s;
@@ -430,7 +429,7 @@ export class Grid {
     const rHi = Math.ceil(Math.max(...rs)) + 1;
     for (let r = rLo; r <= rHi; r++) {
       for (let q = qLo; q <= qHi; q++) {
-        const pts = this.cellCorners(q, r); // the single hex-corner formula (see cellCorners)
+        const pts = this.cellVertices(q, r); // the single hex-corner formula (see cellVertices)
         for (let i = 0; i < 6; i++) {
           const a = pts[i];
           const b = pts[(i + 1) % 6];

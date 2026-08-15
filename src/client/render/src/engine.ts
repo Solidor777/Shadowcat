@@ -19,7 +19,7 @@ import { PingView } from "./ping-view";
 /** Rasterize a flat `[i,j,…]` explored-cell list into one shape polygon per cell, via the active
  * `grid`'s own corner geometry — square on a square grid, hexagon on a hex grid. The fog shader
  * unions overlapping polygons by overdraw, so per-cell shapes (vs merged runs) are correct.
- * Delegates to `Grid.cellCorners` rather than assuming a square (`x=i*size, y=j*size`) shape —
+ * Delegates to `Grid.cellVertices` rather than assuming a square (`x=i*size, y=j*size`) shape —
  * indexing a hex-axial cell that way paints the wrong scene position (skewed square positions
  * over correctly-drawn hexes).
  * @param cells Flat `[i0,j0,i1,j1,…]` cell-index pairs; a trailing unpaired value is dropped.
@@ -35,7 +35,7 @@ import { PingView } from "./ping-view";
 function cellsToRects(cells: number[], grid: Grid): Polygon[] {
   const rects: Polygon[] = [];
   for (let k = 0; k + 1 < cells.length; k += 2) {
-    const corners = grid.cellCorners(cells[k], cells[k + 1]);
+    const corners = grid.cellVertices(cells[k], cells[k + 1]);
     rects.push({ points: corners.flatMap((p) => [p.x, p.y]) });
   }
   return rects;
@@ -641,7 +641,7 @@ export class RenderEngine implements SceneToolHost {
         tint: group.cells[k + 3], hint: group.cells[k + 4],
         // Resolved via the active grid, not `x=i*cell, y=j*cell`: on a hex scene the wire
         // indices are axial, and a square rect there paints the wrong scene position.
-        corners: this.grid.cellCorners(i, j),
+        corners: this.grid.cellVertices(i, j),
       });
     }
     const bands = Array.isArray(p.bands)

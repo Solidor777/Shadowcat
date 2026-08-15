@@ -209,10 +209,11 @@ export interface LitCell {
   tint: number;
   /** Index into `LightingInput.hints` — see the interface doc for the `-1` sentinel. */
   hint: number;
-  /** This cell's scene-coordinate corners — `Grid.cellCorners(i, j)` on the active grid, resolved
+  /** This cell's scene-coordinate corners — `Grid.cellVertices(i, j)` on the active grid, resolved
    * by the caller so `Lighting`/the backend never re-derive cell geometry from `i`/`j` and a flat
-   * cell size (the square-position-under-hex defect this carries the fix for). Square: an
-   * axis-aligned rect. Hex: a pointy-top hexagon. */
+   * cell size: a hex scene's axial indices are not square-indexable as `i*cellSize`/`j*cellSize`,
+   * so the geometry is resolved once here. Square: an axis-aligned rect. Hex: a pointy-top
+   * hexagon. */
   corners: Point[];
 }
 

@@ -152,21 +152,21 @@ test("alternating (5-10-5) rule: two diagonal steps (dmin=2) cost 3, not 2", () 
   expect(g.distance({ x: 50, y: 50 }, { x: 250, y: 250 })).toBe(3);
 });
 
-test("square cellCenter/cellCorners: axis-aligned rect anchored at (col*size, row*size)", () => {
+test("square cellCenter/cellVertices: axis-aligned rect anchored at (col*size, row*size)", () => {
   const g = new Grid({ kind: "square", size: 100 });
   expect(g.cellCenter(2, 0)).toEqual({ x: 250, y: 50 });
-  expect(g.cellCorners(0, 0)).toEqual([
+  expect(g.cellVertices(0, 0)).toEqual([
     { x: 0, y: 0 }, { x: 100, y: 0 }, { x: 100, y: 100 }, { x: 0, y: 100 },
   ]);
-  expect(g.cellCorners(1, 0)).toEqual([
+  expect(g.cellVertices(1, 0)).toEqual([
     { x: 100, y: 0 }, { x: 200, y: 0 }, { x: 200, y: 100 }, { x: 100, y: 100 },
   ]);
 });
 
-test("square cellCorners' centroid equals cellCenter for every cell", () => {
+test("square cellVertices' centroid equals cellCenter for every cell", () => {
   const g = new Grid({ kind: "square", size: 70 });
   for (const [col, row] of [[0, 0], [3, -2], [-4, 5]] as const) {
-    const corners = g.cellCorners(col, row);
+    const corners = g.cellVertices(col, row);
     const cx = corners.reduce((s, p) => s + p.x, 0) / corners.length;
     const cy = corners.reduce((s, p) => s + p.y, 0) / corners.length;
     const center = g.cellCenter(col, row);
@@ -185,10 +185,10 @@ test("hex cellCenter matches the axial-to-pixel formula", () => {
   expect(c.y).toBeCloseTo(100 * 1.5 * 1, 9);
 });
 
-test("hex cellCorners: 6 points, centroid equals cellCenter, every corner exactly `size` from center", () => {
+test("hex cellVertices: 6 points, centroid equals cellCenter, every corner exactly `size` from center", () => {
   const g = new Grid({ kind: "hex", size: 50 });
   for (const [q, r] of [[0, 0], [1, 1], [-2, 3]] as const) {
-    const corners = g.cellCorners(q, r);
+    const corners = g.cellVertices(q, r);
     expect(corners.length).toBe(6);
     const center = g.cellCenter(q, r);
     const cx = corners.reduce((s, p) => s + p.x, 0) / 6;
@@ -202,11 +202,11 @@ test("hex cellCorners: 6 points, centroid equals cellCenter, every corner exactl
 });
 
 // `hexLines` must not carry a second hex-corner formula — pins that its emitted outline for a
-// given hex is exactly `cellCorners`'s own output (in the same order), not merely
+// given hex is exactly `cellVertices`'s own output (in the same order), not merely
 // geometrically equivalent.
-test("hexLines' outline for a cell matches cellCorners exactly (single formula, not a duplicate)", () => {
+test("hexLines' outline for a cell matches cellVertices exactly (single formula, not a duplicate)", () => {
   const g = new Grid({ kind: "hex", size: 50 });
-  const corners = g.cellCorners(0, 0); // the (0,0) hex, centered inside a viewport starting at origin
+  const corners = g.cellVertices(0, 0); // the (0,0) hex, centered inside a viewport starting at origin
   const lines = g.lines({ x: 0, y: 0, w: 10, h: 10 }); // tiny rect margined to still cover (0,0)
   // Collect the 6-segment outline whose first point matches corners[0].
   const outline = [];
