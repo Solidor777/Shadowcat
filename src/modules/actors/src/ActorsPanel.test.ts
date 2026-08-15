@@ -255,6 +255,40 @@ describe("ActorsPanel — darkvision authoring", () => {
     // explicit `null` (never `undefined`, and never a genuinely-absent key).
     expect(dispatchIntent.mock.calls[0][0][0].doc.engine.vision).toBeNull();
   });
+
+  it("per-row darkvision input shows 0 for a vision assignment carrying range: null", async () => {
+    // `VisionAssignment.range` is `number | null` on the wire (an omitted/null range inherits the
+    // mode's own default) — the row reads it via `?? 0`, guarding against exactly this case.
+    const actor = buildActorDoc(
+      "w1",
+      "Troll",
+      {
+        displayName: "Troll",
+        visual: { kind: "image", asset: "a1" },
+        size: { w: 1, h: 1 },
+        shape: "square",
+        faction: null,
+        conditions: [],
+        prototype: false,
+        vision: [{ mode: "darkvision", range: null }],
+      },
+      "act1",
+    );
+    const store = storeWith(actor);
+
+    render(ActorsPanel, {
+      context: setAppContextForTest({
+        role: "gm",
+        world: "w1",
+        documents: store,
+        dispatchIntent: vi.fn(),
+      }),
+    });
+
+    const listItem = screen.getByRole("listitem");
+    const rowDarkvisionInput = within(listItem).getByLabelText("actors.darkvision");
+    expect((rowDarkvisionInput as HTMLInputElement).value).toBe("0");
+  });
 });
 
 describe("ActorsPanel — visual kind editor", () => {

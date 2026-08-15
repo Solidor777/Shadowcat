@@ -43,8 +43,8 @@
     vision?: {
       /** The vision-modes registry id this assignment applies. */
       mode: string;
-      /** The assignment's range in grid cells. */
-      range: number;
+      /** The assignment's range in grid cells; `null`/absent inherits the mode's own default. */
+      range: number | null;
     }[];
   };
 
