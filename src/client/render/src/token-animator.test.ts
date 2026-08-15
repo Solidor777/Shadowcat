@@ -145,6 +145,27 @@ describe("TokenAnimator duration model", () => {
     expect(Number.isFinite(pos.y)).toBe(true);
   });
 
+  it("NaN worldUnitsPerCell does not pin the token or produce moved forever", () => {
+    // NaN passes `<= 0` as false, so only the !isFinite check catches it. Without that check,
+    // `cells = total / NaN` is NaN, `duration` is NaN, `tRaw` never reaches 1, and the anim
+    // reports moved every tick forever.
+    const a = fresh();
+    a.setConfig({ speedCellsPerSec: 6, easing: "linear", worldUnitsPerCell: NaN });
+    a.setTarget("t1", { x: 0, y: 0, rotation: 0 }); // snap
+    a.setTarget("t1", { x: 500, y: 0, rotation: 0 }); // degenerate config → startAnim snaps
+    expect(a.get("t1")!.x).toBe(500);
+    expect(a.tick(16)).toEqual([]);
+  });
+
+  it("NaN speedCellsPerSec does not pin the token or produce moved forever", () => {
+    const a = fresh();
+    a.setConfig({ speedCellsPerSec: NaN, easing: "linear", worldUnitsPerCell: 100 });
+    a.setTarget("t1", { x: 0, y: 0, rotation: 0 }); // snap
+    a.setTarget("t1", { x: 500, y: 0, rotation: 0 }); // degenerate config → startAnim snaps
+    expect(a.get("t1")!.x).toBe(500);
+    expect(a.tick(16)).toEqual([]);
+  });
+
   it("remove drops all state", () => {
     const a = fresh();
     a.setTarget("t1", { x: 0, y: 0, rotation: 0 });

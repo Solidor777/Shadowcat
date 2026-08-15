@@ -697,13 +697,14 @@ test("animateAlongPath forwards to the token view (SceneToolHost seam)", () => {
   expect(backend.lastTokenX("tok1")).toBeCloseTo(300, 0);
 });
 
-// Regression: a hex `RenderEngine` must time a token tween against `Grid.worldUnitsPerCell()`
+// Invariant: a hex `RenderEngine` must time a token tween against `Grid.worldUnitsPerCell()`
 // (the per-step distance, `size * sqrt(3)`), not `GridSpec.size` (the indexing scale/outer
 // radius) — the two coincide on square grids, which is why `engine.test.ts`'s other tween tests
 // (all square) cannot distinguish them. This exercises the constructor's own
-// `this.tokens.setWorldUnitsPerCell(this.grid.worldUnitsPerCell())` call, the historical bug's
-// actual site (an isolated `Grid`/`TokenAnimator` unit test proves neither unit's own arithmetic,
-// which never changed — only whether the correct value reaches the animator through this wiring).
+// `this.tokens.setWorldUnitsPerCell(this.grid.worldUnitsPerCell())` call, the site where the grid
+// kind is consumed to resolve which scale reaches the animator (an isolated `Grid`/`TokenAnimator`
+// unit test proves neither unit's own arithmetic — only whether the correct value reaches the
+// animator through this wiring).
 test("a hex RenderEngine times a token tween against worldUnitsPerCell, not size", () => {
   const store = new DocumentStore();
   const assets = new AssetResolver();

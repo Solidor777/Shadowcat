@@ -48,8 +48,8 @@ test("hex grid emits a non-empty line set over a viewport", () => {
   expect(lines.length).toBeGreaterThan(0);
 });
 
-// Self-consistency pin (bug: TokenAnimator divided a travelled distance by the outer radius
-// instead of the per-step distance on hex, animating √3× too slowly). This measures the real
+// Self-consistency pin. `TokenAnimator` must use the per-step distance on hex, not the outer
+// radius — the two differ by a factor of √3. This measures the real
 // distance between two adjacent hex centers via `snap` (which round-trips through the production
 // `axialToPixel`, the same call `worldUnitsPerCell` itself must agree with) and derives its
 // expectation from that measured geometry rather than restating the `size * sqrt(3)` formula — but
@@ -70,7 +70,7 @@ test("hex per-step distance (worldUnitsPerCell) equals the measured distance bet
 
 // Cross-language parity pin. Neither side can share a symbol across the Rust/TS boundary, so both
 // this test and the server's `hex_world_units_per_cell_matches_the_cross_language_pinned_literal`
-// sibling (in `grid_shape.rs`) state the SAME literal value (`50 * sqrt(3)`) independently, rather
+// sibling state the SAME literal value (`50 * sqrt(3)`) independently, rather
 // than each deriving its expectation from its own implementation as the self-consistency test
 // above does. A literal is not a decision-maker two sites can disagree over — it is the ground
 // truth both sides are checked against — so a formula change on EITHER side alone now fails that

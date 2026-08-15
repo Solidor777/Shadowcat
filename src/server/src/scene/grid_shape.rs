@@ -1926,7 +1926,7 @@ mod tests {
     fn hex_world_units_per_cell_matches_the_cross_language_pinned_literal() {
         // Cross-language parity pin. Neither side can share a symbol across the Rust/TS boundary,
         // so both this test and the client's `hex per-step distance (worldUnitsPerCell) equals
-        // the cross-language pinned literal` sibling (in `grid.test.ts`) state the SAME literal
+        // the cross-language pinned literal` sibling state the SAME literal
         // value (`50 * sqrt(3)`) independently, rather than each deriving its expectation from its
         // own implementation as the self-consistency test above does. A literal is not a
         // decision-maker two sites can disagree over — it is the ground truth both sides are
