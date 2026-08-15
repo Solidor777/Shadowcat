@@ -4503,6 +4503,135 @@ Conventional-commits, imperative, stating the constraint and the consequence. En
 
 ---
 
+### Task 6i: the comment gate's own scope is narrower than the rule it enforces
+
+**Numbered `6i` for the same reason as `5b`.** Found by Task 6h's enumeration and independently
+confirmed, item by item, by both its reviewer and this plan's dispatcher running the greps directly.
+It is not part of 6h's class, which is why 6h reported it instead of sweeping it.
+
+---
+
+#### The shape, stated once because every item below is an instance of it
+
+`node scripts/check-comment-refs.mjs` is the gate for RULE 16, and RULE 16 is enforced retroactively
+with no grandfathering. **The gate's scope is narrower than the rule's, in four independent ways, and
+each gap is invisible from inside the gate** — it reports `0` over the part it cannot see, and a
+reported-clean scan is indistinguishable to a later reader from code that was actually checked. That
+is the no-ratchets rule's own stated failure mode, arriving through the scanner rather than through a
+severity setting.
+
+One of the four is worse than a gap: **the rule that would catch the single live violation is scoped
+so that it does not.** A detector narrowed around the one instance it would otherwise catch is a
+defect shape this repo has already recorded once; a false positive is visible and a false negative is
+not, so every pressure on a detector pushes toward narrowing, and the narrowing then reads as scoping.
+
+---
+
+**Files:**
+- Modify: `scripts/check-comment-refs.mjs` (`EXTS`, `ROOTS`, the `SKILL_BANNED`/`BANNED` split, and one
+  false sentence in its own prose)
+- Modify: `src/client/shell/src/styles/_primitives.scss`, `src/client/shell/src/lib/importMap.test.ts`,
+  `src/client/ui-kit/vitest.config.ts`, `src/server/test-support/src/lib.rs`, plus whatever widening the
+  roots and extensions surfaces
+- Test: the gate's own self-test, which must gain a positive control per widened axis
+
+**Interfaces:**
+- Consumes: Task 6h's enumeration method — a comment lexer over subjects, not a grep over markers. It
+  is the reason this task's inputs exist and it is the method to reuse, not re-invent.
+- Produces: a gate whose roots, extensions and pattern set match RULE 16's stated scope, so that
+  "0 ephemeral references" means what it says.
+
+---
+
+- [ ] **Step 1: Correct the false claim in the gate's own prose**
+
+The `numbered constraint` entry's comment says `importMap.test.ts` "carries a **test name** citing the
+identical constraint by number". It is not a test name. It is a plain `//` comment at that file's
+`runtime chunks export their packages' real public API` case, reading
+`// Global Constraint 1 (single-instance sharing): …`. Read the line, then state what is actually
+there. This sentence is load-bearing: it is the stated justification for the scoping Step 3 removes.
+
+- [ ] **Step 2: Widen the roots and the extensions, and fix what falls out**
+
+`EXTS` omits `.scss`; `ROOTS` is `["src", "scripts"]` and omits `examples/`. Both gaps hold live
+violations today:
+
+- `src/client/shell/src/styles/_primitives.scss` opens with `PROVISIONAL: re-audited at M8 (canvas
+  overlays) and M12 (default sheets/browsers)` — two milestone ids in a committed comment.
+- `examples/` is how a repo-document pointer carrying a numbered invariant id survived in a package
+  that four other CI-blocking gates already cover.
+
+Widen both axes, then **run the gate and fix every hit it now produces.** Enumerate what it surfaces
+with a row per site; the two above are the ones already known, not the expected total. A `.scss`
+comment is `//` or `/* */` — confirm the lexer handles both before trusting a zero.
+
+Add a positive control per widened axis to the gate's self-test: a fixture under each newly-covered
+root and extension that MUST fail. A widened scope that silently matches nothing is the same false
+negative in a new place, and a zero without a positive control is not a measurement.
+
+- [ ] **Step 3: The `numbered constraint` rule applies to code, not only to skills**
+
+**Ruled by the dispatcher; implement it, do not re-open it.** The pattern currently lives only in
+`SKILL_BANNED`, so it never runs against `.ts`/`.rs`/`.svelte`. RULE 16 already bans, in code
+comments, repo-document pointers, dated plan/spec file references, and phase/workstream/numbered
+ids — *including local numbering defined only in a sibling comment*. `Global Constraint 1` is a
+numbered section of a dated plan file. It is already inside the rule as written; only the detector
+excluded it. Widening the detector enforces the existing rule rather than extending it, which is why
+this is not the owner's call.
+
+Move the pattern so it runs against code as well as skills, then convert `importMap.test.ts`'s
+comment — state the constraint it depends on, drop the pointer. With the site converted and the rule
+un-narrowed, the justification sentence Step 1 corrects has nothing left to justify: delete it rather
+than leaving a corrected explanation of a scoping that no longer exists.
+
+- [ ] **Step 4: Enumerate history narration, the half no pattern detects**
+
+RULE 16 bans history narration and the rule's own text concedes it is only partly detectable, making
+it a review obligation rather than a gate obligation. Two instances are already known, both found
+incidentally rather than by a sweep:
+
+- `src/server/test-support/src/lib.rs`'s header — "Each integration-test binary *that included that
+  module* compiled the whole file … so the diagnostic *no longer fires*"
+- `src/client/ui-kit/vitest.config.ts` — "so the seam suites behave identically *after the move*"
+
+Both are inside the gate's current scope and both are green today, which is the proof that the pattern
+does not cover this class. **Enumerate it properly**, with Task 6h's method: every comment in every
+`.ts`/`.rs`/`.svelte`/`.scss` file under `src/`, `scripts/` and `examples/`, adjudicated one row each
+for whether it narrates the code's past. Report your count and what your method cannot see.
+
+Convert by stating the present constraint and dropping the narration. Where the narration carried
+nothing, delete it and change nothing else — inventing a plausible replacement constraint is the worst
+outcome available here.
+
+- [ ] **Step 5: Remove the NEED for the ambiguity that blocks one of Task 6h's unconverted sites**
+
+`assemble-docs.test.mjs` cites ``assemble-docs.mjs's `isMain` `process.exit(1)` block`` and could not
+drop the filename because `isMain` is defined in three separate scripts (`assemble-docs.mjs`,
+`check-comment-refs.mjs`, `extract-ts-examples.mjs`) and referenced in four more. The filename is
+carrying disambiguation that the symbol should carry itself.
+
+Fix the ambiguity at its source rather than arguing for an exemption: give the three definitions one
+shared home, or names that identify their owner. Then the citation needs no filename and the site
+converts with nothing left to rule on. **Do not convert the citation while the ambiguity stands** —
+that trades a working pointer for a vague one, which is a worse comment than the violation.
+
+Two sites from Task 6h stay UNCONVERTED and are NOT yours to decide: the `mock-server.ts` worked
+illustration in `extract-ts-examples.mjs`, and anything resolved by an owner ruling on the held
+positional-reference or unnamed-file-reference populations. Leave them, and list them in your report.
+
+- [ ] **Step 6: Full gate**
+
+The plan's Global Constraints list, in full, from the stated working directories, re-run after your
+last edit. Report each by name with the exact command and its real output tail. A comment-only change
+that alters a test outcome is a finding — report it, do not adjust the test.
+
+- [ ] **Step 7: Commit**
+
+Conventional-commits, imperative, stating the constraint and the consequence. End with the
+`Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>` trailer.
+
+---
+
 ### Task 7: PW3 — exercise the hex + continuous fog clip through the real dispatch, as a non-GM
 
 **Ledger id:** PW3.
