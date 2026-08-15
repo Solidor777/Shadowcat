@@ -188,6 +188,16 @@ const BANNED = [
     name: "unnamed section pointer",
     re: /(?<!\b(?:RFC|ISO|IEC|IEEE|ANSI|W3C|WHATWG|Unicode)[\s-]?\d{1,5}[,;:]?\s{0,3})§\s*\d|\bSection\s+\d+(?:\.\d+)*\b/,
   },
+  // EXAMPLE: "the brief" names the same scaffolding as "task brief"/"dispatch brief" above, but the
+  // EXAMPLE: bare noun collides with `check-brief-rules.mjs`'s own subject matter, which describes
+  // EXAMPLE: what a dispatch brief IS throughout that file's prose. The pointer CONSTRUCTION — a
+  // EXAMPLE: possessive ("the brief's X") or an imperative deferring to it ("the brief requires" /
+  // EXAMPLE: "says" / "specifies" / "states") — is what a genuine reference to one specific,
+  // now-gone document looks like; a generic description of the category uses neither shape.
+  {
+    name: "unnamed brief pointer",
+    re: /\bthe brief'?s\b|\bthe brief\s+(?:requires|says|specifies|states)\b/i,
+  },
   {
     name: "sweep / round / review marker",
     // EXAMPLE: A joined plural writer ("sweeps 2a+2b") names the same process-assigned marker as
