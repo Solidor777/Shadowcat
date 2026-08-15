@@ -3970,11 +3970,34 @@ exercises **both** movement models through the same assertion — same scene geo
 cell count — so a future change to either branch fails. Witness required: mutate one branch's
 conversion and confirm the shared test fails; revert by `diff`.
 
-- [ ] **Step 4: State the GM-visible consequence**
+- [ ] **Step 4: Re-derive every server test that asserts a continuous route cost**
+
+**This step is larger than it looks and is the reason this task is not a two-line change.** A scan of
+the scene tests finds numerous assertions on `PathOutcome.cost` at magnitudes only world units
+explain — comparisons against `900.0`, `400.0`, `200.0`, and against derived lengths like a straight-
+line `dist_to_goal` — alongside grid-model assertions at `2.0` and `0.0`. Every one of the former
+moves when the unit changes.
+
+Enumerate them, one row each: the test, its old expected value, its new expected value, and **why the
+new one is right, derived from the cell count and the shape's per-cell distance** — never read back
+from the run. A fixture adjusted until it passed is the failure mode here, and it is especially
+tempting on this task because dividing by the cell size makes the "right" number obvious enough to
+back-fill without thinking.
+
+Note the tolerances too: several of these assert within an absolute epsilon (`< 5.0`, `< 3.0`) chosen
+for world-unit magnitudes. Divided into cells those epsilons become enormous relative to the value,
+and an assertion that cannot fail is worse than no assertion. Re-scale each tolerance and say so.
+
+- [ ] **Step 4b: State the GM-visible consequence**
 
 The measure tool's label changes on every continuous-movement scene. Say so plainly in the report,
 with the before and after for one concrete authoring, derived from the cell count and `perCell` —
 never read back from the run.
+
+**Confirmed before this task was written: no gate consumes this value.** The sole production consumer
+is the measure tool's label; there is no per-turn movement budget anywhere on the server. So this is a
+display correction with no authz or secrecy dimension — but if you find a second consumer while
+working, that conclusion changes and you must stop and report it rather than proceeding.
 
 - [ ] **Step 5: Full gate**
 
