@@ -498,9 +498,15 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   (any-angle navmesh) + `geo`/`spade` (CDT + Minkowski buffer) crates, engine-owned geometry
   (ARCHITECTURE §6 exception). Carries **walls only** in this checkpoint — impassable/terrain
   regions on the navmesh are a later checkpoint.
-  - `build_navmesh(bounds, cell, walls, footprint_radius_cells) -> Option<NavMesh>` — triangulates
-    the scene's bounds rectangle and inflates each `blocksMove` wall segment into a capsule
-    obstacle (`geo::Buffer`) by the requester's footprint radius. **`MAX_NAVMESH_COORD` (1e15)**
+  - `build_navmesh(extent: WorldExtent, footprint_scene, walls) -> Option<NavMesh>` — triangulates
+    the scene's world ENVELOPE (both corners, `min` and `max` — not an origin-anchored rectangle,
+    which is why the parameter is a `WorldExtent` rather than a bounds pair plus a cell size) and
+    inflates each `blocksMove` wall segment into a capsule obstacle (`geo::Buffer`) by the
+    requester's footprint radius, received pre-converted in scene units. Its refusal guards are
+    ordered: the four finiteness tests and the two span tests (`width() <= 0`, `height() <= 0`) are
+    disjuncts of ONE `if` with finiteness FIRST, and the magnitude gate is a SEPARATE later `if` —
+    a NaN therefore refuses on finiteness alone, since `NaN <= 0.0` and `NaN.abs() > MAX` are both
+    false. **`MAX_NAVMESH_COORD` (1e15)**
     bounds EVERY value that reaches an `f64→f32` cast in this module (derived pixel bounds,
     raw wall-segment endpoints, AND `footprint_scene` — all three were found and fixed as separate
     Critical bugs across a multi-round buddy check: an unbounded-but-finite coordinate saturates to
