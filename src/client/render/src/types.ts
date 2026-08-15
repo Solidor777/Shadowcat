@@ -196,12 +196,12 @@ export interface MoveVisionSample {
   polygons: [number, number][][];
 }
 
-/** One visible cell's lighting: grid coords + gradation band index + packed tint + hint ref.
- * `hint` is an index into `LightingInput.hints`; -1 = no hint. */
+/** One visible cell's lighting: grid coords + gradation band index + packed tint + hint ref +
+ * resolved corner geometry. `hint` is an index into `LightingInput.hints`; -1 = no hint. */
 export interface LitCell {
-  /** Grid column index. */
+  /** Grid column index (square), or hex axial q. */
   i: number;
-  /** Grid row index. */
+  /** Grid row index (square), or hex axial r. */
   j: number;
   /** Gradation band index — see `LightingInput.bands`. */
   band: number;
@@ -209,6 +209,11 @@ export interface LitCell {
   tint: number;
   /** Index into `LightingInput.hints` — see the interface doc for the `-1` sentinel. */
   hint: number;
+  /** This cell's scene-coordinate corners — `Grid.cellCorners(i, j)` on the active grid, resolved
+   * by the caller so `Lighting`/the backend never re-derive cell geometry from `i`/`j` and a flat
+   * cell size (the square-position-under-hex defect this carries the fix for). Square: an
+   * axis-aligned rect. Hex: a pointy-top hexagon. */
+  corners: Point[];
 }
 
 /** Parsed lighting for the active scene (engine-internal, pre-resolution). `null` ⇒ no overlay

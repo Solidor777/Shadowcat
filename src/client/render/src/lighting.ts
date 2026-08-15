@@ -1,12 +1,15 @@
 import type { DisplayBackend } from "./backend";
-import type { LightingInput } from "./types";
+import type { LightingInput, Point } from "./types";
 
 /** A resolved + interpolated cell ready to draw: alpha = band darkening, tint = packed color,
- * tintAlpha (0 ⇒ no tint), desaturate from the render hint. */
+ * tintAlpha (0 ⇒ no tint), desaturate from the render hint, corners = resolved paint geometry.
+ * This class treats `corners` opaquely — copied through from `LightingInput.cells` (via
+ * `resolve`) and carried forward unchanged across a fade (see `currentInterpolated`) — it never
+ * computes cell geometry itself; that stays `Grid`'s job. */
 export interface LitDrawCell {
-  /** Grid column index. */
+  /** Grid column index (square), or hex axial q. */
   i: number;
-  /** Grid row index. */
+  /** Grid row index (square), or hex axial r. */
   j: number;
   /** Darkening fill opacity, `[0, MAX_DARK_ALPHA]`; `0` = no darkening (brightest band). */
   alpha: number;
@@ -16,6 +19,9 @@ export interface LitDrawCell {
   tintAlpha: number;
   /** Whether to paint the flat desaturation wash — see `resolve`'s doc for the hint-name rule. */
   desaturate: boolean;
+  /** This cell's scene-coordinate corners, carried through from `LitCell.corners` unchanged —
+   * see the interface doc. */
+  corners: Point[];
 }
 /** A resolved lighting overlay ready for `DisplayBackend.setLighting`. */
 export interface LightingFrame {
@@ -218,8 +224,10 @@ export class Lighting {
         pc.tintAlpha === 0 ? tc.tint :
         tc.tintAlpha === 0 ? pc.tint :
         lerpRgb(pc.tint, tc.tint, t);
-      // desaturate is boolean — snaps (no gradient between saturation states).
-      return { i: tc.i, j: tc.j, alpha: lerp(pc.alpha, tc.alpha, t), tint, tintAlpha, desaturate: tc.desaturate };
+      // desaturate is boolean — snaps (no gradient between saturation states). corners are
+      // carried from the target unchanged: cell geometry is fixed by the active grid, not
+      // something a day/night fade interpolates.
+      return { i: tc.i, j: tc.j, alpha: lerp(pc.alpha, tc.alpha, t), tint, tintAlpha, desaturate: tc.desaturate, corners: tc.corners };
     });
     return { cell: this.target.cell, cells };
   }
@@ -237,8 +245,8 @@ export class Lighting {
  * ```
  * // not exported from @shadowcat/render; internal to Lighting.setTarget
  * resolve({ cell: 100, bands: [{ name: "bright", min: 0.67 }, { name: "dark", min: 0 }],
- *   hints: ["desaturate"], cells: [{ i: 0, j: 0, band: 1, tint: 0, hint: 0 }] });
- * // { cell: 100, cells: [{ i: 0, j: 0, alpha: 0.6, tint: 0, tintAlpha: 0, desaturate: true }] }
+ *   hints: ["desaturate"], cells: [{ i: 0, j: 0, band: 1, tint: 0, hint: 0, corners: [] }] });
+ * // { cell: 100, cells: [{ i: 0, j: 0, alpha: 0.6, tint: 0, tintAlpha: 0, desaturate: true, corners: [] }] }
  * ```
  */
 function resolve(input: LightingInput): LightingFrame {
@@ -249,6 +257,7 @@ function resolve(input: LightingInput): LightingFrame {
     tint: c.tint,
     tintAlpha: c.tint === 0 ? 0 : TINT_ALPHA,
     desaturate: c.hint >= 0 && input.hints[c.hint] === "desaturate",
+    corners: c.corners,
   }));
   return { cell: input.cell, cells };
 }

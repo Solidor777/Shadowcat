@@ -151,3 +151,70 @@ test("alternating (5-10-5) rule: two diagonal steps (dmin=2) cost 3, not 2", () 
   // Costing this as dmin*1=2 (ignoring the 1,2,1,2… alternation) would be wrong.
   expect(g.distance({ x: 50, y: 50 }, { x: 250, y: 250 })).toBe(3);
 });
+
+test("square cellCenter/cellCorners: axis-aligned rect anchored at (col*size, row*size)", () => {
+  const g = new Grid({ kind: "square", size: 100 });
+  expect(g.cellCenter(2, 0)).toEqual({ x: 250, y: 50 });
+  expect(g.cellCorners(0, 0)).toEqual([
+    { x: 0, y: 0 }, { x: 100, y: 0 }, { x: 100, y: 100 }, { x: 0, y: 100 },
+  ]);
+  expect(g.cellCorners(1, 0)).toEqual([
+    { x: 100, y: 0 }, { x: 200, y: 0 }, { x: 200, y: 100 }, { x: 100, y: 100 },
+  ]);
+});
+
+test("square cellCorners' centroid equals cellCenter for every cell", () => {
+  const g = new Grid({ kind: "square", size: 70 });
+  for (const [col, row] of [[0, 0], [3, -2], [-4, 5]] as const) {
+    const corners = g.cellCorners(col, row);
+    const cx = corners.reduce((s, p) => s + p.x, 0) / corners.length;
+    const cy = corners.reduce((s, p) => s + p.y, 0) / corners.length;
+    const center = g.cellCenter(col, row);
+    expect(cx).toBeCloseTo(center.x, 9);
+    expect(cy).toBeCloseTo(center.y, 9);
+  }
+});
+
+// Hex cellCenter must equal the axial-to-pixel formula (the same math `snap`'s hex branch and
+// `hexLines` already use) — this is the ground truth `cellsToRects`/`toLighting` now paint
+// against instead of a square `i*size, j*size` position.
+test("hex cellCenter matches the axial-to-pixel formula", () => {
+  const g = new Grid({ kind: "hex", size: 100 });
+  const c = g.cellCenter(1, 1);
+  expect(c.x).toBeCloseTo(100 * (Math.sqrt(3) * 1 + (Math.sqrt(3) / 2) * 1), 9);
+  expect(c.y).toBeCloseTo(100 * 1.5 * 1, 9);
+});
+
+test("hex cellCorners: 6 points, centroid equals cellCenter, every corner exactly `size` from center", () => {
+  const g = new Grid({ kind: "hex", size: 50 });
+  for (const [q, r] of [[0, 0], [1, 1], [-2, 3]] as const) {
+    const corners = g.cellCorners(q, r);
+    expect(corners.length).toBe(6);
+    const center = g.cellCenter(q, r);
+    const cx = corners.reduce((s, p) => s + p.x, 0) / 6;
+    const cy = corners.reduce((s, p) => s + p.y, 0) / 6;
+    expect(cx).toBeCloseTo(center.x, 9);
+    expect(cy).toBeCloseTo(center.y, 9);
+    for (const p of corners) {
+      expect(Math.hypot(p.x - center.x, p.y - center.y)).toBeCloseTo(50, 9);
+    }
+  }
+});
+
+// `hexLines` must not carry a second hex-corner formula — pins that its emitted outline for a
+// given hex is exactly `cellCorners`'s own output (in the same order), not merely
+// geometrically equivalent.
+test("hexLines' outline for a cell matches cellCorners exactly (single formula, not a duplicate)", () => {
+  const g = new Grid({ kind: "hex", size: 50 });
+  const corners = g.cellCorners(0, 0); // the (0,0) hex, centered inside a viewport starting at origin
+  const lines = g.lines({ x: 0, y: 0, w: 10, h: 10 }); // tiny rect margined to still cover (0,0)
+  // Collect the 6-segment outline whose first point matches corners[0].
+  const outline = [];
+  for (let i = 0; i + 5 < lines.length; i += 6) {
+    if (Math.abs(lines[i].x1 - corners[0].x) < 1e-9 && Math.abs(lines[i].y1 - corners[0].y) < 1e-9) {
+      for (let k = 0; k < 6; k++) outline.push({ x: lines[i + k].x1, y: lines[i + k].y1 });
+      break;
+    }
+  }
+  expect(outline).toEqual(corners);
+});

@@ -837,11 +837,14 @@ export class PixiBackend implements DisplayBackend {
   }
 
   /** `DisplayBackend.setLighting`: repaint the lighting overlay — clears `lightingGraphics`, then
-   * for each cell draws up to three stacked fills at that cell's rect: a black darkening fill
-   * (`c.alpha`, skipped when `0`), a tinted fill (`c.tint` at `c.tintAlpha`, skipped when `0`), and
-   * — when `c.desaturate` — a flat neutral-gray wash (`0x808080` at `0.18` alpha) approximating
-   * desaturation for a darkvision-only cell. An empty `frame.cells` clears the overlay entirely
-   * (no lighting effect).
+   * for each cell draws up to three stacked fills over that cell's polygon (`c.corners`, already
+   * resolved via the active grid — a square rect on a square grid, a hexagon on a hex grid; this
+   * method paints whatever shape it is handed and performs no grid-kind math of its own): a black
+   * darkening fill (`c.alpha`, skipped when `0`), a tinted fill (`c.tint` at `c.tintAlpha`, skipped
+   * when `0`), and — when `c.desaturate` — a flat neutral-gray wash (`0x808080` at `0.18` alpha)
+   * approximating desaturation for a darkvision-only cell. An empty `frame.cells` clears the
+   * overlay entirely (no lighting effect); a cell with fewer than 3 corners is skipped (degenerate
+   * geometry, nothing to fill).
    * @param frame The resolved per-cell lighting to paint.
    * @example
    * ```ts
@@ -854,14 +857,14 @@ export class PixiBackend implements DisplayBackend {
   setLighting(frame: LightingFrame): void {
     this.lightingGraphics.clear();
     // empty cells = no lighting overlay (all-clear)
-    const cellSize = frame.cell;
     for (const c of frame.cells) {
-      const x = c.i * cellSize, y = c.j * cellSize;
-      if (c.alpha > 0) this.lightingGraphics.rect(x, y, cellSize, cellSize).fill({ color: 0x000000, alpha: c.alpha });
-      if (c.tintAlpha > 0) this.lightingGraphics.rect(x, y, cellSize, cellSize).fill({ color: c.tint, alpha: c.tintAlpha });
+      if (c.corners.length < 3) continue; // degenerate geometry — nothing to fill
+      const poly = c.corners.flatMap((p) => [p.x, p.y]);
+      if (c.alpha > 0) this.lightingGraphics.poly(poly).fill({ color: 0x000000, alpha: c.alpha });
+      if (c.tintAlpha > 0) this.lightingGraphics.poly(poly).fill({ color: c.tint, alpha: c.tintAlpha });
       // V1 desaturate approximation: a low-alpha neutral wash mutes color in darkvision-only cells.
       // TODO: replace with a masked ColorMatrixFilter over the scene layers for true desaturation.
-      if (c.desaturate) this.lightingGraphics.rect(x, y, cellSize, cellSize).fill({ color: 0x808080, alpha: 0.18 });
+      if (c.desaturate) this.lightingGraphics.poly(poly).fill({ color: 0x808080, alpha: 0.18 });
     }
   }
 

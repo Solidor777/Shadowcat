@@ -186,6 +186,71 @@ export class Grid {
   }
 
   /**
+   * The scene-coordinate CENTER of the cell at `(col, row)` — square column/row indices, or hex
+   * axial `q`/`r` (mirrors {@link cellOf}'s return shape). Square: `col*size+size/2,
+   * row*size+size/2`. Hex: {@link axialToPixel}, the same call `snap`'s hex branch and {@link
+   * hexLines} both already use to locate a hex's center — this promotes that private call onto
+   * the public surface rather than a second formula.
+   * @param col Square column index, or hex axial q.
+   * @param row Square row index, or hex axial r.
+   * @returns The cell's center, in scene coordinates.
+   * @example
+   * ```ts
+   * import { Grid } from "@shadowcat/render";
+   *
+   * const grid = new Grid({ kind: "square", size: 100 });
+   * grid.cellCenter(2, 0); // { x: 250, y: 50 }
+   * ```
+   */
+  cellCenter(col: number, row: number): Point {
+    if (this.spec.kind === "square") {
+      const s = this.spec.size;
+      return { x: col * s + s / 2, y: row * s + s / 2 };
+    }
+    return this.axialToPixel(col, row);
+  }
+
+  /**
+   * The scene-coordinate CORNERS of the cell at `(col, row)`, in draw order — square column/row
+   * indices, or hex axial `q`/`r`. Square: the 4 axis-aligned corners of a `size`-edge rect
+   * anchored at `(col*size, row*size)`. Hex: the 6 corners of the pointy-top hexagon centered on
+   * {@link cellCenter}, using the SAME per-corner angle formula {@link hexLines} draws its
+   * outlines with — {@link hexLines} calls this method rather than recomputing the corners a
+   * second time, so there is exactly one hex-corner formula in this class.
+   * @param col Square column index, or hex axial q.
+   * @param row Square row index, or hex axial r.
+   * @returns The cell's corner points, in draw order (a closed polygon; the last point does not
+   * repeat the first).
+   * @example
+   * ```ts
+   * import { Grid } from "@shadowcat/render";
+   *
+   * const grid = new Grid({ kind: "square", size: 100 });
+   * grid.cellCorners(0, 0); // [{x:0,y:0},{x:100,y:0},{x:100,y:100},{x:0,y:100}]
+   * ```
+   */
+  cellCorners(col: number, row: number): Point[] {
+    if (this.spec.kind === "square") {
+      const s = this.spec.size;
+      const x0 = col * s, y0 = row * s;
+      return [
+        { x: x0, y: y0 },
+        { x: x0 + s, y: y0 },
+        { x: x0 + s, y: y0 + s },
+        { x: x0, y: y0 + s },
+      ];
+    }
+    const c = this.axialToPixel(col, row);
+    const size = this.spec.size;
+    const pts: Point[] = [];
+    for (let i = 0; i < 6; i++) {
+      const ang = (Math.PI / 180) * (60 * i - 30); // pointy-top
+      pts.push({ x: c.x + size * Math.cos(ang), y: c.y + size * Math.sin(ang) });
+    }
+    return pts;
+  }
+
+  /**
    * Grid-overlay line segments covering `rect` (plus a margin), for the grid render
    * layer to draw. Dispatches on `spec.kind` — square and hex never share a code path.
    * @param rect The visible scene rectangle to cover.
@@ -365,12 +430,7 @@ export class Grid {
     const rHi = Math.ceil(Math.max(...rs)) + 1;
     for (let r = rLo; r <= rHi; r++) {
       for (let q = qLo; q <= qHi; q++) {
-        const c = this.axialToPixel(q, r);
-        const pts: Point[] = [];
-        for (let i = 0; i < 6; i++) {
-          const ang = (Math.PI / 180) * (60 * i - 30); // pointy-top
-          pts.push({ x: c.x + size * Math.cos(ang), y: c.y + size * Math.sin(ang) });
-        }
+        const pts = this.cellCorners(q, r); // the single hex-corner formula (see cellCorners)
         for (let i = 0; i < 6; i++) {
           const a = pts[i];
           const b = pts[(i + 1) % 6];

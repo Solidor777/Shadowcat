@@ -16,24 +16,27 @@ import { WallView } from "./wall-view";
 import { RegionView } from "./region-view";
 import { PingView } from "./ping-view";
 
-/** Rasterize a flat `[i,j,…]` explored-cell list into one square rect polygon per cell at
- * `size` world units. Cell `(i,j)` covers `[i*size,(i+1)*size) × [j*size,(j+1)*size)`. The fog
- * shader unions overlapping rects by overdraw, so per-cell rects (vs merged runs) are correct.
+/** Rasterize a flat `[i,j,…]` explored-cell list into one shape polygon per cell, via the active
+ * `grid`'s own corner geometry — square on a square grid, hexagon on a hex grid. The fog shader
+ * unions overlapping polygons by overdraw, so per-cell shapes (vs merged runs) are correct.
+ * Delegates to `Grid.cellCorners` rather than assuming a square (`x=i*size, y=j*size`) shape —
+ * indexing a hex-axial cell that way paints the wrong scene position (skewed square positions
+ * over correctly-drawn hexes).
  * @param cells Flat `[i0,j0,i1,j1,…]` cell-index pairs; a trailing unpaired value is dropped.
- * @param size World-unit length of one cell's edge.
- * @returns One 4-point rect polygon per `(i,j)` pair, in input order.
+ * @param grid The active grid, whose kind decides whether each cell is a square or a hexagon.
+ * @returns One polygon per `(i,j)` pair (4 points on square, 6 on hex), in input order.
  * @example
  * ```
  * // module-private helper; not exported from @shadowcat/render
- * cellsToRects([0, 0, 1, 0], 5); // 2 rects: [0,0]-[5,5] and [5,0]-[10,5]
+ * cellsToRects([0, 0, 1, 0], new Grid({ kind: "square", size: 5 }));
+ * // 2 rects: [0,0]-[5,5] and [5,0]-[10,5]
  * ```
  */
-function cellsToRects(cells: number[], size: number): Polygon[] {
+function cellsToRects(cells: number[], grid: Grid): Polygon[] {
   const rects: Polygon[] = [];
   for (let k = 0; k + 1 < cells.length; k += 2) {
-    const x = cells[k] * size;
-    const y = cells[k + 1] * size;
-    rects.push({ points: [x, y, x + size, y, x + size, y + size, x, y + size] });
+    const corners = grid.cellCorners(cells[k], cells[k + 1]);
+    rects.push({ points: corners.flatMap((p) => [p.x, p.y]) });
   }
   return rects;
 }
@@ -575,7 +578,7 @@ export class RenderEngine implements SceneToolHost {
           g.cell > 0 &&
           Array.isArray(g.cells),
       )
-      .flatMap((g) => cellsToRects(g.cells, g.cell));
+      .flatMap((g) => cellsToRects(g.cells, this.grid));
     return { mode: "masked", visible, explored };
   }
 
@@ -632,9 +635,13 @@ export class RenderEngine implements SceneToolHost {
     if (!group) return null;
     const cells: LitCell[] = [];
     for (let k = 0; k + 4 < group.cells.length; k += 5) {
+      const i = group.cells[k], j = group.cells[k + 1];
       cells.push({
-        i: group.cells[k], j: group.cells[k + 1], band: group.cells[k + 2],
+        i, j, band: group.cells[k + 2],
         tint: group.cells[k + 3], hint: group.cells[k + 4],
+        // Resolved via the active grid, not `x=i*cell, y=j*cell`: on a hex scene the wire
+        // indices are axial, and a square rect there paints the wrong scene position.
+        corners: this.grid.cellCorners(i, j),
       });
     }
     const bands = Array.isArray(p.bands)

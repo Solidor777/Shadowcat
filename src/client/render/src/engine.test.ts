@@ -206,6 +206,47 @@ test("a masked frame rasterizes the active scene's explored cells into dimmed-me
   });
 });
 
+// Regression: on a hex scene the server sends explored cells as axial (q,r) — `HexGrid`'s
+// `axial_to_pixel` places cell (1,1) at x=150√3≈259.81, y=150, NOT the square position
+// x=1*100=100, y=1*100=100 a naive `x=i*size, y=j*size` rasterization would paint. Pins the fix
+// at `cellsToRects`'s own wiring site (via `toVisibility`), not just `Grid.cellCorners` in
+// isolation — this test fails if `cellsToRects` reverts to indexing by `size` alone.
+test("a masked frame rasterizes a hex scene's explored cells at their true axial position, not a square index", () => {
+  const store = new DocumentStore();
+  store.applyCommand(sceneCmd(1, "s1"));
+  const backend = new MockBackend();
+  let onUpdate!: (f: { payload: unknown; computedAtSeq: number }) => void;
+  const engine = new RenderEngine({
+    store, assets: new AssetResolver(), backend, grid: { kind: "hex", size: 100 },
+    subscribeScene: (_c, cb) => { onUpdate = cb; return { unsubscribe: () => {} }; },
+  });
+  engine.start();
+  onUpdate({
+    payload: {
+      mode: "masked",
+      polygons: [],
+      explored: [{ scene: "s1", cell: 100, cells: [1, 1] }], // hex cell axial (q=1, r=1)
+    },
+    computedAtSeq: 1,
+  });
+  const rects = backend.visibility!.explored;
+  expect(rects.length).toBe(1);
+  // Ground truth: the true hex (1,1) center, computed independently from the axial formula
+  // (`axialToPixel`: x = size*(√3q + √3/2 r), y = size*1.5r), NOT restated from `Grid`.
+  const expectedCenterX = 100 * (Math.sqrt(3) * 1 + (Math.sqrt(3) / 2) * 1);
+  const expectedCenterY = 100 * 1.5 * 1;
+  const pts = rects[0].points;
+  expect(pts.length).toBe(12); // 6 hex corners
+  let cx = 0, cy = 0;
+  for (let k = 0; k + 1 < pts.length; k += 2) { cx += pts[k]; cy += pts[k + 1]; }
+  cx /= 6; cy /= 6;
+  expect(cx).toBeCloseTo(expectedCenterX, 6);
+  expect(cy).toBeCloseTo(expectedCenterY, 6);
+  // Witness the bug directly: the square-position formula would have centered this at (100,100).
+  expect(cx).not.toBeCloseTo(100, 1);
+  expect(cy).not.toBeCloseTo(100, 1);
+});
+
 test("setFogPreview renders a GM no-fog frame as full fog and restores on toggle off", () => {
   const store = new DocumentStore();
   const backend = new MockBackend();
@@ -914,13 +955,54 @@ test("toLighting parses lit cells for the active scene and fails safe", () => {
   });
   expect(li).not.toBeNull();
   expect(li!.cell).toBe(100);
-  expect(li!.cells).toEqual([{ i: 0, j: 0, band: 2, tint: 0, hint: 0 }]);
+  expect(li!.cells).toEqual([
+    { i: 0, j: 0, band: 2, tint: 0, hint: 0, corners: [{ x: 0, y: 0 }, { x: 100, y: 0 }, { x: 100, y: 100 }, { x: 0, y: 100 }] },
+  ]);
   expect(li!.hints).toEqual(["desaturate"]);
   expect(li!.bands).toEqual([{ name: "bright", min: 0.67 }, { name: "dim", min: 0.34 }, { name: "dark", min: 0 }]);
   // GM / garbled → null (cosmetic, no overlay).
   expect(engine.toLightingForTest({ mode: "all" })).toBeNull();
   expect(engine.toLightingForTest({ mode: "masked", lit: "garbage" })).toBeNull();
   expect(engine.toLightingForTest(null)).toBeNull();
+});
+
+// Regression: on a hex scene the lighting overlay's `lit` cells are also axial (q,r) — this
+// pins the fix at the RenderEngine wiring site (`toLighting` → `Lighting.setTarget/apply` →
+// `backend.setLighting`), so a revert of `PixiBackend.setLighting`'s paint math OR of the
+// `this.grid.cellCorners(i, j)` call in `toLighting` both fail this test, not just a Grid-level
+// unit.
+test("a masked frame paints a hex scene's lit cell at its true axial position, not a square index", () => {
+  const store = new DocumentStore();
+  const backend = new MockBackend();
+  let onUpdate!: (f: { payload: unknown; computedAtSeq: number }) => void;
+  const engine = new RenderEngine({
+    store, assets: new AssetResolver(), backend, grid: { kind: "hex", size: 100 },
+    subscribeScene: (_c, cb) => { onUpdate = cb; return { unsubscribe: () => {} }; },
+  });
+  engine.start();
+  store.applyCommand(sceneCmd(1, "s1"));
+  onUpdate({
+    payload: {
+      mode: "masked", polygons: [], bands: [{ name: "bright", min: 0.67 }, { name: "dark", min: 0 }],
+      renderHints: [], lit: [{ scene: "s1", cell: 100, cells: [1, 1, 1, 0, -1] }], // hex axial (q=1, r=1)
+    },
+    computedAtSeq: 1,
+  });
+  backend.tick?.(1000); // settle the fade
+  const cells = backend.lighting!.cells;
+  expect(cells.length).toBe(1);
+  const expectedCenterX = 100 * (Math.sqrt(3) * 1 + (Math.sqrt(3) / 2) * 1);
+  const expectedCenterY = 100 * 1.5 * 1;
+  const corners = cells[0].corners;
+  expect(corners.length).toBe(6);
+  let cx = 0, cy = 0;
+  for (const p of corners) { cx += p.x; cy += p.y; }
+  cx /= 6; cy /= 6;
+  expect(cx).toBeCloseTo(expectedCenterX, 6);
+  expect(cy).toBeCloseTo(expectedCenterY, 6);
+  // Witness the bug directly: the square-position formula would have centered this at (100,100).
+  expect(cx).not.toBeCloseTo(100, 1);
+  expect(cy).not.toBeCloseTo(100, 1);
 });
 
 describe("multi-scene render filtering", () => {
