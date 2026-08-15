@@ -34,8 +34,11 @@ export interface AnimationConfig {
   /** Easing curve applied to polyline tweens (`startAnim`) — sample-driven playback
    * (`animateSamples`) always linearly interpolates and ignores this. */
   easing: EasingMode;
-  /** Pixels per grid cell (grid.size); converts pixel distance to cells for duration. */
-  cellSize: number;
+  /** World distance between adjacent cell centres (`Grid.worldUnitsPerCell`); converts a
+   * travelled pixel distance into a cell count for duration. NOT the grid's indexing scale
+   * (`GridSpec.size`) — the two coincide on square grids but diverge by `sqrt(3)` on hex, where
+   * `size` is the outer radius rather than the centre-to-centre step. */
+  worldUnitsPerCell: number;
 }
 
 /** Linear interpolation between `a` and `b` at position `t`.
@@ -99,8 +102,8 @@ interface Anim {
   total: number;
   /** Accumulated elapsed time (ms) since this tween started. */
   elapsed: number;
-  /** Total tween duration, in ms — `(total / cfg.cellSize / cfg.speedCellsPerSec) * 1000` at
-   * the config active when `startAnim` ran. */
+  /** Total tween duration, in ms — `(total / cfg.worldUnitsPerCell / cfg.speedCellsPerSec) *
+   * 1000` at the config active when `startAnim` ran. */
   duration: number;
   /** Rendered rotation at tween start (`t=0`). */
   startRot: number;
@@ -127,18 +130,18 @@ export class TokenAnimator {
   /** Token ids currently in an occlusion gap (server-clipped visibility span). */
   private hidden = new Set<string>();
   /** Tween-duration tuning applied to newly-started animations — see `setConfig`. */
-  private cfg: AnimationConfig = { speedCellsPerSec: 6, easing: "easeInOut", cellSize: 100 };
+  private cfg: AnimationConfig = { speedCellsPerSec: 6, easing: "easeInOut", worldUnitsPerCell: 100 };
 
-  /** Replace the tween-duration tuning (speed/easing/cellSize). Affects only FUTURE tweens started
-   * by `startAnim` — an animation already in progress keeps the duration computed from the config
-   * that was active when it started.
-   * @param cfg The new speed/easing/cellSize tuple.
+  /** Replace the tween-duration tuning (speed/easing/worldUnitsPerCell). Affects only FUTURE
+   * tweens started by `startAnim` — an animation already in progress keeps the duration computed
+   * from the config that was active when it started.
+   * @param cfg The new speed/easing/worldUnitsPerCell tuple.
    * @example
    * ```ts
    * import { TokenAnimator } from "@shadowcat/render";
    *
    * const animator = new TokenAnimator();
-   * animator.setConfig({ speedCellsPerSec: 6, easing: "easeInOut", cellSize: 100 });
+   * animator.setConfig({ speedCellsPerSec: 6, easing: "easeInOut", worldUnitsPerCell: 100 });
    * ```
    */
   setConfig(cfg: AnimationConfig): void {
@@ -431,10 +434,11 @@ export class TokenAnimator {
   }
 
   /** Compute per-segment lengths for `poly` and register a new ease-to-stop `Anim` entry for `id`,
-   * duration = `(total px / cfg.cellSize) / cfg.speedCellsPerSec * 1000` using the CURRENT `cfg` (a
-   * later `setConfig` call does not retroactively affect this tween — see `setConfig`). Degenerate
-   * input (non-finite `total`, `total < EPSILON`, non-positive `cellSize` or `speedCellsPerSec`)
-   * fails closed: snaps directly to `poly`'s last vertex (when finite) instead of animating,
+   * duration = `(total px / cfg.worldUnitsPerCell) / cfg.speedCellsPerSec * 1000` using the
+   * CURRENT `cfg` (a later `setConfig` call does not retroactively affect this tween — see
+   * `setConfig`). Degenerate input (non-finite `total`, `total < EPSILON`, non-positive
+   * `worldUnitsPerCell` or `speedCellsPerSec`) fails closed: snaps directly to `poly`'s last
+   * vertex (when finite) instead of animating,
    * mirroring the fail-closed convention used server-side in `scene::movement`/`scene::lighting`/
    * `scene::vision` (non-finite input → snap/under-reveal, never freeze on NaN or animate forever).
    * @param id The token id to animate.
@@ -465,7 +469,7 @@ export class TokenAnimator {
     // snaps to the last vertex instead. Mirrors the fail-closed convention in `scene::movement` /
     // `scene::lighting` / `scene::vision` (non-finite inputs → under-reveal / snap, never freeze or NaN output).
     // If the last vertex itself is non-finite, fall back to leaving `cur` unchanged.
-    if (!Number.isFinite(total) || total < EPSILON || this.cfg.cellSize <= 0 || this.cfg.speedCellsPerSec <= 0) {
+    if (!Number.isFinite(total) || total < EPSILON || this.cfg.worldUnitsPerCell <= 0 || this.cfg.speedCellsPerSec <= 0) {
       if (Number.isFinite(last[0]) && Number.isFinite(last[1])) {
         this.cur.set(id, { x: last[0], y: last[1], rotation: finalRot }); // degenerate → snap
       }
@@ -473,7 +477,7 @@ export class TokenAnimator {
       this.anim.delete(id);
       return;
     }
-    const cells = total / this.cfg.cellSize;
+    const cells = total / this.cfg.worldUnitsPerCell;
     this.anim.set(id, {
       poly, segLen, total, elapsed: 0,
       duration: (cells / this.cfg.speedCellsPerSec) * 1000,

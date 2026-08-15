@@ -234,22 +234,6 @@ Currently open, confirmed-real defects. Deferrals belong in `TODO.md`, not here.
     `makeTemplateTool` fix above. Found during Sweep 12 Task 6 by the dispatcher and
     independently confirmed by both reviewers, from writing the doc comment that sits above it.
 
-- **[hex] `TokenAnimator`'s tween measures a travelled distance in the indexing scale, so hex
-  token animation runs `√3` too slow.** `startAnim` computes `cells = total / cfg.cellSize` and
-  derives its duration from that. `AnimationConfig.cellSize` is fed by `TokenView.pushAnimConfig`
-  from `TokenView.setCellSize`, which `RenderEngine.setGrid` sets from `GridSpec.size` — on hex the
-  cell's OUTER RADIUS, not the distance between adjacent centres. The client's own
-  `Grid.axialToPixel` confirms neighbours are `√3 · size` apart, and the server converts the same
-  quantity through `GridShape::world_units_per_cell` when it computes the authoritative
-  `MoveExecution::duration_ms`. Two paths, one decision, opposite answers.
-  - **Reachability:** live. `TokenView.reconcile` calls `TokenAnimator.setTarget` for every token
-    document on every sync, and `setTarget` starts this tween. Any position change arriving as a
-    document update animates through it.
-  - **Why nothing caught it:** `animateSamples` replays a server-supplied duration and never reads
-    the field, so the move-stream path is correct and masks the fork on the journeys anyone tests.
-    Every animator fixture uses an implicit square grid, where the two conventions coincide.
-  - **Impact:** cosmetic. No authz or secrecy effect.
-
 - **[hex] The lighting overlay and the explored-fog layer paint axial indices at square
   positions.** On a hex scene the server sends lit and explored cells as axial `(q, r)`, produced
   through `HexGrid`'s `GridShape` implementation. `PixiBackend.setLighting` places each at

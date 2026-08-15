@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { TokenAnimator } from "./token-animator";
 
-const cfg = { speedCellsPerSec: 6, easing: "linear" as const, cellSize: 100 };
+const cfg = { speedCellsPerSec: 6, easing: "linear" as const, worldUnitsPerCell: 100 };
 
 function fresh(): TokenAnimator {
   const a = new TokenAnimator();
@@ -103,9 +103,25 @@ describe("TokenAnimator duration model", () => {
     expect(here).toBeGreaterThan(0);
   });
 
+  it("a one-hex step reaches the target after exactly one cell's worth of time at the configured speed", () => {
+    // Hex outer radius (size) = 100; adjacent centres are size*sqrt(3) ≈ 173.205 apart
+    // (Grid.axialToPixel / GridShape::world_units_per_cell) — the per-step distance the caller
+    // (TokenView, fed by RenderEngine via Grid.worldUnitsPerCell) supplies as `worldUnitsPerCell`,
+    // never the bare outer radius. One cell at 6 cells/sec should take 1000/6 ≈ 166.667ms
+    // regardless of grid shape.
+    const a = new TokenAnimator();
+    const step = 100 * Math.sqrt(3);
+    a.setConfig({ speedCellsPerSec: 6, easing: "linear", worldUnitsPerCell: step });
+    a.setTarget("t1", { x: 0, y: 0, rotation: 0 }); // snap
+    a.setTarget("t1", { x: step, y: 0, rotation: 0 }); // one hex step
+    const expectedMs = (1 / 6) * 1000; // 166.667ms for one cell at 6 cells/sec
+    a.tick(expectedMs);
+    expect(a.get("t1")!.x).toBeCloseTo(step, 0);
+  });
+
   it("zero-distance / degenerate config snaps", () => {
     const a = new TokenAnimator();
-    a.setConfig({ speedCellsPerSec: 0, easing: "linear", cellSize: 100 });
+    a.setConfig({ speedCellsPerSec: 0, easing: "linear", worldUnitsPerCell: 100 });
     a.setTarget("t1", { x: 0, y: 0, rotation: 0 });
     a.setTarget("t1", { x: 500, y: 0, rotation: 0 });
     expect(a.get("t1")!.x).toBe(500); // speed 0 → snap, never freeze

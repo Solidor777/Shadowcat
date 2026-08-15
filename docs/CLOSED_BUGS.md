@@ -396,3 +396,23 @@ Confirmed-real defects that have since been fixed, kept for provenance. New fixe
   **An omitted range is not an omitted assignment**, and the two now mean opposite things: every
   writer in the tree — including seeds, fixtures and tests — either supplies an explicit numeric
   range or omits the whole assignment, verified by an independent sweep during review.
+
+## Client / render — hex token animation forked the per-step distance from the server
+
+- **[hex] `TokenAnimator`'s tween measured a travelled distance against the grid's indexing scale
+  where the server measures it against the per-step distance, so hex token animation ran `√3`
+  too slow.** `startAnim` divided the travelled pixel distance by the bare `AnimationConfig`
+  field fed from `GridSpec.size` — on hex the cell's OUTER RADIUS, not the distance between
+  adjacent centres — while the server converts the same travelled distance through
+  `GridShape::world_units_per_cell` to compute the authoritative `MoveExecution::duration_ms`.
+  **Fix:** `Grid` gained a public `worldUnitsPerCell()` method (`size` on square, `size *
+  sqrt(3)` on hex — mirroring the server's `world_units_per_cell` in the client's casing so the
+  two are greppable as one concept), and `AnimationConfig.cellSize` was renamed to
+  `worldUnitsPerCell` throughout the animator/`TokenView`/`RenderEngine` chain, with
+  `RenderEngine` now deriving the value from `Grid.worldUnitsPerCell()` instead of passing
+  `GridSpec.size` straight through. Regression coverage: a duration test pinning a one-hex-step
+  tween to the true per-step time, and a cross-language parity test asserting the client's
+  measured inter-center distance (derived via `Grid.snap`'s production round-trip, not a
+  restated formula) equals `worldUnitsPerCell()` for a stated hex size — witnessed on both the
+  client and server sides by mutating each `world_units_per_cell` to return the bare size and
+  confirming the corresponding test fails.

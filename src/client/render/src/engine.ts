@@ -225,7 +225,7 @@ export class RenderEngine implements SceneToolHost {
     this.gridColor = opts.gridColor ?? 0x3a3a4a;
     this.reconciler = new SceneReconciler(opts.store, opts.assets, opts.backend, this.viewedScene);
     this.tokens = new TokenView(opts.store, opts.assets, opts.backend, this.viewedScene);
-    this.tokens.setCellSize(opts.grid.size);
+    this.tokens.setWorldUnitsPerCell(this.grid.worldUnitsPerCell());
     this.drawings = new DrawingView(opts.store, opts.backend, this.viewedScene);
     this.templates = new TemplateView(opts.store, opts.backend, this.viewedScene);
     this.walls = new WallView(opts.store, opts.backend, this.viewedScene);
@@ -875,8 +875,9 @@ export class RenderEngine implements SceneToolHost {
   }
 
   /** Swap the active grid (from the active scene's `engine.grid`) and redraw lines.
-   * Coupling: notifies the token animator so tween durations are recalculated in the
-   * new cell size (px/cell ratio changes when the grid changes).
+   * Coupling: notifies the token animator so tween durations are recalculated against the new
+   * grid's per-step world distance (`Grid.worldUnitsPerCell`) — not `spec.size` directly, which
+   * is the indexing scale and diverges from the per-step distance by `sqrt(3)` on hex.
    * @param spec The new grid's kind/size/diagonal-rule.
    * @example
    * ```ts
@@ -889,7 +890,7 @@ export class RenderEngine implements SceneToolHost {
    */
   setGrid(spec: GridSpec): void {
     this.grid = new Grid(spec);
-    this.tokens.setCellSize(spec.size);
+    this.tokens.setWorldUnitsPerCell(this.grid.worldUnitsPerCell());
     this.redrawGrid();
   }
 

@@ -76,6 +76,29 @@ export class Grid {
     return this.axialToPixel(q, r);
   }
 
+  /**
+   * The world distance between two adjacent cell centres — `size` on square (the edge length IS
+   * the center-to-center step), `size * sqrt(3)` on hex (every axial neighbour sits `sqrt(3) ·
+   * size` away; {@link axialToPixel} confirms this for the six unit-axial offsets). This is NOT
+   * the grid's indexing scale (`spec.size`, the square edge length or hex outer radius/
+   * circumradius) — the two coincide on square grids and diverge by a factor of `sqrt(3)` on hex,
+   * which is why a caller converting a travelled world distance into a cell count must use this
+   * method, never `spec.size` directly. Mirrors the server's `GridShape::world_units_per_cell`
+   * (same quantity, same name in the client's casing) so the two conventions are greppable as one
+   * concept.
+   * @returns The world distance spanned by one grid step, in scene (px) units.
+   * @example
+   * ```ts
+   * import { Grid } from "@shadowcat/render";
+   *
+   * const grid = new Grid({ kind: "hex", size: 100 });
+   * grid.worldUnitsPerCell(); // 173.20508075688772 (100 * sqrt(3))
+   * ```
+   */
+  worldUnitsPerCell(): number {
+    return this.spec.kind === "square" ? this.spec.size : this.spec.size * Math.sqrt(3);
+  }
+
   /** Whole-cell distance between two scene points.
    * Hex: axial distance (`col`/`row` are axial q/r).
    * Square: selected by `spec.diagonalRule` (default `"chebyshev"`):

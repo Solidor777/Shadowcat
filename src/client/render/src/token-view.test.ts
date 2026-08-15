@@ -302,11 +302,11 @@ function moveToken(store: DocumentStore, id: string, pos: { x: number; y: number
 }
 
 // Animation config reaches the animator: a slow speed makes a move take longer.
-it("setAnimationConfig + setCellSize drive tween duration", () => {
+it("setAnimationConfig + setWorldUnitsPerCell drive tween duration", () => {
   const store = makeStoreWithToken("tok1", { x: 0, y: 0 });
   const backend = new RecordingBackend();
   const view = new TokenView(store, new AssetResolver(), backend);
-  view.setCellSize(100);
+  view.setWorldUnitsPerCell(100);
   view.setAnimationConfig({ speedCellsPerSec: 1, easing: "linear" }); // 1 cell/s
   view.reconcile(); // snap at (0,0)
   moveToken(store, "tok1", { x: 100, y: 0 }); // 1 cell → 1000ms
@@ -321,7 +321,7 @@ it("animateAlongPath walks the route polyline", () => {
   const store = makeStoreWithToken("tok1", { x: 0, y: 0 });
   const backend = new RecordingBackend();
   const view = new TokenView(store, new AssetResolver(), backend);
-  view.setCellSize(100);
+  view.setWorldUnitsPerCell(100);
   view.setAnimationConfig({ speedCellsPerSec: 6, easing: "linear" });
   view.reconcile();
   view.animateAlongPath("tok1", [[0, 0], [300, 0], [300, 300]]); // 6 cells → 1000ms

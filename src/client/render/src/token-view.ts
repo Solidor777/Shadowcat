@@ -23,8 +23,8 @@ export class TokenView {
   private dragging: string | null = null;
 
   // Animation config fields; kept in sync with the animator via pushAnimConfig().
-  /** Active grid's pixel-per-cell size — see `setCellSize`. */
-  private cellSize = 100;
+  /** Active grid's per-step world distance (`Grid.worldUnitsPerCell`) — see `setWorldUnitsPerCell`. */
+  private worldUnitsPerCell = 100;
   /** Tween speed, in grid cells per second — see `setAnimationConfig`. */
   private animSpeed = 6;
   /** Easing curve applied to polyline tweens — see `setAnimationConfig`. */
@@ -72,9 +72,11 @@ export class TokenView {
     this.dragging = id;
   }
 
-  /** Update the pixel-per-cell value used to compute tween durations. Affects only FUTURE tweens
+  /** Update the per-step world distance used to compute tween durations — the world distance
+   * between adjacent cell centres (`Grid.worldUnitsPerCell`), NOT the grid's indexing scale
+   * (`GridSpec.size`), which diverges from it by `sqrt(3)` on hex. Affects only FUTURE tweens
    * (`TokenAnimator.setConfig` does not retarget an animation already in progress).
-   * @param px The active grid's pixel-per-cell size.
+   * @param units The active grid's world distance between adjacent cell centres.
    * @example
    * ```ts
    * import { TokenView, MockBackend } from "@shadowcat/render";
@@ -82,16 +84,16 @@ export class TokenView {
    *
    * declare const store: ReadableDocuments;
    * const view = new TokenView(store, new AssetResolver(), new MockBackend());
-   * view.setCellSize(100);
+   * view.setWorldUnitsPerCell(100);
    * ```
    */
-  setCellSize(px: number): void {
-    this.cellSize = px;
+  setWorldUnitsPerCell(units: number): void {
+    this.worldUnitsPerCell = units;
     this.pushAnimConfig();
   }
 
   /** Update the speed + easing used to compute tween durations. Affects only FUTURE tweens, same
-   * as `setCellSize`.
+   * as `setWorldUnitsPerCell`.
    * @param cfg The new tween speed/easing.
    * @example
    * ```ts
@@ -109,9 +111,9 @@ export class TokenView {
     this.pushAnimConfig();
   }
 
-  /** Merge the stored speed/easing/cellSize into a single AnimationConfig and forward it to the
-   * animator. Coupling: both setCellSize and setAnimationConfig must call this so the animator's
-   * config is always the product of the latest values of all three fields.
+  /** Merge the stored speed/easing/worldUnitsPerCell into a single AnimationConfig and forward it
+   * to the animator. Coupling: both setWorldUnitsPerCell and setAnimationConfig must call this so
+   * the animator's config is always the product of the latest values of all three fields.
    * @example
    * ```
    * // private method; not part of the public API
@@ -119,7 +121,7 @@ export class TokenView {
    * ```
    */
   private pushAnimConfig(): void {
-    this.animator.setConfig({ speedCellsPerSec: this.animSpeed, easing: this.animEasing, cellSize: this.cellSize });
+    this.animator.setConfig({ speedCellsPerSec: this.animSpeed, easing: this.animEasing, worldUnitsPerCell: this.worldUnitsPerCell });
   }
 
   /** Has no production caller today (`src/modules`/`src/client/shell` drive route playback

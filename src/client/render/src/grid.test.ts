@@ -48,6 +48,28 @@ test("hex grid emits a non-empty line set over a viewport", () => {
   expect(lines.length).toBeGreaterThan(0);
 });
 
+// Cross-language parity pin (bug: TokenAnimator divided a travelled distance by the outer
+// radius instead of the per-step distance on hex, animating √3× too slowly). Neither side can
+// share a symbol across the Rust/TS boundary, so both are pinned independently to the same
+// stated size (50) and derive their expectation from measured geometry rather than restating
+// the `size * sqrt(3)` formula: this test measures the real distance between two adjacent hex
+// centers via `snap` (which round-trips through the production `axialToPixel`, the same call
+// `worldUnitsPerCell` itself must agree with); the server's
+// `hex_world_units_per_cell_equals_the_distance_between_adjacent_centers` test (size 50) measures
+// the same distance via its own production `cell_center`. A future change to either
+// `worldUnitsPerCell`/`world_units_per_cell` that drifts from the true inter-center distance
+// fails its own side's test.
+test("hex per-step distance (worldUnitsPerCell) equals the measured distance between adjacent cell centers", () => {
+  const g = new Grid({ kind: "hex", size: 50 });
+  // Snap the origin to its hex's center, then snap a point known to fall inside the (1,0)
+  // neighbor to that hex's center — both via the real production round-trip, not a restated
+  // formula.
+  const origin = g.snap({ x: 0, y: 0 });
+  const neighbor = g.snap({ x: 90, y: 0 }); // inside the (1,0) hex for size 50
+  const measured = Math.hypot(neighbor.x - origin.x, neighbor.y - origin.y);
+  expect(g.worldUnitsPerCell()).toBeCloseTo(measured, 9);
+});
+
 // `pixelToAxial`'s q mixes x and y with opposite signs, so its extrema sit on the
 // top-right/bottom-left diagonal. Sampling only the other diagonal understated the
 // q-range and left hexes CENTERED INSIDE the viewport undrawn (50 of them at
