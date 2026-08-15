@@ -908,8 +908,8 @@ export class DockviewEngine implements EngineAdapter {
 
   /** Floating groups are non-modal dialogs (dockview's own `Overlay`
    * sets `role="dialog"`/`aria-modal="false"` — see `Overlay`'s constructor); this adds
-   * the label + focus management the brief requires that dockview doesn't
-   * supply itself: `aria-label` = the panel's own label, DOM focus moves
+   * the label + focus management dockview doesn't supply itself:
+   * `aria-label` = the panel's own label, DOM focus moves
    * into the dialog the moment it appears, and Escape (bubbled from
    * anywhere inside it) closes it via the same op channel a menu/drag
    * gesture uses. Called once per floating-panel CREATION (`apply()`'s

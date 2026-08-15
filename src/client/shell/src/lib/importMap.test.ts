@@ -49,8 +49,8 @@ describe("shared-runtime import map (build output)", () => {
     expect(map.imports["@shadowcat/formula"]).toBe("/runtime/shadowcat-formula.js");
     expect(map.imports["@shadowcat/types"]).toBe("/runtime/shadowcat-types.js");
 
-    // The import map must precede the app's own module entry script (§3:
-    // "injected before any module script executes").
+    // The import map must precede the app's own module entry script: it must be injected
+    // before any module script executes.
     const mapIdx = html.indexOf('<script type="importmap">');
     const appIdx = html.indexOf('<script type="module"');
     expect(mapIdx).toBeGreaterThanOrEqual(0);

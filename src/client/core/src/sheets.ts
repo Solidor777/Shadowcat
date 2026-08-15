@@ -29,7 +29,7 @@ export function sheetContract(docType: string): string {
 /** What `ctx.openDocument` addresses. `docId` targets a top-level document, optionally
  * one embedded child via `embeddedPath` (`/embedded/<collection>/<index>`, ONE level —
  * an actor's inventory item, etc.). `tokenId` targets a placed token, resolved to its
- * linked actor or its embedded actor copy per §5.2. */
+ * linked actor or its embedded actor copy. */
 export type SheetRef =
   | {
       /** The top-level document's id. */

@@ -103,7 +103,10 @@ fn grid_kind_from(eng: Option<&eng::SceneEngine>) -> GridKind {
 pub const DEFAULT_SCENE_BOUNDS_UNITS: (f64, f64) = (100.0, 100.0);
 
 /// The resolved per-scene lighting/vision/movement settings (subset of the client
-/// `ResolvedSceneSettings`; pathfinding/animation fields are resolved in later checkpoints).
+/// `ResolvedSceneSettings`; the pathfinding diagonal-cost rule and animation speed are
+/// world-scoped, not per-scene, so they are resolved separately by
+/// `SceneEcs::resolved_diagonal_rule`/`SceneEcs::resolved_animation_speed` rather than carried
+/// as fields here).
 #[derive(Clone, Debug, PartialEq)]
 pub struct ResolvedScene {
     /// Walls with `blocksSight` restrict line of sight (LOS raycasting on).

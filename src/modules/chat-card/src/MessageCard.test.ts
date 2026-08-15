@@ -791,7 +791,7 @@ describe("MessageCard — delete", () => {
   });
 });
 
-describe("MessageCard actor-name navigation (§5.4)", () => {
+describe("MessageCard actor-name navigation", () => {
   it("renders the actor name as a button that opens the actor doc when present in the store", async () => {
     const actor = buildActorDoc("w1", "Goblin", actorEngine(), "a1");
     const doc = msgDoc("m1", baseSystem({ actor_owner: { kind: "actor", actor_id: "a1" } }));

@@ -21,8 +21,8 @@ pub enum ModeKind {
     SuccessCount,
 }
 
-/// Caller-supplied ambient state the notation string does not itself encode
-/// (design's "notation pillar", §10): `mode` resolves a bare `t<N>` target's
+/// Caller-supplied ambient state the notation string does not itself encode:
+/// `mode` resolves a bare `t<N>` target's
 /// `Mode`, `direction` resolves its comparator (`HighWins` => `Gte`, `LowWins`
 /// => `Lte`) and seeds `RollSpec::direction`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -70,7 +70,7 @@ pub enum ParseError {
     /// A `[` was never closed by a matching `]` before the input ended.
     UnterminatedLabel,
     /// A `[...]` label contained a byte that is neither ASCII-printable nor a space
-    /// (e.g. a C0 control byte or DEL) — design §3.1 restricts a label's charset to
+    /// (e.g. a C0 control byte or DEL) — a label's charset is restricted to
     /// ASCII printable characters (plus space) except `]`.
     InvalidLabelChar,
 }

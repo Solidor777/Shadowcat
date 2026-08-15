@@ -1,4 +1,4 @@
-/** The engine-owned canvas z-order (§6.1). Module layers splice between these by
+/** The engine-owned canvas z-order. Module layers splice between these by
  * fractional `order`; core ids are reserved. Index = the core order key. */
 export type CoreLayerId =
   | "background" | "grid" | "tiles" | "regions" | "drawings" | "walls"

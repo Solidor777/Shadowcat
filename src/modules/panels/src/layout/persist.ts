@@ -193,8 +193,7 @@ function isCompactLayout(v: unknown): v is CompactLayout {
 
 /** Structural validation for a raw `PanelLayoutV1` blob. Every panel id anywhere in the
  * tree must be a string (checked transitively by the `isString`/`isStringArray` guards
- * above) — a non-string id anywhere fails the whole blob, matching the brief's "any panel
- * id non-string" clause.
+ * above) — a non-string id anywhere fails the whole blob.
  * @param v The value to check.
  * @returns Whether `v` structurally satisfies `PanelLayoutV1` (does NOT check the
  * cross-field referential invariants `isReferentiallyConsistent` checks separately).

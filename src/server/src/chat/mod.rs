@@ -454,8 +454,7 @@ pub enum SendMessageError {
     /// The requested `actor_owner` cannot be attributed by this sender: the
     /// referenced actor doc does not exist, is not an `actor` doc_type, or
     /// is owned by someone else and the sender is not a GM; or the ref is a
-    /// `TokenInstance` (rejected fail-closed pending speak-as-token, design
-    /// doc §8).
+    /// `TokenInstance` (rejected fail-closed pending speak-as-token).
     ActorNotSpeakable,
 }
 
@@ -788,13 +787,13 @@ pub async fn handle_send_message(
         }
     };
     // Link-preview enrich stage: only for hyperlink-carrying, non-Roll bodies.
-    // The `kind != Roll` guard is EXPLICIT (design doc §3), not incidental: a
+    // The `kind != Roll` guard is EXPLICIT, not incidental: a
     // successful roll falls through here with `content_segments == [RollEmbed]`
     // (only the roll-EXECUTION-FAILURE arm returns early), so without this
     // guard a `/roll` on a preview-enabled world would enter `enrich` — a no-op
     // today only because `enrich` scans `Segment::Html` runs (none in a
     // RollEmbed), but a latent path to attaching outbound-fetched previews to a
-    // roll message if that ever changes. Synchronous, before publish (§3) — no
+    // roll message if that ever changes. Synchronous, before publish — no
     // spawned task, no post-publish revision, no message-deleted-mid-fetch race.
     if parsed.kind != MessageKind::Roll && policy.previews_enabled() {
         link_preview::enrich(
@@ -3201,7 +3200,7 @@ mod tests {
     }
 }
 
-/// Ingest integration for the link-preview enrich stage (design doc §8):
+/// Ingest integration for the link-preview enrich stage:
 /// drives `handle_send_message`/`handle_edit_message` directly, exactly like
 /// `chat::tests`, but against a real stub `axum` target on `127.0.0.1` — the
 /// same `build_client_allow_loopback` seam `link_preview`'s own fetcher tests use. Kept
@@ -3628,7 +3627,7 @@ mod link_preview_ingest_tests {
     }
 
     /// A `/roll` on a PREVIEW-ENABLED world never accumulates a `LinkPreview`
-    /// segment: its content is exactly one `RollEmbed`. Pins the design §3
+    /// segment: its content is exactly one `RollEmbed`. Pins the
     /// EXPLICIT `kind != MessageKind::Roll` enrich guard — a successful roll
     /// falls through to the enrich gate (only the roll-execution-FAILURE arm
     /// returns early), so the guard, not the incidental absence of `<a href>`

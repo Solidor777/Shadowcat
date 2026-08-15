@@ -12,7 +12,7 @@ function ev(): PointerEvent { return {} as PointerEvent; }
 function flush(): Promise<void> {
   return new Promise((r) => setTimeout(r, 0));
 }
-/** Alias used by commit-gesture tests (matches brief naming). */
+/** Alias used by commit-gesture tests. */
 const drain = flush;
 
 function setup() {

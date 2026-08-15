@@ -27,7 +27,7 @@ struct P {
     /// Success rule set by a `cs` (or `cf`-implied) modifier; forces
     /// SuccessCount mode once seen.
     success: Option<SuccessRule>,
-    /// Mode-agnostic `t<N>` target (design's notation pillar, §10): resolves to
+    /// Mode-agnostic `t<N>` target: resolves to
     /// `TotalConfig::difficulty` in Total mode, or a direction-derived
     /// `SuccessRule` in SuccessCount mode.
     t_target: Option<i32>,

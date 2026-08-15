@@ -1,5 +1,5 @@
 <script lang="ts">
-  // Host-rendered template chrome for any doc_type's sheet (§6.1). Reads provenance/instances
+  // Host-rendered template chrome for any doc_type's sheet. Reads provenance/instances
   // from the templates seam; shows a source badge + pull/revert (stamped, authorized) and push
   // (has instances, authorized). The module sheet body never opts in.
   import { createSubscriber } from "svelte/reactivity";

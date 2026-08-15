@@ -372,7 +372,7 @@ async fn whisper_is_hidden_from_a_non_recipients_resync_but_visible_to_the_recip
 /// Search: the whisper's own recipient finds it; a non-recipient's search
 /// for the same unique term returns nothing, even though the FTS index
 /// contains the text (the per-hit READ-gate filter, not the index split,
-/// enforces this — see design doc §1).
+/// enforces this).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn whisper_content_is_hidden_from_a_non_recipient_search() {
     let (h, _gm_id) = spawn().await;

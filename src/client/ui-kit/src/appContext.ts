@@ -40,7 +40,7 @@ export interface ChatApi {
   delete(messageId: string): Promise<void>;
 }
 
-/** Template pull/push/revert/stamp seam (§6.3). Thin orchestration over `store`/`documents` +
+/** Template pull/push/revert/stamp seam. Thin orchestration over `store`/`documents` +
  * `dispatchIntent`; the controller opens the conflict modal when needed. */
 export interface TemplatesApi {
   /** Deep-clone `source` into a new stamped instance; the caller dispatches the Create.

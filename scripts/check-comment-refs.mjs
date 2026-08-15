@@ -176,6 +176,18 @@ const BANNED = [
     // in a doctest names a module in this crate) rather than a document reference.
     re: /\bspec\s*§|\b(?:the|this|design|parent|wire|per)\s+spec\b|\bspec'?d\b|\bspec\s*:(?!:)/i,
   },
+  // EXAMPLE: A section pointer that names no document — a bare `§7`, or a "design doc §3" whose
+  // EXAMPLE: document is only ever "the design doc" — cannot be resolved from the code at all, so
+  // it is strictly worse than a stale named citation: nothing tells a reader which document to
+  // go and fail to find. A pointer prefixed by a named public standard resolves for as long as
+  // EXAMPLE: that standard exists (`RFC 4291 §2.5.5.2`), so the ban is on the unnamed form, not
+  // on the section symbol. The named-document prefix is the property, never a list of the
+  // EXAMPLE: specific spellings already written: an ISO or W3C citation is admissible on the same
+  // ground and needs no separate ruling.
+  {
+    name: "unnamed section pointer",
+    re: /(?<!\b(?:RFC|ISO|IEC|IEEE|ANSI|W3C|WHATWG|Unicode)[\s-]?\d{1,5}[,;:]?\s{0,3})§\s*\d|\bSection\s+\d+(?:\.\d+)*\b/,
+  },
   {
     name: "sweep / round / review marker",
     // EXAMPLE: A joined plural writer ("sweeps 2a+2b") names the same process-assigned marker as
