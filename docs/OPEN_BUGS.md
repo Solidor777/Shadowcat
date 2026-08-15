@@ -264,18 +264,6 @@ Currently open, confirmed-real defects. Deferrals belong in `TODO.md`, not here.
     lit and which are remembered, which is misleading rather than merely ugly — but the underlying
     masks are correct, so nothing is disclosed that should not be.
 
-- **[settings] A vision mode's authored `default_range` reaches no mask, leaving its GM control
-  inert.** `VisionMode::default_range` is written at three sites, all inside
-  `SceneEcs::resolved_vision_modes`, and read by nothing. `SceneEcs::token_vision_floors` looks a
-  mode up only for its `illumination_floor` and `render_hint`, taking the range from
-  `VisionAssignment::range` unconditionally — a plain `f64` with nowhere for a fallback to attach.
-  - **Reachability:** `GameSettingsPanel` renders a GM-only number input that patches the field on
-    the vision-modes document. It persists, round-trips and validates, and changes nothing on the
-    table. The client's seeded `darkvision` default of 12 cells likewise reaches no mask.
-  - **Impact:** a setting whose stored value does not determine its effect — the same shape as the
-    light-reach cap above it in this list. No secrecy effect: the inert direction is that vision
-    stays as narrow as the assignment says.
-
 - **[hex] A token is drawn and collided as something smaller than the hex it occupies, by two
   different factors.** `resolveTokenBox` sizes the drawn footprint as `actor.size.w * cell` by
   `actor.size.h * cell`, where `sceneCellSize` supplies the scene's `grid.size` — on hex the cell's

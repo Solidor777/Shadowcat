@@ -377,3 +377,22 @@ Confirmed-real defects that have since been fixed, kept for provenance. New fixe
   sole production consumer of `PathResult.cost` is the measure tool's label — no gate reads it and
   no per-turn movement budget exists server-side, so this was a display correction with no authz
   dimension.
+
+- **[settings] A vision mode's authored `default_range` reached no mask, leaving its GM control
+  inert.** `VisionMode::default_range` was written at three sites inside
+  `SceneEcs::resolved_vision_modes` and read by nothing: `SceneEcs::token_vision_floors` looked a
+  mode up only for its `illumination_floor` and `render_hint`, taking the range from
+  `VisionAssignment::range` unconditionally — a plain `f64` with nowhere for a fallback to attach.
+  `GameSettingsPanel`'s GM-only number input persisted, round-tripped and validated a value that
+  changed nothing on the table, as did the client's seeded `darkvision` default of 12 cells.
+  **Fix:** `VisionAssignment::range` is now `Option<f64>`, and `token_vision_floors` resolves an
+  absent range against the referenced mode's default at the point it joins the assignment to the
+  registry — never as a struct-level serde default, which would make every reader see a number the
+  registry never supplied. Both quantities are authored in cells and are compared against the same
+  converted distance, so a resolved default is never scaled relative to an explicit override.
+  The unknown-mode path still drops the assignment before any range resolution runs, so a mode
+  missing from the registry remains fail-closed. A non-finite or negative default makes the range
+  test false unconditionally, which is the under-reveal direction.
+  **An omitted range is not an omitted assignment**, and the two now mean opposite things: every
+  writer in the tree — including seeds, fixtures and tests — either supplies an explicit numeric
+  range or omits the whole assignment, verified by an independent sweep during review.
