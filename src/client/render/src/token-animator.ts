@@ -469,7 +469,18 @@ export class TokenAnimator {
     // snaps to the last vertex instead. Mirrors the fail-closed convention in `scene::movement` /
     // `scene::lighting` / `scene::vision` (non-finite inputs → under-reveal / snap, never freeze or NaN output).
     // If the last vertex itself is non-finite, fall back to leaving `cur` unchanged.
-    if (!Number.isFinite(total) || total < EPSILON || this.cfg.worldUnitsPerCell <= 0 || this.cfg.speedCellsPerSec <= 0) {
+    // `worldUnitsPerCell`/`speedCellsPerSec` get the same finiteness check `total` gets, not just
+    // the `<= 0` check: a `<= 0` comparison is false for NaN, so an unguarded NaN would otherwise
+    // survive into `cells`/`duration`, reproducing the same pinned-forever failure this guard exists
+    // to prevent.
+    if (
+      !Number.isFinite(total) ||
+      total < EPSILON ||
+      !Number.isFinite(this.cfg.worldUnitsPerCell) ||
+      this.cfg.worldUnitsPerCell <= 0 ||
+      !Number.isFinite(this.cfg.speedCellsPerSec) ||
+      this.cfg.speedCellsPerSec <= 0
+    ) {
       if (Number.isFinite(last[0]) && Number.isFinite(last[1])) {
         this.cur.set(id, { x: last[0], y: last[1], rotation: finalRot }); // degenerate → snap
       }
