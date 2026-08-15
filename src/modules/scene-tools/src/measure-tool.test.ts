@@ -33,7 +33,10 @@ test("measuring draws the distance label and persists nothing", () => {
   const { tool, measures, sent, clears } = setup();
   expect(tool.onPointerDown({ x: 0, y: 0 }, ev())).toBe(true);
   tool.onPointerMove({ x: 300, y: 0 }, ev());
-  expect(measures.at(-1)).toEqual({ from: { x: 0, y: 0 }, to: { x: 300, y: 0 }, label: "3" });
+  // No scene is viewed in this fixture: the fallback labels through the route branch's own
+  // `formatCellDistance`, against `activeScene`'s no-scene default { perCell: 5, unit: "ft" } —
+  // 3 cells (the `gridDistance` stub) × 5 = "15 ft", not a bare cell count.
+  expect(measures.at(-1)).toEqual({ from: { x: 0, y: 0 }, to: { x: 300, y: 0 }, label: "15 ft" });
   tool.onPointerUp({ x: 300, y: 0 }, ev());
   expect(clears()).toBe(1);
   expect(sent).toHaveLength(0); // client-local: no document, no broadcast
@@ -48,6 +51,8 @@ function setupRoute(over: {
   now?: ToolContext["now"];
   scheduleTimeout?: ToolContext["scheduleTimeout"];
   clearScheduledTimeout?: ToolContext["clearScheduledTimeout"];
+  /** Scene-level vision overrides. Absent ⇒ grid-stepped default. */
+  sceneVision?: { movementModel?: "grid-stepped" | "continuous" };
 } = {}) {
   const docs = new DocumentStore();
   // Scene with grid.distance so the budget label can be computed.
@@ -56,7 +61,17 @@ function setupRoute(over: {
     ops: [
       {
         op: "create",
-        doc: buildSceneDoc("w1", { grid: { kind: "square", size: 100, distance: { perCell: 5, unit: "ft" } } }, "s1"),
+        doc: buildSceneDoc("w1", {
+          grid: { kind: "square", size: 100, distance: { perCell: 5, unit: "ft" } },
+          ...(over.sceneVision
+            ? {
+                vision: {
+                  losRestriction: null, fog: null, observerVision: null, movementRestriction: null,
+                  movementModel: over.sceneVision.movementModel ?? null,
+                },
+              }
+            : {}),
+        }, "s1"),
       },
       {
         op: "create",
@@ -180,7 +195,10 @@ test("measure tool with no pathfind function falls back to plain measure", () =>
 
   tool.onPointerDown({ x: 0, y: 0 }, ev());
   tool.onPointerMove({ x: 200, y: 0 }, ev());
-  expect(measures.at(-1)?.label).toBe("4"); // plain gridDistance label
+  // No scene doc exists in this fixture's DocumentStore: `activeScene` returns null, so the
+  // fallback labels through its no-scene default { perCell: 5, unit: "ft" } — 4 cells (the
+  // `gridDistance` stub) × 5 = "20 ft", the SAME formatter the route branch uses.
+  expect(measures.at(-1)?.label).toBe("20 ft");
   tool.onPointerUp({ x: 200, y: 0 }, ev());
   expect(cleared).toBe(1);
 });
@@ -347,6 +365,31 @@ test("route mode: an arrested PathResult appends an arrest marker to the budget 
 
   expect(measures.at(-1)!.label).toContain("10 ft"); // budget = cost(2) × perCell(5)
   expect(measures.at(-1)!.label).toContain("⚠"); // arrest marker
+});
+
+test("route mode on a continuous-movement scene labels the wire cost as cells, not a doubled scene-unit value", async () => {
+  // Regression coverage for the server-side unit fix this scene's route cost now depends on:
+  // `SceneEcs::pathfind`'s wire contract is ONE unit, cells, on every movement model. A prior
+  // client test on a continuous scene stubbed `pathfind`'s cost with an arbitrary number and
+  // never asserted a label, so it could not have caught the server sending a world-unit value
+  // here and the client multiplying it by `perCell` a second time. This test feeds a cost in the
+  // unit the server now sends — a plain cell count, indistinguishable in shape from a
+  // grid-stepped route's cost — and asserts the SAME single-multiply label math applies
+  // regardless of `movementModel`.
+  const pathfind: ToolContext["pathfind"] = async () => ({
+    path: [[50, 50], [550, 50]] as [number, number][],
+    cost: 5, // cells: a 500-scene-unit straight route at cell 100
+    arrested: false,
+  });
+  const { tool, measures } = setupRoute({ pathfind, sceneVision: { movementModel: "continuous" } });
+
+  tool.onPointerDown({ x: 50, y: 50 }, ev());
+  tool.onPointerMove({ x: 550, y: 50 }, ev());
+  await flush();
+
+  // budget = cost(5 cells) × perCell(5) = 25 ft. A double-multiply regression (the client
+  // treating an already-world-unit server cost as cells again) would instead read 2500 ft.
+  expect(measures.at(-1)!.label).toContain("25 ft");
 });
 
 /** A deterministic logical clock + timer scheduler pair for route-preview debounce tests.

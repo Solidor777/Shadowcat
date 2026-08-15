@@ -129,6 +129,34 @@ function activeScene(ctx: ToolContext): {
   return { id: scene.id, size, perCell, unit };
 }
 
+/** Format a whole-cell distance as the measure tool's shared distance label:
+ * `${round(cells * perCell)} ${unit}`. Both the routed budget label (`requestRoute`) and the
+ * plain-measure fallback (`onPointerMove`'s non-route branch) call this, so a distance is
+ * expressed identically regardless of which branch measured it — the divergence this replaces
+ * had the fallback printing a bare cell count (`"5"`) while the route branch printed the scaled,
+ * unit-suffixed form (`"25 ft"`) for the same underlying distance. The function knows nothing
+ * about arrest: only `requestRoute` has that information, so it appends the `⚠` marker itself to
+ * this function's return value rather than this function taking a caller-specific flag.
+ * @param cells The whole or fractional cell count to label.
+ * @param scene The perCell/unit scale to label with.
+ * @param scene.perCell Distance-per-cell scale used for the label.
+ * @param scene.unit Distance unit label (e.g. `"ft"`) used for the label.
+ * @returns The formatted label string, e.g. `"25 ft"`.
+ * @example
+ * ```
+ * declare function formatCellDistance(cells: number, scene: { perCell: number; unit: string }): string;
+ * formatCellDistance(5, { perCell: 5, unit: "ft" });
+ * ```
+ */
+function formatCellDistance(cells: number, scene: {
+  /** Distance-per-cell scale used for the label. */
+  perCell: number;
+  /** Distance unit label (e.g. `"ft"`) used for the label. */
+  unit: string;
+}): string {
+  return `${Math.round(cells * scene.perCell)} ${scene.unit}`;
+}
+
 /** Per-token footprint radius in cells (pathfind clearance), resolved from the token's
  * linked/embedded actor; falls back to 0.4 sub-cell units when unresolved. Module-level (not
  * closed over a single tool) so the measure tool's single-selection `resolveFootprint` and the
@@ -731,13 +759,15 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
         // Render the routed polyline via previewOverlay.
         const pts = result.path.flat();
         ctx.scene.previewOverlay([{ points: pts, closed: false, stroke: { color: ROUTE_COLOR, width: 3 }, fill: null }]);
-        // Budget label: rounds to whole distance units for display; the server-side cost
-        // stays exact (diagonal rules like alternating/euclidean yield fractional cells).
-        const budget = Math.round(result.cost * scene.perCell);
+        // Budget label: `formatCellDistance` rounds to whole distance units for display; the
+        // server-side cost stays exact (diagonal rules like alternating/euclidean yield
+        // fractional cells).
+        const budgetLabel = formatCellDistance(result.cost, scene);
         const startPt: Point = { x: start[0], y: start[1] };
-        // An arrested result means the server truncated the route at an arrest region;
-        // the ⚠ marker signals the previewed budget covers a shorter, non-final stop.
-        const label = result.arrested ? `${budget} ${scene.unit} ⚠` : `${budget} ${scene.unit}`;
+        // An arrested result means the server truncated the route at an arrest region; only this
+        // branch knows that, so it appends the ⚠ marker itself — the shared formatter has no
+        // arrest concept — signalling the previewed budget covers a shorter, non-final stop.
+        const label = result.arrested ? `${budgetLabel} ⚠` : budgetLabel;
         ctx.scene.drawMeasure(startPt, goal, label);
       },
       () => {
@@ -991,9 +1021,14 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
         }
         return;
       }
-      // Fallback: plain gridDistance measure.
+      // Fallback: plain gridDistance measure, labelled through the SAME `formatCellDistance`
+      // the route branch uses, so the two branches express an identical distance identically.
+      // `activeScene`'s own `{ perCell: 5, unit: "ft" }` default covers the case where no scene
+      // is viewed, matching `resolveSceneSettings`'s default exactly.
       if (!anchor) return;
-      ctx.scene.drawMeasure(anchor, p, String(ctx.scene.gridDistance(anchor, p)));
+      const cells = ctx.scene.gridDistance(anchor, p);
+      const scene = activeScene(ctx) ?? { perCell: 5, unit: "ft" };
+      ctx.scene.drawMeasure(anchor, p, formatCellDistance(cells, scene));
     },
     onPointerUp(_p: Point): void {
       if (inRouteMode()) {

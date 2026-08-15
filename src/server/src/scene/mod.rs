@@ -1603,15 +1603,11 @@ impl SceneEcs {
                             shape: &*euclid_shape,
                         },
                     )?;
-                    // `find` reports cost in CELLS; the continuous engine reports SCENE UNITS
-                    // (parity with the polyanya path, which measures Euclidean length).
-                    // The conversion is the shape's own per-cell world distance, not the cell
-                    // size: on hex those differ by the √3 factor between a hex's circumradius
-                    // and the distance to its neighbours.
-                    let weighted = pathfinding::PathOutcome {
-                        cost: weighted.cost * grid_shape.world_units_per_cell(),
-                        ..weighted
-                    };
+                    // `find` already reports cost in CELLS — the wire contract `PathResult`'s
+                    // own doc comment promises (`ws::protocol`) and the grid-stepped branch
+                    // above already honors — so this sub-path needs no conversion. The pure-
+                    // polyanya sub-path below is the one that computes Euclidean scene-unit
+                    // lengths and converts once, at its own boundary.
                     // `grid_shape`, not `euclid_shape`: the smoother's cell indexing must match the
                     // shape `mask` (`visible_cells`) and `regions` (`region_field`) were built with,
                     // both of which resolve through `resolve_grid_shape`. The two shapes are
@@ -1656,12 +1652,26 @@ impl SceneEcs {
                     if clipped.path.len() < 2 && !raw_was_trivial {
                         return Err(pathfinding::PathFail::Unreachable);
                     }
-                    Ok(navmesh::truncate_at_arrest(
-                        clipped,
-                        &regions,
-                        cell,
-                        &*grid_shape,
-                    ))
+                    let outcome =
+                        navmesh::truncate_at_arrest(clipped, &regions, cell, &*grid_shape);
+                    // Convert once, at the boundary: `navmesh_find`/`clip_to_visible_mask`/
+                    // `truncate_at_arrest` all compute Euclidean lengths in SCENE units, but
+                    // `PathResult`'s wire contract (`ws::protocol`) promises cells, matching the
+                    // grid-stepped/weighted branches above. `world_units_per_cell` — the
+                    // authored-distance conversion, not `cell` (the indexing scale) — is the same
+                    // symbol `lighting_inputs_from` converts an authored light radius through; a
+                    // route length is the same class of authored distance. Guarded like that
+                    // conversion's own divisor: a non-finite or non-positive per-cell distance
+                    // refuses rather than dividing into an infinity the client would render as a
+                    // label.
+                    let wu = grid_shape.world_units_per_cell();
+                    if !wu.is_finite() || wu <= 0.0 {
+                        return Err(pathfinding::PathFail::Invalid);
+                    }
+                    Ok(pathfinding::PathOutcome {
+                        cost: outcome.cost / wu,
+                        ..outcome
+                    })
                 }
             }
         }
@@ -6511,12 +6521,68 @@ explored: // GM: unrestricted mask
                 0.1,
             )
             .expect("continuous route over an open bounded scene");
-        // Euclidean straight line ≈ 900, unlike a grid diagonal-rule cost — proves the navmesh
-        // path was actually taken, not the grid router.
+        // Euclidean straight line ≈ 900 scene units, unlike a grid diagonal-rule cost — proves
+        // the navmesh path was actually taken, not the grid router — converted to the wire's cell
+        // unit by dividing through the fixture's cell size (900 / 100 = 9); the tolerance is the
+        // same conversion applied to the prior world-unit tolerance (2.0 / 100 = 0.02).
         assert!(
-            (outcome.cost - 900.0).abs() < 2.0,
-            "expected ~900 (Euclidean), got {}",
+            (outcome.cost - 9.0).abs() < 0.02,
+            "expected ~9 cells (900 Euclidean scene units / cell 100), got {}",
             outcome.cost
+        );
+    }
+
+    #[test]
+    fn pathfind_grid_and_continuous_report_the_same_cell_cost_for_a_straight_route() {
+        // Anti-drift witness for the `pathfind` boundary conversion this task installs: the wire
+        // contract (`ws::protocol`'s `PathResult` doc comment) declares ONE unit, cells, for
+        // BOTH movement models. A straight horizontal route has an identical Chebyshev and
+        // Euclidean length, so the two engines' cell costs for the SAME route geometry must agree
+        // exactly regardless of which one ran — a future re-fork of either conversion (the
+        // weighted branch reintroducing a `* world_units_per_cell` multiply, or the pure-polyanya
+        // branch losing its boundary division) breaks this equality.
+        let grid_ecs = SceneEcs::from_documents(
+            vec![entity_doc_top_eng(
+                10,
+                "scene",
+                json!({ "grid": { "kind": "square", "size": 100 }, "background": null }),
+            )],
+            0,
+        );
+        let mut continuous_ecs = SceneEcs::from_documents(continuous_scene_docs(), 0);
+        continuous_ecs.set_world_settings_for_test(continuous_world_settings());
+
+        let requester = || RouteRequester {
+            user: Uuid::from_u128(1),
+            is_gm: true,
+            explored: None,
+        };
+        let start = (50.0, 50.0);
+        let goal = (550.0, 50.0);
+
+        let grid_out = grid_ecs
+            .pathfind(requester(), Uuid::from_u128(10), start, &[goal], 0.1)
+            .expect("grid-stepped straight route");
+        let continuous_out = continuous_ecs
+            .pathfind(requester(), Uuid::from_u128(10), start, &[goal], 0.1)
+            .expect("continuous straight route");
+
+        assert!(
+            (grid_out.cost - 5.0).abs() < 1e-9,
+            "grid-stepped: 5 orthogonal cells, got {}",
+            grid_out.cost
+        );
+        assert!(
+            (continuous_out.cost - 5.0).abs() < 0.05,
+            "continuous: 500 Euclidean scene units / cell 100 = 5 cells, got {}",
+            continuous_out.cost
+        );
+        assert!(
+            (grid_out.cost - continuous_out.cost).abs() < 0.05,
+            "both engines must report the SAME cell cost for identical straight-route geometry: \
+             grid={}, continuous={}",
+            grid_out.cost,
+            continuous_out.cost
         );
     }
 
@@ -6651,12 +6717,13 @@ explored: // GM: unrestricted mask
     }
 
     #[test]
-    fn pathfind_continuous_terrain_bends_the_route_and_costs_scene_units() {
+    fn pathfind_continuous_terrain_bends_the_route_and_costs_cells() {
         // Continuous scene, terrain mult 5 on cell (1,0) = Rect [100,0]-[200,100] between start and
         // goal. The weighted grid route (forced Euclidean) detours through row 1 (2 diagonal steps,
-        // ~2*sqrt(2) cells => *cell = ~283 scene units) instead of straight through the mult-5 cell
-        // (would be 1+5 = 6 cells => 600 scene units). Proves terrain BENDS the continuous route and
-        // that cost is in scene units.
+        // ~2*sqrt(2) cells) instead of straight through the mult-5 cell (would be 1+5 = 6 cells).
+        // Proves terrain BENDS the continuous route and that the weighted sub-path's cost is
+        // already in cells — `pathfinding::find`'s own unit, matching `PathResult`'s wire contract
+        // (`ws::protocol`) with no conversion needed.
         let mut docs = continuous_scene_docs();
         docs.push(region_doc_top(
             12,
@@ -6686,14 +6753,15 @@ explored: // GM: unrestricted mask
             )
             .expect("weighted continuous route");
         // Tight pin (not a loose range): the forced-Euclidean detour is exactly 2 diagonal steps
-        // (each √2 cells) around the mult-5 cell, so the cost is 2·√2·cell = ~282.84 scene units. A
-        // loose bound here would silently pass a regression to the world diagonal rule (Chebyshev
-        // diagonals cost 1 → 200 units) — that reversion is precisely the forced-Euclidean gap
-        // this pin guards, so the expected value must be the Euclidean one, epsilon-tight.
-        let expected = 2.0 * std::f64::consts::SQRT_2 * 100.0;
+        // (each √2 cells) around the mult-5 cell, so the cost is 2·√2 ≈ 2.828 cells. A loose bound
+        // here would silently pass a regression to the world diagonal rule (Chebyshev diagonals
+        // cost 1 → 2 cells) — that reversion is precisely the forced-Euclidean gap this pin
+        // guards, so the expected value must be the Euclidean one, epsilon-tight. Tolerance is the
+        // pre-conversion 0.5-scene-unit bound divided through the fixture's cell size (100).
+        let expected = 2.0 * std::f64::consts::SQRT_2;
         assert!(
-            (out.cost - expected).abs() < 0.5,
-            "forced-Euclidean detour cost is 2·√2·cell ≈ {expected:.3} scene units, got {}",
+            (out.cost - expected).abs() < 0.005,
+            "forced-Euclidean detour cost is 2·√2 ≈ {expected:.3} cells, got {}",
             out.cost
         );
         assert!(
@@ -6805,7 +6873,8 @@ explored: // GM: unrestricted mask
 
     #[test]
     fn pathfind_continuous_no_region_is_a_straight_polyanya_route() {
-        // Same scene WITHOUT a region: the pure polyanya path is taken — a straight 200px route.
+        // Same scene WITHOUT a region: the pure polyanya path is taken — a straight 200px route,
+        // 200 Euclidean scene units / cell(100) = 2 cells at the `pathfind` boundary conversion.
         let mut ecs = SceneEcs::from_documents(continuous_scene_docs(), 0);
         ecs.set_world_settings_for_test(continuous_world_settings());
         let out = ecs
@@ -6821,9 +6890,11 @@ explored: // GM: unrestricted mask
                 0.1,
             )
             .expect("polyanya route");
+        // Tolerance is the pre-conversion 3.0-scene-unit bound divided through the fixture's
+        // cell size (100).
         assert!(
-            (out.cost - 200.0).abs() < 3.0,
-            "straight Euclidean ~200, got {}",
+            (out.cost - 2.0).abs() < 0.03,
+            "straight Euclidean ~2 cells (200 scene units / cell 100), got {}",
             out.cost
         );
     }
@@ -6873,7 +6944,8 @@ explored: // GM: unrestricted mask
     #[test]
     fn pathfind_continuous_secret_terrain_absent_from_player_route_present_for_gm() {
         // gm_only terrain (mult 5) on cell (1,0). A player (non-GM) never sees it: their route is
-        // the straight polyanya line (no bend, ~200 scene units). The GM's route bends (weighted).
+        // the straight polyanya line (no bend, ~200 scene units = 2 cells). The GM's route bends
+        // (weighted).
         let mut docs = continuous_scene_docs();
         let mut secret = region_doc_top(
             12,
@@ -6913,8 +6985,10 @@ explored: // GM: unrestricted mask
                 0.1,
             )
             .expect("player route");
+        // Pure-polyanya sub-path: 200 scene units / cell(100) = 2 cells. Tolerance is the
+        // pre-conversion 5.0-scene-unit bound divided through the same cell size.
         assert!(
-            (p.cost - 200.0).abs() < 5.0,
+            (p.cost - 2.0).abs() < 0.05,
             "secret terrain does not bend the player route, got {}",
             p.cost
         );
@@ -6932,8 +7006,11 @@ explored: // GM: unrestricted mask
                 0.1,
             )
             .expect("gm route");
+        // Weighted sub-path: `pathfinding::find`'s cost is already in cells, no conversion — the
+        // pre-conversion 150.0..400.0-scene-unit range divided through the fixture's cell size
+        // (100).
         assert!(
-            g.cost < 400.0 && g.cost > 150.0,
+            g.cost < 4.0 && g.cost > 1.5,
             "GM route is weighted, got {}",
             g.cost
         );
@@ -6973,13 +7050,16 @@ explored: // GM: unrestricted mask
             .expect(
                 "clip truncates the route short of the unseen goal rather than failing outright",
             );
-        let dist_to_goal =
-            ((far_goal.0 - 50.0_f64).powi(2) + (far_goal.1 - 50.0_f64).powi(2)).sqrt();
+        // `outcome.cost` is now in CELLS (the `pathfind` boundary conversion) while a raw
+        // Euclidean distance over scene coordinates is in scene units — divide through the
+        // fixture's cell size (100) so both sides of the comparison are the same unit.
+        let dist_to_goal_cells =
+            ((far_goal.0 - 50.0_f64).powi(2) + (far_goal.1 - 50.0_f64).powi(2)).sqrt() / 100.0;
         assert!(
-            outcome.cost < dist_to_goal / 2.0,
-            "route must truncate well short of the unseen far goal: cost {} vs distance {}",
+            outcome.cost < dist_to_goal_cells / 2.0,
+            "route must truncate well short of the unseen far goal: cost {} vs distance {} cells",
             outcome.cost,
-            dist_to_goal
+            dist_to_goal_cells
         );
         let (lx, ly) = *outcome.path.last().expect("non-empty truncated path");
         let dist_from_start = ((lx - 50.0_f64).powi(2) + (ly - 50.0_f64).powi(2)).sqrt();
@@ -7026,7 +7106,7 @@ explored: // GM: unrestricted mask
         // and routes `pathfind`'s `Continuous` dispatch to the WEIGHTED sub-path; it is
         // deliberately placed off the requester's route so this test isolates "does the weighted
         // sub-path correctly enforce the mask" from "does terrain bend the route" (already
-        // covered by `pathfind_continuous_terrain_bends_the_route_and_costs_scene_units`).
+        // covered by `pathfind_continuous_terrain_bends_the_route_and_costs_cells`).
         let terrain = region_doc_top(
             12,
             10,
@@ -7161,9 +7241,11 @@ explored: // GM: unrestricted mask
             !p.arrested,
             "secret arrest region does not truncate the player's own route preview"
         );
+        // Pure-polyanya sub-path: 400 Euclidean scene units / cell(100) = 4 cells. Tolerance is
+        // the pre-conversion 5.0-scene-unit bound divided through the same cell size.
         assert!(
-            (p.cost - 400.0).abs() < 5.0,
-            "player route reaches the full goal (~400 Euclidean), got {}",
+            (p.cost - 4.0).abs() < 0.05,
+            "player route reaches the full goal (~4 cells, 400 Euclidean scene units / cell 100), got {}",
             p.cost
         );
 
@@ -8500,7 +8582,10 @@ explored: // GM: unrestricted mask
             envelope.min.1 < corner.1 - g.size * 0.99 && envelope.min.0 < corner.0,
             "the origin row must sit strictly inside the envelope {envelope:?}"
         );
-        let straight = far.0 - corner.0;
+        // Pure-polyanya sub-path (no region docs): `out.cost` is the `pathfind` boundary's
+        // cell-converted value, so the straight-line comparison must divide through the same
+        // `world_units_per_cell` conversion rather than comparing against the raw scene-unit span.
+        let straight_cells = (far.0 - corner.0) / g.world_units_per_cell();
         for (from, to, label) in [
             (corner, far, "outward along row 0"),
             (far, corner, "inward along row 0"),
@@ -8519,8 +8604,8 @@ explored: // GM: unrestricted mask
                 )
                 .unwrap_or_else(|e| panic!("routing {label} along row 0 must succeed, got {e:?}"));
             assert!(
-                out.cost >= straight * 0.99 && out.cost <= straight * 1.01,
-                "routing {label} must cost the straight-line distance {straight}, got {}",
+                out.cost >= straight_cells * 0.99 && out.cost <= straight_cells * 1.01,
+                "routing {label} must cost the straight-line distance {straight_cells} cells, got {}",
                 out.cost
             );
         }
@@ -8583,10 +8668,13 @@ explored: // GM: unrestricted mask
                 0.1,
             )
             .expect("a position inside an authored hex must be on-mesh and routable");
-        let straight = to.0 - from.0;
+        // Same conversion as `hex_continuous_routes_along_axial_row_zero_strictly_inside_the_mesh`:
+        // `out.cost` is cell-converted at the `pathfind` boundary, so the comparison value must be
+        // too.
+        let straight_cells = (to.0 - from.0) / g.world_units_per_cell();
         assert!(
-            out.cost >= straight * 0.99 && out.cost <= straight * 1.01,
-            "the route must run straight below the origin row at cost {straight}, got {}",
+            out.cost >= straight_cells * 0.99 && out.cost <= straight_cells * 1.01,
+            "the route must run straight below the origin row at cost {straight_cells} cells, got {}",
             out.cost
         );
     }
@@ -8642,11 +8730,12 @@ explored: // GM: unrestricted mask
     }
 
     #[test]
-    fn hex_continuous_weighted_cost_is_reported_in_scene_units() {
+    fn hex_continuous_weighted_cost_is_reported_in_cells() {
         // A terrain region flips the continuous dispatch to the weighted grid sub-path, whose
-        // cost is converted from cells to scene units. On hex one grid step is √3·size scene
-        // units, so the reported cost must be at least the straight-line distance between the
-        // endpoints; a conversion through the size itself cannot reach that.
+        // cost is `pathfinding::find`'s own unit (cells) — `PathResult`'s wire contract, no
+        // conversion. The comparison value below converts the straight-line scene-unit distance
+        // between the endpoints through the same `world_units_per_cell` (on hex, √3·size per
+        // step) so both sides of the assertion share a unit.
         // Discrimination: the expectation is LOWER-BOUNDED by the straight-line distance between
         // the two endpoints, computed from `cell_center`, not from the router's own output.
         let g = grid_shape::HexGrid {
@@ -8686,7 +8775,8 @@ explored: // GM: unrestricted mask
         );
         let a = g.cell_center((1, 1));
         let b = g.cell_center((10, 1));
-        let straight = ((b.0 - a.0).powi(2) + (b.1 - a.1).powi(2)).sqrt();
+        let straight_cells =
+            ((b.0 - a.0).powi(2) + (b.1 - a.1).powi(2)).sqrt() / g.world_units_per_cell();
         let out = ecs
             .pathfind(
                 RouteRequester {
@@ -8701,11 +8791,11 @@ explored: // GM: unrestricted mask
             )
             .expect("hex continuous weighted route");
         // Bounded on BOTH sides. The endpoints are nine collinear hex steps apart with no terrain
-        // between them, so the true scene-unit cost is exactly the straight-line distance; a
-        // lower bound alone also passes for any wrong-but-larger factor, `2·size` included.
+        // between them, so the true cell cost is exactly the straight-line distance; a lower
+        // bound alone also passes for any wrong-but-larger factor, `2·size` included.
         assert!(
-            out.cost >= straight * 0.99 && out.cost <= straight * 1.01,
-            "cost {} must equal the straight-line scene distance {straight}",
+            out.cost >= straight_cells * 0.99 && out.cost <= straight_cells * 1.01,
+            "cost {} must equal the straight-line cell distance {straight_cells}",
             out.cost
         );
     }

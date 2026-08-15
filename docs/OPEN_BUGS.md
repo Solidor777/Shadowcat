@@ -250,21 +250,6 @@ Currently open, confirmed-real defects. Deferrals belong in `TODO.md`, not here.
     Every animator fixture uses an implicit square grid, where the two conventions coincide.
   - **Impact:** cosmetic. No authz or secrecy effect.
 
-- **[hex] The route cost field carries cells from one movement model and world units from the
-  other.** `ServerMsg::PathResult`'s doc states its cost is "in cells (client multiplies
-  `grid.distance.perCell`)". The grid A* router honours that. `SceneEcs::pathfind`'s `Continuous`
-  branch rescales by `GridShape::world_units_per_cell`, and its navmesh branch returns a Euclidean
-  world-unit length directly; `conn` forwards the value unchanged. `makeMeasureTool` multiplies by
-  `grid.distance.perCell` regardless, so on a continuous scene it applies the game-distance scale
-  twice.
-  - **Observable:** at the common authoring of grid `size: 100` and `perCell: 5`, a five-cell route
-    labels **2500 ft where it should read 25 ft**.
-  - **Why nothing caught it:** `GridStepped` is the default movement model. The one client test
-    covering a continuous-movement scene stubs `pathfind` with a fixed cost, so it never exercises
-    the server's unit switch, and it asserts nothing about the label.
-  - **Impact:** GM-visible wrong number on a measurement overlay. No gate consumes the value — no
-    per-turn movement budget exists — so there is no authz effect.
-
 - **[hex] The lighting overlay and the explored-fog layer paint axial indices at square
   positions.** On a hex scene the server sends lit and explored cells as axial `(q, r)`, produced
   through `HexGrid`'s `GridShape` implementation. `PixiBackend.setLighting` places each at
