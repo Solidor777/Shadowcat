@@ -4180,13 +4180,24 @@ this; implement it.
 - Modify: `src/server/src/data/engine/token.rs` (`VisionAssignment`)
 - Modify: `src/server/src/scene/mod.rs` (`SceneEcs::token_vision_floors`)
 - Modify: `src/types/generated/**` — by REGENERATION, never by hand
-- Modify: the client Zod mirror of the token engine schema
-- Test: `src/server/src/scene/mod.rs` tests, plus the client schema-parity tests
+- Modify: `src/client/core/src/actor.ts` and any client reader of a vision assignment's range
+- Test: `src/server/src/scene/mod.rs` tests, plus the client tests covering those readers
 
 **Interfaces:**
-- Produces: `VisionAssignment::range` becomes optional on the wire. This is a **shared wire-schema
-  change** — the generated bindings and the Zod mirror must both move, and a typecheck alone will not
-  catch a dropped Zod field.
+- Produces: `VisionAssignment::range` becomes optional on the wire.
+
+**There is NO Zod schema to mirror for this type, and that is verified rather than assumed.**
+`WireDocument.engine` is declared `z.unknown()` — the engine band carries no client-side structural
+validation at all. `VisionAssignment` reaches the client purely as a ts-rs TYPE re-exported through
+`scene-docs`, so regeneration propagates the change on its own and there is no hand-written schema
+that can silently fail to follow.
+
+**What that changes about your risk profile:** the usual "a typecheck cannot see a dropped Zod field"
+warning does not apply here, but the opposite exposure does — because nothing validates this band at
+runtime, a client reading `.range` as a bare number gets `undefined` at runtime with no schema error
+to announce it. **Enumerate every client site that reads a vision assignment's range and adjudicate
+each**, rather than relying on the typecheck to find them; a site that destructures or arithmetics
+the value is the one that breaks quietly.
 
 ---
 
