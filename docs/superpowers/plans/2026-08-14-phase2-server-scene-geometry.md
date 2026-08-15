@@ -34,6 +34,26 @@ Ledger Additions section).
 
 ## Global Constraints
 
+- **THE GATE LIST LIVES HERE AND NOWHERE ELSE.** A per-task gate list is a forked decision, and it
+  drifted exactly as that class predicts: six task briefs each re-enumerated the gates, all six
+  dropped the same one, and a doc-example failure introduced mid-phase survived several tasks
+  reporting "all gates clean" — because every one of them ran the list it was handed rather than the
+  list that exists. A task brief must POINT here, never restate.
+  Run from the repo root unless noted:
+  - `pnpm -r test` and `pnpm -r typecheck` (any client package touched)
+  - `pnpm lint`
+  - `pnpm lint:docs`, `pnpm lint:props`, `pnpm lint:comments` — doc/property coverage and ephemeral
+    references
+  - **`pnpm docs:check-examples`** — every `@example` block must typecheck. **Examples compile
+    INSIDE the module that documents them**, so an example may fail at a line its author never
+    touched, and an ambient `declare` of a symbol the host already declares collides with the real
+    declaration. Do not redeclare a host symbol in its own example; it is already in scope.
+  - `node scripts/check-comment-refs.mjs` — the unnamed-pointer rule, fatal at zero
+  - From `src/server/`: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,
+    `cargo test`
+  All are `error` and fail CI; there is no advisory tier. **A gate that was not run is not a gate
+  that passed** — report each by name with its result, including the ones that were irrelevant and
+  why.
 - **The campaign directive in the spec's §1 is copied verbatim into every subagent's first prompt.**
 - **Report channel, stated in every dispatch:** return the report as the Agent tool's result, or
   send it via SendMessage, or write it to a named document. Dispatches are launched **without** a
