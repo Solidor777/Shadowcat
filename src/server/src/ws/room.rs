@@ -3999,11 +3999,16 @@ mod room_tests {
         //
         // Goal (650,850) is a 3-4-5 triangle scaled ×200 from start (50,50): distance =
         // sqrt(600²+800²) = 1000 wu. `gate_walk` subdivides this into 8 dense ≤1-cell samples
-        // (cheby = max(600,800) = 800 wu ⇒ k = ceil(800/100) = 8). Sample 1, (125,150), lands
-        // in cell (1,1) — inside the ~100wu (1-cell) `VISION_BOUND_MARGIN` scan box around the
-        // colocated token/light viewpoint (50,50), so it is visible. Sample 2, (200,250), lands
-        // in cell (2,2), outside that scan box — not in the mask — so the walk truncates there,
-        // leaving the token at sample 1's exact position.
+        // (cheby = max(600,800) = 800 wu ⇒ k = ceil(800/100) = 8), at (50+75k, 50+100k) for
+        // k=0..8. What decides a sample's cell is the light's own dim radius (3.0 cells = 300 wu
+        // at this scene's cell size 100), not a fixed scan-box margin — a lamp's occlusion
+        // polygon grows to cover its authored reach, so the reach itself, not
+        // `VISION_BOUND_MARGIN`, is what a cell's distance from the colocated token/light
+        // viewpoint (50,50) is checked against. Sample 2, (200,250), lands in cell (2,2)
+        // (center (250,250), 282.8 wu from the lamp) — inside the 300wu dim radius, lit. Sample
+        // 3, (275,350), lands in cell (2,3) (center (250,350), 360.6 wu from the lamp) — past the
+        // dim radius, dark — so the walk truncates entering that cell, leaving the token at
+        // sample 2's exact position.
         let h = movement_scene_continuous("visible", /*with_light=*/ true).await;
         let goal = (650.0, 850.0);
         let res = h
@@ -4020,7 +4025,7 @@ mod room_tests {
             .unwrap();
         assert_eq!(
             res.stop,
-            (125.0, 150.0),
+            (200.0, 250.0),
             "cell-gate truncates the route at the last visible sample, short of the goal"
         );
         assert_ne!(

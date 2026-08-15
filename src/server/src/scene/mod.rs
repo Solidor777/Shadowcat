@@ -1998,14 +1998,15 @@ impl SceneEcs {
         } else {
             self.light_walls(scene)
         };
+        let grid = self.resolve_grid_shape(scene, cell);
         Self::lighting_inputs_from(
             all_bright,
             lights,
             &light_walls,
             self.sight_walls(scene),
-            self.resolve_grid_shape(scene, cell)
-                .world_extent(settings.bounds),
+            grid.world_extent(settings.bounds),
             cell,
+            grid.world_units_per_cell(),
         )
     }
 
@@ -2020,6 +2021,13 @@ impl SceneEcs {
     /// `GridShape::world_extent` from the scene's authored bounds — those are measured in grid
     /// units (cells), continuous, and must never reach `env_light_polys`, which measures against
     /// wall coordinates in world units.
+    ///
+    /// `world_units_per_cell` is `GridShape::world_units_per_cell` for the same scene, used ONLY to
+    /// convert each light's authored (cell) radii into the world-unit reach `bound_for_reach` grows
+    /// its occlusion polygon's bound to cover — it is NOT the indexing scale `cell`/`extent` carry,
+    /// which differ from it on hex. Without this, a placed light's occlusion polygon is bounded by
+    /// wall endpoints and `VISION_BOUND_MARGIN` alone, capping its reach independent of the radii the
+    /// light was authored with.
     fn lighting_inputs_from(
         all_bright: bool,
         lights: Vec<lighting::Light>,
@@ -2027,11 +2035,22 @@ impl SceneEcs {
         sight_walls: Vec<vision::Seg>,
         extent: grid_shape::WorldExtent,
         cell: f64,
+        world_units_per_cell: f64,
     ) -> LightingInputs {
+        let wu = if world_units_per_cell.is_finite() && world_units_per_cell > 0.0 {
+            world_units_per_cell
+        } else {
+            0.0
+        };
         let lit_polys: Vec<Vec<vision::P>> = lights
             .iter()
             .map(|l| {
-                let b = vision::bound_for(l.pos, light_walls, VISION_BOUND_MARGIN);
+                let reach = [l.bright_radius, l.dim_radius]
+                    .into_iter()
+                    .filter(|r| r.is_finite() && *r > 0.0)
+                    .fold(0.0_f64, f64::max)
+                    * wu;
+                let b = vision::bound_for_reach(l.pos, light_walls, VISION_BOUND_MARGIN, reach);
                 vision::visibility_polygon(l.pos, light_walls, b)
             })
             .collect();
@@ -2429,6 +2448,7 @@ impl SceneEcs {
             sight_walls,
             grid.world_extent(settings.bounds),
             cell,
+            grid.world_units_per_cell(),
         );
         let mut mask = BTreeSet::new();
         accumulate_visible_cells(&mut mask, &sources, &settings, cell, &li, lenient, &*grid);
@@ -5291,6 +5311,77 @@ mod tests {
         assert!(!strict.is_empty());
     }
 
+    #[test]
+    fn a_square_light_reaches_its_authored_bright_radius_past_the_bound_margin() {
+        // `scene_with_lit_player_token` authors a 3-cell bright radius at cell size 100 (300
+        // world units), with no wall anywhere near the lamp. Cell (2,0), center (250,50), is 200
+        // world units from the lamp at (50,50) — inside the bright radius and full intensity, but
+        // past the lamp's occlusion-polygon bound margin (100 world units) if that bound never
+        // grows past it. A cap at the margin leaves this cell dark regardless of the authored
+        // radius; the fix must make the authored radius, not the margin, decide it.
+        let (ecs, user, scene) = scene_with_lit_player_token();
+        let cells = mask_cells(&ecs, user, scene);
+        assert!(
+            cells.contains(&(2, 0)),
+            "a cell 200 world units from a 300-world-unit bright radius must be lit, got {cells:?}"
+        );
+        let mask = ecs.visible_cells(user, scene, false);
+        assert!(
+            mask.contains(&(2, 0)),
+            "the movement-gate mask agrees with the egress mask"
+        );
+    }
+
+    /// `scene_with_lit_player_token`'s lamp/token scene, plus one `blocksLight` wall standing
+    /// between the lamp at (50,50) and cell (2,0) (center (250,50)) — the same cell
+    /// `a_square_light_reaches_its_authored_bright_radius_past_the_bound_margin` proves is lit
+    /// with no wall present. The wall runs the full y-span the light's grown occlusion bound could
+    /// reach, so a bound that grows to cover the reach but stops respecting occlusion (e.g. degrades
+    /// to an unoccluded disc) cannot be distinguished from a correctly-occluded one by any other
+    /// test in this file — this is the one that would catch it.
+    fn scene_with_lit_player_token_and_occluding_wall() -> (SceneEcs, Uuid, Uuid) {
+        let (ecs, user, scene_id) = scene_with_lit_player_token();
+        let mut docs: Vec<crate::data::document::Document> = ecs
+            .world
+            .query::<&SceneEntity>()
+            .iter()
+            .map(|e| e.doc.clone())
+            .collect();
+        docs.push(entity_doc_eng(
+            30,
+            10,
+            "wall",
+            json!({ "seg": {"x1": 150.0, "y1": -600.0, "x2": 150.0, "y2": 600.0},
+                    "blocksSight": false, "blocksMove": false, "blocksLight": true }),
+        ));
+        (SceneEcs::from_documents(docs, 0), user, scene_id)
+    }
+
+    #[test]
+    fn a_square_light_still_occludes_behind_a_wall_within_its_grown_reach() {
+        // The occlusion polygon's bound must be able to grow to the light's authored reach
+        // (proven by the sibling test above) WITHOUT the polygon itself stopping being an
+        // occlusion polygon: a `blocksLight` wall between the lamp and a cell inside the authored
+        // radius must still leave that cell unlit.
+        let (ecs, user, scene) = scene_with_lit_player_token_and_occluding_wall();
+        let cells = mask_cells(&ecs, user, scene);
+        assert!(
+            !cells.contains(&(2, 0)),
+            "a blocksLight wall between the lamp and cell (2,0) must occlude it, got {cells:?}"
+        );
+        let mask = ecs.visible_cells(user, scene, false);
+        assert!(
+            !mask.contains(&(2, 0)),
+            "the movement-gate mask agrees with the occluded egress mask"
+        );
+        // Positive control: the near side of the wall is still lit, so the absence of (2,0) above
+        // is the wall occluding it, not the light failing to reach anything at all.
+        assert!(
+            cells.contains(&(0, 0)),
+            "the lamp's own cell, on the near side of the wall, must stay lit, got {cells:?}"
+        );
+    }
+
     /// Gate-vs-egress parity helper: asserts `visible_cells(user, scene, false)` == the `(i,j)` set of
     /// `player_lit_mask(user)` filtered to `scene`, and that neither set is empty (non-vacuous).
     fn assert_strict_parity(ecs: &SceneEcs, user: Uuid, scene: Uuid) {
@@ -8045,25 +8136,15 @@ explored: // GM: unrestricted mask
     /// A pointy-top hex scene at `HEX_FIXTURE_SIZE` with lighting ENABLED, an environment
     /// intensity of zero (so the lamp is the only illumination any cell receives), one
     /// player-owned token at hex (0,0) with unlimited normal vision, and one lamp at that same
-    /// point carrying `HEX_LIGHT_BRIGHT_CELLS`/`HEX_LIGHT_DIM_CELLS` radii.
-    ///
-    /// The scene is walled as a `blocksLight` ROOM around the whole authored block, derived from
-    /// `GridShape::world_extent` so the room and the block cannot name different rectangles. That
-    /// is load-bearing rather than decoration: a light's occlusion polygon is raycast against a
-    /// `vision::bound_for` box that grows around the `blocksLight` endpoints only, so in a scene
-    /// with no such wall the polygon is a `VISION_BOUND_MARGIN` box around the lamp itself and
-    /// cuts the lamp's reach off there — short of both probes at this grid size, leaving the radii
-    /// with nothing to decide. Walling the room puts the probes inside the polygon and hands the
-    /// decision back to the radii. The walls occlude neither probe: both sit on row 0 between the
-    /// lamp and the room's far edge. `blocksSight` is off, so the LOS polygon stays the plain
-    /// rectangle and vision never gates a probe either.
+    /// point carrying `HEX_LIGHT_BRIGHT_CELLS`/`HEX_LIGHT_DIM_CELLS` radii. Wall-less: a light's
+    /// occlusion-polygon bound grows to cover its own authored reach
+    /// (`vision::bound_for_reach`), so nothing needs to be walled in for the probes to fall
+    /// inside the polygon and hand the decision to the radii. `blocksSight` is off on every
+    /// document here (there are none), so the LOS polygon stays the plain rectangle and vision
+    /// never gates a probe either.
     fn hex_lit_scene() -> (SceneEcs, Uuid, Uuid) {
         let user = Uuid::from_u128(7);
         let scene_id = Uuid::from_u128(10);
-        let g = grid_shape::HexGrid {
-            size: HEX_FIXTURE_SIZE,
-        };
-        let room = grid_shape::GridShape::world_extent(&g, HEX_LIGHT_BLOCK);
         let mut tok = entity_doc_eng(
             11,
             10,
@@ -8087,23 +8168,7 @@ explored: // GM: unrestricted mask
             json!({ "grid": { "kind": "hex", "size": HEX_FIXTURE_SIZE }, "background": null,
                     "bounds": { "width": HEX_LIGHT_BLOCK.0, "height": HEX_LIGHT_BLOCK.1 } }),
         );
-        let mut docs = vec![scene, tok, light];
-        let corners = [
-            (room.min.0, room.min.1),
-            (room.max.0, room.min.1),
-            (room.max.0, room.max.1),
-            (room.min.0, room.max.1),
-        ];
-        for (k, a) in corners.iter().enumerate() {
-            let b = corners[(k + 1) % corners.len()];
-            docs.push(entity_doc_eng(
-                31 + k as u128,
-                10,
-                "wall",
-                json!({ "seg": {"x1": a.0, "y1": a.1, "x2": b.0, "y2": b.1},
-                        "blocksSight": false, "blocksMove": false, "blocksLight": true }),
-            ));
-        }
+        let docs = vec![scene, tok, light];
         let mut ecs = SceneEcs::from_documents(docs, 0);
         ecs.set_world_settings_for_test(json!({
             "scene": {

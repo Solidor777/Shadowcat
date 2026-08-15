@@ -97,6 +97,25 @@ pub fn bound_for(viewpoint: P, walls: &[Seg], margin: f64) -> Rect {
     }
 }
 
+/// `bound_for`, UNIONED with a `reach`-radius square around `viewpoint` — never a replacement, so
+/// the wall-endpoint growth `bound_for` already does still applies on top. `reach` is a WORLD-unit
+/// distance (a caller converts an authored cell radius through `GridShape::world_units_per_cell`
+/// before calling this); a non-finite or non-positive `reach` contributes nothing, leaving the
+/// plain `margin` box `bound_for` already computes — the same fail-closed handling
+/// `light_illumination` gives a degenerate radius, not an invented fallback distance. This is what
+/// keeps a placed light's occlusion polygon growing to the light's OWN authored reach instead of
+/// capping at `margin` regardless of how far the light was told to shine.
+pub(crate) fn bound_for_reach(viewpoint: P, walls: &[Seg], margin: f64, reach: f64) -> Rect {
+    let mut b = bound_for(viewpoint, walls, margin);
+    if reach.is_finite() && reach > 0.0 {
+        b.minx = b.minx.min(viewpoint.0 - reach);
+        b.miny = b.miny.min(viewpoint.1 - reach);
+        b.maxx = b.maxx.max(viewpoint.0 + reach);
+        b.maxy = b.maxy.max(viewpoint.1 + reach);
+    }
+    b
+}
+
 /// `bound_for`, UNIONED with the scene's own world-unit envelope. `scene_extent` is in WORLD units
 /// — a caller passes
 /// `GridShape::world_extent` of the scene's authored bounds, never those raw bounds, which are
