@@ -938,8 +938,8 @@ export class RenderEngine implements SceneToolHost {
     this.tokens.setAnimationConfig(cfg);
   }
 
-  /** Has no production caller today (`src/modules`/`src/client/shell` drive route playback
-   * exclusively through `animateSamples`, per `commitRoute`'s own "Animation is
+  /** Has no production caller today (`WorldSession` drives route playback exclusively through
+   * `SceneInteraction.animateSamples`, per `commitRoute`'s own "Animation is
    * broadcast-driven via onMoveStream ... no local animation from the moveRequest resolve value"
    * comment); this `SceneToolHost` seam is exercised only by tests. The mechanism below is the
    * contract it honors if called.

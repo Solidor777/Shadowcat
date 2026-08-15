@@ -69,7 +69,7 @@ export class MockServer {
    * @example
    * ```
    * // test scaffolding — not part of @shadowcat/core's public surface;
-   * // import directly from mock-server.ts within the core package
+   * // import the declaring module directly within the core package
    * import { MockServer } from "./mock-server";
    *
    * const server = new MockServer({ world: "test-world" });

@@ -973,7 +973,7 @@ test("toLighting parses lit cells for the active scene and fails safe", () => {
 // `backend.setLighting`). It builds the engine with `MockBackend`, which records the frame but
 // never invokes `PixiBackend`'s paint math, so a revert of `this.grid.cellVertices(i, j)` in
 // `toLighting` fails this test, while a revert of `PixiBackend.setLighting`'s own paint math is
-// pinned separately by `pixi-backend.test.ts`.
+// pinned separately by that class's own tests.
 test("a masked frame paints a hex scene's lit cell at its true axial position, not a square index", () => {
   const store = new DocumentStore();
   const backend = new MockBackend();

@@ -62,8 +62,8 @@ class AdoptingContentRenderer implements IContentRenderer {
 
   /** Stashes `resolve` for `init()` to call (never invoked here — see the class
    * doc comment) and builds this renderer's own wrapper `element`, tagged with
-   * `className` so `panels.scss` can style the stage's content container
-   * distinctly from an ordinary panel's.
+   * `className` so this module's own stylesheet can style the stage's content
+   * container distinctly from an ordinary panel's.
    * @param resolve Lazily resolves the element to adopt — a panel slot, or the
    * shared stage element. Called exactly once, from `init()`.
    * @param className CSS class applied to this renderer's own wrapper element

@@ -54,7 +54,7 @@ import type {
 } from "@shadowcat/types";
 
 // --- Re-exported generated engine types (ts-rs output, `@shadowcat/types`) ---
-// These mirror `src/server/src/data/engine/*.rs` byte-for-byte; NEVER hand-edit the
+// These mirror the Rust types in `crate::data::engine` byte-for-byte; NEVER hand-edit the
 // generated source. Nested/shared shapes keep their generated name (identical to the
 // prior client name); per-doc-type body shapes are re-exported under a NEW `*Engine` name
 // (never aliased back onto the old `*System` name — an alias would let stale `*System`-named

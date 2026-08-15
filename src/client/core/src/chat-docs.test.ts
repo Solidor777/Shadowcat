@@ -20,11 +20,11 @@ import {
 } from "./chat-docs";
 import type { WireDocument } from "./wire";
 
-// Non-vacuous schema/type guard — see `wire.ts`'s module-level note above its `z` import for the
-// full rationale (asserting against the unannotated `xImpl` const, not `z.infer<typeof XSchema>`,
-// is what makes a dropped union arm or a narrowed field fail this assertion). `RollOutcomeSchema`
-// and `ChatMessageEngineSchema` are covered by their own describe block below, since both widen
-// their INPUT type via `.default(...)` and so need the matching 3-arg `z.ZodType` form.
+// Non-vacuous schema/type guard: asserting against the unannotated `xImpl` const, not
+// `z.infer<typeof XSchema>`, is what makes a dropped union arm or a narrowed field fail this
+// assertion. `RollOutcomeSchema` and `ChatMessageEngineSchema` are covered by their own describe
+// block below, since both widen their INPUT type via `.default(...)` and so need the matching
+// 3-arg `z.ZodType` form.
 describe("chat-docs drift guard — non-vacuous schema/type assertions", () => {
   test("DieRecord", () => {
     expectTypeOf<z.infer<typeof dieRecordSchemaImpl>>().toEqualTypeOf<DieRecord>();

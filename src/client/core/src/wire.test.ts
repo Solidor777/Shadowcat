@@ -115,8 +115,7 @@ describe("wire drift guard — message discriminants", () => {
 // against its hand-written type, rather than `z.infer<typeof XSchema>` (which reads back the
 // exported const's own `z.ZodType<T>` annotation and would trivially pass regardless of what the
 // schema actually validates). A dropped discriminated-union arm or a field narrowed to a
-// literal subtype fails `toEqualTypeOf` here — see `wire.ts`'s module-level note above the `z`
-// import for why the split exists.
+// literal subtype fails `toEqualTypeOf` here.
 describe("wire drift guard — non-vacuous schema/type assertions", () => {
   it("ActorOwnerRef", () => {
     expectTypeOf<z.infer<typeof actorOwnerRefSchemaImpl>>().toEqualTypeOf<WireActorOwnerRef>();

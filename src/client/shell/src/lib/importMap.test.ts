@@ -3,7 +3,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import path from "node:path";
 import { describe, it, expect } from "vitest";
 
-// .../src/client/shell/src/lib/importMap.test.ts -> repo root is five levels up.
+// This module's directory sits five levels below the repo root.
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../../..");
 const distDir = path.join(repoRoot, "dist");
 

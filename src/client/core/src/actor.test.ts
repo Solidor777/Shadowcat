@@ -143,8 +143,8 @@ const actorEngine = (over: Partial<ActorEngine> = {}): ActorEngine => ({
 });
 
 /** A lookup stating `extent` for `tokenId` and nothing else, standing in for a `"footprints"`
- * frame the server has broadcast. `parseFootprints` is exercised against a real payload in
- * `footprints.test.ts`; these cases are about what `resolveTokenBox` does with what it is told. */
+ * frame the server has broadcast. `parseFootprints` is exercised against a real payload by its
+ * own tests; these cases are about what `resolveTokenBox` does with what it is told. */
 function footprintsFor(tokenId: string, extent: { w: number; h: number } | null): FootprintLookup {
   return { token: (id) => (id === tokenId ? extent : null), unit: () => null };
 }

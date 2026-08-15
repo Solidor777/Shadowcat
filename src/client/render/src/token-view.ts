@@ -128,8 +128,8 @@ export class TokenView {
     this.animator.setConfig({ speedCellsPerSec: this.animSpeed, easing: this.animEasing, worldUnitsPerCell: this.worldUnitsPerCell });
   }
 
-  /** Has no production caller today (`src/modules`/`src/client/shell` drive route playback
-   * exclusively through `animateSamples`, per `commitRoute`'s own "Animation is
+  /** Has no production caller today (`WorldSession` drives route playback exclusively through
+   * `SceneInteraction.animateSamples`, per `commitRoute`'s own "Animation is
    * broadcast-driven via onMoveStream ... no local animation from the moveRequest resolve value"
    * comment); exercised only by tests and this passthrough's own caller (`RenderEngine`'s
    * `SceneToolHost` seam). The mechanism below is the contract it honors if called.

@@ -313,8 +313,8 @@ export class TokenAnimator {
     this.startAnim(id, c, [[c.x, c.y], [t.x, t.y]], t.rotation, false);
   }
 
-  /** Has no production caller today (`src/modules`/`src/client/shell` drive route playback
-   * exclusively through `animateSamples`, per `commitRoute`'s own "Animation is
+  /** Has no production caller today (`WorldSession` drives route playback exclusively through
+   * `SceneInteraction.animateSamples`, per `commitRoute`'s own "Animation is
    * broadcast-driven via onMoveStream ... no local animation from the moveRequest resolve value"
    * comment); exercised only by tests and this package's `TokenView`/`RenderEngine`
    * passthroughs. The mechanism below is the contract it honors if called.

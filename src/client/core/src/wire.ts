@@ -336,7 +336,7 @@ export type WireDocument = {
    * content version at stamp time), or `null` for a document with no source. Mirrors
    * `crate::data::document::Source`. */
   source: z.infer<typeof SourceSchema> | null;
-  /** Opaque mergeable-content snapshot at last sync (`MergeBase`, `./merge`). Present on any
+  /** Opaque mergeable-content snapshot at last sync (`MergeBase`). Present on any
    * document stamped from a template (top-level or embedded, per `source`) — not restricted
    * to embedded children; absent/undefined on a document that was never stamped. */
   base?: unknown;
