@@ -197,8 +197,13 @@ pub struct Size {
 pub struct VisionAssignment {
     /// `vision-modes` registry entry id.
     pub mode: String,
-    /// Effective range in grid CELLS (not scene units).
-    pub range: f64,
+    /// Effective range in grid CELLS (not scene units). `None` inherits the
+    /// referenced mode's own `VisionMode::default_range` — an omitted key
+    /// deserializes to `None` (serde special-cases `Option` regardless of
+    /// `#[serde(default)]`; verified in `token_vision_floors_falls_back_to_mode_default_range_when_assignment_omits_range`),
+    /// so the GM-authored mode default becomes live only once a caller resolves
+    /// it against the mode, never by a struct-level fallback here.
+    pub range: Option<f64>,
 }
 
 /// The client-owned token/actor visual union. Internally tagged on

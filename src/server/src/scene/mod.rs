@@ -1885,9 +1885,14 @@ impl SceneEcs {
                 let Some(vm) = modes.get(&a.mode) else {
                     continue;
                 }; // unknown mode → drop (fail-closed)
+                   // An omitted assignment range inherits the mode's own authored default — both
+                   // are authored in the SAME unit (grid cells; see `VisionAssignment::range`'s and
+                   // `VisionMode::default_range`'s docs), so no additional per-cell conversion is
+                   // needed here: the value feeds straight into the same `dist_cells` comparison
+                   // `a.range` always fed.
                 out.push((
                     crate::scene::lighting::floor_min(&bands, &vm.illumination_floor),
-                    a.range,
+                    a.range.unwrap_or(vm.default_range),
                     vm.render_hint.clone(),
                 ));
             }
@@ -4726,6 +4731,31 @@ mod tests {
             .iter()
             .any(|(_, _, h)| h.as_deref() == Some("desaturate")));
         assert!(floors.iter().any(|(_, _, h)| h.is_none()));
+    }
+
+    #[test]
+    fn token_vision_floors_falls_back_to_mode_default_range_when_assignment_omits_range() {
+        use serde_json::json;
+        // Instanced token with an embedded actor granting darkvision but omitting `range`.
+        let mut tok = entity_doc_eng(
+            11,
+            10,
+            "token",
+            json!({ "x": 0, "y": 0, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+        );
+        tok.embedded.insert(
+            "actor".into(),
+            vec![{
+                let mut a = doc(99, None, "actor");
+                a.engine = Some(actor_body(json!([{ "mode": "darkvision" }])));
+                a
+            }],
+        );
+        let ecs = SceneEcs::from_documents(vec![doc(10, None, "scene"), tok.clone()], 0);
+        let floors = ecs.token_vision_floors(&tok);
+        // No vision-modes doc set -> `resolved_vision_modes`'s built-in fallback seed, whose
+        // darkvision entry carries `default_range: 12.0`.
+        assert_eq!(floors, vec![(0.0, 12.0, Some("desaturate".to_string()))]);
     }
 
     // --- Test helpers for movement-restriction resolution tests ---
@@ -7961,9 +7991,9 @@ explored: // GM: unrestricted mask
     /// else varies between the two, so a bounded and an unbounded token measure the same geometry
     /// rather than two fixtures that have to be kept in step.
     ///
-    /// The range rides `VisionAssignment.range`, which is the value `token_vision_floors` reads.
-    /// `VisionMode.default_range` is parsed into the resolved registry but no server-side mask
-    /// consults it, so authoring the range there would leave the token unbounded.
+    /// The range rides `VisionAssignment.range`, which `token_vision_floors` reads directly when
+    /// present; an absent `range` instead resolves to the mode's own `VisionMode.default_range`.
+    /// This fixture always authors an explicit `range`, so it never exercises that fallback.
     ///
     /// The authored block is 3.2 x 3.0 hexes, which is fractional because a hex block's world
     /// rectangle is a shear-dependent function of the block rather than a per-axis product.

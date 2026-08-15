@@ -75,8 +75,10 @@ pub(crate) trait GridShape {
     /// the engine must measure in world units — light bright/dim radii, a token's
     /// `VisionAssignment::range`, animation speed, and the router's reported cost all belong to it.
     /// `VisionMode::default_range` belongs to the class as an AUTHORED quantity but is not measured
-    /// here: no mask reads it, `token_vision_floors` builds every floor from the assignment's own
-    /// `range`.
+    /// here either: `token_vision_floors` resolves an omitted `VisionAssignment::range` against it
+    /// BEFORE any mask reads the pair, so the mode default reaches the mask through the exact same
+    /// cells-vs-`dist_cells` comparison the assignment's own `range` always used — never a second,
+    /// independently-converted path.
     ///
     /// Square returns its own cell size, so nothing changes there; pointy-top hex returns
     /// `√3 · size`, because all six axial neighbours sit that far from a hex's centre while `size`
