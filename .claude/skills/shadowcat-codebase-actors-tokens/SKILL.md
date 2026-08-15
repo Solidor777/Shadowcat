@@ -57,9 +57,9 @@ token/actor name from non-owners via the `OwnerOrGm` visibility tier. Conditions
     that is what makes the mode default live at all, since nothing else reads it. The resolution
     happens where a caller joins an assignment to its mode (`SceneEcs::token_vision_floors`), never
     as a struct-level default, so a reader holding a bare `VisionAssignment` cannot know the
-    effective range without the registry. Both quantities are authored in CELLS and go through the
-    same per-cell conversion, so a resolved default is never scaled differently from an explicit
-    override.
+    effective range without the registry. Both quantities are authored in CELLS and neither is
+    itself converted — the measured DISTANCE is converted to cells and both are compared against it
+    unconverted, so a resolved default is never scaled relative to an explicit override.
     **An omitted RANGE is not the same as an omitted ASSIGNMENT**, and confusing the two inverts the
     meaning: `ActorsPanel` clears darkvision by writing `null`/`[]` — dropping the whole assignment —
     rather than by writing an assignment with no range, which would now grant the mode's default
