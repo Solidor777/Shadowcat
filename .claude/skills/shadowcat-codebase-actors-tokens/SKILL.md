@@ -40,7 +40,7 @@ token/actor name from non-owners via the `OwnerOrGm` visibility tier. Conditions
     `WorldSession.enter` opens the subscription before any tool use.
   - `TokenOverrides` whitelist includes `shape` (alongside `name`, `visual`, `size`) — a per-token
     `"square" | "circle"` override applied on top of the actor's own shape field.
-  - **Token visual union (replaces the old flat `ActorVisual`):** `RenderVisual = {kind:
+  - **Token visual union:** `RenderVisual = {kind:
     "image", asset} | {kind:"animated", source: AnimatedSource, fps, loop}` — the only two kinds the
     render layer ever draws. `AnimatedSource = {type:"frames", frames: string[]} | {type:"sheet",
     asset, rows, cols, count?}` (asset ids pre-resolution; resolved to URLs at the render boundary,

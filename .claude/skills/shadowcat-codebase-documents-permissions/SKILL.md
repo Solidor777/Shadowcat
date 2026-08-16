@@ -63,7 +63,7 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
   -> Result<(), DataError>` (deserializes the body against that doc_type's typed struct;
   `deny_unknown_fields` on every struct — engine-defined types WITHOUT an `engine` body error, and
   non-engine types WITH one error too, so a non-engine `doc_type` can never smuggle a typed body
-  in). `data::command::validate_engine_tree` is the recursive ingress
+  in). `data::validation::validate_engine_tree` is the recursive ingress
   chokepoint — called on every Create/Update POST-IMAGE (after all `FieldChange`s apply),
   including embedded children, so a wholesale `/engine` replacement, a leaf `/engine/x` write, and
   an embedded child's engine write are all covered by one call site. `normalize_engine` also

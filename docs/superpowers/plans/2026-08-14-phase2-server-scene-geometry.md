@@ -54,6 +54,8 @@ Ledger Additions section).
   - `pnpm lint:allowances` — no unapproved lint suppression anywhere in the tree
   - `pnpm run check:svelte-runtime` — single-instance Svelte runtime across the workspace
   - `node scripts/check-skill-api-refs-cli.mjs` — every API symbol a skill cites still exists
+  - `node scripts/check-skill-symbol-refs-cli.mjs` — every code-symbol citation in a
+    `shadowcat-codebase-*` skill resolves to a symbol declared in the tree
   - **`pnpm docs:check-examples`** — every `@example` block must typecheck. **Examples compile
     INSIDE the module that documents them**, so an example may fail at a line its author never
     touched, and an ambient `declare` of a symbol the host already declares collides with the real

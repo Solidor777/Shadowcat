@@ -32,7 +32,8 @@ and restore as a deployment-operator tool, not an in-app feature.
   skipped.
 - `db` — `open_pool(url)`: `SqlitePoolOptions::max_connections(1)`. **Dead
   code** — its only caller is its own unit test; production startup (`main`) and
-  `backup`/`tests::backup_cli` all open pools independently. The whole server's actual
+  `backup::create_backup`/`backup::restore_backup` (plus `backup`'s own `tests` module) all open
+  pools independently. The whole server's actual
   single-connection invariant lives in `data::sqlite::SqliteRepository::connect`
   ([[shadowcat-codebase-documents-permissions]]), which
   separately sets the same `max_connections(1)` — editing `db` does NOT affect the live

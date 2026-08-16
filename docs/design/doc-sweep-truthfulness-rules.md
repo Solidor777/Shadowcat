@@ -364,7 +364,18 @@ The rot is silent, it accumulates, and every instance aims a future reader at wh
 drifted into those coordinates — which is strictly worse than no citation, because it still reads as
 diligence. **A symbol name has none of this failure mode: it survives every insertion, every reflow,
 and every move between files. It breaks only on rename or deletion — precisely the edit where a grep
-for the old name finds it.**
+for the old name finds it.** That grep is no longer a manual step someone has to remember to run:
+`node scripts/check-skill-symbol-refs-cli.mjs` builds a symbol index from every Rust
+`fn`/`struct`/`enum`/`trait`/`const`/`static`/`mod`/`pub use` declaration and every TS/Svelte
+export or class/interface member, then verifies every code-symbol citation in a
+`shadowcat-codebase-*` skill resolves against it — fatal, no baseline, wired into CI beside
+`check-skill-api-refs-cli.mjs`. Two structurally unresolvable sub-classes stay review obligations,
+not gate obligations, exactly as the lowercase-hyphenated marker does for RULE 16: a citation
+inside `shadowcat-codebase-nightfox` naming a symbol the SEPARATE Nightfox repository owns (not
+present in this checkout to index), and a flat bare word, bare camelCase word, or lowercase-first
+`.`-chain (`item`, `basePrefix`, `doc.engine`) — a shape no GOOD example under this rule ever uses,
+and shape alone cannot tell a real declaration from an ordinary in-context value or a local
+variable narrated in prose.
 
 **Disambiguation without paths.** Rule 13's motivating problem was real: this repo has two
 `controller.svelte.ts` and 26 `index.ts`. Symbols solve it better than paths did. Qualify with the
@@ -577,6 +588,18 @@ ignored") rather than the code's past, and flagging it would train writers to do
 of dropping the narration. **A green detector is therefore not a satisfied rule** — history
 narration is a review obligation. Reword to evade a pattern while still speaking of something
 outside the code and you have violated RULE 0, not fixed anything.
+
+**`still`/`nonetheless`/`all the same` are concessive, not historical, unless they narrate a PRIOR
+state of the code.** A concessive word joins two clauses of the SAME present-tense claim ("despite
+X, Y holds") and carries no narration at all; history narration is a word describing what the code
+`used to` do. The test: does the word refer to a PAST VERSION of the code, or to ANOTHER CLAUSE in
+the same sentence? `"the divergence must nonetheless be reported, at debug"` concedes one part of
+a present claim (a divergence that fails one severity check is still reported at another) against
+another, with no past version in view — ordinary prose, not narration, and not converted. A
+genuine historical `still` — "the check still uses the array-based approach" — narrates a state
+that used to be true and remains true, and that IS the banned form. Do not run a blanket
+`still`/`nonetheless`/`all the same` → deletion pass; classify each site by this test first, or a
+sweep churns a real concession into a flatter sentence and a later sweep churns it back.
 
 **The lowercase hyphenated marker shape is deliberately ungated, and this is the decision rather
 than an open gap.** A local checkpoint id written as one lowercase letter, a hyphen and one digit —

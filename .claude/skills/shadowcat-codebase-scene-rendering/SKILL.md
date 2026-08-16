@@ -272,7 +272,7 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   prove parity across 10 scenarios, then DELETED once those cases were frozen as literal
   fixtures — a second permanent executor would reintroduce exactly the fork this refactor exists
   to avoid. The frozen fixture test,
-  `frozen_parity_king_step_paths_match_previously_oracle_verified_outcomes`, is now the permanent
+  `frozen_parity_king_step_grid_outcomes`, is now the permanent
   regression proof. The per-step gate — (1) wall gate (`blocks_move`, all modes incl. GM), (2)
   vision-mask gate (`GridShape::line_traversal` + `visible` membership, skipped for `Unrestricted`), (3)
   region gate (see below) — runs over this DENSE walk, not the raw authored path; the
@@ -416,7 +416,7 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   (the union closes a gap — footprint-disc-at-destination alone missed a diagonal
   step's corner-flanker cells for sub-0.5-cell footprints, letting the router approve a step the
   executor then rejected; `None` from `line_traversal` fails closed); (3) center-to-center
-  step crosses no wall (`segments_cross`); (4) `region_arrests`/impassable check via
+  step crosses no wall (`segments_cross`); (4) `RegionField::is_arrest`/impassable check via
   `PathGrid.inputs.regions: Option<&RegionField>` (see below; a `None` grid field means "no region enforcement",
   distinct from an empty `RegionField`). `astar_leg` — king-move A*, 4 diagonal
   rules, 5-10-5 parity tracked in the `(cell, parity)` node and carried across waypoint legs (cost
@@ -795,7 +795,7 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   (builders + deep-frozen defaults `DEFAULT_WORLD_SETTINGS`/`DEFAULT_GRADATION`/`SEED_VISION_MODES`;
   builders `structuredClone` the frozen default), per-scene `SceneSystem.vision?`/`lighting?`
   overrides + `grid.distance?` + `bounds?`, the scene-parented `light` doc_type
-  (`LightSystem` + `buildLightDoc`), and the fail-closed resolvers `resolveSceneSettings`/
+  (`LightEngine` + `buildLightDoc`), and the fail-closed resolvers `resolveSceneSettings`/
   `resolveGradation`/`resolveVisionModes`. **`bounds`:** `SceneDimensions {width,
   height}` (grid units) — the navmesh's triangulation boundary; per-scene ONLY, no
   world-settings layer; `resolveBounds` (private helper called from `resolveSceneSettings`) falls
@@ -1170,7 +1170,7 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
 - **`resolved_diagonal_rule` is world-only** — there is intentionally no per-scene `diagonalRule`
   override in the pathfinder; the same rule applies across all scenes in a world. Matches the client
   `resolveSceneSettings` precedence (the setting lives in `world-settings`, not per-scene).
-- **`region_arrests`/impassable checking is footprint-gated in the router (`cell_enterable`'s mask
+- **`RegionField::is_arrest`/impassable checking is footprint-gated in the router (`cell_enterable`'s mask
   check, via `grid.inputs.shape.footprint_cells ∪ grid.inputs.shape.line_traversal`) but CENTER-CELL-ONLY in `move_exec` — a
   deliberate asymmetry (route stricter, execution looser), not a bug.** `route ⊆
   gate-allowed` still holds because the router's predicate is already a documented superset of the

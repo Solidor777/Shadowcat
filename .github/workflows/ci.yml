@@ -180,6 +180,8 @@ jobs:
       - run: pnpm build:all
       - name: Skill doc-pointer references resolve
         run: node scripts/check-skill-api-refs-cli.mjs
+      - name: Skill code-symbol citations resolve
+        run: node scripts/check-skill-symbol-refs-cli.mjs
       - name: Function doc coverage (TS)
         run: pnpm lint:docs
       - name: Property and type doc coverage (TS)

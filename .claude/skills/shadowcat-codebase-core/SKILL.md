@@ -116,9 +116,16 @@ source of truth. The ones agents break most:
   ``see `egress_loop`'s `SceneSubscribe` arm ``, never ``see conn.rs:1313`` and never ``the handler in
   `conn.rs` ``. Qualify by owner (`AssetResolver.url`, `chat::broadcast`), not location. Applies to
   all committed prose — doc comments and the live tracking docs. A line number is invalidated by any
-  insertion above it and **no gate catches the rot**; a symbol breaks only on rename, which a grep
-  finds. Carve-outs: config/build files (no symbols to cite), filenames used as *values*, and dated
-  records under `docs/superpowers/`. Full rule: `docs/design/doc-sweep-truthfulness-rules.md`
+  insertion above it; a symbol breaks only on rename, which a grep finds — and for this skill
+  family specifically, that grep now runs automatically:
+  `node scripts/check-skill-symbol-refs-cli.mjs` (fatal, CI-wired) resolves every code-symbol
+  citation in `.claude/skills/shadowcat-codebase-*/SKILL.md` against a symbol index built from the
+  tree. Carve-outs: config/build files (no symbols to cite), filenames used as *values*, dated
+  records under `docs/superpowers/`, and — a documented review obligation, not a gate obligation —
+  citations of a symbol the separate Nightfox repository owns
+  (`shadowcat-codebase-nightfox`, not present in this checkout) and a flat bare/camelCase word or
+  lowercase-first `.`-chain, whose shape cannot mechanically distinguish a real citation from an
+  ordinary in-context value. Full rule: `docs/design/doc-sweep-truthfulness-rules.md`
   RULE 15. [[cite-symbols-not-file-lines]]
 - **As far as code is concerned, ephemeral documents, plans, dates, history and tasks DO NOT EXIST**
   (user directive, iron-clad; RULE 16). This is an ontology, not a style preference: the test is
@@ -134,6 +141,12 @@ source of truth. The ones agents break most:
   - dated plan/spec files, and unnamed spec references (`per spec §3.2`, `the spec'd default`)  <!-- EXAMPLE: RULE 16 specimen -->
   - sweep / fix-round / `buddy-check finding N` markers, `POST_WORK:`, and date stamps  <!-- EXAMPLE: RULE 16 specimen -->
   - **history narration** — `previously`, `formerly`, `before the fix`, "used to return X"  <!-- EXAMPLE: RULE 16 specimen -->
+  - local letter+digit markers — a single letter from the set A, C, F, H, R, V plus one digit
+    (`C-2`, `F3`), including a **version-label writer** (`V1 desaturate approximation`) using the  <!-- EXAMPLE: RULE 16 specimen -->
+    same shape for a version number instead of a review finding — resolvable only by a reader
+    holding the artifact that assigned it, same as the milestone-id class above. A citation of a
+    versioned SYMBOL (`` `PanelLayoutV1` ``, `` `Vec2` ``) is unaffected: the letter-run before the
+    digit excludes it.
 
   **These are one class: each names something outside the code whose identity a process assigns** —
   milestones get renumbered, bug entries move `OPEN_BUGS` → `CLOSED_BUGS`, specs get superseded,
@@ -168,7 +181,12 @@ source of truth. The ones agents break most:
   marked. But
   **a green detector is not a satisfied rule**: history narration is only partly detectable (`no
   longer` usually describes runtime data, not the code's past), so it is a review obligation.
-  Rewording to evade a pattern while still speaking of something outside the code violates RULE 0.
+  A second class sits beside it on the same footing: the lowercase hyphenated marker shape
+  (`c-1`, `b-2`) is character-for-character ordinary comment arithmetic (`0..n-1`, `w-1`) with no
+  separator a pattern can key on, so it is **permanently ungated by design**, not an open gap — a
+  reviewer enforces the ban, and a clean `scripts/check-comment-refs.mjs` run is not evidence none
+  remains. Rewording to evade a pattern while still speaking of something outside the code
+  violates RULE 0.
   Full rule: `docs/design/doc-sweep-truthfulness-rules.md` RULE 16.
 - **There are NO justified keeps, exemptions or carve-outs unless the user explicitly signs off**
   (user directive, iron-clad). A well-argued keep is still a decision about *what the work covers*,

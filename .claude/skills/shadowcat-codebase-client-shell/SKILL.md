@@ -62,8 +62,7 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
 - `AppContext.pathfind` — correlated-request seam: issues a
   `Pathfind` frame via `WsClient.pathfind` and resolves with `PathResult` or rejects with
   `PathError`; wired through `WorldSession` and consumed by `scene-tools` measure-tool route mode.
-- `WsClient.moveRequest(scene, tokenId, path) → Promise<MoveStream>` (`MoveExecuted`
-  is FULLY RETIRED, server + Zod + client) — correlated-request mirror of
+- `WsClient.moveRequest(scene, tokenId, path) → Promise<MoveStream>` — correlated-request mirror of
   `pathfind`: sends `MoveRequest`, resolves with the broadcast `MoveStream` when the matching
   `move_stream` frame arrives (mover's `request_id` correlates; the resolved value signals success
   only — it does NOT drive animation), rejects on `move_error` or timeout (default 10 s). Pure
