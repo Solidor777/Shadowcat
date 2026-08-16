@@ -81,6 +81,14 @@ const under = (p, prefix) => p === norm(prefix) || p.startsWith(norm(prefix) + "
 export const inScope = (scopes, p) =>
   scopes.length === 0 || scopes.some((s) => under(p, s));
 
+// ts-rs output, never hand-written — the owner ruled this whole population out of scope. Excluded
+// by path prefix rather than folded into SKIP_DIRS (a directory-NAME skip that would blindly
+// exclude any directory named "generated" anywhere in the tree), matching the shape
+// eslint.config.js's `"src/types/generated/"` ignore already uses for the same reasoning. The
+// exclusion covers the directory, not a content heuristic — a hand-written file could carry a
+// banner comment too, and this rule must not exempt that.
+export const GENERATED_ROOT = "src/types/generated";
+
 // Single source of the two corpora this gate governs. Every consumer — the main scan, `--cover`,
 // and the `--residue` coverage control — calls this one function rather than re-deriving its own
 // path list, so a future change to what the gate scans cannot silently leave the control scanning
@@ -89,9 +97,12 @@ export function collectFiles() {
   const codeFiles = [
     ...ROOTS.flatMap((d) => sources(d, EXTS)),
     ...rootFiles(),
-  ].map(norm);
+  ]
+    .map(norm)
+    .filter((p) => !under(p, GENERATED_ROOT));
+  const generatedFiles = sources(GENERATED_ROOT, EXTS).map(norm);
   const mdFiles = MD_ROOTS.flatMap((d) => sources(d, MD_EXTS)).map(norm);
-  return { codeFiles, mdFiles };
+  return { codeFiles, mdFiles, generatedFiles };
 }
 
 /**
@@ -100,10 +111,11 @@ export function collectFiles() {
  * corpus cannot diverge from the gate's without changing this one function.
  */
 export function gateFileSet(scopes = []) {
-  const { codeFiles, mdFiles } = collectFiles();
+  const { codeFiles, mdFiles, generatedFiles } = collectFiles();
   const isMdFile = new Set(mdFiles);
   const scanned = [...codeFiles, ...mdFiles].filter((p) => inScope(scopes, p));
-  return { scanned, isMdFile };
+  const generatedExcluded = generatedFiles.filter((p) => inScope(scopes, p)).length;
+  return { scanned, isMdFile, generatedExcluded };
 }
 
 // Patterns below are documented by describing the shape they match wherever describing is as clear
@@ -688,7 +700,7 @@ function main() {
     process.exit(1);
   }
 
-  const { scanned, isMdFile } = gateFileSet(scopes);
+  const { scanned, isMdFile, generatedExcluded } = gateFileSet(scopes);
   const hits = [];
   let exempted = 0;
   for (const path of scanned) {
@@ -740,6 +752,7 @@ function main() {
         MD_ROOTS,
         MD_EXTS,
         [...SKIP_DIRS].sort(),
+        GENERATED_ROOT,
         // The scope-matching rule is part of the ruler: changing what a prefix claims changes every
         // scoped count without touching a pattern. Hashing the function's source keeps the
         // fingerprint honest without anyone remembering to bump a version.
@@ -792,7 +805,11 @@ function main() {
   function provenance(total) {
     const prior = priorRun();
     const ex = exempted > 0 ? `; ${exempted} line(s) EXAMPLE-exempt` : "";
-    const head = `instrument ${INSTRUMENT}; ${scanned.length} file(s) scanned${ex}`;
+    const gen =
+      generatedExcluded > 0
+        ? `; ${generatedExcluded} generated file(s) excluded (${GENERATED_ROOT})`
+        : "";
+    const head = `instrument ${INSTRUMENT}; ${scanned.length} file(s) scanned${ex}${gen}`;
     if (!prior) return `${head}; no prior run recorded for this scope`;
     if (prior.instrument !== INSTRUMENT) {
       return (

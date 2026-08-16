@@ -9,10 +9,11 @@ import {
   collectFiles,
   gateFileSet,
   residueReport,
+  GENERATED_ROOT,
 } from "./check-comment-refs.mjs";
 
 // Every fixture string below is a SPECIMEN whose exact wording is the thing under test — an id, a
-// date, a filename this suite must reproduce verbatim to prove the pattern matches it. Each such
+// date, a filename these fixtures must reproduce verbatim to prove the pattern matches it. Each such
 // LINE carries the scanner's own EXAMPLE: marker (the exemption is per-line, so it rides on the
 // same line as the fixture, never a comment above it), the same exemption BANNED's own entries
 // use to describe themselves without becoming a hit.
@@ -475,6 +476,35 @@ test("the gate's corpus reaches the examples workspace", () => {
   const { scanned } = gateFileSet([]);
   const examples = scanned.filter((p) => p.startsWith("examples/"));
   expect(examples.length, "no example package file reached the scan").toBeGreaterThan(0);
+});
+
+// ts-rs output is out of scope by owner ruling — generated files are never hand-written comments.
+// The exclusion is a path prefix, not a directory-name skip and not a content heuristic: it must
+// remove exactly `GENERATED_ROOT`, nothing broader and nothing narrower.
+test("the gate excludes ts-rs generated output under GENERATED_ROOT", () => {
+  const { codeFiles, generatedFiles } = collectFiles();
+  // Positive control: the directory holds real ts-rs output, so a clean result here is a genuine
+  // exclusion, not a corpus that never reached the directory in the first place.
+  expect(generatedFiles.length, "no ts-rs output found — the positive control is void").toBeGreaterThan(0);
+  for (const p of codeFiles) {
+    expect(p.startsWith(`${GENERATED_ROOT}/`)).toBe(false);
+  }
+  const { scanned } = gateFileSet([]);
+  for (const p of scanned) {
+    expect(p.startsWith(`${GENERATED_ROOT}/`)).toBe(false);
+  }
+});
+
+// The exclusion must stop at the directory boundary: a hand-written sibling one level up
+// (`src/types/index.ts`) shares the `src/types/` prefix with the generated directory but is not
+// itself generated, and must stay in scope. A widened exclusion (e.g. matching on the ts-rs
+// banner text, or on the bare "generated" substring) would silently drop it too.
+test("the exclusion does not widen past the generated directory to its hand-written siblings", () => {
+  const { codeFiles } = collectFiles();
+  expect(
+    codeFiles.includes("src/types/index.ts"),
+    "a hand-written file next to the generated directory was excluded along with it",
+  ).toBe(true);
 });
 
 // Stylesheet comment syntax, both forms. A `//` line comment and a `/* */` block are the only two
