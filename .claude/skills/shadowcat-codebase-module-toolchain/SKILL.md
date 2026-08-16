@@ -70,9 +70,14 @@ existing `ModuleRegistry`.
   source for `svelte/*` bare-specifier imports, failing if any resolve to a subpath NOT present in
   `RUNTIME_ENTRIES` — catches the "import map serves a FIXED svelte-subpath set" gotcha below at
   build time instead of a runtime `SyntaxError`. Wired into `.github/workflows/ci.yml`'s web job +
-  `package.json`'s `check:svelte-runtime` script. Its CLI-entry-point detection uses
-  `pathToFileURL(...).href` (not a raw `file://${argv[1]}` string compare, which never matches on
-  Windows — wrong scheme/separator/drive-letter handling).
+  `package.json`'s `check:svelte-runtime` script. Its CLI-entry-point detection routes through the
+  shared `isDirectEntry`, which resolves `argv[1]` before comparing it against
+  `fileURLToPath(import.meta.url)` — so a relative or unnormalized invocation still matches, while a
+  raw `file://${argv[1]}` string compare never matches on Windows (wrong scheme/separator/
+  drive-letter handling). Every additional spelling of that decision is free to disagree with the
+  others on an `argv[1]` nobody tested, and its failure mode is a gate that scans nothing and exits
+  0, so `isDirectEntry`'s own unit pin asserts it is the sole reader of `argv[1]` across the
+  scripts tree.
 - The shell `worldSession` module — `#loadExternalModules(world, serverVersion)`
   sourced from `w.server_version`; fetch enabled set → `loadModules` → activate; keyed on `info.id`.
 - **`ModuleManager`** (`@shadowcat/module-settings`) — GM installed-module management UI; toggle/save
