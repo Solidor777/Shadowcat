@@ -294,9 +294,10 @@ export class TokenAnimator {
       // Ignore-scan rationale: scan ALL vertices at segIndex or ahead (not just the immediate next).
       // The route-commit dispatcher issues each run-endpoint as a synchronous burst of separate
       // `dispatchIntent` calls; the optimistic store notifies the engine subscription synchronously
-      // per call, so the animator receives `setTarget(V1), setTarget(V2), …, setTarget(goal)` ALL
-      // while `segIndex` is still 0 (no tick runs between them). Narrowing to immediate-next would
-      // interrupt on V2. Scanning all ahead-vertices swallows every burst endpoint cleanly.
+      // per call, so the animator receives `setTarget(first vertex), setTarget(second vertex), …,
+      // setTarget(goal)` ALL while `segIndex` is still 0 (no tick runs between them). Narrowing to
+      // immediate-next would interrupt on the second vertex. Scanning all ahead-vertices swallows
+      // every burst endpoint cleanly.
       //
       // Edge-case: a foreign or rollback authoritative position that coincidentally equals an
       // ahead route-vertex is also swallowed. This is acceptable because routes are constructed

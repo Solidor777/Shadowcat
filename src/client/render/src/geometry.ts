@@ -3,7 +3,7 @@
 // points it is given, so all shape math (cone/circle/ellipse/square) lives here and is
 // headless-testable. Angles are degrees; 0° = +x, positive toward +y (scene y is down).
 
-/** Converts degrees to radians, per this file's angle convention (0° = +x, positive toward +y).
+/** Converts degrees to radians, per the shared angle convention (0° = +x, positive toward +y).
  * @param d An angle in degrees.
  * @returns `d` in radians.
  * @example
@@ -101,7 +101,7 @@ export function circlePoints(cx: number, cy: number, r: number, segments = 32): 
 /**
  * Isoceles cone AoE as a 3-point wedge (apex + two straight base corners, not an arc)
  * — apex at `(apexX,apexY)`, base corners at distance `size` along
- * `directionDeg ± apertureDeg/2`. Degrees follow this file's convention: 0° = +x,
+ * `directionDeg ± apertureDeg/2`. Degrees follow the shared convention: 0° = +x,
  * positive toward +y (scene y is down).
  * @param apexX Apex x.
  * @param apexY Apex y.
@@ -131,7 +131,7 @@ export function conePoints(apexX: number, apexY: number, size: number, direction
 
 /**
  * Four corners of a square (side `2*half`) centered at `(cx,cy)`, rotated
- * `directionDeg` about its center. Degrees follow this file's convention: 0° = +x,
+ * `directionDeg` about its center. Degrees follow the shared convention: 0° = +x,
  * positive toward +y (scene y is down).
  * @param cx Center x.
  * @param cy Center y.

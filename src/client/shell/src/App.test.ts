@@ -14,7 +14,7 @@ vi.mock("@shadowcat/module-entry", async () => {
 afterEach(() => vi.restoreAllMocks());
 
 // `currentRoute()`'s backing state is module-scope $state, so it PERSISTS across every
-// test in this file (module caching — it is not re-initialized per test). A
+// test in this suite (module caching — it is not re-initialized per test). A
 // prior test's `navigate()` call (e.g. entering a world sets the hash to
 // `#/world/<id>`) otherwise leaks into the next test, which now matters
 // because boot() reads `currentRoute()`. Reset the hash — and manually

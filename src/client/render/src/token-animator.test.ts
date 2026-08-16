@@ -68,14 +68,15 @@ describe("TokenAnimator duration model", () => {
   });
 
   it("synchronous burst: all run-endpoints arrive at segIndex 0, walk still reaches final goal", () => {
-    // Reproduces the real route-commit pattern: dispatchIntent fires V1 then goal synchronously
-    // before any tick, so the animator receives setTarget(V1) then setTarget(goal) while segIndex
-    // is still 0.  Both must be swallowed by the ignore-scan; the walk must complete to (300,300).
+    // Reproduces the real route-commit pattern: dispatchIntent fires the corner vertex then the
+    // goal synchronously before any tick, so the animator receives both setTarget calls while
+    // segIndex is 0. Both must be swallowed by the ignore-scan; the walk must complete to
+    // (300,300).
     const a = fresh();
     a.setTarget("t1", { x: 0, y: 0, rotation: 0 });
     a.animateAlongPath("t1", [[0, 0], [300, 0], [300, 300]], 0);
     // No tick between these — both arrive at segIndex 0.
-    a.setTarget("t1", { x: 300, y: 0, rotation: 0 }); // V1 (corner)
+    a.setTarget("t1", { x: 300, y: 0, rotation: 0 }); // the corner vertex
     a.setTarget("t1", { x: 300, y: 300, rotation: 0 }); // goal
     a.tick(10_000); // settle
     expect(a.get("t1")).toEqual({ x: 300, y: 300, rotation: 0 });

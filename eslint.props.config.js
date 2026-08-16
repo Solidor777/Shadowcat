@@ -97,9 +97,9 @@ export default [
   {
     files: ["src/types/**/*.ts", "src/client/**/*.ts", "src/modules/**/*.ts", "examples/**/*.ts"],
     ignores: [
-      // Identical to eslint.docs.config.js's ignores — see that file's
-      // comment for why both test-file conventions and the generated-types
-      // exemption must all appear.
+      // Identical to eslint.docs.config.js's ignores — see its own comment for
+      // why both test-file conventions and the generated-types exemption must
+      // all appear.
       "**/node_modules/**", "**/dist/**", "**/*.test.ts", "**/*.spec.ts", "**/vitest.setup.ts",
       "src/types/generated/**",
     ],

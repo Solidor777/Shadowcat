@@ -1,5 +1,5 @@
-// The ONLY file in this codebase permitted to import `dockview-core`. Every
-// dockview type/event crosses out of this module already translated into our
+// The `dockview` module is the ONLY importer of `dockview-core` in this codebase. Every
+// dockview type/event crosses out of it already translated into our
 // own vocabulary (`LayoutOp`, `DropSite`) — the `policy` module and everything above
 // the `EngineAdapter` seam stays engine-free.
 import { createDockview } from "dockview-core";
@@ -1181,7 +1181,7 @@ export class DockviewEngine implements EngineAdapter {
    * of these ops apply). This assumes the dragged group is not already a
    * member of the target zone (the overwhelmingly common real gesture — a
    * titlebar drag to a DIFFERENT zone's edge); a same-zone whole-group
-   * reorder is a residual approximation, matching this file's existing
+   * reorder is a residual approximation, matching `DockviewEngine`'s
    * documented fidelity limits (see `#toDropSite`'s target-group-outside-our-
    * zone-bookkeeping approximation). An existing-group target (`group` a
    * number already) instead reuses that same numeric index for every tab,

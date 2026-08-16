@@ -252,7 +252,7 @@ export class RenderEngine implements SceneToolHost {
    * derived-vision frame); starts the backend's per-frame ticker (token tween, lighting fade,
    * vision-sweep advance, ping rings); and opens the `vision` subscription. Call exactly once
    * per engine instance. Every field a `SceneToolHost` method reads is already constructed
-   * before `start()` runs (see the constructor) — nothing in THIS file's own methods depends on
+   * before `start()` runs (see the constructor) — no `RenderEngine` method of its own depends on
    * `start()` having run — but no scene document has been reconciled into a render node yet, so
    * a method that would otherwise touch one (e.g. `animateAlongPath` on a token not yet
    * reconciled) has nothing to act on until the first reconcile pass above completes.
@@ -1283,7 +1283,7 @@ export class RenderEngine implements SceneToolHost {
 
   /** Recomputes the visible scene rect from the current camera + viewport, then redraws the
    * grid layer for it. Called after any camera or viewport change ({@link applyCamera},
-   * {@link setViewport}, {@link setGrid}) — never on its own by a caller outside this file.
+   * {@link setViewport}, {@link setGrid}) — never on its own by a caller outside `RenderEngine`.
    * @example
    * ```
    * // private method; not part of the public API

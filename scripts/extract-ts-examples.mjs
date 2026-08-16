@@ -433,7 +433,7 @@ export function hasTypeValueClash(hoisted, hostBindings, selfPackageName = null,
  * plus `import type { B } from …`, so `B` stays exactly as type-only as it was. Safe
  * ONLY because the merged virtual file is typechecked, never emitted: the
  * `verbatimModuleSyntax` rule that makes `import type` meaningful for real output
- * governs emitted JS, which this file never produces. The host's real file on disk is
+ * governs emitted JS, which example typechecking never produces. The host's real file on disk is
  * never touched — this operates on an in-memory copy of its text.
  *
  * Returns the rewritten text and the subset of `namesToUpgrade` actually resolved.

@@ -2,7 +2,7 @@
 // custom properties onto our design tokens so the docking chrome matches the
 // rest of the app instead of dockview's shipped themes. A full stage-well
 // skin (drop overlays, tab-group chips, floating titlebar) is future work;
-// this file only wires the two token systems together. Imported once, as a
+// this stylesheet only wires the two token systems together. Imported once, as a
 // side effect, from the `dockview` module — never paid for by `FakeEngine`-only
 // hosts.
 // Referenced by relative path (not a bare "pkg/..." specifier) — dart-sass's
@@ -35,8 +35,8 @@
 
 // The custom tab component (`PanelTabRenderer`) — icon +
 // label + menu button, rendered as the CONTENT of dockview's own `.dv-tab`
-// wrapper (which supplies `role="tab"` + roving tabindex; this file never
-// re-styles that wrapper's OWN focus/selection state, only its content).
+// wrapper (which supplies `role="tab"` + roving tabindex, whose OWN focus/selection
+// state is never re-styled here — only its content).
 .sc-tab {
   display: flex;
   align-items: center;
@@ -92,9 +92,9 @@
   }
 }
 
-// `:focus-visible` ring on every interactive part this file owns — dockview's
+// `:focus-visible` ring on every interactive part the stage-well skin owns — dockview's
 // own `.dv-tab` wrapper already carries its own focus styling via its theme
-// vars; this covers the parts THIS file introduces (menu button, popover
+// vars; this covers the parts the skin introduces (menu button, popover
 // menu items — the latter styled in `PanelMenu` itself, scoped there).
 .sc-tab-menu-btn:focus-visible {
   outline: 2px solid var(--accent);

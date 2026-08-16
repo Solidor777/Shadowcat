@@ -236,7 +236,7 @@ export async function revokeWorldInvite(world: string, codeId: string): Promise<
 /** The server's `{ error }` body when present, else the bare status. Handlers
  * return only client-actionable text (5xx detail is logged server-side, never
  * echoed), so surfacing it is safe. Not exported — the shared error-message
- * helper every wrapper in this file calls.
+ * helper every exported request wrapper calls.
  * @param res The failed `Response` (already known non-ok by the caller).
  * @param fallback The message to use when the body has no usable `error` string.
  * @returns The server's error message, or `"<fallback>: <status>"`.

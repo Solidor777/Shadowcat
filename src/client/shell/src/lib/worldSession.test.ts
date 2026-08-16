@@ -15,7 +15,7 @@ import { listWorldMembers } from "./api";
 
 // The members fetch hits the network; stub it (safe default, overridable per
 // test). The server version now arrives on the Welcome payload, not a fetch —
-// ensure this file's mock Welcome message (built in `mockConnect`) includes a
+// ensure the mock Welcome message `mockConnect` builds includes a
 // `server_version: "0.1.0"` field, since the `WireWelcome` schema now requires it.
 vi.mock("./api", async (importActual) => {
   const actual = await importActual<typeof import("./api")>();
@@ -1001,9 +1001,9 @@ test("a scene sub added during the Welcome await window is established exactly o
 test("an enabled set with nothing to load never calls listInstalledModules a second time on reconnect", async () => {
   const core = await import("@shadowcat/core");
   // This suite has no `clearMocks` config, so the shared `getEnabledModules` mock's
-  // call count otherwise carries over from every earlier test in this file that
-  // also calls `session.enter()`; clear it here so the assertion below reflects
-  // only this session's calls, not file-order-dependent accumulation.
+  // call count otherwise carries over from every earlier test that also calls
+  // `session.enter()`; clear it here so the assertion below reflects only this
+  // session's calls, not order-dependent accumulation.
   vi.mocked(core.getEnabledModules).mockClear();
   const session = new WorldSession({
     selfId: "u1",

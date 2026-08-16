@@ -322,7 +322,7 @@ function fnv1a32(str: string, seed: number): number {
  * produce the same id, so independent callers (e.g. two GMs seeding a world-scoped singleton
  * doc at once) converge on one id without a lookup. Built from four independently-seeded
  * FNV-1a 32-bit mixes (128 bits total) rather than true SHA-1 UUIDv5, because Web Crypto's
- * `subtle.digest` is async and every doc builder in this file — `envelope` included — is
+ * `subtle.digest` is async and every doc builder consuming this id — `envelope` included — is
  * synchronous; the version(5)/variant nibbles are set purely for id-shape parity with
  * `crypto.randomUUID()`, not RFC 4122 conformance. Collision risk is not a security boundary:
  * the server's singleton create-gate rejects a duplicate Create by `doc_type`, not by id, so a

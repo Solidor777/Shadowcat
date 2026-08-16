@@ -248,7 +248,7 @@ export type PanelLocation =
     };
 
 // The fixed dock-zone set every `ExpandedLayout.zones` record always has an entry for
-// (see `ExpandedLayout`'s own doc comment) — an iteration order for the loops in this file,
+// (see `ExpandedLayout`'s own doc comment) — an iteration order for the reducer's loops,
 // not a priority. Mirrored (not shared) by `DockviewEngine`'s own `ZONE_IDS`, which walks the
 // same three zones for its dockview-side reconciliation.
 const ZONE_IDS: readonly ZoneId[] = ["right", "bottom", "left"];
@@ -264,7 +264,7 @@ const ZONE_DEFAULT_SIZE: Record<ZoneId, number> = { right: 320, bottom: 240, lef
 // shared import, so the two modules stay decoupled) — the same logical operation
 // (reload -> float a persisted popout) must land at the same screen position
 // regardless of which of the two call sites handles a given panel's registration timing.
-// Nothing in either file's types enforces this pairing; the two constants can drift
+// Nothing in either constant's type enforces this pairing; the two can drift
 // silently unless something exercises both call sites and compares their output. That
 // enforcement is the "cascade parity at index %i: a floating placement and
 // a rehydrated popout land on the identical rect" test, not a runtime assertion here.

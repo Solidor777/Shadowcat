@@ -475,7 +475,7 @@ describe("ActorsPanel — per-token face swap", () => {
 describe("ActorsPanel — live search + open sheet", () => {
   // Real (not identity) `t` for this describe block: the "Open sheet" assertion below matches
   // the actual rendered label text, not the raw i18n key (the identity default the other
-  // describes in this file rely on has no space between "open" and "Sheet").
+  // `describe` blocks rely on has no space between "open" and "Sheet").
   const realT = (k: string): string => ({ "actors.openSheet": "Open sheet", "actors.search": "Search actors" })[k as "actors.openSheet" | "actors.search"] ?? k;
 
   function actorDoc(id: string, name = "Goblin"): WireDocument {

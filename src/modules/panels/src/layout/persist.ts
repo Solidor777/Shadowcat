@@ -278,7 +278,8 @@ function withPoppedOut(l: PanelLayoutV1): PanelLayoutV1 {
  * pruning against that partial set would otherwise permanently drop every not-yet-registered
  * panel's saved position. `PanelsController` retains `source` to reconstruct later-registering
  * panels' persisted locations via `placeNewRegistrations` instead of losing them to that race.
- * @param raw The persisted blob, of unknown shape (see the file header).
+ * @param raw The persisted blob, of unknown shape — `UiState.worlds[world].panelLayout` is
+ * `unknown`, so the structural guards here are hand-rolled rather than schema-driven.
  * @param known The panel ids the caller already has registered at decode time — consumed only
  * by the post-validation `prune` pass, not by the structural/referential validity check.
  * @param fallback Builds the layout to use when `raw` fails validation — typically

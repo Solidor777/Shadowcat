@@ -1,7 +1,7 @@
 // Pure drop-veto + zone-classification policy for the stage well. NO
 // dockview import here (that boundary is the `dockview` module's alone) — dockview's
-// drop events are translated into `DropSite` INSIDE the `dockview` module; this file
-// only ever sees our own vocabulary, so it is directly unit-testable and
+// drop events are translated into `DropSite` INSIDE the `dockview` module, so the veto
+// policy only ever sees our own vocabulary, is directly unit-testable and
 // carries zero DOM/engine dependency.
 import type { ExpandedLayout, LayoutOp, Rect } from "../layout/tree";
 import type { ZoneId } from "@shadowcat/core";

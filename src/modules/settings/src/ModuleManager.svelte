@@ -18,7 +18,7 @@
   /**
    * Display-only label: the manifest's author-declared `id`, falling back to
    * the install-folder id if the manifest omits one. Never used as a
-   * toggle/save key — every call site in this file (`checked`/`onchange`
+   * toggle/save key — every call site (`checked`/`onchange`
    * below, and `save()`'s `[...enabled]`) keys on `info.id` (the install
    * folder id, server-guaranteed present) instead, because the server's
    * enabled-module set is keyed on THAT id, which the manifest's own

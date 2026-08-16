@@ -1185,7 +1185,7 @@ export class WsClient {
         resolve();
       }, CHAT_ERROR_WINDOW_MS);
       // Node exposes `unref` on its Timeout objects; browsers don't. The cast + optional
-      // call reaches it where present without a `@types/node` dependency in this file.
+      // call reaches it where present without taking a `@types/node` dependency.
       (
         timer as unknown as {
           /** Node-only: detach the timer from keeping the event loop alive. */

@@ -83,6 +83,6 @@ export class ChatUnreadBadge implements PanelBadge {
  * the constructor); each disposes its own subscription in its own
  * `dispose()`, so a tab close/reopen does not accumulate listeners here as
  * long as dockview-core calls that lifecycle hook on every teardown — a
- * third-party guarantee this file does not itself enforce or verify.
+ * third-party guarantee `ChatUnreadBadge` does not itself enforce or verify.
  */
 export const chatUnreadBadge = new ChatUnreadBadge();

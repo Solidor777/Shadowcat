@@ -1,8 +1,8 @@
 // Client mirror of the chat message content model (`chat::MessageEngine` et al).
 // `MessageEngine` is deliberately NOT ts-rs-exported (server comment: "Opaque on the
 // WIRE" — the server enforces `deny_unknown_fields` structurally, the exact segment/
-// outcome union is the client's own concern) — this file is the manually-kept-in-sync
-// Zod mirror; a Rust body-shape change MUST update it. Fail-closed: a body that does
+// outcome union is the client's own concern) — the Zod mirror is kept in sync by hand,
+// so a Rust body-shape change MUST update it. Fail-closed: a body that does
 // not parse renders as nothing, never partially. Re-rooted onto the three-band
 // document shape: the message body lives in `doc.engine`, `doc.system` stays `{}`.
 import { z } from "zod";
