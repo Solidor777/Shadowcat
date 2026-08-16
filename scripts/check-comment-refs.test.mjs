@@ -245,6 +245,23 @@ test("code mode flags the hyphenated local letter+digit marker", () => {
   expect(hits.map((h) => h.kind)).toEqual(["local letter+digit marker"]);
 });
 
+// A version label written as an initial plus its number is the same unresolvable local marker as a
+// review finding's, so `V` sits in the same letter set. The two cases below pin the letter and the
+// word boundary that keeps a versioned SYMBOL out of the ban.
+test("code mode flags a version-label local marker", () => {
+  const { hits } = scanContent("// V1 desaturate approximation of the wash.\n", { // EXAMPLE:
+    isMd: false,
+  });
+  expect(hits.map((h) => h.kind)).toEqual(["local letter+digit marker"]);
+});
+
+test("a versioned symbol name is not a version-label marker", () => {
+  const { hits } = scanContent("// `PanelLayoutV1` is the persisted shape; `Vec2` is its unit.\n", {
+    isMd: false,
+  });
+  expect(hits).toEqual([]);
+});
+
 // The scope of the entry is the COMMENT and prose-shaped literals, never program data: a
 // whitespace-free literal outside an explanatory context is a value the program acts on, where a
 // marker-shaped collision refers to nothing. This is what lets the entry govern code at all.
@@ -360,11 +377,42 @@ test("scanCandidates in code mode reports a novel unspaced shape found in a comm
   expect(residue.map((r) => r.token)).toEqual(["Bump7"]); // EXAMPLE:
 });
 
-test("scanCandidates in code mode shadows a token the code ban list already catches", () => {
+test("scanCandidates in code mode shadows a candidate the ban list already catches", () => {
   // A candidate the gate itself would fail is not a coverage gap, so it must not be re-reported as
   // an unrecognised shape.
   const { residue } = scanCandidates("// documented as the C1 property\n", { isMd: false }); // EXAMPLE:
   expect(residue).toEqual([]);
+});
+
+// WHICH list that shadowing consults is pinned by injection rather than by a specimen: every
+// code-list entry a candidate pattern can reach is also reachable from the skill list, so any real
+// token is classified identically under both and a fixture-based test would pass regardless of the
+// selection. Two fabricated lists that overlap in nothing make the selection observable — each case
+// fails if the mapping is inverted or hardcoded to one side.
+// The two tokens are interpolated rather than written into the fixture text, so the fixture stays
+// program data under the scanner's own whitespace rule and reports no residue of its own when the
+// coverage control scans it.
+const CODE_TOKEN = "CodeOnly1";
+const SKILL_TOKEN = "SkillOnly2";
+const PROBE_BAN_LISTS = {
+  code: [{ name: "code-list probe", re: /\bCodeOnly1\b/ }],
+  md: [{ name: "skill-list probe", re: /\bSkillOnly2\b/ }],
+};
+
+test("scanCandidates checks a code file against the code ban list", () => {
+  const { residue } = scanCandidates(`// ${CODE_TOKEN} and ${SKILL_TOKEN} both appear.\n`, {
+    isMd: false,
+    banLists: PROBE_BAN_LISTS,
+  });
+  expect(residue.map((r) => r.token)).toEqual([SKILL_TOKEN]);
+});
+
+test("scanCandidates checks a skill file against the skill ban list", () => {
+  const { residue } = scanCandidates(`${CODE_TOKEN} and ${SKILL_TOKEN} both appear.\n`, {
+    isMd: true,
+    banLists: PROBE_BAN_LISTS,
+  });
+  expect(residue.map((r) => r.token)).toEqual([CODE_TOKEN]);
 });
 
 // The two ban lists are selected per file class, and the discriminator has to be a shape that one

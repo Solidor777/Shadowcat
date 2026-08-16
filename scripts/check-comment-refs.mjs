@@ -16,7 +16,7 @@
 // from a new one to every future reader, so exempting a backlog preserves exactly the defect being
 // removed.
 //
-// This file is itself in scope (see ROOTS) and names no document, rule number or workspace, for
+// This checker is itself in scope (see ROOTS) and names no document, rule number or workspace, for
 // the reason it enforces: a checker that cites the numbered rule it implements breaks silently
 // when that rule is renumbered, while still reporting success. The property is the durable name.
 
@@ -124,8 +124,8 @@ const BANNED = [
   // unsuffixed form carries no less process identity than the suffixed one, so a pattern that
   // required the suffix would read the short form as clean. The spelled-out `Task N` form is the
   // same id shape written in full rather than abbreviated behind the capital letter, so it is the
-  // same category, not a second one — a coverage scan of the corpus this pattern governs found it
-  // surviving under this entry's own name while the abbreviated form was already caught.
+  // same category, not a second one: both writers point outside the code identically, so a pattern
+  // carrying only the abbreviated form reads the spelled-out one as clean.
   { name: "milestone/task id", re: /\bM\d+[a-z]?(?:-\d+)?\b|\bTask\s+\d+[a-z]?(?:-\d+)?\b/ },
   // A capital D, I, T or W followed by digits: phase checkpoints, numbered invariants, tasks and
   // workstreams. All are ids a process assigns, resolvable only by a reader holding that artifact.
@@ -134,18 +134,20 @@ const BANNED = [
   // collision resolves the same way every other value/document collision here does.
   { name: "phase / workstream / invariant id", re: /\b[DITW]\d+\b/ },
   // The same local-marker shape as the entry above under a second letter set: a capital A, C, F,
-  // H or R and a single digit, optionally hyphen-separated and optionally carrying a dashed
-  // sub-number. It is how a review finding, a numbered fix pass, or any other locally numbered
-  // item gets written as an initial plus its number, and it resolves only for a reader holding
-  // the artifact that assigned it.
+  // H, R or V and a single digit, optionally hyphen-separated and optionally carrying a dashed
+  // sub-number. It is how a review finding, a numbered fix pass, a version label, or any other
+  // locally numbered item gets written as an initial plus its number, and it resolves only for a
+  // reader holding the artifact that assigned it.
   //
   // Restricted to exactly ONE digit and to that letter set, because the governed corpora carry
   // legitimate two-digit tokens sharing a first letter (a Fortran source-extension name), and
-  // letters outside this set that a vendored skill uses for its own step headings. It governs BOTH
+  // letters outside this set that a vendored skill uses for its own step headings. `V` is included
+  // on a measured zero collisions across both corpora; a versioned SYMBOL is unaffected, since the
+  // token boundary excludes a letter run before the V (`PanelLayoutV1`, `Vec2`). It governs BOTH
   // corpora: an initial-plus-number points outside the code from a comment exactly as it does from
   // skill prose, so the two file classes share the entry by reference rather than each carrying
   // its own copy.
-  { name: "local letter+digit marker", re: /\b[ACFHR]-?\d(?:-\d+)?\b/ },
+  { name: "local letter+digit marker", re: /\b[ACFHRV]-?\d(?:-\d+)?\b/ },
   {
     name: "repo document pointer",
     re: /docs\/[\w./-]+\.md|\b(?:TODO|OPEN_BUGS|CLOSED_BUGS|POST_WORK_FINDINGS|ARCHITECTURE|PLAN)\.md|ARCHITECTURE\s*[§#]|\binvariant\s*#?\s*\d+/i,
@@ -174,9 +176,9 @@ const BANNED = [
   // a clean run means none remains.
   //
   // EXAMPLE: `pre-fix`/`post-fix`/`pre-refactor`/`post-refactor` are the same shape as
-  // EXAMPLE: "before/after the fix" written as a compound instead of a phrase — a coverage scan
-  // of the corpus this pattern governs found it surviving under this entry's own name in exactly
-  // this compound form.
+  // EXAMPLE: "before/after the fix" written as a compound instead of a phrase. The compound names
+  // the same superseded state the phrase does, so a pattern carrying only the phrase reads the
+  // compound as clean.
   //
   // The `used to` form is bound to an explicit subject pronoun (`it`/`this`/`that`/`which`/`they`)
   // rather than matched bare: unqualified "used to <verb>" is also the ordinary present-tense
@@ -276,7 +278,7 @@ const SKILL_BANNED = [
   skillBannedByName("sweep / round / review marker"),
   skillBannedByName("history narration"),
   skillBannedByName("unnamed spec reference"),
-  // EXAMPLE: The ruling's newly-added "ephemeral doc pointer" category, named apart from the
+  // EXAMPLE: The "ephemeral doc pointer" category, named apart from the
   // EXAMPLE: shared "repo document pointer" CODE entry because the split is different for
   // EXAMPLE: skills: the code entry also bans a durable architecture reference and a bare
   // EXAMPLE: numbered invariant, for which code has no durable-citation carve-out at all, while
@@ -292,6 +294,26 @@ const SKILL_BANNED = [
   skillBannedByName("local letter+digit marker"),
   skillBannedByName("numbered constraint"),
 ];
+
+// The file class → ban list mapping, held as one value so both scanners select through the same
+// symbol rather than each repeating the conditional; two derivations of the same decision are how
+// they come to disagree about a file class.
+const BAN_LISTS = { code: BANNED, md: SKILL_BANNED };
+
+/**
+ * The ban list governing one file class: the skill ruleset for `.md` prose, the code ruleset
+ * otherwise.
+ *
+ * `lists` is a seam, not a knob — production has exactly one mapping and passes nothing. It exists
+ * because no real specimen can pin `scanCandidates`'s half of this selection: every code-list entry
+ * a candidate pattern can reach is also reachable from the skill list, and the entries the two
+ * lists do not share match no candidate shape at all, so a fixture's classification is identical
+ * under either list. Two fabricated lists that deliberately differ are the only way to observe
+ * which one a code file is checked against.
+ */
+function bannedFor(isMd, lists = BAN_LISTS) {
+  return isMd ? lists.md : lists.code;
+}
 
 // EXAMPLE: A durable design-doc citation can carry digits that are part of its FILENAME, not a
 // EXAMPLE: process marker (a milestone-numbered data-model doc under the durable design-doc
@@ -316,25 +338,25 @@ const DESIGN_DOC_CITATION = /docs\/design\/[\w.-]+\.md/g;
 //
 // Two independent candidate SHAPES run side by side because they miss different things: an
 // EXAMPLE: identifier-shaped candidate (a letter run plus digits) cannot see a marker with no
-// EXAMPLE: digit at all — `pre-fix` has none — which is exactly the gap that motivated the
-// second class below. Neither shape subsumes the other, so both must run for the control to
+// EXAMPLE: digit at all — `pre-fix` has none — which is the gap the second class below
+// covers. Neither shape subsumes the other, so both must run for the control to
 // cover what BANNED's own entries already ban by shape (an id, and separately a narration phrase).
 //
 // The identifier shape itself splits into two sub-forms that behave differently per corpus. A
-// EXAMPLE: real local design marker is LABEL-shaped and unspaced (`S1`, `D9`, `E8`, `M13-0`) — a corpus
-// scan of `src`/`scripts` under the spaced sub-form (a capitalized word plus a bare number, e.g.
-// a fixture or scene counter) found it to be almost entirely an ordinary-English "Word Number"
-// test-scenario counter, not a marker at all, while the skill corpus's spaced form still carries
-// genuine hits (BANNED's own spelled-out "Task N" entry names one spaced shape that IS a real
+// EXAMPLE: real local design marker is LABEL-shaped and unspaced (`S1`, `D9`, `E8`, `M13-0`). Over
+// `src`/`scripts` the spaced sub-form (a capitalized word plus a bare number, e.g. a fixture or
+// scene counter) is almost entirely an ordinary-English "Word Number" test-scenario counter rather
+// than a marker, while the skill corpus's spaced form carries genuine hits (BANNED's own
+// spelled-out "Task N" entry names one spaced shape that IS a real
 // marker). The unspaced label form stays a candidate in both corpora; the spaced "Word Number"
 // form is scoped to the skill corpus only.
 const CANDIDATE_TOKEN_LABEL = /\b[A-Z][A-Za-z]{0,20}\d+[a-z]?(?:-\d+)?\b/g;
 const CANDIDATE_TOKEN_WORD = /\b[A-Z][A-Za-z]{0,20}\s\d+[a-z]?(?:-\d+)?\b/g;
 
 // The narration-shaped class: comment text carrying temporal/comparative language about the code
-// itself. Scoped narrower than "every word that can describe a past state" on purpose — a first
-// pass against the governed corpus included the common English words `new`/`still`/`now`/`was`/
-// `were`/`since`/`until`/`after`/`old` and produced ~520 of ~630 raw matches, essentially all of
+// itself. Scoped narrower than "every word that can describe a past state" on purpose: the common
+// English words `new`/`still`/`now`/`was`/`were`/`since`/`until`/`after`/`old` match the
+// overwhelming majority of raw candidates over the governed corpus, essentially all of
 // them present-tense or runtime-data prose ("the caller now owns the buffer", "if the previous
 // sample was inside the mask") with no shape-level way to tell a genuine narration instance from
 // the noise. Acknowledging that volume, or worse acknowledging it by a reason that amounts to "the
@@ -345,21 +367,21 @@ const CANDIDATE_TOKEN_WORD = /\b[A-Z][A-Za-z]{0,20}\s\d+[a-z]?(?:-\d+)?\b/g;
 // The pre-/post- compound shape is meaningful in BOTH corpora and runs unconditionally.
 const PRE_POST_NARRATION_TOKEN = /\bpre-[a-z]+\b|\bpost-[a-z]+\b/gi;
 
-// The six single words below are meaningful ONLY over the skill corpus, not code: a corpus scan
-// of `src`/`scripts` under this same class found `moved`/`replaced`/`renamed`/`deprecated` used
-// almost exclusively as runtime-data or wire-protocol vocabulary — an `AssetChanged` op literally
+// The six single words below are meaningful ONLY over the skill corpus, not code: over
+// `src`/`scripts`, `moved`/`replaced`/`renamed`/`deprecated` are
+// almost exclusively runtime-data or wire-protocol vocabulary — an `AssetChanged` op literally
 // named `"replaced"`, a doc comment on "the token that moved", a wire-drift test naming "a renamed
 // … enum variant" — none of it narration of the CODE's own past, all of it the ordinary present-
 // tense description this class is designed not to flag. The skill corpus is pure prose about a
-// subsystem's current shape, where the same six words turned out to be mostly genuine narration
-// once read (`legacy` was the sole exception — see ACKNOWLEDGED_NARRATION); code comments are not,
+// subsystem's current shape, where the same six words are mostly genuine narration
+// (`legacy` is the sole exception — see ACKNOWLEDGED_NARRATION); code comments are not,
 // so this half of the class is scoped to `isMd` rather than widened to swallow that noise.
 const WORD_NARRATION_TOKEN =
   /\boriginally\b|\blegacy\b|\bdeprecated\b|\brenamed\b|\bmoved\b|\breplaced\b/gi;
 
 // Named, counted, one reason each — an unnamed or uncounted acknowledgement is a backdoor by the
-// same reasoning as the EXAMPLE exemption. Each entry was matched against the corpus once and is
-// real: a product/standard name, a versioned code symbol, or a vendored tool skill's own internal
+// same reasoning as the EXAMPLE exemption. Every entry names a token the corpus really carries: a
+// product/standard name, a versioned code symbol, or a vendored tool skill's own internal
 // structure, none of which is a Shadowcat-process-assigned id.
 const ACKNOWLEDGED = [
   {
@@ -373,10 +395,6 @@ const ACKNOWLEDGED = [
   {
     name: "a SQL micro-query/clause literal used as a lightweight existence or connectivity probe, not prose",
     re: /\bSELECT\s?1\b|\bLIMIT\s?1\b/,
-  },
-  {
-    name: "an algorithm/route waypoint label or an inline first-pass-version label, not a process id",
-    re: /\bV[12]\b/,
   },
   {
     name: "a code symbol cited as a value, not a process id",
@@ -472,17 +490,18 @@ function lineSubject(line, isMd, lexState) {
  * looked at. Pure function of its arguments, mirroring `scanContent`, so a test exercises it on
  * fabricated text without touching the filesystem.
  *
- * `isMd` selects the same comment/prose subject extraction `scanContent` uses (`lineSubject`) and
- * the matching BANNED/SKILL_BANNED list to shadow against, so a code-file candidate already caught
- * by a CODE pattern is not double-reported here, and a skill-file candidate is checked against the
- * skill ruleset rather than the code one.
+ * `isMd` selects the same comment/prose subject extraction `scanContent` uses (`lineSubject`) and,
+ * through `bannedFor`, the matching BANNED/SKILL_BANNED list to shadow against, so a code-file
+ * candidate already caught by a CODE pattern is not double-reported here, and a skill-file
+ * candidate is checked against the skill ruleset rather than the code one. `banLists` overrides
+ * that mapping — see `bannedFor` for why the seam exists and why production never passes it.
  *
  * A class's own `contextChars` sets how many characters past the match an ACKNOWLEDGED entry's
  * `re` can see: 0 for the identifier class (its entries match the bare token), a few for the
  * narration class (an entry there can require a specific following word, e.g. "replaced BY").
  */
-export function scanCandidates(content, { isMd } = { isMd: true }) {
-  const banned = isMd ? SKILL_BANNED : BANNED;
+export function scanCandidates(content, { isMd, banLists } = { isMd: true }) {
+  const banned = bannedFor(isMd, banLists);
   const lines = content.split("\n");
   const acknowledged = [];
   const residue = [];
@@ -572,7 +591,7 @@ export function sources(dir, exts) {
  * a test exercises it on fabricated text without touching the filesystem.
  */
 export function scanContent(content, { isMd }) {
-  const banned = isMd ? SKILL_BANNED : BANNED;
+  const banned = bannedFor(isMd);
   const lines = content.split("\n");
   const hits = [];
   let exempted = 0;
@@ -938,7 +957,7 @@ function main() {
   recordRun(0);
 }
 
-// The scan-and-report pipeline runs only when this file is executed directly, never on import — a
+// The scan-and-report pipeline runs only under `isDirectEntry`, never on import — a
 // test imports `scanContent` to exercise the ruleset against fabricated text, and running the whole
 // repo scan (with its own `process.exit`) as a side effect of that import would make the function
 // untestable in isolation.

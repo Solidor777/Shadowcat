@@ -578,6 +578,22 @@ of dropping the narration. **A green detector is therefore not a satisfied rule*
 narration is a review obligation. Reword to evade a pattern while still speaking of something
 outside the code and you have violated RULE 0, not fixed anything.
 
+**The lowercase hyphenated marker shape is deliberately ungated, and this is the decision rather
+than an open gap.** A local checkpoint id written as one lowercase letter, a hyphen and one digit —
+`c-1`, `b-2`, `f-3` — is a banned marker: it is the same id the uppercase `M11c-1` writer names,
+with the milestone prefix dropped, and it resolves only for a reader holding the artifact that
+assigned it. No pattern can detect it. It is character-for-character the shape of ordinary
+arithmetic in a comment (`0..n-1`, `w-1`, `h-1`, `s_i = i/(n-1) * L`), and no casing, length or
+adjacency test separates the two: every candidate separator is a narrowing tuned to whichever
+specimens are in front of the author, which makes the next instance invisible. The collision is
+also not fixable at its source the way a single mis-spelled term is — arithmetic in a comment is
+legitimate, open-ended prose, and rewriting `0..n-1` to dodge a detector is exactly the
+reword-to-evade RULE 0 forbids.
+
+So the shape is a **review obligation, not a gate obligation**, on the same footing as history
+narration above: the ban is real and a reviewer enforces it, and a clean
+`scripts/check-comment-refs.mjs` run is not evidence that none remains.
+
 **Scope.** Code comments and code-facing strings, plus the narrower subset below for
 `.claude/skills/`. A codebase-skill brief is prose, not code, and may reference a durable document
 by path + section anchor — prose has no symbols, and a durable document is read as one. But a
