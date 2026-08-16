@@ -496,32 +496,60 @@ fn reapply_changes(doc: &mut Document, changes: &[FieldChange]) {
     }
 }
 
-/// The single authority for the `/engine`-tier per-requester visibility decision: can `viewer`
-/// see `doc`'s `/engine` property override? `viewer: None` is the AUTHORITATIVE caller (a GM, or
-/// the execution path) and always sees everything — `true` unconditionally. `viewer: Some(user)`
-/// resolves the tier declared at `permissions.property_overrides["/engine"]` (default `All` when
-/// absent) against `user`'s access, via `permission::resolve_access` + `effective_owner(doc,
-/// None)` — the no-actor-join form, exact for any doc type that never carries an actor link
-/// (wall, region). `move_walls` and `region_field` both call this rather than keep a private
-/// copy: two paths that must agree on the same decision share one symbol rather than each keeping
-/// its own copy (anti-fork). Do not re-inline this at a new call site.
-fn engine_tier_visible(doc: &Document, viewer: Option<Uuid>) -> bool {
-    let Some(user) = viewer else {
-        return true;
-    };
+/// The document a token's drawn geometry is authored in, as `SceneEcs::token_geometry_source`
+/// resolves it.
+enum GeometrySource<'a> {
+    /// The shared actor document a LINKED token's `actor_id` resolves to.
+    Linked(&'a Document),
+    /// An INSTANCED token's own embedded actor copy, which reaches a recipient under the token's
+    /// access rather than one of its own.
+    Embedded(&'a Document),
+}
+
+/// The single authority for the `/engine`-tier visibility decision, expressed against an ALREADY
+/// RESOLVED `Access`: the tier declared at `permissions.property_overrides["/engine"]` (default
+/// `All` when absent) tested through `Access::can_see` — the exact pair `filter_properties` runs
+/// per override pointer on whole-document egress, so this channel hides the band on precisely the
+/// recipients whose document stream nulls it. Every path needing that decision reaches it here
+/// rather than keeping a private copy of the lookup or the predicate (anti-fork). Do not re-inline
+/// this at a new call site.
+fn engine_tier_visible_to(doc: &Document, access: &crate::data::permission::Access) -> bool {
     let tier = doc
         .permissions
         .property_overrides
         .get("/engine")
         .copied()
         .unwrap_or(crate::data::document::Visibility::All);
+    access.can_see(tier)
+}
+
+/// Whether `access` receives `doc`'s `/engine` geometry: BOTH gates document egress applies, in
+/// egress order — whole-document `cap::READ`, without which `filter_command` withholds the
+/// document entirely, then the `/engine` property tier, without which `filter_properties` nulls
+/// the band. A derived channel restating engine geometry must clear both, or it hands a recipient
+/// the very band their document stream nulled. Stated once here so no caller composes its own.
+fn engine_geometry_visible_to(doc: &Document, access: &crate::data::permission::Access) -> bool {
+    access.has(crate::data::permission::cap::READ) && engine_tier_visible_to(doc, access)
+}
+
+/// The per-requester form of `engine_tier_visible_to`, for callers holding a user id rather than
+/// an `Access`. `viewer: None` is the AUTHORITATIVE caller (a GM, or the execution path) and
+/// always sees everything — `true` unconditionally. `viewer: Some(user)` resolves that user's
+/// access via `permission::resolve_access` + `effective_owner(doc, None)` — the no-actor-join
+/// form, exact for any doc type that never carries an actor link (wall, region) — and defers the
+/// tier decision itself to `engine_tier_visible_to`. `move_walls` and `region_field` both call
+/// this rather than keep a private copy.
+fn engine_tier_visible(doc: &Document, viewer: Option<Uuid>) -> bool {
+    let Some(user) = viewer else {
+        return true;
+    };
     let access = crate::data::permission::resolve_access(
         user,
         crate::data::document::WorldRole::Player,
         doc,
         crate::data::permission::effective_owner(doc, None),
     );
-    access.can_see(tier)
+    engine_tier_visible_to(doc, &access)
 }
 
 /// Exact, order-independent key for a routing wall set — the third component of
@@ -1914,23 +1942,44 @@ impl SceneEcs {
         out
     }
 
-    /// A token's effective `(shape, size)`, joined through the SAME actor precedence
-    /// `token_vision_floors` implements: a LINKED token (`actor_id` present) resolves the shared
-    /// actor and applies `overrides.shape`/`overrides.size` (each independently, per-field) over
-    /// the actor's own value; a dangling link yields `None` (overrides ignored, mirroring
-    /// `resolveTokenActor`); an INSTANCED token (no `actor_id`) reads its embedded copy through the
-    /// deliberately-uncached direct `engine_as` path — an embedded actor's own `id` differs from
-    /// the token's, so caching under either key would go stale on an `/embedded/actor/0/...` write.
+    /// The document a token's `shape`/`size` are authored in, joined through the SAME actor
+    /// precedence `token_vision_floors` implements: a LINKED token (`actor_id` present) resolves
+    /// the shared actor, and a dangling link yields `None` (overrides ignored, mirroring
+    /// `resolveTokenActor`); an INSTANCED token (no `actor_id`) resolves its own embedded copy.
+    ///
+    /// Stated once because two callers ask about the same join for different reasons —
+    /// `token_shape_and_size` reads the values out of it, `token_footprint_visible` decides
+    /// whether a recipient may receive them — and a second copy of the branch would let the
+    /// document whose band is checked drift from the document the size comes from.
+    fn token_geometry_source<'a>(&'a self, token_doc: &'a Document) -> Option<GeometrySource<'a>> {
+        match self
+            .engine_as_cached::<eng::TokenEngine>(token_doc.id, token_doc)
+            .and_then(|t| t.actor_id)
+        {
+            Some(id) => self.actor(&id).map(GeometrySource::Linked),
+            None => token_doc
+                .embedded
+                .get("actor")
+                .and_then(|v| v.first())
+                .map(GeometrySource::Embedded),
+        }
+    }
+
+    /// A token's effective `(shape, size)`, read out of the document `token_geometry_source`
+    /// resolves: a LINKED token applies `overrides.shape`/`overrides.size` (each independently,
+    /// per-field) over the shared actor's own value; an INSTANCED token reads its embedded copy
+    /// through the deliberately-uncached direct `engine_as` path — an embedded actor's own `id`
+    /// differs from the token's, so caching under either key would go stale on an
+    /// `/embedded/actor/0/...` write.
     fn token_shape_and_size(&self, token: Uuid) -> Option<(String, eng::Size)> {
         let &e = self.index.get(&token)?;
         let tok = self.world.get::<&SceneEntity>(e).ok()?;
         let doc = &tok.doc;
-        let token_eng = self.engine_as_cached::<eng::TokenEngine>(token, doc);
 
-        match token_eng.as_ref().and_then(|t| t.actor_id) {
-            Some(id) => {
-                let actor = self.actors.get(&id)?; // dangling link → None (overrides ignored)
+        match self.token_geometry_source(doc)? {
+            GeometrySource::Linked(actor) => {
                 let actor_eng = self.engine_as_cached::<eng::ActorEngine>(actor.id, actor)?;
+                let token_eng = self.engine_as_cached::<eng::TokenEngine>(token, doc);
                 let overrides = token_eng.as_ref().and_then(|t| t.overrides.as_ref());
                 let shape = overrides
                     .and_then(|o| o.shape.clone())
@@ -1938,12 +1987,9 @@ impl SceneEcs {
                 let size = overrides.and_then(|o| o.size).unwrap_or(actor_eng.size);
                 Some((shape, size))
             }
-            None => doc
-                .embedded
-                .get("actor")
-                .and_then(|v| v.first())
-                .and_then(engine_as::<eng::ActorEngine>)
-                .map(|a| (a.shape, a.size)),
+            GeometrySource::Embedded(child) => {
+                engine_as::<eng::ActorEngine>(child).map(|a| (a.shape, a.size))
+            }
         }
     }
 
@@ -1977,18 +2023,19 @@ impl SceneEcs {
         }
     }
 
-    /// Whether `ctx` may READ `doc`, resolved through the SAME `effective_owner_via` +
+    /// The access `ctx` holds on `doc`, resolved through the SAME `effective_owner_via` +
     /// `resolve_access_world` pair document egress uses (`filter_command`), with the grants
     /// projected from `doc`'s OWN `doc_type` so a caller cannot supply a mismatched set.
     ///
-    /// `resolved_footprints` applies this one decision at BOTH levels it emits — the scene entry
-    /// and each token entry — so the two can never be gated by two decisions that disagree.
-    fn ctx_can_read(
+    /// Returns the `Access` rather than a verdict because egress asks TWO questions of it — whole
+    /// document `cap::READ` and the per-property tier through `Access::can_see` — and resolving it
+    /// twice is how the two answers drift apart.
+    fn ctx_access(
         &self,
         ctx: &PermissionContext,
         world_defaults: &crate::data::document::WorldCapDefaults,
         doc: &Document,
-    ) -> bool {
+    ) -> crate::data::permission::Access {
         let owner = crate::data::permission::effective_owner_via(doc, &|id: &Uuid| self.actor(id));
         crate::data::permission::resolve_access_world(
             ctx.user_id,
@@ -1997,7 +2044,53 @@ impl SceneEcs {
             &world_defaults.grants_for(&doc.doc_type),
             owner,
         )
-        .has(crate::data::permission::cap::READ)
+    }
+
+    /// `engine_geometry_visible_to` against the access `ctx` holds on `doc`.
+    ///
+    /// `resolved_footprints` applies this one decision to EVERY document an entry discloses
+    /// geometry from — the scene, the token, and the actor authoring that token's size — so no
+    /// level is gated by a decision the others do not share.
+    fn ctx_can_see_engine(
+        &self,
+        ctx: &PermissionContext,
+        world_defaults: &crate::data::document::WorldCapDefaults,
+        doc: &Document,
+    ) -> bool {
+        engine_geometry_visible_to(doc, &self.ctx_access(ctx, world_defaults, doc))
+    }
+
+    /// Whether `ctx` receives every band a token's footprint entry would disclose: the token
+    /// document's own — `overrides.shape`/`overrides.size` live in it — and the document its
+    /// `shape`/`size` are authored in, resolved through the same `token_geometry_source` join
+    /// `token_shape_and_size` reads those values through.
+    ///
+    /// An embedded child's band is tested against the access resolved for the token it rides in,
+    /// because that is how a child reaches a recipient at all: `filter_properties` recurses into
+    /// `embedded` carrying the PARENT's access and applies each child's own overrides, and no
+    /// whole-document `cap::READ` is ever resolved for a child.
+    ///
+    /// `false` for a token with no geometry source — a dangling `actor_id`, or an instanced token
+    /// with no embedded actor. `token_shape_and_size` yields nothing to disclose for either, so
+    /// the entry is absent regardless; refusing here states that rather than leaving it to a later
+    /// step.
+    fn token_footprint_visible(
+        &self,
+        ctx: &PermissionContext,
+        world_defaults: &crate::data::document::WorldCapDefaults,
+        token_doc: &Document,
+    ) -> bool {
+        let access = self.ctx_access(ctx, world_defaults, token_doc);
+        if !engine_geometry_visible_to(token_doc, &access) {
+            return false;
+        }
+        match self.token_geometry_source(token_doc) {
+            Some(GeometrySource::Linked(actor)) => {
+                self.ctx_can_see_engine(ctx, world_defaults, actor)
+            }
+            Some(GeometrySource::Embedded(child)) => engine_tier_visible_to(child, &access),
+            None => false,
+        }
     }
 
     /// The resolved drawn extents the `"footprints"` derived channel carries: for every scene with
@@ -2007,15 +2100,17 @@ impl SceneEcs {
     /// `grid.size` (the INDEXING scale, the circumradius on hex), the one conversion a footprint
     /// takes.
     ///
-    /// Egress rule: an entry — a scene's as much as a token's — is included only when
-    /// `ctx_can_read` holds for the document it describes. The envelope IS the disclosure at both
-    /// levels: a scene entry states that scene's id and its grid-derived unit geometry, so an
-    /// entry with an empty `tokens` list is not a redaction of a scene the recipient may not read.
-    /// A token parented to a withheld scene is withheld with it.
+    /// Egress rule: an entry — a scene's as much as a token's — is included only when `ctx`
+    /// receives the `/engine` geometry of every document that entry is computed from, both gates
+    /// of it (`ctx_can_see_engine`, and `token_footprint_visible` for the token's actor join). The
+    /// envelope IS the disclosure at both levels: a scene entry states that scene's id and its
+    /// grid-derived unit geometry, so an entry with an empty `tokens` list is not a redaction of a
+    /// scene the recipient may not see. A token parented to a withheld scene is withheld with it.
     ///
     /// A token with no entry has no server-resolved footprint: it carries no actor, its actor link
-    /// dangles, or `ctx` cannot read it. An entry with `extent: None` is a REFUSAL — the same
-    /// `footprint::resolve_checked` refusal `resolve_token_footprint` returns `None` for.
+    /// dangles, or `ctx` does not receive the band sizing it. An entry with `extent: None` is a
+    /// REFUSAL — the same `footprint::resolve_checked` refusal `resolve_token_footprint` returns
+    /// `None` for.
     pub(crate) fn resolved_footprints(
         &self,
         ctx: &PermissionContext,
@@ -2024,11 +2119,11 @@ impl SceneEcs {
         let mut by_scene: BTreeMap<Uuid, (f64, footprint::SceneFootprints)> = BTreeMap::new();
         // The cell size comes from `scene_grid_sizes` rather than a second `grid.size` read, so
         // this channel's scale can never disagree with the gates'; the entity scan alongside it
-        // supplies the scene DOCUMENT that map does not carry, which the READ check needs.
+        // supplies the scene DOCUMENT that map does not carry, which the egress check needs.
         let grid_sizes = self.scene_grid_sizes();
         for e in self.world.query::<&SceneEntity>().iter() {
             let doc = &e.doc;
-            if doc.doc_type != "scene" || !self.ctx_can_read(ctx, world_defaults, doc) {
+            if doc.doc_type != "scene" || !self.ctx_can_see_engine(ctx, world_defaults, doc) {
                 continue;
             }
             let Some(cell) = grid_sizes.get(&doc.id).copied() else {
@@ -2066,7 +2161,7 @@ impl SceneEcs {
             if !by_scene.contains_key(&scene) {
                 continue;
             }
-            if !self.ctx_can_read(ctx, world_defaults, doc) {
+            if !self.token_footprint_visible(ctx, world_defaults, doc) {
                 continue;
             }
             tokens.push((scene, doc.id));
@@ -4514,14 +4609,77 @@ mod tests {
         }
     }
 
-    /// A scene document a `WorldRole::Player` may READ. `PermissionSet::default` is
-    /// `DocRole::None`, so a fixture scene is invisible to a player unless it says otherwise —
-    /// which would make a player-facing assertion about anything INSIDE that scene pass for the
-    /// wrong reason.
-    fn readable_scene_doc(id: u128, body: serde_json::Value) -> Document {
-        let mut d = entity_doc_top_eng(id, "scene", body);
+    /// A player context, for the footprint-payload tests that ARE about the egress filter. One
+    /// identity for all of them: a test that hides a document from one user id and queries another
+    /// measures nothing.
+    fn footprint_player_ctx() -> PermissionContext {
+        PermissionContext {
+            user_id: Uuid::from_u128(77),
+            world_role: crate::data::document::WorldRole::Player,
+        }
+    }
+
+    /// A document a `WorldRole::Player` may READ. `PermissionSet::default` is `DocRole::None`, so
+    /// a fixture document is invisible to a player unless it says otherwise — which would make a
+    /// player-facing assertion about anything that document carries pass for the wrong reason.
+    fn readable(mut d: Document) -> Document {
         d.permissions.default = crate::data::document::DocRole::Observer;
         d
+    }
+
+    /// Declare `d`'s `/engine` band GM-only: the document stays READABLE and its geometry band is
+    /// nulled on egress. The same `property_overrides` declaration a secret region carries,
+    /// applied to whichever document a footprint entry would disclose geometry from.
+    fn engine_band_gm_only(mut d: Document) -> Document {
+        d.permissions
+            .property_overrides
+            .insert("/engine".into(), crate::data::document::Visibility::GmOnly);
+        d
+    }
+
+    /// A structurally-complete `SceneEngine` body at the cell size every footprint test in this
+    /// block scales its expectations by.
+    fn scene_body(kind: &str) -> serde_json::Value {
+        json!({ "grid": { "kind": kind, "size": 100.0 }, "background": null })
+    }
+
+    /// A scene-parented `token` document LINKED to actor `actor`, at the origin.
+    fn linked_token_doc(id: u128, scene: u128, actor: u128) -> Document {
+        entity_doc_eng(
+            id,
+            scene,
+            "token",
+            json!({ "x": 0.0, "y": 0.0, "w": 100.0, "h": 100.0, "rotation": 0.0,
+                    "actor_id": Uuid::from_u128(actor).to_string() }),
+        )
+    }
+
+    /// A scene-parented INSTANCED `token` document carrying `actor` as its own embedded copy: no
+    /// `actor_id`, so `token_geometry_source` resolves the embedded child.
+    fn instanced_token_doc(id: u128, scene: u128, actor: Document) -> Document {
+        let mut d = entity_doc_eng(
+            id,
+            scene,
+            "token",
+            json!({ "x": 0.0, "y": 0.0, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+        );
+        d.embedded.insert("actor".into(), vec![actor]);
+        d
+    }
+
+    /// A scene document a `WorldRole::Player` may READ.
+    fn readable_scene_doc(id: u128, body: serde_json::Value) -> Document {
+        readable(entity_doc_top_eng(id, "scene", body))
+    }
+
+    /// The token ids a footprint payload carries for `scene`'s entry, in payload order.
+    fn tokens_of(payload: &footprint::FootprintsPayload, scene: Uuid) -> Vec<Uuid> {
+        payload
+            .scenes
+            .iter()
+            .find(|s| s.scene == scene)
+            .map(|s| s.tokens.iter().map(|t| t.token).collect())
+            .unwrap_or_default()
     }
 
     /// The one scene entry of a footprint payload built for a GM.
@@ -4647,11 +4805,8 @@ mod tests {
             "actor",
             actor_body_shaped("square", 1.0, 1.0),
         )]);
-        let player = PermissionContext {
-            user_id: Uuid::from_u128(77),
-            world_role: crate::data::document::WorldRole::Player,
-        };
-        let for_player = ecs.resolved_footprints(&player, &WorldCapDefaults::default());
+        let for_player =
+            ecs.resolved_footprints(&footprint_player_ctx(), &WorldCapDefaults::default());
         assert!(
             for_player.scenes[0].tokens.is_empty(),
             "a token whose document the recipient may not read discloses no extent either"
@@ -4695,11 +4850,8 @@ mod tests {
             "actor",
             actor_body_shaped("square", 1.0, 1.0),
         )]);
-        let player = PermissionContext {
-            user_id: Uuid::from_u128(77),
-            world_role: crate::data::document::WorldRole::Player,
-        };
-        let for_player = ecs.resolved_footprints(&player, &WorldCapDefaults::default());
+        let for_player =
+            ecs.resolved_footprints(&footprint_player_ctx(), &WorldCapDefaults::default());
         assert!(
             !for_player.scenes.iter().any(|s| s.scene == secret_scene),
             "the whole entry is absent — its id and its unit extent are the disclosure, so an \
@@ -4725,6 +4877,196 @@ mod tests {
             gm_secret.tokens.len(),
             1,
             "and receives the tokens parented to it"
+        );
+    }
+
+    #[test]
+    fn footprints_payload_withholds_a_scene_whose_engine_band_the_recipient_may_not_see() {
+        let open_scene = Uuid::from_u128(10);
+        let banded_scene = Uuid::from_u128(20);
+        let ecs = SceneEcs::from_documents(
+            vec![
+                readable_scene_doc(10, scene_body("square")),
+                // READABLE as a document, with `/engine` — the band carrying `grid.kind` and
+                // `grid.size`, the only inputs `unit` is a function of — declared GM-only.
+                engine_band_gm_only(readable_scene_doc(20, scene_body("hex"))),
+            ],
+            0,
+        );
+        let for_player =
+            ecs.resolved_footprints(&footprint_player_ctx(), &WorldCapDefaults::default());
+        assert_eq!(
+            for_player
+                .scenes
+                .iter()
+                .map(|s| s.scene)
+                .collect::<Vec<_>>(),
+            vec![open_scene],
+            "the whole entry is absent — `unit` is that scene's grid kind and size, which the \
+             recipient's document stream nulls; and the scene whose band is open is still carried, \
+             so the absence is the tier decision rather than an empty payload"
+        );
+        let for_gm = ecs.resolved_footprints(&footprint_gm_ctx(), &WorldCapDefaults::default());
+        assert!(
+            for_gm.scenes.iter().any(|s| s.scene == banded_scene),
+            "the GM, who receives the band, still receives the entry"
+        );
+    }
+
+    #[test]
+    fn footprints_payload_withholds_a_token_whose_engine_band_the_recipient_may_not_see() {
+        let scene = Uuid::from_u128(10);
+        let open_token = Uuid::from_u128(12);
+        let mut ecs = SceneEcs::from_documents(
+            vec![
+                readable_scene_doc(10, scene_body("square")),
+                // READABLE, with `/engine` — the band carrying `overrides.shape`/`overrides.size`
+                // — declared GM-only.
+                engine_band_gm_only(readable(linked_token_doc(11, 10, 200))),
+                readable(linked_token_doc(12, 10, 200)),
+            ],
+            0,
+        );
+        ecs.set_actors(vec![readable(entity_doc_top_eng(
+            200,
+            "actor",
+            actor_body_shaped("square", 1.0, 1.0),
+        ))]);
+        let for_player =
+            ecs.resolved_footprints(&footprint_player_ctx(), &WorldCapDefaults::default());
+        assert_eq!(
+            tokens_of(&for_player, scene),
+            vec![open_token],
+            "the whole entry is absent — a token id paired with an extent is the disclosure, so a \
+             null extent is not a redaction; the sibling whose band is open is still carried"
+        );
+        let for_gm = ecs.resolved_footprints(&footprint_gm_ctx(), &WorldCapDefaults::default());
+        assert_eq!(
+            tokens_of(&for_gm, scene).len(),
+            2,
+            "the GM, who receives the band, still receives both"
+        );
+    }
+
+    #[test]
+    fn footprints_payload_withholds_a_token_whose_actors_engine_band_the_recipient_may_not_see() {
+        let scene = Uuid::from_u128(10);
+        let open_token = Uuid::from_u128(12);
+        let mut ecs = SceneEcs::from_documents(
+            vec![
+                readable_scene_doc(10, scene_body("square")),
+                readable(linked_token_doc(11, 10, 200)),
+                readable(linked_token_doc(12, 10, 201)),
+            ],
+            0,
+        );
+        // The linked actor is where a token's `size`/`shape` are authored, so its band decides the
+        // extent even when the token's own band is open.
+        ecs.set_actors(vec![
+            engine_band_gm_only(readable(entity_doc_top_eng(
+                200,
+                "actor",
+                actor_body_shaped("square", 2.0, 3.0),
+            ))),
+            readable(entity_doc_top_eng(
+                201,
+                "actor",
+                actor_body_shaped("square", 1.0, 1.0),
+            )),
+        ]);
+        let for_player =
+            ecs.resolved_footprints(&footprint_player_ctx(), &WorldCapDefaults::default());
+        assert_eq!(
+            tokens_of(&for_player, scene),
+            vec![open_token],
+            "a token whose own band is open still discloses no extent while the band authoring \
+             that extent is nulled for this recipient"
+        );
+        let for_gm = ecs.resolved_footprints(&footprint_gm_ctx(), &WorldCapDefaults::default());
+        assert_eq!(
+            tokens_of(&for_gm, scene).len(),
+            2,
+            "the GM, who receives the actor band, still receives both"
+        );
+    }
+
+    #[test]
+    fn footprints_payload_withholds_a_token_whose_actor_document_the_recipient_may_not_read() {
+        let scene = Uuid::from_u128(10);
+        let open_token = Uuid::from_u128(12);
+        let mut ecs = SceneEcs::from_documents(
+            vec![
+                readable_scene_doc(10, scene_body("square")),
+                readable(linked_token_doc(11, 10, 200)),
+                readable(linked_token_doc(12, 10, 201)),
+            ],
+            0,
+        );
+        // Actor 200 keeps `PermissionSet::default`'s `DocRole::None`: the recipient's document
+        // stream never delivers it at all, band or no band.
+        ecs.set_actors(vec![
+            entity_doc_top_eng(200, "actor", actor_body_shaped("square", 2.0, 3.0)),
+            readable(entity_doc_top_eng(
+                201,
+                "actor",
+                actor_body_shaped("square", 1.0, 1.0),
+            )),
+        ]);
+        let for_player =
+            ecs.resolved_footprints(&footprint_player_ctx(), &WorldCapDefaults::default());
+        assert_eq!(
+            tokens_of(&for_player, scene),
+            vec![open_token],
+            "the extent is the actor's authored geometry, so a recipient who may not read the \
+             actor document receives no entry for the token it sizes"
+        );
+        let for_gm = ecs.resolved_footprints(&footprint_gm_ctx(), &WorldCapDefaults::default());
+        assert_eq!(
+            tokens_of(&for_gm, scene).len(),
+            2,
+            "the GM, who may read it, still receives both"
+        );
+    }
+
+    #[test]
+    fn footprints_payload_withholds_a_token_whose_embedded_actors_band_the_recipient_may_not_see() {
+        let scene = Uuid::from_u128(10);
+        let open_token = Uuid::from_u128(12);
+        let ecs = SceneEcs::from_documents(
+            vec![
+                readable_scene_doc(10, scene_body("square")),
+                // An embedded child carries its OWN `property_overrides`, applied against the
+                // access resolved for the parent it rides in.
+                readable(instanced_token_doc(
+                    11,
+                    10,
+                    engine_band_gm_only(entity_doc_top_eng(
+                        200,
+                        "actor",
+                        actor_body_shaped("square", 2.0, 3.0),
+                    )),
+                )),
+                readable(instanced_token_doc(
+                    12,
+                    10,
+                    entity_doc_top_eng(201, "actor", actor_body_shaped("square", 1.0, 1.0)),
+                )),
+            ],
+            0,
+        );
+        let for_player =
+            ecs.resolved_footprints(&footprint_player_ctx(), &WorldCapDefaults::default());
+        assert_eq!(
+            tokens_of(&for_player, scene),
+            vec![open_token],
+            "an instanced token's geometry is authored in its embedded copy, so that child's band \
+             decides the extent exactly as a linked actor's does"
+        );
+        let for_gm = ecs.resolved_footprints(&footprint_gm_ctx(), &WorldCapDefaults::default());
+        assert_eq!(
+            tokens_of(&for_gm, scene).len(),
+            2,
+            "the GM, who receives the embedded band, still receives both"
         );
     }
 
