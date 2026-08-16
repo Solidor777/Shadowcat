@@ -862,7 +862,10 @@ export class PixiBackend implements DisplayBackend {
       const poly = c.corners.flatMap((p) => [p.x, p.y]);
       if (c.alpha > 0) this.lightingGraphics.poly(poly).fill({ color: 0x000000, alpha: c.alpha });
       if (c.tintAlpha > 0) this.lightingGraphics.poly(poly).fill({ color: c.tint, alpha: c.tintAlpha });
-      // V1 desaturate approximation: a low-alpha neutral wash mutes color in darkvision-only cells.
+      // Desaturate approximation for darkvision-only cells: a low-alpha mid-grey fill blends the
+      // pixels beneath it toward grey. Chroma is scaled down by the remaining alpha rather than
+      // removed, so a saturated color reads as a paler version of itself, not as grey; the trade
+      // buys a fill that needs no filter, mask, or extra render target.
       // TODO: replace with a masked ColorMatrixFilter over the scene layers for true desaturation.
       if (c.desaturate) this.lightingGraphics.poly(poly).fill({ color: 0x808080, alpha: 0.18 });
     }
