@@ -75,7 +75,13 @@ describe("isDirectEntry", () => {
 
   it("matches an argv[1] carrying an unnormalized parent segment", () => {
     const entry = resolve(process.cwd(), "scripts", "gate-cli.mjs");
-    process.argv[1] = join("scripts", "lib", "..", "gate-cli.mjs");
+    // Assembled with `Array.prototype.join` and the platform separator, never `path.join`:
+    // `path.join` collapses `..` before it returns, so a path built with it arrives at `argv[1]`
+    // already normalized and asks the same question as the relative case above. The segment
+    // assertion below pins that premise, because an input that quietly loses its `..` makes this
+    // case a duplicate of its sibling while both keep passing.
+    process.argv[1] = ["scripts", "lib", "..", "gate-cli.mjs"].join(sep);
+    expect(process.argv[1].split(sep)).toContain("..");
     expect(isDirectEntry(pathToFileURL(entry).href)).toBe(true);
   });
 
