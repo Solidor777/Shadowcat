@@ -1639,8 +1639,8 @@ for the same decision is the fork-a-decision class this codebase produces most.*
     blind spot by re-checking only `/** */` blocks. A repo-wide orphaned-doc-block scan and a
     223-comment inline-`//` inventory across the six packages (task 6) found 0 orphans and verified
     every load-bearing claim true.
-  - **Ratchet mutation-proven per block:** dropping `footprintFor`'s doc comment
-    (`src/modules/scene-tools/src/controller.svelte.ts`) fails the `.ts` block; dropping
+  - **Ratchet mutation-proven per block:** dropping a documented function's doc comment in
+    `src/modules/scene-tools/src/controller.svelte.ts` fails the `.ts` block; dropping
     `toggleSnap`'s (`src/modules/scene-tools/src/ToolRail.svelte`) fails the `.svelte`
     block. All twelve globs (six packages × two blocks) verified individually at `error` severity.
   - **Carried forward, not fixed here:** the dead `sendMoves` shorthand still appears in two SERVER
