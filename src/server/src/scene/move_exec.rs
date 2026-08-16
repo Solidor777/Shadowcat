@@ -2544,8 +2544,8 @@ mod tests {
     /// grid-aligned start/goal cells 4 columns apart. The gap is sized PER KIND from the token's
     /// OWN resolved footprint radius (`resolve_token_footprint`), since a hex token is wider than
     /// its square counterpart at the same authored size (owner ruling: a hex's authored size
-    /// counts HEXES, so its collision radius is the circumradius `max(w,h)`, not the square
-    /// half-diagonal `max(w,h)/2`) — square: 300-unit gap for a footprint-1.6-cell token
+    /// counts HEXES, so its collision radius is the circumradius `max(w,h)`, not the `max(w,h)/2`
+    /// this circle-shaped actor resolves to on square) — square: 300-unit gap for a footprint-1.6-cell token
     /// (r_scene=80, 70-unit margin); hex: 460-unit gap for the same actor (r_scene=160, matching
     /// 70-unit margin). `start`/`goal` are computed
     /// from the ACTUAL grid shape's own `cell_center` (square: `(i+0.5)*cell`; hex: the axial
