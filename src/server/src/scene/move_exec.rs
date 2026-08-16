@@ -547,9 +547,9 @@ mod tests {
     }
 
     /// Builds a scene-entity fixture with `engine` set to `body` (`system` stays `{}`) — every
-    /// reader these tests exercise (`scene_grid_sizes`, `blocks_move`, `region_field`) is a
+    /// reader exercised in `move_exec` (`scene_grid_sizes`, `blocks_move`, `region_field`) is a
     /// typed `engine` read; a `token` fixture built through this helper carries no position data
-    /// these tests consume (`execute_move` takes an explicit `path`, never the token doc's
+    /// any of them consume (`execute_move` takes an explicit `path`, never the token doc's
     /// position), so re-rooting it here alongside scene/wall/region is harmless.
     fn entity_doc(
         id: u128,

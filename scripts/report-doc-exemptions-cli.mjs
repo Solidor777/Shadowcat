@@ -5,8 +5,7 @@
 // normalize identically (a differently-cased Windows drive letter, a symlinked bin). Silence is
 // then indistinguishable from "no exemptions", the exact failure this report exists to prevent.
 // The reporting logic therefore lives in the importable `scanDocExemptions` module and runs
-// unconditionally here: invoking this entry point always executes the report; there is no comparison
-// to fail.
+// unconditionally here — there is no comparison to fail.
 // Cross-platform: node:path/node:fs only.
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";

@@ -38,10 +38,10 @@ const ALLOWLIST = ".claude/suppression-allowlist.toml";
 // annotation while leaving no annotation for the scan above to find.
 const MANIFESTS = ["Cargo.toml", "clippy.toml", "eslint.config.js"];
 
-// A pattern must contain a literal copy of what it matches, so this checker necessarily writes every
-// directive it bans. Marked lines are skipped and the active count prints with every result: an
-// uncounted exemption is a backdoor, and a silent one is indistinguishable from a rule that does
-// not apply.
+// A pattern must contain a literal copy of what it matches, so `SUPPRESSIONS`' own regex literals
+// necessarily reproduce every directive they ban. Marked lines are skipped and the active count
+// prints with every result: an uncounted exemption is a backdoor, and a silent one is
+// indistinguishable from a rule that does not apply.
 const EXAMPLE_EXEMPT = /\bEXAMPLE:/;
 
 /**
@@ -124,9 +124,9 @@ function itemOf(lines, i) {
 }
 
 /**
- * Reads the allowlist. Deliberately accepts only the shape this checker writes — `[[allow]]` tables of
- * double-quoted string values — and ERRORS on anything else rather than skipping it: a line this
- * parser silently ignored would be an approval nobody granted or a stale entry nobody caught.
+ * Reads the allowlist. Deliberately accepts only `[[allow]]` tables of double-quoted string
+ * values and ERRORS on anything else rather than skipping it: a line this parser silently ignored
+ * would be an approval nobody granted or a stale entry nobody caught.
  */
 function loadAllowlist() {
   if (!existsSync(ALLOWLIST)) return [];

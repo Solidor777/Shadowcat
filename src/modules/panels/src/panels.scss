@@ -2,13 +2,13 @@
 // custom properties onto our design tokens so the docking chrome matches the
 // rest of the app instead of dockview's shipped themes. A full stage-well
 // skin (drop overlays, tab-group chips, floating titlebar) is future work;
-// this stylesheet only wires the two token systems together. Imported once, as a
+// only the two token systems are wired together here. Imported once, as a
 // side effect, from the `dockview` module — never paid for by `FakeEngine`-only
 // hosts.
 // Referenced by relative path (not a bare "pkg/..." specifier) — dart-sass's
 // CLI/Vite compiler resolves plain npm-package specifiers only via the
 // newer Node "pkg:" importer scheme, which is not universally wired through
-// every consumer of this stylesheet; a relative path into the module's own
+// every consumer; a relative path into the module's own
 // `node_modules/dockview-core` (a direct dependency, always present there)
 // resolves everywhere without extra sass config.
 @use "../node_modules/dockview-core/dist/styles/dockview.css";

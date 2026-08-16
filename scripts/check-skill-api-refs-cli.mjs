@@ -1,6 +1,6 @@
 // CLI entry point. No `isDirectEntry` guard: an `argv[1]`-vs-module-URL identity check goes
 // silently to a no-op — exiting 0 with no output — whenever the two spellings fail to normalize
-// identically, so this entry point always executes the check instead.
+// identically, so the check below always runs unconditionally.
 // Cross-platform: node:path/node:fs only.
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";

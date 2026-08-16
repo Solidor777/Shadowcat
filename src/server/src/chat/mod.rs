@@ -3379,7 +3379,7 @@ mod link_preview_ingest_tests {
     /// URL to actually become an `<a href>` — `sanitize`'s bare-toggle
     /// `hyperlinks` only controls whether ammonia PERMITS the `<a>` tag once
     /// produced; producing one at all needs markdown link syntax
-    /// (`[label](url)`) run through `pulldown-cmark`. Bodies in these tests
+    /// (`[label](url)`) run through `pulldown-cmark`. Bodies built via `hyperlinks_on`
     /// use that syntax accordingly.
     fn hyperlinks_on() -> ChatContentPolicy {
         ChatContentPolicy {

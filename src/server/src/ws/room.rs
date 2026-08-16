@@ -2126,7 +2126,7 @@ mod room_tests {
 
     /// A token `Document` at `(x, y)` in `world`, parented to `scene`, ready for
     /// `Operation::Create`. `permissions.default = Owner` carries the WRITE_FIELDS floor for
-    /// WHICHEVER user creates it (player or GM) — this suite tests the placement mask, not
+    /// WHICHEVER user creates it (player or GM) — this fixture exercises the placement mask, not
     /// per-user document ownership, so `core:create` (from the fixture's world-cap grant, or
     /// the GM's unconditional access) is the only authorization axis in play here.
     fn token_doc_at(world: Uuid, scene: Uuid, x: f64, y: f64) -> Document {
@@ -3827,7 +3827,7 @@ mod room_tests {
     /// from a scene genuinely marked continuous, not just incidentally sent a diagonal path.
     /// Functionally inert on the server today — `execute_move` has no `movementModel` branch,
     /// being engine-agnostic; this mirrors `movement_scene`'s body (the established
-    /// per-scenario-helper convention these tests follow) with one added JSON key.
+    /// per-scenario-helper convention) with one added JSON key.
     async fn movement_scene_continuous(restriction: &str, with_light: bool) -> MovementHandle {
         use serde_json::json;
 

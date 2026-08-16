@@ -674,7 +674,7 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
 
   /** The single selected token's id, or `undefined` when zero or multiple are selected. Passed
    * as `pathfind`'s `token` so the server derives the AUTHORITATIVE footprint from that token
-   * rather than honoring the `footprint_radius` this controller sends on the wire.
+   * rather than honoring the `footprint_radius` argument passed to `ctx.pathfind` on the wire.
    * @returns The selected token id, or `undefined`.
    * @example
    * ```

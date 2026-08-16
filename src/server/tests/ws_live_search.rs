@@ -130,7 +130,7 @@ fn create_intent(world: Uuid, n: u128, name: &str, default_role: &str) -> serde_
                                  "capabilities": { "by_role": {}, "by_user": {} } },
                 // "actor" is engine-defined; a minimal valid body clears the
                 // ingress gate. `name` above (the envelope field, indexed by
-                // search) is what this suite matches against.
+                // search) is what the search assertions below match against.
                 "engine": {
                     "displayName": "Test",
                     "visual": { "kind": "image", "asset": "a.png" },

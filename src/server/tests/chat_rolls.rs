@@ -27,7 +27,7 @@ struct Fixture {
     repo: SqliteRepository,
     room: Arc<Room>,
     rate: PingRateLimiter,
-    // Link-preview deps: no test in this suite enables `hyperlinks`, so
+    // Link-preview deps: no test built through `Fixture` enables `hyperlinks`, so
     // `previews_enabled()` is always false and `enrich` never fetches — a
     // production (non-loopback) client is safe here, it's simply never
     // dialed.
