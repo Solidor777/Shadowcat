@@ -1,6 +1,6 @@
 ---
 name: shadowcat-codebase-scene-rendering
-description: "Use when touching Shadowcat scenes, the scene ECS, rendering, the PixiJS canvas/stage, vision raycasting, fog of war, lighting, the server visibility/lit mask, movement restriction (the Room::publish move gate, supercover, visible_cells), the grid A* pathfinder (`SceneEcs::pathfind`, Pathfind/PathResult frames, diagonal rules), the continuous/navmesh router (movementModel axis, polyanya, the navmesh cache, `clip_to_visible_mask`), streamed continuous vision (MoveStream, `player_vision_polygons_at`, the per-recipient egress clip, client fog-sweep/cross-fade playback), regions (weighted/impassable/arrest zones, region docs, the `region-view` render layer), multi-scene viewing (viewedSceneId, resolveViewedScene, world-settings.activeScene, GM local roam, the `scene-scope` module), or scene-tools (place/select/move/draw/template/measure/ping/wall/region). Covers src/server/src/scene, src/client/render, src/modules/{stage,scene-tools}. Invoke shadowcat-codebase-core first."
+description: "Use when touching Shadowcat scenes, the scene ECS, rendering, the PixiJS canvas/stage, vision raycasting, fog of war, lighting, the server visibility/lit mask, movement restriction (the Room::publish move gate, supercover, visible_cells), token footprints (the single `scene::footprint` definition, `resolve_token_footprint`, the `"footprints"` derived channel and its client readers `FootprintLookup`/`resolveTokenBox`/`reapplyFootprints`), the grid A* pathfinder (`SceneEcs::pathfind`, Pathfind/PathResult frames, diagonal rules), the continuous/navmesh router (movementModel axis, polyanya, the navmesh cache, `clip_to_visible_mask`), streamed continuous vision (MoveStream, `player_vision_polygons_at`, the per-recipient egress clip, client fog-sweep/cross-fade playback), regions (weighted/impassable/arrest zones, region docs, the `region-view` render layer), multi-scene viewing (viewedSceneId, resolveViewedScene, world-settings.activeScene, GM local roam, the `scene-scope` module), or scene-tools (place/select/move/draw/template/measure/ping/wall/region). Covers src/server/src/scene, src/client/render, src/modules/{stage,scene-tools}. Invoke shadowcat-codebase-core first."
 ---
 
 # Shadowcat — Scene & Rendering
@@ -17,8 +17,12 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
 
 - `scene` — `SceneEcs` (derived read-model, hydrated from documents + the
   config-doc/actor side-tables `world_settings`/`gradation`/`vision_modes`/`actors`, set via
-  `set_world_config`/`set_actors` and maintained by `apply_op`), `compute_derived(...)` (builds
-  derived frames; the `vision` masked payload is `{mode, polygons, bands, lit}`),
+  `set_world_config`/`set_actors` and maintained by `apply_op`),
+  `compute_derived(channel, ecs, ctx, world_defaults)` (builds derived frames; the `vision` masked
+  payload is `{mode, polygons, bands, lit}`, and `"footprints"` is the second per-recipient channel
+  — see the derived-channel egress bullet below. `world_defaults:
+  &data::document::WorldCapDefaults` is what lets a channel resolve READ against the same
+  world-level grants the document stream does; both `egress_loop` call sites already hold it),
   `player_vision_polygons(user_id)`, `player_lit_mask(user_id)` (the lighting-aware mask →
   `LitScene` cells), and the fail-closed server resolvers `resolve_scene`/`resolved_bands`/
   `resolved_vision_modes`/`token_vision_floors` (mirror the `scene-docs` module's + `resolveTokenActor`'s
@@ -90,8 +94,9 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   WorldSettingsEngine, LightEngine, ...}` (re-exported here as `eng::*`) are the typed structs
   `engine_as` deserializes into. No `sys_f64`/raw pointer-walk helper exists anywhere in this
   subsystem — do not reintroduce a pointer-walk reader; add a new typed
-  field to the relevant `eng::*Engine` struct instead. `region_field`'s per-requester secrecy-tier
-  lookup reads `doc.permissions.property_overrides.get("/engine")` (not `"/system"`)
+  field to the relevant `eng::*Engine` struct instead. The per-requester secrecy-tier lookup
+  `region_field` reaches through `engine_tier_visible` reads
+  `doc.permissions.property_overrides.get("/engine")` (not `"/system"`)
   since a region's shape/behavior/cost live in `engine`; `setRegionVisibility`
   (`scene-docs` module) sets `property_overrides["/engine"] = "gm_only"` to match.
   `movementModel`/`snapToGrid` (below) are likewise typed `SceneEngine` fields, ts-rs exported
@@ -128,6 +133,86 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   a spurious mismatch. The snapshot already covers everything `env_light_polys` occlusion depends
   on (`settings.bounds`, `cell`, `light_walls`), so the `env_polys` addition to
   `lighting_inputs_from` needed no cache-key change to stay correct.
+- `scene::footprint` — **THE single footprint definition, in Rust, with no client counterpart.**
+  `resolve_footprint_cells(kind: GridKind, shape: &str, w: f64, h: f64) -> FootprintCells {box_w,
+  box_h, radius}`, all in GRID UNITS. Square: the box is the authored `w × h` block, the radius its
+  conservative enclosure (`max(w,h)/2` for `"circle"`, `hypot(w,h)/2` otherwise). Hex: an authored
+  size counts HEXES so `shape` is inert; `n = max(w,h)`, box `n·√3` wide by `n·2` tall, radius `n`.
+  Both outputs are on the INDEXING scale (`grid.size`, the circumradius on hex), so the one
+  conversion a footprint takes is a multiply by `grid.size` — never
+  `GridShape::world_units_per_cell`, which would give a 1-hex token a disc past its own hex's
+  circumradius. `resolve_checked` wraps it with the ONE refusal decision
+  (`FootprintRefusal::{DegenerateSize, OverCap}`, the cap being
+  `pathfinding::MAX_FOOTPRINT_CELLS`), so the gate radius and the drawn extent refuse for the same
+  inputs or not at all; every caller propagates the refusal and none clamps — clamping would route
+  and gate an oversized token as a smaller disc, letting it enter gaps its real footprint cannot
+  (a geometric fail-open).
+  **Two readers, one definition, and the client is a READER — never a second implementer.**
+  `SceneEcs::resolve_token_footprint` reads `.radius` (the movement/routing gate quantity, `None`
+  ⇒ REFUSE, `Some(DEFAULT_FOOTPRINT_RADIUS_CELLS)` = 0.4 for a token nothing sizes);
+  `SceneEcs::resolved_footprints` reads `.box_w`/`.box_h`, scales by the scene's own `grid.size`,
+  and puts the result on the wire. There is no footprint arithmetic in TypeScript anywhere —
+  re-introducing one is exactly the forked-decision defect this seam exists to remove, and the only
+  mechanical guard is a mutation of `resolve_footprint_cells` moving BOTH the gate-radius tests and
+  the wire-extent tests.
+  The module also owns the channel's payload types (ts-rs exported, Zod-mirrored by
+  `@shadowcat/core`'s `footprints` module): `FootprintsPayload {scenes}` / `SceneFootprints {scene,
+  unit, tokens}` / `TokenFootprint {token, extent: Option<FootprintExtent>}` / `FootprintExtent
+  {w, h}` in SCENE units. **The payload carries NO radius** — the collision radius is a server-side
+  gate quantity, deliberately not disclosed as a client-consumable number, and the client's only
+  uses of an extent are drawing and picking. `extent: None` is a REFUSAL; an ABSENT token entry
+  means either the server does not size that token (no actor, dangling link) or the recipient may
+  not receive the band that sizes it — the two are indistinguishable to the client on purpose, and
+  both fall back to the token document's own authored `w`/`h`, never to a larger box. `unit` is the
+  scene's 1x1 extent, which the optimistic placement path stamps.
+- **A DERIVED CHANNEL restating a document band is an egress path, and must apply BOTH document
+  gates at EVERY document its entry is computed from.** This is the whole shape of
+  `SceneEcs::resolved_footprints(ctx, world_defaults)`, computed PER RECIPIENT (both
+  `compute_derived` call sites in `egress_loop` pass `view_ctx` — the connection's own context or a
+  GM see-as target):
+  - `SceneEcs::ctx_access` resolves the `Access` through the SAME `effective_owner_via` +
+    `resolve_access_world` pair `filter_command` uses, with the grants projected from the
+    document's OWN `doc_type` inside the helper so no caller can hand it a mismatched set. It
+    returns the `Access` rather than a verdict because egress asks it TWO questions, and resolving
+    it twice is how the two answers drift apart.
+  - `engine_tier_visible_to(doc, access)` is the SINGLE authority for the `/engine` tier decision —
+    `property_overrides["/engine"]` (default `All`) through `Access::can_see`, the exact pair
+    `filter_properties` runs per override pointer. `move_walls` and `region_field` reach it via the
+    per-requester wrapper `engine_tier_visible(doc, viewer)`; the footprints channel reaches it
+    directly with an already-resolved `Access`. Do not re-inline the lookup or the predicate at a
+    new site.
+  - `engine_geometry_visible_to(doc, access)` is the composite `cap::READ && tier`, stated once so
+    no call site composes its own ordering.
+  - Applied at four levels: the SCENE entry and a LINKED actor via `ctx_can_see_engine`; the TOKEN
+    entry via `token_footprint_visible`; an INSTANCED token's EMBEDDED actor child via
+    `engine_tier_visible_to(child, token_access)` — the child is tested against the TOKEN's access
+    and has no whole-document READ of its own, because that is how a child reaches a recipient at
+    all (`filter_properties` recurses into `embedded` under the PARENT's access).
+    `token_geometry_source` decides which document authors a token's geometry and is SHARED with
+    `token_shape_and_size`, so the document whose band is checked cannot drift from the document
+    the size comes from.
+  - **The redaction is ABSENCE of the whole entry, never a nulled field or an empty list** — a
+    scene entry states that scene's id and its grid-derived `unit`, so an entry with an empty
+    `tokens` list is not a redaction of a scene the recipient may not see, and `extent: None`
+    already means "refused to size", which reusing for withholding would conflate. A token
+    parented to a withheld scene is withheld with it (its scene has no `by_scene` entry).
+  - The cell size comes from `scene_grid_sizes()` rather than a second `grid.size` read, so the
+    channel's scale cannot disagree with the gates'; the payload is sorted (scenes by a `BTreeMap`,
+    tokens sorted before the extent pass) because the egress loop's change detection compares whole
+    payloads and `hecs` iteration order is not stable.
+  - **The general lesson, which is why this is stated as a rule and not as a description:** a
+    helper written as an internal GATE input carries no egress filtering, so promoting one to a
+    wire surface is a permissions change even when no formula changes. `scene_grid_sizes`
+    enumerates every scene entity with zero filtering because every prior caller was a gate. Note
+    also that `"vision"` never ENUMERATES (it emits only where the recipient's own token has a
+    vision source), so any future channel that enumerates entities must state a per-field authority
+    for the SET itself, not just for each field's contents.
+  - **Fixture gotcha, and it differs from `region_field`'s:** `PermissionSet::default()` is
+    `default: DocRole::None`, so a fixture scene/token/actor a `WorldRole::Player` must be able to
+    read needs `DocRole::Observer` set explicitly, or a negative test passes vacuously on an empty
+    payload. Unlike the region secrecy filter — where `permissions.default` does not gate the
+    per-requester field at all — BOTH `permissions.default` and the `/engine` override gate here,
+    and each needs its own negative test.
 - `scene::movement` — pure `supercover_cells(a0, a1, cell) -> Option<BTreeSet<(i32,i32)>>` —
   every cell the move segment crosses (supercover, not a thin line — an exact corner crossing
   emits BOTH flanking cells so a diagonal can't thread an unseen cell). `None` ⇒ caller fails closed
@@ -310,7 +395,9 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   secret regions on execution regardless of what the mover's own route preview could see);
   `viewer: Some(user)` is the PER-REQUESTER view used by the grid A* router — a region is included
   only when `user` can see the visibility tier declared on its `/engine` (defaults
-  to `All` when undeclared), via the SAME `resolve_access`/`property_overrides["/engine"]`
+  to `All` when undeclared), via `engine_tier_visible(doc, viewer)` — the per-requester wrapper
+  over `engine_tier_visible_to`, which is the SINGLE `property_overrides["/engine"]` +
+  `Access::can_see` authority the footprints channel and `move_walls` also reach, and the same
   mechanism that already
   gates every other document's egress — no new secrecy machinery. **Callers MUST pass
   `None` for a GM requester** — mirrors `visible_cells`'s GM-skips-the-mask convention; passing
@@ -372,9 +459,8 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   contract, never a third mode, mirroring `region_field` exactly**: `None` is AUTHORITATIVE (every
   `blocksMove` segment, used by `execute_move` and by GM requesters); `Some(user)` is the
   PER-REQUESTER view used by the router — a wall is included only when `user` can see the
-  visibility tier declared on its `/engine` (`property_overrides.get("/engine")`, defaults to
-  `Visibility::All`), through the SAME `resolve_access` mechanism `region_field` uses (no new
-  secrecy machinery). Callers MUST pass `None` for a GM requester, exactly as `region_field`
+  visibility tier declared on its `/engine`, through the SAME `engine_tier_visible` wrapper
+  `region_field` calls (no new secrecy machinery). Callers MUST pass `None` for a GM requester, exactly as `region_field`
   requires. `pathfind` computes it once (`move_walls(scene, if is_gm { None } else { Some(user) })`)
   and passes the same slice into both engines; `navmesh_for`'s memo key incorporates the
   requester's exact wall-set bit-pattern (not merely "filtered vs unfiltered"), since two
@@ -748,6 +834,37 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   `ToolContext.viewedSceneId?.()` before falling back to the first scene — every doc-creating tool
   (place/wall/region/drawing/template) stamps `parent_id` onto the viewed scene, not always the
   first one.
+- **Client-side footprint consumption — every seam is a READ of the `"footprints"` channel.**
+  `@shadowcat/core`'s `footprints` module owns `FootprintExtent`, `FootprintLookup`
+  (`token(id)`/`unit(sceneId)`, each `null` when the server has stated nothing),
+  `parseFootprints(payload)` and `EMPTY_FOOTPRINTS`. A payload that fails the Zod schema yields
+  `EMPTY_FOOTPRINTS` rather than a partial read — mixing authoritative extents with silently
+  dropped ones is indistinguishable to a caller.
+  - **`WorldSession` owns the subscription, not the render engine** — the extents feed the canvas,
+    the hit-test, the selection ring and the place tool, so they belong beside the document view
+    all four read. `AppContext.footprints` is the getter; `RenderEngineOpts.footprints?: () =>
+    FootprintLookup` (→ `TokenView`) and `ToolContext.footprints?` (→ `footprintsOf(ctx)`, used by
+    `topTokenAt`, the select/move drag and the place tool) both read it through Stage/ToolRail.
+    `enter()`'s `subscribeScene("footprints", …)` runs before the socket is up and that first
+    attempt is dropped; `#onWelcome` re-establishes it, and `leave()` unsubscribes and resets to
+    `EMPTY_FOOTPRINTS` so a second world cannot inherit the first's extents.
+  - `resolveTokenBox(token, store, footprints, eff?)` is a pure reader: `w: resolved?.w ?? eng?.w
+    ?? 0`. `buildTokenFromActor(..., unit: FootprintExtent | null, id?)` stamps the scene's
+    server-resolved unit extent onto a token it creates, rather than deriving one — the standing
+    extent until that token's own arrives, and permanently for a token no actor sizes.
+  - **`RenderEngine.reapplyFootprints()` joins `reapplyViewedScene()` as a client-local
+    re-projection entry point**: a footprints frame carries no store commit (the server recomputes
+    derived channels on a debounce AFTER the event that changed them), so without it the canvas
+    keeps drawing the previous extents until an unrelated commit. Tokens only — no other view reads
+    a footprint. `Stage`'s `$effect` watches `ctx.footprints` alongside `ctx.viewedSceneId` and
+    calls it exactly once per genuine change.
+  - **Deliberately NOT behind the `appliedSeq` watermark that guards `vision`.** That watermark
+    exists because fog is the client's secrecy gate; an extent is a rendering quantity with no
+    confidentiality stake, and holding it back would delay a purely cosmetic correction. If a
+    future field on this channel ever carries a secrecy stake, that decision has to be revisited —
+    it is a property of the payload, not of the channel.
+  - Cost of the seam, by design: a freshly placed actor-backed token draws at the scene's unit
+    footprint for one round trip, until its own resolved extent arrives.
 
 ## Hard invariants
 
@@ -946,12 +1063,13 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   router's field is a SUBSET of the authoritative field — a secret region can
   narrow a player's route/preview but can never appear to them where it wouldn't to the GM, and it
   always still applies at `move_exec` regardless of what the router showed. Reuses the EXACT same
-  `resolve_access`/`property_overrides["/engine"]` mechanism as ordinary document egress (not
-  `"/system"`) — no new secrecy machinery was introduced for regions.
+  `resolve_access` + `property_overrides["/engine"]` mechanism as ordinary document egress (not
+  `"/system"`), through `engine_tier_visible` — no new secrecy machinery was introduced for regions.
   **Fixture-construction precision (test/brief authoring convention):** the correct way to mark a
   region `gm_only` in a test fixture is
-  `doc.permissions.property_overrides.insert("/engine".into(), Visibility::GmOnly)` — matching
-  `region_field`'s actual read (`doc.permissions.property_overrides.get("/engine")`, default
+  `doc.permissions.property_overrides.insert("/engine".into(), Visibility::GmOnly)` — matching the
+  read `engine_tier_visible_to` performs on `region_field`'s behalf
+  (`doc.permissions.property_overrides.get("/engine")`, default
   `Visibility::All`). Setting `permissions.default = Access::None` instead does NOT gate
   `region_field`'s per-requester filter at all (that field only reads the `/engine`
   `property_overrides` entry) — a brief/test author who reaches for `permissions.default` here will

@@ -1,6 +1,6 @@
 ---
 name: shadowcat-codebase-documents-permissions
-description: "Use when touching Shadowcat documents, permissions, redaction, visibility tiers (all / gm_only / owner_or_gm), per-recipient broadcast filtering, the search index, the `Document.base` merge-snapshot field (its authz/size-cap/egress rules — not the client merge algorithm), or the client wire/Zod types. Covers src/server/src/data and its src/client/core wire mirror. Invoke shadowcat-codebase-core first."
+description: "Use when touching Shadowcat documents, permissions, redaction, visibility tiers (all / gm_only / owner_or_gm), per-recipient broadcast filtering (document stream AND derived channels, which owe the same two gates), the search index, the `Document.base` merge-snapshot field (its authz/size-cap/egress rules — not the client merge algorithm), or the client wire/Zod types. Covers src/server/src/data and its src/client/core wire mirror. Invoke shadowcat-codebase-core first."
 ---
 
 # Shadowcat — Documents & Permissions
@@ -88,7 +88,9 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
   wrapper exists, so a new egress call site must state where its owner comes from or it fails to
   compile. Three join sources, one per hot-path shape:
   - **WS hot path** (`ws::conn::send_filtered`'s `Event` branch; `http::routes::write_ops`'s
-    HTTP-write receive) — `data::permission::filter_command` is a SYNC core over
+    HTTP-write receive; and the per-recipient derived-channel egress in `SceneEcs::ctx_access`,
+    which resolves the SAME `effective_owner_via` + `resolve_access_world` pair against the same
+    in-memory actor table) — `data::permission::filter_command` is a SYNC core over
     `load_update_docs` (Update pre-images, awaited ONCE per event before the sync core runs — no
     lock held across that await) and an `actor_lookup` closure backed by the room's in-memory
     `SceneEcs` actor table (`|id| ecs.actor(id)`). No pool read on this path at all — the join is
@@ -294,6 +296,23 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
   first, then (optionally) `filter_properties` for property redaction. Gating whole-doc delivery
   on `see_gm_only`/GM-ness alone instead of `has(cap::READ)` would leak a `gm_role`-capped
   document (see below) straight past its intended cap.
+  - **"Egress path" includes a DERIVED CHANNEL, not just the document stream — and a channel
+    inherits NONE of the document stream's filtering.** A derived frame computed from documents
+    restates their content on the wire, so it owes the recipient the same two gates in the same
+    order, at EVERY document it is computed from — including a linked parent it joins to and an
+    embedded child it reads. Both gates must be reached through the same symbols the document
+    stream uses (`resolve_access_world` + `effective_owner_via` for READ, `Access::can_see` on the
+    `property_overrides` tier for the band), never a same-shaped copy. **The way this defect
+    arrives is a helper written as an internal GATE input being promoted to a wire surface:** such
+    a helper enumerates without filtering because every prior caller was authoritative, so
+    promoting it is a permissions change even when no formula changes and no new query is written.
+    Two consequences follow. (1) Redact by ABSENCE of the whole entry — an id paired with an empty
+    child list is itself the disclosure, so a nulled field or an emptied list is not a redaction of
+    an entry the recipient may not see. (2) An EMBEDDED child is tested on the tier alone, against
+    the PARENT's `Access`: `filter_properties` recurses into `embedded` carrying the parent's
+    access and no whole-document READ is ever resolved for a child, so demanding one there would
+    diverge from the document stream rather than match it. The `"footprints"` channel is the worked
+    instance, symbols and levels named in `shadowcat-codebase-scene-rendering`.
 - **`PermissionSet.gm_role: Option<DocRole>` makes the GM's usual unconditional access
   conditional, per document.** `resolve_access`'s GM branch normally short-circuits to
   `Access { all: true, see_gm_only: true, is_owner: true, caps: {} }` for every `WorldRole::Gm`

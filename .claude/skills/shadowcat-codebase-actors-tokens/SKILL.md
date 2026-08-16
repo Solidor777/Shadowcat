@@ -29,9 +29,15 @@ token/actor name from non-owners via the `OwnerOrGm` visibility tier. Conditions
   ([[shadowcat-codebase-sheets]]/`shadowcat-codebase-documents-permissions` cover it).
   - `buildActorDoc(worldId, name, engine, id?)` — `name: string | null` is now a DEDICATED
     parameter (the envelope `name` band), separate from the `ActorEngine` body.
-  - `buildTokenFromActor(worldId, sceneId, actor, "link"|"instance", pos, size, id?)` — link mode
+  - `buildTokenFromActor(worldId, sceneId, actor, "link"|"instance", pos, unit, id?)` — link mode
     sets `token.engine.actor_id` + `overrides`; instance mode embeds an independent (deep-cloned)
-    copy with `source` provenance.
+    copy with `source` provenance. `unit: FootprintExtent | null` is the parent scene's
+    SERVER-RESOLVED unit (1x1) extent, stamped as the new token's `engine.w`/`h`; it is never
+    derived from the actor's size and the grid, because deriving it would be a second footprint
+    formula. It stands until the server states this token's own extent, and permanently for a
+    token no actor sizes. `null` (no `"footprints"` frame yet) stamps `w: 0, h: 0`, which
+    `topTokenAt` skips outright — the token is unpickable until the frame lands. In practice
+    `WorldSession.enter` opens the subscription before any tool use.
   - `TokenOverrides` whitelist includes `shape` (alongside `name`, `visual`, `size`) — a per-token
     `"square" | "circle"` override applied on top of the actor's own shape field.
   - **Token visual union (replaces the old flat `ActorVisual`):** `RenderVisual = {kind:
@@ -80,13 +86,20 @@ token/actor name from non-owners via the `OwnerOrGm` visibility tier. Conditions
   `conditionTarget(token, store) -> {doc, path, conditions}` (the write site: linked →
   `actor` doc `/engine/conditions`; instanced → token `/embedded/actor/0/engine/conditions` —
   was `/system/conditions`).
-  Shapes + footprint: `resolveTokenBox(token, store, eff?) -> TokenBox {x,y,w,h,shape}` — the
-  scene-pixel footprint read-through: actor-backed size = `EffectiveActor.size × parent-scene grid
-  cell` (default 100 px); raw/dangling token → `token.engine.w/h` + `"square"`; fail-closed (never
-  throws); optional pre-resolved `eff` avoids a double `resolveTokenActor` call. `TokenBox` is
-  exported from `@shadowcat/core`. `footprintRadius(eff) -> number` — grid-unit bounding-disc radius
-  for the pathfinder: circle = `max(w,h)/2`, square = half-diagonal (`√(w²+h²)/2`); both in
-  grid-cell units. `EffectiveActor.visionModes: VisionAssignment[]` — projected by `project()` as
+  Shapes + footprint: `resolveTokenBox(token, store, footprints, eff?) -> TokenBox
+  {x,y,w,h,shape}` — a scene-pixel footprint READ-THROUGH that computes no geometry of its own.
+  **There is no client-side footprint formula.** `w`/`h` come from the server's resolved extent
+  (`FootprintLookup.token(id)`, off the `"footprints"` derived channel), falling back to the
+  token's own authored `token.engine.w/h` when the lookup states none — an unconfirmed optimistic
+  token, a token no actor sizes, or an extent the server REFUSED. `shape` is the only field `eff`
+  decides (`actor?.shape ?? "square"`); the optional pre-resolved `eff` avoids a double
+  `resolveTokenActor` call, and `null` skips resolution for a known actorless token. Fail-closed,
+  never throws. `TokenBox` is exported from `@shadowcat/core`. The definition both the drawn box
+  and the movement gate's collision radius are read from is `scene::footprint`
+  (`shadowcat-codebase-scene-rendering`) — a size formula re-derived here would be the
+  forked-decision defect that seam exists to remove, and the shape/size an extent is computed from
+  are additionally gated per recipient, so a client cannot assume one exists for every token it can
+  see. `EffectiveActor.visionModes: VisionAssignment[]` — projected by `project()` as
   `overrides?.vision ?? base.vision ?? []` (per-token override **replaces** actor base, not merged).
   **`resolveTokenVisual(token, store, eff?) -> RenderVisual | null`** — the render-boundary
   visual resolver, sibling to `resolveTokenActor`/`resolveTokenBox`/`resolveConditions`. Reads
@@ -209,9 +222,13 @@ token/actor name from non-owners via the `OwnerOrGm` visibility tier. Conditions
     cannot disagree about who owns a token. The per-call-site join sources are egress territory:
     `shadowcat-codebase-documents-permissions`.
 - **Rendered token size, hit-test, and the selection ring all resolve through `resolveTokenBox`** —
-  never read `token.system.w/h` directly for an actor-backed token; doing so bypasses the
-  `EffectiveActor.size × grid-cell` scaling, breaks multi-cell tokens, and ignores the shape
-  override, causing the render size, click target, and selection ring to diverge.
+  never read `token.engine.w/h` directly for an actor-backed token. Those authored fields are only
+  the FALLBACK the read-through applies when the server has stated no extent; reading them
+  directly ignores the server's resolved extent whenever one exists (they differ for a multi-cell
+  token, and on hex for every token) and ignores the shape override, causing the render size, click
+  target and selection ring to diverge. Deriving a size instead — from `EffectiveActor.size` times
+  the grid cell — is worse still: that is a second footprint formula, and the drawn geometry would
+  then disagree with the geometry the server's movement gate collides with.
 - **Instanced token's embedded actor copy needs `structuredClone`, not `{...}`** — a shallow copy
   aliases nested `system`/`permissions`/`embedded` with the source until the wire round-trip
   [[embedded-copy-needs-deep-clone]].
