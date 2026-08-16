@@ -32,7 +32,7 @@ describe("FaceSwapPalette", () => {
 
   it("renders the face options for a token whose effective visual is 'faces'", () => {
     const actor = facesActor();
-    const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, 100, "tok1");
+    const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 }, "tok1");
     render(FaceSwapPalette, {
       context: setAppContextForTest({ role: "gm", world: "w1", documents: storeWith(actor, token), dispatchIntent: vi.fn(), canEdit: () => true }),
       props: { tokenId: "tok1" },
@@ -45,7 +45,7 @@ describe("FaceSwapPalette", () => {
   it("clicking a face dispatches an /engine/face update reading the raw stored value for `old`", async () => {
     const dispatchIntent = vi.fn();
     const actor = facesActor();
-    const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, 100, "tok1");
+    const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 }, "tok1");
     render(FaceSwapPalette, {
       context: setAppContextForTest({ role: "gm", world: "w1", documents: storeWith(actor, token), dispatchIntent, canEdit: () => true }),
       props: { tokenId: "tok1" },

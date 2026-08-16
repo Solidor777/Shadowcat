@@ -35,7 +35,7 @@ function actorOwnedBy(owner: string | null): WireDocument {
 }
 
 function linkedToken(actor: WireDocument, override: string | null): WireDocument {
-  const t = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, 100, "tok1");
+  const t = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 }, "tok1");
   t.owner = override;
   return t;
 }

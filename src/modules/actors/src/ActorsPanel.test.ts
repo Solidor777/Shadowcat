@@ -443,7 +443,7 @@ describe("ActorsPanel — per-token face swap", () => {
 
   it("shows the face palette for a selected token whose visual is 'faces', not for a plain image token", async () => {
     const actor = facesActor();
-    const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, 100, "tok1");
+    const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 }, "tok1");
     const store = storeWith(actor, token);
     const tokenSelection = new TokenSelection();
     tokenSelection.set(["tok1"]);
@@ -458,7 +458,7 @@ describe("ActorsPanel — per-token face swap", () => {
   it("clicking a face dispatches a /system/face update reading the raw stored value for `old`", async () => {
     const dispatchIntent = vi.fn();
     const actor = facesActor();
-    const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, 100, "tok1");
+    const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 }, "tok1");
     const store = storeWith(actor, token);
     const tokenSelection = new TokenSelection();
     tokenSelection.set(["tok1"]);

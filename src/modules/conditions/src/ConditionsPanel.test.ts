@@ -39,7 +39,7 @@ describe("ConditionsPanel", () => {
   it("does not toggle when the user may not edit the target (canEdit false)", async () => {
     const dispatchIntent = vi.fn();
     const actor = actorDoc("act1", []);
-    const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, 100, "tok1");
+    const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 }, "tok1");
     const store = storeWith(buildConditionRegistryDoc("w1", { dead: { name: "Dead", icon: "💀" } }, "creg1"), actor, token);
     const tokenSelection = new TokenSelection();
     tokenSelection.set(["tok1"]);
@@ -51,7 +51,7 @@ describe("ConditionsPanel", () => {
   it("toggles the condition on the editable selected token (canEdit true)", async () => {
     const dispatchIntent = vi.fn();
     const actor = actorDoc("act1", []);
-    const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, 100, "tok1");
+    const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 }, "tok1");
     const store = storeWith(buildConditionRegistryDoc("w1", { dead: { name: "Dead", icon: "💀" } }, "creg1"), actor, token);
     const tokenSelection = new TokenSelection();
     tokenSelection.set(["tok1"]);

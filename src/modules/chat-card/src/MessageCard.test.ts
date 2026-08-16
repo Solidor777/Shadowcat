@@ -806,7 +806,7 @@ describe("MessageCard actor-name navigation", () => {
 
   it("renders the token name as a button that opens the token when present in the store", async () => {
     const actor = buildActorDoc("w1", "Goblin", actorEngine(), "a1");
-    const token = buildTokenFromActor("w1", "scene1", actor, "instance", { x: 0, y: 0 }, 100, "token1");
+    const token = buildTokenFromActor("w1", "scene1", actor, "instance", { x: 0, y: 0 }, { w: 100, h: 100 }, "token1");
     const doc = msgDoc("m1", baseSystem({ actor_owner: { kind: "token_instance", token_id: "token1" } }));
     const opened: unknown[] = [];
     const { getByRole } = render(MessageCard, {
@@ -838,7 +838,7 @@ describe("MessageCard — actor attribution + redaction fixtures (real resolveTo
 
   it("resolves an actor_owner{kind:'token_instance'} to the embedded instance's real name", () => {
     const actor = buildActorDoc("w1", "Grog", actorEngine(), "actor1");
-    const token = buildTokenFromActor("w1", "scene1", actor, "instance", { x: 0, y: 0 }, 100, "token1");
+    const token = buildTokenFromActor("w1", "scene1", actor, "instance", { x: 0, y: 0 }, { w: 100, h: 100 }, "token1");
     const doc = msgDoc("m1", baseSystem({ actor_owner: { kind: "token_instance", token_id: "token1" } }));
     const { container } = render(MessageCard, { props: { message: doc, showChannel: false }, context: setAppContextForTest({ documents: storeWith(actor, token, doc) }) });
     expect(container.querySelector(".actor-name")?.textContent).toBe("(Grog)");
