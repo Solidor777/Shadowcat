@@ -1,5 +1,5 @@
 import { readFileSync, globSync } from "node:fs";
-import { pathToFileURL } from "node:url";
+import { isDirectEntry } from "./lib/is-main.mjs";
 
 const IMPORT_RE = /from\s+["'](svelte(?:\/[^"']+)?)["']/g;
 
@@ -16,8 +16,11 @@ export function findUnenumeratedSveltePaths(fileContentsByPath, knownEntries) {
   return flagged;
 }
 
-// CLI entry point — only runs when invoked directly, not when imported by the test.
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+// CLI entry point — only runs when invoked directly, not when imported by the test. The decision
+// comes from the shared definition rather than a local comparison: a second spelling of it is free
+// to disagree with the others on an `argv[1]` nobody tested, and its failure mode is a gate that
+// silently scans nothing and exits 0.
+if (isDirectEntry(import.meta.url)) {
   const { RUNTIME_ENTRIES } = await import("../src/client/shell/vite.config.ts");
   const knownEntries = Object.values(RUNTIME_ENTRIES);
   // examples/** ships the same externalized-svelte build pattern (and is the
