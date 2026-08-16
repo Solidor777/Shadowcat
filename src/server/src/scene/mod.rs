@@ -1469,8 +1469,10 @@ impl SceneEcs {
         // the zero rectangle instead, and a navmesh has no use for a rectangle of zero area.
         let cell = self.scene_grid_sizes().get(&scene).copied()?;
         let extent = self.scene_world_extent_at(scene, cell);
-        // The footprint radius is authored against the INDEXING scale (a square block's
-        // half-diagonal in cells), not the per-cell world distance — see
+        // The footprint radius is already stated in the grid's OWN cells by
+        // `footprint::resolve_footprint_cells` — the authored block's conservative enclosure on
+        // square, the circumscribing radius of the authored hex count on hex — so it converts
+        // through the INDEXING scale, not the per-cell world distance; see
         // `GridShape::world_units_per_cell`'s own note on why scaling it is a rules change.
         let footprint_scene = footprint_radius_cells * cell;
         let built = navmesh::build_navmesh(extent, footprint_scene, walls)?;
@@ -1975,16 +1977,41 @@ impl SceneEcs {
         }
     }
 
-    /// The resolved drawn extents the `"footprints"` derived channel carries: for every scene with
-    /// a resolvable grid, that scene's unit (1x1) extent plus one entry per token whose footprint
-    /// this ECS resolves and `ctx` may read. Scene units throughout — `footprint::FootprintCells`
-    /// is in grid units and is scaled here by the scene's own `grid.size` (the INDEXING scale,
-    /// the circumradius on hex), the one conversion a footprint takes.
+    /// Whether `ctx` may READ `doc`, resolved through the SAME `effective_owner_via` +
+    /// `resolve_access_world` pair document egress uses (`filter_command`), with the grants
+    /// projected from `doc`'s OWN `doc_type` so a caller cannot supply a mismatched set.
     ///
-    /// Egress rule: a token is included only when `ctx` has `cap::READ` on its document, resolved
-    /// through the SAME `resolve_access_world` + `effective_owner_via` pair document egress uses
-    /// (`filter_command`) rather than a second access decision — otherwise a hidden token's
-    /// existence and size would leak through a channel that never carries its document.
+    /// `resolved_footprints` applies this one decision at BOTH levels it emits — the scene entry
+    /// and each token entry — so the two can never be gated by two decisions that disagree.
+    fn ctx_can_read(
+        &self,
+        ctx: &PermissionContext,
+        world_defaults: &crate::data::document::WorldCapDefaults,
+        doc: &Document,
+    ) -> bool {
+        let owner = crate::data::permission::effective_owner_via(doc, &|id: &Uuid| self.actor(id));
+        crate::data::permission::resolve_access_world(
+            ctx.user_id,
+            ctx.world_role,
+            doc,
+            &world_defaults.grants_for(&doc.doc_type),
+            owner,
+        )
+        .has(crate::data::permission::cap::READ)
+    }
+
+    /// The resolved drawn extents the `"footprints"` derived channel carries: for every scene with
+    /// a resolvable grid that `ctx` may read, that scene's unit (1x1) extent plus one entry per
+    /// token whose footprint this ECS resolves and `ctx` may read. Scene units throughout —
+    /// `footprint::FootprintCells` is in grid units and is scaled here by the scene's own
+    /// `grid.size` (the INDEXING scale, the circumradius on hex), the one conversion a footprint
+    /// takes.
+    ///
+    /// Egress rule: an entry — a scene's as much as a token's — is included only when
+    /// `ctx_can_read` holds for the document it describes. The envelope IS the disclosure at both
+    /// levels: a scene entry states that scene's id and its grid-derived unit geometry, so an
+    /// entry with an empty `tokens` list is not a redaction of a scene the recipient may not read.
+    /// A token parented to a withheld scene is withheld with it.
     ///
     /// A token with no entry has no server-resolved footprint: it carries no actor, its actor link
     /// dangles, or `ctx` cannot read it. An entry with `extent: None` is a REFUSAL — the same
@@ -1995,7 +2022,19 @@ impl SceneEcs {
         world_defaults: &crate::data::document::WorldCapDefaults,
     ) -> footprint::FootprintsPayload {
         let mut by_scene: BTreeMap<Uuid, (f64, footprint::SceneFootprints)> = BTreeMap::new();
-        for (scene, cell) in self.scene_grid_sizes() {
+        // The cell size comes from `scene_grid_sizes` rather than a second `grid.size` read, so
+        // this channel's scale can never disagree with the gates'; the entity scan alongside it
+        // supplies the scene DOCUMENT that map does not carry, which the READ check needs.
+        let grid_sizes = self.scene_grid_sizes();
+        for e in self.world.query::<&SceneEntity>().iter() {
+            let doc = &e.doc;
+            if doc.doc_type != "scene" || !self.ctx_can_read(ctx, world_defaults, doc) {
+                continue;
+            }
+            let Some(cell) = grid_sizes.get(&doc.id).copied() else {
+                continue;
+            };
+            let scene = doc.id;
             let kind = self.resolve_grid_kind(scene);
             let unit = footprint::resolve_footprint_cells(kind, "square", 1.0, 1.0);
             by_scene.insert(
@@ -2013,7 +2052,6 @@ impl SceneEcs {
                 ),
             );
         }
-        let grants = world_defaults.grants_for("token");
         // Sorted so the payload is a stable value: the egress loop's change detection compares
         // whole payloads, and `hecs` iteration order is not stable.
         let mut tokens: Vec<(Uuid, Uuid)> = Vec::new();
@@ -2028,16 +2066,7 @@ impl SceneEcs {
             if !by_scene.contains_key(&scene) {
                 continue;
             }
-            let owner =
-                crate::data::permission::effective_owner_via(doc, &|id: &Uuid| self.actor(id));
-            let access = crate::data::permission::resolve_access_world(
-                ctx.user_id,
-                ctx.world_role,
-                doc,
-                &grants,
-                owner,
-            );
-            if !access.has(crate::data::permission::cap::READ) {
+            if !self.ctx_can_read(ctx, world_defaults, doc) {
                 continue;
             }
             tokens.push((scene, doc.id));
@@ -4485,6 +4514,16 @@ mod tests {
         }
     }
 
+    /// A scene document a `WorldRole::Player` may READ. `PermissionSet::default` is
+    /// `DocRole::None`, so a fixture scene is invisible to a player unless it says otherwise —
+    /// which would make a player-facing assertion about anything INSIDE that scene pass for the
+    /// wrong reason.
+    fn readable_scene_doc(id: u128, body: serde_json::Value) -> Document {
+        let mut d = entity_doc_top_eng(id, "scene", body);
+        d.permissions.default = crate::data::document::DocRole::Observer;
+        d
+    }
+
     /// The one scene entry of a footprint payload built for a GM.
     fn only_scene_footprints(ecs: &SceneEcs) -> footprint::SceneFootprints {
         let mut p = ecs.resolved_footprints(&footprint_gm_ctx(), &WorldCapDefaults::default());
@@ -4593,9 +4632,10 @@ mod tests {
         hidden.permissions.default = crate::data::document::DocRole::None;
         let mut ecs = SceneEcs::from_documents(
             vec![
-                entity_doc_top_eng(
+                // Readable, so the scene entry survives its own READ gate and the token gate is
+                // the only thing this test can be measuring.
+                readable_scene_doc(
                     10,
-                    "scene",
                     json!({ "grid": { "kind": "square", "size": 100.0 }, "background": null }),
                 ),
                 hidden,
@@ -4620,6 +4660,71 @@ mod tests {
             only_scene_footprints(&ecs).tokens.len(),
             1,
             "the GM, who can read it, still receives it"
+        );
+    }
+
+    #[test]
+    fn footprints_payload_withholds_a_scene_entry_the_recipient_cannot_read() {
+        let open_scene = Uuid::from_u128(10);
+        let secret_scene = Uuid::from_u128(20);
+        let mut secret = entity_doc_top_eng(
+            20,
+            "scene",
+            json!({ "grid": { "kind": "hex", "size": 100.0 }, "background": null }),
+        );
+        secret.permissions.default = crate::data::document::DocRole::None;
+        let mut ecs = SceneEcs::from_documents(
+            vec![
+                readable_scene_doc(
+                    10,
+                    json!({ "grid": { "kind": "square", "size": 100.0 }, "background": null }),
+                ),
+                secret,
+                entity_doc_eng(
+                    21,
+                    20,
+                    "token",
+                    json!({ "x": 0.0, "y": 0.0, "w": 100.0, "h": 100.0, "rotation": 0.0,
+                            "actor_id": Uuid::from_u128(200).to_string() }),
+                ),
+            ],
+            0,
+        );
+        ecs.set_actors(vec![entity_doc_top_eng(
+            200,
+            "actor",
+            actor_body_shaped("square", 1.0, 1.0),
+        )]);
+        let player = PermissionContext {
+            user_id: Uuid::from_u128(77),
+            world_role: crate::data::document::WorldRole::Player,
+        };
+        let for_player = ecs.resolved_footprints(&player, &WorldCapDefaults::default());
+        assert!(
+            !for_player.scenes.iter().any(|s| s.scene == secret_scene),
+            "the whole entry is absent — its id and its unit extent are the disclosure, so an \
+             empty token list is not a redaction"
+        );
+        assert_eq!(
+            for_player
+                .scenes
+                .iter()
+                .map(|s| s.scene)
+                .collect::<Vec<_>>(),
+            vec![open_scene],
+            "the scene the recipient may read is still carried, so absence is the access decision \
+             rather than an empty payload"
+        );
+        let for_gm = ecs.resolved_footprints(&footprint_gm_ctx(), &WorldCapDefaults::default());
+        let gm_secret = for_gm
+            .scenes
+            .iter()
+            .find(|s| s.scene == secret_scene)
+            .expect("the GM, who can read it, still receives it");
+        assert_eq!(
+            gm_secret.tokens.len(),
+            1,
+            "and receives the tokens parented to it"
         );
     }
 
