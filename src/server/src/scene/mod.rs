@@ -1551,8 +1551,7 @@ impl SceneEcs {
         // forked wall computation (the same discipline `mask` follows).
         let walls = self.move_walls(scene, if is_gm { None } else { Some(user) });
         // Hoisted so `movement_model` is available to the engine dispatch regardless of `is_gm`
-        // (a GM can also route on a continuous scene) — the grid branch's OWN behavior is
-        // unchanged, it just now reads `settings` from this shared binding instead of a local one.
+        // (a GM can also route on a continuous scene); both engine branches read this one binding.
         let settings = self.resolve_scene(scene);
 
         // Build the per-(user,scene) mask (None ⇒ unconstrained). Shared by both engines —
@@ -6085,7 +6084,7 @@ mod tests {
         // world units from the lamp at (50,50) — inside the bright radius and full intensity, but
         // past the lamp's occlusion-polygon bound margin (100 world units) if that bound never
         // grows past it. A cap at the margin leaves this cell dark regardless of the authored
-        // radius; the fix must make the authored radius, not the margin, decide it.
+        // radius; the authored radius, not the margin, must decide it.
         let (ecs, user, scene) = scene_with_lit_player_token();
         let cells = mask_cells(&ecs, user, scene);
         assert!(
@@ -7280,8 +7279,8 @@ explored: // GM: unrestricted mask
             .expect("continuous route over an open bounded scene");
         // Euclidean straight line ≈ 900 scene units, unlike a grid diagonal-rule cost — proves
         // the navmesh path was actually taken, not the grid router — converted to the wire's cell
-        // unit by dividing through the fixture's cell size (900 / 100 = 9); the tolerance is the
-        // same conversion applied to the prior world-unit tolerance (2.0 / 100 = 0.02).
+        // unit by dividing through the fixture's cell size (900 / 100 = 9); the tolerance is a
+        // 2.0 world-unit slack under that same conversion (2.0 / 100 = 0.02).
         assert!(
             (outcome.cost - 9.0).abs() < 0.02,
             "expected ~9 cells (900 Euclidean scene units / cell 100), got {}",
@@ -9594,7 +9593,7 @@ explored: // GM: unrestricted mask
 
     #[test]
     fn navmesh_for_refuses_a_radius_over_the_footprint_cap() {
-        // The radius-RANGE refusal, pinned at the level it now lives: `build_navmesh` receives an
+        // The radius-RANGE refusal is `navmesh_for`'s own: `build_navmesh` receives an
         // already-converted world distance and refuses only on that distance's magnitude, so an
         // over-cap radius whose converted distance stays under `MAX_NAVMESH_COORD` would build a
         // mesh if `navmesh_for` stopped checking the range.

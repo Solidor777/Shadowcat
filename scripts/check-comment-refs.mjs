@@ -28,15 +28,8 @@ import {
   mkdirSync,
 } from "node:fs";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
-
-// The scan-and-report pipeline below runs only when this file is executed directly, never on
-// import — a test imports `scanContent` to exercise the ruleset against fabricated text, and
-// running the whole repo scan (with its own `process.exit`) as a side effect of that import would
-// make the function untestable in isolation.
-const isMain =
-  process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
+import { isDirectEntry } from "./lib/is-main.mjs";
 
 const SKIP_DIRS = new Set([
   "node_modules",
@@ -45,13 +38,20 @@ const SKIP_DIRS = new Set([
   ".git",
   "dist-docs",
 ]);
-const EXTS = [".ts", ".rs", ".svelte", ".mjs", ".js"];
+// Every extension whose files carry comments a human reads. A stylesheet is code that decides what
+// ships exactly as a module is, and its `//` and `/* */` comments go stale the same undetectable
+// way — an extension list narrower than the rule's scope reports zero over the part it cannot see,
+// which is indistinguishable from a part that was checked.
+const EXTS = [".ts", ".rs", ".svelte", ".mjs", ".js", ".scss"];
 
 // The checkers are in scope with the code they check. A gate that excludes its own directory
 // guarantees exactly one blind spot, and it is the blind spot where a violation does the most
 // damage: an enforcement script that cites an ephemeral document teaches every reader that the
 // citation is acceptable, and no run will ever say otherwise.
-const ROOTS = ["src", "scripts"];
+//
+// `examples` is a published workspace whose packages ship as the authoring reference, so a comment
+// there is read by more people than most of `src`. Every other repo-wide gate already covers it.
+const ROOTS = ["src", "scripts", "examples"];
 
 // The codebase-skill briefs are prose about the code, not code. Their exemption from this
 // scanner's rule is narrow, not total: a skill may still cite a durable document by its path plus
@@ -138,6 +138,15 @@ const BANNED = [
     re: /docs\/[\w./-]+\.md|\b(?:TODO|OPEN_BUGS|CLOSED_BUGS|POST_WORK_FINDINGS|ARCHITECTURE|PLAN)\.md|ARCHITECTURE\s*[§#]|\binvariant\s*#?\s*\d+/i,
   },
   { name: "dated plan/spec file", re: /\b20\d\d-\d\d-\d\d[\w-]*\.md/ },
+  // A `Constraint N` / `Global Constraint N` reference is the same bare-numbered-registry shape as
+  // the `invariant N` form above: it names an item outside the line with no document to resolve it
+  // against, and the number is assigned by a process that renumbers freely. The numbered section of
+  // a plan document is exactly the repo-document pointer this list already bans, written without
+  // the filename that would at least say which document went stale.
+  {
+    name: "numbered constraint",
+    re: /\b(?:Global\s+)?Constraint\s*#?\s*\d+\b/i,
+  },
   // A date stamps a comment with when someone wrote it, which is not behaviour. A match requires a
   // parenthesised or "as of" form, because a bare ISO date also appears inside illustrative
   // program data (a backup path, a sample record) where it names a value rather than a writing.
@@ -189,8 +198,8 @@ const BANNED = [
     re: /(?<!\b(?:RFC|ISO|IEC|IEEE|ANSI|W3C|WHATWG|Unicode)[\s-]?\d{1,5}[,;:]?\s{0,3})§\s*\d|\bSection\s+\d+(?:\.\d+)*\b/,
   },
   // EXAMPLE: "the brief" names the same scaffolding as "task brief"/"dispatch brief" above, but the
-  // EXAMPLE: bare noun collides with `check-brief-rules.mjs`'s own subject matter, which describes
-  // EXAMPLE: what a dispatch brief IS throughout that file's prose. The pointer CONSTRUCTION — a
+  // EXAMPLE: bare noun collides with the brief-rules checker's own subject matter, which describes
+  // EXAMPLE: what a dispatch brief IS throughout its prose. The pointer CONSTRUCTION — a
   // EXAMPLE: possessive ("the brief's X") or an imperative deferring to it ("the brief requires" /
   // EXAMPLE: "says" / "specifies" / "states") — is what a genuine reference to one specific,
   // now-gone document looks like; a generic description of the category uses neither shape.
@@ -224,8 +233,8 @@ const BANNED = [
 ];
 
 // The subset of BANNED the owner's ruling actually named for skills: milestone ids, task ids,
-// dated plan filenames, sweep/round/review markers, history narration and unnamed spec
-// references. A skill's "Pointers" section may cite a durable design document by path plus a
+// dated plan filenames, sweep/round/review markers, history narration, unnamed spec references and
+// numbered constraints. A skill's "Pointers" section may cite a durable design document by path plus a
 // section anchor, but a dated spec or plan file is a superseded-by-construction record rather
 // than a durable one, so citing one by its dated filename is exactly the "dated plan/spec file"
 // shape and stays banned. Reusing the CODE entries by reference (rather than re-deriving the
@@ -260,7 +269,7 @@ const SKILL_BANNED = [
     name: "ephemeral doc pointer",
     re: /\b(?:TODO|PLAN|OPEN_BUGS|CLOSED_BUGS|POST_WORK_FINDINGS)\.md\b/,
   },
-  // The two entries below are skill-ONLY (no `skillBannedByName` reuse, no BANNED counterpart):
+  // The entry below is skill-ONLY (no `skillBannedByName` reuse, no BANNED counterpart):
   // a corpus scan surfaced the same letter+digit local-reference shape as `[DITW]\d+` above, under
   // different letters. Those letters are exactly the ones a short Rust/TypeScript identifier, test
   // name, or algorithm label routinely takes (a one-letter-plus-digit token is a common naming
@@ -276,14 +285,7 @@ const SKILL_BANNED = [
     name: "local letter+digit marker",
     re: /\b[ACFHR]\d(?:-\d+)?\b/,
   },
-  // A `Constraint N` / `Global Constraint N` reference is the same bare-numbered-registry shape as
-  // the code entry's `invariant N`, naming an item outside the line without a document to resolve
-  // it against. Skill-only for the same reason as above: `src/client/shell/src/lib/importMap.test.ts`
-  // carries a test name citing the identical constraint by number, which a shared entry would fail.
-  {
-    name: "numbered constraint",
-    re: /\b(?:Global\s+)?Constraint\s*#?\s*\d+\b/i,
-  },
+  skillBannedByName("numbered constraint"),
 ];
 
 // EXAMPLE: A durable design-doc citation can carry digits that are part of its FILENAME, not a
@@ -635,9 +637,8 @@ function main() {
     .filter(Boolean);
 
   // --residue: the coverage control. Reads `gateFileSet(scopes)` — the exact array the main scan
-  // below also reads — so it cannot silently narrow to one corpus the way it once did when it
-  // filtered `mdFiles` alone. Exits 1 only on non-empty RESIDUE — an acknowledged match is not a
-  // failure, it is the mechanism working.
+  // below also reads — so it cannot silently narrow to one corpus. Exits 1 only on non-empty
+  // RESIDUE — an acknowledged match is not a failure, it is the mechanism working.
   if (argv.includes("--residue")) {
     const { scanned: residueFiles } = gateFileSet(scopes);
     if (scopes.length > 0 && residueFiles.length === 0) {
@@ -936,4 +937,8 @@ function main() {
   recordRun(0);
 }
 
-if (isMain) main();
+// The scan-and-report pipeline runs only when this file is executed directly, never on import — a
+// test imports `scanContent` to exercise the ruleset against fabricated text, and running the whole
+// repo scan (with its own `process.exit`) as a side effect of that import would make the function
+// untestable in isolation.
+if (isDirectEntry(import.meta.url)) main();

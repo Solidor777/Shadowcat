@@ -3699,7 +3699,7 @@ mod tests {
     #[test]
     fn egress_gm_and_gm_role_cap_are_unchanged() {
         // The owner-join plumbing through `filter_command` must not widen the
-        // pre-existing `gm_role` cap: a plain doc still delivers everything to
+        // `gm_role` cap: a plain doc still delivers everything to
         // the GM, but a `gm_role: Some(DocRole::None)` doc (message-style,
         // e.g. a whisper) still drops the capped GM's op entirely.
         use crate::data::command::{Command, Operation};

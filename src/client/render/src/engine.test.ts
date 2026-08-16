@@ -209,9 +209,9 @@ test("a masked frame rasterizes the active scene's explored cells into dimmed-me
 
 // Regression: on a hex scene the server sends explored cells as axial (q,r) — `HexGrid`'s
 // `axial_to_pixel` places cell (1,1) at x=150√3≈259.81, y=150, NOT the square position
-// x=1*100=100, y=1*100=100 a naive `x=i*size, y=j*size` rasterization would paint. Pins the fix
-// at `cellsToRects`'s own wiring site (via `toVisibility`), not just `Grid.cellVertices` in
-// isolation — this test fails if `cellsToRects` reverts to indexing by `size` alone.
+// x=1*100=100, y=1*100=100 a naive `x=i*size, y=j*size` rasterization would paint. Pins the
+// axial rasterization at `cellsToRects`'s own wiring site (via `toVisibility`), not just
+// `Grid.cellVertices` in isolation — this test fails if `cellsToRects` indexes by `size` alone.
 test("a masked frame rasterizes a hex scene's explored cells at their true axial position, not a square index", () => {
   const store = new DocumentStore();
   store.applyCommand(sceneCmd(1, "s1"));
@@ -969,11 +969,11 @@ test("toLighting parses lit cells for the active scene and fails safe", () => {
 });
 
 // Regression: on a hex scene the lighting overlay's `lit` cells are also axial (q,r) — this
-// pins the fix at the RenderEngine wiring site (`toLighting` → `Lighting.setTarget/apply` →
-// `backend.setLighting`). It builds the engine with `MockBackend`, which records the frame but
-// never invokes `PixiBackend`'s paint math, so a revert of `this.grid.cellVertices(i, j)` in
-// `toLighting` fails this test, while a revert of `PixiBackend.setLighting`'s own paint math is
-// pinned separately by that class's own tests.
+// pins the axial rasterization at the RenderEngine wiring site (`toLighting` →
+// `Lighting.setTarget/apply` → `backend.setLighting`). It builds the engine with `MockBackend`,
+// which records the frame but never invokes `PixiBackend`'s paint math, so replacing
+// `this.grid.cellVertices(i, j)` in `toLighting` with square indexing fails this test, while
+// `PixiBackend.setLighting`'s own paint math is pinned separately by that class's own tests.
 test("a masked frame paints a hex scene's lit cell at its true axial position, not a square index", () => {
   const store = new DocumentStore();
   const backend = new MockBackend();

@@ -241,11 +241,21 @@ test("skill mode flags a numbered constraint reference", () => {
   expect(hits.map((h) => h.kind)).toEqual(["numbered constraint"]);
 });
 
-test("code mode does NOT gain the numbered constraint category", () => {
+// A numbered section of a plan document is the same unresolvable pointer in a code comment as in
+// a skill, so the entry is shared by reference rather than duplicated: these two cases fail
+// together if either file class ever stops carrying it.
+test("code mode flags a numbered constraint reference in a comment", () => {
+  const { hits } = scanContent("// Global Constraint 1: one runtime instance.\n", { // EXAMPLE:
+    isMd: false,
+  });
+  expect(hits.map((h) => h.kind)).toEqual(["numbered constraint"]);
+});
+
+test("code mode flags a numbered constraint reference in an explanatory string", () => {
   const { hits } = scanContent('it("Constraint 1: single runtime instance", () => {});\n', { // EXAMPLE:
     isMd: false,
   });
-  expect(hits).toEqual([]);
+  expect(hits.map((h) => h.kind)).toEqual(["numbered constraint"]);
 });
 
 // Coverage control (`scanCandidates`): a genuine miss, an acknowledged legitimate token, and a
@@ -311,10 +321,10 @@ test("scanCandidates in code mode shadows a token BANNED already catches, not SK
   expect(residue.map((r) => r.token)).toEqual(["C1"]);
 });
 
-// The reach-equality control this task exists to add: the coverage control (`--residue`, backed
-// by `residueReport`/`gateFileSet`) must examine exactly the file set the gate itself scans — both
-// corpora, not a filtered subset of one. This is the regression test for the fourth occurrence of
-// the same mechanical defect (a control's reach silently narrower than the gate's).
+// Reach equality: the coverage control (`--residue`, backed by `residueReport`/`gateFileSet`)
+// must examine exactly the file set the gate itself scans — both corpora, not a filtered subset
+// of one. A control whose reach is narrower than the gate's reports clean over what it never read,
+// and nothing in its output distinguishes that from a corpus it actually checked.
 test("residue control's file set is identical to the gate's file set", () => {
   const gate = gateFileSet([]);
   const residue = residueReport([]);
@@ -337,9 +347,44 @@ test("residue control's file set is identical to the gate's file set", () => {
   }
 });
 
-// The coverage control itself, wired into `pnpm test:scripts` so a new unrecognised form in the
-// governed skill corpus fails CI instead of passing silently the way the spelled-out task-id form
-// once did. Every acknowledged match must be real (present in ACKNOWLEDGED with a reason) and
+// Positive controls, one per axis of the gate's corpus. A scope that reaches nothing and a scope
+// that is genuinely clean both report zero, so each axis is pinned by a file the gate must
+// actually be reading — membership in `gateFileSet`'s `scanned` array is reach, because that array
+// is exactly what the scan iterates. Detection is pinned separately below, since a corpus the
+// scanner reads but cannot lex is the same false negative one step later.
+test("the gate's corpus reaches stylesheet sources", () => {
+  const { scanned } = gateFileSet([]);
+  const styles = scanned.filter((p) => p.endsWith(".scss"));
+  expect(styles.length, "no stylesheet reached the scan").toBeGreaterThan(0);
+});
+
+test("the gate's corpus reaches the examples workspace", () => {
+  const { scanned } = gateFileSet([]);
+  const examples = scanned.filter((p) => p.startsWith("examples/"));
+  expect(examples.length, "no example package file reached the scan").toBeGreaterThan(0);
+});
+
+// Stylesheet comment syntax, both forms. A `//` line comment and a `/* */` block are the only two
+// a stylesheet has, and the block form carries its state across lines, so the id here sits on the
+// continuation line rather than the opener.
+test("a stylesheet line comment is lexed as comment text", () => {
+  const { hits } = scanContent("--slate-950: #16161f; // re-audited at M8\n", { // EXAMPLE:
+    isMd: false,
+  });
+  expect(hits.map((h) => h.kind)).toEqual(["milestone/task id"]);
+});
+
+test("a stylesheet block comment is lexed as comment text across its lines", () => {
+  const { hits } = scanContent("/* Tier 1 raw primitives.\n   Re-audited at M12. */\n", { // EXAMPLE:
+    isMd: false,
+  });
+  expect(hits.map((h) => h.line)).toEqual([2]);
+  expect(hits.map((h) => h.kind)).toEqual(["milestone/task id"]);
+});
+
+// The coverage control itself, wired into `pnpm test:scripts` so an unrecognised form in the
+// governed skill corpus fails CI instead of passing silently.
+// Every acknowledged match must be real (present in ACKNOWLEDGED with a reason) and
 // every remaining candidate must be empty — a red run here means a real corpus token nobody has
 // looked at, not a flaky test.
 test("coverage control: the governed skill corpus has no unrecognised candidate tokens", () => {

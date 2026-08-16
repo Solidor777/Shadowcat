@@ -409,8 +409,8 @@ async fn converges_with_publishing_during_resync() {
     // Volume is kept modest (`TOTAL`): the load-bearing invariants above hold at any
     // count, while a large backlog only burdens the single-writer ingress, whose
     // apply throughput collapses under CI-runner saturation (a 300-intent backlog
-    // once took >60s to drain on ubuntu-latest) — a runner-capacity artifact, not a
-    // correctness property.
+    // takes >60s to drain on a saturated ubuntu-latest runner) — a runner-capacity
+    // artifact, not a correctness property.
     const TOTAL: i64 = 100;
 
     let h = spawn().await;

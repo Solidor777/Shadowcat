@@ -368,14 +368,12 @@ test("route mode: an arrested PathResult appends an arrest marker to the budget 
 });
 
 test("route mode on a continuous-movement scene labels the wire cost as cells, not a doubled scene-unit value", async () => {
-  // Regression coverage for the server-side unit fix this scene's route cost now depends on:
-  // `SceneEcs::pathfind`'s wire contract is ONE unit, cells, on every movement model. A prior
-  // client test on a continuous scene stubbed `pathfind`'s cost with an arbitrary number and
-  // never asserted a label, so it could not have caught the server sending a world-unit value
-  // here and the client multiplying it by `perCell` a second time. This test feeds a cost in the
-  // unit the server now sends — a plain cell count, indistinguishable in shape from a
-  // grid-stepped route's cost — and asserts the SAME single-multiply label math applies
-  // regardless of `movementModel`.
+  // `SceneEcs::pathfind`'s wire contract is ONE unit, cells, on every movement model. A test that
+  // stubs `pathfind`'s cost with an arbitrary number and asserts no label cannot catch a server
+  // sending a world-unit value here and the client multiplying it by `perCell` a second time.
+  // This test feeds a cost in the unit the server sends — a plain cell count, indistinguishable
+  // in shape from a grid-stepped route's cost — and asserts the SAME single-multiply label math
+  // applies regardless of `movementModel`.
   const pathfind: ToolContext["pathfind"] = async () => ({
     path: [[50, 50], [550, 50]] as [number, number][],
     cost: 5, // cells: a 500-scene-unit straight route at cell 100
@@ -453,9 +451,9 @@ test("rapid pointer moves during route preview are debounced to a bounded reques
   expect(calls.length).toBe(3); // the deferred fire (from the last suppressed move) + this one
 });
 
-test("a stale route-preview pathfind response is still ignored via the existing pendingSeq guard", async () => {
-  // Regression guard: the debounce must not touch/weaken the pre-existing last-write-wins
-  // staleness check — only reduce REQUEST volume.
+test("a stale route-preview pathfind response is ignored via the pendingSeq guard", async () => {
+  // The debounce reduces REQUEST volume only: it must not touch or weaken the last-write-wins
+  // staleness check on RESPONSES.
   const resolvers: Array<(r: { path: [number, number][]; cost: number; arrested: boolean }) => void> = [];
   const pathfind: ToolContext["pathfind"] = () => new Promise((res) => { resolvers.push(res); });
   const clock = makeFakeClock();

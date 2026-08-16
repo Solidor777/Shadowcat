@@ -57,16 +57,15 @@ describe("shared-runtime import map (build output)", () => {
     expect(appIdx).toBeGreaterThan(mapIdx);
   });
 
-  // Global Constraint 1 (single-instance sharing): a stable chunk name is not
-  // enough — Vite's default `preserveEntrySignatures: false` lets Rollup drop
-  // or mangle an entry chunk's exports down to whatever THIS build's own
-  // module graph happens to consume by name. That ships a chunk file at the
-  // right path with the wrong (or zero) export bindings, so an external
-  // module's `import { mount } from "svelte"` resolves through the import map
-  // but throws `SyntaxError: does not provide an export named 'mount'` at
-  // runtime — invisible to a test that only checks file existence / the
-  // import map's string content. These assertions import the actual built
-  // chunks and check the real public API names survive.
+  // Single-instance sharing — every consumer of a shared package resolves to one runtime copy
+  // of it — takes more than a stable chunk name: Vite's default
+  // `preserveEntrySignatures: false` lets Rollup drop or mangle an entry chunk's exports down
+  // to whatever THIS build's own module graph happens to consume by name. That ships a chunk
+  // file at the right path with the wrong (or zero) export bindings, so an external module's
+  // `import { mount } from "svelte"` resolves through the import map but throws
+  // `SyntaxError: does not provide an export named 'mount'` at runtime — invisible to a test
+  // that only checks file existence / the import map's string content. These assertions import
+  // the actual built chunks and check the real public API names survive.
   // Imports six real built chunks from disk — I/O-bound, so the default 5s
   // budget flakes under full-workspace parallel runs (`pnpm -r test`).
   it("runtime chunks export their packages' real public API (not mangled aliases)", { timeout: 30_000 }, async () => {

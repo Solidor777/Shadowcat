@@ -1,6 +1,5 @@
 // Tier 1 — raw primitives. Palette sampled from assets/icon-256.png (cool
-// slate-violet charcoal + brand blue). PROVISIONAL: re-audited at M8 (canvas
-// overlays) and M12 (default sheets/browsers). Components must not reference
+// slate-violet charcoal + brand blue), PROVISIONAL. Components must not reference
 // these directly — use the tier-2 semantic tokens.
 :root {
   // Slate (surface) ramp

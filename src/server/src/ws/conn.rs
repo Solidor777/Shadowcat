@@ -1684,8 +1684,8 @@ mod tests {
 
     /// Deterministic broadcast-`Lagged` → resync guard, driven directly against the
     /// generic `egress_loop` with a credit-gated in-process sink — no real socket, so
-    /// it does not depend on any OS's TCP buffer sizing (the prior socket-backpressure
-    /// approach was non-portable: `SO_SNDBUF`/`SO_RCVBUF` are advisory and each OS
+    /// it does not depend on any OS's TCP buffer sizing (a socket-backpressure approach
+    /// is non-portable: `SO_SNDBUF`/`SO_RCVBUF` are advisory and each OS
     /// clamps/autotunes them differently). The sink starts with exactly one credit
     /// (consumed by `Welcome`); with zero credits the egress drains at most one
     /// broadcast event before parking on the gated send, so publishing
@@ -2056,7 +2056,7 @@ mod tests {
 
     /// Build the square `GridShape` companion map the production `enrich_vision_explored` captures
     /// via `SceneEcs::scene_grid_shapes` — one `SquareGrid` per scene at its cell size, so a
-    /// square-grid test indexes explored fog byte-identically to the pre-migration hardcoded math.
+    /// square-grid test indexes explored fog byte-identically to the production path.
     fn square_grid_shapes(
         grid: &std::collections::HashMap<Uuid, f64>,
     ) -> std::collections::HashMap<Uuid, Box<dyn crate::scene::grid_shape::GridShape + Send + Sync>>
@@ -3835,8 +3835,8 @@ mod tests {
                     "visible sample must be (50,50)"
                 );
                 assert_eq!(mv, None, "mover_vision must be None for observers");
-                // Critical 2 regression: stop and duration_ms must be clipped to
-                // the last visible sample, NOT the true goal/full travel distance.
+                // stop and duration_ms must be clipped to the last visible sample,
+                // NOT the true goal/full travel distance.
                 assert_eq!(
                     out_stop,
                     [50.0_f64, 50.0_f64],
@@ -3846,7 +3846,7 @@ mod tests {
                     (out_duration_ms - 0.0_f64).abs() < 1e-9,
                     "duration_ms must be clipped to last visible sample t_ms (0 ms), got {out_duration_ms}"
                 );
-                // Critical security fix regression: a clipped observer must never learn the
+                // Secrecy: a clipped observer must never learn the
                 // true authoritative cost — it may reflect secret (gm_only) region terrain
                 // the observer's clipped samples never reveal.
                 assert_eq!(
@@ -3932,7 +3932,7 @@ mod tests {
                     [50.0_f64, 60.0_f64],
                     "stop clips to the last visible sample, not the true diagonal goal"
                 );
-                // Critical 2 regression: duration_ms must be clipped to the last visible
+                // duration_ms must be clipped to the last visible
                 // sample's t_ms, NOT the true goal/full travel duration (mirrors the
                 // axis-aligned sibling `clip_observer_sees_near_side_prefix`).
                 assert!(

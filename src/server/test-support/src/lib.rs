@@ -2,12 +2,12 @@
 //! against an ephemeral in-process server whose single seeded user owns the
 //! world (GM), so its intents are authorized.
 //!
-//! A library crate rather than a `tests/common/mod.rs` include. Each integration-test binary
-//! that included that module compiled the whole file and used only part of it, so every unused
-//! helper was dead code in that binary and the module carried a blanket suppression. A `pub`
-//! item in a library is reachable by definition, so the diagnostic no longer fires and nothing
-//! is silenced. Reaching this crate only through `shadowcat`'s [dev-dependencies] keeps it out
-//! of release builds.
+//! A library crate rather than a shared module included by each integration-test binary: such a
+//! module compiles whole while each binary uses only part of it, so every unused
+//! helper is dead code there and the module needs a blanket suppression. A `pub` item in a
+//! library is reachable by definition, so no such diagnostic fires and nothing is silenced.
+//! Reaching this crate only through `shadowcat`'s [dev-dependencies] keeps it out of release
+//! builds.
 #![deny(missing_docs)]
 
 use std::sync::atomic::AtomicBool;

@@ -141,7 +141,7 @@ async function expectTokenX(page: Page, x: number, why: string): Promise<void> {
 // tools and a token it effectively owns.
 //
 // A non-GM's move is request-only and server-authoritative (`SceneEcs::pathfind` then
-// `Room::execute_move`; `Room::publish` no longer runs any traversal/wall/mask geometry for a
+// `Room::execute_move`; `Room::publish` runs no traversal/wall/mask geometry for a
 // non-GM at all). A rejection can therefore come from EITHER the presence/
 // ownership gate (`handle_pathfind`'s Step 0) or the router genuinely finding no route
 // (`PathFail::Unreachable`) or the executor refusing the resulting request — all indistinguishable
@@ -162,7 +162,7 @@ async function expectTokenX(page: Page, x: number, why: string): Promise<void> {
 //
 // SCOPE. The scene being hex drives the client (render, snapping) and the server's hex-specific
 // `GridShape` (axial rounding, supercover traversal, `cell_enterable`'s footprint/mask/wall
-// checks) for every leg — Unrestricted no longer means routing-agnostic, since a non-GM's move
+// checks) for every leg — Unrestricted does not mean routing-agnostic, since a non-GM's move
 // is always server-routed through real A* pathfinding (never client-executed). The hex router's
 // exact per-cell parity with the executor is also pinned by the server's own unit and integration
 // tests; this test proves the end-to-end authoring→drag→commit path round-trips through a real

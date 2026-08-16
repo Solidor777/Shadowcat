@@ -1099,8 +1099,8 @@ mod find_tests {
         // from a narrower single-cell rect: under Chebyshev, orthogonal and diagonal steps cost
         // the same, so (0,0)->(4,0) has several tied-cost 4-step routes and this build's A*
         // tie-break (QNode ties favor the lexicographically LARGER (cell, parity) key) resolves to
-        // a diagonal detour through (2,2), not the straight row — the same tie-break ambiguity the
-        // pre-existing `terrain_region_raises_astar_step_cost` test's comment documents. Covering
+        // a diagonal detour through (2,2), not the straight row — the same tie-break ambiguity
+        // `terrain_region_raises_astar_step_cost`'s own comment documents. Covering
         // the whole column (rather than only the straight-line cell) makes the test robust to
         // which tied route is chosen while still proving arrest fires exactly when the route
         // FIRST reaches x in [200,300), at cost 2.0 (2 steps in).

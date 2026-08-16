@@ -1,9 +1,8 @@
-// Client-owned scene-entity doc builders + pure resolvers (re-rooted onto the three-band
-// document shape — envelope(+name) + engine? + system). The per-doc-type ENGINE bodies are
-// no longer client-owned interpretations of an opaque `system` blob: they are ts-rs-generated
-// from the server's `data/engine` structs (`@shadowcat/types`), server-validated at ingress
-// (`validate_engine`). Only genuinely game-system-owned shapes (`item`) and client-only
-// resolution helpers stay defined here.
+// Client-owned scene-entity doc builders + pure resolvers over the three-band document shape
+// (envelope(+name) + engine? + system). The per-doc-type ENGINE bodies are ts-rs-generated from
+// the server's `data/engine` structs (`@shadowcat/types`) and server-validated at ingress
+// (`validate_engine`), never a client-owned interpretation of an opaque `system` blob. Only
+// genuinely game-system-owned shapes (`item`) and client-only resolution helpers are defined here.
 export type { WireDocument } from "./wire";
 import type { WireDocument } from "./wire";
 import type { ReadableDocuments } from "./store";
@@ -55,10 +54,9 @@ import type {
 
 // --- Re-exported generated engine types (ts-rs output, `@shadowcat/types`) ---
 // These mirror the Rust types in `crate::data::engine` byte-for-byte; NEVER hand-edit the
-// generated source. Nested/shared shapes keep their generated name (identical to the
-// prior client name); per-doc-type body shapes are re-exported under a NEW `*Engine` name
-// (never aliased back onto the old `*System` name — an alias would let stale `*System`-named
-// reads/writes keep compiling against the wrong band undetected).
+// generated source. Nested/shared shapes keep their generated name; per-doc-type body shapes are
+// re-exported under an `*Engine` name, with no `*System` alias — an alias would let a
+// `*System`-named read/write keep compiling against the wrong band undetected.
 export type {
   MovementRestriction,
   MovementModel,
@@ -456,7 +454,7 @@ export function resolveSceneSettings(scene: WireDocument | undefined, store: Rea
   const eng = scene?.engine as SceneEngine | undefined;
   // `vision`/`lighting` are required-but-nullable keys on the generated `SceneEngine`
   // (absent and explicit `null` are wire-equivalent) — read through optional chaining
-  // rather than defaulting to `{}`, which no longer structurally satisfies the type.
+  // rather than defaulting to `{}`, which does not structurally satisfy the type.
   const v = eng?.vision;
   const l = eng?.lighting;
   const movementModel = v?.movementModel ?? d.scene.movementModel;

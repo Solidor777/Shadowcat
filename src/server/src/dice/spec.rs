@@ -296,10 +296,9 @@ pub struct Tier {
     pub tier_value: Option<i32>,
 }
 
-/// What makes a die's crit event fire. `AtLeast` is direction-aware (flips
-/// under `LowWins`, exactly as the old bare `threshold: i32` did). `HasSymbol`
-/// is direction-INSENSITIVE — a symbol is present or absent, there is no
-/// "better end" to flip.
+/// What makes a die's crit event fire. `AtLeast` is direction-aware: it flips
+/// under `LowWins`. `HasSymbol` is direction-INSENSITIVE — a symbol is present
+/// or absent, there is no "better end" to flip.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CritTrigger {
     /// Fires at-or-past this die value (orientation-flipped under `LowWins`).

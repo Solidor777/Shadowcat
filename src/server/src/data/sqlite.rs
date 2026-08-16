@@ -1727,9 +1727,9 @@ impl SqliteRepository {
     /// `Document` exactly as given, malformed `engine` body included, to
     /// exercise a reader's fail-closed handling of already-persisted data
     /// that predates or violates the current typed schema (schema
-    /// evolution, hand-edited rows). `apply_command` validates on write as
-    /// of this gate, so it can no longer seed such fixtures; this is not a
-    /// production code path and must stay `#[cfg(test)]`-only.
+    /// evolution, hand-edited rows). `apply_command` validates on write, so
+    /// it cannot seed such fixtures; this is not a production code path and
+    /// must stay `#[cfg(test)]`-only.
     #[cfg(test)]
     pub(crate) async fn seed_document_unvalidated(&self, doc: &Document) -> Result<(), DataError> {
         let mut tx = self.pool.begin().await?;
@@ -2434,8 +2434,9 @@ impl Repository for SqliteRepository {
                     // JSON-number literal coerced to its typed f64
                     // representation; an unknown key smuggled into a
                     // tagged-enum sub-object dropped by the
-                    // deserialize-then-reserialize round trip) but that
-                    // normalization only reached the persisted row until now.
+                    // deserialize-then-reserialize round trip), and that
+                    // normalization reaches `doc` alone — the caller's own
+                    // `FieldChange.new` values are untouched by it.
                     // Re-derive each `/engine`(/*) `FieldChange.new` from the
                     // SAME validated post-image so the broadcast delta and the
                     // `world_events` log entry (and therefore every future
@@ -6614,7 +6615,7 @@ mod tests {
         .expect("player may post a message");
 
         // The owning Player's DocRole::Owner grants WRITE_FIELDS on their own
-        // message (satisfied without the fix), so this Update would otherwise
+        // message (the capability check alone passes), so this Update would otherwise
         // let them forge `kind`/`content` post-hoc. Must be rejected outright:
         // c-1 has no legitimate message-edit path.
         let err = r
@@ -8760,8 +8761,8 @@ mod tests {
         use crate::data::command::FieldChange;
         use crate::data::membership::PermissionContext;
         let (r, gm, w, p1, _p2) = ownership_fixture().await;
-        // An `actor` the player owns. `owner` keeps its pre-existing
-        // provenance-only meaning on every non-`token` doc_type: it admits the
+        // An `actor` the player owns. `owner` carries a provenance-only
+        // meaning on every non-`token` doc_type: it admits the
         // OwnerOrGm redaction tier but grants NO capability, so the player cannot
         // write the actor's body. Widening this is a separate design decision.
         let mut actor = actor_doc_owned_by(w, Some(p1));

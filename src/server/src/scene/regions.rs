@@ -669,8 +669,8 @@ mod tests {
         );
     }
 
-    // A raw `system`-body shape with a missing `/shape` key or a non-numeric point entry can no
-    // longer reach this function at all: `parse_region_shape` now takes the typed, already
+    // A raw `system`-body shape with a missing `/shape` key or a non-numeric point entry cannot
+    // reach this function at all: `parse_region_shape` takes the typed, already
     // ingress-validated `engine::RegionShape { kind: String, points: Vec<f64> }` directly (a
     // document carrying either defect fails ingress validation before persistence, so no caller
     // of this function can ever hand it one). Only the two structural checks internal to this

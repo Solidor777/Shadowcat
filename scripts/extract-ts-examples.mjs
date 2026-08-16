@@ -11,6 +11,7 @@ import { basename, dirname, extname, join, relative, resolve, sep } from "node:p
 import { fileURLToPath } from "node:url";
 import process from "node:process";
 import ts from "typescript";
+import { isDirectEntry } from "./lib/is-main.mjs";
 
 const toPosix = (p) => p.split(sep).join("/");
 
@@ -1768,9 +1769,9 @@ function runSvelteHostControl(repoRoot) {
 /** `bind:this` definite-assignment controls, exercised through the real
  * `extractBindThisSimpleIdentifiers` → `markBindThisAssigned` → `extractSvelteHost` →
  * `buildVirtualText` → `compileOverlay` pipeline:
- * - **The fix does not blind the checker.** A host variable read before assignment
- *   that is NOT named by any `bind:this` in the template must still FAIL — proving the
- *   analysis was corrected, not silenced (a global `strictNullChecks` disable, or a
+ * - **The definite-assignment marking does not blind the checker.** A host variable read
+ *   before assignment that is NOT named by any `bind:this` in the template must still FAIL —
+ *   the analysis stays real rather than silenced (a global `strictNullChecks` disable, or a
  *   filter on the diagnostic's message text, would pass this control's twin covering
  *   the actual bind:this target below but fail to distinguish it from this one).
  * - **A real `bind:this` target still FAILS on genuine type errors.** Marking a
@@ -1825,8 +1826,8 @@ function runBindThisAssignmentControl(repoRoot) {
 
   // A `let` never named by any `bind:this` in the template, read before assignment
   // from inside a nested function — the exact shape the real defect takes, minus the
-  // template binding — must still be reported: the fix must not have blinded the
-  // checker to genuine "used before assigned" bugs.
+  // template binding — must still be reported: the definite-assignment marking must
+  // not blind the checker to genuine "used before assigned" bugs.
   const notBoundHost = [
     "<div>no bind:this here</div>",
     '<script lang="ts">',
@@ -1912,8 +1913,7 @@ runClassInjectionControl(repoRootForControls);
 runSvelteHostControl(repoRootForControls);
 runBindThisAssignmentControl(repoRootForControls);
 
-const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
-if (isMain) {
+if (isDirectEntry(import.meta.url)) {
   const repo = repoRootForControls;
   const roots = ["src/types", "src/client", "src/modules", "examples"];
   const pkgDirs = workspacePackageDirs(repo);
