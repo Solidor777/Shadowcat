@@ -220,7 +220,7 @@ impl Command {
 }
 
 /// Who originated a write reaching `apply_intent`. A stored `message` doc's
-/// `Update` is blanket-rejected for `Client` (c-1 invariant); `ServerMessageRevision`
+/// `Update` is blanket-rejected for `Client`; `ServerMessageRevision`
 /// — set ONLY by the server edit/delete handlers, never derivable from any wire
 /// frame — re-opens that path for the sanitized authoritative revision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

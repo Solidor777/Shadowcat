@@ -724,7 +724,7 @@ test("route commit survives its own pointer-up: moveRequest resolves after point
 });
 
 test("rejected moveRequest calls clearRoute and does NOT animate", async () => {
-  // Fix 3: reject path — moveRequest rejects → overlay/measure cleared, no animation.
+  // Reject path: moveRequest rejects → overlay/measure cleared, no animation.
   let overlayClears = 0;
   let measureClears = 0;
   const animated: Array<{ id: string; path: [number, number][] }> = [];
@@ -754,7 +754,7 @@ test("rejected moveRequest calls clearRoute and does NOT animate", async () => {
 });
 
 test("cache-hit: commitRoute reuses lastPreviewedPath and does not call pathfind again", async () => {
-  // Fix 4: preview populates lastPreviewedPath; double-click commit reuses it — pathfind
+  // Preview populates lastPreviewedPath; double-click commit reuses it — pathfind
   // must NOT be called a second time, and moveRequest receives the cached path.
   const pathfindCalls: number[] = [];
   const cachedPath: [number, number][] = [[0, 0], [100, 0], [100, 100]];

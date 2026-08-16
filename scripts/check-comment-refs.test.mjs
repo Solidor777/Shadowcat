@@ -220,16 +220,62 @@ test("skill mode flags a hyphenated sweep marker", () => {
   expect(hits.map((h) => h.kind)).toEqual(["sweep / round / review marker"]);
 });
 
-// Skill-only local-marker categories (never reused by BANNED — src carries live identifiers and
-// test names of the identical shape, so a shared entry would fail the code-file-count-0 gate).
+// The local-marker categories are shared by both file classes: an initial-plus-number naming a
+// review finding or a numbered fix pass points outside the code in a comment exactly as it does in
+// skill prose, so these cases fail together if either class ever stops carrying the entry.
 test("skill mode flags a bare local letter+digit marker", () => {
   const fixture = "documented as the C1 no-pool-query-on-the-hot-path property.\n"; // EXAMPLE:
   const { hits } = scanContent(fixture, { isMd: true });
   expect(hits.map((h) => h.kind)).toEqual(["local letter+digit marker"]);
 });
 
-test("code mode does NOT gain the local letter+digit marker category", () => {
+test("code mode flags a bare local letter+digit marker in a comment", () => {
+  const { hits } = scanContent("// the C1 no-pool-query-on-the-hot-path property.\n", { // EXAMPLE:
+    isMd: false,
+  });
+  expect(hits.map((h) => h.kind)).toEqual(["local letter+digit marker"]);
+});
+
+// The hyphenated writer is the same id as the bare one, so requiring the unhyphenated form alone
+// would read a genuine marker as clean.
+test("code mode flags the hyphenated local letter+digit marker", () => {
+  const { hits } = scanContent("// reachable via the C-2 frame's audience field.\n", { // EXAMPLE:
+    isMd: false,
+  });
+  expect(hits.map((h) => h.kind)).toEqual(["local letter+digit marker"]);
+});
+
+// The scope of the entry is the COMMENT and prose-shaped literals, never program data: a
+// whitespace-free literal outside an explanatory context is a value the program acts on, where a
+// marker-shaped collision refers to nothing. This is what lets the entry govern code at all.
+test("a token-shaped string literal is program data, not a local marker", () => {
   const { hits } = scanContent('const label = "C1"; // a real identifier, not prose\n', { // EXAMPLE:
+    isMd: false,
+  });
+  expect(hits).toEqual([]);
+});
+
+// A numbered severity word and a numbered remedy are the marker vocabulary a reviewer writes; the
+// entry already carrying the sweep/fix-pass/finding forms is where they belong, not a new category.
+test("code mode flags a numbered severity marker", () => {
+  const { hits } = scanContent("// Critical 2 regression: the guard must stay.\n", { // EXAMPLE:
+    isMd: false,
+  });
+  expect(hits.map((h) => h.kind)).toEqual(["sweep / round / review marker"]);
+});
+
+test("code mode flags a numbered fix-pass marker", () => {
+  const { hits } = scanContent("// FIX 2: an inline roll still stores kind Normal.\n", { // EXAMPLE:
+    isMd: false,
+  });
+  expect(hits.map((h) => h.kind)).toEqual(["sweep / round / review marker"]);
+});
+
+// The bare severity word is untouched: it is the NUMBER that makes the phrase name a finding
+// somebody filed rather than describe the code. A category that flagged the word alone would fire
+// on a roll tier label and on any doc comment calling a defect critical.
+test("an unnumbered severity word is not a marker", () => {
+  const { hits } = scanContent("// A critical failure here fails closed.\n", {
     isMd: false,
   });
   expect(hits).toEqual([]);
@@ -314,11 +360,30 @@ test("scanCandidates in code mode reports a novel unspaced shape found in a comm
   expect(residue.map((r) => r.token)).toEqual(["Bump7"]); // EXAMPLE:
 });
 
-test("scanCandidates in code mode shadows a token BANNED already catches, not SKILL_BANNED", () => {
-  // EXAMPLE: "C1" is SKILL_BANNED's local-letter+digit marker, not a CODE pattern — in code mode it must
-  // surface as residue, proving the shadow check uses BANNED for code files.
+test("scanCandidates in code mode shadows a token the code ban list already catches", () => {
+  // A candidate the gate itself would fail is not a coverage gap, so it must not be re-reported as
+  // an unrecognised shape.
   const { residue } = scanCandidates("// documented as the C1 property\n", { isMd: false }); // EXAMPLE:
-  expect(residue.map((r) => r.token)).toEqual(["C1"]);
+  expect(residue).toEqual([]);
+});
+
+// The two ban lists are selected per file class, and the discriminator has to be a shape that one
+// list carries and the other does not. A bare ISO date is that shape: a skill's dates are narrative
+// ("user directive <date>") so the skill entry matches the bare form, while the code entry requires
+// a parenthesised or "as of" writer because a bare date in code also appears as program data. These
+// two cases fail in opposite directions if the selection is ever inverted.
+test("skill mode flags a bare ISO date", () => {
+  const { hits } = scanContent("Ruled in on 2026-07-30 and unchanged since.\n", { // EXAMPLE:
+    isMd: true,
+  });
+  expect(hits.map((h) => h.kind)).toEqual(["date stamp"]);
+});
+
+test("code mode does not flag a bare ISO date, which is also program data", () => {
+  const { hits } = scanContent('const cutoff = "2026-07-30"; // the retention boundary\n', {
+    isMd: false,
+  });
+  expect(hits).toEqual([]);
 });
 
 // Reach equality: the coverage control (`--residue`, backed by `residueReport`/`gateFileSet`)

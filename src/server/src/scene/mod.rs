@@ -1551,7 +1551,8 @@ impl SceneEcs {
         // forked wall computation (the same discipline `mask` follows).
         let walls = self.move_walls(scene, if is_gm { None } else { Some(user) });
         // Hoisted so `movement_model` is available to the engine dispatch regardless of `is_gm`
-        // (a GM can also route on a continuous scene); both engine branches read this one binding.
+        // (a GM can also route on a continuous scene); the mask build and the dispatch discriminant
+        // read this one resolution.
         let settings = self.resolve_scene(scene);
 
         // Build the per-(user,scene) mask (None ⇒ unconstrained). Shared by both engines —
@@ -2289,7 +2290,7 @@ impl SceneEcs {
     /// (mode:"all"); this is the masked path only.
     pub fn player_lit_mask(&self, user: Uuid) -> Vec<LitScene> {
         // 0. Pre-resolve scene settings for every scene that has a token, so resolve_scene is
-        //    called exactly once per scene rather than once per token (Fix 3: memoize). Collect
+        //    called exactly once per scene rather than once per token. Collect
         //    scene ids in a first pass (drops the query borrow before the resolve calls).
         let mut all_scene_ids: Vec<Uuid> = Vec::new();
         for e in self.world.query::<&SceneEntity>().iter() {
@@ -4779,41 +4780,39 @@ mod tests {
 
     #[test]
     fn footprints_payload_withholds_a_token_the_recipient_cannot_read() {
-        let mut hidden = entity_doc_eng(
-            11,
-            10,
-            "token",
-            json!({ "x": 0.0, "y": 0.0, "w": 100.0, "h": 100.0, "rotation": 0.0,
-                    "actor_id": Uuid::from_u128(200).to_string() }),
-        );
-        hidden.permissions.default = crate::data::document::DocRole::None;
+        let scene = Uuid::from_u128(10);
+        let open_token = Uuid::from_u128(12);
         let mut ecs = SceneEcs::from_documents(
             vec![
                 // Readable, so the scene entry survives its own READ gate and the token gate is
                 // the only thing this test can be measuring.
-                readable_scene_doc(
-                    10,
-                    json!({ "grid": { "kind": "square", "size": 100.0 }, "background": null }),
-                ),
-                hidden,
+                readable_scene_doc(10, scene_body("square")),
+                // Token 11 keeps `PermissionSet::default`'s `DocRole::None`: the recipient's
+                // document stream never delivers it at all.
+                linked_token_doc(11, 10, 200),
+                readable(linked_token_doc(12, 10, 200)),
             ],
             0,
         );
-        ecs.set_actors(vec![entity_doc_top_eng(
+        ecs.set_actors(vec![readable(entity_doc_top_eng(
             200,
             "actor",
             actor_body_shaped("square", 1.0, 1.0),
-        )]);
+        ))]);
         let for_player =
             ecs.resolved_footprints(&footprint_player_ctx(), &WorldCapDefaults::default());
-        assert!(
-            for_player.scenes[0].tokens.is_empty(),
-            "a token whose document the recipient may not read discloses no extent either"
-        );
         assert_eq!(
-            only_scene_footprints(&ecs).tokens.len(),
-            1,
-            "the GM, who can read it, still receives it"
+            tokens_of(&for_player, scene),
+            vec![open_token],
+            "a token whose document the recipient may not read discloses no extent, while its \
+             readable sibling in the same payload discloses one — so the absence is the READ \
+             decision rather than an empty payload"
+        );
+        let for_gm = ecs.resolved_footprints(&footprint_gm_ctx(), &WorldCapDefaults::default());
+        assert_eq!(
+            tokens_of(&for_gm, scene).len(),
+            2,
+            "the GM, who may read it, still receives both"
         );
     }
 

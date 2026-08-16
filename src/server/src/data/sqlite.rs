@@ -6617,7 +6617,7 @@ mod tests {
         // The owning Player's DocRole::Owner grants WRITE_FIELDS on their own
         // message (the capability check alone passes), so this Update would otherwise
         // let them forge `kind`/`content` post-hoc. Must be rejected outright:
-        // c-1 has no legitimate message-edit path.
+        // a `Client`-origin write has no legitimate message-edit path.
         let err = r
             .apply_intent(
                 &pl_ctx,
@@ -6708,7 +6708,7 @@ mod tests {
             }]
         };
 
-        // Client origin: still blanket-rejected (c-1 invariant intact).
+        // Client origin: blanket-rejected.
         let client = repo
             .apply_intent(&owner_ctx, world, ops(), 2, WriteOrigin::Client)
             .await;

@@ -133,6 +133,19 @@ const BANNED = [
   // backticks — and a comment naming a type is required to cite it as a symbol regardless, so the
   // collision resolves the same way every other value/document collision here does.
   { name: "phase / workstream / invariant id", re: /\b[DITW]\d+\b/ },
+  // The same local-marker shape as the entry above under a second letter set: a capital A, C, F,
+  // H or R and a single digit, optionally hyphen-separated and optionally carrying a dashed
+  // sub-number. It is how a review finding, a numbered fix pass, or any other locally numbered
+  // item gets written as an initial plus its number, and it resolves only for a reader holding
+  // the artifact that assigned it.
+  //
+  // Restricted to exactly ONE digit and to that letter set, because the governed corpora carry
+  // legitimate two-digit tokens sharing a first letter (a Fortran source-extension name), and
+  // letters outside this set that a vendored skill uses for its own step headings. It governs BOTH
+  // corpora: an initial-plus-number points outside the code from a comment exactly as it does from
+  // skill prose, so the two file classes share the entry by reference rather than each carrying
+  // its own copy.
+  { name: "local letter+digit marker", re: /\b[ACFHR]-?\d(?:-\d+)?\b/ },
   {
     name: "repo document pointer",
     re: /docs\/[\w./-]+\.md|\b(?:TODO|OPEN_BUGS|CLOSED_BUGS|POST_WORK_FINDINGS|ARCHITECTURE|PLAN)\.md|ARCHITECTURE\s*[§#]|\binvariant\s*#?\s*\d+/i,
@@ -210,11 +223,17 @@ const BANNED = [
   {
     name: "sweep / round / review marker",
     // EXAMPLE: A joined plural writer ("sweeps 2a+2b") names the same process-assigned marker as
-    // EXAMPLE: a lone singular one; requiring only the singular form read a legitimate hit as
-    // EXAMPLE: clean, missing a ruled-in category rather than widening one.
-    // EXAMPLE: A hyphenated writer ("Sweep-1 lesson") is the same marker as the spaced form;
-    // requiring the space alone missed it the identical way the plural gap above was missed.
-    re: /\b[Ss]weeps?[ -]\d+|\bfix[- ]round|\bbuddy-check|\bwhole-branch[- ]review|\bfinding \d+/i,
+    // EXAMPLE: a lone singular one, and a hyphenated writer ("Sweep-1 lesson") names the same
+    // EXAMPLE: marker as the spaced form. Requiring only the singular, spaced form would read a
+    // genuine hit as clean — a ruled-in category missed, not a category widened.
+    //
+    // EXAMPLE: A numbered SEVERITY word ("Critical 2") names a review finding, and a numbered
+    // EXAMPLE: remedy ("FIX 2", "Fix 3") names a numbered fix pass — the same process-assigned
+    // marker the sibling forms in this entry already name, written with the vocabulary a reviewer
+    // actually uses. The NUMBER is what makes the phrase point outside the code, so the bare
+    // severity word — a roll's `tier_label`, a doc comment calling a defect critical — is
+    // deliberately not matched.
+    re: /\b[Ss]weeps?[ -]\d+|\bfix[- ]round|\bbuddy-check|\bwhole-branch[- ]review|\bfinding \d+|\b(?:critical|important|major|minor|blocker|fix|issue|bug)\s*#?\s*\d+\b/i,
   },
   // EXAMPLE: A dispatch brief, task or plan is scaffolding that stops existing once the work
   // lands, so a comment deferring to one leaves the reader an instruction they cannot retrieve.
@@ -233,7 +252,8 @@ const BANNED = [
 ];
 
 // The subset of BANNED the owner's ruling actually named for skills: milestone ids, task ids,
-// dated plan filenames, sweep/round/review markers, history narration, unnamed spec references and
+// dated plan filenames, sweep/round/review markers, local letter+digit markers, history narration,
+// unnamed spec references and
 // numbered constraints. A skill's "Pointers" section may cite a durable design document by path plus a
 // section anchor, but a dated spec or plan file is a superseded-by-construction record rather
 // than a durable one, so citing one by its dated filename is exactly the "dated plan/spec file"
@@ -269,22 +289,7 @@ const SKILL_BANNED = [
     name: "ephemeral doc pointer",
     re: /\b(?:TODO|PLAN|OPEN_BUGS|CLOSED_BUGS|POST_WORK_FINDINGS)\.md\b/,
   },
-  // The entry below is skill-ONLY (no `skillBannedByName` reuse, no BANNED counterpart):
-  // a corpus scan surfaced the same letter+digit local-reference shape as `[DITW]\d+` above, under
-  // different letters. Those letters are exactly the ones a short Rust/TypeScript identifier, test
-  // name, or algorithm label routinely takes (a one-letter-plus-digit token is a common naming
-  // shape for a local variable or a test-scenario label) — reusing this by reference the way the
-  // other entries do would fail code files carrying that ordinary vocabulary rather than any of
-  // this skill's process debt. Restricted
-  // to exactly one digit: the corpus also holds legitimate two-digit tokens sharing a first letter
-  // (Fortran extension names `F90`/`F95`/`F03`/`F08`, a third-party skill's own `B0`-`B3` step
-  // labels) that a looser digit count would misclassify as the same local-marker shape. `B` is
-  // excluded from the letter set for the same reason: it names only that third-party skill's own
-  // step headings in the corpus, never a local Shadowcat marker.
-  {
-    name: "local letter+digit marker",
-    re: /\b[ACFHR]\d(?:-\d+)?\b/,
-  },
+  skillBannedByName("local letter+digit marker"),
   skillBannedByName("numbered constraint"),
 ];
 
@@ -368,10 +373,6 @@ const ACKNOWLEDGED = [
   {
     name: "a SQL micro-query/clause literal used as a lightweight existence or connectivity probe, not prose",
     re: /\bSELECT\s?1\b|\bLIMIT\s?1\b/,
-  },
-  {
-    name: "the ASCII C0 control-character class, a real technical term rather than a process id",
-    re: /\bC0\b/,
   },
   {
     name: "an algorithm/route waypoint label or an inline first-pass-version label, not a process id",

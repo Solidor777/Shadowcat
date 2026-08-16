@@ -70,7 +70,7 @@ pub enum ParseError {
     /// A `[` was never closed by a matching `]` before the input ended.
     UnterminatedLabel,
     /// A `[...]` label contained a byte that is neither ASCII-printable nor a space
-    /// (e.g. a C0 control byte or DEL) — a label's charset is restricted to
+    /// (e.g. a control byte below `0x20`, or DEL) — a label's charset is restricted to
     /// ASCII printable characters (plus space) except `]`.
     InvalidLabelChar,
 }

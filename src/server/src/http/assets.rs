@@ -416,7 +416,8 @@ pub async fn delete(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// `GET /api/worlds/{world}/assets` — membership-gated list (b-2 grid source).
+/// `GET /api/worlds/{world}/assets` — membership-gated list; the `Assets`
+/// browser's grid reads it.
 pub async fn list(
     State(state): State<AppState>,
     user: AuthUser,
