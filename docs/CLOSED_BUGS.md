@@ -158,7 +158,7 @@ Confirmed-real defects that have since been fixed, kept for provenance. New fixe
   flanking cells still emitted whenever real path remains on both axes). Regression tests:
   `diagonal_leg_with_both_endpoints_on_lattice_corners_succeeds` (the exact bug-report repro),
   `perfect_diagonal_across_many_lattice_corners_converges` (a longer 45-degree diagonal crossing
-  several lattice-corner ties in a row), `single_endpoint_on_lattice_corner_still_includes_flankers`
+  several lattice-corner ties in a row), `single_endpoint_on_lattice_corner_includes_flankers`
   (proves flanker emission is unregressed when only one endpoint is lattice-aligned) —
   `src/server/src/scene/movement.rs`. `execute_move`'s frozen-fixture scenario "diagonal 3-step
   king path, full visible" (`src/server/src/scene/move_exec.rs`) — previously frozen at the

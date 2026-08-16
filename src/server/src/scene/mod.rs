@@ -2228,8 +2228,7 @@ impl SceneEcs {
     /// pre-raycast `lights`/`light_walls`/`sight_walls` (cheap: cached document decodes only, no
     /// geometry) to build its invalidation fingerprint WITHOUT paying for `lit_polys`' raycasts,
     /// then call this to do the raycast only on a fingerprint mismatch. `lighting_inputs` itself
-    /// is unchanged behavior — it always gathers then immediately raycasts, same as before this
-    /// split.
+    /// takes no such split: it always gathers then immediately raycasts in one call.
     ///
     /// `extent` is the scene's WORLD-unit envelope, produced by
     /// `GridShape::world_extent` from the scene's authored bounds — those are measured in grid
@@ -4074,7 +4073,7 @@ mod tests {
         );
         assert!(
             levels.contains(&tracing::Level::DEBUG),
-            "the divergence must still be reported, at debug: got {levels:?}"
+            "the divergence must nonetheless be reported, at debug: got {levels:?}"
         );
     }
 
@@ -4744,7 +4743,7 @@ mod tests {
     }
 
     #[test]
-    fn the_footprints_channel_serves_the_resolved_payload_and_an_unknown_channel_still_errors() {
+    fn the_footprints_channel_serves_the_resolved_payload_and_an_unknown_channel_errors() {
         let (ecs, token) = scene_with_linked_token_sized_kind("hex", "square", 1.0, 1.0);
         let payload = compute_derived(
             "footprints",
@@ -6124,11 +6123,11 @@ mod tests {
     }
 
     #[test]
-    fn a_square_light_still_occludes_behind_a_wall_within_its_grown_reach() {
+    fn a_square_light_occludes_behind_a_wall_within_its_grown_reach() {
         // The occlusion polygon's bound must be able to grow to the light's authored reach
-        // (proven by the sibling test above) WITHOUT the polygon itself stopping being an
-        // occlusion polygon: a `blocksLight` wall between the lamp and a cell inside the authored
-        // radius must still leave that cell unlit.
+        // (proven by the sibling test above) while remaining an occlusion polygon: a
+        // `blocksLight` wall between the lamp and a cell inside the authored radius must leave
+        // that cell unlit.
         let (ecs, user, scene) = scene_with_lit_player_token_and_occluding_wall();
         let cells = mask_cells(&ecs, user, scene);
         assert!(
@@ -6140,8 +6139,8 @@ mod tests {
             !mask.contains(&(2, 0)),
             "the movement-gate mask agrees with the occluded egress mask"
         );
-        // Positive control: the near side of the wall is still lit, so the absence of (2,0) above
-        // is the wall occluding it, not the light failing to reach anything at all.
+        // Positive control: the near side of the wall is lit, so the absence of (2,0) above is
+        // the wall occluding it, not the light failing to reach anything at all.
         assert!(
             cells.contains(&(0, 0)),
             "the lamp's own cell, on the near side of the wall, must stay lit, got {cells:?}"
@@ -6254,7 +6253,7 @@ mod tests {
         let interior = (3, 3); // center (350,350), inside the sealed box
         assert!(
             before.contains(&interior),
-            "baseline (blocksLight:false) still lights the interior"
+            "baseline (blocksLight:false) lights the interior"
         );
         assert!(
             !after.contains(&interior),
@@ -6350,7 +6349,7 @@ mod tests {
         let before = mask_cells(&ecs_before, user, scene);
         assert!(
             before.contains(&HEX_SEALED_CELL),
-            "baseline (blocksLight:false) still lights hex {HEX_SEALED_CELL:?}"
+            "baseline (blocksLight:false) lights hex {HEX_SEALED_CELL:?}"
         );
         assert!(
             !after.contains(&HEX_SEALED_CELL),
@@ -6823,7 +6822,7 @@ mod tests {
         assert_eq!(
             player_field.terrain_multiplier((2, 0)),
             2.0,
-            "visible region still present"
+            "the region whose tier this player can see weights their field"
         );
     }
 

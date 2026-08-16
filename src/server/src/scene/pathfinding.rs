@@ -1315,17 +1315,18 @@ mod tests {
     }
 
     #[test]
-    fn large_footprint_diagonal_step_with_flankers_in_mask_is_still_enterable() {
+    fn large_footprint_diagonal_step_with_flankers_in_mask_is_enterable() {
         // A large footprint (1.0 cell radius) at the destination of a diagonal step already
         // overlaps both corner-flanker cells — the footprint_cells check alone would pass this.
-        // Prove the ADDED step-supercover union doesn't introduce a new false rejection when the
-        // mask already covers everything the footprint disc covers.
+        // The step-supercover union must not reject a step whose mask already covers everything
+        // the footprint disc covers: the union widens what is checked, never what is refused
+        // beyond it.
         let walls: Vec<Seg> = vec![];
         let mask = visible_grid(6); // covers (0,0)..(5,5); large enough for both footprint + step.
         let g = grid(&walls, Some(&mask), 1.0);
         assert!(
             cell_enterable(&g, (2, 2), (3, 3)),
-            "large footprint with a fully-visible mask must remain enterable after the union fix"
+            "a large footprint with a fully-visible mask is enterable"
         );
     }
 

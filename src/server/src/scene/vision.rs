@@ -468,7 +468,7 @@ mod tests {
         let far_refused = bound_for_scene(far_vp, &far_walls, REFUSED_EXTENT, margin);
         assert!(
             far_refused.minx == 0.0 && far_refused.miny == 0.0,
-            "a refused envelope still pulls the low edges to the origin, got ({}, {})",
+            "a refused envelope pulls the low edges to the origin all the same, got ({}, {})",
             far_refused.minx,
             far_refused.miny
         );

@@ -1857,7 +1857,7 @@ mod tests {
     }
 
     #[test]
-    fn hex_line_traversal_still_fails_closed_on_non_finite_and_over_cap() {
+    fn hex_line_traversal_fails_closed_on_non_finite_and_over_cap() {
         let g = HexGrid { size: 50.0 };
         assert_eq!(
             g.line_traversal((f64::NAN, 0.0), (10.0, 10.0), g.size),

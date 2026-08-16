@@ -951,7 +951,7 @@ mod tests {
         );
         assert!(
             build_navmesh(refuse((-1000.0, -1000.0)), 40.0, &[]).is_some(),
-            "an ordinary negative minimum — what every hex block has — must still build"
+            "an ordinary negative minimum — what every hex block has — must build"
         );
     }
 
@@ -1054,9 +1054,9 @@ mod tests {
     }
 
     #[test]
-    fn ordinary_wall_and_footprint_still_build_successfully() {
+    fn ordinary_wall_and_footprint_build_successfully() {
         // Positive case: normal gameplay magnitudes (a small scene, a modest footprint radius, a
-        // single ordinary interior wall) must still build a valid mesh, and the wall's obstacle
+        // single ordinary interior wall) must build a valid mesh, and the wall's obstacle
         // ring must actually be present in the resulting mesh (distinguishing "built successfully"
         // from "built successfully but the wall silently vanished").
         let walls = vec![Seg {
@@ -1410,7 +1410,7 @@ mod tests {
         let last = *clipped.path.last().unwrap();
         assert!(
             last.0 <= 500.0 + 1e-6,
-            "the well-formed wall must still truncate the route even alongside a malformed one, \
+            "the well-formed wall must truncate the route even alongside a malformed one, \
              last x = {}",
             last.0
         );

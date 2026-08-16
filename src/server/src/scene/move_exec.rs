@@ -1103,7 +1103,7 @@ mod tests {
         );
         assert!(
             out.truncated,
-            "final-step arrest must still report truncated=true"
+            "a final-step arrest reports truncated=true even though the stop is the last vertex"
         );
     }
 
@@ -1535,8 +1535,9 @@ mod tests {
     }
 
     #[test]
-    fn non_gm_move_is_still_blocked_by_the_same_wall() {
-        // The exemption must not widen: pin that non-GM behavior is unchanged.
+    fn non_gm_move_is_blocked_by_the_wall_a_gm_crosses() {
+        // The exemption is scoped to GMs: the same fixture wall a GM walks through truncates a
+        // non-GM.
         let (ecs, scene, token) = scene_with_wall_across_the_path();
         let out = execute_move(
             &ecs,
@@ -1552,11 +1553,11 @@ mod tests {
             0.4,
         )
         .expect("admissible");
-        assert!(out.truncated, "a non-GM is still stopped by the wall");
+        assert!(out.truncated, "a non-GM is stopped by the wall");
     }
 
     #[test]
-    fn gm_move_is_still_refused_beyond_the_coordinate_bound() {
+    fn gm_move_is_refused_beyond_the_coordinate_bound() {
         // A GM bypasses gameplay gates but NO resource guard.
         let (ecs, scene, token) = scene_with_wall_across_the_path();
         let over = MAX_GATE_WALK_COORD + 1.0;
@@ -1578,7 +1579,7 @@ mod tests {
     }
 
     #[test]
-    fn gm_move_still_accrues_terrain_cost() {
+    fn gm_move_accrues_terrain_cost() {
         // Cost is information, not a gate — accrual is independent of the exemption.
         let (ecs, scene, token) = scene_with_terrain_multiplier_3();
         let out = execute_move(
@@ -1597,7 +1598,7 @@ mod tests {
         .expect("admissible");
         assert!(
             out.cost >= 3.0,
-            "terrain still accrues for a GM, got {}",
+            "terrain accrues for a GM, got {}",
             out.cost
         );
     }
@@ -2896,7 +2897,7 @@ mod tests {
     #[test]
     fn gate_refused_steps_are_absent_from_every_route_non_gm_grid() {
         // Reverse-parity direction: catches a gate MORE
-        // permissive than the router (e.g. a dropped segments_cross check).
+        // permissive than the router (e.g. a gate that omits the `segments_cross` check).
         let (ecs, scene, token, user) =
             scene_with_wall_between_adjacent_cells_and_default_footprint();
         let fp = ecs.resolve_token_footprint(token, scene).expect("in-range"); // 0.4
@@ -2946,9 +2947,10 @@ mod tests {
     }
 
     #[test]
-    fn a_default_footprint_step_across_a_wall_is_still_truncated() {
-        // Regression for the dropped segments_cross check: a wall between two adjacent cell
-        // centers sits 0.5 cell from each, so the 0.4-radius disc test alone would pass it.
+    fn a_default_footprint_step_across_a_wall_is_truncated() {
+        // The center-to-center `segments_cross` test is load-bearing here, not redundant with the
+        // disc test: a wall between two adjacent cell centers sits 0.5 cell from each, so the
+        // 0.4-radius disc test alone would pass it.
         let (ecs, scene, token, user) =
             scene_with_wall_between_adjacent_cells_and_default_footprint();
         let mask = ecs.visible_cells(user, scene, false);
@@ -2966,10 +2968,7 @@ mod tests {
             0.4,
         )
         .expect("admissible");
-        assert!(
-            out.truncated,
-            "the wall still blocks a default-footprint step"
-        );
+        assert!(out.truncated, "the wall blocks a default-footprint step");
     }
 
     #[test]
@@ -2998,8 +2997,9 @@ mod tests {
     }
 
     #[test]
-    fn a_sub_half_cell_footprint_diagonal_stays_admissible() {
-        // A small footprint's diagonal must not regress.
+    fn a_sub_half_cell_footprint_diagonal_is_admissible() {
+        // A footprint disc smaller than half a cell clears both corner flankers of a diagonal
+        // step in a fully-lit area, so the step is admissible.
         let (ecs, scene, token, user) = scene_with_open_lit_area();
         let mask = ecs.visible_cells(user, scene, false);
         let out = execute_move(
@@ -3016,10 +3016,7 @@ mod tests {
             0.4,
         )
         .expect("admissible");
-        assert!(
-            !out.truncated,
-            "a 0.4-radius diagonal step is still allowed"
-        );
+        assert!(!out.truncated, "a 0.4-radius diagonal step is allowed");
     }
 
     #[test]

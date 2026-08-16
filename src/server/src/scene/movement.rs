@@ -154,7 +154,7 @@ mod tests {
         assert_eq!(c.len(), 1);
         assert!(c.contains(&(0, 0)));
         let c2 = cells((10.0, 10.0), (90.0, 90.0), 100.0);
-        assert_eq!(c2, c, "still inside cell (0,0)");
+        assert_eq!(c2, c, "both endpoints inside cell (0,0)");
     }
 
     #[test]
@@ -252,11 +252,11 @@ mod tests {
     }
 
     #[test]
-    fn single_endpoint_on_lattice_corner_still_includes_flankers() {
+    fn single_endpoint_on_lattice_corner_includes_flankers() {
         // Only the START sits exactly on a lattice intersection; the end does not. A tie can
-        // still occur mid-path — both flanking cells at that true corner crossing must remain
-        // present (this must NOT regress to under-inclusion once the endpoint-overshoot fix is
-        // in place).
+        // occur mid-path all the same, and the per-axis remaining-step budget that stops the
+        // traversal overshooting its endpoint must not cost the flankers at that true corner
+        // crossing: both flanking cells must be present.
         let c = cells((200.0, 200.0), (330.0, 70.0), 100.0);
         assert!(c.contains(&(2, 2)), "start cell present");
         assert!(c.contains(&(3, 0)), "end cell present");
