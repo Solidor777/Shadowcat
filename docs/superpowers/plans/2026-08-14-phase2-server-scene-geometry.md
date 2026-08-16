@@ -4703,6 +4703,25 @@ Conventional-commits, imperative, stating the constraint and the consequence. En
 
 ---
 
+### Task 6k: a skill's code-symbol citations rot silently, and no gate can see it
+
+**Files:**
+- Modify: `.claude/skills/shadowcat-codebase-scene-rendering/SKILL.md`,
+  `.claude/skills/shadowcat-codebase-core/SKILL.md`,
+  `docs/design/doc-sweep-truthfulness-rules.md`, `.claude/.claude-plugin/plugin.json`
+- Create: a checker under `scripts/` plus its test, wired into the gate set
+
+**Why:** RULE 15 argues from "a symbol breaks only on rename, which a grep finds", and nothing
+performs that grep. Three dead citations were found by accident in one skill file
+(`frozen_parity_king_step_paths_match_previously_oracle_verified_outcomes`, and `region_arrests`
+twice); `check-skill-api-refs-cli.mjs` covers `/api/...` doc-site pointers, not code symbols. The
+task fixes the class, not the instances.
+
+Full requirements, including the corpus-narrowing trap and the mandatory two-direction positive
+control, are in this plan's workspace brief `task-6k.md`.
+
+---
+
 ### Task 7: PW3 — exercise the hex + continuous fog clip through the real dispatch, as a non-GM
 
 **Ledger id:** PW3.
