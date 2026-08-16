@@ -39,11 +39,21 @@ Ledger Additions section).
   dropped the same one, and a doc-example failure introduced mid-phase survived several tasks
   reporting "all gates clean" — because every one of them ran the list it was handed rather than the
   list that exists. A task brief must POINT here, never restate.
+  **This list is DERIVED FROM THE CI WORKFLOW, not curated beside it.** A hand-kept list forks from
+  the pipeline the moment a job gains a step, and it did: the list below once omitted four commands
+  CI runs, so a break in any of them reported green under the plan's own list while failing the
+  pipeline. Check it against the workflow's `run:` steps rather than trusting it; a command CI runs
+  and this list omits is a defect in this section, not an optional extra.
   Run from the repo root unless noted:
   - `pnpm -r test` and `pnpm -r typecheck` (any client package touched)
+  - `pnpm run test:scripts` — the `scripts/` suite. It has its own runner and is invisible to
+    `pnpm -r test`, so a broken build script passes every workspace gate.
   - `pnpm lint`
   - `pnpm lint:docs`, `pnpm lint:props`, `pnpm lint:comments` — doc/property coverage and ephemeral
     references
+  - `pnpm lint:allowances` — no unapproved lint suppression anywhere in the tree
+  - `pnpm run check:svelte-runtime` — single-instance Svelte runtime across the workspace
+  - `node scripts/check-skill-api-refs-cli.mjs` — every API symbol a skill cites still exists
   - **`pnpm docs:check-examples`** — every `@example` block must typecheck. **Examples compile
     INSIDE the module that documents them**, so an example may fail at a line its author never
     touched, and an ambient `declare` of a symbol the host already declares collides with the real
@@ -51,6 +61,9 @@ Ledger Additions section).
   - `node scripts/check-comment-refs.mjs` — the unnamed-pointer rule, fatal at zero
   - From `src/server/`: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,
     `cargo test`
+  - `cargo clippy --manifest-path src/server/Cargo.toml --all-targets -- -D missing-docs
+    -D clippy::missing-docs-in-private-items` — the Rust doc-coverage pass. It is a SEPARATE
+    invocation from the plain clippy gate above and passing one says nothing about the other.
   All are `error` and fail CI; there is no advisory tier. **A gate that was not run is not a gate
   that passed** — report each by name with its result, including the ones that were irrelevant and
   why.
@@ -4626,6 +4639,64 @@ last edit. Report each by name with the exact command and its real output tail. 
 that alters a test outcome is a finding — report it, do not adjust the test.
 
 - [ ] **Step 7: Commit**
+
+Conventional-commits, imperative, stating the constraint and the consequence. End with the
+`Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>` trailer.
+
+---
+
+### Task 6j: two residuals a reviewer offered to let stand
+
+**Numbered `6j` for the same reason as `5b`.** Both items were surfaced by a reviewer or an
+implementer and both were offered up as "not required" — one explicitly as *awareness only*, one as
+an owner call it turned out not to be. They are here because a green branch is exactly when a
+deferred residual stops being visible.
+
+---
+
+- [ ] **Step 1: A negative test that can pass vacuously**
+
+`SceneEcs`'s `footprints_payload_withholds_a_token_the_recipient_cannot_read` asserts that the
+recipient's token list is EMPTY. Its fixture contains only the hidden token, so nothing in the test
+rules out the list being empty for a reason unrelated to the guard — a payload that lost its tokens
+entirely would pass it just as well.
+
+Its own siblings, written later, use the shape that discriminates: assert the withheld entity is
+ABSENT from a list that still contains a readable sibling, in the same payload, plus a GM-receives-
+both assertion. Convert this one to that shape.
+
+A reviewer marked it *"no action required, awareness only"*, and it is genuinely corroborated today
+by a paired count assertion and by a revert witness. **That is not the point.** An emptiness
+assertion is the exact shape this plan's own fix files twice called insufficient, and "not required
+by the wording" plus "awareness only" is how one survives to become the next reader's precedent.
+
+Then prove it: revert the guard, observe the failure verbatim, restore, confirm the diff is empty.
+
+- [ ] **Step 2: A process-marker shape the comment gate does not see**
+
+`Critical N` and `FIX 1` — process markers naming a review finding or a fix round — pass
+`check-comment-refs.mjs` entirely. RULE 16 already bans sweep, fix-round and finding markers in code
+comments, so these are inside the rule as written and only the detector misses them; widening it
+enforces the existing rule rather than extending it. **Ruled by the dispatcher; implement it.**
+
+The reason it was reported as an owner call is real and is the actual work here: the obvious pattern
+collides with a letter-plus-digit entry that is deliberately scoped skill-only. **Fix the collision at
+its source rather than narrowing the new pattern around it.** A narrowed detector is how the class
+this task series keeps finding stays invisible — a false positive is visible and gets fixed, a false
+negative is not, so every pressure on a detector pushes toward narrowing and the narrowing then reads
+as scoping. If the two shapes genuinely cannot be told apart by pattern, say so plainly and report
+what the ambiguous set contains rather than shrinking either one.
+
+Then sweep what the widened pattern surfaces, with a positive control proving the new pattern fires,
+and a row per hit adjudicated.
+
+- [ ] **Step 3: Full gate**
+
+The plan's Global Constraints list, in full, re-run after the last edit, each reported with its exact
+command and real output tail. Note that the list gained several commands: check it, do not run the
+list you remember.
+
+- [ ] **Step 4: Commit**
 
 Conventional-commits, imperative, stating the constraint and the consequence. End with the
 `Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>` trailer.
