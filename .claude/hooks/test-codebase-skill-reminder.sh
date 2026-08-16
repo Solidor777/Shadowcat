@@ -48,6 +48,10 @@ check m9 "src/modules/conditions/src/index.ts"           "shadowcat-codebase-act
 check m10 "src/modules/game-settings/src/index.ts"       "shadowcat-codebase-client-shell"
 check m11 "examples/system-minimal/src/index.ts"         "shadowcat-codebase-module-toolchain"
 check m12 "src/client/core/src/index.ts"                 "shadowcat-codebase-client-shell"
+# Absolute paths: the Edit/Write payload always carries one, so a repo-relative
+# assertion alone cannot prove an entry fires in production.
+check m13 "C:/Dev/Shadowcat/src/client/core/src/footprints.ts" "shadowcat-codebase-scene-rendering"
+check m14 "/home/dev/Shadowcat/src/client/core/src/scene-docs.ts" "shadowcat-codebase-scene-rendering"
 
 # Standalone-Nightfox paths (the Nightfox repo opened on its own, not nested under
 # src/modules/nightfox/) must route to the nightfox skill.

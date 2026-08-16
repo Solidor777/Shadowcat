@@ -16,7 +16,7 @@ SUBSYSTEMS = [
     ("module-toolchain",     [r"src/server/src/modules\.rs", r"src/server/src/http/module_routes\.rs", r"src/client/core/src/(loader|module-rest)\.ts", r"src/modules/settings/src/ModuleManager", r"examples/"]),
     ("documents-permissions", [r"src/server/src/data/", r"src/client/core/src/wire\.ts"]),
     ("actors-tokens",        [r"src/modules/actors/", r"src/modules/factions/", r"src/modules/conditions/", r"src/client/core/src/actor\.ts"]),
-    ("scene-rendering",      [r"src/server/src/scene/", r"src/modules/stage/", r"src/modules/scene-tools/", r"src/modules/scene-browser/", r"src/client/render/", r"src/client/core/src/scene-docs\.ts"]),
+    ("scene-rendering",      [r"src/server/src/scene/", r"src/modules/stage/", r"src/modules/scene-tools/", r"src/modules/scene-browser/", r"src/client/render/", r"src/client/core/src/(scene-docs|footprints)\.ts"]),
     ("realtime-sync",        [r"src/server/src/ws/", r"src/server/src/http/", r"src/server/src/auth/", r"src/client/core/src/(store|optimistic|ws-client)\.ts"]),
     ("panels",               [r"src/modules/panels/", r"src/client/ui-kit/src/panelsBridge"]),
     ("templates",            [r"src/client/core/src/(merge|templates)\.ts", r"src/client/ui-kit/src/(templatesController|TemplateControls|TemplateModalHost|MergeConflictModal|SheetHost)"]),
