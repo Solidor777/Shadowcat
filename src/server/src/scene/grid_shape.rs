@@ -1238,9 +1238,9 @@ mod tests {
     fn exceeds_cell_cap_is_strictly_greater_than_at_the_boundary() {
         // Anti-drift on the predicate's own polarity, pinned exactly at the boundary: a `>` → `>=`
         // flip would refuse an otherwise-legal exactly-at-cap scan at every one of the three sites
-        // that call this predicate — the total mask loss this file exists to remove. `bounds =
-        // (0, 0, w-1, 0)` gives `candidate_span` exactly `w` (h = 1), so setting `w` to `CAP` and
-        // to `CAP + 1` isolates the boundary through the span formula itself.
+        // that call this predicate — the total mask loss `exceeds_cell_cap` exists to prevent.
+        // `bounds = (0, 0, w-1, 0)` gives `candidate_span` exactly `w` (h = 1), so setting `w` to
+        // `CAP` and to `CAP + 1` isolates the boundary through the span formula itself.
         // Discrimination: fails if `exceeds_cell_cap`'s `>` becomes `>=`.
         assert!(!exceeds_cell_cap((0, 0, (CAP - 1) as i32, 0), CAP));
         assert!(exceeds_cell_cap((0, 0, CAP as i32, 0), CAP));

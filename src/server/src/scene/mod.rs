@@ -30,7 +30,8 @@ use crate::data::document::Document;
 // declares its own `LightMode`/`MovementRestriction`/`MovementModel` (the RESOLVED
 // representation `ResolvedScene` exposes to callers elsewhere in `scene/`); the engine crate's
 // identically-named enums are the wire representation read off a document's `engine` field.
-// Keeping the two distinct avoids widening this file's already-declared public enum surface.
+// Keeping the two distinct avoids widening the `scene` module's already-declared public enum
+// surface.
 use crate::data::engine as eng;
 use crate::data::membership::PermissionContext;
 use crate::scene::lighting::Band;
@@ -380,8 +381,8 @@ pub struct SceneEcs {
     navmesh_cache: std::sync::Mutex<HashMap<NavmeshCacheKey, std::sync::Arc<navmesh::NavMesh>>>,
     /// Per-document decoded-`engine`-field cache, keyed on the
     /// owning document's own id. `engine_as` fully re-`serde_json::from_value`-decodes on every
-    /// call; this cache lets the ~19 vision/lighting/pathfinding hot-path call sites in this file
-    /// reuse a prior decode instead. `Mutex` (not `RefCell`), matching `navmesh_cache`, for
+    /// call; this cache lets the ~19 vision/lighting/pathfinding hot-path call sites in the
+    /// `scene` module reuse a prior decode instead. `Mutex` (not `RefCell`), matching `navmesh_cache`, for
     /// the same `Sync`-under-shared-`RwLock` reason. Never locked across an `.await` (every use
     /// here is synchronous). Correctness does NOT depend on catching every mutation site — see
     /// `CachedEngine`'s doc comment: a cached entry is only reused when its stored `source` Value
@@ -3331,9 +3332,9 @@ mod tests {
     }
 
     /// Builds a scene-entity fixture with `engine` set to `body` (`system` stays `{}`), used by
-    /// every fixture whose doc_type this file's production code reads through `engine_as`/a
-    /// typed `*Engine` struct — every derivation reader in this file, including `token_move`
-    /// as of this task (movement position lives exclusively in `/engine`).
+    /// every fixture whose doc_type the `scene` module's production code reads through
+    /// `engine_as`/a typed `*Engine` struct — every derivation reader there, `token_move`
+    /// included (movement position lives exclusively in `/engine`).
     fn entity_doc_eng(id: u128, parent: u128, ty: &str, body: serde_json::Value) -> Document {
         let mut d = doc(id, Some(parent), ty);
         d.engine = Some(body);
@@ -3350,7 +3351,7 @@ mod tests {
 
     /// A minimal, structurally-complete `ActorEngine` body (`displayName`/`visual`/`size`/
     /// `shape`/`conditions`/`prototype` are all required, non-`Option` fields) with `vision` set
-    /// to the caller's assignment array — this file's vision-floor tests only ever vary `vision`.
+    /// to the caller's assignment array — the vision-floor tests only ever vary `vision`.
     fn actor_body(vision: serde_json::Value) -> serde_json::Value {
         json!({
             "displayName": "Fixture Actor",
@@ -4406,7 +4407,7 @@ mod tests {
     }
 
     /// A minimal, structurally-complete `ActorEngine` body with the caller's `shape`/`size`, for
-    /// this file's footprint tests.
+    /// the footprint tests.
     fn actor_body_shaped(shape: &str, w: f64, h: f64) -> serde_json::Value {
         json!({
             "displayName": "Fixture Actor",
@@ -4812,7 +4813,7 @@ mod tests {
         assert_eq!(
             tokens_of(&for_gm, scene).len(),
             2,
-            "the GM, who may read it, still receives both"
+            "the GM, who may read the withheld token, receives both"
         );
     }
 
@@ -4862,7 +4863,7 @@ mod tests {
                 .map(|s| s.scene)
                 .collect::<Vec<_>>(),
             vec![open_scene],
-            "the scene the recipient may read is still carried, so absence is the access decision \
+            "the scene the recipient may read is carried, so absence is the access decision \
              rather than an empty payload"
         );
         let for_gm = ecs.resolved_footprints(&footprint_gm_ctx(), &WorldCapDefaults::default());
@@ -4870,7 +4871,7 @@ mod tests {
             .scenes
             .iter()
             .find(|s| s.scene == secret_scene)
-            .expect("the GM, who can read it, still receives it");
+            .expect("the GM, who may read the secret scene, receives its entry");
         assert_eq!(
             gm_secret.tokens.len(),
             1,
@@ -4901,13 +4902,13 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![open_scene],
             "the whole entry is absent — `unit` is that scene's grid kind and size, which the \
-             recipient's document stream nulls; and the scene whose band is open is still carried, \
+             recipient's document stream nulls; and the scene whose band is open is carried, \
              so the absence is the tier decision rather than an empty payload"
         );
         let for_gm = ecs.resolved_footprints(&footprint_gm_ctx(), &WorldCapDefaults::default());
         assert!(
             for_gm.scenes.iter().any(|s| s.scene == banded_scene),
-            "the GM, who receives the band, still receives the entry"
+            "the GM, who receives the band, receives the entry"
         );
     }
 
@@ -4936,13 +4937,13 @@ mod tests {
             tokens_of(&for_player, scene),
             vec![open_token],
             "the whole entry is absent — a token id paired with an extent is the disclosure, so a \
-             null extent is not a redaction; the sibling whose band is open is still carried"
+             null extent is not a redaction; the sibling whose band is open is carried"
         );
         let for_gm = ecs.resolved_footprints(&footprint_gm_ctx(), &WorldCapDefaults::default());
         assert_eq!(
             tokens_of(&for_gm, scene).len(),
             2,
-            "the GM, who receives the band, still receives both"
+            "the GM, who receives the band, receives both"
         );
     }
 
@@ -4977,14 +4978,14 @@ mod tests {
         assert_eq!(
             tokens_of(&for_player, scene),
             vec![open_token],
-            "a token whose own band is open still discloses no extent while the band authoring \
+            "a token whose own band is open discloses no extent while the band authoring \
              that extent is nulled for this recipient"
         );
         let for_gm = ecs.resolved_footprints(&footprint_gm_ctx(), &WorldCapDefaults::default());
         assert_eq!(
             tokens_of(&for_gm, scene).len(),
             2,
-            "the GM, who receives the actor band, still receives both"
+            "the GM, who receives the actor band, receives both"
         );
     }
 
@@ -5022,7 +5023,7 @@ mod tests {
         assert_eq!(
             tokens_of(&for_gm, scene).len(),
             2,
-            "the GM, who may read it, still receives both"
+            "the GM, who may read the actor document, receives both"
         );
     }
 
@@ -5064,7 +5065,7 @@ mod tests {
         assert_eq!(
             tokens_of(&for_gm, scene).len(),
             2,
-            "the GM, who receives the embedded band, still receives both"
+            "the GM, who receives the embedded band, receives both"
         );
     }
 
@@ -6103,7 +6104,7 @@ mod tests {
     /// with no wall present. The wall runs the full y-span the light's grown occlusion bound could
     /// reach, so a bound that grows to cover the reach but stops respecting occlusion (e.g. degrades
     /// to an unoccluded disc) cannot be distinguished from a correctly-occluded one by any other
-    /// test in this file — this is the one that would catch it.
+    /// test — this fixture is what catches it.
     fn scene_with_lit_player_token_and_occluding_wall() -> (SceneEcs, Uuid, Uuid) {
         let (ecs, user, scene_id) = scene_with_lit_player_token();
         let mut docs: Vec<crate::data::document::Document> = ecs

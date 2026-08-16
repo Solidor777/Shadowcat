@@ -3207,7 +3207,7 @@ mod tests {
 /// `chat::tests`, but against a real stub `axum` target on `127.0.0.1` — the
 /// same `build_client_allow_loopback` seam `link_preview`'s own fetcher tests use. Kept
 /// as its own `mod` (not folded into `chat::tests`) because every test here
-/// needs `hyperlinks: true` and a stub server, unlike the rest of the file.
+/// needs `hyperlinks: true` and a stub server, unlike the tests in `chat::tests`.
 #[cfg(test)]
 mod link_preview_ingest_tests {
     use super::*;
@@ -3379,7 +3379,7 @@ mod link_preview_ingest_tests {
     /// URL to actually become an `<a href>` — `sanitize`'s bare-toggle
     /// `hyperlinks` only controls whether ammonia PERMITS the `<a>` tag once
     /// produced; producing one at all needs markdown link syntax
-    /// (`[label](url)`) run through `pulldown-cmark`. Bodies in this file
+    /// (`[label](url)`) run through `pulldown-cmark`. Bodies in these tests
     /// use that syntax accordingly.
     fn hyperlinks_on() -> ChatContentPolicy {
         ChatContentPolicy {

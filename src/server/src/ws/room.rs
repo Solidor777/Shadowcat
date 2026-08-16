@@ -3826,8 +3826,8 @@ mod room_tests {
     /// explicitly `"continuous"`: proves `execute_move` gates an any-angle route
     /// from a scene genuinely marked continuous, not just incidentally sent a diagonal path.
     /// Functionally inert on the server today — `execute_move` has no `movementModel` branch,
-    /// being engine-agnostic; this mirrors `movement_scene`'s body (this file's
-    /// established per-scenario-helper convention) with one added JSON key.
+    /// being engine-agnostic; this mirrors `movement_scene`'s body (the established
+    /// per-scenario-helper convention these tests follow) with one added JSON key.
     async fn movement_scene_continuous(restriction: &str, with_light: bool) -> MovementHandle {
         use serde_json::json;
 
