@@ -11,26 +11,46 @@ import {
 
 describe("findSkillFiles", () => {
   let root;
+  const skills = (r) => join(r, ".claude", "skills");
   afterEach(() => {
     if (root) rmSync(root, { recursive: true, force: true });
   });
 
   it("finds every SKILL.md recursively, ignoring same-named-differently files", () => {
     root = mkdtempSync(join(tmpdir(), "skills-find-"));
-    mkdirSync(join(root, "a"), { recursive: true });
-    mkdirSync(join(root, "b"), { recursive: true });
-    writeFileSync(join(root, "a", "SKILL.md"), "");
-    writeFileSync(join(root, "b", "SKILL.md"), "");
-    writeFileSync(join(root, "b", "skill.md"), ""); // wrong case — must not match
-    writeFileSync(join(root, "b", "SKILL.mdx"), ""); // wrong extension — must not match
-    const found = findSkillFiles(root);
-    expect(found).toEqual([join(root, "a", "SKILL.md"), join(root, "b", "SKILL.md")]);
+    mkdirSync(join(skills(root), "a"), { recursive: true });
+    mkdirSync(join(skills(root), "b"), { recursive: true });
+    writeFileSync(join(skills(root), "a", "SKILL.md"), "");
+    writeFileSync(join(skills(root), "b", "SKILL.md"), "");
+    writeFileSync(join(skills(root), "b", "skill.md"), ""); // wrong case — must not match
+    writeFileSync(join(skills(root), "b", "SKILL.mdx"), ""); // wrong extension — must not match
+    const { files } = findSkillFiles(root, { trackedDirs: new Set(["a", "b"]) });
+    expect(files).toEqual([
+      join(skills(root), "a", "SKILL.md"),
+      join(skills(root), "b", "SKILL.md"),
+    ]);
+  });
+
+  // The corpus rule both gates now share: an untracked directory is vendored prose, and a
+  // `/api/...` pointer inside one is not this repo's to fail CI on.
+  it("skips an untracked skill directory and reports it as excluded", () => {
+    root = mkdtempSync(join(tmpdir(), "skills-find-"));
+    mkdirSync(join(skills(root), "tracked"), { recursive: true });
+    mkdirSync(join(skills(root), "vendored"), { recursive: true });
+    writeFileSync(join(skills(root), "tracked", "SKILL.md"), "");
+    writeFileSync(join(skills(root), "vendored", "SKILL.md"), "See `/api/ts/nope.html`.");
+    const found = findSkillFiles(root, {
+      trackedDirs: new Set(["tracked"]),
+      untrackedDirs: ["vendored"],
+    });
+    expect(found.files).toEqual([join(skills(root), "tracked", "SKILL.md")]);
+    expect(found.untrackedDirs).toEqual(["vendored"]);
   });
 
   it("returns an empty array for a scope with no SKILL.md files", () => {
     root = mkdtempSync(join(tmpdir(), "skills-find-"));
-    mkdirSync(join(root, "empty"), { recursive: true });
-    expect(findSkillFiles(root)).toEqual([]);
+    mkdirSync(join(skills(root), "empty"), { recursive: true });
+    expect(findSkillFiles(root, { trackedDirs: new Set(["empty"]) }).files).toEqual([]);
   });
 });
 
@@ -84,16 +104,20 @@ describe("apiRefResolves", () => {
 });
 
 describe("checkSkillApiRefs", () => {
+  let repoRoot;
   let skillsRoot;
   let distDocsRoot;
+  const scoped = { trackedDirs: new Set(["shadowcat-codebase-example"]) };
   beforeEach(() => {
-    skillsRoot = mkdtempSync(join(tmpdir(), "skills-"));
+    repoRoot = mkdtempSync(join(tmpdir(), "skills-"));
+    skillsRoot = join(repoRoot, ".claude", "skills");
+    mkdirSync(skillsRoot, { recursive: true });
     distDocsRoot = mkdtempSync(join(tmpdir(), "dist-docs-"));
     mkdirSync(join(distDocsRoot, "api", "ts", "modules"), { recursive: true });
     writeFileSync(join(distDocsRoot, "api", "ts", "modules", "_shadowcat_core.html"), "<html></html>");
   });
   afterEach(() => {
-    rmSync(skillsRoot, { recursive: true, force: true });
+    rmSync(repoRoot, { recursive: true, force: true });
     rmSync(distDocsRoot, { recursive: true, force: true });
   });
 
@@ -103,7 +127,7 @@ describe("checkSkillApiRefs", () => {
       join(skillsRoot, "shadowcat-codebase-example", "SKILL.md"),
       "See `/api/ts/modules/_shadowcat_core.html`.",
     );
-    const result = checkSkillApiRefs(skillsRoot, distDocsRoot);
+    const result = checkSkillApiRefs(repoRoot, distDocsRoot, scoped);
     expect(result.filesScanned).toBe(1);
     expect(result.refsChecked).toBe(1);
     expect(result.broken).toEqual([]);
@@ -115,7 +139,7 @@ describe("checkSkillApiRefs", () => {
     mkdirSync(join(skillsRoot, "shadowcat-codebase-example"), { recursive: true });
     const skillFile = join(skillsRoot, "shadowcat-codebase-example", "SKILL.md");
     writeFileSync(skillFile, "See `/api/ts/modules/_shadowcat_totally_made_up.html`.");
-    const result = checkSkillApiRefs(skillsRoot, distDocsRoot);
+    const result = checkSkillApiRefs(repoRoot, distDocsRoot, scoped);
     expect(result.broken).toEqual([
       { file: skillFile, ref: "/api/ts/modules/_shadowcat_totally_made_up.html" },
     ]);
@@ -130,7 +154,7 @@ describe("checkSkillApiRefs", () => {
       join(skillsRoot, "shadowcat-codebase-example", "SKILL.md"),
       "No generated-doc pointers in this skill at all.",
     );
-    const result = checkSkillApiRefs(skillsRoot, distDocsRoot);
+    const result = checkSkillApiRefs(repoRoot, distDocsRoot, scoped);
     expect(result.filesScanned).toBe(1);
     expect(result.refsChecked).toBe(0);
     expect(result.broken).toEqual([]);
