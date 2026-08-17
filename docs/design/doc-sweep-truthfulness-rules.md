@@ -365,17 +365,31 @@ drifted into those coordinates — which is strictly worse than no citation, bec
 diligence. **A symbol name has none of this failure mode: it survives every insertion, every reflow,
 and every move between files. It breaks only on rename or deletion — precisely the edit where a grep
 for the old name finds it.** That grep is no longer a manual step someone has to remember to run:
-`node scripts/check-skill-symbol-refs-cli.mjs` builds a symbol index from every Rust
-`fn`/`struct`/`enum`/`trait`/`const`/`static`/`mod`/`pub use` declaration and every TS/Svelte
-export or class/interface member, then verifies every code-symbol citation in a
-`shadowcat-codebase-*` skill resolves against it — fatal, no baseline, wired into CI beside
-`check-skill-api-refs-cli.mjs`. Two structurally unresolvable sub-classes stay review obligations,
-not gate obligations, exactly as the lowercase-hyphenated marker does for RULE 16: a citation
-inside `shadowcat-codebase-nightfox` naming a symbol the SEPARATE Nightfox repository owns (not
-present in this checkout to index), and a flat bare word, bare camelCase word, or lowercase-first
-`.`-chain (`item`, `basePrefix`, `doc.engine`) — a shape no GOOD example under this rule ever uses,
-and shape alone cannot tell a real declaration from an ordinary in-context value or a local
-variable narrated in prose.
+`node scripts/check-skill-symbol-refs-cli.mjs` builds a symbol index from what the tree actually
+declares and verifies every code-symbol citation in a TRACKED skill directory against it — fatal,
+no baseline, wired into CI beside `check-skill-api-refs-cli.mjs`. The index reads Rust items,
+impl/trait methods, struct fields, enum variants, serde wire names, `let` bindings, function
+parameters and string-literal alternation sets; the SQL baseline's tables and columns; Cargo
+manifest keys; every TS/JS/Svelte declaration, member (at any nesting depth), object-literal key,
+import and literal type, through the TypeScript parser rather than line patterns; JSON config keys;
+and module, package-directory and skill-directory names.
+
+**A token's SHAPE decides only whether it is a citation at all — never whether a citation gets
+checked.** A shape-based exclusion is invisible in two directions at once: it hides the citations it
+skips, and it hides every gap in the index behind them, since a name the index cannot see is
+indistinguishable from a name the shape rule declined to look at. Every code span therefore lands in
+exactly one printed bucket — verified, acknowledged non-symbol, broken, or not citation-shaped — and
+each acknowledgement entry is hit-counted, with a zero-hit entry failing the gate so the list cannot
+quietly hold a slot that absorbs a future defect. One structurally unresolvable sub-class stays a
+review obligation rather than a gate obligation, exactly as the lowercase-hyphenated marker does for
+RULE 16: a citation inside `shadowcat-codebase-nightfox` naming a symbol the SEPARATE Nightfox
+repository owns, which is not present in this checkout to index. Its file count and unresolved-token
+count print on every run.
+
+**Corpus scoping is by tracked-ness, not by directory name.** A skill directory holding no committed
+file is vendored third-party content documenting an external tool's own API, which this repo neither
+wrote nor maintains; a name pattern would encode the wrong reason and silently drop a future
+first-party skill named anything else. The excluded directories and their count print on every run.
 
 **Disambiguation without paths.** Rule 13's motivating problem was real: this repo has two
 `controller.svelte.ts` and 26 `index.ts`. Symbols solve it better than paths did. Qualify with the

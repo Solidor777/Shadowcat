@@ -119,14 +119,21 @@ source of truth. The ones agents break most:
   insertion above it; a symbol breaks only on rename, which a grep finds — and for this skill
   family specifically, that grep now runs automatically:
   `node scripts/check-skill-symbol-refs-cli.mjs` (fatal, CI-wired) resolves every code-symbol
-  citation in `.claude/skills/shadowcat-codebase-*/SKILL.md` against a symbol index built from the
-  tree. Carve-outs: config/build files (no symbols to cite), filenames used as *values*, dated
-  records under `docs/superpowers/`, and — a documented review obligation, not a gate obligation —
-  citations of a symbol the separate Nightfox repository owns
-  (`shadowcat-codebase-nightfox`, not present in this checkout) and a flat bare/camelCase word or
-  lowercase-first `.`-chain, whose shape cannot mechanically distinguish a real citation from an
-  ordinary in-context value. Full rule: `docs/design/doc-sweep-truthfulness-rules.md`
-  RULE 15. [[cite-symbols-not-file-lines]]
+  citation in every TRACKED skill directory against a symbol index built from what the tree
+  declares — Rust items, methods, fields, variants, serde wire names, local bindings, parameters
+  and literal alternation sets; SQL tables/columns; Cargo and JSON config keys; every TS/Svelte
+  declaration, member at any depth, object-literal key, import and literal type, read through the
+  TypeScript parser; and module/package/skill directory names. **A token's shape decides only
+  whether it is a citation at all, never whether a citation is CHECKED** — a shape exclusion hides
+  the citations it skips AND every index gap behind them, so every code span lands in one printed
+  bucket (verified / acknowledged non-symbol / broken / not citation-shaped) and each
+  acknowledgement entry is hit-counted, a zero-hit entry failing the gate. Carve-outs:
+  config/build files (no symbols to cite), filenames used as *values*, dated records under
+  `docs/superpowers/`, and — a documented review obligation, not a gate obligation — citations of a
+  symbol the separate Nightfox repository owns (`shadowcat-codebase-nightfox`, not present in this
+  checkout). An untracked skill directory is vendored third-party prose and is out of the corpus by
+  that property, never by a name pattern; its count prints on every run. Full rule:
+  `docs/design/doc-sweep-truthfulness-rules.md` RULE 15. [[cite-symbols-not-file-lines]]
 - **As far as code is concerned, ephemeral documents, plans, dates, history and tasks DO NOT EXIST**
   (user directive, iron-clad; RULE 16). This is an ontology, not a style preference: the test is
   never "is this reference useful?" but "is this thing visible from the code?" Every exception

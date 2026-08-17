@@ -11,7 +11,6 @@ import { checkSkillSymbolRefs } from "./check-skill-symbol-refs.mjs";
 
 function main() {
   const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-  const skillsRoot = resolve(repoRoot, ".claude", "skills");
 
   const {
     filesScanned,
@@ -21,18 +20,20 @@ function main() {
     verified,
     acknowledged,
     broken,
-    ambiguous,
     nonCandidates,
+    acknowledgedHits,
+    unusedAcknowledgements,
+    untrackedDirs,
     nightfoxExcludedFiles,
     nightfoxExcludedBroken,
-  } = checkSkillSymbolRefs(skillsRoot, repoRoot);
+  } = checkSkillSymbolRefs(repoRoot);
 
   // A scan that touched no skill file, or extracted no citation-shaped candidate at all, is
   // indistinguishable from a clean pass by its own zero-broken count — exactly the "0 broken"
   // shape `check-skill-api-refs-cli.mjs` already refuses to treat as success. Fail loudly instead
   // of reporting a green run that verified nothing.
   if (filesScanned === 0) {
-    console.error(`check-skill-symbol-refs: 0 skill .md file(s) found under ${skillsRoot}`);
+    console.error(`check-skill-symbol-refs: 0 tracked skill .md file(s) found under ${repoRoot}`);
     process.exit(2);
   }
   if (symbolCount === 0) {
@@ -48,12 +49,17 @@ function main() {
     process.exit(2);
   }
 
+  const untracked =
+    untrackedDirs.length > 0
+      ? `${untrackedDirs.length} untracked skill directory(ies) excluded as not this repo's own ` +
+        `prose (${untrackedDirs.join(", ")}); `
+      : "";
   console.log(
     `check-skill-symbol-refs: symbol index ${symbolCount} name(s) from ${filesIndexed} source file(s); ` +
       `${candidatesChecked} citation-shaped candidate(s) in ${filesScanned} skill file(s) ` +
-      `(${verified} verified, ${acknowledged} acknowledged non-symbol, ${broken.length} broken); ` +
-      `${ambiguous} flat bare-lowercase/camelCase/wire-path token(s) excluded from resolution ` +
-      `(review obligation, see RULE 15); ${nonCandidates} backtick span(s) not citation-shaped; ` +
+      `(${verified} verified, ${acknowledged} acknowledged non-symbol via ${acknowledgedHits.size} ` +
+      `named entry(ies), ${broken.length} broken); ` +
+      `${nonCandidates} code span(s) not citation-shaped; ${untracked}` +
       `${nightfoxExcludedFiles} Nightfox skill file(s) excluded from this gate (cross-repo, ` +
       `structurally unresolvable — review obligation, see RULE 15), carrying ` +
       `${nightfoxExcludedBroken} unresolved candidate(s).`,
@@ -63,6 +69,22 @@ function main() {
     console.error(`\n${broken.length} broken symbol citation(s):`);
     for (const { file, line, token } of broken)
       console.error(`  ${file}:${line}  \`${token}\` — no matching symbol in the tree`);
+    process.exit(1);
+  }
+
+  // An acknowledgement entry that absorbs nothing is a standing invitation to absorb a future
+  // defect: the day a real, broken citation happens to spell that token, the gate reports it as a
+  // known non-symbol. The list is therefore re-derived from what the corpus actually reaches on
+  // every run, not maintained by hand and trusted.
+  if (unusedAcknowledgements.length > 0) {
+    console.error(
+      `\n${unusedAcknowledgements.length} acknowledgement entry(ies) matched nothing in the corpus:`,
+    );
+    for (const entry of unusedAcknowledgements) console.error(`  ${entry}`);
+    console.error(
+      "\nDelete each one. An entry no citation reaches cannot be justified by the corpus, and it " +
+        "silently absorbs the first future citation that happens to spell it.",
+    );
     process.exit(1);
   }
 

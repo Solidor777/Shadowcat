@@ -31,7 +31,9 @@ import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { isDirectEntry } from "./lib/is-main.mjs";
 
-const SKIP_DIRS = new Set([
+// Exported: the skill-symbol-citation gate walks the same tree and must skip the same
+// directories. Two copies of a skip list drift into two different notions of what the repo is.
+export const SKIP_DIRS = new Set([
   "node_modules",
   "dist",
   "target",
@@ -70,12 +72,16 @@ const rootFiles = () =>
   );
 
 /** Repo-relative path with forward slashes, so a scope reads the same on every platform. */
-const norm = (p) => p.split("\\").join("/");
+export const norm = (p) => p.split("\\").join("/");
 
 // Prefix matching is path-boundary-aware: a raw `startsWith` makes "src/modules/chat" also claim
 // "src/modules/chat-card", silently pulling a sibling directory into a scope that never named it.
 // The over-match is invisible — the count is simply larger, and larger reads as more thorough.
-const under = (p, prefix) => p === norm(prefix) || p.startsWith(norm(prefix) + "/");
+//
+// Exported alongside `norm` because the skill-symbol-citation gate resolves the same path-prefix
+// question (is this file under the generated root?) over the same tree. A second copy of a
+// boundary-aware prefix test is a second place for the boundary rule to be got wrong.
+export const under = (p, prefix) => p === norm(prefix) || p.startsWith(norm(prefix) + "/");
 
 /** True when `p` sits inside one of `scopes` (or `scopes` is empty, meaning "everything"). */
 export const inScope = (scopes, p) =>
@@ -125,7 +131,11 @@ export function gateFileSet(scopes = []) {
 // The exemption is narrow by construction and its active count prints with every result. An
 // exemption nobody counts is a backdoor, and a silent one is indistinguishable from a rule that
 // does not apply; this one is neither, and it is the only exemption the scanner has.
-const EXAMPLE_EXEMPT = /\bEXAMPLE:/;
+//
+// Exported because the skill-symbol-citation gate governs the same corpus by the same convention:
+// a line demonstrating a specimen is deliberately not-real, so neither gate may resolve it. Two
+// copies of the marker would be two decisions about what "exempt" means, free to disagree.
+export const EXAMPLE_EXEMPT = /\bEXAMPLE:/;
 
 // The comment/code split, and its controls, live in one module so this gate and the
 // suppression gate cannot drift apart about what counts as a comment.
