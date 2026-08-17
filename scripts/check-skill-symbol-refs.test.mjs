@@ -352,10 +352,17 @@ describe("extractCodeSpans / citationTokens", () => {
   // Pins CommonMark's run-length rule against the construction RULE 15's own worked example uses:
   // a DOUBLE-backtick span quoting two single-backtick citations. A single-backtick reader loses
   // both of them into the gap between matches, where nothing counts them.
-  it("recovers both citations from a double-backtick span that quotes them", () => {
+  // The assertion is the FULL token list, not just the two citations: a single-backtick reader
+  // happens to recover those two anyway on this line, because the delimiters pair up evenly by
+  // coincidence. What it CANNOT produce is the quoting span's own content, so only an exact list
+  // discriminates a run-length reader from the pattern this replaces.
+  it("recovers both citations from the double-backtick span that quotes them", () => {
     const line = "Write ``see `egress_loop`'s `SceneSubscribe` arm``, never a line number.";
-    expect(citationTokens(line).map((t) => t.token)).toContain("egress_loop");
-    expect(citationTokens(line).map((t) => t.token)).toContain("SceneSubscribe");
+    expect(citationTokens(line).map((t) => t.token)).toEqual([
+      "see `egress_loop`'s `SceneSubscribe` arm",
+      "egress_loop",
+      "SceneSubscribe",
+    ]);
   });
 
   it("counts the quoting span itself too, so no span goes unaccounted for", () => {
