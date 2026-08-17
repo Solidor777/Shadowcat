@@ -41,7 +41,7 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   (`MovementRestriction::{Visible,Revealed,Unrestricted}`, scene-overridable, fail-closed to `Visible`)
   + `partial_cell_leniency` (world-only).
   **A single-gate constraint list: `Room::publish`
-  no longer gates non-GM traversal at all** — a non-GM `Update` touching a token's `/engine/x`/`/engine/y`
+  gates no non-GM traversal at all** — a non-GM `Update` touching a token's `/engine/x`/`/engine/y`
   is refused outright (`ws::room`'s bitwise `a0 != a1` check); `Room::publish` runs no
   wall/mask/supercover machinery of its own. `move_exec`/`execute_move` is the SOLE
   implementation of the per-cell traversal decision. The six axes below are present-tense
@@ -288,8 +288,8 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   coordinates to silently misclassify a genuinely-multi-cell segment as identity) are the DoS bound; there is no
   authored-vertex-count cap, and `MoveReject::TooLong` reflects `gate_walk`'s `None` (either
   cap), not vertex count. `MoveReject` variants: `NotAToken`, `EmptyPath`, `TooLong` (as above),
-  `Degenerate` (non-finite coords / bad start — no longer covers non-adjacent king-step, which is
-  now subdivided-and-gated rather than rejected). **Region gate (step 3):** always reads
+  `Degenerate` (non-finite coords / bad start only — a non-adjacent king-step is subdivided and
+  gated, never rejected here). **Region gate (step 3):** always reads
   `ecs.region_field(scene, None)` — the AUTHORITATIVE field, computed once before the walk loop
   begins (never per-step, never filtered) — so a `gm_only` secret region "springs" on execution
   even for a mover whose own route preview couldn't see it. Center-cell only (`to_cell(next)`; no
@@ -377,11 +377,11 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   summed), `RegionField`/`RegionFieldBuilder` (`.add` silently drops a fail-closed shape —
   contributes nothing, never all-passes; `.build` composes per-cell), and `parse_region_shape`
   (structural-only parse of a region doc's `/shape` body; any malformed field fails closed to
-  `None`, dropping the whole region). **Historical bug (fixed):** an extreme-magnitude finite
-  coordinate (e.g. `-1e300`) saturated the float→cell-index cast to `i64::MIN/MAX`, letting the
-  subsequent `i1 - i0 + 1` cell-count arithmetic overflow BEFORE the `checked_mul` DoS-cap check
-  ever ran — a bypass of the cap, not merely a wrong count. Fixed via an explicit `MAX_CELL_COORD`
-  (`i32::MAX - 1.0`) bound checked on all four AABB edges before any i64 arithmetic. A
+  `None`, dropping the whole region). **`MAX_CELL_COORD` (`i32::MAX - 1.0`) is checked on all four
+  AABB edges before any i64 arithmetic, and that ordering is the invariant:** without it an
+  extreme-magnitude finite coordinate (e.g. `-1e300`) saturates the float→cell-index cast to
+  `i64::MIN/MAX`, and the subsequent `i1 - i0 + 1` cell-count arithmetic overflows BEFORE the
+  `checked_mul` DoS-cap check runs — a bypass of the cap, not merely a wrong count. A
   large-magnitude-but-small-span coordinate (e.g. `1e13`) is a separate failure mode also caught by
   the same bound (would otherwise silently truncate/wrap under `as i32`, aliasing onto an unrelated
   real cell).
@@ -549,9 +549,8 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   null` breaks after the first
   successful write, since the server's field-level optimistic-concurrency check
   (`Repository::apply_intent`) rejects any subsequent `Update` whose `old` doesn't match the
-  actual current stored value. This was a Critical bug caught and fixed during review; the SAME
-  pre-existing bug shape was later found AND fixed in `GameSettingsPanel` (a later game-settings
-  review) and in `FactionsPanel`/`ConditionsPanel` — always read the raw stored value for `old`,
+  actual current stored value. `GameSettingsPanel`, `FactionsPanel` and `ConditionsPanel` carry the
+  same rule for the same reason — always read the raw stored value for `old`,
   never the resolved/defaulted one, in any future editor of this shape.
 - **Regions on the continuous engine.** `SceneEcs::pathfind`'s
   `Continuous` branch (`scene`) computes the per-requester `region_field` once (same call the
@@ -626,8 +625,9 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
     a NaN therefore refuses on finiteness alone, since `NaN <= 0.0` and `NaN.abs() > MAX` are both
     false. **`MAX_NAVMESH_COORD` (1e15)**
     bounds EVERY value that reaches an `f64→f32` cast in this module (derived pixel bounds,
-    raw wall-segment endpoints, AND `build_navmesh::footprint_scene` — all three were found and fixed as separate
-    Critical bugs across a multi-round buddy check: an unbounded-but-finite coordinate saturates to
+    raw wall-segment endpoints, AND `build_navmesh::footprint_scene` — all three carry the bound
+    independently, and any one of them missing it is a panic surface: an unbounded-but-finite
+    coordinate saturates to
     `Infinity` on cast, which `spade`'s triangulation rejects via an unhandled internal `.unwrap()`
     on `Err(InsertionError::TooLarge)` — a panic, not a fail-closed `None`). **Separately**, a
     non-degenerate wall whose `build_navmesh::footprint_scene`-to-segment-length ratio exceeds ~4.9e8 makes
@@ -662,16 +662,16 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
     arc-length samples, an undersampled chord between two corner-straddling samples could otherwise
     visually cross the wall the true route avoided. Also validates `footprint_radius_cells` (against
     `MAX_FOOTPRINT_CELLS`), `cell`, and skips (not fails) any individual non-finite wall
-    endpoint — mirroring `build_navmesh`'s defense-in-depth convention, since this function had been
-    the one place in the module NOT following it (found + fixed in buddy check). **Two-checks
+    endpoint — mirroring `build_navmesh`'s defense-in-depth convention, which every function in the
+    module follows. **Two-checks
     dichotomy, never conflate:** the mask check is a genuine secrecy gate (route ⊆ gate-allowed);
     the wall check is a fidelity/correctness guarantee with no confidentiality stake — don't reuse
     one's severity framing for the other. Cost is recomputed as the Euclidean length of the
     truncated polyline, never the original route's cost.
   - `SceneEcs::navmesh_for(scene, footprint_radius_cells) -> Option<Arc<NavMesh>>` —
-    memoized per `(scene, quantized footprint radius)` (nearest 1/1000 cell — matches the design
-    spec's explicit "cache stays bounded" requirement; a plan-level buddy check caught an earlier
-    exact-f64-bits keying scheme as a departure from this). **Validates `footprint_radius_cells`
+    memoized per `(scene, quantized footprint radius)` (nearest 1/1000 cell — the quantization IS
+    the bound on cache growth, and keying on exact `f64` bits instead would let a caller mint an
+    unbounded number of entries). **Validates `footprint_radius_cells`
     BEFORE computing the quantized key or touching the cache** (doing the
     validation after the cache lookup let `NaN`/small-negative inputs alias onto an already-cached
     LEGITIMATE mesh — e.g. `NaN` saturates to the same quantized key as `0.0` via `f64 as i64` —
@@ -897,7 +897,7 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   survive past a newer frame's (seq 7) immediate apply advancing `lastAppliedSeq` to 7, then get
   wrongly re-applied by a LATER `flushPendingDerived` call (any subsequent store commit), regressing
   the mask back to seq 5. Fix: `flushPendingDerived` now applies a pending entry only when
-  `p.seq > this.lastAppliedSeq` at flush time (checked AFTER the pre-existing `store.appliedSeq >=
+  `p.seq > this.lastAppliedSeq` at flush time (checked AFTER the `store.appliedSeq >=
   p.seq` watermark check, BEFORE the `toVisibility` re-filter) — otherwise discards it; the pending
   slot is unconditionally cleared as soon as the watermark condition is met, applied or not. This is
   a distinct guard from the scene-refilter-at-flush fix directly above (that fix is about WHAT
@@ -910,7 +910,7 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
 - **`Room::publish`'s non-GM block retains only two gates, neither a traversal gate.**
   (1) An `Update` touching a token's `/engine/x`/`/engine/y` is refused
   outright on bitwise `a0 != a1` (position changed at all) — zero wall/mask/traversal-cell checks;
-  a select/move-tool drag no longer writes `/engine/x,y` directly at all — it goes through
+  a select/move-tool drag never writes `/engine/x,y` directly at all — it goes through
   `makeSelectMoveTool.previewMoves`/`makeSelectMoveTool.commitMoves`, request-only via `moveRequest` → `execute_move`, the SOLE remaining
   implementation of the per-cell traversal decision (see the parity-checklist bullet above).
   (2) A `Create` of a `token` doc is still authorized: the target scene must exist
@@ -973,13 +973,13 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   `grid.inputs.shape.footprint_cells(to,...) ∪ grid.inputs.shape.line_traversal(from,to,cell)` — the same RESOLVED
   `GridShape` primitives `scene::move_exec` uses per step — so the router's mask predicate is
   provably `≥` the gate's; **route ⊆ gate-allowed holds for every footprint size**, including the
-  sub-0.5-cell diagonal case where the earlier footprint-disc-only check let the router approve a step
-  the gate rejected. Never make the pathfinder mask test weaker than
+  sub-0.5-cell diagonal case a footprint-disc-only check lets the router approve while the gate
+  rejects it. Never make the pathfinder mask test weaker than
   `grid.inputs.shape.footprint_cells ∪ grid.inputs.shape.line_traversal` — that union IS the invariant, not merely
   a suggestion. **Both halves must come from the SHAPE, never the free square functions**
   (`pathfinding::footprint_cells`, `movement::supercover_cells`): those are `SquareGrid`'s own
   internals, and calling them here indexes cells by square coordinates against a mask that may be
-  hex-axial — a live square-on-hex misclassification, not merely a historical one. See
+  hex-axial — a square-on-hex misclassification the type system does not catch. See
   checklist axis (2) above and the shape-identity invariant below.
 - **The `route ⊆ gate-allowed` invariant is engine-agnostic, not grid-specific.**
   `SceneEcs::pathfind` builds the per-`(user,scene)` visibility mask exactly once and passes the
@@ -999,7 +999,7 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   indexed in two coordinate systems is not a shared mask.
 - **`execute_move`'s per-cell gate is the sole movement gate, footprint-aware for
   walls/mask/impassable, center-cell for arrest/terrain.** There is no second gate
-  to keep in parity with — `Room::publish` no longer runs any wall/mask/traversal geometry for a
+  to keep in parity with — `Room::publish` runs no wall/mask/traversal geometry for a
   non-GM (see the single-gate constraint list at the top of this section) — so this bullet
   describes `execute_move`'s OWN per-step checks, mirroring `pathfinding::cell_enterable`'s four
   checks exactly rather than a second implementation of them:
@@ -1029,7 +1029,7 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   exemption, and this holds for every gate, not just movement:** `MAX_GATE_WALK_COORD` binds in every restriction mode
   including `Unrestricted` (which short-circuits the mask check later, not the admissibility check).
   An anti-drift test exercises the exact bound and bound+1.0 through the shared symbol, so a value
-  change or a `>`/`>=` flip fails. **(Still true)** The executor is not stricter
+  change or a `>`/`>=` flip fails. The executor is not stricter
   on authored path shape than a hand-authored waypoint list: `gate_walk` subdivides any >1-cell
   authored jump into dense ≤1-cell samples and gates each one, equivalent to the client having sent
   the explicit intermediate waypoints (no new capability; security lives entirely in the per-cell
@@ -1045,7 +1045,7 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   observer must not learn a move even happened if they can't see any of it. `mover_vision` is
   disclosed to the mover only (nulled for every other recipient, incl. a full-vision GM observer who
   has no fog to sweep anyway). **Design doc scope note:** "strictly leak-free" covers the IN-FLIGHT
-  path only; RESTING token positions still ride the pre-existing position `Event` + client-side fog
+  path only; RESTING token positions still ride the position `Event` + client-side fog
   model (delivered to all scene readers, fogged client-side per `fog-is-the-secrecy-gate-fail-closed`)
   — this does not change that. **Known v1 limitation (by design, not a bug):** each move's
   per-recipient clip is computed once at ITS execute time against the recipient's then-current
@@ -1093,10 +1093,10 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   broadcast-by-default.** `PathResult.arrested: bool` is always disclosed (no secrecy concern — it
   only tells the requester their OWN already-visible route is truncating). `MoveStream.cost:
   Option<f64>` is `Some` for the mover/GM (trusted, full information) and `None` for a clipped
-  observer, mirroring `mover_vision`'s pre-existing null-for-observers pattern — because the
+  observer, mirroring `mover_vision`'s null-for-observers pattern — because the
   authoritative cost may reflect `gm_only` secret-region terrain the observer's own vision would
-  never reveal. This was a Critical finding caught and fixed during review (an
-  earlier draft broadcast `cost` unconditionally). **Load-bearing invariant, not a footnote:** any
+  never reveal, so broadcasting it unconditionally is a Critical leak. **Load-bearing invariant,
+  not a footnote:** any
   FUTURE whole-move scalar added to `MoveStream` must default to the same trusted-only disclosure
   pattern unless explicitly proven safe to broadcast to every recipient.
   - **Exercised once, as `MoveStream.truncated: Option<bool>`** — `Some` for the mover/GM, `None`
@@ -1172,7 +1172,7 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   deliberate asymmetry (route stricter, execution looser), not a bug.** `route ⊆
   gate-allowed` still holds because the router's predicate is already a documented superset of the
   executor's. Do not "fix" `move_exec` to match the router's footprint check without re-deriving
-  the parity argument — the asymmetry is load-bearing, matching the pre-existing wall-check
+  the parity argument — the asymmetry is load-bearing, matching the wall-check
   asymmetry the pathfinder invariant above already documents.
 - **`find()`'s arrest truncation recomputes cost by REPLAYING `step_cost`, never by trusting
   `astar_leg`'s per-leg running total for the truncated prefix.** Parity threading is purely
@@ -1228,10 +1228,10 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   puts the two step-parameter values into permanent lockstep, and every later tie would then
   re-step the arrived axis, drifting past `(ei,ej)` until `MAX_MOVE_CELLS` aborts with `None`.
   Convergence is therefore a property of the bounded step budget, not of floating-point
-  tie-breaking; the existing safe-over-include behavior for genuine mid-path corner
-  crossings (both flankers emitted) is unchanged and covered by dedicated regression tests in
+  tie-breaking; the safe-over-include behavior for genuine mid-path corner
+  crossings (both flankers emitted) is covered by dedicated regression tests in
   `scene::movement`. `execute_move`'s frozen-fixture "diagonal 3-step king path, full visible" case
-  (`scene::move_exec`) is updated to the now-correct non-truncated outcome.
+  (`scene::move_exec`) pins the non-truncated outcome.
 - **Cross-scene `MoveStream`/`ScenePing` leak class — exists only because per-client scene
   divergence is possible.** When every client renders the SAME scene (`activeScene`, in
   lockstep), there is no per-client "which scene am I looking at" state for a broadcast
@@ -1243,7 +1243,7 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   the `worldSession` module) — a GM roaming scene B must not animate/ping-render scene A's event, and
   vice versa. **Any future per-client "which scene am I looking at/subscribed to" feature must
   re-audit EVERY broadcast fan-out egress path for this same divergence class, not just the render
-  layer** — `MoveStream`/`ScenePing` are the two found and fixed so far; a new room-wide
+  layer** — `MoveStream`/`ScenePing` are the two that carry the client-side scene filter; a new room-wide
   broadcast type added later (chat, pings, future presence/cursor frames) inherits the same risk
   the instant any client can view something other than the room's single shared `activeScene`.
 

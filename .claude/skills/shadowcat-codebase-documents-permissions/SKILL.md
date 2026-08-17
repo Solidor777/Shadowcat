@@ -21,7 +21,7 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
 
 - `data::document` — the `Document` envelope: `name: Option<String>` (universal
   display name, `#[serde(default)]`) and `engine: Option<serde_json::Value>` (`#[ts(type =
-  "unknown")]`, present iff `doc_type` is engine-defined) alongside the pre-existing `system`
+  "unknown")]`, present iff `doc_type` is engine-defined) alongside the `system`
   body; `enum Visibility { All, GmOnly, OwnerOrGm }` (the per-property visibility tiers);
   `PermissionSet.gm_role: Option<DocRole>` (`#[serde(default)]`, ts-rs exported) — see Hard
   Invariants below.
@@ -236,14 +236,15 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
   genuinely-mixed pair (one integer variant, one `Float`) falls back to an `f64` comparison, gated
   by a `|n| <= 2^53` exactness guard (`MAX_EXACT_F64_INT`) — outside that range a mixed-variant
   pair is unconditionally unequal, never a false-positive OCC pass. Recurses through
-  `Object`/`Array` structure; any non-Number mismatch falls back to serde's derived `PartialEq`.
+  `serde_json::Value::Object`/`serde_json::Value::Array` structure; any non-Number mismatch falls
+  back to serde's derived `PartialEq`.
   `apply_intent` is also the tier-2 enforcement chokepoint: `validate_system_schema_tree` runs
   immediately after `validate_engine_tree`, at BOTH call sites — Create (Phase-1, against the
   new document) and Update (Phase-2, against the merged post-image: existing row + applied
   `FieldChange`s, never the pre-image) — recursing through embedded children by their own
   `doc_type` exactly as `validate_engine_tree` does. A violation returns `Err` before the
   transaction commits, so the per-world seq counter is NOT consumed on rejection, and surfaces
-  to the client via the pre-existing rejected-intent path (`DataError::SchemaViolation { pointer,
+  to the client via the rejected-intent path (`DataError::SchemaViolation { pointer,
   reason }`) — no new wire frame.
 - The client `wire` module — Zod mirror: `VisibilitySchema = z.enum(["all","gm_only",
   "owner_or_gm"])`, `property_overrides`. ts-rs generates the TS types from the Rust source.
@@ -274,7 +275,7 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
     `data::validation`, so the hostile-input surface includes the envelope, not just the two
     opaque bodies.
 - The client `scene-docs` module — `ITEM_DOC_TYPE = "item"`, `ItemSystem`, `buildItemDoc`:
-  a **client-only doc_type** — the server has NO Rust-side knowledge of `item` and
+  a **client-only doc_type** — the server has NO Rust-side knowledge of `ITEM_DOC_TYPE` and
   requires none, since `doc_type` is an unconstrained wire string and `system` is opaque JSONB the
   server never interprets. An item document lives standalone (top-level, `parent_id: null`) or
   embedded in an actor's inventory (`actor.embedded.item[]`); write-site resolution for an embedded
@@ -317,7 +318,7 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
   conditional, per document.** `resolve_access`'s GM branch normally short-circuits to
   `Access { all: true, see_gm_only: true, is_owner: true, caps: {} }` for every `WorldRole::Gm`
   user, before any document-level permission is consulted — correct and load-bearing for every
-  pre-existing document type (actors, scenes, secret regions: the GM must always see a secret
+  document type (actors, scenes, secret regions: the GM must always see a secret
   region even though it's `default: DocRole::None`).
   - `gm_role: None` (the field's default via `#[serde(default)]`; every document type that
     predates this field deserializes to `None`) preserves that unconditional short-circuit
@@ -373,7 +374,7 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
   change to `base`'s visibility must land at both call sites.
 - **Tier-2 validates the `system` band's SHAPE only, never values — it EXTENDS invariant 6
   (three-band document shape), it does not replace it.** `engine`-band validation
-  (`validate_engine`/`validate_engine_tree`) remains the separate, pre-existing REAL semantic
+  (`validate_engine`/`validate_engine_tree`) remains the separate REAL semantic
   ingress gate for the 17 engine-defined doc types (see the `engine ingress validation` invariant
   above); tier-2 is the `system`-band's analogous but strictly structural enforcement floor. The
   declarable `Schema` type-tree grammar (`type`/`properties`/`required`/`items`/

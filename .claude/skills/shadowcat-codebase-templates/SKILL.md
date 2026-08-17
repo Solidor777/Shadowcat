@@ -12,7 +12,7 @@ template via a client-side 3-way merge — no server-side merge logic, no `templ
 ## Purpose
 
 A "template" is just a document another document's `source: { id, ... }` field points at
-(`Document.source`, pre-existing). The templates system adds the machinery to keep an instance and its
+(`Document.source`). The templates system adds the machinery to keep an instance and its
 template's mergeable content (`name`/`engine`/`system`/`embedded`) in sync over time, using a
 classic 3-way merge (base/mine/theirs) where "base" is a client-owned snapshot
 (`Document.base`) taken at stamp time or the last successful sync. This is entirely client-core

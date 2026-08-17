@@ -379,11 +379,24 @@ checked.** A shape-based exclusion is invisible in two directions at once: it hi
 skips, and it hides every gap in the index behind them, since a name the index cannot see is
 indistinguishable from a name the shape rule declined to look at. Every code span therefore lands in
 exactly one printed bucket — verified, acknowledged non-symbol, cross-repo, broken, EXAMPLE-exempt,
-or not citation-shaped — and each acknowledgement entry is hit-counted, with a zero-hit entry
-failing the gate so the list cannot quietly hold a slot that absorbs a future defect. A span written
+not citation-shaped, or empty — and each acknowledgement entry is hit-counted, with a zero-hit entry
+failing the gate so the list cannot quietly hold a slot that absorbs a future defect. That
+enumeration is not maintained by hand: `check-skill-symbol-refs-cli.mjs`'s `SPAN_BUCKETS` generates
+the banner, and a test asserts this sentence lists exactly those labels, because this sentence has
+twice been false about the code it describes.
+
+**The bucket list is checked by conservation, not by inspection.** `spanAccountingDelta` requires
+every backtick RUN a document carries to be block-blanked, left unpaired, or one of the two
+delimiters of a span that reached a bucket; the gate fails on any imbalance and reports it per file
+and in aggregate. Three consecutive review rounds each found a different path leaving the pipeline
+uncounted, and every one of them was created by the previous round's widening — an audit finds the
+path just built, while the identity covers the paths nobody has written yet. A span written
 as `NAME=value` is checked on its NAME rather than discarded as unshaped, and a file that carries
-backticks yet yields no classified span at all fails on its own, because one unpaired delimiter is
-enough to take a whole file out of the gate while every total stays healthy.
+backticks yet yields no CHECKED citation fails on its own, because one unpaired delimiter is
+enough to take a whole file out of the gate while every total stays healthy. That floor asks only
+whether a citation was checked: the shifted-pairing failure it exists for turns real citations into
+prose spans, which climb the not-citation-shaped bucket, so a floor that waited for a file to yield
+literally nothing would be held shut on its own failure mode.
 
 One structurally unresolvable sub-class stays a review obligation rather than a gate obligation,
 exactly as the lowercase-hyphenated marker does for RULE 16: a citation naming a symbol the SEPARATE
@@ -391,15 +404,28 @@ Nightfox repository owns, which is not present in this checkout to index. That o
 per NAME, not per file — `shadowcat-codebase-nightfox` is scanned like every other skill, so its
 citations of THIS repo's own symbols are gated, and only an enumerated list of cross-repo names is
 acknowledged, inside that one file, hit-counted like every other entry. The count prints on every
-run.
+run. The list records the owning repository and base branch beside it, plus the procedure that
+would settle its second claim — nest that checkout, rebuild the index, expect every name to
+resolve — so "the other repo declares it" is falsifiable rather than merely unverified.
 
 **A function-LOCAL name is cited through its owner.** A let binding, a for-loop pattern's binding, a
 parameter and a function-scoped object key are all indexed only under the function that declares
-them (`supercover_cells::t_max_i`, `restore_backup::db_path`), never bare. A bare local carries no
-owner relation while the rest of the index does, so indexing one bare makes the index answer "the
-tree declares that" to any citation spelling any local anywhere — which is how a renamed field
-stays green because some unrelated function happens to bind the old name. Owner-qualification is
-what this rule already asks of the citation itself.
+them (`supercover_cells::t_max_i`, `restore_backup::db_path`), never bare, and under the FULL owner
+chain rather than every suffix of it: a chain whose head is itself a local (`WorldSession`'s
+`loadExternalModules`, then one of its bindings) would otherwise register a path headed by a name
+invisible outside that function. A bare local carries no owner relation while the rest of the index
+does, so indexing one bare makes the index answer "the tree declares that" to any citation spelling
+any local anywhere — which is how a renamed field stays green because some unrelated function
+happens to bind the old name. Owner-qualification is what this rule already asks of the citation
+itself.
+
+**A closed VALUE SET is cited through the constant that declares it.** `NOTATION_KEYWORDS.kh`, not
+the member spelled bare: a one- or two-letter member indexed bare answers for every citation that
+happens to spell it, which is how a skill's mention of the i18n shell's `t` came to verify against
+a dice-notation keyword. Value-set extraction is scoped to the PRODUCT roots for the same reason — a
+string literal in a build script is that gate's own configuration, and indexing it lets a citation
+resolve against the tooling that checks it. Declarations under `scripts/` stay indexed; a gate that
+excludes its own directory guarantees exactly one blind spot.
 
 **Corpus scoping is by tracked-ness, not by directory name.** A skill directory holding no committed
 file is vendored third-party content documenting an external tool's own API, which this repo neither

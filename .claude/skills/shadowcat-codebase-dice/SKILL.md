@@ -247,22 +247,29 @@ on.
   `expr := term (('+'|'-') term)*`; `term := factor (('*'|'/') factor)*`; `factor := '(' expr ')'
   | '-' factor | dice | int`). `ParseContext{mode: ModeKind, direction: Direction}` is caller-
   supplied ambient state the notation string does not itself encode: `mode` (`ModeKind::Total |
-  SuccessCount`) resolves a bare `t<N>` target's `Mode` when the notation has no explicit `cs`/
-  `cf`; `direction` resolves `t<N>`'s comparator under SuccessCount-ambient context (`HighWins` ->
-  `Gte`, `LowWins` -> `Lte` — the composer never specifies the comparator via `t`) and seeds
+  SuccessCount`) resolves a bare `t<N>` target's `Mode` when the notation has no explicit
+  `NOTATION_KEYWORDS.cs`/`NOTATION_KEYWORDS.cf`; `direction` resolves `t<N>`'s comparator under
+  SuccessCount-ambient context (`HighWins` -> `Gte`, `LowWins` -> `Lte` — the composer never
+  specifies the comparator via `NOTATION_KEYWORDS.t`) and seeds
   `RollSpec::direction`. Under Total-ambient context, `t<N>` resolves to `TotalConfig.difficulty`
   instead. The parser's internal state (`struct P`, not `ParseContext`) also carries an
   `expertise: Option<u32>` roll-level scratch field set by an `e<N>` token (no dedicated lexer
   token — the alphabetic-run arm emits `Ident("e")`, the parser's `modifiers` arm reads the
-  following int, the same function that handles `kh`/`cs`/`t`); a duplicate `e<N>` is
+  following int, the same function that handles
+  `NOTATION_KEYWORDS.kh`/`NOTATION_KEYWORDS.cs`/`NOTATION_KEYWORDS.t`); a duplicate `e<N>` is
   `ParseError::DuplicateExpertise`. `expertise` is only consumed when the FINAL resolved mode is
   `SuccessCount(SuccessConfig{expertise, ..})` — if the notation instead resolves to `Total`
-  (e.g. `t<N>` under Total-ambient context with no `cs`/`cf`), any parsed `e<N>` value is silently
-  dropped, never an error. Explicit `cs`/`cf` in the notation always forces `SuccessCount` regardless of the
-  ambient `mode`. A `t<N>` + explicit `cs`/`cf` together is a collision —
+  (e.g. `t<N>` under Total-ambient context with no
+  `NOTATION_KEYWORDS.cs`/`NOTATION_KEYWORDS.cf`), any parsed `e<N>` value is silently
+  dropped, never an error. Explicit `NOTATION_KEYWORDS.cs`/`NOTATION_KEYWORDS.cf` in the notation
+  always forces `SuccessCount` regardless of the
+  ambient `mode`. A `t<N>` + explicit `NOTATION_KEYWORDS.cs`/`NOTATION_KEYWORDS.cf` together is a
+  collision —
   `ParseError::DuplicateSuccessRule` (shared parser state: `success`/`t_target` are one `RollSpec`,
-  not per-`DiceGroup`). SuccessCount with NEITHER a `cs`/`cf` rule nor a `t<N>` target is a hard
-  parse error. The lexer is **case-insensitive on the `d` dice operator** and enforces
+  not per-`DiceGroup`). SuccessCount with NEITHER a
+  `NOTATION_KEYWORDS.cs`/`NOTATION_KEYWORDS.cf` rule nor a `t<N>` target is a hard
+  parse error. The lexer is **case-insensitive on the `NOTATION_KEYWORDS.d` dice operator** and
+  enforces
   **ASCII-only input** as an explicit precondition (not an accident of the byte-as-char cast it
   uses internally). The parser also rejects `sides < 1` (`ParseError::InvalidDieSides`) before ever
   constructing a `DieKind::Numeric`. **`[label]` notation**: the lexer's `[` arm scans to
@@ -273,7 +280,8 @@ on.
   parser's `factor` arm reads an optional trailing `Token::Label` onto the just-built `DiceGroup`
   (after its modifiers) — a per-group, not per-spec, field. Duplicate labels across different
   groups in the same notation string are NOT a parse error (they pool under `by_label`
-  intentionally); only a duplicate `e<N>`/`t<N>`/`cs`/`cf` (shared roll-level state) errors.
+  intentionally); only a duplicate
+  `e<N>`/`t<N>`/`NOTATION_KEYWORDS.cs`/`NOTATION_KEYWORDS.cf` (shared roll-level state) errors.
   Label-consumption is a shared `take_label()` helper applied after EITHER atomic
   factor — a `DiceGroup` or a bare `Const` — not the `Dice` branch alone; a label immediately
   after a parenthesized/compound sub-expression is still correctly rejected as trailing input
@@ -406,9 +414,11 @@ on.
 - **`ParseError`/`Token` implement player-presentable `Display`** — chat System
   notices surface them directly; a new variant MUST get a clean `Display` arm (pinned by the
   no-debug-artifacts test iterating every variant), never a `{:?}` payload.
-- **The notation-level `cs`/`cf` tokens and `SuccessConfig.crit_success`/`crit_fail` are two
-  unrelated mechanisms that happen to share initials.** `cs`/`cf` in a dice-notation string set
-  the ordinary per-die `SuccessRule` (or its inverted-comparator `cf` approximation);
+- **The notation-level `NOTATION_KEYWORDS.cs`/`NOTATION_KEYWORDS.cf` tokens and
+  `SuccessConfig.crit_success`/`crit_fail` are two unrelated mechanisms that happen to share
+  initials.** `NOTATION_KEYWORDS.cs`/`NOTATION_KEYWORDS.cf` in a dice-notation string set
+  the ordinary per-die `SuccessRule` (or its inverted-comparator `NOTATION_KEYWORDS.cf`
+  approximation);
   they do NOT construct a `CritSuccess`/`CritFail` struct. Today, crit events are configurable
   only by authoring a `RollSpec`/`SuccessConfig` directly — no notation syntax exposes them yet.
 - **Expertise DP is the highest-risk piece of the whole engine** — it is verified via
@@ -430,7 +440,7 @@ on.
   invariants above for two such cases).
 - **`DieKind::validate()` is enforced at the wire boundary, not inside `roll()`**:
   `chat::rolls::validate_pre_roll` calls it per parsed group before any rolling, so an
-  empty-`faces` die can no longer arrive via chat (notation still can't construct `Faces`
+  empty-`faces` die cannot arrive via chat (notation cannot construct `Faces`
   anyway). The crate itself remains unvalidated by design — any future non-chat caller that
   hand-builds a `RollSpec` must run the same validation. `ReplaceDie`-onto-`Faces` is separately
   bounds-checked inside `dice::recalc` itself (see the `dice::spec` entry above), so it
@@ -457,7 +467,8 @@ on.
   (`chat::rolls`) is documented under `shadowcat-codebase-chat`'s generated-API pointer instead.
   Produce with `pnpm build:all`.
 - Deferred work: TODO's dice section (dice-count cap, serde-defaults, `Token` Display impl —
-  several already resolved), a dedicated `SuccessConfig.expertise` bounding entry (unbounded `E`
-  is an `O(N·E²)` DoS/wrap-around vector), and the `DieKind::Faces` empty-face-list panic-surface
+  several already resolved), a dedicated `SuccessConfig.expertise` bounding entry (an unbounded
+  `SuccessConfig.expertise` is an `O(N·E²)` DoS/wrap-around vector, N dice by expertise squared),
+  and the `DieKind::Faces` empty-face-list panic-surface
   gap — all deferred to the untrusted-transport boundary alongside the dice-count cap.
 - Related work in the project's auto-memory: `m11-dice-chat-resume`.

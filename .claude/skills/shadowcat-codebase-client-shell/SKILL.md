@@ -86,7 +86,8 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
   `moverVision` is present (mover only), the engine's `visionSweeps` fog-sweep playback (see
   `shadowcat-codebase-scene-rendering`).
 - **External-module loading** — `WorldSession`'s `#loadExternalModules(world,
-  serverVersion)` runs after `Welcome` (`loadExternalModules.serverVersion` = `w.server_version`): fetches the world's
+  serverVersion)` runs after `Welcome` (`WorldSession.loadExternalModules.serverVersion` =
+  `w.server_version`): fetches the world's
   enabled set (keyed on the install FOLDER id, `InstalledModuleInfo.id`, never manifest id), calls
   core `loadModules` (per-module-contained, non-throwing `ModuleLoadResult`), then activates. The
   shell serves ONE runtime instance of `svelte`/`@shadowcat/*` via `RUNTIME_ENTRIES`
@@ -163,7 +164,7 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
   changed since the last successful write — `global.locale`/`global.lastWorld` and
   `worlds.<id>.panelLayout`/`worlds.<id>.chatRead` each track independently, so two owners of the
   same slice (the panels module writing `panelLayout`, the chat module writing `chatRead` inside
-  the same `worlds.<id>`) no longer clobber each other. `persist()`/`flushOnUnload()` build a
+  the same `worlds.<id>`) never clobber each other. `persist()`/`flushOnUnload()` build a
   `UiStatePatch` covering only those dirty leaves — never the whole slice, and never
   the whole `{global, worlds}` blob — clearing them before the write and re-marking on failure
   (both functions snapshot the dirty structure, clear it, attempt the write, and on rejection
@@ -178,7 +179,7 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
   (a live getter, `Table`: `get viewedSceneId() { return session.viewedSceneId; }` —
   NEVER destructure a snapshot of it), `AppContext.setGmViewedScene(id): void` (GM-only local
   roam; no-ops+warns for a non-GM), `AppContext.searchDocuments(query, opts, onUpdate) ->
-  Promise<SubscriptionHandle>` (the live-FTS subscription seam, newly exposed through
+  Promise<SubscriptionHandle>` (the live-FTS subscription seam, exposed through
   `AppContext`/`WorldSession` — wraps `WsClient.subscribeSearch`, ephemeral/NOT
   reconnect-resilient), `AppContext.sceneSelection: SceneSelection`
   (a small stable-ref class, `configureSceneId`

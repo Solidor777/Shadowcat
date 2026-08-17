@@ -90,7 +90,7 @@ source of truth. The ones agents break most:
   `WireDocument.permissions` and `StampOpts.permissions` share the same shape across two files; a
   single exported name is structurally required there — the alternative duplicates the
   access-control shape inline in both places, the forked-decision defect this codebase produces
-  most (see above). Nothing became newly reachable when the name was introduced:
+  most (see above). The name exposes nothing new:
   `WireDocument["permissions"]` already exposed the identical shape.
 
 ## Gotchas
@@ -126,14 +126,20 @@ source of truth. The ones agents break most:
   declaration, member at any depth, object-literal key, import and literal type, read through the
   TypeScript parser; and module/package/skill directory names. **A token's shape decides only
   whether it is a citation at all, never whether a citation is CHECKED** — a shape exclusion hides
-  the citations it skips AND every index gap behind them, so every code span lands in one printed
-  bucket (verified / acknowledged non-symbol / cross-repo / broken / EXAMPLE-exempt / not
-  citation-shaped) and each acknowledgement entry is hit-counted, a zero-hit entry failing the
-  gate. A span written as `NAME=value` is checked on its NAME: the value is there to save the
+  the citations it skips AND every index gap behind them, so every code span lands in exactly
+  one printed bucket — verified, acknowledged non-symbol, cross-repo, broken, EXAMPLE-exempt,
+  not citation-shaped, or empty — and each acknowledgement entry is hit-counted, a zero-hit entry
+  failing the gate. **That list is `SPAN_BUCKETS`, and this sentence is pinned to it by a test**:
+  the same claim has twice drifted from the code it describes. What makes it true rather than
+  asserted is `spanAccountingDelta` — every backtick RUN must be block-blanked, unpaired, or one of
+  a bucketed span's two delimiters, per file and in aggregate, or the gate fails and says by how
+  much. A span written as `NAME=value` is checked on its NAME: the value is there to save the
   reader a lookup, and letting the whole span fail the citation shape is what kept a constant that
   no longer exists cited with the gate reporting zero broken. A PER-FILE floor sits under the
-  global one — a file that carries backticks and yields no classified span at all has silently
-  left the gate, which one unpaired delimiter is enough to cause. Carve-outs:
+  global one — a file that carries backticks and yields no CHECKED citation has silently
+  left the gate, which one unpaired delimiter is enough to cause; the floor reports what that
+  file's spans DID land in, since the shifted-pairing case it exists for turns real citations into
+  prose spans that climb the not-citation-shaped bucket. Carve-outs:
   config/build files (no symbols to cite), filenames used as *values*, dated records under
   `docs/superpowers/`, and — a documented review obligation, not a gate obligation — citations of a
   symbol the separate Nightfox repository owns. That last one is now scoped per NAME, not per
@@ -145,8 +151,14 @@ source of truth. The ones agents break most:
   disagree on the size of the corpus.
   **A function-LOCAL name (a let binding, a for-loop pattern, a parameter, a function-scoped
   object key) is indexed only under the function that declares it (`execute_move::check_mask`),
-  never bare** — a bare local carries no owner relation, so it would make the index answer "the
-  tree declares that" to any citation spelling any local anywhere. Cite one the same way. Full rule:
+  never bare, and under its FULL owner chain rather than every suffix** — a bare local carries no
+  owner relation, so it would make the index answer "the tree declares that" to any citation
+  spelling any local anywhere, and a suffix of a local-headed chain (`WorldSession`'s
+  `loadExternalModules`, then one of its bindings) is a path headed by a name invisible outside
+  that function. Cite one the same way. **A closed VALUE SET is likewise cited through its
+  constant** (`NOTATION_KEYWORDS.kh`, never the member spelled bare), and value-set extraction runs only over
+  the product roots: a string literal in a build script is that gate's own configuration, and
+  indexing it lets a citation resolve against the tooling that checks it. Full rule:
   `docs/design/doc-sweep-truthfulness-rules.md` RULE 15. [[cite-symbols-not-file-lines]]
 - **As far as code is concerned, ephemeral documents, plans, dates, history and tasks DO NOT EXIST**
   (user directive, iron-clad; RULE 16). This is an ontology, not a style preference: the test is
@@ -316,8 +328,8 @@ source of truth. The ones agents break most:
 - Docs: `pnpm docs:serve` (view; the assembled `dist-docs/index.html` also opens directly over
   `file://` for static content, styling, and link navigation — anything driven by the site's
   runtime JavaScript, including search, the appearance toggle, and the mobile nav panel, needs the
-  server instead), `pnpm docs:check-examples` (`@example` ```ts
-  blocks must typecheck — CI-blocking), `pnpm lint:docs` (function doc coverage),
+  server instead), `pnpm docs:check-examples` (`@example` `` ```ts `` blocks must typecheck —
+  CI-blocking), `pnpm lint:docs` (function doc coverage),
   `pnpm lint:props` (property/type/named-arrow doc coverage), `pnpm lint:comments` (no ephemeral
   references). **All are errors repo-wide with no per-package staging** — see the no-ratchets rule
   above; there is no `rulesAt(severity)` and no advisory tier anywhere in these configs.
@@ -335,7 +347,7 @@ source of truth. The ones agents break most:
 - **`@example` blocks compile INSIDE the module that documents them, not in a scratch file.**
   `scripts/extract-ts-examples.mjs` compiles each example through the TypeScript compiler API with
   an in-memory virtual overlay of its host module, under that host's OWN package `tsconfig` — so
-  the host's imports, private helpers and `this` resolve exactly as in real code, and an example on
+  the host's imports, private helpers and this binding resolve exactly as in real code, and an example on
   a class member is injected into the host class body. `.svelte` hosts join the same path via their
   extracted `<script>`/`<script module>` block; runes type correctly because svelte's own
   `types/index.d.ts` declares them as ambient globals (it also declares `module '*.svelte'`, so a

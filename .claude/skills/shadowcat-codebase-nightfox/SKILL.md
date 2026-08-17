@@ -34,7 +34,7 @@ edit them from a Shadowcat working tree.
 
 Headless, pure-function rules package: `system.stats`/`system.mechanics` data model (Zod
 tier-1 validation) + a one-dependency-graph resolver + typed commutative modifier buckets +
-`item`/`effect` semantics. Zero server change (client-semantics only, ARCHITECTURE §2 invariant
+`ITEM_DOC_TYPE`/`EFFECT_DOC_TYPE` semantics. Zero server change (client-semantics only, ARCHITECTURE §2 invariant
 6); zero Svelte/store dependency — sheets call these functions with docs they already
 have.
 
@@ -55,7 +55,7 @@ have.
   doc, `label` ≤ 64 chars, `text.value` ≤ 1024 chars, formula strings ≤ `@shadowcat/formula`'s
   `MAX_FORMULA_LENGTH`.
 - **The `contributions` module** (Nightfox repo) — `collectNightfox(host)` walks the embed tree
-  exactly (host → `embedded.item` → each item's `embedded.effect`, plus host's own
+  exactly (host → each `embedded` `ITEM_DOC_TYPE` child → that child's `embedded.effect`, plus host's own
   `embedded.effect`) and produces `ModifierContribution`s (`{ modId, carrierId, targetId,
   modifier }`) plus warnings. Targeting rule: an item's modifiers target the owning
   actor; an effect's modifiers target its host (actor-embedded → actor; item-embedded → the
@@ -112,9 +112,8 @@ new wire frames.
   `/embedded/<coll>/<i>/system`) is where `mechanics`/`stats` live, `basePrefix` is where
   `name`/`engine` live. **Confusing the two silently breaks OCC** — a `mechanics.*` field read
   via `basePrefix` instead of `systemPrefix` always resolves `undefined`, collapsing every
-  write's `old` pre-image to `null`. This exact bug was found and fixed during `ItemSheet`'s
-  implementation review; no shipped test currently exercises the embedded (non-top-level) case
-  that would catch a regression, so treat any new sheet or write helper touching
+  write's `old` pre-image to `null`. No shipped test exercises the embedded (non-top-level) case
+  that would catch this, so treat any new sheet or write helper touching
   `stats`/`mechanics` as needing this check first, and consider adding that regression test.
 - **Map-CRUD idiom, every write helper (`addStat`/`editStatField`/`removeStat`/
   `setStatOrder`/`addModifier`/`editModifierField`/`removeModifier`/`setMechanicsFlag`)**: add =
@@ -137,9 +136,8 @@ new wire frames.
   `core:write_fields`; a write to an EMBEDDED carrier's `/embedded/.../mechanics/<flag>`
   (item/effect active toggle, effect transfer toggle) gates on the DISTINCT
   `core:manage_embedded` capability. `ActorSheet` computes this per-carrier as `embedReadOnly`,
-  never reusing the actor's own `cap::WRITE_FIELDS`-derived `readOnly` for embedded controls — caught
-  as a Critical/Important finding by two independent reviewers reviewing the same code blind,
-  reaching the same conclusion; `ItemSheet` inherits the identical pattern (`effectReadOnly`) for its own
+  never reusing the actor's own `core:write_fields`-derived `readOnly` for embedded controls;
+  `ItemSheet` inherits the identical pattern (`effectReadOnly`) for its own
   embedded effects. `EffectSheet` has no embeds of its own (effects are leaf documents in this
   checkpoint) and needs no such split — its `readOnly` alone is correct and complete.
 - **`nfT`/`NF_MESSAGES`** — chrome-translation helper: prefers the shell's `t`,
@@ -191,7 +189,8 @@ producer, not consumer.
   itself errored, e.g. a broken `formula`), the builder returns that `FormulaError` and never
   posts.
 - **Verbatim-copy rule:** the builder never rewrites, rounds, or otherwise normalizes the produced
-  notation string — `resolveNotationTemplate` alone owns that (including the count-less-`d` → `1d`
+  notation string — `resolveNotationTemplate` alone owns that (including the count-less
+  `NOTATION_KEYWORDS.d` → `1d`
   normalization the dice-notation parser requires; the visible template text keeps the user's authored
   `d20`). A non-integer resolved value (e.g. a `formula` evaluating to `7 / 2`) is a `type` error
   from the builder rather than a silently-rounded roll — explicit rounding is required upstream.
@@ -317,8 +316,8 @@ not the only, expected caller):
   Nightfox module repo) use a hand-rolled seeded PRNG — do not add `fast-check` or any other new dependency to
   either package (Global Constraint).
 - **Nested for dev, the Nightfox repo is inside Shadowcat's gate perimeter.** `check-lint-allowances`
-  walks Shadowcat's `src` tree recursively and skips only `node_modules`/`dist`/`target`/`.git`/
-  `dist-docs`, so `pnpm lint:allowances` scans `src/modules/nightfox/**` and fails on a covered
+  walks each of its `ROOTS` recursively and skips only `SKIP_DIRS` (`node_modules`/`dist`/`target`/
+  `.git`/`dist-docs`), so `pnpm lint:allowances` scans `src/modules/nightfox/**` and fails on a covered
   suppression there — even though Nightfox standalone has no ESLint and no lint script. Nesting is
   the only configuration Nightfox is developed in, so treat the gate as always applying to it.
 - **Item-in-item nesting silently drops modifiers.** `contributions`'s embed walk is exactly
@@ -327,8 +326,8 @@ not the only, expected caller):
   treat any fix here as a scope change, not a bugfix, and check whether the walk needs
   generalizing to arbitrary nesting depth or whether item-in-item stays disallowed.
 - **`mechanics.active` is read doc_type-agnostically** on whatever document hosts it — the
-  active-gating logic in `contributions` has no special case per `doc_type` (`item` vs
-  `effect`), it just reads the field. Any future doc_type that reuses `system.mechanics` inherits
+  active-gating logic in `contributions` has no special case per `doc_type` (`ITEM_DOC_TYPE` vs
+  `EFFECT_DOC_TYPE`), it just reads the field. Any future doc_type that reuses `system.mechanics` inherits
   active-gating for free; verify that's actually wanted before adding a new mechanics consumer.
 - **`resolveNightfox` re-parses every doc on every call — there is no cross-call cache.** Fine at
   current call rates (sheet render, roll-button click); revisit if a future consumer wires it to
@@ -345,9 +344,9 @@ not the only, expected caller):
   identity-echo means every `nfT` call resolves through `NF_MESSAGES`, not through a mocked
   translation catalog; a test asserting a raw key string can never pass against a component that
   correctly routes through `nfT`.
-- **An embedded carrier's write capability is NOT the sheet's own `cap::WRITE_FIELDS`.** Reusing a
+- **An embedded carrier's write capability is NOT the sheet's own `core:write_fields`.** Reusing a
   single `readOnly` for both a sheet's own fields and its embedded items/effects is a
-  Critical-class permission bug caught by independent two-reviewer review, not a minor UX gap — always compute
+  Critical-class permission bug, not a minor UX gap — always compute
   embedded-write gating from `core:manage_embedded` per carrier.
 
 ## Pointers

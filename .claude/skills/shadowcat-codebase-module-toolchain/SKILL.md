@@ -43,7 +43,7 @@ existing `ModuleRegistry`.
 
 **Client core (framework-neutral):**
 - The client `loader` module — `loadModules(...) → Promise<ModuleLoadResult { loaded, failed }>`
-  — **per-module contained, NON-throwing** (a single module's import/compat failure no longer aborts
+  — **per-module contained, NON-throwing** (a single module's import/compat failure never aborts
   the batch); `checkEngineCompat`; fail-closed when `opts.shadowcatVersion` is absent.
 - The client `modules` module — `ModuleRegistry.activate()` is per-module isolated: a throwing
   `register()` or a singleton-contract collision is logged + skipped, the topo loop continues, the

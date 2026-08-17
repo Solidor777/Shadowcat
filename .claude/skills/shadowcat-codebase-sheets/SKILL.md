@@ -17,7 +17,7 @@ already-shipped `PanelHost` ([[shadowcat-codebase-panels]]). A separate `shadowc
 contract family (plus an always-registered `shadowcat.sheet:*` fallback) resolves which sheet
 COMPONENT to show for a document; `ctx.openDocument(ref)` resolves the doc + its write site, picks
 the sheet, and opens/focuses the panel. This is the seam mods use to add their own sheets — see
-`shadowcat-codebase-documents-permissions` for the `item` doc_type this milestone introduces.
+`shadowcat-codebase-documents-permissions` for the client-only `ITEM_DOC_TYPE` document type.
 
 ## Key files & seams
 
@@ -57,8 +57,8 @@ the sheet, and opens/focuses the panel. This is the seam mods use to add their o
   late-registration/`placeFromPersistedLocation` path to restore float/dock/minimize state;
   idempotent).
   - **`#register` registers `SheetHost`, not the picked sheet directly.** The picked
-    `component` (from `pickSheet`) is no longer registered as the contribution's own `component`;
-    instead `#register` ALWAYS registers `SheetHost` (`@shadowcat/ui-kit`) as the panel's
+    `component` (from `pickSheet`) is never the contribution's own `component`;
+    `#register` ALWAYS registers `SheetHost` (`@shadowcat/ui-kit`) as the panel's
     `component`, forwarding the picked component as `props.inner` alongside `props.docId`/
     `props.systemPrefix`/`props.close`. `SheetHost` renders `TemplateControls` (the source
     badge + pull/revert/push chrome, see `shadowcat-codebase-templates`) above `props.inner`, so
@@ -79,7 +79,7 @@ the sheet, and opens/focuses the panel. This is the seam mods use to add their o
   `basePath` via a fresh `getPointer(doc, path)` read.
 - `@shadowcat/module-sheet-fallback`/`-actor`/`-item` — the three generic sheets, each `sheetContract`
   registered (fallback at `-Infinity`, actor/item at `0`). `sheet-item` introduces the client-only
-  `item` doc_type ([[shadowcat-codebase-documents-permissions]]) and the roll-to-chat affordance
+  `ITEM_DOC_TYPE` doc_type ([[shadowcat-codebase-documents-permissions]]) and the roll-to-chat affordance
   (`ctx.chat.send({channel:"general", content:"/roll <formula>"})`, gated by `isDiceNotation`).
   Seam-only: none of the three imports any other `@shadowcat/module-*`.
   **`basePrefix` derivation pattern (`ActorSheet`/`ItemSheet`):** the three-band document
@@ -93,7 +93,7 @@ the sheet, and opens/focuses the panel. This is the seam mods use to add their o
   `writePrefix` ITSELF still genuinely means `/system` — game-system
   data is untouched by the three-band restructure; only the DERIVED `enginePrefix`/`namePrefix`
   are new. `setField`'s `old` for an engine-field edit reads the RAW current value via
-  `getPointer(doc, enginePrefix + "/" + field)`, mirroring the pre-existing raw-`old` invariant
+  `getPointer(doc, enginePrefix + "/" + field)`, mirroring the raw-`old` invariant
   above — no special-casing needed since `setField` is already path-generic. **Critical bug
   caught + fixed:** `ItemSheet` initially read/wrote the envelope
   `/name` path DIRECTLY rather than via `namePrefix` — for an embedded item (opened from an
@@ -173,6 +173,6 @@ the sheet, and opens/focuses the panel. This is the seam mods use to add their o
   `_shadowcat_module-sheet-item.html`. Produce with `pnpm build:all`.
 - Relationships: `graphify query "sheets registry openDocument SheetsController resolveDocRef pickSheet setField"`.
 - Panel-manager internals sheets mount into: [[shadowcat-codebase-panels]].
-- Document/permission model + the client-only `item` doc_type: [[shadowcat-codebase-documents-permissions]].
+- Document/permission model + the client-only `ITEM_DOC_TYPE` doc_type: [[shadowcat-codebase-documents-permissions]].
 - `SheetHost`'s `TemplateControls` chrome + the 3-way merge engine it drives:
   [[shadowcat-codebase-templates]].

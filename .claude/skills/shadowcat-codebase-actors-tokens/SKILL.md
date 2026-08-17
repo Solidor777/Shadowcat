@@ -24,7 +24,7 @@ token/actor name from non-owners via the `OwnerOrGm` visibility tier. Conditions
   `ActorEngine`/`TokenEngine`/`FactionRegistryEngine`/`ConditionRegistryEngine` hold token/actor
   position, vision, conditions, and visual on `doc.engine`, not `doc.system` (there is no
   `ActorSystem`/`TokenSystem`/`FactionRegistrySystem`/`ConditionRegistrySystem` back-compat
-  alias). `ItemSystem` is UNCHANGED — `item` is a client-only doc_type with no Rust-side
+  alias). `ItemSystem` is UNCHANGED — `ITEM_DOC_TYPE` is a client-only doc_type with no Rust-side
   registration, not one of the 17 engine-defined types, so it stays on the opaque `system` band
   ([[shadowcat-codebase-sheets]]/`shadowcat-codebase-documents-permissions` cover it).
   - `buildActorDoc(worldId, name, engine, id?)` — `name: string | null` is now a DEDICATED

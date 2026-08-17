@@ -107,7 +107,7 @@ guarded, per `validate_url` below).
   an existing `doc_type=="actor"` doc, IN THE SENDING ROOM'S WORLD
   (`crate::data::document::world_of(d) == Some(room.world_id)`), owned by the sender (GM: any
   actor in that world). An actor doc from another world is refused (`ActorNotSpeakable`) even for
-  its owner — ownership alone no longer crosses world scope. `TokenInstance` refs are REJECTED
+  its owner — ownership alone does not cross world scope. `TokenInstance` refs are REJECTED
   until speak-as-token ships (same error, nothing persisted). Edits copy `actor_owner` verbatim
   from the stored doc, so this ingest gate is the only one needed. `world_of` (`data::document`,
   `pub(crate)`) is the SAME helper `ws::conn::scene_ping_permitted` uses for its own
@@ -270,7 +270,8 @@ with zero message-specific plumbing in any of those subsystems.
   the single security boundary — producing one `Segment::Html`. `ammonia_for(policy)` narrows
   ammonia's already-safe default (which already strips `<script>`/`<style>`/the `style`
   attribute/`javascript:`/`data:` schemes) further per toggle: `images: false` removes `<img>`
-  entirely; `images: true` adds a lexical `src` extension allowlist (`.png/.jpg/.jpeg/.webp/.gif`,
+  entirely; `images: true` adds, through `ammonia::attribute_filter`, a lexical image-source
+  extension allowlist (`.png/.jpg/.jpeg/.webp/.gif`,
   checked after stripping `?query`/`#fragment` but NOT scheme/host — a filename-suffix heuristic,
   not real content-type verification; a genuine external host with an allowlisted-looking
   extension still passes, tracked as follow-up); `hyperlinks: false` removes `<a>`; `emails`
