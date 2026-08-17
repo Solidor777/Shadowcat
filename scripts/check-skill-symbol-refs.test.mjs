@@ -27,6 +27,7 @@ import {
   resolvesAgainstIndex,
   checkFileCitations,
   checkSkillSymbolRefs,
+  buildSymbolIndex,
   listSkillDirs,
 } from "./check-skill-symbol-refs.mjs";
 
@@ -664,6 +665,25 @@ describe("extractCitationCandidates", () => {
     const { candidates, nonCandidates } = extractCitationCandidates(text);
     expect(candidates).toEqual([]);
     expect(nonCandidates).toBe(3);
+  });
+});
+
+// `Array.sort` reaches its acknowledgement only because nothing in the tree declares `sort`:
+// `Array` IS indexed (from `SchemaType::Array`), so the capitalized-head guard does not fire, and
+// the token survives to the whole-token acknowledgement list. The day anything declares `sort`,
+// the citation VERIFIES — against an unrelated declaration — and the entry dies zero-hit, so the
+// obvious repair (deleting the dead entry) would cement a false verify. This test is the tripwire:
+// it fails while that precondition holds, so the arrangement cannot change silently.
+describe("the Array.sort acknowledgement's precondition", () => {
+  it("holds only while the tree declares no `sort`", () => {
+    const { declared } = buildSymbolIndex(REPO_ROOT);
+    expect(declared.has("Array")).toBe(true);
+    expect(
+      declared.has("sort"),
+      "the tree now declares `sort`, so the `Array.sort` citation resolves against it instead of " +
+        "reaching its acknowledgement — the entry will die zero-hit and deleting it would leave " +
+        "the false verify in place. Qualify the citation by its real owner.",
+    ).toBe(false);
   });
 });
 
