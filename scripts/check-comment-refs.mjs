@@ -472,26 +472,22 @@ const ACKNOWLEDGED_NARRATION = [
 ];
 
 /**
- * Runs the broad candidate matchers over one file's text and classifies every match: already a
- * real BANNED/SKILL_BANNED hit (not a coverage gap — it will already fail the main scan),
- * acknowledged as a named legitimate token, or RESIDUE — an unrecognised shape that must be
- * looked at. Pure function of its argument, mirroring `scanContent`, so a test exercises it on
- * fabricated text without touching the filesystem.
- *
- * `contextChars` sets how many characters past the match an ACKNOWLEDGED entry's `re` can see:
- * 0 for the identifier class (its entries match the bare token), a few for the narration class
- * (an entry there can require a specific following word, e.g. "replaced BY").
- */
-/**
  * Extracts the comment/prose text one line contributes, mirroring exactly what `scanContent`
  * checks against BANNED/SKILL_BANNED. Shared so the coverage control (`scanCandidates`) can never
- * see a different subject than the gate does — a defect class this gate has hit three times
- * already (a vocabulary gap, a scope gap, a corpus-filter gap), each time because a second
- * derivation of "what counts" existed somewhere and drifted from the first.
+ * see a different subject than the gate does: a second derivation of "what counts" drifts from the
+ * first, and the drift is invisible because both still report a number.
+ *
+ * `kind` says what the line contributed, which is what decides whether the line may be JOINED to
+ * its neighbours: `"comment"` for commentary, `"literal"` for a code line whose only prose is a
+ * string the program carries, `"prose"` for a Markdown line.
  */
 function lineSubject(line, isMd, lexState) {
   if (isMd) {
-    return { subject: line.trim().replace(DESIGN_DOC_CITATION, ""), state: lexState };
+    return {
+      subject: line.trim().replace(DESIGN_DOC_CITATION, ""),
+      state: lexState,
+      kind: "prose",
+    };
   }
   const split = splitLine(line, lexState);
   const literals = split.code.match(STRING_LITERAL) ?? [];
@@ -502,7 +498,164 @@ function lineSubject(line, isMd, lexState) {
   ]
     .join(" ")
     .trim();
-  return { subject, state: split.state };
+  return {
+    subject,
+    state: split.state,
+    kind: split.comment.trim() === "" ? "literal" : "comment",
+  };
+}
+
+// The separator joining two WORDS of a marker phrase is a spelling, never part of the marker's
+// identity: a hyphen, an underscore and a space all name the same process artifact, so a pattern
+// carrying one spelling reads the other two as clean.
+//
+// The widening is derived from each pattern's own source rather than written into the patterns one
+// spelling at a time, because an enumerated list can only ever carry the spellings someone
+// remembered — which is how a hyphen-only marker came to miss its spaced form. Deriving covers
+// every entry at once, including entries not yet written.
+//
+// It rewrites the PATTERN and never the subject. Rewriting the subject looks equivalent and is not:
+// `_` is a word character while `-` and a space are not, so any subject-side substitution retokenizes
+// the text and exposes token boundaries the patterns rely on — a constant like `SCHEMA_FORMAT_V1`
+// splits into three tokens and its version suffix reads as a local marker, and a quantity like
+// "A 1-hex token" fuses into one and reads the same way. Both were measured, in bulk.
+//
+// Only a separator between two LITERAL ALPHABETIC characters is widened, and only outside a
+// character class: a `-` inside `[a-z]` is a RANGE, and widening it corrupts the pattern outright.
+const SEPARATOR_CLASS = "[-_\\s]";
+const SEPARATOR_CHARS = new Set(["-", "_", " "]);
+
+/**
+ * The separator-flexible form of one ban pattern, or null when it carries no widenable separator.
+ * @param {RegExp} re - one ban pattern.
+ * @returns {RegExp|null} the widened pattern, or null when the source is unchanged.
+ */
+export function separatorFlexible(re) {
+  const src = re.source;
+  const isAlpha = (c) => c !== undefined && /[A-Za-z]/.test(c);
+  let out = "";
+  let inClass = false;
+  // The last character emitted as a plain literal; reset by anything that is not one, so an escape
+  // sequence's trailing letter (`\s`, `\w`) is never read as the word a separator follows.
+  let prevLiteral = "";
+  for (let i = 0; i < src.length; i += 1) {
+    const c = src[i];
+    if (c === "\\") {
+      out += src.slice(i, i + 2);
+      i += 1;
+      prevLiteral = "";
+      continue;
+    }
+    if (c === "[" || c === "]") {
+      inClass = c === "[";
+      out += c;
+      prevLiteral = "";
+      continue;
+    }
+    if (!inClass && SEPARATOR_CHARS.has(c) && isAlpha(prevLiteral) && isAlpha(src[i + 1])) {
+      out += SEPARATOR_CLASS;
+      prevLiteral = "";
+      continue;
+    }
+    out += c;
+    prevLiteral = c;
+  }
+  return out === src ? null : new RegExp(out, re.flags);
+}
+
+// Derived once per pattern object: the ban lists share entries by reference, so a per-call
+// derivation would rebuild the same regex for every line of every file.
+const flexibleCache = new Map();
+const flexibleFor = (re) => {
+  if (!flexibleCache.has(re)) flexibleCache.set(re, separatorFlexible(re));
+  return flexibleCache.get(re);
+};
+
+/**
+ * The index at which `re` first matches `subject`, under either its own spelling or its
+ * separator-flexible form; -1 for no match.
+ * @param {RegExp} re - one ban pattern.
+ * @param {string} subject - a grouped comment block or Markdown paragraph.
+ * @returns {number} an index into `subject`, or -1.
+ */
+export function bannedMatchIndex(re, subject) {
+  const direct = subject.match(re);
+  if (direct !== null) return direct.index;
+  const flexible = flexibleFor(re);
+  if (flexible === null) return -1;
+  const widened = subject.match(flexible);
+  return widened === null ? -1 : widened.index;
+}
+
+// A comment block, or a Markdown paragraph, is the unit a sentence is written in; a LINE is only
+// where the text happened to wrap. A line-scoped subject therefore reads every multi-word ban
+// pattern as clean the moment ordinary prose wrapping puts a line break at one of its spaces, and
+// the two halves are individually innocent — nothing in the output says a phrase was split.
+//
+// The GROUP BOUNDARY is what makes joining safe, and it is the whole design. A group ends at a
+// blank line, at any line contributing no prose, and — in code — at any line that is not commentary,
+// so a doc comment is never joined to the declaration beneath it. Joining across that boundary
+// manufactures phrases nobody wrote out of a comment's last words and a signature's first, turning
+// a false negative into a false positive.
+/**
+ * Groups a file's lines into the units a sentence is written in, joining each group's per-line
+ * subjects with the single space a wrap replaced.
+ *
+ * Each group carries `lineAt`, mapping any offset in the joined text back to the source line that
+ * contributed it, so a hit inside a wrapped phrase still names the line the phrase starts on.
+ *
+ * @param {string} content - one file's raw contents.
+ * @param {boolean} isMd - true for skill prose, false for source code.
+ * @returns {{groups: {text: string, lineAt: (index: number) => {line: number, source: string}}[],
+ *   exempted: number}} the joined groups, and how many lines an EXAMPLE marker covered.
+ */
+export function subjectGroups(content, isMd) {
+  const groups = [];
+  let parts = [];
+  let exempted = 0;
+  const flush = () => {
+    if (parts.length === 0) return;
+    let text = "";
+    const starts = [];
+    for (const part of parts) {
+      if (text !== "") text += " ";
+      starts.push({ start: text.length, line: part.line, source: part.source });
+      text += part.subject;
+    }
+    const lineAt = (index) => {
+      let found = starts[0];
+      for (const s of starts) if (s.start <= index) found = s;
+      return found;
+    };
+    groups.push({ text, lineAt });
+    parts = [];
+  };
+  let lexState = { inBlock: false, inHtml: false };
+  content.split("\n").forEach((line, i) => {
+    if (EXAMPLE_EXEMPT.test(line)) {
+      exempted += 1;
+      flush();
+      return;
+    }
+    const { subject, state, kind } = lineSubject(line, isMd, lexState);
+    lexState = state;
+    if (subject === "") {
+      flush();
+      return;
+    }
+    const part = { line: i + 1, subject, source: line.trim() };
+    // A code line whose prose comes from a string LITERAL is program text, not commentary: it
+    // neither extends a comment block nor is extended by one, so it stands as its own group.
+    if (kind === "literal") {
+      flush();
+      parts.push(part);
+      flush();
+      return;
+    }
+    parts.push(part);
+  });
+  flush();
+  return { groups, exempted };
 }
 
 /**
@@ -524,19 +677,11 @@ function lineSubject(line, isMd, lexState) {
  */
 export function scanCandidates(content, { isMd, banLists } = { isMd: true }) {
   const banned = bannedFor(isMd, banLists);
-  const lines = content.split("\n");
   const acknowledged = [];
   const residue = [];
-  let exempted = 0;
-  let lexState = { inBlock: false, inHtml: false };
-  lines.forEach((line, i) => {
-    if (EXAMPLE_EXEMPT.test(line)) {
-      exempted += 1;
-      return;
-    }
-    const { subject, state } = lineSubject(line, isMd, lexState);
-    lexState = state;
-    if (subject === "") return;
+  const { groups, exempted } = subjectGroups(content, isMd);
+  for (const group of groups) {
+    const subject = group.text;
     const classes = [
       { re: CANDIDATE_TOKEN_LABEL, acks: ACKNOWLEDGED, contextChars: 0 },
       // Skill-only: see CANDIDATE_TOKEN_WORD's own comment for why code is excluded.
@@ -552,17 +697,18 @@ export function scanCandidates(content, { isMd, banLists } = { isMd: true }) {
     for (const { re, acks, contextChars } of classes) {
       for (const m of subject.matchAll(re)) {
         const token = m[0];
-        if (banned.some((b) => b.re.test(token))) continue;
+        if (banned.some((b) => bannedMatchIndex(b.re, token) >= 0)) continue;
         const context = subject.slice(m.index, m.index + token.length + contextChars);
         const ack = acks.find((a) => a.re.test(context));
+        const at = group.lineAt(m.index);
         if (ack) {
-          acknowledged.push({ line: i + 1, token, reason: ack.name });
+          acknowledged.push({ line: at.line, token, reason: ack.name });
           continue;
         }
-        residue.push({ line: i + 1, token, text: line.trim() });
+        residue.push({ line: at.line, token, text: at.source });
       }
     }
-  });
+  }
   return { acknowledged, residue, exempted };
 }
 
@@ -614,24 +760,24 @@ export function sources(dir, exts) {
  */
 export function scanContent(content, { isMd }) {
   const banned = bannedFor(isMd);
-  const lines = content.split("\n");
   const hits = [];
-  let exempted = 0;
-  let lexState = { inBlock: false, inHtml: false };
-  lines.forEach((line, i) => {
-    if (EXAMPLE_EXEMPT.test(line)) {
-      exempted += 1;
-      return;
+  // Comment text is checked whole; the code span is checked only inside its string literals, so
+  // identifiers and paths that are part of the program are never flagged. Of those literals, prose
+  // ones always count and token-shaped ones count only in an explanatory context. The subject is a
+  // GROUP — see `subjectGroups` — so a phrase split by a line wrap is one subject, not two.
+  const { groups, exempted } = subjectGroups(content, isMd);
+  for (const group of groups) {
+    // One hit per group, at the FIRST pattern that matches it, mirroring what a per-line scan
+    // reported for a line carrying two violations: the remaining ones surface on the next run.
+    for (const b of banned) {
+      const index = bannedMatchIndex(b.re, group.text);
+      if (index < 0) continue;
+      const at = group.lineAt(index);
+      hits.push({ line: at.line, kind: b.name, text: at.source });
+      break;
     }
-    // Comment text is checked whole; the code span is checked only inside its string literals, so
-    // identifiers and paths that are part of the program are never flagged. Of those literals,
-    // prose ones always count and token-shaped ones count only in an explanatory context.
-    const { subject, state } = lineSubject(line, isMd, lexState);
-    lexState = state;
-    if (subject === "") return;
-    const hit = banned.find((b) => b.re.test(subject));
-    if (hit) hits.push({ line: i + 1, kind: hit.name, text: line.trim() });
-  });
+  }
+  hits.sort((a, b) => a.line - b.line);
   return { hits, exempted };
 }
 
@@ -757,6 +903,11 @@ function main() {
           EXAMPLE_EXEMPT.source,
           DESIGN_DOC_CITATION.source,
         ],
+        // What a SUBJECT is, and which spellings of a separator a pattern reaches, decide every
+        // count as directly as the patterns themselves do: regrouping lines or widening a
+        // separator moves every total without touching a `re`. Hashing them keeps a comparison
+        // between two runs from being offered when the ruler, not the corpus, is what changed.
+        [stableSource(subjectGroups), stableSource(separatorFlexible), SEPARATOR_CLASS],
         ROOTS,
         EXTS,
         MD_ROOTS,

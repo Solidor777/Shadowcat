@@ -325,9 +325,8 @@ on.
 - **An Explode retrigger check on an ordered `Faces` die must test the die's DERIVED value
   (`face_value_and_symbols`), never the raw drawn face INDEX** — a face-list where index
   doesn't track value monotonically (e.g. index 0 -> value 6, index 1 -> value 1) would otherwise
-  test the comparator against the wrong number and silently truncate the chain. Fixed during Task
-  6 as a real bug; for `Numeric` this is a no-op distinction since `face_value_and_symbols` is a
-  pure pass-through there.
+  test the comparator against the wrong number and silently truncate the chain. For `Numeric` the
+  distinction is a no-op, since `face_value_and_symbols` is a pure pass-through there.
 - **Reroll and Explode must skip `!kept` dice.** Since modifiers apply in Vec order, a
   Drop-then-Reroll sequence is legal and must not mutate an already-dropped die.
 - **`resolve_group`'s ENTIRE modifier loop must be gated by `DieKind::is_ordered()`** — an

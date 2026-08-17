@@ -9,6 +9,7 @@ import {
   collectFiles,
   gateFileSet,
   residueReport,
+  separatorFlexible,
   GENERATED_ROOT,
 } from "./check-comment-refs.mjs";
 
@@ -523,6 +524,87 @@ test("a stylesheet block comment is lexed as comment text across its lines", () 
   });
   expect(hits.map((h) => h.line)).toEqual([2]);
   expect(hits.map((h) => h.kind)).toEqual(["milestone/task id"]);
+});
+
+// The grouped subject. A multi-word ban pattern is defeated by an ordinary line wrap at one of its
+// spaces, and the two halves are individually innocent — so these cases pin the unit of the scan,
+// not just its vocabulary. Each fixture writes the phrase with the break where prose wrapping would
+// put it.
+test("a milestone id split across a line wrap is one subject, not two clean halves", () => {
+  const fixture =
+    "silently truncate the chain. Fixed during Task\n6 as a real bug; the distinction is a no-op.\n"; // EXAMPLE:
+  const { hits } = scanContent(fixture, { isMd: true });
+  expect(hits.map((h) => h.kind)).toEqual(["milestone/task id"]);
+  // Attribution stays per-line: the hit names the line the phrase STARTS on, not the group.
+  expect(hits.map((h) => h.line)).toEqual([1]);
+});
+
+test("a history-narration phrase split across a line wrap is one subject", () => {
+  const fixture = "// the comparator is evaluated once, unlike before the\n// fix it replaces\n"; // EXAMPLE:
+  const { hits } = scanContent(fixture, { isMd: false });
+  expect(hits.map((h) => h.kind)).toEqual(["history narration"]);
+});
+
+// A blank line ends a Markdown paragraph, so two innocent halves in DIFFERENT paragraphs stay
+// innocent. Without this the grouping would run to the end of the file and manufacture phrases.
+test("a paragraph break stops the join", () => {
+  const fixture = "a sentence ending in Task\n\n6 opens the next paragraph.\n"; // EXAMPLE:
+  expect(scanContent(fixture, { isMd: true }).hits).toEqual([]);
+});
+
+// The boundary that makes grouping safe. A doc comment's last words joined to the declaration
+// beneath it manufactures a phrase nobody wrote out of a trailing sentence and a field name, which
+// converts a false negative into a false positive.
+test("a comment block is never joined to the code line beneath it", () => {
+  const fixture = "/// Rolls each group deterministically.\npub spec: RollSpec,\n"; // EXAMPLE:
+  expect(scanContent(fixture, { isMd: false }).hits).toEqual([]);
+});
+
+test("a prose string literal neither extends a comment block nor is extended by one", () => {
+  const fixture =
+    '// a trailing clause about Task\nassert!(ok, "a message that mentions 6 of them");\n'; // EXAMPLE:
+  expect(scanContent(fixture, { isMd: false }).hits).toEqual([]);
+});
+
+// Separator spelling. A marker's words may be joined by a hyphen, an underscore or a space, and the
+// widening is derived from the pattern's own source rather than enumerated — so the hyphen-only
+// spelling in the pattern must reach all three in the corpus.
+test("a hyphen-only marker pattern matches its spaced and underscored spellings", () => {
+  for (const written of ["buddy-check", "buddy check", "buddy_check"]) { // EXAMPLE:
+    const { hits } = scanContent(`Found during a multi-round ${written} of the branch.\n`, {
+      isMd: true,
+    });
+    expect(hits.map((h) => h.kind), written).toEqual(["sweep / round / review marker"]);
+  }
+});
+
+// The widening rewrites the PATTERN, never the subject. A subject-side rewrite retokenizes the text
+// — `_` is a word character while `-` and a space are not — which exposes boundaries the patterns
+// rely on: a versioned constant splits into words whose suffix reads as a local marker, and a
+// quantity fuses into a token that reads as one too. Both are ordinary prose this corpus carries.
+test("a versioned constant is not retokenized into a local marker", () => {
+  const fixture = "/// Engine-owned schema-vocabulary version (`SCHEMA_FORMAT_V1`).\n";
+  expect(scanContent(fixture, { isMd: false }).hits).toEqual([]);
+});
+
+test("a spaced quantity is not fused into a local marker", () => {
+  const fixture = "// A 1-hex token spans the hex it sits in.\n";
+  expect(scanContent(fixture, { isMd: false }).hits).toEqual([]);
+});
+
+// A `-` inside a character class is a RANGE, and widening it corrupts the pattern outright: the
+// rewrite turns the range into a three-character alternation, so the pattern silently stops
+// matching the characters it governs. Only a separator between two literal alphabetic characters
+// is widened.
+test("separatorFlexible widens a word separator and leaves a character-class range alone", () => {
+  // Three separators, one per outcome: the first joins two literal words and widens; the second is
+  // a range inside a class; the third follows a class, so no literal word precedes it.
+  const widened = separatorFlexible(/\bmarker-word[a-z]-x/);
+  expect(widened.source).toBe("\\bmarker[-_\\s]word[a-z]-x");
+});
+
+test("separatorFlexible returns null for a pattern with no widenable separator", () => {
+  expect(separatorFlexible(/\b[DITW]\d+\b/)).toBe(null);
 });
 
 // The coverage control itself, wired into `pnpm test:scripts` so an unrecognised form in the
