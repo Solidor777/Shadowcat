@@ -267,13 +267,12 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   sample is ≤1 cell apart (Chebyshev), preserving already-≤1-cell input segments EXACTLY —
   identity on grid input (cell-center vertices, ≤1 cell apart on every axis incl. diagonals). This
   identity property is what makes grid-parity a property of the code shape rather than something
-  proven only by testing; empirically, a temporary `execute_move_kingstep_oracle` (a frozen,
-  `#[cfg(test)]`-only verbatim copy of the prior king-step executor) was added, used to
-  prove parity across 10 scenarios, then DELETED once those cases were frozen as literal
-  fixtures — a second permanent executor would reintroduce exactly the fork this refactor exists
-  to avoid. The frozen fixture test,
-  `frozen_parity_king_step_grid_outcomes`, is now the permanent
-  regression proof. The per-step gate — (1) wall gate (`blocks_move`, all modes incl. GM), (2)
+  proven only by testing. The permanent regression proof is
+  `frozen_parity_king_step_grid_outcomes`, a `#[cfg(test)]` battery of 10 labelled `FrozenCase`
+  scenarios whose `ExpectedOutcome` (`stop`/`render_path`/`truncated`/`cost`) is frozen LITERAL
+  data. Expected outcomes stay literals on purpose: a second executor computing them would
+  reintroduce exactly the fork this shape exists to avoid, and a test that agrees with a
+  computation cannot witness the two agreeing on the wrong answer. The per-step gate — (1) wall gate (`blocks_move`, all modes incl. GM), (2)
   vision-mask gate (`GridShape::line_traversal` + `visible` membership, skipped for `Unrestricted`), (3)
   region gate (see below) — runs over this DENSE walk, not the raw authored path; the
   coarse `render_path` returned to the caller is reconstructed as either the authored-vertex

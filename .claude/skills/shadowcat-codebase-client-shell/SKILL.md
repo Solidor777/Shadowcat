@@ -74,8 +74,8 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
 - `AppContext.moveRequest` — AppContext seam wired through
   `WorldSession`; consumed by scene-tools measure-tool route-commit (sends `MoveRequest`, awaits the
   signal-only resolution, does NOT locally animate — the `TokenAnimator` plays back from the
-  broadcast, not the promise). Optimistic dispatch + `collinearRuns` chaining were removed;
-  route-commit is request-only.
+  broadcast, not the promise). Route-commit is request-only: no optimistic local dispatch, and no
+  client-side chaining of collinear path runs.
 - `onMoveStream` wiring (`WorldSession.enter`): subscribes once at session start,
   **filters `stream.scene` against the active scene** (`this.#optimistic.query("scene")[0]?.id`)
   before forwarding — a room-wide `MoveStream` broadcast for a DIFFERENT scene must not animate a

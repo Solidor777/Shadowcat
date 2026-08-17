@@ -165,8 +165,9 @@ on.
   positive_counter, negative_counter}` + `score_die(direction, value, symbols: &[Symbol], cfg:
   &SuccessConfig) -> DieCrit`: scores one kept die against `cfg.crit_success`/`cfg.crit_fail`
   independently via the shared `reaches(direction, value, symbols, trigger, is_success_event)`
-  helper (replaces the old bare-comparator check) — `CritTrigger::AtLeast` flips under
-  `LowWins` exactly as the old bare `threshold` did; `CritTrigger::HasSymbol` is direction-
+  helper — one comparator for both crit events, so success and failure cannot drift apart.
+  `CritTrigger::AtLeast` is direction-SENSITIVE: it flips its comparison under
+  `LowWins`. `CritTrigger::HasSymbol` is direction-
   INSENSITIVE (`reaches`'s `HasSymbol` arm never reads `direction`). Both `is_success` and
   `is_fail` CAN be `true` on the same die under an overlapping-threshold OR overlapping-symbol
   config — intentional, tested (`overlapping_thresholds_fire_both_crit_success_and_crit_fail`,
