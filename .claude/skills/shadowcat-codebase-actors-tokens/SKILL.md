@@ -27,8 +27,8 @@ token/actor name from non-owners via the `OwnerOrGm` visibility tier. Conditions
   alias). `ItemSystem` is UNCHANGED — `ITEM_DOC_TYPE` is a client-only doc_type with no Rust-side
   registration, not one of the 17 engine-defined types, so it stays on the opaque `system` band
   ([[shadowcat-codebase-sheets]]/`shadowcat-codebase-documents-permissions` cover it).
-  - `buildActorDoc(worldId, name, engine, id?)` — `name: string | null` is now a DEDICATED
-    parameter (the envelope `name` band), separate from the `ActorEngine` body.
+  - `buildActorDoc(worldId, name, engine, id?)` — `name: string | null` is a DEDICATED parameter
+    (the envelope `name` band), separate from the `ActorEngine` body.
   - `buildTokenFromActor(worldId, sceneId, actor, "link"|"instance", pos, unit, id?)` — link mode
     sets `token.engine.actor_id` + `overrides`; instance mode embeds an independent (deep-cloned)
     copy with `source` provenance. `unit: FootprintExtent | null` is the parent scene's
@@ -84,8 +84,7 @@ token/actor name from non-owners via the `OwnerOrGm` visibility tier. Conditions
   redaction-aware fallback), `TokenOverrides` projection. Conditions: `resolveConditions(token,
   store)` (effective condition ids → `{id,name,icon}` via the registry, fail-closed) +
   `conditionTarget(token, store) -> {doc, path, conditions}` (the write site: linked →
-  `actor` doc `/engine/conditions`; instanced → token `/embedded/actor/0/engine/conditions` —
-  was `/system/conditions`).
+  `actor` doc `/engine/conditions`; instanced → token `/embedded/actor/0/engine/conditions`).
   Shapes + footprint: `resolveTokenBox(token, store, footprints, eff?) -> TokenBox
   {x,y,w,h,shape}` — a scene-pixel footprint READ-THROUGH that computes no geometry of its own.
   **There is no client-side footprint formula.** `w`/`h` come from the server's resolved extent
@@ -125,9 +124,8 @@ token/actor name from non-owners via the `OwnerOrGm` visibility tier. Conditions
   (`EffectiveActor.square`/`EffectiveActor.circle`) + size (fractional grid-cells) editing in the
   create form and in the per-row
   GM inline editor; darkvision range authoring (create + per-row), writing `engine.vision: [{
-  mode: "darkvision", range }]` (was `system.vision`; omitted when range 0).
-  **Visual authoring (extracted into `VisualKindEditor`, a pure intra-module split
-  with no behavior change):** a visual-kind editor (image / faces / animated) in the
+  mode: "darkvision", range }]` (omitted when range 0).
+  **Visual authoring (`VisualKindEditor`):** a visual-kind editor (image / faces / animated) in the
   actor-creation form, mounted by `ActorsPanel` and driven by an `onBuild` callback prop
   (`ActorsPanel` still owns `conditionOptions` and the aggregate create-form reset, calling the
   child's exposed `reset()`). `buildVisual()` (in `VisualKindEditor`) validates per-kind
@@ -139,7 +137,7 @@ token/actor name from non-owners via the `OwnerOrGm` visibility tier. Conditions
   names an existing row (else nulls the visual); a stale `faceMapRows` entry referencing an
   absent face (row name changed or row deleted) is silently DROPPED rather than failing the
   whole visual.
-  **Per-TOKEN face-swap palette (extracted into `FaceSwapPalette`, prop `{ tokenId: string
+  **Per-TOKEN face-swap palette (`FaceSwapPalette`, prop `{ tokenId: string
   | null }`, mounted by `ActorsPanel` as `<FaceSwapPalette tokenId={selectedTokenId} />`):**
   distinct from the per-actor creation-form editor; shows only when the selected token's effective
   visual is `"faces"`, resolved via `selectedFaceNamesFor(token, store)` — a thin
@@ -147,8 +145,8 @@ token/actor name from non-owners via the `OwnerOrGm` visibility tier. Conditions
   `resolveTokenVisual` independently resolves through `resolveTokenActor` too, so a token's
   `overrides.visual` faces-union can never diverge between what renders and what the palette
   offers to swap to (pinned by an `actor.test` case combining an `overrides.visual` faces-union
-  with an active `token.engine.face`). Clicking a face name dispatches a `/engine/face` (was
-  `/system/face`) update on the TOKEN doc.
+  with an active `token.engine.face`). Clicking a face name dispatches a `/engine/face` update on
+  the TOKEN doc.
   **Load-bearing convention: the dispatched update's `old` reads the RAW stored `token.engine.face`**
   (never a resolved/defaulted value) — the same raw-`old` convention already established for other
   config-doc field-toggle editors in this codebase (e.g. the `snapToGrid` toggle) — a
@@ -216,9 +214,9 @@ token/actor name from non-owners via the `OwnerOrGm` visibility tier. Conditions
     `{READ, WRITE_FIELDS}` and excludes `EDIT_PERMISSIONS`, so an effective owner cannot steal or
     hand off ownership — but the floored role also selects additive `by_role[Owner]` grants, so a
     deployment that puts `EDIT_PERMISSIONS` there lets an owner pin `/owner = self` (defeating
-    GM re-assignment) and rewrite `/permissions` to lock the GM out. Parity with a *stamped* owner
-    holds exactly; what changed is the POPULATION — "Owner" is now every player with an assigned
-    actor rather than a hand-enumerated set.
+    GM re-assignment) and rewrite `/permissions` to lock the GM out. The capability semantics are
+    exactly a *stamped* owner's; what differs is the POPULATION — "Owner" is every player with an
+    assigned actor, not a hand-enumerated set.
   - **Egress redaction resolves ownership through this same rule** — `resolve_access`'s
     `is_owner` comes from an explicit effective-owner parameter, so redaction and write authz
     cannot disagree about who owns a token. The per-call-site join sources are egress territory:
@@ -273,7 +271,7 @@ token/actor name from non-owners via the `OwnerOrGm` visibility tier. Conditions
   selection can make the palette chip's active/mixed display, and the click's no-op-or-not
   outcome, diverge from what the editable tokens alone would show. Client-side UX inconsistency
   only (every write still goes through `canEdit` then the server's independent re-check);
-  accepted as-is, not fixed.
+  accepted as-is.
 - **Docs-ratchet is live on `data::engine::token`:** it carries
   `#![deny(missing_docs)]` + the private-items twin — a new undocumented field/variant on
   `TokenEngine`/`ActorEngine`/`TokenVisual`/`AnimatedSource` fails the 3-OS CI clippy step, and

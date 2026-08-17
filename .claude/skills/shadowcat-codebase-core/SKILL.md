@@ -46,7 +46,7 @@ source of truth. The ones agents break most:
 - **NEVER FORK A DECISION ACROSS TWO PATHS — the defect class this codebase produces most.**
   Whenever two code paths are *documented* to agree on something, they eventually disagree on an
   input nobody thought to check, and the disagreement is a security defect rather than a bug. Six
-  instances found in one branch, across four subsystems:
+  instances across four subsystems:
   | Forked on | Where | Consequence |
   |---|---|---|
   | Cell indexing | `Room::publish`, `clip_to_visible_mask` | square indices tested against a hex-axial mask |
@@ -54,8 +54,8 @@ source of truth. The ones agents break most:
   | Input admissibility | `Room::publish` vs `gate_walk` | one bounded coordinate magnitude, the other did not |
   | **Scene identity** | `MoveRequest` vs `Room::publish` | one took the scene from the client, the other derived it from the token ⇒ total movement-gate bypass |
   | **`remove` semantics** | `SceneEcs::apply_op` vs `apply_intent` | ECS ignored `FieldChange.remove` while the DB honoured it ⇒ vision widened where write authz refused |
-  | Fail-open defaults | `execute_move` vs `publish` vs `pathfind` | a `unwrap_or(100.0)` cell size removed from ONE gate, left in the other two — created by the commit that fixed the row above. **Now removed from all three gates AND all six non-gate siblings** (`SceneEcs::navmesh_for`, `SceneEcs::region_field`, `SceneEcs::player_lit_mask`, `SceneEcs::visible_cells`, `SceneEcs::visible_cells_cached` — an absent `scene_grid_sizes()` entry now returns `None`/empty instead of synthesizing a 100-unit grid; `region_field`'s signature changed to `-> Option<RegionField>`, its three callers (`pathfind`'s two branches, `move_exec::execute_move`) refuse via `let-else` on `None`, and `MoveReject` gained a `SceneUnknown` variant mirroring `Degenerate`; `conn::enrich_vision_explored` now continues past a scene absent from either its `grid` or
-  `enrich_vision_explored::grid_shapes` map, never synthesizing a fallback `SquareGrid`). The fail-open default is now removed at ALL sites — `scene_grid_sizes` remains the sole intentional defaulting SOURCE, not a survivor. |
+  | Fail-open defaults | `execute_move` vs `publish` vs `pathfind` | a `unwrap_or(100.0)` cell size dropped from ONE gate and left in its siblings — the shape a fix for the row above produces if it lands at one site. **No such default exists at any of the three gates or their six non-gate siblings** (`SceneEcs::navmesh_for`, `SceneEcs::region_field`, `SceneEcs::player_lit_mask`, `SceneEcs::visible_cells`, `SceneEcs::visible_cells_cached` — an absent `scene_grid_sizes()` entry returns `None`/empty rather than synthesizing a 100-unit grid; `region_field` returns `-> Option<RegionField>`, its three callers (`pathfind`'s two branches, `move_exec::execute_move`) refuse via `let-else` on `None`, and `MoveReject` carries a `SceneUnknown` variant mirroring `Degenerate`; `conn::enrich_vision_explored` continues past a scene absent from either its `grid` or
+  `enrich_vision_explored::grid_shapes` map, never synthesizing a fallback `SquareGrid`). `scene_grid_sizes` is the sole intentional defaulting SOURCE. |
   **How to apply.** (1) When you find two paths that must agree, do not verify they agree today —
   make one *derive* from the other, or have both read one shared symbol, so agreement is structural.
   (2) When you fix one instance, grep for the other copies **in the same commit**; the last row
@@ -76,7 +76,7 @@ source of truth. The ones agents break most:
   lights, drawings, templates, messages, and the world/vision/lighting/chat/dice/faction/
   condition/channel config-docs) gets REAL server-side ingress validation instead
   (`validate_engine`/`validate_engine_tree`, `deny_unknown_fields` per struct) — this is the band
-  engine-owned geometry (movement-collision, vision) now lives in, not a `system`-body exception
+  engine-owned geometry (movement-collision, vision) lives in, not a `system`-body exception
   (ARCHITECTURE §2 invariant 6). See `shadowcat-codebase-documents-permissions` for the
   `data/engine/` registry and `shadowcat-codebase-scene-rendering`/`-chat`/`-actors-tokens` for
   the per-subsystem re-root.
@@ -118,7 +118,7 @@ source of truth. The ones agents break most:
   `conn.rs` ``. Qualify by owner (`AssetResolver.url`, `chat::broadcast`), not location. Applies to
   all committed prose — doc comments and the live tracking docs. A line number is invalidated by any
   insertion above it; a symbol breaks only on rename, which a grep finds — and for this skill
-  family specifically, that grep now runs automatically:
+  family specifically, that grep runs automatically:
   `node scripts/check-skill-symbol-refs-cli.mjs` (fatal, CI-wired) resolves every code-symbol
   citation in every TRACKED skill directory against a symbol index built from what the tree
   declares — Rust items, methods, fields, variants, serde wire names, local bindings, parameters
@@ -146,7 +146,7 @@ source of truth. The ones agents break most:
   prose spans that climb the not-citation-shaped bucket. Carve-outs:
   config/build files (no symbols to cite), filenames used as *values*, dated records under
   `docs/superpowers/`, and — a documented review obligation, not a gate obligation — citations of a
-  symbol the separate Nightfox repository owns. That last one is now scoped per NAME, not per
+  symbol the separate Nightfox repository owns. That last one is scoped per NAME, not per
   file: `shadowcat-codebase-nightfox` is scanned like any other skill, its citations of THIS
   repo's symbols are gated, and only the enumerated cross-repo names are acknowledged, inside that
   one file, hit-counted like every other entry. An untracked skill directory is vendored
@@ -388,8 +388,8 @@ source of truth. The ones agents break most:
   gate on tag PRESENCE only: they cannot see a vacuous tag (`@returns The result.`), a false
   statement, or a second doc block appended below an existing one. That last case actively
   misleads — jsdoc, TypeDoc, and editor hover all bind to the NEAREST preceding block, so an
-  appended block satisfies the linter while ORPHANING the richer one above it (found on
-  `webSocketConnect` during the client/core sweep, at 0 warnings the whole time). Detecting it needs a
+  appended block satisfies the linter while ORPHANING the richer one above it — a real instance on
+  `webSocketConnect` sat at 0 warnings the whole time. Detecting it needs a
   manual scan for a `*/` line immediately followed by `/**`. Truthfulness and placement are review
   concerns, not gate concerns: `docs/design/doc-sweep-truthfulness-rules.md`.
 - CI builds the client **before** cargo (embed ordering) across the three-OS matrix.

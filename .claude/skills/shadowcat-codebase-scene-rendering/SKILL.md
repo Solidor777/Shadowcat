@@ -87,10 +87,9 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   subsystem now goes through the typed `engine` band, not a `/system` pointer walk. `scene`'s
   private `engine_as::<T: DeserializeOwned>(doc: &Document) -> Option<T>` (`doc.engine.as_ref()
   .and_then(|v| serde_json::from_value(v.clone()).ok())`) is the module-local typed accessor every
-  reader calls — a `None` result (absent `engine`, or a stored value that fails to parse) is
-  treated identically to the old pointer-walk's `None`, so every caller's OWN existing
-  field-level fail-closed backstop (bounds → `DEFAULT_SCENE_BOUNDS_UNITS`, grid size default 100,
-  etc.) is unchanged. `data/engine::{TokenEngine, SceneEngine, WallEngine, RegionEngine,
+  reader calls — a `None` result (absent `engine`, or a stored value that fails to parse) is what
+  every caller's OWN field-level fail-closed backstop keys on (bounds →
+  `DEFAULT_SCENE_BOUNDS_UNITS`, grid size default 100, etc.). `data/engine::{TokenEngine, SceneEngine, WallEngine, RegionEngine,
   WorldSettingsEngine, LightEngine, ...}` (re-exported here as `eng::*`) are the typed structs
   `engine_as` deserializes into. No `sys_f64`/raw pointer-walk helper exists anywhere in this
   subsystem — do not reintroduce a pointer-walk reader; add a new typed
@@ -110,9 +109,9 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   when its stored source `engine` `Value` still equals the document's current one — `apply_op` is
   NOT the only place a `Document` in this ECS gets mutated (`set_world_config`/`set_actors`, the
   room-hydration setters, assign fields directly, bypassing `apply_op` entirely), so an
-  invalidate-on-every-mutation-site design would have been incomplete by construction (caught by
-  two real test failures — `diagonal_rule_reads_world_settings_and_unknown_falls_back` and
-  `token_vision_floors_resolve_through_actor_join` — when first tried). `apply_op` still removes
+  invalidate-on-every-mutation-site design is incomplete by construction — the shape is pinned by
+  `diagonal_rule_reads_world_settings_and_unknown_falls_back` and
+  `token_vision_floors_resolve_through_actor_join`. `apply_op` still removes
   the touched id's entry as a best-effort trim (bounds memory on delete), but this is NOT
   load-bearing for correctness. The ONE deliberately-uncached call site is `token_vision_floors`'s
   embedded-actor branch (`token.embedded.get("actor")...`): an embedded actor sub-document's own
@@ -123,7 +122,7 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   **`visible_cells_cached`:** `SceneEcs::visible_cells_cached(user,
   scene, lenient) -> BTreeSet<(i32,i32)>` is a per-`(user, scene)` memoized wrapper around the same
   mask `visible_cells` computes for the movement gate — `visible_cells` itself and every
-  other existing caller (pathfinder, §13 parity tests) are unchanged and still call the uncached
+  other existing caller (pathfinder, the grid-parity tests) are unchanged and still call the uncached
   primitive. Keyed on `VisibilityInputsSnapshot` (`{lenient, settings, cell, sources: Vec<(id, vp,
   floors)>, lights, light_walls, sight_walls}`) — a VALUE-COMPARISON cache like `engine_as_cached`,
   not mutation-site invalidation: a cached mask is reused only when a freshly rebuilt snapshot
@@ -315,7 +314,7 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   compares the two costs together. Resolve before any per-turn movement-budget system consumes
   either `MoveOutcome.cost` or `MoveStream.cost`. `supercover_cells`'s
   lattice-corner-tie drift (a diagonal king-step whose leg endpoints both sit exactly on 4-way
-  grid-line intersections could otherwise spuriously fail-closed) is fixed via a per-axis
+  grid-line intersections could otherwise spuriously fail-closed) is prevented by a per-axis
   remaining-step budget gating the diagonal corner branch.
 - `scene` — adds `SceneEcs::token_position(token) -> Option<(f64,f64)>` and
   `SceneEcs::resolved_animation_speed() -> f64` (`pub(crate)` seams; the latter sits alongside
@@ -444,7 +443,7 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   `SceneEcs::resolve_token_footprint` whenever the frame names a token. A shared type would let a
   caller forward the frame straight through and skip that override — a token-size oracle. Do not
   "simplify" these into one type.
-  It reuses the SAME `visible_cells` mask as the movement gate (**§13
+  It reuses the SAME `visible_cells` mask as the movement gate (**the
   invariant: never fork the per-cell visibility decision** — the route cannot thread the unknown nor
   leak hidden geometry); unions `explored` (`ExploredSet::iter`) for `revealed`; GM unconstrained
   (no mask); empty non-GM mask ⇒ `PathError::Unreachable` (fail-closed); passes
@@ -499,7 +498,7 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   `pathfinding::find`; `Continuous` calls `navmesh_for` → `navmesh::navmesh_find` →
   `navmesh::clip_to_visible_mask` (below). Both branches build the per-`(user,scene)` visibility
   mask ONCE, above the dispatch, and pass the SAME reference into whichever engine runs — never
-  forked (mirrors the pathfinder's own §13 invariant, generalized to a second engine). Client:
+  forked (mirrors the pathfinder's own mask invariant, generalized to a second engine). Client:
   `movementModel` world-default + scene-override editor in `GameSettingsPanel` (mirrors the
   `movementRestriction` editor exactly). The measure-tool's
   `commitRoute` (the scene-tools `controller` module) does not branch on `movementModel` at
@@ -612,8 +611,8 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
     for any polyline, grid or any-angle.
 - `scene::navmesh` — pure headless adapter around the `polyanya`
   (any-angle navmesh) + `geo`/`spade` (CDT + Minkowski buffer) crates, engine-owned geometry
-  (ARCHITECTURE §6 exception). Carries **walls only** in this checkpoint — impassable/terrain
-  regions on the navmesh are a later checkpoint.
+  (ARCHITECTURE §6 exception). Carries **walls only** — impassable/terrain regions are not on the
+  navmesh, and adding them is a scope change, not a fix.
   - `build_navmesh(extent: WorldExtent, footprint_scene, walls) -> Option<NavMesh>` — triangulates
     the scene's world ENVELOPE (both corners, `min` and `max` — not an origin-anchored rectangle,
     which is why the parameter is a `WorldExtent` rather than a bounds pair plus a cell size) and
@@ -717,8 +716,8 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   `loop:false` clamps to the final frame (a one-shot animation holds, never re-wraps); degenerate
   input (`frameCount<=0`, non-finite `elapsedMs`/`fps`, `fps<=0`) fails closed to frame 0.
   `TokenNodeSpec.visual` (the `types` module) is now a discriminated union: `{kind:"image", url} |
-  {kind:"animated", source: ResolvedAnimatedSource, fps, loop}` (replaces the old flat `.url`
-  field) — `ResolvedAnimatedSource = {type:"frames", urls:string[]} | {type:"sheet", url, rows,
+  {kind:"animated", source: ResolvedAnimatedSource, fps, loop}` — a token's URL is reachable only
+  through the `image` arm, never as a bare field — `ResolvedAnimatedSource = {type:"frames", urls:string[]} | {type:"sheet", url, rows,
   cols, count?}`, already asset-id-resolved to serve URLs by `AssetResolver` (the backend never
   resolves asset ids itself). `DisplayBackend.tickTokenAnimations(dtMs): void` — the new per-frame
   animation-advance seam, called once per frame alongside `startTicker`; `MockBackend`'s
@@ -746,8 +745,8 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   ALSO conditional (`if (!(node.visual instanceof AnimatedSprite))`), mirroring the image branch, to
   reduce how often the object gets recreated in the first place. Any future code touching this
   async-completion pattern (anywhere in-flight code can swap in a different display object) must
-  follow the same object-identity-guard shape — a real bug of this exact kind has been found and
-  fixed before.
+  follow the same object-identity-guard shape; a key-equality guard is not sufficient here
+  [[async-completion-needs-object-identity-not-key]].
 - `engine` (client/render module) — `visionSweeps: Map<tokenId, {samples, elapsed,
   durationMs}>` drives the mover's fog sweep during `MoveStream` playback (keyed per token — unions
   concurrent sweeps' visible sets rather than clobbering). `animateSamples(id, samples, durationMs,
@@ -786,8 +785,8 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   honors it) without a UI surface. `buildRegionDoc`/`setRegionVisibility`/`RegionEngine`/
   `RegionShape`/`RegionShapeKind`/`RegionBehavior` are exported from `@shadowcat/core`'s public
   entrypoint module (the client type is `RegionEngine`, not `RegionSystem` — no
-  back-compat alias; the `scene-docs` source predates the export; any future `scene-docs` addition
-  needs its own entrypoint export line — it is not automatic).
+  back-compat alias; the entrypoint's export list is written by hand, so any future `scene-docs`
+  addition needs its own export line — it is not automatic).
 - `scene-docs` (`src/client/core/src`) — **vision/lighting/movement data model: the server mask
   consumes these shapes; the client lighting render (see `lighting` above) is display-only**:
   world-scoped config-docs `world-settings`/`light-gradation`/`vision-modes`
@@ -880,13 +879,13 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   fog-fail-closed invariant above to a NEW failure axis: multi-scene viewing means the "active
   scene" a cached value should be filtered against can itself change before the cache is
   consumed. `RenderEngine.pendingDerived` is the concrete instance: a `vision` frame
-  arriving before `store.appliedSeq` catches up is held behind the watermark. The prior shape
-  cached an ALREADY-FILTERED `VisibilityInput` (the result of `toVisibility`/`toLighting` run at
-  frame-ARRIVAL time); once multi-scene viewing made a client-local scene switch
-  (`reapplyViewedScene`) possible while a frame sat pending, that stale pre-filtered snapshot could
-  be silently flushed and painted on top of the SWITCHED-TO scene once the watermark caught up —
-  a fog hole computed for scene A rendered on scene B. Two independent reviewers traced
-  this to the same root cause. The fix: `pendingDerived` now caches the RAW `{payload, seq}` only;
+  arriving before `store.appliedSeq` catches up is held behind the watermark. Caching an
+  ALREADY-FILTERED `VisibilityInput` (the result of `toVisibility`/`toLighting` run at
+  frame-ARRIVAL time) is what must not happen: a client-local scene switch
+  (`reapplyViewedScene`) can land while a frame sits pending, and that stale pre-filtered snapshot
+  is then silently flushed and painted on top of the SWITCHED-TO scene once the watermark catches
+  up — a fog hole computed for scene A rendered on scene B. So `pendingDerived` caches the RAW
+  `{payload, seq}` only, and
   `flushPendingDerived()` re-runs `toVisibility(p.payload)`/`toLighting` at FLUSH time, which reads
   `viewedScene()` internally and therefore always filters against the scene that is current AT
   FLUSH, not at arrival. Any future engine cache that spans a client-local scene switch (not just
@@ -921,13 +920,13 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   point, not a traversal, so no `line_traversal`/supercover call here) must lie in the user's mask
   per `movement_restriction`: `Unrestricted` ⇒ no check; `Visible` ⇒
   `visible_cells_cached(user, scene, lenient)`; `Revealed` ⇒ the same mask unioned with
-  `get_explored` (deferred past the scene-read-lock scope, exactly as the old traversal gate
-  deferred it, since `get_explored` is async and must not run under the guard). GMs are exempt from
+  `get_explored` (deferred past the scene-read-lock scope, since `get_explored` is async and must
+  not run under the guard). GMs are exempt from
   both gates entirely. `publish::visible_cache`/`publish::explored_cache` memoize per `(scene, lenient)`/
   `scene` within one `publish` call so a batch of Creates doesn't recompute the mask or refetch
   explored per token. **By design: a dark scene under `Visible` still refuses non-GM token
-  placement into an unseen cell** — the same fail-closed reasoning the prior traversal gate used,
-  now scoped to Create only. Do NOT "fix" this by softening the defaults — it is the correct
+  placement into an unseen cell** — the same fail-closed reasoning the per-step traversal gate
+  uses, scoped here to Create. Do NOT "fix" this by softening the defaults — it is the correct
   fail-closed outcome.
 - **Bound recursive walks over self-FK (parent_id) tables with a visited-set** [[m8a-execution-state]].
 - **Scene-settings resolvers are fail-closed and inheritance-layered**: `resolveSceneSettings`
@@ -939,13 +938,13 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
 - **The server lit mask is the lighting-aware secrecy gate**: `player_lit_mask(user)` =
   `LOS ∩ (lit ∨ darkvision)`, union over the user's vision sources (owned tokens ∪ observer-tier
   tokens when `observerVision`), emitted as per-recipient `lit` cells. Wire format:
-  5-int `[i,j,band,tint,hint_idx]` (not the older 4-int `(i,j,band,tint)`) + a top-level `renderHints:[String]`
+  5-int `[i,j,band,tint,hint_idx]` + a top-level `renderHints:[String]`
   table (index into the hint name, e.g. `"darkvision"`); `VisionMode` carries `render_hint`;
   `player_lit_mask` resolves a per-cell hint via the highest-floor admitting vision mode (`None` wins
   ties). Fail-closed (no source / dark scene ⇒ empty; cell scans bounded by
   `explored::MAX_CELLS_PER_POLYGON` with a `saturating_mul` span guard). Egress is ADDITIVE —
   `polygons` + the post-lock `explored` are unchanged, GM stays `mode:"all"`. **Environment light
-  is now edge-projected and `blocksLight`-occludable SERVER-SIDE (`lighting::env_light_polys`,
+  is edge-projected and `blocksLight`-occludable SERVER-SIDE (`lighting::env_light_polys`,
   `SceneEcs`'s `lighting_inputs_from`) — this is a genuine secrecy input, not cosmetic.** A cell's
   illumination (`lighting::cell_illumination`) composes the boundary-projected environment ambient
   with placed lights and feeds `point_qualifies`/`cell_visible`, which gates both `player_lit_mask`
@@ -1046,8 +1045,8 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   A wholly-occluded move is suppressed (zero frames), never sent as an empty-`samples` frame — an
   observer must not learn a move even happened if they can't see any of it. `mover_vision` is
   disclosed to the mover only (nulled for every other recipient, incl. a full-vision GM observer who
-  has no fog to sweep anyway). **Design doc scope note:** "strictly leak-free" covers the IN-FLIGHT
-  path only; RESTING token positions still ride the position `Event` + client-side fog
+  has no fog to sweep anyway). **Scope of the leak-free claim:** "strictly leak-free" covers the
+  IN-FLIGHT path only; RESTING token positions still ride the position `Event` + client-side fog
   model (delivered to all scene readers, fogged client-side per `fog-is-the-secrecy-gate-fail-closed`)
   — this does not change that. **Known v1 limitation (by design, not a bug):** each move's
   per-recipient clip is computed once at ITS execute time against the recipient's then-current
@@ -1071,8 +1070,8 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   (`doc.permissions.property_overrides.get("/engine")`, default
   `Visibility::All`). Setting `permissions.default = Access::None` instead does NOT gate
   `region_field`'s per-requester filter at all (that field only reads the `/engine`
-  `property_overrides` entry) — a brief/test author who reaches for `permissions.default` here will
-  write a region that still weights a non-GM's route (a brief slip caught before merge).
+  `property_overrides` entry) — a test or spec author who reaches for `permissions.default` here
+  writes a region that still weights a non-GM's route.
 - **The continuous-engine dispatch predicate MUST read the PER-REQUESTER region field, never the
   authoritative one.** `has_terrain_or_impassable()` is evaluated against `region_field(
   scene, Some(user))` for a non-GM — this is the single mechanism preventing a secret
@@ -1135,9 +1134,9 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   `reconcile()` diffing scene-scoped docs against tracked ids, and a module-private `toSpec()`
   returning `ShapeNodeSpec | null` where `null` means "don't render". Because they are written by
   copy-and-adapt, a change made to one is easy to omit from the other three, and nothing structural
-  catches it. Two divergences have already been found this way:
-  - **Non-numeric coordinate guards** were present in `region-view`/`wall-view` and absent in
-    `drawing-view`/`template-view`. Now identical in all four, and the placement is load-bearing:
+  catches it. Two divergences the four must not reacquire:
+  - **Non-numeric coordinate guards** must be identical in all four, and their placement is
+    load-bearing:
     the guard runs on the RAW authored fields BEFORE tessellation, because JS coerces `null` to 0 in
     arithmetic — `circlePoints(null, 5, 10)` yields finite, plausible geometry that a
     post-tessellation check cannot distinguish from an authored shape.

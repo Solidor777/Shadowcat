@@ -94,10 +94,10 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
   + `preserveEntrySignatures:"strict"` + the `index.html` import map. GM management UI =
   `ModuleManager`. Full subsystem (server discovery/serving/enablement,
   engine-compat gate) → [[shadowcat-codebase-module-toolchain]].
-- **`boot()` resolves the world route-first, not `lastWorld`-first (silent-hang-startup fix)** —
+- **`boot()` resolves the world route-first, not `lastWorld`-first** —
   `App`'s `boot()` reads `currentRoute()` once, AFTER the `getMe`/`getUiState` awaits and
   BEFORE both the `withRetry(() => listWorlds())` await and consulting `ui.global.lastWorld` (a
-  hash change during the `listWorlds` await is ignored — see TODO).
+  hash change during the `listWorlds` await is ignored).
   The rule lives in one pure, directly-testable helper, `resolveBootWorld(route, lastWorld,
   worlds)`: a world route (`#/world/<id>`) always wins — `lastWorld` is
   NOT consulted at all while a world route is present, even if it would resolve to a different,
@@ -106,18 +106,17 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
   deep link must never wipe an otherwise-valid `lastWorld` reference — then lets `boot()` fall
   back to the entry/worlds-list route. Entering the
   resolved id still goes through `enterWorld(worldId)`, which itself calls `setLastWorld` +
-  `navigate` — `lastWorld` write semantics are unchanged. Root-caused via a captured Playwright
-  network trace: under the shared-account parallel e2e suite, a reload's `boot()` ignoring the URL
-  restored whichever world a DIFFERENT concurrent worker entered last — a real product defect
-  (a deep-linked reload in production would teleport away from its own URL the same way), not an
-  e2e-only artifact. See CLOSED_BUGS, the "Client / silent-hang startup paths" entry.
-- **Bounded + retried boot fetches (silent-hang-startup fix)** — `FETCH_TIMEOUT_MS`
+  `navigate` — `lastWorld` write semantics are unchanged. A `boot()` that consulted `lastWorld`
+  ahead of the URL restores whichever world that account last entered from any other session, so a
+  deep-linked reload teleports away from its own URL — a product defect, not merely a
+  parallel-test artifact.
+- **Bounded + retried boot fetches, against a silent hang at startup** — `FETCH_TIMEOUT_MS`
   (15s) covers every fetch in its module, not only the session/boot trio: `getMe`, `getUiState`,
   `listWorlds`, `postJson` (login/logout), and `putUiState` (including the unload keepalive PUT)
   all carry `AbortSignal.timeout(FETCH_TIMEOUT_MS)`, so a hung backend rejects instead of leaving
   any of them unsettled forever. `App.boot()` wraps each of the three awaits in `withRetry` (3 attempts, flat delays) before
-  degrading to the login/worlds route — a transient non-2xx or connection reset during startup no
-  longer permanently strands the SPA on that fallback route with no retry.
+  degrading to the login/worlds route, so a transient non-2xx or connection reset during startup
+  does not permanently strand the SPA on that fallback route with no retry.
 - **`WorldSession`'s activation latch is split, and the split order is load-bearing** —
   latching a single `#bootstrapped` boolean BEFORE `await #modules.activate()` would let a
   failed/hung first activation (e.g. a manifest dependency cycle) cache "done" for the
@@ -126,8 +125,8 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
   session — re-adding modules would duplicate registrations) and `#activated` (latches only on a
   successful `activate()`, reverted to `false` in the catch clause on a thrown activation, so the NEXT
   Welcome retries instead of caching the failure). **`#activated` is still set to `true`
-  SYNCHRONOUSLY, before the `activate()` await** — this is the one part of the old single-latch
-  behavior deliberately preserved: same-tick concurrent Welcomes re-enter `#onWelcome`, and
+  SYNCHRONOUSLY, before the `activate()` await** — deliberately, and it is the one place a latch
+  is set ahead of the work it guards: same-tick concurrent Welcomes re-enter `#onWelcome`, and
   setting `#activated` only after the await (e.g. in a `.then()`) would let a second Welcome
   arriving mid-activation see `#activated === false` and call `activate()` again, double-
   activating. Any future change to this seam must keep the synchronous pre-await set — do not
@@ -158,8 +157,8 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
   `ui_state` blob: `getPanelLayout(world)`/`setPanelLayout(world, blob)` persist the
   per-world panel layout into `UiState.worlds[world].panelLayout` via
   the existing leading-edge-debounced PUT. The blob is OPAQUE to the shell — the panel host
-  owns its shape/validation. **Leaf-key dirty tracking (fixes the same-user cross-session
-  clobber — see CLOSED_BUGS, the "Server + client / ui-state persistence" entry)**: a `dirty` structure
+  owns its shape/validation. **Leaf-key dirty tracking, which is what keeps two sessions of the
+  same user from clobbering each other**: a `dirty` structure
   (`Set<GlobalField>` + a `Map<worldId, Set<WorldKey>>`) tracks which individual FIELDS/KEYS
   changed since the last successful write — `global.locale`/`global.lastWorld` and
   `worlds.<id>.panelLayout`/`worlds.<id>.chatRead` each track independently, so two owners of the
@@ -210,8 +209,8 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
   acknowledges an accepted op and the 15s timer RESOLVES on silence. Exactly three settle paths:
   that timer, a `chat_error` reject, and a `failPending` reject — reached from BOTH a disconnect
   and an explicit `stop()` (`WorldSession.leave()`, and the `evicted` frame handler). Details →
-  [[shadowcat-codebase-chat]]). `members` is now populated for EVERY role (chat name resolution; the
-  roster endpoint was widened from GM-only), not just GM.
+  [[shadowcat-codebase-chat]]). `members` is populated for EVERY role, not only GM — chat name
+  resolution needs it, and the roster endpoint is member-visible.
 - `src/modules/{entry,core-ui,panels,stage,topbar,statusbar,settings,game-settings,scene-browser,
   chat,chat-composer,chat-card}/` — entry = `@shadowcat/module-entry` (login + world mgmt, behind
   `<Entry onEnterWorld>`); core-ui owns the layout grid + region surfaces into the singleton

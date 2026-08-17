@@ -84,8 +84,9 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
   Update-writable under `cap::EDIT_PERMISSIONS`; `DocRole::Owner`'s BUILT-IN floor is
   `{READ, WRITE_FIELDS}` and excludes it, but the floored role also selects additive
   `by_role[Owner]` grants. **State the precedence rule exactly ONCE** — duplicating it via a
-  short-circuit in the DB join let an inverted-precedence mutation survive. Full rule, the
-  fail-closed list, and the instanced-token exclusion: `shadowcat-codebase-actors-tokens`.
+  short-circuit in the DB join lets an inverted-precedence mutation survive, because either copy
+  alone still produces the right answer. Full rule, the fail-closed list, and the instanced-token
+  exclusion: `shadowcat-codebase-actors-tokens`.
   **Egress ownership is unified with write ownership.** Every egress site resolves
   `is_owner` through the same `effective_owner`/`effective_owner_via` rule the write path uses —
   the owner is an EXPLICIT parameter of `resolve_access`/`resolve_access_world`
@@ -325,9 +326,9 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
   user, before any document-level permission is consulted — correct and load-bearing for every
   document type (actors, scenes, secret regions: the GM must always see a secret
   region even though it's `default: DocRole::None`).
-  - `gm_role: None` (the field's default via `#[serde(default)]`; every document type that
-    predates this field deserializes to `None`) preserves that unconditional short-circuit
-    exactly — no behavior change for anything but the new consumer below.
+  - `gm_role: None` (the field's default via `#[serde(default)]`, so a stored document carrying
+    no `gm_role` key deserializes to `None`) preserves that unconditional short-circuit exactly —
+    every doc_type but the one consumer below is unaffected by the field's existence.
   - `gm_role: Some(role)` caps a GM to the SAME per-document role-floor resolution every other
     actor uses: `effective_role` looks the GM up in `doc.permissions.users` first, falling back to
     `role` (NOT `doc.permissions.default`) only if the GM isn't individually listed. This lets a
@@ -339,8 +340,8 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
     `doc.permissions.default`) to layer world-level capability grants, so a world-default grant
     for the GM's fallback role applies consistently even when that GM is `gm_role`-capped.
     Recomputing the role independently from `doc.permissions.default` here would silently
-    diverge for a capped GM — this is a real, caught-before-shipping bug class, not a
-    hypothetical, which is why the two call sites must share one `effective_role`.
+    diverge for a capped GM — a real defect class, not a hypothetical, which is why the two call
+    sites must share one `effective_role`.
   - First (and so far only) consumer: `shadowcat-codebase-chat`'s `Audience`→`PermissionSet`
     mapping (`Whisper` sets `Some(DocRole::None)`, `GmOnly` sets `Some(DocRole::Observer)`,
     `Public` leaves it `None`).
@@ -358,7 +359,7 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
   conflate the two bands' authority models when reasoning about what the server does and doesn't
   validate.
 - **OCC pre-image comparison at `apply_intent` is numeric-variant-aware, not raw equality.** A
-  naive raw-`==` assumption is now wrong: `data::sqlite::values_semantically_eq` exists
+  naive raw-`==` assumption is wrong: `data::sqlite::values_semantically_eq` exists
   because JS clients cannot preserve the whole-number-vs-float distinction through a JSON
   round-trip (e.g. a server-computed `100.0` comes back over the wire and reparses as `PosInt(100)`,
   which raw `==` would treat as unequal to a stored `100`, causing a spurious `Conflict` on an

@@ -119,8 +119,9 @@ job's example-build step keep them green; the guides code-import their sources r
   one is a host change (`RUNTIME_ENTRIES` + import map), not a module change. See the
   creating-a-module guide (`docs/site/guides/creating-a-module.md`).
   The `check-svelte-runtime-entries` script (above) catches an unserved subpath import at CI time.
-- **`loadModules`'s contract CHANGED** from `Promise<void>` throw-on-first-failure to the contained
-  `ModuleLoadResult`; any doc describing the old throw behavior is stale.
+- **`loadModules` never rejects.** Its contract is the contained `ModuleLoadResult { loaded,
+  failed }`, so a caller must read `failed` to see a module's import or compat failure — nothing
+  propagates out of the batch.
 - **Adding a required field to `Welcome`** (e.g. `server_version`) breaks untyped frame fixtures in
   every package — gate with `pnpm -r test`, not a single filter [[shared-wire-schema-change-needs-full-repo-test]].
 - **`InstalledModuleInfo` is ts-rs generated** — edit the Rust struct, regenerate, never hand-edit

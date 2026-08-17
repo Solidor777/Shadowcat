@@ -109,10 +109,9 @@ and restore as a deployment-operator tool, not an in-app feature.
   value is a server-operator-supplied CLI path (never network-derived) and is single-quote-escaped
   (`.replace('\'', "''")`) before interpolation — re-verify both conditions still hold if this
   code is ever reused somewhere the input could be less trusted.
-- `cargo fmt` with a path argument still reformats the WHOLE crate if not scoped correctly — this
-  bit two different implementers, leaving unrelated drift in
-  the `http` module that had to be reverted before commit. Use `cargo fmt --check` first, or scope
-  explicitly, and diff before committing.
+- `cargo fmt` with a path argument still reformats the WHOLE crate if not scoped correctly,
+  leaving unrelated drift across modules the change never touched. Use `cargo fmt --check` first,
+  or scope explicitly, and diff before committing.
 - `restore_backup`'s destination writes are a stage-then-swap, not an in-place write: the db
   copies to `<db_path>.restore-tmp` then a single `rename` swaps it in (rename atomically replaces
   an existing FILE on all three target OSes); the assets tree copies to

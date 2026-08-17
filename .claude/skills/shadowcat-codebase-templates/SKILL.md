@@ -125,7 +125,7 @@ interprets or merges anything itself.
   someone
   holding `/embedded` on THAT instance pulls or reverts (both terminate in `planToUpdate`, which
   always re-emits `/base`) — a different principal from the pusher who lacked the capability.
-  Contained to the one instance (`push` dispatches one intent PER instance); not yet fixed.**
+  Contained to the one instance (`push` dispatches one intent PER instance).**
 - `MergeConflictModal` (+ `TemplateModalHost`) — the
   field-level conflict resolution UI: renders one `ConflictGroup` per pending child
   (`{ key, label, conflicts: Conflict[] }`; the type lives in
@@ -135,7 +135,7 @@ interprets or merges anything itself.
   calls the session's `resolve(theirsByGroup: Map<string, Set<string>>)`. `TemplateModalHost`
   just renders `MergeConflictModal` when `controller.pending` is non-null — mount once per
   `Table` alongside the root `<Surface>`.
-- `TemplateControls` — the host-rendered chrome (§6.1): a source
+- `TemplateControls` — the host-rendered chrome: a source
   badge (template name + `syncState`) and pull/revert (if `canPull`) / push (if `canPush`)
   buttons, reactive via `createSubscriber`/`subscribe()` on `ctx.documents` (same pattern as
   every sheet — see `shadowcat-codebase-sheets` Hard Invariants). Rendered by `SheetHost`
@@ -157,8 +157,8 @@ interprets or merges anything itself.
   `source` at it) or an instance (has a `source`) or both. `stampInstance` is fully generic —
   never gate it on `doc_type`.
 - **Embedded correlation is by `source.id`, never index/position** — see `merge3Embedded` above;
-  this is the load-bearing fix for embedded children that get reordered/added/removed on either
-  side between syncs.
+  it is what keeps embedded children correlated when either side reorders, adds or removes one
+  between syncs.
 - **Merge emission is band-level, never per-leaf.** `planToUpdate` always emits whole-band
   `FieldChange`s (`/name`, `/engine`, `/system`, one per changed `/embedded/<coll>` — the WHOLE
   collection array, never a per-index path) — deliberate for merge results, since a merge can
@@ -189,8 +189,7 @@ interprets or merges anything itself.
 - Every `$derived.by` in `TemplateControls` that reads `ctx.documents` (directly or via
   `ctx.templates.*`, which reads the same underlying store) must call the component's own
   `subscribe()` first — same freeze-at-first-read hazard as every other sheet
-  (`shadowcat-codebase-sheets` Hard Invariants); already fixed here, don't regress it if this
-  file is touched again.
+  (`shadowcat-codebase-sheets` Hard Invariants). The calls are present; dropping one is silent.
 - `merge3Embedded` is intentionally NOT exported from `@shadowcat/core`'s public surface —
   it's an implementation detail of `merge3`. Do not import it directly from a
   module or ui-kit component; go through `merge3`/`computePull`/`computeRevert`.

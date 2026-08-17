@@ -134,17 +134,17 @@ the reducer (intercept-and-redispatch), so the engine never owns state.
   window-close path expects to hand the panel back to that exact group object — but the
   reducer's tree no longer names it once `detach()` strips the now-empty group. Capture
   `panel.group.id` SYNCHRONOUSLY before the driver call (capturing after resolves to the wrong
-  group). This and the in-flight guard above were both found via direct trace through the
-  vendored `dockview-core@7.0.2` CJS source (`DockviewComponent`, `PopoutWindowService`), not
-  from the wrapper code alone — re-verify against that source on any dockview-core version bump.
+  group). This and the in-flight guard above are properties of the vendored `dockview-core@7.0.2`
+  CJS source (`DockviewComponent`, `PopoutWindowService`), not of the wrapper code — read that
+  source, and re-verify against it on any dockview-core version bump.
 - **`#handleRemovePopoutGroup` (real window-close → `LayoutOp.popIn`) has three branches that must
   all be covered by a test that actually fires `onDidRemovePopoutGroup`, not a synthetic op**: the
   `#applying`-suppression branch (a `LayoutOp.popIn` must NOT fire when OUR OWN `apply()` reconcile is
   what caused the popout group's removal, e.g. a menu "dock" on a popped-out panel), the
   fallback that reads the panel ids off the removal event's own group when the panel isn't in
   `#poppedOutGroupPanels`, and the
-  `STAGE_ID` skip. All three read correct on inspection but are exactly the class of bug found
-  twice in this file under adversarial testing — do not trust inspection alone for changes here.
+  `STAGE_ID` skip. All three read correct on inspection, which is exactly the property this class
+  of bug has in this file — do not trust inspection alone for changes here.
 - **`#applying` is a synchronous-only guard — it cannot suppress an `AsapEvent` listener**
   (live floating re-drag/resize sync). `DockviewApi.onDidLayoutChange` is dockview's `AsapEvent`:
   `.fire()` schedules delivery via `queueMicrotask`, so every listener runs on the
@@ -159,8 +159,8 @@ the reducer (intercept-and-redispatch), so the engine never owns state.
   `onDidDimensionsChange` pattern used for docked zones — that event, owned by dockview-core's
   `PanelApiImpl`, only ever carries width/height, so a pure drag with no size change never fires
   it at all; only `onDidLayoutChange` (fed by `Overlay`'s `onDidChangeEnd`) covers both
-  gestures. Found by tracing the vendored `dockview-core@7.0.2` source directly, not the wrapper
-  code alone — re-verify on any dockview-core version bump, same as the pop-out invariants above.
+  gestures. Both facts live in the vendored `dockview-core@7.0.2` source, not the wrapper code —
+  read it, and re-verify on any dockview-core version bump, same as the pop-out invariants above.
 
 ## Gotchas
 
@@ -177,18 +177,17 @@ the reducer (intercept-and-redispatch), so the engine never owns state.
   `PanelsController.focus` and stops there. Consequence to know before wiring it up:
   `DockviewEngine.focus` early-returns on `STAGE_ID` (stage-well defense-in-depth) and
   `FakeEngine.focus` has NO such guard — a never-fork-a-decision violation that is inert only
-  because the seam is uncalled. Logged in TODO.
+  because the seam is uncalled.
 - Panel modules `requires` `PANEL_CONTRACT`, which topologically activates `panels` FIRST —
   late panel registration is the ROUTINE order, not an edge case.
 - dockview's `onDidRemovePanel` fires synchronously inside `removePanel` — transition guards
   must be armed before the call.
-- RESOLVED: FakeEngine's zone width-containment defect (a zone `<div>` with no width of its own
-  stretched to `host`'s full cross-size, `align-items: stretch`, once enough docked content made
-  the always-present stretch visually register) — `init()` now nests a `row` flex container
+- FakeEngine sizes its zones explicitly, because a zone `<div>` with no width of its own stretches
+  to `host`'s full cross-size under `align-items: stretch`: `init()` nests a `row` flex container
   (left/center/right) with `bottom` full-width below it, and `apply()` applies `ZoneNode.size` as
   each zone's actual px width/height on every reconcile, with `min-width: 0`/`overflow: auto` on
   the zone and `width: 100%; min-width: 0` on each group `<div>` so oversized content scrolls
-  within the zone instead of escaping it — see CLOSED_BUGS.
+  within the zone instead of escaping it.
 - jsdom cannot simulate a real pointer-drag gesture — `dockview.test` unit-tests
   `DockviewEngine` directly under jsdom (init/apply/DOM adoption) with duck-typed
   `DockviewWillDropEvent`s standing in for drops. NO e2e test exercises a real dockview tab
@@ -217,8 +216,8 @@ the reducer (intercept-and-redispatch), so the engine never owns state.
   unit tests drive the translation logic via the injected `popoutDriver` and fire dockview's
   real event emitters directly (e.g. `api.component._onDidRemovePopoutGroup.fire(...)`,
   verified against the vendored source) rather than simulating a real popup; the actual
-  cross-window re-parent + stylesheet clone is dockview's own (spike-verified) machinery plus a
-  manual-QA item, same class as the existing real-pointer-drag gap below.
+  cross-window re-parent + stylesheet clone is dockview's own machinery plus a manual-QA item,
+  same class as the real-pointer-drag gap above.
 - jsdom never runs real layout, so `boundingBox` (backed by `getBoundingClientRect()`) always
   reads all-zero unless a test stubs it — `dockview.test`'s live floating re-drag/resize sync tests assign a replacement
   `getBoundingClientRect` directly onto the floating panel's `group.element`, then fire

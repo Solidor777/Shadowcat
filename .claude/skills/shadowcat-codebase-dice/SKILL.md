@@ -77,8 +77,8 @@ on.
   to join). `Direction`
   (`HighWins`/`LowWins`, `#[default] HighWins`) is a global flip on `RollSpec::direction` orienting
   every margin/tier/crit computation. `Tier{margin_offset, label, tier_value}` is one rung of a
-  classification ladder, shared by both modes. `CritTrigger` (replaces a bare
-  `threshold: i32` field): `AtLeast(i32)` (direction-aware, byte-for-byte the old bare-threshold logic)
+  classification ladder, shared by both modes. `CritTrigger`: `AtLeast(i32)` (direction-aware — a
+  bare numeric threshold, flipped under `LowWins`)
   | `HasSymbol(Symbol)` (direction-**insensitive** — presence/absence has no "better end" to flip).
   `CritSuccess{trigger: CritTrigger, extra_successes, positive_counter}` /
   `CritFail{trigger: CritTrigger, lost, negative_counter, allow_negative}` are SuccessCount-only
@@ -98,8 +98,8 @@ on.
   Option<String>`, `symbols: Vec<Symbol>`, `ordered: bool`). `expertise` is the audit trail of
   points spent adjusting this die's `value` (0 if none/not applicable). `label` is copied
   from the producing `DiceGroup.label`, `None` if unlabeled. `symbols` is the resolved
-  symbols for a `Faces` die's drawn face; always empty for `Numeric`. `ordered` (added in a
-  post-ship final-review fix) is a per-record snapshot of the producing group's
+  symbols for a `Faces` die's drawn face; always empty for `Numeric`. `ordered` is a per-record
+  snapshot of the producing group's
   `DieKind::is_ordered()` at construction time, stamped at every `DieRecord` construction site
   (mirrors `label`/`symbols` propagation exactly, including exploded/penetrated children); `#[serde
   (default = "default_ordered")]` defaults deserialized/legacy records to `true`. It exists solely
@@ -298,9 +298,8 @@ on.
   this form's two unlabeled `Const`s contribute none. A negative stat therefore shows no `[label]`
   chip in the breakdown. `template.test`'s "negative values emit parenthesized zero-minus form
   (no label)" test pins the notation output (deliberately, naming the absent label), so the
-  client shape is a choice; what is untested and undecided is that
-  downstream breakdown consequence — see TODO's dice section. Do not restate the substitution rule
-  without this exception.
+  client shape is a choice; what is untested and undecided is that downstream breakdown
+  consequence. Do not restate the substitution rule without this exception.
 
 ## Hard invariants
 
@@ -317,8 +316,8 @@ on.
   the source; both modes rely on it unmodified.
 - **`resolve_group`'s outer Explode loop must never re-scan a die it (or a sibling die's own
   chain) already pushed** — snapshot the pool length (`resolve_group::initial_len`) before the pass; the inner
-  chain loop is the sole mechanism that extends any one die's own chain. Violating this caused a
-  real 41GB-memory-blowup bug and would silently falsify `CHAIN_CAP`'s bound.
+  chain loop is the sole mechanism that extends any one die's own chain. Violating this grows the
+  pool without bound (41GB observed) and silently falsifies `CHAIN_CAP`'s bound.
 - **An Explode/Reroll retrigger check must test the RAW rolled face, never a post-modifier value**
   (Penetrate's `-1` must apply only to the stored `value`, not to what gates whether the chain
   continues) — checking the decremented value silently truncates Penetrate chains to length 1.
@@ -351,8 +350,8 @@ on.
   undefined** (`DieRecord.ordered: bool`) — checking only `recs.is_empty()` (the absent
   case) is insufficient; an unordered symbolic label's records derive `value` via
   `face_value_and_symbols`'s `unwrap_or(0)`, so omitting the ordered check silently returns
-  `Some(0)`/`Some(sum)` instead of `None` for the exact Daggerheart Hope/Fear headline case the
-  design doc calls out. A label spanning multiple `DiceGroup`s where even one group is unordered
+  `Some(0)`/`Some(sum)` instead of `None` for the Daggerheart Hope/Fear headline case. A label
+  spanning multiple `DiceGroup`s where even one group is unordered
   must also yield `None` for that label (a partial pool with any unordered member has no
   well-defined sum).
 - **`recalculate` targets ONLY base naturals (via `group_spans`), never explosion/penetrate
@@ -361,7 +360,7 @@ on.
   modifier**: `rederive` re-triggers the full modifier pipeline fresh against (possibly-unchanged)
   base naturals, so an UNTARGETED sibling die in the same group can get a brand-new explosion/
   reroll tail across a recalc call even though its own `natural` never changed. This is
-  intentional/plan-approved (not a bug) — see `dice::recalc`'s doc comment and the pinning tests in
+  intentional, not a bug — see `dice::recalc`'s doc comment and the pinning tests in
   `dice::recalc`'s test module (`explosion_tail_for_untouched_sibling_changes_across_recalc` et al.)
   for the exact proven behavior. Base-die `natural` values ARE stable across recalc; derived
   records for exploding/rerolling dice are NOT.
@@ -399,9 +398,9 @@ on.
   `#![deny(missing_docs)]` + `#![deny(clippy::missing_docs_in_private_items)]` — a new
   undocumented item fails the 3-OS CI clippy step. Notation-token and grammar docs are quoted
   from the lexer/parser's enforcing lines — never document a marker or grammar rule from memory.
-- **A written design snippet and the real code can drift** — this module's signatures changed
-  several times after early example code was written. Always read the actual current file
-  before assuming a documented snippet's exact signature.
+- **A written design snippet and the real code can drift** — this module's signatures carry more
+  detail than any prose summary of them. Always read the actual current file before assuming a
+  documented snippet's exact signature.
 - **The crate's OWN types stay uncapped by design — the caps live at the transport boundary**:
   `DiceGroup.count` is still an unbounded `u32` inside the pure library; anything
   reaching `roll()`/`evaluate()` from untrusted input MUST come through
@@ -465,9 +464,4 @@ on.
   `eval`/`notation`/`outcome`/`recalc`/`rng`/`spec` submodule tree). The transport boundary
   (`chat::rolls`) is documented under `shadowcat-codebase-chat`'s generated-API pointer instead.
   Produce with `pnpm build:all`.
-- Deferred work: TODO's dice section (dice-count cap, serde-defaults, `Token` Display impl —
-  several already resolved), a dedicated `SuccessConfig.expertise` bounding entry (an unbounded
-  `SuccessConfig.expertise` is an `O(N·E²)` DoS/wrap-around vector, N dice by expertise squared),
-  and the `DieKind::Faces` empty-face-list panic-surface
-  gap — all deferred to the untrusted-transport boundary alongside the dice-count cap.
 - Related work in the project's auto-memory: `m11-dice-chat-resume`.
