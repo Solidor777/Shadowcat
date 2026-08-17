@@ -78,7 +78,7 @@ export class Grid {
   /**
    * The world distance between two adjacent cell centres — `size` on square (the edge length IS
    * the center-to-center step), `size * sqrt(3)` on hex (every axial neighbour sits `sqrt(3) ·
-   * size` away; {@link axialToPixel} confirms this for the six unit-axial offsets). This is NOT
+   * size` away; `axialToPixel` confirms this for the six unit-axial offsets). This is NOT
    * the grid's indexing scale (`spec.size`, the square edge length or hex outer radius/
    * circumradius) — the two coincide on square grids and diverge by a factor of `sqrt(3)` on hex,
    * which is why a caller converting a travelled world distance into a cell count must use this
@@ -187,8 +187,8 @@ export class Grid {
   /**
    * The scene-coordinate CENTER of the cell at `(col, row)` — square column/row indices, or hex
    * axial `q`/`r` (mirrors {@link cellOf}'s return shape). Square: `col*size+size/2,
-   * row*size+size/2`. Hex: {@link axialToPixel}, the same call `snap`'s hex branch and {@link
-   * hexLines} both already use to locate a hex's center — this promotes that private call onto
+   * row*size+size/2`. Hex: `axialToPixel`, the same call `snap`'s hex branch and `hexLines`
+   * both already use to locate a hex's center — this promotes that private call onto
    * the public surface rather than a second formula.
    * @param col Square column index, or hex axial q.
    * @param row Square row index, or hex axial r.
@@ -213,8 +213,8 @@ export class Grid {
    * The scene-coordinate CORNERS of the cell at `(col, row)`, in draw order — square column/row
    * indices, or hex axial `q`/`r`. Square: the 4 axis-aligned corners of a `size`-edge rect
    * anchored at `(col*size, row*size)`. Hex: the 6 corners of the pointy-top hexagon centered on
-   * {@link cellCenter}, using the SAME per-corner angle formula {@link hexLines} draws its
-   * outlines with — {@link hexLines} calls this method rather than recomputing the corners a
+   * {@link cellCenter}, using the SAME per-corner angle formula `hexLines` draws its
+   * outlines with — `hexLines` calls this method rather than recomputing the corners a
    * second time, so there is exactly one hex-corner formula in this class.
    * @param col Square column index, or hex axial q.
    * @param row Square row index, or hex axial r.
