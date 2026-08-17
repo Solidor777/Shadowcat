@@ -661,8 +661,7 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
     arc-length samples, an undersampled chord between two corner-straddling samples could otherwise
     visually cross the wall the true route avoided. Also validates `footprint_radius_cells` (against
     `MAX_FOOTPRINT_CELLS`), `cell`, and skips (not fails) any individual non-finite wall
-    endpoint — mirroring `build_navmesh`'s defense-in-depth convention, which every function in the
-    module follows. **Two-checks
+    endpoint — mirroring `build_navmesh`'s defense-in-depth convention. **Two-checks
     dichotomy, never conflate:** the mask check is a genuine secrecy gate (route ⊆ gate-allowed);
     the wall check is a fidelity/correctness guarantee with no confidentiality stake — don't reuse
     one's severity framing for the other. Cost is recomputed as the Euclidean length of the
