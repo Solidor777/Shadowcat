@@ -226,6 +226,13 @@ source of truth. The ones agents break most:
   reader checking the source concludes the symbol is documented while the coverage gate reports
   it undocumented — the two disagree and the source looks right. Fix: move the comment onto its
   own line above the member.
+- **A `{@link}` to a `private` member fails the docs BUILD, not just the link.** TypeDoc resolves
+  the name, then excludes the reflection from the output, and reports "resolved but is not
+  included in the documentation" — a validation warning, which the root config's
+  `treatValidationWarningsAsErrors` makes fatal. A tag straddling a line break is worse: the
+  comment's leading `*` lands inside the tag and the link fails to resolve at all. Cite a private
+  helper in backticks (`axialToPixel`) instead; RULE 15 asks for the symbol name, not a hyperlink,
+  and the generator is being asked for something it cannot deliver.
 - **TypeDoc's `entryPointStrategy: "packages"` makes most root-level `typedoc.json` settings
   inert.** `Options.copyForPackage` builds a FRESH options object per package, resets every value
   to its default, applies only the root's `packageOptions` map, then reads that package's own
