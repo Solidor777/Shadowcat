@@ -11,11 +11,17 @@
 // exclusion is invisible in both directions at once — it hides the citations it skips AND it hides
 // every gap in the symbol index, because a name the index cannot see is indistinguishable from a
 // name the shape rule declined to look at. Every backtick span is therefore classified into
-// exactly one printed bucket: verified, acknowledged non-symbol, cross-repo, broken,
-// EXAMPLE-exempt, or not citation-shaped. `EXAMPLE-exempt` is a printed count for the same reason
-// as the rest: an exclusion nobody counts is a backdoor, and a line carrying both a specimen and a
-// real citation would otherwise take the citation out of the gate with nothing in the output
-// changing.
+// exactly one printed bucket — the enumeration is `SPAN_BUCKETS`, which the banner is generated
+// from, so no prose here or anywhere else restates it. An exclusion nobody counts is a backdoor: a
+// line carrying both a specimen and a real citation would otherwise take the citation out of the
+// gate with nothing in the output changing.
+//
+// `spanAccountingDelta` is what makes that claim checkable rather than asserted. Every backtick
+// RUN a document carries must be block-blanked, unpaired, or one of the two delimiters of a span
+// that reached a bucket; the gate fails on any imbalance and says by how much. Three consecutive
+// review rounds each found a different path leaving the pipeline uncounted, every one of them
+// created by the previous round's widening — auditing paths finds the path just built, while the
+// identity covers the ones nobody has written yet.
 //
 // Pure library: no top-level side effects. `check-skill-symbol-refs-cli.mjs` is the executable
 // entry point.
@@ -54,10 +60,12 @@ function stripLiteralsForBraceCounting(line) {
 
 /**
  * Splits source text into lines with any carriage return removed. Line-ending normalization
- * happens ONCE, here, rather than in each pattern: git checks this tree out with CRLF endings on
- * Windows, and a `$`-anchored pattern applied to a line still carrying its `\r` fails to match
- * with no error and no output difference — the file is simply, silently, indexed short. A
- * per-pattern `\r?$` fixes the patterns someone remembered; normalizing the input fixes the class.
+ * happens ONCE, here, rather than in each pattern. `.gitattributes` declares `* text=auto eol=lf`,
+ * so a checkout of THIS tree is LF on every platform and no `\r` should reach these patterns — but
+ * this module also runs over fixture text a test composes and over any tree a caller points it at,
+ * and a `$`-anchored pattern applied to a line still carrying its `\r` fails to match with no
+ * error and no output difference: the file is simply, silently, indexed short. A per-pattern
+ * `\r?$` fixes the patterns someone remembered; normalizing the input fixes the class.
  * @param {string} text - source file contents.
  * @returns {string[]} lines, free of carriage returns.
  */
@@ -548,15 +556,29 @@ function arrayLiteralInitializer(node) {
  * `export type { Foo }`); every name the module IMPORTS, which is this tree's own declaration
  * that the name exists in a package it depends on; every identifier-shaped string LITERAL
  * TYPE, which is how a wire-protocol discriminant value is declared (`type SyncState = "none" |
- * "up_to_date"`); and every identifier-shaped string member of a MODULE-LEVEL array literal, which
- * is the other way this tree declares a closed value set (`NOTATION_KEYWORDS`).
+ * "up_to_date"`); and — under `valueSets` only — every identifier-shaped string member of a
+ * MODULE-LEVEL array literal or single-string constant, which is the other way this tree declares
+ * a closed value set (`NOTATION_KEYWORDS`).
+ *
+ * A value-set member is indexed UNDER ITS DECLARING CONSTANT (`NOTATION_KEYWORDS.kh`), never bare.
+ * Bare, a one- or two-letter dice-notation keyword answers "the tree declares that" to any
+ * citation spelling `t`, `d` or `e` — which is how `shadowcat-codebase-nightfox`'s "prefers the
+ * shell's `t`" came to verify against a dice keyword instead of the i18n function it names. The
+ * owner qualification is the same principle a function-local binding already gets, and it makes
+ * the `kh` citation that motivated the extractor resolve for the right reason.
  *
  * @param {string} text - one `.ts`/`.mjs`/`.js` file's contents, or a `.svelte` file's extracted
  *   script text.
  * @param {string} [fileName] - a name for the parser's diagnostics; never read as a path.
+ * @param {{valueSets?: boolean}} [opts] - `valueSets` enables value-SET extraction, for the
+ *   product roots whose string literals are wire values documents really carry. Off for build
+ *   scripts and repo-root configs, whose literals are a gate's own configuration: indexing those
+ *   lets a citation resolve against the tooling that checks it, which is how `Cargo.toml` and
+ *   `examples` became "symbols the tree declares".
  * @returns {Set<string>} every symbol name this module declares.
  */
-export function extractTsSymbols(text, fileName = "module.ts") {
+export function extractTsSymbols(text, fileName = "module.ts", opts = {}) {
+  const { valueSets = false } = opts;
   const names = new Set();
   const source = ts.createSourceFile(fileName, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
   // Registered under EVERY SUFFIX of its owner chain, mirroring the Rust side's module-path
@@ -567,12 +589,19 @@ export function extractTsSymbols(text, fileName = "module.ts") {
     names.add(name);
     for (let i = 0; i < chain.length; i += 1) names.add(`${chain.slice(i).join(".")}.${name}`);
   };
-  // The owner-qualified forms ONLY. A name with an empty chain reaches nothing: an anonymous
-  // callback's parameter has no owner a citation could name, so it is indexed nowhere rather than
-  // bare.
+  // The FULL owner chain and nothing shorter. A name with an empty chain reaches nothing: an
+  // anonymous callback's parameter has no owner a citation could name, so it is indexed nowhere
+  // rather than bare.
+  //
+  // Suffixes are correct for `add`, whose chain is made of REAL owners — `AppContext.chat.send`
+  // and `chat.send` name the same declaration because `chat` is itself a declared member. They are
+  // wrong here, because the head of a function-local chain is a name invisible outside its
+  // function: registering every suffix of `f`'s local `cfg` puts `cfg.host` in the index, a path
+  // headed by a name no citation outside `f` could legitimately be naming. That is the owner-less
+  // resolution this list exists to prevent, surviving one level down.
   const addOwned = (name, chain) => {
-    if (name === "" || !IDENTIFIER_SHAPED.test(name)) return;
-    for (let i = 0; i < chain.length; i += 1) names.add(`${chain.slice(i).join(".")}.${name}`);
+    if (name === "" || !IDENTIFIER_SHAPED.test(name) || chain.length === 0) return;
+    names.add(`${chain.join(".")}.${name}`);
   };
 
   const walk = (node, chain, inFunction) => {
@@ -611,22 +640,23 @@ export function extractTsSymbols(text, fileName = "module.ts") {
       // A module-level array literal of strings DECLARES a closed set of accepted values —
       // `NOTATION_KEYWORDS`'s dice-notation prefixes are the tree's only spelling of `kh`/`cs`/`cf`
       // — exactly as a Rust string-literal alternation does on the server side, and prose cites a
-      // member of that set by its literal spelling. Registered bare, like a string-literal union
-      // member, since the set's own name is not part of how the value is written. Restricted to a
-      // MODULE-LEVEL declaration: an array built inside a function is a local value, not a
-      // declaration the tree publishes.
+      // member of that set through the constant that declares it. Restricted to a MODULE-LEVEL
+      // declaration: an array built inside a function is a local value, not a declaration the tree
+      // publishes.
       if (
+        valueSets &&
         node.parent?.parent?.parent !== undefined &&
         ts.isSourceFile(node.parent.parent.parent)
       ) {
+        const owner = [node.name.text];
         const literal = arrayLiteralInitializer(node.initializer);
         if (literal !== null) {
           for (const element of literal.elements)
-            if (ts.isStringLiteral(element)) add(element.text, []);
+            if (ts.isStringLiteral(element)) addOwned(element.text, owner);
         } else if (node.initializer !== undefined && ts.isStringLiteral(node.initializer)) {
           // The same rationale at cardinality one: `ITEM_DOC_TYPE = "item"` is the tree's only
-          // spelling of that wire value, and prose cites the VALUE, not the constant holding it.
-          add(node.initializer.text, []);
+          // spelling of that wire value.
+          addOwned(node.initializer.text, owner);
         }
       }
     } else if (ts.isBindingElement(node) && ts.isIdentifier(node.name)) {
@@ -670,6 +700,43 @@ export function extractTsSymbols(text, fileName = "module.ts") {
     ts.forEachChild(node, (child) => walk(child, nextChain, nextInFunction));
   };
   ts.forEachChild(source, (child) => walk(child, [], false));
+  return names;
+}
+
+// A module specifier this repo owns: a relative path, or one of its own workspace packages.
+// Anything else names a package outside the tree.
+const INTERNAL_MODULE_SPECIFIER = /^(?:\.|@shadowcat\/)/;
+
+/**
+ * Extracts every name a module imports from OUTSIDE this repo — an npm dependency, a `node:`
+ * builtin — as opposed to a relative or workspace-package import, which names something this tree
+ * declares elsewhere.
+ *
+ * The index deliberately holds both kinds, so a skill citing `DockviewApi` resolves. The
+ * distinction matters only for the acknowledgement assertion: an acknowledgement claims the tree
+ * does not DECLARE a name, and importing an external name is not declaring it. Without the split,
+ * that assertion would fire on every entry whose own reason is "declared in a dependency" and
+ * force the deletion of correct entries.
+ *
+ * @param {string} text - one TS/JS module's contents, or a `.svelte` file's extracted script.
+ * @param {string} [fileName] - a name for the parser's diagnostics; never read as a path.
+ * @returns {Set<string>} every locally-bound name introduced by an external import.
+ */
+export function externalImportNames(text, fileName = "module.ts") {
+  const names = new Set();
+  const source = ts.createSourceFile(fileName, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  for (const statement of source.statements) {
+    if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier))
+      continue;
+    if (INTERNAL_MODULE_SPECIFIER.test(statement.moduleSpecifier.text)) continue;
+    const clause = statement.importClause;
+    if (clause === undefined) continue;
+    if (clause.name !== undefined) names.add(clause.name.text);
+    const bindings = clause.namedBindings;
+    if (bindings === undefined) continue;
+    if (ts.isNamespaceImport(bindings)) names.add(bindings.name.text);
+    else for (const element of bindings.elements) names.add(element.name.text);
+  }
   return names;
 }
 
@@ -768,86 +835,107 @@ export function moduleNameOf(filePath) {
  * `GENERATED_ROOT`) and `scripts`; and every `.svelte` file's component name (its basename) plus
  * its script-block declarations.
  *
+ * The index is built in two halves that are unioned at the end. `declared` holds what this tree
+ * declares itself; `referenced` holds what it merely NAMES as belonging elsewhere — a Cargo
+ * manifest key, an import of an npm package. Both resolve citations identically, since a skill
+ * citing `tokio` or `DockviewApi` is citing something real. The split exists for the
+ * acknowledgement assertion, whose claim is about DECLARATION: without it, every prefix entry
+ * whose own reason is "declared in a dependency" would report as a conflict, and the correct fix
+ * would look like deleting correct entries.
+ *
  * @param {string} repoRoot - absolute path to the repository root.
- * @returns {{ symbols: Set<string>, filesIndexed: number }}
+ * @returns {{ symbols: Set<string>, filesIndexed: number, declared: Set<string> }}
  */
 export function buildSymbolIndex(repoRoot) {
-  const symbols = new Set();
+  const declared = new Set();
+  const referenced = new Set();
   let filesIndexed = 0;
+  // Product roots carry wire values a document really holds; `scripts` carries a gate's own
+  // configuration. Both are indexed for their DECLARATIONS, only the former for its value sets.
+  const PRODUCT_ROOTS = ["src/client", "src/modules", "src/types"];
 
   const rustRoot = join(repoRoot, "src", "server", "src");
   for (const file of sources(rustRoot, [".rs"])) {
     filesIndexed += 1;
     const text = readFileSync(file, "utf8");
     const modulePath = rustModulePath(rustRoot, file);
-    for (const name of extractRustSymbols(text, modulePath)) symbols.add(name);
+    for (const name of extractRustSymbols(text, modulePath)) declared.add(name);
     // The module a file IS, under every suffix of its path: a binary target under `bin/` is never
     // reached by a `mod` declaration, so `bin::test_server` and `test_server` are otherwise names
     // the tree carries and the index cannot see.
-    for (let i = 0; i < modulePath.length; i += 1) symbols.add(modulePath.slice(i).join("::"));
+    for (let i = 0; i < modulePath.length; i += 1) declared.add(modulePath.slice(i).join("::"));
   }
 
-  // Cargo's manifests declare every crate this repo depends on, and skill prose names those crates
+  // Cargo's manifests name every crate this repo depends on, and skill prose names those crates
   // directly when it explains which library owns a behaviour. Rust paths spell a hyphenated crate
-  // name with underscores, so both forms are indexed.
+  // name with underscores, so both forms are indexed. A manifest key names a dependency or a build
+  // knob — it is a reference, never a declaration of a Rust item.
   for (const file of sources(join(repoRoot, "src", "server"), [".toml"])) {
     filesIndexed += 1;
-    for (const name of extractTomlKeys(readFileSync(file, "utf8"))) symbols.add(name);
+    for (const name of extractTomlKeys(readFileSync(file, "utf8"))) referenced.add(name);
   }
 
   const sqlRoot = join(repoRoot, "src", "server", "migrations");
   for (const file of sources(sqlRoot, [".sql"])) {
     filesIndexed += 1;
-    for (const name of extractSqlSymbols(readFileSync(file, "utf8"))) symbols.add(name);
+    for (const name of extractSqlSymbols(readFileSync(file, "utf8"))) declared.add(name);
   }
 
-  const tsRoots = ["src/client", "src/modules", "src/types", "scripts"];
+  const tsRoots = [...PRODUCT_ROOTS, "scripts"];
   for (const root of tsRoots) {
     const abs = join(repoRoot, ...root.split("/"));
+    const valueSets = PRODUCT_ROOTS.includes(root);
     // Every package/module directory is a declaration too: `src/modules/topbar` is what makes
     // "the `topbar` module" a citation of something real rather than of a word.
     for (const entry of readdirSync(abs, { withFileTypes: true })) {
-      if (entry.isDirectory() && !SKIP_DIRS.has(entry.name)) symbols.add(entry.name);
+      if (entry.isDirectory() && !SKIP_DIRS.has(entry.name)) declared.add(entry.name);
     }
     for (const file of sources(abs, [".ts", ".mjs", ".js"])) {
       const rel = norm(join(root, file.slice(abs.length + 1)));
       if (under(rel, GENERATED_ROOT)) continue;
       filesIndexed += 1;
-      symbols.add(moduleNameOf(file));
-      for (const name of extractTsSymbols(readFileSync(file, "utf8"), basename(file)))
-        symbols.add(name);
+      declared.add(moduleNameOf(file));
+      const text = readFileSync(file, "utf8");
+      const external = externalImportNames(text, basename(file));
+      for (const name of extractTsSymbols(text, basename(file), { valueSets }))
+        (external.has(name) ? referenced : declared).add(name);
     }
     for (const file of sources(abs, [".svelte"])) {
       filesIndexed += 1;
       const componentName = basename(file, ".svelte");
-      symbols.add(componentName);
+      declared.add(componentName);
       const script = extractSvelteScript(readFileSync(file, "utf8"));
-      for (const name of extractTsSymbols(script, `${componentName}.ts`)) {
-        symbols.add(name);
+      const external = externalImportNames(script, `${componentName}.ts`);
+      for (const name of extractTsSymbols(script, `${componentName}.ts`, { valueSets })) {
+        (external.has(name) ? referenced : declared).add(name);
         // A skill legitimately cites a script-level function as the COMPONENT's own behaviour
         // (`SystemTreeEditor.removeField`) — the component name is this file's de facto exported
         // owner, exactly as a TS class or interface name owns its members.
-        symbols.add(`${componentName}.${name}`);
+        declared.add(`${componentName}.${name}`);
       }
     }
     for (const file of sources(abs, [".json"])) {
       const rel = norm(join(root, file.slice(abs.length + 1)));
       if (under(rel, GENERATED_ROOT)) continue;
       filesIndexed += 1;
-      for (const name of extractJsonKeys(readFileSync(file, "utf8"))) symbols.add(name);
+      for (const name of extractJsonKeys(readFileSync(file, "utf8"))) declared.add(name);
     }
   }
   // Repo-root config files: an eslint or TypeDoc option a skill cites is set here and nowhere
-  // else, and the lint configs are real modules whose own bindings prose names.
+  // else, and the lint configs are real modules whose own bindings prose names. Their string
+  // literals are configuration, not wire values, so value-set extraction stays off.
   for (const name of readdirSync(repoRoot)) {
     const path = join(repoRoot, name);
     if (name.endsWith(".json")) {
       filesIndexed += 1;
-      for (const key of extractJsonKeys(readFileSync(path, "utf8"))) symbols.add(key);
+      for (const key of extractJsonKeys(readFileSync(path, "utf8"))) declared.add(key);
     } else if (/\.(?:ts|js|mjs|cjs)$/.test(name)) {
       filesIndexed += 1;
-      symbols.add(moduleNameOf(path));
-      for (const key of extractTsSymbols(readFileSync(path, "utf8"), name)) symbols.add(key);
+      declared.add(moduleNameOf(path));
+      const text = readFileSync(path, "utf8");
+      const external = externalImportNames(text, name);
+      for (const key of extractTsSymbols(text, name))
+        (external.has(key) ? referenced : declared).add(key);
     }
   }
 
@@ -856,13 +944,16 @@ export function buildSymbolIndex(repoRoot) {
   for (const root of MD_ROOTS) {
     for (const entry of readdirSync(join(repoRoot, ...root.split("/")), { withFileTypes: true })) {
       if (!entry.isDirectory()) continue;
-      symbols.add(entry.name);
-      symbols.add(entry.name.replace(/^shadowcat-codebase-/, ""));
+      declared.add(entry.name);
+      declared.add(entry.name.replace(/^shadowcat-codebase-/, ""));
     }
   }
-  symbols.delete("");
+  declared.delete("");
+  referenced.delete("");
 
-  return { symbols, filesIndexed };
+  const symbols = new Set(declared);
+  for (const name of referenced) symbols.add(name);
+  return { symbols, filesIndexed, declared };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -925,6 +1016,21 @@ const NIGHTFOX_SKILL_DIR = "shadowcat-codebase-nightfox";
 // reported broken. Hit-counted and zero-hit-fatal like every other acknowledgement list, so an
 // entry dies the day its citation goes away. This remains a standing review obligation rather than
 // a settled exemption: nothing here can be checked against the repository that owns it.
+//
+// PROVENANCE, so the unverifiable half is falsifiable rather than merely unverified. The owning
+// repository is `Solidor777/Nightfox`, base branch `master`. To check the list: nest that checkout
+// at `src/modules/nightfox`, add it to this gate's indexed roots, rebuild the index, and expect
+// every name below to resolve. An entry that does not is either renamed there or never existed.
+//
+// WEAK POINT, named rather than hidden: `format`, `mechanics`, `resource` and `Stat` are generic
+// wire words. If a name of THIS repo's is renamed away and happens to spell one, the citation of it
+// lands here as "cross-repo" instead of "broken" - the one silent failure this list can produce.
+// The remaining entries are distinctive enough that the collision is not credible. The four stay
+// unqualified because the prose cites them as the wire values they are - a `Stat.type`
+// discriminant, a band key, a module name - and this checkout cannot see the declarations that
+// would supply an owner, so a qualified spelling would be invented rather than cited. The doc-type
+// pair is qualified instead: `EFFECT_DOC_TYPE` and `embedded.effect` carry what a bare `effect`
+// used to.
 export const ACKNOWLEDGED_CROSS_REPO = new Set([
   // Rules-engine entry points and result types.
   "parseNightfox", "resolveNightfox", "ResolveWarning", "Collected.docs", "statRefResolver",
@@ -941,9 +1047,31 @@ export const ACKNOWLEDGED_CROSS_REPO = new Set([
   "EFFECT_DOC_TYPE", "NF_MESSAGES", "nfT",
   // The Nightfox document body's own bands, stat types and doc types, cited as the wire values
   // they are: the `mechanics` band and its `system.mechanics` path, the `resource` stat type, the
-  // `effect` doc type and the `embedded.effect` slot that carries it, and the `format` module.
-  "mechanics", "system.mechanics", "resource", "effect", "embedded.effect", "format",
+  // `embedded.effect` slot the effect doc type is carried in, and the `format` module.
+  "mechanics", "system.mechanics", "resource", "embedded.effect", "format",
 ]);
+
+/**
+ * The skill DIRECTORY one corpus file belongs to — the path component directly under a skill root,
+ * never a substring of the whole path. A checkout that happens to live in a directory named after
+ * a skill would otherwise apply that skill's file-scoped acknowledgements to every file in the
+ * corpus, turning a per-file exemption into a global one with nothing in the output changing.
+ *
+ * @param {string} repoRoot - absolute path to the repository root.
+ * @param {string} file - absolute path to a corpus markdown file.
+ * @returns {string|null} the owning skill directory name, or null when the file sits under no
+ *   skill root.
+ */
+export function skillDirOf(repoRoot, file) {
+  const path = norm(file);
+  for (const root of MD_ROOTS) {
+    const prefix = `${norm(join(repoRoot, ...root.split("/")))}/`;
+    if (!path.startsWith(prefix)) continue;
+    const rest = path.slice(prefix.length);
+    return rest.includes("/") ? rest.split("/")[0] : null;
+  }
+  return null;
+}
 
 /**
  * Finds every markdown file under the tracked skill directories. No file is excluded: the
@@ -1013,11 +1141,18 @@ const ASSIGNMENT_SHAPE =
  * checking almost none of it. Bounding costs the wrapped-span fix nothing, since a wrapped span
  * never crosses a blank line either.
  *
+ * Every backtick RUN in `text` is accounted for: a run either delimits a span emitted here, sits
+ * INSIDE one (where the caller's recursion re-extracts it), or is reported in `unpairedRuns`. That
+ * three-way split is what lets `spanAccountingDelta` prove no span left the pipeline uncounted.
+ *
  * @param {string} text - Markdown prose, fenced and indented code blocks already stripped.
- * @returns {{content: string, index: number}[]} each span's raw content and start offset.
+ * @returns {{spans: {content: string, index: number}[], runs: number, unpairedRuns: number}} each
+ *   span's raw content and start offset, the total backtick-run count, and the runs that paired
+ *   with nothing at this nesting level.
  */
 export function extractCodeSpans(text) {
   const spans = [];
+  let unpairedRuns = 0;
   // Paragraph boundaries: a run of one or more blank lines. Offsets stay absolute so the caller's
   // line attribution needs no adjustment.
   let paraStart = 0;
@@ -1031,6 +1166,7 @@ export function extractCodeSpans(text) {
       let j = i + 1;
       while (j < runs.length && runs[j].len !== open.len) j += 1;
       if (j >= runs.length) {
+        unpairedRuns += 1;
         i += 1;
         continue;
       }
@@ -1041,7 +1177,11 @@ export function extractCodeSpans(text) {
       i = j + 1;
     }
   };
-  const blankLine = /^[ \t]*$/;
+  // `\r` is in the blank-line class deliberately. `.gitattributes` normalizes this tree to LF, so
+  // a line ending in `\r` should not arise — but paragraph bounding is what caps an unpaired
+  // delimiter's blast radius, and a bounding rule that silently stops bounding on one line ending
+  // is a failure in the hiding direction. Admitting `\r` costs nothing and removes the coupling.
+  const blankLine = /^[ \t\r]*$/;
   let offset = 0;
   for (const line of text.split("\n")) {
     if (blankLine.test(line)) {
@@ -1051,7 +1191,17 @@ export function extractCodeSpans(text) {
     offset += line.length + 1;
   }
   flush(text.length);
-  return spans;
+  return { spans, runs: countBacktickRuns(text), unpairedRuns };
+}
+
+/**
+ * Counts the backtick RUNS in a string — the unit code-span pairing consumes, two per span,
+ * whatever each run's length. This is the conserved quantity `spanAccountingDelta` balances.
+ * @param {string} text - any text.
+ * @returns {number} the number of maximal backtick runs.
+ */
+export function countBacktickRuns(text) {
+  return (text.match(/`+/g) ?? []).length;
 }
 
 /**
@@ -1061,8 +1211,15 @@ export function extractCodeSpans(text) {
  * accounted for) and each span nested inside it, which are the real citations. Nesting recurses to
  * any depth — a triple-run span quoting a double-run span quoting a citation would otherwise lose
  * the innermost token, which is the only real one, into no bucket at all.
+ *
+ * A span whose content is entirely whitespace yields no token, so it is COUNTED in `emptySpans`
+ * rather than dropped: it still consumed two backtick runs, and an uncounted drop is the exact
+ * shape this module's accounting exists to make impossible.
+ *
  * @param {string} text - Markdown prose, fenced and indented code blocks already stripped.
- * @returns {{token: string, line: number}[]} trimmed span contents, nested spans included.
+ * @returns {{tokens: {token: string, line: number}[], spansEmitted: number, emptySpans: number,
+ *   runs: number, unpairedRuns: number}} the non-empty trimmed span contents (nested spans
+ *   included), the span and empty-span counts, and the run accounting summed over every level.
  */
 export function citationTokens(text) {
   const lineStarts = [0];
@@ -1078,13 +1235,23 @@ export function citationTokens(text) {
     return lo + 1;
   };
   const out = [];
+  let spansEmitted = 0;
+  let emptySpans = 0;
+  let unpairedRuns = 0;
   const emit = (content, line) => {
-    out.push({ token: content.trim(), line });
+    spansEmitted += 1;
+    const token = content.trim();
+    if (token === "") emptySpans += 1;
+    else out.push({ token, line });
     if (!content.includes("`")) return;
-    for (const inner of extractCodeSpans(content)) emit(inner.content, line);
+    const nested = extractCodeSpans(content);
+    unpairedRuns += nested.unpairedRuns;
+    for (const inner of nested.spans) emit(inner.content, line);
   };
-  for (const span of extractCodeSpans(text)) emit(span.content, lineOf(span.index));
-  return out.filter((t) => t.token !== "");
+  const top = extractCodeSpans(text);
+  unpairedRuns += top.unpairedRuns;
+  for (const span of top.spans) emit(span.content, lineOf(span.index));
+  return { tokens: out, spansEmitted, emptySpans, runs: top.runs, unpairedRuns };
 }
 
 // Inline code spans only — a fenced or indented code BLOCK is an illustrative snippet (BAD/GOOD
@@ -1106,12 +1273,26 @@ const LIST_MARKER = /^([ \t]*)([-*+]|\d+[.)])([ \t]+)/;
  * Blanks every fenced and indented code BLOCK in Markdown text, keeping one blank line per removed
  * line so the caller's line attribution stays aligned with the original file.
  *
+ * Removal is whole-line and COUNTED. Block stripping has the largest blast radius of any exclusion
+ * in this module — a `FENCE_DELIMITER` or `LIST_MARKER` misdetection removes arbitrary prose from
+ * the gate — so the lines it blanks and the backtick runs they carried are returned as numbers the
+ * caller prints and balances, never as a silent difference between two strings.
+ *
  * @param {string} text - one Markdown document's raw contents.
- * @returns {string} the same document with code-block lines emptied.
+ * @returns {{body: string, blankedLines: number, blankedRuns: number}} the document with
+ *   code-block lines emptied, how many lines that removed, and how many backtick runs went with
+ *   them.
  */
 export function stripCodeBlocks(text) {
   const lines = text.split("\n");
   const out = [];
+  let blankedLines = 0;
+  let blankedRuns = 0;
+  const blank = (line) => {
+    blankedLines += 1;
+    blankedRuns += countBacktickRuns(line);
+    out.push("");
+  };
   const listContent = [];
   let inFence = false;
   let inIndented = false;
@@ -1119,13 +1300,13 @@ export function stripCodeBlocks(text) {
   let prevBlank = true;
   for (const line of lines) {
     if (inFence) {
-      out.push("");
+      blank(line);
       if (FENCE_DELIMITER.test(line)) inFence = false;
       prevBlank = false;
       continue;
     }
     if (FENCE_DELIMITER.test(line)) {
-      out.push("");
+      blank(line);
       inFence = true;
       prevBlank = false;
       continue;
@@ -1138,7 +1319,7 @@ export function stripCodeBlocks(text) {
     const indent = line.length - line.trimStart().length;
     if (inIndented) {
       if (indent >= indentedFrom) {
-        out.push("");
+        blank(line);
         prevBlank = false;
         continue;
       }
@@ -1150,7 +1331,7 @@ export function stripCodeBlocks(text) {
     if (prevBlank && indent >= required) {
       inIndented = true;
       indentedFrom = required;
-      out.push("");
+      blank(line);
       prevBlank = false;
       continue;
     }
@@ -1159,7 +1340,7 @@ export function stripCodeBlocks(text) {
     out.push(line);
     prevBlank = false;
   }
-  return out.join("\n");
+  return { body: out.join("\n"), blankedLines, blankedRuns };
 }
 
 /**
@@ -1173,17 +1354,24 @@ export function stripCodeBlocks(text) {
  * carrying both a specimen and a genuine citation would otherwise take the citation out of the
  * gate with nothing in the output changing.
  *
+ * The `accounting` it returns is the raw material of `spanAccountingDelta`: every backtick run the
+ * document carries, split into the runs block stripping removed, the runs that paired with
+ * nothing, and the two runs each emitted span consumed.
+ *
  * @param {string} text - the skill file's raw contents.
  * @returns {{ candidates: {line: number, token: string}[], nonCandidates: number,
- *   exampleExempt: number }}
+ *   exampleExempt: number, accounting: {rawRuns: number, blankedBlockLines: number,
+ *   blankedRuns: number, bodyRuns: number, unpairedRuns: number, spansEmitted: number,
+ *   emptySpans: number} }}
  */
 export function extractCitationCandidates(text) {
-  const body = stripCodeBlocks(text);
+  const { body, blankedLines, blankedRuns } = stripCodeBlocks(text);
   const lines = body.split("\n");
   const candidates = [];
   let nonCandidates = 0;
   let exampleExempt = 0;
-  for (const { token, line } of citationTokens(body)) {
+  const { tokens, spansEmitted, emptySpans, runs, unpairedRuns } = citationTokens(body);
+  for (const { token, line } of tokens) {
     // The EXAMPLE marker exempts the line a span OPENS on: that is the line whose author wrote the
     // specimen, and a span is only ever a specimen because of the sentence introducing it.
     if (EXAMPLE_EXEMPT.test(lines[line - 1] ?? "")) {
@@ -1198,7 +1386,48 @@ export function extractCitationCandidates(text) {
     }
     candidates.push({ line, token: cited });
   }
-  return { candidates, nonCandidates, exampleExempt };
+  return {
+    candidates,
+    nonCandidates,
+    exampleExempt,
+    accounting: {
+      rawRuns: countBacktickRuns(text),
+      blankedBlockLines: blankedLines,
+      blankedRuns,
+      bodyRuns: runs,
+      unpairedRuns,
+      spansEmitted,
+      emptySpans,
+    },
+  };
+}
+
+/**
+ * The conservation invariant this gate is built on, in one expression: every backtick RUN the
+ * document carries must be either blanked with its code block, left unpaired, or one of the two
+ * delimiters of a span that reached exactly one printed bucket.
+ *
+ * A non-zero result means a span left the pipeline without being counted — the defect class that
+ * recurred three rounds running, each time through a NEW early-exit path created by the previous
+ * round's widening. Auditing the paths one at a time can only ever find the path just built; the
+ * identity holds for every path at once, including the ones nobody has written yet, because a new
+ * exclusion that forgets to declare itself unbalances the sum.
+ *
+ * @param {{rawRuns: number, blankedRuns: number, unpairedRuns: number, emptySpans: number,
+ *   exampleExempt: number, nonCandidates: number, verified: number, acknowledged: number,
+ *   crossRepo: number, broken: number}} a - one file's, or the whole run's, span accounting.
+ * @returns {number} runs found minus runs accounted for; 0 when nothing leaked.
+ */
+export function spanAccountingDelta(a) {
+  const classified =
+    a.emptySpans +
+    a.exampleExempt +
+    a.nonCandidates +
+    a.verified +
+    a.acknowledged +
+    a.crossRepo +
+    a.broken;
+  return a.rawRuns - (a.blankedRuns + a.unpairedRuns + 2 * classified);
 }
 
 // A citation-shaped token that is legitimately not a symbol this tree declares: a wire/serde
@@ -1228,9 +1457,6 @@ export const ACKNOWLEDGED_NON_SYMBOLS = new Set([
   // `#[serde(...)]` / rustdoc attribute keywords - serde's and rustdoc's own vocabulary, not a
   // symbol this repo declares.
   "deny_unknown_fields", "skip_serializing_if", "no_run", "tag",
-  // A language keyword whose backticks are load-bearing: the same sentence also uses "this" as an
-  // ordinary pronoun, and only the code font tells the reader which one is meant.
-  "this",
   // Durable-tracker filenames RULE 15/16 already govern on their own terms (a "Pointers"-section
   // citation of a durable doc by name), not a code-symbol citation.
   "OPEN_BUGS", "CLOSED_BUGS",
@@ -1250,9 +1476,14 @@ export const ACKNOWLEDGED_NON_SYMBOLS = new Set([
   // Test-framework API: a Vitest matcher and a Playwright locator method, named while describing
   // what a test can and cannot observe.
   "toBe", "boundingBox",
-  // A JSON-Schema combinator keyword, cited beside its siblings while describing what a validator
-  // accepts. The schema vocabulary is the standard's, not a declaration in this tree.
+  // JSON-Schema keywords cited beside each other while describing what a validator accepts:
+  // `enum` is a validation keyword, `anyOf`/`oneOf` are combinators. The schema vocabulary is the
+  // standard's, not a declaration in this tree.
   "enum", "anyOf", "oneOf",
+  // The JS array sort, cited whole. NOT a bare `Array` prefix entry: this tree declares
+  // `SchemaType::Array`, so a head-matching entry would absorb a dead citation of THAT variant's
+  // members as "external" - the acknowledgement would be false and the broken citation silent.
+  "Array.sort",
   // URL grammar terms from the standard the SSRF guard parses against.
   "https", "userinfo",
   // A request API named beside the crate this repo actually uses for the same job, and the
@@ -1294,16 +1525,22 @@ export const ACKNOWLEDGED_NON_SYMBOLS = new Set([
 // members an external owner exposes is unbounded while the owner's own name is bounded and
 // reasoned - the one place a segment-wise acknowledgement is defensible. Everything here is
 // declared in a dependency, in the standard library, or by the web platform; nothing in this tree
-// declares any of it.
+// declares any of it, which `indexedAcknowledgements` re-checks against the index on every run.
+//
+// Two constraints on membership, both load-bearing. An entry must name an OWNER, so its head match
+// is bounded by that owner's surface; and no entry may be a single letter, since one letter is far
+// likelier to be a prose variable than an owner name - `E` sat here absorbing the `E` of an
+// `O(N*E^2)` complexity bound, an acknowledgement of something that is not a symbol at all. A
+// name whose members are enumerable belongs in `ACKNOWLEDGED_NON_SYMBOLS` as a whole token.
 export const ACKNOWLEDGED_EXTERNAL_PREFIX = new Set([
   // Crates this repo depends on, named as the owner of whatever they expose.
   "tokio", "clap", "reqwest", "serde_json", "ammonia", "polyanya",
   // Rust primitive and std types.
   "f64", "u32", "i128", "Vec", "Option", "Some", "Result", "Err", "HashSet", "BTreeMap",
   "Uuid", "Arc", "Mutex", "Rc", "RefCell", "Sync", "Display", "PartialEq", "Path", "PathBuf",
-  "SqlitePool", "SyntaxError", "Sink", "ConnectInfo", "JoinSet", "E", "i32",
+  "SqlitePool", "SyntaxError", "Sink", "ConnectInfo", "JoinSet", "i32",
   // TS/JS standard and Web globals, and the `crypto` global whose members this repo calls.
-  "undefined", "Array", "Map", "Window", "IntersectionObserver", "structuredClone", "crypto",
+  "undefined", "Map", "Window", "IntersectionObserver", "structuredClone", "crypto",
   // Third-party UI libraries this repo depends on but does not declare (the dockview panel
   // library, TypeDoc's own internals).
   "DockviewComponent", "PopoutWindowService", "AsapEvent", "DockviewApi", "PanelApiImpl",
@@ -1366,10 +1603,12 @@ export function resolvesAgainstIndex(token, symbols) {
  *   whole-token acknowledgement set that applies to THIS file only, with its own hit counter;
  *   `ACKNOWLEDGED_CROSS_REPO` is passed this way for the skill that documents another repository.
  * @returns {{ verified: number, acknowledged: number, broken: {line: number, token: string}[],
- *   nonCandidates: number, exampleExempt: number, crossRepo: number }}
+ *   nonCandidates: number, exampleExempt: number, crossRepo: number,
+ *   accounting: ReturnType<typeof extractCitationCandidates>["accounting"] &
+ *     {verified: number, acknowledged: number, crossRepo: number, broken: number} }}
  */
 export function checkFileCitations(text, symbols, hits = new Map(), scoped = {}) {
-  const { candidates, nonCandidates, exampleExempt } = extractCitationCandidates(text);
+  const { candidates, nonCandidates, exampleExempt, accounting } = extractCitationCandidates(text);
   const { extra = new Set(), extraHits = new Map() } = scoped;
   let verified = 0;
   let acknowledged = 0;
@@ -1408,7 +1647,23 @@ export function checkFileCitations(text, symbols, hits = new Map(), scoped = {})
     }
     broken.push({ line, token });
   }
-  return { verified, acknowledged, broken, nonCandidates, exampleExempt, crossRepo };
+  return {
+    verified,
+    acknowledged,
+    broken,
+    nonCandidates,
+    exampleExempt,
+    crossRepo,
+    accounting: {
+      ...accounting,
+      nonCandidates,
+      exampleExempt,
+      verified,
+      acknowledged,
+      crossRepo,
+      broken: broken.length,
+    },
+  };
 }
 
 /**
@@ -1421,9 +1676,16 @@ export function checkFileCitations(text, symbols, hits = new Map(), scoped = {})
  * @returns {{ filesScanned: number, filesIndexed: number, symbolCount: number,
  *   candidatesChecked: number, verified: number, acknowledged: number,
  *   broken: {file: string, line: number, token: string}[], nonCandidates: number,
- *   exampleExempt: number, crossRepo: number, filesWithNoCandidates: string[],
+ *   exampleExempt: number, crossRepo: number,
+ *   filesWithNoCandidates: {file: string, nonCandidates: number, exampleExempt: number,
+ *     emptySpans: number, unpairedRuns: number}[],
  *   acknowledgedHits: Map<string, number>, crossRepoHits: Map<string, number>,
- *   unusedAcknowledgements: string[], untrackedDirs: string[] }}
+ *   unusedAcknowledgements: string[], indexedAcknowledgements: string[],
+ *   untrackedDirs: string[],
+ *   accounting: Parameters<typeof spanAccountingDelta>[0] & {bodyRuns: number,
+ *     blankedBlockLines: number, spansEmitted: number},
+ *   conservationDelta: number,
+ *   conservationFailures: {file: string, delta: number, accounting: object}[] }}
  */
 export function checkSkillSymbolRefs(repoRoot, opts = {}) {
   let { trackedDirs, untrackedDirs } = opts;
@@ -1437,7 +1699,7 @@ export function checkSkillSymbolRefs(repoRoot, opts = {}) {
     trackedDirs = dirs.tracked;
     untrackedDirs = dirs.untracked;
   }
-  const { symbols, filesIndexed } = buildSymbolIndex(repoRoot);
+  const { symbols, filesIndexed, declared } = buildSymbolIndex(repoRoot);
   const files = findMarkdownFiles(repoRoot, trackedDirs);
   const acknowledgedHits = new Map();
   const crossRepoHits = new Map();
@@ -1448,11 +1710,30 @@ export function checkSkillSymbolRefs(repoRoot, opts = {}) {
   let crossRepo = 0;
   const broken = [];
   const filesWithNoCandidates = [];
+  // Summed over every file, then balanced once: the aggregate is what a per-file rounding of any
+  // kind cannot hide, and the per-file list is what localizes a failure to the document that
+  // caused it.
+  const totals = {
+    rawRuns: 0,
+    blankedBlockLines: 0,
+    blankedRuns: 0,
+    bodyRuns: 0,
+    unpairedRuns: 0,
+    spansEmitted: 0,
+    emptySpans: 0,
+    nonCandidates: 0,
+    exampleExempt: 0,
+    verified: 0,
+    acknowledged: 0,
+    crossRepo: 0,
+    broken: 0,
+  };
+  const conservationFailures = [];
   for (const file of files) {
     const text = readFileSync(file, "utf8");
     // The cross-repo acknowledgements apply to the ONE skill that documents another repository,
     // and nowhere else: a citation of a Nightfox name in any other skill is still broken.
-    const scoped = norm(file).includes(`/${NIGHTFOX_SKILL_DIR}/`)
+    const scoped = skillDirOf(repoRoot, file) === NIGHTFOX_SKILL_DIR
       ? { extra: ACKNOWLEDGED_CROSS_REPO, extraHits: crossRepoHits }
       : {};
     const result = checkFileCitations(text, symbols, acknowledgedHits, scoped);
@@ -1462,16 +1743,30 @@ export function checkSkillSymbolRefs(repoRoot, opts = {}) {
     exampleExempt += result.exampleExempt;
     crossRepo += result.crossRepo;
     for (const b of result.broken) broken.push({ file, ...b });
+    for (const key of Object.keys(totals)) totals[key] += result.accounting[key];
+    const delta = spanAccountingDelta(result.accounting);
+    if (delta !== 0) conservationFailures.push({ file, delta, accounting: result.accounting });
     // A per-FILE floor. The global `candidatesChecked === 0` guard cannot see a single file that
     // stopped yielding candidates - one stray delimiter, or a fence-pairing slip, silently takes
     // that file's whole prose out of the gate while every other file keeps the totals healthy.
-    // A file that carries backticks at all must yield at least one classified span.
+    // A file that carries backticks at all must yield at least one CHECKED citation: the failure
+    // this floor exists for shifts pairing so the real citations land in the gaps and the prose
+    // between them becomes the spans, and that prose is full of spaces, so it climbs
+    // `nonCandidates` instead of yielding nothing. Requiring a non-empty `nonCandidates` bucket to
+    // stay silent would therefore hold the floor shut on precisely its own failure mode. What each
+    // unchecked bucket DID absorb is reported with the file, so the finding never overstates
+    // itself on a document whose spans are legitimately all specimens or all prose.
     if (
       result.verified + result.acknowledged + result.crossRepo + result.broken.length === 0 &&
-      result.nonCandidates === 0 &&
       text.includes("`")
     )
-      filesWithNoCandidates.push(file);
+      filesWithNoCandidates.push({
+        file,
+        nonCandidates: result.nonCandidates,
+        exampleExempt: result.exampleExempt,
+        emptySpans: result.accounting.emptySpans,
+        unpairedRuns: result.accounting.unpairedRuns,
+      });
   }
 
   const unusedAcknowledgements = [
@@ -1480,6 +1775,17 @@ export function checkSkillSymbolRefs(repoRoot, opts = {}) {
   ]
     .filter((entry) => !acknowledgedHits.has(entry))
     .concat([...ACKNOWLEDGED_CROSS_REPO].filter((entry) => !crossRepoHits.has(entry)));
+
+  // Every acknowledgement asserts "this tree does not declare that name". The zero-hit rule proves
+  // an entry is REACHED; it cannot prove the entry is TRUE, and for the head-matching prefix list
+  // it does not even imply it — `P.unknownMember` fails resolution and bumps `P` whether or not
+  // the index has grown `P` in the meantime. Checking the assertion directly names the cause where
+  // the zero-hit rule could only ever name a symptom.
+  const indexedAcknowledgements = [
+    ...ACKNOWLEDGED_NON_SYMBOLS,
+    ...ACKNOWLEDGED_EXTERNAL_PREFIX,
+    ...ACKNOWLEDGED_CROSS_REPO,
+  ].filter((entry) => declared.has(entry));
 
   return {
     filesScanned: files.length,
@@ -1496,6 +1802,10 @@ export function checkSkillSymbolRefs(repoRoot, opts = {}) {
     acknowledgedHits,
     crossRepoHits,
     unusedAcknowledgements,
+    indexedAcknowledgements,
     untrackedDirs: untrackedDirs ?? [],
+    accounting: totals,
+    conservationDelta: spanAccountingDelta(totals),
+    conservationFailures,
   };
 }

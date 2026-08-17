@@ -16,9 +16,13 @@ import {
   rustModulePath,
   extractTsSymbols,
   extractSvelteScript,
+  externalImportNames,
+  skillDirOf,
   extractCodeSpans,
   stripCodeBlocks,
   citationTokens,
+  countBacktickRuns,
+  spanAccountingDelta,
   extractCitationCandidates,
   resolvesAgainstIndex,
   checkFileCitations,
@@ -190,18 +194,34 @@ describe("extractRustSymbols", () => {
     expect(names.has("astar_leg::cell")).toBe(true);
   });
 
-  it("scopes a local to the fn that declares it, not to a sibling fn", () => {
+  // The two `fnStack` pops are separately necessary, so each gets a fixture only IT can satisfy.
+  // A two-sibling-functions fixture is satisfied by either pop alone, which is why it discriminates
+  // neither: deleting one mechanism leaves the test green.
+  it("ends a body-less trait method's scope at the NEXT declaration (the item-time pop)", () => {
     const text = [
-      "pub fn first() {",
-      "    let only_here = 1;",
-      "}",
-      "pub fn second() {",
-      "    let elsewhere = 2;",
+      "pub trait Repo {",
+      "    fn first(&self, only_here: u32);",
+      "    fn second(&self, elsewhere: u32);",
       "}",
     ].join("\n");
     const names = extractRustSymbols(text);
     expect(names.has("first::only_here")).toBe(true);
     expect(names.has("second::only_here")).toBe(false);
+  });
+
+  it("returns to the ENCLOSING fn when a nested fn's body closes (the brace-time pop)", () => {
+    const text = [
+      "pub fn outer() {",
+      "    fn inner() {",
+      "        let deep = 1;",
+      "    }",
+      "    let shallow = 2;",
+      "}",
+    ].join("\n");
+    const names = extractRustSymbols(text);
+    expect(names.has("inner::deep")).toBe(true);
+    expect(names.has("outer::shallow")).toBe(true);
+    expect(names.has("inner::shallow")).toBe(false);
   });
 });
 
@@ -388,33 +408,70 @@ describe("extractTsSymbols", () => {
     expect(names.has("messages.plain")).toBe(true);
   });
 
-  it("indexes each identifier-shaped string in a module-level array-literal value set", () => {
+  // Value-set members carry their declaring constant. Bare, a one- or two-letter notation keyword
+  // answers "the tree declares that" to any citation spelling `d`, `t` or `e` anywhere.
+  it("indexes an array-literal value set's members UNDER the constant, never bare", () => {
     const text = 'export const NOTATION_KEYWORDS: readonly string[] = ["d", "kh", "cs"];';
-    const names = extractTsSymbols(text);
-    expect(names.has("kh")).toBe(true);
-    expect(names.has("cs")).toBe(true);
+    const names = extractTsSymbols(text, "template.ts", { valueSets: true });
+    expect(names.has("NOTATION_KEYWORDS.kh")).toBe(true);
+    expect(names.has("kh")).toBe(false);
+    expect(names.has("d")).toBe(false);
+  });
+
+  // A build script's string literals are its own configuration, not wire values. Indexed, they let
+  // a skill citation resolve against the tooling that checks it.
+  it("extracts no value set at all when valueSets is off", () => {
+    const text = 'export const ROOTS = ["src", "scripts", "examples"];';
+    const names = extractTsSymbols(text, "check-lint-allowances.mjs");
+    expect(names.has("ROOTS")).toBe(true);
+    expect(names.has("ROOTS.src")).toBe(false);
+    expect(names.has("src")).toBe(false);
   });
 
   it("ignores an array literal that is not a module-level declaration's value set", () => {
-    const names = extractTsSymbols('function f() {\n  accept(["kh", "kl"]);\n}');
+    const names = extractTsSymbols('function f() {\n  accept(["kh", "kl"]);\n}', "f.ts", {
+      valueSets: true,
+    });
     expect(names.has("kh")).toBe(false);
+    expect(names.has("f.kh")).toBe(false);
   });
 
   it("does NOT index a collection constructor's members, which would index this gate's own lists", () => {
     // `scripts/` is an indexed root and `ACKNOWLEDGED_NON_SYMBOLS` is declared as `new Set([...])`.
     // Unwrapping the constructor makes every acknowledged token resolve as a declared name, so the
     // list goes dead and the gate reports as verified the exact citations it exists to flag.
-    expect(extractTsSymbols('export const ACK = new Set(["Uuid"]);').has("Uuid")).toBe(false);
+    const names = extractTsSymbols('export const ACK = new Set(["Uuid"]);', "a.ts", {
+      valueSets: true,
+    });
+    expect(names.has("Uuid")).toBe(false);
+    expect(names.has("ACK.Uuid")).toBe(false);
   });
 
-  it("indexes the wire VALUE a module-level string constant declares", () => {
-    const names = extractTsSymbols('export const ITEM_DOC_TYPE = "item";');
+  it("indexes the wire VALUE a module-level string constant declares, under that constant", () => {
+    const names = extractTsSymbols('export const ITEM_DOC_TYPE = "item";', "docs.ts", {
+      valueSets: true,
+    });
     expect(names.has("ITEM_DOC_TYPE")).toBe(true);
-    expect(names.has("item")).toBe(true);
+    expect(names.has("ITEM_DOC_TYPE.item")).toBe(true);
+    expect(names.has("item")).toBe(false);
   });
 
   it("ignores a function-local string constant, which publishes no value", () => {
-    expect(extractTsSymbols('function f() {\n  const k = "item";\n}').has("item")).toBe(false);
+    const names = extractTsSymbols('function f() {\n  const k = "item";\n}', "f.ts", {
+      valueSets: true,
+    });
+    expect(names.has("item")).toBe(false);
+    expect(names.has("f.k.item")).toBe(false);
+  });
+
+  // A local's owner chain is registered WHOLE. Its head is a name invisible outside the function,
+  // so every suffix of it is a path no citation could legitimately be naming — `cfg.host` below is
+  // the shape that let an owner-less resolution survive one level down.
+  it("registers a function-local object's members under the FULL chain, not every suffix", () => {
+    const names = extractTsSymbols("function f() {\n  const cfg = { host: 1 };\n}");
+    expect(names.has("f.cfg.host")).toBe(true);
+    expect(names.has("cfg.host")).toBe(false);
+    expect(names.has("host")).toBe(false);
   });
 
   it("indexes an imported name and a string-literal type member", () => {
@@ -445,7 +502,7 @@ describe("extractCodeSpans / citationTokens", () => {
   // discriminates a run-length reader from the pattern this replaces.
   it("recovers both citations from the double-backtick span that quotes them", () => {
     const line = "Write ``see `egress_loop`'s `SceneSubscribe` arm``, never a line number.";
-    expect(citationTokens(line).map((t) => t.token)).toEqual([
+    expect(citationTokens(line).tokens.map((t) => t.token)).toEqual([
       "see `egress_loop`'s `SceneSubscribe` arm",
       "egress_loop",
       "SceneSubscribe",
@@ -455,44 +512,59 @@ describe("extractCodeSpans / citationTokens", () => {
   it("pairs a span that WRAPS a line break, so later spans on the line stay aligned", () => {
     // A line-scoped reader pairs the wrap's ORPHAN closing backtick with the next span's opener:
     // it emits the prose BETWEEN the two spans ("and") as a token the author never wrote, and
-    // loses the real citation entirely. Both assertions below discriminate that reader.
-    const tokens = citationTokens("a `foo ==\nbar` and `MoveOutcome.cost` here.").map((t) => t.token);
+    // loses the real citation entirely. The exact list is what discriminates that reader: it
+    // fails on the manufactured token AND on the lost citation, where a containment check on
+    // either one alone leaves the other side untested.
+    const tokens = citationTokens("a `foo ==\nbar` and `MoveOutcome.cost` here.").tokens.map(
+      (t) => t.token,
+    );
     expect(tokens).toEqual(["foo ==\nbar", "MoveOutcome.cost"]);
-    expect(tokens).not.toContain("and");
   });
 
   it("stops pairing at a blank line, so one stray backtick cannot unpair the rest of a file", () => {
     const text = "A stray ` backtick ends the paragraph.\n\nThen `MoveOutcome.cost` and `Grid`.";
-    expect(citationTokens(text).map((t) => t.token)).toEqual(["MoveOutcome.cost", "Grid"]);
+    expect(citationTokens(text).tokens.map((t) => t.token)).toEqual(["MoveOutcome.cost", "Grid"]);
   });
 
   it("recovers a citation nested two spans deep, not just one", () => {
-    expect(citationTokens("```A ``B `C` `` ```").map((t) => t.token)).toContain("C");
+    expect(citationTokens("```A ``B `C` `` ```").tokens.map((t) => t.token)).toContain("C");
   });
 
   it("reports the line a span OPENS on", () => {
-    expect(citationTokens("x\ny `Foo::bar`")).toEqual([{ token: "Foo::bar", line: 2 }]);
+    expect(citationTokens("x\ny `Foo::bar`").tokens).toEqual([{ token: "Foo::bar", line: 2 }]);
   });
 
-  it("leaves an unmatched backtick run as literal text rather than opening a span", () => {
-    expect(extractCodeSpans("a ` b")).toEqual([]);
+  it("leaves an unmatched backtick run as literal text, and COUNTS it as unpaired", () => {
+    const { spans, runs, unpairedRuns } = extractCodeSpans("a ` b");
+    expect(spans).toEqual([]);
+    expect({ runs, unpairedRuns }).toEqual({ runs: 1, unpairedRuns: 1 });
   });
 });
 
 describe("stripCodeBlocks", () => {
   it("pairs only fence delimiters that OPEN a line, so an inline mention blanks no prose", () => {
     const text = "An inline ```ts fence mention.\n\n`Grid.cellCenter` is cited here.\n";
-    expect(stripCodeBlocks(text)).toContain("`Grid.cellCenter`");
+    expect(stripCodeBlocks(text).body).toContain("`Grid.cellCenter`");
   });
 
   it("blanks a four-space-indented code block that follows a blank line", () => {
     const text = "Prose.\n\n    let notACitation = 1;\n\nMore prose.\n";
-    expect(stripCodeBlocks(text)).toBe("Prose.\n\n\n\nMore prose.\n");
+    expect(stripCodeBlocks(text).body).toBe("Prose.\n\n\n\nMore prose.\n");
   });
 
   it("keeps an indented CONTINUATION of a list item, whose citations are real prose", () => {
     const text = "  - A bullet whose body wraps.\n\n    `Whisper` is cited in the continuation.\n";
-    expect(stripCodeBlocks(text)).toContain("`Whisper`");
+    expect(stripCodeBlocks(text).body).toContain("`Whisper`");
+  });
+
+  // Block stripping is the widest exclusion here and the only one that removes whole LINES. A
+  // fence misdetection has to move a number someone can see, or it removes arbitrary prose from
+  // the gate with every printed total unchanged.
+  it("REPORTS the lines it blanked and the backtick runs that went with them", () => {
+    const text = "Prose `A`.\n\n```\n`InsideAFence`\n```\n\nMore `B`.\n";
+    const { blankedLines, blankedRuns } = stripCodeBlocks(text);
+    expect(blankedLines).toBe(3);
+    expect(blankedRuns).toBe(4);
   });
 });
 
@@ -589,6 +661,18 @@ describe("checkFileCitations", () => {
     expect(result.acknowledged).toBe(0);
   });
 
+  // The other branch, and the shape that motivated the rule: the HEAD is indexed and the MEMBER is
+  // dead — a renamed method on a type that still exists. The unknown-head case above takes an
+  // earlier exit, so it leaves this path untested.
+  it("reports a dead MEMBER of an INDEXED type as broken, not acknowledged", () => {
+    const result = checkFileCitations(
+      "`PanelsController.mutation`",
+      new Set(["PanelsController"]),
+    );
+    expect(result.broken.map((b) => b.token)).toEqual(["PanelsController.mutation"]);
+    expect(result.acknowledged).toBe(0);
+  });
+
   it("still acknowledges a qualified path by its external-crate PREFIX", () => {
     const hits = new Map();
     const result = checkFileCitations("`tokio::spawn_blocking`", new Set(), hits);
@@ -599,6 +683,102 @@ describe("checkFileCitations", () => {
   it("carries the EXAMPLE-exempt span count through to its caller", () => {
     const result = checkFileCitations("EXAMPLE: `M13-0` is a specimen.", new Set());
     expect(result.exampleExempt).toBe(1);
+  });
+});
+
+describe("externalImportNames", () => {
+  // The acknowledgement assertion asks whether this tree DECLARES a name. Importing one from a
+  // dependency is not declaring it — without the split, every entry whose own reason is "declared
+  // in a dependency" reports as a conflict with itself.
+  it("separates a dependency import from a relative or workspace one", () => {
+    const text = [
+      'import { DockviewApi } from "dockview-core";',
+      'import ts from "typescript";',
+      'import * as fs from "node:fs";',
+      'import { pickSheet } from "@shadowcat/core";',
+      'import { local } from "./neighbour";',
+    ].join("\n");
+    const names = externalImportNames(text);
+    expect([...names].sort()).toEqual(["DockviewApi", "fs", "ts"]);
+  });
+});
+
+describe("skillDirOf", () => {
+  // Scoped by the path COMPONENT under a skill root. A substring test applies a per-file
+  // acknowledgement list to the whole corpus the moment a checkout lives in a directory whose name
+  // happens to match.
+  it("names the owning skill directory, and is not fooled by an ancestor of the same name", () => {
+    expect(skillDirOf("/repo", "/repo/.claude/skills/shadowcat-codebase-nightfox/SKILL.md")).toBe(
+      "shadowcat-codebase-nightfox",
+    );
+    expect(
+      skillDirOf(
+        "/src/shadowcat-codebase-nightfox",
+        "/src/shadowcat-codebase-nightfox/.claude/skills/shadowcat-codebase-core/SKILL.md",
+      ),
+    ).toBe("shadowcat-codebase-core");
+  });
+});
+
+describe("span conservation", () => {
+  it("counts every backtick RUN, whatever its length", () => {
+    expect(countBacktickRuns("a `b` and ``c `d` c`` and a stray `")).toBe(7);
+  });
+
+  // The accounting identity itself, on a hand-computed set of terms: every run in the document is
+  // either blanked with its block, left unpaired, or one of the two delimiters of a span that
+  // landed in exactly one bucket.
+  it("is satisfied when every run is accounted for, and violated when one bucket is dropped", () => {
+    const accounting = {
+      rawRuns: 12,
+      blankedRuns: 2,
+      unpairedRuns: 2,
+      emptySpans: 1,
+      exampleExempt: 1,
+      nonCandidates: 1,
+      verified: 1,
+      acknowledged: 0,
+      crossRepo: 0,
+      broken: 0,
+    };
+    expect(spanAccountingDelta(accounting)).toBe(0);
+    // The leak this invariant exists to make impossible: a bucket that stops being counted while
+    // the gate's own output stays green.
+    expect(spanAccountingDelta({ ...accounting, emptySpans: 0 })).toBe(2);
+  });
+
+  // The end-to-end identity over one document that exercises EVERY term at once. A term that stops
+  // being counted anywhere in the pipeline shows up here as a non-zero delta, whatever produced it.
+  it("balances a document carrying a block, an unpaired run, an empty span and every bucket", () => {
+    const text = [
+      "```",
+      "`InsideAFence`",
+      "```",
+      "",
+      "A stray ` run.",
+      "",
+      "An empty `` `` span, `RegionField::is_arrest`, `Uuid`, `NotAThing::atAll`,",
+      "`Option<&T>`.",
+      "",
+      "EXAMPLE: `M13-0` is a specimen.",
+    ].join("\n");
+    const result = checkFileCitations(text, new Set(["RegionField::is_arrest"]));
+    expect(result.accounting.blankedBlockLines).toBe(3);
+    expect(result.accounting.blankedRuns).toBe(4);
+    expect(result.accounting.unpairedRuns).toBe(1);
+    expect(result.accounting.emptySpans).toBe(1);
+    expect(result.verified).toBe(1);
+    expect(result.acknowledged).toBe(1);
+    expect(result.broken).toHaveLength(1);
+    expect(result.nonCandidates).toBe(1);
+    expect(result.exampleExempt).toBe(1);
+    expect(spanAccountingDelta(result.accounting)).toBe(0);
+  });
+
+  it("balances every tracked skill file in this repo, and every file individually", () => {
+    const result = checkSkillSymbolRefs(REPO_ROOT);
+    expect(result.conservationDelta).toBe(0);
+    expect(result.conservationFailures).toEqual([]);
   });
 });
 
@@ -692,7 +872,18 @@ describe("checkSkillSymbolRefs", () => {
 
   it("floors a file that carries backticks but yields no classified span", () => {
     const result = run("An unpaired ` delimiter and nothing else.");
-    expect(result.filesWithNoCandidates).toEqual([skillFile]);
+    expect(result.filesWithNoCandidates.map((f) => f.file)).toEqual([skillFile]);
+  });
+
+  // The floor's ACTUAL failure mode, which the demonstrated one does not reach: a stray delimiter
+  // shifts pairing so the prose between the real citations becomes the spans. That prose is full of
+  // spaces, so every shifted span fails both shapes and climbs `nonCandidates` — a floor that stays
+  // silent while `nonCandidates` is non-zero is held shut on precisely the case it exists for.
+  it("floors a file whose spans are ALL non-candidates, and reports what they were", () => {
+    const result = run("`a stray shifted span` and `another shifted phrase here`.");
+    expect(result.filesWithNoCandidates).toEqual([
+      { file: skillFile, nonCandidates: 2, exampleExempt: 0, emptySpans: 0, unpairedRuns: 0 },
+    ]);
   });
 
   it("counts an EXAMPLE-exempt span rather than dropping it into no bucket", () => {

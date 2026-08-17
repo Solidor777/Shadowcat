@@ -8,6 +8,7 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { listSkillDirs } from "./check-skill-symbol-refs.mjs";
+import { MD_ROOTS } from "./check-comment-refs.mjs";
 
 /**
  * Recursively finds every `SKILL.md` file under the TRACKED skill directories. Tracked-ness is
@@ -16,6 +17,10 @@ import { listSkillDirs } from "./check-skill-symbol-refs.mjs";
  * pointer inside one is no more this repo's to gate than a code-symbol citation is. Scanning
  * every directory unconditionally is what made the two gates disagree on the size of the same
  * corpus, and would fail this repo's CI on prose nobody here committed.
+ *
+ * The ROOT SET is read from `MD_ROOTS` for the same reason, and from nowhere else: a second entry
+ * added there must reach both gates, and a hardcoded skills path here would silently under-scan
+ * this one while `listSkillDirs` kept reporting the larger corpus as tracked.
  *
  * @param {string} repoRoot - Absolute path to the repository root.
  * @param {{trackedDirs?: Set<string>, untrackedDirs?: string[]}} [opts] - corpus scoping override,
@@ -43,9 +48,11 @@ export function findSkillFiles(repoRoot, opts = {}) {
       else if (entry.isFile() && entry.name === "SKILL.md") out.push(p);
     }
   };
-  const skillsRoot = join(repoRoot, ".claude", "skills");
-  for (const entry of readdirSync(skillsRoot, { withFileTypes: true }))
-    if (entry.isDirectory() && trackedDirs.has(entry.name)) walk(join(skillsRoot, entry.name));
+  for (const root of MD_ROOTS) {
+    const skillsRoot = join(repoRoot, ...root.split("/"));
+    for (const entry of readdirSync(skillsRoot, { withFileTypes: true }))
+      if (entry.isDirectory() && trackedDirs.has(entry.name)) walk(join(skillsRoot, entry.name));
+  }
   return { files: out.sort(), untrackedDirs: untrackedDirs ?? [] };
 }
 
