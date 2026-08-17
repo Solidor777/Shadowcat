@@ -248,27 +248,27 @@ on.
   | '-' factor | dice | int`). `ParseContext{mode: ModeKind, direction: Direction}` is caller-
   supplied ambient state the notation string does not itself encode: `mode` (`ModeKind::Total |
   SuccessCount`) resolves a bare `t<N>` target's `Mode` when the notation has no explicit
-  `NOTATION_KEYWORDS.cs`/`NOTATION_KEYWORDS.cf`; `direction` resolves `t<N>`'s comparator under
+  `cs>N`/`cf<N`; `direction` resolves `t<N>`'s comparator under
   SuccessCount-ambient context (`HighWins` -> `Gte`, `LowWins` -> `Lte` — the composer never
-  specifies the comparator via `NOTATION_KEYWORDS.t`) and seeds
+  specifies the comparator via `t<N>`) and seeds
   `RollSpec::direction`. Under Total-ambient context, `t<N>` resolves to `TotalConfig.difficulty`
   instead. The parser's internal state (`struct P`, not `ParseContext`) also carries an
   `expertise: Option<u32>` roll-level scratch field set by an `e<N>` token (no dedicated lexer
   token — the alphabetic-run arm emits `Ident("e")`, the parser's `modifiers` arm reads the
   following int, the same function that handles
-  `NOTATION_KEYWORDS.kh`/`NOTATION_KEYWORDS.cs`/`NOTATION_KEYWORDS.t`); a duplicate `e<N>` is
+  `P::modifiers::kh`/`P::modifiers::cs`/`P::modifiers::t`); a duplicate `e<N>` is
   `ParseError::DuplicateExpertise`. `expertise` is only consumed when the FINAL resolved mode is
   `SuccessCount(SuccessConfig{expertise, ..})` — if the notation instead resolves to `Total`
   (e.g. `t<N>` under Total-ambient context with no
-  `NOTATION_KEYWORDS.cs`/`NOTATION_KEYWORDS.cf`), any parsed `e<N>` value is silently
-  dropped, never an error. Explicit `NOTATION_KEYWORDS.cs`/`NOTATION_KEYWORDS.cf` in the notation
+  `cs>N`/`cf<N`), any parsed `e<N>` value is silently
+  dropped, never an error. Explicit `cs>N`/`cf<N` in the notation
   always forces `SuccessCount` regardless of the
-  ambient `mode`. A `t<N>` + explicit `NOTATION_KEYWORDS.cs`/`NOTATION_KEYWORDS.cf` together is a
+  ambient `mode`. A `t<N>` + explicit `cs>N`/`cf<N` together is a
   collision —
   `ParseError::DuplicateSuccessRule` (shared parser state: `success`/`t_target` are one `RollSpec`,
   not per-`DiceGroup`). SuccessCount with NEITHER a
-  `NOTATION_KEYWORDS.cs`/`NOTATION_KEYWORDS.cf` rule nor a `t<N>` target is a hard
-  parse error. The lexer is **case-insensitive on the `NOTATION_KEYWORDS.d` dice operator** and
+  `cs>N`/`cf<N` rule nor a `t<N>` target is a hard
+  parse error. The lexer is **case-insensitive on the `Token::D` dice operator** and
   enforces
   **ASCII-only input** as an explicit precondition (not an accident of the byte-as-char cast it
   uses internally). The parser also rejects `sides < 1` (`ParseError::InvalidDieSides`) before ever
@@ -281,7 +281,7 @@ on.
   (after its modifiers) — a per-group, not per-spec, field. Duplicate labels across different
   groups in the same notation string are NOT a parse error (they pool under `by_label`
   intentionally); only a duplicate
-  `e<N>`/`t<N>`/`NOTATION_KEYWORDS.cs`/`NOTATION_KEYWORDS.cf` (shared roll-level state) errors.
+  `e<N>`/`t<N>`/`cs>N`/`cf<N` (shared roll-level state) errors.
   Label-consumption is a shared `take_label()` helper applied after EITHER atomic
   factor — a `DiceGroup` or a bare `Const` — not the `Dice` branch alone; a label immediately
   after a parenthesized/compound sub-expression is still correctly rejected as trailing input
@@ -413,10 +413,10 @@ on.
 - **`ParseError`/`Token` implement player-presentable `Display`** — chat System
   notices surface them directly; a new variant MUST get a clean `Display` arm (pinned by the
   no-debug-artifacts test iterating every variant), never a `{:?}` payload.
-- **The notation-level `NOTATION_KEYWORDS.cs`/`NOTATION_KEYWORDS.cf` tokens and
+- **The notation-level `cs>N`/`cf<N` tokens and
   `SuccessConfig.crit_success`/`crit_fail` are two unrelated mechanisms that happen to share
-  initials.** `NOTATION_KEYWORDS.cs`/`NOTATION_KEYWORDS.cf` in a dice-notation string set
-  the ordinary per-die `SuccessRule` (or its inverted-comparator `NOTATION_KEYWORDS.cf`
+  initials.** `cs>N`/`cf<N` in a dice-notation string set
+  the ordinary per-die `SuccessRule` (or its inverted-comparator `cf<N`
   approximation);
   they do NOT construct a `CritSuccess`/`CritFail` struct. Today, crit events are configurable
   only by authoring a `RollSpec`/`SuccessConfig` directly — no notation syntax exposes them yet.
@@ -430,7 +430,7 @@ on.
   value is only ever read into `SuccessConfig.expertise` when the resolved `Mode` is
   `SuccessCount`. A notation string like
   `4d6t10e3` under Total-ambient context (`t<N>` resolves to `TotalConfig.difficulty`, not a
-  success target) parses successfully and simply drops the `e3` — no `ParseError`, no warning.
+  success target) parses successfully and simply drops the `e<N>` — no `ParseError`, no warning.
 - **This module's pipeline logic is dense and easy to get subtly wrong.** Treat any future
   change to `dice::eval::groups`, `dice::eval::sum`, `dice::eval::success`, `dice::eval::classify`,
   `dice::eval::crit`, `dice::eval::expertise`, or `dice::recalc` as needing independent

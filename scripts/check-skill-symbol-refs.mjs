@@ -352,14 +352,21 @@ export function extractRustSymbols(text, modulePath = []) {
       }
     }
     // Owned by the innermost enclosing `fn`; a local outside every `fn` has no owner to cite it
-    // by and is not indexed at all, rather than being indexed bare.
+    // by and is not indexed at all, rather than being indexed bare. Inside an `impl`/`trait` body
+    // the chain carries that container too, so both `P::modifiers::cs` (the form that names which
+    // type's method declares it) and `modifiers::cs` resolve — each is headed by a real
+    // declaration, which is the property that makes an owner path citable.
     const owner = fnStack.length === 0 ? null : fnStack[fnStack.length - 1].name;
+    const ownerChain =
+      owner === null ? null : methodOwner === null ? [owner] : [methodOwner.name, owner];
     lineOwners.push(
-      owner === null ? null : { owner, mods: modStack.map((m) => m.name) },
+      ownerChain === null ? null : { chain: ownerChain, mods: modStack.map((m) => m.name) },
     );
     if (!isComment) {
       const addLocal = (name) => {
-        if (owner !== null) addQualified(`${owner}::${name}`);
+        if (ownerChain === null) return;
+        addQualified(`${ownerChain.join("::")}::${name}`);
+        if (ownerChain.length > 1) addQualified(`${owner}::${name}`);
       };
       for (const m of line.matchAll(RUST_LET_BINDING)) addLocal(m[1]);
       for (const m of line.matchAll(RUST_LET_TUPLE))
@@ -433,8 +440,11 @@ export function extractRustSymbols(text, modulePath = []) {
   const addValueSet = (index, run) => {
     const context = lineOwners[lineOf(index)];
     if (context === undefined || context === null) return;
-    for (const lit of run.matchAll(RUST_LITERAL_MEMBER))
-      addQualifiedWith(`${context.owner}::${lit[1]}`, context.mods);
+    for (const lit of run.matchAll(RUST_LITERAL_MEMBER)) {
+      addQualifiedWith(`${context.chain.join("::")}::${lit[1]}`, context.mods);
+      if (context.chain.length > 1)
+        addQualifiedWith(`${context.chain.at(-1)}::${lit[1]}`, context.mods);
+    }
   };
   for (const m of codeText.matchAll(RUST_LITERAL_ALTERNATIVES)) addValueSet(m.index, m[0]);
   for (const m of codeText.matchAll(RUST_MATCH_ARM_LITERALS)) addValueSet(m.index, m[1]);
@@ -1614,10 +1624,6 @@ export const ACKNOWLEDGED_NON_SYMBOLS = new Set([
   // itself (TypeDoc's per-package option map), the plugin-cache state keys of the agent harness
   // (a file outside this repo), and the TypeScript config concept named as a whole.
   "packageOptions", "lastUpdated", "installedAt", "tsconfig",
-  // Composed dice notation - a keyword and its numeric argument written together - which no
-  // single declaration in the tree spells. (The bare keywords it composes, `kh`/`cs`/`cf`, are
-  // declared by `NOTATION_KEYWORDS` and resolve there.)
-  "e3", "d20", "kh3",
   // A derived quantity the implementation names only in its own explanatory comment - no binding
   // carries the name, so prose and code agree on a term the index cannot hold.
   "minConsecutiveDelta",

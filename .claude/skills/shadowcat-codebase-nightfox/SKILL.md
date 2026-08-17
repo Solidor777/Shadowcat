@@ -52,7 +52,7 @@ have.
   `FnName.round`) and any dice-notation-keyword collision (imported from
   `@shadowcat/formula`'s `NOTATION_KEYWORDS`) — a key collides when its maximal `[a-z_]+` prefix
   is a notation keyword AND (the prefix is the whole key or the next char is a digit), e.g.
-  `d20`/`kh3` are rejected, `damage`/`total` are not. Caps: `MAX_STATS`/`MAX_MODIFIERS = 128` per
+  `<N>d<M>`/`kh<N>` are rejected, `damage`/`total` are not. Caps: `MAX_STATS`/`MAX_MODIFIERS = 128` per
   doc, `label` ≤ 64 chars, `text.value` ≤ 1024 chars, formula strings ≤ `@shadowcat/formula`'s
   `MAX_FORMULA_LENGTH`.
 - **The `contributions` module** (Nightfox repo) — `collectNightfox(host)` walks the embed tree
@@ -191,9 +191,9 @@ producer, not consumer.
   posts.
 - **Verbatim-copy rule:** the builder never rewrites, rounds, or otherwise normalizes the produced
   notation string — `resolveNotationTemplate` alone owns that (including the count-less
-  `NOTATION_KEYWORDS.d` → `1d`
-  normalization the dice-notation parser requires; the visible template text keeps the user's authored
-  `d20`). A non-integer resolved value (e.g. a `formula` evaluating to `7 / 2`) is a `type` error
+  count-less `d<M>` → `1d<M>`
+  normalization the dice-notation parser requires; the visible template text keeps the user's
+  authored count-less `d<M>` spelling). A non-integer resolved value (e.g. a `formula` evaluating to `7 / 2`) is a `type` error
   from the builder rather than a silently-rounded roll — explicit rounding is required upstream.
 - **One-embed-per-message constraint:** the builder emits exactly ONE inline `[[…]]` roll embed per
   message by construction, trivially satisfying the server's `MAX_INLINE_ROLLS=8` (`chat::rolls`).
