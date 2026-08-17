@@ -21,8 +21,9 @@ the reducer (intercept-and-redispatch), so the engine never owns state.
 
 - `panels/layout`'s `applyOp` (the pure layout-tree reducer) — `PanelLayoutV1` (expanded zones right/bottom/left +
   floating + minimized + `poppedOut: string[]`, compact view state), `LayoutOp` (incl.
-  `popOut`/`popIn`, `resizeFloating` — an already-floating panel's in-place rect update, mirroring
-  `resizeZone`/`resizeGroup` rather than `float`'s detach-and-reinsert), `applyOp` reducer,
+  `LayoutOp.popOut`/`LayoutOp.popIn`, `LayoutOp.resizeFloating` — an already-floating panel's
+  in-place rect update, mirroring `LayoutOp.resizeZone`/`LayoutOp.resizeGroup` rather than
+  `LayoutOp.float`'s detach-and-reinsert), `applyOp` reducer,
   `defaultLayout`, `locate`, `prune`,
   `placeNewRegistrations`, `placeFromPersistedLocation`. **Same-reference no-op contract**: an
   op that changes nothing returns the SAME layout object (callers/tests rely on `toBe`).
@@ -113,11 +114,12 @@ the reducer (intercept-and-redispatch), so the engine never owns state.
   mid-flight (float transition) invalidates key-equality staleness checks
   [[async-completion-needs-object-identity-not-key]]; see `DockviewEngine.#floatTransitionIds`.
 - **Pop-out is gesture-time imperative, never routed through `apply()`'s declarative
-  reconcile.** The only producer of a `popOut` tree op is the menu-command handler
+  reconcile.** The only producer of a `LayoutOp.popOut` tree op is the menu-command handler
   `DockviewEngine.#requestPopOut`, which calls `window.open`-backed `addPopoutGroup` FIRST
   and emits the op only after that promise resolves `true`. No code path can need pop-out
   reconciled through the reducer's `apply()` diff and silently miss it, because `apply()` never
-  originates a `popOut`/`popIn` op — it only consumes one already emitted imperatively. A
+  originates a `LayoutOp.popOut`/`LayoutOp.popIn` op — it only consumes one already emitted
+  imperatively. A
   browser popup cannot be opened outside a user gesture; this is why rehydration-on-load
   degrades persisted `poppedOut` ids to floating instead of re-opening a real window.
 - **`#pendingPopouts` in-flight guard is required because dockview-core's `mutation()` wrapper
@@ -135,9 +137,9 @@ the reducer (intercept-and-redispatch), so the engine never owns state.
   group). This and the in-flight guard above were both found via direct trace through the
   vendored `dockview-core@7.0.2` CJS source (`DockviewComponent`, `PopoutWindowService`), not
   from the wrapper code alone — re-verify against that source on any dockview-core version bump.
-- **`#handleRemovePopoutGroup` (real window-close → `popIn`) has three branches that must all be
-  covered by a test that actually fires `onDidRemovePopoutGroup`, not a synthetic op**: the
-  `#applying`-suppression branch (a `popIn` must NOT fire when OUR OWN `apply()` reconcile is
+- **`#handleRemovePopoutGroup` (real window-close → `LayoutOp.popIn`) has three branches that must
+  all be covered by a test that actually fires `onDidRemovePopoutGroup`, not a synthetic op**: the
+  `#applying`-suppression branch (a `LayoutOp.popIn` must NOT fire when OUR OWN `apply()` reconcile is
   what caused the popout group's removal, e.g. a menu "dock" on a popped-out panel), the
   fallback that reads the panel ids off the removal event's own group when the panel isn't in
   `#poppedOutGroupPanels`, and the
@@ -151,7 +153,7 @@ the reducer (intercept-and-redispatch), so the engine never owns state.
   regardless of cause — worse than no guard, since it reads as protected. `#handleFloatingLayoutChange`
   instead diffs the freshly-read `boundingBox` against `#lastFloatingRect`, a per-id cache
   `apply()`'s floating loop snapshots to the TREE's own rect on every reconcile (whether or not
-  that iteration touched dockview); a `resizeFloating` op's own round trip re-snapshots the
+  that iteration touched dockview); a `LayoutOp.resizeFloating` op's own round trip re-snapshots the
   identical rect, so the diff reads unchanged and nothing re-fires, with no dependency on
   `apply()`'s synchronous window. Also why re-position sync can't reuse the per-group
   `onDidDimensionsChange` pattern used for docked zones — that event, owned by dockview-core's

@@ -1,22 +1,22 @@
 import { describe, it, expect } from "vitest";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   extractRustSymbols,
   extractRustReexports,
-  extractRustLiteralAlternatives,
   extractSqlSymbols,
   extractTomlKeys,
   extractJsonKeys,
+  extractJsonDependencyNames,
   moduleNameOf,
   applyRenameAll,
   splitSourceLines,
   rustModulePath,
   extractTsSymbols,
   extractSvelteScript,
-  externalImportNames,
+  importBindingNames,
   skillDirOf,
   extractCodeSpans,
   stripCodeBlocks,
@@ -194,10 +194,9 @@ describe("extractRustSymbols", () => {
     expect(names.has("astar_leg::cell")).toBe(true);
   });
 
-  // The two `fnStack` pops are separately necessary, so each gets a fixture only IT can satisfy.
-  // A two-sibling-functions fixture is satisfied by either pop alone, which is why it discriminates
-  // neither: deleting one mechanism leaves the test green.
-  it("ends a body-less trait method's scope at the NEXT declaration (the item-time pop)", () => {
+  // A body-less trait method owns only the parameters on its own line: the next declaration's
+  // entry goes on top of it, and only the top is ever read.
+  it("gives each body-less trait method its own parameters and no sibling's", () => {
     const text = [
       "pub trait Repo {",
       "    fn first(&self, only_here: u32);",
@@ -207,6 +206,24 @@ describe("extractRustSymbols", () => {
     const names = extractRustSymbols(text);
     expect(names.has("first::only_here")).toBe(true);
     expect(names.has("second::only_here")).toBe(false);
+    expect(names.has("second::elsewhere")).toBe(true);
+  });
+
+  // The enclosing item's closing brace drains every buried entry at once, so a local AFTER a trait
+  // is owned by whatever declares it and not by the trait's last method.
+  it("drains every buried body-less entry at the enclosing item's closing brace", () => {
+    const text = [
+      "pub trait Repo {",
+      "    fn first(&self, a: u32);",
+      "    fn second(&self, b: u32);",
+      "}",
+      "pub fn after() {",
+      "    let owned_by_after = 1;",
+      "}",
+    ].join("\n");
+    const names = extractRustSymbols(text);
+    expect(names.has("after::owned_by_after")).toBe(true);
+    expect(names.has("second::owned_by_after")).toBe(false);
   });
 
   it("returns to the ENCLOSING fn when a nested fn's body closes (the brace-time pop)", () => {
@@ -257,18 +274,38 @@ describe("extractRustReexports", () => {
   });
 });
 
-describe("extractRustLiteralAlternatives", () => {
-  it("indexes each member of a string-literal alternation pattern", () => {
-    const text = 'matches!(doc_type, "token" | "scene" | "drawing")';
-    expect([...extractRustLiteralAlternatives(text)].sort()).toEqual([
-      "drawing",
-      "scene",
-      "token",
-    ]);
+describe("Rust value sets", () => {
+  // A closed value set is indexed under the function that declares it, never bare: bare, a
+  // one- or two-letter member answers "the tree declares that" to any citation spelling it.
+  it("indexes an alternation member and a match arm under the declaring fn, not bare", () => {
+    const text = [
+      "fn classify(t: &str) -> bool {",
+      '    let known = matches!(t, "token" | "scene");',
+      "    match t {",
+      '        "kh" => true,',
+      "        _ => known,",
+      "    }",
+      "}",
+    ].join("\n");
+    const names = extractRustSymbols(text);
+    expect(names.has("classify::token")).toBe(true);
+    expect(names.has("classify::scene")).toBe(true);
+    expect(names.has("classify::kh")).toBe(true);
+    expect(names.has("token")).toBe(false);
+    expect(names.has("kh")).toBe(false);
   });
 
   it("ignores a lone string literal, which declares no value set", () => {
-    expect(extractRustLiteralAlternatives('let s = "drawing";').size).toBe(0);
+    const names = extractRustSymbols('fn f() {\n    let s = "drawing";\n}');
+    expect(names.has("f::drawing")).toBe(false);
+  });
+
+  // A doc comment's prose is not a declaration. Harvesting an alternation out of one resolves a
+  // citation against the sentence describing the code rather than against the code.
+  it("does not harvest a value set out of a doc comment", () => {
+    const names = extractRustSymbols('fn f() {\n    /// accepts "hex" | "square" here\n    let x = 1;\n}');
+    expect(names.has("f::hex")).toBe(false);
+    expect(names.has("f::square")).toBe(false);
   });
 });
 
@@ -317,6 +354,18 @@ describe("extractJsonKeys", () => {
     expect(names.has("notDocumented")).toBe(true);
     expect(names.has("validation.notDocumented")).toBe(true);
     expect(names.has("shadowcat")).toBe(false);
+  });
+});
+
+describe("extractJsonDependencyNames", () => {
+  // A dependency is a REFERENCE in a `package.json` for the same reason it is one in a
+  // `Cargo.toml`; classifying the one category two ways is what let an external package name pass
+  // the acknowledgement assertion on one side and fail it on the other.
+  it("names the packages a manifest depends on, and nothing else it declares", () => {
+    const names = extractJsonDependencyNames(
+      '{"name": "shadowcat", "dependencies": {"typescript": "^5"}, "devDependencies": {"vitest": "^4"}, "scripts": {"build": "vite"}}',
+    );
+    expect([...names].sort()).toEqual(["typescript", "vitest"]);
   });
 });
 
@@ -474,14 +523,15 @@ describe("extractTsSymbols", () => {
     expect(names.has("host")).toBe(false);
   });
 
-  it("indexes an imported name and a string-literal type member", () => {
-    const text = [
-      'import { createSubscriber } from "svelte/reactivity";',
-      'export type SyncState = "none" | "up_to_date";',
-    ].join("\n");
-    const names = extractTsSymbols(text);
-    expect(names.has("createSubscriber")).toBe(true);
-    expect(names.has("up_to_date")).toBe(true);
+  // A string-literal type declares one member of a closed value set, so it is indexed under the
+  // type that declares it and only under `valueSets` — the same rule the array-literal and
+  // single-string forms obey. Bare, a discriminant answers for any prose word that spells it.
+  it("indexes a string-literal type member under its type alias, never bare", () => {
+    const text = 'export type SyncState = "none" | "up_to_date";';
+    const names = extractTsSymbols(text, "wire.ts", { valueSets: true });
+    expect(names.has("SyncState.up_to_date")).toBe(true);
+    expect(names.has("up_to_date")).toBe(false);
+    expect(extractTsSymbols(text).has("SyncState.up_to_date")).toBe(false);
   });
 });
 
@@ -686,20 +736,36 @@ describe("checkFileCitations", () => {
   });
 });
 
-describe("externalImportNames", () => {
-  // The acknowledgement assertion asks whether this tree DECLARES a name. Importing one from a
-  // dependency is not declaring it — without the split, every entry whose own reason is "declared
-  // in a dependency" reports as a conflict with itself.
-  it("separates a dependency import from a relative or workspace one", () => {
+describe("importBindingNames", () => {
+  // The acknowledgement assertion asks whether this tree DECLARES a name. Importing one is not
+  // declaring it, whatever the specifier — an internal import's target is declared by the file that
+  // declares it, and reading the import as a second declaration is what the split avoids.
+  it("collects every import binding and no local declaration", () => {
     const text = [
       'import { DockviewApi } from "dockview-core";',
       'import ts from "typescript";',
       'import * as fs from "node:fs";',
       'import { pickSheet } from "@shadowcat/core";',
       'import { local } from "./neighbour";',
+      "export function declaredHere() {}",
     ].join("\n");
-    const names = externalImportNames(text);
-    expect([...names].sort()).toEqual(["DockviewApi", "fs", "ts"]);
+    const names = importBindingNames(text);
+    expect([...names].sort()).toEqual(["DockviewApi", "fs", "local", "pickSheet", "ts"]);
+  });
+
+  // The routing leak this closes: one file that imports a name AND declares a member of the same
+  // name sent both to the reference half, masking a real declaration from the assertion that reads
+  // it. `extractTsSymbols` no longer emits import bindings at all, so the two cannot collide.
+  it("extractTsSymbols emits a re-export but not an import binding", () => {
+    const text = [
+      'import { Collision } from "dockview-core";',
+      "export interface Holder { Collision: string }",
+      'export { inner as Collision2 } from "./neighbour";',
+    ].join("\n");
+    const names = extractTsSymbols(text);
+    expect(names.has("Holder.Collision")).toBe(true);
+    expect(names.has("Collision2")).toBe(true);
+    expect(importBindingNames(text).has("Collision")).toBe(true);
   });
 });
 
@@ -792,10 +858,12 @@ describe("listSkillDirs", () => {
 });
 
 describe("checkSkillSymbolRefs", () => {
-  // One fixture tree for the whole suite: each test writes the skill prose it needs. Nothing is
-  // deleted afterwards — the OS owns the reclamation of its own temp directory, and this repo
-  // permits no permanent-deletion call.
-  const repoRoot = mkdtempSync(join(tmpdir(), "symbol-refs-repo-"));
+  // One fixture tree for the whole suite, at ONE fixed path rewritten in place: this repo permits
+  // no permanent-deletion call, so a per-run temp directory accumulates forever. Reuse is safe
+  // because every test writes the prose it needs and the corpus-size case below asserts the scan
+  // saw exactly two files, so a file left behind by an older fixture turns a test red rather than
+  // quietly joining the corpus.
+  const repoRoot = join(tmpdir(), "shadowcat-symbol-refs-fixture");
   const skillsRoot = join(repoRoot, ".claude", "skills");
   const skillFile = join(skillsRoot, "shadowcat-codebase-example", "SKILL.md");
   const trackedDirs = new Set(["shadowcat-codebase-example", "shadowcat-codebase-nightfox"]);
@@ -884,6 +952,20 @@ describe("checkSkillSymbolRefs", () => {
     expect(result.filesWithNoCandidates).toEqual([
       { file: skillFile, nonCandidates: 2, exampleExempt: 0, emptySpans: 0, unpairedRuns: 0 },
     ]);
+  });
+
+  // The case the per-file floor cannot reach, and the reason the top-level unpaired count is
+  // separate and fatal: one paragraph's pairing is shifted by a stray delimiter while the other
+  // paragraphs keep yielding real citations, so the floor stays silent, conservation still
+  // balances, and the shifted spans quietly climb the not-citation-shaped bucket.
+  it("counts a top-level unpaired run in a paragraph the other paragraphs keep healthy", () => {
+    const result = run(
+      "A stray ` delimiter opens here and `RegionField::is_arrest` is swallowed by it.\n\n" +
+        "This paragraph cites `RegionField::is_arrest` and is unaffected.",
+    );
+    expect(result.filesWithNoCandidates).toEqual([]);
+    expect(result.conservationDelta).toBe(0);
+    expect(result.accounting.topLevelUnpairedRuns).toBe(1);
   });
 
   it("counts an EXAMPLE-exempt span rather than dropping it into no bucket", () => {

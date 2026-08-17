@@ -53,7 +53,7 @@ interprets or merges anything itself.
   - Types: `Diff`, `Conflict` (`{ path, base, parent, child, parentKind: "set" | "delete" }` —
     `parent`/`child` are `undefined` when that side deleted the key; `parentKind` records how
     "take template" resolves it. Conceptually `parent`≈"theirs" (the template) and `child`≈"mine"
-    (the instance), but the field names on the type are `parent`/`child`, not `mine`/`theirs`),
+    (the instance), but the field names on the type are `parent`/`child`, not "mine"/"theirs"),
     `MergeBase` (the `base` snapshot shape: `{ name, engine, system, embedded }`), `MergeBands`
     (the merged-band result shape), `EmbeddedBaseChild`, `MergePlan`.
 - The `templates` module — the stamp/sync operations built on the `merge` module:
@@ -73,8 +73,8 @@ interprets or merges anything itself.
     `MergeBands` into ONE `Update` op, refreshing `/base` to `snapshotBase(template)` — the
     TEMPLATE's current snapshot, not a snapshot of the merged result. This is deliberate: it
     makes `syncState`, run immediately after this op lands, compare the child's new stored
-    `base` against the template's CURRENT state and correctly read `up_to_date` rather than
-    falsely `template_changed` (a merged-result snapshot would already differ from the
+    `base` against the template's CURRENT state and correctly read `SyncState.up_to_date` rather
+    than falsely `SyncState.template_changed` (a merged-result snapshot would already differ from the
     template's live state the instant the template changes again, or in edge cases immediately).
     **Emits whole-band `FieldChange`s (`/name`, `/engine`, `/system`, `/embedded/<coll>`),
     never per-leaf changes** — deliberately, not because no leaf-removal mechanism exists: a
@@ -121,7 +121,8 @@ interprets or merges anything itself.
   included, and its ENTIRE Update is then refused: `data::sqlite::apply_intent` returns `Forbidden`
   at the FIRST uncapped path and aborts the whole intent. That instance receives none of the
   push — not even the `/name`/`/engine`/`/system` merge — and its `/base` is not refreshed, so it
-  stays `template_changed`. Nothing in the push path retries, so it stays stale until someone
+  stays `SyncState.template_changed`. Nothing in the push path retries, so it stays stale until
+  someone
   holding `/embedded` on THAT instance pulls or reverts (both terminate in `planToUpdate`, which
   always re-emits `/base`) — a different principal from the pusher who lacked the capability.
   Contained to the one instance (`push` dispatches one intent PER instance); not yet fixed.**

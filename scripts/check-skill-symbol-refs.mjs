@@ -18,10 +18,10 @@
 //
 // `spanAccountingDelta` is what makes that claim checkable rather than asserted. Every backtick
 // RUN a document carries must be block-blanked, unpaired, or one of the two delimiters of a span
-// that reached a bucket; the gate fails on any imbalance and says by how much. Three consecutive
-// review rounds each found a different path leaving the pipeline uncounted, every one of them
-// created by the previous round's widening — auditing paths finds the path just built, while the
-// identity covers the ones nobody has written yet.
+// that reached a bucket; the gate fails on any imbalance and says by how much. Every widening of
+// this gate's reach creates a new early-exit path, so an audit of the paths that exist can only
+// ever cover the ones already written; the identity covers every path at once, including the ones
+// nobody has written yet, because an exclusion that forgets to declare itself unbalances the sum.
 //
 // Pure library: no top-level side effects. `check-skill-symbol-refs-cli.mjs` is the executable
 // entry point.
@@ -211,6 +211,12 @@ export function rustModulePath(rustRoot, filePath) {
  * `apply_intent` all resolve — since this repo's own citations mix full-path, one-hop, and bare
  * forms and none of them is wrong.
  *
+ * A closed VALUE SET — a string-literal alternation, or a `match` arm's literal pattern — is
+ * indexed UNDER THE FUNCTION THAT DECLARES IT (`modifiers::cs`), never bare, on the same reasoning
+ * a local binding is. It is read from CODE lines only (an alternation harvested out of a `///`
+ * comment resolves a citation against prose rather than against a declaration) and over the whole
+ * file text rather than line by line, since a wide alternation routinely wraps across many lines.
+ *
  * @param {string} text - one `.rs` file's contents.
  * @param {string[]} [modulePath] - this file's module path segments, from `rustModulePath`;
  *   defaults to `[]` (no qualification) in tests that don't care about it.
@@ -223,15 +229,17 @@ export function extractRustSymbols(text, modulePath = []) {
   // `cap::WRITE_FIELDS` a real path a citation can name. Stacked (not a single slot) since inline
   // modules can themselves nest.
   const modStack = []; // { name, depth }[]
-  /** Registers `name` bare, plus once per suffix of `[...modulePath, ...modStack names]`
-   * (`a::b::name`, `b::name`, …, and every inline-module-qualified form). */
-  const addQualified = (name) => {
+  /** Registers `name` bare, plus once per suffix of `[...modulePath, ...mods]` (`a::b::name`,
+   * `b::name`, …, and every inline-module-qualified form). */
+  const addQualifiedWith = (name, mods) => {
     names.add(name);
-    const chain = [...modulePath, ...modStack.map((m) => m.name)];
+    const chain = [...modulePath, ...mods];
     for (let i = 0; i < chain.length; i += 1) {
       names.add(`${chain.slice(i).join("::")}::${name}`);
     }
   };
+  /** `addQualifiedWith` against the inline-module nesting open at this point in the file. */
+  const addQualified = (name) => addQualifiedWith(name, modStack.map((m) => m.name));
   const lines = splitSourceLines(text);
   // Method-owner container (`impl <Type>` or `trait <Name>`): qualifies a `fn` signature found
   // inside its body as `Owner::method`, whether that signature has a body (`impl`) or is a bare
@@ -248,14 +256,26 @@ export function extractRustSymbols(text, modulePath = []) {
   let pendingAttrs = [];
   let inSignature = false;
   let signatureParens = 0;
-  // The `fn` a local name belongs to. Stacked because a `fn` may nest inside another; an entry is
-  // popped when a sibling declaration opens at the same depth, which is what ends a body-less
-  // trait method's scope.
+  // The `fn` a local name belongs to, innermost on top. Stacked because a `fn` may nest inside
+  // another, and the enclosing one owns every local after the inner one's body closes. Entries are
+  // drained only at a closing brace: a body-less declaration (a trait method) leaves its entry
+  // buried under the next declaration's, and nothing reads below the top, so the enclosing item's
+  // own brace is what ends every such scope at once.
   const fnStack = []; // { name, depth }[]
+  // The owner context each line sits in, recorded as the line is read so a value-set pass over the
+  // whole file text can attribute a run to the `fn` that declares it. A closed value set commonly
+  // wraps across many lines (a 17-arm `matches!` alternation), and a line-local reader would drop
+  // every such declaration out of the index while reporting nothing.
+  const lineOwners = []; // ({ owner: string, mods: string[] } | null)[]
+  // The same lines with comment text removed, so a value set is read from CODE only: an alternation
+  // harvested out of a `///` comment resolves a citation against prose describing the code rather
+  // than against a declaration.
+  const codeLines = [];
   for (const line of lines) {
     const trimmed = line.trim();
     const isAttr = trimmed.startsWith("#[") || trimmed.startsWith("#!");
     const isComment = trimmed.startsWith("//");
+    codeLines.push(isComment ? "" : line);
     let attrs = "";
     if (isAttr) {
       pendingAttrs.push(trimmed);
@@ -274,10 +294,7 @@ export function extractRustSymbols(text, modulePath = []) {
       if (item) {
         const [, kind, name] = item;
         addQualified(name);
-        if (kind === "fn") {
-          while (fnStack.length > 0 && depth <= fnStack[fnStack.length - 1].depth) fnStack.pop();
-          fnStack.push({ name, depth });
-        }
+        if (kind === "fn") fnStack.push({ name, depth });
         if (kind === "fn" && methodOwner !== null) {
           // Qualified BOTH ways: `Type::method` alone (the common citation form) and, chained
           // through `addQualified`, every `module::path::Type::method` prefix too — a citation may
@@ -334,10 +351,13 @@ export function extractRustSymbols(text, modulePath = []) {
         }
       }
     }
+    // Owned by the innermost enclosing `fn`; a local outside every `fn` has no owner to cite it
+    // by and is not indexed at all, rather than being indexed bare.
+    const owner = fnStack.length === 0 ? null : fnStack[fnStack.length - 1].name;
+    lineOwners.push(
+      owner === null ? null : { owner, mods: modStack.map((m) => m.name) },
+    );
     if (!isComment) {
-      // Owned by the innermost enclosing `fn`; a local outside every `fn` has no owner to cite it
-      // by and is not indexed at all, rather than being indexed bare.
-      const owner = fnStack.length === 0 ? null : fnStack[fnStack.length - 1].name;
       const addLocal = (name) => {
         if (owner !== null) addQualified(`${owner}::${name}`);
       };
@@ -391,27 +411,48 @@ export function extractRustSymbols(text, modulePath = []) {
     }
   }
   for (const name of extractRustReexports(text)) addQualified(name);
-  for (const name of extractRustLiteralAlternatives(text)) names.add(name);
+
+  // Closed VALUE SETS, over the comment-free file text so a run that wraps across lines is read
+  // whole, and attributed to the owner recorded for the line the run OPENS on. Each member is
+  // indexed under that owner (`modifiers::cs`), never bare: bare, a one- or two-letter member
+  // answers "the tree declares that" to any citation anywhere that happens to spell it. A run
+  // outside every `fn` has no owner to cite it by and is not indexed at all.
+  const codeText = codeLines.join("\n");
+  const lineStarts = [0];
+  for (const codeLine of codeLines) lineStarts.push(lineStarts.at(-1) + codeLine.length + 1);
+  const lineOf = (index) => {
+    let lo = 0;
+    let hi = lineStarts.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (lineStarts[mid] <= index) lo = mid;
+      else hi = mid - 1;
+    }
+    return lo;
+  };
+  const addValueSet = (index, run) => {
+    const context = lineOwners[lineOf(index)];
+    if (context === undefined || context === null) return;
+    for (const lit of run.matchAll(RUST_LITERAL_MEMBER))
+      addQualifiedWith(`${context.owner}::${lit[1]}`, context.mods);
+  };
+  for (const m of codeText.matchAll(RUST_LITERAL_ALTERNATIVES)) addValueSet(m.index, m[0]);
+  for (const m of codeText.matchAll(RUST_MATCH_ARM_LITERALS)) addValueSet(m.index, m[1]);
   return names;
 }
 
-// A run of string-literal alternatives in a Rust pattern (`matches!(t, "token" | "scene" | …)`,
-// a `match` arm) DECLARES a closed set of wire values, exactly as a TS string-literal union type
-// does on the client side. Requiring at least two alternatives is what separates a declaration of
-// a value set from an ordinary string argument.
+// A run of string-literal alternatives (`matches!(t, "token" | "scene" | …)`) DECLARES a closed set
+// of wire values, exactly as a TS string-literal union type does on the client side. Requiring at
+// least two alternatives is what separates a declaration of a value set from an ordinary string
+// argument.
 const RUST_LITERAL_ALTERNATIVES = /"[A-Za-z0-9_-]+"(?:\s*\|\s*"[A-Za-z0-9_-]+")+/g;
-
-/**
- * Extracts every string literal appearing in an alternation pattern in one Rust file's text.
- * @param {string} text - one `.rs` file's contents.
- * @returns {Set<string>} every alternative's literal value.
- */
-export function extractRustLiteralAlternatives(text) {
-  const names = new Set();
-  for (const run of text.matchAll(RUST_LITERAL_ALTERNATIVES))
-    for (const lit of run[0].matchAll(/"([A-Za-z0-9_-]+)"/g)) names.add(lit[1]);
-  return names;
-}
+// A `match` ARM's pattern is the same declaration at cardinality one: `"kh" => …` says this
+// function accepts `kh`, and no other construct in the tree spells that value. The optional guard
+// is skipped rather than parsed, since only the literals before it are the arm's pattern.
+const RUST_MATCH_ARM_LITERALS =
+  /("[A-Za-z0-9_-]+"(?:\s*\|\s*"[A-Za-z0-9_-]+")*)\s*(?:if\s[^=]*?)?=>/g;
+// One member of either run.
+const RUST_LITERAL_MEMBER = /"([A-Za-z0-9_-]+)"/g;
 
 // `pub use path::{a, b as c};` / `pub use path::name;` re-exports the imported item's name INTO
 // this module's own public surface — RULE 15's own citation convention names a re-exporting
@@ -553,28 +594,27 @@ function arrayLiteralInitializer(node) {
  * owner chain (`UiState.global.lastWorld`, `global.lastWorld`, `lastWorld`) so both the
  * declaration-citation shape and this repo's wire-path notation resolve at whatever depth prose
  * cites them; every name a named re-export publishes (`export { a as b }`,
- * `export type { Foo }`); every name the module IMPORTS, which is this tree's own declaration
- * that the name exists in a package it depends on; every identifier-shaped string LITERAL
- * TYPE, which is how a wire-protocol discriminant value is declared (`type SyncState = "none" |
- * "up_to_date"`); and — under `valueSets` only — every identifier-shaped string member of a
- * MODULE-LEVEL array literal or single-string constant, which is the other way this tree declares
- * a closed value set (`NOTATION_KEYWORDS`).
+ * `export type { Foo }`); and — under `valueSets` only — every
+ * identifier-shaped string LITERAL TYPE, which is how a wire-protocol discriminant value is
+ * declared (`type SyncState = "none" | "up_to_date"`), plus every identifier-shaped string member
+ * of a MODULE-LEVEL array literal or single-string constant, which is the other way this tree
+ * declares a closed value set (`NOTATION_KEYWORDS`).
  *
- * A value-set member is indexed UNDER ITS DECLARING CONSTANT (`NOTATION_KEYWORDS.kh`), never bare.
- * Bare, a one- or two-letter dice-notation keyword answers "the tree declares that" to any
- * citation spelling `t`, `d` or `e` — which is how `shadowcat-codebase-nightfox`'s "prefers the
- * shell's `t`" came to verify against a dice keyword instead of the i18n function it names. The
- * owner qualification is the same principle a function-local binding already gets, and it makes
- * the `kh` citation that motivated the extractor resolve for the right reason.
+ * A value-set member is indexed UNDER ITS DECLARING OWNER (`NOTATION_KEYWORDS.kh`,
+ * `SyncState.up_to_date`), never bare, and all three forms of value set obey that rule. Bare, a
+ * one- or two-letter dice-notation keyword answers "the tree declares that" to any citation
+ * spelling `t`, `d` or `e`, and a bare discriminant answers for any prose word that happens to
+ * spell it. The owner qualification is the same principle a function-local binding already gets.
  *
  * @param {string} text - one `.ts`/`.mjs`/`.js` file's contents, or a `.svelte` file's extracted
  *   script text.
  * @param {string} [fileName] - a name for the parser's diagnostics; never read as a path.
- * @param {{valueSets?: boolean}} [opts] - `valueSets` enables value-SET extraction, for the
- *   product roots whose string literals are wire values documents really carry. Off for build
- *   scripts and repo-root configs, whose literals are a gate's own configuration: indexing those
- *   lets a citation resolve against the tooling that checks it, which is how `Cargo.toml` and
- *   `examples` became "symbols the tree declares".
+ * @param {{valueSets?: boolean}} [opts] - `valueSets` enables value-SET extraction — array
+ *   literals, single-string constants and literal TYPES alike — for the product roots whose string
+ *   literals are wire values documents really carry. Off for build scripts and repo-root configs,
+ *   whose literals are a gate's own configuration: indexing those lets a citation resolve against
+ *   the tooling that checks it, which is how `Cargo.toml` and `examples` became "symbols the tree
+ *   declares".
  * @returns {Set<string>} every symbol name this module declares.
  */
 export function extractTsSymbols(text, fileName = "module.ts", opts = {}) {
@@ -604,8 +644,17 @@ export function extractTsSymbols(text, fileName = "module.ts", opts = {}) {
     names.add(`${chain.join(".")}.${name}`);
   };
 
-  const walk = (node, chain, inFunction) => {
+  const walk = (node, chain, inFunction, typeOwner) => {
     let nextChain = chain;
+    // The nearest enclosing named TYPE, which is the owner a literal-type value set belongs to. A
+    // discriminated union declares its values two levels below the alias (`LayoutOp` → `op` →
+    // `"popOut"`), and prose cites the value against the union, not against the discriminant key.
+    let nextTypeOwner =
+      (ts.isTypeAliasDeclaration(node) || ts.isInterfaceDeclaration(node)) &&
+      node.name !== undefined &&
+      ts.isIdentifier(node.name)
+        ? node.name.text
+        : typeOwner;
     // Everything declared below a function-like node is function-local, at any depth.
     const nextInFunction =
       inFunction ||
@@ -688,47 +737,45 @@ export function extractTsSymbols(text, fileName = "module.ts", opts = {}) {
       // plain parameter is function-local and is owned by the function it belongs to.
       if (node.modifiers === undefined) addOwned(declaredMemberName(node.name), chain);
       else add(declaredMemberName(node.name), chain);
-    } else if (ts.isExportSpecifier(node) || ts.isImportSpecifier(node)) {
+    } else if (ts.isExportSpecifier(node) || ts.isNamespaceExport(node)) {
+      // A re-export publishes the name from THIS module, so it is a declaration here. An IMPORT
+      // binding is not: the name belongs to the module it came from, and `importBindingNames`
+      // collects it separately. Emitting both from one set is what let a file that imports a name
+      // externally AND declares a member of the same name mask its own declaration.
       add(node.name.text, []);
-    } else if (ts.isNamespaceImport(node) || ts.isNamespaceExport(node)) {
-      add(node.name.text, []);
-    } else if (ts.isImportClause(node) && node.name !== undefined) {
-      add(node.name.text, []);
-    } else if (ts.isLiteralTypeNode(node) && ts.isStringLiteral(node.literal)) {
-      add(node.literal.text, []);
+    } else if (valueSets && ts.isLiteralTypeNode(node) && ts.isStringLiteral(node.literal)) {
+      // A string-literal type declares one member of a closed value set, so it is indexed under
+      // the type that declares it (`SyncState.up_to_date`, `LayoutOp.popOut`) rather than bare —
+      // the same owner-qualification the array-literal and single-string forms get, for the same
+      // reason. A literal type outside any named type has no owner to cite it by.
+      if (typeOwner !== undefined) addOwned(node.literal.text, [typeOwner]);
     }
-    ts.forEachChild(node, (child) => walk(child, nextChain, nextInFunction));
+    ts.forEachChild(node, (child) => walk(child, nextChain, nextInFunction, nextTypeOwner));
   };
-  ts.forEachChild(source, (child) => walk(child, [], false));
+  ts.forEachChild(source, (child) => walk(child, [], false, undefined));
   return names;
 }
 
-// A module specifier this repo owns: a relative path, or one of its own workspace packages.
-// Anything else names a package outside the tree.
-const INTERNAL_MODULE_SPECIFIER = /^(?:\.|@shadowcat\/)/;
-
 /**
- * Extracts every name a module imports from OUTSIDE this repo — an npm dependency, a `node:`
- * builtin — as opposed to a relative or workspace-package import, which names something this tree
- * declares elsewhere.
+ * Extracts every name a module binds through an `import` declaration, whatever the specifier.
  *
- * The index deliberately holds both kinds, so a skill citing `DockviewApi` resolves. The
- * distinction matters only for the acknowledgement assertion: an acknowledgement claims the tree
- * does not DECLARE a name, and importing an external name is not declaring it. Without the split,
- * that assertion would fire on every entry whose own reason is "declared in a dependency" and
- * force the deletion of correct entries.
+ * An import is not a DECLARATION — the name belongs to the module it came from — so it feeds the
+ * index's `referenced` half rather than its `declared` half, and anything that claims ownership of
+ * what one file declares must exclude these or it manufactures owner paths nothing carries. The
+ * specifier is not consulted: an internal import's target is declared by the file that declares it,
+ * and reading the import as a second declaration of the same name is what the split exists to
+ * avoid.
  *
  * @param {string} text - one TS/JS module's contents, or a `.svelte` file's extracted script.
  * @param {string} [fileName] - a name for the parser's diagnostics; never read as a path.
- * @returns {Set<string>} every locally-bound name introduced by an external import.
+ * @returns {Set<string>} every locally-bound import name.
  */
-export function externalImportNames(text, fileName = "module.ts") {
+export function importBindingNames(text, fileName = "module.ts") {
   const names = new Set();
   const source = ts.createSourceFile(fileName, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
   for (const statement of source.statements) {
     if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier))
       continue;
-    if (INTERNAL_MODULE_SPECIFIER.test(statement.moduleSpecifier.text)) continue;
     const clause = statement.importClause;
     if (clause === undefined) continue;
     if (clause.name !== undefined) names.add(clause.name.text);
@@ -785,6 +832,44 @@ export function extractJsonKeys(text) {
   return names;
 }
 
+// The manifest tables whose member keys name a PACKAGE this repo depends on rather than a setting
+// it declares. A dependency is a reference in a `package.json` for exactly the reason it is one in
+// a `Cargo.toml`, and classifying the same category two ways lets an acknowledgement of an
+// external package name report as a conflict on one side and pass on the other.
+const JSON_DEPENDENCY_TABLES = new Set([
+  "dependencies",
+  "devDependencies",
+  "peerDependencies",
+  "optionalDependencies",
+]);
+
+/**
+ * Extracts every package name a JSON manifest names as a dependency, at any depth (a pnpm
+ * workspace root and a package both carry these tables).
+ * @param {string} text - one `.json` file's contents.
+ * @returns {Set<string>} every dependency package name.
+ */
+export function extractJsonDependencyNames(text) {
+  const names = new Set();
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return names;
+  }
+  const walk = (node) => {
+    if (Array.isArray(node)) return;
+    if (node === null || typeof node !== "object") return;
+    for (const [key, value] of Object.entries(node)) {
+      if (JSON_DEPENDENCY_TABLES.has(key) && value !== null && typeof value === "object")
+        for (const dep of Object.keys(value)) names.add(dep);
+      walk(value);
+    }
+  };
+  walk(parsed);
+  return names;
+}
+
 /**
  * Extracts every key and table header a TOML manifest declares — for Cargo, that is every
  * dependency, feature and target name. A hyphenated crate name is additionally indexed in its
@@ -836,12 +921,13 @@ export function moduleNameOf(filePath) {
  * its script-block declarations.
  *
  * The index is built in two halves that are unioned at the end. `declared` holds what this tree
- * declares itself; `referenced` holds what it merely NAMES as belonging elsewhere — a Cargo
- * manifest key, an import of an npm package. Both resolve citations identically, since a skill
- * citing `tokio` or `DockviewApi` is citing something real. The split exists for the
- * acknowledgement assertion, whose claim is about DECLARATION: without it, every prefix entry
- * whose own reason is "declared in a dependency" would report as a conflict, and the correct fix
- * would look like deleting correct entries.
+ * declares itself; `referenced` holds what it merely NAMES as belonging elsewhere — a manifest's
+ * dependency entry (Cargo and `package.json` alike, one category classified one way), and any
+ * `import` binding. Both resolve citations identically, since a skill citing `tokio` or
+ * `DockviewApi` is citing something real. The split exists for the acknowledgement assertion, whose
+ * claim is about DECLARATION: without it, every prefix entry whose own reason is "declared in a
+ * dependency" would report as a conflict, and the correct fix would look like deleting correct
+ * entries.
  *
  * @param {string} repoRoot - absolute path to the repository root.
  * @returns {{ symbols: Set<string>, filesIndexed: number, declared: Set<string> }}
@@ -853,6 +939,11 @@ export function buildSymbolIndex(repoRoot) {
   // Product roots carry wire values a document really holds; `scripts` carries a gate's own
   // configuration. Both are indexed for their DECLARATIONS, only the former for its value sets.
   const PRODUCT_ROOTS = ["src/client", "src/modules", "src/types"];
+  /** One JSON document's keys: a dependency name is a REFERENCE, every other key a declaration. */
+  const indexJson = (text) => {
+    const deps = extractJsonDependencyNames(text);
+    for (const key of extractJsonKeys(text)) (deps.has(key) ? referenced : declared).add(key);
+  };
 
   const rustRoot = join(repoRoot, "src", "server", "src");
   for (const file of sources(rustRoot, [".rs"])) {
@@ -896,29 +987,32 @@ export function buildSymbolIndex(repoRoot) {
       filesIndexed += 1;
       declared.add(moduleNameOf(file));
       const text = readFileSync(file, "utf8");
-      const external = externalImportNames(text, basename(file));
-      for (const name of extractTsSymbols(text, basename(file), { valueSets }))
-        (external.has(name) ? referenced : declared).add(name);
+      for (const name of extractTsSymbols(text, basename(file), { valueSets })) declared.add(name);
+      for (const name of importBindingNames(text, basename(file))) referenced.add(name);
     }
     for (const file of sources(abs, [".svelte"])) {
       filesIndexed += 1;
       const componentName = basename(file, ".svelte");
       declared.add(componentName);
       const script = extractSvelteScript(readFileSync(file, "utf8"));
-      const external = externalImportNames(script, `${componentName}.ts`);
+      const imported = importBindingNames(script, `${componentName}.ts`);
+      for (const name of imported) referenced.add(name);
       for (const name of extractTsSymbols(script, `${componentName}.ts`, { valueSets })) {
-        (external.has(name) ? referenced : declared).add(name);
+        declared.add(name);
         // A skill legitimately cites a script-level function as the COMPONENT's own behaviour
         // (`SystemTreeEditor.removeField`) — the component name is this file's de facto exported
-        // owner, exactly as a TS class or interface name owns its members.
-        declared.add(`${componentName}.${name}`);
+        // owner, exactly as a TS class or interface name owns its members. Only a name the script
+        // DECLARES gets the alias: an IMPORTED name belongs to the module it came from, and a
+        // dotted path already carries an owner of its own, so aliasing either manufactures a path
+        // nothing declares (`Component.onMount`) that a dead citation then resolves against.
+        if (!imported.has(name) && !name.includes(".")) declared.add(`${componentName}.${name}`);
       }
     }
     for (const file of sources(abs, [".json"])) {
       const rel = norm(join(root, file.slice(abs.length + 1)));
       if (under(rel, GENERATED_ROOT)) continue;
       filesIndexed += 1;
-      for (const name of extractJsonKeys(readFileSync(file, "utf8"))) declared.add(name);
+      indexJson(readFileSync(file, "utf8"));
     }
   }
   // Repo-root config files: an eslint or TypeDoc option a skill cites is set here and nowhere
@@ -928,14 +1022,13 @@ export function buildSymbolIndex(repoRoot) {
     const path = join(repoRoot, name);
     if (name.endsWith(".json")) {
       filesIndexed += 1;
-      for (const key of extractJsonKeys(readFileSync(path, "utf8"))) declared.add(key);
+      indexJson(readFileSync(path, "utf8"));
     } else if (/\.(?:ts|js|mjs|cjs)$/.test(name)) {
       filesIndexed += 1;
       declared.add(moduleNameOf(path));
       const text = readFileSync(path, "utf8");
-      const external = externalImportNames(text, name);
-      for (const key of extractTsSymbols(text, name))
-        (external.has(key) ? referenced : declared).add(key);
+      for (const key of extractTsSymbols(text, name)) declared.add(key);
+      for (const key of importBindingNames(text, name)) referenced.add(key);
     }
   }
 
@@ -1029,8 +1122,8 @@ const NIGHTFOX_SKILL_DIR = "shadowcat-codebase-nightfox";
 // unqualified because the prose cites them as the wire values they are - a `Stat.type`
 // discriminant, a band key, a module name - and this checkout cannot see the declarations that
 // would supply an owner, so a qualified spelling would be invented rather than cited. The doc-type
-// pair is qualified instead: `EFFECT_DOC_TYPE` and `embedded.effect` carry what a bare `effect`
-// used to.
+// pair is qualified instead: `EFFECT_DOC_TYPE` and `embedded.effect` are the spellings the prose
+// uses, each carrying an owner a bare `effect` does not.
 export const ACKNOWLEDGED_CROSS_REPO = new Set([
   // Rules-engine entry points and result types.
   "parseNightfox", "resolveNightfox", "ResolveWarning", "Collected.docs", "statRefResolver",
@@ -1112,8 +1205,8 @@ const FILE_EXTENSION_TOKEN =
 // A span that writes a name TOGETHER WITH its value (`MAX_GATE_WALK_SAMPLES=4096`,
 // `autoUpdate = false`) is a citation of that name, not a config value: the value is there to
 // save the reader a lookup. Without this, the whole span fails the citation shape and lands in
-// `nonCandidates`, so the NAME goes unchecked — which is how a constant that no longer exists
-// stayed cited with the gate reporting 0 broken. `=(?![=>])` is what keeps a comparison
+// `nonCandidates`, so the NAME goes unchecked — a citation of a constant the tree does not declare
+// then passes with the gate reporting 0 broken. `=(?![=>])` is what keeps a comparison
 // (`w <= 0`, `a == b`) and an arrow (`k => v`) out: neither writes a value to a name. A VALUE must
 // actually follow, which is what keeps a bare syntax fragment (`` `href=` ``, quoted as the literal
 // text a scan would match) from being read as a citation of the name in front of it. A VALUE is
@@ -1216,10 +1309,18 @@ export function countBacktickRuns(text) {
  * rather than dropped: it still consumed two backtick runs, and an uncounted drop is the exact
  * shape this module's accounting exists to make impossible.
  *
+ * An unpaired run is reported at two levels, because they mean opposite things. NESTED inside a
+ * span, one is ordinary: a longer-run span exists precisely to quote a shorter delimiter, so its
+ * content carries an odd run by construction. At TOP level, in a bounded paragraph, one is always
+ * a prose defect — it shifts pairing so real citations land in the gaps between spans and the prose
+ * between them becomes the spans, which the file-level floor cannot see whenever any other
+ * paragraph in the same file still yields a checked citation.
+ *
  * @param {string} text - Markdown prose, fenced and indented code blocks already stripped.
  * @returns {{tokens: {token: string, line: number}[], spansEmitted: number, emptySpans: number,
- *   runs: number, unpairedRuns: number}} the non-empty trimmed span contents (nested spans
- *   included), the span and empty-span counts, and the run accounting summed over every level.
+ *   runs: number, unpairedRuns: number, topLevelUnpairedRuns: number}} the non-empty trimmed span
+ *   contents (nested spans included), the span and empty-span counts, and the run accounting summed
+ *   over every level plus the top level alone.
  */
 export function citationTokens(text) {
   const lineStarts = [0];
@@ -1251,7 +1352,14 @@ export function citationTokens(text) {
   const top = extractCodeSpans(text);
   unpairedRuns += top.unpairedRuns;
   for (const span of top.spans) emit(span.content, lineOf(span.index));
-  return { tokens: out, spansEmitted, emptySpans, runs: top.runs, unpairedRuns };
+  return {
+    tokens: out,
+    spansEmitted,
+    emptySpans,
+    runs: top.runs,
+    unpairedRuns,
+    topLevelUnpairedRuns: top.unpairedRuns,
+  };
 }
 
 // Inline code spans only — a fenced or indented code BLOCK is an illustrative snippet (BAD/GOOD
@@ -1361,8 +1469,8 @@ export function stripCodeBlocks(text) {
  * @param {string} text - the skill file's raw contents.
  * @returns {{ candidates: {line: number, token: string}[], nonCandidates: number,
  *   exampleExempt: number, accounting: {rawRuns: number, blankedBlockLines: number,
- *   blankedRuns: number, bodyRuns: number, unpairedRuns: number, spansEmitted: number,
- *   emptySpans: number} }}
+ *   blankedRuns: number, bodyRuns: number, unpairedRuns: number, nestedUnpairedRuns: number,
+ *   topLevelUnpairedRuns: number, spansEmitted: number, emptySpans: number} }}
  */
 export function extractCitationCandidates(text) {
   const { body, blankedLines, blankedRuns } = stripCodeBlocks(text);
@@ -1370,7 +1478,8 @@ export function extractCitationCandidates(text) {
   const candidates = [];
   let nonCandidates = 0;
   let exampleExempt = 0;
-  const { tokens, spansEmitted, emptySpans, runs, unpairedRuns } = citationTokens(body);
+  const { tokens, spansEmitted, emptySpans, runs, unpairedRuns, topLevelUnpairedRuns } =
+    citationTokens(body);
   for (const { token, line } of tokens) {
     // The EXAMPLE marker exempts the line a span OPENS on: that is the line whose author wrote the
     // specimen, and a span is only ever a specimen because of the sentence introducing it.
@@ -1396,6 +1505,8 @@ export function extractCitationCandidates(text) {
       blankedRuns,
       bodyRuns: runs,
       unpairedRuns,
+      nestedUnpairedRuns: unpairedRuns - topLevelUnpairedRuns,
+      topLevelUnpairedRuns,
       spansEmitted,
       emptySpans,
     },
@@ -1407,11 +1518,11 @@ export function extractCitationCandidates(text) {
  * document carries must be either blanked with its code block, left unpaired, or one of the two
  * delimiters of a span that reached exactly one printed bucket.
  *
- * A non-zero result means a span left the pipeline without being counted — the defect class that
- * recurred three rounds running, each time through a NEW early-exit path created by the previous
- * round's widening. Auditing the paths one at a time can only ever find the path just built; the
- * identity holds for every path at once, including the ones nobody has written yet, because a new
- * exclusion that forgets to declare itself unbalances the sum.
+ * A non-zero result means a span left the pipeline without being counted. Every widening of this
+ * gate's reach creates a new early-exit path, so an audit of the paths one at a time can only ever
+ * cover the ones already written; the identity holds for every path at once, including the ones
+ * nobody has written yet, because a new exclusion that forgets to declare itself unbalances the
+ * sum.
  *
  * @param {{rawRuns: number, blankedRuns: number, unpairedRuns: number, emptySpans: number,
  *   exampleExempt: number, nonCandidates: number, verified: number, acknowledged: number,
@@ -1528,10 +1639,11 @@ export const ACKNOWLEDGED_NON_SYMBOLS = new Set([
 // declares any of it, which `indexedAcknowledgements` re-checks against the index on every run.
 //
 // Two constraints on membership, both load-bearing. An entry must name an OWNER, so its head match
-// is bounded by that owner's surface; and no entry may be a single letter, since one letter is far
-// likelier to be a prose variable than an owner name - `E` sat here absorbing the `E` of an
-// `O(N*E^2)` complexity bound, an acknowledgement of something that is not a symbol at all. A
-// name whose members are enumerable belongs in `ACKNOWLEDGED_NON_SYMBOLS` as a whole token.
+// is bounded by that owner's surface; and no entry may be a SINGLE LETTER, because one letter is
+// far likelier to name a variable in a prose formula - a complexity bound's edge count, a
+// dimension - than to name an owner, and acknowledging it acknowledges something that is not a
+// symbol at all. A name whose members are enumerable belongs in `ACKNOWLEDGED_NON_SYMBOLS` as a
+// whole token.
 export const ACKNOWLEDGED_EXTERNAL_PREFIX = new Set([
   // Crates this repo depends on, named as the owner of whatever they expose.
   "tokio", "clap", "reqwest", "serde_json", "ammonia", "polyanya",
@@ -1719,6 +1831,8 @@ export function checkSkillSymbolRefs(repoRoot, opts = {}) {
     blankedRuns: 0,
     bodyRuns: 0,
     unpairedRuns: 0,
+    nestedUnpairedRuns: 0,
+    topLevelUnpairedRuns: 0,
     spansEmitted: 0,
     emptySpans: 0,
     nonCandidates: 0,
@@ -1756,9 +1870,12 @@ export function checkSkillSymbolRefs(repoRoot, opts = {}) {
     // stay silent would therefore hold the floor shut on precisely its own failure mode. What each
     // unchecked bucket DID absorb is reported with the file, so the finding never overstates
     // itself on a document whose spans are legitimately all specimens or all prose.
+    // Measured on the BODY's runs, not the raw text's: a file whose only backticks live inside
+    // fenced blocks has no prose citation to yield, and flooring it would report a claim that is
+    // false about that file.
     if (
       result.verified + result.acknowledged + result.crossRepo + result.broken.length === 0 &&
-      text.includes("`")
+      result.accounting.bodyRuns > 0
     )
       filesWithNoCandidates.push({
         file,

@@ -57,9 +57,14 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
   registry, one submodule per doc-type family (`data::engine::token`, `data::engine::scene`,
   `data::engine::geometry`, `data::engine::registries`) plus the `data::engine` module itself:
   `is_engine_doc_type(doc_type) -> bool` (the 17-entry registry:
-  `token`/`scene`/`wall`/`region`/`light`/`drawing`/`template`/`actor`/`message`/
-  `world-settings`/`vision-modes`/`light-gradation`/`chat-settings`/`dice-settings`/
-  `channel-registry`/`faction-registry`/`condition-registry`), `validate_engine(doc_type, engine)
+  `is_engine_doc_type::token`/`is_engine_doc_type::scene`/`is_engine_doc_type::wall`/
+  `is_engine_doc_type::region`/`is_engine_doc_type::light`/`is_engine_doc_type::drawing`/
+  `is_engine_doc_type::template`/`is_engine_doc_type::actor`/`is_engine_doc_type::message`/
+  `is_engine_doc_type::world-settings`/`is_engine_doc_type::vision-modes`/
+  `is_engine_doc_type::light-gradation`/`is_engine_doc_type::chat-settings`/
+  `is_engine_doc_type::dice-settings`/`is_engine_doc_type::channel-registry`/
+  `is_engine_doc_type::faction-registry`/`is_engine_doc_type::condition-registry`),
+  `validate_engine(doc_type, engine)
   -> Result<(), DataError>` (deserializes the body against that doc_type's typed struct;
   `deny_unknown_fields` on every struct — engine-defined types WITHOUT an `engine` body error, and
   non-engine types WITH one error too, so a non-engine `doc_type` can never smuggle a typed body
@@ -255,8 +260,8 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
     distinguish "absent" from "present and `undefined`"), because the Rust `FieldChange` carries
     no `skip_serializing_if` on either value, so a frame lacking one is malformed. The declared
     type nevertheless stays optional because **Zod v3 infers an object field's declared
-    optionality STRUCTURALLY**: any field whose output type admits `undefined` — which
-    `z.unknown()`'s always does — is inferred optional regardless of what a whole-object
+    optionality STRUCTURALLY**: any field whose output type admits `undefined` — which an
+    unknown-valued `zod` field's always does — is inferred optional regardless of what a whole-object
     `.refine()` enforces, so the declared type cannot be tightened to "required key, unknown
     value" while the impl still satisfies `z.ZodType<WireFieldChange>`. Tightening the type
     breaks that annotation; dropping the refine restores the hole. An explicit `null` is valid on

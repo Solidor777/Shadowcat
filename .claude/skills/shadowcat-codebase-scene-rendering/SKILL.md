@@ -700,8 +700,10 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
     measured at ~0.94 MiB against the 60 MiB CI ceiling — no bloat concern.
 - `src/client/render/src/` — engine-owned PixiJS layer: the `backend` + `pixi-backend`
   modules (renderer host), `engine`, `reconciler` (doc→scene reconcile), `compositor`,
-  `layers` (CORE_LAYERS z-order, 0-based: `background` 0, `grid` 1, `tiles` 2, `regions` 3,
-  `drawings` 4, `walls` 5, `tokens` 6, `templates` 7, `lighting` 8, `mask` 9, `overlays` 10 —
+  `layers` (`CORE_LAYERS` z-order, 0-based: `CORE_LAYERS.background` 0, `CORE_LAYERS.grid` 1,
+  `CORE_LAYERS.tiles` 2, `CORE_LAYERS.regions` 3, `CORE_LAYERS.drawings` 4, `CORE_LAYERS.walls` 5,
+  `CORE_LAYERS.tokens` 6, `CORE_LAYERS.templates` 7, `CORE_LAYERS.lighting` 8, `CORE_LAYERS.mask` 9,
+  `CORE_LAYERS.overlays` 10 —
   read the array, not this list, before placing a module layer: a module's fractional `order` is
   relative to these indices, so an off-by-one lands it under the wrong neighbour),
   `camera`, `grid`, `token-view` + `token-animator` (tween),
@@ -791,7 +793,7 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   world-scoped config-docs `world-settings`/`light-gradation`/`vision-modes`
   (builders + deep-frozen defaults `DEFAULT_WORLD_SETTINGS`/`DEFAULT_GRADATION`/`SEED_VISION_MODES`;
   builders `structuredClone` the frozen default), per-scene `SceneSystem.vision?`/`lighting?`
-  overrides + `grid.distance?` + `bounds?`, the scene-parented `light` doc_type
+  overrides + `grid.distance?` + `bounds?`, the scene-parented `is_engine_doc_type::light` doc_type
   (`LightEngine` + `buildLightDoc`), and the fail-closed resolvers `resolveSceneSettings`/
   `resolveGradation`/`resolveVisionModes`. **`bounds`:** `SceneDimensions {width,
   height}` (grid units) — the navmesh's triangulation boundary; per-scene ONLY, no
@@ -1121,10 +1123,12 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
     code while every gate stays green. `truncated` is pinned end-to-end by assertions on the
     parsed value and on the mapped object, mover and clipped-observer paths both.
   - **`truncated` is NOT interchangeable with the client's derived move outcome.**
-    `WorldSession.moveRequest` derives `executed`/`truncated` from geometry (does `stop` equal the
+    `WorldSession.moveRequest` derives `WorldSession.moveRequest.executed`/`truncated` from
+    geometry (does `stop` equal the
     requested goal), which is a DIFFERENT predicate: a region arrest on the final step sets the
     server's `truncated` while `stop` still equals the goal, and the client deliberately reports
-    that as `executed` because the token did reach the goal. Do not "simplify" the client to read
+    that as `WorldSession.moveRequest.executed` because the token did reach the goal. Do not
+    "simplify" the client to read
     the wire flag — the two answer different questions, and a regression test pins the arrest case.
 - **The four shape views are a NEAR-IDENTICAL SIBLING SET, and that is where they diverge silently.**
   `drawing-view`, `template-view`, `region-view`, and `wall-view` share one shape: a

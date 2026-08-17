@@ -122,7 +122,8 @@ token/actor name from non-owners via the `OwnerOrGm` visibility tier. Conditions
   can't diverge from what actually renders.
 - The `actors` module (`ActorsPanel`, `VisualKindEditor`, `FaceSwapPalette`)
   — `ActorsPanel`: create/list/pick actors; hide-name control; faction assignment; shape
-  (`square`/`circle`) + size (fractional grid-cells) editing in the create form and in the per-row
+  (`EffectiveActor.square`/`EffectiveActor.circle`) + size (fractional grid-cells) editing in the
+  create form and in the per-row
   GM inline editor; darkvision range authoring (create + per-row), writing `engine.vision: [{
   mode: "darkvision", range }]` (was `system.vision`; omitted when range 0).
   **Visual authoring (extracted into `VisualKindEditor`, a pure intra-module split
@@ -288,7 +289,7 @@ token/actor name from non-owners via the `OwnerOrGm` visibility tier. Conditions
   `resolveTokenVisual`, never read `actor.visual`/`token.system.visual` directly.
 - **Token on-scene placement is excluded from template merge:** `/engine/x`, `/engine/y`,
   `/engine/rotation` are always instance-owned — never pulled, pushed, reverted, or flagged
-  `template_changed` by the merge engine (`placementExclusions("token")`). See
+  `SyncState.template_changed` by the merge engine (`placementExclusions("token")`). See
   `shadowcat-codebase-templates`.
 
 ## Pointers

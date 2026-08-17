@@ -47,8 +47,9 @@ have.
   returns `null` when BOTH `system.stats` and `system.mechanics` are absent (not a
   Nightfox-bearing doc) **or** when EITHER present side is malformed (fail-closed, never a
   partial parse) — an absent-but-not-both side defaults (`stats: {}` / `mechanics: {version:
-  1}`). `validateStatKey`/`RESERVED_STAT_KEYS` reject `parent`/`base`/`current`/`min`/`max`/
-  `floor`/`ceil`/`round` plus any dice-notation-keyword collision (imported from
+  1}`). `validateStatKey`/`RESERVED_STAT_KEYS` reject `parent`/`base`/`current` plus every
+  `@shadowcat/formula` function name (`FnName.min`/`FnName.max`/`FnName.floor`/`FnName.ceil`/
+  `FnName.round`) and any dice-notation-keyword collision (imported from
   `@shadowcat/formula`'s `NOTATION_KEYWORDS`) — a key collides when its maximal `[a-z_]+` prefix
   is a notation keyword AND (the prefix is the whole key or the next char is a digit), e.g.
   `d20`/`kh3` are rejected, `damage`/`total` are not. Caps: `MAX_STATS`/`MAX_MODIFIERS = 128` per
@@ -261,8 +262,9 @@ not the only, expected caller):
   `resolveAll` + `resolveNotationTemplate` + `NOTATION_KEYWORDS`.
 - **Arithmetic semantics that surprise formula AUTHORS** (all in the `evaluate`/`lexer` modules): `/` is
   float division and `%` is JS TRUNCATED remainder, so `-7 % 2` is `-1`, not the floored `1` — and
-  neither implicitly rounds, so a stat requiring an integer needs an explicit `floor`/`round` —
-  and `round` is JS-native, meaning ties go toward +Infinity, NOT away from zero
+  neither implicitly rounds, so a stat requiring an integer needs an explicit
+  `FnName.floor`/`FnName.round` — and `FnName.round` is JS-native, meaning ties go toward
+  +Infinity, NOT away from zero
   (`Math.round(-2.5) === -2`), which is a real difference for negative modifiers.
   Both `x / 0` and `x % 0` are `"div-zero"`, never `Infinity`/`NaN`; every arithmetic result is
   gated through `finite()`, so an overflow surfaces as `"non-finite"` rather than leaking

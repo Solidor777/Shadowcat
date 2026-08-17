@@ -386,11 +386,14 @@ the banner, and a test asserts this sentence lists exactly those labels, because
 twice been false about the code it describes.
 
 **The bucket list is checked by conservation, not by inspection.** `spanAccountingDelta` requires
-every backtick RUN a document carries to be block-blanked, left unpaired, or one of the two
-delimiters of a span that reached a bucket; the gate fails on any imbalance and reports it per file
-and in aggregate. Three consecutive review rounds each found a different path leaving the pipeline
-uncounted, and every one of them was created by the previous round's widening — an audit finds the
-path just built, while the identity covers the paths nobody has written yet. A span written
+every backtick RUN a document carries to be one of the two delimiters of a span that reached a
+bucket, or else to have left before classification by one of the ways out printed beside the
+buckets: block-blanked, unpaired inside a span, unpaired at top level — the last of which is always
+a prose defect and fails the gate on its own, because a stray delimiter shifts pairing across its
+whole paragraph while conservation still balances and every total stays healthy. The gate fails on
+any imbalance and reports it per file and in aggregate. Every widening of this gate's reach creates
+a new early-exit path, so an audit can only ever cover the paths already written, while the
+identity covers the ones nobody has written yet. A span written
 as `NAME=value` is checked on its NAME rather than discarded as unshaped, and a file that carries
 backticks yet yields no CHECKED citation fails on its own, because one unpaired delimiter is
 enough to take a whole file out of the gate while every total stays healthy. That floor asks only

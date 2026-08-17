@@ -28,14 +28,24 @@ export const SPAN_BUCKETS = [
 ];
 
 /**
- * The two ways a backtick RUN leaves the pipeline without ever becoming a span: it was blanked
- * with the code block around it, or it paired with nothing. Both are printed for the same reason
+ * Every way a backtick RUN leaves the pipeline without ever becoming a span: blanked with the code
+ * block around it, or paired with nothing at one of two levels. All are printed for the same reason
  * every bucket is — block stripping has the largest blast radius of any exclusion here, so a fence
- * misdetection must move a number someone can see.
+ * misdetection must move a number someone can see. Like `SPAN_BUCKETS`, this array is the ONE
+ * enumeration: the banner is generated from it and a test asserts both prose statements list
+ * exactly these labels, in this order.
+ *
+ * The two unpaired levels are split because they mean opposite things. A run left unpaired INSIDE a
+ * span is ordinary — a longer-run span exists to quote a shorter delimiter — while one left
+ * unpaired at TOP level shifts pairing across its whole paragraph, so the real citations land in
+ * the gaps between spans and the prose between them becomes the spans. Merged into one count, the
+ * fatal case cannot be told from the ordinary one, and the file-level floor stays silent whenever
+ * any other paragraph in the file still yields a checked citation.
  */
 export const RUN_EXCLUSIONS = [
   { key: "blankedRuns", label: "block-blanked" },
-  { key: "unpairedRuns", label: "unpaired" },
+  { key: "nestedUnpairedRuns", label: "unpaired inside a span" },
+  { key: "topLevelUnpairedRuns", label: "unpaired at top level" },
 ];
 
 /**
@@ -106,12 +116,12 @@ export function classifySkillSymbolRun(result) {
 
   // EVERY failure class is collected. Reporting only the first would let a run with a broken
   // citation hide every dead acknowledgement entry behind it, so the two could only ever be fixed
-  // one round at a time.
+  // one run at a time.
   const problems = [];
 
-  // The conservation invariant, first and loudest. Three consecutive rounds found a path that left
-  // the pipeline uncounted, each through an exclusion the previous round had just created; this
-  // identity is what makes the class impossible rather than making the next instance findable.
+  // The conservation invariant, first and loudest. Every widening of this gate's reach creates a
+  // new early-exit path, so the identity is what makes an uncounted path impossible rather than
+  // what makes the next instance findable.
   if (conservationDelta !== 0 || conservationFailures.length > 0)
     problems.push(
       `\nspan conservation FAILED by ${conservationDelta} backtick run(s) in aggregate, across ` +
@@ -122,6 +132,18 @@ export function classifySkillSymbolRun(result) {
         "\n\nEvery backtick run must be block-blanked, unpaired, or one of the two delimiters of a " +
         "span that reached exactly one bucket. A non-zero delta means spans are leaving the " +
         "pipeline uncounted — find the exclusion that does not declare itself.",
+    );
+
+  // A top-level unpaired run is always a prose defect, and it is the ONLY signal of the failure
+  // paragraph bounding leaves behind: bounding caps the shift to one paragraph, so conservation
+  // still balances (the shifted spans land in the not-citation-shaped bucket) and the file-level
+  // floor stays silent as long as any other paragraph in the file still yields a checked citation.
+  if (accounting.topLevelUnpairedRuns > 0)
+    problems.push(
+      `\n${accounting.topLevelUnpairedRuns} backtick run(s) paired with nothing at top level.\n\n` +
+        "A stray delimiter shifts pairing across its whole paragraph: the real citations fall into " +
+        "the gaps between spans and the prose between them becomes the spans, which leaves that " +
+        "paragraph unchecked while every total stays healthy. Close or remove the delimiter.",
     );
 
   // A file that carries backticks and yields no CHECKED citation has silently left the gate: one

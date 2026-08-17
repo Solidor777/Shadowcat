@@ -131,14 +131,18 @@ source of truth. The ones agents break most:
   not citation-shaped, or empty — and each acknowledgement entry is hit-counted, a zero-hit entry
   failing the gate. **That list is `SPAN_BUCKETS`, and this sentence is pinned to it by a test**:
   the same claim has twice drifted from the code it describes. What makes it true rather than
-  asserted is `spanAccountingDelta` — every backtick RUN must be block-blanked, unpaired, or one of
-  a bucketed span's two delimiters, per file and in aggregate, or the gate fails and says by how
-  much. A span written as `NAME=value` is checked on its NAME: the value is there to save the
-  reader a lookup, and letting the whole span fail the citation shape is what kept a constant that
-  no longer exists cited with the gate reporting zero broken. A PER-FILE floor sits under the
-  global one — a file that carries backticks and yields no CHECKED citation has silently
-  left the gate, which one unpaired delimiter is enough to cause; the floor reports what that
-  file's spans DID land in, since the shifted-pairing case it exists for turns real citations into
+  asserted is `spanAccountingDelta` — every backtick RUN must be one of a bucketed span's two
+  delimiters, or must have left before classification by one of the ways out printed beside the
+  buckets: block-blanked, unpaired inside a span, unpaired at top level — of which the last is
+  always a prose defect and fails on its own, since a stray delimiter shifts pairing across its
+  whole paragraph while conservation still balances. **That list is `RUN_EXCLUSIONS`, pinned by
+  the same test.** The identity is enforced per file and in aggregate, or the gate fails and says
+  by how much. A span written as `NAME=value` is checked on its NAME: the value is there to save
+  the reader a lookup, and letting the whole span fail the citation shape lets a citation of a
+  constant the tree does not declare pass with the gate reporting zero broken. A PER-FILE floor
+  sits under the global one — a file whose PROSE carries backticks and yields no CHECKED citation
+  has silently left the gate; the floor reports what that file's spans DID land in, since the
+  shifted-pairing case it exists for turns real citations into
   prose spans that climb the not-citation-shaped bucket. Carve-outs:
   config/build files (no symbols to cite), filenames used as *values*, dated records under
   `docs/superpowers/`, and — a documented review obligation, not a gate obligation — citations of a
@@ -437,8 +441,8 @@ reviewed: **bump the `version` key in `.claude/.claude-plugin/plugin.json`** —
 does not identify a cached plugin copy — **then refresh the plugin in each consuming repo**, from a
 shell run inside that repo: `claude plugin marketplace update shadowcat`, then
 `claude plugin update shadowcat-codebase@shadowcat --scope project` (a restart applies it). The
-version bump is what makes the staleness detectable — an unversioned plugin caches as `unknown`,
-where a refreshed copy and a stale one are indistinguishable.
+version bump is what makes the staleness detectable — an unversioned plugin caches under a single
+unchanging placeholder version, where a refreshed copy and a stale one are indistinguishable.
 
 **The update subcommand needs the FULLY-QUALIFIED name and the scope, or it fails.** Bare
 `claude plugin update shadowcat-codebase` reports `Plugin "shadowcat-codebase" not found` at both
