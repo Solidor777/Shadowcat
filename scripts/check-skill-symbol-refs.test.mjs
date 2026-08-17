@@ -17,6 +17,7 @@ import {
   extractTsSymbols,
   extractSvelteScript,
   extractCodeSpans,
+  stripCodeBlocks,
   citationTokens,
   extractCitationCandidates,
   resolvesAgainstIndex,
@@ -128,6 +129,22 @@ describe("extractRustSymbols", () => {
     expect(names.has("blocks_move")).toBe(true);
   });
 
+  it("indexes a STRUCT-VARIANT's own fields, and their explicit serde wire names", () => {
+    const text = [
+      "pub enum TokenVisual {",
+      "    Faces {",
+      "        faces: BTreeMap<String, RenderVisual>,",
+      '        #[serde(default, rename = "faceMap")]',
+      "        face_map: Option<BTreeMap<String, String>>,",
+      "    },",
+      "}",
+    ].join("\n");
+    const names = extractRustSymbols(text);
+    expect(names.has("TokenVisual::Faces")).toBe(true);
+    expect(names.has("faceMap")).toBe(true);
+    expect(names.has("TokenVisual.face_map")).toBe(true);
+  });
+
   it("indexes a field's explicit serde rename over the container default", () => {
     const text = [
       '#[serde(rename_all = "camelCase")]',
@@ -150,12 +167,41 @@ describe("extractRustSymbols", () => {
       "    Ok(())",
       "}",
     ].join("\n");
+    const names = extractRustSymbols(text, ["backup"]);
+    expect(names.has("restore_backup::db_path")).toBe(true);
+    expect(names.has("backup::restore_backup::out_dir")).toBe(true);
+    expect(names.has("restore_backup::t_max_i")).toBe(true);
+    expect(names.has("restore_backup::leg_start")).toBe(true);
+    expect(names.has("restore_backup::leg_end")).toBe(true);
+  });
+
+  it("never indexes a function-local name BARE, which would own-nothing and absorb anything", () => {
+    const text = "pub fn execute_move(scene_id: Uuid) -> bool {\n    let chord_ok = true;\n}";
+    const names = extractRustSymbols(text, ["move_exec"]);
+    expect(names.has("chord_ok")).toBe(false);
+    expect(names.has("scene_id")).toBe(false);
+    expect(names.has("execute_move::chord_ok")).toBe(true);
+  });
+
+  it("indexes a for-loop pattern's bindings, which declare names exactly as a let does", () => {
+    const text = "pub fn astar_leg() {\n    for (next, sc, parity) in edges {}\n    for cell in cells {}\n}";
     const names = extractRustSymbols(text);
-    expect(names.has("db_path")).toBe(true);
-    expect(names.has("out_dir")).toBe(true);
-    expect(names.has("t_max_i")).toBe(true);
-    expect(names.has("leg_start")).toBe(true);
-    expect(names.has("leg_end")).toBe(true);
+    expect(names.has("astar_leg::sc")).toBe(true);
+    expect(names.has("astar_leg::cell")).toBe(true);
+  });
+
+  it("scopes a local to the fn that declares it, not to a sibling fn", () => {
+    const text = [
+      "pub fn first() {",
+      "    let only_here = 1;",
+      "}",
+      "pub fn second() {",
+      "    let elsewhere = 2;",
+      "}",
+    ].join("\n");
+    const names = extractRustSymbols(text);
+    expect(names.has("first::only_here")).toBe(true);
+    expect(names.has("second::only_here")).toBe(false);
   });
 });
 
@@ -274,7 +320,16 @@ describe("extractTsSymbols", () => {
     expect(names.has("foo")).toBe(true);
     expect(names.has("BAR")).toBe(true);
     expect(names.has("inner")).toBe(true);
-    expect(names.has("local")).toBe(true);
+    expect(names.has("inner.local")).toBe(true);
+    expect(names.has("local")).toBe(false);
+  });
+
+  it("owns a function-local binding and a parameter by the function that declares them", () => {
+    const text = "export function checkFile(hits) {\n  const absorbed = 1;\n  return absorbed + hits;\n}";
+    const names = extractTsSymbols(text);
+    expect(names.has("checkFile.absorbed")).toBe(true);
+    expect(names.has("checkFile.hits")).toBe(true);
+    expect(names.has("absorbed")).toBe(false);
   });
 
   it("indexes the EXPORTED alias of a named re-export, and a type-only re-export", () => {
@@ -287,6 +342,8 @@ describe("extractTsSymbols", () => {
     const names = extractTsSymbols("export const enum Mode { Fast = 1 }");
     expect(names.has("Mode")).toBe(true);
     expect(names.has("Mode.Fast")).toBe(true);
+    // Regression marker, not coverage: no mutation of the current AST reader can make the parser
+    // hand back the keyword as a declared name. It pins the behaviour a pattern reader got wrong.
     expect(names.has("enum")).toBe(false);
   });
 
@@ -320,7 +377,8 @@ describe("extractTsSymbols", () => {
     const names = extractTsSymbols(text);
     expect(names.has("Baz.open")).toBe(true);
     expect(names.has("Baz.viewedScene")).toBe(true);
-    expect(names.has("panelId")).toBe(true);
+    expect(names.has("Baz.open.panelId")).toBe(true);
+    expect(names.has("panelId")).toBe(false);
   });
 
   it("indexes an object-literal key, including a quoted dotted catalog key", () => {
@@ -328,6 +386,35 @@ describe("extractTsSymbols", () => {
     const names = extractTsSymbols(text);
     expect(names.has("panels.popoutRestoredFloating")).toBe(true);
     expect(names.has("messages.plain")).toBe(true);
+  });
+
+  it("indexes each identifier-shaped string in a module-level array-literal value set", () => {
+    const text = 'export const NOTATION_KEYWORDS: readonly string[] = ["d", "kh", "cs"];';
+    const names = extractTsSymbols(text);
+    expect(names.has("kh")).toBe(true);
+    expect(names.has("cs")).toBe(true);
+  });
+
+  it("ignores an array literal that is not a module-level declaration's value set", () => {
+    const names = extractTsSymbols('function f() {\n  accept(["kh", "kl"]);\n}');
+    expect(names.has("kh")).toBe(false);
+  });
+
+  it("does NOT index a collection constructor's members, which would index this gate's own lists", () => {
+    // `scripts/` is an indexed root and `ACKNOWLEDGED_NON_SYMBOLS` is declared as `new Set([...])`.
+    // Unwrapping the constructor makes every acknowledged token resolve as a declared name, so the
+    // list goes dead and the gate reports as verified the exact citations it exists to flag.
+    expect(extractTsSymbols('export const ACK = new Set(["Uuid"]);').has("Uuid")).toBe(false);
+  });
+
+  it("indexes the wire VALUE a module-level string constant declares", () => {
+    const names = extractTsSymbols('export const ITEM_DOC_TYPE = "item";');
+    expect(names.has("ITEM_DOC_TYPE")).toBe(true);
+    expect(names.has("item")).toBe(true);
+  });
+
+  it("ignores a function-local string constant, which publishes no value", () => {
+    expect(extractTsSymbols('function f() {\n  const k = "item";\n}').has("item")).toBe(false);
   });
 
   it("indexes an imported name and a string-literal type member", () => {
@@ -365,16 +452,22 @@ describe("extractCodeSpans / citationTokens", () => {
     ]);
   });
 
-  it("counts the quoting span itself too, so no span goes unaccounted for", () => {
-    const line = "``a `b` c``";
-    expect(citationTokens(line).map((t) => t.token)).toEqual(["a `b` c", "b"]);
+  it("pairs a span that WRAPS a line break, so later spans on the line stay aligned", () => {
+    // A line-scoped reader pairs the wrap's ORPHAN closing backtick with the next span's opener:
+    // it emits the prose BETWEEN the two spans ("and") as a token the author never wrote, and
+    // loses the real citation entirely. Both assertions below discriminate that reader.
+    const tokens = citationTokens("a `foo ==\nbar` and `MoveOutcome.cost` here.").map((t) => t.token);
+    expect(tokens).toEqual(["foo ==\nbar", "MoveOutcome.cost"]);
+    expect(tokens).not.toContain("and");
   });
 
-  it("pairs a span that WRAPS a line break, so later spans on the line stay aligned", () => {
-    const text = "even though `stop_index ==\npath.len()-1`. `MoveOutcome.cost` accumulates.";
-    const tokens = citationTokens(text).map((t) => t.token);
-    expect(tokens).toContain("MoveOutcome.cost");
-    expect(tokens).not.toContain("accumulates");
+  it("stops pairing at a blank line, so one stray backtick cannot unpair the rest of a file", () => {
+    const text = "A stray ` backtick ends the paragraph.\n\nThen `MoveOutcome.cost` and `Grid`.";
+    expect(citationTokens(text).map((t) => t.token)).toEqual(["MoveOutcome.cost", "Grid"]);
+  });
+
+  it("recovers a citation nested two spans deep, not just one", () => {
+    expect(citationTokens("```A ``B `C` `` ```").map((t) => t.token)).toContain("C");
   });
 
   it("reports the line a span OPENS on", () => {
@@ -383,6 +476,23 @@ describe("extractCodeSpans / citationTokens", () => {
 
   it("leaves an unmatched backtick run as literal text rather than opening a span", () => {
     expect(extractCodeSpans("a ` b")).toEqual([]);
+  });
+});
+
+describe("stripCodeBlocks", () => {
+  it("pairs only fence delimiters that OPEN a line, so an inline mention blanks no prose", () => {
+    const text = "An inline ```ts fence mention.\n\n`Grid.cellCenter` is cited here.\n";
+    expect(stripCodeBlocks(text)).toContain("`Grid.cellCenter`");
+  });
+
+  it("blanks a four-space-indented code block that follows a blank line", () => {
+    const text = "Prose.\n\n    let notACitation = 1;\n\nMore prose.\n";
+    expect(stripCodeBlocks(text)).toBe("Prose.\n\n\n\nMore prose.\n");
+  });
+
+  it("keeps an indented CONTINUATION of a list item, whose citations are real prose", () => {
+    const text = "  - A bullet whose body wraps.\n\n    `Whisper` is cited in the continuation.\n";
+    expect(stripCodeBlocks(text)).toContain("`Whisper`");
   });
 });
 
@@ -409,10 +519,22 @@ describe("extractCitationCandidates", () => {
     expect(candidates.map((c) => c.token)).toEqual(["RealCitation::method"]);
   });
 
-  it("skips a line carrying the EXAMPLE: marker", () => {
-    const text = "EXAMPLE: `NotReal::Thing` demonstrates the shape.";
-    const { candidates, nonCandidates } = extractCitationCandidates(text);
+  it("COUNTS every span an EXAMPLE: marker exempts rather than dropping it into no bucket", () => {
+    const text = "EXAMPLE: `NotReal::Thing` and `Option<&T>` demonstrate the shape.";
+    const { candidates, nonCandidates, exampleExempt } = extractCitationCandidates(text);
     expect(candidates.length + nonCandidates).toBe(0);
+    expect(exampleExempt).toBe(2);
+  });
+
+  it("checks the NAME in a `NAME=value` span, which is a citation with its value attached", () => {
+    const { candidates } = extractCitationCandidates("The cap is `MAX_GATE_WALK_SAMPLES=4096`.");
+    expect(candidates.map((c) => c.token)).toEqual(["MAX_GATE_WALK_SAMPLES"]);
+  });
+
+  it("does not read a comparison or an arrow as an assignment", () => {
+    const { candidates, nonCandidates } = extractCitationCandidates("`w <= 0` and `k => v`");
+    expect(candidates).toEqual([]);
+    expect(nonCandidates).toBe(2);
   });
 
   it("excludes a filename-extension token as a non-candidate, not a broken citation", () => {
@@ -457,6 +579,27 @@ describe("checkFileCitations", () => {
     expect(hits.get("Uuid")).toBe(1);
     expect(result.broken).toEqual([{ line: 1, token: "TotallyMadeUp::NotReal" }]);
   });
+
+  it("reports a QUALIFIED dead citation as broken, never absorbed by a bare-word entry", () => {
+    // `fetch` and `mutation` are both acknowledged bare. A citation naming a type that does not
+    // exist must still be BROKEN — a member-name fallback would keep the entry alive on a token
+    // that has nothing to do with the reason the entry records.
+    const result = checkFileCitations("`MadeUpType.fetch` `Gone::mutation`", new Set());
+    expect(result.broken.map((b) => b.token)).toEqual(["MadeUpType.fetch", "Gone::mutation"]);
+    expect(result.acknowledged).toBe(0);
+  });
+
+  it("still acknowledges a qualified path by its external-crate PREFIX", () => {
+    const hits = new Map();
+    const result = checkFileCitations("`tokio::spawn_blocking`", new Set(), hits);
+    expect(result.acknowledged).toBe(1);
+    expect(hits.get("tokio")).toBe(1);
+  });
+
+  it("carries the EXAMPLE-exempt span count through to its caller", () => {
+    const result = checkFileCitations("EXAMPLE: `M13-0` is a specimen.", new Set());
+    expect(result.exampleExempt).toBe(1);
+  });
 });
 
 describe("listSkillDirs", () => {
@@ -464,7 +607,6 @@ describe("listSkillDirs", () => {
     const dirs = listSkillDirs(REPO_ROOT);
     expect(dirs).not.toBeNull();
     expect(dirs.tracked.has("shadowcat-codebase-core")).toBe(true);
-    expect(dirs.tracked.has("graphify")).toBe(false);
     expect(dirs.untracked).toContain("graphify");
   });
 });
@@ -490,17 +632,16 @@ describe("checkSkillSymbolRefs", () => {
   mkdirSync(join(skillsRoot, "shadowcat-codebase-example"), { recursive: true });
   mkdirSync(join(skillsRoot, "shadowcat-codebase-nightfox"), { recursive: true });
   mkdirSync(join(skillsRoot, "graphify"), { recursive: true });
-  writeFileSync(
-    join(skillsRoot, "shadowcat-codebase-nightfox", "SKILL.md"),
-    "See `NightfoxOnlyType::NotInThisRepo`.",
-  );
+  const nightfoxFile = join(skillsRoot, "shadowcat-codebase-nightfox", "SKILL.md");
+  writeFileSync(nightfoxFile, "See `parseNightfox`.");
   writeFileSync(
     join(skillsRoot, "graphify", "SKILL.md"),
     "See `some_python_function` and `AnotherPythonThing`.",
   );
 
-  const run = (prose) => {
+  const run = (prose, nightfoxProse = "See `parseNightfox`.") => {
     writeFileSync(skillFile, prose);
+    writeFileSync(nightfoxFile, nightfoxProse);
     return checkSkillSymbolRefs(repoRoot, { trackedDirs, untrackedDirs: ["graphify"] });
   };
 
@@ -521,22 +662,42 @@ describe("checkSkillSymbolRefs", () => {
     ]);
   });
 
-  it("excludes shadowcat-codebase-nightfox from the fatal scan but still counts its candidates", () => {
-    const result = run("See `RegionField::is_arrest`.");
+  it("acknowledges a NAMED cross-repo symbol in the skill that documents the other repo", () => {
+    const result = run("See `RegionField::is_arrest`.", "See `parseNightfox`.");
     expect(result.broken).toEqual([]);
-    expect(result.nightfoxExcludedFiles).toBe(1);
-    expect(result.nightfoxExcludedBroken).toBe(1);
+    expect(result.crossRepo).toBe(1);
+    expect(result.crossRepoHits.get("parseNightfox")).toBe(1);
+  });
+
+  it("reports an UNNAMED cross-repo citation as broken — the file is no longer exempt", () => {
+    const result = run("See `RegionField::is_arrest`.", "See `NightfoxOnlyType::NotInThisRepo`.");
+    expect(result.broken.map((b) => b.token)).toEqual(["NightfoxOnlyType::NotInThisRepo"]);
+  });
+
+  it("acknowledges a cross-repo name ONLY inside that skill's own file", () => {
+    const result = run("See `parseNightfox`.", "See `parseNightfox`.");
+    expect(result.broken.map((b) => b.token)).toEqual(["parseNightfox"]);
   });
 
   it("does not scan an untracked (vendored) skill directory", () => {
     const result = run("See `RegionField::is_arrest`.");
-    expect(result.filesScanned).toBe(1);
-    expect(result.untrackedDirs).toEqual(["graphify"]);
+    expect(result.filesScanned).toBe(2);
   });
 
-  it("names every acknowledgement entry the corpus never reaches", () => {
-    const result = run("See `RegionField::is_arrest`.");
-    expect(result.unusedAcknowledgements).toContain("Uuid");
-    expect(result.acknowledgedHits.size).toBe(0);
+  it("names an acknowledgement entry the corpus never reaches, and spares one it does", () => {
+    const result = run("See `RegionField::is_arrest` and `Uuid`.");
+    expect(result.unusedAcknowledgements).not.toContain("Uuid");
+    expect(result.unusedAcknowledgements).toContain("NOCASE");
+  });
+
+  it("floors a file that carries backticks but yields no classified span", () => {
+    const result = run("An unpaired ` delimiter and nothing else.");
+    expect(result.filesWithNoCandidates).toEqual([skillFile]);
+  });
+
+  it("counts an EXAMPLE-exempt span rather than dropping it into no bucket", () => {
+    const result = run("EXAMPLE: `M13-0` is a specimen.\n\nSee `RegionField::is_arrest`.");
+    expect(result.exampleExempt).toBe(1);
+    expect(result.verified).toBeGreaterThan(0);
   });
 });

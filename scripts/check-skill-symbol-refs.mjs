@@ -11,7 +11,11 @@
 // exclusion is invisible in both directions at once — it hides the citations it skips AND it hides
 // every gap in the symbol index, because a name the index cannot see is indistinguishable from a
 // name the shape rule declined to look at. Every backtick span is therefore classified into
-// exactly one printed bucket: verified, acknowledged non-symbol, broken, or not citation-shaped.
+// exactly one printed bucket: verified, acknowledged non-symbol, cross-repo, broken,
+// EXAMPLE-exempt, or not citation-shaped. `EXAMPLE-exempt` is a printed count for the same reason
+// as the rest: an exclusion nobody counts is a backdoor, and a line carrying both a specimen and a
+// real citation would otherwise take the citation out of the gate with nothing in the output
+// changing.
 //
 // Pure library: no top-level side effects. `check-skill-symbol-refs-cli.mjs` is the executable
 // entry point.
@@ -83,8 +87,18 @@ const RUST_ENUM_VARIANT = /(?:^|[{,])\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?=[,({}]|$)/
 // citation of one be VERIFIED — and lets a rename of one be caught — instead of being written off
 // as an unresolvable shape. Tuple/struct destructuring patterns are matched too, since the names
 // they bind are exactly as citable.
+//
+// They are registered ONLY under the `fn` that declares them (`execute_move::chord_ok`), never
+// bare. A function-local name is invisible outside its function, so a bare entry carries no owner
+// relation while the rest of the index does: it makes the index answer "yes, the tree declares
+// that" to any citation spelling any local anywhere, which is how a renamed field stays green
+// because some unrelated function happens to bind the old name. Owner-qualification is also what
+// RULE 15 asks the citation itself to do.
 const RUST_LET_BINDING = /\blet\s+(?:mut\s+)?([a-z_][A-Za-z0-9_]*)/g;
 const RUST_LET_TUPLE = /\blet\s+\(([^)]*)\)\s*=/g;
+// A `for` pattern binds names exactly as a `let` does — `for (next, sc, parity) in …` is where
+// `astar_leg`'s per-step cost gets its name — and prose cites them the same way.
+const RUST_FOR_BINDING = /\bfor\s+(?:\(([^)]*)\)|(?:mut\s+)?([a-z_][A-Za-z0-9_]*))\s+in\b/g;
 const RUST_FN_SIGNATURE_OPEN = /\bfn\s+[A-Za-z_][A-Za-z0-9_]*\s*(?:<[^>(]*>)?\s*\(/;
 // A parameter inside a signature: `name: Type`, at a `(` or `,` boundary. `self` binds no name.
 const RUST_FN_PARAM = /(?:^|[(,])\s*(?:mut\s+)?([a-z_][A-Za-z0-9_]*)\s*:(?!:)/g;
@@ -226,6 +240,10 @@ export function extractRustSymbols(text, modulePath = []) {
   let pendingAttrs = [];
   let inSignature = false;
   let signatureParens = 0;
+  // The `fn` a local name belongs to. Stacked because a `fn` may nest inside another; an entry is
+  // popped when a sibling declaration opens at the same depth, which is what ends a body-less
+  // trait method's scope.
+  const fnStack = []; // { name, depth }[]
   for (const line of lines) {
     const trimmed = line.trim();
     const isAttr = trimmed.startsWith("#[") || trimmed.startsWith("#!");
@@ -248,6 +266,10 @@ export function extractRustSymbols(text, modulePath = []) {
       if (item) {
         const [, kind, name] = item;
         addQualified(name);
+        if (kind === "fn") {
+          while (fnStack.length > 0 && depth <= fnStack[fnStack.length - 1].depth) fnStack.pop();
+          fnStack.push({ name, depth });
+        }
         if (kind === "fn" && methodOwner !== null) {
           // Qualified BOTH ways: `Type::method` alone (the common citation form) and, chained
           // through `addQualified`, every `module::path::Type::method` prefix too — a citation may
@@ -270,8 +292,15 @@ export function extractRustSymbols(text, modulePath = []) {
           if (line.trimEnd().endsWith("{")) modStack.push({ name: modMatch[1], depth });
         }
       }
-      if (container !== null && depth === container.depth + 1) {
-        const pattern = container.kind === "struct" ? RUST_STRUCT_FIELD : RUST_ENUM_VARIANT;
+      // A STRUCT-VARIANT's own fields sit one level deeper than its variant name, and are real
+      // declarations the wire carries (`TokenVisual::Faces`'s `#[serde(rename = "faceMap")]` is the
+      // tree's only spelling of `faceMap`). Only the field's EXPLICIT rename applies here: a
+      // container's `rename_all` renames its VARIANTS, not a variant's fields.
+      const inVariantBody =
+        container !== null && container.kind === "enum" && depth === container.depth + 2;
+      if (container !== null && (depth === container.depth + 1 || inVariantBody)) {
+        const pattern =
+          container.kind === "struct" || inVariantBody ? RUST_STRUCT_FIELD : RUST_ENUM_VARIANT;
         pattern.lastIndex = 0;
         const explicitRename = SERDE_RENAME.exec(attrs)?.[1] ?? null;
         for (const match of line.matchAll(pattern)) {
@@ -285,7 +314,9 @@ export function extractRustSymbols(text, modulePath = []) {
           for (const form of [
             member,
             explicitRename,
-            container.renameAll === null ? null : applyRenameAll(member, container.renameAll),
+            container.renameAll === null || inVariantBody
+              ? null
+              : applyRenameAll(member, container.renameAll),
           ]) {
             if (form === null) continue;
             addQualified(form);
@@ -296,10 +327,22 @@ export function extractRustSymbols(text, modulePath = []) {
       }
     }
     if (!isComment) {
-      for (const m of line.matchAll(RUST_LET_BINDING)) names.add(m[1]);
+      // Owned by the innermost enclosing `fn`; a local outside every `fn` has no owner to cite it
+      // by and is not indexed at all, rather than being indexed bare.
+      const owner = fnStack.length === 0 ? null : fnStack[fnStack.length - 1].name;
+      const addLocal = (name) => {
+        if (owner !== null) addQualified(`${owner}::${name}`);
+      };
+      for (const m of line.matchAll(RUST_LET_BINDING)) addLocal(m[1]);
       for (const m of line.matchAll(RUST_LET_TUPLE))
         for (const part of m[1].split(","))
-          for (const id of part.trim().matchAll(/\b([a-z_][A-Za-z0-9_]*)\b/g)) names.add(id[1]);
+          for (const id of part.trim().matchAll(/\b([a-z_][A-Za-z0-9_]*)\b/g)) addLocal(id[1]);
+      for (const m of line.matchAll(RUST_FOR_BINDING)) {
+        if (m[2] !== undefined) addLocal(m[2]);
+        else
+          for (const part of m[1].split(","))
+            for (const id of part.trim().matchAll(/\b([a-z_][A-Za-z0-9_]*)\b/g)) addLocal(id[1]);
+      }
       // A signature can wrap across lines, so parameter scanning stays open until the parameter
       // list's own paren closes rather than assuming the signature fits on the `fn` line.
       const code = stripLiteralsForBraceCounting(line);
@@ -314,7 +357,7 @@ export function extractRustSymbols(text, modulePath = []) {
       }
       if (inSignature) {
         const rest = code.slice(scanFrom);
-        for (const m of rest.matchAll(RUST_FN_PARAM)) names.add(m[1]);
+        for (const m of rest.matchAll(RUST_FN_PARAM)) addLocal(m[1]);
         for (const ch of rest) {
           if (ch === "(") signatureParens += 1;
           else if (ch === ")") {
@@ -333,6 +376,7 @@ export function extractRustSymbols(text, modulePath = []) {
         depth -= 1;
         if (methodOwner !== null && depth <= methodOwner.depth) methodOwner = null;
         if (container !== null && depth <= container.depth) container = null;
+        while (fnStack.length > 0 && depth <= fnStack[fnStack.length - 1].depth) fnStack.pop();
         while (modStack.length > 0 && depth <= modStack[modStack.length - 1].depth)
           modStack.pop();
       }
@@ -471,6 +515,29 @@ function declaredMemberName(name) {
 const IDENTIFIER_SHAPED = /^[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*$/;
 
 /**
+ * The array literal a module-level declaration is initialized to, seen through the wrappers a
+ * value set is normally written behind (`as const`, a type assertion, parentheses); null for
+ * anything else.
+ *
+ * A collection CONSTRUCTOR (`new Set([...])`) is deliberately NOT unwrapped. This gate's own
+ * acknowledgement lists are declared that way and `scripts/` is an indexed root, so unwrapping
+ * makes every acknowledged non-symbol index itself as a declared name — the index would then
+ * resolve exactly the tokens the list exists to flag, and the list would go dead while the gate
+ * reported everything verified.
+ * @param {ts.Node|undefined} node - a variable declaration's initializer.
+ * @returns {ts.ArrayLiteralExpression|null} the array literal, or null.
+ */
+function arrayLiteralInitializer(node) {
+  let cur = node;
+  while (
+    cur !== undefined &&
+    (ts.isAsExpression(cur) || ts.isTypeAssertionExpression(cur) || ts.isParenthesizedExpression(cur))
+  )
+    cur = cur.expression;
+  return cur !== undefined && ts.isArrayLiteralExpression(cur) ? cur : null;
+}
+
+/**
  * Extracts every symbol name one TS/JS module declares: top-level `function`/`class`/`interface`/
  * `type`/`enum`/`namespace` declarations and module-level `const`/`let`/`var` bindings (exported
  * or not — a skill may legitimately cite a module-private symbol); every class, interface,
@@ -479,9 +546,10 @@ const IDENTIFIER_SHAPED = /^[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]
  * declaration-citation shape and this repo's wire-path notation resolve at whatever depth prose
  * cites them; every name a named re-export publishes (`export { a as b }`,
  * `export type { Foo }`); every name the module IMPORTS, which is this tree's own declaration
- * that the name exists in a package it depends on; and every identifier-shaped string LITERAL
+ * that the name exists in a package it depends on; every identifier-shaped string LITERAL
  * TYPE, which is how a wire-protocol discriminant value is declared (`type SyncState = "none" |
- * "up_to_date"`).
+ * "up_to_date"`); and every identifier-shaped string member of a MODULE-LEVEL array literal, which
+ * is the other way this tree declares a closed value set (`NOTATION_KEYWORDS`).
  *
  * @param {string} text - one `.ts`/`.mjs`/`.js` file's contents, or a `.svelte` file's extracted
  *   script text.
@@ -499,9 +567,26 @@ export function extractTsSymbols(text, fileName = "module.ts") {
     names.add(name);
     for (let i = 0; i < chain.length; i += 1) names.add(`${chain.slice(i).join(".")}.${name}`);
   };
+  // The owner-qualified forms ONLY. A name with an empty chain reaches nothing: an anonymous
+  // callback's parameter has no owner a citation could name, so it is indexed nowhere rather than
+  // bare.
+  const addOwned = (name, chain) => {
+    if (name === "" || !IDENTIFIER_SHAPED.test(name)) return;
+    for (let i = 0; i < chain.length; i += 1) names.add(`${chain.slice(i).join(".")}.${name}`);
+  };
 
-  const walk = (node, chain) => {
+  const walk = (node, chain, inFunction) => {
     let nextChain = chain;
+    // Everything declared below a function-like node is function-local, at any depth.
+    const nextInFunction =
+      inFunction ||
+      ts.isFunctionDeclaration(node) ||
+      ts.isFunctionExpression(node) ||
+      ts.isArrowFunction(node) ||
+      ts.isMethodDeclaration(node) ||
+      ts.isConstructorDeclaration(node) ||
+      ts.isGetAccessorDeclaration(node) ||
+      ts.isSetAccessorDeclaration(node);
     if (
       ts.isFunctionDeclaration(node) ||
       ts.isClassDeclaration(node) ||
@@ -513,17 +598,45 @@ export function extractTsSymbols(text, fileName = "module.ts") {
       const named = node.name !== undefined && ts.isIdentifier(node.name) ? node.name.text : "";
       if (named !== "") {
         add(named, chain);
-        if (!ts.isFunctionDeclaration(node)) nextChain = [named];
+        nextChain = [named];
       }
     } else if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name)) {
-      add(node.name.text, chain);
-      nextChain = [node.name.text];
+      if (inFunction) {
+        addOwned(node.name.text, chain);
+        nextChain = [...chain, node.name.text];
+      } else {
+        add(node.name.text, chain);
+        nextChain = [node.name.text];
+      }
+      // A module-level array literal of strings DECLARES a closed set of accepted values —
+      // `NOTATION_KEYWORDS`'s dice-notation prefixes are the tree's only spelling of `kh`/`cs`/`cf`
+      // — exactly as a Rust string-literal alternation does on the server side, and prose cites a
+      // member of that set by its literal spelling. Registered bare, like a string-literal union
+      // member, since the set's own name is not part of how the value is written. Restricted to a
+      // MODULE-LEVEL declaration: an array built inside a function is a local value, not a
+      // declaration the tree publishes.
+      if (
+        node.parent?.parent?.parent !== undefined &&
+        ts.isSourceFile(node.parent.parent.parent)
+      ) {
+        const literal = arrayLiteralInitializer(node.initializer);
+        if (literal !== null) {
+          for (const element of literal.elements)
+            if (ts.isStringLiteral(element)) add(element.text, []);
+        } else if (node.initializer !== undefined && ts.isStringLiteral(node.initializer)) {
+          // The same rationale at cardinality one: `ITEM_DOC_TYPE = "item"` is the tree's only
+          // spelling of that wire value, and prose cites the VALUE, not the constant holding it.
+          add(node.initializer.text, []);
+        }
+      }
     } else if (ts.isBindingElement(node) && ts.isIdentifier(node.name)) {
-      add(node.name.text, []);
+      if (inFunction) addOwned(node.name.text, chain);
+      else add(node.name.text, []);
     } else if (ts.isPropertyAssignment(node) || ts.isShorthandPropertyAssignment(node)) {
       const named = declaredMemberName(node.name);
       if (named !== "") {
-        add(named, chain);
+        if (inFunction) addOwned(named, chain);
+        else add(named, chain);
         nextChain = [...chain, named];
       }
     } else if (
@@ -541,9 +654,10 @@ export function extractTsSymbols(text, fileName = "module.ts") {
         nextChain = [...chain, named];
       }
     } else if (ts.isParameter(node)) {
-      // A parameter is a declaration prose legitimately cites by name; a constructor parameter
-      // property additionally declares a real class member, which is why the owner chain applies.
-      add(declaredMemberName(node.name), node.modifiers === undefined ? [] : chain);
+      // A constructor parameter property declares a real class member and is indexed as one; a
+      // plain parameter is function-local and is owned by the function it belongs to.
+      if (node.modifiers === undefined) addOwned(declaredMemberName(node.name), chain);
+      else add(declaredMemberName(node.name), chain);
     } else if (ts.isExportSpecifier(node) || ts.isImportSpecifier(node)) {
       add(node.name.text, []);
     } else if (ts.isNamespaceImport(node) || ts.isNamespaceExport(node)) {
@@ -553,9 +667,9 @@ export function extractTsSymbols(text, fileName = "module.ts") {
     } else if (ts.isLiteralTypeNode(node) && ts.isStringLiteral(node.literal)) {
       add(node.literal.text, []);
     }
-    ts.forEachChild(node, (child) => walk(child, nextChain));
+    ts.forEachChild(node, (child) => walk(child, nextChain, nextInFunction));
   };
-  ts.forEachChild(source, (child) => walk(child, []));
+  ts.forEachChild(source, (child) => walk(child, [], false));
   return names;
 }
 
@@ -796,32 +910,55 @@ export function listSkillDirs(repoRoot) {
 }
 
 // `shadowcat-codebase-nightfox` documents a subsystem split across TWO repositories: this engine
-// repo owns `@shadowcat/formula`, but the Nightfox rules-engine/sheets code the rest of the skill
-// documents lives in a SEPARATE repository, nested into a dev checkout only (not present in this
-// one, verified: `src/modules/nightfox` does not exist here). A citation of a Nightfox-repo symbol
-// is therefore structurally unresolvable from this tree regardless of whether it is accurate —
-// the same "genuinely cannot be gated" shape RULE 16 already accepted for the lowercase-hyphenated
-// marker, and handled the same way: excluded from the FATAL scan, but its count is never silently
-// dropped (see `checkSkillSymbolRefs`'s `nightfoxExcluded`), and it is recorded beside RULE 15 in
-// this repo's doc-sweep truthfulness rules as a stated review obligation awaiting a ruling, not a
-// self-authorized exemption.
+// repo owns `@shadowcat/formula` (at `src/client/formula/`), while the Nightfox rules-engine and
+// sheets code the rest of the skill documents lives in a SEPARATE repository, nested into a dev
+// checkout only (`src/modules/nightfox` does not exist here). Its markdown is scanned like every
+// other skill file: RESOLUTION decides per citation, never membership in a file. Excluding the
+// whole file left this repo's OWN symbols unchecked purely because they shared a page with names
+// this tree cannot see - the same defect, in a different exemption, that dropping the shape
+// exclusion removed from the classifier.
 const NIGHTFOX_SKILL_DIR = "shadowcat-codebase-nightfox";
 
+// The names the SEPARATE Nightfox repository declares, cited by the skill that documents it. Each
+// is verified absent from this tree - which is the half of the claim this checkout can settle -
+// and is acknowledged ONLY in that skill's own file, so a citation of one anywhere else is still
+// reported broken. Hit-counted and zero-hit-fatal like every other acknowledgement list, so an
+// entry dies the day its citation goes away. This remains a standing review obligation rather than
+// a settled exemption: nothing here can be checked against the repository that owns it.
+export const ACKNOWLEDGED_CROSS_REPO = new Set([
+  // Rules-engine entry points and result types.
+  "parseNightfox", "resolveNightfox", "ResolveWarning", "Collected.docs", "statRefResolver",
+  "isParseError",
+  // The stat/modifier data model and its caps.
+  "Stat", "ModifierContribution", "MAX_STATS", "MAX_MODIFIERS",
+  "RESERVED_STAT_KEYS", "validateStatKey", "maxBase", "maxFormula", "effectiveCurrent",
+  "clampToMax", "mulAdditive",
+  // Sheet components and the editing commands they issue.
+  "StatRow", "StatTable", "ModifiersEditor", "EffectSheet", "addStat", "removeStat",
+  "setStatOrder", "editStatField", "addModifier", "removeModifier", "editModifierField",
+  "setMechanicsFlag", "buildStatRollContent", "effectReadOnly", "embedReadOnly",
+  // The module's own document-type constant and i18n catalog.
+  "EFFECT_DOC_TYPE", "NF_MESSAGES", "nfT",
+  // The Nightfox document body's own bands, stat types and doc types, cited as the wire values
+  // they are: the `mechanics` band and its `system.mechanics` path, the `resource` stat type, the
+  // `effect` doc type and the `embedded.effect` slot that carries it, and the `format` module.
+  "mechanics", "system.mechanics", "resource", "effect", "embedded.effect", "format",
+]);
+
 /**
- * Finds every markdown file under the tracked skill directories, excluding
- * `NIGHTFOX_SKILL_DIR` (see its comment) unless `includeNightfox` is set.
+ * Finds every markdown file under the tracked skill directories. No file is excluded: the
+ * cross-repo skill is scanned like any other, and its unresolvable citations are acknowledged
+ * per NAME via `ACKNOWLEDGED_CROSS_REPO`.
  * @param {string} repoRoot - absolute path to the repository root.
  * @param {Set<string>} trackedDirs - tracked directory names, from `listSkillDirs`.
- * @param {{includeNightfox?: boolean}} [opts] - set `includeNightfox` to keep the cross-repo skill.
  * @returns {string[]} absolute paths, sorted.
  */
-export function findMarkdownFiles(repoRoot, trackedDirs, { includeNightfox = false } = {}) {
+export function findMarkdownFiles(repoRoot, trackedDirs) {
   const out = [];
   for (const root of MD_ROOTS) {
     const abs = join(repoRoot, ...root.split("/"));
     for (const entry of readdirSync(abs, { withFileTypes: true })) {
       if (!entry.isDirectory() || !trackedDirs.has(entry.name)) continue;
-      if (!includeNightfox && entry.name === NIGHTFOX_SKILL_DIR) continue;
       out.push(...sources(join(abs, entry.name), MD_EXTS));
     }
   }
@@ -844,6 +981,20 @@ const CITATION_SHAPE =
 const FILE_EXTENSION_TOKEN =
   /\.(?:md|scss|json|toml|ya?ml|py|txt|html?|svg|png|db|sql|rs|m?[jt]s|cjs|lock)$/i;
 
+// A span that writes a name TOGETHER WITH its value (`MAX_GATE_WALK_SAMPLES=4096`,
+// `autoUpdate = false`) is a citation of that name, not a config value: the value is there to
+// save the reader a lookup. Without this, the whole span fails the citation shape and lands in
+// `nonCandidates`, so the NAME goes unchecked — which is how a constant that no longer exists
+// stayed cited with the gate reporting 0 broken. `=(?![=>])` is what keeps a comparison
+// (`w <= 0`, `a == b`) and an arrow (`k => v`) out: neither writes a value to a name. A VALUE must
+// actually follow, which is what keeps a bare syntax fragment (`` `href=` ``, quoted as the literal
+// text a scan would match) from being read as a citation of the name in front of it. A VALUE is
+// one token: a multi-token right-hand side is an expression or an illustrative formula
+// (`attack = dex + str`), where the name on the left is the author's example rather than a
+// citation of anything the tree declares.
+const ASSIGNMENT_SHAPE =
+  /^([A-Za-z_][A-Za-z0-9_]*(?:(?:::|\.)[A-Za-z_][A-Za-z0-9_]*)*)\s*=(?![=>])\s*\S+\s*$/;
+
 /**
  * Extracts every Markdown code span in a document, by CommonMark's own rule: a run of N backticks
  * opens a span that closes at the next run of exactly N, and a span may cross a line break. A
@@ -854,25 +1005,52 @@ const FILE_EXTENSION_TOKEN =
  * they are common) leaves an odd backtick on each of two lines, which re-pairs every later span on
  * those lines against the wrong delimiter and yields tokens the prose never wrote.
  *
- * @param {string} text - Markdown prose, fences already stripped.
+ * Pairing is bounded at a BLANK LINE, which is CommonMark's own rule (a code span lives inside one
+ * paragraph's inline content and cannot cross a paragraph break) and is what caps the blast radius
+ * of an unpaired delimiter. Unbounded, a single stray backtick re-pairs every later span in the
+ * file one delimiter off: the real citations land in the gaps between spans, which nothing counts,
+ * while the prose between them becomes the spans — a file the gate reports 0 broken for while
+ * checking almost none of it. Bounding costs the wrapped-span fix nothing, since a wrapped span
+ * never crosses a blank line either.
+ *
+ * @param {string} text - Markdown prose, fenced and indented code blocks already stripped.
  * @returns {{content: string, index: number}[]} each span's raw content and start offset.
  */
 export function extractCodeSpans(text) {
-  const runs = [];
-  for (const m of text.matchAll(/`+/g)) runs.push({ index: m.index, len: m[0].length });
   const spans = [];
-  let i = 0;
-  while (i < runs.length) {
-    const open = runs[i];
-    let j = i + 1;
-    while (j < runs.length && runs[j].len !== open.len) j += 1;
-    if (j >= runs.length) {
-      i += 1;
-      continue;
+  // Paragraph boundaries: a run of one or more blank lines. Offsets stay absolute so the caller's
+  // line attribution needs no adjustment.
+  let paraStart = 0;
+  const flush = (end) => {
+    const para = text.slice(paraStart, end);
+    const runs = [];
+    for (const m of para.matchAll(/`+/g)) runs.push({ index: m.index, len: m[0].length });
+    let i = 0;
+    while (i < runs.length) {
+      const open = runs[i];
+      let j = i + 1;
+      while (j < runs.length && runs[j].len !== open.len) j += 1;
+      if (j >= runs.length) {
+        i += 1;
+        continue;
+      }
+      spans.push({
+        content: para.slice(open.index + open.len, runs[j].index),
+        index: paraStart + open.index,
+      });
+      i = j + 1;
     }
-    spans.push({ content: text.slice(open.index + open.len, runs[j].index), index: open.index });
-    i = j + 1;
+  };
+  const blankLine = /^[ \t]*$/;
+  let offset = 0;
+  for (const line of text.split("\n")) {
+    if (blankLine.test(line)) {
+      flush(offset);
+      paraStart = offset + line.length + 1;
+    }
+    offset += line.length + 1;
   }
+  flush(text.length);
   return spans;
 }
 
@@ -880,8 +1058,10 @@ export function extractCodeSpans(text) {
  * Every token a document offers for classification, each with the 1-based line its span opens on.
  * A span whose content itself contains backticks is a longer-run span quoting other spans: it
  * yields BOTH itself (its full content is prose, and counting it is what keeps every span
- * accounted for) and each span nested inside it, which are the real citations.
- * @param {string} text - Markdown prose, fences already stripped.
+ * accounted for) and each span nested inside it, which are the real citations. Nesting recurses to
+ * any depth — a triple-run span quoting a double-run span quoting a citation would otherwise lose
+ * the innermost token, which is the only real one, into no bucket at all.
+ * @param {string} text - Markdown prose, fenced and indented code blocks already stripped.
  * @returns {{token: string, line: number}[]} trimmed span contents, nested spans included.
  */
 export function citationTokens(text) {
@@ -898,102 +1078,171 @@ export function citationTokens(text) {
     return lo + 1;
   };
   const out = [];
-  for (const span of extractCodeSpans(text)) {
-    const line = lineOf(span.index);
-    out.push({ token: span.content.trim(), line });
-    if (span.content.includes("`"))
-      for (const inner of extractCodeSpans(span.content))
-        out.push({ token: inner.content.trim(), line });
-  }
+  const emit = (content, line) => {
+    out.push({ token: content.trim(), line });
+    if (!content.includes("`")) return;
+    for (const inner of extractCodeSpans(content)) emit(inner.content, line);
+  };
+  for (const span of extractCodeSpans(text)) emit(span.content, lineOf(span.index));
   return out.filter((t) => t.token !== "");
 }
 
-// Inline code spans only — fenced ``` blocks are illustrative snippets (BAD/GOOD examples, shell
-// commands) rather than point citations, and are stripped before span extraction runs.
+// Inline code spans only — a fenced or indented code BLOCK is an illustrative snippet (BAD/GOOD
+// examples, shell commands) rather than a point citation, and is stripped before span extraction
+// runs.
 
-/** Strips fenced ``` code blocks (any info string) from Markdown text, replacing each with blank
- * lines so line numbers in the caller's reporting stay aligned with the original file. */
-export function stripFences(text) {
-  return text.replace(/```[\s\S]*?```/g, (m) => m.replace(/[^\n]/g, ""));
+// A fence delimiter OPENS its line, up to leading indentation. Matching a triple-backtick run
+// anywhere on a line pairs an INLINE mention of one (prose naming the ```ts fence marker) with the
+// next real fence opener, blanking every line of prose between them and dropping its citations
+// uncounted — a failure in the hiding direction, which no output distinguishes from clean prose.
+const FENCE_DELIMITER = /^[ \t]*(?:```|~~~)/;
+// A list item's CONTENT column: the marker's indentation plus the marker and the space after it.
+// An indented code block inside a list item is measured from that column, not from the margin —
+// without which every wrapped continuation paragraph of a nested bullet (this corpus is full of
+// them) reads as a code block and its real citations vanish.
+const LIST_MARKER = /^([ \t]*)([-*+]|\d+[.)])([ \t]+)/;
+
+/**
+ * Blanks every fenced and indented code BLOCK in Markdown text, keeping one blank line per removed
+ * line so the caller's line attribution stays aligned with the original file.
+ *
+ * @param {string} text - one Markdown document's raw contents.
+ * @returns {string} the same document with code-block lines emptied.
+ */
+export function stripCodeBlocks(text) {
+  const lines = text.split("\n");
+  const out = [];
+  const listContent = [];
+  let inFence = false;
+  let inIndented = false;
+  let indentedFrom = 0;
+  let prevBlank = true;
+  for (const line of lines) {
+    if (inFence) {
+      out.push("");
+      if (FENCE_DELIMITER.test(line)) inFence = false;
+      prevBlank = false;
+      continue;
+    }
+    if (FENCE_DELIMITER.test(line)) {
+      out.push("");
+      inFence = true;
+      prevBlank = false;
+      continue;
+    }
+    if (line.trim() === "") {
+      out.push(line);
+      prevBlank = true;
+      continue;
+    }
+    const indent = line.length - line.trimStart().length;
+    if (inIndented) {
+      if (indent >= indentedFrom) {
+        out.push("");
+        prevBlank = false;
+        continue;
+      }
+      inIndented = false;
+    }
+    while (listContent.length > 0 && indent < listContent[listContent.length - 1])
+      listContent.pop();
+    const required = (listContent[listContent.length - 1] ?? 0) + 4;
+    if (prevBlank && indent >= required) {
+      inIndented = true;
+      indentedFrom = required;
+      out.push("");
+      prevBlank = false;
+      continue;
+    }
+    const marker = LIST_MARKER.exec(line);
+    if (marker !== null) listContent.push(marker[1].length + marker[2].length + marker[3].length);
+    out.push(line);
+    prevBlank = false;
+  }
+  return out.join("\n");
 }
 
 /**
- * Splits every code span in one skill file's prose (fenced blocks excluded) into two buckets:
- * `candidates` (resolved against the symbol index, and the gate fails on an unresolved one) and
+ * Splits every code span in one skill file's prose (code blocks excluded) into three buckets:
+ * `candidates` (resolved against the symbol index, and the gate fails on an unresolved one),
  * `nonCandidates` (a span whose shape rules it out entirely — a path, a type snippet, a prose
- * phrase). Shape decides only whether a span is a citation AT ALL; it never decides whether a
- * citation-shaped token gets checked. Nothing is silently dropped: both buckets are numbers the
- * caller must print.
+ * phrase), and `exampleExempt` (a span on an EXAMPLE-marked line, deliberately a specimen rather
+ * than a citation). Shape decides only whether a span is a citation AT ALL; it never decides
+ * whether a citation-shaped token gets checked. Nothing is silently dropped: all three buckets are
+ * numbers the caller must print, because an exclusion nobody counts is a backdoor — a future line
+ * carrying both a specimen and a genuine citation would otherwise take the citation out of the
+ * gate with nothing in the output changing.
  *
  * @param {string} text - the skill file's raw contents.
- * @returns {{ candidates: {line: number, token: string}[], nonCandidates: number }}
+ * @returns {{ candidates: {line: number, token: string}[], nonCandidates: number,
+ *   exampleExempt: number }}
  */
 export function extractCitationCandidates(text) {
-  const body = stripFences(text);
+  const body = stripCodeBlocks(text);
   const lines = body.split("\n");
   const candidates = [];
   let nonCandidates = 0;
+  let exampleExempt = 0;
   for (const { token, line } of citationTokens(body)) {
     // The EXAMPLE marker exempts the line a span OPENS on: that is the line whose author wrote the
     // specimen, and a span is only ever a specimen because of the sentence introducing it.
-    if (EXAMPLE_EXEMPT.test(lines[line - 1] ?? "")) continue;
-    if (!CITATION_SHAPE.test(token) || FILE_EXTENSION_TOKEN.test(token)) {
+    if (EXAMPLE_EXEMPT.test(lines[line - 1] ?? "")) {
+      exampleExempt += 1;
+      continue;
+    }
+    const assigned = CITATION_SHAPE.test(token) ? null : ASSIGNMENT_SHAPE.exec(token)?.[1] ?? null;
+    const cited = assigned ?? token;
+    if ((!CITATION_SHAPE.test(cited) && assigned === null) || FILE_EXTENSION_TOKEN.test(cited)) {
       nonCandidates += 1;
       continue;
     }
-    candidates.push({ line, token });
+    candidates.push({ line, token: cited });
   }
-  return { candidates, nonCandidates };
+  return { candidates, nonCandidates, exampleExempt };
 }
 
-// A citation-shaped token that is legitimately not a symbol this tree declares: an external
-// crate/std/Web API name, a wire/serde keyword, or an ordinary English word set in code font.
+// A citation-shaped token that is legitimately not a symbol this tree declares: a wire/serde
+// keyword, a literal value, an external member name cited standalone, or a deliberate negative
+// citation. An entry matches the WHOLE token and nothing less - see `checkFileCitations` for why a
+// segment-wise fallback is what lets a dead qualified citation pass as acknowledged. A name that
+// OWNS members belongs in `ACKNOWLEDGED_EXTERNAL_PREFIX` instead.
+//
 // Named and reasoned, exactly like `check-comment-refs.mjs`'s ACKNOWLEDGED list, and for the same
 // reason: an unresolved candidate must be counted and either verified, acknowledged, or reported
-// as broken — never silently dropped. Every entry is HIT-COUNTED on each run and a zero-hit entry
+// as broken - never silently dropped. Every entry is HIT-COUNTED on each run and a zero-hit entry
 // fails the gate, so the list cannot quietly grow a slot that absorbs a future defect.
 export const ACKNOWLEDGED_NON_SYMBOLS = new Set([
-  // Rust primitive/std types this repo's own code never declares — cited as VALUES.
-  "f64", "u32", "i128", "Vec", "Option", "Some", "Result", "Err", "HashSet", "BTreeMap",
-  "Uuid", "Arc", "Mutex", "Rc", "RefCell", "Sync", "Display", "PartialEq", "Path", "PathBuf",
-  "SqlitePool", "SyntaxError", "Sink", "ConnectInfo", "JoinSet", "E",
-  // Rust std method/associated-fn names cited standalone (`checked_add`, `as_ref`) — this repo
+  // Rust std method/associated-fn names cited standalone (`checked_add`, `as_ref`) - this repo
   // declares no method of these names on its own types at the point cited.
   "checked_add", "checked_mul", "saturating_mul", "is_ascii_graphic",
-  "max_by_key", "min_by_key", "binary_search_by_key", "remove_dir_all", "as_ref", "is_some",
-  "filter_map",
-  // TS/JS standard and Web globals cited without meaning "this repo declares it".
-  "undefined", "Array", "Map", "Window", "IntersectionObserver", "structuredClone",
+  "max_by_key", "min_by_key", "binary_search_by_key", "remove_dir_all", "filter_map",
   // Literal/keyword values, not declarations.
   "true", "false", "NaN", "Infinity",
   // Non-Rust/TS/Svelte source this checker's symbol index does not cover (Python hook internals,
   // SQL/OS keywords, HTTP method/header names).
   "SUBSYSTEMS", "file_path", "NOCASE", "Referer", "GET", "POST", "SO_SNDBUF", "SO_RCVBUF",
   "EXEMPT", "TODO",
-  // `#[serde(...)]` / rustdoc attribute keywords — serde's and rustdoc's own vocabulary, not a
+  // A DIRECTORY name cited as a value in a tree-walk description, which RULE 15 governs on its
+  // own terms exactly as it does a filename cited as a value.
+  "node_modules",
+  // `#[serde(...)]` / rustdoc attribute keywords - serde's and rustdoc's own vocabulary, not a
   // symbol this repo declares.
-  "deny_unknown_fields", "skip_serializing_if", "no_run",
-  // Third-party UI libraries this repo depends on but does not declare (dockview panel library,
-  // TypeDoc's own internals) — their own type/class names, cited as VALUES.
-  "DockviewComponent", "PopoutWindowService", "AsapEvent", "DockviewApi", "PanelApiImpl",
-  "Overlay", "Options", "Vec2",
-  // `serde_json::Number`'s own PRIVATE variant names (`PosInt`/`NegInt`/`Float`), cited in a
-  // comment describing serde_json's internal representation split — not a type this repo declares.
-  "PosInt", "NegInt", "Float",
-  // Further external crate/Web-API types this repo cites as values (`hyper`'s `Host` header
-  // enum, `url`'s `Url`, PixiJS's `Link` filter, the `ammonia` HTML-sanitizer's `PassThrough`
-  // element-handling mode, `polyanya`'s `Mesh`/`Layer`).
-  "Host", "Link", "PassThrough", "SqlSafeStr", "Date", "DefaultBodyLimit", "Url", "Mesh", "Layer",
+  "deny_unknown_fields", "skip_serializing_if", "no_run", "tag",
+  // A language keyword whose backticks are load-bearing: the same sentence also uses "this" as an
+  // ordinary pronoun, and only the code font tells the reader which one is meant.
+  "this",
   // Durable-tracker filenames RULE 15/16 already govern on their own terms (a "Pointers"-section
   // citation of a durable doc by name), not a code-symbol citation.
   "OPEN_BUGS", "CLOSED_BUGS",
   // The `EXAMPLE:` marker word itself, cited by `shadowcat-codebase-core` while explaining the
-  // marker convention — not a code symbol.
+  // marker convention - not a code symbol.
   "EXAMPLE",
   // Web-platform API names: a DOM property, event handler or global this repo calls but does not
-  // declare. `randomUUID` is the tail of `crypto.randomUUID()`.
+  // declare.
   "innerHTML", "onscroll", "onclick", "appendChild", "queueMicrotask", "encodeURIComponent",
-  "getBoundingClientRect", "fetch", "randomUUID",
+  "getBoundingClientRect", "isComposing",
+  // A PixiJS `AnimatedSprite` property this repo SETS but does not declare.
+  "autoUpdate",
   // dockview-core's own API surface (the vendored panel library): methods and events this repo
   // calls or subscribes to, all declared inside the dependency.
   "addStyles", "addPopoutGroup", "onDidRemovePopoutGroup", "onDidRemovePanel", "onDidLayoutChange",
@@ -1001,17 +1250,20 @@ export const ACKNOWLEDGED_NON_SYMBOLS = new Set([
   // Test-framework API: a Vitest matcher and a Playwright locator method, named while describing
   // what a test can and cannot observe.
   "toBe", "boundingBox",
-  // Language keywords cited as SYNTAX — the shape of a control-flow construct or declaration
-  // form, not a name anything declares.
-  "if", "continue", "catch", "finally", "await", "enum",
-  // Grammar vocabulary from a standard this repo consumes: URL syntax terms and JSON-Schema
-  // combinator keywords, cited while describing what a validator does and does not accept.
-  "https", "userinfo", "anyOf", "oneOf",
-  // A command or filesystem syscall named in prose while explaining what the code does NOT
-  // shell out to, or what a single atomic operation is.
-  "cargo", "xcopy", "robocopy", "rename",
-  // A transitive dependency this repo never names in its own manifest, or a cargo FEATURE of one
-  // (`polyanya`'s `async`/`recast`) — declared in the dependency graph, not in this tree.
+  // A JSON-Schema combinator keyword, cited beside its siblings while describing what a validator
+  // accepts. The schema vocabulary is the standard's, not a declaration in this tree.
+  "enum", "anyOf", "oneOf",
+  // URL grammar terms from the standard the SSRF guard parses against.
+  "https", "userinfo",
+  // A request API named beside the crate this repo actually uses for the same job, and the
+  // filesystem RENAME syscall, whose backticks are what mark the one atomic operation apart from
+  // the same sentence's ordinary use of the word.
+  "fetch", "rename",
+  // A filesystem copy command named while explaining what this repo's code does NOT shell out to.
+  "xcopy", "robocopy",
+  // A transitive dependency this repo never names in its own manifest, and two cargo FEATURES of
+  // `polyanya` that its dependency declaration turns off - declared in the dependency graph and in
+  // that crate's manifest, not in this tree.
   "spade", "i_overlay", "recast", "async",
   // An external crate's method, called on that crate's own builder type (`ammonia`'s URL-scheme
   // allowlist setter).
@@ -1020,12 +1272,13 @@ export const ACKNOWLEDGED_NON_SYMBOLS = new Set([
   // itself (TypeDoc's per-package option map), the plugin-cache state keys of the agent harness
   // (a file outside this repo), and the TypeScript config concept named as a whole.
   "packageOptions", "lastUpdated", "installedAt", "tsconfig",
-  // Dice-notation operator tokens: notation the lexer ACCEPTS, spelled the way an author types
-  // it, not an identifier the tree declares.
-  "kh", "e3",
-  // A derived quantity the implementation names only in its own explanatory comment — no binding
+  // Composed dice notation - a keyword and its numeric argument written together - which no
+  // single declaration in the tree spells. (The bare keywords it composes, `kh`/`cs`/`cf`, are
+  // declared by `NOTATION_KEYWORDS` and resolve there.)
+  "e3", "d20", "kh3",
+  // A derived quantity the implementation names only in its own explanatory comment - no binding
   // carries the name, so prose and code agree on a term the index cannot hold.
-  "minConsecutiveDelta", "tMax",
+  "minConsecutiveDelta",
   // Deliberate NEGATIVE citations, each in a sentence asserting the named thing does NOT exist:
   // no back-compat `*System` aliases (verified against `src/server/src/data/engine/`, which
   // declares none of them), no sidebar `tab` field on a `Contribution`, no `TabbedSurface`
@@ -1036,12 +1289,32 @@ export const ACKNOWLEDGED_NON_SYMBOLS = new Set([
   "tab", "TabbedSurface", "sys_f64", "get_pointer", "blocked_layers", "rand",
 ]);
 
-// Regex forms, for a qualified path whose PREFIX names a known external crate/package rather
-// than this repo's own code — checking a full qualified token against a flat Set would need one
-// entry per method the crate exposes, which is unbounded; the crate/package NAME is the bounded,
-// reasoned thing to acknowledge.
+// The name of something EXTERNAL that owns members: a crate, a package, or a type declared inside
+// one. Acknowledges the bare name and any `::`/`.` path headed by it, because enumerating the
+// members an external owner exposes is unbounded while the owner's own name is bounded and
+// reasoned - the one place a segment-wise acknowledgement is defensible. Everything here is
+// declared in a dependency, in the standard library, or by the web platform; nothing in this tree
+// declares any of it.
 export const ACKNOWLEDGED_EXTERNAL_PREFIX = new Set([
+  // Crates this repo depends on, named as the owner of whatever they expose.
   "tokio", "clap", "reqwest", "serde_json", "ammonia", "polyanya",
+  // Rust primitive and std types.
+  "f64", "u32", "i128", "Vec", "Option", "Some", "Result", "Err", "HashSet", "BTreeMap",
+  "Uuid", "Arc", "Mutex", "Rc", "RefCell", "Sync", "Display", "PartialEq", "Path", "PathBuf",
+  "SqlitePool", "SyntaxError", "Sink", "ConnectInfo", "JoinSet", "E", "i32",
+  // TS/JS standard and Web globals, and the `crypto` global whose members this repo calls.
+  "undefined", "Array", "Map", "Window", "IntersectionObserver", "structuredClone", "crypto",
+  // Third-party UI libraries this repo depends on but does not declare (the dockview panel
+  // library, TypeDoc's own internals).
+  "DockviewComponent", "PopoutWindowService", "AsapEvent", "DockviewApi", "PanelApiImpl",
+  "Overlay", "Options", "Vec2",
+  // `serde_json::Number`'s own PRIVATE variant names, cited while describing serde_json's internal
+  // representation split.
+  "PosInt", "NegInt", "Float",
+  // Further external crate/Web-API types (`hyper`'s `Host` header enum, `url`'s `Url`, PixiJS's
+  // `Link` filter, the `ammonia` HTML-sanitizer's `PassThrough` element-handling mode,
+  // `polyanya`'s `Mesh`/`Layer`, `axum`'s `DefaultBodyLimit`).
+  "Host", "Link", "PassThrough", "SqlSafeStr", "Date", "DefaultBodyLimit", "Url", "Mesh", "Layer",
 ]);
 
 /**
@@ -1089,12 +1362,18 @@ export function resolvesAgainstIndex(token, symbols) {
  * @param {string} text - the skill file's raw contents.
  * @param {Set<string>} symbols - the built symbol index.
  * @param {Map<string, number>} [hits] - acknowledgement-entry hit counter, accumulated across files.
- * @returns {{ verified: number, acknowledged: number, broken: {line: number, token: string}[], nonCandidates: number }}
+ * @param {{extra?: Set<string>, extraHits?: Map<string, number>}} [scoped] - an additional
+ *   whole-token acknowledgement set that applies to THIS file only, with its own hit counter;
+ *   `ACKNOWLEDGED_CROSS_REPO` is passed this way for the skill that documents another repository.
+ * @returns {{ verified: number, acknowledged: number, broken: {line: number, token: string}[],
+ *   nonCandidates: number, exampleExempt: number, crossRepo: number }}
  */
-export function checkFileCitations(text, symbols, hits = new Map()) {
-  const { candidates, nonCandidates } = extractCitationCandidates(text);
+export function checkFileCitations(text, symbols, hits = new Map(), scoped = {}) {
+  const { candidates, nonCandidates, exampleExempt } = extractCitationCandidates(text);
+  const { extra = new Set(), extraHits = new Map() } = scoped;
   let verified = 0;
   let acknowledged = 0;
+  let crossRepo = 0;
   const broken = [];
   const bump = (entry) => hits.set(entry, (hits.get(entry) ?? 0) + 1);
   for (const { line, token } of candidates) {
@@ -1103,16 +1382,24 @@ export function checkFileCitations(text, symbols, hits = new Map()) {
       verified += 1;
       continue;
     }
+    if (extra.has(bare)) {
+      crossRepo += 1;
+      extraHits.set(bare, (extraHits.get(bare) ?? 0) + 1);
+      continue;
+    }
+    // An `ACKNOWLEDGED_NON_SYMBOLS` entry matches the WHOLE token and nothing less. Absorbing a
+    // qualified token on one of its segments is what lets `MadeUpType.fetch` — a type that does
+    // not exist, or a member renamed away, which `resolvesAgainstIndex` correctly refused — be
+    // reported as acknowledged instead of broken, which is the exact class this gate exists to
+    // catch; it also keeps the entry alive vacuously, on a token unrelated to the reason the
+    // entry's own comment records. Only `ACKNOWLEDGED_EXTERNAL_PREFIX` matches by HEAD segment,
+    // because the name of an external owner is a bounded, reasoned acknowledgement of everything
+    // that owner exposes, where enumerating its members is not.
     const segments = bare.split(/::|\./);
-    const lastSegment = segments[segments.length - 1];
-    const entry = ACKNOWLEDGED_NON_SYMBOLS.has(bare)
-      ? bare
-      : segments.length > 1
-        ? [
-            ACKNOWLEDGED_EXTERNAL_PREFIX.has(segments[0]) ? segments[0] : null,
-            ACKNOWLEDGED_NON_SYMBOLS.has(segments[0]) ? segments[0] : null,
-            ACKNOWLEDGED_NON_SYMBOLS.has(lastSegment) ? lastSegment : null,
-          ].find((e) => e !== null) ?? null
+    const entry = ACKNOWLEDGED_EXTERNAL_PREFIX.has(segments[0])
+      ? segments[0]
+      : ACKNOWLEDGED_NON_SYMBOLS.has(bare)
+        ? bare
         : null;
     if (entry !== null) {
       acknowledged += 1;
@@ -1121,7 +1408,7 @@ export function checkFileCitations(text, symbols, hits = new Map()) {
     }
     broken.push({ line, token });
   }
-  return { verified, acknowledged, broken, nonCandidates };
+  return { verified, acknowledged, broken, nonCandidates, exampleExempt, crossRepo };
 }
 
 /**
@@ -1134,8 +1421,9 @@ export function checkFileCitations(text, symbols, hits = new Map()) {
  * @returns {{ filesScanned: number, filesIndexed: number, symbolCount: number,
  *   candidatesChecked: number, verified: number, acknowledged: number,
  *   broken: {file: string, line: number, token: string}[], nonCandidates: number,
- *   acknowledgedHits: Map<string, number>, unusedAcknowledgements: string[],
- *   untrackedDirs: string[], nightfoxExcludedFiles: number, nightfoxExcludedBroken: number }}
+ *   exampleExempt: number, crossRepo: number, filesWithNoCandidates: string[],
+ *   acknowledgedHits: Map<string, number>, crossRepoHits: Map<string, number>,
+ *   unusedAcknowledgements: string[], untrackedDirs: string[] }}
  */
 export function checkSkillSymbolRefs(repoRoot, opts = {}) {
   let { trackedDirs, untrackedDirs } = opts;
@@ -1152,47 +1440,62 @@ export function checkSkillSymbolRefs(repoRoot, opts = {}) {
   const { symbols, filesIndexed } = buildSymbolIndex(repoRoot);
   const files = findMarkdownFiles(repoRoot, trackedDirs);
   const acknowledgedHits = new Map();
+  const crossRepoHits = new Map();
   let verified = 0;
   let acknowledged = 0;
   let nonCandidates = 0;
+  let exampleExempt = 0;
+  let crossRepo = 0;
   const broken = [];
+  const filesWithNoCandidates = [];
   for (const file of files) {
-    const result = checkFileCitations(readFileSync(file, "utf8"), symbols, acknowledgedHits);
+    const text = readFileSync(file, "utf8");
+    // The cross-repo acknowledgements apply to the ONE skill that documents another repository,
+    // and nowhere else: a citation of a Nightfox name in any other skill is still broken.
+    const scoped = norm(file).includes(`/${NIGHTFOX_SKILL_DIR}/`)
+      ? { extra: ACKNOWLEDGED_CROSS_REPO, extraHits: crossRepoHits }
+      : {};
+    const result = checkFileCitations(text, symbols, acknowledgedHits, scoped);
     verified += result.verified;
     acknowledged += result.acknowledged;
     nonCandidates += result.nonCandidates;
+    exampleExempt += result.exampleExempt;
+    crossRepo += result.crossRepo;
     for (const b of result.broken) broken.push({ file, ...b });
+    // A per-FILE floor. The global `candidatesChecked === 0` guard cannot see a single file that
+    // stopped yielding candidates - one stray delimiter, or a fence-pairing slip, silently takes
+    // that file's whole prose out of the gate while every other file keeps the totals healthy.
+    // A file that carries backticks at all must yield at least one classified span.
+    if (
+      result.verified + result.acknowledged + result.crossRepo + result.broken.length === 0 &&
+      result.nonCandidates === 0 &&
+      text.includes("`")
+    )
+      filesWithNoCandidates.push(file);
   }
-
-  // The excluded Nightfox skill still gets counted — never silently dropped — as its own
-  // structurally-unresolvable review obligation, per `NIGHTFOX_SKILL_DIR`'s comment. Its
-  // acknowledgements are deliberately NOT counted into `acknowledgedHits`: an entry that only
-  // ever fires on the excluded file is dead as far as the gated corpus is concerned.
-  const nightfoxFiles = findMarkdownFiles(repoRoot, trackedDirs, { includeNightfox: true }).filter(
-    (f) => !files.includes(f),
-  );
-  let nightfoxExcludedBroken = 0;
-  for (const file of nightfoxFiles)
-    nightfoxExcludedBroken += checkFileCitations(readFileSync(file, "utf8"), symbols).broken.length;
 
   const unusedAcknowledgements = [
     ...ACKNOWLEDGED_NON_SYMBOLS,
     ...ACKNOWLEDGED_EXTERNAL_PREFIX,
-  ].filter((entry) => !acknowledgedHits.has(entry));
+  ]
+    .filter((entry) => !acknowledgedHits.has(entry))
+    .concat([...ACKNOWLEDGED_CROSS_REPO].filter((entry) => !crossRepoHits.has(entry)));
 
   return {
     filesScanned: files.length,
     filesIndexed,
     symbolCount: symbols.size,
-    candidatesChecked: verified + acknowledged + broken.length,
+    candidatesChecked: verified + acknowledged + crossRepo + broken.length,
     verified,
     acknowledged,
     broken,
     nonCandidates,
+    exampleExempt,
+    crossRepo,
+    filesWithNoCandidates,
     acknowledgedHits,
+    crossRepoHits,
     unusedAcknowledgements,
     untrackedDirs: untrackedDirs ?? [],
-    nightfoxExcludedFiles: nightfoxFiles.length,
-    nightfoxExcludedBroken,
   };
 }
