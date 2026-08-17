@@ -10,7 +10,12 @@ export default [
   {
     // .claude/worktrees holds harness-created git worktrees whose own dist/
     // builds are not at the repo-root "dist/" path this list matches.
-    ignores: ["dist/", "node_modules/", "target/", "**/*.svelte", "src/types/generated/", ".claude/worktrees/",
+    // A pattern with no leading `**/` is anchored at the config's own directory, so `target/`
+    // matches only a repo-root Cargo output directory and never `src/server/target/`, which is
+    // where the Rust build actually writes — including the rustdoc `.js` the doc gate generates
+    // under `--target-dir target/nightly-doc`. `**/target/` is what covers a Cargo output
+    // directory at any depth.
+    ignores: ["dist/", "node_modules/", "**/target/", "**/*.svelte", "src/types/generated/", ".claude/worktrees/",
       // Docs pipeline output: generated sites/scratch, never hand-written code.
       ".docs-tmp/", "dist-docs/", "docs/site/.vitepress/cache/", "docs/site/.vitepress/dist/",
       // Worked-example lib builds (the root "dist/" ignore is top-level only).
