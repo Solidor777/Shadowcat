@@ -50,7 +50,7 @@ and serves uploads unconverted (the conversion pipeline is deferred).
   harmless dead disk space. Two-store writes (file + metadata row) without a spanning txn always
   order around whichever failure mode is unrecoverable for that operation — row-first for
   replace, file-first for create.
-- **`upload`/`replace`/`delete` all take `AppState.write_barrier.read()` around their
+- **`upload`/`replace`/`delete` all hold a read permit on `AppState.write_barrier` around their
   commit+rename/commit+unlink critical section** (`http::assets`) — never around the earlier
   network-bound multipart stream, which has no timeout (`DefaultBodyLimit::disable()` on these
   routes) and would otherwise let a slow uploader hold the write-preferring

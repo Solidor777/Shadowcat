@@ -54,8 +54,9 @@ export class Grid {
    * Snaps a scene point to the active grid's nearest CELL CENTER — never a
    * vertex/corner, on either grid kind. Square: the containing cell's center. Hex: the
    * nearest hex's center, via `axialRound`-then-`axialToPixel` — the same
-   * `axialToPixel` call `hexLines` uses as the origin it draws the six corners
-   * around, so this is provably a center, not a vertex.
+   * `axialToPixel` call `cellVertices` uses as the origin it generates the six corners
+   * around (and `hexLines` reaches through `cellVertices`), so this is provably a center,
+   * not a vertex.
    * @param p A scene-coordinate point.
    * @returns `p` snapped to the nearest cell center.
    * @example
@@ -187,9 +188,9 @@ export class Grid {
   /**
    * The scene-coordinate CENTER of the cell at `(col, row)` — square column/row indices, or hex
    * axial `q`/`r` (mirrors {@link cellOf}'s return shape). Square: `col*size+size/2,
-   * row*size+size/2`. Hex: `axialToPixel`, the same call `snap`'s hex branch and `hexLines`
-   * both already use to locate a hex's center — this promotes that private call onto
-   * the public surface rather than a second formula.
+   * row*size+size/2`. Hex: `axialToPixel`, the same call `snap`'s hex branch uses directly and
+   * `hexLines` reaches through `cellVertices` to locate a hex's center — this promotes that
+   * private call onto the public surface rather than a second formula.
    * @param col Square column index, or hex axial q.
    * @param row Square row index, or hex axial r.
    * @returns The cell's center, in scene coordinates.
@@ -325,10 +326,10 @@ export class Grid {
   }
 
   /**
-   * Axial `(q,r)` → the CENTER pixel of that hex, pointy-top orientation. {@link
-   * hexLines} calls this to get each hex's center, then generates its six corners at
-   * `size` (the circumradius) around it — the same call this function makes proves
-   * `snap`'s hex branch also returns a center, never a vertex.
+   * Axial `(q,r)` → the CENTER pixel of that hex, pointy-top orientation. `cellVertices`
+   * calls this to get each hex's center, then generates its six corners at `size` (the
+   * circumradius) around it, and {@link hexLines} draws those corners — the same call this
+   * function makes proves `snap`'s hex branch also returns a center, never a vertex.
    * @param q Axial q.
    * @param r Axial r.
    * @returns The hex's center, in scene coordinates.

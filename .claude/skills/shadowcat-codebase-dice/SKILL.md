@@ -136,7 +136,7 @@ on.
   face INDEX and looks up `faces[natural]` (`None`-value face contributes `0` numerically). The
   ENTIRE modifier loop is gated by `let ordered = group.kind.is_ordered(); if !ordered { continue;
   }` — an unordered `Faces` group (any face with `value: None`) skips reroll/explode/
-  keep/drop entirely for every modifier, fail-closed. A shared `redraw` closure dispatches the RNG
+  keep/drop entirely for every modifier, fail-closed. A shared `resolve_group::redraw` closure dispatches the RNG
   draw per `DieKind` (a numeric face for `Numeric`, a face INDEX via `roll_uniform(rng, 0,
   faces.len()-1)` for `Faces`). Explode's `Compound`/`Penetrate` arms are guarded by `matches!
   (group.kind, DieKind::Numeric { .. })` — restricted to `Numeric` only; an ordered `Faces` die
@@ -176,7 +176,7 @@ on.
   score_die_net`) is the CENTRALIZED per-die net-success formula (`base + extra_successes −
   lost`): `score_die_net(direction, cfg, value, symbols) -> DieScore` computes both `cfg.success`'s
   base-success test AND `score_die`'s crit result together — shared by `eval::success`'s main pooling
-  loop, `eval::expertise::allocate` (the `fixed` term, see below), and `eval::expertise`'s test-only
+  loop, `eval::expertise::allocate` (the `allocate::fixed` term, see below), and `eval::expertise`'s test-only
   `score_pool` helper. `eval::expertise`'s `die_values` deliberately still inlines its own narrower
   version (a different shape — scoring a synthetic single-step candidate mid-DP, symbols always
   empty since expertise only ever adjusts Numeric dice).
@@ -191,7 +191,7 @@ on.
   Vec<(i32,i32)>` builds the per-die `v_i(k)` table for `k in 0..=e`: each entry is
   `(net_i, counter_i)` from moving the face `k` steps then re-scoring via `crit::score_die` +
   `cfg.success`. `run_dp(dies, e, better) -> (Vec<u32>, (i32,i32))` is a bounded-knapsack DP,
-  `O(N·E²)`, over an injected `better` ordering; ties break toward the SMALLEST `k` at each die,
+  `O(N·E²)`, over an injected `run_dp::better` ordering; ties break toward the SMALLEST `k` at each die,
   and backtracking runs from the LAST die outward so points concentrate on the earliest dice
   whenever spending is actually needed. `allocate` runs `run_dp` up to
   TWICE: pass 1 maximizes raw lexicographic `(net, counter)`; if
@@ -207,7 +207,7 @@ on.
   clamp-decision branch checks `allow_neg || net + fixed >= 1`, not just the DP's own Numeric-only
   `net`, because the pool's TRUE clamped net includes any fixed contribution from an excluded
   Faces die that independently satisfies success/crit rules; using only the partial `net` answers
-  a different question than `evaluate_success` will actually score. `fixed` is a constant additive
+  a different question than `evaluate_success` will actually score. `allocate::fixed` is a constant additive
   shift across every candidate allocation, so it never changes either DP pass's own argmax — only
   the pass-choice threshold needs it.
 - `dice::eval::sum` — `evaluate_total(spec, cfg: &TotalConfig, raws) ->
@@ -304,11 +304,11 @@ on.
   `crit::score_die`/the success-rule comparator resolved at parse time; flipping the pooled margin
   again would double-apply direction. Any future change touching `dice::eval::success`'s margin
   computation must preserve this asymmetry.
-- **A `RollOutcome` reports EITHER `pass` (default 2-rung classification) OR a `tier`
+- **A `RollOutcome` reports EITHER `pass` (default 2-rung classification) OR a tier
   (`tier_label`/`tier_value`, custom ladder), never both** — `classify::classify` enforces this at
   the source; both modes rely on it unmodified.
 - **`resolve_group`'s outer Explode loop must never re-scan a die it (or a sibling die's own
-  chain) already pushed** — snapshot the pool length (`initial_len`) before the pass; the inner
+  chain) already pushed** — snapshot the pool length (`resolve_group::initial_len`) before the pass; the inner
   chain loop is the sole mechanism that extends any one die's own chain. Violating this caused a
   real 41GB-memory-blowup bug and would silently falsify `CHAIN_CAP`'s bound.
 - **An Explode/Reroll retrigger check must test the RAW rolled face, never a post-modifier value**
@@ -328,13 +328,13 @@ on.
   not a ranking-by-`0`-default accident. `Numeric` is always ordered; a `Faces` group is ordered
   iff EVERY face has `value: Some`.
 - **Expertise's `allocate` must restrict its contributing-dice set to `Numeric` dice only, folding
-  any excluded kept `Faces` die's contribution in as a constant `fixed` term on the pass-choice
+  any excluded kept `Faces` die's contribution in as a constant `allocate::fixed` term on the pass-choice
   threshold** — `adjust`'s face-move has no defined meaning over a `Faces` die's arbitrary
   face-list, but a kept-but-excluded `Faces` die's own (unchangeable) success/crit score still
   counts toward the TRUE pool-wide net that decides whether the two-pass clamp fork triggers.
-  Checking only the DP's own Numeric-only partial `net` (omitting `fixed`) answers a different
+  Checking only the DP's own Numeric-only partial `net` (omitting `allocate::fixed`) answers a different
   question than `evaluate_success` will actually score.
-  `fixed` never needs to enter the DP's own per-allocation comparisons (a constant
+  `allocate::fixed` never needs to enter the DP's own per-allocation comparisons (a constant
   shift never changes an argmax), only the pass-choice threshold.
 - **`resolve_group`/`push_extra` must stamp every produced `DieRecord` (including exploded/
   penetrated children) with the CALLER-SUPPLIED `group_index`** — `eval::sum::fold`'s per-group
@@ -426,7 +426,7 @@ on.
   change to `dice::eval::groups`, `dice::eval::sum`, `dice::eval::success`, `dice::eval::classify`,
   `dice::eval::crit`, `dice::eval::expertise`, or `dice::recalc` as needing independent
   two-reviewer review by default — each of these modules carries dense per-group state that a
-  single reviewer can plausibly miss (see the `fixed`-term and derived-value-retrigger Hard
+  single reviewer can plausibly miss (see the `allocate::fixed`-term and derived-value-retrigger Hard
   invariants above for two such cases).
 - **`DieKind::validate()` is enforced at the wire boundary, not inside `roll()`**:
   `chat::rolls::validate_pre_roll` calls it per parsed group before any rolling, so an

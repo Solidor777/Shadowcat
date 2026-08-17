@@ -378,13 +378,28 @@ and module, package-directory and skill-directory names.
 checked.** A shape-based exclusion is invisible in two directions at once: it hides the citations it
 skips, and it hides every gap in the index behind them, since a name the index cannot see is
 indistinguishable from a name the shape rule declined to look at. Every code span therefore lands in
-exactly one printed bucket — verified, acknowledged non-symbol, broken, or not citation-shaped — and
-each acknowledgement entry is hit-counted, with a zero-hit entry failing the gate so the list cannot
-quietly hold a slot that absorbs a future defect. One structurally unresolvable sub-class stays a
-review obligation rather than a gate obligation, exactly as the lowercase-hyphenated marker does for
-RULE 16: a citation inside `shadowcat-codebase-nightfox` naming a symbol the SEPARATE Nightfox
-repository owns, which is not present in this checkout to index. Its file count and unresolved-token
-count print on every run.
+exactly one printed bucket — verified, acknowledged non-symbol, cross-repo, broken, EXAMPLE-exempt,
+or not citation-shaped — and each acknowledgement entry is hit-counted, with a zero-hit entry
+failing the gate so the list cannot quietly hold a slot that absorbs a future defect. A span written
+as `NAME=value` is checked on its NAME rather than discarded as unshaped, and a file that carries
+backticks yet yields no classified span at all fails on its own, because one unpaired delimiter is
+enough to take a whole file out of the gate while every total stays healthy.
+
+One structurally unresolvable sub-class stays a review obligation rather than a gate obligation,
+exactly as the lowercase-hyphenated marker does for RULE 16: a citation naming a symbol the SEPARATE
+Nightfox repository owns, which is not present in this checkout to index. That obligation is scoped
+per NAME, not per file — `shadowcat-codebase-nightfox` is scanned like every other skill, so its
+citations of THIS repo's own symbols are gated, and only an enumerated list of cross-repo names is
+acknowledged, inside that one file, hit-counted like every other entry. The count prints on every
+run.
+
+**A function-LOCAL name is cited through its owner.** A let binding, a for-loop pattern's binding, a
+parameter and a function-scoped object key are all indexed only under the function that declares
+them (`supercover_cells::t_max_i`, `restore_backup::db_path`), never bare. A bare local carries no
+owner relation while the rest of the index does, so indexing one bare makes the index answer "the
+tree declares that" to any citation spelling any local anywhere — which is how a renamed field
+stays green because some unrelated function happens to bind the old name. Owner-qualification is
+what this rule already asks of the citation itself.
 
 **Corpus scoping is by tracked-ness, not by directory name.** A skill directory holding no committed
 file is vendored third-party content documenting an external tool's own API, which this repo neither

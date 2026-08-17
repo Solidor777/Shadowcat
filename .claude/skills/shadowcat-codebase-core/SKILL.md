@@ -54,7 +54,8 @@ source of truth. The ones agents break most:
   | Input admissibility | `Room::publish` vs `gate_walk` | one bounded coordinate magnitude, the other did not |
   | **Scene identity** | `MoveRequest` vs `Room::publish` | one took the scene from the client, the other derived it from the token ⇒ total movement-gate bypass |
   | **`remove` semantics** | `SceneEcs::apply_op` vs `apply_intent` | ECS ignored `FieldChange.remove` while the DB honoured it ⇒ vision widened where write authz refused |
-  | Fail-open defaults | `execute_move` vs `publish` vs `pathfind` | a `unwrap_or(100.0)` cell size removed from ONE gate, left in the other two — created by the commit that fixed the row above. **Now removed from all three gates AND all six non-gate siblings** (`SceneEcs::navmesh_for`, `SceneEcs::region_field`, `SceneEcs::player_lit_mask`, `SceneEcs::visible_cells`, `SceneEcs::visible_cells_cached` — an absent `scene_grid_sizes()` entry now returns `None`/empty instead of synthesizing a 100-unit grid; `region_field`'s signature changed to `-> Option<RegionField>`, its three callers (`pathfind`'s two branches, `move_exec::execute_move`) refuse via `let-else` on `None`, and `MoveReject` gained a `SceneUnknown` variant mirroring `Degenerate`; `conn::enrich_vision_explored` now `continue`s past a scene absent from either its `grid` or `grid_shapes` map, never synthesizing a fallback `SquareGrid`). The fail-open default is now removed at ALL sites — `scene_grid_sizes` remains the sole intentional defaulting SOURCE, not a survivor. |
+  | Fail-open defaults | `execute_move` vs `publish` vs `pathfind` | a `unwrap_or(100.0)` cell size removed from ONE gate, left in the other two — created by the commit that fixed the row above. **Now removed from all three gates AND all six non-gate siblings** (`SceneEcs::navmesh_for`, `SceneEcs::region_field`, `SceneEcs::player_lit_mask`, `SceneEcs::visible_cells`, `SceneEcs::visible_cells_cached` — an absent `scene_grid_sizes()` entry now returns `None`/empty instead of synthesizing a 100-unit grid; `region_field`'s signature changed to `-> Option<RegionField>`, its three callers (`pathfind`'s two branches, `move_exec::execute_move`) refuse via `let-else` on `None`, and `MoveReject` gained a `SceneUnknown` variant mirroring `Degenerate`; `conn::enrich_vision_explored` now continues past a scene absent from either its `grid` or
+  `enrich_vision_explored::grid_shapes` map, never synthesizing a fallback `SquareGrid`). The fail-open default is now removed at ALL sites — `scene_grid_sizes` remains the sole intentional defaulting SOURCE, not a survivor. |
   **How to apply.** (1) When you find two paths that must agree, do not verify they agree today —
   make one *derive* from the other, or have both read one shared symbol, so agreement is structural.
   (2) When you fix one instance, grep for the other copies **in the same commit**; the last row
@@ -65,7 +66,7 @@ source of truth. The ones agents break most:
 - **Cross-platform from day one (CI-verified).** `std::path` only (no hardcoded separators),
   `#[cfg]`-gate OS-specific code for every target, three-OS CI matrix, responsive/touch UI.
   [CLAUDE.md Cross-Platform; ARCHITECTURE §2 invariant 10]
-- **`dist/` must be built before any `cargo` build of the server** — `rust-embed` validates
+- **`dist/` must be built before any cargo build of the server** — `rust-embed` validates
   `../../dist/` at COMPILE time. [[embed-dist-compile-ordering]]
 - **Capability/permission model** layered server/world/document roles. [[capability-permissions]]
 - **Three-band document shape: envelope `name` + typed `engine` + opaque `system`.**
@@ -126,13 +127,26 @@ source of truth. The ones agents break most:
   TypeScript parser; and module/package/skill directory names. **A token's shape decides only
   whether it is a citation at all, never whether a citation is CHECKED** — a shape exclusion hides
   the citations it skips AND every index gap behind them, so every code span lands in one printed
-  bucket (verified / acknowledged non-symbol / broken / not citation-shaped) and each
-  acknowledgement entry is hit-counted, a zero-hit entry failing the gate. Carve-outs:
+  bucket (verified / acknowledged non-symbol / cross-repo / broken / EXAMPLE-exempt / not
+  citation-shaped) and each acknowledgement entry is hit-counted, a zero-hit entry failing the
+  gate. A span written as `NAME=value` is checked on its NAME: the value is there to save the
+  reader a lookup, and letting the whole span fail the citation shape is what kept a constant that
+  no longer exists cited with the gate reporting zero broken. A PER-FILE floor sits under the
+  global one — a file that carries backticks and yields no classified span at all has silently
+  left the gate, which one unpaired delimiter is enough to cause. Carve-outs:
   config/build files (no symbols to cite), filenames used as *values*, dated records under
   `docs/superpowers/`, and — a documented review obligation, not a gate obligation — citations of a
-  symbol the separate Nightfox repository owns (`shadowcat-codebase-nightfox`, not present in this
-  checkout). An untracked skill directory is vendored third-party prose and is out of the corpus by
-  that property, never by a name pattern; its count prints on every run. Full rule:
+  symbol the separate Nightfox repository owns. That last one is now scoped per NAME, not per
+  file: `shadowcat-codebase-nightfox` is scanned like any other skill, its citations of THIS
+  repo's symbols are gated, and only the enumerated cross-repo names are acknowledged, inside that
+  one file, hit-counted like every other entry. An untracked skill directory is vendored
+  third-party prose and is out of the corpus by that property, never by a name pattern; its count
+  prints on every run, from the same `listSkillDirs` both skill gates read, so the two can never
+  disagree on the size of the corpus.
+  **A function-LOCAL name (a let binding, a for-loop pattern, a parameter, a function-scoped
+  object key) is indexed only under the function that declares it (`execute_move::check_mask`),
+  never bare** — a bare local carries no owner relation, so it would make the index answer "the
+  tree declares that" to any citation spelling any local anywhere. Cite one the same way. Full rule:
   `docs/design/doc-sweep-truthfulness-rules.md` RULE 15. [[cite-symbols-not-file-lines]]
 - **As far as code is concerned, ephemeral documents, plans, dates, history and tasks DO NOT EXIST**
   (user directive, iron-clad; RULE 16). This is an ontology, not a style preference: the test is
@@ -362,7 +376,7 @@ source of truth. The ones agents break most:
   `webSocketConnect` during the client/core sweep, at 0 warnings the whole time). Detecting it needs a
   manual scan for a `*/` line immediately followed by `/**`. Truthfulness and placement are review
   concerns, not gate concerns: `docs/design/doc-sweep-truthfulness-rules.md`.
-- CI builds the client **before** `cargo` (embed ordering) across the three-OS matrix.
+- CI builds the client **before** cargo (embed ordering) across the three-OS matrix.
 
 **Subsystem skills:** `documents-permissions`, `actors-tokens`, `scene-rendering`,
 `realtime-sync`, `client-shell`, `assets`, `dice`, `chat`, `nightfox`, `module-toolchain`,

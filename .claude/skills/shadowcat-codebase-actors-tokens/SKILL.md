@@ -91,8 +91,8 @@ token/actor name from non-owners via the `OwnerOrGm` visibility tier. Conditions
   **There is no client-side footprint formula.** `w`/`h` come from the server's resolved extent
   (`FootprintLookup.token(id)`, off the `"footprints"` derived channel), falling back to the
   token's own authored `token.engine.w/h` when the lookup states none — an unconfirmed optimistic
-  token, a token no actor sizes, or an extent the server REFUSED. `shape` is the only field `eff`
-  decides (`actor?.shape ?? "square"`); the optional pre-resolved `eff` avoids a double
+  token, a token no actor sizes, or an extent the server REFUSED. `shape` is the only field `resolveTokenBox.eff`
+  decides (`actor?.shape ?? "square"`); that optional pre-resolved actor avoids a double
   `resolveTokenActor` call, and `null` skips resolution for a known actorless token. Fail-closed,
   never throws. `TokenBox` is exported from `@shadowcat/core`. The definition both the drawn box
   and the movement gate's collision radius are read from is `scene::footprint`
@@ -114,7 +114,7 @@ token/actor name from non-owners via the `OwnerOrGm` visibility tier. Conditions
   `kind` isn't `"image"`/`"animated"` (defense against a malformed nested `faces`-within-`faces`
   value, which the type system forbids but a hand-edited/legacy doc could still contain); and a
   malformed `AnimatedSource` (`isValidAnimated`: non-finite/`<=0` `fps`, an empty `frames` array, or
-  a non-positive/non-integer `rows`/`cols` for a `sheet` source). Optional pre-resolved `eff` avoids
+  a non-positive/non-integer `rows`/`cols` for a `sheet` source). Optional pre-resolved `resolveTokenVisual.eff` avoids
   a second `resolveTokenActor` call, mirroring `resolveTokenBox`'s convention.
   `selectedFaceNamesFor(token, store) -> string[]` — the effective face-name list for a
   `"faces"`-union visual (`[]` if the effective visual isn't `"faces"`); shares `resolveTokenActor`'s
@@ -197,9 +197,10 @@ token/actor name from non-owners via the `OwnerOrGm` visibility tier. Conditions
   side in `SceneEcs::token_effective_owner`, client mirror `effectiveOwner`). A GM sets
   the per-token override; actor ownership is assigned on the actor, so re-assigning an actor moves
   authority over **every** linked token with no re-stamp — which is the whole point of resolving
-  rather than copying. **State the precedence rule exactly ONCE**: an earlier version short-circuited
-  on `doc.owner.is_some()` in the DB join, duplicating it, and an inverted-precedence mutation
-  survived until the short-circuit was removed.
+  rather than copying. **State the precedence rule exactly ONCE**: a DB join that
+  short-circuits on the token's own owner expresses the same precedence a second time, and two
+  copies of one rule cover for each other — an inverted-precedence mutation then survives, because
+  either copy alone still produces the right answer.
   - **Fail-closed** on a missing link, a dangling link, an `actor.id` that does not match the link, a
     non-`actor` `doc_type`, or an unowned actor — no owner means no write, never a fallback to
     "world member". (Cycles are unrepresentable: only tokens carry the link.) The actor join is **scope-checked**: an actor whose
@@ -281,7 +282,7 @@ token/actor name from non-owners via the `OwnerOrGm` visibility tier. Conditions
   instanced copy is frozen at placement. Instanced re-sync against the source is deferred
   [[document-inheritance-merge-model]].
 - **Tokens are Container sprites behind a `TokenVisual` source abstraction — image, animated, and
-  multi-face (`"faces"`) visuals all ship today.** `generated` (procedural) and `fx`/emotes
+  multi-face (`"faces"`) visuals all ship today.** `generated` (procedural) and fx/emote
   remain forward-looking [[token-architecture-forward-looking]]. Don't bind rendering
   to raw image URLs or assume a token has exactly one static image — always resolve through
   `resolveTokenVisual`, never read `actor.visual`/`token.system.visual` directly.

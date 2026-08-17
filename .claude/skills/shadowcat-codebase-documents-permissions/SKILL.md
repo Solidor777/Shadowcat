@@ -92,7 +92,7 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
     which resolves the SAME `effective_owner_via` + `resolve_access_world` pair against the same
     in-memory actor table) — `data::permission::filter_command` is a SYNC core over
     `load_update_docs` (Update pre-images, awaited ONCE per event before the sync core runs — no
-    lock held across that await) and an `actor_lookup` closure backed by the room's in-memory
+    lock held across that await) and a `filter_command::actor_lookup` closure backed by the room's in-memory
     `SceneEcs` actor table (`|id| ecs.actor(id)`). No pool read on this path at all — the join is
     entirely in-memory, preserving the no-pool-query-on-the-hot-path property. The scene read
     guard around `filter_command` itself is short (sync core, no await inside it), the same
@@ -466,7 +466,7 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
   via two independent mechanisms.** A tx-scoped DB existence check alone is sufficient for
   cross-call races (serialized by the single-writer pool) but NOT for two same-doc_type Creates
   inside one `apply_intent` batch, since Phase 1 validates every op before Phase 2 inserts any of
-  them — both same-batch DB reads see an empty table. The in-memory `claimed_singletons` HashSet
+  them — both same-batch DB reads see an empty table. The in-memory `apply_intent::claimed_singletons` HashSet
   closes that second gap; do not remove either mechanism assuming the other already covers it.
 - **Check-then-act across two queries needs one transaction** — TOCTOU-racy even at
   `max_connections(1)` [[two-query-guard-needs-tx]].

@@ -29,7 +29,7 @@ interprets or merges anything itself.
     level: **arrays merge wholesale** (either side's whole-array change wins outright, or
     conflicts if both changed — arrays have no stable per-element identity to diff), **objects
     merge key-level** (each key independently: parent-only / child-only / both-same /
-    both-different-conflict). `exclusions` drops matching paths from the parent side entirely
+    both-different-conflict). `merge3Tree.exclusions` drops matching paths from the parent side entirely
     (never merge, never conflict) — the placement-exclusion mechanism (below).
   - `merge3Embedded(baseChildren, theirsChildren, mineChildren)` — **internal helper, not
     exported from `@shadowcat/core`** (used only inside `merge3`); correlates embedded children
@@ -40,7 +40,7 @@ interprets or merges anything itself.
     correlated triple with a real conflict is kept pending, not merged.
   - `merge3(base: MergeBase, parentNow: WireDocument, childNow: WireDocument, exclusions:
     string[])` → `MergePlan { mergedBands, conflicts: Conflict[] }` — the top-level entry point:
-    merges `name`/`engine`/`system` bands (via `merge3Tree`, forwarding `exclusions`) plus
+    merges `name`/`engine`/`system` bands (via `merge3Tree`, forwarding `merge3.exclusions`) plus
     `embedded` (via `merge3Embedded`) in one pass.
   - `restampSubtree(doc)` — deep-clones a document tree for use as a fresh `base`/instance
     (guards against the aliasing hazard in `[[embedded-copy-needs-deep-clone]]`).

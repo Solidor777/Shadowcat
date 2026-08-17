@@ -157,13 +157,13 @@ optimistically and roll back on divergence.
 - `webSocketConnect(url, connectTimeoutMs = 10_000)`: bounds
   the handshake so an accepted-but-never-upgraded socket settles (rejects + closes) instead of
   leaving `WsClient`'s `scheduleReconnect` path unreachable behind an unsettled connect promise. A single
-  shared `settled` flag (distinct from `opened`) guards ALL THREE settling paths (timeout, error,
-  open) — a `connectTimeoutMs` expiry and an already-queued `open` event landing in the same tick
+  shared `webSocketConnect.settled` flag (distinct from `opened`) guards ALL THREE settling paths (timeout, error,
+  open) — a `webSocketConnect.connectTimeoutMs` expiry and an already-queued `open` event landing in the same tick
   no longer lets `opened` flip true AFTER the promise already rejected, which would otherwise let a
   later `close` event ALSO reach `handlers.onClose` (double-scheduling a reconnect on top of the
   promise-rejection path, and the orphan transport's own close nulling `WsClient.transport` out
   from under the live one). The `open` listener discards the socket (`ws.close()`, no resolve) when
-  `settled` is already true instead of completing the handshake.
+  `webSocketConnect.settled` is already true instead of completing the handshake.
 - `DocumentStore implements ReadableDocuments` (authoritative,
   rollback base).
 - `OptimisticClient implements ReadableDocuments` (the

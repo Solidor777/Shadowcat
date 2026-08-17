@@ -121,12 +121,12 @@ the reducer (intercept-and-redispatch), so the engine never owns state.
   browser popup cannot be opened outside a user gesture; this is why rehydration-on-load
   degrades persisted `poppedOut` ids to floating instead of re-opening a real window.
 - **`#pendingPopouts` in-flight guard is required because dockview-core's `mutation()` wrapper
-  does not span `addPopoutGroup`'s async gap** — its `finally` fires the instant the async
+  does not span `addPopoutGroup`'s async gap** — its finally clause fires the instant the async
   function RETURNS the pending promise, not when it settles, and `getNextGroupId()` is fresh on
   every call. A second "Pop out" click on the same panel before the first resolves would
   otherwise fire two independent `window.open()` calls and corrupt `#poppedOutGroupPanels`. Set
   the guard before calling the driver; clear it in both `.then()`/`.catch()` and in `destroy()`.
-- **A popped-out panel's origin group must be seeded into `apply()`'s `seenGroupIds`, via
+- **A popped-out panel's origin group must be seeded into `DockviewEngine.apply.seenGroupIds`, via
   `#poppedOutOriginGroups`, or it is orphan-removed on the very next `apply()`.** dockview-core
   keeps that origin group alive-but-hidden (`setVisible(false)`) internally — its own
   window-close path expects to hand the panel back to that exact group object — but the
@@ -139,7 +139,8 @@ the reducer (intercept-and-redispatch), so the engine never owns state.
   covered by a test that actually fires `onDidRemovePopoutGroup`, not a synthetic op**: the
   `#applying`-suppression branch (a `popIn` must NOT fire when OUR OWN `apply()` reconcile is
   what caused the popout group's removal, e.g. a menu "dock" on a popped-out panel), the
-  `event.group.model.panels` fallback when the panel isn't in `#poppedOutGroupPanels`, and the
+  fallback that reads the panel ids off the removal event's own group when the panel isn't in
+  `#poppedOutGroupPanels`, and the
   `STAGE_ID` skip. All three read correct on inspection but are exactly the class of bug found
   twice in this file under adversarial testing — do not trust inspection alone for changes here.
 - **`#applying` is a synchronous-only guard — it cannot suppress an `AsapEvent` listener**

@@ -68,8 +68,8 @@ have.
   entirely — it contributes nothing and does not appear in `Collected.docs`.
 - **The `resolve` module** (Nightfox repo) — `resolveNightfox(host)` is **one** `@shadowcat/formula`
   `resolveAll` call over node keys `f:<docId>#<key>` (final value) and `c:<docId>#<key>`
-  (resource `effectiveCurrent`), not three passes. Per stat: `base` → `derived` (the stat's own
-  `formula`, else `base`/`maxBase`) → `final` (derived pushed through the bucket pipeline `final
+  (resource `effectiveCurrent`), not three passes. Per stat: `base` → derived (the stat's own
+  `formula`, else `base`/`maxBase`) → final (derived pushed through the bucket pipeline `final
   = (derived + Σadd) × (1 + ΣmulAdditive) × ΠmulCompound` — fixed stage order, commutative
   *within* each stage). **Canonical fold order is load-bearing, not cosmetic**: floating-point
   add/multiply is not associative, so contributions within a stage are folded in a fixed
@@ -131,13 +131,13 @@ new wire frames.
   no reserved-word semantics to protect — only pointer-injection safety matters for it.
 - **Presentation-only order:** `StatTable`'s add-stat assigns `max-existing-order + 1`,
   not a count — a remove-then-add sequence with a naive count would collide orders. Order never
-  feeds `resolveNightfox`; it's a `sort()` key at render time only.
+  feeds `resolveNightfox`; it is a sort key at render time only.
 - **Permission-gating split — a Critical-class distinction, not interchangeable `readOnly`
   booleans.** A sheet's own `/system` writes (its own stats/modifiers/mechanics flags) gate on
   `core:write_fields`; a write to an EMBEDDED carrier's `/embedded/.../mechanics/<flag>`
   (item/effect active toggle, effect transfer toggle) gates on the DISTINCT
   `core:manage_embedded` capability. `ActorSheet` computes this per-carrier as `embedReadOnly`,
-  never reusing the actor's own `write_fields`-derived `readOnly` for embedded controls — caught
+  never reusing the actor's own `cap::WRITE_FIELDS`-derived `readOnly` for embedded controls — caught
   as a Critical/Important finding by two independent reviewers reviewing the same code blind,
   reaching the same conclusion; `ItemSheet` inherits the identical pattern (`effectReadOnly`) for its own
   embedded effects. `EffectSheet` has no embeds of its own (effects are leaf documents in this
@@ -226,7 +226,7 @@ producer, not consumer.
 
 ## The `@shadowcat/formula` graph-resolver contract (the `graph` module, Shadowcat engine repo)
 
-Load-bearing for anyone writing a new `evalNode` consumer (Nightfox's `resolve` module is the first,
+Load-bearing for anyone writing a new `resolveAll.evalNode` consumer (Nightfox's `resolve` module is the first,
 not the only, expected caller):
 
 - **`resolveAll` is a pure function of the key set** — sorted-root traversal means the same set
@@ -236,7 +236,7 @@ not the only, expected caller):
 - **Cycle-error detail names the lexicographically smallest cycle member** — a canonical,
   deterministic choice so two logically-identical graphs built in different key orders report
   byte-identical error details.
-- **`evalNode` implementations MUST NOT wrap their own call(s) to the injected `get` in
+- **`resolveAll.evalNode` implementations MUST NOT wrap their own call(s) to the injected `get` in
   try/catch.** `resolveAll` drives evaluation via a restart-based trampoline keyed on an internal
   `NeedsDependency` signal thrown by `get`; swallowing it in a consumer's own try/catch breaks
   the trampoline and silently memoizes a wrong (partial) result. This is why Nightfox's
@@ -256,7 +256,7 @@ not the only, expected caller):
   spec order.
 - The `internal` module — shared trust-boundary helpers (`isWellFormedError`, `validateResolverOutput`,
   `finite`). **Not re-exported from `@shadowcat/formula`'s `index` module** — every injected-callback boundary (evaluate's
-  `ref` case, graph's `evalNode` call, template's identifier resolver) validates a consumer
+  `ref` case, graph's `resolveAll.evalNode` call, template's identifier resolver) validates a consumer
   callback's return value through these before trusting it as a `FormulaValue`.
 - `@shadowcat/formula`'s `index` module — the only public entry point: types + caps + `parseFormula` + `evaluate` +
   `resolveAll` + `resolveNotationTemplate` + `NOTATION_KEYWORDS`.
@@ -277,7 +277,7 @@ not the only, expected caller):
 
 - **Error-value-only, fail-closed.** No function in this package ever throws on ANY input, and
   arithmetic never leaks `NaN`/`Infinity` — both become a `FormulaError` (`internal`'s
-  `finite`). A consumer callback (`resolve`/`evalNode`) IS allowed to throw or return a malformed
+  `finite`). A consumer callback (`resolve`/`resolveAll.evalNode`) IS allowed to throw or return a malformed
   value; the library's own boundary code (`validateResolverOutput`) converts that into a
   `"resolver-error"` rather than propagating it. `FormulaErrorKind` is mirrored by hand in
   `FORMULA_ERROR_KINDS` (the `types` module) for runtime validation — adding a kind means updating BOTH the
@@ -287,9 +287,9 @@ not the only, expected caller):
   unary-minus — NOT grammar-production depth; a flat `a+b+c+...` chain never trips it),
   `MAX_GRAPH_VISITS=2048` (charged once per newly discovered key in `resolveAll`).
 - **`resolveAll`'s trampoline is O(1) JS-stack-depth by construction, not an implementation
-  detail.** It restarts `evalNode` from scratch on an internal `NeedsDependency` throw rather than
+  detail.** It restarts `resolveAll.evalNode` from scratch on an internal `NeedsDependency` throw rather than
   recursing, so graph depth never grows the call stack — required for constrained-stack mobile
-  engines (project cross-platform invariant). Consumer `evalNode` bodies must NEVER wrap their own
+  engines (project cross-platform invariant). Consumer `resolveAll.evalNode` bodies must NEVER wrap their own
   call(s) to the injected `get` in try/catch — that would swallow the internal signal driving the
   trampoline and silently memoize a wrong result. Documented in `graph`'s own JSDoc; treat any
   PR touching `resolveAll` or its consumers as needing that invariant re-verified.
@@ -345,7 +345,7 @@ not the only, expected caller):
   identity-echo means every `nfT` call resolves through `NF_MESSAGES`, not through a mocked
   translation catalog; a test asserting a raw key string can never pass against a component that
   correctly routes through `nfT`.
-- **An embedded carrier's write capability is NOT the sheet's own `write_fields`.** Reusing a
+- **An embedded carrier's write capability is NOT the sheet's own `cap::WRITE_FIELDS`.** Reusing a
   single `readOnly` for both a sheet's own fields and its embedded items/effects is a
   Critical-class permission bug caught by independent two-reviewer review, not a minor UX gap — always compute
   embedded-write gating from `core:manage_embedded` per carrier.

@@ -86,7 +86,7 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
   `moverVision` is present (mover only), the engine's `visionSweeps` fog-sweep playback (see
   `shadowcat-codebase-scene-rendering`).
 - **External-module loading** — `WorldSession`'s `#loadExternalModules(world,
-  serverVersion)` runs after `Welcome` (`serverVersion` = `w.server_version`): fetches the world's
+  serverVersion)` runs after `Welcome` (`loadExternalModules.serverVersion` = `w.server_version`): fetches the world's
   enabled set (keyed on the install FOLDER id, `InstalledModuleInfo.id`, never manifest id), calls
   core `loadModules` (per-module-contained, non-throwing `ModuleLoadResult`), then activates. The
   shell serves ONE runtime instance of `svelte`/`@shadowcat/*` via `RUNTIME_ENTRIES`
@@ -123,7 +123,7 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
   session's life: reconnect Welcomes would short-circuit, `role` would be set, but every
   Surface would stay empty. It is instead two fields: `#modulesAdded` (latches once per
   session — re-adding modules would duplicate registrations) and `#activated` (latches only on a
-  successful `activate()`, reverted to `false` in the `catch` on a thrown activation, so the NEXT
+  successful `activate()`, reverted to `false` in the catch clause on a thrown activation, so the NEXT
   Welcome retries instead of caching the failure). **`#activated` is still set to `true`
   SYNCHRONOUSLY, before the `activate()` await** — this is the one part of the old single-latch
   behavior deliberately preserved: same-tick concurrent Welcomes re-enter `#onWelcome`, and
@@ -247,7 +247,7 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
 - **A value put into `setContext`/AppContext must be a stable, in-place-mutated ref** (e.g. a
   `SvelteMap`), not a reassigned `$state`, or consumers hold a stale snapshot
   [[svelte-context-stable-ref]].
-- **Contribute/activate before any `await` that gates the host mount** — an async-populated
+- **Contribute/activate before any await that gates the host mount** — an async-populated
   contribution Surface paints blank until activation runs; the minimal fix touches only the
   diverging path [[refactor-async-contribution-paint-timing]].
 - **In-game elements communicate ONLY through seams** (module contracts, `ContributionRegistry`,

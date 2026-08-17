@@ -26,7 +26,7 @@ and restore as a deployment-operator tool, not an in-app feature.
   never read from TOML/env (a one-shot operation is not persistent server configuration).
 - `main` — `main()`'s FIRST branch: if both `backup_to` and `restore_from` are
   `Some`, `anyhow::bail!` before `Config::load` even runs. The three fields are cloned OUT of
-  `cli` before `Config::load(cli)` consumes it by value. Either flag alone short-circuits to
+  `main::cli` before `Config::load(cli)` consumes it by value. Either flag alone short-circuits to
   `run_backup`/`run_restore` and `return Ok(())` — `SqliteRepository::connect` (the long-lived
   pool) and `axum::serve` are structurally unreachable on that path, not just conditionally
   skipped.
@@ -79,7 +79,7 @@ and restore as a deployment-operator tool, not an in-app feature.
   destination assets dir exists and is non-empty, without `--force`. A rejected restore is
   structurally inert — the control flow cannot reach any destination-mutating call before the
   gate's `return Err`. Asymmetric ownership: `restore_backup` enforces its own gate internally
-  regardless of caller, but `create_backup` does NOT check `out_dir` for prior contents — the
+  regardless of caller, but `create_backup` does NOT check `create_backup::out_dir` for prior contents — the
   refuse-non-empty gate for backup lives at the CLI layer (`main::run_backup`, via the
   exported `dir_is_empty_or_absent`). A future caller invoking `create_backup` directly (e.g. an
   in-app export feature) would bypass that gate.
@@ -119,7 +119,7 @@ and restore as a deployment-operator tool, not an in-app feature.
   `<assets_dir>.restore-tmp`, the live `assets_dir` renames out to `<assets_dir>.restore-old`
   (directory rename does NOT replace a non-empty destination on any target OS, hence the two-step
   swap), the staged tree renames into `assets_dir`, then `.restore-old` is removed. A failure at
-  any point leaves `db_path` either fully pre-restore or fully post-restore, and independently
+  any point leaves `restore_backup::db_path` either fully pre-restore or fully post-restore, and independently
   leaves `assets_dir` either fully pre-restore or fully post-restore — worst case
   (crash between the two directory renames) parks the old tree at `.restore-old`, which the next
   restore attempt clears before staging. No `--force`-only special case: both paths use the
@@ -128,7 +128,7 @@ and restore as a deployment-operator tool, not an in-app feature.
   not one joint transaction — the db rename completes in full before the assets copy/swap starts,
   so a crash in that window pairs a new db with old (or momentarily absent) assets; recovery is
   re-running `restore_backup` with `force` (the db swap already completed, so a force-less retry
-  would refuse on the now-existing `db_path`).
+  would refuse on the now-existing `restore_backup::db_path`).
 - The CLI backup mode (`create_backup` invoked directly by `main::run_backup`, cross-process,
   no live server) still has NO write-quiesce — its assets-copy is not transactionally coupled to
   the `VACUUM INTO` snapshot, so a CLI backup racing an external process's in-flight asset REPLACE
@@ -151,5 +151,5 @@ and restore as a deployment-operator tool, not an in-app feature.
 - This subsystem is classified as file I/O + one SQL statement risk, not the
   security/concurrency/determinism risk class that requires independent review.
 - Relationships: `graphify query "config cli main backup restore server bootstrap"`.
-- Data-layer side (what `db_path`/`assets_dir` ultimately point at): [[shadowcat-codebase-assets]],
+- Data-layer side (what `create_backup::db_path`/`Config.assets_dir` ultimately point at): [[shadowcat-codebase-assets]],
   [[shadowcat-codebase-documents-permissions]] (`SqliteRepository`, `src/server/src/data/`).

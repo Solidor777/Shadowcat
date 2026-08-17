@@ -216,7 +216,8 @@ with zero message-specific plumbing in any of those subsystems.
     regardless of which front-door (frame field or content `/w`) produced it. A post-parse empty
     body (e.g. `/w @alice` with no trailing text) is rejected the same as raw-empty content. Only
     then does it resolve the world's `chat-settings` policy (`resolve_content_policy`), call
-    `sanitize(&parsed.body, &policy)` to produce `content_segments`, then `build_message_doc`, then
+    `sanitize(&parsed.body, &policy)` to produce `handle_send_message::content_segments`, then
+    `build_message_doc`, then
     `room.publish(..., vec![Operation::Create { doc }], ..., WriteOrigin::Client)`. **The sole
     message-authoring entry point** — nothing else may produce a stored `message` doc. Posting
     rights are open to any world member (any member may `SendMessage`); `audience` restricts only
@@ -317,7 +318,7 @@ with zero message-specific plumbing in any of those subsystems.
   `chat::SendMessageError`.
 - `ws::conn` — three chat dispatch points plus the `Intent` guard:
   - `ClientMsg::Intent { ops, .. }` arm: calls `chat::ops_target_message(&ops)` BEFORE
-    `room.publish`; if true, sends `ServerMsg::Reject{reason: Forbidden}` and `continue`s without
+    `room.publish`; if true, sends `ServerMsg::Reject{reason: Forbidden}` and continues without
     ever reaching `apply_intent`.
   - `ClientMsg::SendMessage { .. }` arm: calls `chat::handle_send_message`.
   - `ClientMsg::EditMessage { .. }` arm: calls `chat::handle_edit_message`.
@@ -325,7 +326,7 @@ with zero message-specific plumbing in any of those subsystems.
   - All three chat arms confirm success only by the broadcast echo of the authored `Event` (same
     pattern as `Intent`), not a direct reply; a failure is `tracing::debug!`-logged AND emits a
     `ServerMsg::ChatError { request_id, message: e.to_string() }` to the SENDER's connection only
-    (`etx`, never broadcast) so the rejection is surfaced instead of vanishing.
+    (`handle_socket::etx`, never broadcast) so the rejection is surfaced instead of vanishing.
 - `http::routes::write_ops` — mirrors the WS ingress guard:
   `if chat::ops_target_message(&ops) { return Err(AppError::Forbidden); }` before the room/repo
   write path. Both transports must independently apply this guard. (`EditMessage`/`DeleteMessage`
@@ -336,7 +337,7 @@ with zero message-specific plumbing in any of those subsystems.
   ONLY `handle_edit_message`/`handle_delete_message` ever construct
   `WriteOrigin::ServerMessageRevision`, and only after their own owner-or-GM check has already
   passed). Now FOUR coupled chokepoints, not three:
-  1. **Create-gate exemption** (`is_baseline_message = doc.doc_type == MESSAGE_DOC_TYPE &&
+  1. **Create-gate exemption** (`apply_intent::is_baseline_message = doc.doc_type == MESSAGE_DOC_TYPE &&
      ctx.world_role == WorldRole::Player && doc.owner == Some(ctx.user_id)`) — lets a Player
      create a `message` doc even though `core:create` is otherwise GM-only by world default.
   2. **Ingress guard** (`ops_target_message`, WS `Intent` + HTTP `write_ops`) — rejects any
@@ -534,7 +535,7 @@ Three independently replaceable modules (UI-is-modules; swap any one without the
   re-syncs on visibility — panels stay mounted in the tabbed sidebar). Both `scrollToBottom` and
   the visibility-reveal path must call the same scroll-state sync used by the `onscroll` handler,
   or the virtualized window silently goes stale after a programmatic (non-event-firing) scroll.
-- **`@shadowcat/module-chat-composer`** — Enter sends / Shift+Enter newline / `e.isComposing` IME
+- **`@shadowcat/module-chat-composer`** — Enter sends / Shift+Enter newline / `isComposing` IME
   guard; validation on the TRIMMED length (what's actually sent); NO client command parsing
   (`/`-commands ride verbatim — the server parses); the "Speak as" picker sends
   `actor_owner` `Actor` refs, server-ownership-validated at ingest (see Dice wire above).
