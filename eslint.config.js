@@ -21,6 +21,11 @@ export default [
       // failure that CI cannot reproduce, because CI never checks the directory out — a local-only
       // false failure trains readers to discount a real one.
       ".superpowers/",
+      // The mandated debug-dump sink, git-ignored and ephemeral. Linting it makes USING the sink
+      // the project requires break the repo lint gate, so an investigation has no green baseline
+      // to work against — which pushes the next writer to drop artifacts somewhere unswept
+      // instead, defeating the single-sink rule at the moment it matters most.
+      "debug/",
       // Docs pipeline output: generated sites/scratch, never hand-written code.
       ".docs-tmp/", "dist-docs/", "docs/site/.vitepress/cache/", "docs/site/.vitepress/dist/",
       // Worked-example lib builds (the root "dist/" ignore is top-level only).
