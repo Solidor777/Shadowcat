@@ -16,6 +16,11 @@ export default [
     // under `--target-dir target/nightly-doc`. `**/target/` is what covers a Cargo output
     // directory at any depth.
     ignores: ["dist/", "node_modules/", "**/target/", "**/*.svelte", "src/types/generated/", ".claude/worktrees/",
+      // Git-ignored plan workspace: briefs, reports, diffs and throwaway probe scripts, none of
+      // which ship or are tracked. Linting it turns any scratch script into a repo-wide gate
+      // failure that CI cannot reproduce, because CI never checks the directory out — a local-only
+      // false failure trains readers to discount a real one.
+      ".superpowers/",
       // Docs pipeline output: generated sites/scratch, never hand-written code.
       ".docs-tmp/", "dist-docs/", "docs/site/.vitepress/cache/", "docs/site/.vitepress/dist/",
       // Worked-example lib builds (the root "dist/" ignore is top-level only).
