@@ -204,8 +204,10 @@ describe("the reservation split between the two grammars", () => {
 
 // `checkNotationKey` is the authority a consuming system's stat-key authoring validation
 // calls, and it answers by RUNNING the same recognizer chain the rewrite runs. These cases
-// pin the shapes four rounds of review each described differently, and the last case pins
-// the two answers to each other so the checker cannot drift from the rewrite.
+// pin the shapes this grammar takes apart — keyword runs, leading and embedded digits, the
+// dot edges, brackets, non-word characters — against the ordinary keys they contrast with,
+// and the last case pins the two answers to each other so the checker cannot drift from the
+// rewrite.
 describe("checkNotationKey", () => {
   /** Runs the REWRITE over a bare key and reports whether the key survived whole: the
    * resolver was asked for exactly the key the author wrote, and the emitted notation is
@@ -220,9 +222,10 @@ describe("checkNotationKey", () => {
     return seen.length === 1 && seen[0] === key && result.notation === `7[${key}]`;
   };
 
-  /** Every key shape the review rounds surfaced, plus the safe shapes they contrast with.
-   * Keyword-derived entries come from `NOTATION_KEYWORDS` itself, so a keyword added there
-   * is covered without a second edit. */
+  /** Every key shape this grammar can claim as something other than one identifier span,
+   * beside the ordinary keys that survive whole. Keyword-derived entries come from
+   * `NOTATION_KEYWORDS` itself, so a keyword added there is covered without a second
+   * edit. */
   const CORPUS: readonly string[] = [
     ...NOTATION_KEYWORDS,
     ...NOTATION_KEYWORDS.map((kw) => `${kw}1`),
