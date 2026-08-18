@@ -218,7 +218,8 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   (`cell<=0.0` / non-finite endpoint / span > `MAX_MOVE_CELLS`). Clean-room (Amanatides–Woo extension);
   relative-epsilon corner test (over-include is the safe direction).
 - `scene::vision` — raycast `visibility_polygon(viewpoint, walls, bound)`,
-  `bound_for(...)`, `Seg`/`Rect`/`P`, `point_in_poly` (shared). Public-source computational geometry only (ARCHITECTURE §7).
+  `bound_for(...)`, `Seg`/`Rect`/`P`, `point_in_poly` (shared). Public-source computational
+  geometry only.
   **Three bound builders, and the two wrappers UNION onto `bound_for` rather than replacing it** —
   each calls it first and then only `.min`s low edges / `.max`es high edges, so a bound can only ever
   GROW. That monotonicity is the invariant: a bound that could shrink is an under-reveal defect on a
@@ -611,7 +612,7 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
     for any polyline, grid or any-angle.
 - `scene::navmesh` — pure headless adapter around the `polyanya`
   (any-angle navmesh) + `geo`/`spade` (CDT + Minkowski buffer) crates, engine-owned geometry
-  (ARCHITECTURE §6 exception). Carries **walls only** — impassable/terrain regions are not on the
+  Carries **walls only** — impassable/terrain regions are not on the
   navmesh, and adding them is a scope change, not a fix.
   - `build_navmesh(extent: WorldExtent, footprint_scene, walls) -> Option<NavMesh>` — triangulates
     the scene's world ENVELOPE (both corners, `min` and `max` — not an origin-anchored rectangle,
@@ -904,7 +905,7 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   scene a cached payload filters against; this one is about WHETHER a superseded payload should
   apply at all) — both guards live in the same function and must both be preserved by any future
   edit to `flushPendingDerived`.
-- **Vision is server-authoritative, no client prediction** (ARCHITECTURE §2 invariant 3); movement that
+- **Vision is server-authoritative, no client prediction**; movement that
   crosses a `blocksMove` wall is rejected server-side before the write — validate the **post-image**
   position, not just the pre-move one [[m9-progress]].
 - **`Room::publish`'s non-GM block retains only two gates, neither a traversal gate.**
@@ -1052,7 +1053,7 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   vision; two tokens moving simultaneously do not reveal each other mid-walk if a watcher's vision
   opens after the clip — reconciles at the stop + the next `vision` rebroadcast. Live
   cross-animation concurrency is not currently implemented — it would need a per-move server loop. Client
-  computes NO vision in any of this (ARCHITECTURE §2 invariant 3/4) — it renders only the streamed,
+  computes NO vision in any of this — it renders only the streamed,
   already-clipped polygons.
 - **Region secrecy is a two-value contract on `region_field`, never a third mode.**
   `region_field(scene, None)` = authoritative (GM + `move_exec`); `region_field(scene, Some(user))`
@@ -1254,8 +1255,7 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
 - **Generated API** — `/api/rust/shadowcat/scene/` (rustdoc, private items included),
   `/api/ts/modules/_shadowcat_render.html` (TypeDoc), `/api/ts/modules/_shadowcat_module-scene-tools.html`,
   `_shadowcat_module-stage.html`. Produce with `pnpm build:all`.
-- Rationale: `docs/design/ARCHITECTURE.md` §2 (invariants 3, 5, 6 + the geometry exception)
-  + §7 (rendering provenance).
+- Rationale: `docs/design/ARCHITECTURE.md` §2 (invariants 3, 5, 6 + the geometry exception) + §7 (rendering provenance).
 - Relationships:
   `graphify query "scene ECS derived read-model vision fog stage pixi render tokens regions faces animated"`.
 - History/decisions: [[m8-brainstorm]], [[m8d-2-scene-tools]], [[m9-progress]],

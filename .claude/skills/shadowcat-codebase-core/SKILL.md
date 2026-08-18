@@ -41,7 +41,7 @@ source of truth. The ones agents break most:
 
 - **Server-authoritative, permissions per-recipient.** Client sends intents; server validates,
   applies, broadcasts. Hidden fields are stripped **before** transmission, never sent-then-hidden
-  (ARCHITECTURE §2 invariant 4). See `shadowcat-codebase-documents-permissions`.
+  See `shadowcat-codebase-documents-permissions`.
 - **Optimistic with rollback.** Documents are source of truth; ECS/runtime is derived & ephemeral.
 - **NEVER FORK A DECISION ACROSS TWO PATHS — the defect class this codebase produces most.**
   Whenever two code paths are *documented* to agree on something, they eventually disagree on an
@@ -65,7 +65,7 @@ source of truth. The ones agents break most:
   wrong the same way proves nothing — mutate one side and confirm the test fails.
 - **Cross-platform from day one (CI-verified).** `std::path` only (no hardcoded separators),
   `#[cfg]`-gate OS-specific code for every target, three-OS CI matrix, responsive/touch UI.
-  [CLAUDE.md Cross-Platform; ARCHITECTURE §2 invariant 10]
+  [CLAUDE.md Cross-Platform; `docs/design/ARCHITECTURE.md` §2 invariant 10]
 - **`dist/` must be built before any cargo build of the server** — `rust-embed` validates
   `../../dist/` at COMPILE time. [[embed-dist-compile-ordering]]
 - **Capability/permission model** layered server/world/document roles. [[capability-permissions]]
@@ -77,7 +77,7 @@ source of truth. The ones agents break most:
   condition/channel config-docs) gets REAL server-side ingress validation instead
   (`validate_engine`/`validate_engine_tree`, `deny_unknown_fields` per struct) — this is the band
   engine-owned geometry (movement-collision, vision) lives in, not a `system`-body exception
-  (ARCHITECTURE §2 invariant 6). See `shadowcat-codebase-documents-permissions` for the
+  See `shadowcat-codebase-documents-permissions` for the
   `data/engine/` registry and `shadowcat-codebase-scene-rendering`/`-chat`/`-actors-tokens` for
   the per-subsystem re-root.
 - **A type built via `Extract<SomeUnion, { type: "x" }>` cannot be documented.** TypeDoc cannot
@@ -265,8 +265,8 @@ source of truth. The ones agents break most:
   open-source repo. `.gitignore`'s `/CLAUDE.md` rule is root-anchored and matches no file (no
   root-level `CLAUDE.md` exists); the genuinely-ignored entries under `.claude/` are
   `settings.json`, `settings.local.json`, `skills/graphify/`, and `kimi.plugin.json`.
-  `ARCHITECTURE.md` §2 remains
-  the invariant source of truth, but not because `CLAUDE.md` is unshared.
+  `docs/design/ARCHITECTURE.md` §2 remains the invariant source of truth, but not
+  because `CLAUDE.md` is unshared.
   [[claude-md-is-git-ignored]]
 - **ts-rs types are generated** — change the Rust enum/struct, regenerate, then mirror in the
   client Zod schema (a drift guard enforces parity).

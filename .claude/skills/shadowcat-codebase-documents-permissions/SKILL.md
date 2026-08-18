@@ -378,8 +378,8 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
   `filter_properties` and `collect_hidden` each append `/base` to their own hidden list from their
   own `can_see(Visibility::OwnerOrGm)` test. That one decision is genuinely duplicated, so any
   change to `base`'s visibility must land at both call sites.
-- **Tier-2 validates the `system` band's SHAPE only, never values — it EXTENDS invariant 6
-  (three-band document shape), it does not replace it.** `engine`-band validation
+- **Tier-2 validates the `system` band's SHAPE only, never values — it EXTENDS the three-band
+  document shape, it does not replace it.** `engine`-band validation
   (`validate_engine`/`validate_engine_tree`) remains the separate REAL semantic
   ingress gate for the 17 engine-defined doc types (see the `engine ingress validation` invariant
   above); tier-2 is the `system`-band's analogous but strictly structural enforcement floor. The
@@ -523,9 +523,8 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
   submodule tree), `/api/ts/modules/_shadowcat_core.html` (TypeDoc — the `wire` Zod mirror),
   `/api/ts/modules/_shadowcat_types.html` (TypeDoc — the ts-rs generated bindings the Zod mirror
   is checked against). Produce with `pnpm build:all`.
-- Rationale: `docs/design/M2-data-foundation.md`; invariants in `docs/design/ARCHITECTURE.md`
-  §2 invariant 4 (per-recipient permissions) + invariant 6 (three-band document shape) + §6 (data
-  model). Design rationale for the three-band document shape and the tier-2 structural schema
+- Rationale: `docs/design/M2-data-foundation.md`.
+- Rationale: `docs/design/ARCHITECTURE.md` §2 invariant 4 (per-recipient permissions) + invariant 6 (three-band document shape) + §6 (data model). Design rationale for the three-band document shape and the tier-2 structural schema
   registry lives under `docs/superpowers/specs/`.
 - Relationships: `graphify query "document permissions redaction filter_properties can_see"`,
   `graphify path "permission.rs" "search.rs"`.

@@ -58,7 +58,7 @@ and serves uploads unconverted (the conversion pipeline is deferred).
   side across its `VACUUM INTO` + assets copy, so no asset write's row-commit+file-op pair can
   interleave with an in-server backup snapshot (`shadowcat-codebase-server-ops`).
 - **ETag == `"{id}-{version}"`**; `version` is the single monotonic cache key. Stable UUID identity
-  means a replace keeps the id and only bumps the version, so links survive (ARCHITECTURE §6).
+  means a replace keeps the id and only bumps the version, so links survive.
 - **Upload limits are tiered + configurable** (GM ≈ 2× regular); uploads stream to disk, not buffered.
 - **World deletion removes the whole `<assets_path>/<world_id>/` directory AFTER the row
   transaction commits** (`http::routes::delete_world` — the delete convention: rows first, files second;

@@ -50,7 +50,7 @@ optimistically and roll back on divergence.
     not durable).
 - `ws::protocol` — client/server message frames; `ServerMsg`, `event_seq()`.
 - `ws::conn` — per-connection loop + egress; `ws::time` — server time source +
-  client offset calibration (exists before its consumer, per ARCHITECTURE §2 invariant 2).
+  client offset calibration (exists before its consumer).
   `send_filtered` (takes `room: &Room` alongside `repo`/`ctx`) is where per-recipient
   redaction actually happens: only the `Event` branch carries document data, so only it is
   redacted — every other frame (including `MoveStream`, clipped separately by `clip_move_stream`;
@@ -171,10 +171,10 @@ optimistically and roll back on divergence.
 
 ## Hard invariants
 
-- **Ordered, recoverable realtime** (ARCHITECTURE §2 invariant 2): every broadcast carries a per-world
+- **Ordered, recoverable realtime**: every broadcast carries a per-world
   monotonic seq from an atomic counter; clients gap-detect and resync from the `RingBuffer` or a
   full snapshot.
-- **Optimistic with rollback** (ARCHITECTURE §2 invariant 3): `OptimisticClient` applies locally tagged with
+- **Optimistic with rollback**: `OptimisticClient` applies locally tagged with
   an intent id; the server confirmation reconciles; divergence rolls back to `DocumentStore`.
   `appliedSeq` is identical across the two so the derived watermark holds
   [[render-from-optimistic-view]].

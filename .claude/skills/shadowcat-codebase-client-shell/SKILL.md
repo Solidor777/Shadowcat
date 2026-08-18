@@ -251,8 +251,7 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
   contribution Surface paints blank until activation runs; the minimal fix touches only the
   diverging path [[refactor-async-contribution-paint-timing]].
 - **In-game elements communicate ONLY through seams** (module contracts, `ContributionRegistry`,
-  `<Surface>`, AppContext, render-layer API) — never import one another or the shell directly
-  (ARCHITECTURE §1, §2 invariant 7).
+  `<Surface>`, AppContext, render-layer API) — never import one another or the shell directly.
 - **Entry views are plain-routed, not contributions; surfaces are in-world only.**
 - **A config-doc seed `$effect` must be reactive (`createSubscriber` + `subscribe()`)** — contribution
   panels mount during `#onWelcome` BEFORE the resync stream populates the store, so a one-shot

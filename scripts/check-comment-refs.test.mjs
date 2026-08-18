@@ -790,10 +790,10 @@ test("the local letter+digit separator is deliberately not widened to a space", 
   expect(quantity.hits.map((h) => h.kind)).not.toContain("local letter+digit marker");
 });
 
-// The other measured counter-case: hyphenating the spec reference turns a noun into an adjectival
+// The other measured counter-case: hyphenating that reference turns a noun into an adjectival
 // compound naming a code symbol's scope, which is not a document pointer at all.
 test("a hyphenated spec compound is not an unnamed spec reference", () => {
-  const bare = scanContent("// Resolved per spec for this field.\n", { isMd: false });
+  const bare = scanContent("// Resolved per spec for this field.\n", { isMd: false }); // EXAMPLE:
   expect(bare.hits.map((h) => h.kind)).toContain("unnamed spec reference");
   const compound = scanContent("// A per-spec field, not a per-group one.\n", { isMd: false });
   expect(compound.hits.map((h) => h.kind)).not.toContain("unnamed spec reference");
@@ -878,8 +878,10 @@ test("a group carrying two instances of one pattern reports both", () => {
 // De-duplicating by offset is what keeps the per-match iteration above from double-counting every
 // hit whose separator the widening also matches.
 test("both spellings matching at one offset report a single violation", () => {
-  const matches = bannedMatchesIn(/\bfix[ ]round/i, "a fix round here");
-  expect(matches).toEqual([{ index: 2, text: "fix round" }]);
+  // A fabricated pattern, not a live entry: the property under test is de-duplication by offset,
+  // which needs only a widenable separator, and a real marker would make the fixture a specimen.
+  const matches = bannedMatchesIn(/\bwidget[ ]part/i, "a widget part here");
+  expect(matches).toEqual([{ index: 2, text: "widget part" }]);
 });
 
 // A global ban pattern carries `lastIndex` state between subjects, so it would silently skip real
@@ -974,14 +976,14 @@ test("code mode has no durable-citation carve-out", () => {
 // directions are controlled, because a ban that fired on the skill corpus would fail the corpus it
 // is meant to describe.
 test("a source comment naming a codebase skill is a pointer", () => {
-  const fixture = "// Broadcast filtering lives here (see `shadowcat-codebase-chat`).\n";
+  const fixture = "// Broadcast filtering lives here (see `shadowcat-codebase-chat`).\n"; // EXAMPLE:
   expect(scanContent(fixture, { isMd: false }).hits.map((h) => h.kind)).toEqual([
     "codebase skill pointer",
   ]);
 });
 
 test("a skill naming a sibling skill is not a pointer", () => {
-  const fixture = "Invoke `shadowcat-codebase-core` first, then `shadowcat-codebase-chat`.\n";
+  const fixture = "Invoke `shadowcat-codebase-core` first, then `shadowcat-codebase-chat`.\n"; // EXAMPLE:
   expect(scanContent(fixture, { isMd: true }).hits).toEqual([]);
 });
 

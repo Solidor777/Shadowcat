@@ -33,8 +33,8 @@ edit them from a Shadowcat working tree.
 
 Headless, pure-function rules package: `system.stats`/`system.mechanics` data model (Zod
 tier-1 validation) + a one-dependency-graph resolver + typed commutative modifier buckets +
-`ITEM_DOC_TYPE`/`EFFECT_DOC_TYPE` semantics. Zero server change (client-semantics only, ARCHITECTURE §2 invariant
-6); zero Svelte/store dependency — sheets call these functions with docs they already
+`ITEM_DOC_TYPE`/`EFFECT_DOC_TYPE` semantics. Zero server change (client-semantics only);
+zero Svelte/store dependency — sheets call these functions with docs they already
 have.
 
 - **The `nightfox-docs` module** (Nightfox repo) — the stat/mechanics data model and its fail-closed

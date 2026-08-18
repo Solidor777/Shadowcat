@@ -141,7 +141,7 @@ the sheet, and opens/focuses the panel. This is the seam mods use to add their o
   tie-break) rather than throwing; two providers sharing a non-finite priority (e.g. two modules
   both registering a generic fallback) would silently fall back to registration order.
 - **Sheet modules import ONLY `@shadowcat/core`/`@shadowcat/ui-kit`/`@shadowcat/types`** — no
-  cross-module import (ARCHITECTURE §2 invariant 7); `openDocument`/the registry resolver are
+  cross-module import; `openDocument`/the registry resolver are
   generic host glue (core/ui-kit), never a module.
 
 ## Gotchas

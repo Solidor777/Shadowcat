@@ -13,7 +13,7 @@ points INTO graphify, `docs/design/`, and memory.
 
 An installed module lives at `<data-dir>/modules/<folder-id>/` as a `module.json` manifest plus a
 pre-built ESM bundle. The **server discovers and serves it as static files but NEVER executes any
-module code** (ARCHITECTURE §2 invariant 6). A GM enables a module per-world; the client shell
+module code**. A GM enables a module per-world; the client shell
 supplies exactly one runtime instance of `svelte`/`@shadowcat/*` via an import map, fetches the
 enabled set after `Welcome`, dynamically imports each enabled module through the real
 modules-folder → server → import-map path (identical in dev and prod), and activates it through the
@@ -94,7 +94,7 @@ job's example-build step keep them green; the guides code-import their sources r
 ## Hard invariants
 
 - **The server NEVER executes installed module code** — it only discovers + serves it as static
-  bytes (ARCHITECTURE §2 invariant 6). Authority over the `system` band stays structural.
+  bytes. Authority over the `system` band stays structural.
 - **Exactly one runtime instance** of `svelte`/`svelte/*`/`@shadowcat/*` —
   requires `preserveEntrySignatures: "strict"` so runtime chunks export real API names, verified by
   a test that IMPORTS each chunk (not just checks existence) [[build-artifact-tests-must-consume-not-just-exist]].
