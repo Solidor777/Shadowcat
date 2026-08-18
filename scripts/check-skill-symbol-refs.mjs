@@ -1396,10 +1396,16 @@ const LIST_MARKER = /^([ \t]*)([-*+]|\d+[.)])([ \t]+)/;
  * the gate — so the lines it blanks and the backtick runs they carried are returned as numbers the
  * caller prints and balances, never as a silent difference between two strings.
  *
+ * A fence still open at end of file is reported rather than absorbed. Markdown gives a fence no
+ * terminator at EOF, so an unclosed one blanks every remaining line of the document: conservation
+ * still balances, because those lines' runs are counted as blanked, and a file whose whole
+ * citation surface vanishes that way carries no body run for the per-file floor to trigger on. The
+ * signal is what makes the document defect fail loudly instead of quietly shrinking the corpus.
+ *
  * @param {string} text - one Markdown document's raw contents.
- * @returns {{body: string, blankedLines: number, blankedRuns: number}} the document with
- *   code-block lines emptied, how many lines that removed, and how many backtick runs went with
- *   them.
+ * @returns {{body: string, blankedLines: number, blankedRuns: number,
+ *   unterminatedFence: boolean}} the document with code-block lines emptied, how many lines that
+ *   removed, how many backtick runs went with them, and whether a fence was still open at EOF.
  */
 export function stripCodeBlocks(text) {
   const lines = text.split("\n");
@@ -1458,7 +1464,7 @@ export function stripCodeBlocks(text) {
     out.push(line);
     prevBlank = false;
   }
-  return { body: out.join("\n"), blankedLines, blankedRuns };
+  return { body: out.join("\n"), blankedLines, blankedRuns, unterminatedFence: inFence };
 }
 
 /**
@@ -1478,12 +1484,13 @@ export function stripCodeBlocks(text) {
  *
  * @param {string} text - the skill file's raw contents.
  * @returns {{ candidates: {line: number, token: string}[], nonCandidates: number,
- *   exampleExempt: number, accounting: {rawRuns: number, blankedBlockLines: number,
+ *   exampleExempt: number, unterminatedFence: boolean,
+ *   accounting: {rawRuns: number, blankedBlockLines: number,
  *   blankedRuns: number, bodyRuns: number, unpairedRuns: number, nestedUnpairedRuns: number,
  *   topLevelUnpairedRuns: number, spansEmitted: number, emptySpans: number} }}
  */
 export function extractCitationCandidates(text) {
-  const { body, blankedLines, blankedRuns } = stripCodeBlocks(text);
+  const { body, blankedLines, blankedRuns, unterminatedFence } = stripCodeBlocks(text);
   const lines = body.split("\n");
   const candidates = [];
   let nonCandidates = 0;
@@ -1509,6 +1516,7 @@ export function extractCitationCandidates(text) {
     candidates,
     nonCandidates,
     exampleExempt,
+    unterminatedFence,
     accounting: {
       rawRuns: countBacktickRuns(text),
       blankedBlockLines: blankedLines,
@@ -1721,12 +1729,13 @@ export function resolvesAgainstIndex(token, symbols) {
  *   whole-token acknowledgement set that applies to THIS file only, with its own hit counter;
  *   `ACKNOWLEDGED_CROSS_REPO` is passed this way for the skill that documents another repository.
  * @returns {{ verified: number, acknowledged: number, broken: {line: number, token: string}[],
- *   nonCandidates: number, exampleExempt: number, crossRepo: number,
+ *   nonCandidates: number, exampleExempt: number, crossRepo: number, unterminatedFence: boolean,
  *   accounting: ReturnType<typeof extractCitationCandidates>["accounting"] &
  *     {verified: number, acknowledged: number, crossRepo: number, broken: number} }}
  */
 export function checkFileCitations(text, symbols, hits = new Map(), scoped = {}) {
-  const { candidates, nonCandidates, exampleExempt, accounting } = extractCitationCandidates(text);
+  const { candidates, nonCandidates, exampleExempt, unterminatedFence, accounting } =
+    extractCitationCandidates(text);
   const { extra = new Set(), extraHits = new Map() } = scoped;
   let verified = 0;
   let acknowledged = 0;
@@ -1772,6 +1781,7 @@ export function checkFileCitations(text, symbols, hits = new Map(), scoped = {})
     nonCandidates,
     exampleExempt,
     crossRepo,
+    unterminatedFence,
     accounting: {
       ...accounting,
       nonCandidates,
@@ -1797,6 +1807,7 @@ export function checkFileCitations(text, symbols, hits = new Map(), scoped = {})
  *   exampleExempt: number, crossRepo: number,
  *   filesWithNoCandidates: {file: string, nonCandidates: number, exampleExempt: number,
  *     emptySpans: number, unpairedRuns: number}[],
+ *   filesWithUnterminatedFence: string[],
  *   acknowledgedHits: Map<string, number>, crossRepoHits: Map<string, number>,
  *   unusedAcknowledgements: string[], indexedAcknowledgements: string[],
  *   untrackedDirs: string[],
@@ -1828,6 +1839,7 @@ export function checkSkillSymbolRefs(repoRoot, opts = {}) {
   let crossRepo = 0;
   const broken = [];
   const filesWithNoCandidates = [];
+  const filesWithUnterminatedFence = [];
   // Summed over every file, then balanced once: the aggregate is what a per-file rounding of any
   // kind cannot hide, and the per-file list is what localizes a failure to the document that
   // caused it.
@@ -1866,10 +1878,11 @@ export function checkSkillSymbolRefs(repoRoot, opts = {}) {
     for (const key of Object.keys(totals)) totals[key] += result.accounting[key];
     const delta = spanAccountingDelta(result.accounting);
     if (delta !== 0) conservationFailures.push({ file, delta, accounting: result.accounting });
+    if (result.unterminatedFence) filesWithUnterminatedFence.push(file);
     // A per-FILE floor. The global `candidatesChecked === 0` guard cannot see a single file that
-    // stopped yielding candidates - one stray delimiter, or a fence-pairing slip, silently takes
+    // stops yielding candidates - one stray delimiter, or a fence-pairing slip, silently takes
     // that file's whole prose out of the gate while every other file keeps the totals healthy.
-    // A file that carries backticks at all must yield at least one CHECKED citation: the failure
+    // A file whose PROSE carries backticks must yield at least one CHECKED citation: the failure
     // this floor exists for shifts pairing so the real citations land in the gaps and the prose
     // between them becomes the spans, and that prose is full of spaces, so it climbs
     // `nonCandidates` instead of yielding nothing. Requiring a non-empty `nonCandidates` bucket to
@@ -1878,7 +1891,9 @@ export function checkSkillSymbolRefs(repoRoot, opts = {}) {
     // itself on a document whose spans are legitimately all specimens or all prose.
     // Measured on the BODY's runs, not the raw text's: a file whose only backticks live inside
     // fenced blocks has no prose citation to yield, and flooring it would report a claim that is
-    // false about that file.
+    // false about that file. The narrow measurement is safe only because `unterminatedFence` fails
+    // separately: an unclosed fence blanks the rest of the document, which would otherwise drive
+    // `bodyRuns` to 0 and hold this floor shut on a file that lost its whole citation surface.
     if (
       result.verified + result.acknowledged + result.crossRepo + result.broken.length === 0 &&
       result.accounting.bodyRuns > 0
@@ -1922,6 +1937,7 @@ export function checkSkillSymbolRefs(repoRoot, opts = {}) {
     exampleExempt,
     crossRepo,
     filesWithNoCandidates,
+    filesWithUnterminatedFence,
     acknowledgedHits,
     crossRepoHits,
     unusedAcknowledgements,

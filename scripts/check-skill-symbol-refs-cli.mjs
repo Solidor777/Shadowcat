@@ -65,6 +65,7 @@ export function classifySkillSymbolRun(result) {
     candidatesChecked,
     broken,
     filesWithNoCandidates,
+    filesWithUnterminatedFence,
     acknowledgedHits,
     crossRepoHits,
     unusedAcknowledgements,
@@ -146,6 +147,19 @@ export function classifySkillSymbolRun(result) {
         "paragraph unchecked while every total stays healthy. Close or remove the delimiter.",
     );
 
+  // An unclosed fence is a document defect with no terminator to recover on: every line after it
+  // is blanked to end of file, so the document's remaining citations leave the gate while
+  // conservation still balances and `bodyRuns` falls to 0, which is exactly the measurement the
+  // per-file floor below reads. Failing on the fence itself closes that path and the mid-file
+  // variant of it at once, and names the defect rather than a symptom of it.
+  if (filesWithUnterminatedFence.length > 0)
+    problems.push(
+      `\n${filesWithUnterminatedFence.length} skill file(s) end inside an unclosed code fence:\n` +
+        filesWithUnterminatedFence.map((f) => `  ${f}`).join("\n") +
+        "\n\nEvery line after an unclosed fence is stripped as code, so the rest of the document " +
+        "is not checked at all. Close the fence.",
+    );
+
   // A file that carries backticks and yields no CHECKED citation has silently left the gate: one
   // unpaired delimiter is enough, and every total stays healthy because the other files carry
   // them. What the file's spans did land in is printed with it, so the finding states the file's
@@ -160,7 +174,7 @@ export function classifySkillSymbolRun(result) {
               `EXAMPLE-exempt, ${f.emptySpans} empty, ${f.unpairedRuns} unpaired run(s))`,
           )
           .join("\n") +
-        "\n\nA file whose prose no longer produces checked citations is not being checked. Look " +
+        "\n\nA file whose prose yields no checked citation is not being checked. Look " +
         "for an unpaired backtick run or a fence delimiter that stopped opening its line.",
     );
 

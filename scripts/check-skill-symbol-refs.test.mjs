@@ -617,6 +617,19 @@ describe("stripCodeBlocks", () => {
     expect(blankedLines).toBe(3);
     expect(blankedRuns).toBe(4);
   });
+
+  // Markdown gives a fence no terminator at end of file, so an unclosed one blanks the whole
+  // remainder of the document. Conservation balances on it and `bodyRuns` falls to 0, which is the
+  // measurement the per-file floor reads - the defect is invisible from every printed count unless
+  // the strip itself says it ended inside a fence.
+  it("reports a fence still open at end of file, and a closed one as closed", () => {
+    const unclosed = stripCodeBlocks("Prose `A`.\n\n```\nlet x = 1;\n\nMore `B`.\n");
+    expect(unclosed.unterminatedFence).toBe(true);
+    expect(unclosed.body).not.toContain("`B`");
+    const closed = stripCodeBlocks("Prose `A`.\n\n```\nlet x = 1;\n```\n\nMore `B`.\n");
+    expect(closed.unterminatedFence).toBe(false);
+    expect(closed.body).toContain("`B`");
+  });
 });
 
 describe("extractCitationCandidates", () => {
@@ -937,7 +950,7 @@ describe("checkSkillSymbolRefs", () => {
     expect(result.crossRepoHits.get("parseNightfox")).toBe(1);
   });
 
-  it("reports an UNNAMED cross-repo citation as broken — the file is no longer exempt", () => {
+  it("reports an UNNAMED cross-repo citation as broken — the file is exempt per NAME only", () => {
     const result = run("See `RegionField::is_arrest`.", "See `NightfoxOnlyType::NotInThisRepo`.");
     expect(result.broken.map((b) => b.token)).toEqual(["NightfoxOnlyType::NotInThisRepo"]);
   });
@@ -956,6 +969,25 @@ describe("checkSkillSymbolRefs", () => {
     const result = run("See `RegionField::is_arrest` and `Uuid`.");
     expect(result.unusedAcknowledgements).not.toContain("Uuid");
     expect(result.unusedAcknowledgements).toContain("NOCASE");
+  });
+
+  // The hole a body-run measurement opens on its own: an unclosed fence with no citation above it
+  // blanks every remaining line, so `bodyRuns` is 0, the floor stays silent, conservation balances
+  // because those runs are counted as blanked, and the global candidate guard is held up by the
+  // other files. The fence signal is the only thing that fails on it.
+  it("FAILS a file that ends inside an unclosed fence, which no other count can see", () => {
+    const result = run("```\nlet x = 1;\n\n`RegionField::is_arrest` is swallowed whole.\n");
+    expect(result.filesWithUnterminatedFence).toEqual([skillFile]);
+    expect(result.filesWithNoCandidates).toEqual([]);
+    expect(result.conservationDelta).toBe(0);
+    // The citation the fence swallowed: the same prose without the fence verifies.
+    expect(result.verified).toBe(0);
+  });
+
+  it("names no file when every fence closes", () => {
+    const result = run("```\nlet x = 1;\n```\n\n`RegionField::is_arrest` survives.\n");
+    expect(result.filesWithUnterminatedFence).toEqual([]);
+    expect(result.verified).toBeGreaterThan(0);
   });
 
   it("floors a file that carries backticks but yields no classified span", () => {

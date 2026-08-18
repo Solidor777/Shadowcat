@@ -23,6 +23,7 @@ const clean = (over = {}) => ({
   candidatesChecked: 4559,
   broken: [],
   filesWithNoCandidates: [],
+  filesWithUnterminatedFence: [],
   acknowledgedHits: new Map([["Uuid", 3]]),
   crossRepoHits: new Map([["parseNightfox", 2]]),
   unusedAcknowledgements: [],
@@ -101,6 +102,17 @@ describe("classifySkillSymbolRun", () => {
     expect(result.problems).toHaveLength(2);
     expect(result.problems.join("\n")).toContain("region_arrests");
     expect(result.problems.join("\n")).toContain("matched nothing in the corpus");
+  });
+
+  // An unclosed fence takes the rest of a document out of the gate while every printed total stays
+  // healthy, so it needs its own failure rather than a symptom the other guards happen to catch.
+  it("FAILS on a file that ends inside an unclosed code fence", () => {
+    const result = classifySkillSymbolRun(
+      clean({ filesWithUnterminatedFence: [".claude/skills/x/SKILL.md"] }),
+    );
+    expect(result.exitCode).toBe(1);
+    expect(result.problems.join("")).toContain("unclosed code fence");
+    expect(result.problems.join("")).toContain(".claude/skills/x/SKILL.md");
   });
 
   it("FAILS on a file that carries backticks but yielded no checked citation", () => {
