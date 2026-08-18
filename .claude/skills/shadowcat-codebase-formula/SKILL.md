@@ -68,7 +68,10 @@ which no prose can do.
   satisfies clause makes an entry outside the union a compile error; the reverse — a kind added
   to the union and omitted from the array — compiles clean and silently narrows what
   `isWellFormedError` accepts, so a consumer returning that kind gets it rewritten to
-  `"resolver-error"`. That is the direction to check by hand. The
+  `"resolver-error"`. That direction is closed by `types.test`'s exhaustive keyed record over
+  `FormulaErrorKind`: adding a union member is a COMPILE error there until it is listed, and the
+  assertion beside it then requires `FORMULA_ERROR_KINDS` to carry exactly those members — so
+  both directions are machine-checked and neither rests on a habit. The
   callback half is [[injected-callback-boundary-must-validate-every-site]]; the no-throw half is
   pinned by `property.test`'s never-throws and never-NaN properties over random input.
 - **DoS caps, exact values:** `MAX_FORMULA_LENGTH` 512, `MAX_AST_NODES` 256, `MAX_PARSE_DEPTH` 32
@@ -81,13 +84,21 @@ which no prose can do.
   deriving it from the constant: `parser.test` for `MAX_AST_NODES` and for `MAX_PARSE_DEPTH` (the
   exact size parses, one more caps — three constructs for the depth cap), and `graph.test` for
   `MAX_GRAPH_VISITS` (a chain of exactly that many distinct keys resolves, one key more caps, which
-  also pins the bound as EXCEEDS rather than reaches). A bracket derived from the constant pins
-  nothing: `graph.test`'s 2000-key and 5000-key chains admit every value between them.
+  also pins the bound as EXCEEDS rather than reaches). A LOOSE bracket pins nothing however it is
+  spelled: `graph.test`'s other two chains admit every value between them, and they are a 2001-key
+  and a 5001-key chain — `countdownChain`'s own doc states that a root one below a count discovers
+  that many keys.
 - **`resolveAll`'s trampoline is O(1) JS-stack-depth by construction, not an implementation
   detail.** It restarts `resolveAll.evalNode` from scratch on an internal `NeedsDependency` throw
-  rather than recursing, so graph depth never grows the call stack. Pinned by `graph.test`'s
-  deep-chain case, which resolves a 2000-long chain and records the depth at which a recursive
-  traversal of the same graph dies on a constrained stack. Motivation, not the constraint itself:
+  rather than recursing, so graph depth never grows the call stack. Pinned by MEASUREMENT rather
+  than by exhaustion, and it has to be: `MAX_GRAPH_VISITS` caps a chain at 2048 keys, far short of
+  the default stack, so no constructible input makes a depth-proportional traversal overflow and
+  growing the input can pin nothing. `graph.test`'s constant-frame case reads the observed JS stack
+  depth from inside the consumer callback at every chain level, and asserts it is identical across
+  the levels of one chain AND across a short and a long chain — which a recursive rewrite fails,
+  because its frame count grows per level. Its sibling long-chain case is a smoke case only: it
+  runs at the harness default stack and passes under a recursive rewrite too.
+  Motivation, not the constraint itself:
   the client must run on mobile browsers (`docs/design/ARCHITECTURE.md` §2 invariant 10), which
   requires that support but states no call-stack bound of its own. **A consumer's
   `resolveAll.evalNode` body must NEVER wrap its own call(s) to the injected getter in
@@ -114,20 +125,24 @@ which no prose can do.
   parses reserve DIFFERENTLY.** `parseFormula`'s grammar reserves no identifier names: a bare word
   is always a reference, whatever it spells, so reserved-word validation there is purely a
   consumer's concern. `resolveNotationTemplate`'s grammar reserves MORE than
-  `NOTATION_KEYWORDS` lists. `readAlphaPrefix` reads the maximal LEADING alpha run, lowercases it,
-  and tests THAT for membership, so the reserved set is every identifier whose leading alpha run,
-  lowercased, is a member — which reaches two shapes beyond the literal list. A COMPOUND identifier
-  collides whenever its alpha run stops early, i.e. a keyword followed by a digit: the keyword
-  branch takes it and the remainder re-lexes as notation atoms (the same mechanism that lexes a
-  dice atom, so it cannot be narrowed away). And matching is CASE-INSENSITIVE, so an upper- or
-  mixed-case spelling collides as well as the lowercase one the list is written in. Any collision
-  emits dice notation and never reaches the consumer's identifier resolver, so a stat key spelled
-  `NOTATION_KEYWORDS.t` or `NOTATION_KEYWORDS.e` — or either of the two shapes above — is rewritten
-  into a threshold or explode operator and the roll uses the operator, with no error on any path.
-  That asymmetry is why the list is exported at all: it is what a consuming system's stat-key
-  authoring validation rejects against, and that validation must reject the DERIVED set, not list
-  membership alone. All three shapes are pinned by cases in `template.test` that derive from the
-  list, so a keyword added there is covered without a second edit.
+  `NOTATION_KEYWORDS` lists, and the whole rule is one sentence: **an identifier collides when its
+  leading maximal alpha run, lowercased, is a member — whatever follows that run.**
+  `readAlphaPrefix` reads that run and stops at the first character outside `isAlpha`, and only the
+  run is tested for membership, so the keyword branch takes the identifier and the dotted-identifier
+  logic below it is never reached. Any collision emits dice notation and never reaches the
+  consumer's identifier resolver, so a colliding stat key is rewritten into a dice operator and the
+  roll uses the operator, with no error on any path. That asymmetry is why the list is exported at
+  all: it is what a consuming system's stat-key authoring validation rejects against, and that
+  validation must implement the RULE — validating against an enumeration of shapes builds exactly
+  the insufficient check the export exists to prevent. Illustrations, deliberately NOT exhaustive:
+  a member spelled bare; a member followed by a digit, whose remainder re-lexes as notation atoms
+  by the same mechanism that lexes a dice atom, so it cannot be narrowed away; any upper- or
+  mixed-case spelling, since the run is lowercased before the test; and — the likeliest of them in
+  practice, because a dotted path is this library's canonical reference form — a dotted path whose
+  FIRST SEGMENT is a member, where the dot ends the run, the remainder resolves as a reference of
+  its own, and the consumer is never asked for the path the author wrote. `template.test` derives
+  each of those cases from `NOTATION_KEYWORDS` itself, so a keyword added there is covered without
+  a second edit.
 
 ## Gotchas
 
