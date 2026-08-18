@@ -149,15 +149,37 @@ which no prose can do.
   here. **The two also FAIL DIFFERENTLY on one written key**: a key whose dotted segment starts
   with a digit is a loud parse error in `parseFormula` and a silent split in
   `resolveNotationTemplate`, which is why testing a key against one grammar tells a consumer
-  nothing about the other. Every template-grammar collision is silent on every path — the colliding
-  text is rewritten into notation, the consumer's identifier resolver is never asked for it, and no
-  error is returned anywhere. `template.test`'s `checkNotationKey` cases derive their keyword
+  nothing about the other. **A template-grammar collision ends one of three ways and only one of
+  them is silent.** Text claimed as a keyword is rewritten into notation and never offered to the
+  consumer's identifier resolver, with no error on any path. A SPLIT key offers the resolver each
+  fragment separately — paths the author never wrote — so a consuming system holding no stat at one
+  of them answers with its own unknown-reference error and the template fails with it, which is the
+  common real-world shape. A REJECTED key returns a parse error from every template containing it.
+  `NotationKeyCheck` carries all three, and a spy resolver answering every path hides the middle
+  one, so `template.test` pins it with a resolver that knows only the key as written.
+  `template.test`'s `checkNotationKey` cases derive their keyword
   shapes from `NOTATION_KEYWORDS` itself, so a keyword added there is covered without a second
   edit, and one case asserts the checker's verdict against what the rewrite observably does to each
   key, so the two cannot drift apart.
 
 ## Gotchas
 
+- **`checkNotationKey` answers over the key in ISOLATION, and that is the one place it CAN disagree
+  with the rewrite.** Both run `claimAt`, so an intact verdict cannot drift. A REJECTION can:
+  `claimLabelSpan`'s extent is not key-local — it scans forward for a `]` through whatever source it
+  is handed. A key holding an unmatched `[` therefore rejects when checked alone, while a template
+  supplying a `]` further along returns notation with no error and absorbs everything between the
+  two brackets as a label. An authoring UI told "this will not run" about a key that runs WRONG is
+  the worse of the two errors. The positions differ for the same reason: the checker counts from the
+  start of the key, a template's own error from the start of the template. Both behaviours are
+  measured and pinned by `template.test`. Whether a bracket inside a written key should be
+  absorbable as a label at all is an open runtime question awaiting a ruling — do not change the
+  behaviour to close the gap.
+- **The dice-modifier vocabulary is one decision declared in two languages.** `NOTATION_KEYWORDS`
+  mirrors the server notation parser's `P::modifiers` match, and neither language can read the
+  other's declaration. `modifierParityDifference` reads both and fails `pnpm test:scripts` on a
+  difference in either direction, so a new modifier lands in both declarations or the build breaks.
+  Without that gate the only signal is a wrong roll, seen by whoever wrote the template.
 - The `internal` module's three helpers are the ONLY sanctioned way to cross a consumer-callback
   boundary. A gap at one boundary reopens the class of bug the others already guard against
   [[injected-callback-boundary-must-validate-every-site]] — treat any NEW injected-callback seam as
