@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { NOTATION_KEYWORDS, checkNotationKey, resolveNotationTemplate } from "./template";
+import {
+  NOTATION_KEYWORDS,
+  checkNotationKey,
+  resolveNotationTemplate,
+  type NotationKeyCheck,
+} from "./template";
 import { parseFormula } from "./parser";
 import type { FormulaValue } from "./types";
 
@@ -217,15 +222,24 @@ describe("the reservation split between the two grammars", () => {
 // and the last case pins the two answers to each other so the checker cannot drift from the
 // rewrite.
 describe("checkNotationKey", () => {
-  /** Runs the REWRITE over a bare key and reports whether the key survived whole: the
-   * resolver was asked for exactly the key the author wrote, and the emitted notation is
-   * exactly that one substitution. This is the observable consequence `intact` predicts. */
-  const rewriteKeepsKeyWhole = (key: string): boolean => {
+  /** Runs the REWRITE over a bare key with a resolver answering every path, reporting the
+   * paths it was asked for and what came back. Answering everything is deliberate: it makes
+   * a case observe the SHAPE the grammar imposed rather than the consumer's own
+   * unknown-reference error, which would mask the paths the split actually offered. */
+  const rewriteKey = (key: string): { seen: string[]; result: ReturnType<typeof resolveNotationTemplate> } => {
     const seen: string[] = [];
     const result = resolveNotationTemplate(key, (path) => {
       seen.push(path.join("."));
       return 7;
     });
+    return { seen, result };
+  };
+
+  /** Reports whether the key survived the rewrite whole: the resolver was asked for exactly
+   * the key the author wrote, and the emitted notation is exactly that one substitution.
+   * This is the observable consequence `intact` predicts. */
+  const rewriteKeepsKeyWhole = (key: string): boolean => {
+    const { seen, result } = rewriteKey(key);
     if (!("notation" in result)) return false;
     return seen.length === 1 && seen[0] === key && result.notation === `7[${key}]`;
   };
@@ -241,8 +255,46 @@ describe("checkNotationKey", () => {
     ...NOTATION_KEYWORDS.map((kw) => `${kw}.max`),
     "hp", "hp.max", "a.b.c", "str_mod", "_x", "x1", "HP.Max", "hp.d", "damage", "total",
     "kh_max", "2hp", "0hp", "hp.2max", "hp max", "hp-max", "hp+max", "hp[max", "hp[max]",
-    "hp.", ".hp", "hp..max", "hp]max", "[hp]", "",
+    "hp.", ".hp", "hp..max", "hp]max", "[hp]", "-", "",
   ];
+
+  /** The states `NotationKeyCheck` enumerates, one predicate each, read straight off a
+   * returned value. Each is written independently of its siblings — none is spelled as "the
+   * remaining case" — so a key matching none of them, or matching two, is a hole in the
+   * taxonomy rather than two spellings of one predicate disagreeing. The discriminator is
+   * whether an `"identifier"` claim SURVIVES, never how many claims there are: a key the
+   * grammar consumed entirely as notation carries several claims and reaches no resolver. */
+  const STATES: readonly { readonly name: string; readonly holds: (check: NotationKeyCheck) => boolean }[] = [
+    { name: "rejected", holds: (check) => check.rejects !== null },
+    {
+      name: "no surviving identifier",
+      holds: (check) =>
+        check.rejects === null && !check.segments.some((seg) => seg.kind === "identifier"),
+    },
+    {
+      name: "intact",
+      holds: (check) =>
+        check.rejects === null
+        && check.segments.length === 1
+        && check.segments[0].kind === "identifier",
+    },
+    {
+      name: "split",
+      holds: (check) =>
+        check.rejects === null
+        && check.segments.some((seg) => seg.kind === "identifier")
+        && check.segments.length > 1,
+    },
+  ];
+
+  /** The one state a check lands in, failing the calling case if the taxonomy classifies it
+   * zero times or more than once. */
+  const soleState = (check: NotationKeyCheck, key: string): string => {
+    const matched = STATES.filter((state) => state.holds(check)).map((state) => state.name);
+    expect(matched, `${JSON.stringify(key)} kinds=${JSON.stringify(check.segments.map((s) => s.kind))}`)
+      .toHaveLength(1);
+    return matched[0];
+  };
 
   it("a bare keyword never survives, whatever case it is written in", () => {
     for (const kw of NOTATION_KEYWORDS) {
@@ -354,6 +406,41 @@ describe("checkNotationKey", () => {
       expect(checkNotationKey(key).segments.map((s) => s.text), key).toEqual([key]);
     }
     expect(checkNotationKey("")).toEqual({ intact: false, segments: [], rejects: null });
+  });
+
+  it("every key lands in exactly ONE of the states NotationKeyCheck enumerates", () => {
+    // Conservation, not one spot check per state: the assertion is over the COUNT of states
+    // a key satisfies, so a shape the taxonomy cannot classify and a shape two states both
+    // claim fail the same way. Per-state expectations cannot do this — they ask only about
+    // the shapes someone thought to list, and a key falling out of the taxonomy is exactly
+    // the shape nobody listed. A discriminator that counts claims rather than reading
+    // identifier survival fails here on a key claimed as several notation atoms.
+    for (const key of CORPUS) soleState(checkNotationKey(key), key);
+  });
+
+  it("each state predicts what the rewrite does to the key it classifies", () => {
+    // The states are worth nothing as a partition alone; each names a consequence, and this
+    // is what ties them to observable behaviour. The silent state is the load-bearing
+    // one: its defining property is that NOTHING reaches the consumer's resolver, which is
+    // why a keyword run, a bracketed label and a literal fallthrough belong to one state
+    // rather than to a keyword-shaped state of their own.
+    for (const key of CORPUS) {
+      const check = checkNotationKey(key);
+      const state = soleState(check, key);
+      const { seen, result } = rewriteKey(key);
+      const where = `${JSON.stringify(key)} (${state})`;
+      if (state === "rejected") {
+        expect(result, where).toMatchObject({ error: "parse" });
+        continue;
+      }
+      expect("notation" in result, `${where} did not run`).toBe(true);
+      if (state === "no surviving identifier") expect(seen, where).toEqual([]);
+      if (state === "intact") expect(seen, where).toEqual([key]);
+      if (state === "split") {
+        expect(seen.length, `${where} offered the resolver nothing`).toBeGreaterThan(0);
+        expect(seen, `${where} offered the resolver the key as written`).not.toEqual([key]);
+      }
+    }
   });
 
   it("the verdict matches what the rewrite actually does to the key, shape for shape", () => {
