@@ -586,10 +586,41 @@ trackers (a churn tracker named as a pointer, as distinct from a durable design 
 references, and history narration. Process markers are not in the skill subset. Widening the subset
 further is a decision for whoever owns the rule, not an inference to draw from this table.
 
-**Not banned in a skill:** a durable document cited by path plus a section anchor —
-`docs/design/ARCHITECTURE.md §2`, `docs/design/doc-sweep-truthfulness-rules.md` RULE 16 — since
-that citation names something that does not get renumbered, closed, or superseded out from under
-it.
+**Not banned in a skill:** a durable document cited by path plus a section anchor, since that
+citation names something that does not get renumbered, closed, or superseded out from under it.
+
+**That carve-out is a GUARD on the check, never the check dropped.** The PATHLESS forms of the same
+reference — a bare architecture reference, a bare numbered invariant, a bare section anchor — are
+precisely what the carve-out has to make room for, so they are IN the skill subset and permitted
+only where the line also carries the full durable design-doc path. Implementing the carve-out by
+substituting a narrower entry is how a permission for one form silently drops the ban on all of
+them: the pathless form is strictly worse than a stale named citation, because nothing tells a
+reader which file to go and fail to find.
+
+Two properties of the guard are load-bearing. It evaluates against the RAW line, because the
+Markdown subject has every design-doc citation replaced by the empty string before matching (that
+strip exists so a durable filename's digits cannot feed the milestone-id pattern) and would delete
+the evidence the guard needs. And its unit is the LINE: not the token, since a permitted citation
+may name the path once and carry a second anchor later on the same line; and not the group, since
+one permitted citation would then exempt every bare anchor sharing its paragraph. The cost is that
+a citation wrapped across two lines must carry its path on the line its anchor sits on — a visible
+failure an author fixes by reflowing, rather than an invisible hole.
+
+**Two spellings the reference entries did not reach, banned in CODE only.** A comment naming a
+codebase skill BY NAME is the same class of process-assigned referent: skills are created, renamed,
+split and retired, and when one goes the comment points at nothing. It is deliberately absent from
+the skill subset, where a skill naming a sibling skill is the documented structure of that
+knowledge layer. Separately, a churn tracker named WITHOUT its extension is the identical pointer
+four characters shorter; matching it requires a POINTER CONSTRUCTION — a preposition or verb of
+reference in front of the name — because the bare marker form stays permitted and these names also
+occur as ordinary prose.
+
+**The skill corpus is scoped to the TRACKED skill directories**, from the same derivation the
+skill-symbol-citation gate uses. An untracked skill directory is vendored third-party prose: this
+repo neither wrote it nor may edit it, so holding it to a rule about how this repo writes prose
+leaves only a vendored-file edit or a carve-out, and both are wrong. Tracked-ness is the durable
+property that says whose prose it is; a name pattern would have to be updated per vendored tool and
+would read as clean when it was not. The excluded count prints on every run.
 
 **Local numbering is not an exception.** An `I4` whose definition lives in a sibling comment of the
 same subsystem still forces the reader to resolve a number that no compiler, test or tool binds to
@@ -665,14 +696,33 @@ patterns rely on. Two spellings of a separator are widened:
 
 - a BARE separator character, only between two LITERAL ALPHABETIC characters, since the pattern
   source offers nothing else to tell a word separator from regex punctuation;
-- a CHARACTER CLASS whose every member is a separator, with no neighbour requirement, since such a
-  class cannot be anything else. A class carrying any non-separator member is left untouched: a `-`
-  inside a range is a range operator, and widening it corrupts the pattern outright.
+- a CHARACTER CLASS whose every member is a separator, written as a literal or as a
+  single-character escape, with no neighbour requirement, since such a class cannot be anything
+  else. A class carrying any non-separator member is left untouched: a `-` inside a range is a
+  range operator, and widening it corrupts the pattern outright. A separator spelled as a numeric
+  escape is rejected too, which leaves the class unwidened — the visible failure direction.
 
-**RESIDUAL, stated because the coverage claim is bounded rather than universal:** a bare separator
-whose neighbour is an ESCAPE rather than a literal letter fails the neighbour test and keeps its
-single spelling. Spelling that separator as a character class widens it, and that is the fix when
-an entry needs it.
+**RESIDUAL, stated because the coverage claim is bounded rather than universal:** the neighbour
+test requires a LITERAL ALPHABETIC character on BOTH sides, so a bare separator keeps its single
+spelling whenever either neighbour is anything else — a group boundary, an escape, a class, a
+quantifier or a punctuation mark. Naming only the escape case would state a bound narrower than the
+code's and read as better coverage than exists; the group boundary is the commoner of the two,
+because an alternation of writers is how a marker with several spellings gets written at all.
+
+**The fix at a site is to respell that separator as a ONE-MEMBER CHARACTER CLASS**, which routes it
+through the class path above with no new mechanism and no new residual. The source still declares
+exactly one spelling; the class is what marks it as a word separator rather than regex punctuation,
+supplying the evidence the neighbours could not. Loosening the neighbour test instead is the wrong
+repair: it is correct for every separator that is not a word separator, and relaxing it is how a
+matcher acquires silent over-widening.
+
+**Respelling is not unconditionally safe, and the direction decides.** Adding a hyphen or an
+underscore between two words is safe — nobody writes English that way by accident. Adding a SPACE
+where the pattern had a hyphen is not: it fuses two ordinary tokens into a marker. Two entries are
+therefore left at their single spelling on measured grounds — the local letter+digit marker, where
+the space writer collides with an indefinite article in front of a quantity, and the hyphenated
+spec compound, where hyphenation turns the noun into an adjectival compound naming a code symbol's
+scope rather than a document.
 
 **Nothing inside a NEGATIVE lookaround is widened, at any nesting depth.** Widening a separator
 inside an exclusion widens the exclusion, so the pattern matches strictly less and the gate reports

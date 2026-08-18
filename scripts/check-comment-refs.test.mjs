@@ -3,7 +3,6 @@ import { test, expect } from "vitest";
 import {
   scanContent,
   scanCandidates,
-  sources,
   MD_ROOTS,
   MD_EXTS,
   collectFiles,

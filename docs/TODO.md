@@ -435,21 +435,14 @@ Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one de
   `OPEN_BUGS.md` in sweep 11 Task 6 because the divergence never produces an incorrect state,
   server-authoritative or otherwise — only a possibly-confusing no-op click.)
 
-## Actionable now — `check-comment-refs.mjs` cannot see a skill-name repo pointer
-- TODO: Extend `check-comment-refs.mjs`'s repo-document-pointer pattern to match
-  `shadowcat-codebase-*` skill names. The current pattern matches `docs/...md` paths,
-  `ARCHITECTURE` section refs, and bare `invariant N`, so a comment citing a skill by name
-  passes clean while being exactly the class of external, process-assigned referent RULE 16
-  exists to remove. Found when a previously-unbound `@param` tag carrying such a pointer
-  started rendering live in the generated API docs. A green `lint:comments` is therefore not
-  evidence of RULE 16 compliance for this shape.
+## Actionable now — `check-comment-refs.mjs` cannot see history narration by allusion
 - TODO: Teach the same checker to see history narration by allusion. It reports clean both
   before and after a test name narrating an external incident ("the reported panic"), on the
   same instrument fingerprint — a detection gap, not instrument drift, because a name referring
-  to an incident by allusion carries no fixed lexical marker the pattern can anchor on. Pairs
-  with the skill-name-pointer item above: one instrument, two blind spots, one pass. **Care
-  required when building it:** widening a detector this way is the right direction, but a false
-  positive is visible while a false negative is invisible, so all the feedback pressure pushes
+  to an incident by allusion carries no fixed lexical marker the pattern can anchor on. It is the
+  last of the two blind spots this checker was reported to have; the skill-name pointer that was
+  the other one is now a live entry. **Care required when building it:** widening a detector this
+  way is the right direction, but a false positive is visible while a false negative is invisible, so all the feedback pressure pushes
   toward narrowing it back. Positive-control the detector against a known-violating name before
   trusting a green run.
 

@@ -208,6 +208,30 @@ source of truth. The ones agents break most:
   durable citation regardless of its `docs/` path. Repo-document pointers to non-durable trackers,
   unnamed spec references and history narration are ALSO ruled in for skills; process markers are not;
   do not widen the skill subset further without a ruling.
+  **The path-plus-anchor carve-out is a GUARD on the check, never the check dropped.** The
+  PATHLESS forms — a bare architecture reference, a bare numbered invariant, a bare section anchor —
+  are what the carve-out has to make room for, so they are ruled in for skills and reused from the
+  code list by reference under `skipLine`, which permits a match exactly when the line ALSO carries
+  the full durable design-doc path. Substituting a narrower entry instead is how the carve-out for
+  one form silently drops the ban on all of them. The guard's unit is the LINE and it reads the RAW
+  line: `lineSubject`'s Markdown branch replaces every design-doc citation with the empty string
+  before matching, which would delete the evidence the guard needs. It is not the GROUP either —
+  one permitted citation would then exempt every bare anchor sharing its paragraph — so a citation
+  wrapped across two lines must carry its path on the line its anchor sits on.
+  **Two spellings the reference entries did not reach are now banned in CODE.** A comment naming a
+  codebase skill BY NAME (`codebase skill pointer`) is the same class of process-assigned referent:
+  skills are created, split, re-scoped and retired, and their names move with them. It is
+  deliberately absent from the skill list,
+  where a skill naming a sibling skill is the documented structure of this knowledge layer — the
+  Subsystem skills list above is written that way. And a churn tracker named WITHOUT its extension
+  (`extensionless tracker pointer`) is the same pointer four characters shorter; it requires a
+  POINTER CONSTRUCTION (a preposition or verb of reference in front of the name) rather than a bare
+  occurrence, because the bare marker form stays permitted and these names also occur as prose.
+  **The skill corpus is scoped to the TRACKED skill directories**, read from the same
+  `listSkillDirs` the skill-symbol-citation gate reads. An untracked skill directory is vendored
+  third-party prose that this repo neither wrote nor may edit, so holding it to a rule about how
+  THIS repo writes prose leaves only a vendored-file edit or a carve-out, and both are wrong. The
+  excluded count prints on every run.
   **Enforced retroactively with no grandfathering** (user directive) by
   `node scripts/check-comment-refs.mjs` — no baseline, no side-car allowlist, every legacy hit
   fails. The ONE exemption is an `EXAMPLE` marker (that word, then a colon) on a line that
@@ -236,14 +260,26 @@ source of truth. The ones agents break most:
   above). Joining across that boundary manufactures phrases nobody wrote out of one line's last
   words and the next line's first — a false negative traded for a false positive.
   **A separator between two WORDS of a marker is a SPELLING, not part of its identity**, so
-  `bannedMatchIn` also matches each pattern under a `separatorFlexible` form derived from that
+  `bannedMatchesIn` also matches each pattern under a `separatorFlexible` form derived from that
   pattern's own source: hyphen, underscore and space all reach the same entry, for every entry at
   once including entries not yet written. The rewrite lands on the PATTERN, never the subject. Two
   spellings are widened — a BARE separator between two literal alphabetic characters, and a
-  character class whose every member is a separator (`separatorOnlyClass`); a class with any other
-  member is untouched, since widening a range corrupts the pattern. RESIDUAL, which is why that
-  coverage claim is bounded rather than universal: a bare separator adjacent to an ESCAPE rather
-  than a literal letter keeps its single spelling, and spelling it as a character class is the fix.
+  character class whose every member is a separator, written as a literal or a single-character
+  escape (`separatorOnlyClass`); a class with any other member is untouched, since widening a range
+  corrupts the pattern. RESIDUAL, which is why that coverage claim is bounded rather than
+  universal: the neighbour test requires a LITERAL ALPHABETIC character on BOTH sides, so a bare
+  separator keeps its single spelling whenever either neighbour is anything else — a group
+  boundary, an escape, a class, a quantifier or a punctuation mark. The group boundary is the
+  commoner of the two named cases, because an alternation of writers is how a marker with several
+  spellings gets written in the first place. **The fix at a site is to respell that separator as a
+  ONE-MEMBER CHARACTER CLASS**, which routes it through the class path with no new mechanism: the
+  source still declares one spelling, and the class is what marks it as a word separator rather
+  than regex punctuation. Loosening the neighbour test instead is the wrong repair — it is correct
+  for every separator that is not a word separator at all. Respelling is not unconditionally safe
+  either: adding a hyphen or underscore between two words is, but adding a SPACE where the pattern
+  had a hyphen fuses two ordinary tokens, which is why `local letter+digit marker` and the
+  hyphenated `unnamed spec reference` compound are left at their single spelling on measured
+  grounds.
   **Nothing inside a NEGATIVE lookaround is widened at any depth** — widening an exclusion makes
   the pattern match strictly less and the gate report strictly cleaner, the one direction nothing
   in the output distinguishes from a clean corpus.
