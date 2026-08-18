@@ -90,17 +90,48 @@ describe("resolveNotationTemplate", () => {
 // reason that list is public. Both halves are derived from the list itself, so adding a keyword
 // extends the coverage rather than leaving a silent hole.
 describe("the reservation split between the two grammars", () => {
+  /** A resolver recording every dotted path it is asked for, so a case can assert the
+   * template grammar reserved a word BEFORE the consumer's identifier resolver saw it. */
+  const spyResolve = () => {
+    const seen: string[] = [];
+    const resolve = (path: string[]): FormulaValue => {
+      seen.push(path.join("."));
+      return 7;
+    };
+    return { seen, resolve };
+  };
+
+  /** Asserts `word` is consumed by the template grammar's keyword branch: the resolver is
+   * never consulted and no `[word]` label is emitted for it. */
+  const expectReserved = (word: string) => {
+    const { seen, resolve } = spyResolve();
+    const result = resolveNotationTemplate(`2d20 + ${word}`, resolve);
+    expect(seen, `'${word}' reached the identifier resolver`).toEqual([]);
+    expect(JSON.stringify(result), `'${word}' substituted as a stat`).not.toContain(`[${word}]`);
+  };
+
   it("every NOTATION_KEYWORDS member is reserved by the template grammar (resolver never consulted)", () => {
-    for (const kw of NOTATION_KEYWORDS) {
-      const seen: string[] = [];
-      const spy = (path: string[]): FormulaValue => {
-        seen.push(path.join("."));
-        return 7;
-      };
-      const result = resolveNotationTemplate(`1d20 + ${kw}`, spy);
-      expect(seen, `'${kw}' reached the identifier resolver`).toEqual([]);
-      expect(JSON.stringify(result), `'${kw}' substituted as a stat`).not.toContain(`[${kw}]`);
-    }
+    for (const kw of NOTATION_KEYWORDS) expectReserved(kw);
+  });
+
+  it("the reserved set is LARGER than the list: a compound identifier whose leading alpha run is a keyword collides", () => {
+    // `readAlphaPrefix` reads the maximal ALPHA run and stops at the first non-alpha
+    // character, so `t1` offers `t` for membership testing and the trailing digit
+    // re-lexes as a notation atom — the compound name never reaches the resolver. A
+    // consuming system's reserved-key validation must reject this shape too, not just
+    // literal list members; a key spelled this way is silently rewritten into an
+    // operator with no error on any path.
+    for (const kw of NOTATION_KEYWORDS) expectReserved(`${kw}1`);
+    expect(resolveNotationTemplate("2d20 + t1", () => 7)).toEqual({ notation: "2d20 + t1" });
+  });
+
+  it("the reserved set is LARGER than the list: matching is case-insensitive, so any case spelling collides", () => {
+    // The alpha run is lowercased before the membership test, so the list's lowercase
+    // spelling is the only one written down but every case spelling is reserved. The
+    // emitted text keeps the ORIGINAL case — the rewrite is a reservation, not a
+    // normalization.
+    for (const kw of NOTATION_KEYWORDS) expectReserved(kw.toUpperCase());
+    expect(resolveNotationTemplate("2d20Kh1", () => 7)).toEqual({ notation: "2d20Kh1" });
   });
   it("the formula grammar reserves none of them: each parses as a reference", () => {
     for (const kw of NOTATION_KEYWORDS) {
