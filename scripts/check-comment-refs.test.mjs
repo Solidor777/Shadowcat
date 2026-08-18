@@ -10,6 +10,7 @@ import {
   gateFileSet,
   residueReport,
   separatorFlexible,
+  separatorOnlyClass,
   GENERATED_ROOT,
 } from "./check-comment-refs.mjs";
 
@@ -560,6 +561,14 @@ test("a comment block is never joined to the code line beneath it", () => {
   expect(scanContent(fixture, { isMd: false }).hits).toEqual([]);
 });
 
+// The same boundary, from the other side: a comment TRAILING a statement is written against that
+// statement, not as a continuation of the block above it. Joining the two splices a doc comment's
+// last word onto the trailing comment's first and manufactures a marker phrase nobody wrote.
+test("a trailing comment neither extends a comment block nor is extended by one", () => {
+  const fixture = "// a trailing clause about Task\nlet n = count(); // 6 of them arrive\n"; // EXAMPLE:
+  expect(scanContent(fixture, { isMd: false }).hits).toEqual([]);
+});
+
 test("a prose string literal neither extends a comment block nor is extended by one", () => {
   const fixture =
     '// a trailing clause about Task\nassert!(ok, "a message that mentions 6 of them");\n'; // EXAMPLE:
@@ -594,8 +603,8 @@ test("a spaced quantity is not fused into a local marker", () => {
 
 // A `-` inside a character class is a RANGE, and widening it corrupts the pattern outright: the
 // rewrite turns the range into a three-character alternation, so the pattern silently stops
-// matching the characters it governs. Only a separator between two literal alphabetic characters
-// is widened.
+// matching the characters it governs. A BARE separator is widened only between two literal
+// alphabetic characters.
 test("separatorFlexible widens a word separator and leaves a character-class range alone", () => {
   // Three separators, one per outcome: the first joins two literal words and widens; the second is
   // a range inside a class; the third follows a class, so no literal word precedes it.
@@ -605,6 +614,57 @@ test("separatorFlexible widens a word separator and leaves a character-class ran
 
 test("separatorFlexible returns null for a pattern with no widenable separator", () => {
   expect(separatorFlexible(/\b[DITW]\d+\b/)).toBe(null);
+});
+
+// A character class whose every member is a separator needs no neighbour context to be recognised
+// as one, so it is widened wherever it sits. A class carrying any non-separator member is a RANGE
+// or a real alternation and is emitted untouched.
+test("separatorFlexible widens a separator-only class and leaves every other class alone", () => {
+  expect(String(separatorFlexible(/\bfix[- ]round/))).toBe(String(/\bfix[-_\s]round/));
+  expect(String(separatorFlexible(/\b[Ss]weeps?[ -]\d+/))).toBe(String(/\b[Ss]weeps?[-_\s]\d+/));
+  expect(separatorFlexible(/\bB[0-3]\b/)).toBeNull();
+  expect(separatorFlexible(/docs\/[\w./-]+\.md/)).toBeNull();
+});
+
+// `[ -_]` is a RANGE spanning every character from space to underscore, not two separators.
+test("separatorOnlyClass accepts only members that are separators, and never a range", () => {
+  expect(separatorOnlyClass(" -")).toBe(true);
+  expect(separatorOnlyClass("- ")).toBe(true);
+  expect(separatorOnlyClass("\\s-")).toBe(true);
+  expect(separatorOnlyClass("_")).toBe(true);
+  expect(separatorOnlyClass(" -_")).toBe(false);
+  expect(separatorOnlyClass("a-z")).toBe(false);
+  expect(separatorOnlyClass("^ -")).toBe(false);
+  expect(separatorOnlyClass("")).toBe(false);
+});
+
+// Widening inside a NEGATIVE lookaround widens an EXCLUSION: the pattern then matches strictly
+// less and the gate reports strictly cleaner, which is the one direction nothing in the output
+// distinguishes from a clean corpus. A live entry carries a separator class inside a lookbehind.
+test("separatorFlexible widens nothing inside a negative lookaround, at any depth", () => {
+  expect(separatorFlexible(/(?<!\bRFC[\s-]?\d{1,5})§\s*\d/)).toBeNull();
+  expect(separatorFlexible(/(?!fix[- ]round)/)).toBeNull();
+  expect(separatorFlexible(/(?!a(?:fix[- ]round))/)).toBeNull();
+  // A POSITIVE lookaround and a named group are ordinary: widening there adds matches.
+  expect(String(separatorFlexible(/(?=fix[- ]round)/))).toBe(String(/(?=fix[-_\s]round)/));
+  expect(String(separatorFlexible(/(?<n>fix[- ]round)/))).toBe(String(/(?<n>fix[-_\s]round)/));
+  // The exclusion is scoped to the lookaround, not to the rest of the pattern after it.
+  expect(String(separatorFlexible(/(?!x[- ]y)fix[- ]round/))).toBe(
+    String(/(?!x[- ]y)fix[-_\s]round/),
+  );
+});
+
+// End to end through the ban list: the corpus spelling of a marker whose pattern carries a class.
+test("a class-spelled marker pattern matches all three of its separator spellings", () => {
+  for (const written of ["fix-round", "fix round", "fix_round"]) { // EXAMPLE:
+    const { hits } = scanContent(`Converted during the ${written} that follows.\n`, {
+      isMd: true,
+    });
+    expect(
+      hits.map((h) => h.kind),
+      written,
+    ).toEqual(["sweep / round / review marker"]);
+  }
 });
 
 // The coverage control itself, wired into `pnpm test:scripts` so an unrecognised form in the

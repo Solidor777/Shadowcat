@@ -478,8 +478,15 @@ const ACKNOWLEDGED_NARRATION = [
  * first, and the drift is invisible because both still report a number.
  *
  * `kind` says what the line contributed, which is what decides whether the line may be JOINED to
- * its neighbours: `"comment"` for commentary, `"literal"` for a code line whose only prose is a
- * string the program carries, `"prose"` for a Markdown line.
+ * its neighbours: `"comment"` for a line that is nothing but commentary, `"literal"` for a code
+ * line whose only prose is a string the program carries, `"trailing"` for a code line carrying
+ * commentary beside code, `"prose"` for a Markdown line.
+ *
+ * `"trailing"` is separated from `"comment"` for the same reason `"literal"` is. A trailing
+ * comment is written against the statement on its own line, not as a continuation of the block
+ * above it, so joining it to that block splices a doc comment's last word onto a trailing
+ * comment's first and manufactures a phrase nobody wrote - the false-positive direction the group
+ * boundary exists to prevent.
  */
 function lineSubject(line, isMd, lexState) {
   if (isMd) {
@@ -498,10 +505,11 @@ function lineSubject(line, isMd, lexState) {
   ]
     .join(" ")
     .trim();
+  const standalone = split.comment.trim() === "" ? "literal" : "trailing";
   return {
     subject,
     state: split.state,
-    kind: split.comment.trim() === "" ? "literal" : "comment",
+    kind: split.code.trim() === "" ? "comment" : standalone,
   };
 }
 
@@ -510,9 +518,9 @@ function lineSubject(line, isMd, lexState) {
 // carrying one spelling reads the other two as clean.
 //
 // The widening is derived from each pattern's own source rather than written into the patterns one
-// spelling at a time, because an enumerated list can only ever carry the spellings someone
-// remembered — which is how a hyphen-only marker came to miss its spaced form. Deriving covers
-// every entry at once, including entries not yet written.
+// spelling at a time. An enumerated list can only ever carry the spellings someone remembered, so
+// an entry written with one separator leaves the other two unreachable for that entry alone.
+// Deriving covers every entry at once, including entries not yet written.
 //
 // It rewrites the PATTERN and never the subject. Rewriting the subject looks equivalent and is not:
 // `_` is a word character while `-` and a space are not, so any subject-side substitution retokenizes
@@ -520,10 +528,56 @@ function lineSubject(line, isMd, lexState) {
 // splits into three tokens and its version suffix reads as a local marker, and a quantity like
 // "A 1-hex token" fuses into one and reads the same way. Both were measured, in bulk.
 //
-// Only a separator between two LITERAL ALPHABETIC characters is widened, and only outside a
-// character class: a `-` inside `[a-z]` is a RANGE, and widening it corrupts the pattern outright.
+// Two spellings of a separator are widened, and they differ in where the disambiguation comes from:
+//   - a BARE separator character, only between two LITERAL ALPHABETIC characters. The pattern
+//     source offers nothing else to tell a word separator from regex punctuation, so the
+//     neighbours are the whole evidence.
+//   - a CHARACTER CLASS whose every member is a separator (`[ -]`), with no neighbour requirement:
+//     such a class cannot be anything but a separator, so it needs no disambiguating context. A
+//     class carrying any non-separator member is emitted untouched, because a `-` inside `[a-z]`
+//     is a RANGE and widening it corrupts the pattern outright.
+// RESIDUAL, and why the coverage claim above is bounded rather than universal: a bare separator
+// whose neighbour is an ESCAPE rather than a literal letter fails the neighbour test and keeps its
+// single spelling. Spelling that separator as a character class widens it.
+//
+// Nothing inside a NEGATIVE lookaround is widened, at any nesting depth. Widening there widens an
+// EXCLUSION, so the pattern matches strictly less and the gate reports strictly cleaner — the
+// silent direction, and the inverse of what every other widening here does.
 const SEPARATOR_CLASS = "[-_\\s]";
 const SEPARATOR_CHARS = new Set(["-", "_", " "]);
+// A negative lookaround opener, matched against the pattern source from its `(`. A named group and
+// a POSITIVE lookaround are ordinary: widening inside them adds matches, which is this gate's
+// deliberate failure direction.
+const NEGATIVE_LOOKAROUND = /^\(\?(?:!|<!)/;
+
+/**
+ * Whether a character-class body denotes separators and nothing else, so the whole class can be
+ * replaced by `SEPARATOR_CLASS`.
+ *
+ * A `-` counts as a member only at the body's first or last position; anywhere else it is a RANGE
+ * operator, and a range is rejected outright rather than read through — `[ -_]` spans every
+ * character from space to underscore.
+ *
+ * @param {string} body - the class source between `[` and `]`.
+ * @returns {boolean} whether every member of the class is a separator.
+ */
+export function separatorOnlyClass(body) {
+  if (body === "" || body.startsWith("^")) return false;
+  for (let i = 0; i < body.length; i += 1) {
+    const c = body[i];
+    if (c === "\\") {
+      if (body.slice(i, i + 2) !== "\\s") return false;
+      i += 1;
+      continue;
+    }
+    if (c === "-") {
+      if (i !== 0 && i !== body.length - 1) return false;
+      continue;
+    }
+    if (c !== " " && c !== "_") return false;
+  }
+  return true;
+}
 
 /**
  * The separator-flexible form of one ban pattern, or null when it carries no widenable separator.
@@ -534,7 +588,10 @@ export function separatorFlexible(re) {
   const src = re.source;
   const isAlpha = (c) => c !== undefined && /[A-Za-z]/.test(c);
   let out = "";
-  let inClass = false;
+  // One entry per open group, each carrying whether it sits inside a negative lookaround; a nested
+  // group inherits its parent's answer, so the top of the stack is the whole test.
+  const groups = [];
+  const excluded = () => groups.length > 0 && groups[groups.length - 1];
   // The last character emitted as a plain literal; reset by anything that is not one, so an escape
   // sequence's trailing letter (`\s`, `\w`) is never read as the word a separator follows.
   let prevLiteral = "";
@@ -546,13 +603,28 @@ export function separatorFlexible(re) {
       prevLiteral = "";
       continue;
     }
-    if (c === "[" || c === "]") {
-      inClass = c === "[";
+    if (c === "(") {
+      groups.push(excluded() || NEGATIVE_LOOKAROUND.test(src.slice(i)));
       out += c;
       prevLiteral = "";
       continue;
     }
-    if (!inClass && SEPARATOR_CHARS.has(c) && isAlpha(prevLiteral) && isAlpha(src[i + 1])) {
+    if (c === ")") {
+      groups.pop();
+      out += c;
+      prevLiteral = "";
+      continue;
+    }
+    if (c === "[") {
+      let end = i + 1;
+      while (end < src.length && src[end] !== "]") end += src[end] === "\\" ? 2 : 1;
+      const body = src.slice(i + 1, end);
+      out += !excluded() && separatorOnlyClass(body) ? SEPARATOR_CLASS : src.slice(i, end + 1);
+      i = end;
+      prevLiteral = "";
+      continue;
+    }
+    if (!excluded() && SEPARATOR_CHARS.has(c) && isAlpha(prevLiteral) && isAlpha(src[i + 1])) {
       out += SEPARATOR_CLASS;
       prevLiteral = "";
       continue;
@@ -644,9 +716,10 @@ export function subjectGroups(content, isMd) {
       return;
     }
     const part = { line: i + 1, subject, source: line.trim() };
-    // A code line whose prose comes from a string LITERAL is program text, not commentary: it
-    // neither extends a comment block nor is extended by one, so it stands as its own group.
-    if (kind === "literal") {
+    // A code line's prose - a string LITERAL the program carries, or a comment trailing the
+    // statement - is written against that one line. It neither extends a comment block nor is
+    // extended by one, so it stands as its own group.
+    if (kind === "literal" || kind === "trailing") {
       flush();
       parts.push(part);
       flush();
