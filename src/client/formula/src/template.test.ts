@@ -54,6 +54,14 @@ describe("resolveNotationTemplate", () => {
     expect(resolveNotationTemplate("d20 + negBig", env({ negBig: -2147483648 })))
       .toMatchObject({ error: "cap" });
   });
+  it("a label between an integer and a bare 'd' does not carry the count", () => {
+    // The scan's carry is set by an integer run and by nothing else, so any claim between
+    // the integer and the dice operator clears it and the operator is normalized to a
+    // synthesized count of 1 — the label is emitted verbatim between the two.
+    expect(resolveNotationTemplate("2[fire]d6", env({}))).toEqual({ notation: "2[fire]1d6" });
+    expect(resolveNotationTemplate("2[fire]d", env({}))).toEqual({ notation: "2[fire]1d" });
+    expect(resolveNotationTemplate("2d6", env({}))).toEqual({ notation: "2d6" });
+  });
   it("unterminated '[' label is a parse error", () => {
     expect(resolveNotationTemplate("d20 + [oops", env({}))).toMatchObject({ error: "parse" });
   });
@@ -294,6 +302,26 @@ describe("checkNotationKey", () => {
       .toEqual(["identifier", "literal", "integer", "identifier"]);
     expect(resolveNotationTemplate("hp.2max", () => 7)).toEqual({ notation: "7[hp].27[max]" });
     expect(parseFormula("hp.2max")).toMatchObject({ error: "parse" });
+  });
+
+  it("a dot with no identifier-start character after it is a literal, wherever it sits", () => {
+    // The identifier span crosses a dot only when an identifier-start character follows it,
+    // so a trailing, leading or doubled dot drops through to the literal fallthrough one
+    // character at a time and the key is split around it.
+    expect(checkNotationKey("hp.").segments.map((s) => s.kind)).toEqual(["identifier", "literal"]);
+    expect(checkNotationKey(".hp").segments.map((s) => s.kind)).toEqual(["literal", "identifier"]);
+    expect(checkNotationKey("hp..max").segments.map((s) => s.kind))
+      .toEqual(["identifier", "literal", "literal", "identifier"]);
+  });
+
+  it("a closed bracket run is claimed as a label, never as part of the author's key", () => {
+    // The label recognizer is ordered first, so a bracketed run is taken whole and its
+    // contents are never scanned — the only way a key yields a `"label"` claim.
+    expect(checkNotationKey("hp[max]").segments).toEqual([
+      { kind: "identifier", text: "hp", at: 0 },
+      { kind: "label", text: "[max]", at: 2 },
+    ]);
+    expect(checkNotationKey("[hp]").segments).toEqual([{ kind: "label", text: "[hp]", at: 0 }]);
   });
 
   it("a key that rejects the template reports the error rather than a split", () => {
