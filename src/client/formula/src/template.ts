@@ -314,6 +314,15 @@ export interface NotationKeyCheck {
  *
  * Scope: the grammar only. `MAX_FORMULA_LENGTH` bounds a whole template rather than a key,
  * so it is not applied here, and no resolution is attempted — no resolver is accepted.
+ *
+ * **The answer is over the key in ISOLATION, and one recognizer's extent is not key-local.**
+ * `claimLabelSpan` scans FORWARD for a closing `]` through whatever source it is handed, so
+ * a key carrying an unmatched `[` rejects here while a template that supplies a `]` further
+ * along returns notation with no error at all, absorbing everything between the two
+ * brackets as a label. A `rejects` verdict therefore says the key rejects ON ITS OWN, not
+ * that every template containing it must. The two positions differ for the same reason: the
+ * detail here counts from the start of the KEY, where a template's own error counts from
+ * the start of the template.
  * @param key The stat key as an author would write it.
  * @returns An `intact` verdict plus the claim structure behind it: which recognizer took
  * each span, and where. A bare boolean cannot tell an authoring UI what went wrong, and

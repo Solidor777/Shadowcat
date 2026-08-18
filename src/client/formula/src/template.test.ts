@@ -300,6 +300,20 @@ describe("checkNotationKey", () => {
     expect(resolveNotationTemplate("hp[max", () => 7)).toMatchObject({ error: "parse" });
   });
 
+  it("a rejection is answered over the key ALONE: a later ']' in a template absorbs the rest", () => {
+    // `claimLabelSpan` scans forward for a closing bracket through whatever source it is
+    // handed, which is the one recognizer whose extent is not key-local. So a key holding
+    // an unmatched `[` rejects on its own, while a template supplying a `]` further along
+    // runs and swallows the text between the brackets as a label — and the positions in
+    // the two errors are counted from different origins.
+    expect(checkNotationKey("hp[max").rejects)
+      .toEqual({ error: "parse", detail: "unterminated '[' label at position 2" });
+    expect(resolveNotationTemplate("2d20 + hp[max", () => 7))
+      .toEqual({ error: "parse", detail: "unterminated '[' label at position 9" });
+    expect(resolveNotationTemplate("hp[max + 1d6] + str", () => 7))
+      .toEqual({ notation: "7[hp][max + 1d6] + 7[str]" });
+  });
+
   it("an ordinary key survives whole, dotted or not, in any case", () => {
     // `kh_max` is safe although `kh1` is not: `_` is an identifier-start character, so the
     // keyword run swallows it and the run tested for membership is the whole key.

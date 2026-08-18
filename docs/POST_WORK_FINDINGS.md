@@ -640,3 +640,19 @@ are observations awaiting triage, not committed work.
   the chained, path-qualified and fully-qualified forms to the deny list costs
   nothing, is correct under either reading, and needs no experiment. Treat the
   unverifiability as settled, not as pending work.
+
+- Title: A written stat key's `[` can absorb a template's later `]` as a label.
+  Summary: in `@shadowcat/formula`'s notation-template grammar, `claimLabelSpan`
+  scans forward for a closing `]` through the whole template, so a key containing
+  an unmatched `[` behaves two ways depending on its surroundings.
+  `checkNotationKey("hp[max")` rejects with a `"parse"` error, while
+  `resolveNotationTemplate("hp[max + 1d6] + str", ...)` returns
+  `"7[hp][max + 1d6] + 7[str]"` — no error, and the intervening dice expression is
+  swallowed as a label rather than rolled. An authoring UI calling the checker is
+  told "this will not run" about a key that does run, wrong. Both behaviours are
+  measured, documented on `checkNotationKey`, and pinned by a case in
+  `template.test`; nothing here was changed. Status: Needs Review — the runtime
+  question is whether a `[` inside a WRITTEN KEY should be absorbable as a label
+  at all, or whether the identifier recognizer should refuse a key that opens a
+  bracket it does not close. That is a behaviour change and needs an owner ruling
+  before anyone makes it.
