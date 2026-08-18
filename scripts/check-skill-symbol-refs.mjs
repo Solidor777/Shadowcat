@@ -201,11 +201,19 @@ export function rustModulePath(rustRoot, filePath) {
  * from `#[serde(rename = "…")]` or the container's `#[serde(rename_all = "…")]`.
  *
  * Brace-depth tracking is line-based, over the same comment-free, literal-blanked span the
- * extractors read, so neither a brace inside a string nor one inside a comment shifts the count.
- * What it does not do is parse across lines, and a rare miscount only ever WIDENS which lines are
- * treated as "inside a container" — it cannot cause a real item to be missed from the bare-name
- * index, only (harmlessly) cause an extra qualified alias, or an extra field/variant candidate,
- * to be recorded.
+ * extractors read, so a brace inside a string or inside a comment does not shift the count —
+ * BOUNDED by the two under-scanning residuals `splitLine` documents, since that split is what
+ * decides which characters reach here as code at all. The within-line one is live in Rust: a line
+ * carrying an ODD number of single quotes — a lifetime parameter is the shape — consumes its
+ * trailing comment into the CODE span, so a declaration COMMENTED OUT after one is extracted as a
+ * real declaration and a skill citing that name reports verified against prose. A PAIRED lifetime
+ * closes the literal the first quote opened and leaves the trailing comment reachable; the control
+ * set beside `splitLine` and a fixture in this checker's tests pin both.
+ *
+ * What brace tracking does not do is parse across lines, and a rare miscount only ever WIDENS
+ * which lines are treated as "inside a container" — it cannot cause a real item to be missed
+ * from the bare-name index, only (harmlessly) cause an extra qualified alias, or an extra
+ * field/variant candidate, to be recorded.
  *
  * A bare item is additionally registered under EVERY SUFFIX of its enclosing module path (from
  * `rustModulePath`) — `data::sqlite::apply_intent`, `sqlite::apply_intent`, and bare

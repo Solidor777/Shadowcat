@@ -166,6 +166,24 @@ describe("extractRustSymbols", () => {
     expect(names.has("commented_out_item")).toBe(false);
   });
 
+  // The residual bounding the claim above, pinned to what the extractor does TODAY. `splitLine`
+  // reads a lone single quote as a string opener, so a Rust line carrying an ODD number of them
+  // consumes its trailing comment into the CODE span: a declaration commented out there is
+  // extracted as real, and a skill citing that name reports verified against prose. A PAIRED
+  // lifetime is the control that keeps this one shape rather than "quotes break the extractor".
+  it("still indexes a declaration commented out after an ODD lifetime quote", () => {
+    const odd = [
+      "impl Footprint {",
+      "    fn span<'a>(&self) -> u32 { // let swallowed_binding = 5;",
+      "        0",
+      "    }",
+      "}",
+    ].join("\n");
+    expect(extractRustSymbols(odd).has("span::swallowed_binding")).toBe(true);
+    const paired = odd.replace("<'a>(&self)", "<'a>(&self, r: &'a str)");
+    expect(extractRustSymbols(paired).has("span::swallowed_binding")).toBe(false);
+  });
+
   it("indexes a variant on a CRLF line with no trailing comma", () => {
     const names = extractRustSymbols("pub enum Mode {\r\n    Strict\r\n}\r\n");
     expect(names.has("Mode::Strict")).toBe(true);
