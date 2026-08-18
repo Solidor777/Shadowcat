@@ -153,8 +153,21 @@ describe("the reservation split between the two grammars", () => {
     // through as a literal, and the remainder re-lexes as a reference of its own. A
     // dotted path is this library's canonical reference form, which makes this the
     // likeliest collision shape in practice — and the consumer's resolver is asked for a
-    // path the author never wrote, with no error on any path.
+    // path the author never wrote, so whether anything is reported is the consumer's
+    // answer for that fragment rather than a property of the split.
     for (const kw of NOTATION_KEYWORDS) expectDottedSplit(kw);
+  });
+
+  it("the dotted split is LOUD whenever the consumer holds no stat at the remainder", () => {
+    // The split is silent only while the remainder happens to resolve. A consuming system
+    // whose stat sits at the path the author WROTE has nothing at the remainder, answers
+    // its own unknown-reference error, and that error fails the whole template — the
+    // common real-world shape, and the one a spy resolver answering every path hides.
+    for (const kw of NOTATION_KEYWORDS) {
+      const written = `${kw}.max`;
+      expect(resolveNotationTemplate(`2d20 + ${written}`, env({ [written]: 7 })), written)
+        .toEqual({ error: "unknown-ref", detail: "max" });
+    }
   });
 
   it("the dotted split emits the leading segment verbatim, and synthesizes a count for the dice keyword", () => {

@@ -18,8 +18,15 @@ const DICE_OPERATOR = "d";
  * `claimIdentifierSpan` claim covers all of it. That set has no closed-form description;
  * the chain is its definition. So a consuming system's stat-key authoring validation calls
  * `checkNotationKey`, which runs the chain, and must not reimplement a rule over this list
- * instead. Every collision is silent on every path: the colliding text is rewritten into
- * notation and the consumer's identifier resolver is never asked about it. */
+ * instead.
+ *
+ * **A collision ends in one of three ways, and only one of them is silent.** Text claimed
+ * as a keyword is rewritten into notation and never offered to the consumer's identifier
+ * resolver, with no error on any path. A key SPLIT across several claims offers the
+ * resolver each identifier span on its own — paths the author never wrote — so a consuming
+ * system holding no stat at one of them answers with its own unknown-reference error and
+ * the template fails with that error. A key a recognizer REJECTS returns a parse error from
+ * every template containing it. `NotationKeyCheck` carries all three outcomes. */
 export const NOTATION_KEYWORDS: readonly string[] =
   [DICE_OPERATOR, "kh", "kl", "dh", "dl", "r", "ro", "cs", "cf", "t", "e"];
 
@@ -283,8 +290,11 @@ export interface NotationKeyCheck {
    * shape that reaches a consumer's identifier resolver as the author wrote it. */
   readonly intact: boolean;
   /** Every claim over the key, in order, stopping at `rejects` when one is set. Two or
-   * more segments means the key is SPLIT: each `"identifier"` segment resolves separately
-   * and every other segment is emitted into the notation, with no error on any path. */
+   * more segments means the key is SPLIT: each `"identifier"` segment is offered to the
+   * consumer's resolver on its own — a path the author never wrote — and every other
+   * segment is emitted into the notation. A split is LOUD whenever the consumer holds no
+   * stat at one of those paths: that resolver's own unknown-reference error fails the whole
+   * template. It is silent only while every split path happens to resolve. */
   readonly segments: readonly NotationKeySegment[];
   /** Set when a recognizer rejected the key outright, in which case any template
    * containing it returns this error instead of notation; `null` otherwise. */
@@ -337,9 +347,9 @@ export function checkNotationKey(key: string): NotationKeyCheck {
  *
  * Scanning is `RECOGNIZERS` tried in order at each position (`claimAt`), then `emitClaim`
  * on the winner. Which recognizer claims a position is what decides whether an author's
- * stat key survives as a reference at all, and a key that loses is rewritten into notation
- * with no error on any path — so a consuming system validates its keys with
- * `checkNotationKey`, which runs this same chain.
+ * stat key survives as a reference at all. A key that loses is rewritten into notation, or
+ * split into resolver paths the author never wrote, or rejected outright — so a consuming
+ * system validates its keys with `checkNotationKey`, which runs this same chain.
  * @param src Template text, e.g. `"1d20 + str"` — a mix of dice-notation atoms
  * (numbers, the dice operator, `NOTATION_KEYWORDS` modifiers, bracketed label spans)
  * and dotted identifier references.

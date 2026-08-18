@@ -90,9 +90,12 @@ dotted path to a number from the `system` body, or returns the library's own
 
 Roll templates are rewritten by a second grammar, which reads dice notation and
 stat references out of the same text. Some keys are claimed by that grammar
-before they are ever offered to your resolver — and when that happens there is
-**no error on any path**: the reference is rewritten, the roll uses the rewritten
-form, and the number changes.
+before they are ever offered to your resolver, and the three ways that ends are
+not equally loud. The claimed text may be rewritten into notation with **no error
+on any path** — the roll runs and the number changes. Or the key may be split, so
+your resolver is asked for a fragment the author never wrote and answers
+`unknown-ref`, failing the roll with an error naming a key nobody typed. Or the
+key may reject every template that contains it.
 
 Do not try to derive which keys are safe. Ask:
 
@@ -110,7 +113,8 @@ whole template fail instead of being split.
 
 Run it wherever your system accepts a key an author can name — a sheet's stat
 editor, a compendium importer, a migration. A key that fails this check is a
-name to refuse at authoring time, because nothing downstream will report it.
+name to refuse at authoring time, because what downstream reports is either
+nothing at all or an error naming a fragment the author never wrote.
 
 ## Templates: shipping content
 
