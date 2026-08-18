@@ -216,7 +216,8 @@ describe("checkNotationKey", () => {
     ...NOTATION_KEYWORDS.map((kw) => kw.toUpperCase()),
     ...NOTATION_KEYWORDS.map((kw) => `${kw}.max`),
     "hp", "hp.max", "a.b.c", "str_mod", "_x", "x1", "HP.Max", "hp.d", "damage", "total",
-    "2hp", "0hp", "hp.2max", "hp max", "hp-max", "hp+max", "hp[max", "hp[max]", "",
+    "kh_max", "2hp", "0hp", "hp.2max", "hp max", "hp-max", "hp+max", "hp[max", "hp[max]",
+    "hp.", ".hp", "hp..max", "hp]max", "[hp]", "",
   ];
 
   it("a bare keyword never survives, whatever case it is written in", () => {
@@ -287,7 +288,9 @@ describe("checkNotationKey", () => {
   });
 
   it("an ordinary key survives whole, dotted or not, in any case", () => {
-    for (const key of ["hp", "hp.max", "a.b.c", "str_mod", "_x", "x1", "HP.Max"]) {
+    // `kh_max` is safe although `kh1` is not: `_` is an identifier-start character, so the
+    // keyword run swallows it and the run tested for membership is the whole key.
+    for (const key of ["hp", "hp.max", "a.b.c", "str_mod", "_x", "x1", "HP.Max", "kh_max"]) {
       expect(checkNotationKey(key), key).toMatchObject({ intact: true, rejects: null });
       expect(checkNotationKey(key).segments.map((s) => s.text), key).toEqual([key]);
     }
