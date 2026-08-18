@@ -143,6 +143,30 @@ describe("extractRustSymbols", () => {
     expect(names.has("classify::blockprose")).toBe(false);
   });
 
+  // The DECLARATION path reads the same code span the value-set pass does. A block comment does
+  // not open its line with a line-comment marker and a trailing comment does not open its line at
+  // all, so a leading-marker test hands both to every extractor: a commented-out binding is then
+  // indexed as a real declaration under the enclosing `fn`, and a skill citing that name reports
+  // verified against prose. Revert direction: restore the leading-marker test, or hand the
+  // extractors the raw line, and the three `false` expectations below turn true.
+  it("indexes no declaration written inside a block or trailing comment", () => {
+    const text = [
+      "pub fn outer() {",
+      "    /* let block_binding = 1; */",
+      "    let real_binding = 2; // let trailing_binding = 3;",
+      "}",
+      "/*",
+      "pub fn commented_out_item() {}",
+      "*/",
+    ].join("\n");
+    const names = extractRustSymbols(text);
+    expect(names.has("outer")).toBe(true);
+    expect(names.has("outer::real_binding")).toBe(true);
+    expect(names.has("outer::block_binding")).toBe(false);
+    expect(names.has("outer::trailing_binding")).toBe(false);
+    expect(names.has("commented_out_item")).toBe(false);
+  });
+
   it("indexes a variant on a CRLF line with no trailing comma", () => {
     const names = extractRustSymbols("pub enum Mode {\r\n    Strict\r\n}\r\n");
     expect(names.has("Mode::Strict")).toBe(true);

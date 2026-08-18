@@ -200,12 +200,12 @@ export function rustModulePath(rustRoot, filePath) {
  * `MoveReject::SceneUnknown`-style variant names; and each field's or variant's serde WIRE name,
  * from `#[serde(rename = "…")]` or the container's `#[serde(rename_all = "…")]`.
  *
- * Brace-depth tracking is line-based and does not parse strings/comments; a `{`/`}` inside a
- * string or comment can shift the count by one. Rust source overwhelmingly keeps braces off
- * string/comment lines, and a rare miscount only ever WIDENS which lines are treated as "inside a
- * container" — it cannot cause a real item to be missed from the bare-name index, only
- * (harmlessly) cause an extra qualified alias, or an extra field/variant candidate, to be
- * recorded.
+ * Brace-depth tracking is line-based, over the same comment-free, literal-blanked span the
+ * extractors read, so neither a brace inside a string nor one inside a comment shifts the count.
+ * What it does not do is parse across lines, and a rare miscount only ever WIDENS which lines are
+ * treated as "inside a container" — it cannot cause a real item to be missed from the bare-name
+ * index, only (harmlessly) cause an extra qualified alias, or an extra field/variant candidate,
+ * to be recorded.
  *
  * A bare item is additionally registered under EVERY SUFFIX of its enclosing module path (from
  * `rustModulePath`) — `data::sqlite::apply_intent`, `sqlite::apply_intent`, and bare
@@ -271,19 +271,24 @@ export function extractRustSymbols(text, modulePath = []) {
   // The same lines with comment text removed, so a value set is read from CODE only: an
   // alternation harvested out of a comment resolves a citation against prose describing the code
   // rather than against a declaration. The span comes from `splitLine`, the one lexical definition
-  // of comment-vs-code this repo's gates share, because a comment is a REGION and not a line
-  // shape: a leading-marker test leaves a trailing comment and a block comment in the text the
-  // extractors read, which is the silent direction - the harvested prose then resolves a citation
-  // and the gate reports it verified.
+  // of comment-vs-code this repo's gates share, and it is the same span every extractor in the
+  // loop below reads - one definition, not one per reader.
   const codeLines = [];
   let commentState = { inBlock: false, inHtml: false };
   for (const line of lines) {
-    const trimmed = line.trim();
-    const isAttr = trimmed.startsWith("#[") || trimmed.startsWith("#!");
-    const isComment = trimmed.startsWith("//");
     const split = splitLine(line, commentState);
     commentState = split.state;
     codeLines.push(split.code);
+    // EVERY extractor below reads the code span, and "is this a comment" is decided ONCE, by
+    // whether that span holds anything. A leading-marker test answers a different question - it
+    // asks whether the line OPENS with a comment - so a block comment wrapping a `let` binding,
+    // or a trailing comment carrying a commented-out one, passes it and the binding is indexed as
+    // a declaration under the enclosing `fn`. A skill citing that name then reports verified
+    // against prose, which is the silent direction.
+    const code = split.code;
+    const trimmed = code.trim();
+    const isAttr = trimmed.startsWith("#[") || trimmed.startsWith("#!");
+    const isComment = trimmed === "";
     let attrs = "";
     if (isAttr) {
       pendingAttrs.push(trimmed);
@@ -293,12 +298,12 @@ export function extractRustSymbols(text, modulePath = []) {
     }
     if (!isAttr && !isComment) {
       if (methodOwner === null) {
-        const implMatch = RUST_IMPL.exec(line);
-        const traitMatch = implMatch ? null : RUST_TRAIT.exec(line);
+        const implMatch = RUST_IMPL.exec(code);
+        const traitMatch = implMatch ? null : RUST_TRAIT.exec(code);
         if (implMatch) methodOwner = { name: implMatch[1], depth };
         else if (traitMatch) methodOwner = { name: traitMatch[1], depth };
       }
-      const item = RUST_ITEM.exec(line);
+      const item = RUST_ITEM.exec(code);
       if (item) {
         const [, kind, name] = item;
         addQualified(name);
@@ -310,7 +315,7 @@ export function extractRustSymbols(text, modulePath = []) {
           // does.
           addQualified(`${methodOwner.name}::${name}`);
         }
-        if ((kind === "struct" || kind === "enum") && line.includes("{") && container === null) {
+        if ((kind === "struct" || kind === "enum") && code.includes("{") && container === null) {
           container = {
             kind,
             name,
@@ -319,10 +324,10 @@ export function extractRustSymbols(text, modulePath = []) {
           };
         }
       } else if (container === null) {
-        const modMatch = RUST_MOD.exec(line);
+        const modMatch = RUST_MOD.exec(code);
         if (modMatch) {
           addQualified(modMatch[1]);
-          if (line.trimEnd().endsWith("{")) modStack.push({ name: modMatch[1], depth });
+          if (code.trimEnd().endsWith("{")) modStack.push({ name: modMatch[1], depth });
         }
       }
       // A STRUCT-VARIANT's own fields sit one level deeper than its variant name, and are real
@@ -336,7 +341,7 @@ export function extractRustSymbols(text, modulePath = []) {
           container.kind === "struct" || inVariantBody ? RUST_STRUCT_FIELD : RUST_ENUM_VARIANT;
         pattern.lastIndex = 0;
         const explicitRename = SERDE_RENAME.exec(attrs)?.[1] ?? null;
-        for (const match of line.matchAll(pattern)) {
+        for (const match of code.matchAll(pattern)) {
           const member = match[1];
           // Both separators, regardless of container kind: Markdown prose is not held to strict
           // Rust syntax, and a skill citing a struct field as `RollSpec::direction` (real syntax:
@@ -376,11 +381,11 @@ export function extractRustSymbols(text, modulePath = []) {
         addQualified(`${ownerChain.join("::")}::${name}`);
         if (ownerChain.length > 1) addQualified(`${owner}::${name}`);
       };
-      for (const m of line.matchAll(RUST_LET_BINDING)) addLocal(m[1]);
-      for (const m of line.matchAll(RUST_LET_TUPLE))
+      for (const m of code.matchAll(RUST_LET_BINDING)) addLocal(m[1]);
+      for (const m of code.matchAll(RUST_LET_TUPLE))
         for (const part of m[1].split(","))
           for (const id of part.trim().matchAll(/\b([a-z_][A-Za-z0-9_]*)\b/g)) addLocal(id[1]);
-      for (const m of line.matchAll(RUST_FOR_BINDING)) {
+      for (const m of code.matchAll(RUST_FOR_BINDING)) {
         if (m[2] !== undefined) addLocal(m[2]);
         else
           for (const part of m[1].split(","))
@@ -388,10 +393,10 @@ export function extractRustSymbols(text, modulePath = []) {
       }
       // A signature can wrap across lines, so parameter scanning stays open until the parameter
       // list's own paren closes rather than assuming the signature fits on the `fn` line.
-      const code = stripLiteralsForBraceCounting(line);
+      const parenCode = stripLiteralsForBraceCounting(code);
       let scanFrom = 0;
       if (!inSignature) {
-        const open = RUST_FN_SIGNATURE_OPEN.exec(code);
+        const open = RUST_FN_SIGNATURE_OPEN.exec(parenCode);
         if (open !== null) {
           inSignature = true;
           signatureParens = 0;
@@ -399,7 +404,7 @@ export function extractRustSymbols(text, modulePath = []) {
         }
       }
       if (inSignature) {
-        const rest = code.slice(scanFrom);
+        const rest = parenCode.slice(scanFrom);
         for (const m of rest.matchAll(RUST_FN_PARAM)) addLocal(m[1]);
         for (const ch of rest) {
           if (ch === "(") signatureParens += 1;
@@ -413,7 +418,7 @@ export function extractRustSymbols(text, modulePath = []) {
         }
       }
     }
-    for (const ch of stripLiteralsForBraceCounting(line)) {
+    for (const ch of stripLiteralsForBraceCounting(code)) {
       if (ch === "{") depth += 1;
       else if (ch === "}") {
         depth -= 1;
