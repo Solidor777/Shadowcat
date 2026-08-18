@@ -92,9 +92,9 @@ Every served HTML page declares a responsive viewport; layouts reflow to a phone
 </head>
 ```
 
-<!-- Sync-paired with the Nightfox repo's .claude/CLAUDE.md. The RULES are shared: a change to what
-     the rule requires must be mirrored there. The EXAMPLES, covered sets, tracking files and stack
-     specifics are ADAPTED per repo and deliberately differ — never mirror those across. -->
+<!-- Sync-paired with each consuming repository's .claude/CLAUDE.md. The RULES are shared: a change
+     to what the rule requires must be mirrored there. The EXAMPLES, covered sets, tracking files
+     and stack specifics are ADAPTED per repo and deliberately differ — never mirror those. -->
 ## Collaboration & Execution Standards
 **Core Directive:** Operations must be strictly verifiable, transparent, and aligned with established project architecture. Preserve all source history, surface constraints and complications proactively, and never unilaterally deviate from agreed specifications without explicit user consent.
 
@@ -199,9 +199,9 @@ Communicate with load-bearing facts. Strip sycophantic language and redundant ex
 
 ---
 
-<!-- Sync-paired with the Nightfox repo's .claude/CLAUDE.md. The RULES are shared: a change to what
-     the rule requires must be mirrored there. The EXAMPLES, covered sets, tracking files and stack
-     specifics are ADAPTED per repo and deliberately differ — never mirror those across. -->
+<!-- Sync-paired with each consuming repository's .claude/CLAUDE.md. The RULES are shared: a change
+     to what the rule requires must be mirrored there. The EXAMPLES, covered sets, tracking files
+     and stack specifics are ADAPTED per repo and deliberately differ — never mirror those. -->
 ## Lint Suppressions Require Explicit User Approval
 **Core Directive:** A suppression silences a diagnostic without fixing what it describes. Every
 suppression requires the user's explicit, per-instance sign-off. Enforced by the
@@ -254,9 +254,9 @@ Here is the optimized guidelines set for data privacy, security, and intellectua
 
 ---
 
-<!-- Sync-paired with the Nightfox repo's .claude/CLAUDE.md. The RULES are shared: a change to what
-     the rule requires must be mirrored there. The EXAMPLES, covered sets, tracking files and stack
-     specifics are ADAPTED per repo and deliberately differ — never mirror those across. -->
+<!-- Sync-paired with each consuming repository's .claude/CLAUDE.md. The RULES are shared: a change
+     to what the rule requires must be mirrored there. The EXAMPLES, covered sets, tracking files
+     and stack specifics are ADAPTED per repo and deliberately differ — never mirror those. -->
 ## Agent-Optimized Security & IP Standards
 **Core Directive:** Zero-tolerance for intellectual property infringement and data leaks. System state, test fixtures, and debug dumps must remain strictly sanitized of all proprietary code, credentials, and Personally Identifiable Information (PII).
 
@@ -336,9 +336,9 @@ If the provided workspace context, logs, or user instructions inadvertently cont
 - [Crash] API failed when querying mock customer record due to malformed date parser. [PII Redacted from original log].
 ```
 
-<!-- Sync-paired with the Nightfox repo's .claude/CLAUDE.md. The RULES are shared: a change to what
-     the rule requires must be mirrored there. The EXAMPLES, covered sets, tracking files and stack
-     specifics are ADAPTED per repo and deliberately differ — never mirror those across. -->
+<!-- Sync-paired with each consuming repository's .claude/CLAUDE.md. The RULES are shared: a change
+     to what the rule requires must be mirrored there. The EXAMPLES, covered sets, tracking files
+     and stack specifics are ADAPTED per repo and deliberately differ — never mirror those. -->
 ## Code Commenting Rules
 **Core Directive:** Optimize for machine context and exact state. Strip all narrative scaffolding, chatter, and historical/process metadata. Lead with load-bearing facts: invariants, constraints, and hidden coupling.
 
@@ -446,12 +446,13 @@ Here is the optimized guidelines set for workflow, documentation, and source con
 
 ---
 
-<!-- Sync-paired with the Nightfox repo's .claude/CLAUDE.md. The RULES are shared: a change to what
-     the rule requires must be mirrored there. The EXAMPLES, covered sets, tracking files and stack
-     specifics are ADAPTED per repo and deliberately differ — never mirror those across.
+<!-- Sync-paired with each consuming repository's .claude/CLAUDE.md. The RULES are shared: a change
+     to what the rule requires must be mirrored there. The EXAMPLES, covered sets, tracking files
+     and stack specifics are ADAPTED per repo and deliberately differ — never mirror those.
      ONE RULE in this block is also deliberately per-repo and must NOT be mirrored: the push / CI
-     policy. Shadowcat pushes autonomously on a completed milestone and then watches CI; Nightfox
-     never pushes at all, milestone or not. Reconciling the two undoes an intentional divergence. -->
+     policy. Shadowcat pushes autonomously on a completed milestone and then watches CI; a
+     consuming repo may forbid pushing outright. Reconciling the two undoes an intentional
+     divergence. -->
 ## Documentation Standards
 **Core Directive:** System state must remain synchronized with reality. Documentation updates are mandatory prerequisites for context clearing. Artifacts must remain hygienic, and source control operations must proceed autonomously based on CI triggers.
 
@@ -617,9 +618,9 @@ Rules:
 - Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
 - After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).
 
-<!-- Sync-paired with the Nightfox repo's .claude/CLAUDE.md. The RULES are shared: a change to what
-     the rule requires must be mirrored there. The EXAMPLES, covered sets, tracking files and stack
-     specifics are ADAPTED per repo and deliberately differ — never mirror those across. -->
+<!-- Sync-paired with each consuming repository's .claude/CLAUDE.md. The RULES are shared: a change
+     to what the rule requires must be mirrored there. The EXAMPLES, covered sets, tracking files
+     and stack specifics are ADAPTED per repo and deliberately differ — never mirror those. -->
 ## Codebase Skills & Agents
 
 Project-scoped codebase knowledge lives in `shadowcat-codebase-*` skills (`.claude/skills/`):
@@ -645,8 +646,8 @@ Two propagation obligations ride on the same gate:
 
 - **Agent-body mirrors.** A change to `shadowcat-coder`, `shadowcat-code-reviewer`, or
   `shadowcat-spec-reviewer`'s body must be mirrored to that agent's `-opus` twin **and** to both
-  `.kimi-code/agents/` trees (this repo's and the consuming Nightfox repo's), each of which keeps
-  its own `model`/`effort` frontmatter and an otherwise byte-identical body.
+  `.kimi-code/agents/` trees — this repo's, and each consuming repository's — every one of which
+  keeps its own `model`/`effort` frontmatter and an otherwise byte-identical body.
 - **Plugin refresh.** `.claude/` is a plugin source, and a directory-sourced plugin is COPIED into
   a consumer's plugin cache rather than read live — so a skill/agent/hook edit reaches a consuming
   repo only after the plugin is refreshed. Bump `version` in `.claude/.claude-plugin/plugin.json`
