@@ -93,7 +93,24 @@ tree is a root and a nested module checkout lives under it, so this repo's suppr
 ephemeral-reference ban apply to source and prose the NESTING repository owns, and fail here even
 though that repository has its own lint config or none. Nesting is a dev convenience with no entry
 in either gate's skip set: unnest before running the gates, or expect the nested contents to be
-judged by them. The
+judged by them.
+**The documentation build sits inside the same perimeter, by a different mechanism** — worth naming
+because the obvious guess about it is wrong. `entryPoints` includes the client-module glob, and the
+root `exclude` is consulted while the packages strategy EXPANDS that glob: an excluded directory is
+never selected as a package at all. So a nested checkout carrying a `package.json` becomes a
+converted package the moment nothing excludes it. What that does NOT produce is a coverage failure:
+`Options.copyForPackage` resets every value to its default, `validation`'s `notDocumented` default
+is off, and a foreign package extends none of this repo's shared configuration — so it opts into no
+coverage check and `treatValidationWarningsAsErrors` has no warning to escalate. The real break is
+coarser: a selected package that fails to CONVERT aborts the whole run, and `skipErrorChecking`
+defaults to off, so a TypeScript diagnostic in a checkout this repo does not build (an uninstalled
+dependency, a type error), an unreadable options file, or a nested `entryPointStrategy` of packages
+takes the documentation build down with it — and one that converts cleanly instead joins the local
+API output unannounced. The position is the two gates' above: unnest before running the build. A
+nested-checkout exclusion here would make the documentation build the one gate in this repo that
+carves them out, and a name-keyed one would go stale the first time a developer chose a different
+directory name.
+The
 authoring guide lives in the docs site: `docs/site/guides/creating-a-module.md` (`docs/design/module-authoring.md` is a
 pointer stub to it). Two in-repo CI-built worked examples double as copyable scaffolds:
 `examples/module-initiative-tracker/` (panel + document read/write) and `examples/system-minimal/`
