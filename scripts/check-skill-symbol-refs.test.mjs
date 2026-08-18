@@ -750,6 +750,26 @@ describe("the Array.sort acknowledgement's precondition", () => {
   });
 });
 
+// The instance the precedence rule was written for, pinned on the REAL corpus rather than on a
+// fixture: the Nightfox document band's `stats` key collides with a field this tree declares, so
+// with the index consulted first the citation verified against an unrelated Shadowcat member and
+// its acknowledgement absorbed nothing. Both halves are asserted, because either one alone is
+// satisfiable without the other: the collision must still exist, and the citation must still land
+// in the cross-repo bucket.
+describe("the cross-repo precedence, on the live corpus", () => {
+  it("classifies the Nightfox `stats` band key as cross-repo though this tree declares `stats`", () => {
+    const { declared } = buildSymbolIndex(REPO_ROOT);
+    expect(
+      declared.has("stats"),
+      "the collision this test pins is gone: `stats` is no longer declared in this tree, so the " +
+        "citation would resolve nowhere and the precedence it demonstrates is untested here.",
+    ).toBe(true);
+    const result = checkSkillSymbolRefs(REPO_ROOT);
+    expect(result.crossRepoHits.get("stats")).toBeGreaterThan(0);
+    // Two full index builds over the real tree, so the default per-test budget is not enough.
+  }, 60_000);
+});
+
 describe("resolvesAgainstIndex", () => {
   const symbols = new Set(["AppContext", "AppContext.chat", "send", "documents", "RegionField"]);
 

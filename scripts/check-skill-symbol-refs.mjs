@@ -1165,16 +1165,28 @@ export const ACKNOWLEDGED_CROSS_REPO = new Set([
   "Stat", "ModifierContribution", "MAX_STATS", "MAX_MODIFIERS",
   "RESERVED_STAT_KEYS", "validateStatKey", "maxBase", "maxFormula", "effectiveCurrent",
   "clampToMax", "mulAdditive",
-  // Sheet components and the editing commands they issue.
-  "StatRow", "StatTable", "ModifiersEditor", "EffectSheet", "addStat", "removeStat",
+  // Sheet components and the editing commands they issue. The three sheets share their names with
+  // this repo's own generic sheet components; the prose here names Nightfox's, which is what the
+  // precedence rule above exists for.
+  "StatRow", "StatTable", "ModifiersEditor", "ActorSheet", "ItemSheet", "EffectSheet",
+  "addStat", "removeStat",
   "setStatOrder", "editStatField", "addModifier", "removeModifier", "editModifierField",
   "setMechanicsFlag", "buildStatRollContent", "effectReadOnly", "embedReadOnly",
   // The module's own document-type constant and i18n catalog.
   "EFFECT_DOC_TYPE", "NF_MESSAGES", "nfT",
-  // The Nightfox document body's own bands, stat types and doc types, cited as the wire values
-  // they are: the `mechanics` band and its `system.mechanics` path, the `resource` stat type, the
-  // `embedded.effect` slot the effect doc type is carried in, and the `format` module.
-  "mechanics", "system.mechanics", "resource", "embedded.effect", "format",
+  // Nightfox modules and test batteries, named as the modules they are - the same class as the
+  // engine repo's own module citations, owned by the other repository.
+  "contributions", "resolve", "format", "roll", "permutation.test",
+  // The Nightfox document body's own bands and paths, cited as the wire values they are: the two
+  // bands (`system.stats`/`system.mechanics`), the flag and modifier record the `mechanics` band
+  // carries, and the modifier record's own bare spelling.
+  "stats", "system.stats", "mechanics", "system.mechanics", "mechanics.active",
+  "mechanics.modifiers", "modifiers",
+  // The `Stat` union's discriminant, its four type values, and the field names each shape
+  // carries. `base`, `current`, `parent`, `text`, `number` and `order` all spell a member this
+  // tree declares somewhere unrelated, which is why the index cannot answer for them.
+  "Stat.type", "number", "resource", "text", "boolean", "text.value",
+  "base", "current", "parent", "formula", "label", "order",
 ]);
 
 /**

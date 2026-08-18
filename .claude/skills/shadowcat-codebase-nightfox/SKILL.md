@@ -17,7 +17,7 @@ repo** owns the rules engine, sheets layer, and roll wire. This skill covers the
 zero-runtime-dependency expression library: text → tokens → AST → number, plus generic
 cycle-guarded dependency-graph resolution and a dice-notation-template rewrite mode. It has
 **zero Nightfox concepts** — no stat types, no modifier buckets, no `parent`/`base` vocabulary.
-References are opaque dotted paths (`hp.max`) resolved entirely by a consumer-supplied callback;
+References are opaque dotted paths (`"hp.max"`) resolved entirely by a consumer-supplied callback;
 Nightfox is the first consumer but any game system may use or replace this library. No Svelte in
 its dependency closure — it is usable from server-side validators and other headless contexts,
 not just the client.
@@ -38,7 +38,7 @@ zero Svelte/store dependency — sheets call these functions with docs they alre
 have.
 
 - **The `nightfox-docs` module** (Nightfox repo) — the stat/mechanics data model and its fail-closed
-  boundary. `Stat` is a discriminated union on `type`: `number` (`base` + optional `formula`/
+  boundary. `Stat` is a discriminated union on `Stat.type`: `number` (`base` + optional `formula`/
   `roll`), `resource` (`current` + `maxBase`/`maxFormula`, `clampToMax` default `true`), `text`
   (`value: string`), `boolean` (`value: boolean`) — only `number`/`resource` are
   formula/modifier targets. `Modifier = { stat, op: "add"|"mulAdditive"|"mulCompound",
@@ -52,13 +52,13 @@ have.
   `@shadowcat/formula`'s `NOTATION_KEYWORDS`) — a key collides when its maximal `[a-z_]+` prefix
   is a notation keyword AND (the prefix is the whole key or the next char is a digit), so a key
   spelling `NOTATION_KEYWORDS.kh` exactly is rejected, and so is one spelling `NOTATION_KEYWORDS.kh`
-  immediately followed by a digit; `damage`/`total` are not. Caps: `MAX_STATS`/`MAX_MODIFIERS = 128` per
-  doc, `label` ≤ 64 chars, `text.value` ≤ 1024 chars, formula strings ≤ `@shadowcat/formula`'s
-  `MAX_FORMULA_LENGTH`.
+  immediately followed by a digit; `"damage"`/`"total"` are not. Caps:
+  `MAX_STATS`/`MAX_MODIFIERS = 128` per doc, `label` ≤ 64 chars, `text.value` ≤ 1024 chars,
+  formula strings ≤ `@shadowcat/formula`'s `MAX_FORMULA_LENGTH`.
 - **The `contributions` module** (Nightfox repo) — `collectNightfox(host)` walks the embed tree
-  exactly (host → each `embedded` `ITEM_DOC_TYPE` child → that child's `embedded.effect`, plus host's own
-  `embedded.effect`) and produces `ModifierContribution`s (`{ modId, carrierId, targetId,
-  modifier }`) plus warnings. Targeting rule: an item's modifiers target the owning
+  exactly (host → each `ITEM_DOC_TYPE` child under `embedded` → that child's `EFFECT_DOC_TYPE`
+  children under `embedded`, plus the host's own) and produces `ModifierContribution`s
+  (`{ modId, carrierId, targetId, modifier }`) plus warnings. Targeting rule: an item's modifiers target the owning
   actor; an effect's modifiers target its host (actor-embedded → actor; item-embedded → the
   item; item-embedded **with `transfer: true`** → the item's owning actor). Active gating:
   `mechanics.active !== false` on the carrier itself AND the whole carrier chain — an inactive
@@ -88,8 +88,8 @@ have.
   (not the carrier) — a transferring effect's `parent.*` reaches the actor, not the item it
   rides on. Tolerance: a modifier targeting a missing stat or a `text`/`boolean` stat is
   inert + a `ResolveWarning` (community content mixing must never error the whole actor;
-  resource targets always apply to `max`); a **formula** referencing a missing stat is a hard
-  error value (fail-closed, visible chip) — the missing-ref tolerance is a modifier-only
+  resource targets always apply to a resource's max side, never its `current`); a **formula**
+  referencing a missing stat is a hard error value (fail-closed, visible chip) — the missing-ref tolerance is a modifier-only
   courtesy, not a general one. An errored magnitude poisons its target stat's final value rather
   than being silently dropped. `statRefResolver` exposes the same reference rules over an
   already-resolved doc for roll-template previews and sheet formula previews.
@@ -108,8 +108,7 @@ new wire frames.
   extracts the self doc's slice by id — resolving an embedded item/effect in isolation would
   drop transfer/`parent.*` flow (the scope rules above). The self doc is located by stripping the trailing
   `/system` off `systemPrefix` to get `basePrefix` — **the same `basePrefix` derivation
-  documented in `shadowcat-codebase-sheets`'s `ActorSheet`/`ItemSheet` paragraph
-  (`systemPrefix.replace(/\/system$/, "")`)**: `systemPrefix` (`/system` or
+  `shadowcat-codebase-sheets` documents (`systemPrefix.replace(/\/system$/, "")`)**: `systemPrefix` (`/system` or
   `/embedded/<coll>/<i>/system`) is where `mechanics`/`stats` live, `basePrefix` is where
   `name`/`engine` live. **Confusing the two silently breaks OCC** — a `mechanics.*` field read
   via `basePrefix` instead of `systemPrefix` always resolves `undefined`, collapsing every
@@ -124,7 +123,7 @@ new wire frames.
   against a key that would escape the intended pointer segment as defense-in-depth even though
   the calling UI is expected to have already surfaced Tier-1 validation — but the two guards are
   NOT the same mechanism: `addStat` calls the shared `validateStatKey` (rejects `/`-containing
-  AND reserved words like `parent`/`base`/`current`/`min`/`max`), because a stat key is a
+  AND reserved words like `parent`/`base`/`current`/`FnName.min`/`FnName.max`), because a stat key is a
   user-chosen identifier subject to reserved-word/notation-collision rules (it can appear bare in
   a formula reference). `addModifier` uses its own simpler ad-hoc check
   (`id.length === 0 || id.includes("/")`), because a modifier id is an opaque generated UUID with
@@ -193,7 +192,7 @@ producer, not consumer.
   notation string — `resolveNotationTemplate` alone owns that (including the count-less
   `d<M>` → `1d<M>` normalization the dice-notation parser requires; the visible template text
   keeps the user's authored count-less `d<M>` spelling). A non-integer resolved value (e.g. a
-  `formula` evaluating to `7 / 2`) is a `type` error
+  `formula` evaluating to `7 / 2`) is a `"type"` error
   from the builder rather than a silently-rounded roll — explicit rounding is required upstream.
 - **One-embed-per-message constraint:** the builder emits exactly ONE inline `[[…]]` roll embed per
   message by construction, trivially satisfying the server's `MAX_INLINE_ROLLS=8` (`chat::rolls`).
@@ -209,8 +208,8 @@ producer, not consumer.
 - **Server-side prerequisite this pathway depends on:** the dice notation parser accepts a
   trailing `[label]` on ANY atomic factor (a bare `Const` or a `DiceGroup`), not only a dice group
   — required because `resolveNotationTemplate` substitutes a resolved identifier as a labeled
-  constant (`value[name]`) even when the template has no dice group at all (e.g. `str`'s default
-  flat roll → `4[str]`). **A NEGATIVE value is the exception and emits no label** — `(0 - N)`, an
+  constant (`value[name]`) even when the template has no dice group at all (e.g. the `"str"` stat's
+  default flat roll → `4[str]`). **A NEGATIVE value is the exception and emits no label** — `(0 - N)`, an
   unlabeled parenthesized subtraction — so a negative stat contributes no `[label]` chip to the
   breakdown even though the total is unaffected. See `shadowcat-codebase-dice`'s
   `ConstTerm`/`labeled_consts` entries for the full mechanism — this skill only needs the
@@ -277,7 +276,7 @@ not the only, expected caller):
 
 - **Error-value-only, fail-closed.** No function in this package ever throws on ANY input, and
   arithmetic never leaks `NaN`/`Infinity` — both become a `FormulaError` (`internal`'s
-  `finite`). A consumer callback (`resolve`/`resolveAll.evalNode`) IS allowed to throw or return a malformed
+  `finite`). A consumer callback (`evaluate.resolve`/`resolveAll.evalNode`) IS allowed to throw or return a malformed
   value; the library's own boundary code (`validateResolverOutput`) converts that into a
   `"resolver-error"` rather than propagating it. `FormulaErrorKind` is mirrored by hand in
   `FORMULA_ERROR_KINDS` (the `types` module) for runtime validation — adding a kind means updating BOTH the
