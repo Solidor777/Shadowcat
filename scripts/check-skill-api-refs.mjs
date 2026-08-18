@@ -7,8 +7,7 @@
 // Cross-platform: node:path/node:fs only.
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { listSkillDirs } from "./check-skill-symbol-refs.mjs";
-import { MD_ROOTS } from "./check-comment-refs.mjs";
+import { listSkillDirs, MD_ROOTS } from "./lib/gate-corpus.mjs";
 
 /**
  * Recursively finds every `SKILL.md` file under the TRACKED skill directories. Tracked-ness is

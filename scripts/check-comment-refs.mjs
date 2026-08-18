@@ -30,20 +30,20 @@ import {
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { isDirectEntry } from "./lib/is-main.mjs";
-// The skill corpus is scoped by tracked-ness, and the skill-symbol-citation gate answers that same
-// question for the same directories. Importing its answer rather than re-deriving one is what keeps
-// the two gates from disagreeing about which directories are this repo's own prose.
-import { listSkillDirs } from "./check-skill-symbol-refs.mjs";
-
-// Exported: the skill-symbol-citation gate walks the same tree and must skip the same
-// directories. Two copies of a skip list drift into two different notions of what the repo is.
-export const SKIP_DIRS = new Set([
-  "node_modules",
-  "dist",
-  "target",
-  ".git",
-  "dist-docs",
-]);
+// Scope vocabulary and the specimen marker live one level down, in the module both documentation
+// gates import from. Importing the sibling gate instead formed a cycle: nothing evaluated an
+// imported binding at module scope, so it worked by accident rather than by construction.
+import {
+  EXAMPLE_EXEMPT,
+  GENERATED_ROOT,
+  listSkillDirs,
+  MD_EXTS,
+  MD_ROOTS,
+  norm,
+  SKIP_DIRS,
+  sources,
+  under,
+} from "./lib/gate-corpus.mjs";
 // Every extension whose files carry comments a human reads. A stylesheet is code that decides what
 // ships exactly as a module is, and its `//` and `/* */` comments go stale the same undetectable
 // way — an extension list narrower than the rule's scope reports zero over the part it cannot see,
@@ -59,14 +59,6 @@ const EXTS = [".ts", ".rs", ".svelte", ".mjs", ".js", ".scss"];
 // there is read by more people than most of `src`. Every other repo-wide gate already covers it.
 const ROOTS = ["src", "scripts", "examples"];
 
-// The codebase-skill briefs are prose about the code, not code. Their exemption from this
-// scanner's rule is narrow, not total: a skill may still cite a durable document by its path plus
-// a section anchor, but not a milestone id, a task id, a sweep marker, or a date. A separate root
-// (not folded into ROOTS) because these files carry a different extension and a different notion
-// of "comment" — the whole line is prose, there is no surrounding code to split it from.
-export const MD_ROOTS = [".claude/skills"];
-export const MD_EXTS = [".md"];
-
 // Repo-root config files are code too — an eslint config decides what ships. They are collected by
 // walking the root non-recursively rather than by listing them, so a new config is in scope the
 // day it is added instead of the day someone remembers to enumerate it.
@@ -75,29 +67,9 @@ const rootFiles = () =>
     (n) => EXTS.some((e) => n.endsWith(e)) && statSync(n).isFile(),
   );
 
-/** Repo-relative path with forward slashes, so a scope reads the same on every platform. */
-export const norm = (p) => p.split("\\").join("/");
-
-// Prefix matching is path-boundary-aware: a raw `startsWith` makes "src/modules/chat" also claim
-// "src/modules/chat-card", silently pulling a sibling directory into a scope that never named it.
-// The over-match is invisible — the count is simply larger, and larger reads as more thorough.
-//
-// Exported alongside `norm` because the skill-symbol-citation gate resolves the same path-prefix
-// question (is this file under the generated root?) over the same tree. A second copy of a
-// boundary-aware prefix test is a second place for the boundary rule to be got wrong.
-export const under = (p, prefix) => p === norm(prefix) || p.startsWith(norm(prefix) + "/");
-
 /** True when `p` sits inside one of `scopes` (or `scopes` is empty, meaning "everything"). */
 export const inScope = (scopes, p) =>
   scopes.length === 0 || scopes.some((s) => under(p, s));
-
-// ts-rs output, never hand-written — the owner ruled this whole population out of scope. Excluded
-// by path prefix rather than folded into SKIP_DIRS (a directory-NAME skip that would blindly
-// exclude any directory named "generated" anywhere in the tree), matching the shape
-// eslint.config.js's `"src/types/generated/"` ignore already uses for the same reasoning. The
-// exclusion covers the directory, not a content heuristic — a hand-written file could carry a
-// banner comment too, and this rule must not exempt that.
-export const GENERATED_ROOT = "src/types/generated";
 
 // Single source of the two corpora this gate governs. Every consumer — the main scan, `--cover`,
 // and the `--residue` coverage control — calls this one function rather than re-deriving its own
@@ -151,16 +123,10 @@ export function gateFileSet(scopes = []) {
 
 // Patterns below are documented by describing the shape they match wherever describing is as clear
 // as showing. Where a specimen genuinely carries more than a description — a phrase whose exact
-// wording is the thing being matched — the line carries this marker and is skipped.
-//
-// The exemption is narrow by construction and its active count prints with every result. An
-// exemption nobody counts is a backdoor, and a silent one is indistinguishable from a rule that
-// does not apply; this one is neither, and it is the only exemption the scanner has.
-//
-// Exported because the skill-symbol-citation gate governs the same corpus by the same convention:
-// a line demonstrating a specimen is deliberately not-real, so neither gate may resolve it. Two
-// copies of the marker would be two decisions about what "exempt" means, free to disagree.
-export const EXAMPLE_EXEMPT = /\bEXAMPLE:/;
+// wording is the thing being matched — the line carries `EXAMPLE_EXEMPT`'s marker and is skipped.
+// That marker is shared with the skill-symbol-citation gate and defined beside the rest of the
+// corpus vocabulary; its active count prints with every result here, because an exemption nobody
+// counts is a backdoor. It is the only exemption this scanner has.
 
 // The comment/code split, and its controls, live in one module so this gate and the
 // suppression gate cannot drift apart about what counts as a comment.
@@ -1054,18 +1020,6 @@ const PROSE_LITERAL = /\s/;
 // JavaScript form is prose and is already caught by the shape test.
 const EXPLANATORY_STRING =
   /\bassert(?:_eq|_ne)?!|\bpanic!|\.expect\(|^\s*(?:async\s+)?(?:test|it|describe)\s*(?:\.\w+)?\s*\(/;
-
-/** Recursively collects paths matching `exts` under `dir`; called once per entry in a roots list. */
-export function sources(dir, exts) {
-  const out = [];
-  for (const name of readdirSync(dir)) {
-    if (SKIP_DIRS.has(name)) continue;
-    const p = join(dir, name);
-    if (statSync(p).isDirectory()) out.push(...sources(p, exts));
-    else if (exts.some((e) => name.endsWith(e))) out.push(p);
-  }
-  return out;
-}
 
 /**
  * Scans one file's already-read text for banned references, returning its hits (line + kind + the

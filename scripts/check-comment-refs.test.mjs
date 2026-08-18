@@ -3,8 +3,6 @@ import { test, expect } from "vitest";
 import {
   scanContent,
   scanCandidates,
-  MD_ROOTS,
-  MD_EXTS,
   collectFiles,
   gateFileSet,
   residueReport,
@@ -18,8 +16,8 @@ import {
   instrumentHashInput,
   BANNED,
   SKILL_BANNED,
-  GENERATED_ROOT,
 } from "./check-comment-refs.mjs";
+import { GENERATED_ROOT, MD_EXTS, MD_ROOTS } from "./lib/gate-corpus.mjs";
 
 // Every fixture string below is a SPECIMEN whose exact wording is the thing under test — an id, a
 // date, a filename these fixtures must reproduce verbatim to prove the pattern matches it. Each such

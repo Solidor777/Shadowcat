@@ -29,19 +29,22 @@
 // Cross-platform: node:path/node:fs only, plus one `git ls-files` invocation for corpus scoping.
 import { readFileSync, readdirSync } from "node:fs";
 import { join, basename } from "node:path";
-import { execFileSync } from "node:child_process";
 import ts from "typescript";
 import { splitLine } from "./lib/comment-span.mjs";
+// Scope vocabulary, the specimen marker and the tracked-skill-corpus lister live one level down,
+// in the module both documentation gates import from. Importing the sibling gate instead formed a
+// cycle: nothing evaluated an imported binding at module scope, so it worked by accident.
 import {
-  sources,
-  norm,
-  under,
-  GENERATED_ROOT,
   EXAMPLE_EXEMPT,
-  MD_ROOTS,
+  GENERATED_ROOT,
+  listSkillDirs,
   MD_EXTS,
+  MD_ROOTS,
+  norm,
   SKIP_DIRS,
-} from "./check-comment-refs.mjs";
+  sources,
+  under,
+} from "./lib/gate-corpus.mjs";
 
 // A brace-depth counter that reads every character, including inside a string or char literal,
 // misreads a lone unbalanced brace-shaped character (a Rust char literal `'{'`, found in this
@@ -1091,46 +1094,6 @@ export function buildSymbolIndex(repoRoot) {
 // ---------------------------------------------------------------------------------------------
 // Corpus scoping and citation extraction, over the tracked skill directories.
 // ---------------------------------------------------------------------------------------------
-
-/**
- * The skill directories git TRACKS — the corpus this gate governs. Tracked-ness is the property
- * that actually matters: a directory holding no committed file is vendored third-party content
- * this repo neither wrote nor maintains, and its prose documents an external tool's own API
- * rather than Shadowcat's. Scoping by a directory-NAME pattern instead would encode the wrong
- * reason and silently drop a future first-party skill named anything else.
- *
- * @param {string} repoRoot - absolute path to the repository root.
- * @returns {{ tracked: Set<string>, untracked: string[] }|null} tracked and untracked directory
- *   names under the skill roots, or null when git cannot answer (no checkout, or no git).
- */
-export function listSkillDirs(repoRoot) {
-  const tracked = new Set();
-  for (const root of MD_ROOTS) {
-    let listed;
-    try {
-      listed = execFileSync("git", ["ls-files", "-z", "--", root], {
-        cwd: repoRoot,
-        encoding: "utf8",
-        maxBuffer: 64 * 1024 * 1024,
-      });
-    } catch {
-      return null;
-    }
-    for (const entry of listed.split("\0")) {
-      if (entry === "") continue;
-      const rel = norm(entry).slice(norm(root).length + 1);
-      if (rel.includes("/")) tracked.add(rel.split("/")[0]);
-    }
-  }
-  const untracked = [];
-  for (const root of MD_ROOTS) {
-    const abs = join(repoRoot, ...root.split("/"));
-    for (const entry of readdirSync(abs, { withFileTypes: true })) {
-      if (entry.isDirectory() && !tracked.has(entry.name)) untracked.push(entry.name);
-    }
-  }
-  return { tracked, untracked };
-}
 
 /**
  * Finds every markdown file under the tracked skill directories. No file is excluded: resolution

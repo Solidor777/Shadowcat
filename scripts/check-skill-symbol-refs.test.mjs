@@ -27,8 +27,8 @@ import {
   checkFileCitations,
   checkSkillSymbolRefs,
   buildSymbolIndex,
-  listSkillDirs,
 } from "./check-skill-symbol-refs.mjs";
+import { listSkillDirs } from "./lib/gate-corpus.mjs";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
