@@ -1539,8 +1539,10 @@ export const ACKNOWLEDGED_NON_SYMBOLS = new Set([
   // Durable-tracker filenames RULE 15/16 already govern on their own terms (a "Pointers"-section
   // citation of a durable doc by name), not a code-symbol citation.
   "OPEN_BUGS", "CLOSED_BUGS",
-  // The `EXAMPLE:` marker word itself, cited by `shadowcat-codebase-core` while explaining the
-  // marker convention - not a code symbol.
+  // The specimen-marker word `EXAMPLE_EXEMPT` triggers on, cited by the orientation skill while
+  // explaining the marker convention - not a code symbol. Written without its trailing colon so
+  // the line does not trigger that marker itself: a whole-line exemption here would take the rest
+  // of this comment out of the comment gate's reach along with it.
   "EXAMPLE",
   // Web-platform API names: a DOM property, event handler or global this repo calls but does not
   // declare.
