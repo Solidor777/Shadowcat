@@ -149,9 +149,10 @@ which no prose can do.
   here. **The two also FAIL DIFFERENTLY on one written key**: a key whose dotted segment starts
   with a digit is a loud parse error in `parseFormula` and a silent split in
   `resolveNotationTemplate`, which is why testing a key against one grammar tells a consumer
-  nothing about the other. **A template-grammar collision is not reliably loud, and the three ways
-  one scan can end are enumerated on `NotationKeyCheck` — read them there rather than restating
-  them here.** What binds a consumer is the coupling: a consuming system validates a stat key by
+  nothing about the other. **A template-grammar collision is not reliably loud, and how one
+  scan can end is enumerated on `NotationKeyCheck`, keyed on whether an identifier claim SURVIVES
+  rather than on how many claims there are — read the outcomes there rather than restating them
+  here.** What binds a consumer is the coupling: a consuming system validates a stat key by
   CALLING `checkNotationKey`, never by reasoning over `NOTATION_KEYWORDS`, because a collision it
   misses can change the number a roll produces with no error on any path. A spy resolver answering
   every path hides the split outcome, so `template.test` pins it with a resolver that knows only
