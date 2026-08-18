@@ -2605,8 +2605,8 @@ pub(crate) mod tests {
         // Same module_id declaring two non-overlapping subtrees of the same
         // doc_type is accepted -- a SchemaDeclaration is a single
         // (doc_type, subtree_pointer, schema) triple, not a per-module bundle,
-        // so one module legitimately governs several subtrees (e.g. a
-        // Nightfox-style module declaring both `/system/stats` and
+        // so one module legitimately governs several subtrees (e.g. a game-system
+        // module declaring both of the reserved directories, `/system/stats` and
         // `/system/mechanics`).
         let same_module_disjoint_subtrees = serde_json::json!([
             { "module_id": "nightfox", "version": "1", "schema_format": 1, "doc_type": "actor",

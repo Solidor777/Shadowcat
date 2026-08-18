@@ -24,9 +24,9 @@ class NeedsDependency {
  * dynamically: evalNode calls get(depKey) and cycles are detected via the
  * in-progress stack. Every node on a cycle resolves to {error:"cycle"}.
  * INVARIANT: the result is a pure function of the key SET — independent of
- * the caller's key order (consumers rely on this for the Nightfox permutation
- * invariant: identical inputs must resolve identically regardless of embed/record/order
- * shuffling). Enforced by sorting the roots before iteration; see the note at the root loop.
+ * the caller's key order. Identical inputs must resolve identically no matter
+ * how a consumer shuffles the embed/record/key order it builds the request
+ * from. Enforced by sorting the roots before iteration; see the note at the root loop.
  *
  * Recursion bound: O(1) JS call-stack frames regardless of graph depth or
  * chain length. `evalNode` is a consumer-supplied synchronous callback that

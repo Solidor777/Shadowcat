@@ -3,7 +3,9 @@ import { validateResolverOutput } from "./internal";
 
 /** Identifier words whose leading-alpha prefix means dice notation, not a stat.
  * Mirrors `P::modifiers`'s keyword match (kh/kl/dh/dl/r/ro/cs/cf/t/e)
- * plus the 'd' dice operator. Nightfox's stat-key authoring validation imports this list. */
+ * plus the 'd' dice operator. Exported as public API precisely so a consuming
+ * system's stat-key authoring validation can import it and reject colliding keys —
+ * the library itself reserves no identifier names. */
 export const NOTATION_KEYWORDS: readonly string[] =
   ["d", "kh", "kl", "dh", "dl", "r", "ro", "cs", "cf", "t", "e"];
 
@@ -206,9 +208,9 @@ export function resolveNotationTemplate(
       // by a digit or another keyword-shaped run (e.g. "t1", "d2mod") cannot be resolved
       // as an identifier here: `readAlphaPrefix` stops at the first non-alpha char, so
       // the keyword letter alone matches NOTATION_KEYWORDS and the remainder re-lexes as
-      // dice-notation atoms, not a continued identifier. Nightfox's stat-key authoring
-      // validation (reserved-key checking) must reject this compound shape too, not just
-      // literal keyword collisions.
+      // dice-notation atoms, not a continued identifier. A consuming system's stat-key
+      // authoring validation (reserved-key checking) must reject this compound shape too,
+      // not just literal keyword collisions.
       if (NOTATION_KEYWORDS.includes(lower)) {
         if (lower === "d" && !prevWasInt) {
           out += `1${prefix}`;
