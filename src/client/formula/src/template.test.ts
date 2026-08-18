@@ -86,9 +86,10 @@ describe("resolveNotationTemplate", () => {
   });
 });
 
-// The two grammars reserve differently, and the doc on `NOTATION_KEYWORDS` states the split as the
-// reason that list is public. Every case below derives its inputs from the list itself, so adding a
-// keyword extends the coverage rather than leaving a silent hole.
+// The two grammars reserve differently. Every case below derives its inputs from
+// `NOTATION_KEYWORDS` itself, so adding a keyword extends the coverage rather than leaving a
+// silent hole — but list membership is only one of the ways a key is taken, and
+// `checkNotationKey` rather than this list is what a consuming system validates against.
 describe("the reservation split between the two grammars", () => {
   /** A resolver recording every dotted path it is asked for, so a case can assert the
    * template grammar reserved a word BEFORE the consumer's identifier resolver saw it. */
@@ -115,12 +116,11 @@ describe("the reservation split between the two grammars", () => {
   });
 
   it("the reserved set is LARGER than the list: a compound identifier whose leading alpha run is a keyword collides", () => {
-    // `readAlphaPrefix` reads the maximal ALPHA run and stops at the first non-alpha
-    // character, so a `NOTATION_KEYWORDS` member followed by a digit offers just that
-    // member for the membership test and the trailing digit re-lexes as a notation atom
-    // — the compound name never reaches the resolver. A consuming system's reserved-key
-    // validation must reject this shape too, not just literal list members; a key
-    // spelled this way is silently rewritten into an operator with no error on any path.
+    // `readKeywordRun` reads the maximal identifier-start run and stops at the first
+    // character outside it, so a `NOTATION_KEYWORDS` member followed by a digit offers just
+    // that member for the membership test and the trailing digit re-lexes as a notation
+    // atom — the compound name never reaches the resolver, and is rewritten into an operator
+    // with no error on any path.
     for (const kw of NOTATION_KEYWORDS) expectReserved(`${kw}1`);
     expect(resolveNotationTemplate("2d20 + t1", () => 7)).toEqual({ notation: "2d20 + t1" });
   });
@@ -147,8 +147,8 @@ describe("the reservation split between the two grammars", () => {
   };
 
   it("the reserved set is LARGER than the list: a DOTTED path whose first segment is a keyword is split at the dot", () => {
-    // `readAlphaPrefix` stops at the first non-alpha character, and a DOT is outside
-    // `isAlpha`. So a dotted reference offers only its first segment for the membership
+    // `readKeywordRun` stops at the first character outside `isWordStart`, and a DOT is
+    // outside it. So a dotted reference offers only its first segment for the membership
     // test; on a hit the keyword branch emits notation and continues, the dot falls
     // through as a literal, and the remainder re-lexes as a reference of its own. A
     // dotted path is this library's canonical reference form, which makes this the

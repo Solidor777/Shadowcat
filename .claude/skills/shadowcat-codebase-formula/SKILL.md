@@ -1,6 +1,6 @@
 ---
 name: shadowcat-codebase-formula
-description: "Use when touching `@shadowcat/formula` (src/client/formula/) — the framework-neutral expression library: the `lexer`/`parser`/`evaluate` pipeline, `resolveAll`'s cycle-guarded dependency-graph resolution and its restart trampoline, the dice-notation-template rewrite (`resolveNotationTemplate`/`NOTATION_KEYWORDS`), the `types` module's error kinds and DoS caps, or the `internal` module's consumer-callback trust boundary. Invoke shadowcat-codebase-core first; for the sheet layer that consumes formulas invoke shadowcat-codebase-sheets."
+description: "Use when touching `@shadowcat/formula` (src/client/formula/) — the framework-neutral expression library: the `lexer`/`parser`/`evaluate` pipeline, `resolveAll`'s cycle-guarded dependency-graph resolution and its restart trampoline, the dice-notation-template rewrite and its key checker (`resolveNotationTemplate`/`NOTATION_KEYWORDS`/`checkNotationKey`), the `types` module's error kinds and DoS caps, or the `internal` module's consumer-callback trust boundary. Invoke shadowcat-codebase-core first; for the sheet layer that consumes formulas invoke shadowcat-codebase-sheets."
 ---
 
 # Shadowcat — `@shadowcat/formula`
@@ -28,10 +28,17 @@ engine holds.
   the one before it, so this is a real data flow.
 - Two SIBLING entry points over the same value types — NOT later stages of that pipeline: the
   `graph` module (`resolveAll`) and the `template` module (`resolveNotationTemplate`,
-  `NOTATION_KEYWORDS`). Each imports the `types` and `internal` modules and nothing else in this
-  package, and each is driven by a consumer callback. Neither can call the pipeline, so wiring a
+  `checkNotationKey`, `NOTATION_KEYWORDS`). Neither imports the pipeline — `graph` imports the
+  `types` and `internal` modules, `template` those two plus `chars` — and each is driven by a
+  consumer callback. Neither can call the pipeline, so wiring a
   graph node's or a template identifier's text through `parseFormula`/`evaluate` is the consumer's
   own callback body, never something this package does on its way through.
+- The `chars` module — `isDigit`/`isWordStart`/`isWordChar`, the character classes BOTH grammars
+  accept, in ONE declaration read by the `lexer` module's tokenizer and the `template` module's
+  scanner alike, so neither can widen its identifier set without the other following. Not
+  re-exported from the `index` module. The grammars differ ABOVE this layer — what may follow an
+  identifier, which words are reserved, how a malformed reference fails — so a difference between
+  them never belongs here.
 - The `internal` module — the shared trust-boundary helpers `isWellFormedError`,
   `validateResolverOutput` and `finite`. **Deliberately not re-exported from the `index` module**:
   every injected-callback boundary (the `evaluate` module's reference case, `resolveAll`'s call to
@@ -87,7 +94,7 @@ which no prose can do.
   also pins the bound as EXCEEDS rather than reaches). A LOOSE bracket pins nothing however it is
   spelled: `graph.test`'s cap-trip case and its long-chain smoke case admit every value between
   them. Name those two by what they do rather than by how many chains the file holds — a count goes
-  stale the moment a case is added, and one already was.
+  stale the moment a case is added.
 - **`resolveAll`'s trampoline is O(1) JS-stack-depth by construction, not an implementation
   detail.** It restarts `resolveAll.evalNode` from scratch on an internal `NeedsDependency` throw
   rather than recursing, so graph depth never grows the call stack. Pinned by MEASUREMENT rather
@@ -121,40 +128,33 @@ which no prose can do.
   error, not a cap error. A deliberate grammar boundary, not a lexer defect; do not "fix" the lexer
   to accept exponents without a grammar change. Pinned by `parser.test`'s exponent-notation case;
   the boundary is this package's own decision and no external record states it.
-- **The two grammars this package parses differ in BOTH reservation and case handling, and
-  generalizing either one across both is a silent miss.** `parseFormula`'s grammar reserves no
-  identifier names: a bare word is always a reference, whatever it spells, so reserved-word
-  validation there is purely a consumer's concern — and `tokenize` lowercases every word token it
-  emits, so that grammar's resolver is always offered a lowercased path.
-  `resolveNotationTemplate` does neither. It reserves MORE than
-  `NOTATION_KEYWORDS` lists, and the whole rule is one sentence: **an identifier collides when its
-  leading maximal alpha run, lowercased, is a member — whatever follows that run.**
-  `readAlphaPrefix` reads that run and stops at the first character outside `isAlpha`, and only the
-  run is tested for membership, so the keyword branch takes the identifier and the dotted-identifier
-  logic below it is never reached. **Only that membership probe is lowercased.** The emitted text
-  keeps the author's case, and `substituteIdentifier` splits the raw slice, so there the consumer's
-  identifier resolver is offered a RAW-CASE path. A consumer keying its resolver on lowercase —
-  which the other grammar teaches it to do — misses on a mixed-case template reference, and the miss
-  surfaces as that consumer's own unknown-reference error rather than as anything pointing here.
-  Any collision emits dice notation and never reaches the
-  consumer's identifier resolver, so a colliding stat key is rewritten into a dice operator and the
-  roll uses the operator, with no error on any path. That asymmetry is why the list is exported at
-  all: it is what a consuming system's stat-key authoring validation rejects against **for keyword
-  collisions**, and that validation must implement the RULE — validating against an enumeration of
-  shapes builds exactly the insufficient check the export exists to prevent. **A keyword collision
-  is not the only way a written key is silently split**: the identifier span accepts `isWordChar`
-  characters and dot-joined segments and nothing else, so a key carrying any other character is
-  split into separate references with a literal between them, and a key whose first character is a
-  digit loses that digit to the notation stream — different mechanism, same silent consequence, and
-  not covered by the keyword rule at all. Illustrations, deliberately NOT exhaustive:
-  a member spelled bare; a member followed by a digit, whose remainder re-lexes as notation atoms
-  by the same mechanism that lexes a dice atom, so it cannot be narrowed away; any upper- or
-  mixed-case spelling, since the run is lowercased before the test; and — the likeliest of them in
-  practice, because a dotted path is this library's canonical reference form — a dotted path whose
-  FIRST SEGMENT is a member, where the dot ends the run, the remainder resolves as a reference of
-  its own, and the consumer is never asked for the path the author wrote. `template.test` derives
-  each of those cases from `NOTATION_KEYWORDS` itself, so a keyword added there is covered without
-  a second edit.
+- **The two grammars this package parses differ in reservation, in case handling and in FAILURE
+  MODE, and generalizing any of the three across both is a silent miss.** `parseFormula`'s grammar
+  reserves no identifier names: a bare word is always a reference, whatever it spells, so
+  reserved-word validation there is purely a consumer's concern — and `tokenize` lowercases every
+  word token it emits, so that grammar's resolver is always offered a lowercased path.
+  `resolveNotationTemplate` does neither, and **which written keys survive its grammar has no
+  closed-form description.** Its scan is an ordered chain of recognizers (`RECOGNIZERS`) tried at
+  each position by `claimAt`, and a key survives exactly when one `claimIdentifierSpan` claim
+  covers all of it — negative space over that ordering, not a property of `NOTATION_KEYWORDS`,
+  which the grammar reserves more than. **`checkNotationKey` is the authority, and it answers by
+  RUNNING that same chain**, so a consuming system's stat-key authoring validation calls it rather
+  than restating it; a restatement is a second statement of one decision and drifts. Do not write a
+  rule for the safe set here or anywhere else.
+  **Only the membership probe is lowercased.** The emitted text keeps the author's case and
+  `substituteIdentifier` splits the raw slice, so this grammar's resolver is offered a RAW-CASE
+  path where the other's is offered a lowercased one. A consumer keying its resolver on lowercase —
+  which the other grammar teaches it to do — misses on a mixed-case template reference, and the
+  miss surfaces as that consumer's own unknown-reference error rather than as anything pointing
+  here. **The two also FAIL DIFFERENTLY on one written key**: a key whose dotted segment starts
+  with a digit is a loud parse error in `parseFormula` and a silent split in
+  `resolveNotationTemplate`, which is why testing a key against one grammar tells a consumer
+  nothing about the other. Every template-grammar collision is silent on every path — the colliding
+  text is rewritten into notation, the consumer's identifier resolver is never asked for it, and no
+  error is returned anywhere. `template.test`'s `checkNotationKey` cases derive their keyword
+  shapes from `NOTATION_KEYWORDS` itself, so a keyword added there is covered without a second
+  edit, and one case asserts the checker's verdict against what the rewrite observably does to each
+  key, so the two cannot drift apart.
 
 ## Gotchas
 

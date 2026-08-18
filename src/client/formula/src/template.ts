@@ -9,25 +9,17 @@ import { isDigit, isWordChar, isWordStart } from "./chars";
  * disagree about which keyword that is. */
 const DICE_OPERATOR = "d";
 
-/** Identifier words whose leading-alpha prefix means dice notation, not a stat.
- * Mirrors `P::modifiers`'s keyword match (kh/kl/dh/dl/r/ro/cs/cf/t/e)
- * plus the dice operator.
+/** Identifier words that mean dice notation rather than a stat. Mirrors `P::modifiers`'s
+ * keyword match (kh/kl/dh/dl/r/ro/cs/cf/t/e) plus the dice operator.
  *
- * The two grammars this package parses reserve DIFFERENTLY, and the split is the reason this
- * list is public. `parseFormula`'s grammar reserves no identifier names: a bare word there is
- * always a reference, whatever it spells. `resolveNotationTemplate`'s grammar reserves MORE than
- * this list: `readKeywordRun` reads an identifier's LEADING MAXIMAL ALPHA RUN and only that run,
- * lowercased, is tested for membership — so an identifier collides whenever its leading alpha
- * run is a member, WHATEVER FOLLOWS THAT RUN. A collision emits dice notation and never reaches
- * the consumer's identifier resolver, so a colliding stat key is rewritten into a dice operator
- * and the roll uses the operator, with no error on any path.
- *
- * Exported as public API precisely so a consuming system's stat-key authoring validation can
- * import it — but that validation must reject against the DERIVED rule above, never against
- * membership in this list alone. Illustrations of the derived set, deliberately NOT exhaustive:
- * a member followed by a digit, any upper- or mixed-case spelling, and a dotted path whose
- * FIRST SEGMENT is a member (the dot ends the run, so the consumer is asked to resolve the
- * remainder alone rather than the path the author wrote). */
+ * **This list is not the set of unsafe stat keys, and no list is.** The notation grammar
+ * reserves more than these words, and what it reserves is negative space over an ordered
+ * chain of recognizers (`RECOGNIZERS`): a key survives exactly when one
+ * `claimIdentifierSpan` claim covers all of it. That set has no closed-form description;
+ * the chain is its definition. So a consuming system's stat-key authoring validation calls
+ * `checkNotationKey`, which runs the chain, and must not reimplement a rule over this list
+ * instead. Every collision is silent on every path: the colliding text is rewritten into
+ * notation and the consumer's identifier resolver is never asked about it. */
 export const NOTATION_KEYWORDS: readonly string[] =
   [DICE_OPERATOR, "kh", "kl", "dh", "dl", "r", "ro", "cs", "cf", "t", "e"];
 
