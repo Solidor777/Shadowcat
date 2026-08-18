@@ -23,9 +23,15 @@ engine holds.
 
 - The `types` module — `FormulaError`/`FormulaErrorKind`/`FormulaValue`, `isFormulaError`, and the
   four cap constants. Everything else imports from here.
-- The five-stage pipeline, in order: the `lexer` module (`tokenize` → `Tok`/`Op`) → the `parser`
-  module (`parseFormula` → the `Expr` AST) → the `evaluate` module (`evaluate`) → the `graph`
-  module (`resolveAll`) → the `template` module (`resolveNotationTemplate`, `NOTATION_KEYWORDS`).
+- The three-stage pipeline, in order: the `lexer` module (`tokenize` → `Tok`/`Op`) → the `parser`
+  module (`parseFormula` → the `Expr` AST) → the `evaluate` module (`evaluate`). Each stage imports
+  the one before it, so this is a real data flow.
+- Two SIBLING entry points over the same value types — NOT later stages of that pipeline: the
+  `graph` module (`resolveAll`) and the `template` module (`resolveNotationTemplate`,
+  `NOTATION_KEYWORDS`). Each imports the `types` and `internal` modules and nothing else in this
+  package, and each is driven by a consumer callback. Neither can call the pipeline, so wiring a
+  graph node's or a template identifier's text through `parseFormula`/`evaluate` is the consumer's
+  own callback body, never something this package does on its way through.
 - The `internal` module — the shared trust-boundary helpers `isWellFormedError`,
   `validateResolverOutput` and `finite`. **Deliberately not re-exported from the `index` module**:
   every injected-callback boundary (the `evaluate` module's reference case, `resolveAll`'s call to
@@ -58,20 +64,34 @@ which no prose can do.
   callback (`evaluate.resolve`, `resolveAll.evalNode`) IS allowed to throw or return a malformed
   value; `validateResolverOutput` converts that into a `"resolver-error"` rather than propagating
   it. `FormulaErrorKind` is mirrored by hand in `FORMULA_ERROR_KINDS` for runtime validation —
-  adding a kind means updating BOTH, with nothing else enforcing they stay in sync. The
+  adding a kind means updating BOTH, and the enforcement is ONE-DIRECTIONAL. The array's
+  `satisfies` clause makes an entry outside the union a compile error; the reverse — a kind added
+  to the union and omitted from the array — compiles clean and silently narrows what
+  `isWellFormedError` accepts, so a consumer returning that kind gets it rewritten to
+  `"resolver-error"`. That is the direction to check by hand. The
   callback half is [[injected-callback-boundary-must-validate-every-site]]; the no-throw half is
   pinned by `property.test`'s never-throws and never-NaN properties over random input.
 - **DoS caps, exact values:** `MAX_FORMULA_LENGTH` 512, `MAX_AST_NODES` 256, `MAX_PARSE_DEPTH` 32
   (true structural-nesting boundaries — parens, call arguments, unary minus — NOT
   grammar-production depth, so a flat `a+b+c` chain never trips it), `MAX_GRAPH_VISITS` 2048
-  (charged once per newly discovered key in `resolveAll`). The exact values are pinned by
-  `types.test`'s cap assertions — no external record fixes them, so that test is the source.
+  (charged once per newly discovered key in `resolveAll`). No external record fixes any of them, so
+  the tests are the source — but FOUR separate cases pin them, one per cap, and no single file
+  stands for the rest. `types.test` asserts `MAX_FORMULA_LENGTH`'s value directly. The other three
+  are pinned behaviourally, by a boundary case that spells its size as a LITERAL rather than
+  deriving it from the constant: `parser.test` for `MAX_AST_NODES` and for `MAX_PARSE_DEPTH` (the
+  exact size parses, one more caps — three constructs for the depth cap), and `graph.test` for
+  `MAX_GRAPH_VISITS` (a chain of exactly that many distinct keys resolves, one key more caps, which
+  also pins the bound as EXCEEDS rather than reaches). A bracket derived from the constant pins
+  nothing: `graph.test`'s 2000-key and 5000-key chains admit every value between them.
 - **`resolveAll`'s trampoline is O(1) JS-stack-depth by construction, not an implementation
   detail.** It restarts `resolveAll.evalNode` from scratch on an internal `NeedsDependency` throw
-  rather than recursing, so graph depth never grows the call stack — required for
-  constrained-stack mobile engines (`docs/design/ARCHITECTURE.md` §2, the cross-platform
-  invariant). **A consumer's `resolveAll.evalNode` body must NEVER wrap its own call(s) to the
-  injected getter in try/catch**: that swallows the signal driving the trampoline and silently
+  rather than recursing, so graph depth never grows the call stack. Pinned by `graph.test`'s
+  deep-chain case, which resolves a 2000-long chain and records the depth at which a recursive
+  traversal of the same graph dies on a constrained stack. Motivation, not the constraint itself:
+  the client must run on mobile browsers (`docs/design/ARCHITECTURE.md` §2 invariant 10), which
+  requires that support but states no call-stack bound of its own. **A consumer's
+  `resolveAll.evalNode` body must NEVER wrap its own call(s) to the injected getter in
+  try/catch**: that swallows the signal driving the trampoline and silently
   memoizes a wrong, partial result. The `evaluate` module's own reference-case try/catch guards a
   DIFFERENT concern (turning a malformed resolver return into a `FormulaError`) and must not be
   reused to catch the trampoline signal — prefetch every reference path unwrapped before calling
@@ -93,13 +113,21 @@ which no prose can do.
 - **Identifiers are case-insensitive and normalized to lowercase, and the two grammars this package
   parses reserve DIFFERENTLY.** `parseFormula`'s grammar reserves no identifier names: a bare word
   is always a reference, whatever it spells, so reserved-word validation there is purely a
-  consumer's concern. `resolveNotationTemplate`'s grammar reserves EXACTLY `NOTATION_KEYWORDS` — a
-  lowercase alpha prefix found in that list emits dice notation and never reaches the consumer's
-  identifier resolver, so a stat key spelled `NOTATION_KEYWORDS.t` or `NOTATION_KEYWORDS.e` is
-  rewritten into a threshold or explode operator and the roll uses the operator, with no error on
-  any path. That asymmetry is why the list is exported at all: it is what a consuming system's
-  stat-key authoring validation rejects against. Both halves are pinned by a test that derives its
-  cases from the list, so a keyword added there is covered without a second edit.
+  consumer's concern. `resolveNotationTemplate`'s grammar reserves MORE than
+  `NOTATION_KEYWORDS` lists. `readAlphaPrefix` reads the maximal LEADING alpha run, lowercases it,
+  and tests THAT for membership, so the reserved set is every identifier whose leading alpha run,
+  lowercased, is a member — which reaches two shapes beyond the literal list. A COMPOUND identifier
+  collides whenever its alpha run stops early, i.e. a keyword followed by a digit: the keyword
+  branch takes it and the remainder re-lexes as notation atoms (the same mechanism that lexes a
+  dice atom, so it cannot be narrowed away). And matching is CASE-INSENSITIVE, so an upper- or
+  mixed-case spelling collides as well as the lowercase one the list is written in. Any collision
+  emits dice notation and never reaches the consumer's identifier resolver, so a stat key spelled
+  `NOTATION_KEYWORDS.t` or `NOTATION_KEYWORDS.e` — or either of the two shapes above — is rewritten
+  into a threshold or explode operator and the roll uses the operator, with no error on any path.
+  That asymmetry is why the list is exported at all: it is what a consuming system's stat-key
+  authoring validation rejects against, and that validation must reject the DERIVED set, not list
+  membership alone. All three shapes are pinned by cases in `template.test` that derive from the
+  list, so a keyword added there is covered without a second edit.
 
 ## Gotchas
 
@@ -118,10 +146,13 @@ which no prose can do.
   equally reachable**, and the asymmetry is the trap: `NOTATION_KEYWORDS` is exported from the
   `template` module, while `FN_NAMES` and its `FnName` mirror are module-private to `parser` and
   the barrel re-exports nothing it does not export. A consumer therefore cannot import the
-  builtin-function names and has to mirror them — which is a forked decision by construction, since
-  the copy has nothing binding it to the original. Treat any consumer-side duplicate as needing its
-  own drift guard, and do not export `FN_NAMES` to remove the fork without a ruling: that is a
-  public-API change.
+  builtin-function names and has to mirror them. The RUNTIME value set is what is unimportable —
+  the mirror is not unbindable: `Expr` is exported and its call arm declares `fn` as the same
+  closed literal union, so a consumer can extract that union from the exported AST type and bind
+  its own list to it at compile time in both directions (constrain the list to the union, and
+  assert the union minus the list is empty). That is the drift guard a consumer-side duplicate
+  needs — not a hand-maintained copy — and it needs no change to this package's public API. Do not
+  export `FN_NAMES` to remove the fork without a ruling: that IS a public-API change.
 
 ## Pointers
 

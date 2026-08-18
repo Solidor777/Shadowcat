@@ -90,12 +90,14 @@ may be nested into a Shadowcat checkout under `src/modules/` so the pnpm workspa
 entry of its `ROOTS` recursively and prunes only what its `SKIP_DIRS` names — build outputs and
 dependency trees — and the ephemeral-reference gate scopes itself the same way. The client source
 tree is a root and a nested module checkout lives under it, so this repo's suppression ban and
-ephemeral-reference ban apply to source and prose the NESTING repository owns, and fail here even
-though that repository has its own lint config or none. Nesting is a dev convenience with no entry
+ephemeral-reference ban apply to the nested repository's SOURCE and the comments in it, and fail
+here even though that repository has its own lint config or none. Its Markdown is not gated: the
+ephemeral-reference gate's prose corpus is `MD_ROOTS`, which names the skills directory alone; out
+of `ROOTS` it reads only the code extensions `EXTS` lists. Nesting is a dev convenience with no entry
 in either gate's skip set: unnest before running the gates, or expect the nested contents to be
 judged by them.
-**The documentation build sits inside the same perimeter, by a different mechanism** — worth naming
-because the obvious guess about it is wrong. `entryPoints` includes the client-module glob, and the
+**The documentation build sits inside the same perimeter, by a different mechanism.**
+`entryPoints` includes the client-module glob, and the
 root `exclude` is consulted while the packages strategy EXPANDS that glob: an excluded directory is
 never selected as a package at all. So a nested checkout carrying a `package.json` becomes a
 converted package the moment nothing excludes it. What that does NOT produce is a coverage failure:
