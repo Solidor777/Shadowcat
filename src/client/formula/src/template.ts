@@ -10,7 +10,9 @@ import { isDigit, isWordChar, isWordStart } from "./chars";
 const DICE_OPERATOR = "d";
 
 /** Identifier words that mean dice notation rather than a stat. Mirrors `P::modifiers`'s
- * keyword match (kh/kl/dh/dl/r/ro/cs/cf/t/e) plus the dice operator.
+ * keyword match, plus the dice operator; the array below is the only enumeration of the set
+ * on this side of the language boundary. Neither language can read the other's declaration,
+ * so `modifierParityDifference` reads both and fails the build on any difference.
  *
  * **This list is not the set of unsafe stat keys, and no list is.** The notation grammar
  * reserves more than these words, and what it reserves is negative space over an ordered
@@ -256,9 +258,10 @@ function substituteIdentifier(
       detail: `'${originalText}' = ${value}: roll templates require integers (use floor/round in the stat formula)`,
     };
   }
-  // Intentionally asymmetric: spec formula is `abs(value) > i32::MAX`, so the true i32
-  // minimum (-2147483648) is rejected as a cap error even though it IS representable in
-  // an i32. This asymmetry is intentional — do not "fix" it into a symmetric range check.
+  // The cap is a MAGNITUDE test rather than a range test, so it is asymmetric about zero:
+  // the most negative representable i32 (-2147483648) exceeds `I32_MAX` in magnitude and is
+  // rejected as a cap error even though an i32 holds it. Deliberate — do not "fix" it into
+  // a symmetric range check.
   if (Math.abs(value) > I32_MAX) {
     return { error: "cap", detail: `'${originalText}' = ${value}: out of i32 range` };
   }
