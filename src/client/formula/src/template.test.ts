@@ -87,8 +87,8 @@ describe("resolveNotationTemplate", () => {
 });
 
 // The two grammars reserve differently, and the doc on `NOTATION_KEYWORDS` states the split as the
-// reason that list is public. Both halves are derived from the list itself, so adding a keyword
-// extends the coverage rather than leaving a silent hole.
+// reason that list is public. Every case below derives its inputs from the list itself, so adding a
+// keyword extends the coverage rather than leaving a silent hole.
 describe("the reservation split between the two grammars", () => {
   /** A resolver recording every dotted path it is asked for, so a case can assert the
    * template grammar reserved a word BEFORE the consumer's identifier resolver saw it. */
@@ -116,11 +116,11 @@ describe("the reservation split between the two grammars", () => {
 
   it("the reserved set is LARGER than the list: a compound identifier whose leading alpha run is a keyword collides", () => {
     // `readAlphaPrefix` reads the maximal ALPHA run and stops at the first non-alpha
-    // character, so `t1` offers `t` for membership testing and the trailing digit
-    // re-lexes as a notation atom — the compound name never reaches the resolver. A
-    // consuming system's reserved-key validation must reject this shape too, not just
-    // literal list members; a key spelled this way is silently rewritten into an
-    // operator with no error on any path.
+    // character, so a `NOTATION_KEYWORDS` member followed by a digit offers just that
+    // member for the membership test and the trailing digit re-lexes as a notation atom
+    // — the compound name never reaches the resolver. A consuming system's reserved-key
+    // validation must reject this shape too, not just literal list members; a key
+    // spelled this way is silently rewritten into an operator with no error on any path.
     for (const kw of NOTATION_KEYWORDS) expectReserved(`${kw}1`);
     expect(resolveNotationTemplate("2d20 + t1", () => 7)).toEqual({ notation: "2d20 + t1" });
   });
