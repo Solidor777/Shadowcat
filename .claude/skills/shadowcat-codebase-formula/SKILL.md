@@ -152,7 +152,11 @@ which no prose can do.
   nothing about the other. **A template-grammar collision is not reliably loud, and how one
   scan can end is enumerated on `NotationKeyCheck`, keyed on whether an identifier claim SURVIVES
   rather than on how many claims there are — read the outcomes there rather than restating them
-  here.** What binds a consumer is the coupling: a consuming system validates a stat key by
+  here.** That enumeration discriminates on TWO levels, and reading it as one flat set is how a
+  consumer ends up branching on a value two outcomes describe: `rejects` is the first
+  discriminator and excludes the rest, since `segments` then covers only the prefix claimed ahead
+  of the rejecting position; the shape outcomes are properties of a value that carries no
+  rejection, and are total and mutually exclusive over those. What binds a consumer is the coupling: a consuming system validates a stat key by
   CALLING `checkNotationKey`, never by reasoning over `NOTATION_KEYWORDS`, because a collision it
   misses can change the number a roll produces with no error on any path. A spy resolver answering
   every path hides the split outcome, so `template.test` pins it with a resolver that knows only
@@ -160,7 +164,14 @@ which no prose can do.
   `template.test`'s `checkNotationKey` cases derive their keyword
   shapes from `NOTATION_KEYWORDS` itself, so a keyword added there is covered without a second
   edit, and one case asserts the checker's verdict against what the rewrite observably does to each
-  key, so the two cannot drift apart.
+  key, so the two cannot drift apart. Beside the hand-written cases sits a generated sweep:
+  `template.test` enumerates every string over a bounded alphabet mechanically, classifies each
+  from what `checkNotationKey` returns, and checks that classification's consequence against what
+  `resolveNotationTemplate` observably does to the same key. It
+  exists because an author's list of shapes — prose, corpus and predicate set alike — cannot
+  contain the shape nobody thought of, and it is what a claim about this taxonomy is answerable
+  against. It is NOT independent of the recognizer chain, which both sides run, so a defect inside
+  a recognizer still moves both answers together.
 
 ## Gotchas
 
