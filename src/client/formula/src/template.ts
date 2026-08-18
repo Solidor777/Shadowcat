@@ -1,14 +1,22 @@
 import { MAX_FORMULA_LENGTH, type FormulaError, type FormulaValue, isFormulaError } from "./types";
 import { validateResolverOutput } from "./internal";
+import { isDigit, isWordChar, isWordStart } from "./chars";
+
+/** The dice operator: both a `NOTATION_KEYWORDS` member and the one keyword whose
+ * emission is rewritten — with no integer immediately before it a count of `1` is
+ * synthesized, because the server's notation parser requires a count. Declared once and
+ * used both as the list's first member and as `emitClaim`'s test, so the two cannot
+ * disagree about which keyword that is. */
+const DICE_OPERATOR = "d";
 
 /** Identifier words whose leading-alpha prefix means dice notation, not a stat.
  * Mirrors `P::modifiers`'s keyword match (kh/kl/dh/dl/r/ro/cs/cf/t/e)
- * plus the 'd' dice operator.
+ * plus the dice operator.
  *
  * The two grammars this package parses reserve DIFFERENTLY, and the split is the reason this
  * list is public. `parseFormula`'s grammar reserves no identifier names: a bare word there is
  * always a reference, whatever it spells. `resolveNotationTemplate`'s grammar reserves MORE than
- * this list: `readAlphaPrefix` reads an identifier's LEADING MAXIMAL ALPHA RUN and only that run,
+ * this list: `readKeywordRun` reads an identifier's LEADING MAXIMAL ALPHA RUN and only that run,
  * lowercased, is tested for membership — so an identifier collides whenever its leading alpha
  * run is a member, WHATEVER FOLLOWS THAT RUN. A collision emits dice notation and never reaches
  * the consumer's identifier resolver, so a colliding stat key is rewritten into a dice operator
@@ -21,73 +29,181 @@ import { validateResolverOutput } from "./internal";
  * FIRST SEGMENT is a member (the dot ends the run, so the consumer is asked to resolve the
  * remainder alone rather than the path the author wrote). */
 export const NOTATION_KEYWORDS: readonly string[] =
-  ["d", "kh", "kl", "dh", "dl", "r", "ro", "cs", "cf", "t", "e"];
+  [DICE_OPERATOR, "kh", "kl", "dh", "dl", "r", "ro", "cs", "cf", "t", "e"];
 
 const I32_MAX = 2147483647;
 
-/**
- * True for a character that may START a notation keyword or identifier:
- * a letter or `_`. Distinct from `isWordStart` (a separate
- * scanner over a separate grammar — this module rewrites dice-notation
- * template text, not formula source).
- * @param ch A single character.
- * @returns `true` when `ch` matches `[a-z_]` case-insensitively.
- * @example
- * ```
- * // not part of the public `@shadowcat/formula` surface — this helper is not exported.
- * isAlpha("_"); // true
- * ```
- */
-function isAlpha(ch: string): boolean {
-  return /[a-z_]/i.test(ch);
+/** Which recognizer claimed a span of notation-template source. The grammar is an ordered
+ * chain (`RECOGNIZERS`) plus a total fallthrough, and this names the outcome of that
+ * ordering — which recognizer took a given span, and therefore what became of the text an
+ * author wrote there.
+ *
+ * - `"label"` — a bracketed span, emitted verbatim.
+ * - `"integer"` — a run of digits, emitted verbatim.
+ * - `"keyword"` — an identifier-start run that is a `NOTATION_KEYWORDS` member when
+ *   lowercased, emitted as notation.
+ * - `"identifier"` — a dotted reference span, handed to the consumer's resolver and
+ *   replaced by the resolved value.
+ * - `"literal"` — one character no recognizer claimed, emitted verbatim. */
+export type NotationClaimKind = "label" | "integer" | "keyword" | "identifier" | "literal";
+
+/** One recognizer's claim over a span of source, before any consumer resolution.
+ * Recognition carries NO state: what claims a position depends only on the source and the
+ * position. The scan's carry is consumed by `emitClaim` alone. */
+interface Claim {
+  /** Which recognizer claimed the span. */
+  readonly kind: NotationClaimKind;
+  /** The exact source slice claimed — its length is what the scan advances by. */
+  readonly text: string;
 }
 
-/**
- * True for a character that may CONTINUE an identifier or keyword already
- * begun by `isAlpha` — letters, digits, and `_`.
- * @param ch A single character.
- * @returns `true` when `ch` matches `[a-z0-9_]` case-insensitively.
- * @example
- * ```
- * // not part of the public `@shadowcat/formula` surface — this helper is not exported.
- * isWordChar("3"); // true
- * ```
- */
-function isWordChar(ch: string): boolean {
-  return /[a-z0-9_]/i.test(ch);
+/** A named member of the ordered recognizer chain. */
+interface Recognizer {
+  /** The `NotationClaimKind` this recognizer produces on a hit. */
+  readonly kind: NotationClaimKind;
+  /** Attempts a claim at `at`, as a pure function of the source and the position:
+   * returns the claimed source slice (never empty), `null` to decline and let the next
+   * recognizer try, or a `FormulaError` rejecting the whole template. */
+  readonly claim: (src: string, at: number) => string | FormulaError | null;
 }
 
-/**
- * True for an ASCII decimal digit — used to scan a literal count/sides run
- * in the surrounding dice-notation text (e.g. the `20` in `1d20`), which
- * this module passes through unchanged rather than resolving.
- * @param ch A single character.
- * @returns `true` when `ch` is `'0'`–`'9'`.
- * @example
- * ```
- * // not part of the public `@shadowcat/formula` surface — this helper is not exported.
- * isDigit("7"); // true
- * ```
- */
-function isDigit(ch: string): boolean {
-  return ch >= "0" && ch <= "9";
-}
-
-/** Reads the maximal `[a-z_]+` prefix (case-insensitive) starting at `i`.
+/** Reads the maximal run of identifier-START characters at `i` — the run
+ * `claimNotationKeyword` tests for membership. Stops at the first character outside
+ * `isWordStart`, which includes both a digit and a dot.
  * @param src The template source text.
- * @param i Index to start scanning from (must point at an `isAlpha` character).
- * @returns The longest run of `isAlpha` characters starting at `i` (never empty
- * when `src[i]` is itself alphabetic).
+ * @param i Index to start scanning from.
+ * @returns The run, empty when `src[i]` is not an identifier-start character.
  * @example
  * ```
  * // not part of the public `@shadowcat/formula` surface — this helper is not exported.
- * readAlphaPrefix("kh3", 0); // "kh"
+ * readKeywordRun("kh3", 0); // "kh"
  * ```
  */
-function readAlphaPrefix(src: string, i: number): string {
+function readKeywordRun(src: string, i: number): string {
   let j = i;
-  while (j < src.length && isAlpha(src[j])) j++;
+  while (j < src.length && isWordStart(src[j])) j++;
   return src.slice(i, j);
+}
+
+/** Recognizer 1: a bracketed label span, from `[` through the next `]`, emitted verbatim
+ * so an author-written label survives the rewrite. An unterminated bracket rejects the
+ * whole template. Ordered FIRST, so a label's contents are never scanned for keywords or
+ * identifiers. */
+const claimLabelSpan: Recognizer = {
+  kind: "label",
+  claim: (src, at) => {
+    if (src[at] !== "[") return null;
+    const end = src.indexOf("]", at + 1);
+    if (end === -1) return { error: "parse", detail: `unterminated '[' label at position ${at}` };
+    return src.slice(at, end + 1);
+  },
+};
+
+/** Recognizer 2: a maximal run of digits, emitted verbatim as a notation count/sides
+ * literal. Ordered BEFORE the identifier span, which is what costs a key whose first
+ * character is a digit that digit: the run is emitted into the notation stream and the
+ * remainder is claimed separately. */
+const claimIntegerRun: Recognizer = {
+  kind: "integer",
+  claim: (src, at) => {
+    if (!isDigit(src[at])) return null;
+    let j = at;
+    while (j < src.length && isDigit(src[j])) j++;
+    return src.slice(at, j);
+  },
+};
+
+/** Recognizer 3: an identifier-start run that is a `NOTATION_KEYWORDS` member when
+ * lowercased. Only the run is tested, and `readKeywordRun` stops at the first character
+ * outside `isWordStart`, so whatever follows the run is claimed by later iterations on its
+ * own terms. Ordered BEFORE the identifier span, which is what makes the reserved set
+ * wider than the list. */
+const claimNotationKeyword: Recognizer = {
+  kind: "keyword",
+  claim: (src, at) => {
+    if (!isWordStart(src[at])) return null;
+    const run = readKeywordRun(src, at);
+    return NOTATION_KEYWORDS.includes(run.toLowerCase()) ? run : null;
+  },
+};
+
+/** Recognizer 4: a dotted reference span — `isWordChar` characters, then any number of
+ * `.`-joined segments, each of which must itself begin with an identifier-start
+ * character. A dot NOT followed by such a character ends the span, splitting what the
+ * author wrote into separate references. The only recognizer whose emission reaches the
+ * consumer's resolver. */
+const claimIdentifierSpan: Recognizer = {
+  kind: "identifier",
+  claim: (src, at) => {
+    if (!isWordStart(src[at])) return null;
+    let j = at;
+    while (j < src.length && isWordChar(src[j])) j++;
+    while (j < src.length && src[j] === "." && j + 1 < src.length && isWordStart(src[j + 1])) {
+      let k = j + 1;
+      while (k < src.length && isWordChar(src[k])) k++;
+      j = k;
+    }
+    return src.slice(at, j);
+  },
+};
+
+/** The template grammar's recognizer chain, tried in this order at every position. The
+ * ORDER is the grammar: each recognizer claims only what no earlier one took, so "does
+ * this key survive" means "does `claimIdentifierSpan` get all of it". Ordering is data
+ * here rather than nested control flow so a reader can answer that question by reading
+ * this list, without simulating the loop. */
+const RECOGNIZERS: readonly Recognizer[] = [
+  claimLabelSpan,
+  claimIntegerRun,
+  claimNotationKeyword,
+  claimIdentifierSpan,
+];
+
+/** Runs the recognizer chain at one position. Total: when every recognizer declines, one
+ * character passes through as a `"literal"` claim, so the scan always advances.
+ * @param src The template source text.
+ * @param at Index to claim at; must be within `src`.
+ * @returns The winning `Claim`, or a `FormulaError` rejecting the whole template.
+ * @example
+ * ```
+ * // not part of the public `@shadowcat/formula` surface — this helper is not exported.
+ * claimAt("kh3", 0); // { kind: "keyword", text: "kh" }
+ * ```
+ */
+function claimAt(src: string, at: number): Claim | FormulaError {
+  for (const recognizer of RECOGNIZERS) {
+    const text = recognizer.claim(src, at);
+    if (text === null) continue;
+    if (typeof text !== "string") return text;
+    return { kind: recognizer.kind, text };
+  }
+  return { kind: "literal", text: src[at] };
+}
+
+/** Turns a `Claim` into the text it contributes to the rewritten notation. The ONLY stage
+ * that reads the scan's carried state or calls the consumer's resolver; recognition does
+ * neither.
+ * @param claim The winning claim at the current position.
+ * @param prevWasInt Whether the immediately preceding claim was an integer run — read only
+ * by the dice-operator normalization, and passed explicitly rather than reached for.
+ * @param resolve Consumer callback resolving a dotted ref path to a `FormulaValue`.
+ * @returns The emitted text, or a `FormulaError` from identifier resolution.
+ * @example
+ * ```
+ * // not part of the public `@shadowcat/formula` surface — this helper is not exported.
+ * emitClaim({ kind: "keyword", text: "d" }, false, () => 0); // "1d"
+ * ```
+ */
+function emitClaim(
+  claim: Claim,
+  prevWasInt: boolean,
+  resolve: (path: string[]) => FormulaValue,
+): string | FormulaError {
+  if (claim.kind === "identifier") return substituteIdentifier(claim.text, resolve);
+  if (claim.kind === "keyword" && claim.text.toLowerCase() === DICE_OPERATOR && !prevWasInt) {
+    return `1${claim.text}`;
+  }
+  return claim.text;
 }
 
 /** Resolves a `.`-joined identifier path (e.g. "hp.max") to a labeled substitution.
@@ -159,15 +275,20 @@ function substituteIdentifier(
 }
 
 /** Rewrites a dice-notation template: identifiers resolve to labeled constants, existing
- * dice-notation atoms (and `[label]` spans) pass through untouched.
+ * dice-notation atoms (and label spans) pass through untouched.
  * INVARIANT: never throws; every failure path returns a FormulaError.
+ *
+ * Scanning is `RECOGNIZERS` tried in order at each position (`claimAt`), then `emitClaim`
+ * on the winner. Which recognizer claims a position is what decides whether an author's
+ * stat key survives as a reference at all, and a key that loses is rewritten into notation
+ * with no error on any path.
  * @param src Template text, e.g. `"1d20 + str"` — a mix of dice-notation atoms
- * (numbers, the `d` operator, `NOTATION_KEYWORDS` modifiers, `[label]` spans)
+ * (numbers, the dice operator, `NOTATION_KEYWORDS` modifiers, bracketed label spans)
  * and dotted identifier references.
  * @param resolve Consumer callback resolving a dotted ref path to a `FormulaValue`.
  * @returns The rewritten notation string on success, or a `FormulaError` —
  * `"cap"` (template exceeds `MAX_FORMULA_LENGTH`), `"parse"` (unterminated
- * `[` label), or any error `substituteIdentifier` returns for a referenced identifier.
+ * label bracket), or any error `substituteIdentifier` returns for a referenced identifier.
  * @example
  * ```ts
  * import { resolveNotationTemplate } from "@shadowcat/formula";
@@ -188,78 +309,18 @@ export function resolveNotationTemplate(
 
   let out = "";
   let i = 0;
-  // Tracks whether the immediately preceding emitted token was an integer literal,
-  // so a bare 'd' keyword can be normalized to '1d' only when no count precedes it.
+  // The scan's only carried state: whether the immediately preceding claim was an integer
+  // run. Read by `emitClaim` alone, and passed to it explicitly.
   let prevWasInt = false;
 
   while (i < src.length) {
-    const ch = src[i];
-
-    if (ch === "[") {
-      const end = src.indexOf("]", i + 1);
-      if (end === -1) {
-        return { error: "parse", detail: `unterminated '[' label at position ${i}` };
-      }
-      out += src.slice(i, end + 1);
-      i = end + 1;
-      prevWasInt = false;
-      continue;
-    }
-
-    if (isDigit(ch)) {
-      let j = i;
-      while (j < src.length && isDigit(src[j])) j++;
-      out += src.slice(i, j);
-      i = j;
-      prevWasInt = true;
-      continue;
-    }
-
-    if (isAlpha(ch)) {
-      const prefix = readAlphaPrefix(src, i);
-      const lower = prefix.toLowerCase();
-      // Membership is tested on `lower` — the identifier's LEADING MAXIMAL ALPHA RUN,
-      // lowercased — so an identifier collides whenever that run is a member, whatever
-      // follows the run. `readAlphaPrefix` stops at the first character outside `isAlpha`,
-      // which includes both a digit and a DOT, so the identifier-span logic below this
-      // branch is never entered for such an input: this branch emits notation and
-      // continues, and whatever follows the run re-lexes on its own terms. Illustrations,
-      // deliberately NOT an exhaustive enumeration: a member followed by a digit, any
-      // upper- or mixed-case spelling, and a dotted path whose FIRST SEGMENT is a member
-      // — for which `substituteIdentifier` is handed the REMAINDER alone, so the consumer
-      // resolves a path the author never wrote. A consuming system's stat-key authoring
-      // validation must reject against this rule, not against a list of shapes.
-      if (NOTATION_KEYWORDS.includes(lower)) {
-        if (lower === "d" && !prevWasInt) {
-          out += `1${prefix}`;
-        } else {
-          out += prefix;
-        }
-        i += prefix.length;
-        prevWasInt = false;
-        continue;
-      }
-
-      // Identifier span: word segments joined by '.', same word rule per segment.
-      let j = i;
-      while (j < src.length && isWordChar(src[j])) j++;
-      while (j < src.length && src[j] === "." && j + 1 < src.length && isAlpha(src[j + 1])) {
-        let k = j + 1;
-        while (k < src.length && isWordChar(src[k])) k++;
-        j = k;
-      }
-      const word = src.slice(i, j);
-      const result = substituteIdentifier(word, resolve);
-      if (typeof result !== "string") return result;
-      out += result;
-      i = j;
-      prevWasInt = false;
-      continue;
-    }
-
-    out += ch;
-    i++;
-    prevWasInt = false;
+    const claim = claimAt(src, i);
+    if (!("kind" in claim)) return claim;
+    const emitted = emitClaim(claim, prevWasInt, resolve);
+    if (typeof emitted !== "string") return emitted;
+    out += emitted;
+    i += claim.text.length;
+    prevWasInt = claim.kind === "integer";
   }
 
   return { notation: out };
