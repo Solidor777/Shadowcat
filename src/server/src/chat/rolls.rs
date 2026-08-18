@@ -266,8 +266,8 @@ fn validate_pre_roll(spec: &RollSpec) -> Result<(), RollError> {
 
     for group in &groups {
         // `DieKind::validate()` rejects an empty `Faces{faces:[]}`. No notation
-        // path constructs `Faces` today (see `shadowcat-codebase-dice`), so this
-        // arm is unreachable via `execute_roll`/`validate_formula`'s only caller
+        // path constructs `Faces` today, so this arm is unreachable via
+        // `execute_roll`/`validate_formula`'s only caller
         // (the notation parser); called anyway as defense-in-depth against a
         // future notation extension. `RollError`'s variant set is fixed by this
         // module's interface contract (no dedicated `Faces` variant), so an

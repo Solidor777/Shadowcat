@@ -43,8 +43,7 @@ pub const PREVIEW_FETCH_PER_MIN: usize = 20;
 
 /// Reused verbatim: `PingRateLimiter` is already a generic per-user
 /// sliding-window hit budget (user, now_ms, per_min) with no ping-specific
-/// logic in it. See `shadowcat-codebase-chat` / `PingRateLimiter` for the shared
-/// implementation.
+/// logic in it. `PingRateLimiter` is the shared implementation.
 pub type PreviewRateLimiter = PingRateLimiter;
 
 /// Caches `fetch_preview` outcomes keyed on the exact fetched URL string.

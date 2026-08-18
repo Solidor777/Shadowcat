@@ -1,7 +1,6 @@
 // Persistence codec for PanelLayoutV1. Pure; no Svelte, no shell coupling. The shell's
-// `UiState.worlds[world].panelLayout` field is `unknown` (Zod-free by design — see
-// shadowcat-codebase-client-shell), so decoding must hand-roll its own structural guards
-// rather than lean on a schema library.
+// `UiState.worlds[world].panelLayout` field is `unknown` (Zod-free by design), so decoding must
+// hand-roll its own structural guards rather than lean on a schema library.
 import { prune, type CompactLayout, type ExpandedLayout, type GroupNode, type PanelLayoutV1, type Rect, type ZoneNode } from "./tree";
 
 const ZONE_IDS = ["right", "bottom", "left"] as const;

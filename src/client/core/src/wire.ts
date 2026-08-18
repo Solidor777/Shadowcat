@@ -1098,8 +1098,8 @@ export type ClientMsg =
   | {
       /** A server-authoritative move request for a token the caller controls. `scene` is
        * checked only for agreement — the server DERIVES the acting scene from the token
-       * itself and refuses on mismatch, so this field selects nothing on its own (see the
-       * derive-from-token invariant, `shadowcat-codebase-realtime-sync`). Success broadcasts
+       * itself and refuses on mismatch, so this field selects nothing on its own.
+       * Success broadcasts
        * `move_stream` to the scene; failure replies `move_error` to the requester only. */
       type: "move_request";
       /** Correlation token for `move_error` (success echoes via the broadcast `move_stream`). */

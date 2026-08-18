@@ -232,7 +232,7 @@ export class DocumentStore implements ReadableDocuments {
 
   /** Apply a confirmed, sequenced command, then notify subscribers.
    * @param cmd An authoritative, server-sequenced command (wire `WsClient.onCommand`
-   * to this — see `shadowcat-codebase-realtime-sync`).
+   * to this).
    * @example
    * ```ts
    * import { DocumentStore } from "@shadowcat/core";
