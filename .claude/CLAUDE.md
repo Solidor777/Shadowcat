@@ -648,6 +648,10 @@ Two propagation obligations ride on the same gate:
   `shadowcat-spec-reviewer`'s body must be mirrored to that agent's `-opus` twin **and** to both
   `.kimi-code/agents/` trees — this repo's, and each consuming repository's — every one of which
   keeps its own `model`/`effort` frontmatter and an otherwise byte-identical body.
+  This repo's `.kimi-code/` is git-ignored, so its copies serve THIS checkout's Kimi Code sessions
+  and propagate to nobody: mirroring into it keeps a local tool honest, while only a consuming
+  repository's own tree reaches other people. Neither the mirror nor the divergence is detectable
+  by git here, which makes it a review obligation rather than something a clean status proves.
 - **Plugin refresh.** `.claude/` is a plugin source, and a directory-sourced plugin is COPIED into
   a consumer's plugin cache rather than read live — so a skill/agent/hook edit reaches a consuming
   repo only after the plugin is refreshed. Bump `version` in `.claude/.claude-plugin/plugin.json`
