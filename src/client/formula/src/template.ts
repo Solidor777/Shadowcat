@@ -77,7 +77,7 @@ function readKeywordRun(src: string, i: number): string {
   return src.slice(i, j);
 }
 
-/** Recognizer 1: a bracketed label span, from `[` through the next `]`, emitted verbatim
+/** A bracketed label span, from `[` through the next `]`, emitted verbatim
  * so an author-written label survives the rewrite. An unterminated bracket rejects the
  * whole template. Ordered FIRST, so a label's contents are never scanned for keywords or
  * identifiers. */
@@ -91,7 +91,7 @@ const claimLabelSpan: Recognizer = {
   },
 };
 
-/** Recognizer 2: a maximal run of digits, emitted verbatim as a notation count/sides
+/** A maximal run of digits, emitted verbatim as a notation count/sides
  * literal. Ordered BEFORE the identifier span, which is what costs a key whose first
  * character is a digit that digit: the run is emitted into the notation stream and the
  * remainder is claimed separately. */
@@ -105,7 +105,7 @@ const claimIntegerRun: Recognizer = {
   },
 };
 
-/** Recognizer 3: an identifier-start run that is a `NOTATION_KEYWORDS` member when
+/** An identifier-start run that is a `NOTATION_KEYWORDS` member when
  * lowercased. Only the run is tested, and `readKeywordRun` stops at the first character
  * outside `isWordStart`, so whatever follows the run is claimed by later iterations on its
  * own terms. Ordered BEFORE the identifier span, which is what makes the reserved set
@@ -119,11 +119,12 @@ const claimNotationKeyword: Recognizer = {
   },
 };
 
-/** Recognizer 4: a dotted reference span — `isWordChar` characters, then any number of
+/** A dotted reference span — `isWordChar` characters, then any number of
  * `.`-joined segments, each of which must itself begin with an identifier-start
  * character. A dot NOT followed by such a character ends the span, splitting what the
- * author wrote into separate references. The only recognizer whose emission reaches the
- * consumer's resolver. */
+ * author wrote into separate references. Ordered LAST, so it claims only what no earlier
+ * recognizer took — which is what makes a key's safety negative space rather than a rule.
+ * The only recognizer whose emission reaches the consumer's resolver. */
 const claimIdentifierSpan: Recognizer = {
   kind: "identifier",
   claim: (src, at) => {
