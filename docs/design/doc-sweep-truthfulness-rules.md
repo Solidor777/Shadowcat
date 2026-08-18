@@ -403,13 +403,29 @@ literally nothing would be held shut on its own failure mode.
 
 One structurally unresolvable sub-class stays a review obligation rather than a gate obligation,
 exactly as the lowercase-hyphenated marker does for RULE 16: a citation naming a symbol the SEPARATE
-Nightfox repository owns, which is not present in this checkout to index. That obligation is scoped
-per NAME, not per file — `shadowcat-codebase-nightfox` is scanned like every other skill, so its
-citations of THIS repo's own symbols are gated, and only an enumerated list of cross-repo names is
-acknowledged, inside that one file, hit-counted like every other entry. The count prints on every
+Nightfox repository owns, whose declaration is not in this checkout to index. That obligation is
+scoped per NAME, not per file — `shadowcat-codebase-nightfox` is scanned like every other skill, so
+its citations of THIS repo's own symbols are gated, and only an enumerated list of cross-repo names
+is acknowledged, inside that one file, hit-counted like every other entry. The count prints on every
 run. The list records the owning repository and base branch beside it, plus the procedure that
 would settle its second claim — nest that checkout, rebuild the index, expect every name to
 resolve — so "the other repo declares it" is falsifiable rather than merely unverified.
+
+Inside that one file the list is consulted BEFORE the index, and absence from this tree is not a
+membership condition. The claim an entry makes is about the other repository, so a member here
+spelling the same string falsifies nothing — and with the index first, a Nightfox band key that
+collided with any field anywhere in this tree counted as verified against a declaration it has
+nothing to do with, while its entry absorbed nothing and the declares-none guard failed the run for
+listing it at all. The name could be neither checked nor acknowledged. The price of the precedence
+is stated rather than hidden: an entry shadows the index inside that file, so a citation there
+meaning one of THIS repo's symbols but spelling an entry is classified cross-repo rather than
+checked, which is why the generic wire words are named individually where the collision is credible.
+
+The residual this leaves is deliberate and is NOT covered by the gate: a bare citation in a
+this-repo skill can still verify against an unrelated same-named member. The citation rule is
+narrow — its target is citing a LOCATION instead of a symbol, and a bare member name is
+grep-findable and rename-breaking, so it satisfies the rule. Which member a bare citation meant is
+a review obligation, and the gate must not be described as covering it.
 
 **A function-LOCAL name is cited through its owner.** A let binding, a for-loop pattern's binding, a
 parameter and a function-scoped object key are all indexed only under the function that declares
@@ -673,6 +689,17 @@ no baseline and no allowlist: every hit fails, legacy included. The reason a bas
 available here is structural — a grandfathered site is indistinguishable from a new one to every
 future reader, so exempting the backlog would preserve exactly the defect the rule removes.
 
+**Its coverage control's acknowledgement entries are hit-counted, and a zero-hit entry is fatal.**
+The same rule the symbol gate applies to its own lists, for the same reason: an entry that absorbs
+nothing stays on the list and silently absorbs the first future candidate that happens to spell it,
+with nothing in any output moving. The count of REACHED entries prints beside the EXAMPLE-exempt
+count on every full-corpus run, because an exemption whose size nobody sees is indistinguishable
+from a rule that does not apply. The measurement is only sound over the whole corpus, so a scoped
+run makes no zero-hit claim at all — on a subset a zero says the scope missed the token. The
+instance the rule was written from: narrowing the corpus to the tracked skill directories killed
+six entries at once, all of them naming tokens that live only in vendored third-party prose, and
+nothing said so.
+
 **The scan SUBJECT is a comment BLOCK, or a Markdown PARAGRAPH — never a line.** A line is only
 where the text happened to wrap, so a line-scoped subject reads every multi-word ban as clean the
 moment ordinary prose wrapping puts a break at one of the phrase's spaces, and the two halves are
@@ -723,6 +750,16 @@ therefore left at their single spelling on measured grounds — the local letter
 the space writer collides with an indefinite article in front of a quantity, and the hyphenated
 spec compound, where hyphenation turns the noun into an adjectival compound naming a code symbol's
 scope rather than a document.
+
+**An entry whose own spelling carries NO separator is a different repair: an added ALTERNATIVE, not
+a respelling.** There is nothing in the source to widen, and a one-member class would route the
+entry through the class path straight into the space writer — which for the phase/workstream/
+invariant id is a capital letter, a space and a quantity, ordinary English. Writing the separated
+writers as their own alternatives keeps them at exactly the spellings written, because each
+separator then sits between a group boundary and an escape, which is precisely the residual named
+above. A writer reached by neither the derivation nor a live corpus line is evidenced only by its
+positive control, so the control is mandatory in both directions: each added writer flagged, and
+the space form left clean.
 
 **Nothing inside a NEGATIVE lookaround is widened, at any nesting depth.** Widening a separator
 inside an exclusion widens the exclusion, so the pattern matches strictly less and the gate reports

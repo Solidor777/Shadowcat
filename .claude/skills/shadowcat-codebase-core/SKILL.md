@@ -150,7 +150,18 @@ source of truth. The ones agents break most:
   symbol the separate Nightfox repository owns. That last one is scoped per NAME, not per
   file: `shadowcat-codebase-nightfox` is scanned like any other skill, its citations of THIS
   repo's symbols are gated, and only the enumerated cross-repo names are acknowledged, inside that
-  one file, hit-counted like every other entry. An untracked skill directory is vendored
+  one file, hit-counted like every other entry. **Inside that one file the cross-repo set is
+  consulted BEFORE the index, and its membership does not require absence from this tree** — the
+  claim an entry makes is about the OTHER repository, so a same-named member here falsifies
+  nothing, and with the index first a Nightfox band key (`stats`) counted as verified against an
+  unrelated field while its entry absorbed nothing, leaving the name neither checkable nor
+  listable. The price is stated rather than hidden: an entry shadows the index inside that file,
+  so a citation there meaning one of THIS repo's symbols but spelling an entry is classified
+  cross-repo instead of checked. `checkSkillSymbolRefs.indexedAcknowledgements` therefore holds the
+  other two lists only. **RESIDUAL, uncovered by design: a bare citation in a THIS-repo skill can still verify
+  against an unrelated same-named member** — the citation rule is narrow (location-citations
+  only), a bare member name is grep-findable and rename-breaking, so bare member registration
+  stays and which member a bare citation MEANT is a review obligation. An untracked skill directory is vendored
   third-party prose and is out of the corpus by that property, never by a name pattern; its count
   prints on every run, from the same `listSkillDirs` both skill gates read, so the two can never
   disagree on the size of the corpus.
@@ -240,7 +251,12 @@ source of truth. The ones agents break most:
   this rule's own statement below is marked. It is owner-approved per instance, sits on the line
   it exempts (so no position to rot), and the gate prints its active count, because an uncounted
   exemption is a backdoor. It covers specimens only: a genuine pointer gets converted, never
-  marked. But
+  marked. The coverage control's own `ACKNOWLEDGED` lists answer to the same rule as the symbol
+  gate's: hit-counted on every FULL-corpus run, the reached-entry count printed beside the
+  EXAMPLE count, and a zero-hit entry fatal — a `--scope`d run makes no such claim, since a zero
+  on a subset says the scope missed the token rather than that the entry is dead. Scoping the
+  corpus to the tracked skill directories is what killed six of these entries at once, silently,
+  which is what the rule now prevents. But
   **a green detector is not a satisfied rule**: history narration is only partly detectable (`no
   longer` usually describes runtime data, not the code's past), so it is a review obligation.
   A second class sits beside it on the same footing: the lowercase hyphenated marker shape
@@ -279,7 +295,11 @@ source of truth. The ones agents break most:
   either: adding a hyphen or underscore between two words is, but adding a SPACE where the pattern
   had a hyphen fuses two ordinary tokens, which is why `local letter+digit marker` and the
   hyphenated `unnamed spec reference` compound are left at their single spelling on measured
-  grounds.
+  grounds. **An entry whose own spelling carries NO separator is reached by an added ALTERNATIVE,
+  never by a class** — there is nothing to respell, and a one-member class would be widened to the
+  space writer, which for `phase / workstream / invariant id` is a capital plus a space plus a
+  quantity, i.e. ordinary English. Each alternative's separator sits between a group boundary and
+  an escape, so the residual above is what holds the two spellings written at exactly two.
   **Nothing inside a NEGATIVE lookaround is widened at any depth** — widening an exclusion makes
   the pattern match strictly less and the gate report strictly cleaner, the one direction nothing
   in the output distinguishes from a clean corpus.
