@@ -111,13 +111,47 @@ describe("resolveAll", () => {
   });
 
   it("resolves a long non-cyclic chain (depth under the visit cap) without a stack overflow", () => {
-    // Depth 2000 stays under MAX_GRAPH_VISITS (2048) so the cap never trips, isolating
-    // stack safety from the cap. INVARIANT: `resolveAll` consumes O(1) JS call-stack
-    // frames whatever the chain depth; a recursive implementation of the same traversal
-    // exhausts a constrained stack instead (node --stack-size=200 throws RangeError at
-    // depth 770).
+    // A root of `n2000` discovers 2001 keys, which stays under MAX_GRAPH_VISITS (2048) so
+    // the cap never trips, isolating stack safety from the cap. This is a smoke case only:
+    // it runs at the harness default stack, which is several times what a depth-proportional
+    // traversal of 2001 levels needs, so it passes under a recursive rewrite too. The
+    // constant-frame case below is what actually pins the trampoline.
     const r = resolveAll(["n2000"], countdownChain);
     expect(r.get("n2000")).toBe(0);
+  });
+
+  it("consumes a CONSTANT number of JS stack frames, at every chain level and at every chain length", () => {
+    // Pins the trampoline directly, by MEASURING the JS stack depth rather than by
+    // exhausting it: `MAX_GRAPH_VISITS` caps a chain at 2048 keys, which is far short of
+    // the default stack, so no constructible input makes a recursive rewrite overflow on
+    // its own. A recursive rewrite grows the stack by a fixed number of frames per chain
+    // level, so it fails all three assertions here; the trampoline restarts
+    // `resolveAll`'s node evaluation from a fixed depth instead and produces one value.
+    //
+    // The absolute frame count includes the test runner's own frames and is therefore
+    // environment-dependent; every assertion below compares measurements taken in the
+    // SAME run, so none of them depends on it.
+    const observedDepths = (root: number): number[] => {
+      const depths: number[] = [];
+      const probe = (k: string, get: (d: string) => FormulaValue): FormulaValue => {
+        const previousLimit = Error.stackTraceLimit;
+        Error.stackTraceLimit = Infinity;
+        const trace = new Error().stack ?? "";
+        Error.stackTraceLimit = previousLimit;
+        depths.push(trace.split("\n").length);
+        return countdownChain(k, get);
+      };
+      expect(resolveAll([`n${root}`], probe).get(`n${root}`), "chain did not resolve").toBe(0);
+      return depths;
+    };
+
+    const shallow = observedDepths(10);
+    const deep = observedDepths(2000);
+    expect(deep.length, "the deep chain visited no more nodes than the shallow one")
+      .toBeGreaterThan(shallow.length);
+    expect(new Set(shallow).size, "frame count varied ACROSS LEVELS of the shallow chain").toBe(1);
+    expect(new Set(deep).size, "frame count varied ACROSS LEVELS of the deep chain").toBe(1);
+    expect(deep[0], "frame count varied WITH CHAIN LENGTH").toBe(shallow[0]);
   });
 
   it("evaluates a shared (diamond) dependency exactly once across two entry points", () => {
