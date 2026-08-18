@@ -352,31 +352,31 @@ are observations awaiting triage, not committed work.
   Phase 1 validation (which needs the same guard, via `commit_ops_locked`) until the prior
   publish's hydration has fully completed. No code change required.
 
-- Title: External-module i18n registration seam missing. Summary: An out-of-tree module
-  (Nightfox sheets, M13c) has no public seam to register i18n keys into the shell catalog; M13c
-  ships a built-in English fallback map (`nfT`/`NF_MESSAGES`) with a `ctx.t` override hook as a
-  workaround. First surfaced in M13c Task 1's own code comment; reinforced by a separately
-  discovered test-context gotcha (`setAppContextForTest`'s default `t: (k) => k` echo means `nfT`
-  always resolves through its English fallback under test, never through a real translation
-  catalog).
+- Title: External-module i18n registration seam missing. Summary: An out-of-tree sheet module has
+  no public seam to register i18n keys into the shell catalog, so it must ship its own built-in
+  English fallback map behind a `ctx.t` override hook as a workaround. Reinforced by a separately
+  discovered test-context gotcha (`setAppContextForTest`'s default `t: (k) => k` echo means such a
+  helper always resolves through its own English fallback under test, never through a real
+  translation catalog).
   Status: Needs Review (candidate engine seam for a later checkpoint).
 
 - Title: `effect` doc_type constant has no engine home. Summary: D9 makes `effect` a
   client-semantics doc_type but neither M12c (which owns `ITEM_DOC_TYPE`)
-  nor the M13b rules plan declares an `EFFECT_DOC_TYPE`; M13c defines its own `EFFECT_DOC_TYPE` in
-  the Nightfox module's barrel. Consider promoting it beside `ITEM_DOC_TYPE` if a second
-  consumer appears. Status: Needs Review.
+  nor the M13b rules plan declares an `EFFECT_DOC_TYPE`; an out-of-tree system module defines its
+  own `EFFECT_DOC_TYPE` in its barrel instead. Consider promoting it beside `ITEM_DOC_TYPE` if a
+  second consumer appears. Status: Needs Review.
 
 - Title: No browser e2e harness for external modules. Summary: The M13-1 toolchain e2e is
   HTTP-only (no DOM); the spec §11 "Playwright e2e" for M13c has no browser harness, so the
   author→equip→toggle→revert flow (M13c Task 11) is covered by a component-level integration
   test instead. Status: Needs Review (Playwright harness is a toolchain follow-up).
 
-- Title: Two Nightfox sheet-layer findings moved to the Nightfox repo. Summary: the `StatTable`
-  touch-reorder gap on iOS Safari and the `StatRow` silent numeric no-op were recorded here while
-  Nightfox's packages were being built from this repo. Nightfox owns its own source and its own
-  trackers, so both are now open bugs in that repo instead. Engine-API friction stays here — the
-  split is by which repo's SOURCE carries the defect, not by which repo surfaced it.
+- Title: Two consumer sheet-layer findings moved to the consumer's own repo. Summary: a
+  touch-reorder gap on iOS Safari and a silent numeric no-op, both in an out-of-tree system
+  module's sheet components, were recorded here while that module's packages were being built
+  from this repo. A consumer owns its own source and its own trackers, so both are open bugs in
+  that repo instead. Engine-API friction stays here — the split is by which repo's SOURCE carries
+  the defect, not by which repo surfaced it.
   Status: Moved — do not re-file here.
 
 - Title: M13d dice-label fix (`bf494c1`) — no Rust-side test for `RollOutcome` missing the
@@ -618,8 +618,8 @@ are observations awaiting triage, not committed work.
 
 - Title: Deletion deny-list may only block the naive invocation. Summary: the
   `permissions.deny` block in `.claude/settings.json` (Shadowcat, and the
-  byte-identical copy added to the Nightfox repo on the `nightfox-agent-parity`
-  branch) lists `Bash(rm *)`, `Bash(sudo rm *)`, `PowerShell(Remove-Item *)` and
+  byte-identical copy added to a consuming repo during the agent-parity work)
+  lists `Bash(rm *)`, `Bash(sudo rm *)`, `PowerShell(Remove-Item *)` and
   the shell aliases. If Claude Code matches these as literal prefixes, the rules
   catch `rm -rf build` but NOT a chained invocation (`echo ok && rm -rf build`),
   a path-qualified one (`/bin/rm -rf build`), or PowerShell's fully-qualified

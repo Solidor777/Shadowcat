@@ -485,8 +485,8 @@ is the `claude plugin` CLI, not only the TUI command:
 Scope matters — `user` scope would enable it in Shadowcat too and double-register every skill and
 agent name.
 
-Per-machine setup actions inside a CONSUMING repo's workspace belong to that repo, not here: the
-Nightfox workspace's trust dialog is tracked in the Nightfox repo's own backlog.
+Per-machine setup actions inside a CONSUMING repo's workspace belong to that repo, not here: a
+consumer workspace's trust dialog is tracked in that repo's own backlog.
 
 Settled by direct observation, kept because each is a property to re-check after a refresh:
 - A directory-sourced plugin serves a cached SNAPSHOT, not the live repo — CONFIRMED. The payload
@@ -500,11 +500,11 @@ Settled by direct observation, kept because each is a property to re-check after
   `settings.json` sitting in a distributed payload is worth re-checking if the loader ever widens.
 - Plugin skills ARE addressed under a `<plugin>:<skill>` prefix — the listing offers only
   `shadowcat-codebase:shadowcat-codebase-core`, never the bare id. The agent bodies already name
-  this case, and invocation was verified end-to-end from a Nightfox session.
-- The routing hook fires exactly once per session: Nightfox declares no `hooks` key of its own and
-  gets only the plugin's, while Shadowcat keeps its own wiring and shows the plugin disabled.
+  this case, and invocation was verified end-to-end from a consumer session.
+- The routing hook fires exactly once per session: a consumer that declares no `hooks` key of its
+  own gets only the plugin's, while Shadowcat keeps its own wiring and shows the plugin disabled.
 - `claude plugin validate` warns that a `CLAUDE.md` at the plugin root is NOT loaded as project
-  context. This is why Nightfox carries its own adapted `.claude/CLAUDE.md` rather than inheriting
+  context. A consumer therefore needs its own adapted `.claude/CLAUDE.md` rather than inheriting
   one — do not "simplify" by deleting it in favour of the shipped copy.
 - Both manifests validate with one cosmetic warning each: no `author` field.
 
@@ -516,5 +516,5 @@ Settled by direct observation, kept because each is a property to re-check after
   unrecognized entries reject the frontmatter, the agents will not load at all. Separately,
   their bodies say "invoke via the Skill tool", but Kimi's config sets
   `merge_all_available_skills = true`, suggesting skills may be merged into context rather than
-  invoked; if so the bodies' BLOCKED branch could fire in Nightfox even when the context is
-  already present. Both need one real dispatch in a Nightfox workspace to settle.
+  invoked; if so the bodies' BLOCKED branch could fire in a consumer repo even when the context
+  is already present. Both need one real dispatch in a consumer workspace to settle.
