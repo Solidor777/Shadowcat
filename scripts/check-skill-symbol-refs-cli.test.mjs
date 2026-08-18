@@ -245,8 +245,8 @@ describe("the CLI process itself", () => {
 });
 
 // A claim about the code is either derived from it or tested against it; a sentence enumerating
-// the buckets is neither on its own, and drifts the first time a bucket is added or renamed. This
-// is the test that makes the prose derived.
+// the buckets is neither on its own, and drifts the first time a bucket joins the list or its
+// label changes. This is the test that makes the prose derived.
 describe("the bucket enumeration prose", () => {
   // The haystack is whitespace-normalized BEFORE the search, so no search key ever has to carry a
   // hard line wrap. A key containing a newline matches only while its paragraph wraps at exactly
