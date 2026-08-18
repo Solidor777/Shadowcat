@@ -86,6 +86,32 @@ The resolver callback is where your system's data model plugs in: it maps a
 dotted path to a number from the `system` body, or returns the library's own
 `unknown-ref` error to fail closed.
 
+### Check your stat keys before you ship them
+
+Roll templates are rewritten by a second grammar, which reads dice notation and
+stat references out of the same text. Some keys are claimed by that grammar
+before they are ever offered to your resolver — and when that happens there is
+**no error on any path**: the reference is rewritten, the roll uses the rewritten
+form, and the number changes.
+
+Do not try to derive which keys are safe. Ask:
+
+```ts
+import { checkNotationKey } from "@shadowcat/formula";
+
+checkNotationKey("hp.max").intact; // true  — reaches your resolver as written
+checkNotationKey("kh.max").intact; // false — "kh" is claimed as dice notation
+```
+
+`intact` is the verdict. `segments` shows what each part of the key was claimed
+as, so an authoring UI can tell the author *why* a name was refused rather than
+only *that* it was, and `rejects` carries the error for a key that makes the
+whole template fail instead of being split.
+
+Run it wherever your system accepts a key an author can name — a sheet's stat
+editor, a compendium importer, a migration. A key that fails this check is a
+name to refuse at authoring time, because nothing downstream will report it.
+
 ## Templates: shipping content
 
 Any document can be a template — templating is provenance (`source`), not a doc
