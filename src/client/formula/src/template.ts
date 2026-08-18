@@ -7,12 +7,19 @@ import { validateResolverOutput } from "./internal";
  *
  * The two grammars this package parses reserve DIFFERENTLY, and the split is the reason this
  * list is public. `parseFormula`'s grammar reserves no identifier names: a bare word there is
- * always a reference, whatever it spells. `resolveNotationTemplate`'s grammar reserves exactly
- * this list — a lowercase alpha prefix found here emits dice notation and never reaches the
- * consumer's identifier resolver — so a stat key spelled `NOTATION_KEYWORDS.t` or
- * `NOTATION_KEYWORDS.e` is rewritten into a threshold or explode operator and the roll uses the
- * operator, with no error on any path. Exported as public API precisely so a consuming system's
- * stat-key authoring validation can import it and reject colliding keys. */
+ * always a reference, whatever it spells. `resolveNotationTemplate`'s grammar reserves MORE than
+ * this list: `readAlphaPrefix` reads an identifier's LEADING MAXIMAL ALPHA RUN and only that run,
+ * lowercased, is tested for membership — so an identifier collides whenever its leading alpha
+ * run is a member, WHATEVER FOLLOWS THAT RUN. A collision emits dice notation and never reaches
+ * the consumer's identifier resolver, so a colliding stat key is rewritten into a dice operator
+ * and the roll uses the operator, with no error on any path.
+ *
+ * Exported as public API precisely so a consuming system's stat-key authoring validation can
+ * import it — but that validation must reject against the DERIVED rule above, never against
+ * membership in this list alone. Illustrations of the derived set, deliberately NOT exhaustive:
+ * a member followed by a digit, any upper- or mixed-case spelling, and a dotted path whose
+ * FIRST SEGMENT is a member (the dot ends the run, so the consumer is asked to resolve the
+ * remainder alone rather than the path the author wrote). */
 export const NOTATION_KEYWORDS: readonly string[] =
   ["d", "kh", "kl", "dh", "dl", "r", "ro", "cs", "cf", "t", "e"];
 
@@ -211,13 +218,17 @@ export function resolveNotationTemplate(
     if (isAlpha(ch)) {
       const prefix = readAlphaPrefix(src, i);
       const lower = prefix.toLowerCase();
-      // An identifier whose name is exactly a single-letter keyword immediately followed
-      // by a digit or another keyword-shaped run (e.g. "t1", "d2mod") cannot be resolved
-      // as an identifier here: `readAlphaPrefix` stops at the first non-alpha char, so
-      // the keyword letter alone matches NOTATION_KEYWORDS and the remainder re-lexes as
-      // dice-notation atoms, not a continued identifier. A consuming system's stat-key
-      // authoring validation (reserved-key checking) must reject this compound shape too,
-      // not just literal keyword collisions.
+      // Membership is tested on `lower` — the identifier's LEADING MAXIMAL ALPHA RUN,
+      // lowercased — so an identifier collides whenever that run is a member, whatever
+      // follows the run. `readAlphaPrefix` stops at the first character outside `isAlpha`,
+      // which includes both a digit and a DOT, so the identifier-span logic below this
+      // branch is never entered for such an input: this branch emits notation and
+      // continues, and whatever follows the run re-lexes on its own terms. Illustrations,
+      // deliberately NOT an exhaustive enumeration: a member followed by a digit, any
+      // upper- or mixed-case spelling, and a dotted path whose FIRST SEGMENT is a member
+      // — for which `substituteIdentifier` is handed the REMAINDER alone, so the consumer
+      // resolves a path the author never wrote. A consuming system's stat-key authoring
+      // validation must reject against this rule, not against a list of shapes.
       if (NOTATION_KEYWORDS.includes(lower)) {
         if (lower === "d" && !prevWasInt) {
           out += `1${prefix}`;
