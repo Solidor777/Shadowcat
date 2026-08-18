@@ -4,8 +4,8 @@ A game system in Shadowcat — the rules, sheets, and content model for a
 particular game — is not a separate kind of artifact. It is a module that claims
 game-facing surfaces. This tutorial builds a minimal d20-style system from
 `examples/system-minimal/` in the Shadowcat repository (CI-built and tested, like
-every sample on this page) and closes with the full-scale reference
-implementation, Nightfox.
+every sample on this page) and closes with the layering a full-scale system
+grows into.
 
 ## Systems are modules
 
@@ -112,22 +112,22 @@ sends a roll for `attributes.str`'s modifier via
 custom chat content. See the [wire protocol](/protocol) page for the frame-level
 picture.
 
-## The full-scale reference: Nightfox
+## The full-scale shape
 
-Nightfox is Shadowcat's reference system — a complete, generic ruleset built
-exactly the way this guide describes, in its own repository with its own release
-cycle. Where each concern lives:
+`examples/system-minimal/` fits in one package because it is small enough to. A
+complete ruleset lives in its own repository, on its own release cycle, and
+separates three concerns:
 
-- **Formula layer** — `@shadowcat/formula` (in the Shadowcat repo): the
-  expression engine this guide already used.
-- **Rules engine** — Nightfox's document layer (`nightfox-docs.ts`,
-  `contributions.ts`, `resolve.ts`): doc-type definitions, dependency-resolved
-  derived stats, effects.
-- **Sheets layer** — Nightfox's `src/sheets/*`: sheet models, stat tables,
-  modifier editors, actor/item/effect sheets.
+- **Formula layer** — `@shadowcat/formula`, shipped by the engine: the
+  expression engine this guide already used. Systems consume it rather than
+  writing their own.
+- **Rules layer** — the system's document layer: doc-type definitions,
+  dependency-resolved derived stats, effects. No UI.
+- **Sheets layer** — sheet models, stat tables, modifier editors, and the
+  actor/item/effect sheet components that claim the sheet contracts.
 
-When this tutorial's single-file system stops being enough, copy Nightfox's
-layering.
+When this tutorial's single file stops being enough, that is the split to make:
+sheets read values the rules layer computed, instead of computing them.
 
 ## Reference
 
