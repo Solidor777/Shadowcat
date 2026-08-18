@@ -78,9 +78,16 @@ erroring cleanly — build expressions with `parseFormula`, never by hand.
 - **The grammar has no exponent notation.** `1e999` lexes as a number followed by a word — a parse
   error, not a cap error. A deliberate grammar boundary, not a lexer defect; do not "fix" the lexer
   to accept exponents without a grammar change.
-- **Identifiers are case-insensitive, normalized to lowercase, and the library reserves no
-  identifier names.** Reserved-word validation is a consumer's concern, and every consumer-facing
-  guard belongs in the consumer.
+- **Identifiers are case-insensitive and normalized to lowercase, and the two grammars this package
+  parses reserve DIFFERENTLY.** `parseFormula`'s grammar reserves no identifier names: a bare word
+  is always a reference, whatever it spells, so reserved-word validation there is purely a
+  consumer's concern. `resolveNotationTemplate`'s grammar reserves EXACTLY `NOTATION_KEYWORDS` — a
+  lowercase alpha prefix found in that list emits dice notation and never reaches the consumer's
+  identifier resolver, so a stat key spelled `NOTATION_KEYWORDS.t` or `NOTATION_KEYWORDS.e` is
+  rewritten into a threshold or explode operator and the roll uses the operator, with no error on
+  any path. That asymmetry is why the list is exported at all: it is what a consuming system's
+  stat-key authoring validation rejects against. Both halves are pinned by a test that derives its
+  cases from the list, so a keyword added there is covered without a second edit.
 
 ## Gotchas
 
@@ -93,8 +100,9 @@ erroring cleanly — build expressions with `parseFormula`, never by hand.
 - `property.test` uses a hand-rolled seeded PRNG — do not add `fast-check` or any other new
   dependency to this package.
 - **A consumer that reuses the library's function names as data keys collides silently.** The
-  library reserves nothing, so a consumer that skips a collision check gets an identifier resolving
-  to a call instead of a reference. **The two name sets a consumer must reject against are NOT
+  FORMULA grammar reserves nothing (the notation-template grammar's separate reservation is the
+  invariant above), so a consumer that skips a collision check gets an identifier resolving to a
+  call instead of a reference. **The two name sets a consumer must reject against are NOT
   equally reachable**, and the asymmetry is the trap: `NOTATION_KEYWORDS` is exported from the
   `template` module, while `FN_NAMES` and its `FnName` mirror are module-private to `parser` and
   the barrel re-exports nothing it does not export. A consumer therefore cannot import the

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { resolveNotationTemplate } from "./template";
+import { NOTATION_KEYWORDS, resolveNotationTemplate } from "./template";
+import { parseFormula } from "./parser";
 import type { FormulaValue } from "./types";
 
 const env = (vals: Record<string, FormulaValue>) => (path: string[]): FormulaValue =>
@@ -82,5 +83,29 @@ describe("resolveNotationTemplate", () => {
       const inf = (() => Infinity) as unknown as (path: string[]) => FormulaValue;
       expect(resolveNotationTemplate("d20 + oops", inf)).toMatchObject({ error: "non-finite" });
     });
+  });
+});
+
+// The two grammars reserve differently, and the doc on `NOTATION_KEYWORDS` states the split as the
+// reason that list is public. Both halves are derived from the list itself, so adding a keyword
+// extends the coverage rather than leaving a silent hole.
+describe("the reservation split between the two grammars", () => {
+  it("every NOTATION_KEYWORDS member is reserved by the template grammar (resolver never consulted)", () => {
+    for (const kw of NOTATION_KEYWORDS) {
+      const seen: string[] = [];
+      const spy = (path: string[]): FormulaValue => {
+        seen.push(path.join("."));
+        return 7;
+      };
+      const result = resolveNotationTemplate(`1d20 + ${kw}`, spy);
+      expect(seen, `'${kw}' reached the identifier resolver`).toEqual([]);
+      expect(JSON.stringify(result), `'${kw}' substituted as a stat`).not.toContain(`[${kw}]`);
+    }
+  });
+  it("the formula grammar reserves none of them: each parses as a reference", () => {
+    for (const kw of NOTATION_KEYWORDS) {
+      expect(parseFormula(kw), `'${kw}' did not parse as a reference`)
+        .toEqual({ kind: "ref", path: [kw] });
+    }
   });
 });

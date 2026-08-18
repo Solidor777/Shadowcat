@@ -3,9 +3,16 @@ import { validateResolverOutput } from "./internal";
 
 /** Identifier words whose leading-alpha prefix means dice notation, not a stat.
  * Mirrors `P::modifiers`'s keyword match (kh/kl/dh/dl/r/ro/cs/cf/t/e)
- * plus the 'd' dice operator. Exported as public API precisely so a consuming
- * system's stat-key authoring validation can import it and reject colliding keys —
- * the library itself reserves no identifier names. */
+ * plus the 'd' dice operator.
+ *
+ * The two grammars this package parses reserve DIFFERENTLY, and the split is the reason this
+ * list is public. `parseFormula`'s grammar reserves no identifier names: a bare word there is
+ * always a reference, whatever it spells. `resolveNotationTemplate`'s grammar reserves exactly
+ * this list — a lowercase alpha prefix found here emits dice notation and never reaches the
+ * consumer's identifier resolver — so a stat key spelled `NOTATION_KEYWORDS.t` or
+ * `NOTATION_KEYWORDS.e` is rewritten into a threshold or explode operator and the roll uses the
+ * operator, with no error on any path. Exported as public API precisely so a consuming system's
+ * stat-key authoring validation can import it and reject colliding keys. */
 export const NOTATION_KEYWORDS: readonly string[] =
   ["d", "kh", "kl", "dh", "dl", "r", "ro", "cs", "cf", "t", "e"];
 
