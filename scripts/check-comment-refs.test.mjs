@@ -972,6 +972,16 @@ test("separatorOnlyClass accepts a separator written as an escape", () => {
   expect(separatorOnlyClass("\\")).toBe(false);
 });
 
+// The docblock's rejected/accepted specimens, pinned. A doc naming an ACCEPTED spelling as
+// rejected sends an author to loosen the neighbour test instead of respelling the site — the
+// repair `separatorFlexible` explicitly calls the wrong one, and the way a matcher acquires
+// silent over-widening.
+test("separatorOnlyClass rejects a numeric-escape separator and accepts a literal one", () => {
+  expect(separatorOnlyClass("\\x20")).toBe(false);
+  expect(separatorOnlyClass("\\u0020")).toBe(false);
+  expect(separatorOnlyClass(" ")).toBe(true);
+});
+
 // A one-member class is how a source marks a separator as a word separator rather than regex
 // punctuation. It must derive to the full separator class, or the respellings above do nothing.
 test("a one-member separator class widens to the full separator class", () => {

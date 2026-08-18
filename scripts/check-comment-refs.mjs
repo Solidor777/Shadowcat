@@ -762,9 +762,11 @@ const WHITESPACE_ESCAPES = new Set(["s", "t", "n", "r", "f", "v"]);
  * replaced by `SEPARATOR_CLASS`.
  *
  * A member counts when it is a separator character written as a LITERAL or as a SINGLE-CHARACTER
- * ESCAPE — `[ -]`, `[\s]`, `[\-_]`, `[\t]` all qualify. A separator spelled as a numeric escape
- * (`[\x20]`, `[ ]`) is rejected: that spelling never appears in a hand-written word separator,
- * and rejecting leaves the class unwidened, which is the visible failure direction.
+ * ESCAPE — `[ -]`, `[\s]`, `[\-_]`, `[\t]` all qualify, and so does a one-member literal
+ * space class (`[ ]`), which is one of the sanctioned respellings a site uses to mark a separator
+ * as a word separator rather than regex punctuation. A separator spelled as a NUMERIC escape
+ * (`[\x20]`, `[\u0020]`) is rejected: that spelling never appears in a hand-written word
+ * separator, and rejecting leaves the class unwidened, which is the visible failure direction.
  *
  * A `-` counts as a member only at the body's first or last position; anywhere else it is a RANGE
  * operator, and a range is rejected outright rather than read through — `[ -_]` spans every
