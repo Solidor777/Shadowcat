@@ -50,8 +50,9 @@ have.
   `@shadowcat/formula` function name (`FnName.min`/`FnName.max`/`FnName.floor`/`FnName.ceil`/
   `FnName.round`) and any dice-notation-keyword collision (imported from
   `@shadowcat/formula`'s `NOTATION_KEYWORDS`) — a key collides when its maximal `[a-z_]+` prefix
-  is a notation keyword AND (the prefix is the whole key or the next char is a digit), e.g.
-  `<N>d<M>`/`kh<N>` are rejected, `damage`/`total` are not. Caps: `MAX_STATS`/`MAX_MODIFIERS = 128` per
+  is a notation keyword AND (the prefix is the whole key or the next char is a digit), so a key
+  spelling a `NOTATION_KEYWORDS` member exactly, and one spelling a member immediately followed by
+  a digit, are both rejected; `damage`/`total` are not. Caps: `MAX_STATS`/`MAX_MODIFIERS = 128` per
   doc, `label` ≤ 64 chars, `text.value` ≤ 1024 chars, formula strings ≤ `@shadowcat/formula`'s
   `MAX_FORMULA_LENGTH`.
 - **The `contributions` module** (Nightfox repo) — `collectNightfox(host)` walks the embed tree

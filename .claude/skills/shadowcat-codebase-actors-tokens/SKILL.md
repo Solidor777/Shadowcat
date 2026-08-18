@@ -120,9 +120,11 @@ token/actor name from non-owners via the `OwnerOrGm` visibility tier. Conditions
   projection with `resolveTokenVisual`, so the face-swap palette (`FaceSwapPalette`, below)
   can't diverge from what actually renders.
 - The `actors` module (`ActorsPanel`, `VisualKindEditor`, `FaceSwapPalette`)
-  — `ActorsPanel`: create/list/pick actors; hide-name control; faction assignment; shape
-  (`EffectiveActor.square`/`EffectiveActor.circle`) + size (fractional grid-cells) editing in the
-  create form and in the per-row
+  — `ActorsPanel`: create/list/pick actors; hide-name control; faction assignment; shape editing —
+  the authored field is `ActorEngine.shape`, a bare string on the server, so its two values are
+  enumerated only by the read-through projection's literal union
+  (`EffectiveActor.square`/`EffectiveActor.circle`), which is what the citation names — plus size
+  (fractional grid-cells) editing, both in the create form and in the per-row
   GM inline editor; darkvision range authoring (create + per-row), writing `engine.vision: [{
   mode: "darkvision", range }]` (omitted when range 0).
   **Visual authoring (`VisualKindEditor`):** a visual-kind editor (image / faces / animated) in the

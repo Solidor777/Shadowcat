@@ -581,12 +581,15 @@ stronger constraint and it wins wherever the two touch.
 | Dates, bare or narrative | `2026-07-30`, `(user directive 2026-08-05)` |
 | Dated plan/spec filenames | `docs/superpowers/plans/2026-07-15-m13a-formula-library.md` |
 
+**Also banned in a skill, by a later owner ruling:** repo-document pointers to NON-DURABLE
+trackers (a churn tracker named as a pointer, as distinct from a durable design doc), unnamed spec
+references, and history narration. Process markers are not in the skill subset. Widening the subset
+further is a decision for whoever owns the rule, not an inference to draw from this table.
+
 **Not banned in a skill:** a durable document cited by path plus a section anchor —
 `docs/design/ARCHITECTURE.md §2`, `docs/design/doc-sweep-truthfulness-rules.md` RULE 16 — since
 that citation names something that does not get renumbered, closed, or superseded out from under
-it. Repo-document pointers to non-durable trackers, unnamed spec references, history narration and
-process markers are not yet ruled on for skills; widening the skill subset to cover them is a
-decision for whoever owns the rule, not an inference to draw from this table.
+it.
 
 **Local numbering is not an exception.** An `I4` whose definition lives in a sibling comment of the
 same subsystem still forces the reader to resolve a number that no compiler, test or tool binds to
@@ -639,6 +642,44 @@ no baseline and no allowlist: every hit fails, legacy included. The reason a bas
 available here is structural — a grandfathered site is indistinguishable from a new one to every
 future reader, so exempting the backlog would preserve exactly the defect the rule removes.
 
+**The scan SUBJECT is a comment BLOCK, or a Markdown PARAGRAPH — never a line.** A line is only
+where the text happened to wrap, so a line-scoped subject reads every multi-word ban as clean the
+moment ordinary prose wrapping puts a break at one of the phrase's spaces, and the two halves are
+individually innocent: nothing in the output says a phrase was split. The GROUP BOUNDARY is what
+makes joining safe, and it is the load-bearing part of the design rather than an implementation
+detail. A group ends at a blank line, at any line contributing no prose, and — in code — at any
+line that is not purely commentary, so a doc comment is never joined to the declaration beneath it,
+a string-literal-bearing line stands alone, and a comment TRAILING a statement stands alone too
+(it is written against that statement, not as a continuation of the block above it). Joining across
+that boundary manufactures phrases nobody wrote out of one line's last words and the next line's
+first, turning a false negative into a false positive — the failure the boundary exists to prevent.
+
+**A separator between two WORDS of a marker is a SPELLING, never part of the marker's identity.**
+A hyphen, an underscore and a space all name the same process artifact, so each ban pattern is also
+matched under a separator-flexible form DERIVED from that pattern's own source. Deriving rather
+than enumerating is the point: an enumerated list can only ever carry the spellings someone
+remembered, while a derivation covers every entry at once, including entries not yet written. The
+rewrite is applied to the PATTERN and never to the subject — `_` is a word character while `-` and
+a space are not, so a subject-side substitution retokenizes the text and exposes boundaries the
+patterns rely on. Two spellings of a separator are widened:
+
+- a BARE separator character, only between two LITERAL ALPHABETIC characters, since the pattern
+  source offers nothing else to tell a word separator from regex punctuation;
+- a CHARACTER CLASS whose every member is a separator, with no neighbour requirement, since such a
+  class cannot be anything else. A class carrying any non-separator member is left untouched: a `-`
+  inside a range is a range operator, and widening it corrupts the pattern outright.
+
+**RESIDUAL, stated because the coverage claim is bounded rather than universal:** a bare separator
+whose neighbour is an ESCAPE rather than a literal letter fails the neighbour test and keeps its
+single spelling. Spelling that separator as a character class widens it, and that is the fix when
+an entry needs it.
+
+**Nothing inside a NEGATIVE lookaround is widened, at any nesting depth.** Widening a separator
+inside an exclusion widens the exclusion, so the pattern matches strictly less and the gate reports
+strictly cleaner — the one direction nothing in the output distinguishes from a clean corpus, and
+the inverse of what every other widening here does. A positive lookaround and a named group are
+ordinary: widening inside them adds matches, which is this gate's deliberate failure direction.
+
 **What the detector can and cannot see.** The patterns cover the id-shaped and pointer-shaped forms
 at high precision. History narration is only partly detectable: `previously`/`formerly` match, but
 `no longer` overwhelmingly describes *runtime data* ("an id that no longer names a scene is
@@ -675,10 +716,11 @@ So the shape is a **review obligation, not a gate obligation**, on the same foot
 narration above: the ban is real and a reviewer enforces it, and a clean
 `scripts/check-comment-refs.mjs` run is not evidence that none remains.
 
-**Scope.** Code comments and code-facing strings, plus the narrower subset below for
+**Scope.** Code comments and code-facing strings, plus the narrower subset above for
 `.claude/skills/`. A codebase-skill brief is prose, not code, and may reference a durable document
 by path + section anchor — prose has no symbols, and a durable document is read as one. But a
-skill may not carry a milestone id, a task id, a sweep/round/review marker, or a date: those are
+skill may not carry a milestone id, a task id, a sweep/round/review marker, a date, a pointer to a
+non-durable tracker, an unnamed spec reference, or history narration: those are
 process ephemera regardless of the file that names them, and a "Pointers" section that cites a
 dated plan or spec by its dated filename is citing a superseded-by-construction record, not a
 durable one, so that citation stays banned too. `.superpowers/` artifacts and dated plan/spec

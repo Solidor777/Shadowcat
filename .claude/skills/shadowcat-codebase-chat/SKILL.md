@@ -291,8 +291,8 @@ with zero message-specific plumbing in any of those subsystems.
   whisper_to: Option<Vec<String>>, body}`, pure (no repo/async — the async caller resolves
   `whisper_to` usernames and re-validates). Only a LEADING token counts; the same text mid-message
   is literal. `/me `/`/em `/`/emote ` → `MessageKind::Emote`. `/roll `/`/r `, or bare `/NdM`
-  shorthand (optionally `+K`/`-K`) → `MessageKind::Roll`, body stored VERBATIM/unexecuted (a
-  nothing in the parser executes it). `/w @user @user... rest` → `MessageKind::Normal` +
+  shorthand (optionally `+K`/`-K`) → `MessageKind::Roll`, body stored VERBATIM/unexecuted (nothing
+  in the parser executes it). `/w @user @user... rest` → `MessageKind::Normal` +
   `whisper_to: Some(raw_usernames)` — this is chat's SECOND `/w` front-door, independent of the
   `SendMessage` wire frame's `audience` field; `handle_send_message` reconciles the two,
   content taking precedence (see below). **`kind` can never be `MessageKind::System` from any

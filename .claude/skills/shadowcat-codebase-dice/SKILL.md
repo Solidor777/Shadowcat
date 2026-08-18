@@ -428,8 +428,9 @@ on.
   vs-mode gotcha: `e<N>` sets the parser's internal `struct P.expertise` scratch field, but that
   value is only ever read into `SuccessConfig.expertise` when the resolved `Mode` is
   `SuccessCount`. A notation string like
-  `4d6t10e3` under Total-ambient context (`t<N>` resolves to `TotalConfig.difficulty`, not a
-  success target) parses successfully and simply drops the `e<N>` — no `ParseError`, no warning.
+  `4d6t10e3` parses successfully under Total-ambient context: its target resolves to
+  `TotalConfig.difficulty` rather than a success target, so the expertise value it carries is
+  simply dropped — no `ParseError`, no warning.
 - **This module's pipeline logic is dense and easy to get subtly wrong.** Treat any future
   change to `dice::eval::groups`, `dice::eval::sum`, `dice::eval::success`, `dice::eval::classify`,
   `dice::eval::crit`, `dice::eval::expertise`, or `dice::recalc` as needing independent

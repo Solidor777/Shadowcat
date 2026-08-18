@@ -58,8 +58,8 @@ source of truth. The ones agents break most:
   `enrich_vision_explored::grid_shapes` map, never synthesizing a fallback `SquareGrid`). `scene_grid_sizes` is the sole intentional defaulting SOURCE. |
   **How to apply.** (1) When you find two paths that must agree, do not verify they agree today —
   make one *derive* from the other, or have both read one shared symbol, so agreement is structural.
-  (2) When you fix one instance, grep for the other copies **in the same commit**; the last row
-  above was created by the commit fixing the row above it. (3) Pin parity with an anti-drift test
+  (2) When you fix one instance, grep for the other copies **in the same commit**; a fix that lands
+  at one site of a forked decision is what produces the next row of this table. (3) Pin parity with an anti-drift test
   that exercises BOTH paths through the shared symbol (see `MAX_GATE_WALK_COORD`'s, which catches a
   value change or a `>`/`>=` flip on either side). (4) A test that passes because both paths are
   wrong the same way proves nothing — mutate one side and confirm the test fails.
@@ -130,7 +130,8 @@ source of truth. The ones agents break most:
   one printed bucket — verified, acknowledged non-symbol, cross-repo, broken, EXAMPLE-exempt,
   not citation-shaped, or empty — and each acknowledgement entry is hit-counted, a zero-hit entry
   failing the gate. **That list is `SPAN_BUCKETS`, and this sentence is pinned to it by a test**:
-  the same claim has twice drifted from the code it describes. What makes it true rather than
+  a claim about the code that is neither derived from it nor tested against it drifts the moment a
+  bucket joins the list or its label changes. What makes it true rather than
   asserted is `spanAccountingDelta` — every backtick RUN must be one of a bucketed span's two
   delimiters, or must have left before classification by one of the ways out printed beside the
   buckets: block-blanked, unpaired inside a span, unpaired at top level — of which the last is
@@ -224,6 +225,28 @@ source of truth. The ones agents break most:
   reviewer enforces the ban, and a clean `scripts/check-comment-refs.mjs` run is not evidence none
   remains. Rewording to evade a pattern while still speaking of something outside the code
   violates RULE 0.
+  **The scan SUBJECT is a comment BLOCK or a Markdown PARAGRAPH, never a LINE** — a line is only
+  where the text happened to wrap, so a line-scoped subject reads every multi-word ban as clean the
+  moment prose wrapping puts a break at one of the phrase's spaces, and each half is individually
+  innocent. The GROUP BOUNDARY is what makes joining safe and is the load-bearing design, not an
+  implementation detail: `subjectGroups` ends a group at a blank line, at any line contributing no
+  prose, and — in code — at any line that is not purely commentary, so a doc comment never joins
+  the declaration beneath it, a string-literal-bearing line stands alone, and a comment TRAILING a
+  statement stands alone (it is written against that statement, not as a continuation of the block
+  above). Joining across that boundary manufactures phrases nobody wrote out of one line's last
+  words and the next line's first — a false negative traded for a false positive.
+  **A separator between two WORDS of a marker is a SPELLING, not part of its identity**, so
+  `bannedMatchIn` also matches each pattern under a `separatorFlexible` form derived from that
+  pattern's own source: hyphen, underscore and space all reach the same entry, for every entry at
+  once including entries not yet written. The rewrite lands on the PATTERN, never the subject. Two
+  spellings are widened — a BARE separator between two literal alphabetic characters, and a
+  character class whose every member is a separator (`separatorOnlyClass`); a class with any other
+  member is untouched, since widening a range corrupts the pattern. RESIDUAL, which is why that
+  coverage claim is bounded rather than universal: a bare separator adjacent to an ESCAPE rather
+  than a literal letter keeps its single spelling, and spelling it as a character class is the fix.
+  **Nothing inside a NEGATIVE lookaround is widened at any depth** — widening an exclusion makes
+  the pattern match strictly less and the gate report strictly cleaner, the one direction nothing
+  in the output distinguishes from a clean corpus.
   Full rule: `docs/design/doc-sweep-truthfulness-rules.md` RULE 16.
 - **There are NO justified keeps, exemptions or carve-outs unless the user explicitly signs off**
   (user directive, iron-clad). A well-argued keep is still a decision about *what the work covers*,
