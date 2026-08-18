@@ -30,6 +30,10 @@ import {
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { isDirectEntry } from "./lib/is-main.mjs";
+// The skill corpus is scoped by tracked-ness, and the skill-symbol-citation gate answers that same
+// question for the same directories. Importing its answer rather than re-deriving one is what keeps
+// the two gates from disagreeing about which directories are this repo's own prose.
+import { listSkillDirs } from "./check-skill-symbol-refs.mjs";
 
 // Exported: the skill-symbol-citation gate walks the same tree and must skip the same
 // directories. Two copies of a skip list drift into two different notions of what the repo is.
@@ -99,6 +103,15 @@ export const GENERATED_ROOT = "src/types/generated";
 // and the `--residue` coverage control — calls this one function rather than re-deriving its own
 // path list, so a future change to what the gate scans cannot silently leave the control scanning
 // a narrower set: there is no second derivation left to drift.
+//
+// The skill corpus is scoped to the TRACKED skill directories, read from the same `listSkillDirs`
+// the skill-symbol-citation gate reads. An untracked skill directory is vendored third-party prose:
+// this repo neither wrote it nor may edit it, so holding it to a rule about how THIS repo writes
+// prose leaves only two outcomes, editing a vendored file or carving out an exemption, and both are
+// wrong. Tracked-ness is the durable property that says whose prose it is — never a name pattern,
+// which would have to be updated for every vendored tool and reads as clean when it is not. Sharing
+// the derivation is what keeps the two skill gates from disagreeing about the size of the corpus;
+// the excluded count prints on every run, because an uncounted exclusion is a backdoor.
 export function collectFiles() {
   const codeFiles = [
     ...ROOTS.flatMap((d) => sources(d, EXTS)),
@@ -107,8 +120,19 @@ export function collectFiles() {
     .map(norm)
     .filter((p) => !under(p, GENERATED_ROOT));
   const generatedFiles = sources(GENERATED_ROOT, EXTS).map(norm);
-  const mdFiles = MD_ROOTS.flatMap((d) => sources(d, MD_EXTS)).map(norm);
-  return { codeFiles, mdFiles, generatedFiles };
+  const dirs = listSkillDirs(".");
+  if (dirs === null)
+    throw new Error(
+      "git could not list the skill corpus: this gate scopes skill prose by tracked-ness and " +
+        "cannot report a trustworthy count without it.",
+    );
+  const mdFiles = MD_ROOTS.flatMap((d) =>
+    [...dirs.tracked].flatMap((name) => sources(join(d, name), MD_EXTS)),
+  ).map(norm);
+  const untrackedSkillFiles = MD_ROOTS.flatMap((d) =>
+    dirs.untracked.flatMap((name) => sources(join(d, name), MD_EXTS)),
+  ).map(norm);
+  return { codeFiles, mdFiles, generatedFiles, untrackedSkillFiles };
 }
 
 /**
@@ -117,11 +141,12 @@ export function collectFiles() {
  * corpus cannot diverge from the gate's without changing this one function.
  */
 export function gateFileSet(scopes = []) {
-  const { codeFiles, mdFiles, generatedFiles } = collectFiles();
+  const { codeFiles, mdFiles, generatedFiles, untrackedSkillFiles } = collectFiles();
   const isMdFile = new Set(mdFiles);
   const scanned = [...codeFiles, ...mdFiles].filter((p) => inScope(scopes, p));
   const generatedExcluded = generatedFiles.filter((p) => inScope(scopes, p)).length;
-  return { scanned, isMdFile, generatedExcluded };
+  const untrackedSkillExcluded = untrackedSkillFiles.filter((p) => inScope(scopes, p)).length;
+  return { scanned, isMdFile, generatedExcluded, untrackedSkillExcluded };
 }
 
 // Patterns below are documented by describing the shape they match wherever describing is as clear
@@ -141,14 +166,19 @@ export const EXAMPLE_EXEMPT = /\bEXAMPLE:/;
 // suppression gate cannot drift apart about what counts as a comment.
 import { splitLine } from "./lib/comment-span.mjs";
 
-const BANNED = [
+export const BANNED = [
   // A capital M, digits, an optional letter and an optional dashed number are one id shape: the
   // unsuffixed form carries no less process identity than the suffixed one, so a pattern that
   // required the suffix would read the short form as clean. The spelled-out `Task N` form is the
   // same id shape written in full rather than abbreviated behind the capital letter, so it is the
   // same category, not a second one: both writers point outside the code identically, so a pattern
   // carrying only the abbreviated form reads the spelled-out one as clean.
-  { name: "milestone/task id", re: /\bM\d+[a-z]?(?:-\d+)?\b|\bTask\s+\d+[a-z]?(?:-\d+)?\b/ },
+  //
+  // `Task[\s]+` spells the word separator as a one-member class so `separatorFlexible` reaches the
+  // hyphen and underscore writers too — see `SEPARATOR_CLASS`. The sub-number separator in
+  // `(?:-\d+)?` is deliberately NOT respelled: the group is optional and its head already matches,
+  // so widening it can only extend the reported span, never reach a subject the entry was missing.
+  { name: "milestone/task id", re: /\bM\d+[a-z]?(?:-\d+)?\b|\bTask[\s]+\d+[a-z]?(?:-\d+)?\b/ },
   // A capital D, I, T or W followed by digits: phase checkpoints, numbered invariants, tasks and
   // workstreams. All are ids a process assigns, resolvable only by a reader holding that artifact.
   // The T form collides with a generic type parameter, but only where a comment names one WITHOUT
@@ -169,11 +199,66 @@ const BANNED = [
   // corpora: an initial-plus-number points outside the code from a comment exactly as it does from
   // skill prose, so the two file classes share the entry by reference rather than each carrying
   // its own copy.
+  //
+  // Its separators are the one place in this list where a word separator stays at its single
+  // spelling deliberately, and the bound is measured rather than assumed. Respelling the optional
+  // hyphen as a one-member class would admit the SPACE writer, and an initial followed by a space
+  // and a digit is ordinary English — an indefinite article in front of a quantity, as in a
+  // one-hex token or a three-face die — which fires 13 times across the governed corpora.
+  //
+  // Widening a separator is safe in the direction that ADDS a hyphen or underscore between two
+  // words, because nobody writes English that way by accident. It is not safe in the direction that
+  // adds a SPACE between a letter and a digit, because that fuses two ordinary tokens into a
+  // marker. The optional sub-number group is unwidenable for the reason its counterpart in the
+  // milestone entry is: the group is optional and its head already matches.
   { name: "local letter+digit marker", re: /\b[ACFHRV]-?\d(?:-\d+)?\b/ },
   {
     name: "repo document pointer",
-    re: /docs\/[\w./-]+\.md|\b(?:TODO|OPEN_BUGS|CLOSED_BUGS|POST_WORK_FINDINGS|ARCHITECTURE|PLAN)\.md|ARCHITECTURE\s*[§#]|\binvariant\s*#?\s*\d+/i,
+    re: /docs\/[\w./-]+\.md|\b(?:TODO|OPEN_BUGS|CLOSED_BUGS|POST_WORK_FINDINGS|ARCHITECTURE|PLAN)\.md/i,
   },
+  // The same five churn trackers named WITHOUT the extension. The extension is a spelling, not the
+  // referent, so requiring it lets the identical pointer through by dropping four characters.
+  //
+  // A POINTER CONSTRUCTION is required rather than a bare occurrence, and that is the whole
+  // precision of the entry: a preposition or verb of reference in front of the name is what turns
+  // it into a deferral to a document. The bare marker form is PERMITTED — a lone `TODO` is a code
+  // marker the rule keeps deliberately — and these words also occur as ordinary prose, so keying on
+  // the name alone would flag both. Preventive: zero live sites, and the entry must not change any
+  // tracked file's verdict.
+  {
+    name: "extensionless tracker pointer",
+    re: /\b(?:see|in|per|from|under|logged[\s]+in|recorded[\s]+in|tracked[\s]+in|filed[\s]+in|listed[\s]+in|cites?|names?|references?)[\s]+(?:the[\s]+)?(?:TODO|OPEN_BUGS|CLOSED_BUGS|POST_WORK_FINDINGS|PLAN)\b(?!\.md)/,
+  },
+  // A comment naming a codebase skill BY NAME points at a knowledge artifact outside the code whose
+  // identity a process assigns: skills are created, renamed, split and retired, and when one goes
+  // the comment points at nothing with nothing in the code to say so — the same undetectability
+  // every other entry here exists to remove.
+  //
+  // CODE ONLY, deliberately absent from the skill list: a skill naming a sibling skill is the
+  // documented, intended structure of that knowledge layer, and the core skill's own subsystem list
+  // is written that way. The entry is scoped to the corpus where the reference is a defect, not
+  // widened to the corpus where it is the design.
+  {
+    name: "codebase skill pointer",
+    re: /\bshadowcat-codebase-[a-z][a-z-]*\b/,
+  },
+  // The PATHLESS forms of the same reference, held apart from the entry above because the two
+  // halves are governed differently outside code. A skill may cite a durable design document by
+  // path plus anchor, and the entry above is what that carve-out has to make room for; these forms
+  // name the same document with the path omitted, so nothing tells a reader which file to open and
+  // the carve-out has nothing to key on. Splitting is what lets the skill list reuse THIS half by
+  // reference under a guard, instead of substituting a narrower entry and dropping the check.
+  //
+  // The separator between the invariant keyword and its number is a word separator spelled as a
+  // one-member class, so the hyphenated and underscored writers reach the entry alongside the
+  // spaced one. The `\s*` before `[§#]` is optional space in front of a punctuation mark rather
+  // than a word joiner, so it keeps its single spelling.
+  {
+    name: "pathless durable document reference",
+    re: /ARCHITECTURE\s*[§#]|\binvariant[\s]*#?[\s]*\d+/i,
+  },
+  // A date's hyphens are its FORMAT, not a word separator, so they keep their single spelling in
+  // this entry and in `date stamp` below: widening them would read `2026 08 17.md` as a date.
   { name: "dated plan/spec file", re: /\b20\d\d-\d\d-\d\d[\w-]*\.md/ },
   // A `Constraint N` / `Global Constraint N` reference is the same bare-numbered-registry shape as
   // the `invariant N` form above: it names an item outside the line with no document to resolve it
@@ -182,14 +267,20 @@ const BANNED = [
   // the filename that would at least say which document went stale.
   {
     name: "numbered constraint",
-    re: /\b(?:Global\s+)?Constraint\s*#?\s*\d+\b/i,
+    // Both word separators are spelled as one-member classes, so the hyphenated and underscored
+    // writers of the qualifier and of the number reach the entry alongside their spaced ones.
+    re: /\b(?:Global[\s]+)?Constraint[\s]*#?[\s]*\d+\b/i,
   },
   // A date stamps a comment with when someone wrote it, which is not behaviour. A match requires a
   // parenthesised or "as of" form, because a bare ISO date also appears inside illustrative
   // program data (a backup path, a sample record) where it names a value rather than a writing.
   {
     name: "date stamp",
-    re: /\(\s*20\d\d-\d\d-\d\d\s*\)|\bas of \d|\bas of (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)/i,
+    // The separator before the date is spelled as a one-member class so the whole phrase widens
+    // together. Only the separator INSIDE the qualifying phrase passed the neighbour test, so a
+    // fully hyphenated writer of the phrase went unmatched while a half-hyphenated one matched —
+    // one marker reachable under two of its three writers, split on nothing a reader could see.
+    re: /\(\s*20\d\d-\d\d-\d\d\s*\)|\bas of[ ]\d|\bas of[ ](?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)/i,
   },
   // Prose describing a superseded state of the code. Only high-precision forms match. Phrases like
   // "no longer" overwhelmingly describe runtime data rather than the code's past, so flagging them
@@ -210,7 +301,13 @@ const BANNED = [
   // recall needed to remember every purpose-clause phrasing that would otherwise collide.
   {
     name: "history narration",
-    re: /\bpreviously\b|\bformerly\b|\bhistorically\b|\b(?:before|after) the (?:fix|refactor|change|rewrite)\b|\bpre-(?:fix|refactor)\b|\bpost-(?:fix|refactor)\b|\b(?:it|this|that|which|they)\s+used to\b/i,
+    // Every word separator in the phrase and compound forms is spelled as a one-member class. Both
+    // sit next to a GROUP boundary, which the bare-separator widening cannot read, so without the
+    // respelling the phrase form matched only its spaced writer and the compound form only its
+    // hyphenated one. That left the hyphenated and underscored writers of the phrase reachable by
+    // any author who happens to hyphenate, and this entry's own prose names that phrase as the
+    // canonical banned form — the widest gap in the list, because it is the most-cited entry.
+    re: /\bpreviously\b|\bformerly\b|\bhistorically\b|\b(?:before|after)[ ]the[ ](?:fix|refactor|change|rewrite)\b|\bpre[-](?:fix|refactor)\b|\bpost[-](?:fix|refactor)\b|\b(?:it|this|that|which|they)\s+used to\b/i,
   },
   // EXAMPLE: An unnamed reference to "the spec" is the same defect as a named one and strictly
   // worse to resolve: the reader cannot even tell which document went stale. Matches a spec
@@ -220,6 +317,11 @@ const BANNED = [
     name: "unnamed spec reference",
     // The trailing-colon form excludes `::`, which is a Rust path segment (a `dice::spec::DieKind`
     // in a doctest names a module in this crate) rather than a document reference.
+    //
+    // The whitespace before `spec` is the one word separator here that must NOT be respelled as a
+    // one-member class. Hyphenated, the words form an adjectival compound with a different
+    // referent: `per-spec` qualifies a `RollSpec`-scoped field, not a document, and the widened
+    // form fires on it. The space is load-bearing evidence that "spec" is being used as a noun.
     re: /\bspec\s*§|\b(?:the|this|design|parent|wire|per)\s+spec\b|\bspec'?d\b|\bspec\s*:(?!:)/i,
   },
   // EXAMPLE: A section pointer that names no document — a bare `§7`, or a "design doc §3" whose
@@ -232,7 +334,11 @@ const BANNED = [
   // ground and needs no separate ruling.
   {
     name: "unnamed section pointer",
-    re: /(?<!\b(?:RFC|ISO|IEC|IEEE|ANSI|W3C|WHATWG|Unicode)[\s-]?\d{1,5}[,;:]?\s{0,3})§\s*\d|\bSection\s+\d+(?:\.\d+)*\b/,
+    // The separator after the section keyword is spelled as a one-member class, so its hyphenated
+    // and underscored writers reach the entry. Nothing inside the negative lookbehind is widened at
+    // any depth — the mechanism refuses it, because widening an exclusion makes the pattern match
+    // strictly less.
+    re: /(?<!\b(?:RFC|ISO|IEC|IEEE|ANSI|W3C|WHATWG|Unicode)[\s-]?\d{1,5}[,;:]?\s{0,3})§\s*\d|\bSection[\s]+\d+(?:\.\d+)*\b/,
   },
   // EXAMPLE: "the brief" names the same scaffolding as "task brief"/"dispatch brief" above, but the
   // EXAMPLE: bare noun collides with the brief-rules checker's own subject matter, which describes
@@ -242,7 +348,9 @@ const BANNED = [
   // now-gone document looks like; a generic description of the category uses neither shape.
   {
     name: "unnamed brief pointer",
-    re: /\bthe brief'?s\b|\bthe brief\s+(?:requires|says|specifies|states)\b/i,
+    // The separator before the deferring verb is spelled as a one-member class, so the whole
+    // construction widens together rather than reaching only its spaced writer.
+    re: /\bthe brief'?s\b|\bthe brief[\s]+(?:requires|says|specifies|states)\b/i,
   },
   {
     name: "sweep / round / review marker",
@@ -257,7 +365,11 @@ const BANNED = [
     // actually uses. The NUMBER is what makes the phrase point outside the code, so the bare
     // severity word — a roll's `tier_label`, a doc comment calling a defect critical — is
     // deliberately not matched.
-    re: /\b[Ss]weeps?[ -]\d+|\bfix[- ]round|\bbuddy-check|\bwhole-branch[- ]review|\bfinding \d+|\b(?:critical|important|major|minor|blocker|fix|issue|bug)\s*#?\s*\d+\b/i,
+    //
+    // The separator before each number is spelled as a one-member class. Both sit next to an
+    // ESCAPE, which the bare-separator widening cannot read, so the hyphenated and underscored
+    // writers of a numbered finding and of a numbered severity went unmatched entirely.
+    re: /\b[Ss]weeps?[ -]\d+|\bfix[- ]round|\bbuddy-check|\bwhole-branch[- ]review|\bfinding[ ]\d+|\b(?:critical|important|major|minor|blocker|fix|issue|bug)[\s]*#?[\s]*\d+\b/i,
   },
   // EXAMPLE: A dispatch brief, task or plan is scaffolding that stops existing once the work
   // lands, so a comment deferring to one leaves the reader an instruction they cannot retrieve.
@@ -271,9 +383,51 @@ const BANNED = [
   // ones still to come.
   {
     name: "process marker",
-    re: /POST_WORK:|\b(?:task|dispatch) brief\b|\bthe plan\b/i,
+    // The separator before the noun sits next to a GROUP boundary, which the bare-separator
+    // widening cannot read, so it is spelled as a one-member class. Without it the entry reached
+    // only the spaced writer of each qualifier, while the hyphenated and underscored writers of
+    // the same two-word marker passed clean.
+    re: /POST_WORK:|\b(?:task|dispatch)[ ]brief\b|\bthe plan\b/i,
   },
 ];
+
+// EXAMPLE: A durable design-doc citation can carry digits that are part of its FILENAME, not a
+// EXAMPLE: process marker (a milestone-numbered data-model doc under the durable design-doc
+// EXAMPLE: directory) — those digits must not feed the milestone/task-id pattern (or any other
+// EXAMPLE: SKILL_BANNED pattern) below. The citation is stripped from the subject before
+// EXAMPLE: matching only; the reported text still comes from the untouched source line, so a
+// EXAMPLE: separate violation riding on the same line (a bare milestone id beside the citation)
+// EXAMPLE: still surfaces.
+const DESIGN_DOC_CITATION = /docs\/design\/[\w.-]+\.md/g;
+
+/**
+ * Whether one RAW source line carries a full durable design-doc path — the citation form a skill
+ * is permitted to use, and the only evidence that a section anchor beside it resolves to something.
+ *
+ * Read against the RAW line, never the subject: the Markdown branch of `lineSubject` replaces every
+ * design-doc citation with the empty string before matching, which deletes exactly the evidence
+ * this predicate needs. That strip stays — it exists because a durable filename can carry digits
+ * that would otherwise feed the milestone-id pattern — so the two read different texts on purpose.
+ *
+ * The unit is the LINE, not the token. Several permitted citations name the path once and carry a
+ * second anchor later on the same line, joined by a `+`; a predicate keyed to immediate adjacency
+ * would admit the first anchor and flag the second. The unit is not the GROUP either, even though
+ * the group is what every ban pattern matches against: one permitted citation anywhere in a
+ * paragraph would then exempt every bare anchor sharing that paragraph, and a hole that opens when
+ * unrelated prose happens to sit nearby is the invisible failure direction this gate refuses. The
+ * cost is that a citation wrapped across two lines must carry its path on the line the anchor sits
+ * on, which is a visible failure an author fixes by reflowing.
+ *
+ * Derived from `DESIGN_DOC_CITATION` rather than restating its source: a second spelling of "this
+ * names a durable design doc" is free to disagree with the first about what a durable path is.
+ * The clone drops the global flag, whose `lastIndex` state would make `test` answer differently on
+ * successive calls with the same argument.
+ *
+ * @param {string} rawLine - one untouched source line.
+ * @returns {boolean} whether the line names a durable design document by its full path.
+ */
+const namesDurableDesignDoc = (rawLine) =>
+  new RegExp(DESIGN_DOC_CITATION.source).test(rawLine);
 
 // The subset of BANNED the owner's ruling actually named for skills: milestone ids, task ids,
 // dated plan filenames, sweep/round/review markers, local letter+digit markers, history narration,
@@ -285,7 +439,7 @@ const BANNED = [
 // regexes) keeps a milestone/task/sweep/narration/spec pattern change from silently diverging
 // between the two file classes.
 const skillBannedByName = (name) => BANNED.find((b) => b.name === name);
-const SKILL_BANNED = [
+export const SKILL_BANNED = [
   skillBannedByName("milestone/task id"),
   skillBannedByName("phase / workstream / invariant id"),
   skillBannedByName("dated plan/spec file"),
@@ -302,25 +456,59 @@ const SKILL_BANNED = [
   skillBannedByName("unnamed spec reference"),
   // EXAMPLE: The "ephemeral doc pointer" category, named apart from the
   // EXAMPLE: shared "repo document pointer" CODE entry because the split is different for
-  // EXAMPLE: skills: the code entry also bans a durable architecture reference and a bare
-  // EXAMPLE: numbered invariant, for which code has no durable-citation carve-out at all, while
-  // EXAMPLE: a skill may cite one of those by its full design-doc path. Matching on the FILENAME
-  // EXAMPLE: rather than a generic doc-path prefix is what keeps the split correct without any
-  // EXAMPLE: extra carve-out logic: none of these five churn trackers live under the durable
-  // EXAMPLE: design-doc directory, and none of the durable design docs are named after one of
-  // EXAMPLE: them.
+  // EXAMPLE: skills: code may cite no repo document at all, while a skill may cite a durable
+  // EXAMPLE: design document by its full path. Matching on the FILENAME rather than a generic
+  // EXAMPLE: doc-path prefix is what keeps the split correct without any extra carve-out logic:
+  // EXAMPLE: none of these five churn trackers live under the durable design-doc directory, and
+  // EXAMPLE: none of the durable design docs are named after one of them.
   {
     name: "ephemeral doc pointer",
     re: /\b(?:TODO|PLAN|OPEN_BUGS|CLOSED_BUGS|POST_WORK_FINDINGS)\.md\b/,
   },
   skillBannedByName("local letter+digit marker"),
   skillBannedByName("numbered constraint"),
+  // The two PATHLESS reference forms, reused from the code list by reference and QUALIFIED by the
+  // carve-out rather than dropped for it. A skill may name a durable design document, so a bare
+  // architecture reference, a bare numbered invariant and a bare section anchor are permitted
+  // exactly when the line also carries the path that says WHICH document — and banned otherwise,
+  // where they are strictly worse than a stale named citation: nothing tells the reader which file
+  // to go and fail to find.
+  //
+  // `skipLine` is a predicate on the ban RECORD rather than a pre-filter over the list, so the one
+  // decision "this line names a durable doc" is stated once and read wherever the record is applied.
+  // A pre-filter would have to re-derive it at every site that selects a ban list, and two
+  // derivations of one decision are how the two come to disagree.
+  { ...skillBannedByName("pathless durable document reference"), skipLine: namesDurableDesignDoc },
+  { ...skillBannedByName("unnamed section pointer"), skipLine: namesDurableDesignDoc },
 ];
 
 // The file class → ban list mapping, held as one value so both scanners select through the same
 // symbol rather than each repeating the conditional; two derivations of the same decision are how
 // they come to disagree about a file class.
 const BAN_LISTS = { code: BANNED, md: SKILL_BANNED };
+
+/**
+ * Refuses a ban pattern carrying the global flag, at CONSTRUCTION rather than at report time.
+ *
+ * A global pattern carries mutable `lastIndex` state, so the same pattern applied to successive
+ * subjects starts wherever the previous subject left off and skips real hits; `separatorFlexible`
+ * preserves flags, so a derived form inherits the defect. Failing here names the offending entry,
+ * while failing at report time looks exactly like a clean corpus.
+ *
+ * @param {Record<string, {name: string, re: RegExp}[]>} lists - ban lists by file class.
+ * @throws {Error} naming the first entry that carries the flag.
+ */
+export function assertNoGlobalPatterns(lists) {
+  for (const [label, list] of Object.entries(lists))
+    for (const entry of list)
+      if (entry.re.global)
+        throw new Error(
+          `${label} ban entry "${entry.name}" carries the global flag. ` +
+            "Ban patterns are applied to many subjects and must hold no match state.",
+        );
+}
+
+assertNoGlobalPatterns(BAN_LISTS);
 
 /**
  * The ban list governing one file class: the skill ruleset for `.md` prose, the code ruleset
@@ -336,15 +524,6 @@ const BAN_LISTS = { code: BANNED, md: SKILL_BANNED };
 function bannedFor(isMd, lists = BAN_LISTS) {
   return isMd ? lists.md : lists.code;
 }
-
-// EXAMPLE: A durable design-doc citation can carry digits that are part of its FILENAME, not a
-// EXAMPLE: process marker (a milestone-numbered data-model doc under the durable design-doc
-// EXAMPLE: directory) — those digits must not feed the milestone/task-id pattern (or any other
-// EXAMPLE: SKILL_BANNED pattern) below. The citation is stripped from the subject before
-// EXAMPLE: matching only; the reported text still comes from the untouched source line, so a
-// EXAMPLE: separate violation riding on the same line (a bare milestone id beside the citation)
-// EXAMPLE: still surfaces.
-const DESIGN_DOC_CITATION = /docs\/design\/[\w.-]+\.md/g;
 
 // Coverage control: a pattern vocabulary enumerated from remembered examples can always miss a
 // shape nobody happened to remember, and reasoning about the pattern list in isolation cannot
@@ -536,9 +715,25 @@ function lineSubject(line, isMd, lexState) {
 //     such a class cannot be anything but a separator, so it needs no disambiguating context. A
 //     class carrying any non-separator member is emitted untouched, because a `-` inside `[a-z]`
 //     is a RANGE and widening it corrupts the pattern outright.
-// RESIDUAL, and why that coverage claim is bounded rather than universal: a bare separator
-// whose neighbour is an ESCAPE rather than a literal letter fails the neighbour test and keeps its
-// single spelling. Spelling that separator as a character class widens it.
+// RESIDUAL, and why that coverage claim is bounded rather than universal: the neighbour test
+// requires a LITERAL ALPHABETIC character on both sides, so a bare separator keeps its single
+// spelling whenever either neighbour is anything else — a group boundary (`(?:task|dispatch) brief`),
+// an escape (`finding \d+`), a class, a quantifier or a punctuation mark. Naming only the escape
+// case would state a bound narrower than the code's and read as better coverage than exists; the
+// group boundary is the commoner of the two, because an alternation of writers is how a marker with
+// several spellings gets written in the first place.
+//
+// The fix at a SITE is to respell that separator as a ONE-MEMBER CHARACTER CLASS — `[ ]`, `[-]`,
+// `[\s]` — which routes it through the class path above with no new mechanism and no new residual.
+// The source still declares exactly one spelling; the class is what marks it as a word separator
+// rather than regex punctuation, supplying the evidence the neighbours could not. Loosening the
+// neighbour test instead is the wrong repair: it is correct for every entry whose separator is not
+// a word separator at all, and relaxing it is how a matcher acquires silent over-widening.
+//
+// Widening is not safe in every direction, so a separator is respelled only where its ADDED
+// writers are not ordinary prose. Adding a hyphen or an underscore between two words is safe —
+// nobody writes English that way by accident. Adding a SPACE where the pattern had a hyphen is not:
+// see `local letter+digit marker`, where it fuses an article and a quantity into a marker.
 //
 // Nothing inside a NEGATIVE lookaround is widened, at any nesting depth. Widening there widens an
 // EXCLUSION, so the pattern matches strictly less and the gate reports strictly cleaner — the
@@ -550,13 +745,25 @@ const SEPARATOR_CHARS = new Set(["-", "_", " "]);
 // deliberate failure direction.
 const NEGATIVE_LOOKAROUND = /^\(\?(?:!|<!)/;
 
+// The single-character escapes that denote whitespace, so a class member written as one is
+// recognised as the separator it is. Derived alongside `SEPARATOR_CHARS` rather than restating
+// which characters separate words: `SEPARATOR_CLASS` is what a widened class becomes, and a member
+// it already matches must not read as non-separator on the way in.
+const WHITESPACE_ESCAPES = new Set(["s", "t", "n", "r", "f", "v"]);
+
 /**
  * Whether a character-class body denotes separators and nothing else, so the whole class can be
  * replaced by `SEPARATOR_CLASS`.
  *
+ * A member counts when it is a separator character written as a LITERAL or as a SINGLE-CHARACTER
+ * ESCAPE — `[ -]`, `[\s]`, `[\-_]`, `[\t]` all qualify. A separator spelled as a numeric escape
+ * (`[\x20]`, `[ ]`) is rejected: that spelling never appears in a hand-written word separator,
+ * and rejecting leaves the class unwidened, which is the visible failure direction.
+ *
  * A `-` counts as a member only at the body's first or last position; anywhere else it is a RANGE
  * operator, and a range is rejected outright rather than read through — `[ -_]` spans every
- * character from space to underscore.
+ * character from space to underscore. An ESCAPED `-` is never a range operator, so it carries no
+ * position requirement.
  *
  * @param {string} body - the class source between `[` and `]`.
  * @returns {boolean} whether every member of the class is a separator.
@@ -566,7 +773,9 @@ export function separatorOnlyClass(body) {
   for (let i = 0; i < body.length; i += 1) {
     const c = body[i];
     if (c === "\\") {
-      if (body.slice(i, i + 2) !== "\\s") return false;
+      const escaped = body[i + 1];
+      if (escaped === undefined) return false;
+      if (!WHITESPACE_ESCAPES.has(escaped) && !SEPARATOR_CHARS.has(escaped)) return false;
       i += 1;
       continue;
     }
@@ -574,7 +783,7 @@ export function separatorOnlyClass(body) {
       if (i !== 0 && i !== body.length - 1) return false;
       continue;
     }
-    if (c !== " " && c !== "_") return false;
+    if (!SEPARATOR_CHARS.has(c)) return false;
   }
   return true;
 }
@@ -643,26 +852,48 @@ const flexibleFor = (re) => {
   return flexibleCache.get(re);
 };
 
+// A global clone of a ban pattern, for iterating every match in one subject. Cloned rather than
+// mutated, and cached per source pattern: a ban entry is shared by reference between the two ban
+// lists and applied to every subject in the corpus, so flipping its own flag would leave match
+// state on a value the whole scan reads.
+const globalCache = new Map();
+const globalFor = (re) => {
+  if (!globalCache.has(re)) globalCache.set(re, new RegExp(re.source, `${re.flags}g`));
+  return globalCache.get(re);
+};
+
 /**
- * Where `re` first matches `subject`, under either its own spelling or its separator-flexible
- * form, and WHAT it matched; null for no match.
+ * EVERY place `re` matches `subject`, under its own spelling and under its separator-flexible
+ * form, ordered by offset and carrying WHAT each match consumed.
  *
- * The matched text is returned, not just the offset, because a subject is a group and a phrase may
- * wrap: the line an offset lands on is the line the phrase STARTS on, whose text does not contain
- * the phrase. A finding naming a line that does not show the violation is materially harder to act
- * on than one carrying the matched words.
+ * Every match is returned, not just the first, because a subject carrying two instances of the
+ * same pattern would otherwise be fixable only one gate run at a time: the run reporting the
+ * second instance looks like a regression introduced by the fix for the first. The two spellings
+ * are merged and de-duplicated by offset rather than short-circuiting on the direct form, since a
+ * subject can carry one writer of a marker at one offset and another writer at the next.
+ *
+ * The matched text travels with each offset because a subject is a group and a phrase may wrap:
+ * the line an offset lands on is the line the phrase STARTS on, whose text does not contain the
+ * phrase. A finding naming a line that does not show the violation is materially harder to act on
+ * than one carrying the matched words.
  *
  * @param {RegExp} re - one ban pattern.
  * @param {string} subject - a grouped comment block or Markdown paragraph.
- * @returns {{index: number, text: string}|null} the offset into `subject` and the matched text.
+ * @returns {{index: number, text: string}[]} every offset into `subject` and the text it matched.
  */
-export function bannedMatchIn(re, subject) {
-  const direct = subject.match(re);
-  if (direct !== null) return { index: direct.index, text: direct[0] };
+export function bannedMatchesIn(re, subject) {
+  const byIndex = new Map();
   const flexible = flexibleFor(re);
-  if (flexible === null) return null;
-  const widened = subject.match(flexible);
-  return widened === null ? null : { index: widened.index, text: widened[0] };
+  for (const spelling of flexible === null ? [re] : [re, flexible])
+    for (const m of subject.matchAll(globalFor(spelling))) {
+      // A wider spelling of the same marker at the same offset is one violation, not two; the
+      // longer text is the more informative report of it.
+      const prior = byIndex.get(m.index);
+      if (prior === undefined || m[0].length > prior.length) byIndex.set(m.index, m[0]);
+    }
+  return [...byIndex]
+    .sort((a, b) => a[0] - b[0])
+    .map(([index, text]) => ({ index, text }));
 }
 
 // A comment block, or a Markdown paragraph, is the unit a sentence is written in; a LINE is only
@@ -776,7 +1007,7 @@ export function scanCandidates(content, { isMd, banLists } = { isMd: true }) {
     for (const { re, acks, contextChars } of classes) {
       for (const m of subject.matchAll(re)) {
         const token = m[0];
-        if (banned.some((b) => bannedMatchIn(b.re, token) !== null)) continue;
+        if (banned.some((b) => bannedMatchesIn(b.re, token).length > 0)) continue;
         const context = subject.slice(m.index, m.index + token.length + contextChars);
         const ack = acks.find((a) => a.re.test(context));
         const at = group.lineAt(m.index);
@@ -846,15 +1077,19 @@ export function scanContent(content, { isMd }) {
   // GROUP — see `subjectGroups` — so a phrase split by a line wrap is one subject, not two.
   const { groups, exempted } = subjectGroups(content, isMd);
   for (const group of groups) {
-    // EVERY pattern that matches a group is reported, not just the first. One hit per group leaves
-    // a block carrying two different violations fixable only one gate run at a time, and the run
-    // that reports the second looks like a regression introduced by the fix for the first.
-    for (const b of banned) {
-      const m = bannedMatchIn(b.re, group.text);
-      if (m === null) continue;
-      const at = group.lineAt(m.index);
-      hits.push({ line: at.line, kind: b.name, text: at.source, match: m.text });
-    }
+    // EVERY violation a group carries is reported: every pattern that matches it, and every place
+    // each pattern matches. Reporting one leaves a block carrying two violations fixable only one
+    // gate run at a time, and the run that reports the second looks like a regression introduced by
+    // the fix for the first — which holds whether the two are different patterns or two instances
+    // of the same one.
+    for (const b of banned)
+      for (const m of bannedMatchesIn(b.re, group.text)) {
+        const at = group.lineAt(m.index);
+        // A guarded entry is qualified by the line the match sits on, not disabled: see
+        // `namesDurableDesignDoc` for why the raw line is the unit and the subject is not.
+        if (b.skipLine?.(at.source)) continue;
+        hits.push({ line: at.line, kind: b.name, text: at.source, match: m.text });
+      }
   }
   hits.sort((a, b) => a.line - b.line);
   return { hits, exempted };
@@ -881,6 +1116,111 @@ export function residueReport(scopes = []) {
     for (const r of result.residue) residue.push({ path, ...r });
   }
   return { ackTotal, ackByReason, residue, filesScanned: scanned.length };
+}
+
+// A bare count carries no record of the instrument that produced it, so a widened pattern and a
+// regressed codebase are the same number going up, and a broken scanner and a clean scope are the
+// same zero. Every count this script prints is therefore stamped with a fingerprint of the rules
+// that produced it, and a run whose fingerprint differs from the previous run for the same scope
+// says so instead of inviting a comparison that is not valid.
+//
+// Hashed function sources are line-ending-normalized. `Function.prototype.toString` returns the
+// literal source text, so the same function hashes differently depending on how the file reached
+// the disk — git stores LF and checks out CRLF on Windows. Without normalizing, a CI run and a
+// local run report different instruments for identical rules, and every comparison between them is
+// refused for a reason that has nothing to do with the rules.
+const stableSource = (fn) => fn.toString().split("\r\n").join("\n");
+
+// Every function whose SOURCE decides what gets counted. The membership rule is the whole design:
+// a function belongs here when changing it alone moves a total without touching any `re`. All eight
+// do — where a line's prose ends, where a group boundary falls, how many hits one group yields, how
+// many spellings a pattern reaches, and which files a scope claims.
+//
+// Held as function VALUES, not names, so `instrumentComponents` can read each name off the function
+// itself. A hand-written label drifts silently when the function it labels is renamed; a name read
+// from the value cannot.
+const INSTRUMENT_FUNCTIONS = [
+  splitLine,
+  lineSubject,
+  subjectGroups,
+  scanContent,
+  bannedMatchesIn,
+  separatorFlexible,
+  separatorOnlyClass,
+  under,
+];
+
+/**
+ * The named parts of the ruler, exactly as `instrumentFingerprint` hashes them.
+ *
+ * Exported so a test can pin WHICH parts are hashed rather than only that the hash is stable. The
+ * omission this guards against is invisible from the fingerprint itself: a component left out
+ * produces a perfectly stable hash that fails to change when the rule it governs does, and the
+ * banner then offers a comparison between two runs measured by different rulers.
+ *
+ * @returns {{functions: string[], patterns: string[], values: string[]}} each hashed component's
+ *   name, grouped by what kind of thing it is.
+ */
+export function instrumentComponents() {
+  return {
+    functions: INSTRUMENT_FUNCTIONS.map((fn) => fn.name),
+    patterns: [
+      "BANNED",
+      "SKILL_BANNED",
+      "STRING_LITERAL",
+      "EXPLANATORY_STRING",
+      "PROSE_LITERAL",
+      "EXAMPLE_EXEMPT",
+      "DESIGN_DOC_CITATION",
+    ],
+    values: [
+      "SEPARATOR_CLASS",
+      "SEPARATOR_CHARS",
+      "WHITESPACE_ESCAPES",
+      "ROOTS",
+      "EXTS",
+      "MD_ROOTS",
+      "MD_EXTS",
+      "SKIP_DIRS",
+      "GENERATED_ROOT",
+    ],
+  };
+}
+
+/**
+ * The short hash stamped beside every count this script prints.
+ *
+ * @returns {string} an 8-character fingerprint of the ban lists, the subject rules and the scope
+ *   rules currently in force.
+ */
+export function instrumentFingerprint() {
+  return createHash("sha256")
+    .update(
+      JSON.stringify([
+        BANNED.map((b) => [b.name, b.re.source, b.re.flags]),
+        SKILL_BANNED.map((b) => [b.name, b.re.source, b.re.flags]),
+        INSTRUMENT_FUNCTIONS.map((fn) => [fn.name, stableSource(fn)]),
+        [
+          STRING_LITERAL.source,
+          EXPLANATORY_STRING.source,
+          PROSE_LITERAL.source,
+          EXAMPLE_EXEMPT.source,
+          DESIGN_DOC_CITATION.source,
+        ],
+        // The separator VALUE SETS sit beside the functions that read them: `separatorOnlyClass`'s
+        // source is unchanged by adding a character to either set, while every count that turns on
+        // which spellings a pattern reaches moves.
+        [SEPARATOR_CLASS, [...SEPARATOR_CHARS].sort(), [...WHITESPACE_ESCAPES].sort()],
+        ROOTS,
+        EXTS,
+        MD_ROOTS,
+        MD_EXTS,
+        [...SKIP_DIRS].sort(),
+        GENERATED_ROOT,
+      ]),
+    )
+    .digest("hex")
+    .slice(0, 8);
 }
 
 // Query interface. It exists so no caller has to re-derive a subset by grepping this script's
@@ -935,7 +1275,7 @@ function main() {
     process.exit(1);
   }
 
-  const { scanned, isMdFile, generatedExcluded } = gateFileSet(scopes);
+  const { scanned, isMdFile, generatedExcluded, untrackedSkillExcluded } = gateFileSet(scopes);
   const hits = [];
   let exempted = 0;
   for (const path of scanned) {
@@ -956,56 +1296,7 @@ function main() {
     process.exit(2);
   }
 
-  // A bare count carries no record of the instrument that produced it, so a widened pattern and a
-  // regressed codebase are the same number going up, and a broken scanner and a clean scope are the
-  // same zero. Every count this script prints is therefore stamped with a fingerprint of the rules
-  // that produced it, and a run whose fingerprint differs from the previous run for the same scope
-  // says so instead of inviting a comparison that is not valid.
-  //
-  // Hashed function sources are line-ending-normalized. `Function.prototype.toString` returns the
-  // literal source text, so the same function hashes differently depending on how the file reached
-  // the disk — git stores LF and checks out CRLF on Windows. Without normalizing, a CI run and a
-  // local run report different instruments for identical rules, and every comparison between them is
-  // refused for a reason that has nothing to do with the rules.
-  const stableSource = (fn) => fn.toString().split("\r\n").join("\n");
-
-  const INSTRUMENT = createHash("sha256")
-    .update(
-      JSON.stringify([
-        BANNED.map((b) => [b.name, b.re.source, b.re.flags]),
-        SKILL_BANNED.map((b) => [b.name, b.re.source, b.re.flags]),
-        [
-          stableSource(splitLine),
-          STRING_LITERAL.source,
-          EXPLANATORY_STRING.source,
-          PROSE_LITERAL.source,
-          EXAMPLE_EXEMPT.source,
-          DESIGN_DOC_CITATION.source,
-        ],
-        // What a SUBJECT is, and which spellings of a separator a pattern reaches, decide every
-        // count as directly as the patterns themselves do: regrouping lines or widening a
-        // separator moves every total without touching a `re`. Hashing them keeps a comparison
-        // between two runs from being offered when the ruler, not the corpus, is what changed.
-        [
-          stableSource(subjectGroups),
-          stableSource(separatorFlexible),
-          stableSource(separatorOnlyClass),
-          SEPARATOR_CLASS,
-        ],
-        ROOTS,
-        EXTS,
-        MD_ROOTS,
-        MD_EXTS,
-        [...SKIP_DIRS].sort(),
-        GENERATED_ROOT,
-        // The scope-matching rule is part of the ruler: changing what a prefix claims changes every
-        // scoped count without touching a pattern. Hashing the function's source keeps the
-        // fingerprint honest without anyone remembering to bump a version.
-        stableSource(under),
-      ]),
-    )
-    .digest("hex")
-    .slice(0, 8);
+  const INSTRUMENT = instrumentFingerprint();
 
   // A run memo, so the next run can distinguish a changed ruler from changed code. It lives in the
   // conventional JS tool cache rather than any workspace a process creates: a durable script that
@@ -1054,7 +1345,11 @@ function main() {
       generatedExcluded > 0
         ? `; ${generatedExcluded} generated file(s) excluded (${GENERATED_ROOT})`
         : "";
-    const head = `instrument ${INSTRUMENT}; ${scanned.length} file(s) scanned${ex}${gen}`;
+    const vendored =
+      untrackedSkillExcluded > 0
+        ? `; ${untrackedSkillExcluded} untracked (vendored) skill file(s) excluded`
+        : "";
+    const head = `instrument ${INSTRUMENT}; ${scanned.length} file(s) scanned${ex}${gen}${vendored}`;
     if (!prior) return `${head}; no prior run recorded for this scope`;
     if (prior.instrument !== INSTRUMENT) {
       return (

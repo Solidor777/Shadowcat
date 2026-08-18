@@ -11,6 +11,12 @@ import {
   residueReport,
   separatorFlexible,
   separatorOnlyClass,
+  bannedMatchesIn,
+  assertNoGlobalPatterns,
+  instrumentComponents,
+  instrumentFingerprint,
+  BANNED,
+  SKILL_BANNED,
   GENERATED_ROOT,
 } from "./check-comment-refs.mjs";
 
@@ -686,7 +692,10 @@ test("a class-spelled marker pattern matches all three of its separator spelling
 // every remaining candidate must be empty — a red run here means a real corpus token nobody has
 // looked at, not a flaky test.
 test("coverage control: the governed skill corpus has no unrecognised candidate tokens", () => {
-  const files = MD_ROOTS.flatMap((d) => sources(d, MD_EXTS));
+  // Read from `collectFiles`, not a second walk of the skill root: an independent walk would
+  // include the untracked vendored directories the gate excludes, and the control would then be
+  // measuring a corpus the gate never scans.
+  const files = collectFiles().mdFiles;
   const residue = [];
   let acknowledgedTotal = 0;
   for (const path of files) {
@@ -701,4 +710,314 @@ test("coverage control: the governed skill corpus has no unrecognised candidate 
   // ACKNOWLEDGED ever stops matching anything in the corpus, so a future edit that empties a
   // reason out is caught here rather than left as a silent uncounted carve-out.
   expect(acknowledgedTotal).toBeGreaterThan(0);
+});
+
+// ---------------------------------------------------------------------------
+// Separator respelling: the writers a bare separator could not reach.
+//
+// The bare-separator widening requires a LITERAL ALPHABETIC neighbour on both sides, so a separator
+// beside a group boundary or an escape kept its single spelling and the marker's other two writers
+// passed the gate clean. Each case below is a spelling that was reachable BEFORE the affected
+// separator was respelled as a one-member character class; every one of them must now fail.
+// ---------------------------------------------------------------------------
+
+// One row per respelled separator, naming the neighbour that defeated the bare widening. A row's
+// three writers must all reach the same entry: that is the property the widening exists to give,
+// and a row failing on one writer is the entry reachable under two spellings out of three.
+const RESPELLED_SEPARATORS = [
+  ["history narration phrase, group boundary", "history narration",
+    ["before the fix", "before-the-fix", "before_the_fix"]], // EXAMPLE:
+  ["history narration phrase, past tense writer", "history narration",
+    ["after the rewrite", "after-the-rewrite", "after_the_rewrite"]], // EXAMPLE:
+  ["history narration compound, group boundary", "history narration",
+    ["pre-refactor", "pre refactor", "pre_refactor"]], // EXAMPLE:
+  ["process marker, group boundary", "process marker",
+    ["dispatch brief", "dispatch-brief", "dispatch_brief"]], // EXAMPLE:
+  ["process marker, second writer of the qualifier", "process marker",
+    ["task brief", "task-brief", "task_brief"]], // EXAMPLE:
+  ["sweep marker finding form, escape neighbour", "sweep / round / review marker",
+    ["finding 3", "finding-3", "finding_3"]], // EXAMPLE:
+  ["sweep marker severity form, escape neighbour", "sweep / round / review marker",
+    ["critical 2", "critical-2", "critical_2"]], // EXAMPLE:
+  ["milestone spelled-out form, escape neighbour", "milestone/task id",
+    ["Task 4", "Task-4", "Task_4"]], // EXAMPLE:
+  ["numbered constraint, escape neighbour", "numbered constraint",
+    ["Constraint 5", "Constraint-5", "Constraint_5"]], // EXAMPLE:
+  ["unnamed brief pointer, escape neighbour", "unnamed brief pointer",
+    ["the brief requires", "the brief-requires", "the-brief_requires"]], // EXAMPLE:
+];
+
+test("every respelled separator reaches all three of its writers", () => {
+  for (const [label, kind, writers] of RESPELLED_SEPARATORS)
+    for (const written of writers) {
+      const { hits } = scanContent(`// A comment mentioning ${written} in passing.\n`, {
+        isMd: false,
+      });
+      expect(hits.map((h) => h.kind), `${label}: ${written}`).toContain(kind);
+    }
+});
+
+// The date-stamp entry's qualifying phrase is its own case: it takes a following NUMBER rather
+// than a following word, and only the separator inside the phrase passed the neighbour test, so a
+// half-hyphenated writer matched while a fully hyphenated one did not.
+test("the date-stamp qualifier reaches its fully separated writers", () => {
+  for (const written of ["as of 2026", "as-of-2026", "as_of_2026"]) { // EXAMPLE:
+    const { hits } = scanContent(`// Counted ${written} for the release window.\n`, {
+      isMd: false,
+    });
+    expect(hits.map((h) => h.kind), written).toContain("date stamp");
+  }
+});
+
+// The section-anchor writer, through the skill ruleset where the entry governs.
+test("the section-pointer separator reaches all three of its writers", () => {
+  for (const written of ["Section 3", "Section-3", "Section_3"]) { // EXAMPLE:
+    const { hits } = scanContent(`Described in ${written} of the reference.\n`, { isMd: true });
+    expect(hits.map((h) => h.kind), written).toContain("unnamed section pointer");
+  }
+});
+
+// The measured counter-case, and the reason the neighbour test is not simply loosened. Respelling
+// the local marker's optional hyphen would admit the SPACE writer, and an initial followed by a
+// space and a digit is ordinary English — an indefinite article in front of a quantity. The
+// hyphenated and unhyphenated writers must still fire; the spaced one must not.
+test("the local letter+digit separator is deliberately not widened to a space", () => {
+  for (const written of ["C-2", "C2"]) { // EXAMPLE:
+    const { hits } = scanContent(`// Raised as ${written} during the pass.\n`, { isMd: false });
+    expect(hits.map((h) => h.kind), written).toContain("local letter+digit marker");
+  }
+  const quantity = scanContent("// A 1-hex token spans the hex it sits in.\n", { isMd: false });
+  expect(quantity.hits.map((h) => h.kind)).not.toContain("local letter+digit marker");
+});
+
+// The other measured counter-case: hyphenating the spec reference turns a noun into an adjectival
+// compound naming a code symbol's scope, which is not a document pointer at all.
+test("a hyphenated spec compound is not an unnamed spec reference", () => {
+  const bare = scanContent("// Resolved per spec for this field.\n", { isMd: false });
+  expect(bare.hits.map((h) => h.kind)).toContain("unnamed spec reference");
+  const compound = scanContent("// A per-spec field, not a per-group one.\n", { isMd: false });
+  expect(compound.hits.map((h) => h.kind)).not.toContain("unnamed spec reference");
+});
+
+// A date's hyphens are its FORMAT, not a word separator: widening them would read a
+// space-separated triple of numbers as a date.
+test("a date's own hyphens are not widened into other separators", () => {
+  const iso = scanContent("Superseded by 2026-08-17-plan.md in the archive.\n", { isMd: true }); // EXAMPLE:
+  expect(iso.hits.map((h) => h.kind)).toContain("dated plan/spec file");
+  const spaced = scanContent("Sized 2026 08 17.md across the three columns.\n", { isMd: true });
+  expect(spaced.hits.map((h) => h.kind)).not.toContain("dated plan/spec file");
+});
+
+// ---------------------------------------------------------------------------
+// The instrument fingerprint.
+// ---------------------------------------------------------------------------
+
+// What the fingerprint HASHES is what makes a printed count comparable to an earlier one. A
+// component left out produces a perfectly stable hash that fails to move when the rule it governs
+// does, and the banner then offers a comparison between two runs measured by different rulers —
+// an omission invisible from the fingerprint itself, which is why nothing detected the last one.
+//
+// The function names are read off the function VALUES, so renaming a hashed function fails here
+// rather than silently drifting from a hand-written label.
+test("the instrument fingerprint hashes exactly the components that decide a count", () => {
+  expect(instrumentComponents().functions).toEqual([
+    "splitLine",
+    "lineSubject",
+    "subjectGroups",
+    "scanContent",
+    "bannedMatchesIn",
+    "separatorFlexible",
+    "separatorOnlyClass",
+    "under",
+  ]);
+  expect(instrumentComponents().patterns).toEqual([
+    "BANNED",
+    "SKILL_BANNED",
+    "STRING_LITERAL",
+    "EXPLANATORY_STRING",
+    "PROSE_LITERAL",
+    "EXAMPLE_EXEMPT",
+    "DESIGN_DOC_CITATION",
+  ]);
+  expect(instrumentComponents().values).toEqual([
+    "SEPARATOR_CLASS",
+    "SEPARATOR_CHARS",
+    "WHITESPACE_ESCAPES",
+    "ROOTS",
+    "EXTS",
+    "MD_ROOTS",
+    "MD_EXTS",
+    "SKIP_DIRS",
+    "GENERATED_ROOT",
+  ]);
+});
+
+// The fingerprint is a pure function of the rules in force, so two calls in one process must agree.
+// A hash that varied per call would refuse every comparison and read as constant instrument drift.
+test("the instrument fingerprint is stable across calls", () => {
+  expect(instrumentFingerprint()).toBe(instrumentFingerprint());
+  expect(instrumentFingerprint()).toMatch(/^[0-9a-f]{8}$/);
+});
+
+// ---------------------------------------------------------------------------
+// Match iteration, and the flag that would corrupt it.
+// ---------------------------------------------------------------------------
+
+// Two instances of the SAME pattern in one subject are two violations. Reporting one leaves the
+// block fixable only a gate run at a time, and the run reporting the second reads as a regression
+// introduced by the fix for the first — the symptom the one-hit-per-group rule was already written
+// against for two DIFFERENT patterns.
+test("a group carrying two instances of one pattern reports both", () => {
+  const fixture = "// Raised in sweep 2 and again in sweep 5 of the same branch.\n"; // EXAMPLE:
+  const { hits } = scanContent(fixture, { isMd: false });
+  const sweeps = hits.filter((h) => h.kind === "sweep / round / review marker");
+  expect(sweeps.map((h) => h.match)).toEqual(["sweep 2", "sweep 5"]); // EXAMPLE:
+});
+
+// One marker matched by both the direct and the widened spelling at one offset is ONE violation.
+// De-duplicating by offset is what keeps the per-match iteration above from double-counting every
+// hit whose separator the widening also matches.
+test("both spellings matching at one offset report a single violation", () => {
+  const matches = bannedMatchesIn(/\bfix[ ]round/i, "a fix round here");
+  expect(matches).toEqual([{ index: 2, text: "fix round" }]);
+});
+
+// A global ban pattern carries `lastIndex` state between subjects, so it would silently skip real
+// hits. The refusal happens at construction, where it names the entry, rather than at report time,
+// where it is indistinguishable from a clean corpus.
+test("a ban entry carrying the global flag is refused at construction", () => {
+  expect(() =>
+    assertNoGlobalPatterns({ code: [{ name: "fabricated", re: /x/g }] }),
+  ).toThrow(/fabricated.*global flag/s);
+  // The lists actually in force must pass the same check they are constructed under.
+  expect(() => assertNoGlobalPatterns({ code: BANNED, md: SKILL_BANNED })).not.toThrow();
+});
+
+// ---------------------------------------------------------------------------
+// `separatorOnlyClass`: the property the prose states is the property the code tests.
+// ---------------------------------------------------------------------------
+
+// A separator written as an ESCAPE is still a separator. Rejecting one left the class unwidened —
+// the safe direction, but it made three prose statements of the property false, and it is a trap
+// that gets likelier as one-member classes become the way a word separator is marked.
+test("separatorOnlyClass accepts a separator written as an escape", () => {
+  expect(separatorOnlyClass("\\-")).toBe(true);
+  expect(separatorOnlyClass("\\_")).toBe(true);
+  expect(separatorOnlyClass("\\ ")).toBe(true);
+  expect(separatorOnlyClass("\\t")).toBe(true);
+  expect(separatorOnlyClass("\\-\\_\\t")).toBe(true);
+  // An escaped `-` is never a range operator, so it carries no position requirement.
+  expect(separatorOnlyClass("\\-_")).toBe(true);
+  // Still rejected: a non-separator escape, and a trailing backslash with nothing after it.
+  expect(separatorOnlyClass("\\w")).toBe(false);
+  expect(separatorOnlyClass("\\d")).toBe(false);
+  expect(separatorOnlyClass("\\")).toBe(false);
+});
+
+// A one-member class is how a source marks a separator as a word separator rather than regex
+// punctuation. It must derive to the full separator class, or the respellings above do nothing.
+test("a one-member separator class widens to the full separator class", () => {
+  expect(String(separatorFlexible(/\bfinding[ ]\d+/))).toBe(String(/\bfinding[-_\s]\d+/));
+  expect(String(separatorFlexible(/\bpre[-]fix\b/))).toBe(String(/\bpre[-_\s]fix\b/));
+  expect(String(separatorFlexible(/\bTask[\s]+\d/))).toBe(String(/\bTask[-_\s]+\d/));
+});
+
+// ---------------------------------------------------------------------------
+// The skill carve-out, implemented as a guard rather than as a dropped check.
+// ---------------------------------------------------------------------------
+
+// A skill may name a durable design document, so a bare architecture reference, a bare numbered
+// invariant and a bare section anchor are permitted exactly when the line carries the path saying
+// WHICH document. Both directions are controlled: a guard nobody can see fail is a dropped check.
+test("skill mode permits a pathless anchor only beside a durable design-doc path", () => {
+  const guarded = "- Rationale: `docs/design/ARCHITECTURE.md` §2 invariant 6 (three bands).\n"; // EXAMPLE:
+  expect(scanContent(guarded, { isMd: true }).hits).toEqual([]);
+  const bare = "Hidden fields are stripped before transmission (ARCHITECTURE §2 invariant 4).\n"; // EXAMPLE:
+  const kinds = scanContent(bare, { isMd: true }).hits.map((h) => h.kind);
+  expect(kinds).toContain("pathless durable document reference");
+  expect(kinds).toContain("unnamed section pointer");
+});
+
+// The guard's unit is the LINE. Several permitted citations name the path once and carry a second
+// anchor later on the same line joined by a `+`; a guard keyed to immediate adjacency would admit
+// the first anchor and flag the second.
+test("a permitted citation covers a second anchor later on the same line", () => {
+  const fixture = "- Rationale: `docs/design/ARCHITECTURE.md` §2 (invariants 1-4) + §3 (stack).\n"; // EXAMPLE:
+  expect(scanContent(fixture, { isMd: true }).hits).toEqual([]);
+});
+
+// The guard reads the RAW line, never the subject: the Markdown branch of `lineSubject` replaces
+// every design-doc citation with the empty string before matching, which would delete exactly the
+// evidence the guard needs and make every guarded citation fail.
+test("the guard survives the design-doc citation strip applied to the subject", () => {
+  // The digits in the filename are why the strip exists; the guard must still see the path.
+  const fixture = "- Rationale: `docs/design/M2-data-foundation.md` §4 (document bands).\n"; // EXAMPLE:
+  expect(scanContent(fixture, { isMd: true }).hits).toEqual([]);
+});
+
+// The guard is scoped to the skill corpus. Code has no durable-citation carve-out at all, so the
+// same line in a comment fails whether or not it names a path.
+test("code mode has no durable-citation carve-out", () => {
+  const fixture = "// Rationale: `docs/design/ARCHITECTURE.md` §2 invariant 6.\n"; // EXAMPLE:
+  const kinds = scanContent(fixture, { isMd: false }).hits.map((h) => h.kind);
+  expect(kinds).toContain("repo document pointer");
+  expect(kinds).toContain("pathless durable document reference");
+});
+
+// ---------------------------------------------------------------------------
+// The two spellings the reference entries did not reach.
+// ---------------------------------------------------------------------------
+
+// A comment naming a codebase skill points at a knowledge artifact outside the code whose identity
+// a process assigns. Scoped to CODE: a skill naming a sibling skill is the documented structure of
+// that knowledge layer, and the core skill's own subsystem list is written that way — so both
+// directions are controlled, because a ban that fired on the skill corpus would fail the corpus it
+// is meant to describe.
+test("a source comment naming a codebase skill is a pointer", () => {
+  const fixture = "// Broadcast filtering lives here (see `shadowcat-codebase-chat`).\n";
+  expect(scanContent(fixture, { isMd: false }).hits.map((h) => h.kind)).toEqual([
+    "codebase skill pointer",
+  ]);
+});
+
+test("a skill naming a sibling skill is not a pointer", () => {
+  const fixture = "Invoke `shadowcat-codebase-core` first, then `shadowcat-codebase-chat`.\n";
+  expect(scanContent(fixture, { isMd: true }).hits).toEqual([]);
+});
+
+// The tracker entry required the literal extension, so the identical pointer read as clean with
+// four characters dropped. A POINTER CONSTRUCTION is required rather than a bare occurrence: the
+// bare marker form is deliberately PERMITTED, and these names occur as ordinary prose.
+test("a tracker named without its extension is still a pointer", () => {
+  for (const written of ["see TODO", "logged in TODO", "in the OPEN_BUGS", "per PLAN"]) { // EXAMPLE:
+    const fixture = `// Deferred — ${written} for the remaining cases.\n`;
+    expect(
+      scanContent(fixture, { isMd: false }).hits.map((h) => h.kind),
+      written,
+    ).toContain("extensionless tracker pointer");
+  }
+});
+
+test("a bare code marker is not a tracker pointer", () => {
+  // The `TODO:` marker itself stays: it is a code marker, not a deferral to a document.
+  const marker = "// TODO: Extract token parsing into a stateless utility.\n";
+  expect(scanContent(marker, { isMd: false }).hits).toEqual([]);
+  // And the name occurring as ordinary prose, with no construction in front of it.
+  const prose = "// A PLAN value is rejected when its steps disagree with the tree.\n";
+  expect(scanContent(prose, { isMd: false }).hits).toEqual([]);
+});
+
+// ---------------------------------------------------------------------------
+// Corpus scoping.
+// ---------------------------------------------------------------------------
+
+// An untracked skill directory is vendored third-party prose: this repo neither wrote it nor may
+// edit it, so it is out of the corpus by that durable property. The skill-symbol-citation gate
+// scopes the same directories the same way, and the two must not disagree about what the corpus is.
+test("the skill corpus is scoped to the tracked skill directories", () => {
+  const { mdFiles, untrackedSkillFiles } = collectFiles();
+  expect(mdFiles.length).toBeGreaterThan(0);
+  for (const p of mdFiles) expect(untrackedSkillFiles).not.toContain(p);
+  // Every scanned skill file sits under the skill root; nothing else sneaks in through the walk.
+  for (const p of mdFiles) expect(p.startsWith(`${MD_ROOTS[0]}/`)).toBe(true);
 });

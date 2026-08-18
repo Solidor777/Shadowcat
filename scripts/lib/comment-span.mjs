@@ -18,8 +18,20 @@ export /**
  * pattern still looks correct. Deriving the span instead of matching a shape removes the whole
  * class rather than one anchor at a time.
  *
- * Over-scanning is the deliberate failure direction: a construct misread as a comment surfaces a
- * visible false positive, whereas a missed comment is invisible and reads as a pass.
+ * Over-scanning is the deliberate failure direction WHERE THERE IS A CHOICE: a construct misread as
+ * a comment surfaces a visible false positive, whereas a missed comment is invisible and reads as a
+ * pass. Two residuals fail the other way, and naming the direction without naming them would claim
+ * a property the function does not have:
+ *
+ *  - A single quote opens a string literal, so a line carrying an ODD number of them consumes the
+ *    rest of the line into the CODE span. A Rust lifetime parameter is the live shape — one lone
+ *    quote, then a trailing comment that vanishes from the comment span.
+ *  - No string state crosses a line, so a line CONTINUING a multi-line template literal is lexed
+ *    from a cold start, and a quote inside that literal opens a span that was never open.
+ *
+ * Both UNDER-scan, which is the invisible direction. Each has a specimen in the control set below,
+ * asserting what the function does today rather than what it should do — the point of a control is
+ * that the behaviour cannot change without a run saying so.
  */
 function splitLine(line, state) {
   let code = "";
@@ -95,6 +107,15 @@ const SUBJECT_SPECIMENS = [
   ["code only", "const x = 1;", null],
   ["url inside a string is not a comment", 'const u = "https://example.test/a";', null],
   ["escaped quote does not end the string", 'const s = "a\\"// b";', null],
+  // A PAIRED lifetime quote closes the literal the first one opened, so the trailing comment is
+  // still reached. This is the control that keeps the two residuals below readable as residuals
+  // rather than as "quotes break everything".
+  ["paired lifetime quotes leave the trailing comment reachable", "impl<'a> Row<'a> {} // text", " text"],
+  // The two UNDER-scanning residuals, pinned to what the function does TODAY. `null` here asserts
+  // a comment is NOT seen — the invisible failure direction, which until now had no control at all
+  // and so could have changed in either direction without any run saying so.
+  ["odd lifetime quote swallows the trailing comment", "pub struct Row<'a> { n: u32 } // text", null],
+  ["a template-literal continuation line is lexed cold", "b) + `; // text", null],
 ];
 
 for (const [label, line, want] of SUBJECT_SPECIMENS) {
