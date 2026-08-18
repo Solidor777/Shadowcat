@@ -35,8 +35,8 @@ const I32_MAX = 2147483647;
 
 /** Which recognizer claimed a span of notation-template source. The grammar is an ordered
  * chain (`RECOGNIZERS`) plus a total fallthrough, and this names the outcome of that
- * ordering — which recognizer took a given span, and therefore what became of the text an
- * author wrote there.
+ * ordering — the whole of what `checkNotationKey` reports, since a key survives only when
+ * one `"identifier"` claim covers it.
  *
  * - `"label"` — a bracketed span, emitted verbatim.
  * - `"integer"` — a run of digits, emitted verbatim.
@@ -150,8 +150,8 @@ const claimIdentifierSpan: Recognizer = {
 /** The template grammar's recognizer chain, tried in this order at every position. The
  * ORDER is the grammar: each recognizer claims only what no earlier one took, so "does
  * this key survive" means "does `claimIdentifierSpan` get all of it". Ordering is data
- * here rather than nested control flow so a reader can answer that question by reading
- * this list, without simulating the loop. */
+ * here rather than nested control flow precisely so that question is answerable by
+ * RUNNING the chain (`checkNotationKey`) instead of by describing it. */
 const RECOGNIZERS: readonly Recognizer[] = [
   claimLabelSpan,
   claimIntegerRun,
@@ -274,6 +274,70 @@ function substituteIdentifier(
   return `${value}[${originalText}]`;
 }
 
+/** One span of a written key, as the template grammar claims it. */
+export interface NotationKeySegment {
+  /** Which recognizer claimed the span. */
+  readonly kind: NotationClaimKind;
+  /** The claimed text. */
+  readonly text: string;
+  /** Index within the key where the span starts. */
+  readonly at: number;
+}
+
+/** What the template grammar does to one written key — `checkNotationKey`'s result. */
+export interface NotationKeyCheck {
+  /** `true` only when the whole key is claimed as ONE identifier span, which is the only
+   * shape that reaches a consumer's identifier resolver as the author wrote it. */
+  readonly intact: boolean;
+  /** Every claim over the key, in order, stopping at `rejects` when one is set. Two or
+   * more segments means the key is SPLIT: each `"identifier"` segment resolves separately
+   * and every other segment is emitted into the notation, with no error on any path. */
+  readonly segments: readonly NotationKeySegment[];
+  /** Set when a recognizer rejected the key outright, in which case any template
+   * containing it returns this error instead of notation; `null` otherwise. */
+  readonly rejects: FormulaError | null;
+}
+
+/** Answers whether a written key survives the notation-template grammar intact, by
+ * RUNNING that grammar's recognizer chain over it — `claimAt`, the same chain
+ * `resolveNotationTemplate` runs at every position, so the two cannot disagree about what
+ * claims a key.
+ *
+ * This is the authority a consuming system's stat-key authoring validation calls.
+ * `NOTATION_KEYWORDS` membership is one of several ways a key fails and there is no closed
+ * form for the rest, because surviving means being claimed by a recognizer no earlier
+ * recognizer beat to the position. Reimplementing a rule instead of calling this is the
+ * failure this function exists to end.
+ *
+ * Scope: the grammar only. `MAX_FORMULA_LENGTH` bounds a whole template rather than a key,
+ * so it is not applied here, and no resolution is attempted — no resolver is accepted.
+ * @param key The stat key as an author would write it.
+ * @returns An `intact` verdict plus the claim structure behind it: which recognizer took
+ * each span, and where. A bare boolean cannot tell an authoring UI what went wrong, and
+ * returning the recognizers themselves would pin this module's internals into the public
+ * API — segments are the smallest shape that explains the verdict without doing either.
+ * @example
+ * ```ts
+ * import { checkNotationKey } from "@shadowcat/formula";
+ *
+ * checkNotationKey("hp.max").intact; // true
+ * checkNotationKey("kh.max").intact; // false — "kh" is claimed as dice notation
+ * checkNotationKey("2hp").segments;  // [{ kind: "integer", ... }, { kind: "identifier", ... }]
+ * ```
+ */
+export function checkNotationKey(key: string): NotationKeyCheck {
+  const segments: NotationKeySegment[] = [];
+  let at = 0;
+  while (at < key.length) {
+    const claim = claimAt(key, at);
+    if (!("kind" in claim)) return { intact: false, segments, rejects: claim };
+    segments.push({ kind: claim.kind, text: claim.text, at });
+    at += claim.text.length;
+  }
+  const intact = segments.length === 1 && segments[0].kind === "identifier";
+  return { intact, segments, rejects: null };
+}
+
 /** Rewrites a dice-notation template: identifiers resolve to labeled constants, existing
  * dice-notation atoms (and label spans) pass through untouched.
  * INVARIANT: never throws; every failure path returns a FormulaError.
@@ -281,7 +345,8 @@ function substituteIdentifier(
  * Scanning is `RECOGNIZERS` tried in order at each position (`claimAt`), then `emitClaim`
  * on the winner. Which recognizer claims a position is what decides whether an author's
  * stat key survives as a reference at all, and a key that loses is rewritten into notation
- * with no error on any path.
+ * with no error on any path — so a consuming system validates its keys with
+ * `checkNotationKey`, which runs this same chain.
  * @param src Template text, e.g. `"1d20 + str"` — a mix of dice-notation atoms
  * (numbers, the dice operator, `NOTATION_KEYWORDS` modifiers, bracketed label spans)
  * and dotted identifier references.

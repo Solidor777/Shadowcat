@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { NOTATION_KEYWORDS, resolveNotationTemplate } from "./template";
+import { NOTATION_KEYWORDS, checkNotationKey, resolveNotationTemplate } from "./template";
 import { parseFormula } from "./parser";
 import type { FormulaValue } from "./types";
 
@@ -185,6 +185,121 @@ describe("the reservation split between the two grammars", () => {
     for (const kw of NOTATION_KEYWORDS) {
       expect(parseFormula(kw), `'${kw}' did not parse as a reference`)
         .toEqual({ kind: "ref", path: [kw] });
+    }
+  });
+});
+
+// `checkNotationKey` is the authority a consuming system's stat-key authoring validation
+// calls, and it answers by RUNNING the same recognizer chain the rewrite runs. These cases
+// pin the shapes four rounds of review each described differently, and the last case pins
+// the two answers to each other so the checker cannot drift from the rewrite.
+describe("checkNotationKey", () => {
+  /** Runs the REWRITE over a bare key and reports whether the key survived whole: the
+   * resolver was asked for exactly the key the author wrote, and the emitted notation is
+   * exactly that one substitution. This is the observable consequence `intact` predicts. */
+  const rewriteKeepsKeyWhole = (key: string): boolean => {
+    const seen: string[] = [];
+    const result = resolveNotationTemplate(key, (path) => {
+      seen.push(path.join("."));
+      return 7;
+    });
+    if (!("notation" in result)) return false;
+    return seen.length === 1 && seen[0] === key && result.notation === `7[${key}]`;
+  };
+
+  /** Every key shape the review rounds surfaced, plus the safe shapes they contrast with.
+   * Keyword-derived entries come from `NOTATION_KEYWORDS` itself, so a keyword added there
+   * is covered without a second edit. */
+  const CORPUS: readonly string[] = [
+    ...NOTATION_KEYWORDS,
+    ...NOTATION_KEYWORDS.map((kw) => `${kw}1`),
+    ...NOTATION_KEYWORDS.map((kw) => kw.toUpperCase()),
+    ...NOTATION_KEYWORDS.map((kw) => `${kw}.max`),
+    "hp", "hp.max", "a.b.c", "str_mod", "_x", "x1", "HP.Max", "hp.d", "damage", "total",
+    "2hp", "0hp", "hp.2max", "hp max", "hp-max", "hp+max", "hp[max", "hp[max]", "",
+  ];
+
+  it("a bare keyword never survives, whatever case it is written in", () => {
+    for (const kw of NOTATION_KEYWORDS) {
+      expect(checkNotationKey(kw), kw).toMatchObject({ intact: false });
+      expect(checkNotationKey(kw.toUpperCase()), kw).toMatchObject({ intact: false });
+    }
+  });
+
+  it("a keyword followed by a digit never survives, and the digit is claimed separately", () => {
+    for (const kw of NOTATION_KEYWORDS) {
+      const check = checkNotationKey(`${kw}1`);
+      expect(check.intact, `${kw}1`).toBe(false);
+      expect(check.segments.map((s) => s.kind), `${kw}1`).toEqual(["keyword", "integer"]);
+    }
+  });
+
+  it("a dotted path whose FIRST segment is a keyword splits at the dot", () => {
+    for (const kw of NOTATION_KEYWORDS) {
+      const check = checkNotationKey(`${kw}.max`);
+      expect(check.intact, `${kw}.max`).toBe(false);
+      expect(check.segments.map((s) => s.kind), `${kw}.max`).toEqual(["keyword", "literal", "identifier"]);
+    }
+  });
+
+  it("a keyword AFTER a dot is harmless: reservation applies where a claim starts", () => {
+    expect(checkNotationKey("hp.d")).toMatchObject({ intact: true });
+    expect(checkNotationKey("hp.kh")).toMatchObject({ intact: true });
+  });
+
+  it("a character the identifier span does not accept splits the key silently", () => {
+    for (const key of ["hp-max", "hp+max", "hp max"]) {
+      const check = checkNotationKey(key);
+      expect(check.intact, key).toBe(false);
+      expect(check.segments.map((s) => s.kind), key).toEqual(["identifier", "literal", "identifier"]);
+    }
+  });
+
+  it("a key beginning with a digit loses the digit INTO the substituted value", () => {
+    // The integer run is emitted ahead of the substitution and concatenates with it, so
+    // the roll silently totals a different number rather than failing on a bad reference:
+    // `2hp` with hp = 7 rolls 27, not 7 and not an error.
+    expect(checkNotationKey("2hp")).toMatchObject({ intact: false });
+    expect(checkNotationKey("2hp").segments).toEqual([
+      { kind: "integer", text: "2", at: 0 },
+      { kind: "identifier", text: "hp", at: 1 },
+    ]);
+    expect(resolveNotationTemplate("2hp", () => 7)).toEqual({ notation: "27[hp]" });
+    expect(resolveNotationTemplate("12hp", () => 7)).toEqual({ notation: "127[hp]" });
+  });
+
+  it("a dotted segment beginning with a digit splits, where the formula grammar errors", () => {
+    // Same written key, two grammars, two failure modes: the template grammar splits it
+    // silently and the formula grammar refuses to parse it. Testing one says nothing
+    // about the other.
+    expect(checkNotationKey("hp.2max")).toMatchObject({ intact: false });
+    expect(checkNotationKey("hp.2max").segments.map((s) => s.kind))
+      .toEqual(["identifier", "literal", "integer", "identifier"]);
+    expect(resolveNotationTemplate("hp.2max", () => 7)).toEqual({ notation: "7[hp].27[max]" });
+    expect(parseFormula("hp.2max")).toMatchObject({ error: "parse" });
+  });
+
+  it("a key that rejects the template reports the error rather than a split", () => {
+    const check = checkNotationKey("hp[max");
+    expect(check.intact).toBe(false);
+    expect(check.rejects).toMatchObject({ error: "parse" });
+    expect(resolveNotationTemplate("hp[max", () => 7)).toMatchObject({ error: "parse" });
+  });
+
+  it("an ordinary key survives whole, dotted or not, in any case", () => {
+    for (const key of ["hp", "hp.max", "a.b.c", "str_mod", "_x", "x1", "HP.Max"]) {
+      expect(checkNotationKey(key), key).toMatchObject({ intact: true, rejects: null });
+      expect(checkNotationKey(key).segments.map((s) => s.text), key).toEqual([key]);
+    }
+    expect(checkNotationKey("")).toEqual({ intact: false, segments: [], rejects: null });
+  });
+
+  it("the verdict matches what the rewrite actually does to the key, shape for shape", () => {
+    // The anti-drift pin: `checkNotationKey` and `resolveNotationTemplate` reach their
+    // answers through the same recognizer chain, so a change to one must move the other.
+    // A checker that restated the rule instead would pass its own cases and disagree here.
+    for (const key of CORPUS) {
+      expect(checkNotationKey(key).intact, key).toBe(rewriteKeepsKeyWhole(key));
     }
   });
 });
