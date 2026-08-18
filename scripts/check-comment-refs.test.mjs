@@ -15,6 +15,7 @@ import {
   assertNoGlobalPatterns,
   instrumentComponents,
   instrumentFingerprint,
+  instrumentHashInput,
   BANNED,
   SKILL_BANNED,
   GENERATED_ROOT,
@@ -913,6 +914,24 @@ test("the instrument fingerprint hashes exactly the components that decide a cou
 test("the instrument fingerprint is stable across calls", () => {
   expect(instrumentFingerprint()).toBe(instrumentFingerprint());
   expect(instrumentFingerprint()).toMatch(/^[0-9a-f]{8}$/);
+});
+
+// The report and the hash must enumerate the SAME components in the same order. They derive from
+// one record today, so this holds by construction — and that is the point: the test is what fails
+// if a second hand-written enumeration is reintroduced into either one, which is how the pattern
+// and value groups came to be typed twice while the fingerprint quietly stopped covering them.
+test("the hash input and the reported component list are the same enumeration", () => {
+  const parts = instrumentComponents();
+  const reported = [...parts.functions, ...parts.patterns, ...parts.values];
+  expect(instrumentHashInput().map(([name]) => name)).toEqual(reported);
+});
+
+// A component whose hashed value is undefined serializes to null, so its changes stop moving the
+// fingerprint while its name still appears in the report — the same silent hole, one level down.
+test("every hashed component contributes a defined value", () => {
+  for (const [name, hashed] of instrumentHashInput()) {
+    expect(hashed, `${name} hashed to undefined`).toBeDefined();
+  }
 });
 
 // ---------------------------------------------------------------------------

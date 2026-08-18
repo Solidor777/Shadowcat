@@ -1147,9 +1147,9 @@ const stableSource = (fn) => fn.toString().split("\r\n").join("\n");
 // one does — where a line's prose ends, where a group boundary falls, how many hits one group yields, how
 // many spellings a pattern reaches, and which files a scope claims.
 //
-// Held as function VALUES, not names, so `instrumentComponents` can read each name off the function
-// itself. A hand-written label drifts silently when the function it labels is renamed; a name read
-// from the value cannot.
+// Held as function VALUES, not names, so each name can be read off the function itself. A
+// hand-written label drifts silently when the function it labels is renamed; a name read from the
+// value cannot.
 const INSTRUMENT_FUNCTIONS = [
   splitLine,
   lineSubject,
@@ -1160,6 +1160,59 @@ const INSTRUMENT_FUNCTIONS = [
   separatorFlexible,
   separatorOnlyClass,
   under,
+];
+
+// One record per hashed component: the group it is reported under, its name, and how it enters the
+// hash. `instrumentComponents` reads the NAMES off this list and `instrumentFingerprint` reads the
+// hashed values off the SAME entries, so the reported component list and the hash input cannot name
+// different sets. Enumerating them twice is what let a name be dropped from the hash while both the
+// report and its test stayed green — the fingerprint then holds still exactly when the rule it
+// governs changes, which is the failure the fingerprint exists to make impossible.
+const banList = (name, list) => ({
+  group: "patterns",
+  name,
+  hashed: () => list.map((b) => [b.name, b.re.source, b.re.flags]),
+});
+const patternSource = (name, re) => ({ group: "patterns", name, hashed: () => re.source });
+// A value enters the hash through a thunk because each carries its own normalization: a Set has no
+// JSON order of its own, so it is sorted on the way in or the hash moves without the rules moving.
+const valueOf = (name, hashed) => ({ group: "values", name, hashed });
+
+const INSTRUMENT_COMPONENTS = [
+  ...INSTRUMENT_FUNCTIONS.map((fn) => ({
+    group: "functions",
+    name: fn.name,
+    hashed: () => stableSource(fn),
+  })),
+  banList("BANNED", BANNED),
+  banList("SKILL_BANNED", SKILL_BANNED),
+  patternSource("STRING_LITERAL", STRING_LITERAL),
+  patternSource("EXPLANATORY_STRING", EXPLANATORY_STRING),
+  patternSource("PROSE_LITERAL", PROSE_LITERAL),
+  patternSource("EXAMPLE_EXEMPT", EXAMPLE_EXEMPT),
+  patternSource("DESIGN_DOC_CITATION", DESIGN_DOC_CITATION),
+  // The coverage control's own matchers, hashed for the same reason the ban lists are: they decide
+  // a printed count (the reached-entry tally) and a gate outcome (a zero-hit entry), so a change to
+  // them makes two runs incomparable.
+  patternSource("CANDIDATE_TOKEN_LABEL", CANDIDATE_TOKEN_LABEL),
+  patternSource("CANDIDATE_TOKEN_WORD", CANDIDATE_TOKEN_WORD),
+  patternSource("PRE_POST_NARRATION_TOKEN", PRE_POST_NARRATION_TOKEN),
+  patternSource("WORD_NARRATION_TOKEN", WORD_NARRATION_TOKEN),
+  // The separator value sets sit beside the functions that read them: `separatorOnlyClass`'s source
+  // is unchanged by adding a character to either set, while every count that turns on which
+  // spellings a pattern reaches moves.
+  valueOf("SEPARATOR_CLASS", () => SEPARATOR_CLASS),
+  valueOf("SEPARATOR_CHARS", () => [...SEPARATOR_CHARS].sort()),
+  valueOf("WHITESPACE_ESCAPES", () => [...WHITESPACE_ESCAPES].sort()),
+  valueOf("ROOTS", () => ROOTS),
+  valueOf("EXTS", () => EXTS),
+  valueOf("MD_ROOTS", () => MD_ROOTS),
+  valueOf("MD_EXTS", () => MD_EXTS),
+  valueOf("SKIP_DIRS", () => [...SKIP_DIRS].sort()),
+  valueOf("GENERATED_ROOT", () => GENERATED_ROOT),
+  valueOf("ACKNOWLEDGED", () => ACKNOWLEDGED.map((a) => [a.name, a.re.source, a.re.flags])),
+  valueOf("ACKNOWLEDGED_NARRATION", () =>
+    ACKNOWLEDGED_NARRATION.map((a) => [a.name, a.re.source, a.re.flags])),
 ];
 
 /**
@@ -1174,35 +1227,23 @@ const INSTRUMENT_FUNCTIONS = [
  *   name, grouped by what kind of thing it is.
  */
 export function instrumentComponents() {
-  return {
-    functions: INSTRUMENT_FUNCTIONS.map((fn) => fn.name),
-    patterns: [
-      "BANNED",
-      "SKILL_BANNED",
-      "STRING_LITERAL",
-      "EXPLANATORY_STRING",
-      "PROSE_LITERAL",
-      "EXAMPLE_EXEMPT",
-      "DESIGN_DOC_CITATION",
-      "CANDIDATE_TOKEN_LABEL",
-      "CANDIDATE_TOKEN_WORD",
-      "PRE_POST_NARRATION_TOKEN",
-      "WORD_NARRATION_TOKEN",
-    ],
-    values: [
-      "SEPARATOR_CLASS",
-      "SEPARATOR_CHARS",
-      "WHITESPACE_ESCAPES",
-      "ROOTS",
-      "EXTS",
-      "MD_ROOTS",
-      "MD_EXTS",
-      "SKIP_DIRS",
-      "GENERATED_ROOT",
-      "ACKNOWLEDGED",
-      "ACKNOWLEDGED_NARRATION",
-    ],
-  };
+  const named = (group) =>
+    INSTRUMENT_COMPONENTS.filter((c) => c.group === group).map((c) => c.name);
+  return { functions: named("functions"), patterns: named("patterns"), values: named("values") };
+}
+
+/**
+ * The exact array `instrumentFingerprint` hashes, each entry paired with the component name it
+ * came from.
+ *
+ * Exported so a test can assert the hash input and the reported component list enumerate the same
+ * names in the same order. That identity holds by construction today; the test is what fails if a
+ * second hand-written enumeration is reintroduced into either one.
+ *
+ * @returns {Array<[string, unknown]>} one `[name, hashed value]` pair per component.
+ */
+export function instrumentHashInput() {
+  return INSTRUMENT_COMPONENTS.map((c) => [c.name, c.hashed()]);
 }
 
 /**
@@ -1213,38 +1254,7 @@ export function instrumentComponents() {
  */
 export function instrumentFingerprint() {
   return createHash("sha256")
-    .update(
-      JSON.stringify([
-        BANNED.map((b) => [b.name, b.re.source, b.re.flags]),
-        SKILL_BANNED.map((b) => [b.name, b.re.source, b.re.flags]),
-        INSTRUMENT_FUNCTIONS.map((fn) => [fn.name, stableSource(fn)]),
-        [
-          STRING_LITERAL.source,
-          EXPLANATORY_STRING.source,
-          PROSE_LITERAL.source,
-          EXAMPLE_EXEMPT.source,
-          DESIGN_DOC_CITATION.source,
-          // The coverage control's own matchers and acknowledgement lists, hashed for the same
-          // reason the ban lists are: they decide a printed count (the reached-entry tally) and a
-          // gate outcome (a zero-hit entry), so a change to them makes two runs incomparable.
-          CANDIDATE_TOKEN_LABEL.source,
-          CANDIDATE_TOKEN_WORD.source,
-          PRE_POST_NARRATION_TOKEN.source,
-          WORD_NARRATION_TOKEN.source,
-        ],
-        [...ACKNOWLEDGED, ...ACKNOWLEDGED_NARRATION].map((a) => [a.name, a.re.source, a.re.flags]),
-        // The separator VALUE SETS sit beside the functions that read them: `separatorOnlyClass`'s
-        // source is unchanged by adding a character to either set, while every count that turns on
-        // which spellings a pattern reaches moves.
-        [SEPARATOR_CLASS, [...SEPARATOR_CHARS].sort(), [...WHITESPACE_ESCAPES].sort()],
-        ROOTS,
-        EXTS,
-        MD_ROOTS,
-        MD_EXTS,
-        [...SKIP_DIRS].sort(),
-        GENERATED_ROOT,
-      ]),
-    )
+    .update(JSON.stringify(instrumentHashInput()))
     .digest("hex")
     .slice(0, 8);
 }
