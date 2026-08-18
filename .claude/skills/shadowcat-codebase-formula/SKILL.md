@@ -65,7 +65,7 @@ which no prose can do.
   value; `validateResolverOutput` converts that into a `"resolver-error"` rather than propagating
   it. `FormulaErrorKind` is mirrored by hand in `FORMULA_ERROR_KINDS` for runtime validation —
   adding a kind means updating BOTH, and the enforcement is ONE-DIRECTIONAL. The array's
-  `satisfies` clause makes an entry outside the union a compile error; the reverse — a kind added
+  satisfies clause makes an entry outside the union a compile error; the reverse — a kind added
   to the union and omitted from the array — compiles clean and silently narrows what
   `isWellFormedError` accepts, so a consumer returning that kind gets it rewritten to
   `"resolver-error"`. That is the direction to check by hand. The
