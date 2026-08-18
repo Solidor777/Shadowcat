@@ -267,13 +267,13 @@ fn validate_pre_roll(spec: &RollSpec) -> Result<(), RollError> {
     for group in &groups {
         // `DieKind::validate()` rejects an empty `Faces{faces:[]}`. No notation
         // path constructs `Faces` today, so this arm is unreachable via
-        // `execute_roll`/`validate_formula`'s only caller
-        // (the notation parser); called anyway as defense-in-depth against a
-        // future notation extension. `RollError`'s variant set is fixed by this
-        // module's interface contract (no dedicated `Faces` variant), so an
-        // `EmptyFaces` failure maps onto `SidesTooLarge(0)` -- the closest
-        // existing "the die's face space is degenerate" variant. Revisit this
-        // mapping if a future change gives `Faces` a real notation constructor.
+        // `execute_roll`/`validate_formula`'s only caller (the notation parser);
+        // called anyway as defense-in-depth against a future notation extension.
+        // `RollError`'s variant set is fixed by this module's interface contract
+        // (no dedicated `Faces` variant), so an `EmptyFaces` failure maps onto
+        // `SidesTooLarge(0)` -- the closest existing "the die's face space is
+        // degenerate" variant. Revisit this mapping if a future change gives
+        // `Faces` a real notation constructor.
         if group.kind.validate().is_err() {
             return Err(RollError::SidesTooLarge(0));
         }

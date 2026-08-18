@@ -523,9 +523,10 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
   submodule tree), `/api/ts/modules/_shadowcat_core.html` (TypeDoc — the `wire` Zod mirror),
   `/api/ts/modules/_shadowcat_types.html` (TypeDoc — the ts-rs generated bindings the Zod mirror
   is checked against). Produce with `pnpm build:all`.
-- Rationale: `docs/design/M2-data-foundation.md`.
-- Rationale: `docs/design/ARCHITECTURE.md` §2 invariant 4 (per-recipient permissions) + invariant 6 (three-band document shape) + §6 (data model). Design rationale for the three-band document shape and the tier-2 structural schema
-  registry lives under `docs/superpowers/specs/`.
+- Rationale: `docs/design/ARCHITECTURE.md` §2 invariant 4 (per-recipient permissions) + invariant 6 (three bands) + §6 (data model),
+  plus `docs/design/M2-data-foundation.md` for the data foundation. Design rationale for the
+  three-band document shape and the tier-2 structural schema registry lives under
+  `docs/superpowers/specs/`.
 - Relationships: `graphify query "document permissions redaction filter_properties can_see"`,
   `graphify path "permission.rs" "search.rs"`.
 - Deferred merge model: [[document-inheritance-merge-model]].

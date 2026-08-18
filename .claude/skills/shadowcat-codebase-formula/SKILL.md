@@ -48,16 +48,24 @@ erroring cleanly — build expressions with `parseFormula`, never by hand.
 
 ## Hard invariants
 
+This package has no design document of its own, so an invariant here cites the architecture
+document or a memory slug where one governs it, and otherwise names the TEST that pins it. A test
+is the stronger referent for a library contract anyway: it fails when the invariant stops holding,
+which no prose can do.
+
 - **Error-value-only, fail-closed.** No function in this package throws on ANY input, and
   arithmetic never leaks `NaN`/`Infinity` — both become a `FormulaError` via `finite`. A consumer
   callback (`evaluate.resolve`, `resolveAll.evalNode`) IS allowed to throw or return a malformed
   value; `validateResolverOutput` converts that into a `"resolver-error"` rather than propagating
   it. `FormulaErrorKind` is mirrored by hand in `FORMULA_ERROR_KINDS` for runtime validation —
-  adding a kind means updating BOTH, with nothing else enforcing they stay in sync.
+  adding a kind means updating BOTH, with nothing else enforcing they stay in sync. The
+  callback half is [[injected-callback-boundary-must-validate-every-site]]; the no-throw half is
+  pinned by `property.test`'s never-throws and never-NaN properties over random input.
 - **DoS caps, exact values:** `MAX_FORMULA_LENGTH` 512, `MAX_AST_NODES` 256, `MAX_PARSE_DEPTH` 32
   (true structural-nesting boundaries — parens, call arguments, unary minus — NOT
   grammar-production depth, so a flat `a+b+c` chain never trips it), `MAX_GRAPH_VISITS` 2048
-  (charged once per newly discovered key in `resolveAll`).
+  (charged once per newly discovered key in `resolveAll`). The exact values are pinned by
+  `types.test`'s cap assertions — no external record fixes them, so that test is the source.
 - **`resolveAll`'s trampoline is O(1) JS-stack-depth by construction, not an implementation
   detail.** It restarts `resolveAll.evalNode` from scratch on an internal `NeedsDependency` throw
   rather than recursing, so graph depth never grows the call stack — required for
@@ -72,12 +80,16 @@ erroring cleanly — build expressions with `parseFormula`, never by hand.
   requested keys always produces the same result regardless of call or iteration order; traversing
   in the caller's key order instead makes the result order-dependent. Cycle-error detail names the
   lexicographically smallest cycle member, so two logically-identical graphs built in different key
-  orders report byte-identical detail.
+  orders report byte-identical detail. Pinned by `graph.test`'s order-independence cases and
+  `property.test`'s random-DAG property; no external record states it.
 - **Zero game-system vocabulary in this package.** A change that introduces one consumer's concepts
   into `src/client/formula/` is a layering violation: it belongs in that consumer's own package.
+  (`docs/design/ARCHITECTURE.md` §2 invariant 7, the framework-neutral public API, and invariant 6,
+  which makes the opaque band the game system's own territory rather than the engine's.)
 - **The grammar has no exponent notation.** `1e999` lexes as a number followed by a word — a parse
   error, not a cap error. A deliberate grammar boundary, not a lexer defect; do not "fix" the lexer
-  to accept exponents without a grammar change.
+  to accept exponents without a grammar change. Pinned by `parser.test`'s exponent-notation case;
+  the boundary is this package's own decision and no external record states it.
 - **Identifiers are case-insensitive and normalized to lowercase, and the two grammars this package
   parses reserve DIFFERENTLY.** `parseFormula`'s grammar reserves no identifier names: a bare word
   is always a reference, whatever it spells, so reserved-word validation there is purely a
