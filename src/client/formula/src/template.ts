@@ -43,7 +43,11 @@ const I32_MAX = 2147483647;
  *   lowercased, emitted as notation.
  * - `"identifier"` — a dotted reference span, handed to the consumer's resolver and
  *   replaced by the resolved value.
- * - `"literal"` — one character no recognizer claimed, emitted verbatim. */
+ * - `"literal"` — one character no recognizer claimed, emitted verbatim.
+ *
+ * These five names are stable public vocabulary. An authoring UI branches on them to explain
+ * a verdict, so they are committed to independently of how `RECOGNIZERS` is later split or
+ * merged — a claim CATEGORY outlives the recognizer that currently produces it. */
 export type NotationClaimKind = "label" | "integer" | "keyword" | "identifier" | "literal";
 
 /** One recognizer's claim over a span of source, before any consumer resolution.
@@ -67,8 +71,8 @@ interface Recognizer {
 }
 
 /** Reads the maximal run of identifier-START characters at `i` — the run
- * `claimNotationKeyword` tests for membership. Stops at the first character outside
- * `isWordStart`, which includes both a digit and a dot.
+ * `claimNotationKeyword` tests for membership. Stops at the first character `isWordStart`
+ * does not accept; a digit and a dot are both rejected by it, so neither continues a run.
  * @param src The template source text.
  * @param i Index to start scanning from.
  * @returns The run, empty when `src[i]` is not an identifier-start character.
@@ -287,7 +291,10 @@ export interface NotationKeySegment {
 /** What the template grammar does to one written key — `checkNotationKey`'s result. */
 export interface NotationKeyCheck {
   /** `true` only when the whole key is claimed as ONE identifier span, which is the only
-   * shape that reaches a consumer's identifier resolver as the author wrote it. */
+   * shape that reaches a consumer's identifier resolver as the author wrote it. The verdict
+   * is about the key scanned from position ZERO and says nothing about what a template puts
+   * in front of it: an intact key placed immediately after a digit run still has that run
+   * emitted ahead of the substituted value, where the two concatenate into one number. */
   readonly intact: boolean;
   /** Every claim over the key, in order, stopping at `rejects` when one is set. Two or
    * more segments means the key is SPLIT: each `"identifier"` segment is offered to the
