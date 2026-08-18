@@ -93,9 +93,15 @@ erroring cleanly — build expressions with `parseFormula`, never by hand.
 - `property.test` uses a hand-rolled seeded PRNG — do not add `fast-check` or any other new
   dependency to this package.
 - **A consumer that reuses the library's function names as data keys collides silently.** The
-  library reserves nothing, so `NOTATION_KEYWORDS` and the `FnName` set are published for a
-  consumer to reject against; a consumer that skips that check gets an identifier resolving to a
-  call instead of a reference.
+  library reserves nothing, so a consumer that skips a collision check gets an identifier resolving
+  to a call instead of a reference. **The two name sets a consumer must reject against are NOT
+  equally reachable**, and the asymmetry is the trap: `NOTATION_KEYWORDS` is exported from the
+  `template` module, while `FN_NAMES` and its `FnName` mirror are module-private to `parser` and
+  the barrel re-exports nothing it does not export. A consumer therefore cannot import the
+  builtin-function names and has to mirror them — which is a forked decision by construction, since
+  the copy has nothing binding it to the original. Treat any consumer-side duplicate as needing its
+  own drift guard, and do not export `FN_NAMES` to remove the fork without a ruling: that is a
+  public-API change.
 
 ## Pointers
 

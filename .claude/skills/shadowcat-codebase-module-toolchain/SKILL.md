@@ -85,7 +85,15 @@ existing `ModuleRegistry`.
 
 **Out-of-tree reference + guide:** an external module is developed in its own git repository and
 may be nested into a Shadowcat checkout under `src/modules/` so the pnpm workspace resolves
-`@shadowcat/core`/`@shadowcat/formula` for dev; it is never bundled statically, even in dev. The
+`@shadowcat/core`/`@shadowcat/formula` for dev; it is never bundled statically, even in dev.
+**A nested checkout is inside this repo's gate perimeter.** `check-lint-allowances` walks every
+entry of its `ROOTS` recursively and prunes only what its `SKIP_DIRS` names — build outputs and
+dependency trees — and the ephemeral-reference gate scopes itself the same way. The client source
+tree is a root and a nested module checkout lives under it, so this repo's suppression ban and
+ephemeral-reference ban apply to source and prose the NESTING repository owns, and fail here even
+though that repository has its own lint config or none. Nesting is a dev convenience with no entry
+in either gate's skip set: unnest before running the gates, or expect the nested contents to be
+judged by them. The
 authoring guide lives in the docs site: `docs/site/guides/creating-a-module.md` (`docs/design/module-authoring.md` is a
 pointer stub to it). Two in-repo CI-built worked examples double as copyable scaffolds:
 `examples/module-initiative-tracker/` (panel + document read/write) and `examples/system-minimal/`

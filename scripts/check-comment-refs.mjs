@@ -1141,8 +1141,8 @@ export function residueReport(scopes = []) {
 const stableSource = (fn) => fn.toString().split("\r\n").join("\n");
 
 // Every function whose SOURCE decides what gets counted. The membership rule is the whole design:
-// a function belongs here when changing it alone moves a total without touching any `re`. All eight
-// do — where a line's prose ends, where a group boundary falls, how many hits one group yields, how
+// a function belongs here when changing it alone moves a total without touching any `re`. Every
+// one does — where a line's prose ends, where a group boundary falls, how many hits one group yields, how
 // many spellings a pattern reaches, and which files a scope claims.
 //
 // Held as function VALUES, not names, so `instrumentComponents` can read each name off the function

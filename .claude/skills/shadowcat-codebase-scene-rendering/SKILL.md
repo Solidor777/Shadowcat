@@ -611,7 +611,7 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
     — proven, not merely asserted: it already cell-samples the region field
     for any polyline, grid or any-angle.
 - `scene::navmesh` — pure headless adapter around the `polyanya`
-  (any-angle navmesh) + `geo`/`spade` (CDT + Minkowski buffer) crates, engine-owned geometry
+  (any-angle navmesh) + `geo`/`spade` (CDT + Minkowski buffer) crates, engine-owned geometry.
   Carries **walls only** — impassable/terrain regions are not on the
   navmesh, and adding them is a scope change, not a fix.
   - `build_navmesh(extent: WorldExtent, footprint_scene, walls) -> Option<NavMesh>` — triangulates

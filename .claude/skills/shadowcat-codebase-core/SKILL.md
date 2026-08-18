@@ -40,7 +40,7 @@ The full list is `docs/design/ARCHITECTURE.md` §2 (10 invariants) — load-bear
 source of truth. The ones agents break most:
 
 - **Server-authoritative, permissions per-recipient.** Client sends intents; server validates,
-  applies, broadcasts. Hidden fields are stripped **before** transmission, never sent-then-hidden
+  applies, broadcasts. Hidden fields are stripped **before** transmission, never sent-then-hidden.
   See `shadowcat-codebase-documents-permissions`.
 - **Optimistic with rollback.** Documents are source of truth; ECS/runtime is derived & ephemeral.
 - **NEVER FORK A DECISION ACROSS TWO PATHS — the defect class this codebase produces most.**
@@ -76,7 +76,7 @@ source of truth. The ones agents break most:
   lights, drawings, templates, messages, and the world/vision/lighting/chat/dice/faction/
   condition/channel config-docs) gets REAL server-side ingress validation instead
   (`validate_engine`/`validate_engine_tree`, `deny_unknown_fields` per struct) — this is the band
-  engine-owned geometry (movement-collision, vision) lives in, not a `system`-body exception
+  engine-owned geometry (movement-collision, vision) lives in, not a `system`-body exception.
   See `shadowcat-codebase-documents-permissions` for the
   `data/engine/` registry and `shadowcat-codebase-scene-rendering`/`-chat`/`-actors-tokens` for
   the per-subsystem re-root.
