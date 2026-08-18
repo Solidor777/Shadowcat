@@ -133,6 +133,40 @@ describe("the reservation split between the two grammars", () => {
     for (const kw of NOTATION_KEYWORDS) expectReserved(kw.toUpperCase());
     expect(resolveNotationTemplate("2d20Kh1", () => 7)).toEqual({ notation: "2d20Kh1" });
   });
+  /** Asserts a DOTTED reference whose FIRST SEGMENT is `word` is split at the dot: the
+   * keyword branch consumes the leading segment, so the identifier-span logic below it is
+   * never entered and the resolver is offered the REMAINDER alone — never the path the
+   * author wrote. */
+  const expectDottedSplit = (word: string) => {
+    const { seen, resolve } = spyResolve();
+    const written = `${word}.max`;
+    const result = resolveNotationTemplate(`2d20 + ${written}`, resolve);
+    expect(seen, `'${written}' did not split at the dot`).toEqual(["max"]);
+    expect(JSON.stringify(result), `'${written}' resolved as a whole path`)
+      .not.toContain(`[${written}]`);
+  };
+
+  it("the reserved set is LARGER than the list: a DOTTED path whose first segment is a keyword is split at the dot", () => {
+    // `readAlphaPrefix` stops at the first non-alpha character, and a DOT is outside
+    // `isAlpha`. So a dotted reference offers only its first segment for the membership
+    // test; on a hit the keyword branch emits notation and continues, the dot falls
+    // through as a literal, and the remainder re-lexes as a reference of its own. A
+    // dotted path is this library's canonical reference form, which makes this the
+    // likeliest collision shape in practice — and the consumer's resolver is asked for a
+    // path the author never wrote, with no error on any path.
+    for (const kw of NOTATION_KEYWORDS) expectDottedSplit(kw);
+  });
+
+  it("the dotted split emits the leading segment verbatim, and synthesizes a count for the dice keyword", () => {
+    // Two exact rewrites, because the dice keyword's output differs: with no integer
+    // immediately before it the keyword branch normalizes it to a `1`-prefixed count,
+    // so the emitted text gains a character the author never wrote.
+    expect(resolveNotationTemplate("2d20 + kh.max", env({ max: 7 })))
+      .toEqual({ notation: "2d20 + kh.7[max]" });
+    expect(resolveNotationTemplate("2d20 + d.max", env({ max: 7 })))
+      .toEqual({ notation: "2d20 + 1d.7[max]" });
+  });
+
   it("the formula grammar reserves none of them: each parses as a reference", () => {
     for (const kw of NOTATION_KEYWORDS) {
       expect(parseFormula(kw), `'${kw}' did not parse as a reference`)
