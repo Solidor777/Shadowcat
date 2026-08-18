@@ -1119,7 +1119,7 @@ export function listSkillDirs(repoRoot) {
   return { tracked, untracked };
 }
 
-// `shadowcat-codebase-nightfox` documents a subsystem split across TWO repositories: this engine
+// `NIGHTFOX_SKILL_DIR` names the skill documenting a subsystem split across TWO repositories: this engine
 // repo owns `@shadowcat/formula` (at `src/client/formula/`), while the Nightfox rules-engine and
 // sheets code the rest of the skill documents lives in a SEPARATE repository, nested into a dev
 // checkout only (`src/modules/nightfox` does not exist here). Its markdown is scanned like every

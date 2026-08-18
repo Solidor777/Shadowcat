@@ -274,7 +274,7 @@ describe("the bucket enumeration prose", () => {
     ).toEqual(labels);
   });
 
-  it("matches the CLI's own bucket list in shadowcat-codebase-core", () => {
+  it("matches the CLI's own bucket list in the orientation skill", () => {
     expect(
       enumerationIn(".claude/skills/shadowcat-codebase-core/SKILL.md", "one printed bucket — "),
     ).toEqual(labels);
@@ -294,7 +294,7 @@ describe("the bucket enumeration prose", () => {
     ).toEqual(exclusionLabels);
   });
 
-  it("matches the CLI's own run-exclusion list in shadowcat-codebase-core", () => {
+  it("matches the CLI's own run-exclusion list in the orientation skill", () => {
     expect(
       enumerationIn(".claude/skills/shadowcat-codebase-core/SKILL.md", "printed beside the buckets: "),
     ).toEqual(exclusionLabels);
