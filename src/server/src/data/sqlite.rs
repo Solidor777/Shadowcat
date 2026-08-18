@@ -4010,7 +4010,7 @@ mod tests {
             .is_empty());
 
         let decls = vec![SchemaDeclaration {
-            module_id: "nightfox".into(),
+            module_id: "example-system".into(),
             version: "1.0.0".into(),
             schema_format: 1,
             doc_type: "actor".into(),
@@ -6052,17 +6052,17 @@ mod tests {
 
         assert!(r.world_enabled_modules(w.id).await.unwrap().is_empty());
 
-        let ids = vec!["actors-plus".to_string(), "nightfox".to_string()];
+        let ids = vec!["actors-plus".to_string(), "example-system".to_string()];
         r.set_world_enabled_modules(w.id, &ids).await.unwrap();
         assert_eq!(r.world_enabled_modules(w.id).await.unwrap(), ids);
 
         // A subsequent set fully replaces, not appends.
-        r.set_world_enabled_modules(w.id, &["nightfox".to_string()])
+        r.set_world_enabled_modules(w.id, &["example-system".to_string()])
             .await
             .unwrap();
         assert_eq!(
             r.world_enabled_modules(w.id).await.unwrap(),
-            vec!["nightfox".to_string()]
+            vec!["example-system".to_string()]
         );
     }
 
@@ -7770,7 +7770,7 @@ mod tests {
         };
         // Register: actor /system/mechanics requires object with numeric `version`.
         let decls = vec![SchemaDeclaration {
-            module_id: "nightfox".into(),
+            module_id: "example-system".into(),
             version: "1".into(),
             schema_format: 1,
             doc_type: "actor".into(),
@@ -7821,7 +7821,7 @@ mod tests {
             world_role: WorldRole::Gm,
         };
         let decls = vec![SchemaDeclaration {
-            module_id: "nightfox".into(),
+            module_id: "example-system".into(),
             version: "1".into(),
             schema_format: 1,
             doc_type: "actor".into(),
@@ -8200,7 +8200,7 @@ mod tests {
             world_role: WorldRole::Gm,
         };
         let decls = vec![SchemaDeclaration {
-            module_id: "nightfox".into(),
+            module_id: "example-system".into(),
             version: "1".into(),
             schema_format: 1,
             doc_type: "actor".into(),

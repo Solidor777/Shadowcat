@@ -621,12 +621,12 @@ pub(crate) mod tests {
     #[test]
     fn schema_declaration_round_trips_and_rejects_unknown_field() {
         let d: super::SchemaDeclaration = serde_json::from_value(serde_json::json!({
-            "module_id": "nightfox", "version": "1.0.0", "schema_format": 1,
+            "module_id": "example-system", "version": "1.0.0", "schema_format": 1,
             "doc_type": "actor", "subtree_pointer": "/system/stats",
             "schema": { "type": "object" }
         }))
         .unwrap();
-        assert_eq!(d.module_id, "nightfox");
+        assert_eq!(d.module_id, "example-system");
         let s = serde_json::to_string(&d).unwrap();
         let back: super::SchemaDeclaration = serde_json::from_str(&s).unwrap();
         assert_eq!(d, back);

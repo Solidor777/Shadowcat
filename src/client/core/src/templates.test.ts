@@ -91,15 +91,15 @@ describe("stampInstance", () => {
   });
 
   it("copies the compendium pack into source when the template is compendium-scoped", () => {
-    const tmpl = doc({ id: "T", scope: { kind: "compendium", pack: "nightfox" } });
+    const tmpl = doc({ id: "T", scope: { kind: "compendium", pack: "example-system" } });
     const inst = stampInstance(tmpl, opts);
-    expect(inst.source).toEqual({ id: "T", pack: "nightfox", version: 1 });
+    expect(inst.source).toEqual({ id: "T", pack: "example-system", version: 1 });
   });
 
   it("does not inherit the template's own provenance pack when the template itself is world-scoped", () => {
     // The template is itself an instance of a compendium item, so its own `source.pack` is set —
     // but that provenance belongs to the TEMPLATE, not to this stamp.
-    const tmpl = doc({ id: "T", scope: { kind: "world", world_id: "w1" }, source: { id: "orig", pack: "nightfox", version: 3 } });
+    const tmpl = doc({ id: "T", scope: { kind: "world", world_id: "w1" }, source: { id: "orig", pack: "example-system", version: 3 } });
     const inst = stampInstance(tmpl, opts);
     expect(inst.source).toEqual({ id: "T", pack: null, version: 3 });
   });
