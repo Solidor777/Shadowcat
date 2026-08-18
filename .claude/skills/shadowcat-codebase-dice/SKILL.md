@@ -375,6 +375,14 @@ on.
   to `RollOutcome`/`DieRecord` MUST update that mirror, not regenerate a binding. All
   transport policy (caps, entropy, settings, error surfacing) lives in `chat::rolls`, never
   here.
+- **The notation-modifier vocabulary is ONE decision declared in TWO languages.** The keyword set
+  `P::modifiers` matches is mirrored on the client by `@shadowcat/formula`'s `NOTATION_KEYWORDS`,
+  and neither language can read the other's declaration. Adding, renaming or removing a modifier
+  here therefore requires the matching edit there IN THE SAME COMMIT: `modifierParityDifference`
+  reads both declarations and fails `pnpm test:scripts` on a difference in either direction. That
+  gate is the only signal — without the second edit, a template the client rewrites is notation
+  this parser then rejects or reads differently, and the first report is a wrong roll seen by
+  whoever authored the template.
 - **Expertise optimizes the CLAMPED (visible) net successes, with a counter-max fallback in the
   all-failed region.** `eval::expertise::allocate` maximizes raw lexicographic `(net, counter)`
   first; only when that raw net is `< 1` AND `allow_negative` is unset (every allocation clamps to
