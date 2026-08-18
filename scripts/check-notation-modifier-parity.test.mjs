@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, test } from "vitest";
 import {
@@ -8,8 +9,11 @@ import {
 } from "./check-notation-modifier-parity.mjs";
 import { NOTATION_KEYWORDS } from "../src/client/formula/src/template.ts";
 
-const repoRoot = fileURLToPath(new URL("..", import.meta.url));
-const rustSource = readFileSync(`${repoRoot}src/server/src/dice/notation/parser.rs`, "utf8");
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
+const rustSource = readFileSync(
+  join(repoRoot, "src", "server", "src", "dice", "notation", "parser.rs"),
+  "utf8",
+);
 
 // The dice operator is a notation token, not a modifier: `P::modifiers` never matches it,
 // and the template grammar reserves it because a bare `d` in a template is dice notation.

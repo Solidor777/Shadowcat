@@ -315,8 +315,9 @@ describe("checkNotationKey", () => {
   });
 
   it("a closed bracket run is claimed as a label, never as part of the author's key", () => {
-    // The label recognizer is ordered first, so a bracketed run is taken whole and its
-    // contents are never scanned — the only way a key yields a `"label"` claim.
+    // Nothing but the label recognizer claims a `[`, and its claim covers the closing
+    // bracket, so a bracketed run is taken whole and its contents are never scanned — the
+    // only way a key yields a `"label"` claim.
     expect(checkNotationKey("hp[max]").segments).toEqual([
       { kind: "identifier", text: "hp", at: 0 },
       { kind: "label", text: "[max]", at: 2 },

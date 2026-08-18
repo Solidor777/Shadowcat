@@ -12,7 +12,8 @@ const DICE_OPERATOR = "d";
 /** Identifier words that mean dice notation rather than a stat. Mirrors `P::modifiers`'s
  * keyword match, plus the dice operator; the array below is the only enumeration of the set
  * on this side of the language boundary. Neither language can read the other's declaration,
- * so `modifierParityDifference` reads both and fails the build on any difference.
+ * so `modifierParityDifference` reads both declarations and fails the script-test gate on
+ * any difference.
  *
  * **This list is not the set of unsafe stat keys, and no list is.** The notation grammar
  * reserves more than these words, and what it reserves is negative space over an ordered
