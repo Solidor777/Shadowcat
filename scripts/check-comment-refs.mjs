@@ -184,7 +184,20 @@ export const BANNED = [
   // The T form collides with a generic type parameter, but only where a comment names one WITHOUT
   // backticks — and a comment naming a type is required to cite it as a symbol regardless, so the
   // collision resolves the same way every other value/document collision here does.
-  { name: "phase / workstream / invariant id", re: /\b[DITW]\d+\b/ },
+  //
+  // The separated writers are reached by ALTERNATIVES rather than by respelling a separator: this
+  // entry's own spelling has no separator for `separatorFlexible` to widen. Written as a class
+  // (`[DITW][-_]?`) they WOULD be widened, and that widening admits the SPACE writer, where a
+  // single capital followed by a space and a quantity is ordinary English — the same collision
+  // that keeps `local letter+digit marker`'s hyphen at one spelling. Each alternative's separator
+  // sits between a group boundary and an escape, which the neighbour test leaves alone, so the two
+  // spellings written here stay the two spellings matched. Measured over both corpora at 0 live
+  // lines each: they cost nothing and close a spelling a future author would otherwise walk
+  // through.
+  {
+    name: "phase / workstream / invariant id",
+    re: /\b[DITW]\d+\b|\b[DITW]-\d+\b|\b[DITW]_\d+\b/,
+  },
   // The same local-marker shape as the entry above under a second letter set: a capital A, C, F,
   // H, R or V and a single digit, optionally hyphen-separated and optionally carrying a dashed
   // sub-number. It is how a review finding, a numbered fix pass, a version label, or any other
@@ -582,44 +595,19 @@ const WORD_NARRATION_TOKEN =
 
 // Named, counted, one reason each — an unnamed or uncounted acknowledgement is a backdoor by the
 // same reasoning as the EXAMPLE exemption. Every entry names a token the corpus really carries: a
-// product/standard name, a versioned code symbol, or a vendored tool skill's own internal
-// structure, none of which is a Shadowcat-process-assigned id.
+// product/standard name, a versioned code symbol, or a structural label, none of which is a
+// Shadowcat-process-assigned id. "Really carries" is ENFORCED rather than asserted: every entry is
+// hit-counted on each full-corpus run and one that reaches nothing fails the gate, so an entry
+// cannot outlive the sites that justified it. The corpus is the tracked skill directories plus the
+// code roots, so a token living only in vendored third-party prose justifies no entry here.
 const ACKNOWLEDGED = [
   {
     name: "product, protocol or algorithm name carrying a version-like number",
     re: /\bNeo4j\b|\bIPv4\b|\bIpv4\b|\bIPv6\b|\bNAT64\b|\bFTS5\b|\bI18n\b|\bPowerShell\s?\d+(?:\.\d+)?\b|\bUUIDv5\b|\bRFC\s?\d+\b|\bArgon2\b|\bSplitMix32\b|\bSplitMix64\b|\bSvelte\s?\d+\b|\bHTTP\s?\d+\b|\bPolyanya\s?\d+\b|\bWin32\b|\bJSON1\b|\bGIF89a\b|\bBM25\b|\bPF1e\b|\bTS2322\b/,
   },
   {
-    name: "a versioned product/spec/language-edition name spaced in prose (a real recognisable vocabulary, not an id)",
-    re: /\bNode\s?22\b|\bD\s?5e\b|\bCSS\s?3\b/,
-  },
-  {
-    name: "a SQL micro-query/clause literal used as a lightweight existence or connectivity probe, not prose",
-    re: /\bSELECT\s?1\b|\bLIMIT\s?1\b/,
-  },
-  {
     name: "a code symbol cited as a value, not a process id",
     re: /\bPanelLayoutV1\b|\bVec2\b/,
-  },
-  {
-    name: "a Fortran source-extension entry inside a vendored skill's own file-extension list",
-    re: /\bF(?:90|95|03|08)\b/,
-  },
-  {
-    name: "a CLI placeholder argument name inside a vendored skill's example command line",
-    re: /\bNODE[12]\b/,
-  },
-  {
-    name: "a POSIX character-class fragment inside a vendored skill's shell excerpt",
-    re: /\bZ0-9\b/,
-  },
-  {
-    name: "a plain quantity in prose, not an id",
-    re: /\bMaximum\s?\d+\b|\bLast\s?\d+\b/,
-  },
-  {
-    name: "a vendored tool skill's own procedural step heading (self-contained table of contents)",
-    re: /\b[Ss]teps?[ -]?\d+[a-z]?(?:-\d+)?\b|\bB[0-3]\b/,
   },
   {
     name: "the two-phase validate-then-commit structural label naming apply_intent's Phase 1 validate / Phase 2 insert split",
@@ -644,11 +632,29 @@ const ACKNOWLEDGED_NARRATION = [
     name: "'legacy' naming a still-supported compatibility path or a third-party product's own version",
     re: /^legacy\b/i,
   },
-  {
-    name: "the passive 'replaced BY' construction stating a substitution/derivation rule",
-    re: /^replaced\s+by\b/i,
-  },
 ];
+
+/**
+ * The acknowledgement entries no candidate in the corpus reached, by name.
+ *
+ * An entry that absorbs nothing is a standing invitation to absorb a future defect: it stays on
+ * the list, and the day a real candidate happens to spell it, the coverage control reports that
+ * candidate as a known-legitimate token instead of surfacing it for review. Nothing in any output
+ * moves. This is the same rule `check-skill-symbol-refs.mjs` applies to its own acknowledgement
+ * lists, stated once per gate because the two lists are separate data.
+ *
+ * The measurement is only valid over the WHOLE corpus. On a subset a zero says the scope did not
+ * reach the token, not that the entry is dead, so the caller must not run this against a scoped
+ * tally.
+ *
+ * @param {Map<string, number>} ackByReason - hits per entry name, from `scanCandidates`.
+ * @returns {string[]} every entry name with no hit, in list order.
+ */
+export function unusedAcknowledgements(ackByReason) {
+  return [...ACKNOWLEDGED, ...ACKNOWLEDGED_NARRATION]
+    .map((a) => a.name)
+    .filter((name) => !ackByReason.has(name));
+}
 
 /**
  * Extracts the comment/prose text one line contributes, mirroring exactly what `scanContent`
@@ -1115,7 +1121,10 @@ export function residueReport(scopes = []) {
       ackByReason.set(a.reason, (ackByReason.get(a.reason) ?? 0) + 1);
     for (const r of result.residue) residue.push({ path, ...r });
   }
-  return { ackTotal, ackByReason, residue, filesScanned: scanned.length };
+  // Scoped runs get an empty list rather than a wrong one: see `unusedAcknowledgements` for why a
+  // zero on a subset cannot falsify an entry.
+  const unused = scopes.length > 0 ? [] : unusedAcknowledgements(ackByReason);
+  return { ackTotal, ackByReason, unused, residue, filesScanned: scanned.length };
 }
 
 // A bare count carries no record of the instrument that produced it, so a widened pattern and a
@@ -1144,6 +1153,7 @@ const INSTRUMENT_FUNCTIONS = [
   lineSubject,
   subjectGroups,
   scanContent,
+  scanCandidates,
   bannedMatchesIn,
   separatorFlexible,
   separatorOnlyClass,
@@ -1172,6 +1182,10 @@ export function instrumentComponents() {
       "PROSE_LITERAL",
       "EXAMPLE_EXEMPT",
       "DESIGN_DOC_CITATION",
+      "CANDIDATE_TOKEN_LABEL",
+      "CANDIDATE_TOKEN_WORD",
+      "PRE_POST_NARRATION_TOKEN",
+      "WORD_NARRATION_TOKEN",
     ],
     values: [
       "SEPARATOR_CLASS",
@@ -1183,6 +1197,8 @@ export function instrumentComponents() {
       "MD_EXTS",
       "SKIP_DIRS",
       "GENERATED_ROOT",
+      "ACKNOWLEDGED",
+      "ACKNOWLEDGED_NARRATION",
     ],
   };
 }
@@ -1206,7 +1222,15 @@ export function instrumentFingerprint() {
           PROSE_LITERAL.source,
           EXAMPLE_EXEMPT.source,
           DESIGN_DOC_CITATION.source,
+          // The coverage control's own matchers and acknowledgement lists, hashed for the same
+          // reason the ban lists are: they decide a printed count (the reached-entry tally) and a
+          // gate outcome (a zero-hit entry), so a change to them makes two runs incomparable.
+          CANDIDATE_TOKEN_LABEL.source,
+          CANDIDATE_TOKEN_WORD.source,
+          PRE_POST_NARRATION_TOKEN.source,
+          WORD_NARRATION_TOKEN.source,
         ],
+        [...ACKNOWLEDGED, ...ACKNOWLEDGED_NARRATION].map((a) => [a.name, a.re.source, a.re.flags]),
         // The separator VALUE SETS sit beside the functions that read them: `separatorOnlyClass`'s
         // source is unchanged by adding a character to either set, while every count that turns on
         // which spellings a pattern reaches moves.
@@ -1255,35 +1279,61 @@ function main() {
       );
       process.exit(2);
     }
-    const { ackTotal, ackByReason, residue, filesScanned } = residueReport(scopes);
+    const { ackTotal, ackByReason, unused, residue, filesScanned } = residueReport(scopes);
     console.log(`${filesScanned} file(s) scanned (code + skill corpora).`);
     console.log(`${ackTotal} acknowledged candidate(s):`);
     for (const [reason, n] of [...ackByReason].sort((a, b) => b[1] - a[1]))
       console.log(`  ${String(n).padStart(4)}  ${reason}`);
     console.log("");
-    if (residue.length === 0) {
+    // BOTH failure classes are collected. Reporting only the residue would let one unrecognised
+    // token hide every dead entry behind it, so the two could be fixed only one run apart.
+    if (unused.length > 0) {
+      console.error(`${unused.length} acknowledgement entry(ies) matched nothing:`);
+      for (const name of unused) console.error(`  ${name}`);
+      console.error(
+        "\nDelete each one. An entry the corpus never reaches cannot be justified by the corpus, " +
+          "and it silently absorbs the first future candidate that happens to spell it.\n",
+      );
+    }
+    if (residue.length === 0 && unused.length === 0) {
       console.log("0 unrecognised candidate(s). Coverage control: clean.");
       process.exit(0);
     }
-    console.error(`${residue.length} unrecognised candidate(s):`);
-    for (const r of residue)
-      console.error(`  ${r.path}:${r.line}  ${JSON.stringify(r.token)}  ${r.text}`);
-    console.error(
-      "\nEach must become a BANNED/SKILL_BANNED pattern (genuine miss) or a named, reasoned " +
-        "ACKNOWLEDGED entry (legitimate token) — never silently ignored.",
-    );
+    if (residue.length > 0) {
+      console.error(`${residue.length} unrecognised candidate(s):`);
+      for (const r of residue)
+        console.error(`  ${r.path}:${r.line}  ${JSON.stringify(r.token)}  ${r.text}`);
+      console.error(
+        "\nEach must become a BANNED/SKILL_BANNED pattern (genuine miss) or a named, reasoned " +
+          "ACKNOWLEDGED entry (legitimate token) — never silently ignored.",
+      );
+    }
     process.exit(1);
   }
 
   const { scanned, isMdFile, generatedExcluded, untrackedSkillExcluded } = gateFileSet(scopes);
   const hits = [];
   let exempted = 0;
+  // The coverage control's acknowledgement entries are hit-counted on the CI-wired run, not only
+  // in `--residue`, because that is the run whose result anyone acts on. An entry that reaches
+  // nothing is an exemption nobody counts, which is a backdoor by the same reasoning the EXAMPLE
+  // marker's printed count answers. Counted off the content already in hand rather than by a
+  // second pass over the tree.
+  const ackByReason = new Map();
   for (const path of scanned) {
     const content = readFileSync(path, "utf8");
-    const result = scanContent(content, { isMd: isMdFile.has(path) });
+    const isMd = isMdFile.has(path);
+    const result = scanContent(content, { isMd });
     exempted += result.exempted;
     for (const h of result.hits) hits.push({ path, ...h });
+    if (scopes.length === 0)
+      for (const a of scanCandidates(content, { isMd }).acknowledged)
+        ackByReason.set(a.reason, (ackByReason.get(a.reason) ?? 0) + 1);
   }
+  // Empty on a scoped run, where a zero hit says the scope missed the token rather than that the
+  // entry is dead — see `unusedAcknowledgements`.
+  const deadAcknowledgements =
+    scopes.length > 0 ? [] : unusedAcknowledgements(ackByReason);
 
   // A scope that matches no files and a scope that is genuinely clean both produce zero hits, and
   // telling them apart by eye is impossible — a mistyped prefix reads as success. Refuse to report
@@ -1337,6 +1387,24 @@ function main() {
     }
   }
 
+  /**
+   * Names every acknowledgement entry the corpus never reached, and says whether there were any.
+   * Returns rather than exits, so a run carrying both this and real hits reports both — one
+   * failure class hiding another behind it is what makes them fixable only one run at a time.
+   */
+  function reportDeadAcknowledgements() {
+    if (deadAcknowledgements.length === 0) return false;
+    console.error(
+      `\n${deadAcknowledgements.length} acknowledgement entry(ies) matched nothing in the corpus:`,
+    );
+    for (const name of deadAcknowledgements) console.error(`  ${name}`);
+    console.error(
+      "\nDelete each one. An entry the corpus never reaches cannot be justified by the corpus, " +
+        "and it silently absorbs the first future candidate that happens to spell it.",
+    );
+    return true;
+  }
+
   /** The line that makes a count self-describing. Print it beside every total. */
   function provenance(total) {
     const prior = priorRun();
@@ -1349,7 +1417,13 @@ function main() {
       untrackedSkillExcluded > 0
         ? `; ${untrackedSkillExcluded} untracked (vendored) skill file(s) excluded`
         : "";
-    const head = `instrument ${INSTRUMENT}; ${scanned.length} file(s) scanned${ex}${gen}${vendored}`;
+    // The acknowledgement list's live size prints on every full-corpus run, for the same reason
+    // the EXAMPLE count does: an exemption whose size nobody sees is indistinguishable from a rule
+    // that does not apply. A scoped run measures a subset and prints nothing rather than a figure
+    // that would read as the whole list's.
+    const acks =
+      scopes.length > 0 ? "" : `; ${ackByReason.size} acknowledgement entry(ies) reached`;
+    const head = `instrument ${INSTRUMENT}; ${scanned.length} file(s) scanned${ex}${gen}${vendored}${acks}`;
     if (!prior) return `${head}; no prior run recorded for this scope`;
     if (prior.instrument !== INSTRUMENT) {
       return (
@@ -1468,6 +1542,7 @@ function main() {
           filesWithHits: files,
           byKind,
           byArea,
+          deadAcknowledgements,
           hits,
         },
         null,
@@ -1475,7 +1550,7 @@ function main() {
       ),
     );
     recordRun(hits.length);
-    process.exit(hits.length > 0 ? 1 : 0);
+    process.exit(hits.length > 0 || deadAcknowledgements.length > 0 ? 1 : 0);
   }
 
   if (wantArea) {
@@ -1484,8 +1559,9 @@ function main() {
     console.log(provenance(hits.length));
     for (const [area, n] of byArea)
       console.log(`${String(n).padStart(5)}  ${area}`);
+    const dead = reportDeadAcknowledgements();
     recordRun(hits.length);
-    process.exit(hits.length > 0 ? 1 : 0);
+    process.exit(hits.length > 0 || dead ? 1 : 0);
   }
 
   if (hits.length > 0) {
@@ -1507,7 +1583,14 @@ function main() {
     // phrase is attributed to the line it starts on, and that line does not contain the phrase.
     for (const h of hits)
       console.error(`  ${h.path}:${h.line}  [${h.kind}]  matched "${h.match}" in: ${h.text}`);
+    reportDeadAcknowledgements();
     recordRun(hits.length);
+    process.exit(1);
+  }
+
+  if (reportDeadAcknowledgements()) {
+    console.error(provenance(0));
+    recordRun(0);
     process.exit(1);
   }
 

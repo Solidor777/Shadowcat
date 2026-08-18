@@ -8,6 +8,7 @@ import {
   collectFiles,
   gateFileSet,
   residueReport,
+  unusedAcknowledgements,
   separatorFlexible,
   separatorOnlyClass,
   bannedMatchesIn,
@@ -63,6 +64,27 @@ test("skill mode flags a task/phase id", () => {
   expect(hits.map((h) => h.kind)).toEqual([
     "phase / workstream / invariant id",
   ]);
+});
+
+// The separated writers name the same artifact as the unspaced one, and neither hits a live line
+// today — so the only evidence they are reached at all is this control. Revert direction: drop
+// either alternative from the entry and its row here turns green-to-red.
+test("skill mode flags a task/phase id written with a hyphen or an underscore", () => {
+  for (const fixture of ["Fixed in D-9 today.\n", "Landed under W_2.\n"]) { // EXAMPLE:
+    const { hits } = scanContent(fixture, { isMd: true });
+    expect(hits.map((h) => h.kind)).toEqual([
+      "phase / workstream / invariant id",
+    ]);
+  }
+});
+
+// The counter-case that decides the spelling. A one-member class would be widened to the SPACE
+// writer, where a single capital plus a space plus a quantity is ordinary English rather than an
+// id; the alternatives above are written so the widening cannot reach them. Revert direction:
+// respell the separators as `[DITW][-_]?\d+` and this line starts failing.
+test("skill mode does NOT read a capital, a space and a quantity as a phase id", () => {
+  const fixture = "Each T 4 cells wide, and I 2 rows deep.\n";
+  expect(scanContent(fixture, { isMd: true }).hits).toEqual([]);
 });
 
 test("skill mode flags a sweep/round/review marker", () => {
@@ -455,6 +477,34 @@ test("code mode does not flag a bare ISO date, which is also program data", () =
   expect(hits).toEqual([]);
 });
 
+// The acknowledgement lists are HIT-COUNTED and a zero-hit entry fails the gate, the same rule
+// `check-skill-symbol-refs.mjs` applies to its own lists. Without it an entry stays alive after the
+// sites that justified it are gone, and absorbs the first future candidate that happens to spell
+// it with nothing in any output moving. Six entries died silently when the corpus stopped
+// including vendored skill prose, which is the instance this rule was written from.
+test("an acknowledgement entry the corpus never reaches is named, and a reached one is not", () => {
+  const live = "product, protocol or algorithm name carrying a version-like number";
+  expect(unusedAcknowledgements(new Map([[live, 3]]))).not.toContain(live);
+  expect(unusedAcknowledgements(new Map([[live, 3]])).length).toBeGreaterThan(0);
+  expect(unusedAcknowledgements(new Map())).toContain(live);
+});
+
+// The live-corpus assertion, which is where the rule has teeth: every entry currently on either
+// list is reached by something. Revert direction: re-add any entry whose sites are gone and this
+// turns red naming it.
+test("every acknowledgement entry is reached by the live corpus", () => {
+  expect(residueReport([]).unused).toEqual([]);
+});
+
+// The soundness condition. On a subset a zero hit says the scope did not reach the token, not that
+// the entry is dead, so a scoped run must produce no finding at all rather than a list of entries
+// the scope simply never covered.
+test("a SCOPED run makes no zero-hit claim about an acknowledgement entry", () => {
+  const scoped = residueReport(["src/server"]);
+  expect(scoped.filesScanned).toBeGreaterThan(0);
+  expect(scoped.unused).toEqual([]);
+});
+
 // Reach equality: the coverage control (`--residue`, backed by `residueReport`/`gateFileSet`)
 // must examine exactly the file set the gate itself scans — both corpora, not a filtered subset
 // of one. A control whose reach is narrower than the gate's reports clean over what it never read,
@@ -824,6 +874,7 @@ test("the instrument fingerprint hashes exactly the components that decide a cou
     "lineSubject",
     "subjectGroups",
     "scanContent",
+    "scanCandidates",
     "bannedMatchesIn",
     "separatorFlexible",
     "separatorOnlyClass",
@@ -837,6 +888,10 @@ test("the instrument fingerprint hashes exactly the components that decide a cou
     "PROSE_LITERAL",
     "EXAMPLE_EXEMPT",
     "DESIGN_DOC_CITATION",
+    "CANDIDATE_TOKEN_LABEL",
+    "CANDIDATE_TOKEN_WORD",
+    "PRE_POST_NARRATION_TOKEN",
+    "WORD_NARRATION_TOKEN",
   ]);
   expect(instrumentComponents().values).toEqual([
     "SEPARATOR_CLASS",
@@ -848,6 +903,8 @@ test("the instrument fingerprint hashes exactly the components that decide a cou
     "MD_EXTS",
     "SKIP_DIRS",
     "GENERATED_ROOT",
+    "ACKNOWLEDGED",
+    "ACKNOWLEDGED_NARRATION",
   ]);
 });
 
