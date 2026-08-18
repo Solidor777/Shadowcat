@@ -536,7 +536,7 @@ function lineSubject(line, isMd, lexState) {
 //     such a class cannot be anything but a separator, so it needs no disambiguating context. A
 //     class carrying any non-separator member is emitted untouched, because a `-` inside `[a-z]`
 //     is a RANGE and widening it corrupts the pattern outright.
-// RESIDUAL, and why the coverage claim above is bounded rather than universal: a bare separator
+// RESIDUAL, and why that coverage claim is bounded rather than universal: a bare separator
 // whose neighbour is an ESCAPE rather than a literal letter fails the neighbour test and keeps its
 // single spelling. Spelling that separator as a character class widens it.
 //

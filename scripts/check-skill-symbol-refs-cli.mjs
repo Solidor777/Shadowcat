@@ -149,9 +149,9 @@ export function classifySkillSymbolRun(result) {
 
   // An unclosed fence is a document defect with no terminator to recover on: every line after it
   // is blanked to end of file, so the document's remaining citations leave the gate while
-  // conservation still balances and `bodyRuns` falls to 0, which is exactly the measurement the
-  // per-file floor below reads. Failing on the fence itself closes that path and the mid-file
-  // variant of it at once, and names the defect rather than a symptom of it.
+  // conservation still balances and `bodyRuns` falls to 0, which is exactly the measurement
+  // `filesWithNoCandidates`'s trigger reads. Failing on the fence itself closes that path and the
+  // mid-file variant of it at once, and names the defect rather than a symptom of it.
   if (filesWithUnterminatedFence.length > 0)
     problems.push(
       `\n${filesWithUnterminatedFence.length} skill file(s) end inside an unclosed code fence:\n` +
