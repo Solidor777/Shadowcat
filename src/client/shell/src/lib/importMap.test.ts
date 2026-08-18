@@ -102,6 +102,9 @@ describe("shared-runtime import map (build output)", () => {
     expect(typeof formula.resolveAll).toBe("function");
     expect(typeof formula.resolveNotationTemplate).toBe("function");
     expect(formula.NOTATION_KEYWORDS).toBeDefined();
+    // A consuming module reaches the stat-key authority through this single instance or not
+    // at all: `checkNotationKey` is what it must call instead of restating the grammar.
+    expect(typeof formula.checkNotationKey).toBe("function");
 
     const core = await import(
       pathToFileURL(path.join(distDir, "runtime", "shadowcat-core.js")).href
