@@ -4,6 +4,7 @@ import {
   checkNotationKey,
   resolveNotationTemplate,
   type NotationKeyCheck,
+  type NotationKeySegment,
 } from "./template";
 import { parseFormula } from "./parser";
 import type { FormulaValue } from "./types";
@@ -223,8 +224,9 @@ describe("the reservation split between the two grammars", () => {
 // rewrite.
 describe("checkNotationKey", () => {
   /** Runs the REWRITE over a bare key with a resolver answering every path, reporting the
-   * paths it was asked for and what came back. Answering everything is deliberate: it makes
-   * a case observe the SHAPE the grammar imposed rather than the consumer's own
+   * paths it was asked for and what the REWRITE produced — the resolver's own return is the
+   * same number every time and carries no information. Answering everything is deliberate: it
+   * makes a case observe the SHAPE the grammar imposed rather than the consumer's own
    * unknown-reference error, which would mask the paths the split actually offered. */
   const rewriteKey = (key: string): { seen: string[]; result: ReturnType<typeof resolveNotationTemplate> } => {
     const seen: string[] = [];
@@ -254,16 +256,18 @@ describe("checkNotationKey", () => {
     ...NOTATION_KEYWORDS.map((kw) => kw.toUpperCase()),
     ...NOTATION_KEYWORDS.map((kw) => `${kw}.max`),
     "hp", "hp.max", "a.b.c", "str_mod", "_x", "x1", "HP.Max", "hp.d", "damage", "total",
-    "kh_max", "2hp", "0hp", "hp.2max", "hp max", "hp-max", "hp+max", "hp[max", "hp[max]",
-    "hp.", ".hp", "hp..max", "hp]max", "[hp]", "-", "",
+    "kh_max", "2hp", "0hp", "42", "hp.2max", "hp max", "hp-max", "hp+max", "hp[max",
+    "2hp[max", "hp[max]", "hp.", ".hp", "hp..max", "hp]max", "[hp]", "-", "",
   ];
 
   /** The states `NotationKeyCheck` enumerates, one predicate each, read straight off a
-   * returned value. Each is written independently of its siblings — none is spelled as "the
-   * remaining case" — so a key matching none of them, or matching two, is a hole in the
-   * taxonomy rather than two spellings of one predicate disagreeing. The discriminator is
-   * whether an `"identifier"` claim SURVIVES, never how many claims there are: a key the
-   * grammar consumed entirely as notation carries several claims and reaches no resolver. */
+   * returned value — including the `intact` FIELD, which is read rather than recomputed, so a
+   * change to how the checker sets it moves the classification here instead of being masked by
+   * a second copy of its rule. Rejection is the first-level discriminator and the three shape
+   * predicates all guard on it. The shape discriminator is whether an `"identifier"` claim
+   * SURVIVES, never how many claims there are: a key the grammar consumed entirely as notation
+   * carries as many claims as the grammar took to consume it — one for a bare keyword, none at
+   * all for the empty key — and reaches no resolver either way. */
   const STATES: readonly { readonly name: string; readonly holds: (check: NotationKeyCheck) => boolean }[] = [
     { name: "rejected", holds: (check) => check.rejects !== null },
     {
@@ -271,29 +275,82 @@ describe("checkNotationKey", () => {
       holds: (check) =>
         check.rejects === null && !check.segments.some((seg) => seg.kind === "identifier"),
     },
-    {
-      name: "intact",
-      holds: (check) =>
-        check.rejects === null
-        && check.segments.length === 1
-        && check.segments[0].kind === "identifier",
-    },
+    { name: "intact", holds: (check) => check.rejects === null && check.intact },
     {
       name: "split",
       holds: (check) =>
         check.rejects === null
         && check.segments.some((seg) => seg.kind === "identifier")
-        && check.segments.length > 1,
+        && !check.intact,
     },
   ];
 
-  /** The one state a check lands in, failing the calling case if the taxonomy classifies it
-   * zero times or more than once. */
-  const soleState = (check: NotationKeyCheck, key: string): string => {
+  /** The dice operator, read off the list rather than respelled: its own declaration is both
+   * `NOTATION_KEYWORDS`' first member and `emitClaim`'s test, so reading the first member is
+   * reading that declaration. A literal here would be a second spelling of it. */
+  const DICE_OPERATOR = NOTATION_KEYWORDS[0];
+
+  /** The notation the silent state predicts for a key: every claimed span verbatim, save the
+   * ONE span the emission rewrites — a `DICE_OPERATOR` keyword with no integer run immediately
+   * before it gains a synthesized count of `1`. This is a deliberate second statement of
+   * `emitClaim`'s only rewrite, and it is the assertion that makes "emitted verbatim" testable
+   * rather than asserted: any further rewrite the emitter grows fails here. */
+  const emittedVerbatim = (segments: readonly NotationKeySegment[]): string =>
+    segments
+      .map((seg, idx) => {
+        const countPrecedes = idx > 0 && segments[idx - 1].kind === "integer";
+        const isDiceOperator = seg.kind === "keyword" && seg.text.toLowerCase() === DICE_OPERATOR;
+        return isDiceOperator && !countPrecedes ? `1${seg.text}` : seg.text;
+      })
+      .join("");
+
+  /** Classifies one key from what `checkNotationKey` RETURNS, then checks the consequence that
+   * classification claims against what `resolveNotationTemplate` observably does to the same
+   * key. Returns one line per violation — an empty array is agreement — so the caller asserts
+   * over the whole key set at once instead of stopping at the first, and so the hand-written
+   * corpus and the generated sweep below share ONE statement of the contract rather than two
+   * that can drift.
+   *
+   * The oracle is the rewrite, never a predicate written beside the states: a predicate set
+   * authored by the same hand as the taxonomy agrees with it by construction. What this is NOT
+   * independent of is the recognizer chain — `checkNotationKey` and the rewrite both run
+   * `claimAt`, so a defect INSIDE a recognizer moves both answers together and passes here.
+   * What it is independent of is the prose and the hand-written case list. */
+  const consequenceViolations = (key: string): string[] => {
+    const check = checkNotationKey(key);
     const matched = STATES.filter((state) => state.holds(check)).map((state) => state.name);
-    expect(matched, `${JSON.stringify(key)} kinds=${JSON.stringify(check.segments.map((s) => s.kind))}`)
-      .toHaveLength(1);
-    return matched[0];
+    const kinds = JSON.stringify(check.segments.map((seg) => seg.kind));
+    const where = `${JSON.stringify(key)} kinds=${kinds}`;
+    if (matched.length !== 1) {
+      return [`${where}: ${matched.length} states hold ${JSON.stringify(matched)}, expected exactly 1`];
+    }
+    const [state] = matched;
+    const { seen, result } = rewriteKey(key);
+    const at = `${where} (${state})`;
+    if (state === "rejected") {
+      // Same scan, same origin for the position: the rewrite is run over the bare key here, so
+      // the two errors must be identical rather than merely both parse errors.
+      return JSON.stringify(result) === JSON.stringify(check.rejects)
+        ? []
+        : [`${at}: rewrite returned ${JSON.stringify(result)}, rejects=${JSON.stringify(check.rejects)}`];
+    }
+    if (!("notation" in result)) return [`${at}: the rewrite failed with ${JSON.stringify(result)}`];
+    const bad: string[] = [];
+    if (state === "no surviving identifier") {
+      if (seen.length > 0) bad.push(`${at}: the resolver was asked for ${JSON.stringify(seen)}`);
+      const expected = emittedVerbatim(check.segments);
+      if (result.notation !== expected) {
+        bad.push(`${at}: emitted ${JSON.stringify(result.notation)}, expected ${JSON.stringify(expected)}`);
+      }
+    }
+    if (state === "intact" && (seen.length !== 1 || seen[0] !== key)) {
+      bad.push(`${at}: the resolver was asked for ${JSON.stringify(seen)}, expected the key once`);
+    }
+    if (state === "split") {
+      if (seen.length === 0) bad.push(`${at}: the resolver was asked for nothing`);
+      if (seen.includes(key)) bad.push(`${at}: the resolver was asked for the key as written`);
+    }
+    return bad;
   };
 
   it("a bare keyword never survives, whatever case it is written in", () => {
@@ -408,39 +465,80 @@ describe("checkNotationKey", () => {
     expect(checkNotationKey("")).toEqual({ intact: false, segments: [], rejects: null });
   });
 
-  it("every key lands in exactly ONE of the states NotationKeyCheck enumerates", () => {
-    // Conservation, not one spot check per state: the assertion is over the COUNT of states
-    // a key satisfies, so a shape the taxonomy cannot classify and a shape two states both
-    // claim fail the same way. Per-state expectations cannot do this — they ask only about
-    // the shapes someone thought to list, and a key falling out of the taxonomy is exactly
-    // the shape nobody listed. A discriminator that counts claims rather than reading
-    // identifier survival fails here on a key claimed as several notation atoms.
-    for (const key of CORPUS) soleState(checkNotationKey(key), key);
-  });
-
   it("each state predicts what the rewrite does to the key it classifies", () => {
     // The states are worth nothing as a partition alone; each names a consequence, and this
-    // is what ties them to observable behaviour. The silent state is the load-bearing
-    // one: its defining property is that NOTHING reaches the consumer's resolver, which is
-    // why a keyword run, a bracketed label and a literal fallthrough belong to one state
-    // rather than to a keyword-shaped state of their own.
-    for (const key of CORPUS) {
-      const check = checkNotationKey(key);
-      const state = soleState(check, key);
-      const { seen, result } = rewriteKey(key);
-      const where = `${JSON.stringify(key)} (${state})`;
-      if (state === "rejected") {
-        expect(result, where).toMatchObject({ error: "parse" });
-        continue;
-      }
-      expect("notation" in result, `${where} did not run`).toBe(true);
-      if (state === "no surviving identifier") expect(seen, where).toEqual([]);
-      if (state === "intact") expect(seen, where).toEqual([key]);
-      if (state === "split") {
-        expect(seen.length, `${where} offered the resolver nothing`).toBeGreaterThan(0);
-        expect(seen, `${where} offered the resolver the key as written`).not.toEqual([key]);
-      }
+    // is what ties them to observable behaviour. The silent state is the load-bearing one:
+    // its defining property is that no `"identifier"` claim is among the segments, so no span
+    // reaches the consumer's resolver whatever claimed the key instead.
+    expect(CORPUS.flatMap(consequenceViolations)).toEqual([]);
+  });
+
+  /** Every letter any `NOTATION_KEYWORDS` member is spelled with, derived from the list rather
+   * than listed again, so a keyword added there widens the sweep's alphabet with no second
+   * edit here. */
+  const KEYWORD_LETTERS: readonly string[] = [...new Set(NOTATION_KEYWORDS.join(""))].sort();
+
+  /** The sweep's alphabet. Reachability is the floor it has to clear — every recognizer and
+   * the literal fallthrough must be reachable — and past that floor each member is here
+   * because some branch is unobservable without it:
+   * - every keyword letter, so every `NOTATION_KEYWORDS` member, every proper prefix of one
+   *   and every near-miss spelling is generated rather than listed;
+   * - the dice operator in UPPER case, because `claimNotationKeyword` lowercases the run
+   *   before its membership probe and `emitClaim` lowercases before synthesizing a count, and
+   *   neither lowercasing is observable from a lowercase-only alphabet;
+   * - a letter no keyword is spelled with, so a run that cannot collide exists;
+   * - a digit, reaching `claimIntegerRun` and the mid-identifier `isWordChar` branch;
+   * - a dot, the segment join `claimIdentifierSpan` crosses only before an identifier start;
+   * - an underscore: an identifier-start character that is not a letter, so it CONTINUES a
+   *   keyword run where a digit ends one;
+   * - both brackets, reaching `claimLabelSpan` terminated and unterminated — the closing one
+   *   is claimed by no recognizer on its own and is what decides which of the two the opening
+   *   one is;
+   * - a hyphen, claimed by no recognizer at any position, reaching the literal fallthrough. */
+  const ALPHABET: readonly string[] = [
+    ...KEYWORD_LETTERS, DICE_OPERATOR.toUpperCase(), "a", "1", ".", "_", "[", "]", "-",
+  ];
+
+  /** The longest generated key. Four characters is what reaches the multi-claim shapes the
+   * hand-written cases were written for — a keyword run followed by a digit, an identifier
+   * followed by an unclosed bracket, a dotted path, a count ahead of a dice operator — with at
+   * least one character to spare on each. */
+  const SWEEP_LENGTH = 4;
+
+  /** Every string over `ALPHABET` from the empty key up to `SWEEP_LENGTH`, in full. Exhaustive
+   * over a bounded space rather than sampled from an unbounded one, so a clean run is a proof
+   * about that space and not evidence about a draw from it. */
+  const sweepKeys = (): string[] => {
+    const keys: string[] = [""];
+    let frontier: string[] = [""];
+    for (let length = 1; length <= SWEEP_LENGTH; length++) {
+      const next: string[] = [];
+      for (const prefix of frontier) for (const ch of ALPHABET) next.push(prefix + ch);
+      for (const key of next) keys.push(key);
+      frontier = next;
     }
+    return keys;
+  };
+
+  it("every generated key over a bounded alphabet lands in one state whose consequence holds", () => {
+    // The hand-written cases above are one author's list of shapes, and so is the corpus, and
+    // so would be any predicate set written beside them: a case nobody thought of is by
+    // definition absent from all three. This enumerates keys MECHANICALLY instead and checks
+    // each against what the rewrite observably does, which is what makes a shape nobody
+    // listed reachable at all.
+    const keys = sweepKeys();
+    // Positive control on the GENERATOR: an alphabet and a length are worth only what they
+    // reach, so name one key of each multi-claim shape the length was chosen for and require
+    // the generated set to hold it. A generator quietly producing fewer shapes would
+    // otherwise report a clean sweep over a space missing them.
+    for (const shape of ["kh1", "h[", "h.h", "1d", "D", "a-a", "[]", "_1", "hh]"]) {
+      expect(keys.includes(shape), `the sweep never generated ${JSON.stringify(shape)}`).toBe(true);
+    }
+    const violations = keys.flatMap(consequenceViolations);
+    expect(
+      violations.slice(0, 10),
+      `${violations.length} of ${keys.length} generated keys broke their state's consequence`,
+    ).toEqual([]);
   });
 
   it("the verdict matches what the rewrite actually does to the key, shape for shape", () => {
