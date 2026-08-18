@@ -2,6 +2,14 @@ import { describe, expect, it } from "vitest";
 import { resolveAll } from "./graph";
 import type { FormulaValue } from "./types";
 
+/** An `evalNode` over the keys `n0..nN`: `n0` resolves to 0 and every other `n{i}`
+ * returns `get("n{i-1}")`, so a root `n{K-1}` discovers exactly K distinct keys and
+ * charges exactly K visits against the graph-visit cap. */
+const countdownChain = (k: string, get: (d: string) => FormulaValue): FormulaValue => {
+  const n = Number(k.slice(1));
+  return n <= 0 ? 0 : get(`n${n - 1}`);
+};
+
 describe("resolveAll", () => {
   const nodes: Record<string, (get: (k: string) => FormulaValue) => FormulaValue> = {
     base: () => 2,
@@ -62,13 +70,19 @@ describe("resolveAll", () => {
     expect(a.get("s2")).toEqual(b.get("s2"));
   });
   it("caps total visits", () => {
-    // a chain longer than MAX_GRAPH_VISITS trips the cap error, not a hang
-    const chain = (k: string, get: (d: string) => FormulaValue): FormulaValue => {
-      const n = Number(k.slice(1));
-      return n <= 0 ? 0 : get(`n${n - 1}`);
-    };
-    const r = resolveAll(["n5000"], chain);
+    // a chain far longer than MAX_GRAPH_VISITS trips the cap error, not a hang
+    const r = resolveAll(["n5000"], countdownChain);
     expect(r.get("n5000")).toMatchObject({ error: "cap" });
+  });
+
+  it("exact MAX_GRAPH_VISITS boundary: a 2048-key chain resolves, a 2049-key one caps", () => {
+    // Literal key counts, never `MAX_GRAPH_VISITS ± 1`: a bracket derived from the
+    // constant moves with it and so pins no value at all. `n2047` roots a chain over
+    // n0..n2047 = 2048 distinct keys, the largest that fits, since `resolveAll` caps a
+    // key only once the charged count EXCEEDS the bound. One further key caps, and the
+    // cap value propagates back up the chain to the root.
+    expect(resolveAll(["n2047"], countdownChain).get("n2047")).toBe(0);
+    expect(resolveAll(["n2048"], countdownChain).get("n2048")).toMatchObject({ error: "cap" });
   });
 
   it("turns a throwing evalNode into a resolver-error, never propagates", () => {
@@ -97,15 +111,12 @@ describe("resolveAll", () => {
   });
 
   it("resolves a long non-cyclic chain (depth under the visit cap) without a stack overflow", () => {
-    // Depth 2000 stays under MAX_GRAPH_VISITS (2048) so the cap never trips —
-    // this proves resolution succeeds regardless of chain depth (would have
-    // been recursion-unsafe on a constrained JS stack before the iterative
-    // rewrite: node --stack-size=200 threw RangeError at depth 770).
-    const chain = (k: string, get: (d: string) => FormulaValue): FormulaValue => {
-      const n = Number(k.slice(1));
-      return n <= 0 ? 0 : get(`n${n - 1}`);
-    };
-    const r = resolveAll(["n2000"], chain);
+    // Depth 2000 stays under MAX_GRAPH_VISITS (2048) so the cap never trips, isolating
+    // stack safety from the cap. INVARIANT: `resolveAll` consumes O(1) JS call-stack
+    // frames whatever the chain depth; a recursive implementation of the same traversal
+    // exhausts a constrained stack instead (node --stack-size=200 throws RangeError at
+    // depth 770).
+    const r = resolveAll(["n2000"], countdownChain);
     expect(r.get("n2000")).toBe(0);
   });
 
