@@ -90,8 +90,11 @@ function readKeywordRun(src: string, i: number): string {
 
 /** A bracketed label span, from `[` through the next `]`, emitted verbatim
  * so an author-written label survives the rewrite. An unterminated bracket rejects the
- * whole template. Ordered FIRST, so a label's contents are never scanned for keywords or
- * identifiers. */
+ * whole template. What keeps a label's contents from being scanned for keywords or
+ * identifiers is the claim's EXTENT rather than its place in the chain — the claim covers
+ * the closing bracket, and the scan resumes past it. Its position is unobservable while it
+ * is the only recognizer that claims a `[`; a later recognizer claiming that character
+ * would make the ordering load-bearing. */
 const claimLabelSpan: Recognizer = {
   kind: "label",
   claim: (src, at) => {
