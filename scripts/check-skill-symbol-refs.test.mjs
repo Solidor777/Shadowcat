@@ -844,11 +844,11 @@ describe("importBindingNames", () => {
     const text = [
       'import { Collision } from "dockview-core";',
       "export interface Holder { Collision: string }",
-      'export { inner as Collision2 } from "./neighbour";',
+      'export { inner as CollisionAlias } from "./neighbour";',
     ].join("\n");
     const names = extractTsSymbols(text);
     expect(names.has("Holder.Collision")).toBe(true);
-    expect(names.has("Collision2")).toBe(true);
+    expect(names.has("CollisionAlias")).toBe(true);
     expect(importBindingNames(text).has("Collision")).toBe(true);
   });
 });
