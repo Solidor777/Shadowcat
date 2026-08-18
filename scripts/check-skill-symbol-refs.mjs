@@ -31,6 +31,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { join, basename } from "node:path";
 import { execFileSync } from "node:child_process";
 import ts from "typescript";
+import { splitLine } from "./lib/comment-span.mjs";
 import {
   sources,
   norm,
@@ -267,15 +268,22 @@ export function extractRustSymbols(text, modulePath = []) {
   // wraps across many lines (a 17-arm `matches!` alternation), and a line-local reader would drop
   // every such declaration out of the index while reporting nothing.
   const lineOwners = []; // ({ owner: string, mods: string[] } | null)[]
-  // The same lines with comment text removed, so a value set is read from CODE only: an alternation
-  // harvested out of a `///` comment resolves a citation against prose describing the code rather
-  // than against a declaration.
+  // The same lines with comment text removed, so a value set is read from CODE only: an
+  // alternation harvested out of a comment resolves a citation against prose describing the code
+  // rather than against a declaration. The span comes from `splitLine`, the one lexical definition
+  // of comment-vs-code this repo's gates share, because a comment is a REGION and not a line
+  // shape: a leading-marker test leaves a trailing comment and a block comment in the text the
+  // extractors read, which is the silent direction - the harvested prose then resolves a citation
+  // and the gate reports it verified.
   const codeLines = [];
+  let commentState = { inBlock: false, inHtml: false };
   for (const line of lines) {
     const trimmed = line.trim();
     const isAttr = trimmed.startsWith("#[") || trimmed.startsWith("#!");
     const isComment = trimmed.startsWith("//");
-    codeLines.push(isComment ? "" : line);
+    const split = splitLine(line, commentState);
+    commentState = split.state;
+    codeLines.push(split.code);
     let attrs = "";
     if (isAttr) {
       pendingAttrs.push(trimmed);
@@ -750,7 +758,7 @@ export function extractTsSymbols(text, fileName = "module.ts", opts = {}) {
     } else if (ts.isExportSpecifier(node) || ts.isNamespaceExport(node)) {
       // A re-export publishes the name from THIS module, so it is a declaration here. An IMPORT
       // binding is not: the name belongs to the module it came from, and `importBindingNames`
-      // collects it separately. Emitting both from one set is what let a file that imports a name
+      // collects it separately. Emitting both from one set lets a file that imports a name
       // externally AND declares a member of the same name mask its own declaration.
       add(node.name.text, []);
     } else if (valueSets && ts.isLiteralTypeNode(node) && ts.isStringLiteral(node.literal)) {
@@ -949,10 +957,18 @@ export function buildSymbolIndex(repoRoot) {
   // Product roots carry wire values a document really holds; `scripts` carries a gate's own
   // configuration. Both are indexed for their DECLARATIONS, only the former for its value sets.
   const PRODUCT_ROOTS = ["src/client", "src/modules", "src/types"];
-  /** One JSON document's keys: a dependency name is a REFERENCE, every other key a declaration. */
+  /**
+   * One JSON document's keys: a dependency name is a REFERENCE, every other key a declaration.
+   *
+   * `extractJsonKeys` emits a key in both its bare and its owner-qualified spelling, so the test
+   * reads the LAST SEGMENT: routing only the bare form leaves `dependencies.typescript` in the
+   * declared half, and the same package name is then a reference in one spelling and a declaration
+   * in the other.
+   */
   const indexJson = (text) => {
     const deps = extractJsonDependencyNames(text);
-    for (const key of extractJsonKeys(text)) (deps.has(key) ? referenced : declared).add(key);
+    const isDependency = (key) => deps.has(key.slice(key.lastIndexOf(".") + 1));
+    for (const key of extractJsonKeys(text)) (isDependency(key) ? referenced : declared).add(key);
   };
 
   const rustRoot = join(repoRoot, "src", "server", "src");

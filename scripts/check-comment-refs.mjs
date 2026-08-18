@@ -644,19 +644,25 @@ const flexibleFor = (re) => {
 };
 
 /**
- * The index at which `re` first matches `subject`, under either its own spelling or its
- * separator-flexible form; -1 for no match.
+ * Where `re` first matches `subject`, under either its own spelling or its separator-flexible
+ * form, and WHAT it matched; null for no match.
+ *
+ * The matched text is returned, not just the offset, because a subject is a group and a phrase may
+ * wrap: the line an offset lands on is the line the phrase STARTS on, whose text does not contain
+ * the phrase. A finding naming a line that does not show the violation is materially harder to act
+ * on than one carrying the matched words.
+ *
  * @param {RegExp} re - one ban pattern.
  * @param {string} subject - a grouped comment block or Markdown paragraph.
- * @returns {number} an index into `subject`, or -1.
+ * @returns {{index: number, text: string}|null} the offset into `subject` and the matched text.
  */
-export function bannedMatchIndex(re, subject) {
+export function bannedMatchIn(re, subject) {
   const direct = subject.match(re);
-  if (direct !== null) return direct.index;
+  if (direct !== null) return { index: direct.index, text: direct[0] };
   const flexible = flexibleFor(re);
-  if (flexible === null) return -1;
+  if (flexible === null) return null;
   const widened = subject.match(flexible);
-  return widened === null ? -1 : widened.index;
+  return widened === null ? null : { index: widened.index, text: widened[0] };
 }
 
 // A comment block, or a Markdown paragraph, is the unit a sentence is written in; a LINE is only
@@ -770,7 +776,7 @@ export function scanCandidates(content, { isMd, banLists } = { isMd: true }) {
     for (const { re, acks, contextChars } of classes) {
       for (const m of subject.matchAll(re)) {
         const token = m[0];
-        if (banned.some((b) => bannedMatchIndex(b.re, token) >= 0)) continue;
+        if (banned.some((b) => bannedMatchIn(b.re, token) !== null)) continue;
         const context = subject.slice(m.index, m.index + token.length + contextChars);
         const ack = acks.find((a) => a.re.test(context));
         const at = group.lineAt(m.index);
@@ -823,8 +829,8 @@ export function sources(dir, exts) {
 }
 
 /**
- * Scans one file's already-read text for banned references, returning its hits (line + kind +
- * the trimmed source line) and how many lines its EXAMPLE-exempt marker covered.
+ * Scans one file's already-read text for banned references, returning its hits (line + kind + the
+ * matched text + the trimmed source line) and how many lines its EXAMPLE-exempt marker covered.
  *
  * `isMd` selects the subject-extraction mode: a `.md` skill has no code/comment boundary — the
  * whole line is prose — so it is checked directly against SKILL_BANNED, while a code file keeps
@@ -840,14 +846,14 @@ export function scanContent(content, { isMd }) {
   // GROUP — see `subjectGroups` — so a phrase split by a line wrap is one subject, not two.
   const { groups, exempted } = subjectGroups(content, isMd);
   for (const group of groups) {
-    // One hit per group, at the FIRST pattern that matches it, mirroring what a per-line scan
-    // reported for a line carrying two violations: the remaining ones surface on the next run.
+    // EVERY pattern that matches a group is reported, not just the first. One hit per group leaves
+    // a block carrying two different violations fixable only one gate run at a time, and the run
+    // that reports the second looks like a regression introduced by the fix for the first.
     for (const b of banned) {
-      const index = bannedMatchIndex(b.re, group.text);
-      if (index < 0) continue;
-      const at = group.lineAt(index);
-      hits.push({ line: at.line, kind: b.name, text: at.source });
-      break;
+      const m = bannedMatchIn(b.re, group.text);
+      if (m === null) continue;
+      const at = group.lineAt(m.index);
+      hits.push({ line: at.line, kind: b.name, text: at.source, match: m.text });
     }
   }
   hits.sort((a, b) => a.line - b.line);
@@ -980,7 +986,12 @@ function main() {
         // count as directly as the patterns themselves do: regrouping lines or widening a
         // separator moves every total without touching a `re`. Hashing them keeps a comparison
         // between two runs from being offered when the ruler, not the corpus, is what changed.
-        [stableSource(subjectGroups), stableSource(separatorFlexible), SEPARATOR_CLASS],
+        [
+          stableSource(subjectGroups),
+          stableSource(separatorFlexible),
+          stableSource(separatorOnlyClass),
+          SEPARATOR_CLASS,
+        ],
         ROOTS,
         EXTS,
         MD_ROOTS,
@@ -1197,8 +1208,10 @@ function main() {
     for (const [area, n] of byArea)
       console.error(`  ${String(n).padStart(4)}  ${area}`);
     console.error("");
+    // The matched text prints beside the source line because a subject is a GROUP: a wrapped
+    // phrase is attributed to the line it starts on, and that line does not contain the phrase.
     for (const h of hits)
-      console.error(`  ${h.path}:${h.line}  [${h.kind}]  ${h.text}`);
+      console.error(`  ${h.path}:${h.line}  [${h.kind}]  matched "${h.match}" in: ${h.text}`);
     recordRun(hits.length);
     process.exit(1);
   }

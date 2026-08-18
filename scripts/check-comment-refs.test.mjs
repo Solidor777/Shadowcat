@@ -66,11 +66,24 @@ test("skill mode flags a sweep/round/review marker", () => {
   expect(hits.map((h) => h.kind)).toEqual(["sweep / round / review marker"]);
 });
 
-test("skill mode flags a dated plan filename", () => {
+// Two rules govern this one span, and both are reported: a group carrying two violations must not
+// be fixable one gate run at a time.
+test("skill mode flags a dated plan filename under every rule it breaks", () => {
   const fixture =
     "Plan: `docs/superpowers/plans/2026-07-15-m13a-formula-library.md`.\n"; // EXAMPLE:
   const { hits } = scanContent(fixture, { isMd: true });
-  expect(hits.map((h) => h.kind)).toEqual(["dated plan/spec file"]);
+  expect(hits.map((h) => h.kind)).toEqual(["dated plan/spec file", "date stamp"]);
+});
+
+// A subject is a GROUP, so a wrapped phrase is attributed to the line it STARTS on - a line whose
+// text does not contain the phrase. The matched words travel with the finding for that reason.
+test("a hit carries the matched text alongside the source line", () => {
+  const fixture = "// the comparator is evaluated once, unlike before the\n// fix it replaces\n"; // EXAMPLE:
+  const [hit] = scanContent(fixture, { isMd: false }).hits;
+  expect(hit.kind).toBe("history narration");
+  expect(hit.text).not.toContain(hit.match);
+  expect(hit.match).toContain("before the");
+  expect(hit.match).toContain("fix");
 });
 
 test("skill mode flags a bare date narrative form the code pattern would miss", () => {

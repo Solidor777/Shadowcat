@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, dirname, resolve } from "node:path";
+import { join, dirname, resolve, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import process from "node:process";
 import {
@@ -14,6 +14,14 @@ import {
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const CLI = join(REPO_ROOT, "scripts", "check-skill-symbol-refs-cli.mjs");
+
+// The fixture directory name is DERIVED from this file's own basename rather than written out, so
+// the one-fixed-path-per-suite rule is structural: two suites cannot name the same directory
+// without sharing a filename, which the filesystem already forbids.
+const FIXTURE_ROOT = join(
+  tmpdir(),
+  `shadowcat-${basename(fileURLToPath(import.meta.url), ".test.mjs")}-fixture`,
+);
 
 /** A gate result whose every count says "clean run"; each test perturbs one field. */
 const clean = (over = {}) => ({
@@ -90,8 +98,8 @@ describe("classifySkillSymbolRun", () => {
     expect(result.problems.join("\n")).toContain("SKILL.md:7  `region_arrests`");
   });
 
-  // Both classes are reported in ONE run: reporting only the first would make the two fixable
-  // only one round at a time.
+  // Both classes are reported in ONE run: reporting only the first would make the two fixable only
+  // one gate run at a time.
   it("reports a broken citation AND a dead acknowledgement together", () => {
     const result = classifySkillSymbolRun(
       clean({
@@ -201,12 +209,12 @@ describe("report", () => {
 // while the CLI prints its findings and reports success.
 describe("the CLI process itself", () => {
   it("exits NON-ZERO on a seeded broken citation", () => {
-    // ONE fixed fixture path, rewritten in place, rather than a fresh temp directory per run: this
-    // repo permits no permanent-deletion call, so a per-run directory accumulates forever. The
+    // ONE fixture path, rewritten in place, rather than a fresh temp directory per run: this repo
+    // permits no permanent-deletion call, so a per-run directory accumulates forever. The
     // corpus-size assertion below is what makes reuse safe — a file left behind by an older
     // version of this fixture would otherwise be scanned and could satisfy the exit assertion for
     // a reason this test never wrote.
-    const repoRoot = join(tmpdir(), "shadowcat-symbol-refs-cli-fixture");
+    const repoRoot = FIXTURE_ROOT;
     mkdirSync(join(repoRoot, "src", "server", "src"), { recursive: true });
     mkdirSync(join(repoRoot, "src", "server", "migrations"), { recursive: true });
     for (const dir of ["client", "modules", "types"])
@@ -236,12 +244,15 @@ describe("the CLI process itself", () => {
   });
 });
 
-// Three artifacts have claimed "every code span lands in exactly one printed bucket" while the
-// code listed a different set, twice. A claim about the code is either derived from it or tested
-// against it; this is the test.
+// A claim about the code is either derived from it or tested against it; a sentence enumerating
+// the buckets is neither on its own, and drifts the first time a bucket is added or renamed. This
+// is the test that makes the prose derived.
 describe("the bucket enumeration prose", () => {
+  // The haystack is whitespace-normalized BEFORE the search, so no search key ever has to carry a
+  // hard line wrap. A key containing a newline matches only while its paragraph wraps at exactly
+  // that word, so ordinary prose reflow - not a defect - reds the gate.
   const enumerationIn = (path, opening) => {
-    const text = readFileSync(join(REPO_ROOT, ...path.split("/")), "utf8");
+    const text = readFileSync(join(REPO_ROOT, ...path.split("/")), "utf8").replace(/\s+/g, " ");
     const start = text.indexOf(opening);
     expect(start, `enumeration opening not found in ${path}`).toBeGreaterThan(-1);
     const from = start + opening.length;
@@ -278,14 +289,14 @@ describe("the bucket enumeration prose", () => {
     expect(
       enumerationIn(
         "docs/design/doc-sweep-truthfulness-rules.md",
-        "printed beside the\nbuckets: ",
+        "printed beside the buckets: ",
       ),
     ).toEqual(exclusionLabels);
   });
 
   it("matches the CLI's own run-exclusion list in shadowcat-codebase-core", () => {
     expect(
-      enumerationIn(".claude/skills/shadowcat-codebase-core/SKILL.md", "buckets: "),
+      enumerationIn(".claude/skills/shadowcat-codebase-core/SKILL.md", "printed beside the buckets: "),
     ).toEqual(exclusionLabels);
   });
 });

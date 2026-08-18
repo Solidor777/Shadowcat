@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, dirname, resolve } from "node:path";
+import { join, dirname, resolve, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   extractRustSymbols,
@@ -32,6 +32,15 @@ import {
 } from "./check-skill-symbol-refs.mjs";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+
+// The fixture directory name is DERIVED from this file's own basename rather than written out, so
+// the one-fixed-path-per-suite rule is structural: two suites cannot name the same directory
+// without sharing a filename, which the filesystem already forbids.
+const FIXTURE_ROOT = join(
+  tmpdir(),
+  `shadowcat-${basename(fileURLToPath(import.meta.url), ".test.mjs")}-fixture`,
+);
+
 
 describe("extractRustSymbols", () => {
   it("indexes fn/struct/enum/trait/const/static items bare and module-path-qualified", () => {
@@ -112,6 +121,26 @@ describe("extractRustSymbols", () => {
     const enumNames = extractRustSymbols("pub enum Dir {\n    Up, Down,\n}\n");
     expect(enumNames.has("Dir::Up")).toBe(true);
     expect(enumNames.has("Dir::Down")).toBe(true);
+  });
+
+  // The value-set pass reads CODE, and a comment is a lexical REGION rather than a line shape: a
+  // trailing comment and a block comment carry prose past a leading-marker test, and an
+  // alternation harvested out of that prose then resolves a citation against a description of the
+  // code instead of a declaration - the silent direction, since the gate reports it verified.
+  it("harvests no value set out of a trailing or block comment", () => {
+    const text = [
+      "pub fn classify(t: &str) -> bool {",
+      '    matches!(t, "real" | "member") // "trailingfake" | "trailingprose"',
+      '    /* "blockfake" | "blockprose" */',
+      "}",
+    ].join("\n");
+    const names = extractRustSymbols(text);
+    expect(names.has("classify::real")).toBe(true);
+    expect(names.has("classify::member")).toBe(true);
+    expect(names.has("classify::trailingfake")).toBe(false);
+    expect(names.has("classify::trailingprose")).toBe(false);
+    expect(names.has("classify::blockfake")).toBe(false);
+    expect(names.has("classify::blockprose")).toBe(false);
   });
 
   it("indexes a variant on a CRLF line with no trailing comma", () => {
@@ -360,13 +389,33 @@ describe("extractJsonKeys", () => {
 
 describe("extractJsonDependencyNames", () => {
   // A dependency is a REFERENCE in a `package.json` for the same reason it is one in a
-  // `Cargo.toml`; classifying the one category two ways is what let an external package name pass
-  // the acknowledgement assertion on one side and fail it on the other.
+  // `Cargo.toml`; classifying the one category two ways lets an external package name pass the
+  // acknowledgement assertion on one side and fail it on the other.
   it("names the packages a manifest depends on, and nothing else it declares", () => {
     const names = extractJsonDependencyNames(
       '{"name": "shadowcat", "dependencies": {"typescript": "^5"}, "devDependencies": {"vitest": "^4"}, "scripts": {"build": "vite"}}',
     );
     expect([...names].sort()).toEqual(["typescript", "vitest"]);
+  });
+});
+
+// A dependency is a REFERENCE, and `extractJsonKeys` emits every key in both a bare and an
+// owner-qualified spelling. Routing only the bare form leaves the qualified one in the DECLARED
+// half, so the same package name is a reference in one spelling and a declaration in the other,
+// and an acknowledgement of it reports as also-declared on the strength of the spelling nobody
+// looked at.
+describe("a manifest dependency is a reference in BOTH its spellings", () => {
+  it("keeps no qualified dependency key in the declared half", () => {
+    const manifest = readFileSync(join(REPO_ROOT, "package.json"), "utf8");
+    const deps = extractJsonDependencyNames(manifest);
+    const qualified = [...extractJsonKeys(manifest)].filter(
+      (k) => k.includes(".") && deps.has(k.slice(k.lastIndexOf(".") + 1)),
+    );
+    expect(qualified.length, "the manifest declares no dependency to check").toBeGreaterThan(0);
+    const { symbols, declared } = buildSymbolIndex(REPO_ROOT);
+    expect(qualified.filter((k) => declared.has(k))).toEqual([]);
+    // Still INDEXED, so a citation of the qualified spelling resolves: only its half changed.
+    expect(qualified.filter((k) => !symbols.has(k))).toEqual([]);
   });
 });
 
@@ -686,7 +735,8 @@ describe("extractCitationCandidates", () => {
 // the token survives to the whole-token acknowledgement list. The day anything declares `sort`,
 // the citation VERIFIES — against an unrelated declaration — and the entry dies zero-hit, so the
 // obvious repair (deleting the dead entry) would cement a false verify. This test is the tripwire:
-// it fails while that precondition holds, so the arrangement cannot change silently.
+// it passes while that precondition holds and fails the moment it breaks, so the arrangement
+// cannot change silently.
 describe("the Array.sort acknowledgement's precondition", () => {
   it("holds only while the tree declares no `sort`", () => {
     const { declared } = buildSymbolIndex(REPO_ROOT);
@@ -786,9 +836,10 @@ describe("importBindingNames", () => {
     expect([...names].sort()).toEqual(["DockviewApi", "fs", "local", "pickSheet", "ts"]);
   });
 
-  // The routing leak this closes: one file that imports a name AND declares a member of the same
-  // name sent both to the reference half, masking a real declaration from the assertion that reads
-  // it. `extractTsSymbols` no longer emits import bindings at all, so the two cannot collide.
+  // The routing invariant behind the split: one file that imports a name AND declares a member of
+  // the same name would send both to the reference half, masking a real declaration from the
+  // assertion that reads it. `extractTsSymbols` emits no import binding, so the two cannot
+  // collide.
   it("extractTsSymbols emits a re-export but not an import binding", () => {
     const text = [
       'import { Collision } from "dockview-core";',
@@ -891,12 +942,12 @@ describe("listSkillDirs", () => {
 });
 
 describe("checkSkillSymbolRefs", () => {
-  // One fixture tree for the whole suite, at ONE fixed path rewritten in place: this repo permits
-  // no permanent-deletion call, so a per-run temp directory accumulates forever. Reuse is safe
+  // One fixture tree for the whole suite, at ONE path rewritten in place: this repo permits no
+  // permanent-deletion call, so a per-run temp directory accumulates forever. Reuse is safe
   // because every test writes the prose it needs and the corpus-size case below asserts the scan
   // saw exactly two files, so a file left behind by an older fixture turns a test red rather than
   // quietly joining the corpus.
-  const repoRoot = join(tmpdir(), "shadowcat-symbol-refs-fixture");
+  const repoRoot = FIXTURE_ROOT;
   const skillsRoot = join(repoRoot, ".claude", "skills");
   const skillFile = join(skillsRoot, "shadowcat-codebase-example", "SKILL.md");
   const trackedDirs = new Set(["shadowcat-codebase-example", "shadowcat-codebase-nightfox"]);
