@@ -1469,18 +1469,19 @@ export function stripCodeBlocks(text) {
       prevBlank = false;
       continue;
     }
-    if (FENCE_DELIMITER.test(line)) {
-      blank(line);
-      inFence = true;
-      prevBlank = false;
-      continue;
-    }
     if (line.trim() === "") {
       out.push(line);
       prevBlank = true;
       continue;
     }
     const indent = line.length - line.trimStart().length;
+    // ORDERING, load-bearing: an already-open indented block consumes its own lines BEFORE the
+    // delimiter test. `FENCE_DELIMITER` allows leading indentation, so tested first it reads a
+    // lone fence line sitting INSIDE an indented block as a real fence opener; nothing later
+    // closes it, and the file is reported as ending inside an unclosed fence although its fences
+    // are balanced - a false report on a well-formed document. The block's own dedent still ends
+    // it, after which a fence opens normally, and a fence that OPENS a block still wins, because
+    // that branch stays below this one.
     if (inIndented) {
       if (indent >= indentedFrom) {
         blank(line);
@@ -1488,6 +1489,12 @@ export function stripCodeBlocks(text) {
         continue;
       }
       inIndented = false;
+    }
+    if (FENCE_DELIMITER.test(line)) {
+      blank(line);
+      inFence = true;
+      prevBlank = false;
+      continue;
     }
     while (listContent.length > 0 && indent < listContent[listContent.length - 1])
       listContent.pop();

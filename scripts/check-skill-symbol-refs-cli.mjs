@@ -151,8 +151,19 @@ export function classifySkillSymbolRun(result) {
   // An unclosed fence is a document defect with no terminator to recover on: every line after it
   // is blanked to end of file, so the document's remaining citations leave the gate while
   // conservation still balances and `bodyRuns` falls to 0, which is exactly the measurement
-  // `filesWithNoCandidates`'s trigger reads. Failing on the fence itself closes that path and the
-  // mid-file variant of it at once, and names the defect rather than a symptom of it.
+  // `filesWithNoCandidates`'s trigger reads. Failing on the fence itself names the defect rather
+  // than a symptom of it, and reaches the variant that OPENS mid-document too - there the prose
+  // above the fence keeps yielding citations, so `bodyRuns` stays positive, the floor never
+  // triggers, and the lost tail is invisible to every other count.
+  //
+  // NOT reached, stated rather than left to be inferred: a stray CLOSED fence PAIR mid-document.
+  // It blanks everything between its two delimiters, leaves this flag false, balances
+  // conservation (the blanked runs are counted as blanked), and keeps the floor silent for as
+  // long as the surviving prose yields one checked citation. No signal can separate it from a
+  // real fenced block, because it IS a real fenced block - only a reader knows the delimiters
+  // were not meant. Two mitigations, neither of them a gate: `blankedBlockLines` prints on every
+  // run, so the lines it removes are visible in the banner rather than silent; and producing the
+  // case at all takes TWO stray delimiters, where one is already fatal here.
   if (filesWithUnterminatedFence.length > 0)
     problems.push(
       `\n${filesWithUnterminatedFence.length} skill file(s) end inside an unclosed code fence:\n` +

@@ -681,6 +681,27 @@ describe("stripCodeBlocks", () => {
     expect(stripCodeBlocks(text).body).toContain("`Whisper`");
   });
 
+  // The delimiter test allows leading indentation, so a lone fence line inside an INDENTED code
+  // block would open a real fence if it were tested first — and with nothing later closing it, a
+  // document whose fences are balanced gets reported as ending inside an unclosed one. Revert
+  // direction: move the delimiter test back above the indented-block branch and both expectations
+  // below flip.
+  it("does not open a fence on a delimiter line INSIDE an indented code block", () => {
+    const text = [
+      "Prose.",
+      "",
+      "    let x = 1;",
+      "    ```",
+      "    let y = 2;",
+      "",
+      "More `B` prose.",
+      "",
+    ].join("\n");
+    const result = stripCodeBlocks(text);
+    expect(result.unterminatedFence).toBe(false);
+    expect(result.body).toContain("`B`");
+  });
+
   // Block stripping is the widest exclusion here and the only one that removes whole LINES. A
   // fence misdetection has to move a number someone can see, or it removes arbitrary prose from
   // the gate with every printed total unchanged.
