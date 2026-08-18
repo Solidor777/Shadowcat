@@ -85,9 +85,9 @@ which no prose can do.
   exact size parses, one more caps — three constructs for the depth cap), and `graph.test` for
   `MAX_GRAPH_VISITS` (a chain of exactly that many distinct keys resolves, one key more caps, which
   also pins the bound as EXCEEDS rather than reaches). A LOOSE bracket pins nothing however it is
-  spelled: `graph.test`'s other two chains admit every value between them, and they are a 2001-key
-  and a 5001-key chain — `countdownChain`'s own doc states that a root one below a count discovers
-  that many keys.
+  spelled: `graph.test`'s cap-trip case and its long-chain smoke case admit every value between
+  them. Name those two by what they do rather than by how many chains the file holds — a count goes
+  stale the moment a case is added, and one already was.
 - **`resolveAll`'s trampoline is O(1) JS-stack-depth by construction, not an implementation
   detail.** It restarts `resolveAll.evalNode` from scratch on an internal `NeedsDependency` throw
   rather than recursing, so graph depth never grows the call stack. Pinned by MEASUREMENT rather
@@ -121,20 +121,32 @@ which no prose can do.
   error, not a cap error. A deliberate grammar boundary, not a lexer defect; do not "fix" the lexer
   to accept exponents without a grammar change. Pinned by `parser.test`'s exponent-notation case;
   the boundary is this package's own decision and no external record states it.
-- **Identifiers are case-insensitive and normalized to lowercase, and the two grammars this package
-  parses reserve DIFFERENTLY.** `parseFormula`'s grammar reserves no identifier names: a bare word
-  is always a reference, whatever it spells, so reserved-word validation there is purely a
-  consumer's concern. `resolveNotationTemplate`'s grammar reserves MORE than
+- **The two grammars this package parses differ in BOTH reservation and case handling, and
+  generalizing either one across both is a silent miss.** `parseFormula`'s grammar reserves no
+  identifier names: a bare word is always a reference, whatever it spells, so reserved-word
+  validation there is purely a consumer's concern — and `tokenize` lowercases every word token it
+  emits, so that grammar's resolver is always offered a lowercased path.
+  `resolveNotationTemplate` does neither. It reserves MORE than
   `NOTATION_KEYWORDS` lists, and the whole rule is one sentence: **an identifier collides when its
   leading maximal alpha run, lowercased, is a member — whatever follows that run.**
   `readAlphaPrefix` reads that run and stops at the first character outside `isAlpha`, and only the
   run is tested for membership, so the keyword branch takes the identifier and the dotted-identifier
-  logic below it is never reached. Any collision emits dice notation and never reaches the
+  logic below it is never reached. **Only that membership probe is lowercased.** The emitted text
+  keeps the author's case, and `substituteIdentifier` splits the raw slice, so there the consumer's
+  identifier resolver is offered a RAW-CASE path. A consumer keying its resolver on lowercase —
+  which the other grammar teaches it to do — misses on a mixed-case template reference, and the miss
+  surfaces as that consumer's own unknown-reference error rather than as anything pointing here.
+  Any collision emits dice notation and never reaches the
   consumer's identifier resolver, so a colliding stat key is rewritten into a dice operator and the
   roll uses the operator, with no error on any path. That asymmetry is why the list is exported at
-  all: it is what a consuming system's stat-key authoring validation rejects against, and that
-  validation must implement the RULE — validating against an enumeration of shapes builds exactly
-  the insufficient check the export exists to prevent. Illustrations, deliberately NOT exhaustive:
+  all: it is what a consuming system's stat-key authoring validation rejects against **for keyword
+  collisions**, and that validation must implement the RULE — validating against an enumeration of
+  shapes builds exactly the insufficient check the export exists to prevent. **A keyword collision
+  is not the only way a written key is silently split**: the identifier span accepts `isWordChar`
+  characters and dot-joined segments and nothing else, so a key carrying any other character is
+  split into separate references with a literal between them, and a key whose first character is a
+  digit loses that digit to the notation stream — different mechanism, same silent consequence, and
+  not covered by the keyword rule at all. Illustrations, deliberately NOT exhaustive:
   a member spelled bare; a member followed by a digit, whose remainder re-lexes as notation atoms
   by the same mechanism that lexes a dice atom, so it cannot be narrowed away; any upper- or
   mixed-case spelling, since the run is lowercased before the test; and — the likeliest of them in

@@ -167,6 +167,20 @@ describe("the reservation split between the two grammars", () => {
       .toEqual({ notation: "2d20 + 1d.7[max]" });
   });
 
+  it("hands the resolver a RAW-CASE path, where the formula grammar hands it a lowercased one", () => {
+    // Only the membership probe is lowercased. A non-colliding identifier reaches
+    // `substituteIdentifier`, which splits the raw slice — so the path offered here keeps the
+    // author's case, and so does the emitted label. `tokenize` lowercases every word token it
+    // emits, so the same reference read through `parseFormula` arrives lowercased instead.
+    // A consumer keying its resolver on lowercase therefore resolves one grammar and misses the
+    // other, and the miss surfaces as its OWN unknown-reference error.
+    const { seen, resolve } = spyResolve();
+    expect(resolveNotationTemplate("2d20 + HP.Max", resolve))
+      .toEqual({ notation: "2d20 + 7[HP.Max]" });
+    expect(seen).toEqual(["HP.Max"]);
+    expect(parseFormula("HP.Max")).toEqual({ kind: "ref", path: ["hp", "max"] });
+  });
+
   it("the formula grammar reserves none of them: each parses as a reference", () => {
     for (const kw of NOTATION_KEYWORDS) {
       expect(parseFormula(kw), `'${kw}' did not parse as a reference`)
