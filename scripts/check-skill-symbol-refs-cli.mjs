@@ -111,9 +111,10 @@ export function classifySkillSymbolRun(result) {
     `run(s) leaving before classification: ${excluded} ` +
     `(from ${accounting.blankedBlockLines} code-block line(s)); conservation delta ` +
     `${conservationDelta}.${untracked}` +
-    ` The ${accounting.crossRepo} cross-repo citation(s) name symbols verified absent from this ` +
-    `tree and acknowledged as the separate Nightfox repository's, which nothing here can check — ` +
-    `a standing review obligation (see RULE 15).`;
+    ` The ${accounting.crossRepo} cross-repo citation(s) are acknowledged as the separate Nightfox ` +
+    `repository's, which nothing here can check — a standing review obligation (see RULE 15). An ` +
+    `entry is NOT required to be absent from this tree: its claim is about the other repository, ` +
+    `so a same-named member here falsifies nothing, and inside that one skill it shadows the index.`;
 
   // EVERY failure class is collected. Reporting only the first would let a run with a broken
   // citation hide every dead acknowledgement entry behind it, so the two could only ever be fixed

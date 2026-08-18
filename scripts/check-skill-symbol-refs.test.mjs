@@ -817,6 +817,34 @@ describe("checkFileCitations", () => {
     const result = checkFileCitations("EXAMPLE: `M13-0` is a specimen.", new Set());
     expect(result.exampleExempt).toBe(1);
   });
+
+  // The precedence the cross-repo list depends on for its existence. A name the OTHER repository
+  // owns is not made this tree's by this tree declaring a member that spells the same string, so
+  // the scoped set is consulted first. With the index first the citation counted as `verified`
+  // against an unrelated declaration and the entry absorbed nothing, which is a false verify and a
+  // zero-hit entry at once. Revert direction: put `resolvesAgainstIndex` back in front and this
+  // reports 1 verified, 0 cross-repo, and an empty hit map.
+  it("classifies a scoped cross-repo name the INDEX ALSO declares as cross-repo, not verified", () => {
+    const extraHits = new Map();
+    const result = checkFileCitations("The `stats` band key.", new Set(["stats"]), new Map(), {
+      extra: new Set(["stats"]),
+      extraHits,
+    });
+    expect(result.crossRepo).toBe(1);
+    expect(result.verified).toBe(0);
+    expect(extraHits.get("stats")).toBe(1);
+  });
+
+  // The other side of the same precedence: an indexed name the scoped set does NOT carry still
+  // verifies, so consulting `extra` first shadows exactly its own entries and nothing else.
+  it("leaves an indexed name the scoped set does not carry verified", () => {
+    const result = checkFileCitations("The `elsewhere` field.", new Set(["elsewhere"]), new Map(), {
+      extra: new Set(["stats"]),
+      extraHits: new Map(),
+    });
+    expect(result.verified).toBe(1);
+    expect(result.crossRepo).toBe(0);
+  });
 });
 
 describe("importBindingNames", () => {
@@ -956,7 +984,10 @@ describe("checkSkillSymbolRefs", () => {
   mkdirSync(join(repoRoot, "src", "server", "migrations"), { recursive: true });
   writeFileSync(
     join(repoRoot, "src", "server", "src", "scene", "regions.rs"),
-    "impl RegionField {\n    pub fn is_arrest(&self) -> bool { true }\n}\n",
+    "impl RegionField {\n    pub fn is_arrest(&self) -> bool { true }\n}\n" +
+      // A field spelling a live cross-repo acknowledgement, so the collision the precedence rule
+      // exists for is present in the fixture rather than described by it.
+      "pub struct Band {\n    pub format: String,\n}\n",
   );
   for (const dir of ["client", "modules", "types"])
     mkdirSync(join(repoRoot, "src", dir), { recursive: true });
@@ -1004,6 +1035,25 @@ describe("checkSkillSymbolRefs", () => {
   it("reports an UNNAMED cross-repo citation as broken — the file is exempt per NAME only", () => {
     const result = run("See `RegionField::is_arrest`.", "See `NightfoxOnlyType::NotInThisRepo`.");
     expect(result.broken.map((b) => b.token)).toEqual(["NightfoxOnlyType::NotInThisRepo"]);
+  });
+
+  // End to end over the collision the whole cross-repo mechanism turns on: the fixture DECLARES a
+  // `format` field, and `format` is a live cross-repo entry. Both halves of the fix are pinned
+  // here — the citation reaches the list instead of false-verifying, and the list is not held to
+  // the "this tree declares none of it" guard, which would fail the run on the same entry.
+  it("reaches a cross-repo entry this tree ALSO declares, and does not flag it as indexed", () => {
+    const result = run("See `RegionField::is_arrest`.", "The `format` module.");
+    expect(result.crossRepoHits.get("format")).toBe(1);
+    expect(result.indexedAcknowledgements).toEqual([]);
+    expect(result.broken).toEqual([]);
+  });
+
+  // The scoping half, on that same colliding name: outside the one cross-repo file the index is
+  // what answers, so a skill of this repo's citing `format` verifies against the declaration.
+  it("still verifies the colliding name against the index in any OTHER skill", () => {
+    const result = run("The `format` field.", "See `parseNightfox`.");
+    expect(result.verified).toBe(1);
+    expect(result.crossRepoHits.get("format")).toBeUndefined();
   });
 
   it("acknowledges a cross-repo name ONLY inside that skill's own file", () => {
