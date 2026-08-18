@@ -23,13 +23,9 @@ const DICE_OPERATOR = "d";
  * `checkNotationKey`, which runs the chain, and must not reimplement a rule over this list
  * instead.
  *
- * **A collision ends in one of three ways, and only one of them is silent.** Text claimed
- * as a keyword is rewritten into notation and never offered to the consumer's identifier
- * resolver, with no error on any path. A key SPLIT across several claims offers the
- * resolver each identifier span on its own — paths the author never wrote — so a consuming
- * system holding no stat at one of them answers with its own unknown-reference error and
- * the template fails with that error. A key a recognizer REJECTS returns a parse error from
- * every template containing it. `NotationKeyCheck` carries all three outcomes. */
+ * **A collision is not reliably loud.** The three ways a scan of a colliding key can end
+ * are enumerated on `NotationKeyCheck` and nowhere else, so no second copy of that taxonomy
+ * can drift from the type a consuming authoring UI actually branches on. */
 export const NOTATION_KEYWORDS: readonly string[] =
   [DICE_OPERATOR, "kh", "kl", "dh", "dl", "r", "ro", "cs", "cf", "t", "e"];
 
@@ -295,7 +291,19 @@ export interface NotationKeySegment {
   readonly at: number;
 }
 
-/** What the template grammar does to one written key — `checkNotationKey`'s result. */
+/** What the template grammar does to one written key — `checkNotationKey`'s result, and the
+ * ONE enumeration of the three ways a scan of that key can end. Each outcome below is a
+ * property of THAT SCAN: what the recognizer chain claims over the text it is handed.
+ *
+ * - **Claimed as a keyword.** An identifier-start run the grammar reserves is rewritten into
+ *   notation and never offered to the consumer's identifier resolver, with no error on any
+ *   path — the outcome no consumer data can make loud. The roll runs and the number changes.
+ * - **Split across several claims.** Each `"identifier"` span is offered to the resolver on
+ *   its own — paths the author never wrote — and every other span is emitted into the
+ *   notation. Loud whenever the consumer holds no stat at one of those paths: that resolver's
+ *   own unknown-reference error fails the scan. Silent only while every split path resolves.
+ * - **Rejected by a recognizer.** The scan in which the rejection occurs ends in that parse
+ *   error instead of notation, and `rejects` is that verdict computed over the key ALONE. */
 export interface NotationKeyCheck {
   /** `true` only when the whole key is claimed as ONE identifier span, which is the only
    * shape that reaches a consumer's identifier resolver as the author wrote it. The verdict
@@ -303,15 +311,12 @@ export interface NotationKeyCheck {
    * in front of it: an intact key placed immediately after a digit run still has that run
    * emitted ahead of the substituted value, where the two concatenate into one number. */
   readonly intact: boolean;
-  /** Every claim over the key, in order, stopping at `rejects` when one is set. Two or
-   * more segments means the key is SPLIT: each `"identifier"` segment is offered to the
-   * consumer's resolver on its own — a path the author never wrote — and every other
-   * segment is emitted into the notation. A split is LOUD whenever the consumer holds no
-   * stat at one of those paths: that resolver's own unknown-reference error fails the whole
-   * template. It is silent only while every split path happens to resolve. */
+  /** Every claim over the key, in order, stopping at `rejects` when one is set. One
+   * `"identifier"` claim covering the whole key is the `intact` case; two or more claims is
+   * the SPLIT outcome above. */
   readonly segments: readonly NotationKeySegment[];
-  /** Set when a recognizer rejected the key outright, in which case any template
-   * containing it returns this error instead of notation; `null` otherwise. */
+  /** The error a recognizer rejected the key with — the REJECTED outcome above — or `null`
+   * when no recognizer rejected it. */
   readonly rejects: FormulaError | null;
 }
 

@@ -149,14 +149,13 @@ which no prose can do.
   here. **The two also FAIL DIFFERENTLY on one written key**: a key whose dotted segment starts
   with a digit is a loud parse error in `parseFormula` and a silent split in
   `resolveNotationTemplate`, which is why testing a key against one grammar tells a consumer
-  nothing about the other. **A template-grammar collision ends one of three ways and only one of
-  them is silent.** Text claimed as a keyword is rewritten into notation and never offered to the
-  consumer's identifier resolver, with no error on any path. A SPLIT key offers the resolver each
-  fragment separately — paths the author never wrote — so a consuming system holding no stat at one
-  of them answers with its own unknown-reference error and the template fails with it, which is the
-  common real-world shape. A REJECTED key returns a parse error from every template containing it.
-  `NotationKeyCheck` carries all three, and a spy resolver answering every path hides the middle
-  one, so `template.test` pins it with a resolver that knows only the key as written.
+  nothing about the other. **A template-grammar collision is not reliably loud, and the three ways
+  one scan can end are enumerated on `NotationKeyCheck` — read them there rather than restating
+  them here.** What binds a consumer is the coupling: a consuming system validates a stat key by
+  CALLING `checkNotationKey`, never by reasoning over `NOTATION_KEYWORDS`, because a collision it
+  misses can change the number a roll produces with no error on any path. A spy resolver answering
+  every path hides the split outcome, so `template.test` pins it with a resolver that knows only
+  the key as written.
   `template.test`'s `checkNotationKey` cases derive their keyword
   shapes from `NOTATION_KEYWORDS` itself, so a keyword added there is covered without a second
   edit, and one case asserts the checker's verdict against what the rewrite observably does to each
@@ -175,6 +174,12 @@ which no prose can do.
   measured and pinned by `template.test`. Whether a bracket inside a written key should be
   absorbable as a label at all is an open runtime question awaiting a ruling — do not change the
   behaviour to close the gap.
+- **An `intact` verdict is not a safe-in-every-position verdict.** `checkNotationKey` scans the key
+  from position ZERO, so it says nothing about the text a template puts in FRONT of it: an intact
+  key immediately following a digit run has that run emitted ahead of the substituted value, and
+  the two concatenate into one number rather than adding — a silently wrong TOTAL, not an error.
+  Same class as the bracket-isolation gotcha above: the key checks safe in isolation and runs wrong
+  in context, and the caveat is carried on `NotationKeyCheck.intact`. Pinned by `template.test`.
 - **The dice-modifier vocabulary is one decision declared in two languages.** `NOTATION_KEYWORDS`
   mirrors the server notation parser's `P::modifiers` match, and neither language can read the
   other's declaration. `modifierParityDifference` reads both and fails `pnpm test:scripts` on a
