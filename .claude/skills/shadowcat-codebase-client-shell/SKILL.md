@@ -272,7 +272,9 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
   Predicted-op overlay and rollback-on-reject are absent; reads through `documents` are plain
   authoritative reads. In production the two are INDEPENDENT siblings fed the same `applyCommand`.
   A test asserting optimistic semantics must supply its own `documents`, or it is asserting
-  nothing. (Same fixture-fidelity class as the nightfox `t: (k) => k` gotcha.)
+  nothing. (Same fixture-fidelity class as that
+  fixture's identity-echo `t: (k) => k`, which resolves every key to itself rather than through a
+  catalog.)
 - **`WorldSession.canEdit` is an affordance mirror, and it diverges from server authz in BOTH
   directions** — treat it as "which controls to show", never as the
   authority. It can over-permit: the `role === "gm"` short-circuit returns `true` unconditionally and

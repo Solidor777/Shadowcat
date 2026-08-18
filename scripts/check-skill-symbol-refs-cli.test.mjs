@@ -33,7 +33,6 @@ const clean = (over = {}) => ({
   filesWithNoCandidates: [],
   filesWithUnterminatedFence: [],
   acknowledgedHits: new Map([["Uuid", 3]]),
-  crossRepoHits: new Map([["parseNightfox", 2]]),
   unusedAcknowledgements: [],
   indexedAcknowledgements: [],
   untrackedDirs: ["graphify"],
@@ -51,7 +50,6 @@ const clean = (over = {}) => ({
     exampleExempt: 35,
     verified: 4259,
     acknowledged: 229,
-    crossRepo: 71,
     broken: 0,
   },
   conservationDelta: 0,
@@ -66,7 +64,6 @@ describe("classifySkillSymbolRun", () => {
     expect(problems).toEqual([]);
     expect(banner).toContain("4259 verified");
     expect(banner).toContain("229 acknowledged non-symbol (1 named entry(ies))");
-    expect(banner).toContain("71 cross-repo");
     expect(banner).toContain("0 broken");
     expect(banner).toContain("2141 not citation-shaped");
     expect(banner).toContain("35 EXAMPLE-exempt");

@@ -17,7 +17,6 @@ import {
   extractTsSymbols,
   extractSvelteScript,
   importBindingNames,
-  skillDirOf,
   extractCodeSpans,
   stripCodeBlocks,
   citationTokens,
@@ -795,26 +794,6 @@ describe("the Array.sort acknowledgement's precondition", () => {
   });
 });
 
-// The instance the precedence rule was written for, pinned on the REAL corpus rather than on a
-// fixture: the Nightfox document band's `stats` key collides with a field this tree declares, so
-// with the index consulted first the citation verified against an unrelated Shadowcat member and
-// its acknowledgement absorbed nothing. Both halves are asserted, because either one alone is
-// satisfiable without the other: the collision must still exist, and the citation must still land
-// in the cross-repo bucket.
-describe("the cross-repo precedence, on the live corpus", () => {
-  it("classifies the Nightfox `stats` band key as cross-repo though this tree declares `stats`", () => {
-    const { declared } = buildSymbolIndex(REPO_ROOT);
-    expect(
-      declared.has("stats"),
-      "the collision this test pins is gone: `stats` is no longer declared in this tree, so the " +
-        "citation would resolve nowhere and the precedence it demonstrates is untested here.",
-    ).toBe(true);
-    const result = checkSkillSymbolRefs(REPO_ROOT);
-    expect(result.crossRepoHits.get("stats")).toBeGreaterThan(0);
-    // Two full index builds over the real tree, so the default per-test budget is not enough.
-  }, 60_000);
-});
-
 describe("resolvesAgainstIndex", () => {
   const symbols = new Set(["AppContext", "AppContext.chat", "send", "documents", "RegionField"]);
 
@@ -882,34 +861,6 @@ describe("checkFileCitations", () => {
     const result = checkFileCitations("EXAMPLE: `M13-0` is a specimen.", new Set());
     expect(result.exampleExempt).toBe(1);
   });
-
-  // The precedence the cross-repo list depends on for its existence. A name the OTHER repository
-  // owns is not made this tree's by this tree declaring a member that spells the same string, so
-  // the scoped set is consulted first. With the index first the citation counted as `verified`
-  // against an unrelated declaration and the entry absorbed nothing, which is a false verify and a
-  // zero-hit entry at once. Revert direction: put `resolvesAgainstIndex` back in front and this
-  // reports 1 verified, 0 cross-repo, and an empty hit map.
-  it("classifies a scoped cross-repo name the INDEX ALSO declares as cross-repo, not verified", () => {
-    const extraHits = new Map();
-    const result = checkFileCitations("The `stats` band key.", new Set(["stats"]), new Map(), {
-      extra: new Set(["stats"]),
-      extraHits,
-    });
-    expect(result.crossRepo).toBe(1);
-    expect(result.verified).toBe(0);
-    expect(extraHits.get("stats")).toBe(1);
-  });
-
-  // The other side of the same precedence: an indexed name the scoped set does NOT carry still
-  // verifies, so consulting `extra` first shadows exactly its own entries and nothing else.
-  it("leaves an indexed name the scoped set does not carry verified", () => {
-    const result = checkFileCitations("The `elsewhere` field.", new Set(["elsewhere"]), new Map(), {
-      extra: new Set(["stats"]),
-      extraHits: new Map(),
-    });
-    expect(result.verified).toBe(1);
-    expect(result.crossRepo).toBe(0);
-  });
 });
 
 describe("importBindingNames", () => {
@@ -946,23 +897,6 @@ describe("importBindingNames", () => {
   });
 });
 
-describe("skillDirOf", () => {
-  // Scoped by the path COMPONENT under a skill root. A substring test applies a per-file
-  // acknowledgement list to the whole corpus the moment a checkout lives in a directory whose name
-  // happens to match.
-  it("names the owning skill directory, and is not fooled by an ancestor of the same name", () => {
-    expect(skillDirOf("/repo", "/repo/.claude/skills/shadowcat-codebase-nightfox/SKILL.md")).toBe(
-      "shadowcat-codebase-nightfox",
-    );
-    expect(
-      skillDirOf(
-        "/src/shadowcat-codebase-nightfox",
-        "/src/shadowcat-codebase-nightfox/.claude/skills/shadowcat-codebase-core/SKILL.md",
-      ),
-    ).toBe("shadowcat-codebase-core");
-  });
-});
-
 describe("span conservation", () => {
   it("counts every backtick RUN, whatever its length", () => {
     expect(countBacktickRuns("a `b` and ``c `d` c`` and a stray `")).toBe(7);
@@ -981,7 +915,6 @@ describe("span conservation", () => {
       nonCandidates: 1,
       verified: 1,
       acknowledged: 0,
-      crossRepo: 0,
       broken: 0,
     };
     expect(spanAccountingDelta(accounting)).toBe(0);
@@ -1038,38 +971,31 @@ describe("checkSkillSymbolRefs", () => {
   // One fixture tree for the whole suite, at ONE path rewritten in place: this repo permits no
   // permanent-deletion call, so a per-run temp directory accumulates forever. Reuse is safe
   // because every test writes the prose it needs and the corpus-size case below asserts the scan
-  // saw exactly two files, so a file left behind by an older fixture turns a test red rather than
+  // saw exactly one file, so a file left behind by an older fixture turns a test red rather than
   // quietly joining the corpus.
   const repoRoot = FIXTURE_ROOT;
   const skillsRoot = join(repoRoot, ".claude", "skills");
   const skillFile = join(skillsRoot, "shadowcat-codebase-example", "SKILL.md");
-  const trackedDirs = new Set(["shadowcat-codebase-example", "shadowcat-codebase-nightfox"]);
+  const trackedDirs = new Set(["shadowcat-codebase-example"]);
 
   mkdirSync(join(repoRoot, "src", "server", "src", "scene"), { recursive: true });
   mkdirSync(join(repoRoot, "src", "server", "migrations"), { recursive: true });
   writeFileSync(
     join(repoRoot, "src", "server", "src", "scene", "regions.rs"),
-    "impl RegionField {\n    pub fn is_arrest(&self) -> bool { true }\n}\n" +
-      // A field spelling a live cross-repo acknowledgement, so the collision the precedence rule
-      // exists for is present in the fixture rather than described by it.
-      "pub struct Band {\n    pub format: String,\n}\n",
+    "impl RegionField {\n    pub fn is_arrest(&self) -> bool { true }\n}\n",
   );
   for (const dir of ["client", "modules", "types"])
     mkdirSync(join(repoRoot, "src", dir), { recursive: true });
   mkdirSync(join(repoRoot, "scripts"), { recursive: true });
   mkdirSync(join(skillsRoot, "shadowcat-codebase-example"), { recursive: true });
-  mkdirSync(join(skillsRoot, "shadowcat-codebase-nightfox"), { recursive: true });
   mkdirSync(join(skillsRoot, "graphify"), { recursive: true });
-  const nightfoxFile = join(skillsRoot, "shadowcat-codebase-nightfox", "SKILL.md");
-  writeFileSync(nightfoxFile, "See `parseNightfox`.");
   writeFileSync(
     join(skillsRoot, "graphify", "SKILL.md"),
     "See `some_python_function` and `AnotherPythonThing`.",
   );
 
-  const run = (prose, nightfoxProse = "See `parseNightfox`.") => {
+  const run = (prose) => {
     writeFileSync(skillFile, prose);
-    writeFileSync(nightfoxFile, nightfoxProse);
     return checkSkillSymbolRefs(repoRoot, { trackedDirs, untrackedDirs: ["graphify"] });
   };
 
@@ -1090,45 +1016,9 @@ describe("checkSkillSymbolRefs", () => {
     ]);
   });
 
-  it("acknowledges a NAMED cross-repo symbol in the skill that documents the other repo", () => {
-    const result = run("See `RegionField::is_arrest`.", "See `parseNightfox`.");
-    expect(result.broken).toEqual([]);
-    expect(result.crossRepo).toBe(1);
-    expect(result.crossRepoHits.get("parseNightfox")).toBe(1);
-  });
-
-  it("reports an UNNAMED cross-repo citation as broken — the file is exempt per NAME only", () => {
-    const result = run("See `RegionField::is_arrest`.", "See `NightfoxOnlyType::NotInThisRepo`.");
-    expect(result.broken.map((b) => b.token)).toEqual(["NightfoxOnlyType::NotInThisRepo"]);
-  });
-
-  // End to end over the collision the whole cross-repo mechanism turns on: the fixture DECLARES a
-  // `format` field, and `format` is a live cross-repo entry. Both halves of the fix are pinned
-  // here — the citation reaches the list instead of false-verifying, and the list is not held to
-  // the "this tree declares none of it" guard, which would fail the run on the same entry.
-  it("reaches a cross-repo entry this tree ALSO declares, and does not flag it as indexed", () => {
-    const result = run("See `RegionField::is_arrest`.", "The `format` module.");
-    expect(result.crossRepoHits.get("format")).toBe(1);
-    expect(result.indexedAcknowledgements).toEqual([]);
-    expect(result.broken).toEqual([]);
-  });
-
-  // The scoping half, on that same colliding name: outside the one cross-repo file the index is
-  // what answers, so a skill of this repo's citing `format` verifies against the declaration.
-  it("still verifies the colliding name against the index in any OTHER skill", () => {
-    const result = run("The `format` field.", "See `parseNightfox`.");
-    expect(result.verified).toBe(1);
-    expect(result.crossRepoHits.get("format")).toBeUndefined();
-  });
-
-  it("acknowledges a cross-repo name ONLY inside that skill's own file", () => {
-    const result = run("See `parseNightfox`.", "See `parseNightfox`.");
-    expect(result.broken.map((b) => b.token)).toEqual(["parseNightfox"]);
-  });
-
   it("does not scan an untracked (vendored) skill directory", () => {
     const result = run("See `RegionField::is_arrest`.");
-    expect(result.filesScanned).toBe(2);
+    expect(result.filesScanned).toBe(1);
   });
 
   it("names an acknowledgement entry the corpus never reaches, and spares one it does", () => {

@@ -20,7 +20,6 @@ import { checkSkillSymbolRefs } from "./check-skill-symbol-refs.mjs";
 export const SPAN_BUCKETS = [
   { key: "verified", label: "verified" },
   { key: "acknowledged", label: "acknowledged non-symbol" },
-  { key: "crossRepo", label: "cross-repo" },
   { key: "broken", label: "broken" },
   { key: "exampleExempt", label: "EXAMPLE-exempt" },
   { key: "nonCandidates", label: "not citation-shaped" },
@@ -67,7 +66,6 @@ export function classifySkillSymbolRun(result) {
     filesWithNoCandidates,
     filesWithUnterminatedFence,
     acknowledgedHits,
-    crossRepoHits,
     unusedAcknowledgements,
     untrackedDirs,
     indexedAcknowledgements,
@@ -96,7 +94,7 @@ export function classifySkillSymbolRun(result) {
       ? ` ${untrackedDirs.length} untracked skill directory(ies) excluded as not this repo's own ` +
         `prose (${untrackedDirs.join(", ")}).`
       : "";
-  const namedEntries = { acknowledged: acknowledgedHits.size, crossRepo: crossRepoHits.size };
+  const namedEntries = { acknowledged: acknowledgedHits.size };
   const buckets = SPAN_BUCKETS.map(({ key, label }) => {
     const via = namedEntries[key] === undefined ? "" : ` (${namedEntries[key]} named entry(ies))`;
     return `${accounting[key]} ${label}${via}`;
@@ -110,11 +108,7 @@ export function classifySkillSymbolRun(result) {
     `${accounting.spansEmitted} code span(s) — ${buckets}; ` +
     `run(s) leaving before classification: ${excluded} ` +
     `(from ${accounting.blankedBlockLines} code-block line(s)); conservation delta ` +
-    `${conservationDelta}.${untracked}` +
-    ` The ${accounting.crossRepo} cross-repo citation(s) are acknowledged as the separate Nightfox ` +
-    `repository's, which nothing here can check — a standing review obligation (see RULE 15). An ` +
-    `entry is NOT required to be absent from this tree: its claim is about the other repository, ` +
-    `so a same-named member here falsifies nothing, and inside that one skill it shadows the index.`;
+    `${conservationDelta}.${untracked}`;
 
   // EVERY failure class is collected. Reporting only the first would let a run with a broken
   // citation hide every dead acknowledgement entry behind it, so the two could only ever be fixed

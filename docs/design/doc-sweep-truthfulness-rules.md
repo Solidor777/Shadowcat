@@ -378,7 +378,7 @@ and module, package-directory and skill-directory names.
 checked.** A shape-based exclusion is invisible in two directions at once: it hides the citations it
 skips, and it hides every gap in the index behind them, since a name the index cannot see is
 indistinguishable from a name the shape rule declined to look at. Every code span therefore lands in
-exactly one printed bucket — verified, acknowledged non-symbol, cross-repo, broken, EXAMPLE-exempt,
+exactly one printed bucket — verified, acknowledged non-symbol, broken, EXAMPLE-exempt,
 not citation-shaped, or empty — and each acknowledgement entry is hit-counted, with a zero-hit entry
 failing the gate so the list cannot quietly hold a slot that absorbs a future defect. That
 enumeration is not maintained by hand: `check-skill-symbol-refs-cli.mjs`'s `SPAN_BUCKETS` generates
@@ -401,31 +401,11 @@ whether a citation was checked: the shifted-pairing failure it exists for turns 
 prose spans, which climb the not-citation-shaped bucket, so a floor that waited for a file to yield
 literally nothing would be held shut on its own failure mode.
 
-One structurally unresolvable sub-class stays a review obligation rather than a gate obligation,
-exactly as the lowercase-hyphenated marker does for RULE 16: a citation naming a symbol the SEPARATE
-Nightfox repository owns, whose declaration is not in this checkout to index. That obligation is
-scoped per NAME, not per file — `shadowcat-codebase-nightfox` is scanned like every other skill, so
-its citations of THIS repo's own symbols are gated, and only an enumerated list of cross-repo names
-is acknowledged, inside that one file, hit-counted like every other entry. The count prints on every
-run. The list records the owning repository and base branch beside it, plus the procedure that
-would settle its second claim — nest that checkout, rebuild the index, expect every name to
-resolve — so "the other repo declares it" is falsifiable rather than merely unverified.
-
-Inside that one file the list is consulted BEFORE the index, and absence from this tree is not a
-membership condition. The claim an entry makes is about the other repository, so a member here
-spelling the same string falsifies nothing — and with the index first, a Nightfox band key that
-collided with any field anywhere in this tree counted as verified against a declaration it has
-nothing to do with, while its entry absorbed nothing and the declares-none guard failed the run for
-listing it at all. The name could be neither checked nor acknowledged. The price of the precedence
-is stated rather than hidden: an entry shadows the index inside that file, so a citation there
-meaning one of THIS repo's symbols but spelling an entry is classified cross-repo rather than
-checked, which is why the generic wire words are named individually where the collision is credible.
-
-The residual this leaves is deliberate and is NOT covered by the gate: a bare citation in a
-this-repo skill can still verify against an unrelated same-named member. The citation rule is
-narrow — its target is citing a LOCATION instead of a symbol, and a bare member name is
-grep-findable and rename-breaking, so it satisfies the rule. Which member a bare citation meant is
-a review obligation, and the gate must not be described as covering it.
+One residual is deliberate and is NOT covered by the gate, exactly as the lowercase-hyphenated
+marker is not for RULE 16: a bare citation can verify against an unrelated same-named member. The
+citation rule is narrow — its target is citing a LOCATION instead of a symbol, and a bare member
+name is grep-findable and rename-breaking, so it satisfies the rule. Which member a bare citation
+meant is a review obligation, and the gate must not be described as covering it.
 
 **A function-LOCAL name is cited through its owner.** A let binding, a for-loop pattern's binding, a
 parameter and a function-scoped object key are all indexed only under the function that declares

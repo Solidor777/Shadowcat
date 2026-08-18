@@ -1063,7 +1063,7 @@ export function buildSymbolIndex(repoRoot) {
     }
   }
 
-  // The skill family names its own members (`nightfox`, `client-shell`) when it points a reader at
+  // The skill family names its own members (`formula`, `client-shell`) when it points a reader at
   // a sibling skill. Those directories are as real a declaration as a source module.
   for (const root of MD_ROOTS) {
     for (const entry of readdirSync(join(repoRoot, ...root.split("/")), { withFileTypes: true })) {
@@ -1124,102 +1124,9 @@ export function listSkillDirs(repoRoot) {
   return { tracked, untracked };
 }
 
-// `NIGHTFOX_SKILL_DIR` names the skill documenting a subsystem split across TWO repositories: this engine
-// repo owns `@shadowcat/formula` (at `src/client/formula/`), while the Nightfox rules-engine and
-// sheets code the rest of the skill documents lives in a SEPARATE repository, nested into a dev
-// checkout only (`src/modules/nightfox` does not exist here). Its markdown is scanned like every
-// other skill file: RESOLUTION decides per citation, never membership in a file. Excluding the
-// whole file left this repo's OWN symbols unchecked purely because they shared a page with names
-// this tree cannot see - the same defect, in a different exemption, that dropping the shape
-// exclusion removed from the classifier.
-const NIGHTFOX_SKILL_DIR = "shadowcat-codebase-nightfox";
-
-// The names the SEPARATE Nightfox repository declares, cited by the skill that documents it. Each
-// is acknowledged ONLY in that skill's own file, so a citation of one anywhere else is still
-// reported broken. Hit-counted and zero-hit-fatal like every other acknowledgement list, so an
-// entry dies the day its citation goes away. This remains a standing review obligation rather than
-// a settled exemption: nothing here can be checked against the repository that owns it.
-//
-// Absence from THIS tree is deliberately not a membership condition. The claim an entry makes is
-// about the other repository, and a Nightfox band key stays a Nightfox band key when this tree
-// happens to declare a field spelling the same string - `stats` is exactly that collision. What
-// membership does require is that the Nightfox-side OWNER can be named, which is the half a
-// reviewer can settle from the provenance below.
-//
-// PROVENANCE, so the unverifiable half is falsifiable rather than merely unverified. The owning
-// repository is `Solidor777/Nightfox`, base branch `master`. To check the list: nest that checkout
-// at `src/modules/nightfox`, add it to this gate's indexed roots, rebuild the index, and expect
-// every name below to resolve. An entry that does not is either renamed there or never existed.
-//
-// WEAK POINT, named rather than hidden, and WIDENED by the precedence `checkFileCitations` applies:
-// every entry here now shadows the index inside this one file, so a citation in that skill meaning
-// one of THIS repo's symbols but spelling an entry lands as "cross-repo" rather than being checked.
-// That is the price of reaching the list at all, and it is bounded by the file scope and by the
-// zero-hit rule. `format`, `mechanics`, `resource`, `stats` and `Stat` are the generic wire words
-// where the collision is credible; the remaining entries are distinctive enough that it is not. The
-// generic ones stay unqualified because the prose cites them as the wire values they are - a
-// `Stat.type` discriminant, a band key, a module name - and this checkout cannot see the
-// declarations that would supply an owner, so a qualified spelling would be invented rather than
-// cited. The doc-type pair is qualified instead: `EFFECT_DOC_TYPE` and `embedded.effect` are the
-// spellings the prose uses, each carrying an owner a bare `effect` does not.
-export const ACKNOWLEDGED_CROSS_REPO = new Set([
-  // Rules-engine entry points and result types.
-  "parseNightfox", "resolveNightfox", "ResolveWarning", "Collected.docs", "statRefResolver",
-  "isParseError",
-  // The stat/modifier data model and its caps.
-  "Stat", "ModifierContribution", "MAX_STATS", "MAX_MODIFIERS",
-  "RESERVED_STAT_KEYS", "validateStatKey", "maxBase", "maxFormula", "effectiveCurrent",
-  "clampToMax", "mulAdditive",
-  // Sheet components and the editing commands they issue. The three sheets share their names with
-  // this repo's own generic sheet components; the prose here names Nightfox's, which is what the
-  // precedence rule above exists for.
-  "StatRow", "StatTable", "ModifiersEditor", "ActorSheet", "ItemSheet", "EffectSheet",
-  "addStat", "removeStat",
-  "setStatOrder", "editStatField", "addModifier", "removeModifier", "editModifierField",
-  "setMechanicsFlag", "buildStatRollContent", "effectReadOnly", "embedReadOnly",
-  // The module's own document-type constant and i18n catalog.
-  "EFFECT_DOC_TYPE", "NF_MESSAGES", "nfT",
-  // Nightfox modules and test batteries, named as the modules they are - the same class as the
-  // engine repo's own module citations, owned by the other repository.
-  "contributions", "resolve", "format", "roll", "permutation.test",
-  // The Nightfox document body's own bands and paths, cited as the wire values they are: the two
-  // bands (`system.stats`/`system.mechanics`), the flag and modifier record the `mechanics` band
-  // carries, and the modifier record's own bare spelling.
-  "stats", "system.stats", "mechanics", "system.mechanics", "mechanics.active",
-  "mechanics.modifiers", "modifiers",
-  // The `Stat` union's discriminant, its four type values, and the field names each shape
-  // carries. `base`, `current`, `parent`, `text`, `number` and `order` all spell a member this
-  // tree declares somewhere unrelated, which is why the index cannot answer for them.
-  "Stat.type", "number", "resource", "text", "boolean", "text.value",
-  "base", "current", "parent", "formula", "label", "order",
-]);
-
 /**
- * The skill DIRECTORY one corpus file belongs to — the path component directly under a skill root,
- * never a substring of the whole path. A checkout that happens to live in a directory named after
- * a skill would otherwise apply that skill's file-scoped acknowledgements to every file in the
- * corpus, turning a per-file exemption into a global one with nothing in the output changing.
- *
- * @param {string} repoRoot - absolute path to the repository root.
- * @param {string} file - absolute path to a corpus markdown file.
- * @returns {string|null} the owning skill directory name, or null when the file sits under no
- *   skill root.
- */
-export function skillDirOf(repoRoot, file) {
-  const path = norm(file);
-  for (const root of MD_ROOTS) {
-    const prefix = `${norm(join(repoRoot, ...root.split("/")))}/`;
-    if (!path.startsWith(prefix)) continue;
-    const rest = path.slice(prefix.length);
-    return rest.includes("/") ? rest.split("/")[0] : null;
-  }
-  return null;
-}
-
-/**
- * Finds every markdown file under the tracked skill directories. No file is excluded: the
- * cross-repo skill is scanned like any other, and its unresolvable citations are acknowledged
- * per NAME via `ACKNOWLEDGED_CROSS_REPO`.
+ * Finds every markdown file under the tracked skill directories. No file is excluded: resolution
+ * decides per citation, never membership in a file.
  * @param {string} repoRoot - absolute path to the repository root.
  * @param {Set<string>} trackedDirs - tracked directory names, from `listSkillDirs`.
  * @returns {string[]} absolute paths, sorted.
@@ -1591,7 +1498,7 @@ export function extractCitationCandidates(text) {
  *
  * @param {{rawRuns: number, blankedRuns: number, unpairedRuns: number, emptySpans: number,
  *   exampleExempt: number, nonCandidates: number, verified: number, acknowledged: number,
- *   crossRepo: number, broken: number}} a - one file's, or the whole run's, span accounting.
+ *   broken: number}} a - one file's, or the whole run's, span accounting.
  * @returns {number} runs found minus runs accounted for; 0 when nothing leaked.
  */
 export function spanAccountingDelta(a) {
@@ -1601,7 +1508,6 @@ export function spanAccountingDelta(a) {
     a.nonCandidates +
     a.verified +
     a.acknowledged +
-    a.crossRepo +
     a.broken;
   return a.rawRuns - (a.blankedRuns + a.unpairedRuns + 2 * classified);
 }
@@ -1627,9 +1533,6 @@ export const ACKNOWLEDGED_NON_SYMBOLS = new Set([
   // SQL/OS keywords, HTTP method/header names).
   "SUBSYSTEMS", "file_path", "NOCASE", "Referer", "GET", "POST", "SO_SNDBUF", "SO_RCVBUF",
   "EXEMPT", "TODO",
-  // A DIRECTORY name cited as a value in a tree-walk description, which RULE 15 governs on its
-  // own terms exactly as it does a filename cited as a value.
-  "node_modules",
   // `#[serde(...)]` / rustdoc attribute keywords - serde's and rustdoc's own vocabulary, not a
   // symbol this repo declares.
   "deny_unknown_fields", "skip_serializing_if", "no_run", "tag",
@@ -1711,7 +1614,7 @@ export const ACKNOWLEDGED_EXTERNAL_PREFIX = new Set([
   // Rust primitive and std types.
   "f64", "u32", "i128", "Vec", "Option", "Some", "Result", "Err", "HashSet", "BTreeMap",
   "Uuid", "Arc", "Mutex", "Rc", "RefCell", "Sync", "Display", "PartialEq", "Path", "PathBuf",
-  "SqlitePool", "SyntaxError", "Sink", "ConnectInfo", "JoinSet", "i32",
+  "SqlitePool", "SyntaxError", "Sink", "ConnectInfo", "JoinSet",
   // TS/JS standard and Web globals, and the `crypto` global whose members this repo calls.
   "undefined", "Map", "Window", "IntersectionObserver", "structuredClone", "crypto",
   // Third-party UI libraries this repo depends on but does not declare (the dockview panel
@@ -1772,44 +1675,25 @@ export function resolvesAgainstIndex(token, symbols) {
  * @param {string} text - the skill file's raw contents.
  * @param {Set<string>} symbols - the built symbol index.
  * @param {Map<string, number>} [hits] - acknowledgement-entry hit counter, accumulated across files.
- * @param {{extra?: Set<string>, extraHits?: Map<string, number>}} [scoped] - an additional
- *   whole-token acknowledgement set that applies to THIS file only, with its own hit counter;
- *   `ACKNOWLEDGED_CROSS_REPO` is passed this way for the skill that documents another repository.
  * @returns {{ verified: number, acknowledged: number, broken: {line: number, token: string}[],
- *   nonCandidates: number, exampleExempt: number, crossRepo: number, unterminatedFence: boolean,
+ *   nonCandidates: number, exampleExempt: number, unterminatedFence: boolean,
  *   accounting: ReturnType<typeof extractCitationCandidates>["accounting"] &
- *     {verified: number, acknowledged: number, crossRepo: number, broken: number} }}
+ *     {verified: number, acknowledged: number, broken: number} }}
  */
-export function checkFileCitations(text, symbols, hits = new Map(), scoped = {}) {
+export function checkFileCitations(text, symbols, hits = new Map()) {
   const { candidates, nonCandidates, exampleExempt, unterminatedFence, accounting } =
     extractCitationCandidates(text);
-  const { extra = new Set(), extraHits = new Map() } = scoped;
   let verified = 0;
   let acknowledged = 0;
-  let crossRepo = 0;
   const broken = [];
   const bump = (entry) => hits.set(entry, (hits.get(entry) ?? 0) + 1);
   for (const { line, token } of candidates) {
     const bare = token.endsWith("()") ? token.slice(0, -2) : token;
-    // PRECEDENCE, and the reason for it: the scoped set is consulted BEFORE the index. `extra`
-    // names symbols the OTHER repository declares, and a name it declares is not made this tree's
-    // by this tree happening to declare a member spelling the same string. With the index first, a
-    // Nightfox band key that collides with any field anywhere in this tree counted as `verified`
-    // against a declaration it has nothing to do with — a false verify that also made the entry
-    // unreachable, so the citation could be neither acknowledged nor checked. Order is the whole
-    // fix; the set is empty for every other file, so no other skill's resolution changes and a
-    // Nightfox name cited elsewhere stays broken, which is the scoping rule.
-    //
-    // RESIDUAL, stated because the gate does not cover it: a BARE citation in a THIS-repo skill
-    // can still verify against an unrelated same-named member — the citation rule is narrow
-    // (location-citations only), a bare member name is grep-findable and rename-breaking, so it
-    // satisfies the rule and bare member registration stays. Which member a bare citation MEANT is
-    // a review obligation, not something this gate reports on.
-    if (extra.has(bare)) {
-      crossRepo += 1;
-      extraHits.set(bare, (extraHits.get(bare) ?? 0) + 1);
-      continue;
-    }
+    // RESIDUAL, stated because the gate does not cover it: a BARE citation can verify against an
+    // unrelated same-named member. The citation rule is narrow (location-citations only), and a
+    // bare member name is grep-findable and rename-breaking, so it satisfies the rule and bare
+    // member registration stays. WHICH member a bare citation MEANT is a review obligation, not
+    // something this gate reports on.
     if (resolvesAgainstIndex(bare, symbols)) {
       verified += 1;
       continue;
@@ -1841,7 +1725,6 @@ export function checkFileCitations(text, symbols, hits = new Map(), scoped = {})
     broken,
     nonCandidates,
     exampleExempt,
-    crossRepo,
     unterminatedFence,
     accounting: {
       ...accounting,
@@ -1849,7 +1732,6 @@ export function checkFileCitations(text, symbols, hits = new Map(), scoped = {})
       exampleExempt,
       verified,
       acknowledged,
-      crossRepo,
       broken: broken.length,
     },
   };
@@ -1865,11 +1747,11 @@ export function checkFileCitations(text, symbols, hits = new Map(), scoped = {})
  * @returns {{ filesScanned: number, filesIndexed: number, symbolCount: number,
  *   candidatesChecked: number, verified: number, acknowledged: number,
  *   broken: {file: string, line: number, token: string}[], nonCandidates: number,
- *   exampleExempt: number, crossRepo: number,
+ *   exampleExempt: number,
  *   filesWithNoCandidates: {file: string, nonCandidates: number, exampleExempt: number,
  *     emptySpans: number, unpairedRuns: number}[],
  *   filesWithUnterminatedFence: string[],
- *   acknowledgedHits: Map<string, number>, crossRepoHits: Map<string, number>,
+ *   acknowledgedHits: Map<string, number>,
  *   unusedAcknowledgements: string[], indexedAcknowledgements: string[],
  *   untrackedDirs: string[],
  *   accounting: Parameters<typeof spanAccountingDelta>[0] & {bodyRuns: number,
@@ -1892,12 +1774,10 @@ export function checkSkillSymbolRefs(repoRoot, opts = {}) {
   const { symbols, filesIndexed, declared } = buildSymbolIndex(repoRoot);
   const files = findMarkdownFiles(repoRoot, trackedDirs);
   const acknowledgedHits = new Map();
-  const crossRepoHits = new Map();
   let verified = 0;
   let acknowledged = 0;
   let nonCandidates = 0;
   let exampleExempt = 0;
-  let crossRepo = 0;
   const broken = [];
   const filesWithNoCandidates = [];
   const filesWithUnterminatedFence = [];
@@ -1918,23 +1798,16 @@ export function checkSkillSymbolRefs(repoRoot, opts = {}) {
     exampleExempt: 0,
     verified: 0,
     acknowledged: 0,
-    crossRepo: 0,
     broken: 0,
   };
   const conservationFailures = [];
   for (const file of files) {
     const text = readFileSync(file, "utf8");
-    // The cross-repo acknowledgements apply to the ONE skill that documents another repository,
-    // and nowhere else: a citation of a Nightfox name in any other skill is still broken.
-    const scoped = skillDirOf(repoRoot, file) === NIGHTFOX_SKILL_DIR
-      ? { extra: ACKNOWLEDGED_CROSS_REPO, extraHits: crossRepoHits }
-      : {};
-    const result = checkFileCitations(text, symbols, acknowledgedHits, scoped);
+    const result = checkFileCitations(text, symbols, acknowledgedHits);
     verified += result.verified;
     acknowledged += result.acknowledged;
     nonCandidates += result.nonCandidates;
     exampleExempt += result.exampleExempt;
-    crossRepo += result.crossRepo;
     for (const b of result.broken) broken.push({ file, ...b });
     for (const key of Object.keys(totals)) totals[key] += result.accounting[key];
     const delta = spanAccountingDelta(result.accounting);
@@ -1956,7 +1829,7 @@ export function checkSkillSymbolRefs(repoRoot, opts = {}) {
     // separately: an unclosed fence blanks the rest of the document, which would otherwise drive
     // `bodyRuns` to 0 and hold this floor shut on a file that lost its whole citation surface.
     if (
-      result.verified + result.acknowledged + result.crossRepo + result.broken.length === 0 &&
+      result.verified + result.acknowledged + result.broken.length === 0 &&
       result.accounting.bodyRuns > 0
     )
       filesWithNoCandidates.push({
@@ -1971,23 +1844,13 @@ export function checkSkillSymbolRefs(repoRoot, opts = {}) {
   const unusedAcknowledgements = [
     ...ACKNOWLEDGED_NON_SYMBOLS,
     ...ACKNOWLEDGED_EXTERNAL_PREFIX,
-  ]
-    .filter((entry) => !acknowledgedHits.has(entry))
-    .concat([...ACKNOWLEDGED_CROSS_REPO].filter((entry) => !crossRepoHits.has(entry)));
+  ].filter((entry) => !acknowledgedHits.has(entry));
 
   // Every acknowledgement asserts "this tree does not declare that name". The zero-hit rule proves
   // an entry is REACHED; it cannot prove the entry is TRUE, and for the head-matching prefix list
   // it does not even imply it — `P.unknownMember` fails resolution and bumps `P` whether or not
   // the index has grown `P` in the meantime. Checking the assertion directly names the cause where
   // the zero-hit rule could only ever name a symptom.
-  // `ACKNOWLEDGED_CROSS_REPO` is deliberately NOT checked here, and the reason is that it asserts
-  // something different from the other two lists. Those two assert "this tree does not declare that
-  // name", so a name the index grows falsifies them. The cross-repo list asserts "the SEPARATE
-  // repository declares that name" — a claim about another checkout, which says nothing at all
-  // about this one, so this tree declaring a member that spells the same string falsifies nothing.
-  // Holding it to this guard made every colliding name unlistable while `checkFileCitations` never
-  // reached it either: the citation could be neither acknowledged nor checked. The zero-hit rule
-  // still applies to it in full, so an entry that stops absorbing a citation still fails the gate.
   const indexedAcknowledgements = [
     ...ACKNOWLEDGED_NON_SYMBOLS,
     ...ACKNOWLEDGED_EXTERNAL_PREFIX,
@@ -1997,17 +1860,15 @@ export function checkSkillSymbolRefs(repoRoot, opts = {}) {
     filesScanned: files.length,
     filesIndexed,
     symbolCount: symbols.size,
-    candidatesChecked: verified + acknowledged + crossRepo + broken.length,
+    candidatesChecked: verified + acknowledged + broken.length,
     verified,
     acknowledged,
     broken,
     nonCandidates,
     exampleExempt,
-    crossRepo,
     filesWithNoCandidates,
     filesWithUnterminatedFence,
     acknowledgedHits,
-    crossRepoHits,
     unusedAcknowledgements,
     indexedAcknowledgements,
     untrackedDirs: untrackedDirs ?? [],

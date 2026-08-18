@@ -1,6 +1,6 @@
 ---
 name: shadowcat-codebase-module-toolchain
-description: "Use when touching the external/community module toolchain: server-side installed-module discovery + path-traversal-guarded static serving + per-world enablement (`scan_installed_modules`, `http::module_routes`, `Config.modules_dir`), the engine-compat semver gate, the Welcome server_version + capability-requirements union, or the client consumption path (the `loader`/`modules`/`module-rest`/`manifest` modules' engine checks, shell import-map single-instance build + `WorldSession.#loadExternalModules`, `ModuleManager` UI). Covers out-of-tree modules (the Nightfox reference repo), the authoring guide docs/site/guides/creating-a-module.md (docs/design/module-authoring.md is a pointer stub), and the examples/* scaffold packages. Invoke shadowcat-codebase-core first; for the shell/AppContext seams invoke shadowcat-codebase-client-shell."
+description: "Use when touching the external/community module toolchain: server-side installed-module discovery + path-traversal-guarded static serving + per-world enablement (`scan_installed_modules`, `http::module_routes`, `Config.modules_dir`), the engine-compat semver gate, the Welcome server_version + capability-requirements union, or the client consumption path (the `loader`/`modules`/`module-rest`/`manifest` modules' engine checks, shell import-map single-instance build + `WorldSession.#loadExternalModules`, `ModuleManager` UI). Covers out-of-tree modules developed in their own repositories, the authoring guide docs/site/guides/creating-a-module.md (docs/design/module-authoring.md is a pointer stub), and the examples/* scaffold packages. Invoke shadowcat-codebase-core first; for the shell/AppContext seams invoke shadowcat-codebase-client-shell."
 ---
 
 # Shadowcat — External Module Toolchain
@@ -83,9 +83,10 @@ existing `ModuleRegistry`.
 - **`ModuleManager`** (`@shadowcat/module-settings`) — GM installed-module management UI; toggle/save
   keyed on the canonical folder `info.id` (manifest id is display-only).
 
-**Out-of-tree reference + guide:** the Nightfox repo (its own git repo, nested into a checkout at
-`src/modules/nightfox/` for dev, never bundled statically even in dev). The authoring guide lives
-in the docs site: `docs/site/guides/creating-a-module.md` (`docs/design/module-authoring.md` is a
+**Out-of-tree reference + guide:** an external module is developed in its own git repository and
+may be nested into a Shadowcat checkout under `src/modules/` so the pnpm workspace resolves
+`@shadowcat/core`/`@shadowcat/formula` for dev; it is never bundled statically, even in dev. The
+authoring guide lives in the docs site: `docs/site/guides/creating-a-module.md` (`docs/design/module-authoring.md` is a
 pointer stub to it). Two in-repo CI-built worked examples double as copyable scaffolds:
 `examples/module-initiative-tracker/` (panel + document read/write) and `examples/system-minimal/`
 (sheet takeover + formula rules) — workspace members, so `pnpm -r test/typecheck` and the web CI

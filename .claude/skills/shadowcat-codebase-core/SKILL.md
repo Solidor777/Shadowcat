@@ -127,7 +127,7 @@ source of truth. The ones agents break most:
   TypeScript parser; and module/package/skill directory names. **A token's shape decides only
   whether it is a citation at all, never whether a citation is CHECKED** — a shape exclusion hides
   the citations it skips AND every index gap behind them, so every code span lands in exactly
-  one printed bucket — verified, acknowledged non-symbol, cross-repo, broken, EXAMPLE-exempt,
+  one printed bucket — verified, acknowledged non-symbol, broken, EXAMPLE-exempt,
   not citation-shaped, or empty — and each acknowledgement entry is hit-counted, a zero-hit entry
   failing the gate. **That list is `SPAN_BUCKETS`, and this sentence is pinned to it by a test**:
   a claim about the code that is neither derived from it nor tested against it drifts the moment a
@@ -144,21 +144,9 @@ source of truth. The ones agents break most:
   sits under the global one — a file whose PROSE carries backticks and yields no CHECKED citation
   has silently left the gate; the floor reports what that file's spans DID land in, since the
   shifted-pairing case it exists for turns real citations into
-  prose spans that climb the not-citation-shaped bucket. Carve-outs:
-  config/build files (no symbols to cite), filenames used as *values*, dated records under
-  `docs/superpowers/`, and — a documented review obligation, not a gate obligation — citations of a
-  symbol the separate Nightfox repository owns. That last one is scoped per NAME, not per
-  file: `shadowcat-codebase-nightfox` is scanned like any other skill, its citations of THIS
-  repo's symbols are gated, and only the enumerated cross-repo names are acknowledged, inside that
-  one file, hit-counted like every other entry. **Inside that one file the cross-repo set is
-  consulted BEFORE the index, and its membership does not require absence from this tree** — the
-  claim an entry makes is about the OTHER repository, so a same-named member here falsifies
-  nothing, and with the index first a Nightfox band key (`stats`) counted as verified against an
-  unrelated field while its entry absorbed nothing, leaving the name neither checkable nor
-  listable. The price is stated rather than hidden: an entry shadows the index inside that file,
-  so a citation there meaning one of THIS repo's symbols but spelling an entry is classified
-  cross-repo instead of checked. `checkSkillSymbolRefs.indexedAcknowledgements` therefore holds the
-  other two lists only. **RESIDUAL, uncovered by design: a bare citation in a THIS-repo skill can still verify
+  prose spans that climb the not-citation-shaped bucket. Carve-outs: config/build files (no
+  symbols to cite), filenames used as *values*, and dated records under `docs/superpowers/`.
+  **RESIDUAL, uncovered by design: a bare citation can still verify
   against an unrelated same-named member** — the citation rule is narrow (location-citations
   only), a bare member name is grep-findable and rename-breaking, so bare member registration
   stays and which member a bare citation MEANT is a review obligation. An untracked skill directory is vendored
@@ -474,7 +462,7 @@ source of truth. The ones agents break most:
 - CI builds the client **before** cargo (embed ordering) across the three-OS matrix.
 
 **Subsystem skills:** `documents-permissions`, `actors-tokens`, `scene-rendering`,
-`realtime-sync`, `client-shell`, `assets`, `dice`, `chat`, `nightfox`, `module-toolchain`,
+`realtime-sync`, `client-shell`, `assets`, `dice`, `chat`, `formula`, `module-toolchain`,
 `sheets`, `panels`, `server-ops`, `templates` (all `shadowcat-codebase-*`).
 
 ## Maintaining this skill family
@@ -499,9 +487,8 @@ When adding one:
 
 Shadowcat's `.claude/` directory is also a Claude Code plugin source (`.claude-plugin/
 marketplace.json` at the Shadowcat repo root points at `./.claude`; `.claude/.claude-plugin/
-plugin.json` names and versions the plugin). A consuming repo — the Nightfox module repo is the
-first — reaches these skills, agents and the routing hook through that plugin rather than through
-a second copy.
+plugin.json` names and versions the plugin). A consuming repo reaches these skills, agents and
+the routing hook through that plugin rather than through a second copy.
 
 **A directory-sourced plugin is COPIED into the consumer's plugin cache rather than read live.**
 Structurally verified, not yet empirically confirmed: an install lands under
