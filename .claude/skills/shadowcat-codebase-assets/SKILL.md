@@ -25,17 +25,23 @@ and serves uploads unconverted (the conversion pipeline is deferred).
   - `serve(...)` — `GET /api/assets/{uuid}`, membership-gated; ETag = `"{id}-{version}"`;
     `If-None-Match` is an RFC 7232 comma-separated list → 304 if our ETag appears anywhere in it.
   - `replace(...)` — swaps bytes, keeping the stable UUID; broadcasts `AssetChanged`.
-- `ws::protocol` — `ServerMsg::AssetChanged { uuid, op: AssetOp, version: Option<i64> }`, broadcast
+- `ws::protocol` — `ServerMsg::AssetChanged { uuid, op: AssetOp, version: i64 }`, broadcast
   **out-of-band** via `Room::broadcast_aux` (not in the per-world event sequence). `version` is
-  `Some` (the bumped, authoritative value) for `Replaced`, `None` for `Deleted` (a deleted asset
-  has no version).
+  REQUIRED for both ops: the bumped, authoritative value for `Replaced`, and the version the row
+  held immediately before removal for `Deleted` — a real ordering token in both cases, so a
+  listing snapshot straddling a delete can be compared against it.
 - **`@shadowcat/module-assets`** (`Assets` component) — the client asset panel (upload/list/replace).
-- `AssetResolver` (`src/client/core/src/assets.ts`) — client-side cache-bust resolver.
-  `onAssetChanged` sets its per-uuid revision to a frame's `version` directly (never a relative
-  bump, and never regressing below a version already held); `reconcile(assets: Asset[])` re-syncs
-  from any touchpoint that already fetches full `Asset` records (`Assets.svelte`'s `reload`,
-  `AssetPicker.svelte`, `VisualKindEditor.svelte`'s `refreshAssets`), closing the gap for an
-  `AssetChanged` frame this connection never received at all.
+- `AssetResolver` (`src/client/core/src/assets.ts`) — client-side cache-bust resolver. Its
+  private `adoptVersion` helper is the single gate both `onAssetChanged` and `reconcile` route
+  through: it adopts an observed `version` for a uuid — updating the cache-busting revision AND
+  the deleted marker together — only if strictly higher than any version already held, so a stale
+  observation (`version <= current`) is a no-op across the board, not just for the revision.
+  `reconcile(assets: Asset[])` re-syncs from any touchpoint that already fetches full `Asset`
+  records (`Assets.svelte`'s `reload`, `AssetPicker.svelte`, `VisualKindEditor.svelte`'s
+  `refreshAssets`), closing the gap for an `AssetChanged` frame this connection never received at
+  all — including a delete: since a listing snapshot captured before a delete carries the SAME
+  version the delete broadcast does (deletion removes the row; it does not bump its version), the
+  shared gate rejects the stale reconcile rather than resurrecting the asset.
 
 ## Hard invariants
 
