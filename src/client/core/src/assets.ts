@@ -67,12 +67,16 @@ export class AssetResolver {
     return rev === undefined ? `/api/assets/${uuid}` : `/api/assets/${uuid}?v=${rev}`;
   }
 
-  /** Adopts an observed `version` for a uuid if and only if it is strictly higher than any
-   * version already held, gating BOTH state changes a mutation notice can carry — the
-   * cache-busting revision and the deleted marker — behind the same comparison, so a stale
-   * write (`version <= current`) is a no-op across the board rather than a partial one. Shared
-   * by `onAssetChanged` and `reconcile`, the two touchpoints that can observe a version for a
-   * uuid: an out-of-band mutation notice, and a listing snapshot that may predate one.
+  /** Adopts an observed `version` for a uuid, gating both state changes a mutation notice can
+   * carry — the cache-busting revision and the deleted marker — behind one comparison whose
+   * strictness depends on `isDeleted`: a delete transition adopts at `version >= current`,
+   * because deletion never bumps the version column, so a delete notice reporting exactly the
+   * version this resolver already holds is the ORDINARY case, not staleness, and must be
+   * honored; every other adoption (always via `reconcile`, which never itself carries a delete
+   * signal) requires `version > current` strictly, because a reconcile snapshot may predate a
+   * delete already adopted at that same version and must not resurrect it. Shared by
+   * `onAssetChanged` and `reconcile`, the two touchpoints that can observe a version for a uuid:
+   * an out-of-band mutation notice, and a listing snapshot that may predate one.
    * @param uuid The asset's stable uuid.
    * @param version The observed authoritative version.
    * @param isDeleted Whether the observation reports the asset as deleted at that version.
@@ -84,15 +88,17 @@ export class AssetResolver {
    */
   private adoptVersion(uuid: string, version: number, isDeleted: boolean): void {
     const current = this.revs.get(uuid) ?? -1;
-    if (version <= current) return;
+    if (isDeleted ? version < current : version <= current) return;
     this.revs.set(uuid, version);
     if (isDeleted) this.deleted.add(uuid);
     else this.deleted.delete(uuid);
   }
 
   /** Invalidate a uuid in response to an AssetChanged frame, routed through `adoptVersion` so a
-   * stale or out-of-order frame (`msg.version` not higher than any version already held) is a
-   * no-op — including for `op: "deleted"`, which now carries a real ordering token rather than
+   * stale or out-of-order frame is a no-op: a `deleted` frame is rejected only if `msg.version`
+   * is BELOW any version already held (equal is the ordinary case, since deletion never bumps
+   * the version column, and is honored), while a `replaced` frame is rejected unless
+   * `msg.version` is strictly higher. `op: "deleted"` carries a real ordering token rather than
    * discarding all version memory for the uuid (see the class doc: a frame that never arrives at
    * all is not fixed by this method; `reconcile` closes that gap).
    * @param msg The broadcast frame; adopted via `adoptVersion` against `msg.version`.

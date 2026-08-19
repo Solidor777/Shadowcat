@@ -88,4 +88,26 @@ describe("AssetResolver", () => {
     r.reconcile([asset("abc", 5)]);
     expect(r.url("abc")).toBe(r.placeholder());
   });
+
+  it("an ordinary delete at the same version already held is honored, not rejected as stale", () => {
+    // The standard flow: a resolver already knows the asset's current version (via reconcile, the
+    // ordinary case for any surface that lists assets), then the eventual AssetChanged delete
+    // notice arrives carrying that SAME version (deletion never bumps the version column). This
+    // is the authoritative delete signal, not a stale write, and must be honored.
+    const r = new AssetResolver();
+    r.reconcile([asset("abc", 1)]);
+    expect(r.url("abc")).toBe("/api/assets/abc?v=1");
+    r.onAssetChanged({ uuid: "abc", op: "deleted", version: 1 });
+    expect(r.url("abc")).toBe(r.placeholder());
+  });
+
+  it("a late-arriving stale delete notice is rejected once a newer version is already held", () => {
+    // e.g. the uuid was reused by a later upload at a higher version before a delayed delete
+    // frame (reporting an older version) finally arrives. The delete must not win against a
+    // version this resolver has already advanced past.
+    const r = new AssetResolver();
+    r.onAssetChanged({ uuid: "abc", op: "replaced", version: 5 });
+    r.onAssetChanged({ uuid: "abc", op: "deleted", version: 3 });
+    expect(r.url("abc")).toBe("/api/assets/abc?v=5");
+  });
 });
