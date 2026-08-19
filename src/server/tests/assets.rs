@@ -195,6 +195,98 @@ async fn delete_removes_record_and_file_and_broadcasts() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn delete_broadcast_reflects_the_truly_removed_version_despite_a_racing_replace() {
+    // `http::assets::delete` reads `existing` once at request entry, before the row is actually
+    // removed; a `replace` on the same id can commit (bumping the version) in the window between
+    // that read and the handler's own `delete_asset` call. There is no seam in this harness to
+    // interleave two full HTTP handler invocations deterministically (no pause hooks exist on
+    // either path, and the DB pool is single-connection), so this exercises the repository layer
+    // directly: it reproduces the exact ordering — a stale pre-delete snapshot captured, then a
+    // version bump committed before the actual DELETE runs — and asserts the value the fixed
+    // handler now broadcasts (`delete_asset`'s own returned row) reflects the bump rather than
+    // the stale snapshot a pre-fetch-based implementation would have used instead.
+    let h = spawn().await;
+    let asset: serde_json::Value = h
+        .upload("m.png", "image/png", PNG_1X1.to_vec())
+        .await
+        .json()
+        .await
+        .unwrap();
+    let id = uuid::Uuid::parse_str(asset["id"].as_str().unwrap()).unwrap();
+
+    // The stale snapshot `delete`'s own pre-delete `get_asset` would capture.
+    let existing = h.repo.get_asset(id).await.unwrap().unwrap();
+    assert_eq!(existing.version, 1);
+
+    // A racing `replace` commits between that read and the actual DELETE, bumping the row.
+    let bumped = h
+        .repo
+        .replace_asset_bytes(id, &existing.storage_key, "image/gif", 7)
+        .await
+        .unwrap();
+    assert_eq!(bumped, 2);
+
+    // The authoritative row the DELETE actually removes — what the fixed handler broadcasts from.
+    let deleted = h.repo.delete_asset(id).await.unwrap().unwrap();
+    assert_eq!(
+        deleted.version, 2,
+        "must reflect the row actually removed, not the pre-delete snapshot"
+    );
+    assert_ne!(
+        deleted.version, existing.version,
+        "the stale snapshot and the truly-removed row must differ for this race to be meaningful"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_deletes_never_double_broadcast_or_error() {
+    use common::drain_until_type;
+    // Two real concurrent HTTP DELETEs against the same asset: the repository's atomic
+    // `DELETE ... RETURNING` guarantees only one actually removes the row, and the handler's
+    // `None` branch (for whichever request loses that race after already passing its own
+    // pre-delete existence check) must return 204 without erroring or broadcasting again — the
+    // other possible ordering (the loser's own existence check runs after the row is already
+    // gone) is the pre-existing 404 path `delete_is_idempotent_second_is_404` covers sequentially.
+    // Either ordering is a safe outcome; what this test pins is that concurrency never panics,
+    // never 500s, and never produces a second `asset_changed` notice.
+    let h = spawn().await;
+    let asset: serde_json::Value = h
+        .upload("m.png", "image/png", PNG_1X1.to_vec())
+        .await
+        .json()
+        .await
+        .unwrap();
+    let id = asset["id"].as_str().unwrap().to_string();
+
+    let mut ws = h.connect().await;
+    let _ = ws.next().await;
+
+    let url = format!("http://{}/api/assets/{}", h.addr, id);
+    let (r1, r2) = tokio::join!(h.client.delete(&url).send(), h.client.delete(&url).send());
+    let s1 = r1.unwrap().status().as_u16();
+    let s2 = r2.unwrap().status().as_u16();
+    assert!(matches!(s1, 204 | 404), "unexpected status: {s1}");
+    assert!(matches!(s2, 204 | 404), "unexpected status: {s2}");
+    assert!(s1 == 204 || s2 == 204, "at least one delete must succeed");
+
+    assert!(h
+        .repo
+        .get_asset(uuid::Uuid::parse_str(&id).unwrap())
+        .await
+        .unwrap()
+        .is_none());
+
+    let frame = drain_until_type(&mut ws, "asset_changed").await;
+    assert_eq!(frame["op"], "deleted");
+    // No second notice arrives within a short window.
+    let second = tokio::time::timeout(std::time::Duration::from_millis(300), ws.next()).await;
+    assert!(
+        second.is_err(),
+        "a second asset_changed notice was broadcast"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn list_returns_world_assets() {
     let h = spawn().await;
     h.upload("a.png", "image/png", PNG_1X1.to_vec()).await;

@@ -388,6 +388,13 @@ pub async fn replace(
 
 /// `DELETE /api/assets/{uuid}` — GM-gated (`require_gm`; no owner exception).
 /// Undo-exempt.
+///
+/// `existing` (the pre-delete read) backs only `require_gm`'s authorization and the initial
+/// `NotFound` check: `write_barrier`'s read side excludes a backup's write side, not a racing
+/// `replace` on the same id, so `existing.version` can be stale by the time the row is actually
+/// removed below. Every post-delete use (file path, broadcast) instead reads `deleted` — the row
+/// `delete_asset`'s `DELETE ... RETURNING *` actually removed — so the broadcast always carries
+/// the version of the row that was truly deleted, never an earlier snapshot.
 pub async fn delete(
     State(state): State<AppState>,
     user: AuthUser,
@@ -402,17 +409,22 @@ pub async fn delete(
     // present ordering the backup's manifest would reference a file the DB no
     // longer knows about, worse than replace's stale-bytes race.
     let _read_permit = state.write_barrier.read().await;
-    state.repo.delete_asset(id).await?;
-    let path = state.config.assets_path().join(&existing.storage_key);
+    let Some(deleted) = state.repo.delete_asset(id).await? else {
+        // A racing delete on the same id already removed the row (and already
+        // broadcast the correct notice) between the existence check above and
+        // this DELETE — nothing left here to unlink or broadcast.
+        return Ok(StatusCode::NO_CONTENT);
+    };
+    let path = state.config.assets_path().join(&deleted.storage_key);
     if let Err(e) = tokio::fs::remove_file(&path).await {
         // Record is gone; a missing file is not fatal (it becomes a no-op).
         tracing::warn!(?e, %id, "asset file remove failed after record delete");
     }
-    if let Some(room) = state.ws.rooms.get(existing.world_id) {
+    if let Some(room) = state.ws.rooms.get(deleted.world_id) {
         room.broadcast_aux(ServerMsg::AssetChanged {
             uuid: id,
             op: AssetOp::Deleted,
-            version: existing.version,
+            version: deleted.version,
         });
     }
     Ok(StatusCode::NO_CONTENT)
