@@ -556,25 +556,19 @@ describe("checkNotationKey", () => {
    *
    * What this bound means this sweep CANNOT see: four characters cannot spell a three-segment
    * dotted path, so no key it generates runs `claimIdentifierSpan`'s dot-join loop past its
-   * first iteration, and a defect restricting that loop to one join passes here. `DEEP_ALPHABET`
-   * is the sweep that covers that shape. */
+   * first iteration. That is NOT a gap a wider or deeper generated sweep over this same oracle
+   * could close: `consequenceViolations` classifies a key from what `checkNotationKey` returns
+   * and checks that classification against `resolveNotationTemplate`, and both functions reach
+   * a dotted span through the SAME `claimAt` call — so a defect confined to
+   * `claimIdentifierSpan`'s own join count moves both sides identically and is invisible to this
+   * oracle at ANY alphabet or length, generated or hand-written corpus alike. The hand-written
+   * case `"an ordinary key survives whole, dotted or not, in any case"` is what actually covers
+   * a multi-join dotted path (`"a.b.c"`), because it asserts `intact` against a value this
+   * oracle never computes independently — its own literal expectation, not a value read back
+   * off the same scan. Measured: restricting the join loop to a single join is caught by that
+   * case alone; a generated sweep over a four-member alphabet up to six characters — wide enough
+   * to spell `"a.b.c"` — still reports zero violations under the restricted loop. */
   const SWEEP_LENGTH = 4;
-
-  /** The deep sweep's alphabet: an identifier-start letter that cannot collide, a digit, the
-   * dot and the opening bracket. Four members is what buys the length a three-segment dotted
-   * path needs at a few thousand keys — extending `SWEEP_LENGTH` instead would multiply the
-   * main sweep's case count by its whole alphabet for every character added.
-   *
-   * What this alphabet means the deep sweep CANNOT see: it holds no keyword letter, no closing
-   * bracket, no underscore and no upper-case character, so the membership probe, a TERMINATED
-   * label, an identifier-start character that is not a letter, and both lowercasings are reached
-   * by the main sweep alone. The literal fallthrough it does reach, by a bare dot. */
-  const DEEP_ALPHABET: readonly string[] = [NON_KEYWORD_LETTER, "1", ".", "["];
-
-  /** The longest deeply generated key. Six characters spells a three-segment path with two to
-   * spare, which is what puts that path in a split context (a leading digit) and a rejected one
-   * (a trailing unclosed bracket) rather than only in an intact one. */
-  const DEEP_SWEEP_LENGTH = 6;
 
   /** Every string over `alphabet` from the empty key up to `maxLength`, in full. Exhaustive
    * over a bounded space rather than sampled from an unbounded one, so a clean run is a proof
@@ -616,26 +610,6 @@ describe("checkNotationKey", () => {
     expect(
       violations.slice(0, 10),
       `${violations.length} of ${keys.length} generated keys broke their state's consequence`,
-    ).toEqual([]);
-  });
-
-  it("every deeply generated key lands in one state whose consequence holds", () => {
-    // Depth traded for width over the SAME consequence oracle: a second statement of the
-    // contract here would be a second copy to drift, so this differs from the sweep above only
-    // in which keys it generates. What it buys is `claimIdentifierSpan`'s dot-join loop run
-    // past its first iteration, which the main sweep's length cannot spell.
-    const keys = enumerateKeys(DEEP_ALPHABET, DEEP_SWEEP_LENGTH);
-    const letter = NON_KEYWORD_LETTER;
-    const path = `${letter}.${letter}.${letter}`;
-    // Positive control: the three-segment path itself, and that path in the split and rejected
-    // contexts the two spare characters were chosen to reach.
-    for (const shape of [path, `${path}[`, `1${path}`, `${path}1`]) {
-      expect(keys.includes(shape), `the deep sweep never generated ${JSON.stringify(shape)}`).toBe(true);
-    }
-    const violations = keys.flatMap(consequenceViolations);
-    expect(
-      violations.slice(0, 10),
-      `${violations.length} of ${keys.length} deeply generated keys broke their state's consequence`,
     ).toEqual([]);
   });
 

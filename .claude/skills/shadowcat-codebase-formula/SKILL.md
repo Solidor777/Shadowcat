@@ -161,17 +161,22 @@ which no prose can do.
   `template.test`'s `checkNotationKey` cases derive their keyword
   shapes from `NOTATION_KEYWORDS` itself, so a keyword added there is covered without a second
   edit, and one case asserts the checker's verdict against what the rewrite observably does to each
-  key, so the two cannot drift apart. Beside the hand-written cases sit TWO generated sweeps
-  sharing one consequence oracle, a `template.test`-local helper that classifies a key from what
-  `checkNotationKey` returns and checks that classification against what
-  `resolveNotationTemplate` observably does to it. One sweep is wide and shallow, over a
-  keyword-derived alphabet; the other narrow and deep, over a four-member alphabet that buys the
-  dotted-path depth the wide one's length cannot spell; what each bound leaves unreachable is
-  stated at that bound's own declaration rather than here. They
-  exist because an author's list of shapes — prose, corpus and predicate set alike — cannot
-  contain the shape nobody thought of, and they are what a claim about this taxonomy is answerable
-  against. Neither is independent of the recognizer chain, which both sides run, so a defect inside
-  a recognizer still moves both answers together.
+  key, so the two cannot drift apart. Beside the hand-written cases sits ONE generated sweep, over
+  a keyword-derived alphabet, driven by a `template.test`-local consequence oracle that classifies
+  a key from what `checkNotationKey` returns and checks that classification against what
+  `resolveNotationTemplate` observably does to it; what the alphabet and length leave unreachable
+  is stated at their own declaration rather than here. It exists because an author's list of
+  shapes — prose, corpus and predicate set alike — cannot contain the shape nobody thought of, and
+  it is what a claim about this taxonomy is answerable against. It is NOT independent of the
+  recognizer chain, which both `checkNotationKey` and `resolveNotationTemplate` run through the
+  SAME `claimAt` call, so a defect confined to a recognizer moves both answers together and is
+  invisible to this oracle AT ANY ALPHABET OR LENGTH — no generated sweep over this oracle, however
+  wide or deep, can see such a defect; only a hand-written case with its own independent
+  expectation can (the `"a.b.c"` case is what actually covers a multi-join dotted path, for
+  exactly this reason: it asserts `intact` against a literal, not against a value this oracle
+  reads back off the same scan). Measured: a sweep wide enough to spell a three-segment dotted
+  path reports zero violations against a `claimIdentifierSpan` restricted to a single dot-join,
+  where that hand-written case alone catches it.
 
 ## Gotchas
 
