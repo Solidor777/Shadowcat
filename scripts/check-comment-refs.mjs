@@ -288,6 +288,38 @@ export const BANNED = [
     // canonical banned form — the widest gap in the list, because it is the most-cited entry.
     re: /\bpreviously\b|\bformerly\b|\bhistorically\b|\b(?:before|after)[ ]the[ ](?:fix|refactor|change|rewrite)\b|\bpre[-](?:fix|refactor)\b|\bpost[-](?:fix|refactor)\b|\b(?:it|this|that|which|they)\s+used to\b/i,
   },
+  // History narration by ALLUSION: the sibling gap the entry above cannot see. The entry above
+  // anchors on a fixed word marking the narration itself; an allusive reference to an incident
+  // carries no such word — the incident is named as though the reader already knows it. The
+  // tractable property is a CONSTRUCTION rather than a wordlist of incidents: a DETERMINER, an
+  // OBSERVATION/REPORTING PARTICIPLE, and an INCIDENT NOUN, in that order. The determiner and
+  // participle are closed grammatical classes and are enumerated directly; the incident itself is
+  // what stays open-ended, and this construction lets the pattern anchor around it without ever
+  // naming it.
+  //
+  // EXAMPLE: "the reported panic" is the construction's canonical shape: determiner, reporting
+  // EXAMPLE: participle, incident noun, with no lexical marker on the incident itself.
+  //
+  // The collision this is designed against: the same nouns name a CODE CONSTRUCT rather than an
+  // event (a panic path, a crash handler, a failure mode, an error type) — visible in the code,
+  // not a reference to something that happened. The reporting participle is what separates the
+  // two: a construct name is a bare determiner plus noun, never a reporting participle between
+  // them. A negative lookahead additionally refuses a construct-noun suffix immediately after the
+  // incident noun, since the participle alone does not resolve a compound like "the observed
+  // failure mode" — that phrase describes the mode's observability, not a reported incident.
+  //
+  // RESIDUAL, by design, and this is half of the deliverable, not an afterthought: this pattern
+  // requires the participle to sit directly between the determiner and the noun. A reordered
+  // allusion ("the panic that was reported"), an allusion carrying no participle at all, or an
+  // incident noun outside this enumerated set is invisible to it — allusion is semantic and this
+  // pattern is lexical, so a clean run over this construction is NOT evidence that no allusive
+  // reference remains. Catching those is a review obligation, on the same footing as the
+  // lowercase hyphenated local-marker class the core skill documents as permanently ungated by
+  // design.
+  {
+    name: "history narration by allusion",
+    re: /\b(?:the|that|this|these|those)\s+(?:reported|logged|observed|documented|noted|described|discovered|identified|known|flagged|surfaced|raised|witnessed|filed)\s+(?:panic|crash|bug|failure|incident|regression|outage|defect|deadlock|leak|corruption|exploit|vulnerability)\b(?!\s+(?:path|handler|mode|type|kind|variant|case))/i,
+  },
   // EXAMPLE: An unnamed reference to "the spec" is the same defect as a named one and strictly
   // worse to resolve: the reader cannot even tell which document went stale. Matches a spec
   // DOCUMENT, not the bare word — that word is also a common parameter name and an end-to-end
@@ -432,6 +464,10 @@ export const SKILL_BANNED = [
   },
   skillBannedByName("sweep / round / review marker"),
   skillBannedByName("history narration"),
+  // Same defect, same corpus reasoning: a skill's prose points at an incident by allusion exactly
+  // as a code comment does, and the construction is the same one — see the CODE entry's own
+  // comment for the property and its residual coverage bound.
+  skillBannedByName("history narration by allusion"),
   skillBannedByName("unnamed spec reference"),
   // EXAMPLE: The "ephemeral doc pointer" category, named apart from the
   // EXAMPLE: shared "repo document pointer" CODE entry because the split is different for

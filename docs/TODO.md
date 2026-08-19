@@ -405,17 +405,6 @@ Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one de
   `OPEN_BUGS.md` in sweep 11 Task 6 because the divergence never produces an incorrect state,
   server-authoritative or otherwise — only a possibly-confusing no-op click.)
 
-## Actionable now — `check-comment-refs.mjs` cannot see history narration by allusion
-- TODO: Teach the same checker to see history narration by allusion. It reports clean both
-  before and after a test name narrating an external incident ("the reported panic"), on the
-  same instrument fingerprint — a detection gap, not instrument drift, because a name referring
-  to an incident by allusion carries no fixed lexical marker the pattern can anchor on. It is the
-  last of the two blind spots this checker was reported to have; the skill-name pointer that was
-  the other one is now a live entry. **Care required when building it:** widening a detector this
-  way is the right direction, but a false positive is visible while a false negative is invisible, so all the feedback pressure pushes
-  toward narrowing it back. Positive-control the detector against a known-violating name before
-  trusting a green run.
-
 ## Actionable now — a literal-field-name key survey misses keys built through a helper
 - TODO: When surveying every constructed value of a specific document field (e.g. every
   `property_overrides` pointer key ever set, to confirm none falls outside an allow-listed set),

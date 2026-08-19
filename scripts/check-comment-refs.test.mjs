@@ -195,6 +195,53 @@ test("skill mode does NOT flag `no longer` as history narration", () => {
   expect(hits).toEqual([]);
 });
 
+// Positive control: the allusion construction itself, in a plain comment. Carries no word the
+// entry above ("history narration") anchors on, so this fails ONLY under the new entry — proving
+// it is a real addition, not a restatement of an existing hit.
+test("code mode flags a definite reference to an incident by allusion", () => {
+  const fixture = "// Regression test for the reported panic in the move handler.\n"; // EXAMPLE:
+  const { hits } = scanContent(fixture, { isMd: false });
+  expect(hits.map((h) => h.kind)).toEqual(["history narration by allusion"]);
+});
+
+// Reaches CODE-FACING STRINGS, not just comments — the logged instance was a test name.
+test("code mode flags a definite reference to an incident by allusion inside a test name", () => {
+  const fixture =
+    'it("does not repeat the observed crash when the queue drains twice", () => {});\n'; // EXAMPLE:
+  const { hits } = scanContent(fixture, { isMd: false });
+  expect(hits.map((h) => h.kind)).toEqual(["history narration by allusion"]);
+});
+
+// Negative controls for the collision this pattern is designed against: the same nouns naming a
+// CODE CONSTRUCT rather than an event. None carries a reporting participle between the determiner
+// and the noun, and the four here are the exact examples the collision was defined against.
+test("code mode does NOT flag a code-construct name sharing the incident-noun vocabulary", () => {
+  for (const fixture of [
+    "// Walks the panic path before returning the fallback value.\n", // EXAMPLE:
+    "// The crash handler restores the last committed frame.\n", // EXAMPLE:
+    "// This failure mode is covered by the retry loop above.\n", // EXAMPLE:
+    "// An error type distinguishes a parse failure from a resource cap.\n", // EXAMPLE:
+  ]) {
+    const { hits } = scanContent(fixture, { isMd: false });
+    expect(hits.map((h) => h.kind)).not.toContain("history narration by allusion");
+  }
+});
+
+// A reporting participle in front of a construct-noun compound is the harder collision: the
+// EXAMPLE: participle alone would otherwise fire on "the observed failure" inside "the observed
+// EXAMPLE: failure mode", which describes the mode's observability, not a reported incident.
+test("code mode does NOT flag a reporting participle in front of a construct-noun compound", () => {
+  const fixture = "// The observed failure mode matches the one predicted by the model.\n"; // EXAMPLE:
+  const { hits } = scanContent(fixture, { isMd: false });
+  expect(hits.map((h) => h.kind)).not.toContain("history narration by allusion");
+});
+
+test("skill mode flags a definite reference to an incident by allusion", () => {
+  const fixture = "Guards against the documented deadlock in the write queue.\n"; // EXAMPLE:
+  const { hits } = scanContent(fixture, { isMd: true });
+  expect(hits.map((h) => h.kind)).toEqual(["history narration by allusion"]);
+});
+
 test("skill mode flags an unnamed spec reference", () => {
   const fixture = "Field ordering follows the spec'd default.\n"; // EXAMPLE:
   const { hits } = scanContent(fixture, { isMd: true });

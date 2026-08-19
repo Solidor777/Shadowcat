@@ -247,6 +247,21 @@ source of truth. The ones agents break most:
   which is what the rule now prevents. But
   **a green detector is not a satisfied rule**: history narration is only partly detectable (`no
   longer` usually describes runtime data, not the code's past), so it is a review obligation.
+  A THIRD detectable-but-bounded class sits beside it: **history narration by allusion**, a
+  definite reference to an event with no fixed lexical marker — the incident is named as though
+  the reader already knows it, unlike a fixed marker word or compound.
+  <!-- EXAMPLE: the canonical shape is a determiner, a reporting participle, an incident noun -->
+  Its pattern is a CONSTRUCTION — a determiner, an
+  observation/reporting participle, and an incident noun — designed against the collision where
+  the same nouns name a CODE CONSTRUCT rather than an event (`the panic path`, `the crash
+  handler`, `the failure mode`, `the error type`): the participle is what separates a construct
+  name from a reference to something that happened, and a construct-noun suffix immediately after
+  the incident noun (`mode`, `path`, `handler`, `type`, `kind`, `variant`, `case`) is refused even
+  when a participle precedes it. **Bounded, not complete**: the pattern requires the participle to
+  sit directly between the determiner and the noun, so a reordered allusion, an allusion with no
+  participle at all, or an incident noun outside its enumerated set is invisible to it — a clean
+  run over this shape is not evidence none remains, on the same review-obligation footing as
+  `history narration`'s own bound above it.
   A second class sits beside it on the same footing: the lowercase hyphenated marker shape
   (`c-1`, `b-2`) is character-for-character ordinary comment arithmetic (`0..n-1`, `w-1`) with no
   separator a pattern can key on, so it is **permanently ungated by design**, not an open gap — a
