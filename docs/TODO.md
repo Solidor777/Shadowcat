@@ -488,3 +488,15 @@ Settled by direct observation, kept because each is a property to re-check after
   `merge_all_available_skills = true`, suggesting skills may be merged into context rather than
   invoked; if so the bodies' BLOCKED branch could fire in a consumer repo even when the context
   is already present. Both need one real dispatch in a consumer workspace to settle.
+
+## Actionable now — no UI-visible notification channel exists in `ui-kit`
+- TODO: Build a UI-visible notification/toast affordance in `@shadowcat/ui-kit` (or wherever the
+  host chrome lives) for operation-level feedback a GM or player needs to see — "an operation
+  partially applied", "some targets were skipped", and similar. Every existing signal of this
+  kind currently goes through `Logger.warn`, whose production implementation writes only to the
+  browser console — invisible to an ordinary user. `TemplatesController.push`'s per-instance
+  write-authorization exclusion is the concrete instance motivating this: the excluded-instance
+  warning is correct and complete against what exists today, but "the user learns" is only
+  actually true for a developer with devtools open. Not blocked on anything; deferred because
+  building a general notification affordance is a larger, separately-scoped piece of work than
+  the task that surfaced the need.
