@@ -125,9 +125,8 @@ interprets or merges anything itself.
   side of an embedded-deletion conflict). Either exclusion is logged via the injected `logger.warn`,
   listing every excluded instance in one call, rather than silently leaving that instance stale.
   `#openSession`'s `resolve` runs the same derivation for BOTH its callers (`push`'s multi-group
-  sessions and `pull`'s single-group session), closing what was previously a real gap: prior to
-  this derivation, `resolve` dispatched every entry's Update with no capability filter at all,
-  including for `pull`'s conflict path.
+  sessions and `pull`'s single-group session) — without it, `resolve` would dispatch every entry's
+  Update with no capability filter at all, including for `pull`'s conflict path.
 - `MergeConflictModal` (+ `TemplateModalHost`) — the
   field-level conflict resolution UI: renders one `ConflictGroup` per pending child
   (`{ key, label, conflicts: Conflict[] }`; the type lives in
