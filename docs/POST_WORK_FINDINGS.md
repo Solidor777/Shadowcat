@@ -651,8 +651,23 @@ are observations awaiting triage, not committed work.
   swallowed as a label rather than rolled. An authoring UI calling the checker is
   told "this will not run" about a key that does run, wrong. Both behaviours are
   measured, documented on `checkNotationKey`, and pinned by a case in
-  `template.test`; nothing here was changed. Status: Needs Review — the runtime
-  question is whether a `[` inside a WRITTEN KEY should be absorbable as a label
-  at all, or whether the identifier recognizer should refuse a key that opens a
-  bracket it does not close. That is a behaviour change and needs an owner ruling
-  before anyone makes it.
+  `template.test`; nothing here was changed. Status:
+  **Resolved — ruling: no, and no grammar change.** `[` is reserved
+  notation syntax (a label span) and is never absorbable into a valid
+  key; a run confirms `checkNotationKey("a[b]")` already returns
+  `{ intact: false }` (SPLIT: `identifier "a"` + `label "[b]"`, never one
+  claim), so a key carrying `[` is already correctly refused as
+  non-intact — the exact signal an authoring UI needs to reject it before
+  it is ever saved. The asymmetry in the summary above is not a grammar
+  defect: `checkNotationKey` answers "is this key, in isolation, safe to
+  use as a reference" and `resolveNotationTemplate` answers "what does
+  this whole template's text mean" — two different, correctly-scoped
+  questions, exactly as `checkNotationKey`'s own doc already states
+  ("the answer is over the key in ISOLATION"). The genuine fix — never
+  letting a `[`-carrying key exist to be embedded in a template in the
+  first place — belongs at the key-authoring boundary, calling
+  `checkNotationKey(key).intact`. Shadowcat's own document field paths
+  are structural (typed schema, not freely authored strings), so this
+  repo has no such boundary to wire. That boundary is the consuming
+  system's (the same one the authorized `validateStatKey` →
+  `checkNotationKey` swap targets), not a Shadowcat action item.
