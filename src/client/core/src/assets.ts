@@ -88,10 +88,17 @@ export class AssetResolver {
    */
   private adoptVersion(uuid: string, version: number, isDeleted: boolean): void {
     const current = this.revs.get(uuid) ?? -1;
-    if (isDeleted ? version < current : version <= current) return;
-    this.revs.set(uuid, version);
-    if (isDeleted) this.deleted.add(uuid);
-    else this.deleted.delete(uuid);
+    if (isDeleted) {
+      const isStale = version < current;
+      if (isStale) return;
+      this.revs.set(uuid, version);
+      this.deleted.add(uuid);
+    } else {
+      const isStaleOrSame = version <= current;
+      if (isStaleOrSame) return;
+      this.revs.set(uuid, version);
+      this.deleted.delete(uuid);
+    }
   }
 
   /** Invalidate a uuid in response to an AssetChanged frame, routed through `adoptVersion` so a
