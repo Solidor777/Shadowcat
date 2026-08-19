@@ -12,7 +12,7 @@ template via a client-side 3-way merge — no server-side merge logic, no `templ
 ## Purpose
 
 A "template" is just a document another document's `source: { id, ... }` field points at
-(`Document.source`, pre-existing). The templates system adds the machinery to keep an instance and its
+(`Document.source`). The templates system adds the machinery to keep an instance and its
 template's mergeable content (`name`/`engine`/`system`/`embedded`) in sync over time, using a
 classic 3-way merge (base/mine/theirs) where "base" is a client-owned snapshot
 (`Document.base`) taken at stamp time or the last successful sync. This is entirely client-core
@@ -29,7 +29,7 @@ interprets or merges anything itself.
     level: **arrays merge wholesale** (either side's whole-array change wins outright, or
     conflicts if both changed — arrays have no stable per-element identity to diff), **objects
     merge key-level** (each key independently: parent-only / child-only / both-same /
-    both-different-conflict). `exclusions` drops matching paths from the parent side entirely
+    both-different-conflict). `merge3Tree.exclusions` drops matching paths from the parent side entirely
     (never merge, never conflict) — the placement-exclusion mechanism (below).
   - `merge3Embedded(baseChildren, theirsChildren, mineChildren)` — **internal helper, not
     exported from `@shadowcat/core`** (used only inside `merge3`); correlates embedded children
@@ -40,7 +40,7 @@ interprets or merges anything itself.
     correlated triple with a real conflict is kept pending, not merged.
   - `merge3(base: MergeBase, parentNow: WireDocument, childNow: WireDocument, exclusions:
     string[])` → `MergePlan { mergedBands, conflicts: Conflict[] }` — the top-level entry point:
-    merges `name`/`engine`/`system` bands (via `merge3Tree`, forwarding `exclusions`) plus
+    merges `name`/`engine`/`system` bands (via `merge3Tree`, forwarding `merge3.exclusions`) plus
     `embedded` (via `merge3Embedded`) in one pass.
   - `restampSubtree(doc)` — deep-clones a document tree for use as a fresh `base`/instance
     (guards against the aliasing hazard in `[[embedded-copy-needs-deep-clone]]`).
@@ -53,7 +53,7 @@ interprets or merges anything itself.
   - Types: `Diff`, `Conflict` (`{ path, base, parent, child, parentKind: "set" | "delete" }` —
     `parent`/`child` are `undefined` when that side deleted the key; `parentKind` records how
     "take template" resolves it. Conceptually `parent`≈"theirs" (the template) and `child`≈"mine"
-    (the instance), but the field names on the type are `parent`/`child`, not `mine`/`theirs`),
+    (the instance), but the field names on the type are `parent`/`child`, not "mine"/"theirs"),
     `MergeBase` (the `base` snapshot shape: `{ name, engine, system, embedded }`), `MergeBands`
     (the merged-band result shape), `EmbeddedBaseChild`, `MergePlan`.
 - The `templates` module — the stamp/sync operations built on the `merge` module:
@@ -73,8 +73,8 @@ interprets or merges anything itself.
     `MergeBands` into ONE `Update` op, refreshing `/base` to `snapshotBase(template)` — the
     TEMPLATE's current snapshot, not a snapshot of the merged result. This is deliberate: it
     makes `syncState`, run immediately after this op lands, compare the child's new stored
-    `base` against the template's CURRENT state and correctly read `up_to_date` rather than
-    falsely `template_changed` (a merged-result snapshot would already differ from the
+    `base` against the template's CURRENT state and correctly read `SyncState.up_to_date` rather
+    than falsely `SyncState.template_changed` (a merged-result snapshot would already differ from the
     template's live state the instant the template changes again, or in edge cases immediately).
     **Emits whole-band `FieldChange`s (`/name`, `/engine`, `/system`, `/embedded/<coll>`),
     never per-leaf changes** — deliberately, not because no leaf-removal mechanism exists: a
@@ -121,10 +121,11 @@ interprets or merges anything itself.
   included, and its ENTIRE Update is then refused: `data::sqlite::apply_intent` returns `Forbidden`
   at the FIRST uncapped path and aborts the whole intent. That instance receives none of the
   push — not even the `/name`/`/engine`/`/system` merge — and its `/base` is not refreshed, so it
-  stays `template_changed`. Nothing in the push path retries, so it stays stale until someone
+  stays `SyncState.template_changed`. Nothing in the push path retries, so it stays stale until
+  someone
   holding `/embedded` on THAT instance pulls or reverts (both terminate in `planToUpdate`, which
   always re-emits `/base`) — a different principal from the pusher who lacked the capability.
-  Contained to the one instance (`push` dispatches one intent PER instance); not yet fixed.**
+  Contained to the one instance (`push` dispatches one intent PER instance).**
 - `MergeConflictModal` (+ `TemplateModalHost`) — the
   field-level conflict resolution UI: renders one `ConflictGroup` per pending child
   (`{ key, label, conflicts: Conflict[] }`; the type lives in
@@ -134,7 +135,7 @@ interprets or merges anything itself.
   calls the session's `resolve(theirsByGroup: Map<string, Set<string>>)`. `TemplateModalHost`
   just renders `MergeConflictModal` when `controller.pending` is non-null — mount once per
   `Table` alongside the root `<Surface>`.
-- `TemplateControls` — the host-rendered chrome (§6.1): a source
+- `TemplateControls` — the host-rendered chrome: a source
   badge (template name + `syncState`) and pull/revert (if `canPull`) / push (if `canPush`)
   buttons, reactive via `createSubscriber`/`subscribe()` on `ctx.documents` (same pattern as
   every sheet — see `shadowcat-codebase-sheets` Hard Invariants). Rendered by `SheetHost`
@@ -156,8 +157,8 @@ interprets or merges anything itself.
   `source` at it) or an instance (has a `source`) or both. `stampInstance` is fully generic —
   never gate it on `doc_type`.
 - **Embedded correlation is by `source.id`, never index/position** — see `merge3Embedded` above;
-  this is the load-bearing fix for embedded children that get reordered/added/removed on either
-  side between syncs.
+  it is what keeps embedded children correlated when either side reorders, adds or removes one
+  between syncs.
 - **Merge emission is band-level, never per-leaf.** `planToUpdate` always emits whole-band
   `FieldChange`s (`/name`, `/engine`, `/system`, one per changed `/embedded/<coll>` — the WHOLE
   collection array, never a per-index path) — deliberate for merge results, since a merge can
@@ -188,8 +189,7 @@ interprets or merges anything itself.
 - Every `$derived.by` in `TemplateControls` that reads `ctx.documents` (directly or via
   `ctx.templates.*`, which reads the same underlying store) must call the component's own
   `subscribe()` first — same freeze-at-first-read hazard as every other sheet
-  (`shadowcat-codebase-sheets` Hard Invariants); already fixed here, don't regress it if this
-  file is touched again.
+  (`shadowcat-codebase-sheets` Hard Invariants). The calls are present; dropping one is silent.
 - `merge3Embedded` is intentionally NOT exported from `@shadowcat/core`'s public surface —
   it's an implementation detail of `merge3`. Do not import it directly from a
   module or ui-kit component; go through `merge3`/`computePull`/`computeRevert`.

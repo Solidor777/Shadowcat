@@ -133,7 +133,7 @@ test("circle-shaped token gets an ellipse selection ring (> 8 points), not a rec
     size: { w: 1, h: 1 }, shape: "circle",
     faction: null, conditions: [], prototype: false, vision: null,
   }, "act1");
-  const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 100, y: 100 }, 100, "tok1");
+  const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 100, y: 100 }, { w: 100, h: 100 }, "tok1");
   docs.applyCommand({ seq: 1, world_id: "w1", author: "a", ts: 0, ops: [
     { op: "create", doc: scene },
     { op: "create", doc: actor },

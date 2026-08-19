@@ -81,7 +81,7 @@ export class SheetsController {
     }
   }
 
-  /** Boot restore (§7): re-registers every `sheet:<docId>` id found anywhere in the
+  /** Boot restore: re-registers every `sheet:<docId>` id found anywhere in the
    * persisted panel blob whose document currently resolves — the panel manager's own
    * late-registration path (`placeNewRegistrations` -> `placeFromPersistedLocation`) then
    * restores each to its persisted floating/minimized spot, so this NEVER calls `open()`

@@ -21,6 +21,7 @@
     pathfind: ctx.pathfind,
     moveRequest: ctx.moveRequest,
     viewedSceneId: () => ctx.viewedSceneId,
+    footprints: () => ctx.footprints,
   });
   const t = ctx.t;
   // Authoring is GM-gated (the server is authoritative; this hides the controls).

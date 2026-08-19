@@ -11,6 +11,7 @@ import {
   cssFilesUnder,
   rewriteAbsolutePaths,
   hasSurvivingAbsoluteRef,
+  survivingAbsoluteRefs,
 } from "./assemble-docs.mjs";
 
 describe("extractLocalLinks", () => {
@@ -224,11 +225,10 @@ describe("rewriteAbsolutePaths", () => {
   });
 });
 
-// This gate (the `hasSurvivingAbsoluteRef` check + assemble-docs.mjs's `isMain`
-// `process.exit(1)` block that uses it) had zero automated coverage before these tests — every
-// other function in this file is exported and tested; this predicate was verified by hand
-// against adversarial inputs only. It is about to be load-bearing on every docs build, so it is
-// now observed failing (and passing) directly, not just wired-in-and-trusted.
+// The docs build fails on a non-empty `survivingAbsoluteRefs`, so both halves of that gate are
+// observed directly rather than only through the entry block that consumes them: the
+// `hasSurvivingAbsoluteRef` predicate against adversarial HTML and CSS below, and the
+// `survivingAbsoluteRefs` scan that turns it into the build's exit status.
 describe("hasSurvivingAbsoluteRef", () => {
   it("HTML: reports a surviving root-absolute href/src", () => {
     expect(hasSurvivingAbsoluteRef("page.html", `<a href="/protocol.html">p</a>`)).toBe(true);
@@ -258,6 +258,26 @@ describe("hasSurvivingAbsoluteRef", () => {
     expect(hasSurvivingAbsoluteRef("page.html", `<style>.a{background:url(/x.png)}</style>`)).toBe(
       false,
     );
+  });
+});
+
+describe("survivingAbsoluteRefs", () => {
+  it("reports the files whose content still carries a root-absolute ref, and only those", () => {
+    const root = mkdtempSync(join(tmpdir(), "docs-survivors-"));
+    const dirty = join(root, "dirty.html");
+    const clean = join(root, "clean.html");
+    const dirtyCss = join(root, "dirty.css");
+    writeFileSync(dirty, `<a href="/protocol.html">p</a>`);
+    writeFileSync(clean, `<a href="./protocol.html">p</a>`);
+    writeFileSync(dirtyCss, `.a{background:url(/assets/a.png)}`);
+    expect(survivingAbsoluteRefs([dirty, clean, dirtyCss])).toEqual([dirty, dirtyCss]);
+  });
+
+  it("returns an empty list when every file is clean", () => {
+    const root = mkdtempSync(join(tmpdir(), "docs-survivors-clean-"));
+    const page = join(root, "index.html");
+    writeFileSync(page, `<a href="./local.html">l</a>`);
+    expect(survivingAbsoluteRefs([page])).toEqual([]);
   });
 });
 

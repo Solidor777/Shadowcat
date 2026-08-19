@@ -1,7 +1,7 @@
 import { test, expect } from "vitest";
 import { LayerRegistry, CORE_LAYERS } from "./index";
 
-test("core layers are in the fixed §6.1 z-order", () => {
+test("core layers are in the fixed z-order", () => {
   const r = new LayerRegistry();
   expect(r.orderedIds()).toEqual([...CORE_LAYERS]);
   expect(CORE_LAYERS).toEqual([

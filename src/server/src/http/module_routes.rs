@@ -478,9 +478,9 @@ mod tests {
         res.assert_status(StatusCode::NOT_FOUND);
     }
 
-    // The documented symlink-resolution defense
+    // Pins the documented symlink-resolution defense
     // ("Both canonicalize calls resolve symlinks too, closing that escape
-    // route") had zero regression coverage. A module "folder" that is itself a
+    // route"). A module "folder" that is itself a
     // symlink pointing outside modules_root must still 404 once containment
     // requires a PROPER descendant (not just any path starting with the root
     // prefix, which a symlink target sharing a prefix could otherwise satisfy).

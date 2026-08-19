@@ -4,8 +4,8 @@ A game system in Shadowcat — the rules, sheets, and content model for a
 particular game — is not a separate kind of artifact. It is a module that claims
 game-facing surfaces. This tutorial builds a minimal d20-style system from
 `examples/system-minimal/` in the Shadowcat repository (CI-built and tested, like
-every sample on this page) and closes with the full-scale reference
-implementation, Nightfox.
+every sample on this page) and closes with the layering a full-scale system
+grows into.
 
 ## Systems are modules
 
@@ -86,6 +86,34 @@ The resolver callback is where your system's data model plugs in: it maps a
 dotted path to a number from the `system` body, or returns the library's own
 `unknown-ref` error to fail closed.
 
+### Check your stat keys before you ship them
+
+Roll templates are rewritten by a second grammar, which reads dice notation and
+stat references out of the same text. Some keys are claimed by that grammar
+before they are ever offered to your resolver, and **the failure downstream is
+not reliably loud** — claimed text can be rewritten into notation with no error
+on any path, so the roll runs and the number changes.
+
+Do not try to derive which keys are safe. Ask:
+
+```ts
+import { checkNotationKey } from "@shadowcat/formula";
+
+checkNotationKey("hp.max").intact; // true  — reaches your resolver as written
+checkNotationKey("kh.max").intact; // false — "kh" is claimed as dice notation
+```
+
+`intact` is the verdict. `segments` shows what each part of the key was claimed
+as, so an authoring UI can tell the author *why* a name was refused rather than
+only *that* it was, and `rejects` carries the error for a key the grammar refuses
+outright. What each of those outcomes does downstream is documented on
+[`NotationKeyCheck`](/api/ts/interfaces/_shadowcat_formula.NotationKeyCheck.html).
+
+Run it wherever your system accepts a key an author can name — a sheet's stat
+editor, a compendium importer, a migration. A key that fails this check is a
+name to refuse at authoring time, because the failure downstream is not reliably
+loud.
+
 ## Templates: shipping content
 
 Any document can be a template — templating is provenance (`source`), not a doc
@@ -112,22 +140,22 @@ sends a roll for `attributes.str`'s modifier via
 custom chat content. See the [wire protocol](/protocol) page for the frame-level
 picture.
 
-## The full-scale reference: Nightfox
+## The full-scale shape
 
-Nightfox is Shadowcat's reference system — a complete, generic ruleset built
-exactly the way this guide describes, in its own repository with its own release
-cycle. Where each concern lives:
+`examples/system-minimal/` fits in one package because it is small enough to. A
+complete ruleset lives in its own repository, on its own release cycle, and
+separates three concerns:
 
-- **Formula layer** — `@shadowcat/formula` (in the Shadowcat repo): the
-  expression engine this guide already used.
-- **Rules engine** — Nightfox's document layer (`nightfox-docs.ts`,
-  `contributions.ts`, `resolve.ts`): doc-type definitions, dependency-resolved
-  derived stats, effects.
-- **Sheets layer** — Nightfox's `src/sheets/*`: sheet models, stat tables,
-  modifier editors, actor/item/effect sheets.
+- **Formula layer** — `@shadowcat/formula`, shipped by the engine: the
+  expression engine this guide already used. Systems consume it rather than
+  writing their own.
+- **Rules layer** — the system's document layer: doc-type definitions,
+  dependency-resolved derived stats, effects. No UI.
+- **Sheets layer** — sheet models, stat tables, modifier editors, and the
+  actor/item/effect sheet components that claim the sheet contracts.
 
-When this tutorial's single-file system stops being enough, copy Nightfox's
-layering.
+When this tutorial's single file stops being enough, that is the split to make:
+sheets read values the rules layer computed, instead of computing them.
 
 ## Reference
 
@@ -137,5 +165,7 @@ layering.
   [`evaluate`](/api/ts/functions/_shadowcat_formula.evaluate.html) ·
   [`isFormulaError`](/api/ts/functions/_shadowcat_formula.isFormulaError.html) ·
   [`FormulaValue`](/api/ts/types/_shadowcat_formula.FormulaValue.html)
+- [`checkNotationKey`](/api/ts/functions/_shadowcat_formula.checkNotationKey.html) ·
+  [`NotationKeyCheck`](/api/ts/interfaces/_shadowcat_formula.NotationKeyCheck.html)
 - [`TemplatesApi`](/api/ts/interfaces/_shadowcat_ui-kit.TemplatesApi.html) ·
   [`ChatApi`](/api/ts/interfaces/_shadowcat_ui-kit.ChatApi.html)

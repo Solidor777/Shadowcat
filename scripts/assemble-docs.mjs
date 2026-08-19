@@ -7,6 +7,7 @@ import { cpSync, existsSync, readdirSync, readFileSync, statSync, mkdirSync, wri
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import process from "node:process";
+import { isDirectEntry } from "./lib/is-main.mjs";
 
 // Skips scheme-prefixed URLs, fragments, and protocol-relative (//host) URLs.
 const SKIP_SCHEMES = /^(?:[a-z][a-z0-9+.-]*:|#|\/\/)/i;
@@ -127,6 +128,13 @@ export function rewriteAbsolutePaths(rootDir, files) {
   return changed;
 }
 
+/** The portal files still carrying a root-absolute local reference once `rewriteAbsolutePaths`
+ * has run. A non-empty result fails the docs build: such a reference resolves only when the
+ * site is served from its own root, so the assembled tree would break under file://. */
+export function survivingAbsoluteRefs(files) {
+  return files.filter((f) => hasSurvivingAbsoluteRef(f, readFileSync(f, "utf8")));
+}
+
 /** Copy portal/ts/rust trees into out (portal at root, refs under api/). */
 export function assemble({ portal, ts, rust, out }) {
   mkdirSync(out, { recursive: true });
@@ -135,8 +143,7 @@ export function assemble({ portal, ts, rust, out }) {
   cpSync(rust, join(out, "api", "rust"), { recursive: true });
 }
 
-const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
-if (isMain) {
+if (isDirectEntry(import.meta.url)) {
   const repo = resolve(fileURLToPath(import.meta.url), "..", "..");
   const paths = {
     portal: join(repo, "docs", "site", ".vitepress", "dist"),
@@ -156,9 +163,7 @@ if (isMain) {
   const portalPages = htmlFilesUnder(paths.out, apiSubtrees);
   const portalStyles = cssFilesUnder(paths.out, apiSubtrees);
   rewriteAbsolutePaths(paths.out, [...portalPages, ...portalStyles]);
-  const stillAbsolute = [...portalPages, ...portalStyles].filter((f) =>
-    hasSurvivingAbsoluteRef(f, readFileSync(f, "utf8")),
-  );
+  const stillAbsolute = survivingAbsoluteRefs([...portalPages, ...portalStyles]);
   if (stillAbsolute.length > 0) {
     for (const f of stillAbsolute) console.error(`root-absolute reference survived rewrite: ${f}`);
     process.exit(1);

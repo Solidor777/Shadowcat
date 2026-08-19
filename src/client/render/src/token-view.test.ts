@@ -1,7 +1,7 @@
 import { test, expect, it, vi } from "vitest";
 import { DocumentStore, AssetResolver, buildActorDoc, buildTokenFromActor, buildFactionRegistryDoc, buildConditionRegistryDoc, buildSceneDoc, buildTokenDoc } from "@shadowcat/core";
 import { MockBackend, TokenView } from "./index";
-import type { WireDocument, WireOperation } from "@shadowcat/core";
+import type { WireDocument, WireOperation, FootprintLookup } from "@shadowcat/core";
 
 function tokenDoc(id: string, x: number, y: number, asset: string): WireDocument {
   return {
@@ -66,7 +66,7 @@ test("renders a linked token using the actor's visual", () => {
     { displayName: "G", visual: { kind: "image", asset: "actorimg" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null },
     "act1",
   );
-  const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 10, y: 20 }, 100, "tok1");
+  const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 10, y: 20 }, { w: 100, h: 100 }, "tok1");
   store.applyCommand(cmd(1, [{ op: "create", doc: actor }, { op: "create", doc: token }]));
   new TokenView(store, assets, backend).reconcile();
   expect(backend.tokens.get("tok1")!.visual).toEqual({ kind: "image", url: assets.url("actorimg") });
@@ -94,7 +94,7 @@ test("resolves the faction border color from the registry", () => {
     { displayName: "G", visual: { kind: "image", asset: "actorimg" }, size: { w: 1, h: 1 }, shape: "square", faction: "f1", conditions: [], prototype: false, vision: null },
     "act1",
   );
-  const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, 100, "tok1");
+  const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 }, "tok1");
   store.applyCommand(cmd(1, [{ op: "create", doc: registry }, { op: "create", doc: actor }, { op: "create", doc: token }]));
   new TokenView(store, assets, backend).reconcile();
   expect(backend.tokens.get("tok1")!.borderColor).toBe(0xff0000);
@@ -109,7 +109,7 @@ test("a token with no faction has a null border", () => {
     { displayName: "G", visual: { kind: "image", asset: "actorimg" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null },
     "act2",
   );
-  const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, 100, "tok2");
+  const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 }, "tok2");
   store.applyCommand(cmd(1, [{ op: "create", doc: actor }, { op: "create", doc: token }]));
   new TokenView(store, new AssetResolver(), backend).reconcile();
   expect(backend.tokens.get("tok2")!.borderColor).toBeNull();
@@ -125,7 +125,7 @@ test("resolves condition icon glyphs into token badges via the registry", () => 
     { displayName: "G", visual: { kind: "image", asset: "actorimg" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: ["dead", "prone"], prototype: false, vision: null },
     "act1",
   );
-  const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, 100, "tok1");
+  const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 }, "tok1");
   store.applyCommand(cmd(1, [{ op: "create", doc: registry }, { op: "create", doc: actor }, { op: "create", doc: token }]));
   new TokenView(store, new AssetResolver(), backend).reconcile();
   expect(backend.tokens.get("tok1")!.badges).toEqual(["💀", "🛌"]);
@@ -140,13 +140,16 @@ test("a token whose actor has no conditions has empty badges", () => {
     { displayName: "G", visual: { kind: "image", asset: "actorimg" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null },
     "act2",
   );
-  const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, 100, "tok2");
+  const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 }, "tok2");
   store.applyCommand(cmd(1, [{ op: "create", doc: actor }, { op: "create", doc: token }]));
   new TokenView(store, new AssetResolver(), backend).reconcile();
   expect(backend.tokens.get("tok2")!.badges).toEqual([]);
 });
 
-test("reconciles a linked 2x2 actor token to 2-cell pixel size + circle shape", () => {
+test("reconciles a token to the server's resolved extent, with the shape still read from the actor", () => {
+  // The store carries a 2x2 actor on a 100-unit square grid — the inputs a size formula would
+  // multiply into 200x200 — while the wire states 173.2x200 (a hex extent). The pushed spec
+  // reports the wire's numbers, so a formula reintroduced on this side fails here.
   const store = new DocumentStore();
   const assets = new AssetResolver();
   const backend = new MockBackend();
@@ -157,13 +160,32 @@ test("reconciles a linked 2x2 actor token to 2-cell pixel size + circle shape", 
     { displayName: "Ogre", visual: { kind: "image", asset: "a1" }, size: { w: 2, h: 2 }, shape: "circle", faction: null, conditions: [], prototype: false, vision: null },
     "act1",
   );
-  const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, 100, "tok1");
+  const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 }, "tok1");
   store.applyCommand(cmd(1, [{ op: "create", doc: scene }, { op: "create", doc: actor }, { op: "create", doc: token }]));
-  new TokenView(store, assets, backend).reconcile();
+  const footprints: FootprintLookup = { token: (id) => (id === "tok1" ? { w: 173.2, h: 200 } : null), unit: () => null };
+  new TokenView(store, assets, backend, () => null, () => footprints).reconcile();
   const spec = backend.tokens.get("tok1")!;
-  expect(spec.w).toBe(200);
+  expect(spec.w).toBe(173.2);
   expect(spec.h).toBe(200);
   expect(spec.shape).toBe("circle");
+});
+
+test("a token the server has stated no extent for keeps its document's own authored extent", () => {
+  const store = new DocumentStore();
+  const backend = new MockBackend();
+  const scene = buildSceneDoc("w1", { grid: { kind: "square", size: 100, distance: null } }, "scene1");
+  const actor = buildActorDoc(
+    "w1",
+    "Ogre",
+    { displayName: "Ogre", visual: { kind: "image", asset: "a1" }, size: { w: 2, h: 2 }, shape: "circle", faction: null, conditions: [], prototype: false, vision: null },
+    "act1",
+  );
+  const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 }, "tok1");
+  store.applyCommand(cmd(1, [{ op: "create", doc: scene }, { op: "create", doc: actor }, { op: "create", doc: token }]));
+  new TokenView(store, new AssetResolver(), backend).reconcile();
+  const spec = backend.tokens.get("tok1")!;
+  expect(spec.w).toBe(100);
+  expect(spec.h).toBe(100);
 });
 
 test("raw token keeps its own size + defaults to square", () => {
@@ -188,7 +210,7 @@ test("renders an animated frame-list visual with resolved frame URLs", () => {
     { displayName: "Wisp", visual: { kind: "animated", source: { type: "frames", frames: ["f1", "f2"] }, fps: 6, loop: true }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null },
     "act1",
   );
-  const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, 100, "tok1");
+  const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 }, "tok1");
   store.applyCommand(cmd(1, [{ op: "create", doc: actor }, { op: "create", doc: token }]));
   new TokenView(store, assets, backend).reconcile();
   expect(backend.tokens.get("tok1")!.visual).toEqual({
@@ -209,7 +231,7 @@ test("renders an animated grid-sheet visual with a resolved sheet URL", () => {
     { displayName: "Torch", visual: { kind: "animated", source: { type: "sheet", asset: "sheet1", rows: 2, cols: 4, count: 7 }, fps: 12, loop: false }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null },
     "act1",
   );
-  const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, 100, "tok1");
+  const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 }, "tok1");
   store.applyCommand(cmd(1, [{ op: "create", doc: actor }, { op: "create", doc: token }]));
   new TokenView(store, assets, backend).reconcile();
   expect(backend.tokens.get("tok1")!.visual).toEqual({
@@ -230,7 +252,7 @@ test("renders an animated grid-sheet visual with a null count coalesced to undef
     { displayName: "Torch", visual: { kind: "animated", source: { type: "sheet", asset: "sheet1", rows: 2, cols: 4, count: null }, fps: 12, loop: false }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null },
     "act1",
   );
-  const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, 100, "tok1");
+  const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 }, "tok1");
   store.applyCommand(cmd(1, [{ op: "create", doc: actor }, { op: "create", doc: token }]));
   new TokenView(store, assets, backend).reconcile();
   expect(backend.tokens.get("tok1")!.visual).toEqual({
@@ -250,7 +272,7 @@ test("a token whose visual fails to resolve (empty faces) is skipped, not crashe
     { displayName: "Broken", visual: { kind: "faces", faces: {}, default: "x", faceMap: null }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null },
     "act1",
   );
-  const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, 100, "tok1");
+  const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 }, "tok1");
   store.applyCommand(cmd(1, [{ op: "create", doc: actor }, { op: "create", doc: token }]));
   expect(() => new TokenView(store, new AssetResolver(), backend).reconcile()).not.toThrow();
   expect(backend.tokens.has("tok1")).toBe(false);
@@ -302,11 +324,11 @@ function moveToken(store: DocumentStore, id: string, pos: { x: number; y: number
 }
 
 // Animation config reaches the animator: a slow speed makes a move take longer.
-it("setAnimationConfig + setCellSize drive tween duration", () => {
+it("setAnimationConfig + setWorldUnitsPerCell drive tween duration", () => {
   const store = makeStoreWithToken("tok1", { x: 0, y: 0 });
   const backend = new RecordingBackend();
   const view = new TokenView(store, new AssetResolver(), backend);
-  view.setCellSize(100);
+  view.setWorldUnitsPerCell(100);
   view.setAnimationConfig({ speedCellsPerSec: 1, easing: "linear" }); // 1 cell/s
   view.reconcile(); // snap at (0,0)
   moveToken(store, "tok1", { x: 100, y: 0 }); // 1 cell → 1000ms
@@ -321,7 +343,7 @@ it("animateAlongPath walks the route polyline", () => {
   const store = makeStoreWithToken("tok1", { x: 0, y: 0 });
   const backend = new RecordingBackend();
   const view = new TokenView(store, new AssetResolver(), backend);
-  view.setCellSize(100);
+  view.setWorldUnitsPerCell(100);
   view.setAnimationConfig({ speedCellsPerSec: 6, easing: "linear" });
   view.reconcile();
   view.animateAlongPath("tok1", [[0, 0], [300, 0], [300, 300]]); // 6 cells → 1000ms

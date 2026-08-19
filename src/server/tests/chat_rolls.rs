@@ -27,7 +27,7 @@ struct Fixture {
     repo: SqliteRepository,
     room: Arc<Room>,
     rate: PingRateLimiter,
-    // Link-preview deps: no test in this file enables `hyperlinks`, so
+    // Link-preview deps: no test built through `Fixture` enables `hyperlinks`, so
     // `previews_enabled()` is always false and `enrich` never fetches — a
     // production (non-loopback) client is safe here, it's simply never
     // dialed.
@@ -258,7 +258,7 @@ async fn inline_roll_executes_inside_whisper_body_and_stays_recipient_only() {
     );
 }
 
-/// (f-1) Editing a message whose STORED `kind == Roll` is rejected outright.
+/// Editing a message whose STORED `kind == Roll` is rejected outright.
 #[tokio::test]
 async fn edit_of_roll_message_is_immutable() {
     let f = Fixture::new().await;
@@ -285,7 +285,7 @@ async fn edit_of_roll_message_is_immutable() {
     assert!(matches!(r, Err(SendMessageError::RollImmutable)), "{r:?}");
 }
 
-/// (f-2) Editing a PLAIN public message's content INTO `/roll ...` is
+/// Editing a PLAIN public message's content INTO `/roll ...` is
 /// rejected the same way — no editing a message into becoming a roll.
 #[tokio::test]
 async fn edit_into_roll_is_rejected() {
@@ -323,7 +323,7 @@ async fn edit_into_roll_is_rejected() {
     );
 }
 
-/// (f-3) An edit's `[[...]]` content stays LITERAL text — `scan_body` never
+/// An edit's `[[...]]` content stays LITERAL text — `scan_body` never
 /// runs on an edit, so an inline-roll-shaped edit body sanitizes as ordinary
 /// text, never producing a `RollEmbed`.
 #[tokio::test]

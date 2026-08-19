@@ -8,7 +8,7 @@ vi.mock("@shadowcat/core", async (importOriginal) => {
   return {
     ...actual,
     listInstalledModules: vi.fn().mockResolvedValue([
-      { id: "nightfox", manifest: { id: "nightfox" }, entry_url: "/modules/nightfox/index.js" },
+      { id: "example-system", manifest: { id: "example-system" }, entry_url: "/modules/example-system/index.js" },
     ]),
     getEnabledModules: vi.fn().mockResolvedValue([]),
     setEnabledModules: vi.fn().mockResolvedValue(undefined),
@@ -20,14 +20,14 @@ describe("ModuleManager", () => {
     const { setEnabledModules } = await import("@shadowcat/core");
     render(ModuleManager, { context: setAppContextForTest({ world: "w1", role: "gm" }) });
 
-    const checkbox = await screen.findByLabelText("nightfox");
+    const checkbox = await screen.findByLabelText("example-system");
     expect((checkbox as HTMLInputElement).checked).toBe(false);
 
     await fireEvent.click(checkbox);
     expect((checkbox as HTMLInputElement).checked).toBe(true);
 
     await fireEvent.click(screen.getByText("settings.modules.save"));
-    await vi.waitFor(() => expect(vi.mocked(setEnabledModules)).toHaveBeenCalledWith("w1", ["nightfox"]));
+    await vi.waitFor(() => expect(vi.mocked(setEnabledModules)).toHaveBeenCalledWith("w1", ["example-system"]));
   });
 
   it("shows an empty state when nothing is installed", async () => {
@@ -49,7 +49,7 @@ describe("ModuleManager", () => {
     vi.mocked(setEnabledModules).mockRejectedValueOnce(new Error("save failed"));
     render(ModuleManager, { context: setAppContextForTest({ world: "w1", role: "gm" }) });
 
-    const checkbox = await screen.findByLabelText("nightfox");
+    const checkbox = await screen.findByLabelText("example-system");
     await fireEvent.click(checkbox);
     const saveButton = screen.getByText("settings.modules.save") as HTMLButtonElement;
     await fireEvent.click(saveButton);

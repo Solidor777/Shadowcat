@@ -15,8 +15,8 @@ const FILL_ALPHA = 0.25;
 const STROKE_WIDTH = 2;
 
 /** Reconciles `doc_type:"region"` documents into the `regions` layer as tinted shapes. Only
- * regions the viewer is permitted to see ever reach `store` (server-side egress filtering, spec
- * §3) — there is no client-side hide check to get wrong. */
+ * regions the viewer is permitted to see ever reach `store` (server-side egress filtering) —
+ * there is no client-side hide check to get wrong. */
 export class RegionView {
   /** Document ids currently tracked in the backend, refreshed each `reconcile()`. */
   private readonly ids = new Set<string>();

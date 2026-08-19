@@ -72,7 +72,7 @@ pub const MESSAGE_DOC_TYPE: &str = "message";
 /// targeting a stored `message` doc is instead rejected in `apply_intent`'s
 /// `Update` branch (classified there against the authoritative stored
 /// `doc_type`). That branch exempts ONLY `WriteOrigin::ServerMessageRevision`
-/// — the legitimate message-edit/-delete path introduced in c-3
+/// — the legitimate message-edit/-delete path
 /// (`handle_edit_message`/`handle_delete_message`), unreachable from any
 /// client transport.
 pub fn ops_target_message(ops: &[Operation]) -> bool {
@@ -113,7 +113,7 @@ pub enum ActorOwnerRef {
 #[ts(export, export_to = "../../types/generated/")]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Audience {
-    /// Every world member may read (c-1's original, unrestricted shape).
+    /// Every world member may read — the unrestricted shape.
     #[default]
     Public,
     /// Only `recipients` (plus the sender) may read. The GM reads it ONLY if
@@ -128,8 +128,8 @@ pub enum Audience {
 }
 
 /// Message subtype, orthogonal to channel. Rides the opaque body (no ts-rs).
-/// c-1 only ever produces `Normal`; `Emote`/`Roll` are set by c-3's command
-/// parser, `System` by server-authored notices.
+/// `Emote`/`Roll` are set by `parse_command`, `System` by server-authored
+/// notices; a message carrying no command prefix stays `Normal`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MessageKind {
@@ -205,8 +205,8 @@ pub enum Segment {
     // Reserved for a future `DocLink` segment variant.
 }
 
-/// The c-1 producer: wrap raw input as a single literal-text segment. Rich
-/// producers (markdown/HTML) are added in c-3, feeding this same content model.
+/// The plain-text producer: wraps raw input as a single literal-text segment.
+/// A richer producer (markdown/HTML) feeds this same content model.
 pub fn plain_text_content(raw: &str) -> Vec<Segment> {
     vec![Segment::Text {
         text: raw.to_string(),
@@ -293,8 +293,8 @@ pub struct MessageDraft {
 /// Server-construct a message `Document`. INVARIANT: only the server calls
 /// this (via `handle_send_message`); clients never build message docs.
 /// `draft.audience` drives the document's `PermissionSet`:
-/// - `Public` — `default: Observer`, `gm_role: None` (c-1's original,
-///   world-readable shape; the GM's unconditional access is unaffected).
+/// - `Public` — `default: Observer`, `gm_role: None` (the world-readable
+///   shape; the GM's unconditional access is unaffected).
 /// - `Whisper { recipients }` — `default: None`, `gm_role: Some(None)` (the
 ///   GM reads only if individually listed), `users` holds `owner: Owner` plus
 ///   each recipient as `Observer`.
@@ -454,8 +454,7 @@ pub enum SendMessageError {
     /// The requested `actor_owner` cannot be attributed by this sender: the
     /// referenced actor doc does not exist, is not an `actor` doc_type, or
     /// is owned by someone else and the sender is not a GM; or the ref is a
-    /// `TokenInstance` (rejected fail-closed pending speak-as-token, design
-    /// doc §8).
+    /// `TokenInstance` (rejected fail-closed pending speak-as-token).
     ActorNotSpeakable,
 }
 
@@ -622,7 +621,8 @@ pub async fn handle_send_message(
     // Captured BEFORE `parsed.whisper_to` is consumed below — drives the
     // /w-prefix strip on `source` (see build_message_doc call).
     let had_whisper = parsed.whisper_to.is_some();
-    // Effective audience: an explicit /w wins; otherwise the c-2 frame field.
+    // Effective audience: an explicit /w wins; otherwise the `SendMessage`
+    // frame's own `audience` field.
     let audience = if let Some(names) = parsed.whisper_to {
         let mut recipients = Vec::with_capacity(names.len());
         for name in &names {
@@ -788,13 +788,13 @@ pub async fn handle_send_message(
         }
     };
     // Link-preview enrich stage: only for hyperlink-carrying, non-Roll bodies.
-    // The `kind != Roll` guard is EXPLICIT (design doc §3), not incidental: a
+    // The `kind != Roll` guard is EXPLICIT, not incidental: a
     // successful roll falls through here with `content_segments == [RollEmbed]`
     // (only the roll-EXECUTION-FAILURE arm returns early), so without this
     // guard a `/roll` on a preview-enabled world would enter `enrich` — a no-op
     // today only because `enrich` scans `Segment::Html` runs (none in a
     // RollEmbed), but a latent path to attaching outbound-fetched previews to a
-    // roll message if that ever changes. Synchronous, before publish (§3) — no
+    // roll message if that ever changes. Synchronous, before publish — no
     // spawned task, no post-publish revision, no message-deleted-mid-fetch race.
     if parsed.kind != MessageKind::Roll && policy.previews_enabled() {
         link_preview::enrich(
@@ -917,7 +917,8 @@ pub async fn handle_edit_message(
     // This check is UNCONDITIONAL (not gated on audience) because
     // `kind == Roll` + `audience == Whisper` IS reachable: `handle_send_message`
     // always runs `parse_command` on the raw content regardless of which
-    // front-door set the audience (the c-2 frame field or a content `/w`) — a
+    // front-door set the audience (the `SendMessage` frame's own `audience`
+    // field, or a content `/w`) — a
     // frame `SendMessage{content: "/roll 2d6", audience: Whisper{..}}` parses
     // to `kind: Roll` with no `/w` in the content, so the frame's `Whisper`
     // audience is used verbatim alongside `kind: Roll`. Without this
@@ -1125,7 +1126,7 @@ mod tests {
             j.get("deleted_at").is_none(),
             "None deleted_at must not serialize"
         );
-        // Round-trips (a stored c-1 message with no markers deserializes unchanged).
+        // Round-trips (a stored message with no markers deserializes unchanged).
         assert_eq!(sys, serde_json::from_value(j).unwrap());
     }
 
@@ -2393,7 +2394,7 @@ mod tests {
 
     #[tokio::test]
     async fn editing_a_normal_message_with_an_inline_roll_segment_is_immutable() {
-        // FIX 2: a Normal message whose body embeds an inline roll ("attack!
+        // A Normal message whose body embeds an inline roll ("attack!
         // [[1d20]] done") stores kind: Normal (never Roll) but its content
         // still carries a Segment::RollEmbed mid-text. Editing must be
         // rejected the same as editing a top-level `/roll` message would be
@@ -2530,8 +2531,8 @@ mod tests {
 
     #[tokio::test]
     async fn whisper_roll_via_frame_audience_is_edit_immutable() {
-        // FIX 3: kind == Roll + audience == Whisper IS reachable via the c-2
-        // frame's `audience` field (content has no /w, so parse_command never
+        // `kind == Roll` + `audience == Whisper` IS reachable via the
+        // `SendMessage` frame's `audience` field (content has no /w, so parse_command never
         // sets whisper_to, and the frame's Whisper audience is used as-is
         // alongside kind: Roll). The unconditional kind == Roll check must
         // still block editing it.
@@ -2626,8 +2627,8 @@ mod tests {
     }
 
     #[test]
-    fn stored_pre_source_message_still_deserializes() {
-        // A stored c-3 (pre-`source`) MessageEngine JSON has no `source` key at all.
+    fn stored_message_without_a_source_key_deserializes() {
+        // A stored `MessageEngine` JSON carrying no `source` key at all.
         let j = serde_json::json!({
             "channel": "all",
             "user_owner": Uuid::from_u128(1),
@@ -3201,12 +3202,12 @@ mod tests {
     }
 }
 
-/// Ingest integration for the link-preview enrich stage (design doc §8):
+/// Ingest integration for the link-preview enrich stage:
 /// drives `handle_send_message`/`handle_edit_message` directly, exactly like
 /// `chat::tests`, but against a real stub `axum` target on `127.0.0.1` — the
 /// same `build_client_allow_loopback` seam `link_preview`'s own fetcher tests use. Kept
 /// as its own `mod` (not folded into `chat::tests`) because every test here
-/// needs `hyperlinks: true` and a stub server, unlike the rest of the file.
+/// needs `hyperlinks: true` and a stub server, unlike the tests in `chat::tests`.
 #[cfg(test)]
 mod link_preview_ingest_tests {
     use super::*;
@@ -3378,7 +3379,7 @@ mod link_preview_ingest_tests {
     /// URL to actually become an `<a href>` — `sanitize`'s bare-toggle
     /// `hyperlinks` only controls whether ammonia PERMITS the `<a>` tag once
     /// produced; producing one at all needs markdown link syntax
-    /// (`[label](url)`) run through `pulldown-cmark`. Bodies in this file
+    /// (`[label](url)`) run through `pulldown-cmark`. Bodies built via `hyperlinks_on`
     /// use that syntax accordingly.
     fn hyperlinks_on() -> ChatContentPolicy {
         ChatContentPolicy {
@@ -3628,7 +3629,7 @@ mod link_preview_ingest_tests {
     }
 
     /// A `/roll` on a PREVIEW-ENABLED world never accumulates a `LinkPreview`
-    /// segment: its content is exactly one `RollEmbed`. Pins the design §3
+    /// segment: its content is exactly one `RollEmbed`. Pins the
     /// EXPLICIT `kind != MessageKind::Roll` enrich guard — a successful roll
     /// falls through to the enrich gate (only the roll-execution-FAILURE arm
     /// returns early), so the guard, not the incidental absence of `<a href>`

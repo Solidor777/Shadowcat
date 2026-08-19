@@ -34,7 +34,9 @@ pub(crate) struct MoveExecution {
     pub scene: Uuid,
     /// The last successfully reached path coordinate (the committed position after the move).
     pub stop: (f64, f64),
-    /// Animation duration in milliseconds (distance / cell / speed * 1000). Zero when stop == start.
+    /// Animation duration in milliseconds: the travelled distance converted to grid steps through
+    /// the scene shape's `GridShape::world_units_per_cell`, divided by the authored cells-per-second
+    /// speed. Zero when `stop == start`.
     pub duration_ms: f64,
     /// Time-tagged position samples for `MoveStream` broadcast playback.
     /// Non-empty; the first sample has `t_ms == 0.0` at the starting position.
@@ -284,7 +286,8 @@ impl Room {
             // cells, visible_set). Revealed mode requires an async get_explored call which
             // cannot occur while holding the scene read lock.
             type CellSet = std::collections::BTreeSet<(i32, i32)>;
-            let mut revealed_pending: Vec<(uuid::Uuid, CellSet, CellSet)> = Vec::new();
+            let mut revealed_pending: Vec<(uuid::Uuid, CellSet, CellSet, crate::scene::GridKind)> =
+                Vec::new();
             {
                 let scene = self.scene.read().await;
                 // Memoize the visible mask per (scene, leniency) within this publish so a
@@ -354,11 +357,14 @@ impl Room {
                                     })
                                     .clone();
                                 // Explored needs an async fetch, which must not run under the
-                                // scene read guard — defer exactly as the movement gate did.
+                                // scene read guard — defer exactly as the movement gate did. The
+                                // grid kind is captured here, under the same guard `settings` was
+                                // resolved in, since decoding runs after the guard is dropped.
                                 revealed_pending.push((
                                     scene_id,
                                     [target].into_iter().collect(),
                                     mask,
+                                    settings.grid_kind,
                                 ));
                             }
                         }
@@ -373,13 +379,13 @@ impl Room {
                 uuid::Uuid,
                 crate::scene::explored::ExploredSet,
             > = std::collections::HashMap::new();
-            for (scene_id, move_cells, visible) in revealed_pending {
+            for (scene_id, move_cells, visible, grid_kind) in revealed_pending {
                 let explored = match explored_cache.entry(scene_id) {
                     std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
                     std::collections::hash_map::Entry::Vacant(e) => {
                         let set = match repo.get_explored(scene_id, ctx.user_id).await {
                             Ok(Some(blob)) => {
-                                crate::scene::explored::ExploredSet::from_bytes(&blob)
+                                crate::scene::explored::ExploredSet::from_bytes(&blob, grid_kind)
                             }
                             _ => crate::scene::explored::ExploredSet::new(),
                         };
@@ -538,6 +544,7 @@ impl Room {
         let is_revealed;
         let is_gm;
         let footprint;
+        let grid_kind;
         {
             let scene = self.scene.read().await;
 
@@ -561,12 +568,15 @@ impl Room {
 
             // An out-of-range footprint refuses the move outright, never clamps — clamping
             // would gate a wider token as a narrower disc, a geometric fail-open.
-            let Some(fp) = scene.resolve_token_footprint(token) else {
+            let Some(fp) = scene.resolve_token_footprint(token, token_scene) else {
                 return Err(DataError::Forbidden);
             };
             footprint = fp;
 
             let settings = scene.resolve_scene(token_scene);
+            // Captured under this same read guard for the same reason `cell` is: the explored
+            // decode below runs after the guard is dropped.
+            grid_kind = settings.grid_kind;
             // Fail-closed on a `parent_id` with no scene document: `scene_grid_sizes` carries an
             // entry (defaulting to 100) for every live scene, so an absent entry means the scene
             // itself is gone — no authored cell size exists to index the visibility mask, the
@@ -608,7 +618,7 @@ impl Room {
         let visible = if is_revealed {
             let mut union = visible_cells;
             let explored = match repo.get_explored(token_scene, ctx.user_id).await {
-                Ok(Some(blob)) => crate::scene::explored::ExploredSet::from_bytes(&blob),
+                Ok(Some(blob)) => crate::scene::explored::ExploredSet::from_bytes(&blob, grid_kind),
                 _ => crate::scene::explored::ExploredSet::new(),
             };
             // Union: insert every explored cell into the visible set.
@@ -648,6 +658,11 @@ impl Room {
             )
             .map_err(|_| DataError::Forbidden)?;
             let speed_cells_per_sec = scene.resolved_animation_speed();
+            // Animation speed is authored in cells/sec, so the travelled distance converts
+            // through the scene shape's per-cell world distance, not its indexing scale.
+            let world_per_cell = scene
+                .resolve_grid_shape(token_scene, cell)
+                .world_units_per_cell();
 
             // Distance and duration computed here so samples and mover_vision can be built
             // under the same lock — all synchronous, no lock-across-await hazard.
@@ -663,7 +678,7 @@ impl Room {
             duration_ms = if distance < 1e-9 {
                 0.0
             } else {
-                (distance / cell) / speed_cells_per_sec * 1000.0
+                (distance / world_per_cell) / speed_cells_per_sec * 1000.0
             };
 
             samples =
@@ -2111,7 +2126,7 @@ mod room_tests {
 
     /// A token `Document` at `(x, y)` in `world`, parented to `scene`, ready for
     /// `Operation::Create`. `permissions.default = Owner` carries the WRITE_FIELDS floor for
-    /// WHICHEVER user creates it (player or GM) — this suite tests the placement mask, not
+    /// WHICHEVER user creates it (player or GM) — this fixture exercises the placement mask, not
     /// per-user document ownership, so `core:create` (from the fixture's world-cap grant, or
     /// the GM's unconditional access) is the only authorization axis in play here.
     fn token_doc_at(world: Uuid, scene: Uuid, x: f64, y: f64) -> Document {
@@ -2298,7 +2313,12 @@ mod room_tests {
             cell,
         );
         h.repo
-            .set_explored(h.world, h.scene, h.player_ctx.user_id, &seed.to_bytes())
+            .set_explored(
+                h.world,
+                h.scene,
+                h.player_ctx.user_id,
+                &seed.to_bytes(crate::scene::GridKind::Square),
+            )
             .await
             .unwrap();
 
@@ -2681,7 +2701,8 @@ mod room_tests {
 
     /// `movement_scene`, with the world's animation speed (cells/sec) under test control.
     ///
-    /// The per-token moving lock's end epoch is derived as `distance / speed`, and
+    /// The per-token moving lock's end epoch is derived from the travelled distance in GRID STEPS
+    /// divided by the speed (`MoveExecution::duration_ms` states the conversion), and
     /// `Room::execute_move` checks it against its OWN internal `ws::time::now_millis()` — not the
     /// `now` argument — so a test cannot hold the lock open by pinning the clock. At the default 6
     /// cells/sec a one-cell move locks for only ~167 ms, which a loaded machine can outrun between
@@ -3765,7 +3786,12 @@ mod room_tests {
             cell,
         );
         h.repo
-            .set_explored(h.world_id, h.scene_id, h.player.user_id, &seed.to_bytes())
+            .set_explored(
+                h.world_id,
+                h.scene_id,
+                h.player.user_id,
+                &seed.to_bytes(crate::scene::GridKind::Square),
+            )
             .await
             .unwrap();
 
@@ -3800,8 +3826,8 @@ mod room_tests {
     /// explicitly `"continuous"`: proves `execute_move` gates an any-angle route
     /// from a scene genuinely marked continuous, not just incidentally sent a diagonal path.
     /// Functionally inert on the server today — `execute_move` has no `movementModel` branch,
-    /// being engine-agnostic; this mirrors `movement_scene`'s body (this file's
-    /// established per-scenario-helper convention) with one added JSON key.
+    /// being engine-agnostic; this mirrors `movement_scene`'s body (the established
+    /// per-scenario-helper convention) with one added JSON key.
     async fn movement_scene_continuous(restriction: &str, with_light: bool) -> MovementHandle {
         use serde_json::json;
 
@@ -3973,11 +3999,16 @@ mod room_tests {
         //
         // Goal (650,850) is a 3-4-5 triangle scaled ×200 from start (50,50): distance =
         // sqrt(600²+800²) = 1000 wu. `gate_walk` subdivides this into 8 dense ≤1-cell samples
-        // (cheby = max(600,800) = 800 wu ⇒ k = ceil(800/100) = 8). Sample 1, (125,150), lands
-        // in cell (1,1) — inside the ~100wu (1-cell) `VISION_BOUND_MARGIN` scan box around the
-        // colocated token/light viewpoint (50,50), so it is visible. Sample 2, (200,250), lands
-        // in cell (2,2), outside that scan box — not in the mask — so the walk truncates there,
-        // leaving the token at sample 1's exact position.
+        // (cheby = max(600,800) = 800 wu ⇒ k = ceil(800/100) = 8), at (50+75k, 50+100k) for
+        // k=0..8. What decides a sample's cell is the light's own dim radius (3.0 cells = 300 wu
+        // at this scene's cell size 100), not a fixed scan-box margin — a lamp's occlusion
+        // polygon grows to cover its authored reach, so the reach itself, not
+        // `VISION_BOUND_MARGIN`, is what a cell's distance from the colocated token/light
+        // viewpoint (50,50) is checked against. Sample 2, (200,250), lands in cell (2,2)
+        // (center (250,250), 282.8 wu from the lamp) — inside the 300wu dim radius, lit. Sample
+        // 3, (275,350), lands in cell (2,3) (center (250,350), 360.6 wu from the lamp) — past the
+        // dim radius, dark — so the walk truncates entering that cell, leaving the token at
+        // sample 2's exact position.
         let h = movement_scene_continuous("visible", /*with_light=*/ true).await;
         let goal = (650.0, 850.0);
         let res = h
@@ -3994,7 +4025,7 @@ mod room_tests {
             .unwrap();
         assert_eq!(
             res.stop,
-            (125.0, 150.0),
+            (200.0, 250.0),
             "cell-gate truncates the route at the last visible sample, short of the goal"
         );
         assert_ne!(
@@ -4002,5 +4033,159 @@ mod room_tests {
             "must not silently reach a goal in unseen space"
         );
         assert_eq!(h.committed_pos(h.token_id).await, res.stop);
+    }
+
+    /// Hex OUTER radius (circumradius) `hex_move_scene`'s scene declares, in scene units. One grid
+    /// step on a pointy-top hex is `√3` times this, which is what makes the two scalars distinct.
+    const HEX_MOVE_SIZE: f64 = 50.0;
+    /// Animation speed `hex_move_scene`'s world authors, in GRID CELLS per second.
+    const HEX_MOVE_SPEED_CELLS_PER_SEC: f64 = 6.0;
+
+    /// A wall-less pointy-top hex scene at `HEX_MOVE_SIZE` with movement unrestricted and lighting
+    /// off — so neither the visibility mask nor a light gates the step and the returned duration is
+    /// the only thing a move can be measured by — one player-owned token at hex (0,0) = pixel
+    /// (0,0), and the world's animation speed at `HEX_MOVE_SPEED_CELLS_PER_SEC`.
+    ///
+    /// `start`/`lit_goal`/`adj`/`adj2` are pixel coordinates the caller derives from the resolved
+    /// shape, so they are filled with the token's own start and left for the test to replace;
+    /// nothing in this fixture's own tests reads the goal fields.
+    async fn hex_move_scene() -> MovementHandle {
+        use serde_json::json;
+
+        let (repo, world_id, gm) = repo_with_world().await;
+        let p = repo
+            .create_user("player_hex", None, crate::auth::role::ServerRole::User, 0)
+            .await
+            .unwrap();
+        repo.add_member(world_id, p, WorldRole::Player)
+            .await
+            .unwrap();
+        let player = PermissionContext {
+            user_id: p,
+            world_role: WorldRole::Player,
+        };
+
+        let reg = RoomRegistry::new();
+        let room = reg.get_or_create(&repo, world_id).await.unwrap().unwrap();
+        let wdoc = crate::data::document::tests::world_scoped_doc;
+        let (scene_id, token_id, ws_id) = (
+            Uuid::from_u128(0x4E60_0000),
+            Uuid::from_u128(0x4E60_0001),
+            Uuid::from_u128(0x4E60_0002),
+        );
+
+        let mut ws = wdoc(world_id, ws_id, "world-settings");
+        ws.owner = Some(gm.user_id);
+        ws.system = json!({
+            "scene": {
+                "losRestriction": false, "fog": true,
+                "lightingEnabled": false, "lightMode": "environmentLight",
+                "environment": { "color": "#000000", "intensity": 0.0 },
+                "observerVision": false,
+                "movementRestriction": "unrestricted",
+                "partialCellLeniency": true
+            },
+            "pathfinding": { "diagonalRule": "chebyshev" },
+            "animation": { "speedCellsPerSec": HEX_MOVE_SPEED_CELLS_PER_SEC,
+                           "easing": "easeInOut" }
+        });
+        ws.engine = Some(ws_engine(ws.system.clone()));
+        room.publish(
+            &repo,
+            &gm,
+            vec![Operation::Create { doc: ws }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+        let mut scene = wdoc(world_id, scene_id, "scene");
+        scene.owner = Some(gm.user_id);
+        scene.system = json!({ "grid": { "kind": "hex", "size": HEX_MOVE_SIZE } });
+        scene.engine = Some(json!({
+            "grid": { "kind": "hex", "size": HEX_MOVE_SIZE },
+            "background": null
+        }));
+        room.publish(
+            &repo,
+            &gm,
+            vec![Operation::Create { doc: scene }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+        let mut token = wdoc(world_id, token_id, "token");
+        token.parent_id = Some(scene_id);
+        token.owner = Some(p);
+        token
+            .permissions
+            .users
+            .insert(p, crate::data::document::DocRole::Owner);
+        token.engine = Some(token_engine(0.0, 0.0));
+        room.publish(
+            &repo,
+            &gm,
+            vec![Operation::Create { doc: token }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+        MovementHandle {
+            room,
+            repo,
+            gm,
+            player,
+            world_id,
+            scene_id,
+            token_id,
+            start: (0.0, 0.0),
+            lit_goal: (0.0, 0.0),
+            adj: (0.0, 0.0),
+            adj2: (0.0, 0.0),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_hex_move_animates_at_the_grid_step_rate() {
+        // Animation speed is authored in cells per second, so one grid step at six cells per
+        // second lasts 1000/6 ms whatever the grid kind. On a pointy-top hex a step is √3·size
+        // scene units, not `size`.
+        //
+        // Discrimination: dividing the travelled distance by the indexing scale reports
+        // (√3·size/size)/6·1000 ≈ 288.7 ms for the same step, which the 1 ms tolerance rejects by
+        // two orders of magnitude. The expectation is derived from the authored SPEED and the
+        // step count, never from the distance the executor returns; the destination is derived
+        // from the scene's own resolved shape so the move really is one axial step.
+        let h = hex_move_scene().await;
+        let dest = {
+            let scene = h.room.scene().read().await;
+            scene
+                .resolve_grid_shape(h.scene_id, HEX_MOVE_SIZE)
+                .cell_center((1, 0))
+        };
+        let out = h
+            .room
+            .execute_move(
+                &h.repo,
+                &h.player,
+                h.scene_id,
+                h.token_id,
+                vec![h.start, dest],
+                now_millis(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(out.stop, dest, "the single axial step completes");
+        let expected_ms = 1000.0 / HEX_MOVE_SPEED_CELLS_PER_SEC;
+        assert!(
+            (out.duration_ms - expected_ms).abs() < 1.0,
+            "one grid step at {HEX_MOVE_SPEED_CELLS_PER_SEC} cells per second lasts {expected_ms} ms, got {}",
+            out.duration_ms
+        );
     }
 }

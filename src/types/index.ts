@@ -23,6 +23,12 @@ export type { ResyncSource } from "./generated/ResyncSource";
 export type { WsErrorCode } from "./generated/WsErrorCode";
 export type { Audience } from "./generated/Audience";
 
+// Derived scene channels
+export type { FootprintsPayload } from "./generated/FootprintsPayload";
+export type { SceneFootprints } from "./generated/SceneFootprints";
+export type { TokenFootprint } from "./generated/TokenFootprint";
+export type { FootprintExtent } from "./generated/FootprintExtent";
+
 // UI contribution contracts
 export type { Cardinality } from "./generated/Cardinality";
 export type { ContractProvide } from "./generated/ContractProvide";

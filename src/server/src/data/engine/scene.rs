@@ -5,7 +5,7 @@
 //! envelope instead).
 
 // Ratchet: every item in this module must carry a doc comment, enforced by
-// the two deny attributes below.
+// the two crate-level deny attributes this module declares.
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
@@ -180,8 +180,9 @@ pub struct SceneLightingOverrides {
 }
 
 /// A scene's engine-owned config (mirrors the client's `SceneEngine`).
-/// `bounds` = the navmesh's outer rectangle in grid units; absent ⇒
-/// `DEFAULT_SCENE_BOUNDS_UNITS` (read-side backstop, unchanged).
+/// `bounds` = the authored play-area rectangle in grid units, which the
+/// continuous router and the per-player vision/lighting path both read;
+/// absent ⇒ `DEFAULT_SCENE_BOUNDS_UNITS` (read-side backstop, unchanged).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -190,7 +191,12 @@ pub struct SceneEngine {
     pub grid: Grid,
     /// Background image asset id; wire-required but nullable.
     pub background: Option<String>,
-    /// Navmesh outer rectangle in grid units; absent = the read-side default.
+    /// The authored play-area rectangle in grid units; absent = the read-side
+    /// default. `GridShape::world_extent` converts it to world units for TWO
+    /// consumer families, not one: `navmesh::build_navmesh` triangulates that
+    /// rectangle directly, and reaches the vision paths through
+    /// `vision::bound_for_scene`. So a change here moves what a player is told
+    /// they can see, not only where a route may run.
     #[serde(default)]
     pub bounds: Option<SceneDimensions>,
     /// Scene-level snap-to-grid toggle, independent of `movementModel`.
@@ -267,7 +273,7 @@ pub struct WorldSettingsEngine {
     pub animation: AnimationSettings,
     /// The scene players render. `None`/absent/dangling ⇒ the first scene
     /// (legacy behavior). Deliberately NOT part of the structural-
-    /// completeness triple below, so a world-settings doc written before
+    /// completeness triple `resolve_scene` checks, so a world-settings doc written before
     /// this field existed is still "complete" and keeps its authored
     /// settings.
     #[serde(default)]

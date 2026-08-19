@@ -5,8 +5,7 @@ import { parseFormula, evaluate, isFormulaError, type FormulaValue } from "@shad
  * Ability-score modifier under the d20-family convention THIS example system
  * chooses to use: `floor((score - 10) / 2)`. This is a convention of this
  * system's opaque `system` body, not an engine rule — Shadowcat's server
- * treats `system` as opaque and never interprets it semantically
- * (docs/design/ARCHITECTURE.md §2 invariant 6).
+ * treats `system` as opaque and never interprets it semantically.
  * @param score - The raw ability score (e.g. 16).
  * @returns The floored modifier: `floor((score - 10) / 2)`.
  * @example

@@ -1,6 +1,6 @@
-// CLI entry point. No `isMain`-style guard (see `report-doc-exemptions-cli.mjs`'s header for why
-// an `argv[1]` identity check is the wrong shape here): running this file always executes the
-// check.
+// CLI entry point. No `isDirectEntry` guard: an `argv[1]`-vs-module-URL identity check goes
+// silently to a no-op — exiting 0 with no output — whenever the two spellings fail to normalize
+// identically, so the check below always runs unconditionally.
 // Cross-platform: node:path/node:fs only.
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
@@ -9,7 +9,6 @@ import process from "node:process";
 import { findSkillFiles, checkSkillApiRefs } from "./check-skill-api-refs.mjs";
 
 const repo = resolve(fileURLToPath(import.meta.url), "..", "..");
-const skillsRoot = resolve(repo, ".claude", "skills");
 const distDocsRoot = resolve(repo, "dist-docs");
 
 if (!existsSync(distDocsRoot)) {
@@ -19,13 +18,13 @@ if (!existsSync(distDocsRoot)) {
 
 // A scope matching zero files is a broken SCOPE, not a clean pass — the skill family is never
 // legitimately empty, so this only fires if the scan is pointed at the wrong directory.
-const scannedFiles = findSkillFiles(skillsRoot);
+const { files: scannedFiles } = findSkillFiles(repo);
 if (scannedFiles.length === 0) {
-  console.error(`check-skill-api-refs: 0 SKILL.md files found under ${skillsRoot}`);
+  console.error(`check-skill-api-refs: 0 tracked SKILL.md files found under ${repo}`);
   process.exit(2);
 }
 
-const { filesScanned, refsChecked, broken } = checkSkillApiRefs(skillsRoot, distDocsRoot);
+const { filesScanned, refsChecked, broken, untrackedDirs } = checkSkillApiRefs(repo, distDocsRoot);
 
 // A zero-of-zero is indistinguishable from success unless it fails loudly: if the citation
 // FORMAT in the skills changes (e.g. skills stop wrapping paths in backticks, or start citing
@@ -44,6 +43,11 @@ if (broken.length > 0) {
   process.exit(1);
 }
 
+const untracked =
+  untrackedDirs.length > 0
+    ? `; ${untrackedDirs.length} untracked skill directory(ies) excluded as not this repo's own ` +
+      `prose (${untrackedDirs.join(", ")})`
+    : "";
 console.log(
-  `check-skill-api-refs: ${refsChecked} doc pointer(s) verified across ${filesScanned} skill file(s), 0 broken`,
+  `check-skill-api-refs: ${refsChecked} doc pointer(s) verified across ${filesScanned} skill file(s), 0 broken${untracked}`,
 );

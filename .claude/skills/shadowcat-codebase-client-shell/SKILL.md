@@ -62,8 +62,7 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
 - `AppContext.pathfind` — correlated-request seam: issues a
   `Pathfind` frame via `WsClient.pathfind` and resolves with `PathResult` or rejects with
   `PathError`; wired through `WorldSession` and consumed by `scene-tools` measure-tool route mode.
-- `WsClient.moveRequest(scene, tokenId, path) → Promise<MoveStream>` (`MoveExecuted`
-  is FULLY RETIRED, server + Zod + client) — correlated-request mirror of
+- `WsClient.moveRequest(scene, tokenId, path) → Promise<MoveStream>` — correlated-request mirror of
   `pathfind`: sends `MoveRequest`, resolves with the broadcast `MoveStream` when the matching
   `move_stream` frame arrives (mover's `request_id` correlates; the resolved value signals success
   only — it does NOT drive animation), rejects on `move_error` or timeout (default 10 s). Pure
@@ -75,8 +74,8 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
 - `AppContext.moveRequest` — AppContext seam wired through
   `WorldSession`; consumed by scene-tools measure-tool route-commit (sends `MoveRequest`, awaits the
   signal-only resolution, does NOT locally animate — the `TokenAnimator` plays back from the
-  broadcast, not the promise). Optimistic dispatch + `collinearRuns` chaining were removed;
-  route-commit is request-only.
+  broadcast, not the promise). Route-commit is request-only: no optimistic local dispatch, and no
+  client-side chaining of collinear path runs.
 - `onMoveStream` wiring (`WorldSession.enter`): subscribes once at session start,
   **filters `stream.scene` against the active scene** (`this.#optimistic.query("scene")[0]?.id`)
   before forwarding — a room-wide `MoveStream` broadcast for a DIFFERENT scene must not animate a
@@ -87,17 +86,18 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
   `moverVision` is present (mover only), the engine's `visionSweeps` fog-sweep playback (see
   `shadowcat-codebase-scene-rendering`).
 - **External-module loading** — `WorldSession`'s `#loadExternalModules(world,
-  serverVersion)` runs after `Welcome` (`serverVersion` = `w.server_version`): fetches the world's
+  serverVersion)` runs after `Welcome` (`WorldSession.loadExternalModules.serverVersion` =
+  `w.server_version`): fetches the world's
   enabled set (keyed on the install FOLDER id, `InstalledModuleInfo.id`, never manifest id), calls
   core `loadModules` (per-module-contained, non-throwing `ModuleLoadResult`), then activates. The
   shell serves ONE runtime instance of `svelte`/`@shadowcat/*` via `RUNTIME_ENTRIES`
   + `preserveEntrySignatures:"strict"` + the `index.html` import map. GM management UI =
   `ModuleManager`. Full subsystem (server discovery/serving/enablement,
   engine-compat gate) → [[shadowcat-codebase-module-toolchain]].
-- **`boot()` resolves the world route-first, not `lastWorld`-first (silent-hang-startup fix)** —
+- **`boot()` resolves the world route-first, not `lastWorld`-first** —
   `App`'s `boot()` reads `currentRoute()` once, AFTER the `getMe`/`getUiState` awaits and
   BEFORE both the `withRetry(() => listWorlds())` await and consulting `ui.global.lastWorld` (a
-  hash change during the `listWorlds` await is ignored — see TODO).
+  hash change during the `listWorlds` await is ignored).
   The rule lives in one pure, directly-testable helper, `resolveBootWorld(route, lastWorld,
   worlds)`: a world route (`#/world/<id>`) always wins — `lastWorld` is
   NOT consulted at all while a world route is present, even if it would resolve to a different,
@@ -106,28 +106,27 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
   deep link must never wipe an otherwise-valid `lastWorld` reference — then lets `boot()` fall
   back to the entry/worlds-list route. Entering the
   resolved id still goes through `enterWorld(worldId)`, which itself calls `setLastWorld` +
-  `navigate` — `lastWorld` write semantics are unchanged. Root-caused via a captured Playwright
-  network trace: under the shared-account parallel e2e suite, a reload's `boot()` ignoring the URL
-  restored whichever world a DIFFERENT concurrent worker entered last — a real product defect
-  (a deep-linked reload in production would teleport away from its own URL the same way), not an
-  e2e-only artifact. See CLOSED_BUGS, the "Client / silent-hang startup paths" entry.
-- **Bounded + retried boot fetches (silent-hang-startup fix)** — `FETCH_TIMEOUT_MS`
+  `navigate` — `lastWorld` write semantics are unchanged. A `boot()` that consulted `lastWorld`
+  ahead of the URL restores whichever world that account last entered from any other session, so a
+  deep-linked reload teleports away from its own URL — a product defect, not merely a
+  parallel-test artifact.
+- **Bounded + retried boot fetches, against a silent hang at startup** — `FETCH_TIMEOUT_MS`
   (15s) covers every fetch in its module, not only the session/boot trio: `getMe`, `getUiState`,
   `listWorlds`, `postJson` (login/logout), and `putUiState` (including the unload keepalive PUT)
   all carry `AbortSignal.timeout(FETCH_TIMEOUT_MS)`, so a hung backend rejects instead of leaving
   any of them unsettled forever. `App.boot()` wraps each of the three awaits in `withRetry` (3 attempts, flat delays) before
-  degrading to the login/worlds route — a transient non-2xx or connection reset during startup no
-  longer permanently strands the SPA on that fallback route with no retry.
+  degrading to the login/worlds route, so a transient non-2xx or connection reset during startup
+  does not permanently strand the SPA on that fallback route with no retry.
 - **`WorldSession`'s activation latch is split, and the split order is load-bearing** —
   latching a single `#bootstrapped` boolean BEFORE `await #modules.activate()` would let a
   failed/hung first activation (e.g. a manifest dependency cycle) cache "done" for the
   session's life: reconnect Welcomes would short-circuit, `role` would be set, but every
   Surface would stay empty. It is instead two fields: `#modulesAdded` (latches once per
   session — re-adding modules would duplicate registrations) and `#activated` (latches only on a
-  successful `activate()`, reverted to `false` in the `catch` on a thrown activation, so the NEXT
+  successful `activate()`, reverted to `false` in the catch clause on a thrown activation, so the NEXT
   Welcome retries instead of caching the failure). **`#activated` is still set to `true`
-  SYNCHRONOUSLY, before the `activate()` await** — this is the one part of the old single-latch
-  behavior deliberately preserved: same-tick concurrent Welcomes re-enter `#onWelcome`, and
+  SYNCHRONOUSLY, before the `activate()` await** — deliberately, and it is the one place a latch
+  is set ahead of the work it guards: same-tick concurrent Welcomes re-enter `#onWelcome`, and
   setting `#activated` only after the await (e.g. in a `.then()`) would let a second Welcome
   arriving mid-activation see `#activated === false` and call `activate()` again, double-
   activating. Any future change to this seam must keep the synchronous pre-await set — do not
@@ -158,13 +157,13 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
   `ui_state` blob: `getPanelLayout(world)`/`setPanelLayout(world, blob)` persist the
   per-world panel layout into `UiState.worlds[world].panelLayout` via
   the existing leading-edge-debounced PUT. The blob is OPAQUE to the shell — the panel host
-  owns its shape/validation. **Leaf-key dirty tracking (fixes the same-user cross-session
-  clobber — see CLOSED_BUGS, the "Server + client / ui-state persistence" entry)**: a `dirty` structure
+  owns its shape/validation. **Leaf-key dirty tracking, which is what keeps two sessions of the
+  same user from clobbering each other**: a `dirty` structure
   (`Set<GlobalField>` + a `Map<worldId, Set<WorldKey>>`) tracks which individual FIELDS/KEYS
   changed since the last successful write — `global.locale`/`global.lastWorld` and
   `worlds.<id>.panelLayout`/`worlds.<id>.chatRead` each track independently, so two owners of the
   same slice (the panels module writing `panelLayout`, the chat module writing `chatRead` inside
-  the same `worlds.<id>`) no longer clobber each other. `persist()`/`flushOnUnload()` build a
+  the same `worlds.<id>`) never clobber each other. `persist()`/`flushOnUnload()` build a
   `UiStatePatch` covering only those dirty leaves — never the whole slice, and never
   the whole `{global, worlds}` blob — clearing them before the write and re-marking on failure
   (both functions snapshot the dirty structure, clear it, attempt the write, and on rejection
@@ -179,7 +178,7 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
   (a live getter, `Table`: `get viewedSceneId() { return session.viewedSceneId; }` —
   NEVER destructure a snapshot of it), `AppContext.setGmViewedScene(id): void` (GM-only local
   roam; no-ops+warns for a non-GM), `AppContext.searchDocuments(query, opts, onUpdate) ->
-  Promise<SubscriptionHandle>` (the live-FTS subscription seam, newly exposed through
+  Promise<SubscriptionHandle>` (the live-FTS subscription seam, exposed through
   `AppContext`/`WorldSession` — wraps `WsClient.subscribeSearch`, ephemeral/NOT
   reconnect-resilient), `AppContext.sceneSelection: SceneSelection`
   (a small stable-ref class, `configureSceneId`
@@ -210,8 +209,8 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
   acknowledges an accepted op and the 15s timer RESOLVES on silence. Exactly three settle paths:
   that timer, a `chat_error` reject, and a `failPending` reject — reached from BOTH a disconnect
   and an explicit `stop()` (`WorldSession.leave()`, and the `evicted` frame handler). Details →
-  [[shadowcat-codebase-chat]]). `members` is now populated for EVERY role (chat name resolution; the
-  roster endpoint was widened from GM-only), not just GM.
+  [[shadowcat-codebase-chat]]). `members` is populated for EVERY role, not only GM — chat name
+  resolution needs it, and the roster endpoint is member-visible.
 - `src/modules/{entry,core-ui,panels,stage,topbar,statusbar,settings,game-settings,scene-browser,
   chat,chat-composer,chat-card}/` — entry = `@shadowcat/module-entry` (login + world mgmt, behind
   `<Entry onEnterWorld>`); core-ui owns the layout grid + region surfaces into the singleton
@@ -248,12 +247,11 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
 - **A value put into `setContext`/AppContext must be a stable, in-place-mutated ref** (e.g. a
   `SvelteMap`), not a reassigned `$state`, or consumers hold a stale snapshot
   [[svelte-context-stable-ref]].
-- **Contribute/activate before any `await` that gates the host mount** — an async-populated
+- **Contribute/activate before any await that gates the host mount** — an async-populated
   contribution Surface paints blank until activation runs; the minimal fix touches only the
   diverging path [[refactor-async-contribution-paint-timing]].
 - **In-game elements communicate ONLY through seams** (module contracts, `ContributionRegistry`,
-  `<Surface>`, AppContext, render-layer API) — never import one another or the shell directly
-  (ARCHITECTURE §1, §2 invariant 7).
+  `<Surface>`, AppContext, render-layer API) — never import one another or the shell directly.
 - **Entry views are plain-routed, not contributions; surfaces are in-world only.**
 - **A config-doc seed `$effect` must be reactive (`createSubscriber` + `subscribe()`)** — contribution
   panels mount during `#onWelcome` BEFORE the resync stream populates the store, so a one-shot
@@ -274,7 +272,9 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
   Predicted-op overlay and rollback-on-reject are absent; reads through `documents` are plain
   authoritative reads. In production the two are INDEPENDENT siblings fed the same `applyCommand`.
   A test asserting optimistic semantics must supply its own `documents`, or it is asserting
-  nothing. (Same fixture-fidelity class as the nightfox `t: (k) => k` gotcha.)
+  nothing. (Same fixture-fidelity class as that
+  fixture's identity-echo `t: (k) => k`, which resolves every key to itself rather than through a
+  catalog.)
 - **`WorldSession.canEdit` is an affordance mirror, and it diverges from server authz in BOTH
   directions** — treat it as "which controls to show", never as the
   authority. It can over-permit: the `role === "gm"` short-circuit returns `true` unconditionally and

@@ -23,7 +23,7 @@ animation: AnimationSettings,
 /**
  * The scene players render. `None`/absent/dangling ⇒ the first scene
  * (legacy behavior). Deliberately NOT part of the structural-
- * completeness triple below, so a world-settings doc written before
+ * completeness triple `resolve_scene` checks, so a world-settings doc written before
  * this field existed is still "complete" and keeps its authored
  * settings.
  */

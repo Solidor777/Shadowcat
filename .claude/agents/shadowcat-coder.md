@@ -15,8 +15,8 @@ actually in, not the one the skill names suggest.
 HARD FIRST STEP — codebase context (subagents do not auto-activate skills):
 1. Invoke `shadowcat-codebase-core` via the Skill tool.
 2. Invoke the subsystem skill(s) for the files in scope (e.g. `shadowcat-codebase-documents-permissions`
-   for Shadowcat's server-side document/permission code, `shadowcat-codebase-nightfox` for the
-   Nightfox rules engine and sheets). If you are unsure which, invoke core and pick from its map.
+   for Shadowcat's server-side document/permission code, `shadowcat-codebase-formula` for the
+   expression library). If you are unsure which, invoke core and pick from its map.
    In a consumer repo these skills are listed under a PLUGIN PREFIX
    (`shadowcat-codebase:shadowcat-codebase-core`) rather than the bare id — take the exact name
    from your skill listing before concluding a skill is unavailable.

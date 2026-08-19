@@ -336,7 +336,7 @@ export type WireDocument = {
    * content version at stamp time), or `null` for a document with no source. Mirrors
    * `crate::data::document::Source`. */
   source: z.infer<typeof SourceSchema> | null;
-  /** Opaque mergeable-content snapshot at last sync (`MergeBase`, `./merge`). Present on any
+  /** Opaque mergeable-content snapshot at last sync (`MergeBase`). Present on any
    * document stamped from a template (top-level or embedded, per `source`) — not restricted
    * to embedded children; absent/undefined on a document that was never stamped. */
   base?: unknown;
@@ -1098,9 +1098,9 @@ export type ClientMsg =
   | {
       /** A server-authoritative move request for a token the caller controls. `scene` is
        * checked only for agreement — the server DERIVES the acting scene from the token
-       * itself and refuses on mismatch, so this field selects nothing on its own (see the
-       * derive-from-token invariant, `shadowcat-codebase-realtime-sync`). Success broadcasts
-       * `move_stream` to the scene; failure replies `move_error` to the requester only. */
+       * itself and refuses on mismatch, so this field selects nothing on its own. Success
+       * broadcasts `move_stream` to the scene; failure replies `move_error` to the requester
+       * only. */
       type: "move_request";
       /** Correlation token for `move_error` (success echoes via the broadcast `move_stream`). */
       request_id: string;

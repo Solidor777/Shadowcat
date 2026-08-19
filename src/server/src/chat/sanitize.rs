@@ -13,7 +13,7 @@ use pulldown_cmark::{html, Event, Options, Parser};
 /// Enrich raw user input into a sanitized `Segment` list under `policy`.
 /// INVARIANT: the ONLY producer of `Segment::Html`. `ammonia` is the single
 /// security boundary, crossed exactly once here. All-off => one `Text`
-/// segment (fail-closed baseline, identical to c-1's `plain_text_content`).
+/// segment (fail-closed baseline, identical to `plain_text_content`).
 pub fn sanitize(raw: &str, policy: &ChatContentPolicy) -> Vec<Segment> {
     // `:shortcode:` -> unicode pre-pass, ahead of BOTH branches below, so
     // stored content is final and identical regardless of the markdown/html

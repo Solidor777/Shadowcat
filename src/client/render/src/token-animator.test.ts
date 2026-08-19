@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { TokenAnimator } from "./token-animator";
 
-const cfg = { speedCellsPerSec: 6, easing: "linear" as const, cellSize: 100 };
+const cfg = { speedCellsPerSec: 6, easing: "linear" as const, worldUnitsPerCell: 100 };
 
 function fresh(): TokenAnimator {
   const a = new TokenAnimator();
@@ -68,14 +68,15 @@ describe("TokenAnimator duration model", () => {
   });
 
   it("synchronous burst: all run-endpoints arrive at segIndex 0, walk still reaches final goal", () => {
-    // Reproduces the real route-commit pattern: dispatchIntent fires V1 then goal synchronously
-    // before any tick, so the animator receives setTarget(V1) then setTarget(goal) while segIndex
-    // is still 0.  Both must be swallowed by the ignore-scan; the walk must complete to (300,300).
+    // Reproduces the real route-commit pattern: dispatchIntent fires the corner vertex then the
+    // goal synchronously before any tick, so the animator receives both setTarget calls while
+    // segIndex is 0. Both must be swallowed by the ignore-scan; the walk must complete to
+    // (300,300).
     const a = fresh();
     a.setTarget("t1", { x: 0, y: 0, rotation: 0 });
     a.animateAlongPath("t1", [[0, 0], [300, 0], [300, 300]], 0);
     // No tick between these — both arrive at segIndex 0.
-    a.setTarget("t1", { x: 300, y: 0, rotation: 0 }); // V1 (corner)
+    a.setTarget("t1", { x: 300, y: 0, rotation: 0 }); // the corner vertex
     a.setTarget("t1", { x: 300, y: 300, rotation: 0 }); // goal
     a.tick(10_000); // settle
     expect(a.get("t1")).toEqual({ x: 300, y: 300, rotation: 0 });
@@ -103,9 +104,25 @@ describe("TokenAnimator duration model", () => {
     expect(here).toBeGreaterThan(0);
   });
 
+  it("a one-hex step reaches the target after exactly one cell's worth of time at the configured speed", () => {
+    // Hex outer radius (size) = 100; adjacent centres are size*sqrt(3) ≈ 173.205 apart
+    // (Grid.axialToPixel / GridShape::world_units_per_cell) — the per-step distance the caller
+    // (TokenView, fed by RenderEngine via Grid.worldUnitsPerCell) supplies as `worldUnitsPerCell`,
+    // never the bare outer radius. One cell at 6 cells/sec should take 1000/6 ≈ 166.667ms
+    // regardless of grid shape.
+    const a = new TokenAnimator();
+    const step = 100 * Math.sqrt(3);
+    a.setConfig({ speedCellsPerSec: 6, easing: "linear", worldUnitsPerCell: step });
+    a.setTarget("t1", { x: 0, y: 0, rotation: 0 }); // snap
+    a.setTarget("t1", { x: step, y: 0, rotation: 0 }); // one hex step
+    const expectedMs = (1 / 6) * 1000; // 166.667ms for one cell at 6 cells/sec
+    a.tick(expectedMs);
+    expect(a.get("t1")!.x).toBeCloseTo(step, 0);
+  });
+
   it("zero-distance / degenerate config snaps", () => {
     const a = new TokenAnimator();
-    a.setConfig({ speedCellsPerSec: 0, easing: "linear", cellSize: 100 });
+    a.setConfig({ speedCellsPerSec: 0, easing: "linear", worldUnitsPerCell: 100 });
     a.setTarget("t1", { x: 0, y: 0, rotation: 0 });
     a.setTarget("t1", { x: 500, y: 0, rotation: 0 });
     expect(a.get("t1")!.x).toBe(500); // speed 0 → snap, never freeze
@@ -127,6 +144,27 @@ describe("TokenAnimator duration model", () => {
     const pos = a.get("t1")!;
     expect(Number.isFinite(pos.x)).toBe(true);
     expect(Number.isFinite(pos.y)).toBe(true);
+  });
+
+  it("NaN worldUnitsPerCell does not pin the token or produce moved forever", () => {
+    // NaN passes `<= 0` as false, so only the !isFinite check catches it. Without that check,
+    // `cells = total / NaN` is NaN, `duration` is NaN, `tRaw` never reaches 1, and the anim
+    // reports moved every tick forever.
+    const a = fresh();
+    a.setConfig({ speedCellsPerSec: 6, easing: "linear", worldUnitsPerCell: NaN });
+    a.setTarget("t1", { x: 0, y: 0, rotation: 0 }); // snap
+    a.setTarget("t1", { x: 500, y: 0, rotation: 0 }); // degenerate config → startAnim snaps
+    expect(a.get("t1")!.x).toBe(500);
+    expect(a.tick(16)).toEqual([]);
+  });
+
+  it("NaN speedCellsPerSec does not pin the token or produce moved forever", () => {
+    const a = fresh();
+    a.setConfig({ speedCellsPerSec: NaN, easing: "linear", worldUnitsPerCell: 100 });
+    a.setTarget("t1", { x: 0, y: 0, rotation: 0 }); // snap
+    a.setTarget("t1", { x: 500, y: 0, rotation: 0 }); // degenerate config → startAnim snaps
+    expect(a.get("t1")!.x).toBe(500);
+    expect(a.tick(16)).toEqual([]);
   });
 
   it("remove drops all state", () => {

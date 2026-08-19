@@ -1,6 +1,6 @@
 import type { AppContext } from "../appContext";
 import { __APP_CONTEXT_KEY__ } from "../appContext";
-import { DocumentStore, AssetResolver, ContributionRegistry, silentLogger } from "@shadowcat/core";
+import { DocumentStore, AssetResolver, ContributionRegistry, silentLogger, EMPTY_FOOTPRINTS } from "@shadowcat/core";
 import { SceneInteractionBridge } from "../sceneInteraction";
 import { ActorSelection } from "../actorSelection.svelte";
 import { TokenSelection } from "../tokenSelection.svelte";
@@ -64,6 +64,7 @@ export function setAppContextForTest(over: Partial<AppContext> = {}): Map<unknow
     },
     panels: over.panels ?? new PanelsBridge(silentLogger),
     viewedSceneId: over.viewedSceneId ?? null,
+    footprints: over.footprints ?? EMPTY_FOOTPRINTS,
     setGmViewedScene: over.setGmViewedScene ?? (() => {}),
     searchDocuments: over.searchDocuments ?? (() => Promise.reject(new Error("not connected"))),
     sceneSelection: over.sceneSelection ?? new SceneSelection(),

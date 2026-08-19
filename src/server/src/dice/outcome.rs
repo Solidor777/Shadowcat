@@ -311,7 +311,7 @@ mod tests {
     #[test]
     fn compare_labels_returns_none_when_either_label_is_unordered() {
         // "Fear" is a symbolic (unordered) label — its records carry `ordered: false`,
-        // the exact Daggerheart Hope/Fear headline case (design doc §3/§5): an
+        // the exact Daggerheart Hope/Fear headline case: an
         // unordered label has no well-defined sum, so `compare_labels` must return
         // `None`, not `Some(0)` from summing derived-0 `value`s.
         let out = RollOutcome {

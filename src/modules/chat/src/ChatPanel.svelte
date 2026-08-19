@@ -112,7 +112,7 @@
    * channel id up in the registry, falling back to the raw id when
    * unregistered (e.g. "general" before the GM has ever opened the editor,
    * or a legacy channel).
-   * @param channelId The post-target channel id (see `postTarget` in `./channels`).
+   * @param channelId The post-target channel id (see `postTarget`).
    * @returns The channel's registered display name, or `channelId` itself when unregistered.
    * @example
    * ```
@@ -336,7 +336,7 @@
    * `CompactSwitcher`, neither ever `{#if}`-removes a mounted panel
    * slot. This forces every descendant's `offsetParent` to `null`, the proxy
    * this function relies on. `offsetParent` is also `null` for a
-   * `position: fixed` element; no CSS rule in `src/modules/panels`'s own
+   * `position: fixed` element; no CSS rule in `@shadowcat/module-panels`'s own
    * styles or the vendored `dockview-core` stylesheet sets `position: fixed`
    * (checked both — CSS only). The pinned `dockview-core@7.0.2` DOES apply
    * `position: fixed` via inline JS style in two places — `PointerGhost`'s

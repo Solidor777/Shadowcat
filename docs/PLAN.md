@@ -1168,13 +1168,12 @@ Decomposed **M11a–d**:
 > deferrals gated on measurement, a future milestone, or a design decision not yet made, not
 > force-closable. Full Rust + JS/TS test suites, typecheck, lint, and clippy all green.
 
-### M13 · Nightfox — first-party generic system module
-> Cross-cutting spec (approved 2026-07-15): [`superpowers/specs/2026-07-15-m13-nightfox-system-design.md`](superpowers/specs/2026-07-15-m13-nightfox-system-design.md).
-> **Nightfox is an external project (D16)**: its own GitHub repository + project folder,
-> consuming engine packages through the real third-party path (dependency + packaging + M6b
-> dynamic-loader install) — the strongest form of the reference-implementation purpose. Engine
-> work (M13-0/M13-1/M13a/M13e/M13f) stays in this repo; the Nightfox packages (M13b/c/d) live
-> in the Nightfox repo, filing API friction back into `POST_WORK_FINDINGS.md`.
+### M13 · Generic-system support — document shape, formula library, external-module toolchain
+> **The reference system is an external project (D16)**: its own GitHub repository + project
+> folder, consuming engine packages through the real third-party path (dependency + packaging +
+> M6b dynamic-loader install) — the strongest form of the reference-implementation purpose. Engine
+> work (M13-0/M13-1/M13a/M13e/M13f) stays in this repo; the system's own packages (M13b/c/d) live
+> in that separate repo, filing API friction back into `POST_WORK_FINDINGS.md`.
 > Decomposed **M13-0** (three-category document shape D15: envelope / `engine` / `system` —
 > engine-known fields relocate from the system-body root to a typed, ts-rs-generated `engine`
 > block; pre-v1 hard cutover, NO migration code; spec
@@ -1196,7 +1195,7 @@ Decomposed **M11a–d**:
 > `|n| <= 2^53` exact range. →
 > **M13-1** (external-module toolchain: engine-package consumption for out-of-tree modules,
 > module build/packaging, world install/load via the M6b loader, dev-server + e2e-harness
-> access for external repos; own spec cycle; bootstraps the Nightfox repo) →
+> access for external repos; own spec cycle; bootstraps the reference system's repo) →
 > **M13-1 DONE** (branch `m13-1-external-module-toolchain`, 21 SDD tasks, 3 pre-authorized
 > security buddy-checks — Task 5 path-traversal static serve, Tasks 8+10 enable+capability-union,
 > Task 14 single-instance import map — Tasks 5 and 14 each caught a Critical, Task 8+10 an
@@ -1215,8 +1214,8 @@ Decomposed **M11a–d**:
 > (`server_version`), not public `/api/config` (closes a pre-auth fingerprint surface); module
 > `requirements` are advisory-to-client only, unioned into the world's broadcast
 > `capability_requirements` but NEVER server-enforced (ARCHITECTURE §2 invariant 6 — server runs no
-> third-party logic). The Nightfox reference repo is bootstrapped OUT-OF-TREE (own git repo, nested
-> into a checkout at `src/modules/nightfox/` for dev; never pushed from this session) with a
+> third-party logic). The reference system's repo is bootstrapped OUT-OF-TREE (own git repo,
+> nested into a checkout under `src/modules/` for dev; never pushed from this session) with a
 > library build, trivial hello module, standalone `test_server --modules-dir` smoke e2e, and 3-OS
 > CI stub. Authoring toolchain guide: `docs/design/module-authoring.md`. →
 > **M13a** (`@shadowcat/formula` shared formula library: free-form parser/evaluator,
@@ -1224,7 +1223,7 @@ Decomposed **M11a–d**:
 > `superpowers/plans/2026-07-15-m13a-formula-library.md`) →
 > **M13a DONE** (branch `m13a-formula-library`, 8 SDD tasks, 3 pre-authorized buddy-checks —
 > Task 3 parser, Task 4 evaluator, Task 6 notation-template): `@shadowcat/formula` (`src/client/
-> formula/`) shipped as a pure-TS, zero-runtime-dep package with no Nightfox concepts baked in —
+> formula/`) shipped as a pure-TS, zero-runtime-dep package with no game-system concepts baked in —
 > lexer → recursive-descent parser (`Expr` AST) → `evaluate` (injected `resolve` callback) →
 > `resolveAll` (restart-based trampoline over a named dependency graph, O(1) JS-stack-depth by
 > construction, cycle-guarded) → `resolveNotationTemplate` (dice-notation-template rewrite mode,
@@ -1235,16 +1234,14 @@ Decomposed **M11a–d**:
 > `MAX_FORMULA_LENGTH=512`, `MAX_AST_NODES=256`, `MAX_PARSE_DEPTH=32` (true structural nesting,
 > not grammar-production depth), `MAX_GRAPH_VISITS=2048`. →
 > **M13b**
-> (`@shadowcat/module-nightfox` headless rules: the reserved `system.stats` variables
+> (the reference system's headless rules package: the reserved `system.stats` variables
 > directory + `system.mechanics` model directory (D13/D14; singleton system per world) —
 > number/resource/text/boolean stats as maps, Zod tier-1 write validation,
 > one-dependency-graph resolver, typed commutative modifier buckets `add → mulAdditive →
-> mulCompound`, `effect` doc_type with opt-in transfer + active gating; plan
-> `superpowers/plans/2026-07-15-m13b-nightfox-headless-rules.md`) →
-> **M13b DONE** (7 tasks, executed in the nested Nightfox dev clone at
-> `<Shadowcat checkout>/src/modules/nightfox/`, committed inside the Nightfox repo
-> `C:\Dev\Nightfox` — never pushed; the Nightfox repo is the user's to push): shipped
-> `nightfox-docs.ts` (fail-closed `parseNightfox`/`validateNightfox`/`validateStatKey` over
+> mulCompound`, `effect` doc_type with opt-in transfer + active gating) →
+> **M13b DONE** (7 tasks, executed in a nested dev clone of that repo under `src/modules/` and
+> committed inside it — never pushed; that repo is the user's to push): shipped its document
+> layer (fail-closed parse/validate entry points including `validateStatKey`, over
 > `system.stats`/`system.mechanics`, reserved-key + dice-notation-collision + cap
 > validation), `contributions.ts` (embed-tree modifier collection with active/transfer
 > gating per spec §5.3, host-inert/dangling warnings), `resolve.ts` (the one-graph resolver
@@ -1255,19 +1252,18 @@ Decomposed **M11a–d**:
 > re-export from the M13-1 Task 18 module entry. Task 4's pre-authorized buddy-check caught
 > an Important (float non-associativity across fold order → fixed by the canonical fold);
 > Task 5 correctly BLOCKED on an order-dependence bug in `@shadowcat/formula` itself, fixed
-> at the root per user decision rather than worked around in Nightfox: `resolveAll` made a
+> at the root per user decision rather than worked around in the consumer: `resolveAll` made a
 > pure function of the key set via sorted-root traversal, cycle-error detail now names the
 > lexicographically smallest cycle member, and the visiting/stack pairing invariant fails
-> loudly instead of silently. Suites: nightfox 136/136, `@shadowcat/formula` 85/85 (both
+> loudly instead of silently. Suites: the system module 136/136, `@shadowcat/formula` 85/85 (both
 > counts include the fix's regression coverage), full `pnpm -r test` green. →
 > **M13c**
-> (`@shadowcat/module-nightfox-sheets` over the M12c sheet registry; plan deferred until M12c +
+> (the reference system's sheets package over the M12c sheet registry; plan deferred until M12c +
 > M13-0 exist) →
-> **M13c DONE** (12 tasks, executed in the nested Nightfox dev clone at
-> `<Shadowcat checkout>/src/modules/nightfox/`, committed inside the Nightfox repo — never
-> pushed; the Nightfox repo is the user's to push): shipped `nfT` (i18n chrome-translation
-> helper with a built-in English fallback map, since no external-module i18n-registration seam
-> exists yet), `sheet-model.ts` (`sheetView` always resolves from the top-level host so
+> **M13c DONE** (12 tasks, executed in a nested dev clone of that repo under `src/modules/` and
+> committed inside it — never pushed; that repo is the user's to push): shipped an i18n
+> chrome-translation helper with a built-in English fallback map (since no external-module
+> i18n-registration seam exists yet), `sheet-model.ts` (`sheetView` always resolves from the top-level host so
 > item/effect modifier flow via the M13b resolver is correct; field-path write helpers for
 > stats/modifiers/mechanics flags following the D11 map-CRUD idiom, hardened with
 > pointer-injection guards on `addStat`/`addModifier`), `format.ts` (value display + live
@@ -1284,14 +1280,14 @@ Decomposed **M11a–d**:
 > Critical/Important capability-gating gap on the third check, fixed and re-confirmed); Task 8
 > (ItemSheet) surfaced a `basePrefix`-vs-`systemPrefix` OCC pre-image bug (fixed during review;
 > the same bug class was checked for and confirmed absent in Task 9's EffectSheet).
-> Suites: nightfox 215/215, typecheck clean, full `pnpm -r test`/`pnpm -r typecheck` green
+> Suites: the system module 215/215, typecheck clean, full `pnpm -r test`/`pnpm -r typecheck` green
 > throughout. →
 > **M13d**
 > (per-stat roll templates → labeled M11 notation as inline `[[…]]` chat embeds; zero new wire
 > frames; plan `superpowers/plans/2026-07-15-m13d-roll-wire.md`) →
-> **M13d DONE** (3 tasks, Tasks 1-2 executed in the nested Nightfox dev clone at
-> `<Shadowcat checkout>/src/modules/nightfox/`, committed inside the Nightfox repo
-> `C:\Dev\Nightfox` — never pushed; Task 3's doc rows committed here): shipped
+> **M13d DONE** (3 tasks, Tasks 1-2 executed in a nested dev clone of the system repo under
+> `src/modules/` and committed inside it — never pushed; Task 3's doc rows committed here):
+> shipped
 > `src/roll.ts`'s `buildStatRollContent(resolved, block, key)` — a pure builder producing chat
 > content of the shape `"<template> [[<notation>]]"` via `@shadowcat/formula`'s
 > `resolveNotationTemplate`; rollable stat types are `number`/`resource` only (D7), a missing
@@ -1311,7 +1307,7 @@ Decomposed **M11a–d**:
 > The e2e caught a real pre-existing Shadowcat-repo bug: the M11 dice notation parser (this
 > repo, `src/server/src/dice/notation/parser.rs`) only ever consumed a trailing `[label]` after
 > a `DiceGroup`, so `@shadowcat/formula`'s labeled-constant substitution (used on every
-> Nightfox roll, including flat-value rolls with no dice group) was rejected as unconsumed
+> stat roll the system builds, including flat-value rolls with no dice group) was rejected as unconsumed
 > trailing input — fixed (`bf494c1`) by mirroring `DiceGroup.label` onto a new
 > `Expr::Const(ConstTerm)` shape and generalizing label-consumption to any atomic factor via a
 > shared `take_label()` helper, plus a Total-mode-only `RollOutcome.labeled_consts` field
@@ -1639,8 +1635,8 @@ for the same decision is the fork-a-decision class this codebase produces most.*
     blind spot by re-checking only `/** */` blocks. A repo-wide orphaned-doc-block scan and a
     223-comment inline-`//` inventory across the six packages (task 6) found 0 orphans and verified
     every load-bearing claim true.
-  - **Ratchet mutation-proven per block:** dropping `footprintFor`'s doc comment
-    (`src/modules/scene-tools/src/controller.svelte.ts`) fails the `.ts` block; dropping
+  - **Ratchet mutation-proven per block:** dropping a documented function's doc comment in
+    `src/modules/scene-tools/src/controller.svelte.ts` fails the `.ts` block; dropping
     `toggleSnap`'s (`src/modules/scene-tools/src/ToolRail.svelte`) fails the `.svelte`
     block. All twelve globs (six packages × two blocks) verified individually at `error` severity.
   - **Carried forward, not fixed here:** the dead `sendMoves` shorthand still appears in two SERVER

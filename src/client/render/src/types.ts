@@ -91,11 +91,11 @@ export interface TokenNodeSpec {
   x: number;
   /** Center's scene y-coordinate — from `resolveTokenBox`. */
   y: number;
-  /** Bounding-box width, in scene (px) units — `resolveTokenBox`'s actor-size × cell, or the
-   * raw token engine's `w` for an actorless token. */
+  /** Bounding-box width, in scene (px) units — `resolveTokenBox`'s read of the server's resolved
+   * extent, or the token engine's own `w` where the server has stated none. */
   w: number;
-  /** Bounding-box height, in scene (px) units — `resolveTokenBox`'s actor-size × cell, or the
-   * raw token engine's `h` for an actorless token. */
+  /** Bounding-box height, in scene (px) units — `resolveTokenBox`'s read of the server's resolved
+   * extent, or the token engine's own `h` where the server has stated none. */
   h: number;
   /** Facing, in degrees — see `TokenTransform.rotation`. */
   rotation: number;
@@ -196,12 +196,12 @@ export interface MoveVisionSample {
   polygons: [number, number][][];
 }
 
-/** One visible cell's lighting: grid coords + gradation band index + packed tint + hint ref.
- * `hint` is an index into `LightingInput.hints`; -1 = no hint. */
+/** One visible cell's lighting: grid coords + gradation band index + packed tint + hint ref +
+ * resolved corner geometry. `hint` is an index into `LightingInput.hints`; -1 = no hint. */
 export interface LitCell {
-  /** Grid column index. */
+  /** Grid column index (square), or hex axial q. */
   i: number;
-  /** Grid row index. */
+  /** Grid row index (square), or hex axial r. */
   j: number;
   /** Gradation band index — see `LightingInput.bands`. */
   band: number;
@@ -209,6 +209,12 @@ export interface LitCell {
   tint: number;
   /** Index into `LightingInput.hints` — see the interface doc for the `-1` sentinel. */
   hint: number;
+  /** This cell's scene-coordinate corners — `Grid.cellVertices(i, j)` on the active grid, resolved
+   * by the caller so `Lighting`/the backend never re-derive cell geometry from `i`/`j` and a flat
+   * cell size: a hex scene's axial indices are not square-indexable as `i*cellSize`/`j*cellSize`,
+   * so the geometry is resolved once here. Square: an axis-aligned rect. Hex: a pointy-top
+   * hexagon. */
+  corners: Point[];
 }
 
 /** Parsed lighting for the active scene (engine-internal, pre-resolution). `null` ⇒ no overlay

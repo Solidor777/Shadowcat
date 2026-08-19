@@ -40,13 +40,13 @@ The full list is `docs/design/ARCHITECTURE.md` §2 (10 invariants) — load-bear
 source of truth. The ones agents break most:
 
 - **Server-authoritative, permissions per-recipient.** Client sends intents; server validates,
-  applies, broadcasts. Hidden fields are stripped **before** transmission, never sent-then-hidden
-  (ARCHITECTURE §2 invariant 4). See `shadowcat-codebase-documents-permissions`.
+  applies, broadcasts. Hidden fields are stripped **before** transmission, never sent-then-hidden.
+  See `shadowcat-codebase-documents-permissions`.
 - **Optimistic with rollback.** Documents are source of truth; ECS/runtime is derived & ephemeral.
 - **NEVER FORK A DECISION ACROSS TWO PATHS — the defect class this codebase produces most.**
   Whenever two code paths are *documented* to agree on something, they eventually disagree on an
   input nobody thought to check, and the disagreement is a security defect rather than a bug. Six
-  instances found in one branch, across four subsystems:
+  instances across four subsystems:
   | Forked on | Where | Consequence |
   |---|---|---|
   | Cell indexing | `Room::publish`, `clip_to_visible_mask` | square indices tested against a hex-axial mask |
@@ -54,18 +54,19 @@ source of truth. The ones agents break most:
   | Input admissibility | `Room::publish` vs `gate_walk` | one bounded coordinate magnitude, the other did not |
   | **Scene identity** | `MoveRequest` vs `Room::publish` | one took the scene from the client, the other derived it from the token ⇒ total movement-gate bypass |
   | **`remove` semantics** | `SceneEcs::apply_op` vs `apply_intent` | ECS ignored `FieldChange.remove` while the DB honoured it ⇒ vision widened where write authz refused |
-  | Fail-open defaults | `execute_move` vs `publish` vs `pathfind` | a `unwrap_or(100.0)` cell size removed from ONE gate, left in the other two — created by the commit that fixed the row above. **Now removed from all three gates AND all six non-gate siblings** (`SceneEcs::navmesh_for`, `SceneEcs::region_field`, `SceneEcs::player_lit_mask`, `SceneEcs::visible_cells`, `SceneEcs::visible_cells_cached` — an absent `scene_grid_sizes()` entry now returns `None`/empty instead of synthesizing a 100-unit grid; `region_field`'s signature changed to `-> Option<RegionField>`, its three callers (`pathfind`'s two branches, `move_exec::execute_move`) refuse via `let-else` on `None`, and `MoveReject` gained a `SceneUnknown` variant mirroring `Degenerate`; `conn::enrich_vision_explored` now `continue`s past a scene absent from either its `grid` or `grid_shapes` map, never synthesizing a fallback `SquareGrid`). The fail-open default is now removed at ALL sites — `scene_grid_sizes` remains the sole intentional defaulting SOURCE, not a survivor. |
+  | Fail-open defaults | `execute_move` vs `publish` vs `pathfind` | a `unwrap_or(100.0)` cell size dropped from ONE gate and left in its siblings — the shape a fix for the row above produces if it lands at one site. **No such default exists at any of the three gates or their six non-gate siblings** (`SceneEcs::navmesh_for`, `SceneEcs::region_field`, `SceneEcs::player_lit_mask`, `SceneEcs::visible_cells`, `SceneEcs::visible_cells_cached` — an absent `scene_grid_sizes()` entry returns `None`/empty rather than synthesizing a 100-unit grid; `region_field` returns `-> Option<RegionField>`, its three callers (`pathfind`'s two branches, `move_exec::execute_move`) refuse via `let-else` on `None`, and `MoveReject` carries a `SceneUnknown` variant mirroring `Degenerate`; `conn::enrich_vision_explored` continues past a scene absent from either its `grid` or
+  `enrich_vision_explored::grid_shapes` map, never synthesizing a fallback `SquareGrid`). `scene_grid_sizes` is the sole intentional defaulting SOURCE. |
   **How to apply.** (1) When you find two paths that must agree, do not verify they agree today —
   make one *derive* from the other, or have both read one shared symbol, so agreement is structural.
-  (2) When you fix one instance, grep for the other copies **in the same commit**; the last row
-  above was created by the commit fixing the row above it. (3) Pin parity with an anti-drift test
+  (2) When you fix one instance, grep for the other copies **in the same commit**; a fix that lands
+  at one site of a forked decision is what produces the next row of this table. (3) Pin parity with an anti-drift test
   that exercises BOTH paths through the shared symbol (see `MAX_GATE_WALK_COORD`'s, which catches a
   value change or a `>`/`>=` flip on either side). (4) A test that passes because both paths are
   wrong the same way proves nothing — mutate one side and confirm the test fails.
 - **Cross-platform from day one (CI-verified).** `std::path` only (no hardcoded separators),
   `#[cfg]`-gate OS-specific code for every target, three-OS CI matrix, responsive/touch UI.
-  [CLAUDE.md Cross-Platform; ARCHITECTURE §2 invariant 10]
-- **`dist/` must be built before any `cargo` build of the server** — `rust-embed` validates
+  [CLAUDE.md Cross-Platform; `docs/design/ARCHITECTURE.md` §2 invariant 10]
+- **`dist/` must be built before any cargo build of the server** — `rust-embed` validates
   `../../dist/` at COMPILE time. [[embed-dist-compile-ordering]]
 - **Capability/permission model** layered server/world/document roles. [[capability-permissions]]
 - **Three-band document shape: envelope `name` + typed `engine` + opaque `system`.**
@@ -75,8 +76,8 @@ source of truth. The ones agents break most:
   lights, drawings, templates, messages, and the world/vision/lighting/chat/dice/faction/
   condition/channel config-docs) gets REAL server-side ingress validation instead
   (`validate_engine`/`validate_engine_tree`, `deny_unknown_fields` per struct) — this is the band
-  engine-owned geometry (movement-collision, vision) now lives in, not a `system`-body exception
-  (ARCHITECTURE §2 invariant 6). See `shadowcat-codebase-documents-permissions` for the
+  engine-owned geometry (movement-collision, vision) lives in, not a `system`-body exception.
+  See `shadowcat-codebase-documents-permissions` for the
   `data/engine/` registry and `shadowcat-codebase-scene-rendering`/`-chat`/`-actors-tokens` for
   the per-subsystem re-root.
 - **A type built via `Extract<SomeUnion, { type: "x" }>` cannot be documented.** TypeDoc cannot
@@ -89,7 +90,7 @@ source of truth. The ones agents break most:
   `WireDocument.permissions` and `StampOpts.permissions` share the same shape across two files; a
   single exported name is structurally required there — the alternative duplicates the
   access-control shape inline in both places, the forked-decision defect this codebase produces
-  most (see above). Nothing became newly reachable when the name was introduced:
+  most (see above). The name exposes nothing new:
   `WireDocument["permissions"]` already exposed the identical shape.
 
 ## Gotchas
@@ -116,10 +117,53 @@ source of truth. The ones agents break most:
   ``see `egress_loop`'s `SceneSubscribe` arm ``, never ``see conn.rs:1313`` and never ``the handler in
   `conn.rs` ``. Qualify by owner (`AssetResolver.url`, `chat::broadcast`), not location. Applies to
   all committed prose — doc comments and the live tracking docs. A line number is invalidated by any
-  insertion above it and **no gate catches the rot**; a symbol breaks only on rename, which a grep
-  finds. Carve-outs: config/build files (no symbols to cite), filenames used as *values*, and dated
-  records under `docs/superpowers/`. Full rule: `docs/design/doc-sweep-truthfulness-rules.md`
-  RULE 15. [[cite-symbols-not-file-lines]]
+  insertion above it; a symbol breaks only on rename, which a grep finds — and for this skill
+  family specifically, that grep runs automatically:
+  `node scripts/check-skill-symbol-refs-cli.mjs` (fatal, CI-wired) resolves every code-symbol
+  citation in every TRACKED skill directory against a symbol index built from what the tree
+  declares — Rust items, methods, fields, variants, serde wire names, local bindings, parameters
+  and literal alternation sets; SQL tables/columns; Cargo and JSON config keys; every TS/Svelte
+  declaration, member at any depth, object-literal key, import and literal type, read through the
+  TypeScript parser; and module/package/skill directory names. **A token's shape decides only
+  whether it is a citation at all, never whether a citation is CHECKED** — a shape exclusion hides
+  the citations it skips AND every index gap behind them, so every code span lands in exactly
+  one printed bucket — verified, acknowledged non-symbol, broken, EXAMPLE-exempt,
+  not citation-shaped, or empty — and each acknowledgement entry is hit-counted, a zero-hit entry
+  failing the gate. **That list is `SPAN_BUCKETS`, and this sentence is pinned to it by a test**:
+  a claim about the code that is neither derived from it nor tested against it drifts the moment a
+  bucket joins the list or its label changes. What makes it true rather than
+  asserted is `spanAccountingDelta` — every backtick RUN must be one of a bucketed span's two
+  delimiters, or must have left before classification by one of the ways out printed beside the
+  buckets: block-blanked, unpaired inside a span, unpaired at top level — of which the last is
+  always a prose defect and fails on its own, since a stray delimiter shifts pairing across its
+  whole paragraph while conservation still balances. **That list is `RUN_EXCLUSIONS`, pinned by
+  the same test.** The identity is enforced per file and in aggregate, or the gate fails and says
+  by how much. A span written as `NAME=value` is checked on its NAME: the value is there to save
+  the reader a lookup, and letting the whole span fail the citation shape lets a citation of a
+  constant the tree does not declare pass with the gate reporting zero broken. A PER-FILE floor
+  sits under the global one — a file whose PROSE carries backticks and yields no CHECKED citation
+  has silently left the gate; the floor reports what that file's spans DID land in, since the
+  shifted-pairing case it exists for turns real citations into
+  prose spans that climb the not-citation-shaped bucket. Carve-outs: config/build files (no
+  symbols to cite), filenames used as *values*, and dated records under `docs/superpowers/`.
+  **RESIDUAL, uncovered by design: a bare citation can still verify
+  against an unrelated same-named member** — the citation rule is narrow (location-citations
+  only), a bare member name is grep-findable and rename-breaking, so bare member registration
+  stays and which member a bare citation MEANT is a review obligation. An untracked skill directory is vendored
+  third-party prose and is out of the corpus by that property, never by a name pattern; its count
+  prints on every run, from the same `listSkillDirs` both skill gates read, so the two can never
+  disagree on the size of the corpus.
+  **A function-LOCAL name (a let binding, a for-loop pattern, a parameter, a function-scoped
+  object key) is indexed only under the function that declares it (`execute_move::check_mask`),
+  never bare, and under its FULL owner chain rather than every suffix** — a bare local carries no
+  owner relation, so it would make the index answer "the tree declares that" to any citation
+  spelling any local anywhere, and a suffix of a local-headed chain (`WorldSession`'s
+  `loadExternalModules`, then one of its bindings) is a path headed by a name invisible outside
+  that function. Cite one the same way. **A closed VALUE SET is likewise cited through its
+  constant** (`NOTATION_KEYWORDS.kh`, never the member spelled bare), and value-set extraction runs only over
+  the product roots: a string literal in a build script is that gate's own configuration, and
+  indexing it lets a citation resolve against the tooling that checks it. Full rule:
+  `docs/design/doc-sweep-truthfulness-rules.md` RULE 15. [[cite-symbols-not-file-lines]]
 - **As far as code is concerned, ephemeral documents, plans, dates, history and tasks DO NOT EXIST**
   (user directive, iron-clad; RULE 16). This is an ontology, not a style preference: the test is
   never "is this reference useful?" but "is this thing visible from the code?" Every exception
@@ -134,6 +178,12 @@ source of truth. The ones agents break most:
   - dated plan/spec files, and unnamed spec references (`per spec §3.2`, `the spec'd default`)  <!-- EXAMPLE: RULE 16 specimen -->
   - sweep / fix-round / `buddy-check finding N` markers, `POST_WORK:`, and date stamps  <!-- EXAMPLE: RULE 16 specimen -->
   - **history narration** — `previously`, `formerly`, `before the fix`, "used to return X"  <!-- EXAMPLE: RULE 16 specimen -->
+  - local letter+digit markers — a single letter from the set A, C, F, H, R, V plus one digit
+    (`C-2`, `F3`), including a **version-label writer** (`V1 desaturate approximation`) using the  <!-- EXAMPLE: RULE 16 specimen -->
+    same shape for a version number instead of a review finding — resolvable only by a reader
+    holding the artifact that assigned it, same as the milestone-id class above. A citation of a
+    versioned SYMBOL (`` `PanelLayoutV1` ``, `` `Vec2` ``) is unaffected: the letter-run before the
+    digit excludes it.
 
   **These are one class: each names something outside the code whose identity a process assigns** —
   milestones get renumbered, bug entries move `OPEN_BUGS` → `CLOSED_BUGS`, specs get superseded,
@@ -157,6 +207,30 @@ source of truth. The ones agents break most:
   durable citation regardless of its `docs/` path. Repo-document pointers to non-durable trackers,
   unnamed spec references and history narration are ALSO ruled in for skills; process markers are not;
   do not widen the skill subset further without a ruling.
+  **The path-plus-anchor carve-out is a GUARD on the check, never the check dropped.** The
+  PATHLESS forms — a bare architecture reference, a bare numbered invariant, a bare section anchor —
+  are what the carve-out has to make room for, so they are ruled in for skills and reused from the
+  code list by reference under `skipLine`, which permits a match exactly when the line ALSO carries
+  the full durable design-doc path. Substituting a narrower entry instead is how the carve-out for
+  one form silently drops the ban on all of them. The guard's unit is the LINE and it reads the RAW
+  line: `lineSubject`'s Markdown branch replaces every design-doc citation with the empty string
+  before matching, which would delete the evidence the guard needs. It is not the GROUP either —
+  one permitted citation would then exempt every bare anchor sharing its paragraph — so a citation
+  wrapped across two lines must carry its path on the line its anchor sits on.
+  **Two spellings the reference entries did not reach are now banned in CODE.** A comment naming a
+  codebase skill BY NAME (`codebase skill pointer`) is the same class of process-assigned referent:
+  skills are created, split, re-scoped and retired, and their names move with them. It is
+  deliberately absent from the skill list,
+  where a skill naming a sibling skill is the documented structure of this knowledge layer — the
+  Subsystem skills list above is written that way. And a churn tracker named WITHOUT its extension
+  (`extensionless tracker pointer`) is the same pointer four characters shorter; it requires a
+  POINTER CONSTRUCTION (a preposition or verb of reference in front of the name) rather than a bare
+  occurrence, because the bare marker form stays permitted and these names also occur as prose.
+  **The skill corpus is scoped to the TRACKED skill directories**, read from the same
+  `listSkillDirs` the skill-symbol-citation gate reads. An untracked skill directory is vendored
+  third-party prose that this repo neither wrote nor may edit, so holding it to a rule about how
+  THIS repo writes prose leaves only a vendored-file edit or a carve-out, and both are wrong. The
+  excluded count prints on every run.
   **Enforced retroactively with no grandfathering** (user directive) by
   `node scripts/check-comment-refs.mjs` — no baseline, no side-car allowlist, every legacy hit
   fails. The ONE exemption is an `EXAMPLE` marker (that word, then a colon) on a line that
@@ -165,10 +239,58 @@ source of truth. The ones agents break most:
   this rule's own statement below is marked. It is owner-approved per instance, sits on the line
   it exempts (so no position to rot), and the gate prints its active count, because an uncounted
   exemption is a backdoor. It covers specimens only: a genuine pointer gets converted, never
-  marked. But
+  marked. The coverage control's own `ACKNOWLEDGED` lists answer to the same rule as the symbol
+  gate's: hit-counted on every FULL-corpus run, the reached-entry count printed beside the
+  EXAMPLE count, and a zero-hit entry fatal — a `--scope`d run makes no such claim, since a zero
+  on a subset says the scope missed the token rather than that the entry is dead. Scoping the
+  corpus to the tracked skill directories is what killed six of these entries at once, silently,
+  which is what the rule now prevents. But
   **a green detector is not a satisfied rule**: history narration is only partly detectable (`no
   longer` usually describes runtime data, not the code's past), so it is a review obligation.
-  Rewording to evade a pattern while still speaking of something outside the code violates RULE 0.
+  A second class sits beside it on the same footing: the lowercase hyphenated marker shape
+  (`c-1`, `b-2`) is character-for-character ordinary comment arithmetic (`0..n-1`, `w-1`) with no
+  separator a pattern can key on, so it is **permanently ungated by design**, not an open gap — a
+  reviewer enforces the ban, and a clean `scripts/check-comment-refs.mjs` run is not evidence none
+  remains. Rewording to evade a pattern while still speaking of something outside the code
+  violates RULE 0.
+  **The scan SUBJECT is a comment BLOCK or a Markdown PARAGRAPH, never a LINE** — a line is only
+  where the text happened to wrap, so a line-scoped subject reads every multi-word ban as clean the
+  moment prose wrapping puts a break at one of the phrase's spaces, and each half is individually
+  innocent. The GROUP BOUNDARY is what makes joining safe and is the load-bearing design, not an
+  implementation detail: `subjectGroups` ends a group at a blank line, at any line contributing no
+  prose, and — in code — at any line that is not purely commentary, so a doc comment never joins
+  the declaration beneath it, a string-literal-bearing line stands alone, and a comment TRAILING a
+  statement stands alone (it is written against that statement, not as a continuation of the block
+  above). Joining across that boundary manufactures phrases nobody wrote out of one line's last
+  words and the next line's first — a false negative traded for a false positive.
+  **A separator between two WORDS of a marker is a SPELLING, not part of its identity**, so
+  `bannedMatchesIn` also matches each pattern under a `separatorFlexible` form derived from that
+  pattern's own source: hyphen, underscore and space all reach the same entry, for every entry at
+  once including entries not yet written. The rewrite lands on the PATTERN, never the subject. Two
+  spellings are widened — a BARE separator between two literal alphabetic characters, and a
+  character class whose every member is a separator, written as a literal or a single-character
+  escape (`separatorOnlyClass`); a class with any other member is untouched, since widening a range
+  corrupts the pattern. RESIDUAL, which is why that coverage claim is bounded rather than
+  universal: the neighbour test requires a LITERAL ALPHABETIC character on BOTH sides, so a bare
+  separator keeps its single spelling whenever either neighbour is anything else — a group
+  boundary, an escape, a class, a quantifier or a punctuation mark. The group boundary is the
+  commoner of the two named cases, because an alternation of writers is how a marker with several
+  spellings gets written in the first place. **The fix at a site is to respell that separator as a
+  ONE-MEMBER CHARACTER CLASS**, which routes it through the class path with no new mechanism: the
+  source still declares one spelling, and the class is what marks it as a word separator rather
+  than regex punctuation. Loosening the neighbour test instead is the wrong repair — it is correct
+  for every separator that is not a word separator at all. Respelling is not unconditionally safe
+  either: adding a hyphen or underscore between two words is, but adding a SPACE where the pattern
+  had a hyphen fuses two ordinary tokens, which is why `local letter+digit marker` and the
+  hyphenated `unnamed spec reference` compound are left at their single spelling on measured
+  grounds. **An entry whose own spelling carries NO separator is reached by an added ALTERNATIVE,
+  never by a class** — there is nothing to respell, and a one-member class would be widened to the
+  space writer, which for `phase / workstream / invariant id` is a capital plus a space plus a
+  quantity, i.e. ordinary English. Each alternative's separator sits between a group boundary and
+  an escape, so the residual above is what holds the two spellings written at exactly two.
+  **Nothing inside a NEGATIVE lookaround is widened at any depth** — widening an exclusion makes
+  the pattern match strictly less and the gate report strictly cleaner, the one direction nothing
+  in the output distinguishes from a clean corpus.
   Full rule: `docs/design/doc-sweep-truthfulness-rules.md` RULE 16.
 - **There are NO justified keeps, exemptions or carve-outs unless the user explicitly signs off**
   (user directive, iron-clad). A well-argued keep is still a decision about *what the work covers*,
@@ -187,8 +309,8 @@ source of truth. The ones agents break most:
   open-source repo. `.gitignore`'s `/CLAUDE.md` rule is root-anchored and matches no file (no
   root-level `CLAUDE.md` exists); the genuinely-ignored entries under `.claude/` are
   `settings.json`, `settings.local.json`, `skills/graphify/`, and `kimi.plugin.json`.
-  `ARCHITECTURE.md` §2 remains
-  the invariant source of truth, but not because `CLAUDE.md` is unshared.
+  `docs/design/ARCHITECTURE.md` §2 remains the invariant source of truth, but not
+  because `CLAUDE.md` is unshared.
   [[claude-md-is-git-ignored]]
 - **ts-rs types are generated** — change the Rust enum/struct, regenerate, then mirror in the
   client Zod schema (a drift guard enforces parity).
@@ -201,6 +323,13 @@ source of truth. The ones agents break most:
   reader checking the source concludes the symbol is documented while the coverage gate reports
   it undocumented — the two disagree and the source looks right. Fix: move the comment onto its
   own line above the member.
+- **A `{@link}` to a `private` member fails the docs BUILD, not just the link.** TypeDoc resolves
+  the name, then excludes the reflection from the output, and reports "resolved but is not
+  included in the documentation" — a validation warning, which the root config's
+  `treatValidationWarningsAsErrors` makes fatal. A tag straddling a line break is worse: the
+  comment's leading `*` lands inside the tag and the link fails to resolve at all. Cite a private
+  helper in backticks (`axialToPixel`) instead; RULE 15 asks for the symbol name, not a hyperlink,
+  and the generator is being asked for something it cannot deliver.
 - **TypeDoc's `entryPointStrategy: "packages"` makes most root-level `typedoc.json` settings
   inert.** `Options.copyForPackage` builds a FRESH options object per package, resets every value
   to its default, applies only the root's `packageOptions` map, then reads that package's own
@@ -270,8 +399,8 @@ source of truth. The ones agents break most:
 - Docs: `pnpm docs:serve` (view; the assembled `dist-docs/index.html` also opens directly over
   `file://` for static content, styling, and link navigation — anything driven by the site's
   runtime JavaScript, including search, the appearance toggle, and the mobile nav panel, needs the
-  server instead), `pnpm docs:check-examples` (`@example` ```ts
-  blocks must typecheck — CI-blocking), `pnpm lint:docs` (function doc coverage),
+  server instead), `pnpm docs:check-examples` (`@example` `` ```ts `` blocks must typecheck —
+  CI-blocking), `pnpm lint:docs` (function doc coverage),
   `pnpm lint:props` (property/type/named-arrow doc coverage), `pnpm lint:comments` (no ephemeral
   references). **All are errors repo-wide with no per-package staging** — see the no-ratchets rule
   above; there is no `rulesAt(severity)` and no advisory tier anywhere in these configs.
@@ -289,7 +418,7 @@ source of truth. The ones agents break most:
 - **`@example` blocks compile INSIDE the module that documents them, not in a scratch file.**
   `scripts/extract-ts-examples.mjs` compiles each example through the TypeScript compiler API with
   an in-memory virtual overlay of its host module, under that host's OWN package `tsconfig` — so
-  the host's imports, private helpers and `this` resolve exactly as in real code, and an example on
+  the host's imports, private helpers and this binding resolve exactly as in real code, and an example on
   a class member is injected into the host class body. `.svelte` hosts join the same path via their
   extracted `<script>`/`<script module>` block; runes type correctly because svelte's own
   `types/index.d.ts` declares them as ambient globals (it also declares `module '*.svelte'`, so a
@@ -326,14 +455,14 @@ source of truth. The ones agents break most:
   gate on tag PRESENCE only: they cannot see a vacuous tag (`@returns The result.`), a false
   statement, or a second doc block appended below an existing one. That last case actively
   misleads — jsdoc, TypeDoc, and editor hover all bind to the NEAREST preceding block, so an
-  appended block satisfies the linter while ORPHANING the richer one above it (found on
-  `webSocketConnect` during the client/core sweep, at 0 warnings the whole time). Detecting it needs a
+  appended block satisfies the linter while ORPHANING the richer one above it — a real instance on
+  `webSocketConnect` sat at 0 warnings the whole time. Detecting it needs a
   manual scan for a `*/` line immediately followed by `/**`. Truthfulness and placement are review
   concerns, not gate concerns: `docs/design/doc-sweep-truthfulness-rules.md`.
-- CI builds the client **before** `cargo` (embed ordering) across the three-OS matrix.
+- CI builds the client **before** cargo (embed ordering) across the three-OS matrix.
 
 **Subsystem skills:** `documents-permissions`, `actors-tokens`, `scene-rendering`,
-`realtime-sync`, `client-shell`, `assets`, `dice`, `chat`, `nightfox`, `module-toolchain`,
+`realtime-sync`, `client-shell`, `assets`, `dice`, `chat`, `formula`, `module-toolchain`,
 `sheets`, `panels`, `server-ops`, `templates` (all `shadowcat-codebase-*`).
 
 ## Maintaining this skill family
@@ -358,9 +487,8 @@ When adding one:
 
 Shadowcat's `.claude/` directory is also a Claude Code plugin source (`.claude-plugin/
 marketplace.json` at the Shadowcat repo root points at `./.claude`; `.claude/.claude-plugin/
-plugin.json` names and versions the plugin). A consuming repo — the Nightfox module repo is the
-first — reaches these skills, agents and the routing hook through that plugin rather than through
-a second copy.
+plugin.json` names and versions the plugin). A consuming repo reaches these skills, agents and
+the routing hook through that plugin rather than through a second copy.
 
 **A directory-sourced plugin is COPIED into the consumer's plugin cache rather than read live.**
 Structurally verified, not yet empirically confirmed: an install lands under
@@ -379,8 +507,8 @@ reviewed: **bump the `version` key in `.claude/.claude-plugin/plugin.json`** —
 does not identify a cached plugin copy — **then refresh the plugin in each consuming repo**, from a
 shell run inside that repo: `claude plugin marketplace update shadowcat`, then
 `claude plugin update shadowcat-codebase@shadowcat --scope project` (a restart applies it). The
-version bump is what makes the staleness detectable — an unversioned plugin caches as `unknown`,
-where a refreshed copy and a stale one are indistinguishable.
+version bump is what makes the staleness detectable — an unversioned plugin caches under a single
+unchanging placeholder version, where a refreshed copy and a stale one are indistinguishable.
 
 **The update subcommand needs the FULLY-QUALIFIED name and the scope, or it fails.** Bare
 `claude plugin update shadowcat-codebase` reports `Plugin "shadowcat-codebase" not found` at both

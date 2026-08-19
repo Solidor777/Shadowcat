@@ -1,12 +1,12 @@
-// Client-owned scene-entity doc builders + pure resolvers (re-rooted onto the three-band
-// document shape — envelope(+name) + engine? + system). The per-doc-type ENGINE bodies are
-// no longer client-owned interpretations of an opaque `system` blob: they are ts-rs-generated
-// from the server's `data/engine` structs (`@shadowcat/types`), server-validated at ingress
-// (`validate_engine`). Only genuinely game-system-owned shapes (`item`) and client-only
-// resolution helpers stay defined here.
+// Client-owned scene-entity doc builders + pure resolvers over the three-band document shape
+// (envelope(+name) + engine? + system). The per-doc-type ENGINE bodies are ts-rs-generated from
+// the server's `data/engine` structs (`@shadowcat/types`) and server-validated at ingress
+// (`validate_engine`), never a client-owned interpretation of an opaque `system` blob. Only
+// genuinely game-system-owned shapes (`item`) and client-only resolution helpers are defined here.
 export type { WireDocument } from "./wire";
 import type { WireDocument } from "./wire";
 import type { ReadableDocuments } from "./store";
+import type { FootprintExtent } from "./footprints";
 import type {
   MovementRestriction,
   MovementModel,
@@ -53,11 +53,10 @@ import type {
 } from "@shadowcat/types";
 
 // --- Re-exported generated engine types (ts-rs output, `@shadowcat/types`) ---
-// These mirror `src/server/src/data/engine/*.rs` byte-for-byte; NEVER hand-edit the
-// generated source. Nested/shared shapes keep their generated name (identical to the
-// prior client name); per-doc-type body shapes are re-exported under a NEW `*Engine` name
-// (never aliased back onto the old `*System` name — an alias would let stale `*System`-named
-// reads/writes keep compiling against the wrong band undetected).
+// These mirror the Rust types in `crate::data::engine` byte-for-byte; NEVER hand-edit the
+// generated source. Nested/shared shapes keep their generated name; per-doc-type body shapes are
+// re-exported under an `*Engine` name, with no `*System` alias — an alias would let a
+// `*System`-named read/write keep compiling against the wrong band undetected.
 export type {
   MovementRestriction,
   MovementModel,
@@ -323,7 +322,7 @@ function fnv1a32(str: string, seed: number): number {
  * produce the same id, so independent callers (e.g. two GMs seeding a world-scoped singleton
  * doc at once) converge on one id without a lookup. Built from four independently-seeded
  * FNV-1a 32-bit mixes (128 bits total) rather than true SHA-1 UUIDv5, because Web Crypto's
- * `subtle.digest` is async and every doc builder in this file — `envelope` included — is
+ * `subtle.digest` is async and every doc builder consuming this id — `envelope` included — is
  * synchronous; the version(5)/variant nibbles are set purely for id-shape parity with
  * `crypto.randomUUID()`, not RFC 4122 conformance. Collision risk is not a security boundary:
  * the server's singleton create-gate rejects a duplicate Create by `doc_type`, not by id, so a
@@ -455,7 +454,7 @@ export function resolveSceneSettings(scene: WireDocument | undefined, store: Rea
   const eng = scene?.engine as SceneEngine | undefined;
   // `vision`/`lighting` are required-but-nullable keys on the generated `SceneEngine`
   // (absent and explicit `null` are wire-equivalent) — read through optional chaining
-  // rather than defaulting to `{}`, which no longer structurally satisfies the type.
+  // rather than defaulting to `{}`, which does not structurally satisfy the type.
   const v = eng?.vision;
   const l = eng?.lighting;
   const movementModel = v?.movementModel ?? d.scene.movementModel;
@@ -591,8 +590,9 @@ export function buildItemDoc(worldId: string, name: string | null, system: ItemS
 
 /** Build a token from an actor. `link` references the shared actor; `instance` embeds an
  * independent copy with `source` provenance (the deferred merge engine consumes it). Size/
- * shape resolve from the actor; `w`/`h` seed the rendered cell size now.
- * `doc_type: "token"` is engine-defined — the transform/visual/link body lands in `engine`.
+ * shape resolve from the actor; `w`/`h` seed the box the token draws at until the server states
+ * its own resolved extent. `doc_type: "token"` is engine-defined — the transform/visual/link body
+ * lands in `engine`.
  * @param worldId The owning world's id.
  * @param sceneId The scene document this token is parented to.
  * @param actor The source actor document to link or instance.
@@ -601,8 +601,9 @@ export function buildItemDoc(worldId: string, name: string | null, system: ItemS
  * @param pos The token's initial scene-unit position.
  * @param pos.x The initial x coordinate, scene units.
  * @param pos.y The initial y coordinate, scene units.
- * @param cellSize The dangling-link fallback size (`w`/`h`); the actor-backed render path
- * resolves size through `EffectiveActor.size × grid-cell` instead (see `resolveTokenBox`).
+ * @param unit The scene's server-resolved UNIT footprint (`FootprintLookup.unit`) — the extent of
+ * a 1x1 token in this scene's grid. `null` (no `"footprints"` frame yet) seeds a zero box, which
+ * the token draws at only until its own resolved extent arrives.
  * @param id An explicit id, or `undefined` to generate one.
  * @returns A `WireDocument` with `doc_type: "token"`, parented to `sceneId`.
  * @example
@@ -610,7 +611,7 @@ export function buildItemDoc(worldId: string, name: string | null, system: ItemS
  * import { buildTokenFromActor, type WireDocument } from "@shadowcat/core";
  *
  * declare const actor: WireDocument;
- * const token = buildTokenFromActor("world-1", "scene-1", actor, "link", { x: 0, y: 0 }, 100);
+ * const token = buildTokenFromActor("world-1", "scene-1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 });
  * token.doc_type; // "token"
  * ```
  */
@@ -620,17 +621,16 @@ export function buildTokenFromActor(
   actor: WireDocument,
   mode: "link" | "instance",
   pos: { /** Initial x coordinate, scene units. */ x: number; /** Initial y coordinate, scene units. */ y: number },
-  cellSize: number,
+  unit: FootprintExtent | null,
   id?: string,
 ): WireDocument {
-  // `w`/`h` are seeded solely as the dangling-link fallback: `resolveTokenBox`
-  // uses this ONLY when the linked/instanced actor is missing (`resolveTokenBox`'s
-  // missing-actor branch, `eng?.w ?? 0`). The actor-backed render path never reads these — size resolves
-  // through EffectiveActor.size x grid-cell instead. This is an explicit, documented
-  // fallback rather than a lazy derivation from the token's last-known actor size, which
-  // would introduce a second size-derivation path.
+  // `w`/`h` are the extent the token draws at until the server's own resolved extent for it
+  // arrives, and the standing extent afterwards for a token no actor sizes (a dangling link).
+  // They are stamped from the scene's server-resolved UNIT footprint rather than derived from
+  // the actor's size and the grid: deriving here would be a second footprint formula, which is
+  // the defect this seam exists to remove.
   const base: TokenEngine = {
-    x: pos.x, y: pos.y, w: cellSize, h: cellSize, rotation: 0,
+    x: pos.x, y: pos.y, w: unit?.w ?? 0, h: unit?.h ?? 0, rotation: 0,
     visual: null, actor_id: null, overrides: null, face: null,
   };
   if (mode === "link") {

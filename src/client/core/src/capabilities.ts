@@ -62,7 +62,7 @@ function roleFloor(role: string): string[] {
  * already returns early for a GM before reaching this function.
  * @param worldGrants The world's default per-role/per-user capability grants.
  * @param isEffectiveOwner Whether `userId` is the effective owner of a TOKEN document
- * (see `effectiveOwner` in `./actor`); floors the resolved role at `"owner"`. Defaults
+ * (see `effectiveOwner`); floors the resolved role at `"owner"`. Defaults
  * to `false` — pass `true` only for `doc_type === "token"`, mirroring the `owner_floor`
  * local inside the server's `data::permission::effective_role`, which applies this floor
  * to no other `doc_type`.

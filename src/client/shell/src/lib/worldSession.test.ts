@@ -15,7 +15,7 @@ import { listWorldMembers } from "./api";
 
 // The members fetch hits the network; stub it (safe default, overridable per
 // test). The server version now arrives on the Welcome payload, not a fetch —
-// ensure this file's mock Welcome message (built in `mockConnect`) includes a
+// ensure the mock Welcome message `mockConnect` builds includes a
 // `server_version: "0.1.0"` field, since the `WireWelcome` schema now requires it.
 vi.mock("./api", async (importActual) => {
   const actual = await importActual<typeof import("./api")>();
@@ -512,8 +512,8 @@ test("subscribeScene sends scene_subscribe and re-establishes on a reconnect Wel
 
   const frames: unknown[] = [];
   session.subscribeScene("identity", (f) => frames.push(f));
-  await vi.waitFor(() => expect(sent.filter((m) => m.type === "scene_subscribe")).toHaveLength(1));
-  const req = sent.find((m) => m.type === "scene_subscribe")!;
+  await vi.waitFor(() => expect(sent.filter((m) => m.type === "scene_subscribe" && m.channel === "identity")).toHaveLength(1));
+  const req = sent.find((m) => m.type === "scene_subscribe" && m.channel === "identity")!;
   // First frame resolves the underlying ws subscription + fires onUpdate.
   push({ type: "scene_derived", request_id: req.request_id, channel: "identity", computed_at_seq: 0, payload: {} });
   await vi.waitFor(() => expect(frames).toHaveLength(1));
@@ -521,10 +521,49 @@ test("subscribeScene sends scene_subscribe and re-establishes on a reconnect Wel
   // A second Welcome (reconnect) must re-establish the subscription — and tear down
   // the prior one, so no duplicate server subscription leaks.
   push(welcomeFrame);
-  await vi.waitFor(() => expect(sent.filter((m) => m.type === "scene_subscribe")).toHaveLength(2));
+  await vi.waitFor(() => expect(sent.filter((m) => m.type === "scene_subscribe" && m.channel === "identity")).toHaveLength(2));
   await vi.waitFor(() =>
     expect(sent.some((m) => m.type === "scene_unsubscribe" && m.request_id === req.request_id)).toBe(true),
   );
+});
+
+test("the session subscribes to footprints itself and publishes each frame's resolved extents", async () => {
+  let push!: (frame: unknown) => void;
+  const sent: Array<Record<string, unknown>> = [];
+  const connect: Connect = (handlers) => {
+    push = (frame) => handlers.onMessage(JSON.stringify(frame));
+    queueMicrotask(() => push(welcomeFrame));
+    return Promise.resolve({ send: (d) => sent.push(JSON.parse(d)), close: () => handlers.onClose() });
+  };
+  const session = new WorldSession({ selfId: "u1", connect, modules: [coreUiStub], logger: silentLogger });
+  await session.enter("w1");
+  await vi.waitFor(() => expect(session.role).toBe("player"));
+
+  // Nothing computes a footprint before the server states one.
+  expect(session.footprints.token("tok1")).toBeNull();
+
+  const req = await vi.waitFor(() => {
+    const m = sent.find((f) => f.type === "scene_subscribe" && f.channel === "footprints");
+    expect(m).toBeDefined();
+    return m!;
+  });
+  push({
+    type: "scene_derived",
+    request_id: req.request_id,
+    channel: "footprints",
+    computed_at_seq: 0,
+    payload: {
+      scenes: [
+        { scene: "scene-1", unit: { w: 173.2, h: 200 }, tokens: [{ token: "tok1", extent: { w: 346.4, h: 400 } }] },
+      ],
+    },
+  });
+  await vi.waitFor(() => expect(session.footprints.token("tok1")).toEqual({ w: 346.4, h: 400 }));
+  expect(session.footprints.unit("scene-1")).toEqual({ w: 173.2, h: 200 });
+
+  // Leaving drops the extents with the connection they came from.
+  session.leave();
+  expect(session.footprints.token("tok1")).toBeNull();
 });
 
 // Minimal SceneToolHost fake (mirrors @shadowcat/ui-kit's `fakeSceneHost` fixture, not
@@ -914,7 +953,7 @@ test("unsubscribing a scene sub during the Welcome await window is not re-establ
 
   const frames: unknown[] = [];
   const sub = session.subscribeScene("identity", (f) => frames.push(f));
-  await vi.waitFor(() => expect(sent.filter((m) => m.type === "scene_subscribe")).toHaveLength(1));
+  await vi.waitFor(() => expect(sent.filter((m) => m.type === "scene_subscribe" && m.channel === "identity")).toHaveLength(1));
 
   // Reconnect Welcome: bootstrap already ran, so the only remaining await before the
   // scene-subs reconciliation loop is the member fetch, now held pending.
@@ -928,7 +967,7 @@ test("unsubscribing a scene sub during the Welcome await window is not re-establ
   await new Promise((r) => setTimeout(r, 20));
 
   // Only the original subscribe; no re-subscribe was sent for the torn-down sub.
-  expect(sent.filter((m) => m.type === "scene_subscribe")).toHaveLength(1);
+  expect(sent.filter((m) => m.type === "scene_subscribe" && m.channel === "identity")).toHaveLength(1);
 });
 
 test("a scene sub added during the Welcome await window is established exactly once", async () => {
@@ -956,15 +995,15 @@ test("a scene sub added during the Welcome await window is established exactly o
 
   // subscribeScene's own establish call is the only scene_subscribe sent — the
   // reconciliation loop must not double-establish a sub added mid-flight.
-  expect(sent.filter((m) => m.type === "scene_subscribe")).toHaveLength(1);
+  expect(sent.filter((m) => m.type === "scene_subscribe" && m.channel === "identity")).toHaveLength(1);
 });
 
 test("an enabled set with nothing to load never calls listInstalledModules a second time on reconnect", async () => {
   const core = await import("@shadowcat/core");
   // This suite has no `clearMocks` config, so the shared `getEnabledModules` mock's
-  // call count otherwise carries over from every earlier test in this file that
-  // also calls `session.enter()`; clear it here so the assertion below reflects
-  // only this session's calls, not file-order-dependent accumulation.
+  // call count otherwise carries over from every earlier test that also calls
+  // `session.enter()`; clear it here so the assertion below reflects only this
+  // session's calls, not order-dependent accumulation.
   vi.mocked(core.getEnabledModules).mockClear();
   const session = new WorldSession({
     selfId: "u1",

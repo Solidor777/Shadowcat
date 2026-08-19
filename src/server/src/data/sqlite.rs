@@ -1652,8 +1652,8 @@ impl SqliteRepository {
         // (all columns), so a shared table would let a non-GM query's score
         // be shifted by the mere LENGTH of GM-only text on the same row even
         // when column weights zero out that column's term-frequency
-        // contribution (see the FTS section of migrations/0001_init.sql).
-        // Separate tables make each tier's row length genuinely isolated.
+        // contribution. Separate tables make each tier's row length genuinely
+        // isolated.
         sqlx::query("DELETE FROM documents_fts_public WHERE doc_id = ?")
             .bind(doc.id.to_string())
             .execute(&mut *conn)
@@ -1727,9 +1727,9 @@ impl SqliteRepository {
     /// `Document` exactly as given, malformed `engine` body included, to
     /// exercise a reader's fail-closed handling of already-persisted data
     /// that predates or violates the current typed schema (schema
-    /// evolution, hand-edited rows). `apply_command` validates on write as
-    /// of this gate, so it can no longer seed such fixtures; this is not a
-    /// production code path and must stay `#[cfg(test)]`-only.
+    /// evolution, hand-edited rows). `apply_command` validates on write, so
+    /// it cannot seed such fixtures; this is not a production code path and
+    /// must stay `#[cfg(test)]`-only.
     #[cfg(test)]
     pub(crate) async fn seed_document_unvalidated(&self, doc: &Document) -> Result<(), DataError> {
         let mut tx = self.pool.begin().await?;
@@ -2434,8 +2434,9 @@ impl Repository for SqliteRepository {
                     // JSON-number literal coerced to its typed f64
                     // representation; an unknown key smuggled into a
                     // tagged-enum sub-object dropped by the
-                    // deserialize-then-reserialize round trip) but that
-                    // normalization only reached the persisted row until now.
+                    // deserialize-then-reserialize round trip), and that
+                    // normalization reaches `doc` alone — the caller's own
+                    // `FieldChange.new` values are untouched by it.
                     // Re-derive each `/engine`(/*) `FieldChange.new` from the
                     // SAME validated post-image so the broadcast delta and the
                     // `world_events` log entry (and therefore every future
@@ -2721,9 +2722,9 @@ impl Repository for SqliteRepository {
         // `documents_fts_gm` table. (Server admin resolves to the Gm world
         // role in `permission_context`.)
         //
-        // TWO SEPARATE single-column tables (migrations/0001_init.sql),
-        // not two columns of one table: SQLite FTS5's bm25() computes each
-        // row's document-length normalization term from the token count of
+        // TWO SEPARATE single-column tables, not two columns of one table:
+        // SQLite FTS5's bm25() computes each row's document-length
+        // normalization term from the token count of
         // the WHOLE ROW (every declared column combined), not just the
         // matched/weighted column — a documented FTS5 characteristic. In a
         // shared two-column table, per-column bm25() weight arguments zero a
@@ -4009,7 +4010,7 @@ mod tests {
             .is_empty());
 
         let decls = vec![SchemaDeclaration {
-            module_id: "nightfox".into(),
+            module_id: "example-system".into(),
             version: "1.0.0".into(),
             schema_format: 1,
             doc_type: "actor".into(),
@@ -6051,17 +6052,17 @@ mod tests {
 
         assert!(r.world_enabled_modules(w.id).await.unwrap().is_empty());
 
-        let ids = vec!["actors-plus".to_string(), "nightfox".to_string()];
+        let ids = vec!["actors-plus".to_string(), "example-system".to_string()];
         r.set_world_enabled_modules(w.id, &ids).await.unwrap();
         assert_eq!(r.world_enabled_modules(w.id).await.unwrap(), ids);
 
         // A subsequent set fully replaces, not appends.
-        r.set_world_enabled_modules(w.id, &["nightfox".to_string()])
+        r.set_world_enabled_modules(w.id, &["example-system".to_string()])
             .await
             .unwrap();
         assert_eq!(
             r.world_enabled_modules(w.id).await.unwrap(),
-            vec!["nightfox".to_string()]
+            vec!["example-system".to_string()]
         );
     }
 
@@ -6614,9 +6615,9 @@ mod tests {
         .expect("player may post a message");
 
         // The owning Player's DocRole::Owner grants WRITE_FIELDS on their own
-        // message (satisfied without the fix), so this Update would otherwise
+        // message (the capability check alone passes), so this Update would otherwise
         // let them forge `kind`/`content` post-hoc. Must be rejected outright:
-        // c-1 has no legitimate message-edit path.
+        // a `Client`-origin write has no legitimate message-edit path.
         let err = r
             .apply_intent(
                 &pl_ctx,
@@ -6707,7 +6708,7 @@ mod tests {
             }]
         };
 
-        // Client origin: still blanket-rejected (c-1 invariant intact).
+        // Client origin: blanket-rejected.
         let client = repo
             .apply_intent(&owner_ctx, world, ops(), 2, WriteOrigin::Client)
             .await;
@@ -7769,7 +7770,7 @@ mod tests {
         };
         // Register: actor /system/mechanics requires object with numeric `version`.
         let decls = vec![SchemaDeclaration {
-            module_id: "nightfox".into(),
+            module_id: "example-system".into(),
             version: "1".into(),
             schema_format: 1,
             doc_type: "actor".into(),
@@ -7820,7 +7821,7 @@ mod tests {
             world_role: WorldRole::Gm,
         };
         let decls = vec![SchemaDeclaration {
-            module_id: "nightfox".into(),
+            module_id: "example-system".into(),
             version: "1".into(),
             schema_format: 1,
             doc_type: "actor".into(),
@@ -8199,7 +8200,7 @@ mod tests {
             world_role: WorldRole::Gm,
         };
         let decls = vec![SchemaDeclaration {
-            module_id: "nightfox".into(),
+            module_id: "example-system".into(),
             version: "1".into(),
             schema_format: 1,
             doc_type: "actor".into(),
@@ -8760,8 +8761,8 @@ mod tests {
         use crate::data::command::FieldChange;
         use crate::data::membership::PermissionContext;
         let (r, gm, w, p1, _p2) = ownership_fixture().await;
-        // An `actor` the player owns. `owner` keeps its pre-existing
-        // provenance-only meaning on every non-`token` doc_type: it admits the
+        // An `actor` the player owns. `owner` carries a provenance-only
+        // meaning on every non-`token` doc_type: it admits the
         // OwnerOrGm redaction tier but grants NO capability, so the player cannot
         // write the actor's body. Widening this is a separate design decision.
         let mut actor = actor_doc_owned_by(w, Some(p1));

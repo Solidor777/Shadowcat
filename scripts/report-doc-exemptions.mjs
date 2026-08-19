@@ -2,9 +2,10 @@
 // repo (root, base, and each package config) instead of naming one hardcoded path — an
 // exemption added to a config this scan does not read would otherwise be invisible to the
 // count it reports, which is the exact backdoor the exemption accountability rule exists to
-// close. Pure library: no top-level side effects. `report-doc-exemptions-cli.mjs` is the
-// executable entry point that imports and runs this unconditionally (see that file's header
-// for why the CLI carries no `isMain`-style guard).
+// close. Pure library: no top-level side effects — the CLI entry point imports `scanDocExemptions`
+// and runs it unconditionally, with no entry-point guard, because an `argv[1]`-vs-module-URL
+// identity check goes silently to a no-op whenever the two spellings fail to normalize
+// identically, and silence is indistinguishable from "no exemptions".
 // Cross-platform: node:path/node:fs only.
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";

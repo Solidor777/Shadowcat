@@ -139,10 +139,9 @@ test("a GM still sees the full rail (every player tool AND every authoring tool)
   }
 });
 
-// Regression: the whole rail — ToolController construction included — used to sit inside a
-// single `{#if isGm}`, so a non-GM had no active tool at all and every canvas drag fell
-// through to camera pan. The controller must be built for EVERY user; only the authoring
-// entries are role-conditional.
+// The controller is built for EVERY user; only the authoring entries are role-conditional.
+// A rail whose ToolController construction sits inside a single `{#if isGm}` leaves a non-GM
+// with no active tool at all, and every canvas drag then falls through to camera pan.
 test("a non-GM's ToolController is constructed and activates the select tool on the scene bridge", async () => {
   const { scene, tools } = captureScene();
   render(ToolRail, { context: setAppContextForTest({ role: "player", scene }) });

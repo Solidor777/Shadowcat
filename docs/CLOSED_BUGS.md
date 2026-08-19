@@ -158,7 +158,7 @@ Confirmed-real defects that have since been fixed, kept for provenance. New fixe
   flanking cells still emitted whenever real path remains on both axes). Regression tests:
   `diagonal_leg_with_both_endpoints_on_lattice_corners_succeeds` (the exact bug-report repro),
   `perfect_diagonal_across_many_lattice_corners_converges` (a longer 45-degree diagonal crossing
-  several lattice-corner ties in a row), `single_endpoint_on_lattice_corner_still_includes_flankers`
+  several lattice-corner ties in a row), `single_endpoint_on_lattice_corner_includes_flankers`
   (proves flanker emission is unregressed when only one endpoint is lattice-aligned) —
   `src/server/src/scene/movement.rs`. `execute_move`'s frozen-fixture scenario "diagonal 3-step
   king path, full visible" (`src/server/src/scene/move_exec.rs`) — previously frozen at the
@@ -342,3 +342,77 @@ Confirmed-real defects that have since been fixed, kept for provenance. New fixe
   field carries its own doc, so it adds no finding). Found by the docs sweep 13 Task 2 implementer
   and deliberately held out of that task, which is comment-only and whose diff was under review;
   fixed immediately once that review closed.
+
+## Server + client / pathfind route cost carried two units under a one-unit contract
+
+- **[hex] The route cost field carried cells from one movement model and world units from the
+  other.** `ServerMsg::PathResult`'s doc states its cost is "in cells (client multiplies
+  `grid.distance.perCell`)". The grid A* router honoured that. `SceneEcs::pathfind`'s `Continuous`
+  branch rescaled its weighted sub-path by `GridShape::world_units_per_cell`, and its pure-polyanya
+  sub-path returned a Euclidean world-unit length directly; `conn` forwarded the value unchanged.
+  `makeMeasureTool` multiplied by `grid.distance.perCell` regardless, so on a continuous scene it
+  applied the game-distance scale twice — at the common authoring of grid `size: 100` and
+  `perCell: 5`, a five-cell route labelled 2500 ft where it should read 25 ft. Reproduced verbatim
+  before the fix via `pathfind_dispatches_to_the_navmesh_router_for_a_continuous_scene`: the raw
+  (pre-fix) assertion pinned `outcome.cost` at ~900 for a 9-cell straight route.
+  **Resolution:** one unit on the wire — cells, converted at the boundary, never at the consumer
+  (the ruled shape; a unit discriminant on `PathResult` was explicitly rejected as re-opening the
+  same forked-decision defect class). `SceneEcs::pathfind`'s weighted continuous sub-path no longer
+  multiplies by `world_units_per_cell` (`pathfinding::find`'s cost is already in cells). The
+  pure-polyanya sub-path divides its Euclidean scene-unit cost by `world_units_per_cell` exactly
+  once, after `navmesh::truncate_at_arrest`, guarded against a non-finite or non-positive divisor
+  (refuses via `PathFail::Invalid` rather than dividing into an infinity a client would render as a
+  label). Every server test asserting a continuous route cost at world-unit magnitudes was
+  re-derived from the cell count and the fixture's own `world_units_per_cell`, including three hex
+  fixtures whose straight-line comparison values needed the same conversion; tolerances were
+  re-scaled through the same division rather than left at their pre-conversion absolute magnitude.
+  A new test, `pathfind_grid_and_continuous_report_the_same_cell_cost_for_a_straight_route`, routes
+  identical straight-line geometry through both engines and asserts equal cell costs — witnessed by
+  mutating each engine's conversion in turn and confirming the shared test fails, then reverting.
+  Client-side, `makeMeasureTool`'s second labelling branch (the no-token-selected fallback, which
+  rendered a bare cell count with no unit — `"5"` vs the route branch's `"25 ft"` for the same
+  distance) was unified with the route branch through one `formatCellDistance` function; the `⚠`
+  arrest marker stays route-branch-only by being appended to that function's return value at the
+  route branch's own call site, not by a caller-specific flag on the shared function. Verified: the
+  sole production consumer of `PathResult.cost` is the measure tool's label — no gate reads it and
+  no per-turn movement budget exists server-side, so this was a display correction with no authz
+  dimension.
+
+- **[settings] A vision mode's authored `default_range` reached no mask, leaving its GM control
+  inert.** `VisionMode::default_range` was written at three sites inside
+  `SceneEcs::resolved_vision_modes` and read by nothing: `SceneEcs::token_vision_floors` looked a
+  mode up only for its `illumination_floor` and `render_hint`, taking the range from
+  `VisionAssignment::range` unconditionally — a plain `f64` with nowhere for a fallback to attach.
+  `GameSettingsPanel`'s GM-only number input persisted, round-tripped and validated a value that
+  changed nothing on the table, as did the client's seeded `darkvision` default of 12 cells.
+  **Fix:** `VisionAssignment::range` is now `Option<f64>`, and `token_vision_floors` resolves an
+  absent range against the referenced mode's default at the point it joins the assignment to the
+  registry — never as a struct-level serde default, which would make every reader see a number the
+  registry never supplied. Both quantities are authored in cells and are compared against the same
+  converted distance, so a resolved default is never scaled relative to an explicit override.
+  The unknown-mode path still drops the assignment before any range resolution runs, so a mode
+  missing from the registry remains fail-closed. A non-finite or negative default makes the range
+  test false unconditionally, which is the under-reveal direction.
+  **An omitted range is not an omitted assignment**, and the two now mean opposite things: every
+  writer in the tree — including seeds, fixtures and tests — either supplies an explicit numeric
+  range or omits the whole assignment, verified by an independent sweep during review.
+
+## Client / render — hex token animation forked the per-step distance from the server
+
+- **[hex] `TokenAnimator`'s tween measured a travelled distance against the grid's indexing scale
+  where the server measures it against the per-step distance, so hex token animation ran `√3`
+  too slow.** `startAnim` divided the travelled pixel distance by the bare `AnimationConfig`
+  field fed from `GridSpec.size` — on hex the cell's OUTER RADIUS, not the distance between
+  adjacent centres — while the server converts the same travelled distance through
+  `GridShape::world_units_per_cell` to compute the authoritative `MoveExecution::duration_ms`.
+  **Fix:** `Grid` gained a public `worldUnitsPerCell()` method (`size` on square, `size *
+  sqrt(3)` on hex — mirroring the server's `world_units_per_cell` in the client's casing so the
+  two are greppable as one concept), and `AnimationConfig.cellSize` was renamed to
+  `worldUnitsPerCell` throughout the animator/`TokenView`/`RenderEngine` chain, with
+  `RenderEngine` now deriving the value from `Grid.worldUnitsPerCell()` instead of passing
+  `GridSpec.size` straight through. Regression coverage: a duration test pinning a one-hex-step
+  tween to the true per-step time, and a cross-language parity test asserting the client's
+  measured inter-center distance (derived via `Grid.snap`'s production round-trip, not a
+  restated formula) equals `worldUnitsPerCell()` for a stated hex size — witnessed on both the
+  client and server sides by mutating each `world_units_per_cell` to return the bare size and
+  confirming the corresponding test fails.

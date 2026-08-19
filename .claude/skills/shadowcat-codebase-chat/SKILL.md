@@ -5,33 +5,29 @@ description: "Use when touching Shadowcat's chat system: the message Document mo
 
 # Shadowcat — Chat Core
 
-Orientation for the server-authoritative chat system. **Shipped**: messages are ordinary
-sequenced `Document`s (`doc_type: "message"`) riding the existing Event/redaction/search
-path — **no new transport or index code**. **Shipped** (restricted-audience messaging —
-whisper allowlist + a GM-only channel): a message's readership is now driven by an `Audience`
-enum mapped onto the generic `PermissionSet`/`gm_role` mechanism, still with zero
-message-specific redaction/search/broadcast code. **Shipped** (sanitizer + command parser
-+ a validated, sanitizing edit/delete path): a content-sanitization boundary (`chat::sanitize`,
-`ammonia` + `pulldown-cmark`) replaces the original raw-text-only model; a leading-command parser
-(`chat::parse_command`) derives `MessageKind`/a content-level `/w` whisper target; `EditMessage`/
-`DeleteMessage` replace the original blanket Update rejection with a real, authorized, sanitizing edit
-path and a soft-tombstone delete path, gated by a new `WriteOrigin` marker. **Shipped**
-(the client display layer + three server enablers): `MessageEngine.source` (edit-prefill raw
-input), an always-on `:shortcode:` → emoji pre-pass in `sanitize`, a member-visible world
-roster, the client Zod mirror (the `chat-docs` module), and the chat UI as three replaceable modules
-(`module-chat` host / `module-chat-composer` / `module-chat-card`) mounted in the tabbed
-sidebar. **Shipped the dice wire**: rolls execute server-side at chat ingest
-(`chat::rolls` — the ONLY untrusted-notation execution path, behind caps + per-roll OS
-entropy), outcomes ride the body as `Segment::RollEmbed`/`RollButton`, roll errors surface as
-the first `MessageKind::System` producer (whispered server notices), rolls are edit-immutable,
-attribution is ownership-validated at ingest, and the card/composer render/author it all.
-**Shipped**: SSRF-guarded link previews — the server's FIRST
-outbound HTTP, behind a validating DNS resolver + IP blocklist, fetched synchronously at ingest,
-stored as a `Segment::LinkPreview`, rendered client-side (never fetched by the client).
+Orientation for the server-authoritative chat system. Messages are ordinary sequenced
+`Document`s (`doc_type: "message"`) riding the existing Event/redaction/search path — **no
+chat-specific transport or index code**. Readership is driven by an `Audience` enum mapped onto
+the generic `PermissionSet`/`gm_role` mechanism, with zero message-specific
+redaction/search/broadcast code. Content passes a sanitization boundary (`chat::sanitize`,
+`ammonia` + `pulldown-cmark`); a leading-command parser (`chat::parse_command`) derives
+`MessageKind` and a content-level `/w` whisper target; `EditMessage`/`DeleteMessage` are the
+authorized, sanitizing edit path and soft-tombstone delete path, gated by a `WriteOrigin` marker.
+The display layer rests on three server enablers — `MessageEngine.source` (edit-prefill raw
+input), an always-on `:shortcode:` → emoji pre-pass in `sanitize`, and a member-visible world
+roster — plus the client Zod mirror (the `chat-docs` module) and the chat UI as three replaceable
+modules (`module-chat` host / `module-chat-composer` / `module-chat-card`). Rolls execute
+server-side at chat ingest (`chat::rolls` — the ONLY untrusted-notation execution path, behind
+caps + per-roll OS entropy), outcomes ride the body as `Segment::RollEmbed`/`RollButton`, roll
+errors surface as whispered `MessageKind::System` notices (`build_roll_error_notice`), rolls are
+edit-immutable, attribution is ownership-validated at ingest, and the card/composer render/author
+it all. SSRF-guarded link previews are the server's ONLY outbound HTTP, behind a validating DNS
+resolver + IP blocklist, fetched synchronously at ingest, stored as a `Segment::LinkPreview`, and
+rendered client-side (never fetched by the client).
 
 ## Link previews — `chat::link_preview` + `chat::preview_cache`
 
-The server's only outbound HTTP. `reqwest` is now a PRODUCTION dep (rustls-tls; ~1.1 MiB binary
+The server's only outbound HTTP. `reqwest` is a PRODUCTION dep (rustls-tls; ~1.1 MiB binary
 delta, far under budget). Load-bearing security surface — treat any change to `chat::link_preview`
 as review-worthy by default (a literal-IP URL
 `http://169.254.169.254/` can bypass the resolver via hyper's IP-literal DNS short-circuit unless
@@ -39,8 +35,9 @@ guarded, per `validate_url` below).
 
 - **`fetch_preview(client, url)`** — the ONLY untrusted-URL fetch path. Guards in order:
   `validate_url` (scheme `http`/`https` ONLY, reject `userinfo`, reject empty host, AND — the
-  Critical fix — for an IP-LITERAL host run `is_blocked_ip` directly since hyper short-circuits
-  DNS for literals; url-crate normalizes `2130706433`/`0x7f000001` to `Host::Ipv4`, caught here);
+  load-bearing arm — for an IP-LITERAL host run `is_blocked_ip` directly, since hyper
+  short-circuits DNS for a literal and `GuardedResolver` would never see it; url-crate normalizes
+  `2130706433`/`0x7f000001` to `Host::Ipv4`, caught here);
   `GuardedResolver` (custom `reqwest::dns::Resolve`, validates EVERY resolved IP against the
   clean-room RFC-cited `is_blocked_ip` v4+v6 blocklist — private/loopback/link-local/CGNAT/ULA/
   multicast/documentation/6to4-`2002::/16`/NAT64/IPv4-mapped/IPv4-compat, ALL-OR-NOTHING so a
@@ -56,7 +53,7 @@ guarded, per `validate_url` below).
 - **Ingest (`chat::link_preview::enrich`, called from `handle_send_message`/`handle_edit_message`):**
   extracts hrefs from GENUINE `<a>` tags in the sanitized `Segment::Html` runs (NOT a raw
   `href=` substring scan — inert body text `see href="http://x"` would otherwise trigger a real
-  outbound fetch, a per-task-review-caught gap), dedups, caps `MAX_PREVIEWS_PER_MESSAGE=3`, fetches
+  outbound fetch), dedups, caps `MAX_PREVIEWS_PER_MESSAGE=3`, fetches
   cache-misses concurrently (`JoinSet`), appends one `Segment::LinkPreview` per success at the
   END. SYNCHRONOUS before publish (no spawned task/post-hoc revision). Gated on
   `ChatContentPolicy::previews_enabled()` (= `hyperlinks && link_previews.unwrap_or(true)` —
@@ -107,7 +104,7 @@ guarded, per `validate_url` below).
   an existing `doc_type=="actor"` doc, IN THE SENDING ROOM'S WORLD
   (`crate::data::document::world_of(d) == Some(room.world_id)`), owned by the sender (GM: any
   actor in that world). An actor doc from another world is refused (`ActorNotSpeakable`) even for
-  its owner — ownership alone no longer crosses world scope. `TokenInstance` refs are REJECTED
+  its owner — ownership alone does not cross world scope. `TokenInstance` refs are REJECTED
   until speak-as-token ships (same error, nothing persisted). Edits copy `actor_owner` verbatim
   from the stored doc, so this ingest gate is the only one needed. `world_of` (`data::document`,
   `pub(crate)`) is the SAME helper `ws::conn::scene_ping_permitted` uses for its own
@@ -143,7 +140,7 @@ with zero message-specific plumbing in any of those subsystems.
     exhaustive test) and `Segment` (tagged enum: `Text{text}` — verbatim, client renders as a DOM
     text node; `Html{sanitized_html}` — a run of already-`ammonia`-cleaned HTML, produced ONLY by
     `sanitize::sanitize`, client renders via `innerHTML`) — both serde-only, NO ts-rs; they live
-    inside the `engine` JSON body (was `system`), not the wire frame, so the client
+    inside the `engine` JSON body, not the wire frame, so the client
     declares its own Zod mirror later. **Design note:** inline formatting/links/images do
     NOT get their own
     typed `Segment` variants — they stay INSIDE a `Segment::Html` run as ordinary sanitized markup
@@ -216,7 +213,8 @@ with zero message-specific plumbing in any of those subsystems.
     regardless of which front-door (frame field or content `/w`) produced it. A post-parse empty
     body (e.g. `/w @alice` with no trailing text) is rejected the same as raw-empty content. Only
     then does it resolve the world's `chat-settings` policy (`resolve_content_policy`), call
-    `sanitize(&parsed.body, &policy)` to produce `content_segments`, then `build_message_doc`, then
+    `sanitize(&parsed.body, &policy)` to produce `handle_send_message::content_segments`, then
+    `build_message_doc`, then
     `room.publish(..., vec![Operation::Create { doc }], ..., WriteOrigin::Client)`. **The sole
     message-authoring entry point** — nothing else may produce a stored `message` doc. Posting
     rights are open to any world member (any member may `SendMessage`); `audience` restricts only
@@ -238,13 +236,13 @@ with zero message-specific plumbing in any of those subsystems.
     post-`/w`-strip) can never reparse into a different `kind` or spuriously trip
     `AudienceLocked` on a literal "/w ..." body. `channel`/`user_owner`/`actor_owner`/`audience`/
     `deleted_at` are always copied verbatim from the STORED doc, never re-derived from the
-    request. Publishes a single `Operation::Update` on `/engine` (was `/system`)
+    request. Publishes a single `Operation::Update` on `/engine`
     under `WriteOrigin::ServerMessageRevision`. Rate-limited like `handle_send_message`.
   - `handle_delete_message(room, repo, ctx, rate, message_id, now, budget_per_min) ->
     Result<Command, SendMessageError>` — same owner-or-GM authorization; a pure SOFT tombstone (no
     command parsing/sanitization runs): clears `content` to `[]` and sets `deleted_at`, leaving
     `channel`/`user_owner`/`actor_owner`/`audience`/`kind`/`edited_at` untouched. Publishes an
-    `Operation::Update` on `/engine` (was `/system`; NOT a hard
+    `Operation::Update` on `/engine` (NOT a hard
     `Operation::Delete`) under `WriteOrigin::
     ServerMessageRevision` — the doc stays in the sequenced log at its original seq, so resync and
     per-recipient redaction continue to apply unmodified. Rate-limited (without a budget, a single
@@ -269,7 +267,8 @@ with zero message-specific plumbing in any of those subsystems.
   the single security boundary — producing one `Segment::Html`. `ammonia_for(policy)` narrows
   ammonia's already-safe default (which already strips `<script>`/`<style>`/the `style`
   attribute/`javascript:`/`data:` schemes) further per toggle: `images: false` removes `<img>`
-  entirely; `images: true` adds a lexical `src` extension allowlist (`.png/.jpg/.jpeg/.webp/.gif`,
+  entirely; `images: true` adds, through `ammonia::attribute_filter`, a lexical image-source
+  extension allowlist (`.png/.jpg/.jpeg/.webp/.gif`,
   checked after stripping `?query`/`#fragment` but NOT scheme/host — a filename-suffix heuristic,
   not real content-type verification; a genuine external host with an allowlisted-looking
   extension still passes, tracked as follow-up); `hyperlinks: false` removes `<a>`; `emails`
@@ -292,8 +291,8 @@ with zero message-specific plumbing in any of those subsystems.
   whisper_to: Option<Vec<String>>, body}`, pure (no repo/async — the async caller resolves
   `whisper_to` usernames and re-validates). Only a LEADING token counts; the same text mid-message
   is literal. `/me `/`/em `/`/emote ` → `MessageKind::Emote`. `/roll `/`/r `, or bare `/NdM`
-  shorthand (optionally `+K`/`-K`) → `MessageKind::Roll`, body stored VERBATIM/unexecuted (a
-  future checkpoint runs it). `/w @user @user... rest` → `MessageKind::Normal` +
+  shorthand (optionally `+K`/`-K`) → `MessageKind::Roll`, body stored VERBATIM/unexecuted (nothing
+  in the parser executes it). `/w @user @user... rest` → `MessageKind::Normal` +
   `whisper_to: Some(raw_usernames)` — this is chat's SECOND `/w` front-door, independent of the
   `SendMessage` wire frame's `audience` field; `handle_send_message` reconciles the two,
   content taking precedence (see below). **`kind` can never be `MessageKind::System` from any
@@ -305,9 +304,9 @@ with zero message-specific plumbing in any of those subsystems.
   `#[serde(default)]`, so an omitted field parses as `Audience::Public`).
   `ClientMsg::EditMessage { request_id, message_id, content }` and
   `ClientMsg::DeleteMessage { request_id, message_id }` (both ts-rs exported) are the ONLY
-  client-facing ways to mutate an existing stored message. **All three now carry a REQUIRED
+  client-facing ways to mutate an existing stored message. **All three carry a REQUIRED
   `request_id: Uuid`** (mirroring the `Search`/`Pathfind`/`MoveRequest` correlation pattern):
-  success is still confirmed only by the broadcast `Event` echo, but a rejection is now surfaced
+  success is confirmed only by the broadcast `Event` echo, while a rejection is surfaced
   to the sender as a `ServerMsg::ChatError { request_id, message }` (one shared error frame for all
   three ops — they share one `SendMessageError` enum + one `Display`). `message` is
   `SendMessageError`'s `Display`, which is `[sec]`-classified: validation-class variants surface a
@@ -317,7 +316,7 @@ with zero message-specific plumbing in any of those subsystems.
   `chat::SendMessageError`.
 - `ws::conn` — three chat dispatch points plus the `Intent` guard:
   - `ClientMsg::Intent { ops, .. }` arm: calls `chat::ops_target_message(&ops)` BEFORE
-    `room.publish`; if true, sends `ServerMsg::Reject{reason: Forbidden}` and `continue`s without
+    `room.publish`; if true, sends `ServerMsg::Reject{reason: Forbidden}` and continues without
     ever reaching `apply_intent`.
   - `ClientMsg::SendMessage { .. }` arm: calls `chat::handle_send_message`.
   - `ClientMsg::EditMessage { .. }` arm: calls `chat::handle_edit_message`.
@@ -325,7 +324,7 @@ with zero message-specific plumbing in any of those subsystems.
   - All three chat arms confirm success only by the broadcast echo of the authored `Event` (same
     pattern as `Intent`), not a direct reply; a failure is `tracing::debug!`-logged AND emits a
     `ServerMsg::ChatError { request_id, message: e.to_string() }` to the SENDER's connection only
-    (`etx`, never broadcast) so the rejection is surfaced instead of vanishing.
+    (`handle_socket::etx`, never broadcast) so the rejection is surfaced instead of vanishing.
 - `http::routes::write_ops` — mirrors the WS ingress guard:
   `if chat::ops_target_message(&ops) { return Err(AppError::Forbidden); }` before the room/repo
   write path. Both transports must independently apply this guard. (`EditMessage`/`DeleteMessage`
@@ -335,13 +334,13 @@ with zero message-specific plumbing in any of those subsystems.
   `Room::publish` through ~60+ call sites (every existing caller passes `WriteOrigin::Client`;
   ONLY `handle_edit_message`/`handle_delete_message` ever construct
   `WriteOrigin::ServerMessageRevision`, and only after their own owner-or-GM check has already
-  passed). Now FOUR coupled chokepoints, not three:
-  1. **Create-gate exemption** (`is_baseline_message = doc.doc_type == MESSAGE_DOC_TYPE &&
+  passed). FOUR coupled chokepoints:
+  1. **Create-gate exemption** (`apply_intent::is_baseline_message = doc.doc_type == MESSAGE_DOC_TYPE &&
      ctx.world_role == WorldRole::Player && doc.owner == Some(ctx.user_id)`) — lets a Player
      create a `message` doc even though `core:create` is otherwise GM-only by world default.
   2. **Ingress guard** (`ops_target_message`, WS `Intent` + HTTP `write_ops`) — rejects any
      client-authored `message` Create/Delete before it ever reaches chokepoint 1.
-  3. **Update blanket rejection**, now CONDITIONAL: `if cur.doc_type == MESSAGE_DOC_TYPE &&
+  3. **Update blanket rejection**, CONDITIONAL: `if cur.doc_type == MESSAGE_DOC_TYPE &&
      origin != WriteOrigin::ServerMessageRevision { return Err(DataError::Forbidden); }` — still
      rejects every ordinary client `Update` against a stored `message` doc (an owning Player's
      `DocRole::Owner` would otherwise satisfy WRITE_FIELDS and let them forge fields post-hoc), but
@@ -355,7 +354,7 @@ with zero message-specific plumbing in any of those subsystems.
      WRITE_FIELDS}, all: false, ... }`, trusting that the calling handler has ALREADY completed
      its owner-or-GM check. This is proven correct for BOTH edit and delete, across all three
      `Audience` variants, for both the owner and a non-addressed GM. `all: false` (not `all:
-     true`) is deliberate — it authorizes writing `/engine` only (was `/system`),
+     true`) is deliberate — it authorizes writing `/engine` only,
      not `/permissions`/`/embedded`, even for this trusted origin. **Caveat:** this scoped grant
      does NOT auto-satisfy an additive `declared_caps_for_path` world/module requirement on a
      message `/engine` (sub-)path — no first-party module declares one today (inert), but a future one would
@@ -365,9 +364,9 @@ with zero message-specific plumbing in any of those subsystems.
 - **`SendMessage` is the SOLE message-authoring path.** A stored `message` doc can only be
   produced by `chat::handle_send_message` → `chat::build_message_doc` → `Room::publish`. No other
   code path may construct or persist one.
-- **The seam is now a FOUR-part coupled surface — weakening any one part alone reopens forgery.**
+- **The seam is a FOUR-part coupled surface — weakening any one part alone reopens forgery.**
   (1) create-gate exemption, (2) `ops_target_message` ingress guard (WS `Intent` + HTTP
-  `write_ops`), (3) the Update blanket rejection (now conditional on `WriteOrigin`), and (4) the
+  `write_ops`), (3) the Update blanket rejection (conditional on `WriteOrigin`), and (4) the
   `WriteOrigin::ServerMessageRevision` scoped-access grant. (1) is sound only because (2) rejects
   a client-authored `message` Create/Delete before it ever reaches (1). (3) still blocks EVERY
   ordinary client Update, so a Player's own `DocRole::Owner` can never satisfy WRITE_FIELDS on
@@ -422,7 +421,7 @@ with zero message-specific plumbing in any of those subsystems.
   There is no automatic GM see-all for `Whisper`/`GmOnly` messages — a GM must be individually
   listed in `recipients` (for `Whisper`) or simply hold `WorldRole::Gm` at read time (for
   `GmOnly`, via `gm_role`); a GM not covered by either sees nothing, not even that the doc exists.
-  This is a deliberate product decision (§0 of the design doc), not an oversight.
+  This is a deliberate product decision, not an oversight.
 - **Recipient validation happens BEFORE document construction, fail-closed on the whole send.**
   `handle_send_message` checks every `Whisper` recipient against current world membership; a
   single bad uuid rejects the entire message (no partial send, nothing persisted) — do not move
@@ -450,7 +449,7 @@ with zero message-specific plumbing in any of those subsystems.
   tracked in a `chatPending` map. Chat correlation is ASYMMETRIC: only a rejection replies, so the
   promise RESOLVES on a `CHAT_ERROR_WINDOW_MS` (15s) timeout (success-assumed) and REJECTS on a
   `chat_error` frame; `failPending` rejects in-flight ops on disconnect. `AppContext.chat.send`/
-  `edit`/`delete` (ui-kit) are now `Promise<void>`; the composer surfaces the reason inline
+  `edit`/`delete` (ui-kit) return `Promise<void>`; the composer surfaces the reason inline
   (`errorMsg`).
 - **`SendMessageError`'s `Display` is a `[sec]` security boundary — do not widen it.** It is what
   `ChatError.message` carries. Validation-class variants (`Empty`/`TooLong`/`RateLimited`/
@@ -516,8 +515,8 @@ Three independently replaceable modules (UI-is-modules; swap any one without the
   sets `audience: gm_only`). Channels live in a `channel-registry`
   singleton config doc (id→`{name}` map, GM-seeded `{general}` via the reactive-seed idiom;
   add/rename are single-key updates but **remove is a WHOLE-FIELD replace of
-  `/engine/channels`** (was `/system/channels`) with the key deleted — `set_pointer` cannot delete keys; a null
-  tombstone was reviewed and rejected). Render cap: last 200 per view, derived incrementally via
+  `/engine/channels`** with the key deleted — `set_pointer` cannot delete keys, and a null
+  tombstone is deliberately not used). Render cap: last 200 per view, derived incrementally via
   `channels`'s `ChatDerivationCache` (`deriveVisibleDocs`) — `channel`/`audience` are frozen at
   creation (see `handle_edit_message` above), so an id's view membership and sorted position are
   parsed/computed once and never revisited; a subsequent edit (a new WireDocument reference for a
@@ -534,7 +533,7 @@ Three independently replaceable modules (UI-is-modules; swap any one without the
   re-syncs on visibility — panels stay mounted in the tabbed sidebar). Both `scrollToBottom` and
   the visibility-reveal path must call the same scroll-state sync used by the `onscroll` handler,
   or the virtualized window silently goes stale after a programmatic (non-event-firing) scroll.
-- **`@shadowcat/module-chat-composer`** — Enter sends / Shift+Enter newline / `e.isComposing` IME
+- **`@shadowcat/module-chat-composer`** — Enter sends / Shift+Enter newline / `isComposing` IME
   guard; validation on the TRIMMED length (what's actually sent); NO client command parsing
   (`/`-commands ride verbatim — the server parses); the "Speak as" picker sends
   `actor_owner` `Actor` refs, server-ownership-validated at ingest (see Dice wire above).
@@ -553,11 +552,11 @@ Three independently replaceable modules (UI-is-modules; swap any one without the
   **THE `{@html}` INVARIANT: the module's single `{@html}` sink renders only an
   `isKnownSegment`-narrowed `kind:"html"` segment's `sanitized_html` (ammonia-produced);
   Text segments are text nodes (`white-space: pre-wrap`); every other string interpolates
-  escaped.** Header: author via `ctx.members` (member-visible roster: `list_members` widened
-  from GM-only to any member — chat name resolution needs it), actor name via
+  escaped.** Header: author via `ctx.members` (`list_members` is member-visible, not GM-only —
+  chat name resolution needs it), actor name via
   the real `resolveTokenActor`/`actorDisplayName` fail-closed chokepoint (an
   `ActorOwnerRef::Actor` is wrapped in a synthetic `{engine:{actor_id, overrides:{}}}` token
-  (was `{system:{...}}}`) — safe: that resolver branch reads only
+  — safe: that resolver branch reads only
   `engine.actor_id` + `engine.overrides`, and the
   empty overrides map is a no-op). Roll-pending shell derives the
   formula from `sys.source` (command prefix stripped per `parse_command`'s exact tokens) —
@@ -574,9 +573,8 @@ Three independently replaceable modules (UI-is-modules; swap any one without the
 - The sanitizer's only new production dependencies are `ammonia` (HTML cleaning) and
   `pulldown-cmark` (Markdown rendering).
 - `shadowcat-codebase-documents-permissions` — the `Document`/`PermissionSet`/redaction/search
-  machinery a message rides, including the `gm_role` field this checkpoint added (owned there,
-  load-bearing here — see that skill's Hard Invariants for what `Some(role)` does to
-  `resolve_access`'s GM branch).
+  machinery a message rides, including the `gm_role` field (owned there, load-bearing here — see
+  that skill's Hard Invariants for what `Some(role)` does to `resolve_access`'s GM branch).
 - `shadowcat-codebase-realtime-sync` — `Room::publish`, WS `Intent`/`SendMessage` dispatch,
   broadcast/resync, and the HTTP `write_ops` mirror guard.
 - graphify: `graphify explain "chat"` / `graphify query "how does SendMessage reach a stored

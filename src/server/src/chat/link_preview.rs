@@ -44,7 +44,7 @@ pub struct LinkPreview {
     pub description: String,
 }
 
-/// Cap on distinct URLs previewed per message (design doc §3). First-seen
+/// Cap on distinct URLs previewed per message. First-seen
 /// order, applied to the DEDUPED candidate list — a message pasting the same
 /// link four times still counts it once toward this cap.
 pub const MAX_PREVIEWS_PER_MESSAGE: usize = 3;

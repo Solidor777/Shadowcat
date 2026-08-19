@@ -32,9 +32,8 @@ optimistically and roll back on divergence.
     **`scene_id` IS NOT TRUSTED and selects nothing.** The gate's scene is DERIVED from the token
     via `SceneEcs::token_move(token, &[])`, and every gate input keys on that; the request's
     `scene_id` is only checked for agreement and refused on mismatch (redundant defense-in-depth).
-    Taking it as input was a `[sec]` **Critical** — a total bypass of the wall + visibility gate,
-    with authorization fully intact — so any NEW move-like or routing frame added here must derive
-    the same way. A frame naming no token (`Pathfind`) must instead prove presence. Full invariant +
+    Taking it as input is a total bypass of the wall + visibility gate with authorization fully
+    intact, so any NEW move-like or routing frame added here must derive the same way. A frame naming no token (`Pathfind`) must instead prove presence. Full invariant +
     the failure it prevents: `shadowcat-codebase-scene-rendering`, the derive-from-token INVARIANT.
     Acquires `publish_guard` at the TOP and HOLDS it across the entire validate→commit critical
     section (mirrors `publish` atomicity). Scene read locks are scoped and dropped before the
@@ -51,7 +50,7 @@ optimistically and roll back on divergence.
     not durable).
 - `ws::protocol` — client/server message frames; `ServerMsg`, `event_seq()`.
 - `ws::conn` — per-connection loop + egress; `ws::time` — server time source +
-  client offset calibration (exists before its consumer, per ARCHITECTURE §2 invariant 2).
+  client offset calibration (exists before its consumer).
   `send_filtered` (takes `room: &Room` alongside `repo`/`ctx`) is where per-recipient
   redaction actually happens: only the `Event` branch carries document data, so only it is
   redacted — every other frame (including `MoveStream`, clipped separately by `clip_move_stream`;
@@ -107,13 +106,14 @@ optimistically and roll back on divergence.
   than closing it, and the property is pinned by a `#[cfg(test)]` verify counter, not by timing.
   **(2) Consume is a SINGLE guarded `UPDATE … RETURNING`** with every lifecycle predicate in the
   WHERE, seating sharing its transaction, so concurrent redemption cannot double-seat.
-  **Why seating is by invite and not by name:** `add_member`-by-username returned 404-vs-204 and so
-  leaked username existence to any authenticated account (`create_world` requires only `AuthUser`,
+  **Why seating is by invite and not by name:** a seat-by-username route answers 404-vs-204 and so
+  leaks username existence to any authenticated account (`create_world` requires only `AuthUser`,
   so anyone can become a GM) — contradicting the constant-time verify `/api/login` already pays to
-  hide exactly that. A uniform 204 would NOT have closed it, because seating-on-hit stays
+  hide exactly that. A uniform 204 does NOT close it either, because seating-on-hit stays
   observable via `list_members`. Naming a target is the disclosure; the invite removes the naming.
-  NOTE this is about the by-NAME path only: `add_member` survives (GM-gated, by user ID, 404 on an
-  unknown id) — it is naming a user by a guessable identifier that was removed, not membership writes.
+  NOTE this covers the by-NAME shape only: `add_member` is GM-gated, takes a user ID, and 404s on
+  an unknown id — what is inadmissible is naming a user by a guessable identifier, not a
+  membership write.
 - **Deletion & eviction.** `ServerMsg::Evicted { user: Option<Uuid> }` is the terminal
   out-of-band frame: `None` addresses every connection in a room (world deletion, broadcast on the
   removed room), `Some(id)` addresses one user's connections across ALL rooms
@@ -132,7 +132,7 @@ optimistically and roll back on divergence.
   `evicted` as terminal (`stop()` — no reconnect) and surfaces `onEvicted`, which the shell routes
   to `leaveWorld()`.
 - `WsClient` — client WS connection + resync. **Welcome watchdog +
-  connection-generation guard (silent-hang-startup fix):** `open()` arms a `welcomeTimeoutMs`
+  connection-generation guard, against a silent hang at startup:** `open()` arms a `welcomeTimeoutMs`
   watchdog (default 10s, `opts.welcomeTimeoutMs`) once `opts.connect` resolves; an open-but-
   unwelcomed transport is closed into the normal `scheduleReconnect` path instead of hanging on
   "Connecting…" forever (the browser's socket `open` fires at HTTP 101, BEFORE the server's
@@ -141,9 +141,9 @@ optimistically and roll back on divergence.
   increasing `connGeneration`; `handleFrame` ignores a `"welcome"` OR `"resync_end"` frame whose
   generation doesn't match the CURRENT connection before acting (clearing the watchdog, setting
   `serverOffsetMs`, emitting `onWelcome`; resp. advancing `nextExpected` + emitting
-  `onResyncComplete`) — this closes the reintroduction where a frame already queued as a message
-  task when the watchdog fired could still arrive after reconnect and incorrectly act on (or
-  disarm) the successor connection's state. **`armWelcomeWatchdog` itself also guards against
+  `onResyncComplete`) — without the check, a frame already queued as a message task when the
+  watchdog fired still arrives after reconnect and acts on (or disarms) the successor
+  connection's state. **`armWelcomeWatchdog` itself also guards against
   out-of-order delivery**: a `welcomedGeneration` field (set inside the `"welcome"` case, after the
   generation check) makes arming a no-op when the CURRENT generation is already welcomed — covers a
   `Connect` implementation that delivers Welcome via a microtask BEFORE its own promise resolves
@@ -157,13 +157,13 @@ optimistically and roll back on divergence.
 - `webSocketConnect(url, connectTimeoutMs = 10_000)`: bounds
   the handshake so an accepted-but-never-upgraded socket settles (rejects + closes) instead of
   leaving `WsClient`'s `scheduleReconnect` path unreachable behind an unsettled connect promise. A single
-  shared `settled` flag (distinct from `opened`) guards ALL THREE settling paths (timeout, error,
-  open) — a `connectTimeoutMs` expiry and an already-queued `open` event landing in the same tick
-  no longer lets `opened` flip true AFTER the promise already rejected, which would otherwise let a
+  shared `webSocketConnect.settled` flag (distinct from `opened`) guards ALL THREE settling paths (timeout, error,
+  open) — a `webSocketConnect.connectTimeoutMs` expiry and an already-queued `open` event landing in the same tick
+  cannot let `opened` flip true AFTER the promise already rejected, which would otherwise let a
   later `close` event ALSO reach `handlers.onClose` (double-scheduling a reconnect on top of the
   promise-rejection path, and the orphan transport's own close nulling `WsClient.transport` out
   from under the live one). The `open` listener discards the socket (`ws.close()`, no resolve) when
-  `settled` is already true instead of completing the handshake.
+  `webSocketConnect.settled` is already true instead of completing the handshake.
 - `DocumentStore implements ReadableDocuments` (authoritative,
   rollback base).
 - `OptimisticClient implements ReadableDocuments` (the
@@ -171,10 +171,10 @@ optimistically and roll back on divergence.
 
 ## Hard invariants
 
-- **Ordered, recoverable realtime** (ARCHITECTURE §2 invariant 2): every broadcast carries a per-world
+- **Ordered, recoverable realtime**: every broadcast carries a per-world
   monotonic seq from an atomic counter; clients gap-detect and resync from the `RingBuffer` or a
   full snapshot.
-- **Optimistic with rollback** (ARCHITECTURE §2 invariant 3): `OptimisticClient` applies locally tagged with
+- **Optimistic with rollback**: `OptimisticClient` applies locally tagged with
   an intent id; the server confirmation reconciles; divergence rolls back to `DocumentStore`.
   `appliedSeq` is identical across the two so the derived watermark holds
   [[render-from-optimistic-view]].

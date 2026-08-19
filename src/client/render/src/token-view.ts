@@ -1,5 +1,5 @@
-import { resolveTokenActor, resolveConditions, resolveTokenBox, resolveTokenVisual } from "@shadowcat/core";
-import type { ReadableDocuments, AssetResolver, WireDocument, FactionRegistryEngine, TokenEngine, AnimatedSource } from "@shadowcat/core";
+import { resolveTokenActor, resolveConditions, resolveTokenBox, resolveTokenVisual, EMPTY_FOOTPRINTS } from "@shadowcat/core";
+import type { ReadableDocuments, AssetResolver, WireDocument, FactionRegistryEngine, TokenEngine, AnimatedSource, FootprintLookup } from "@shadowcat/core";
 import type { DisplayBackend } from "./backend";
 import type { TokenNodeSpec, ResolvedAnimatedSource } from "./types";
 import { parseColor } from "./geometry";
@@ -23,8 +23,8 @@ export class TokenView {
   private dragging: string | null = null;
 
   // Animation config fields; kept in sync with the animator via pushAnimConfig().
-  /** Active grid's pixel-per-cell size — see `setCellSize`. */
-  private cellSize = 100;
+  /** Active grid's per-step world distance (`Grid.worldUnitsPerCell`) — see `setWorldUnitsPerCell`. */
+  private worldUnitsPerCell = 100;
   /** Tween speed, in grid cells per second — see `setAnimationConfig`. */
   private animSpeed = 6;
   /** Easing curve applied to polyline tweens — see `setAnimationConfig`. */
@@ -38,6 +38,9 @@ export class TokenView {
    * @param viewedSceneId Resolves the currently-viewed scene id; `reconcile()` scopes its query to
    * this scene (falls back to unscoped — every token in the store — when it resolves to `null`).
    * Defaults to always-`null` (legacy/test callers that never pass one).
+   * @param footprints Resolves the server's current footprint lookup, read fresh per `toSpec` so a
+   * newly-arrived frame is picked up on the next reconcile. Defaults to `EMPTY_FOOTPRINTS`, under
+   * which every token draws at its document's own authored `w`/`h`.
    * @example
    * ```ts
    * import { TokenView, MockBackend } from "@shadowcat/render";
@@ -52,6 +55,7 @@ export class TokenView {
     private readonly assets: AssetResolver,
     private readonly backend: DisplayBackend,
     private readonly viewedSceneId: () => string | null = () => null,
+    private readonly footprints: () => FootprintLookup = () => EMPTY_FOOTPRINTS,
   ) {}
 
   /** Mark `id` as the locally-dragged token (its sprite snaps to the authoritative transform each
@@ -72,9 +76,11 @@ export class TokenView {
     this.dragging = id;
   }
 
-  /** Update the pixel-per-cell value used to compute tween durations. Affects only FUTURE tweens
+  /** Update the per-step world distance used to compute tween durations — the world distance
+   * between adjacent cell centres (`Grid.worldUnitsPerCell`), NOT the grid's indexing scale
+   * (`GridSpec.size`), which diverges from it by `sqrt(3)` on hex. Affects only FUTURE tweens
    * (`TokenAnimator.setConfig` does not retarget an animation already in progress).
-   * @param px The active grid's pixel-per-cell size.
+   * @param units The active grid's world distance between adjacent cell centres.
    * @example
    * ```ts
    * import { TokenView, MockBackend } from "@shadowcat/render";
@@ -82,16 +88,16 @@ export class TokenView {
    *
    * declare const store: ReadableDocuments;
    * const view = new TokenView(store, new AssetResolver(), new MockBackend());
-   * view.setCellSize(100);
+   * view.setWorldUnitsPerCell(100);
    * ```
    */
-  setCellSize(px: number): void {
-    this.cellSize = px;
+  setWorldUnitsPerCell(units: number): void {
+    this.worldUnitsPerCell = units;
     this.pushAnimConfig();
   }
 
   /** Update the speed + easing used to compute tween durations. Affects only FUTURE tweens, same
-   * as `setCellSize`.
+   * as `setWorldUnitsPerCell`.
    * @param cfg The new tween speed/easing.
    * @example
    * ```ts
@@ -109,9 +115,9 @@ export class TokenView {
     this.pushAnimConfig();
   }
 
-  /** Merge the stored speed/easing/cellSize into a single AnimationConfig and forward it to the
-   * animator. Coupling: both setCellSize and setAnimationConfig must call this so the animator's
-   * config is always the product of the latest values of all three fields.
+  /** Merge the stored speed/easing/worldUnitsPerCell into a single AnimationConfig and forward it
+   * to the animator. Coupling: both setWorldUnitsPerCell and setAnimationConfig must call this so
+   * the animator's config is always the product of the latest values of all three fields.
    * @example
    * ```
    * // private method; not part of the public API
@@ -119,11 +125,11 @@ export class TokenView {
    * ```
    */
   private pushAnimConfig(): void {
-    this.animator.setConfig({ speedCellsPerSec: this.animSpeed, easing: this.animEasing, cellSize: this.cellSize });
+    this.animator.setConfig({ speedCellsPerSec: this.animSpeed, easing: this.animEasing, worldUnitsPerCell: this.worldUnitsPerCell });
   }
 
-  /** Has no production caller today (`src/modules`/`src/client/shell` drive route playback
-   * exclusively through `animateSamples`, per `commitRoute`'s own "Animation is
+  /** Has no production caller today (`WorldSession` drives route playback exclusively through
+   * `SceneInteraction.animateSamples`, per `commitRoute`'s own "Animation is
    * broadcast-driven via onMoveStream ... no local animation from the moveRequest resolve value"
    * comment); exercised only by tests and this passthrough's own caller (`RenderEngine`'s
    * `SceneToolHost` seam). The mechanism below is the contract it honors if called.
@@ -295,7 +301,8 @@ export class TokenView {
    * (`resolveTokenActor`), the visual (`resolveTokenVisual`, image or animated, URL-resolved via
    * `resolveSource`), the faction border color (via the world `faction-registry` doc; `null` when
    * the effective actor has no faction or the faction has no registered color), condition badges
-   * (`resolveConditions`), and the footprint box/shape (`resolveTokenBox`). Fails closed to `null`
+   * (`resolveConditions`), and the footprint box/shape (`resolveTokenBox`, reading the server's
+   * resolved extent rather than computing one). Fails closed to `null`
    * when the doc has no `engine` body or `resolveTokenVisual` cannot resolve a visual; `reconcile`
    * treats a `null` result as "this token is absent" and tears down any tracked state for its id.
    * @param doc The `token` document to project.
@@ -326,7 +333,7 @@ export class TokenView {
     }
     // Condition badges: resolve the actor's condition ids to registry icon glyphs.
     const badges = resolveConditions(doc, this.store).map((c) => c.icon);
-    const box = resolveTokenBox(doc, this.store, eff);
+    const box = resolveTokenBox(doc, this.store, this.footprints(), eff);
     return {
       x: box.x, y: box.y, w: box.w, h: box.h, rotation: s.rotation ?? 0,
       visual: resolvedVisual,

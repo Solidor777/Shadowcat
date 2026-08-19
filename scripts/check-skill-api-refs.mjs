@@ -7,13 +7,38 @@
 // Cross-platform: node:path/node:fs only.
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import { listSkillDirs, MD_ROOTS } from "./lib/gate-corpus.mjs";
 
 /**
- * Recursively finds every `SKILL.md` file under a `.claude/skills`-shaped directory.
- * @param {string} skillsRoot - Directory to scan from (e.g. `<repo>/.claude/skills`).
- * @returns {string[]} Absolute paths, sorted for deterministic output.
+ * Recursively finds every `SKILL.md` file under the TRACKED skill directories. Tracked-ness is
+ * decided once, by `listSkillDirs`, and both skill gates read that one answer: an untracked
+ * directory is vendored third-party prose this repo neither wrote nor maintains, and a `/api/...`
+ * pointer inside one is no more this repo's to gate than a code-symbol citation is. Scanning
+ * every directory unconditionally is what made the two gates disagree on the size of the same
+ * corpus, and would fail this repo's CI on prose nobody here committed.
+ *
+ * The ROOT SET is read from `MD_ROOTS` for the same reason, and from nowhere else: a second entry
+ * added there must reach both gates, and a hardcoded skills path here would silently under-scan
+ * this one while `listSkillDirs` kept reporting the larger corpus as tracked.
+ *
+ * @param {string} repoRoot - Absolute path to the repository root.
+ * @param {{trackedDirs?: Set<string>, untrackedDirs?: string[]}} [opts] - corpus scoping override,
+ *   for a fixture tree that is not itself a git checkout; production passes nothing and asks git.
+ * @returns {{ files: string[], untrackedDirs: string[] }} Absolute paths, sorted, plus the
+ *   directory names the tracked-ness rule excluded — never silently dropped.
  */
-export function findSkillFiles(skillsRoot) {
+export function findSkillFiles(repoRoot, opts = {}) {
+  let { trackedDirs, untrackedDirs } = opts;
+  if (trackedDirs === undefined) {
+    const dirs = listSkillDirs(repoRoot);
+    if (dirs === null)
+      throw new Error(
+        "git could not list the skill corpus: this gate scopes by tracked-ness and cannot " +
+          "guess it. Run it inside a git checkout with git on PATH.",
+      );
+    trackedDirs = dirs.tracked;
+    untrackedDirs = dirs.untracked;
+  }
   const out = [];
   const walk = (dir) => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -22,8 +47,12 @@ export function findSkillFiles(skillsRoot) {
       else if (entry.isFile() && entry.name === "SKILL.md") out.push(p);
     }
   };
-  walk(skillsRoot);
-  return out.sort();
+  for (const root of MD_ROOTS) {
+    const skillsRoot = join(repoRoot, ...root.split("/"));
+    for (const entry of readdirSync(skillsRoot, { withFileTypes: true }))
+      if (entry.isDirectory() && trackedDirs.has(entry.name)) walk(join(skillsRoot, entry.name));
+  }
+  return { files: out.sort(), untrackedDirs: untrackedDirs ?? [] };
 }
 
 // Matches only the two generated-documentation path families (`/api/rust/...`,
@@ -60,17 +89,20 @@ export function apiRefResolves(distDocsRoot, apiPath) {
 }
 
 /**
- * Checks every `/api/...` doc pointer across every skill under `skillsRoot` against the
- * assembled site at `distDocsRoot`.
- * @param {string} skillsRoot - Directory to scan for `SKILL.md` files.
+ * Checks every `/api/...` doc pointer across every TRACKED skill against the assembled site at
+ * `distDocsRoot`.
+ * @param {string} repoRoot - Absolute path to the repository root.
  * @param {string} distDocsRoot - The assembled `dist-docs/` root to resolve pointers against.
- * @returns {{ filesScanned: number, refsChecked: number, broken: { file: string, ref: string }[] }}
- *   `filesScanned`/`refsChecked` stamp the result with what was measured — a zero of either is
- *   the extraction-pattern-broke failure mode this check exists to catch, not a clean pass — and
- *   `broken` lists every citation whose target does not exist on disk.
+ * @param {{trackedDirs?: Set<string>, untrackedDirs?: string[]}} [opts] - corpus scoping override,
+ *   forwarded to `findSkillFiles`.
+ * @returns {{ filesScanned: number, refsChecked: number, broken: { file: string, ref: string }[],
+ *   untrackedDirs: string[] }} `filesScanned`/`refsChecked` stamp the result with what was
+ *   measured — a zero of either is the extraction-pattern-broke failure mode this check exists to
+ *   catch, not a clean pass — `broken` lists every citation whose target does not exist on disk,
+ *   and `untrackedDirs` names what the corpus rule excluded, so the exclusion is counted.
  */
-export function checkSkillApiRefs(skillsRoot, distDocsRoot) {
-  const files = findSkillFiles(skillsRoot);
+export function checkSkillApiRefs(repoRoot, distDocsRoot, opts = {}) {
+  const { files, untrackedDirs } = findSkillFiles(repoRoot, opts);
   const broken = [];
   let refsChecked = 0;
   for (const file of files) {
@@ -80,5 +112,5 @@ export function checkSkillApiRefs(skillsRoot, distDocsRoot) {
       if (!apiRefResolves(distDocsRoot, ref)) broken.push({ file, ref });
     }
   }
-  return { filesScanned: files.length, refsChecked, broken };
+  return { filesScanned: files.length, refsChecked, broken, untrackedDirs };
 }

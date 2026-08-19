@@ -14,8 +14,9 @@
 
   // Stable per-instance id: a message can carry multiple inline rolls and many MessageCards
   // mount simultaneously, so a hardcoded id would collide across on-screen instances. Same
-  // `$props.id()` idiom `LauncherMenu`'s `menuId` uses for its own per-instance id — see that
-  // file for its (different) ARIA rationale; this file's own reason is the collision above.
+  // `$props.id()` idiom `LauncherMenu`'s `menuId` uses for its own per-instance id — see
+  // `menuId`'s own comment for its (different) ARIA rationale; the reason here is the
+  // collision above.
   const uid = $props.id();
   const popoverId = `roll-tooltip-popover-${uid}`;
 

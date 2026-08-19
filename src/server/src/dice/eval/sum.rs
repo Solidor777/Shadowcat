@@ -391,9 +391,9 @@ mod tests {
 
     #[test]
     fn dice_group_plus_labeled_constant_parses_and_surfaces_both() {
-        // The exact failing case from the e2e report: "1d20 + 3[dex]" must parse
-        // (no longer a trailing-input error) and the labeled constant must show up
-        // in labeled_consts alongside the dice group's own records.
+        // A dice group followed by an additive labeled constant parses, and the
+        // labeled constant shows up in labeled_consts alongside the dice group's
+        // own records.
         let spec = notation::parse("1d20 + 3[dex]", total_ctx()).unwrap();
         let raws = roll(&spec, &mut NoiseRng::from_seed(1));
         let out = evaluate(&spec, &raws);

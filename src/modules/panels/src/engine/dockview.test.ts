@@ -401,8 +401,8 @@ test("group-onto-group: a whole-group transfer targeting an existing group's con
   // subscription to `group.model.onWillDrop` (`#groupWillDropSubs`, wired in
   // `apply()`), fired here via the group model's own private `_onWillDrop`
   // emitter — the SAME emitter `group.model.onWillDrop(cb)` subscribes to in
-  // production (mirrors the file's existing `_onDidDimensionChange.fire`
-  // pattern for testing a real dockview event without a native drag gesture).
+  // production (the same direct-emitter-fire technique used elsewhere for
+  // `_onDidDimensionChange.fire`, testing a real dockview event without a native drag gesture).
   // The "assets" group here has a single tab ("assets" itself), so its
   // translated ops are identical in shape to a single-tab drop of that id.
   const host = document.createElement("div");

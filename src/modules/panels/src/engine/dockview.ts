@@ -1,5 +1,5 @@
-// The ONLY file in this codebase permitted to import `dockview-core`. Every
-// dockview type/event crosses out of this module already translated into our
+// The `dockview` module is the ONLY importer of `dockview-core` in this codebase. Every
+// dockview type/event crosses out of it already translated into our
 // own vocabulary (`LayoutOp`, `DropSite`) — the `policy` module and everything above
 // the `EngineAdapter` seam stays engine-free.
 import { createDockview } from "dockview-core";
@@ -62,8 +62,8 @@ class AdoptingContentRenderer implements IContentRenderer {
 
   /** Stashes `resolve` for `init()` to call (never invoked here — see the class
    * doc comment) and builds this renderer's own wrapper `element`, tagged with
-   * `className` so `panels.scss` can style the stage's content container
-   * distinctly from an ordinary panel's.
+   * `className` so this module's own stylesheet can style the stage's content
+   * container distinctly from an ordinary panel's.
    * @param resolve Lazily resolves the element to adopt — a panel slot, or the
    * shared stage element. Called exactly once, from `init()`.
    * @param className CSS class applied to this renderer's own wrapper element
@@ -908,8 +908,8 @@ export class DockviewEngine implements EngineAdapter {
 
   /** Floating groups are non-modal dialogs (dockview's own `Overlay`
    * sets `role="dialog"`/`aria-modal="false"` — see `Overlay`'s constructor); this adds
-   * the label + focus management the brief requires that dockview doesn't
-   * supply itself: `aria-label` = the panel's own label, DOM focus moves
+   * the label + focus management dockview doesn't supply itself:
+   * `aria-label` = the panel's own label, DOM focus moves
    * into the dialog the moment it appears, and Escape (bubbled from
    * anywhere inside it) closes it via the same op channel a menu/drag
    * gesture uses. Called once per floating-panel CREATION (`apply()`'s
@@ -1181,7 +1181,7 @@ export class DockviewEngine implements EngineAdapter {
    * of these ops apply). This assumes the dragged group is not already a
    * member of the target zone (the overwhelmingly common real gesture — a
    * titlebar drag to a DIFFERENT zone's edge); a same-zone whole-group
-   * reorder is a residual approximation, matching this file's existing
+   * reorder is a residual approximation, matching `DockviewEngine`'s
    * documented fidelity limits (see `#toDropSite`'s target-group-outside-our-
    * zone-bookkeeping approximation). An existing-group target (`group` a
    * number already) instead reuses that same numeric index for every tab,

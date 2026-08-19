@@ -489,7 +489,7 @@ mod tests {
     #[test]
     fn expertise_direction_mirror_symmetry() {
         use crate::dice::spec::{CritSuccess, CritTrigger};
-        // Mirror property (design §4/§8): flip direction + mirror every face
+        // Mirror property: flip direction + mirror every face
         // (f -> min+max-f) + mirror the success target and crit threshold -> identical
         // net successes and counters.
         let hi_cfg = SuccessConfig {

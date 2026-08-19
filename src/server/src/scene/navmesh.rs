@@ -54,6 +54,7 @@ mod smoke {
     }
 }
 
+use crate::scene::grid_shape::WorldExtent;
 use crate::scene::vision::Seg;
 use geo::algorithm::buffer::Buffer;
 use geo::Line;
@@ -64,8 +65,8 @@ use geo::Line;
 pub(crate) const MAX_NAVMESH_OBSTACLE_SEGMENTS: usize = 5_000;
 
 /// Magnitude ceiling (scene-pixel units) for any coordinate that reaches an `f64 -> f32` cast in
-/// this module: the CONSTRUCTION-side surfaces (derived `w_px`/`h_px` scene-pixel bounds, a raw
-/// wall-segment endpoint, and `footprint_scene` — the footprint-inflation distance passed to
+/// this module: the CONSTRUCTION-side surfaces (the caller-supplied world `extent` rectangle, a
+/// raw wall-segment endpoint, and `footprint_scene` — the footprint-inflation distance passed to
 /// `line.buffer(...)`), and the QUERY-side surface (`navmesh_find`'s `start`/`waypoints`). An
 /// `f64 -> f32` cast SATURATES an
 /// out-of-range-but-finite value to `f32::INFINITY` rather than panicking or producing NaN, so
@@ -93,60 +94,64 @@ pub(crate) struct NavMesh {
     pub(crate) mesh: polyanya::Mesh,
 }
 
-/// Build a footprint-inflated navmesh from a scene's bounds (grid units; converted to scene
-/// pixels via `cell`) and `blocksMove` wall segments. Fails closed (`None`) on: non-finite/
-/// non-positive bounds or cell size, a non-finite/negative/over-cap footprint radius, an obstacle
-/// count over `MAX_NAVMESH_OBSTACLE_SEGMENTS`, or a triangulation/mesh-build failure — callers
-/// MUST treat `None` as "no navmesh" (the scene reports `Unreachable`, never a silent all-pass).
+/// Build a footprint-inflated navmesh from a scene's world-unit `extent` (the envelope
+/// `GridShape::world_extent` produces from the scene's authored grid-unit bounds, whose `min` is
+/// the origin only on square) and its `blocksMove` wall segments, inflating each wall by
+/// `footprint_scene` (the mover's footprint radius in world units — the radius in cells times the
+/// shape's INDEXING scale, which is what a footprint is measured in). Fails closed (`None`) on: a
+/// non-finite or over-magnitude corner on EITHER side, a non-positive `width()`/`height()`, a
+/// non-finite/negative/over-magnitude `footprint_scene`, an obstacle count over
+/// `MAX_NAVMESH_OBSTACLE_SEGMENTS`, or a triangulation/mesh-build failure — callers MUST treat
+/// `None` as "no navmesh" (the scene reports `Unreachable`, never a silent all-pass). The
+/// radius-RANGE refusal (`0.0..=MAX_FOOTPRINT_CELLS`) lives at the caller, which must apply it
+/// before its cache key is computed; a degenerate `cell` reaches this function as a zero-area
+/// envelope and is refused here.
 pub(crate) fn build_navmesh(
-    bounds: (f64, f64),
-    cell: f64,
+    extent: WorldExtent,
+    footprint_scene: f64,
     walls: &[Seg],
-    footprint_radius_cells: f64,
 ) -> Option<NavMesh> {
-    let (w, h) = bounds;
-    if !w.is_finite() || !h.is_finite() || w <= 0.0 || h <= 0.0 {
+    let (min_x, min_y) = extent.min;
+    let (max_x, max_y) = extent.max;
+    if !min_x.is_finite()
+        || !min_y.is_finite()
+        || !max_x.is_finite()
+        || !max_y.is_finite()
+        || extent.width() <= 0.0
+        || extent.height() <= 0.0
+    {
         return None;
     }
-    if !cell.is_finite() || cell <= 0.0 {
+    // `footprint_scene` is a single scene-wide value (not per-wall), so an oversized value here
+    // fails the whole build rather than skipping one segment. Bounded before it reaches
+    // `line.buffer(...)`: an out-of-range-but-finite value saturates to infinity in the `as f32`
+    // cast that reaches `line.buffer(...)`, and panics inside `spade`'s triangulation.
+    if !footprint_scene.is_finite() || footprint_scene < 0.0 {
         return None;
     }
-    // The grid engine's `pathfinding::find` bounds `footprint_radius` to
-    // `0.0..=MAX_FOOTPRINT_CELLS` before doing any work; this continuous adapter reuses the SAME
-    // ceiling so an untrusted `footprintRadius` on the wire cannot drive an unbounded
-    // `geo::Buffer` inflation here, nor an unbounded footprint-cell scan downstream — no new DoS
-    // surface distinct from the grid router's.
-    if !(0.0..=crate::scene::pathfinding::MAX_FOOTPRINT_CELLS).contains(&footprint_radius_cells) {
+    let footprint_scene = footprint_scene.max(0.01);
+    if footprint_scene > MAX_NAVMESH_COORD {
         return None;
     }
     if walls.len() > MAX_NAVMESH_OBSTACLE_SEGMENTS {
         return None;
     }
-    let footprint_scene = (footprint_radius_cells * cell).max(0.01);
-    // `footprint_scene` is a single scene-wide value (not per-wall), so an oversized value here
-    // fails the whole build rather than skipping one segment. `cell` has no upper-magnitude bound
-    // elsewhere in this module (only `is_finite() && > 0.0`), so a tiny-but-finite `bounds` paired
-    // with an extreme `cell` can keep `w_px`/`h_px` under `MAX_NAVMESH_COORD` while still driving
-    // `footprint_scene` past it (e.g. `bounds=(1e-23,1e-23)`, `cell=1e37`,
-    // `footprint_radius_cells=MAX_FOOTPRINT_CELLS` -> `footprint_scene ~= 6.4e38 > f32::MAX`),
-    // which would otherwise saturate the buffered ring's vertices to infinity in the `as f32`
-    // cast below and panic inside `spade`, same hazard as `MAX_NAVMESH_COORD`'s doc comment.
-    if footprint_scene.abs() > MAX_NAVMESH_COORD {
-        return None;
-    }
-    let (w_px, h_px) = (w * cell, h * cell);
-    // Bound the DERIVED (post-multiplication) magnitude, not just the raw inputs: `w`/`cell`
-    // individually finite-and-small can still multiply into an out-of-range product. Checked
-    // before the `as f32` cast below — see `MAX_NAVMESH_COORD`'s doc comment for why.
-    if w_px.abs() > MAX_NAVMESH_COORD || h_px.abs() > MAX_NAVMESH_COORD {
+    // Bound the magnitude of BOTH corners before the `as f32` cast that builds the outer
+    // rectangle — see `MAX_NAVMESH_COORD`. A finite-but-enormous minimum saturates that cast exactly as a maximum
+    // does, so neither corner may be left unchecked.
+    if min_x.abs() > MAX_NAVMESH_COORD
+        || min_y.abs() > MAX_NAVMESH_COORD
+        || max_x.abs() > MAX_NAVMESH_COORD
+        || max_y.abs() > MAX_NAVMESH_COORD
+    {
         return None;
     }
 
     let outer = [
-        glam::Vec2::new(0.0, 0.0),
-        glam::Vec2::new(w_px as f32, 0.0),
-        glam::Vec2::new(w_px as f32, h_px as f32),
-        glam::Vec2::new(0.0, h_px as f32),
+        glam::Vec2::new(min_x as f32, min_y as f32),
+        glam::Vec2::new(max_x as f32, min_y as f32),
+        glam::Vec2::new(max_x as f32, max_y as f32),
+        glam::Vec2::new(min_x as f32, max_y as f32),
     ];
     let mut tri = polyanya::Triangulation::from_outer_edges(&outer);
 
@@ -158,10 +163,10 @@ pub(crate) fn build_navmesh(
         {
             continue; // a malformed wall segment is skipped, never turned into a bogus obstacle
         }
-        // Same saturating-cast hazard as `bounds`/`cell`, checked BEFORE `.buffer()`/`as f32`:
+        // Same saturating-cast hazard as `extent`, checked BEFORE `.buffer()`/`as f32`:
         // an ordinarily-authored-looking but oversized coordinate (e.g. 1e70) is finite and would
-        // pass the check above, but saturates to `f32::INFINITY` on cast and panics inside
-        // polyanya/spade. Skip the single malformed segment, matching the non-finite branch above
+        // pass the `is_finite` check, but saturates to `f32::INFINITY` on cast and panics inside
+        // polyanya/spade. Skip the single malformed segment, matching the non-finite branch
         // — a whole-build failure is not warranted for one bad wall.
         if seg.a.0.abs() > MAX_NAVMESH_COORD
             || seg.a.1.abs() > MAX_NAVMESH_COORD
@@ -197,7 +202,7 @@ pub(crate) fn build_navmesh(
                 .points()
                 .map(|p| glam::Vec2::new(p.x() as f32, p.y() as f32))
                 .collect();
-            // Believed unreachable: the `inflated.0.is_empty()` check above already catches
+            // Believed unreachable: the `inflated.0.is_empty()` check already catches
             // `i_overlay`'s degenerate-collapse guard, which is all-or-nothing at the whole-buffer
             // level (either a normal `MultiPolygon` or an empty one) — not a case where the
             // `MultiPolygon` is non-empty but an individual ring within it has <3 points. Kept as
@@ -246,7 +251,7 @@ pub(crate) fn navmesh_find(
     }
     // Magnitude bound (not just finiteness) — defense-in-depth against an untrusted wire
     // magnitude reaching `Mesh::path`'s third-party point-in-polygon lookup, not a proven panic
-    // fix (see this function's doc comment above for the empirically-verified distinction from
+    // fix (see `navmesh_find`'s doc comment for the empirically-verified distinction from
     // `build_navmesh`'s construction-side guards). Reuses `MAX_NAVMESH_COORD` rather than
     // defining a second ceiling for the query side.
     let in_bounds = start.0.abs() <= MAX_NAVMESH_COORD
@@ -322,7 +327,8 @@ pub(crate) fn navmesh_find(
 /// single-point path at `outcome.path[0]` with `cost: 0.0` — the caller is responsible for
 /// treating a degenerate result as appropriate for its context. The SAME single-point-at-
 /// `path[0]`/`cost: 0.0` shape is also this function's fail-closed response to a degenerate
-/// `cell`/`footprint_radius_cells` input (see the guard below) — unlike `build_navmesh` (returns
+/// `cell`/`footprint_radius_cells` input (see this function's own range guard) — unlike
+/// `build_navmesh` (returns
 /// `Option<NavMesh>`, can simply return `None`), this function's return type has no "absent"
 /// state, so truncating to just the start point is the most restrictive output it can produce.
 pub(crate) fn clip_to_visible_mask(
@@ -346,7 +352,8 @@ pub(crate) fn clip_to_visible_mask(
     // cast (Rust's `f64 as i32` is a stable saturating cast: `Infinity -> i32::MAX`, `-Infinity ->
     // i32::MIN`, `NaN -> 0`), making the loop range `i32::MIN..=i32::MAX`. `build_navmesh` already
     // guards the identical value with the same `MAX_FOOTPRINT_CELLS` range check; reused here
-    // verbatim. Fail-closed truncates to the start point (see the doc comment above) rather than
+    // verbatim. Fail-closed truncates to the start point (see `clip_to_visible_mask`'s doc
+    // comment) rather than
     // panicking or returning the original unclipped outcome.
     if !cell.is_finite()
         || cell <= 0.0
@@ -362,6 +369,10 @@ pub(crate) fn clip_to_visible_mask(
         return outcome;
     }
 
+    // Indexing scale, never `GridShape::world_units_per_cell` — that symbol's own note states why
+    // a footprint radius is not the class of authored distance that converts. The clip's whole
+    // purpose is to apply the SAME footprint predicate `pathfinding::cell_enterable` applies, so a
+    // disc sized differently here would break the `route ⊆ gate-allowed` invariant outright.
     let r_scene = footprint_radius_cells.max(0.0) * cell;
     // Dummy duration: `sample_path` is a time/arc-length sampler shared with `MoveStream`
     // playback; only `.pos` is used here, so the duration value is immaterial.
@@ -455,6 +466,10 @@ pub(crate) fn los_smooth(
     {
         return outcome;
     }
+    // Indexing scale, never `GridShape::world_units_per_cell` — that symbol's own note states why
+    // a footprint radius is not the class of authored distance that converts. A straightened chord
+    // is admitted by the same footprint predicate the weighted search already applied per cell, so
+    // this disc must be the one `pathfinding::cell_enterable` sized.
     let r_scene = footprint_radius_cells.max(0.0) * cell;
     let path = outcome.path.clone();
 
@@ -587,6 +602,17 @@ mod tests {
     use super::*;
     use crate::scene::pathfinding::PathOutcome;
     use crate::scene::regions::{RegionBehavior, RegionField, RegionShape};
+
+    /// An origin-anchored envelope of the given world-unit spans — the shape a SQUARE scene's
+    /// `GridShape::world_extent` produces. These fixtures exercise `build_navmesh`'s own
+    /// arithmetic and refusals on literal pixel spans, where the anchor is incidental; the
+    /// negative-minimum case a hex scene produces is exercised by the fixtures that name it.
+    fn origin_extent(w: f64, h: f64) -> WorldExtent {
+        WorldExtent {
+            min: (0.0, 0.0),
+            max: (w, h),
+        }
+    }
 
     fn oc(path: Vec<(f64, f64)>) -> PathOutcome {
         PathOutcome {
@@ -885,32 +911,55 @@ mod tests {
     }
 
     #[test]
-    fn degenerate_bounds_fail_closed() {
-        assert!(build_navmesh((0.0, 100.0), 100.0, &[], 0.4).is_none());
-        assert!(build_navmesh((100.0, -1.0), 100.0, &[], 0.4).is_none());
-        assert!(build_navmesh((f64::NAN, 100.0), 100.0, &[], 0.4).is_none());
-        assert!(build_navmesh((f64::INFINITY, 100.0), 100.0, &[], 0.4).is_none());
+    fn degenerate_extent_fails_closed() {
+        assert!(build_navmesh(origin_extent(0.0, 10_000.0), 40.0, &[]).is_none());
+        assert!(build_navmesh(origin_extent(10_000.0, -100.0), 40.0, &[]).is_none());
+        assert!(build_navmesh(origin_extent(f64::NAN, 10_000.0), 40.0, &[]).is_none());
+        assert!(build_navmesh(origin_extent(f64::INFINITY, 10_000.0), 40.0, &[]).is_none());
     }
 
     #[test]
-    fn degenerate_cell_fails_closed() {
-        assert!(build_navmesh((100.0, 100.0), 0.0, &[], 0.4).is_none());
-        assert!(build_navmesh((100.0, 100.0), -1.0, &[], 0.4).is_none());
+    fn a_degenerate_or_over_magnitude_minimum_fails_closed() {
+        // The envelope carries a minimum, so every refusal the maximum gets the minimum needs
+        // too: a non-finite corner on either axis, an inverted rectangle (which the span check
+        // catches, since a minimum past the maximum is a non-positive span rather than a negative
+        // corner), and a finite-but-enormous corner that saturates the `f64 -> f32` cast and
+        // panics inside `spade`.
+        // Discrimination: each case moves ONLY the minimum, and the last assertion pairs an
+        // over-magnitude minimum against an in-range one with the same maximum, so a guard that
+        // refused on the maximum alone, or refused every negative minimum, fails it. The two
+        // non-finite rows are isolating against a finiteness check narrowed to the OTHER axis:
+        // dropping the x-axis check leaves the `min.0` row unrefused, and narrowing it to the x
+        // axis (dropping the y-axis check) leaves the `min.1` row unrefused. Both non-finite
+        // minima reach `spade`'s triangulation as a NaN coordinate and refuse via a panic rather
+        // than a clean `None` when their finiteness guard is the one dropped — the same failure
+        // mode the guard exists to prevent, so the panic is stronger evidence than a clean
+        // refusal, not weaker.
+        let refuse = |min: (f64, f64)| WorldExtent {
+            min,
+            max: (10_000.0, 10_000.0),
+        };
+        assert!(build_navmesh(refuse((f64::NAN, 0.0)), 40.0, &[]).is_none());
+        assert!(build_navmesh(refuse((0.0, f64::NAN)), 40.0, &[]).is_none());
+        assert!(
+            build_navmesh(refuse((20_000.0, 0.0)), 40.0, &[]).is_none(),
+            "a minimum past the maximum is a non-positive span"
+        );
+        assert!(
+            build_navmesh(refuse((-1e40, 0.0)), 40.0, &[]).is_none(),
+            "an over-magnitude minimum saturates the f32 cast just as an over-magnitude maximum does"
+        );
+        assert!(
+            build_navmesh(refuse((-1000.0, -1000.0)), 40.0, &[]).is_some(),
+            "an ordinary negative minimum — what every hex block has — must build"
+        );
     }
 
     #[test]
     fn negative_or_non_finite_footprint_fails_closed() {
-        assert!(build_navmesh((100.0, 100.0), 100.0, &[], -0.1).is_none());
-        assert!(build_navmesh((100.0, 100.0), 100.0, &[], f64::NAN).is_none());
-    }
-
-    #[test]
-    fn over_cap_footprint_radius_fails_closed() {
-        // Mirrors `pathfinding::find`'s `MAX_FOOTPRINT_CELLS` ceiling — an untrusted wire
-        // `footprintRadius` must not drive an unbounded geo::Buffer inflation.
-        let over_cap = crate::scene::pathfinding::MAX_FOOTPRINT_CELLS + 1.0;
-        assert!(build_navmesh((100.0, 100.0), 100.0, &[], over_cap).is_none());
-        assert!(build_navmesh((100.0, 100.0), 100.0, &[], f64::INFINITY).is_none());
+        assert!(build_navmesh(origin_extent(10_000.0, 10_000.0), -10.0, &[]).is_none());
+        assert!(build_navmesh(origin_extent(10_000.0, 10_000.0), f64::NAN, &[]).is_none());
+        assert!(build_navmesh(origin_extent(10_000.0, 10_000.0), f64::INFINITY, &[]).is_none());
     }
 
     #[test]
@@ -921,12 +970,12 @@ mod tests {
                 b: (i as f64, 1.0),
             })
             .collect();
-        assert!(build_navmesh((10_000.0, 100.0), 100.0, &walls, 0.4).is_none());
+        assert!(build_navmesh(origin_extent(1_000_000.0, 10_000.0), 40.0, &walls).is_none());
     }
 
     #[test]
     fn empty_scene_builds_a_navmesh() {
-        assert!(build_navmesh((100.0, 100.0), 100.0, &[], 0.4).is_some());
+        assert!(build_navmesh(origin_extent(10_000.0, 10_000.0), 40.0, &[]).is_some());
     }
 
     #[test]
@@ -935,40 +984,34 @@ mod tests {
             a: (f64::NAN, 0.0),
             b: (10.0, 10.0),
         }];
-        assert!(build_navmesh((100.0, 100.0), 100.0, &walls, 0.4).is_some());
+        assert!(build_navmesh(origin_extent(10_000.0, 10_000.0), 40.0, &walls).is_some());
     }
 
     #[test]
-    fn oversized_but_finite_bounds_fail_closed_not_panic() {
-        // `1e40` is finite and positive (passes the pre-existing `is_finite`/`> 0.0` guards) but
-        // saturates an `f64 -> f32` cast to infinity, which would otherwise reach
-        // `polyanya::Triangulation::as_navmesh` and panic inside `spade`'s `.unwrap()`.
-        assert!(build_navmesh((1e40, 100.0), 1.0, &[], 0.4).is_none());
-        assert!(build_navmesh((100.0, 1e40), 1.0, &[], 0.4).is_none());
-    }
-
-    #[test]
-    fn oversized_derived_pixel_bounds_fail_closed() {
-        // Neither `w` nor `cell` alone is oversized, but their product (`w_px`) is — the bound
-        // must be checked on the DERIVED magnitude, not just the raw inputs.
-        assert!(build_navmesh((1e10, 100.0), 1e10, &[], 0.4).is_none());
+    fn oversized_but_finite_extent_fails_closed_not_panic() {
+        // `1e40` is finite and positive (passes the `is_finite`/`> 0.0` guards) but saturates an
+        // `f64 -> f32` cast to infinity, which would otherwise reach
+        // `polyanya::Triangulation::as_navmesh` and panic inside `spade`'s `.unwrap()`. The
+        // magnitude that must be bounded is the extent this function RECEIVES; the bound on the
+        // conversion that produces it is pinned at `SceneEcs::navmesh_for`.
+        assert!(build_navmesh(origin_extent(1e40, 100.0), 0.4, &[]).is_none());
+        assert!(build_navmesh(origin_extent(100.0, 1e40), 0.4, &[]).is_none());
     }
 
     #[test]
     fn oversized_footprint_scene_fails_closed_not_panic() {
-        // Reproducer independently verified by two reviewers: tiny-but-finite bounds keep
-        // `w_px`/`h_px` well under `MAX_NAVMESH_COORD`, and the wall's raw endpoints are ordinary,
-        // yet `footprint_radius_cells * cell` (64.0 * 1e37) overflows `f32::MAX` and would
-        // saturate the buffered ring's vertices to infinity on cast, panicking inside `spade`.
+        // A tiny-but-finite extent stays well under `MAX_NAVMESH_COORD`, and the wall's raw
+        // endpoints are ordinary, yet a footprint distance of `64.0 * 1e37` overflows `f32::MAX`
+        // and would saturate the buffered ring's vertices to infinity on cast, panicking inside
+        // `spade`.
         let walls = vec![Seg {
             a: (0.0, 0.0),
             b: (1.0, 1.0),
         }];
         assert!(build_navmesh(
-            (1e-23, 1e-23),
-            1e37,
+            origin_extent(1e14, 1e14),
+            crate::scene::pathfinding::MAX_FOOTPRINT_CELLS * 1e37,
             &walls,
-            crate::scene::pathfinding::MAX_FOOTPRINT_CELLS,
         )
         .is_none());
     }
@@ -980,20 +1023,18 @@ mod tests {
         // segment's endpoints onto the same integer point, which its degenerate-collapse guard
         // turns into an EMPTY buffer result — the wall would otherwise silently vanish from the
         // mesh (fail-open) rather than the build failing.
-        // bounds=(1e-8,1e-8), cell=1e9 -> w_px=h_px=10 (an ordinary small domain); wall (5,0)-(5,10)
-        // bisects it; footprint_radius_cells=MAX_FOOTPRINT_CELLS (64.0, within the existing cap)
-        // -> footprint_scene = 6.4e10, ratio to the wall's own length (10) = 6.4e9, past the
-        // collapse threshold.
+        // An ordinary 10 × 10 domain, bisected by the wall (5,0)-(5,10); the footprint distance is
+        // `MAX_FOOTPRINT_CELLS` (64.0, within the caller's cap) at a cell size of 1e9, giving
+        // 6.4e10 — a ratio to the wall's own length (10) of 6.4e9, past the collapse threshold.
         let walls = vec![Seg {
             a: (5.0, 0.0),
             b: (5.0, 10.0),
         }];
         assert!(
             build_navmesh(
-                (1e-8, 1e-8),
-                1e9,
+                origin_extent(10.0, 10.0),
+                crate::scene::pathfinding::MAX_FOOTPRINT_CELLS * 1e9,
                 &walls,
-                crate::scene::pathfinding::MAX_FOOTPRINT_CELLS,
             )
             .is_none(),
             "a wall whose Minkowski buffer silently collapses to zero polygons must fail the \
@@ -1009,22 +1050,22 @@ mod tests {
             a: (5.0, 5.0),
             b: (5.0, 5.0),
         }];
-        assert!(build_navmesh((100.0, 100.0), 100.0, &walls, 0.4).is_some());
+        assert!(build_navmesh(origin_extent(10_000.0, 10_000.0), 40.0, &walls).is_some());
     }
 
     #[test]
-    fn ordinary_wall_and_footprint_still_build_successfully() {
+    fn ordinary_wall_and_footprint_build_successfully() {
         // Positive case: normal gameplay magnitudes (a small scene, a modest footprint radius, a
-        // single ordinary interior wall) must still build a valid mesh, and the wall's obstacle
+        // single ordinary interior wall) must build a valid mesh, and the wall's obstacle
         // ring must actually be present in the resulting mesh (distinguishing "built successfully"
         // from "built successfully but the wall silently vanished").
         let walls = vec![Seg {
             a: (5.0, 0.0),
             b: (5.0, 10.0),
         }];
-        let with_wall = build_navmesh((100.0, 100.0), 1.0, &walls, 0.4)
+        let with_wall = build_navmesh(origin_extent(100.0, 100.0), 0.4, &walls)
             .expect("an ordinary wall + footprint must build a navmesh");
-        let without_wall = build_navmesh((100.0, 100.0), 1.0, &[], 0.4)
+        let without_wall = build_navmesh(origin_extent(100.0, 100.0), 0.4, &[])
             .expect("the walls-absent baseline must also build");
         // Triangulating WITH an interior obstacle produces strictly more triangles than the empty
         // rectangle baseline — a cheap, robust proxy that the wall's obstacle ring was actually
@@ -1051,7 +1092,7 @@ mod tests {
                 b: (20.0, 20.0),
             },
         ];
-        let mesh = build_navmesh((100.0, 100.0), 100.0, &walls, 0.4);
+        let mesh = build_navmesh(origin_extent(10_000.0, 10_000.0), 40.0, &walls);
         assert!(
             mesh.is_some(),
             "the oversized segment must be skipped, not fail the whole build"
@@ -1060,14 +1101,14 @@ mod tests {
 
     #[test]
     fn empty_waypoints_is_invalid() {
-        let nav = build_navmesh((100.0, 100.0), 100.0, &[], 0.4).unwrap();
+        let nav = build_navmesh(origin_extent(10_000.0, 10_000.0), 40.0, &[]).unwrap();
         let r = navmesh_find(&nav, (50.0, 50.0), &[]);
         assert_eq!(r, Err(crate::scene::pathfinding::PathFail::Invalid));
     }
 
     #[test]
     fn straight_route_cost_is_euclidean() {
-        let nav = build_navmesh((10.0, 10.0), 100.0, &[], 0.1).unwrap();
+        let nav = build_navmesh(origin_extent(1000.0, 1000.0), 10.0, &[]).unwrap();
         let outcome = navmesh_find(&nav, (50.0, 50.0), &[(950.0, 50.0)]).unwrap();
         assert!(
             (outcome.cost - 900.0).abs() < 2.0,
@@ -1088,7 +1129,7 @@ mod tests {
             a: (500.0, 0.0),
             b: (500.0, 600.0),
         }];
-        let nav = build_navmesh((10.0, 10.0), 100.0, &walls, 0.1).unwrap();
+        let nav = build_navmesh(origin_extent(1000.0, 1000.0), 10.0, &walls).unwrap();
         let outcome = navmesh_find(&nav, (50.0, 50.0), &[(950.0, 50.0)]).unwrap();
         assert!(
             outcome.cost > 900.5,
@@ -1103,7 +1144,7 @@ mod tests {
         // the internal skip-branch that guards against it: per the real `polyanya` source,
         // `Path::path` never actually includes a leg's start point, so this test would pass
         // identically even if that dedup branch were deleted.
-        let nav = build_navmesh((10.0, 10.0), 100.0, &[], 0.1).unwrap();
+        let nav = build_navmesh(origin_extent(1000.0, 1000.0), 10.0, &[]).unwrap();
         let outcome = navmesh_find(&nav, (50.0, 50.0), &[(500.0, 50.0), (950.0, 50.0)]).unwrap();
         // No two consecutive vertices should be exactly equal (a duplicated leg-join point).
         for w in outcome.path.windows(2) {
@@ -1117,7 +1158,7 @@ mod tests {
 
     #[test]
     fn over_cap_waypoints_is_invalid() {
-        let nav = build_navmesh((100.0, 100.0), 100.0, &[], 0.1).unwrap();
+        let nav = build_navmesh(origin_extent(10_000.0, 10_000.0), 10.0, &[]).unwrap();
         let waypoints: Vec<(f64, f64)> = (0..(crate::scene::pathfinding::MAX_WAYPOINTS + 1))
             .map(|i| (i as f64, 0.0))
             .collect();
@@ -1127,7 +1168,7 @@ mod tests {
 
     #[test]
     fn non_finite_start_or_waypoint_is_invalid() {
-        let nav = build_navmesh((100.0, 100.0), 100.0, &[], 0.1).unwrap();
+        let nav = build_navmesh(origin_extent(10_000.0, 10_000.0), 10.0, &[]).unwrap();
         assert_eq!(
             navmesh_find(&nav, (f64::NAN, 50.0), &[(90.0, 50.0)]),
             Err(crate::scene::pathfinding::PathFail::Invalid)
@@ -1147,7 +1188,7 @@ mod tests {
         // this path) — without the guard this input would map to `PathFail::Unreachable` instead.
         // The guard just gives a more precise `Invalid` and bounds an untrusted wire magnitude
         // before it reaches a third-party numeric library.
-        let nav = build_navmesh((100.0, 100.0), 100.0, &[], 0.1).unwrap();
+        let nav = build_navmesh(origin_extent(10_000.0, 10_000.0), 10.0, &[]).unwrap();
         assert_eq!(
             navmesh_find(&nav, (1e40, 50.0), &[(90.0, 50.0)]),
             Err(crate::scene::pathfinding::PathFail::Invalid)
@@ -1215,9 +1256,10 @@ mod tests {
         assert!((last_orig.0 - last_clipped.0).abs() < 1e-6);
     }
 
-    // Design §9 requires "a goal outside the mask ⇒ Unreachable" as an exercised code path; a mask
+    // "A goal outside the mask ⇒ Unreachable" must be an exercised code path, not only a
+    // reachable one; a mask
     // that excludes the ENTIRE corridor beyond the start cell (as opposed to a partial-route
-    // truncation to a still-substantial prefix, per `clip_truncates_at_the_mask_boundary` above)
+    // truncation to a still-substantial prefix, per `clip_truncates_at_the_mask_boundary`)
     // must confine the returned route to that single visible cell, never reaching the goal.
     //
     // NOTE: the route retains 2 points here, not 1 — `sample_path`'s arc-length sampling places
@@ -1368,7 +1410,7 @@ mod tests {
         let last = *clipped.path.last().unwrap();
         assert!(
             last.0 <= 500.0 + 1e-6,
-            "the well-formed wall must still truncate the route even alongside a malformed one, \
+            "the well-formed wall must truncate the route even alongside a malformed one, \
              last x = {}",
             last.0
         );
@@ -1441,8 +1483,11 @@ mod tests {
             "the clipped route must never reach the occluded hex, last = {last:?}"
         );
         let gap = ((last.0 - goal.0).powi(2) + (last.1 - goal.1).powi(2)).sqrt();
+        // Expressed as a fraction of the hex's own size rather than as a distance: the clearance
+        // the footprint disc ∪ traversal union buys is proportional to the geometry, so a literal
+        // would silently become a weaker claim at a larger size.
         assert!(
-            gap > 40.0,
+            gap > HEX_SIZE * 0.8,
             "the route must stop clear of the occluded hex (footprint disc ∪ traversal), gap = {gap}"
         );
 
@@ -1464,15 +1509,30 @@ mod tests {
         // center. Square indexing of that same chord yields (0,0),(0,-1),(1,-1),(1,-2),(2,-2),
         // (3,-2),(3,-3),(4,-3),(5,-3) — the axial key (2,-1) is never queried at all.
         let g = hexg();
-        let field = hex_region(RegionBehavior::Impassable, 110.0, -95.0, 150.0, -55.0);
-        assert!(
-            field.is_impassable((2, -1)),
-            "fixture: the impassable cell is axial (2,-1)"
+        // The region rect is the target hex's own centre padded by half a size on each axis, so
+        // it moves with the shape; the pad stays inside the hex's inradius (`√3/2·size`), which
+        // is what keeps exactly one centre inside it, and the neighbour loop asserts that rather
+        // than leaving it to the pad's arithmetic.
+        let blocked = (2, -1);
+        let ctr = g.cell_center(blocked);
+        let pad = HEX_SIZE / 2.0;
+        let field = hex_region(
+            RegionBehavior::Impassable,
+            ctr.0 - pad,
+            ctr.1 - pad,
+            ctr.0 + pad,
+            ctr.1 + pad,
         );
         assert!(
-            !field.is_impassable((2, -2)) && !field.is_impassable((1, -1)),
-            "fixture: exactly one hex is impassable"
+            field.is_impassable(blocked),
+            "fixture: the impassable cell is axial {blocked:?}"
         );
+        for (n, _, _) in g.neighbors_with_cost(blocked, 0) {
+            assert!(
+                !field.is_impassable(n),
+                "fixture: hex {n:?} neighbours the impassable hex and must stay clear"
+            );
+        }
 
         let path = vec![
             g.cell_center((0, 0)),
@@ -1504,17 +1564,33 @@ mod tests {
 
     #[test]
     fn truncate_at_arrest_on_hex_cuts_at_the_axial_arrest_cell_not_the_square_one() {
-        // Straight route along the r=0 hex row: hex (0,0) center -> hex (4,0) center. Arrest on
-        // hex (3,0) (center x ~259.8); the (2,0)/(3,0) boundary is x ~216.5. Square indexing reads
-        // the same axial key (3,0) as the square cell x∈[150,200) — a DIFFERENT place on the map —
-        // so it cuts the preview roughly a full hex early.
+        // Straight route along the r=0 hex row: hex (0,0) center -> hex (4,0) center, arresting on
+        // hex (3,0). Square indexing reads the same axial key (3,0) as the square cell
+        // `[3·size, 4·size)` — a DIFFERENT place on the map, short of the hex — so it cuts the
+        // preview roughly a full hex early. Every coordinate here comes from the shape, so the two
+        // arms' landing cells are compared rather than two hand-derived x thresholds, which at a
+        // larger size would both stay satisfied by a cut a full hex early.
         let g = hexg();
-        let field = hex_region(RegionBehavior::Arrest, 240.0, -20.0, 280.0, 20.0);
-        assert!(field.is_arrest((3, 0)), "fixture: arrest is on axial (3,0)");
-        assert!(
-            !field.is_arrest((2, 0)) && !field.is_arrest((4, 0)),
-            "fixture: exactly one hex arrests"
+        let arrest_cell = (3, 0);
+        let arrest_ctr = g.cell_center(arrest_cell);
+        let pad = HEX_SIZE / 2.0;
+        let field = hex_region(
+            RegionBehavior::Arrest,
+            arrest_ctr.0 - pad,
+            arrest_ctr.1 - pad,
+            arrest_ctr.0 + pad,
+            arrest_ctr.1 + pad,
         );
+        assert!(
+            field.is_arrest(arrest_cell),
+            "fixture: arrest is on axial {arrest_cell:?}"
+        );
+        for (n, _, _) in g.neighbors_with_cost(arrest_cell, 0) {
+            assert!(
+                !field.is_arrest(n),
+                "fixture: hex {n:?} neighbours the arrest hex and must stay clear"
+            );
+        }
 
         let route = crate::scene::pathfinding::PathOutcome {
             path: vec![g.cell_center((0, 0)), g.cell_center((4, 0))],
@@ -1527,22 +1603,27 @@ mod tests {
         let last = *hexed.path.last().unwrap();
         assert_eq!(
             g.cell_of(last),
-            (3, 0),
+            arrest_cell,
             "truncation lands ON the arrest hex's own cell, last = {last:?}"
         );
+        // Arrest stops AT ENTRY, so the cut sits in the near half of the arrest hex — the one
+        // claim about `last`'s position the cell assertion does not already imply, `cell_of`
+        // being nearest-centre and therefore already bounding `last` to that hex's span.
         assert!(
-            last.0 > 216.5,
-            "truncation is at the hex (2,0)/(3,0) boundary (x ~216.5), not the square one, \
+            last.0 < arrest_ctr.0,
+            "truncation is at the arrest hex's ENTRY boundary, not past its centre ({}), \
              last x = {}",
+            arrest_ctr.0,
             last.0
         );
 
         let squared = truncate_at_arrest(route, &field, HEX_SIZE, &sq_same_size());
         let sq_last = *squared.path.last().unwrap();
-        assert!(
-            sq_last.0 < 200.0,
-            "square indexing cuts at square cell (3,0) = x∈[150,200), a different location on \
-             the map, last x = {}",
+        assert_ne!(
+            g.cell_of(sq_last),
+            arrest_cell,
+            "square indexing cuts inside square cell {arrest_cell:?}, which is not even the \
+             arrest HEX — a different location on the map, last x = {}",
             sq_last.0
         );
     }

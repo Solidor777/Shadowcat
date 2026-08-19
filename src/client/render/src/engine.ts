@@ -1,4 +1,5 @@
-import type { ReadableDocuments, AssetResolver } from "@shadowcat/core";
+import { EMPTY_FOOTPRINTS } from "@shadowcat/core";
+import type { ReadableDocuments, AssetResolver, FootprintLookup } from "@shadowcat/core";
 import type { DisplayBackend } from "./backend";
 import type { VisibilityInput, LightingInput, LitCell, SceneTool, SceneToolHost, Point, ShapeNodeSpec, Polygon, MoveVisionSample } from "./types";
 import type { TokenTweenConfig } from "./easing";
@@ -16,24 +17,27 @@ import { WallView } from "./wall-view";
 import { RegionView } from "./region-view";
 import { PingView } from "./ping-view";
 
-/** Rasterize a flat `[i,j,…]` explored-cell list into one square rect polygon per cell at
- * `size` world units. Cell `(i,j)` covers `[i*size,(i+1)*size) × [j*size,(j+1)*size)`. The fog
- * shader unions overlapping rects by overdraw, so per-cell rects (vs merged runs) are correct.
+/** Rasterize a flat `[i,j,…]` explored-cell list into one shape polygon per cell, via the active
+ * `grid`'s own corner geometry — square on a square grid, hexagon on a hex grid. The fog shader
+ * unions overlapping polygons by overdraw, so per-cell shapes (vs merged runs) are correct.
+ * Delegates to `Grid.cellVertices` rather than assuming a square (`x=i*size, y=j*size`) shape —
+ * indexing a hex-axial cell that way paints the wrong scene position (skewed square positions
+ * over correctly-drawn hexes).
  * @param cells Flat `[i0,j0,i1,j1,…]` cell-index pairs; a trailing unpaired value is dropped.
- * @param size World-unit length of one cell's edge.
- * @returns One 4-point rect polygon per `(i,j)` pair, in input order.
+ * @param grid The active grid, whose kind decides whether each cell is a square or a hexagon.
+ * @returns One polygon per `(i,j)` pair (4 points on square, 6 on hex), in input order.
  * @example
  * ```
  * // module-private helper; not exported from @shadowcat/render
- * cellsToRects([0, 0, 1, 0], 5); // 2 rects: [0,0]-[5,5] and [5,0]-[10,5]
+ * cellsToRects([0, 0, 1, 0], new Grid({ kind: "square", size: 5 }));
+ * // 2 rects: [0,0]-[5,5] and [5,0]-[10,5]
  * ```
  */
-function cellsToRects(cells: number[], size: number): Polygon[] {
+function cellsToRects(cells: number[], grid: Grid): Polygon[] {
   const rects: Polygon[] = [];
   for (let k = 0; k + 1 < cells.length; k += 2) {
-    const x = cells[k] * size;
-    const y = cells[k + 1] * size;
-    rects.push({ points: [x, y, x + size, y, x + size, y + size, x, y + size] });
+    const corners = grid.cellVertices(cells[k], cells[k + 1]);
+    rects.push({ points: corners.flatMap((p) => [p.x, p.y]) });
   }
   return rects;
 }
@@ -85,6 +89,10 @@ export interface RenderEngineOpts {
   /** Which scene to render/scene-filter by. From the host (Stage → `ctx.viewedSceneId`).
    * Absent ⇒ the first scene, preserving single-scene behavior. */
   viewedSceneId?: () => string | null;
+  /** The server's resolved token footprints (Stage → `ctx.footprints`). The engine computes no
+   * footprint geometry: `TokenView` reads the extent from here. Absent ⇒ `EMPTY_FOOTPRINTS`, under
+   * which every token draws at its document's own authored `w`/`h`. */
+  footprints?: () => FootprintLookup;
 }
 
 /** Orchestrates the render model over a DisplayBackend: layers, camera, grid, and
@@ -224,8 +232,8 @@ export class RenderEngine implements SceneToolHost {
     this.grid = new Grid(opts.grid);
     this.gridColor = opts.gridColor ?? 0x3a3a4a;
     this.reconciler = new SceneReconciler(opts.store, opts.assets, opts.backend, this.viewedScene);
-    this.tokens = new TokenView(opts.store, opts.assets, opts.backend, this.viewedScene);
-    this.tokens.setCellSize(opts.grid.size);
+    this.tokens = new TokenView(opts.store, opts.assets, opts.backend, this.viewedScene, () => opts.footprints?.() ?? EMPTY_FOOTPRINTS);
+    this.tokens.setWorldUnitsPerCell(this.grid.worldUnitsPerCell());
     this.drawings = new DrawingView(opts.store, opts.backend, this.viewedScene);
     this.templates = new TemplateView(opts.store, opts.backend, this.viewedScene);
     this.walls = new WallView(opts.store, opts.backend, this.viewedScene);
@@ -244,7 +252,7 @@ export class RenderEngine implements SceneToolHost {
    * derived-vision frame); starts the backend's per-frame ticker (token tween, lighting fade,
    * vision-sweep advance, ping rings); and opens the `vision` subscription. Call exactly once
    * per engine instance. Every field a `SceneToolHost` method reads is already constructed
-   * before `start()` runs (see the constructor) — nothing in THIS file's own methods depends on
+   * before `start()` runs (see the constructor) — no `RenderEngine` method of its own depends on
    * `start()` having run — but no scene document has been reconciled into a render node yet, so
    * a method that would otherwise touch one (e.g. `animateAlongPath` on a token not yet
    * reconciled) has nothing to act on until the first reconcile pass above completes.
@@ -497,6 +505,23 @@ export class RenderEngine implements SceneToolHost {
     }
   }
 
+  /** Re-project every token after a new `"footprints"` frame. A footprints frame carries no
+   * document change, so the store commit that would otherwise drive a reconcile has already been
+   * and gone (the server recomputes derived channels on a debounce AFTER the event that changed
+   * them). Without this the canvas would keep drawing the previous extents until the next
+   * unrelated store commit. Tokens only — no other view reads a footprint.
+   * @example
+   * ```ts
+   * import type { RenderEngine } from "@shadowcat/render";
+   *
+   * declare const engine: RenderEngine;
+   * engine.reapplyFootprints();
+   * ```
+   */
+  reapplyFootprints(): void {
+    this.tokens.reconcile();
+  }
+
   /** Parse a `vision` payload into a VisibilityInput. Fail CLOSED: fog is the only client-side
    * secrecy gate (the document layer still delivers non-`gm_only` token/wall positions to
    * players), so ONLY an explicit `{mode:"all"}` clears it and ONLY an explicit `{mode:"masked"}`
@@ -575,7 +600,7 @@ export class RenderEngine implements SceneToolHost {
           g.cell > 0 &&
           Array.isArray(g.cells),
       )
-      .flatMap((g) => cellsToRects(g.cells, g.cell));
+      .flatMap((g) => cellsToRects(g.cells, this.grid));
     return { mode: "masked", visible, explored };
   }
 
@@ -632,9 +657,13 @@ export class RenderEngine implements SceneToolHost {
     if (!group) return null;
     const cells: LitCell[] = [];
     for (let k = 0; k + 4 < group.cells.length; k += 5) {
+      const i = group.cells[k], j = group.cells[k + 1];
       cells.push({
-        i: group.cells[k], j: group.cells[k + 1], band: group.cells[k + 2],
+        i, j, band: group.cells[k + 2],
         tint: group.cells[k + 3], hint: group.cells[k + 4],
+        // Resolved via the active grid, not `x=i*cell, y=j*cell`: on a hex scene the wire
+        // indices are axial, and a square rect there paints the wrong scene position.
+        corners: this.grid.cellVertices(i, j),
       });
     }
     const bands = Array.isArray(p.bands)
@@ -875,8 +904,9 @@ export class RenderEngine implements SceneToolHost {
   }
 
   /** Swap the active grid (from the active scene's `engine.grid`) and redraw lines.
-   * Coupling: notifies the token animator so tween durations are recalculated in the
-   * new cell size (px/cell ratio changes when the grid changes).
+   * Coupling: notifies the token animator so tween durations are recalculated against the new
+   * grid's per-step world distance (`Grid.worldUnitsPerCell`) — not `spec.size` directly, which
+   * is the indexing scale and diverges from the per-step distance by `sqrt(3)` on hex.
    * @param spec The new grid's kind/size/diagonal-rule.
    * @example
    * ```ts
@@ -889,7 +919,7 @@ export class RenderEngine implements SceneToolHost {
    */
   setGrid(spec: GridSpec): void {
     this.grid = new Grid(spec);
-    this.tokens.setCellSize(spec.size);
+    this.tokens.setWorldUnitsPerCell(this.grid.worldUnitsPerCell());
     this.redrawGrid();
   }
 
@@ -908,8 +938,8 @@ export class RenderEngine implements SceneToolHost {
     this.tokens.setAnimationConfig(cfg);
   }
 
-  /** Has no production caller today (`src/modules`/`src/client/shell` drive route playback
-   * exclusively through `animateSamples`, per `commitRoute`'s own "Animation is
+  /** Has no production caller today (`WorldSession` drives route playback exclusively through
+   * `SceneInteraction.animateSamples`, per `commitRoute`'s own "Animation is
    * broadcast-driven via onMoveStream ... no local animation from the moveRequest resolve value"
    * comment); this `SceneToolHost` seam is exercised only by tests. The mechanism below is the
    * contract it honors if called.
@@ -1253,7 +1283,7 @@ export class RenderEngine implements SceneToolHost {
 
   /** Recomputes the visible scene rect from the current camera + viewport, then redraws the
    * grid layer for it. Called after any camera or viewport change ({@link applyCamera},
-   * {@link setViewport}, {@link setGrid}) — never on its own by a caller outside this file.
+   * {@link setViewport}, {@link setGrid}) — never on its own by a caller outside `RenderEngine`.
    * @example
    * ```
    * // private method; not part of the public API

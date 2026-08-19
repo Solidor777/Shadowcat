@@ -3,7 +3,7 @@
 //! lives on the envelope instead).
 
 // Ratchet: every item in this module must carry a doc comment, enforced by
-// the two deny attributes below.
+// the two crate-level deny attributes this module declares.
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
@@ -155,7 +155,12 @@ pub struct TokenOverrides {
     /// Visual override; replaces the actor's visual for this token.
     #[serde(default)]
     pub visual: Option<TokenVisual>,
-    /// Size override, scene units.
+    /// Size override in GRID UNITS, replacing the actor's own `size`: a medium creature is `1` —
+    /// one CELL on a square scene, one HEX on a hex scene (never a square block there; the
+    /// footprint derives from the hex's own dimensions). `resolve_token_footprint` derives the
+    /// footprint radius from the resolved value and bounds it by `MAX_FOOTPRINT_CELLS`, and the
+    /// client multiplies it by the scene's cell size to reach scene units. Not to be confused with
+    /// `TokenEngine.w`/`h`, which are the token's rendered box in scene units.
     #[serde(default)]
     pub size: Option<Size>,
     /// "square" | "circle" — kept a `String` in v1 (the literal set is
@@ -168,14 +173,24 @@ pub struct TokenOverrides {
     pub vision: Option<Vec<VisionAssignment>>,
 }
 
-/// A width/height pair, scene units.
+/// A width/height pair in GRID UNITS (cells) — an actor's occupied block, not a pixel box.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
 pub struct Size {
-    /// Width, scene units.
+    /// Width in GRID UNITS: a medium creature is `1` — one CELL on square, one HEX on hex.
+    /// `resolve_token_footprint` derives the footprint radius from this directly (via each grid
+    /// kind's own model — a square block's half-diagonal, or a hex count's circumscribing radius)
+    /// and bounds it by `MAX_FOOTPRINT_CELLS`, and the client multiplies it by the scene's cell
+    /// size to reach scene units. Not to be confused with `TokenEngine.w`, which is the token's
+    /// rendered box in scene units.
     pub w: f64,
-    /// Height, scene units.
+    /// Height in GRID UNITS: a medium creature is `1` — one CELL on square, one HEX on hex.
+    /// `resolve_token_footprint` derives the footprint radius from this directly (via each grid
+    /// kind's own model — a square block's half-diagonal, or a hex count's circumscribing radius)
+    /// and bounds it by `MAX_FOOTPRINT_CELLS`, and the client multiplies it by the scene's cell
+    /// size to reach scene units. Not to be confused with `TokenEngine.h`, which is the token's
+    /// rendered box in scene units.
     pub h: f64,
 }
 
@@ -187,8 +202,13 @@ pub struct Size {
 pub struct VisionAssignment {
     /// `vision-modes` registry entry id.
     pub mode: String,
-    /// Effective range in grid CELLS (not scene units).
-    pub range: f64,
+    /// Effective range in grid CELLS (not scene units). `None` inherits the
+    /// referenced mode's own `VisionMode::default_range` — an omitted key
+    /// deserializes to `None` (serde special-cases `Option` regardless of
+    /// `#[serde(default)]`; verified in `token_vision_floors_falls_back_to_mode_default_range_when_assignment_omits_range`),
+    /// so the GM-authored mode default becomes live only once a caller resolves
+    /// it against the mode, never by a struct-level fallback here.
+    pub range: Option<f64>,
 }
 
 /// The client-owned token/actor visual union. Internally tagged on
@@ -290,7 +310,11 @@ pub struct ActorEngine {
     /// The actor's visual, inherited by linked tokens (raw-token/override
     /// visuals take precedence per `resolveTokenVisual`'s resolution order).
     pub visual: TokenVisual,
-    /// Default token size for this actor, scene units.
+    /// Default token size for this actor in GRID UNITS: a medium creature is `1` — one CELL on
+    /// square, one HEX on hex. `resolve_token_footprint` derives the footprint radius from this
+    /// directly (via each grid kind's own model) and bounds it by `MAX_FOOTPRINT_CELLS`, and the
+    /// client multiplies it by the scene's cell size to reach scene units. Not to be confused with
+    /// `TokenEngine.w`/`h`, which are the token's rendered box in scene units.
     pub size: Size,
     /// "square" | "circle" — kept a `String` in v1 (asserted by the battery).
     pub shape: String,

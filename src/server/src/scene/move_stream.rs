@@ -84,7 +84,8 @@ pub(crate) fn sample_path(path: &[(f64, f64)], cell: f64, duration_ms: f64) -> V
     // Fail-closed non-finite guard: a NaN/Inf coordinate propagates through `sqrt` into
     // `cum`, causing `binary_search_by(.partial_cmp().unwrap())` to panic. Mirrors the
     // fail-closed convention of `supercover_cells`. The empty-path case cannot enter here
-    // (`iter().any()` returns false on an empty slice); it is handled by the guard below.
+    // (`iter().any()` returns false on an empty slice); the single-point-or-empty guard
+    // handles it.
     if path.iter().any(|(x, y)| !x.is_finite() || !y.is_finite()) {
         debug_assert!(
             !path.is_empty(),
@@ -143,7 +144,7 @@ pub(crate) fn sample_path(path: &[(f64, f64)], cell: f64, duration_ms: f64) -> V
         let s = if i == n - 1 {
             total_len
         } else {
-            // Division is safe: n >= 2 is invariant (enforced by .clamp(2, …) above).
+            // Division is safe: n >= 2 is invariant (enforced by `n`'s own `.clamp(2, …)`).
             (i as f64) / ((n - 1) as f64) * total_len
         };
 

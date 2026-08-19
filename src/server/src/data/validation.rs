@@ -831,7 +831,8 @@ mod tests {
 
     #[test]
     fn additional_properties_subschema_accepts_open_map_and_rejects_wrong_type() {
-        // The Nightfox open user-keyed stat map.
+        // A game system's author-keyed stat map: the engine knows none of the keys,
+        // so every value is checked against one shared subschema instead.
         let s: Schema = obj_schema(serde_json::json!({
             "type": "object",
             "additionalProperties": { "type": "object", "required": ["kind"],

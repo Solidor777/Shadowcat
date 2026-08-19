@@ -2,6 +2,7 @@ import { test, expect, describe, it } from "vitest";
 import { DocumentStore, OptimisticClient, AssetResolver, buildSceneDoc, buildTokenDoc } from "@shadowcat/core";
 import { RenderEngine, MockBackend } from "./index";
 import type { SceneTool } from "./index";
+import type { FootprintLookup } from "@shadowcat/core";
 
 const noopTool = (over: Partial<SceneTool> = {}): SceneTool => ({
   onPointerDown: () => false,
@@ -204,6 +205,47 @@ test("a masked frame rasterizes the active scene's explored cells into dimmed-me
       { points: [100, 0, 200, 0, 200, 100, 100, 100] }, // cell (1,0)
     ],
   });
+});
+
+// Regression: on a hex scene the server sends explored cells as axial (q,r) — `HexGrid`'s
+// `axial_to_pixel` places cell (1,1) at x=150√3≈259.81, y=150, NOT the square position
+// x=1*100=100, y=1*100=100 a naive `x=i*size, y=j*size` rasterization would paint. Pins the
+// axial rasterization at `cellsToRects`'s own wiring site (via `toVisibility`), not just
+// `Grid.cellVertices` in isolation — this test fails if `cellsToRects` indexes by `size` alone.
+test("a masked frame rasterizes a hex scene's explored cells at their true axial position, not a square index", () => {
+  const store = new DocumentStore();
+  store.applyCommand(sceneCmd(1, "s1"));
+  const backend = new MockBackend();
+  let onUpdate!: (f: { payload: unknown; computedAtSeq: number }) => void;
+  const engine = new RenderEngine({
+    store, assets: new AssetResolver(), backend, grid: { kind: "hex", size: 100 },
+    subscribeScene: (_c, cb) => { onUpdate = cb; return { unsubscribe: () => {} }; },
+  });
+  engine.start();
+  onUpdate({
+    payload: {
+      mode: "masked",
+      polygons: [],
+      explored: [{ scene: "s1", cell: 100, cells: [1, 1] }], // hex cell axial (q=1, r=1)
+    },
+    computedAtSeq: 1,
+  });
+  const rects = backend.visibility!.explored;
+  expect(rects.length).toBe(1);
+  // Ground truth: the true hex (1,1) center, computed independently from the axial formula
+  // (`axialToPixel`: x = size*(√3q + √3/2 r), y = size*1.5r), NOT restated from `Grid`.
+  const expectedCenterX = 100 * (Math.sqrt(3) * 1 + (Math.sqrt(3) / 2) * 1);
+  const expectedCenterY = 100 * 1.5 * 1;
+  const pts = rects[0].points;
+  expect(pts.length).toBe(12); // 6 hex corners
+  let cx = 0, cy = 0;
+  for (let k = 0; k + 1 < pts.length; k += 2) { cx += pts[k]; cy += pts[k + 1]; }
+  cx /= 6; cy /= 6;
+  expect(cx).toBeCloseTo(expectedCenterX, 6);
+  expect(cy).toBeCloseTo(expectedCenterY, 6);
+  // Witness the bug directly: the square-position formula would have centered this at (100,100).
+  expect(cx).not.toBeCloseTo(100, 1);
+  expect(cy).not.toBeCloseTo(100, 1);
 });
 
 test("setFogPreview renders a GM no-fog frame as full fog and restores on toggle off", () => {
@@ -656,6 +698,30 @@ test("animateAlongPath forwards to the token view (SceneToolHost seam)", () => {
   expect(backend.lastTokenX("tok1")).toBeCloseTo(300, 0);
 });
 
+// Invariant: a hex `RenderEngine` must time a token tween against `Grid.worldUnitsPerCell()`
+// (the per-step distance, `size * sqrt(3)`), not `GridSpec.size` (the indexing scale/outer
+// radius) — the two coincide on square grids, so a square-fixture tween test cannot distinguish
+// them however it is worded. This exercises the constructor's own
+// `this.tokens.setWorldUnitsPerCell(this.grid.worldUnitsPerCell())` call, the site where the grid
+// kind is consumed to resolve which scale reaches the animator (an isolated `Grid`/`TokenAnimator`
+// unit test proves neither unit's own arithmetic — only whether the correct value reaches the
+// animator through this wiring).
+test("a hex RenderEngine times a token tween against worldUnitsPerCell, not size", () => {
+  const store = new DocumentStore();
+  const assets = new AssetResolver();
+  const backend = new MockBackend();
+  const engine = new RenderEngine({ store, assets, backend, grid: { kind: "hex", size: 100 } });
+  store.applyCommand(tokenCmd(1, "tok1", 0));
+  engine.start();
+  const worldUnitsPerCell = 100 * Math.sqrt(3); // the true per-step distance for a hex of size 100
+  engine.animateAlongPath("tok1", [[0, 0], [worldUnitsPerCell, 0]]); // exactly one cell step
+  // Correct duration: 1 cell / 6 cells-per-sec * 1000 ≈ 166.67ms, so the tween is complete by
+  // 200ms. Dividing by `size` (100) instead computes ~1.732 cells ≈ 288.7ms duration — still
+  // short of the target at 200ms — which is what distinguishes the two.
+  backend.runTicker(200);
+  expect(backend.lastTokenX("tok1")).toBeCloseTo(worldUnitsPerCell, 5);
+});
+
 test("animateSamples' moverVision progressively sweeps the fog, reverting to derived vision on completion", () => {
   const store = new DocumentStore();
   store.applyCommand(sceneCmd(1, "s1"));
@@ -891,13 +957,55 @@ test("toLighting parses lit cells for the active scene and fails safe", () => {
   });
   expect(li).not.toBeNull();
   expect(li!.cell).toBe(100);
-  expect(li!.cells).toEqual([{ i: 0, j: 0, band: 2, tint: 0, hint: 0 }]);
+  expect(li!.cells).toEqual([
+    { i: 0, j: 0, band: 2, tint: 0, hint: 0, corners: [{ x: 0, y: 0 }, { x: 100, y: 0 }, { x: 100, y: 100 }, { x: 0, y: 100 }] },
+  ]);
   expect(li!.hints).toEqual(["desaturate"]);
   expect(li!.bands).toEqual([{ name: "bright", min: 0.67 }, { name: "dim", min: 0.34 }, { name: "dark", min: 0 }]);
   // GM / garbled → null (cosmetic, no overlay).
   expect(engine.toLightingForTest({ mode: "all" })).toBeNull();
   expect(engine.toLightingForTest({ mode: "masked", lit: "garbage" })).toBeNull();
   expect(engine.toLightingForTest(null)).toBeNull();
+});
+
+// Regression: on a hex scene the lighting overlay's `lit` cells are also axial (q,r) — this
+// pins the axial rasterization at the RenderEngine wiring site (`toLighting` →
+// `Lighting.setTarget/apply` → `backend.setLighting`). It builds the engine with `MockBackend`,
+// which records the frame but never invokes `PixiBackend`'s paint math, so replacing
+// `this.grid.cellVertices(i, j)` in `toLighting` with square indexing fails this test, while
+// `PixiBackend.setLighting`'s own paint math is pinned separately by that class's own tests.
+test("a masked frame paints a hex scene's lit cell at its true axial position, not a square index", () => {
+  const store = new DocumentStore();
+  const backend = new MockBackend();
+  let onUpdate!: (f: { payload: unknown; computedAtSeq: number }) => void;
+  const engine = new RenderEngine({
+    store, assets: new AssetResolver(), backend, grid: { kind: "hex", size: 100 },
+    subscribeScene: (_c, cb) => { onUpdate = cb; return { unsubscribe: () => {} }; },
+  });
+  engine.start();
+  store.applyCommand(sceneCmd(1, "s1"));
+  onUpdate({
+    payload: {
+      mode: "masked", polygons: [], bands: [{ name: "bright", min: 0.67 }, { name: "dark", min: 0 }],
+      renderHints: [], lit: [{ scene: "s1", cell: 100, cells: [1, 1, 1, 0, -1] }], // hex axial (q=1, r=1)
+    },
+    computedAtSeq: 1,
+  });
+  backend.tick?.(1000); // settle the fade
+  const cells = backend.lighting!.cells;
+  expect(cells.length).toBe(1);
+  const expectedCenterX = 100 * (Math.sqrt(3) * 1 + (Math.sqrt(3) / 2) * 1);
+  const expectedCenterY = 100 * 1.5 * 1;
+  const corners = cells[0].corners;
+  expect(corners.length).toBe(6);
+  let cx = 0, cy = 0;
+  for (const p of corners) { cx += p.x; cy += p.y; }
+  cx /= 6; cy /= 6;
+  expect(cx).toBeCloseTo(expectedCenterX, 6);
+  expect(cy).toBeCloseTo(expectedCenterY, 6);
+  // Witness the bug directly: the square-position formula would have centered this at (100,100).
+  expect(cx).not.toBeCloseTo(100, 1);
+  expect(cy).not.toBeCloseTo(100, 1);
 });
 
 describe("multi-scene render filtering", () => {
@@ -1006,4 +1114,30 @@ describe("multi-scene render filtering", () => {
     expect(backend.visibility).toEqual({ mode: "masked", visible: [{ points: [1, 1, 11, 1, 11, 11] }], explored: [] });
     engine.destroy();
   });
+});
+
+test("the engine renders a token at the footprint lookup it was constructed with, refreshed by reapplyFootprints", () => {
+  // The wiring under test is the engine passing its `footprints` accessor down to `TokenView`.
+  // The accessor is read per reconcile, so replacing the lookup and calling `reapplyFootprints`
+  // repaints without any document change.
+  const store = new DocumentStore();
+  const backend = new MockBackend();
+  let footprints: FootprintLookup = { token: () => ({ w: 173.2, h: 200 }), unit: () => null };
+  const engine = new RenderEngine({
+    store,
+    assets: new AssetResolver(),
+    backend,
+    grid: { kind: "hex", size: 100 },
+    footprints: () => footprints,
+  });
+  engine.start();
+  store.applyCommand(tokenCmd(1, "t1", 0));
+  expect(backend.tokens.get("t1")!.w).toBe(173.2);
+  expect(backend.tokens.get("t1")!.h).toBe(200);
+
+  footprints = { token: () => ({ w: 346.4, h: 400 }), unit: () => null };
+  engine.reapplyFootprints();
+  expect(backend.tokens.get("t1")!.w).toBe(346.4);
+  expect(backend.tokens.get("t1")!.h).toBe(400);
+  engine.destroy();
 });

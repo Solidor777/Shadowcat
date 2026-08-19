@@ -34,6 +34,5 @@ Community modules follow the same model — see
 | [sheet-actor](/modules/sheet-actor) | Generic actor sheet (priority 0) |
 | [sheet-item](/modules/sheet-item) | Generic item sheet (priority 0) |
 
-A nested `src/modules/nightfox/` checkout, when present, is the external
-Nightfox system repo in its dev position — it documents itself in its own
-repository.
+The table covers this repository's first-party modules only. An out-of-tree
+module documents itself in its own repository, wherever its checkout sits.

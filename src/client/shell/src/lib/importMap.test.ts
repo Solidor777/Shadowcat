@@ -3,7 +3,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import path from "node:path";
 import { describe, it, expect } from "vitest";
 
-// .../src/client/shell/src/lib/importMap.test.ts -> repo root is five levels up.
+// This module's directory sits five levels below the repo root.
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../../..");
 const distDir = path.join(repoRoot, "dist");
 
@@ -49,24 +49,23 @@ describe("shared-runtime import map (build output)", () => {
     expect(map.imports["@shadowcat/formula"]).toBe("/runtime/shadowcat-formula.js");
     expect(map.imports["@shadowcat/types"]).toBe("/runtime/shadowcat-types.js");
 
-    // The import map must precede the app's own module entry script (§3:
-    // "injected before any module script executes").
+    // The import map must precede the app's own module entry script: it must be injected
+    // before any module script executes.
     const mapIdx = html.indexOf('<script type="importmap">');
     const appIdx = html.indexOf('<script type="module"');
     expect(mapIdx).toBeGreaterThanOrEqual(0);
     expect(appIdx).toBeGreaterThan(mapIdx);
   });
 
-  // Global Constraint 1 (single-instance sharing): a stable chunk name is not
-  // enough — Vite's default `preserveEntrySignatures: false` lets Rollup drop
-  // or mangle an entry chunk's exports down to whatever THIS build's own
-  // module graph happens to consume by name. That ships a chunk file at the
-  // right path with the wrong (or zero) export bindings, so an external
-  // module's `import { mount } from "svelte"` resolves through the import map
-  // but throws `SyntaxError: does not provide an export named 'mount'` at
-  // runtime — invisible to a test that only checks file existence / the
-  // import map's string content. These assertions import the actual built
-  // chunks and check the real public API names survive.
+  // Single-instance sharing — every consumer of a shared package resolves to one runtime copy
+  // of it — takes more than a stable chunk name: Vite's default
+  // `preserveEntrySignatures: false` lets Rollup drop or mangle an entry chunk's exports down
+  // to whatever THIS build's own module graph happens to consume by name. That ships a chunk
+  // file at the right path with the wrong (or zero) export bindings, so an external module's
+  // `import { mount } from "svelte"` resolves through the import map but throws
+  // `SyntaxError: does not provide an export named 'mount'` at runtime — invisible to a test
+  // that only checks file existence / the import map's string content. These assertions import
+  // the actual built chunks and check the real public API names survive.
   // Imports six real built chunks from disk — I/O-bound, so the default 5s
   // budget flakes under full-workspace parallel runs (`pnpm -r test`).
   it("runtime chunks export their packages' real public API (not mangled aliases)", { timeout: 30_000 }, async () => {
@@ -103,6 +102,9 @@ describe("shared-runtime import map (build output)", () => {
     expect(typeof formula.resolveAll).toBe("function");
     expect(typeof formula.resolveNotationTemplate).toBe("function");
     expect(formula.NOTATION_KEYWORDS).toBeDefined();
+    // A consuming module reaches the stat-key authority through this single instance or not
+    // at all: `checkNotationKey` is what it must call instead of restating the grammar.
+    expect(typeof formula.checkNotationKey).toBe("function");
 
     const core = await import(
       pathToFileURL(path.join(distDir, "runtime", "shadowcat-core.js")).href

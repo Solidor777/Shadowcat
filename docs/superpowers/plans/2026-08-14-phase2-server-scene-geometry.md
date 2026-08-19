@@ -34,6 +34,41 @@ Ledger Additions section).
 
 ## Global Constraints
 
+- **THE GATE LIST LIVES HERE AND NOWHERE ELSE.** A per-task gate list is a forked decision, and it
+  drifted exactly as that class predicts: six task briefs each re-enumerated the gates, all six
+  dropped the same one, and a doc-example failure introduced mid-phase survived several tasks
+  reporting "all gates clean" — because every one of them ran the list it was handed rather than the
+  list that exists. A task brief must POINT here, never restate.
+  **This list is DERIVED FROM THE CI WORKFLOW, not curated beside it.** A hand-kept list forks from
+  the pipeline the moment a job gains a step, and it did: the list below once omitted four commands
+  CI runs, so a break in any of them reported green under the plan's own list while failing the
+  pipeline. Check it against the workflow's `run:` steps rather than trusting it; a command CI runs
+  and this list omits is a defect in this section, not an optional extra.
+  Run from the repo root unless noted:
+  - `pnpm -r test` and `pnpm -r typecheck` (any client package touched)
+  - `pnpm run test:scripts` — the `scripts/` suite. It has its own runner and is invisible to
+    `pnpm -r test`, so a broken build script passes every workspace gate.
+  - `pnpm lint`
+  - `pnpm lint:docs`, `pnpm lint:props`, `pnpm lint:comments` — doc/property coverage and ephemeral
+    references
+  - `pnpm lint:allowances` — no unapproved lint suppression anywhere in the tree
+  - `pnpm run check:svelte-runtime` — single-instance Svelte runtime across the workspace
+  - `node scripts/check-skill-api-refs-cli.mjs` — every API symbol a skill cites still exists
+  - `node scripts/check-skill-symbol-refs-cli.mjs` — every code-symbol citation in a
+    `shadowcat-codebase-*` skill resolves to a symbol declared in the tree
+  - **`pnpm docs:check-examples`** — every `@example` block must typecheck. **Examples compile
+    INSIDE the module that documents them**, so an example may fail at a line its author never
+    touched, and an ambient `declare` of a symbol the host already declares collides with the real
+    declaration. Do not redeclare a host symbol in its own example; it is already in scope.
+  - `node scripts/check-comment-refs.mjs` — the unnamed-pointer rule, fatal at zero
+  - From `src/server/`: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,
+    `cargo test`
+  - `cargo clippy --manifest-path src/server/Cargo.toml --all-targets -- -D missing-docs
+    -D clippy::missing-docs-in-private-items` — the Rust doc-coverage pass. It is a SEPARATE
+    invocation from the plain clippy gate above and passing one says nothing about the other.
+  All are `error` and fail CI; there is no advisory tier. **A gate that was not run is not a gate
+  that passed** — report each by name with its result, including the ones that were irrelevant and
+  why.
 - **The campaign directive in the spec's §1 is copied verbatim into every subagent's first prompt.**
 - **Report channel, stated in every dispatch:** return the report as the Agent tool's result, or
   send it via SendMessage, or write it to a named document. Dispatches are launched **without** a
@@ -52,10 +87,32 @@ Ledger Additions section).
   only; the plan's own reading, where it has one, is recorded in a *separate* step that runs
   **after** the derivation is written down, and a disagreement between the two is a finding to
   report rather than an error to reconcile.
+- **The mechanical comment pass covers every comment in every file TOUCHED, not only added lines.**
+  The added-lines form was installed after two rule violations slipped a gate, and a third instance
+  was then found sitting in UNCHANGED CONTEXT inside the very comment block whose neighbouring lines
+  had just been fixed — invisible to the pass by construction, because a `+`-line grep cannot see a
+  line that did not change. **The check's coverage and the defect's hiding place were the same
+  property**, which is the recurring shape of every detector failure in this phase.
+  So: for each file you touch, run the pass over ALL of its comments. Report the file, the comment
+  count scanned, and the matches including zeros. A violation adjacent to your edit is yours to fix
+  — the no-grandfathering rule makes finding one a defect, not a precedent.
 - **Every test carries a discrimination line** — the production change that would make it fail,
   checked against the test **as written**, not asserted. The check is mechanical: name the edit,
   then confirm the test's own call path REACHES the edited code. A test that passes its input
   through a helper the task does not change cannot discriminate, however the line is worded.
+- **The discrimination check is performed as a REVERT, once PER FIXED SITE, and reported as one row
+  per site.** This constraint existed in the wording above and was violated three times in this
+  phase anyway, so the evaluation method is now specified rather than the property.
+  **Reading a call path cannot establish it**, because the reading is what fails: a test routed
+  through a test double reaches *a* symbol of the right name and never reaches the production one,
+  and the phrase that accompanies this defect every time is "exercised through the real wiring" —
+  true right up to the boundary where it stops being true. **A call path that terminates in a mock,
+  fake, or spy does not reach the production symbol that double replaces.** Observed instances: a
+  wiring site in the render engine, and a paint site whose mock backend recorded the frame it was
+  handed and never invoked the real implementation.
+  So: for each site you changed, revert THAT site, run the suite, record the observed failure
+  verbatim, restore by `diff`. **A site with no row has no coverage**, and a claim of coverage
+  without an observed failure is the claim this rule exists to reject — including when it is true.
 - **No test assertion sits on an exact floating-point equality boundary.** Where a test brackets a
   threshold, both sides are placed a stated distance off it, so a one-ULP difference in a correct
   implementation cannot decide the outcome. A test whose expected value is the threshold itself is
@@ -206,6 +263,15 @@ derivations rather than recollections:
 - **Task 6 runs after Task 5**, which produces the symbol it converts four further sites onto.
 - **Task 7 runs after Tasks 4, 5 and 6**, because the hex scene it exercises runs through all
   three; **Task 8 runs after Task 5**, because it verifies the post-conversion environment light.
+- **Task 5c (three comment/fixture classes) runs after Task 5b**, not because it depends on the
+  envelope but because both edit the same test modules and two agents editing one module is the
+  clobber hazard. It is comments and test-local constants only; no production behaviour changes, and
+  a changed test outcome under it is a finding rather than something to accommodate.
+- **Task 5b (the envelope) runs between Tasks 5 and 6**, and before Tasks 7 and 8. It changes the
+  return type of the symbol Task 5 introduced, so running it after Task 6 would convert four further
+  sites onto a signature that then changes under them, and Task 8's environment-light verification
+  would be verifying a perimeter walk that this task moves. It is numbered `5b` rather than
+  renumbering Tasks 6–12, whose numbers are already cited by dispatched briefs and ledger entries.
 
 ---
 
@@ -2716,6 +2782,497 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>" -- src/server/src/scene/g
 
 ---
 
+### Task 5b: `world_extent` returns the scene's true envelope, not a max corner
+
+**Ledger ids:** owner ruling, escalated out of Task 5's buddy check. **Numbered `5b` deliberately:**
+Tasks 6–12 are already dispatched-against and referenced by ledger entries and briefs; renumbering
+them would falsify every one of those references.
+
+**Depends on:** Task 5 (which introduced `GridShape::world_extent` and routed the three consumers
+through it). Do not start before Task 5's fix round closes.
+
+---
+
+#### The defect
+
+`GridShape::world_extent` returns a single `(f64, f64)` and every consumer reads it as the far
+corner of a rectangle anchored at the origin. On square that is exactly right. On hex it is false,
+and the trait's own doc already says so: a pointy-top hex block is not origin-anchored, because
+axial cell `(0, 0)`'s centre sits at the origin and its own polygon extends half an inradius left
+and one circumradius down. The block's true minimum is
+
+```
+min = ( -(√3/2)·size , -size )
+```
+
+Three consumers each handle that fact independently, and all three handle it the same wrong way —
+they hardcode the origin:
+
+| Consumer | How it anchors | What it costs |
+|---|---|---|
+| `navmesh::build_navmesh` | literal `glam::Vec2::new(0.0, 0.0)` as the outer rectangle's first vertex | axial row `r = 0`'s centres sit exactly ON the mesh's bottom edge; routability there depends on `polyanya::Layer::point_in_polygon` admitting an on-edge point — a third-party convention we do not control |
+| `lighting::env_light_polys` | `perimeter_point(w, h, d)` walks from `(0,0)`; the raycast `Rect` runs `-margin` to `w + margin` | environment light enters at the centre row rather than at the block's real edge — under-reveal |
+| `vision::bound_for_scene` | `minx: wall_bound.minx.min(0.0)`, `miny: …min(0.0)` | the scene's contribution to the bound starts at the origin, so under `los_restriction = false` the whole-box polygon misses the bottom half of row 0 |
+
+**This is not the usual fork.** The three do not disagree with each other; they agree in being wrong
+about the same thing. That is worse in one specific way: a fork is visible the moment two paths are
+compared, whereas unanimous agreement on a false anchor reads as a settled convention. The remedy is
+the same either way — one symbol returns the truth and nobody restates it.
+
+**Direction of the behaviour change: it reveals cells that were authored, never more than were
+authored.** The origin row's hexes are real members of the authored block. Covering their geometry
+is not a hedge and is not the growth `world_extent`'s doc warns against when it rejects rounding the
+authored bound up — that rejection stands untouched, because it is about inventing cells the GM did
+not author. This task invents nothing; it stops truncating cells the GM did author.
+
+---
+
+**Files:**
+- Modify: `src/server/src/scene/grid_shape.rs` — the `WorldExtent` type, the trait method, both impls, their tests
+- Modify: `src/server/src/scene/navmesh.rs` — `build_navmesh`
+- Modify: `src/server/src/scene/lighting.rs` — `env_light_polys`, `perimeter_point`
+- Modify: `src/server/src/scene/vision.rs` — `bound_for_scene`
+- Modify: `src/server/src/scene/mod.rs` — `SceneEcs::scene_world_extent`, `SceneEcs::player_vision_polygons`, `SceneEcs::player_vision_inputs`, `SceneEcs::navmesh_for`, `SceneEcs::lighting_inputs`, `SceneEcs::lighting_inputs_from`, `SceneEcs::visible_cells_cached`, `SceneEcs::player_lit_mask`, `accumulate_visible_cells`, `source_los_poly`, and their tests
+- Modify: `src/server/src/scene/grid_shape_parity_tests.rs` — any parity test reading the extent
+
+**Interfaces:**
+- Produces: `WorldExtent { min: (f64, f64), max: (f64, f64) }` with `width()` and `height()`;
+  `GridShape::world_extent(&self, bounds_cells: (f64, f64)) -> WorldExtent`. Task 6 consumes
+  `world_units_per_cell`, which this task does not touch.
+- Consumes: `normalize_bounds_cells`'s `Option` contract from Task 5's fix round — an unusable
+  authored bound still yields the value the guards refuse.
+
+---
+
+- [ ] **Step 1: Enumerate every subject before changing anything**
+
+Do NOT grep for a marker and call the result the worklist. Enumerate the bounded set of SUBJECTS and
+give every one a row and a disposition, in the report:
+
+1. **Every caller of `world_extent`** (production and test), read out of the source, one row each.
+2. **Every test whose assertions encode an origin-anchored rectangle** — including tests that never
+   name `world_extent`, e.g. one asserting a navmesh route's coordinates or an env-light sample's
+   position. The axis to check is not "does it mention the symbol" but "would this assertion change
+   if the hex rectangle gained a negative minimum".
+3. **Every comment stating the rectangle is `(0,0)–extent`** in the five files above. There are
+   several; the phrase varies, so read the comments rather than searching for that spelling.
+
+Two named instances that MUST appear in your table with a disposition, because both become FALSE
+under this change and neither will fail to compile:
+
+- `hex_world_extent_leaves_the_origin_cells_negative_margin_outside` — its name and its assertion
+  both state the negative margin is outside the rectangle. Under the envelope it is inside. This
+  test inverts; it does not get deleted. The property worth pinning is that the envelope's minimum
+  is exactly the origin cell's own lower-left extreme, and that square's minimum is exactly the
+  origin.
+- `hex_continuous_routes_along_axial_row_zero_including_the_mesh_corner`, and the `world_extent`
+  doc clause that explains it. Both currently say row 0's centres are on-mesh *because the mesh's
+  containment test admits an exactly-on-boundary point*. Under the envelope they are strictly
+  interior and that explanation is false. Rewrite both to state the present fact — the row's centres
+  sit one circumradius above the mesh's bottom edge — and rename the test so "mesh corner" does not
+  survive as a claim about a point that is no longer the corner. **Keep the route assertions**: the
+  test still pins that the row routes, and it now pins it without depending on a third-party
+  convention. Say in your report which of its assertions changed and why.
+
+These two are INPUTS, not examples. A disposition line for each is required.
+
+- [ ] **Step 2: Write the failing test for the envelope itself**
+
+In `grid_shape.rs`'s test module:
+
+```rust
+#[test]
+fn each_shapes_envelope_starts_at_its_own_origin_cells_lower_left_extreme() {
+    let size = 50.0_f64;
+    let sq = SquareGrid { cell: size, diagonal_rule: DiagonalRule::Chebyshev };
+    let hx = HexGrid { size };
+
+    // Discrimination: fails if `world_extent` returns an origin-anchored rectangle on hex, or if
+    // the square arm gains a spurious negative margin from a shared normalisation path.
+    let s = sq.world_extent((8.0, 6.0));
+    assert_eq!(s.min, (0.0, 0.0), "a square block's origin cell starts AT the origin");
+
+    let h = hx.world_extent((8.0, 6.0));
+    let (cx, cy) = hx.cell_center((0, 0));
+    assert_eq!(cy, 0.0, "fixture guard: axial (0,0)'s centre is the origin row");
+    assert!(
+        (h.min.0 - (cx - 3.0_f64.sqrt() / 2.0 * size)).abs() < 1e-9,
+        "the envelope's x minimum is the origin hex's own left inradius, got {}",
+        h.min.0
+    );
+    assert!(
+        (h.min.1 - (cy - size)).abs() < 1e-9,
+        "the envelope's y minimum is the origin hex's own bottom circumradius, got {}",
+        h.min.1
+    );
+    assert!(h.width() > 0.0 && h.height() > 0.0, "a positive block has a positive envelope");
+}
+```
+
+- [ ] **Step 3: Run it and record the failure verbatim**
+
+Run: `cargo test --manifest-path src/server/Cargo.toml each_shapes_envelope`
+It cannot compile until Step 4 exists. Record what you observe; do not predict it.
+
+- [ ] **Step 4: Introduce `WorldExtent` and change both impls**
+
+```rust
+/// A scene's world-unit envelope: the axis-aligned rectangle that contains every cell of the
+/// authored integer block, as both corners rather than a far corner alone.
+///
+/// `min` is not the origin on every shape. A pointy-top hex block's origin cell is CENTRED on the
+/// origin, so its own polygon reaches `-(√3/2)·size` in x and `-size` in y; a square block's origin
+/// cell has its corner there, so `min` is the origin exactly. Consumers that triangulate, walk, or
+/// bound this rectangle read both corners, which is why the type carries both — an anchor a caller
+/// supplies itself is an anchor each caller can get wrong independently.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct WorldExtent {
+    /// Lower-left corner in world units.
+    pub(crate) min: (f64, f64),
+    /// Upper-right corner in world units.
+    pub(crate) max: (f64, f64),
+}
+
+impl WorldExtent {
+    /// The envelope's x span. Zero or negative marks an envelope every consumer refuses.
+    pub(crate) fn width(&self) -> f64 {
+        self.max.0 - self.min.0
+    }
+
+    /// The envelope's y span. Zero or negative marks an envelope every consumer refuses.
+    pub(crate) fn height(&self) -> f64 {
+        self.max.1 - self.min.1
+    }
+}
+```
+
+Both impls keep their existing `max` closed forms unchanged — this task does not re-derive them; two
+reviewers derived them independently and matched. What each gains is its `min`:
+
+- `SquareGrid`: `min = (0.0, 0.0)`.
+- `HexGrid`: `min = (-(√3/2)·size, -size)` — derived from the same half-extents the `max` formula
+  already adds, so the two corners read one expression per axis rather than two.
+
+**The refusal value becomes a zero-AREA envelope**, not a zero max corner: `normalize_bounds_cells`
+returning `None` yields `WorldExtent { min: (0.0, 0.0), max: (0.0, 0.0) }` from both impls. Every
+guard below refuses it on span, so the fail-closed behaviour Task 5's fix round pinned is preserved
+by construction. Confirm that the non-finite parity test from that round still passes unchanged in
+meaning, and update it to compare envelopes rather than corners.
+
+- [ ] **Step 5: Run the new test and the full shape suite**
+
+Run: `cargo test --manifest-path src/server/Cargo.toml grid_shape`
+
+- [ ] **Step 6: Move each consumer onto both corners**
+
+`navmesh::build_navmesh` — take `WorldExtent`. The outer rectangle's four vertices become the
+envelope's corners rather than `(0,0)` and `extent`. Its refusal set must not weaken: refuse a
+non-finite corner on either axis, a non-positive `width()` or `height()`, and an over-`MAX_NAVMESH_COORD`
+magnitude on BOTH corners (today only the far corner is magnitude-checked — with a real minimum, a
+corner that is finite but enormous reaches the `as f32` cast the check exists to protect).
+
+`lighting::env_light_polys` — take `WorldExtent`. `perimeter_point` walks the envelope, so it needs
+the minimum as well as the spans; the raycast `Rect` runs `min − margin` to `max + margin`. The
+sample count stays `perimeter / cell_size`, which is now the envelope's perimeter. The doc's
+fail-closed clause stays true and its `(0,0)–extent` phrasing does not.
+
+`vision::bound_for_scene` — take `WorldExtent`. The two `.min(0.0)` clamps become clamps against the
+envelope's minimum, and the two `.max(...)` against its maximum. **The `.max(0.0)` guards on
+`scene_maxx`/`scene_maxy` are load-bearing and must be preserved in spirit**: a degenerate envelope
+must not shrink the wall-derived bound. Preserve that by unioning, never by replacing.
+
+`SceneEcs::scene_world_extent` and the eight sites in `mod.rs` — thread `WorldExtent` through.
+`source_los_poly` and `accumulate_visible_cells` pass it along unchanged.
+
+- [ ] **Step 7: Pin the behaviour change where it is observable**
+
+Three tests, each asserting a consumer now covers the hex block's negative margin:
+
+1. **Navmesh**: a hex continuous scene routes between two points BELOW `y = 0` but inside the origin
+   row's hexes — impossible today, since the mesh starts at `y = 0`. Its discrimination line is the
+   envelope's minimum; confirm by mutating `HexGrid::world_extent`'s `min` to `(0.0, 0.0)` and
+   observing this test fail. Revert by `diff`, byte-identical, and re-run.
+2. **Env light**: the hex sealed-interior fixture Task 5's fix round added gains a sibling asserting
+   a cell in the origin row is environment-lit through the block's real bottom edge.
+3. **LOS-off box**: a hex scene with `los_restriction = false` includes the origin row in the
+   visible-cell mask. If it already does today (row 0's CENTRES are at `y = 0`, which the current
+   box's edge admits), say so in your report and pin the property that actually changed instead of
+   asserting one that did not — **do not manufacture a test that passes before and after**.
+
+- [ ] **Step 8: Full gate**
+
+Run from `src/server/`: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,
+`cargo test`. Then from the repo root: `node scripts/check-comment-refs.mjs`.
+`pnpm build` first if `dist/` is stale.
+
+Report the test delta as `before → after` with the count of tests added and the count removed. **A
+removed test needs a named reason.** Fixture-coordinate churn on hex is expected and is not a reason
+to delete a test.
+
+- [ ] **Step 9: Commit**
+
+```bash
+git commit -m "fix(scene): return the scene's true envelope, not an origin-anchored corner
+
+A pointy-top hex block's origin cell is centred on the origin, so the block
+reaches below and left of it. Three consumers each hardcoded the origin as the
+rectangle's lower-left corner, truncating the origin row's geometry on the
+navmesh, the environment-light perimeter walk, and the LOS-off bound.
+
+world_extent returns both corners. The navmesh triangulates them, the perimeter
+walk starts at the minimum, and the vision bound unions the envelope instead of
+clamping to zero, so axial row zero's centres are strictly interior rather than
+on the mesh boundary.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>" -- src/server/src/scene/grid_shape.rs src/server/src/scene/navmesh.rs src/server/src/scene/lighting.rs src/server/src/scene/vision.rs src/server/src/scene/mod.rs src/server/src/scene/grid_shape_parity_tests.rs
+```
+
+---
+
+### Task 5c: three comment/fixture classes the scene subsystem carries, enumerated and closed
+
+**Ledger ids:** surfaced by Task 5's fix rounds and held for their own task. **Numbered `5c` for the
+same reason as `5b`:** Tasks 6–12 are already cited by dispatched briefs and ledger entries.
+
+**Depends on:** Task 5 closing. Independent of Task 5b — it touches comments and test fixtures, not
+`world_extent`'s signature — but run it after 5b to avoid two agents editing the same test module.
+
+---
+
+#### Why these are one task and not three
+
+All three are the same shape: **a value or a reference that exists in two places, where the copy is
+not checked against its source.** They are separated from Task 5 only because Task 5's fix rounds
+would have had to sweep them while mid-way through a different subject, and a sweep inside a fix
+round is how a class gets scoped to whatever the fix happened to touch.
+
+They are explicitly NOT ruled acceptable by having been held. Each has a measured population and
+none is grandfathered.
+
+#### The method requirement, which is the point of the task
+
+**Enumerate SUBJECTS, not markers.** Every prior attempt at these classes searched for a spelling —
+`below`, `§`, `cell count` — and every one undercounted, the last by roughly sevenfold. A search
+finds the shape you already imagined; the members that matter are the ones spelled differently.
+
+So: for each file in scope, enumerate **every comment in the file**, one row each, and adjudicate it
+against the criterion. Report the row count per file. A file's row count that is obviously below its
+comment count is the tell that the enumeration was a search wearing an enumeration's clothes.
+
+**Derive from the criterion's wording, never from examples of it.** A round-4 enumeration missed six
+members because it enumerated three *forms* of its criterion and matched against those; the wording
+covered all six. Enumerating the forms of a criterion narrows the criterion.
+
+---
+
+**Files:** every file under `src/server/src/scene/`, plus `src/server/src/data/engine/` for class C.
+
+**Interfaces:** none. This task changes comments and test-local constants only. No production
+behaviour changes; the test suite's pass/fail set must be identical before and after, and a changed
+test outcome is a finding to report, not a thing to accommodate.
+
+---
+
+- [ ] **Step 1: Class A — positional references**
+
+A comment that locates something by where it sits rather than by what it is: `below`, `above`,
+`the loop below`, `placed ahead of`, `the line following`. **71 are measured to survive** — the
+estimate rose from four to thirty to seventy-one across three successive counts, every one of them an
+undercount, which is why this task enumerates rather than estimates.
+
+**Classify, do not sweep.** Roughly 40 further lines match the same words while being nothing of the
+kind: quantitative uses (`a bound below one cell`), temporal ones (`rejected later by`), and ordinary
+prose. A pattern narrow enough to exclude them would exclude real members spelled differently, and
+narrowing a detector hides what widening revealed — so keep the match broad and adjudicate every hit
+by hand, recording the non-members and their reason alongside the members.
+
+**The conversion is: keep the DESCRIPTIVE name, drop the POSITIONAL word.** "the integer-block loop
+below" → "the integer-block loop". The name is what makes a reference findable; the position is the
+part that rots, silently, on any reordering — and no gate catches it.
+
+Where a reference has no descriptive name to fall back on, that is the finding: name the thing, or
+state the constraint directly instead of pointing at it.
+
+- [ ] **Step 2: Class B — section-style and unnamed-document pointers**
+
+Comments carrying a bare `§N` or an unnamed spec reference — a pointer whose referent cannot be
+identified from the code. **13 lines carrying 14 tokens are measured to survive**, 11 of them one
+recurring section number.
+
+These pass `check-comment-refs`, which is a fact about the gate's coverage and not a licence. State
+the constraint the sentence is about; where the pointer carried nothing, delete the token and change
+nothing else — inventing a plausible replacement constraint is the worst outcome available.
+
+- [ ] **Step 3: Class C — configuration-only size restatements**
+
+Around 14 test sites author a grid size in scene JSON and separately restate it as a literal, without
+deriving coordinates from a shape. Their failure mode is loud rather than silent — the literal
+assertions break — which is why they were separated from the drift class Task 5 closed.
+
+**Add `grid_shape.rs`'s own 11 sites**, which appear in no earlier count because that file sat outside
+the worklist that produced every other number here. Treat the totals above the same way: they are the
+measured floor, not the answer.
+
+**The shape is minimal: each fixture's authored size gets ONE expression within that test.** Do NOT
+build a shared fixture constructor across these — they are diverse scenes, and forcing them through
+one constructor would couple unrelated fixtures to make a comment true, which is worse than the
+restatement.
+
+- [ ] **Step 4: Verify no behaviour moved**
+
+Run the full server gate and confirm the pass/fail set is unchanged: `cargo fmt --check`,
+`cargo clippy --all-targets -- -D warnings`, `cargo test`, then `node scripts/check-comment-refs.mjs`
+from the repo root.
+
+**A test that changes outcome under a comment-and-constant task is a finding.** It means a literal
+this task replaced was load-bearing in a way nobody had recorded. Report it; do not adjust the test
+to restore green.
+
+- [ ] **Step 5: Make the class a gate, once its population is zero**
+
+Add the positional-reference and unnamed-pointer patterns to `scripts/check-comment-refs.mjs` as
+full-tree rules, in the same edit that empties their populations. **No baseline and no allowlist** —
+a warn tier or a grandfathered set is an exemption spread across the whole codebase, and a
+reported-but-passing violation is indistinguishable to a later reader from code that was checked.
+
+Two constraints on the patterns, both learned from this task's own history:
+
+- **Keep them broad and pay for it in review, never narrow them to silence a collision.** A false
+  positive is visible and gets adjudicated; a false negative is invisible forever. Where a legitimate
+  quantitative or temporal use collides, change the prose so the collision does not arise rather than
+  carving the pattern around it.
+- **The gate must print its active exemption count**, if it ends up with any. An uncounted exemption
+  is a backdoor and a silent one is indistinguishable from a rule that does not apply.
+
+Verify the gate is real before trusting it: introduce one violation of each new pattern, observe the
+gate FAIL, and revert byte-identically by `diff`. A gate that does not gate and a clean tree produce
+the same output.
+
+- [ ] **Step 6: Report the measured populations**
+
+Per class: the enumerated population, the number converted, and every member left unconverted with
+its reason. **Do not report a class as "complete"** — report what was enumerated and what was done
+with each member. A class whose population matches an earlier estimate exactly is worth a second
+look; every earlier estimate here was an undercount.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git commit -m "docs(scene): replace positional and unnamed-document references, single-source fixture sizes
+
+A positional reference rots on any reordering with nothing to catch it, and a
+section pointer naming no document names nothing at all. Each is replaced by the
+symbol or the constraint it was pointing at.
+
+Test fixtures that authored a grid size twice now express it once, so a changed
+size cannot leave a fixture configuring one scene and asserting about another.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>" -- src/server/src/scene src/server/src/data/engine
+```
+
+---
+
+### Task 5d: close the unnamed-pointer class repo-wide and make its detector fatal
+
+**Numbered `5d` for the same reason as `5b`/`5c`.** Split out of Task 5c's Step 5, which was correctly
+held rather than decided by its implementer.
+
+---
+
+#### The ruling this task rests on, and the half it deliberately excludes
+
+Task 5c wrote two new detector rules, verified both real, and found they fire on **505 sites
+repo-wide, none in the files it enumerated**. It reverted the detector byte-identically and held.
+That was right, and the reason is sharper than the site count:
+
+- **481 of those are POSITIONAL references** (`the loop below`, `the guard above`). `RULE 15` as
+  written bans *file names, paths, and line numbers*. It does not mention positional words inside a
+  file. Extending it to cover them is defensible — "below" rots on any reordering exactly as a line
+  number rots on any insertion, and no gate catches either — **but it is a rule EXTENSION, and
+  widening a rule into a fatal repo-wide gate is the owner's call in the same way narrowing one is.**
+  That question is raised, not answered here.
+- **24 of those are unnamed-document pointers** (a bare `§N`, `per brief`, `per spec §3.2`). These are
+  **already banned** — `RULE 16` names "unnamed spec references" explicitly, and the campaign's
+  standing directive is that its gate is *a gate, never a ratchet*, applying retroactively with
+  nothing grandfathered.
+
+So this task closes the second class only. The positional class stays enumerated, unswept, and
+explicitly **not** thereby ruled acceptable.
+
+---
+
+**Files:** wherever the enumeration lands — known to include `src/server/src/ws/`, `chat/`, `dice/`,
+the client packages, `scripts/`, and the eslint configs — plus `scripts/check-comment-refs.mjs`.
+
+---
+
+- [ ] **Step 1: Enumerate the class, do not trust the count**
+
+24 is a detector's output, not an enumeration. Four successive counts of the sibling class each
+undercounted (4 → 30 → 71 → 79), every time because the subject set came from a filter rather than
+from the domain.
+
+Enumerate every comment in every file the detector flags **and in every sibling file in those
+directories**, one row each, and adjudicate against `RULE 16`'s wording — not against the three forms
+the detector happens to match. Report per-file row counts.
+
+**Expect non-members and record them.** A `§` inside a string literal, a URL fragment, or a config
+file with no symbols to cite is not a member. Adjudicate; do not carve the pattern around them.
+
+- [ ] **Step 2: Convert each member**
+
+State the constraint the sentence is about and drop the pointer. **Where the pointer carried nothing,
+delete the token and change nothing else** — inventing a plausible replacement constraint is the
+worst outcome available, worse than leaving the pointer.
+
+Some of these sit in `scripts/` and eslint configs, which `RULE 16`'s carve-out exempts as
+config/build files with no symbols to cite. Adjudicate each rather than assuming the carve-out covers
+a whole directory.
+
+- [ ] **Step 3: Fix the two items Task 5c reported and left**
+
+Both are in the scene subsystem and squarely in scope; they were reported rather than swept because
+they belong to different classes than the three that task enumerated.
+
+- `SceneEcs`'s module-header comment carries a stale plan reference **and** a now-false claim — it says
+  the pathfinding and animation fields are resolved in later checkpoints, and both resolvers exist.
+  The pointer is a `RULE 16` violation; the false claim is worse and is the reason this is not
+  cosmetic. State what the fields are and what resolves them.
+- `FIXTURE_GRID_SIZE`'s doc argued in-code that the sites it named had "nothing to drift against" —
+  they *were* the drift population. Task 5c rewrote it; verify the rewrite is true of the set as it
+  now stands.
+
+- [ ] **Step 4: Make the unnamed-pointer rule fatal, with its population at zero**
+
+Add the rule to `scripts/check-comment-refs.mjs` in the same commit that empties it. **No baseline, no
+allowlist, no warn tier** — a warn tier is an exemption spread across the codebase, and a
+reported-but-passing violation is indistinguishable to a later reader from code that was checked.
+
+If the rule needs an exemption at all, **it must print its active count** — an uncounted exemption is
+a backdoor and a silent one is indistinguishable from a rule that does not apply.
+
+**Verify the gate is real**: introduce one violation, observe the gate FAIL and name it, revert
+byte-identically by `diff`, and re-run clean. A gate that does not gate and a clean tree produce
+identical output.
+
+**Do not add the positional rule.** Task 5c's verified rule source is preserved in its report for
+whenever that question is answered.
+
+- [ ] **Step 5: Full gate**
+
+`cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` from `src/server/`;
+`pnpm -r test` if any client package was touched; `node scripts/check-comment-refs.mjs` from the root.
+
+**A test that changes outcome under a comment-only task is a finding** — it means a pointer you
+removed was load-bearing in a way nobody recorded. Report it; do not adjust the test to restore green.
+
+- [ ] **Step 6: Commit**
+
+Conventional-commits, imperative, stating the constraint and the consequence. No task ids, round
+numbers, dates, or process references.
+
+---
+
 ### Task 6: Every remaining authored-in-cells quantity reads the shared symbol; the rest are documented non-conversions
 
 **Ledger ids:** PW1, PW2 (same root cause; these are the sites the two named symptoms did not
@@ -3134,6 +3691,1039 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>" -- src/server/src/scene/l
 
 ---
 
+### Task 6b: a placed light reaches what it was authored to reach
+
+**Numbered `6b` for the same reason as `5b`.** Found during Task 6, pre-existing, live on both grid
+shapes, and correctly not fixed inline — the fix widens a secrecy surface and moves every lit-mask
+fixture, which earns its own review cycle rather than a fold-in.
+
+---
+
+#### The defect
+
+`SceneEcs::lighting_inputs_from` builds each placed light's occlusion polygon by raycasting against
+`vision::bound_for(light.pos, light_walls, VISION_BOUND_MARGIN)`. That bound grows around the lamp
+and around nearby `blocksLight` wall ENDPOINTS — and around nothing else. With no such wall near the
+lamp, the polygon is a box of roughly `VISION_BOUND_MARGIN` on a side. `cell_illumination` then
+requires a cell's centre to lie inside that polygon, so **the occlusion polygon silently becomes a
+hard range cap**, independent of the light's authored radii.
+
+Demonstrated by a fixture already in the tree: `scene_with_lit_player_token` authors a dim radius of
+6 cells at cell size 100 — 600 world units of intended reach — and cannot light past roughly 100.
+
+**This is the same defect shape the `ceil` proposal was rejected for in the extent work: a setting
+whose stored value no longer determines its effect.** That argument was decisive there and is
+decisive here, which is why this is a bug rather than a tuning question.
+
+#### The cap is worse than a cap: it is a reach that varies with unrelated authoring
+
+Read `bound_for` before designing the fix. It seeds an AABB at the viewpoint and grows it over
+**every** wall endpoint in the slice it is handed, then pads by `margin` — and
+`SceneEcs::lighting_inputs_from` hands it `light_walls`, the whole scene's `blocksLight` set, not a
+neighbourhood of the lamp. Three consequences follow, and the third is the one that makes this
+unfixable by tuning:
+
+1. On a wall-less scene the AABB is the lamp ± `margin` — a hard cap at roughly `VISION_BOUND_MARGIN`
+   regardless of authored radius.
+2. Adding a `blocksLight` wall **anywhere** in the scene grows that AABB, so it raises the cap for
+   **every** lamp in the scene, including lamps on the far side of it.
+3. Therefore a lamp's maximum reach is a function of where unrelated walls were placed elsewhere.
+   Author a wall in a distant room and a lamp that was clipped starts reaching further; delete it and
+   the lamp dims — with nothing near the lamp having changed.
+
+**Do not describe this in the report as "capped at ~100".** A fixed cap reads as a tuning constant
+someone can raise. This is a reach with no stable value at all, which is why the remedy is to make
+the authored radius determine the bound rather than to enlarge `VISION_BOUND_MARGIN`.
+
+**Raising `VISION_BOUND_MARGIN` is therefore not an acceptable fix** — it moves the cap without
+making the stored radius determine the effect, leaving the same defect at a larger number and
+leaving consequence 3 fully intact. If the work reaches a point where that looks like the answer,
+that is a signal the fix has been mis-scoped; say so rather than adjusting the constant.
+
+**Why nothing caught it.** The direction is under-reveal, and no test asserts a light reaching as far
+as it was told to. Every lit-mask fixture either sits inside the cap or has walls near enough to grow
+the bound past it. A test suite can only catch a cap it tries to exceed.
+
+#### Direction and blast radius, stated before the work rather than discovered during it
+
+The fix makes lights reach further, which grows `SceneEcs::player_lit_mask` and therefore the movement
+gate's `visible_cells`. That is the over-reveal direction on two secrecy-bearing consumers — but it is
+**correct** reveal: the cells becoming lit are the ones a GM authored the radius to light. The bug was
+that the authored value was being silently ignored, not that the correct value is too generous.
+
+Expect existing lit-mask fixtures to move. **A fixture whose expected set changes is evidence the fix
+works, not a regression** — but each one must be re-derived and stated, never adjusted until green.
+
+---
+
+**Files:**
+- Modify: `src/server/src/scene/vision.rs` (`bound_for`, or a light-specific sibling)
+- Modify: `src/server/src/scene/mod.rs` (`SceneEcs::lighting_inputs_from`, its tests)
+- Modify: `src/server/src/scene/lighting.rs` if the reach belongs there
+
+**Interfaces:**
+- Consumes: `GridShape::world_units_per_cell` — the authored radii are in cells, so the reach disc is
+  a second per-cell-distance conversion and must use that symbol, not the indexing scale.
+- Produces: no new public surface expected. If the fix needs one, say so before building it.
+
+---
+
+- [ ] **Step 1: Reproduce the cap before changing anything, and record it verbatim**
+
+Write a test that authors a light with a radius reaching well past `VISION_BOUND_MARGIN` on an
+otherwise wall-less scene, and asserts a cell inside the authored radius is lit. Run it. **Record the
+observed failure verbatim.** Do not predict it.
+
+Do this on **both** shapes. The implementer that found this reports it live on square; verify that
+independently rather than inheriting the claim, because a square-only or hex-only cap would mean a
+different mechanism than the one described above.
+
+- [ ] **Step 2: Union the reach into the bound, never replace it**
+
+The recommended shape, which mirrors the union-never-replace discipline already established for the
+scene extent: grow the bound to contain the lamp's reach disc as well as the wall endpoints, so the
+polygon can only get larger and occlusion still decides what inside it is actually lit.
+
+**Do not clamp, substitute, or special-case.** A bound that replaces rather than unions can shrink,
+and a shrinking bound on this path is an under-reveal defect of exactly the kind being fixed.
+
+The reach is `max(bright_radius, dim_radius) × world_units_per_cell`, since both are authored in
+cells. Handle a non-finite or negative authored radius the way the extent guards do — refuse to a
+value the consumer already rejects, rather than inventing a fallback.
+
+- [ ] **Step 3: Verify occlusion still occludes**
+
+The whole risk of growing this bound is that it stops being an occlusion polygon and becomes a disc.
+Pin that it does not: a `blocksLight` wall between the lamp and a cell inside the authored radius must
+still leave that cell unlit. Witness required — a mutation that drops the occlusion must fail this
+test and no other.
+
+- [ ] **Step 4: Re-derive every moved fixture**
+
+Enumerate every test whose expected lit set or visible-cell set changes, one row each, with the old
+set, the new set, and **why the new one is right** — derived from the authored radius and the cell
+size, not read back from the run. A fixture adjusted until it passed is the failure mode here.
+
+State the movement-gate consequence separately from the fog consequence. They are different things,
+they ride on the same mask, and reporting only the fog half is how a gate change gets ratified as a
+fog change.
+
+- [ ] **Step 5: Full gate**
+
+`cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` from `src/server/`;
+`node scripts/check-comment-refs.mjs` from the root; `pnpm -r test` if anything crosses the
+generated-type boundary.
+
+- [ ] **Step 6: Commit**
+
+Conventional-commits, imperative, stating the constraint and the consequence. No task ids, round
+numbers, dates, or process references.
+
+---
+
+### Task 6c: the client measures a travelled distance in the same cells the server does
+
+**Numbered `6c` for the same reason as `5b`.** Found during Task 6, pre-existing, client-side, and
+correctly not fixed inline — it crosses the language boundary and needs a parity pin, which earns its
+own review cycle.
+
+---
+
+#### The defect: the per-step distance decision is FORKED across the server and the client
+
+The server converts a travelled world distance into grid steps through
+`GridShape::world_units_per_cell` — `cell` on square, `size * √3` on hex — and uses it to compute the
+authoritative `MoveExecution::duration_ms` in `Room`'s move path, whose own doc states that contract.
+
+`TokenAnimator`'s `startAnim` makes the same decision independently and differently:
+
+```ts
+const cells = total / this.cfg.cellSize;
+// duration: (cells / this.cfg.speedCellsPerSec) * 1000
+```
+
+`AnimationConfig.cellSize` is fed by `TokenView.pushAnimConfig` from `TokenView.setCellSize`, which
+`RenderEngine.setGrid` sets from `GridSpec.size` — the scene document's authored `engine.grid.size`.
+On hex that field is the **outer radius (circumradius)**, and the client's own `Grid.axialToPixel`
+confirms adjacent centres are `√3 · size` apart. So on a hex grid the client divides by a value
+`√3` too small, computes `√3×` too many cells, and animates `√3×` too slowly.
+
+**This is the forked-decision class — the defect this codebase produces most.** Two paths documented
+to agree on "how far is one cell" disagree on an input nobody checked, namely the grid shape.
+
+**It is live in production.** `TokenView.reconcile` calls `TokenAnimator.setTarget` for every token
+document on every sync, and `setTarget` starts the `startAnim` tween. Any position change arriving as
+a document update rather than as a move-stream broadcast animates through this path. Verify the
+reachability yourself before building anything — if you conclude it is unreachable, stop and report
+that, because it changes the task.
+
+**Why nothing caught it.** `animateSamples` plays back a server-supplied `durationMs` verbatim and
+never reads `cellSize`, so the server-driven route path is correct and masks the fork on exactly the
+journeys anyone would test. Every existing animator test uses cell size 100 on an implicit square
+grid, where `world_units_per_cell == size` and the two conventions coincide.
+
+---
+
+**Files:**
+- Modify: `src/client/render/src/grid.ts` (`Grid`)
+- Modify: `src/client/render/src/token-animator.ts` (`AnimationConfig`, `TokenAnimator`)
+- Modify: `src/client/render/src/token-view.ts` (`TokenView.setCellSize`, `TokenView.pushAnimConfig`)
+- Modify: `src/client/render/src/engine.ts` (`RenderEngine.setGrid`) if the plumbing changes shape
+- Test: the sibling `.test.ts` of each modified module
+
+**Interfaces:**
+- Produces: a new public `Grid` method returning the world distance between adjacent cell centres.
+  Name it to match the server's `world_units_per_cell` in the client's casing so the two are greppable
+  as one concept.
+- Consumes: `GridSpec.kind` — the animator currently receives a bare number and cannot know the shape,
+  which is the structural reason this forked at all.
+
+---
+
+- [ ] **Step 1: Reproduce the fork before changing anything, and record it verbatim**
+
+Write a test that animates a token one hex step on a hex grid and asserts the duration equals one cell
+at the configured speed. Run it. **Record the observed failure verbatim** — do not predict it, and do
+not compute the expected number by re-deriving the formula you are about to fix.
+
+- [ ] **Step 2: Give `Grid` the per-step distance, and make the animator consume it**
+
+Add the method to `Grid` — `size` for square, `size * Math.sqrt(3)` for hex — with a doc comment
+stating the invariant (every axial neighbour is `√3 · size` away) and why it is NOT the indexing
+scale.
+
+Then **rename `AnimationConfig.cellSize`** to name the quantity it actually needs. The rename is the
+point, not cosmetic: the present name is why a reader supplied the indexing scale in good faith. Its
+doc comment currently says "Pixels per grid cell (grid.size)" — that sentence must become false and be
+rewritten, not left standing beside a new name.
+
+**Do not compute `√3` inside the animator.** One shape-aware symbol, consumed everywhere — a second
+site that knows about hexes is the same fork again in a new place.
+
+- [ ] **Step 3: Pin the parity across the language boundary**
+
+The two implementations cannot share a symbol, so pin them with a test that fails if either side
+changes. Assert the client's per-step distance for a hex grid of a stated size equals the value the
+server's `GridShape::world_units_per_cell` produces for the same size, with the constant written once
+and both conventions derived from it.
+
+**Witness required, on both sides:** mutate the client method to return `size` and confirm the parity
+test fails; revert by `diff`. A test that passes because both sides are wrong the same way proves
+nothing.
+
+- [ ] **Step 4: Enumerate every consumer of the renamed field**
+
+Grep the client for the old name and adjudicate every hit with a row and a disposition, including hits
+that are correct as they stand. A rename falsifies prose that never enters the diff, so include
+comments, not just code. State the count.
+
+- [ ] **Step 5: Full gate**
+
+`pnpm -r test`, `pnpm -r typecheck`, `pnpm lint` from the root; `node scripts/check-comment-refs.mjs`.
+Run `cargo test` from `src/server/` too if you touched anything the server reads.
+
+- [ ] **Step 6: Commit**
+
+Conventional-commits, imperative, stating the constraint and the consequence. No task ids, round
+numbers, dates, or process references. End with the `Co-Authored-By: Claude Opus 5
+<noreply@anthropic.com>` trailer.
+
+---
+
+### Task 6d: one route cost, one unit, whatever engine produced it
+
+**Numbered `6d` for the same reason as `5b`.** Found during Task 6. Server-and-client, and the fix
+changes a number a GM reads off the screen, so it earns its own review cycle.
+
+---
+
+#### The defect: the wire field's stated unit is true of one producer and false of the other
+
+`ServerMsg::PathResult`'s own doc comment states the contract for the whole field:
+
+> total cost in cells (client multiplies `grid.distance.perCell`)
+
+The grid A* router honours it — `PathOutcome.cost` is documented "Total weighted cost in cells", and
+its tests pin one cell per orthogonal step. **The `Continuous` movement model does not.**
+`SceneEcs::pathfind` deliberately rescales:
+
+```rust
+// `find` reports cost in CELLS; the continuous engine reports SCENE UNITS
+// (parity with the polyanya path, which measures Euclidean length).
+cost: weighted.cost * grid_shape.world_units_per_cell(),
+```
+
+and the pure-navmesh branch returns a Euclidean length in world units directly. `conn` forwards
+`outcome.cost` to the wire unchanged, so the same field carries cells on one model and world units on
+the other, under a doc comment that promises cells.
+
+The client cannot tell. `makeMeasureTool`'s route branch always computes
+`Math.round(result.cost * scene.perCell)` with `perCell` from `grid.distance.perCell`. On a
+`Continuous` scene it multiplies an already-world-unit cost by the game-distance scale a second time.
+At the common authoring of `size: 100`, `perCell: 5`, a five-cell move reports **2500 ft where it
+should read 25 ft**.
+
+**This is the forked-decision class again, and in its purest form:** two producers of one wire field
+disagree about its unit, and the consumer has nothing to branch on. `GridStepped` is the default
+movement model, which is why this has gone unseen.
+
+**Why nothing caught it.** The one client test covering a continuous-movement scene stubs `pathfind`
+with a fixed `cost: 2`, so it never exercises the server's unit switch, and it asserts nothing about
+the budget label.
+
+#### The design fork, and its ruling
+
+Either add a unit discriminant to `PathResult` so the client branches, or make both engines report the
+same unit.
+
+**Ruled: one unit on the wire — cells — and convert at the boundary, not at the consumer.** The
+never-fork rule is explicit that agreement must be structural rather than verified: a discriminant is
+a second decision the client can get wrong, and it preserves two units where the field's contract
+declares one. A fractional cell count is a perfectly meaningful continuous result. The internal
+computation may keep working in world units for navmesh parity — that is a good reason for the
+internal unit and no reason at all for the wire unit. Do not re-open this; implement it.
+
+---
+
+**Files:**
+- Modify: `src/server/src/scene/mod.rs` (`SceneEcs::pathfind`, both branches)
+- Modify: `src/server/src/scene/navmesh.rs` if the conversion belongs at its boundary
+- Modify: `src/server/src/ws/protocol.rs` (`PathResult`'s doc, if its wording needs sharpening)
+- Test: the server pathfind tests, and `src/modules/scene-tools/src/measure-tool.test.ts`
+
+**Interfaces:**
+- Produces: no wire SHAPE change — `cost` stays an `f64`. Its VALUE changes on continuous scenes,
+  which is the point. If you find yourself adding a field, stop and report: that is the discriminant
+  this task ruled against.
+
+---
+
+- [ ] **Step 1: Reproduce the double-multiply end to end, and record it verbatim**
+
+Pin the server side first: a continuous-movement scene whose route covers a known number of cells must
+report that number as `cost`. Run it, **record the observed failure verbatim** — it should show the
+world-unit value, and that number is your evidence, not a prediction.
+
+Then pin the client side with a test that does NOT stub the cost: feed `makeMeasureTool` a cost in the
+unit the server will now send and assert the label. The existing continuous test's fixed `cost: 2`
+stub is exactly why this survived; do not extend that stub, replace the coverage.
+
+- [ ] **Step 1b: The same tool labels the same quantity two different ways — fix both branches**
+
+`makeMeasureTool` has a second, non-route branch, taken whenever the user has no token selected, more
+than one selected, or no pathfind available. It labels with
+`String(ctx.scene.gridDistance(anchor, p))` — a raw whole-cell count with **no `perCell` multiply and
+no unit suffix at all** — while the route branch three hundred lines earlier renders
+`` `${budget} ${scene.unit}` ``.
+
+So measuring five cells shows `25 ft` with a token selected and `5` without one. **This is the same
+forked decision as the task's main subject, one level down**: two paths inside one tool disagreeing
+about how a distance is expressed, and the fallback is the one a player without a selected token
+actually hits.
+
+Route the label through ONE function that takes a cell count and produces the labelled string, and
+have both branches call it. Do not fix the fallback by copying the route branch's expression — a
+second copy of the formula is the fork re-created, and it is what let these two drift apart.
+
+The `⚠` arrest marker belongs to the route branch only; keep that distinction, and say in your report
+how you kept it without giving the shared function a caller-specific flag.
+
+- [ ] **Step 2: Convert once, at the boundary, in the direction that preserves the contract**
+
+Make both branches of `SceneEcs::pathfind` yield a cost in cells. Delete the multiply; convert the
+navmesh branch's Euclidean length by dividing by the shape's per-cell world distance.
+
+**Use `GridShape::world_units_per_cell`** — the authored-distance conversion, since a route length is
+a distance a GM authors expectations about. It is emphatically not the footprint radius conversion,
+which the surrounding code is careful to keep distinct; do not follow that precedent here.
+
+Guard the divisor the way the extent work guards its own: a non-finite or non-positive per-cell
+distance must refuse rather than produce an infinity the client renders as a label.
+
+- [ ] **Step 3: Make the contract un-forkable rather than merely correct**
+
+Right now the only thing binding the two engines to one unit is a doc comment. Add a test that
+exercises **both** movement models through the same assertion — same scene geometry, same expected
+cell count — so a future change to either branch fails. Witness required: mutate one branch's
+conversion and confirm the shared test fails; revert by `diff`.
+
+- [ ] **Step 4: Re-derive every server test that asserts a continuous route cost**
+
+**This step is larger than it looks and is the reason this task is not a two-line change.** A scan of
+the scene tests finds numerous assertions on `PathOutcome.cost` at magnitudes only world units
+explain — comparisons against `900.0`, `400.0`, `200.0`, and against derived lengths like a straight-
+line `dist_to_goal` — alongside grid-model assertions at `2.0` and `0.0`. Every one of the former
+moves when the unit changes.
+
+Enumerate them, one row each: the test, its old expected value, its new expected value, and **why the
+new one is right, derived from the cell count and the shape's per-cell distance** — never read back
+from the run. A fixture adjusted until it passed is the failure mode here, and it is especially
+tempting on this task because dividing by the cell size makes the "right" number obvious enough to
+back-fill without thinking.
+
+Note the tolerances too: several of these assert within an absolute epsilon (`< 5.0`, `< 3.0`) chosen
+for world-unit magnitudes. Divided into cells those epsilons become enormous relative to the value,
+and an assertion that cannot fail is worse than no assertion. Re-scale each tolerance and say so.
+
+- [ ] **Step 4b: State the GM-visible consequence**
+
+The measure tool's label changes on every continuous-movement scene. Say so plainly in the report,
+with the before and after for one concrete authoring, derived from the cell count and `perCell` —
+never read back from the run.
+
+**Confirmed before this task was written: no gate consumes this value.** The sole production consumer
+is the measure tool's label; there is no per-turn movement budget anywhere on the server. So this is a
+display correction with no authz or secrecy dimension — but if you find a second consumer while
+working, that conclusion changes and you must stop and report it rather than proceeding.
+
+- [ ] **Step 5: Full gate**
+
+`cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` from `src/server/`;
+`pnpm -r test` from the root; `node scripts/check-comment-refs.mjs`.
+
+- [ ] **Step 6: Commit**
+
+Conventional-commits, imperative, stating the constraint and the consequence. No task ids, round
+numbers, dates, or process references. End with the `Co-Authored-By: Claude Opus 5
+<noreply@anthropic.com>` trailer.
+
+---
+
+### Task 6e: the lighting and fog overlays land on the cells they describe
+
+**Numbered `6e` for the same reason as `5b`.** Found during Task 6, client-side, and it is a
+rendering-correctness defect on every hex scene.
+
+---
+
+#### The defect: axial indices painted at square positions
+
+On a hex scene the server sends lit cells and explored cells as **axial `(q, r)`** — they come from
+`HexGrid`'s `GridShape` implementation, whose `axial_to_pixel` places a cell at
+`x = size·(√3q + √3/2·r)`, `y = size·1.5·r`.
+
+Two client paths paint those indices as if they were square row/column:
+
+- `PixiBackend.setLighting` — `const x = c.i * cellSize, y = c.j * cellSize`, then fills an
+  axis-aligned `rect` of `cellSize` on a side.
+- `cellsToRects`, which rasterizes the fog explored-memory layer — the identical
+  `x = cells[k] * size, y = cells[k+1] * size`, emitting a square rect polygon per cell.
+
+Neither consults the grid shape. Neither has one to consult: `LightingFrame` and the explored payload
+carry a `cell` size and no kind.
+
+**The correct math is already in the same package, on the same object.** `RenderEngine` holds a
+`Grid` built from the scene's `GridSpec`, whose private `axialToPixel` is the exact mirror of the
+server's — and it is used only for grid lines, snapping and measurement. So on a hex scene the grid
+lines are right, the cursor snaps right, the currently-visible fog polygon is right (the server sends
+raw raycast vertices, so no cell math is possible), and **the lighting overlay and the explored fog
+are drawn at skewed square positions over correctly-drawn hexes.**
+
+**Why nothing caught it.** These two paths take cell indices; every other fog path takes polygons.
+The bug needs a hex scene AND an overlay to be visible at once, and the overlay tests all use square
+fixtures where the two conventions coincide.
+
+#### The design fork, and its ruling
+
+**Ruled: one shape-aware symbol on `Grid`, consumed by both paths — not shape branches at the paint
+sites.** This is the same ruling as Task 6c and for the same reason: a second site that knows how
+hexes are laid out is the forked decision reappearing. `Grid` already owns the axial math privately;
+promote what these paths need onto its public surface and have them ask for it.
+
+A hex cell is not a rectangle, so the paint sites must move from `rect` to a filled polygon. Take the
+corner geometry from `Grid` as well — `hexLines` already computes hex outlines, and a second corner
+formula elsewhere is the same defect again.
+
+---
+
+**Files:**
+- Modify: `src/client/render/src/grid.ts` (`Grid` — promote cell-centre and cell-corner geometry)
+- Modify: `src/client/render/src/pixi-backend.ts` (`PixiBackend.setLighting`)
+- Modify: `src/client/render/src/engine.ts` (`cellsToRects`, `RenderEngine.toVisibility`,
+  `RenderEngine.toLighting`)
+- Modify: `src/client/render/src/types.ts` / `lighting.ts` — the frame types must carry the shape
+- Test: the sibling `.test.ts` of each
+
+**Interfaces:**
+- Consumes: `GridSpec.kind`, which these paths currently cannot see. Threading it is most of the work.
+- Produces: public `Grid` geometry. **The convention is already set and is named here rather than
+  pointed at**: `Grid.worldUnitsPerCell()` exists, returning `size` on square and `size * √3` on hex,
+  chosen as the exact camelCase mirror of the server's `GridShape::world_units_per_cell` so the two
+  are greppable as one concept across the language boundary. Name what you add the same way — a
+  camelCase mirror of the server symbol for the same quantity, where one exists.
+  **Do not add a second per-step-distance method**; that one is done. What is missing is cell
+  POSITION and cell CORNER geometry, which `Grid` currently owns only privately.
+
+---
+
+- [ ] **Step 1: Reproduce the misalignment before changing anything**
+
+Write a test on a hex fixture asserting the lighting overlay's painted position for a stated axial
+cell equals that cell's true centre. Run it, **record the observed failure verbatim** — the gap
+between the square and axial positions is the measurement, not a prediction.
+
+Do the same for the explored-fog rasterization. Two paths, two reproductions; a single test covering
+both would let one stay broken.
+
+- [ ] **Step 2: Thread the shape to the paint sites**
+
+The frame types carry `cell` and no kind, which is the structural cause. Add the shape, and prefer
+carrying the resolved geometry over carrying a `kind` the paint site then branches on — a `kind`
+field invites exactly the branch this task ruled against.
+
+- [ ] **Step 3: Paint the cell, not a rectangle**
+
+Both sites emit filled polygons from `Grid`'s corner geometry. Square must keep producing an identical
+result to today: pin that with a test, so this change is provably shape-neutral on square scenes.
+
+- [ ] **Step 4: Enumerate every remaining cell-index consumer in the render layer**
+
+Both known sites are named above, and named sites have twice become the whole worklist on this branch.
+Sweep `src/client/render/` for every conversion from a cell index to a position, give each a row and a
+disposition — including the ones that are correct — and state the count. If you find a third, it is in
+scope.
+
+- [ ] **Step 5: Full gate**
+
+`pnpm -r test`, `pnpm -r typecheck`, `pnpm lint` from the root; `node scripts/check-comment-refs.mjs`.
+If any e2e fixture covers a hex scene's overlays, run it — this is a visual defect and the e2e layer
+is where a visual regression would show.
+
+- [ ] **Step 6: Commit**
+
+Conventional-commits, imperative, stating the constraint and the consequence. No task ids, round
+numbers, dates, or process references. End with the `Co-Authored-By: Claude Opus 5
+<noreply@anthropic.com>` trailer.
+
+---
+
+### Task 6f: a vision mode's authored default range stops being inert
+
+**Numbered `6f` for the same reason as `5b`.** Surfaced by Task 6's fix round, which corrected a doc
+comment that had cited this field as a live member of the converting class. It is not live at all.
+
+---
+
+#### The defect: a GM-facing control whose stored value has no effect
+
+`VisionMode::default_range` is written at exactly three sites, all inside
+`SceneEcs::resolved_vision_modes` — one copying the authored value, two seeding the built-in `normal`
+and `darkvision` modes — and is **read by nothing**. `SceneEcs::token_vision_floors` looks a mode up
+solely for its `illumination_floor` and `render_hint`, and takes the range from
+`VisionAssignment::range` unconditionally. That field is a plain `f64`, not an `Option`, so there is
+structurally nowhere for a fallback to attach.
+
+Meanwhile `GameSettingsPanel` renders a GM-only number input that patches
+`/engine/modes/<id>/defaultRange` on the vision-modes document. It persists, it round-trips, it
+validates, and it changes nothing on the table. The client's `SEED_VISION_MODES` seeds `darkvision`
+with a default range of 12, which likewise reaches no mask.
+
+**This is the same defect shape as the light-reach cap in Task 6b and as the rejected `ceil` proposal:
+a setting whose stored value no longer determines its effect.** Two independent code comments in the
+tree already state the field is dead, which makes this a documented-and-tolerated inertness rather
+than an unknown.
+
+#### The design fork, and its ruling
+
+Two shapes are available: delete the field and its control, or make the assignment's range optional so
+an omitted range inherits the mode's default.
+
+**Ruled: make it live.** The question "what is the best long-term shape in keeping with our plans and
+goals?" answers this one. A registry whose entries carry defaults that per-instance assignments may
+override is the modular shape this platform is built around, and it is what the existing GM control
+and the seeded `darkvision: 12` already promise. Deleting the field would remove an advertised
+capability and force every assignment to restate a value its mode already defines. Do not re-open
+this; implement it.
+
+---
+
+**Files:**
+- Modify: `src/server/src/data/engine/token.rs` (`VisionAssignment`)
+- Modify: `src/server/src/scene/mod.rs` (`SceneEcs::token_vision_floors`)
+- Modify: `src/types/generated/**` — by REGENERATION, never by hand
+- Modify: `src/client/core/src/actor.ts` and any client reader of a vision assignment's range
+- Test: `src/server/src/scene/mod.rs` tests, plus the client tests covering those readers
+
+**Interfaces:**
+- Produces: `VisionAssignment::range` becomes optional on the wire.
+
+**There is NO Zod schema to mirror for this type, and that is verified rather than assumed.**
+`WireDocument.engine` is declared `z.unknown()` — the engine band carries no client-side structural
+validation at all. `VisionAssignment` reaches the client purely as a ts-rs TYPE re-exported through
+`scene-docs`, so regeneration propagates the change on its own and there is no hand-written schema
+that can silently fail to follow.
+
+**What that changes about your risk profile:** the usual "a typecheck cannot see a dropped Zod field"
+warning does not apply here, but the opposite exposure does — because nothing validates this band at
+runtime, a client reading `.range` as a bare number gets `undefined` at runtime with no schema error
+to announce it. **Enumerate every client site that reads a vision assignment's range and adjudicate
+each**, rather than relying on the typecheck to find them; a site that destructures or arithmetics
+the value is the one that breaks quietly.
+
+---
+
+- [ ] **Step 1: Pin the current behaviour before changing it**
+
+Write a test asserting that a token whose assignment omits a range gets the mode's default. Run it,
+**record the failure verbatim.** Confirm by reading, not by assuming, that no fallback exists today.
+
+- [ ] **Step 2: Make the range optional and resolve it against the mode**
+
+`VisionAssignment::range` becomes `Option<f64>`; `token_vision_floors` resolves
+`a.range.unwrap_or(vm.default_range)`. Both quantities are authored in CELLS — confirm that against
+the surrounding conversion work before relying on it, and make sure the resolved value flows through
+the same per-cell conversion the assignment's own range does today. A default that skips the
+conversion the override receives is this phase's whole subject repeated.
+
+**Serde note:** a missing key on an `Option` is never an error, so verify the omitted case actually
+deserializes to `None` rather than being rejected by `deny_unknown_fields` or a required-field guard.
+
+- [ ] **Step 3: Regenerate and mirror**
+
+Regenerate the ts-rs bindings — never hand-edit them — and mirror the change in the client Zod schema.
+Run `pnpm -r test`, not just a typecheck: a dropped Zod field is a runtime failure a typecheck cannot
+see.
+
+- [ ] **Step 4: Make the GM control's effect observable**
+
+The control already writes the field. Verify end-to-end that authoring a mode default now changes a
+token's vision floor when that token's assignment omits a range, and state which test proves it.
+
+- [ ] **Step 5: Full gate**
+
+`cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` from `src/server/`;
+`pnpm -r test` and `pnpm -r typecheck` from the root; `node scripts/check-comment-refs.mjs`.
+
+Both dead-field comments — on the vision-range test helper and on the grid shape's conversion doc —
+become false the moment this lands. Find them and rewrite them; a rename or a revival falsifies prose
+that never enters the diff.
+
+- [ ] **Step 6: Commit**
+
+Conventional-commits, imperative, stating the constraint and the consequence. No task ids, round
+numbers, dates, or process references. End with the `Co-Authored-By: Claude Opus 5
+<noreply@anthropic.com>` trailer.
+
+---
+
+### Task 6g: a token occupies the hexes it is authored to occupy
+
+**Numbered `6g` for the same reason as `5b`.** The largest of this group and the only one carrying an
+owner ruling on semantics rather than a mechanical correction. Dispatch it LAST of the `6*` group —
+it consumes the shape-aware `Grid` surface Tasks 6c and 6e establish.
+
+---
+
+#### The defect, measured rather than inferred
+
+`resolveTokenBox` sizes a token's drawn footprint as `actor.size.w * cell` by
+`actor.size.h * cell`, where `cell` is `sceneCellSize` — the scene's authored `grid.size`. On hex
+that field is the cell's **circumradius**. Separately, `footprintRadius` reduces the same authored
+size to a bounding-disc radius in grid units (`hypot(w,h)/2` for a square, `max(w,h)/2` for a circle),
+which the server multiplies by the same `cell` to get `r_scene` for its collision checks.
+
+For a 1×1 token on a hex grid of circumradius `size`:
+
+| Quantity | Today | The hex it sits in |
+|---|---|---|
+| Drawn box | `size` × `size` | spans `√3·size` ≈ `1.73·size` wide, `2·size` tall |
+| Collision radius | `0.707·size` | inradius `0.866·size`, circumradius `size` |
+
+**Both are undersized, and by different factors** — so a token under-fills its hex visually while
+also colliding as something smaller than the hex, and the two errors do not even agree with each
+other. Gaps a hex would block stay passable.
+
+`resolveTokenBox` is read by three separate concerns — the rendered box, `topTokenAt`'s hit test, and
+`drawSelection`'s ring — so all three inherit it. Those are consumers, not independent defects; fixing
+the source fixes them.
+
+**The remedy is NOT a Role-A-to-Role-B substitution, and this is the trap.** Multiplying by
+`world_units_per_cell` instead of `cell` yields a `√3·size` SQUARE: correct width, wrong height,
+because a hex's height (`2·size`) and width (`√3·size`) are not in the same ratio. Any fix that
+substitutes one scalar for another is wrong before it starts.
+
+#### The owner's ruling — both halves, settled, do not re-open
+
+1. **A token's authored `size` counts HEXES.** A 1×1 token fills the hex it occupies; an N-cell token
+   spans N hexes. Its drawn geometry and its collision geometry both derive from the hex's own
+   dimensions, never from a square approximation.
+2. **One definition, both sides derive from it.** The client's drawn box and the server's collision
+   footprint must come from a single resolved geometry rather than two formulas kept in agreement by
+   review. This is the never-fork rule applied to the exact shape that produced the defect.
+
+**Ruled by me, from the existing documented convention rather than by asking again: the collision
+disc is the CIRCUMSCRIBING radius (`size` for one hex, i.e. `1.0` in cell units), not the inradius.**
+`footprintRadius`'s own doc already states the convention — *"Conservative enclosure: a square uses
+its half-diagonal, a circle its radius"* — and conservative enclosure of a hex is its circumradius.
+It over-blocks slightly rather than under-blocking, which is the fail-closed direction for a movement
+gate. Keep that sentence true by extending it, not by contradicting it.
+
+#### Direction and blast radius, stated before the work
+
+Tokens get bigger, both visually and in collision. Narrow gaps that a token previously slipped
+through will now refuse. **That is the correction, not a regression** — but every movement fixture
+whose route threads a gap may move, and each must be re-derived from the hex geometry and stated,
+never adjusted until green.
+
+---
+
+**Files:**
+- Modify: `src/client/core/src/actor.ts` (`resolveTokenBox`, `sceneCellSize`, `footprintRadius`)
+- Modify: `src/client/core/src/scene-docs.ts` (`buildTokenFromActor`'s fallback)
+- Modify: `src/modules/scene-tools/src/controller.svelte.ts` (`makePlaceTool`, both branches)
+- Modify: `src/server/src/scene/pathfinding.rs` (`footprint_cells`, `cell_enterable`) and its callers
+- Modify: the wire type carrying the resolved footprint, plus `src/types/generated/**` BY
+  REGENERATION
+- Test: the sibling tests of each, plus `src/modules/scene-tools/src/hit-test.ts`'s
+
+**Interfaces:**
+- Produces: a resolved footprint geometry carried on the wire rather than recomputed per side. State
+  its shape in your report BEFORE building the consumers, since both languages bind to it.
+- Consumes: the shape-aware `Grid` surface from Tasks 6c and 6e. If a hex corner or extent helper you
+  need already exists there, use it; a second corner formula is this task's own defect re-created.
+
+---
+
+- [ ] **Step 1: Pin today's geometry before changing it, on both sides**
+
+Write two failing tests: a client test asserting a 1×1 token's drawn box equals the hex's bounding
+box, and a server test asserting a 1×1 token's collision disc equals the hex's circumradius. Run
+both. **Record the observed failures verbatim** — the two wrong values ARE the measurement in the
+table above, and I want them confirmed by a run rather than carried from my prose.
+
+- [ ] **Step 2: Define the footprint once**
+
+Build the single resolved geometry: given a token's shape, its authored size, and the scene's grid
+shape, produce the drawn extent and the collision radius. **Square must come out byte-identical to
+today** — pin that with a test before touching hex, so the change is provably hex-only.
+
+- [ ] **Step 3: Carry it, do not recompute it**
+
+The client renders what the resolved geometry says; the server collides with the same. Neither side
+re-derives from `grid.size`. **If you find yourself writing a second expression that multiplies an
+authored size by a grid scalar, stop** — that expression is the defect, wherever it appears.
+
+Delete `sceneCellSize` if nothing legitimate still needs it. A helper whose only purpose was the
+wrong conversion should not survive the fix as dead code.
+
+- [ ] **Step 4: Witness the anti-fork property**
+
+A test must fail if either side stops deriving from the shared definition. Mutate the client to size
+from `grid.size` again and confirm it fails; revert by `diff`. Then mutate the server the same way and
+confirm it fails too. **Two mutations, two observed failures** — a test that only catches one side
+leaves the fork half-open.
+
+- [ ] **Step 5: Re-derive every moved movement fixture**
+
+Enumerate every test whose route, arrest point, or reachable set changes, one row each: old value,
+new value, and why the new one is right, derived from the hex geometry. State separately whether any
+moved fixture belongs to a SECRECY-bearing path (the movement gate, `visible_cells`) versus a
+convenience path — they ride together and reporting only the convenience half is how a gate change
+gets ratified as a rendering change.
+
+- [ ] **Step 6: Full gate**
+
+`cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` from `src/server/`;
+`pnpm -r test` and `pnpm -r typecheck` from the root; `node scripts/check-comment-refs.mjs`. Run the
+e2e hex movement spec — this changes what fits through a gap, which is what that spec exists to catch.
+
+- [ ] **Step 7: Commit**
+
+Conventional-commits, imperative, stating the constraint and the consequence. No task ids, round
+numbers, dates, or process references. End with the `Co-Authored-By: Claude Opus 5
+<noreply@anthropic.com>` trailer.
+
+---
+
+### Task 6h: close the filename-citation class repo-wide
+
+**Numbered `6h` for the same reason as `5b`.** Found by a whole-tree sweep after a third instance of
+the same class surfaced inside this phase's own work. Comment-only, outside the scene subsystem, and
+it earns its own review cycle because it touches a subsystem this phase otherwise leaves alone.
+
+---
+
+#### What was found, and why the earlier sweep did not find it
+
+`RULE 15` bans citing a file name; the citation must be a symbol. A sweep of every comment in `src/`
+for a backticked source-file name returns **7 sites**, all in the chat/wire area:
+
+- `chat-docs.ts` — four occurrences of `see `dieRecordSchemaImpl`'s note above / `wire.ts`'s module
+  note`
+- `chat-docs.test.ts`, `wire.test.ts`, and one more in `chat-docs.ts` — variants of `see `wire.ts`'s
+  module-level note above its `z` import`
+
+**These are compound violations.** Each names a FILE (banned outright by `RULE 15` as written) and
+also points POSITIONALLY (`above its `z` import`, `note above`). The two halves have different
+statuses and the task must not conflate them:
+
+- The **filename** half is unambiguously in scope. No ruling is pending on it.
+- The **positional** half belongs to a population of roughly 481 sites that an earlier task
+  enumerated, verified, and deliberately left unswept because extending the rule to positional words
+  inside a file is a rule EXTENSION and the owner's call. **That question is still open. Do not
+  answer it here, and do not sweep the other 481.**
+
+The earlier repo-wide comment task closed the unnamed-DOCUMENT-pointer class (`§N`, `per spec`), a
+different class with a different vocabulary. This subclass was never in its brief, which is why a
+clean run there is consistent with these surviving.
+
+---
+
+**Files:** `src/client/core/src/chat-docs.ts`, `src/client/core/src/chat-docs.test.ts`,
+`src/client/core/src/wire.test.ts`, plus whatever the enumeration adds.
+
+---
+
+- [ ] **Step 1: Enumerate before converting**
+
+Run the whole-comment sweep yourself over `src/` — every comment in every `.ts`, `.rs` and `.svelte`
+file, not a grep for the two spellings already found. **7 is a detector's output, not an
+enumeration**, and every count handed to an agent in this phase that was derived rather than run has
+been wrong at least once. Report your own count with a row per site.
+
+Expect non-members and record them: a filename used as a VALUE (a path in a string literal, a config
+key) is not a member, and neither is a build/config file with no symbols to cite. Adjudicate; do not
+narrow the pattern around them.
+
+- [ ] **Step 2: Read what each pointer points AT, then state the constraint instead**
+
+Every one of these sites points at a module-level note. **Read that note.** The conversion is to state
+the constraint the note establishes, in the place that needs it, so the reader does not travel.
+
+Where the note's content genuinely cannot be restated locally — because it is long and shared —
+**cite the SYMBOL the note is about** (`dieRecordSchemaImpl` is already cited correctly in four of
+these, which is why only the `wire.ts` half of those lines is wrong). A symbol survives a file move
+and breaks loudly on a rename; a filename does neither.
+
+**Where a pointer carries nothing, delete the token and change nothing else.** Inventing a plausible
+replacement constraint is the worst available outcome.
+
+- [ ] **Step 3: Do NOT touch the positional class**
+
+Leave `above`, `below` and their kin alone even where they sit in a line you are editing for its
+filename. If removing the filename leaves a sentence that is still positional, **say so in your report
+and leave the positional remnant** — it belongs to the held population, and pre-empting the owner's
+ruling by sweeping a few of its members is the same descope in miniature.
+
+- [ ] **Step 4: Full gate**
+
+Use the plan's Global Constraints gate list; report each by name with its result. **A comment-only
+change that alters a test outcome is a finding** — it means a pointer you removed was load-bearing in
+a way nobody recorded. Report it; do not adjust the test.
+
+- [ ] **Step 5: Commit**
+
+Conventional-commits, imperative, stating the constraint and the consequence. End with the
+`Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>` trailer.
+
+---
+
+### Task 6i: the comment gate's own scope is narrower than the rule it enforces
+
+**Numbered `6i` for the same reason as `5b`.** Found by Task 6h's enumeration and independently
+confirmed, item by item, by both its reviewer and this plan's dispatcher running the greps directly.
+It is not part of 6h's class, which is why 6h reported it instead of sweeping it.
+
+---
+
+#### The shape, stated once because every item below is an instance of it
+
+`node scripts/check-comment-refs.mjs` is the gate for RULE 16, and RULE 16 is enforced retroactively
+with no grandfathering. **The gate's scope is narrower than the rule's, in four independent ways, and
+each gap is invisible from inside the gate** — it reports `0` over the part it cannot see, and a
+reported-clean scan is indistinguishable to a later reader from code that was actually checked. That
+is the no-ratchets rule's own stated failure mode, arriving through the scanner rather than through a
+severity setting.
+
+One of the four is worse than a gap: **the rule that would catch the single live violation is scoped
+so that it does not.** A detector narrowed around the one instance it would otherwise catch is a
+defect shape this repo has already recorded once; a false positive is visible and a false negative is
+not, so every pressure on a detector pushes toward narrowing, and the narrowing then reads as scoping.
+
+---
+
+**Files:**
+- Modify: `scripts/check-comment-refs.mjs` (`EXTS`, `ROOTS`, the `SKILL_BANNED`/`BANNED` split, and one
+  false sentence in its own prose)
+- Modify: `src/client/shell/src/styles/_primitives.scss`, `src/client/shell/src/lib/importMap.test.ts`,
+  `src/client/ui-kit/vitest.config.ts`, `src/server/test-support/src/lib.rs`, plus whatever widening the
+  roots and extensions surfaces
+- Test: the gate's own self-test, which must gain a positive control per widened axis
+
+**Interfaces:**
+- Consumes: Task 6h's enumeration method — a comment lexer over subjects, not a grep over markers. It
+  is the reason this task's inputs exist and it is the method to reuse, not re-invent.
+- Produces: a gate whose roots, extensions and pattern set match RULE 16's stated scope, so that
+  "0 ephemeral references" means what it says.
+
+---
+
+- [ ] **Step 1: Correct the false claim in the gate's own prose**
+
+The `numbered constraint` entry's comment says `importMap.test.ts` "carries a **test name** citing the
+identical constraint by number". It is not a test name. It is a plain `//` comment at that file's
+`runtime chunks export their packages' real public API` case, reading
+`// Global Constraint 1 (single-instance sharing): …`. Read the line, then state what is actually
+there. This sentence is load-bearing: it is the stated justification for the scoping Step 3 removes.
+
+- [ ] **Step 2: Widen the roots and the extensions, and fix what falls out**
+
+`EXTS` omits `.scss`; `ROOTS` is `["src", "scripts"]` and omits `examples/`. Both gaps hold live
+violations today:
+
+- `src/client/shell/src/styles/_primitives.scss` opens with `PROVISIONAL: re-audited at M8 (canvas
+  overlays) and M12 (default sheets/browsers)` — two milestone ids in a committed comment.
+- `examples/` is how a repo-document pointer carrying a numbered invariant id survived in a package
+  that four other CI-blocking gates already cover.
+
+Widen both axes, then **run the gate and fix every hit it now produces.** Enumerate what it surfaces
+with a row per site; the two above are the ones already known, not the expected total. A `.scss`
+comment is `//` or `/* */` — confirm the lexer handles both before trusting a zero.
+
+Add a positive control per widened axis to the gate's self-test: a fixture under each newly-covered
+root and extension that MUST fail. A widened scope that silently matches nothing is the same false
+negative in a new place, and a zero without a positive control is not a measurement.
+
+- [ ] **Step 3: The `numbered constraint` rule applies to code, not only to skills**
+
+**Ruled by the dispatcher; implement it, do not re-open it.** The pattern currently lives only in
+`SKILL_BANNED`, so it never runs against `.ts`/`.rs`/`.svelte`. RULE 16 already bans, in code
+comments, repo-document pointers, dated plan/spec file references, and phase/workstream/numbered
+ids — *including local numbering defined only in a sibling comment*. `Global Constraint 1` is a
+numbered section of a dated plan file. It is already inside the rule as written; only the detector
+excluded it. Widening the detector enforces the existing rule rather than extending it, which is why
+this is not the owner's call.
+
+Move the pattern so it runs against code as well as skills, then convert `importMap.test.ts`'s
+comment — state the constraint it depends on, drop the pointer. With the site converted and the rule
+un-narrowed, the justification sentence Step 1 corrects has nothing left to justify: delete it rather
+than leaving a corrected explanation of a scoping that no longer exists.
+
+- [ ] **Step 4: Enumerate history narration, the half no pattern detects**
+
+RULE 16 bans history narration and the rule's own text concedes it is only partly detectable, making
+it a review obligation rather than a gate obligation. Two instances are already known, both found
+incidentally rather than by a sweep:
+
+- `src/server/test-support/src/lib.rs`'s header — "Each integration-test binary *that included that
+  module* compiled the whole file … so the diagnostic *no longer fires*"
+- `src/client/ui-kit/vitest.config.ts` — "so the seam suites behave identically *after the move*"
+
+Both are inside the gate's current scope and both are green today, which is the proof that the pattern
+does not cover this class. **Enumerate it properly**, with Task 6h's method: every comment in every
+`.ts`/`.rs`/`.svelte`/`.scss` file under `src/`, `scripts/` and `examples/`, adjudicated one row each
+for whether it narrates the code's past. Report your count and what your method cannot see.
+
+Convert by stating the present constraint and dropping the narration. Where the narration carried
+nothing, delete it and change nothing else — inventing a plausible replacement constraint is the worst
+outcome available here.
+
+- [ ] **Step 5: Remove the NEED for the ambiguity that blocks one of Task 6h's unconverted sites**
+
+`assemble-docs.test.mjs` cites ``assemble-docs.mjs's `isMain` `process.exit(1)` block`` and could not
+drop the filename because `isMain` is defined in three separate scripts (`assemble-docs.mjs`,
+`check-comment-refs.mjs`, `extract-ts-examples.mjs`) and referenced in four more. The filename is
+carrying disambiguation that the symbol should carry itself.
+
+Fix the ambiguity at its source rather than arguing for an exemption: give the three definitions one
+shared home, or names that identify their owner. Then the citation needs no filename and the site
+converts with nothing left to rule on. **Do not convert the citation while the ambiguity stands** —
+that trades a working pointer for a vague one, which is a worse comment than the violation.
+
+Two sites from Task 6h stay UNCONVERTED and are NOT yours to decide: the `mock-server.ts` worked
+illustration in `extract-ts-examples.mjs`, and anything resolved by an owner ruling on the held
+positional-reference or unnamed-file-reference populations. Leave them, and list them in your report.
+
+- [ ] **Step 6: Full gate**
+
+The plan's Global Constraints list, in full, from the stated working directories, re-run after your
+last edit. Report each by name with the exact command and its real output tail. A comment-only change
+that alters a test outcome is a finding — report it, do not adjust the test.
+
+- [ ] **Step 7: Commit**
+
+Conventional-commits, imperative, stating the constraint and the consequence. End with the
+`Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>` trailer.
+
+---
+
+### Task 6j: two residuals a reviewer offered to let stand
+
+**Numbered `6j` for the same reason as `5b`.** Both items were surfaced by a reviewer or an
+implementer and both were offered up as "not required" — one explicitly as *awareness only*, one as
+an owner call it turned out not to be. They are here because a green branch is exactly when a
+deferred residual stops being visible.
+
+---
+
+- [ ] **Step 1: A negative test that can pass vacuously**
+
+`SceneEcs`'s `footprints_payload_withholds_a_token_the_recipient_cannot_read` asserts that the
+recipient's token list is EMPTY. Its fixture contains only the hidden token, so nothing in the test
+rules out the list being empty for a reason unrelated to the guard — a payload that lost its tokens
+entirely would pass it just as well.
+
+Its own siblings, written later, use the shape that discriminates: assert the withheld entity is
+ABSENT from a list that still contains a readable sibling, in the same payload, plus a GM-receives-
+both assertion. Convert this one to that shape.
+
+A reviewer marked it *"no action required, awareness only"*, and it is genuinely corroborated today
+by a paired count assertion and by a revert witness. **That is not the point.** An emptiness
+assertion is the exact shape this plan's own fix files twice called insufficient, and "not required
+by the wording" plus "awareness only" is how one survives to become the next reader's precedent.
+
+Then prove it: revert the guard, observe the failure verbatim, restore, confirm the diff is empty.
+
+- [ ] **Step 2: A process-marker shape the comment gate does not see**
+
+`Critical N` and `FIX 1` — process markers naming a review finding or a fix round — pass
+`check-comment-refs.mjs` entirely. RULE 16 already bans sweep, fix-round and finding markers in code
+comments, so these are inside the rule as written and only the detector misses them; widening it
+enforces the existing rule rather than extending it. **Ruled by the dispatcher; implement it.**
+
+The reason it was reported as an owner call is real and is the actual work here: the obvious pattern
+collides with a letter-plus-digit entry that is deliberately scoped skill-only. **Fix the collision at
+its source rather than narrowing the new pattern around it.** A narrowed detector is how the class
+this task series keeps finding stays invisible — a false positive is visible and gets fixed, a false
+negative is not, so every pressure on a detector pushes toward narrowing and the narrowing then reads
+as scoping. If the two shapes genuinely cannot be told apart by pattern, say so plainly and report
+what the ambiguous set contains rather than shrinking either one.
+
+Then sweep what the widened pattern surfaces, with a positive control proving the new pattern fires,
+and a row per hit adjudicated.
+
+- [ ] **Step 3: Full gate**
+
+The plan's Global Constraints list, in full, re-run after the last edit, each reported with its exact
+command and real output tail. Note that the list gained several commands: check it, do not run the
+list you remember.
+
+- [ ] **Step 4: Commit**
+
+Conventional-commits, imperative, stating the constraint and the consequence. End with the
+`Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>` trailer.
+
+---
+
+### Task 6k: a skill's code-symbol citations rot silently, and no gate can see it
+
+**Files:**
+- Modify: `.claude/skills/shadowcat-codebase-scene-rendering/SKILL.md`,
+  `.claude/skills/shadowcat-codebase-core/SKILL.md`,
+  `docs/design/doc-sweep-truthfulness-rules.md`, `.claude/.claude-plugin/plugin.json`
+- Create: a checker under `scripts/` plus its test, wired into the gate set
+
+**Why:** RULE 15 argues from "a symbol breaks only on rename, which a grep finds", and nothing
+performs that grep. Three dead citations were found by accident in one skill file
+(`frozen_parity_king_step_paths_match_previously_oracle_verified_outcomes`, and `region_arrests`
+twice); `check-skill-api-refs-cli.mjs` covers `/api/...` doc-site pointers, not code symbols. The
+task fixes the class, not the instances.
+
+Full requirements, including the corpus-narrowing trap and the mandatory two-direction positive
+control, are in this plan's workspace brief `task-6k.md`.
+
+---
+
 ### Task 7: PW3 — exercise the hex + continuous fog clip through the real dispatch, as a non-GM
 
 **Ledger id:** PW3.
@@ -3301,6 +4891,43 @@ Record each against real code, citing the symbols:
 
 If any of the four does not hold, **stop and report**: this task's premise is then wrong and PW4
 is real work, which is a scope question for the human and not something to build inline.
+
+- [ ] **Step 1b: Answer whether the raycast margin can disclose anything outside the authored block**
+
+`env_light_polys` builds its raycast bound as the scene envelope grown by a margin, so the
+environment reaches cells OUTSIDE the authored block. Square has always had this; hex reaches parity
+with it once the envelope carries a real minimum, and the change is measurable — one extra ring of
+lit cells on the origin side of a hex scene.
+
+Parity is not the question. The question the parity change surfaced, which nobody has answered, is:
+
+> **Limb 1 — what a lit cell outside the block reveals.** Can a cell outside the authored block,
+> being lit and reachable, expose the existence or the position of a document a GM placed outside
+> the bounds?
+>
+> **Limb 2 — what a player can step onto there.** `visible_cells` and `visible_cells_cached` reach
+> the same environment-light path, so the movement gate's mask carries the same ring. Under
+> `movementRestriction: "visible"` a non-GM can enter it. Is a play area a player can leave by one
+> ring the intended contract, on either shape?
+
+Answer limb 2 as well as limb 1. The review that surfaced this found the fog consequence stated and
+the gate consequence unstated, which is how a gate change gets ratified as a fog change.
+
+Note what IS already established, so it is not re-derived: `gm_only` walls and regions are filtered
+per recipient and never delivered, so no secret geometry reaches the ring. What is NOT established is
+the non-secret case — a token, drawing or template a GM placed there is delivered and hidden only by
+fog, so lighting the ring renders it. That half is derived from the fog model rather than tested, and
+no server-side test can assert it, which is itself worth stating in the answer.
+
+Answer it **from the code**, tracing what a client actually receives: whether a cell outside the
+block can enter a player visible-cell mask, what an egressed mask discloses about a cell nothing
+authored occupies, and whether any document outside the bounds becomes reachable through that path.
+State the answer either way with the symbols that establish it.
+
+**If the answer is that it can disclose**, stop and report. That is a live secrecy defect predating
+this phase and applying equally to square, and its fix is a scope question rather than something to
+build inside a documentation task. **If it cannot**, say so with the mechanism that prevents it, so
+the margin stops being an open question the next reader has to re-derive.
 
 - [ ] **Step 2: Correct the record**
 
@@ -4266,7 +5893,22 @@ line numbers, no milestone ids, sweep markers, dates, or history narration. Cite
 `build_navmesh`, `env_light_polys` and `bound_for_scene`. If either has an entry in
 `docs/OPEN_BUGS.md`, remove it in the same commit.
 
+- [ ] **Step 1a: Record the environment-light leak the envelope closed**
+
+Add to `docs/CLOSED_BUGS.md`, in the file's existing entry style: `env_light_polys` sampled its
+perimeter from a rectangle anchored at the origin, so on hex its bottom edge ran along `y = 0` —
+**through** axial row 0 of the authored block rather than outside it. A boundary sample could
+therefore land inside a `blocksLight`-sealed room on that row and project environment light into a
+space the seal was supposed to keep dark. Sampling now walks the block's true envelope, so every
+sample sits strictly outside it.
+
+Cite `lighting::env_light_polys`, `lighting::perimeter_point`, and `grid_shape::WorldExtent`. Hex
+only — a square block's minimum is the origin, so its walk was always outside. State that it was
+unexercised: no fixture placed a sealed room on the origin row, which is why the leak survived to be
+found by reasoning about the walk's geometry rather than by a failing test.
+
 - [ ] **Step 2: Close the to-do entries**
+
 
 Remove the TD17, TD18, TD19 and TD48 entries from `docs/TODO.md`.
 
@@ -4310,6 +5952,31 @@ State the direction (under-reveal) and that no conversion pass exists because fo
 data.
 
 - [ ] **Step 4: Update the subsystem skill (reviewed skill-update gate)**
+
+**Method requirement, learned during this phase.** A skill claim can be stale in SUBSTANCE while the
+symbol it is stale about never appears in the text. An implementer reported
+`shadowcat-codebase-scene-rendering` untouched by the extent work because it never names
+`GridShape::world_extent` — literally true, and the skill nonetheless documents `build_navmesh` with a
+signature it has not had for some time and describes it as triangulating "the scene's bounds
+rectangle", which is precisely the origin anchoring this phase removed. **Audit the skill's CLAIMS
+against the code, never the skill's symbol list against the diff** — a grep for changed symbol names
+reports clean on exactly the drift that matters most, because the staleness lives in a description
+whose subject was renamed or restructured out of it.
+
+Corrections this phase makes mandatory, beyond the additions listed after them:
+
+- `build_navmesh`'s documented signature is wrong independently of this phase and must be corrected to
+  what it takes now.
+- The bounds-to-world conversion returns a `grid_shape::WorldExtent` carrying BOTH corners, and the
+  minimum is the origin only on square — a pointy-top hex block reaches below and left of it. Any
+  sentence describing a scene rectangle as anchored at the origin is wrong for half the shapes.
+- `grid_shape::REFUSED_EXTENT` is the single zero-area refusal every extent guard rejects, and
+  `SceneEcs::scene_world_extent_at` is the single body performing the conversion.
+- `world_extent`'s guarantees hold over the INTEGER block, not over an arbitrary authored bound: a
+  fractional bound leaves a partial column or row outside on a shape-dependent condition, which an
+  executable membership rule and its sweep enforce rather than prose. The "CENTRE cover with a
+  documented origin-side truncation" phrasing below is superseded and must not be carried forward.
+
 
 `shadowcat-codebase-scene-rendering` gains, as Hard Invariants:
 - the three-role distinction for the `cell` scalar — indexing scale, per-cell world distance,

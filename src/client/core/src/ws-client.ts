@@ -32,7 +32,9 @@ export interface SearchPage {
 export interface PathResult {
   /** Ordered `[x, y]` scene-coordinate waypoints of the computed route. */
   path: [number, number][];
-  /** Terrain-weighted movement cost of the route. */
+  /** Total terrain-weighted route cost in cells (multiply by `grid.distance.perCell`). Cells on
+   * every movement model — the continuous engine converts its Euclidean length back through the
+   * shape's per-step world distance, so a consumer never needs to know which engine ran. */
   cost: number;
   /** True when the route was cut short by a visible arrest region rather than reaching the
    * requested goal. */
@@ -1183,7 +1185,7 @@ export class WsClient {
         resolve();
       }, CHAT_ERROR_WINDOW_MS);
       // Node exposes `unref` on its Timeout objects; browsers don't. The cast + optional
-      // call reaches it where present without a `@types/node` dependency in this file.
+      // call reaches it where present without taking a `@types/node` dependency.
       (
         timer as unknown as {
           /** Node-only: detach the timer from keeping the event loop alive. */

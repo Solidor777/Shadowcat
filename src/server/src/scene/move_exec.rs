@@ -59,14 +59,14 @@ const EPS: f64 = 1e-6;
 pub(crate) const MAX_GATE_WALK_SAMPLES: usize = 4096;
 
 /// Magnitude ceiling (scene units) for any `gate_walk` input path coordinate, checked
-/// structurally BEFORE the per-step tolerance arithmetic below (mirrors `navmesh::
+/// structurally BEFORE the per-step tolerance arithmetic in `gate_walk` (mirrors `navmesh::
 /// MAX_NAVMESH_COORD`'s convention: bound the input before any downstream arithmetic that is
 /// sensitive to magnitude, not after).
 ///
 /// This value is deliberately much smaller than `navmesh::MAX_NAVMESH_COORD` (1e15) — the two
 /// bounds guard against DIFFERENT failure modes and neither number transfers to the other's
 /// module. `MAX_NAVMESH_COORD` guards an `f64 -> f32` cast that only saturates near `f32::MAX`
-/// (~3.4e38), so 1e15 is safe there with enormous headroom. Here, the per-step tolerance below
+/// (~3.4e38), so 1e15 is safe there with enormous headroom. Here, `gate_walk`'s per-step tolerance
 /// (`tol = (2*max(|px|,|nx|,|py|,|ny|) + cell + 1) * f64::EPSILON * 64`) scales linearly with
 /// coordinate magnitude and empirically exceeds a full 1.0-unit overshoot margin once that
 /// magnitude passes roughly `3.5e13` (verified directly against this formula) — reusing `1e15` as
@@ -109,7 +109,7 @@ pub(crate) struct GateSample {
 ///
 /// # Coordinate bound (magnitude-independent, checked BEFORE any tolerance arithmetic)
 ///
-/// The per-step Chebyshev comparison below uses a magnitude-SCALED float tolerance (built from
+/// The per-step Chebyshev comparison uses a magnitude-SCALED float tolerance (built from
 /// `px`/`nx`/`py`/`ny`'s own absolute values, mirroring `supercover_cells`'s corner-test
 /// convention — see that comparison's doc comment) to absorb subtraction rounding error at
 /// ordinary grid magnitudes. That scaling is unbounded: at a large enough coordinate magnitude
@@ -263,7 +263,7 @@ pub(crate) struct MoveGateInputs<'a> {
 /// polyanya router emits any-angle vertices arbitrarily far apart. `gate_walk` subdivides it
 /// into a dense walk where every consecutive pair is ≤1 cell apart, preserving already-≤1-cell
 /// segments EXACTLY (identity on grid input — see `gate_walk`'s doc comment). The per-step
-/// gate below runs over this DENSE walk; the coarse `render_path` returned to the caller is
+/// gate runs over this DENSE walk; the coarse `render_path` returned to the caller is
 /// reconstructed from the authored vertices actually traversed plus the exact stop point.
 ///
 /// # Parity with `pathfinding::cell_enterable` — per-cell decision only
@@ -300,7 +300,7 @@ pub(crate) struct MoveGateInputs<'a> {
 /// - `is_gm` — When true, every gameplay gate (walls, mask, impassable, arrest) is bypassed,
 ///   matching `publish`'s own GM position write. Resource
 ///   guards (`gate_walk`'s `MAX_GATE_WALK_COORD`/`MAX_GATE_WALK_SAMPLES`, the non-finite and
-///   scene-existence refusals, and the `footprint_radius_cells` range guard below) are never
+///   scene-existence refusals, and the `footprint_radius_cells` range guard) are never
 ///   exempted. Terrain cost still accrues regardless.
 /// - `footprint_radius_cells` — The mover's bounding-disc radius in grid cells (see
 ///   `SceneEcs::resolve_token_footprint`). Must be in `[0, pathfinding::MAX_FOOTPRINT_CELLS]`;
@@ -353,7 +353,8 @@ pub(crate) fn execute_move(
     // Subdivide into the dense ≤1-cell gate walk; identity on
     // grid input. `None` means the walk would exceed MAX_GATE_WALK_SAMPLES — fail closed.
     let walk = gate_walk(path, cell).ok_or(MoveReject::TooLong)?;
-    // walk.len() >= 2 always here: path.len() >= 2 is already guaranteed above, and the loop
+    // walk.len() >= 2 always here: path.len() >= 2 is already guaranteed by the `EmptyPath`
+    // refusal, and the loop
     // inside gate_walk appends at least one sample per authored segment.
 
     // Gameplay gates apply to non-GMs only. A GM may make an illegal move: they move with or
@@ -380,8 +381,13 @@ pub(crate) fn execute_move(
     // requester's route springs here, exactly as a secret region does.
     let gate_walls = ecs.move_walls(scene, None);
 
-    // Constant for the whole walk: the footprint disc radius in scene units, mirroring
-    // `cell_enterable`'s `r_scene`.
+    // Constant for the whole walk: the footprint disc radius in world units, mirroring
+    // `cell_enterable`'s `r_scene`. The radius is already stated in the grid's OWN cells by
+    // `footprint::resolve_footprint_cells` — the authored block's half-diagonal on square, the
+    // circumscribing radius of the authored hex count on hex — so it converts through the INDEXING
+    // scale, not `GridShape::world_units_per_cell`. Scaling it through the world-unit conversion
+    // would give a 1-hex token a disc past its own hex's circumradius and make a medium creature
+    // occupy seven hexes, which is a rules change rather than a unit fix.
     let r_scene = footprint_radius_cells.max(0.0) * cell;
 
     // Region-cell lookup goes through the SAME resolved grid shape as rasterization
@@ -403,7 +409,7 @@ pub(crate) fn execute_move(
         let prev = walk[i - 1].pos;
         let next = walk[i].pos;
         let next_cell = to_cell(next);
-        // The footprint disc's anchor for every CELL-MEMBERSHIP test below (mask, impassable):
+        // The footprint disc's anchor for every CELL-MEMBERSHIP test (mask, impassable):
         // the cell's own center, exactly mirroring `cell_enterable`'s `ctr = cell_center(to)`.
         // This is NOT optional polish — anchoring at the raw dense-walk
         // point `next` instead is degenerate whenever `next` lands exactly on a cell boundary
@@ -511,7 +517,8 @@ pub(crate) fn execute_move(
         }
     };
 
-    // Safe: walk.len() >= 2 is guaranteed above, so len() - 1 never underflows.
+    // Safe: walk.len() >= 2 is guaranteed by the `EmptyPath` refusal, so len() - 1 never
+    // underflows.
     let truncated = stopped_early || stop_idx < walk.len() - 1;
     Ok(MoveOutcome {
         stop: stop_sample.pos,
@@ -540,9 +547,9 @@ mod tests {
     }
 
     /// Builds a scene-entity fixture with `engine` set to `body` (`system` stays `{}`) — every
-    /// reader this file's tests exercise (`scene_grid_sizes`, `blocks_move`, `region_field`) is a
+    /// reader exercised in `move_exec` (`scene_grid_sizes`, `blocks_move`, `region_field`) is a
     /// typed `engine` read; a `token` fixture built through this helper carries no position data
-    /// these tests consume (`execute_move` takes an explicit `path`, never the token doc's
+    /// any of them consume (`execute_move` takes an explicit `path`, never the token doc's
     /// position), so re-rooting it here alongside scene/wall/region is harmless.
     fn entity_doc(
         id: u128,
@@ -565,7 +572,7 @@ mod tests {
                     10,
                     0,
                     "scene",
-                    json!({ "grid": { "kind": "square", "size": 100 }, "background": null }),
+                    json!({ "grid": { "kind": "square", "size": FIXTURE_GRID_SIZE }, "background": null }),
                 ),
                 entity_doc(
                     11,
@@ -600,7 +607,7 @@ mod tests {
                     10,
                     0,
                     "scene",
-                    json!({ "grid": { "kind": "square", "size": 100 }, "background": null }),
+                    json!({ "grid": { "kind": "square", "size": FIXTURE_GRID_SIZE }, "background": null }),
                 ),
                 entity_doc(
                     11,
@@ -624,7 +631,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Tests (binding assertions per brief)
+    // Tests
     // -----------------------------------------------------------------------
 
     #[test]
@@ -639,7 +646,7 @@ mod tests {
                 scene,
                 restriction: MovementRestriction::Visible,
                 visible: &visible,
-                cell: 100.0,
+                cell: FIXTURE_GRID_SIZE,
             },
             token,
             &[(0.0, 0.0), (100.0, 0.0), (100.0, 100.0)],
@@ -663,7 +670,7 @@ mod tests {
                 scene,
                 restriction: MovementRestriction::Visible,
                 visible: &visible,
-                cell: 100.0,
+                cell: FIXTURE_GRID_SIZE,
             },
             token,
             &[(0.0, 0.0), (100.0, 0.0), (100.0, 100.0)],
@@ -689,7 +696,7 @@ mod tests {
                 scene,
                 restriction: MovementRestriction::Visible,
                 visible: &visible,
-                cell: 100.0,
+                cell: FIXTURE_GRID_SIZE,
             },
             token,
             &[(0.0, 0.0), (100.0, 0.0), (100.0, 100.0)],
@@ -722,7 +729,7 @@ mod tests {
                 scene,
                 restriction: MovementRestriction::Visible,
                 visible: &visible,
-                cell: 100.0,
+                cell: FIXTURE_GRID_SIZE,
             },
             token,
             &[(0.0, 0.0), (200.0, 200.0)],
@@ -754,7 +761,7 @@ mod tests {
                 scene,
                 restriction: MovementRestriction::Revealed,
                 visible: &union_mask,
-                cell: 100.0,
+                cell: FIXTURE_GRID_SIZE,
             },
             token,
             &[(0.0, 0.0), (100.0, 0.0), (100.0, 100.0)],
@@ -776,7 +783,7 @@ mod tests {
                 scene,
                 restriction: MovementRestriction::Revealed,
                 visible: &raw_mask,
-                cell: 100.0,
+                cell: FIXTURE_GRID_SIZE,
             },
             token,
             &[(0.0, 0.0), (100.0, 0.0), (100.0, 100.0)],
@@ -799,7 +806,7 @@ mod tests {
                 scene,
                 restriction: MovementRestriction::Unrestricted,
                 visible: &empty,
-                cell: 100.0,
+                cell: FIXTURE_GRID_SIZE,
             },
             token,
             &[(0.0, 0.0), (100.0, 0.0), (100.0, 100.0)],
@@ -821,7 +828,7 @@ mod tests {
                     scene,
                     restriction: MovementRestriction::Unrestricted,
                     visible: &v,
-                    cell: 100.0,
+                    cell: FIXTURE_GRID_SIZE,
                 },
                 token,
                 &[(500.0, 0.0), (600.0, 0.0)],
@@ -842,13 +849,13 @@ mod tests {
         let out = execute_move(
             &ecs,
             MoveGateInputs {
-scene,
-restriction: // 5 cells in one authored jump
-            MovementRestriction::Visible,
-visible: &visible,
-cell: 100.0,
-},
+                scene,
+                restriction: MovementRestriction::Visible,
+                visible: &visible,
+                cell: FIXTURE_GRID_SIZE,
+            },
             token,
+            // 5 cells in one authored jump
             &[(0.0, 0.0), (500.0, 0.0)],
             false,
             0.4,
@@ -875,7 +882,7 @@ cell: 100.0,
                 scene,
                 restriction: MovementRestriction::Visible,
                 visible: &visible,
-                cell: 100.0,
+                cell: FIXTURE_GRID_SIZE,
             },
             token,
             &[(0.0, 0.0), (500.0, 0.0)],
@@ -928,7 +935,7 @@ cell: 100.0,
                     scene,
                     restriction: MovementRestriction::Unrestricted,
                     visible: &v,
-                    cell: 100.0,
+                    cell: FIXTURE_GRID_SIZE,
                 },
                 token,
                 &[(0.0, 0.0)],
@@ -951,7 +958,7 @@ cell: 100.0,
                     scene,
                     restriction: MovementRestriction::Unrestricted,
                     visible: &v,
-                    cell: 100.0,
+                    cell: FIXTURE_GRID_SIZE,
                 },
                 unknown,
                 &[(0.0, 0.0), (100.0, 0.0)],
@@ -973,7 +980,7 @@ cell: 100.0,
                 scene,
                 restriction: MovementRestriction::Unrestricted,
                 visible: &empty,
-                cell: 100.0,
+                cell: FIXTURE_GRID_SIZE,
             },
             token,
             &[(0.0, 0.0), (100.0, 0.0), (100.0, 100.0)],
@@ -1017,7 +1024,7 @@ cell: 100.0,
                     10,
                     0,
                     "scene",
-                    json!({ "grid": { "kind": "square", "size": 100 }, "background": null }),
+                    json!({ "grid": { "kind": "square", "size": FIXTURE_GRID_SIZE }, "background": null }),
                 ),
                 entity_doc(
                     11,
@@ -1036,7 +1043,7 @@ cell: 100.0,
                 scene: scene_id,
                 restriction: MovementRestriction::Unrestricted,
                 visible: &visible,
-                cell: 100.0,
+                cell: FIXTURE_GRID_SIZE,
             },
             token_id,
             &[(0.0, 0.0), (100.0, 0.0), (100.0, 100.0)],
@@ -1062,7 +1069,7 @@ cell: 100.0,
                     10,
                     0,
                     "scene",
-                    json!({ "grid": { "kind": "square", "size": 100 }, "background": null }),
+                    json!({ "grid": { "kind": "square", "size": FIXTURE_GRID_SIZE }, "background": null }),
                 ),
                 entity_doc(
                     11,
@@ -1081,7 +1088,7 @@ cell: 100.0,
                 scene: scene_id,
                 restriction: MovementRestriction::Unrestricted,
                 visible: &visible,
-                cell: 100.0,
+                cell: FIXTURE_GRID_SIZE,
             },
             token_id,
             &[(0.0, 0.0), (100.0, 0.0)],
@@ -1096,7 +1103,7 @@ cell: 100.0,
         );
         assert!(
             out.truncated,
-            "final-step arrest must still report truncated=true"
+            "a final-step arrest reports truncated=true even though the stop is the last vertex"
         );
     }
 
@@ -1110,7 +1117,7 @@ cell: 100.0,
                     10,
                     0,
                     "scene",
-                    json!({ "grid": { "kind": "square", "size": 100 }, "background": null }),
+                    json!({ "grid": { "kind": "square", "size": FIXTURE_GRID_SIZE }, "background": null }),
                 ),
                 entity_doc(
                     11,
@@ -1129,7 +1136,7 @@ cell: 100.0,
                 scene: scene_id,
                 restriction: MovementRestriction::Unrestricted,
                 visible: &visible,
-                cell: 100.0,
+                cell: FIXTURE_GRID_SIZE,
             },
             token_id,
             &[(0.0, 0.0), (100.0, 0.0)],
@@ -1148,8 +1155,15 @@ cell: 100.0,
         // enclosing ONLY hex cell (1,0)'s center must (a) rasterize onto hex (1,0), and (b) stop a
         // move from (0,0) toward (1,0) before entry. A square-on-hex enumeration or lookup would
         // rasterize onto the wrong axial cell and the move would sail straight through.
+        // The scene's declared grid size, the gate's `cell`, and the region rect are all derived
+        // from the shape whose `cell_center` supplies this test's coordinates, so none of them can
+        // drift apart. The rect is a square of side `size` centred on hex (1,0): half a `size` is
+        // under the half-pitch (`√3/2·size ≈ 43.3`) to its axial neighbours on the row and under
+        // the row spacing (`1.5·size`) to the four off-row neighbours, so it can only ever contain
+        // that one hex's centre — a property the fixture guard asserts rather than assumes.
         let hex = HexGrid { size: 50.0 };
         let c10 = hex.cell_center((1, 0)); // (50·√3, 0) ≈ (86.6, 0)
+        let pad = hex.size / 2.0;
 
         let scene_id = Uuid::from_u128(10);
         let token_id = Uuid::from_u128(11);
@@ -1159,7 +1173,7 @@ cell: 100.0,
                     10,
                     0,
                     "scene",
-                    json!({ "grid": { "kind": "hex", "size": 50.0 }, "background": null }),
+                    json!({ "grid": { "kind": "hex", "size": hex.size }, "background": null }),
                 ),
                 entity_doc(
                     11,
@@ -1167,23 +1181,34 @@ cell: 100.0,
                     "token",
                     json!({ "x": 0.0, "y": 0.0, "w": 50.0, "h": 50.0, "rotation": 0.0 }),
                 ),
-                // Rect around hex (1,0)'s center only — excludes (0,0) at x=0, (2,0) at x≈173.2, and
-                // every neighbor of (1,0) (their centers sit at |y|≈75, outside [-25,25]).
-                region_doc(12, 10, "impassable", 1.0, (61.0, -25.0, 112.0, 25.0)),
+                region_doc(
+                    12,
+                    10,
+                    "impassable",
+                    1.0,
+                    (c10.0 - pad, c10.1 - pad, c10.0 + pad, c10.1 + pad),
+                ),
             ],
             0,
         );
 
-        // (a) The rect rasterizes onto hex cell (1,0) via GridShape, not a square index.
+        // (a) The rect rasterizes onto hex cell (1,0) via GridShape, not a square index — and onto
+        // NOTHING else. The precondition the truncation assertion depends on is that the blocked
+        // set is exactly {(1,0)}, so the six neighbours are asserted clear rather than the one
+        // (0,0) the move happens to start in: a rect that spread to a neighbour would stop the
+        // move for a reason the test does not name, and a rect derived from the shape must be free
+        // to move without that going unnoticed.
         let field = ecs.region_field(scene_id, None).expect("scene exists");
         assert!(
             field.is_impassable((1, 0)),
             "rect rasterizes onto hex cell (1,0)"
         );
-        assert!(
-            !field.is_impassable((0, 0)),
-            "hex (0,0) is outside the rect"
-        );
+        for (n, _, _) in hex.neighbors_with_cost((1, 0), 0) {
+            assert!(
+                !field.is_impassable(n),
+                "fixture: hex {n:?} neighbours the blocked hex and must stay clear"
+            );
+        }
 
         // (b) The move stops before entering hex (1,0). Unrestricted → the vision mask is skipped.
         let visible = BTreeSet::new();
@@ -1193,7 +1218,7 @@ cell: 100.0,
                 scene: scene_id,
                 restriction: MovementRestriction::Unrestricted,
                 visible: &visible,
-                cell: 50.0,
+                cell: hex.size,
             },
             token_id,
             &[(0.0, 0.0), c10],
@@ -1221,8 +1246,16 @@ cell: 100.0,
         // no arrest there and the move sails through. The mask is the exact hex traversal
         // {(0,0),(1,0),(2,0),(3,0)}; the square supercover of the same segment reaches (5,0), so a
         // square-indexed mask gate would instead truncate early, for the wrong reason.
+        // The scene's declared grid size, the square supercover's cell size, the gate's `cell`, and
+        // the arrest rect are all derived from the shape whose `cell_center` supplies this test's
+        // coordinates, so none of them can drift apart. The rect is a square of side `size` centred
+        // on hex (2,0): half a `size` is under the half-pitch (`√3/2·size ≈ 43.3`) to its axial
+        // neighbours on the row and under the row spacing (`1.5·size`) to the four off-row ones, so
+        // it can only ever contain that one hex's centre — asserted, not assumed.
         let hex = HexGrid { size: 50.0 };
+        let c20 = hex.cell_center((2, 0)); // (100·√3, 0) ≈ (173.2, 0)
         let c30 = hex.cell_center((3, 0)); // (150·√3, 0) ≈ (259.8, 0)
+        let pad = hex.size / 2.0;
 
         let scene_id = Uuid::from_u128(10);
         let token_id = Uuid::from_u128(11);
@@ -1232,7 +1265,7 @@ cell: 100.0,
                     10,
                     0,
                     "scene",
-                    json!({ "grid": { "kind": "hex", "size": 50.0 }, "background": null }),
+                    json!({ "grid": { "kind": "hex", "size": hex.size }, "background": null }),
                 ),
                 entity_doc(
                     11,
@@ -1240,24 +1273,36 @@ cell: 100.0,
                     "token",
                     json!({ "x": 0.0, "y": 0.0, "w": 50.0, "h": 50.0, "rotation": 0.0 }),
                 ),
-                region_doc(12, 10, "arrest", 1.0, (148.0, -25.0, 198.0, 25.0)),
+                region_doc(
+                    12,
+                    10,
+                    "arrest",
+                    1.0,
+                    (c20.0 - pad, c20.1 - pad, c20.0 + pad, c20.1 + pad),
+                ),
             ],
             0,
         );
 
+        // Fixture guard, the precondition every assertion in this test rests on: exactly hex
+        // (2,0) arrests. Its six
+        // neighbours include axial (3,0), which is ALSO the square index of the rect's own
+        // location, so the same loop pins the square-indexing claim the test is named for — a
+        // square `floor(p/cell)` region lookup would consult (3,0) and find nothing.
         let field = ecs.region_field(scene_id, None).expect("scene exists");
         assert!(
             field.is_arrest((2, 0)),
             "rect rasterizes onto hex cell (2,0)"
         );
-        assert!(
-            !field.is_arrest((3, 0)),
-            "the SQUARE index of the arrest rect's location carries no arrest — a square-indexed \
-             region lookup would miss it entirely"
-        );
+        for (n, _, _) in hex.neighbors_with_cost((2, 0), 0) {
+            assert!(
+                !field.is_arrest(n),
+                "fixture: hex {n:?} neighbours the arrest hex and must stay clear"
+            );
+        }
 
         let visible: BTreeSet<(i32, i32)> = [(0, 0), (1, 0), (2, 0), (3, 0)].into_iter().collect();
-        let square_cells = crate::scene::movement::supercover_cells((0.0, 0.0), c30, 50.0)
+        let square_cells = crate::scene::movement::supercover_cells((0.0, 0.0), c30, hex.size)
             .expect("bounded square supercover");
         assert!(
             square_cells.iter().any(|c| !visible.contains(c)),
@@ -1270,7 +1315,7 @@ cell: 100.0,
                 scene: scene_id,
                 restriction: MovementRestriction::Visible,
                 visible: &visible,
-                cell: 50.0,
+                cell: hex.size,
             },
             token_id,
             &[(0.0, 0.0), c30],
@@ -1309,7 +1354,7 @@ cell: 100.0,
                     10,
                     0,
                     "scene",
-                    json!({ "grid": { "kind": "square", "size": 100 }, "background": null }),
+                    json!({ "grid": { "kind": "square", "size": FIXTURE_GRID_SIZE }, "background": null }),
                 ),
                 entity_doc(
                     11,
@@ -1328,7 +1373,7 @@ cell: 100.0,
                 scene: scene_id,
                 restriction: MovementRestriction::Visible,
                 visible: &visible,
-                cell: 100.0,
+                cell: FIXTURE_GRID_SIZE,
             },
             token_id,
             &[(0.0, 0.0), (100.0, 0.0), (100.0, 100.0)],
@@ -1348,7 +1393,8 @@ cell: 100.0,
     // impassable, arrest) but no resource guard, and terrain cost still accrues.
     // -----------------------------------------------------------------------
 
-    /// Empty vision mask — irrelevant to every test below since `Unrestricted` skips it.
+    /// Empty vision mask — irrelevant to every GM gate-exemption test, since `Unrestricted`
+    /// skips it.
     fn empty_mask() -> BTreeSet<(i32, i32)> {
         BTreeSet::new()
     }
@@ -1364,7 +1410,7 @@ cell: 100.0,
                     10,
                     0,
                     "scene",
-                    json!({ "grid": { "kind": "square", "size": 100 }, "background": null }),
+                    json!({ "grid": { "kind": "square", "size": FIXTURE_GRID_SIZE }, "background": null }),
                 ),
                 entity_doc(
                     11,
@@ -1399,7 +1445,7 @@ cell: 100.0,
                     10,
                     0,
                     "scene",
-                    json!({ "grid": { "kind": "square", "size": 100 }, "background": null }),
+                    json!({ "grid": { "kind": "square", "size": FIXTURE_GRID_SIZE }, "background": null }),
                 ),
                 entity_doc(
                     11,
@@ -1426,7 +1472,7 @@ cell: 100.0,
                     10,
                     0,
                     "scene",
-                    json!({ "grid": { "kind": "square", "size": 100 }, "background": null }),
+                    json!({ "grid": { "kind": "square", "size": FIXTURE_GRID_SIZE }, "background": null }),
                 ),
                 entity_doc(
                     11,
@@ -1451,7 +1497,7 @@ cell: 100.0,
                 scene,
                 restriction: MovementRestriction::Unrestricted,
                 visible: &empty_mask(),
-                cell: 100.0,
+                cell: FIXTURE_GRID_SIZE,
             },
             token,
             &path,
@@ -1477,7 +1523,7 @@ cell: 100.0,
                 scene,
                 restriction: MovementRestriction::Unrestricted,
                 visible: &empty_mask(),
-                cell: 100.0,
+                cell: FIXTURE_GRID_SIZE,
             },
             token,
             &path,
@@ -1489,8 +1535,9 @@ cell: 100.0,
     }
 
     #[test]
-    fn non_gm_move_is_still_blocked_by_the_same_wall() {
-        // The exemption must not widen: pin that non-GM behavior is unchanged.
+    fn non_gm_move_is_blocked_by_the_wall_a_gm_crosses() {
+        // The exemption is scoped to GMs: the same fixture wall a GM walks through truncates a
+        // non-GM.
         let (ecs, scene, token) = scene_with_wall_across_the_path();
         let out = execute_move(
             &ecs,
@@ -1498,7 +1545,7 @@ cell: 100.0,
                 scene,
                 restriction: MovementRestriction::Unrestricted,
                 visible: &empty_mask(),
-                cell: 100.0,
+                cell: FIXTURE_GRID_SIZE,
             },
             token,
             &[(50.0, 50.0), (150.0, 50.0)],
@@ -1506,11 +1553,11 @@ cell: 100.0,
             0.4,
         )
         .expect("admissible");
-        assert!(out.truncated, "a non-GM is still stopped by the wall");
+        assert!(out.truncated, "a non-GM is stopped by the wall");
     }
 
     #[test]
-    fn gm_move_is_still_refused_beyond_the_coordinate_bound() {
+    fn gm_move_is_refused_beyond_the_coordinate_bound() {
         // A GM bypasses gameplay gates but NO resource guard.
         let (ecs, scene, token) = scene_with_wall_across_the_path();
         let over = MAX_GATE_WALK_COORD + 1.0;
@@ -1520,7 +1567,7 @@ cell: 100.0,
                 scene,
                 restriction: MovementRestriction::Unrestricted,
                 visible: &empty_mask(),
-                cell: 100.0,
+                cell: FIXTURE_GRID_SIZE,
             },
             token,
             &[(50.0, 50.0), (over, 50.0)],
@@ -1532,7 +1579,7 @@ cell: 100.0,
     }
 
     #[test]
-    fn gm_move_still_accrues_terrain_cost() {
+    fn gm_move_accrues_terrain_cost() {
         // Cost is information, not a gate — accrual is independent of the exemption.
         let (ecs, scene, token) = scene_with_terrain_multiplier_3();
         let out = execute_move(
@@ -1541,7 +1588,7 @@ cell: 100.0,
                 scene,
                 restriction: MovementRestriction::Unrestricted,
                 visible: &empty_mask(),
-                cell: 100.0,
+                cell: FIXTURE_GRID_SIZE,
             },
             token,
             &[(50.0, 50.0), (150.0, 50.0)],
@@ -1551,7 +1598,7 @@ cell: 100.0,
         .expect("admissible");
         assert!(
             out.cost >= 3.0,
-            "terrain still accrues for a GM, got {}",
+            "terrain accrues for a GM, got {}",
             out.cost
         );
     }
@@ -1574,7 +1621,7 @@ cell: 100.0,
                 scene,
                 restriction: MovementRestriction::Visible,
                 visible: &visible,
-                cell: 100.0,
+                cell: FIXTURE_GRID_SIZE,
             },
             token,
             &[(0.0, 0.0), (350.0, 120.0)],
@@ -1598,7 +1645,7 @@ cell: 100.0,
                     10,
                     0,
                     "scene",
-                    json!({ "grid": { "kind": "square", "size": 100 }, "background": null }),
+                    json!({ "grid": { "kind": "square", "size": FIXTURE_GRID_SIZE }, "background": null }),
                 ),
                 entity_doc(
                     11,
@@ -1627,7 +1674,7 @@ cell: 100.0,
                 scene: scene_id,
                 restriction: MovementRestriction::Unrestricted,
                 visible: &visible,
-                cell: 100.0,
+                cell: FIXTURE_GRID_SIZE,
             },
             token_id,
             &[(0.0, 0.0), (400.0, 0.0)],
@@ -1656,7 +1703,7 @@ cell: 100.0,
                     10,
                     0,
                     "scene",
-                    json!({ "grid": { "kind": "square", "size": 100 }, "background": null }),
+                    json!({ "grid": { "kind": "square", "size": FIXTURE_GRID_SIZE }, "background": null }),
                 ),
                 entity_doc(
                     11,
@@ -1675,7 +1722,7 @@ cell: 100.0,
                 scene: scene_id,
                 restriction: MovementRestriction::Unrestricted,
                 visible: &visible,
-                cell: 100.0,
+                cell: FIXTURE_GRID_SIZE,
             },
             token_id,
             &[(0.0, 0.0), (400.0, 0.0)],
@@ -1701,7 +1748,7 @@ cell: 100.0,
                     10,
                     0,
                     "scene",
-                    json!({ "grid": { "kind": "square", "size": 100 }, "background": null }),
+                    json!({ "grid": { "kind": "square", "size": FIXTURE_GRID_SIZE }, "background": null }),
                 ),
                 entity_doc(
                     11,
@@ -1720,7 +1767,7 @@ cell: 100.0,
                 scene: scene_id,
                 restriction: MovementRestriction::Unrestricted,
                 visible: &visible,
-                cell: 100.0,
+                cell: FIXTURE_GRID_SIZE,
             },
             token_id,
             &[(0.0, 0.0), (400.0, 0.0)],
@@ -1749,7 +1796,7 @@ cell: 100.0,
                     10,
                     0,
                     "scene",
-                    json!({ "grid": { "kind": "square", "size": 100 }, "background": null }),
+                    json!({ "grid": { "kind": "square", "size": FIXTURE_GRID_SIZE }, "background": null }),
                 ),
                 entity_doc(
                     11,
@@ -1770,7 +1817,7 @@ cell: 100.0,
                 scene: scene_id,
                 restriction: MovementRestriction::Unrestricted,
                 visible: &visible,
-                cell: 100.0,
+                cell: FIXTURE_GRID_SIZE,
             },
             token_id,
             &[(50.0, 50.0), (250.0, 50.0), (350.0, 50.0)],
@@ -1807,7 +1854,7 @@ cell: 100.0,
                 10,
                 0,
                 "scene",
-                json!({ "grid": { "kind": "square", "size": 100 }, "background": null }),
+                json!({ "grid": { "kind": "square", "size": FIXTURE_GRID_SIZE }, "background": null }),
             ),
             entity_doc(
                 11,
@@ -2036,7 +2083,7 @@ cell: 100.0,
                     scene,
                     restriction: case.restriction,
                     visible: &case.visible,
-                    cell: 100.0,
+                    cell: FIXTURE_GRID_SIZE,
                 },
                 token,
                 &case.path,
@@ -2240,7 +2287,8 @@ cell: 100.0,
     fn gate_walk_fails_closed_on_coordinate_over_the_magnitude_bound() {
         // Direct test of the new bound itself: a coordinate just over `MAX_GATE_WALK_COORD`
         // must be rejected even on an otherwise-trivial single-cell step (isolates the bound
-        // check from the tolerance-overshoot scenario above).
+        // check from `gate_walk_fails_closed_when_the_tolerance_would_exceed_a_cell`'s
+        // tolerance-overshoot scenario).
         let cell = 100.0_f64;
         let over = MAX_GATE_WALK_COORD + 1.0;
         assert!(gate_walk(&[(over, 0.0), (over + cell, 0.0)], cell).is_none());
@@ -2266,19 +2314,41 @@ cell: 100.0,
     // -----------------------------------------------------------------------
     // Hex-scene integration coverage: proves the fully-wired hex path (walls + the
     // visibility mask) behaves correctly end-to-end through `execute_move`, mirroring this
-    // module's square-scene wall/mask tests above.
+    // module's square-scene wall/mask tests.
     // -----------------------------------------------------------------------
 
-    /// Pointy-top axial hex center, matching `grid_shape::HexGrid`'s own formula exactly
-    /// (size=100, Red Blob Games convention).
+    /// The ONE expression of the grid size every 100-unit scene in this module is built on: each
+    /// such scene declares it as its own `grid.size`, `hex_cell_center` builds its `HexGrid` at
+    /// it, `scene_with_narrow_gap_and_wide_token` divides its corridor span by it to author
+    /// bounds, and every test gating one of those scenes passes it as `MoveGateInputs.cell`. A
+    /// scene configured at one size and gated at another would test a grid no fixture declared,
+    /// and nothing else here would notice.
+    ///
+    /// It does NOT cover every scene here.
+    /// `impassable_hex_region_stops_a_hex_move_at_the_correct_hex_cell` and
+    /// `arrest_hex_region_stops_at_entry_composed_with_a_hex_visibility_mask` build their own
+    /// `HexGrid` at a size this constant does not carry, and bind their declared and gated sizes
+    /// to that shape's own `size` field instead — the same no-restatement rule, expressed against
+    /// a different shape rather than against this value. `rejects_path_exceeding_gate_walk_cap`
+    /// deliberately gates a `clear_scene` at `cell: 1.0`, a mismatch that IS the input under
+    /// test; the `gate_walk` unit tests configure no scene at all.
+    const FIXTURE_GRID_SIZE: f64 = 100.0;
+
+    /// Pointy-top axial hex center, delegating to the shape rather than restating its formula. The
+    /// scenes reading it declare `FIXTURE_GRID_SIZE` as their own grid size, and
+    /// `scene_with_narrow_gap_and_wide_token` divides by that same constant to author its bounds,
+    /// so a second expression of `HexGrid::axial_to_pixel` here would move a token position out
+    /// from under the grid it is indexed against.
     fn hex_cell_center(q: i32, r: i32) -> (f64, f64) {
-        let size = 100.0;
-        let x = size * (3.0_f64.sqrt() * q as f64 + 3.0_f64.sqrt() / 2.0 * r as f64);
-        let y = size * (1.5 * r as f64);
-        (x, y)
+        crate::scene::grid_shape::GridShape::cell_center(
+            &crate::scene::grid_shape::HexGrid {
+                size: FIXTURE_GRID_SIZE,
+            },
+            (q, r),
+        )
     }
 
-    /// Hex scene (`grid.kind: "hex"`, size=100) with a token at axial (0,0), no walls.
+    /// Hex scene on `FIXTURE_GRID_SIZE` with a token at axial (0,0), no walls.
     fn hex_clear_scene() -> (SceneEcs, Uuid, Uuid) {
         let scene_id = Uuid::from_u128(20);
         let token_id = Uuid::from_u128(21);
@@ -2288,7 +2358,8 @@ cell: 100.0,
                     20,
                     0,
                     "scene",
-                    json!({ "grid": { "kind": "hex", "size": 100 }, "background": null }),
+                    json!({ "grid": { "kind": "hex", "size": FIXTURE_GRID_SIZE },
+                            "background": null }),
                 ),
                 entity_doc(
                     21,
@@ -2302,7 +2373,7 @@ cell: 100.0,
         (ecs, scene_id, token_id)
     }
 
-    /// Hex scene with a vertical `blocksMove` wall at `wall_x`.
+    /// Hex scene on `FIXTURE_GRID_SIZE` with a vertical `blocksMove` wall at `wall_x`.
     fn hex_walled_scene(wall_x: f64) -> (SceneEcs, Uuid, Uuid) {
         let scene_id = Uuid::from_u128(20);
         let token_id = Uuid::from_u128(21);
@@ -2312,7 +2383,8 @@ cell: 100.0,
                     20,
                     0,
                     "scene",
-                    json!({ "grid": { "kind": "hex", "size": 100 }, "background": null }),
+                    json!({ "grid": { "kind": "hex", "size": FIXTURE_GRID_SIZE },
+                            "background": null }),
                 ),
                 entity_doc(
                     21,
@@ -2350,7 +2422,7 @@ cell: 100.0,
                 scene,
                 restriction: MovementRestriction::Unrestricted,
                 visible: &empty,
-                cell: 100.0,
+                cell: FIXTURE_GRID_SIZE,
             },
             token,
             &[(0.0, 0.0), c1, c2],
@@ -2383,7 +2455,7 @@ cell: 100.0,
                 scene,
                 restriction: MovementRestriction::Visible,
                 visible: &visible,
-                cell: 100.0,
+                cell: FIXTURE_GRID_SIZE,
             },
             token,
             &[(0.0, 0.0), c1, c2],
@@ -2449,7 +2521,7 @@ cell: 100.0,
         })
     }
 
-    /// World settings for the footprint fixtures below: `visible`/losRestriction off/lighting
+    /// World settings for the footprint fixtures: `visible`/losRestriction off/lighting
     /// all-bright (globalIllumination) — vision is driven entirely by each token's OWN vision
     /// assignment (range) rather than by wall/light geometry, keeping every fixture's mask
     /// derivable by hand from `resolve_token_footprint` + `visible_cells` alone.
@@ -2469,15 +2541,29 @@ cell: 100.0,
         })
     }
 
-    /// A corridor split by a single vertical wall (with a 300-unit gap centered on the token's
-    /// row) between grid-aligned start/goal cells 4 columns apart, wide enough for a
-    /// footprint-1.6-cell token (r_scene=80) to clear with margin. `start`/`goal` are computed
+    /// A corridor split by a single vertical wall, gapped centered on the token's row, between
+    /// grid-aligned start/goal cells 4 columns apart. The gap is sized PER KIND from the token's
+    /// OWN resolved footprint radius (`resolve_token_footprint`), since a hex token is wider than
+    /// its square counterpart at the same authored size (owner ruling: a hex's authored size
+    /// counts HEXES, so its collision radius is the circumradius `max(w,h)`, not the `max(w,h)/2`
+    /// this circle-shaped actor resolves to on square) — square: 300-unit gap for a footprint-1.6-cell token
+    /// (r_scene=80, 70-unit margin); hex: 460-unit gap for the same actor (r_scene=160, matching
+    /// 70-unit margin). `start`/`goal` are computed
     /// from the ACTUAL grid shape's own `cell_center` (square: `(i+0.5)*cell`; hex: the axial
     /// pointy-top formula `hex_cell_center` uses) rather than a single literal shared across both
     /// kinds — hex cell centers do not fall on square-grid-aligned coordinates, and `execute_move`
     /// requires `path[0]` to equal the token's committed position exactly. Returns `(ecs, scene,
     /// token, user, start, goal)`. Vision is unlimited (no vision override) so the whole corridor
     /// is visible to `user`, isolating the wall/footprint interaction under test.
+    ///
+    /// The authored bounds are a per-axis dimension measured in grid units (cells), continuous —
+    /// never world units, and not required to be integral (the hex arm's width is `12.660254`) —
+    /// so the corridor's world span is divided by `FIXTURE_GRID_SIZE`, the same constant the
+    /// scene's own grid declares and `hex_cell_center` builds its shape from, read once rather
+    /// than restated at any of the three. On square that reproduces the corridor rectangle exactly; on hex the block's
+    /// world rectangle is a shear-dependent function that is strictly LARGER than the corridor
+    /// span, which preserves the fixture's intent — the play area covers the corridor and the gap
+    /// with room to spare — a fortiori.
     fn scene_with_narrow_gap_and_wide_token(
         kind: &str,
         model: MovementModel,
@@ -2492,12 +2578,23 @@ cell: 100.0,
         let (start, goal) = if kind == "hex" {
             (hex_cell_center(0, 2), hex_cell_center(4, 2))
         } else {
-            (((0.5) * 100.0, 2.5 * 100.0), (4.5 * 100.0, 2.5 * 100.0))
+            (
+                (0.5 * FIXTURE_GRID_SIZE, 2.5 * FIXTURE_GRID_SIZE),
+                (4.5 * FIXTURE_GRID_SIZE, 2.5 * FIXTURE_GRID_SIZE),
+            )
         };
         // Both grids place `start`/`goal` on the same row (`y` depends only on the row index, not
         // the column), so a single wall gap centered on that shared `y` clears both kinds.
         let row_y = start.1;
         let wall_x = (start.0 + goal.0) / 2.0;
+        // Gap half-height, derived from each kind's OWN resolved footprint radius (a token's
+        // authored size counts HEXES on hex, so its collision radius is the circumscribing
+        // radius, wider than a square block's half-diagonal at the same authored size): square's
+        // r_scene is 80 (`max(w,h)/2` circle formula — 1.6/2 · FIXTURE_GRID_SIZE), so its
+        // 150-unit half-gap carries a 70-unit margin; hex's r_scene is 160 (`max(w,h)` ·
+        // FIXTURE_GRID_SIZE), so its half-gap is 230 for the same 70-unit margin — a narrower gap
+        // would correctly refuse this token.
+        let gap_half_height = if kind == "hex" { 230.0 } else { 150.0 };
         let mut tok = entity_doc(
             11,
             10,
@@ -2518,15 +2615,16 @@ cell: 100.0,
             10,
             0,
             "scene",
-            json!({ "grid": { "kind": kind, "size": 100 }, "background": null,
-                    "bounds": { "width": goal.0 + 400.0, "height": row_y + 400.0 } }),
+            json!({ "grid": { "kind": kind, "size": FIXTURE_GRID_SIZE }, "background": null,
+                    "bounds": { "width": (goal.0 + 400.0) / FIXTURE_GRID_SIZE,
+                                "height": (row_y + 400.0) / FIXTURE_GRID_SIZE } }),
         );
         let mut ecs = SceneEcs::from_documents(
             vec![
                 scene,
                 tok,
-                wall(12, wall_x, 0.0, wall_x, row_y - 150.0),
-                wall(13, wall_x, row_y + 150.0, wall_x, row_y + 2000.0),
+                wall(12, wall_x, 0.0, wall_x, row_y - gap_half_height),
+                wall(13, wall_x, row_y + gap_half_height, wall_x, row_y + 2000.0),
             ],
             0,
         );
@@ -2543,7 +2641,8 @@ cell: 100.0,
     /// (50,50) and cell (1,0)'s center (150,50) — clears the default 0.4-cell footprint disc test
     /// (0.5 > 0.4) but still crosses the direct center-to-center step. The wall's y-span is huge
     /// (±2000, far past the search window) so no detour around either end exists: the
-    /// reverse-parity test below needs column 1 genuinely UNREACHABLE, not merely blocked on the
+    /// `gate_refused_steps_are_absent_from_every_route_non_gm_grid` needs column 1 genuinely
+    /// UNREACHABLE, not merely blocked on the
     /// direct step (a
     /// finite wall's north/south end would let a detour reach the same destination cell via a
     /// different route, which the test cannot distinguish from a gate/router disagreement). The
@@ -2570,8 +2669,8 @@ cell: 100.0,
             10,
             0,
             "scene",
-            json!({ "grid": { "kind": "square", "size": 100 }, "background": null,
-                    "bounds": { "width": 300.0, "height": 300.0 } }),
+            json!({ "grid": { "kind": "square", "size": FIXTURE_GRID_SIZE }, "background": null,
+                    "bounds": { "width": 3.0, "height": 3.0 } }),
         );
         let mut ecs = SceneEcs::from_documents(vec![scene, tok, wall], 0);
         ecs.set_world_settings_for_test(footprint_world_settings("grid-stepped"));
@@ -2612,8 +2711,8 @@ cell: 100.0,
             10,
             0,
             "scene",
-            json!({ "grid": { "kind": "square", "size": 100 }, "background": null,
-                    "bounds": { "width": 300.0, "height": 300.0 } }),
+            json!({ "grid": { "kind": "square", "size": FIXTURE_GRID_SIZE }, "background": null,
+                    "bounds": { "width": 3.0, "height": 3.0 } }),
         );
         let mut ecs = SceneEcs::from_documents(vec![scene, tok], 0);
         ecs.set_world_settings_for_test(footprint_world_settings("grid-stepped"));
@@ -2621,7 +2720,7 @@ cell: 100.0,
     }
 
     /// A fully open, fully visible scene (no walls, no vision override ⇒ unlimited range) — the
-    /// `is_gm`-free counterpart of the wall/region fixtures above, for tests that need admissible
+    /// `is_gm`-free counterpart of the wall/region fixtures, for tests that need admissible
     /// footprint movement with nothing else in play.
     fn scene_with_open_lit_area() -> (SceneEcs, Uuid, Uuid, Uuid) {
         let scene_id = Uuid::from_u128(10);
@@ -2638,8 +2737,8 @@ cell: 100.0,
             10,
             0,
             "scene",
-            json!({ "grid": { "kind": "square", "size": 100 }, "background": null,
-                    "bounds": { "width": 300.0, "height": 300.0 } }),
+            json!({ "grid": { "kind": "square", "size": FIXTURE_GRID_SIZE }, "background": null,
+                    "bounds": { "width": 3.0, "height": 3.0 } }),
         );
         let mut ecs = SceneEcs::from_documents(vec![scene, tok], 0);
         ecs.set_world_settings_for_test(footprint_world_settings("grid-stepped"));
@@ -2666,8 +2765,8 @@ cell: 100.0,
             10,
             0,
             "scene",
-            json!({ "grid": { "kind": "square", "size": 100 }, "background": null,
-                    "bounds": { "width": 300.0, "height": 300.0 } }),
+            json!({ "grid": { "kind": "square", "size": FIXTURE_GRID_SIZE }, "background": null,
+                    "bounds": { "width": 3.0, "height": 3.0 } }),
         );
         let mut ecs = SceneEcs::from_documents(
             vec![
@@ -2687,7 +2786,7 @@ cell: 100.0,
     }
 
     /// Empty vision mask helper reused by `execute_move_refuses_an_out_of_range_footprint`
-    /// (already defined above as `empty_mask`); this scene just needs a wall the Degenerate guard
+    /// (`empty_mask`); this scene just needs a wall the Degenerate guard
     /// must reject BEFORE any per-step gating runs.
     fn scene_with_wall_across_the_path_for_footprint_guard() -> (SceneEcs, Uuid, Uuid) {
         scene_with_wall_across_the_path()
@@ -2699,14 +2798,14 @@ cell: 100.0,
         // cell-center input, so the gate's sample points ARE the cell centers `cell_enterable`
         // evaluates at, giving the STRONG route ⇔ gate equivalence. This test only asserts the
         // ⇒ half (the ⇐ half is `gate_refused_steps_are_absent_from_every_route_non_gm_grid`
-        // below). Continuous is NOT covered here — `gate_walk`'s dense sampling and the router's
+        // ). Continuous is NOT covered here — `gate_walk`'s dense sampling and the router's
         // cell-center evaluation operate at different granularity there, so only the WEAKER
         // route ⊆ gate-allowed direction holds; see
-        // `route_admissible_implies_gate_admissible_for_a_non_gm_continuous` below.
+        // `route_admissible_implies_gate_admissible_for_a_non_gm_continuous`.
         for kind in ["square", "hex"] {
             let (ecs, scene, token, user, start, goal) =
                 scene_with_narrow_gap_and_wide_token(kind, MovementModel::GridStepped);
-            let fp = ecs.resolve_token_footprint(token).expect("in-range");
+            let fp = ecs.resolve_token_footprint(token, scene).expect("in-range");
             let mask = ecs.visible_cells(user, scene, false);
             // NOT `if let Ok` — a fixture that yields no route must fail the test, not skip it.
             let route = ecs
@@ -2728,7 +2827,7 @@ cell: 100.0,
                     scene,
                     restriction: MovementRestriction::Visible,
                     visible: &mask,
-                    cell: 100.0,
+                    cell: FIXTURE_GRID_SIZE,
                 },
                 token,
                 &route.path,
@@ -2748,14 +2847,15 @@ cell: 100.0,
         // Weaker route ⊆ gate-allowed direction, Continuous-scoped: `gate_walk`'s dense sampling and the router's
         // cell-center evaluation operate at different granularity on this model, so only route ⊆
         // gate-allowed holds here — NOT the reverse/equivalence, which holds for GridStepped only
-        // (see the GridStepped test above). This reuses
+        // (see `route_admissible_implies_gate_admissible_for_a_non_gm_grid`). This reuses
         // `scene_with_narrow_gap_and_wide_token`'s existing `Continuous` dispatch arm: no region
         // is present, so `pathfind` takes the pure-polyanya branch and returns a genuine
         // multi-sample any-angle route through the 300-unit gap (footprint radius 80), not a
-        // degenerate single-point route — the length assertion below rules out a vacuous pass.
+        // degenerate single-point route — this test's route-length assertion rules out a
+        // vacuous pass.
         let (ecs, scene, token, user, start, goal) =
             scene_with_narrow_gap_and_wide_token("square", MovementModel::Continuous);
-        let fp = ecs.resolve_token_footprint(token).expect("in-range");
+        let fp = ecs.resolve_token_footprint(token, scene).expect("in-range");
         let mask = ecs.visible_cells(user, scene, false);
         let route = ecs
             .pathfind(
@@ -2780,7 +2880,7 @@ cell: 100.0,
                 scene,
                 restriction: MovementRestriction::Visible,
                 visible: &mask,
-                cell: 100.0,
+                cell: FIXTURE_GRID_SIZE,
             },
             token,
             &route.path,
@@ -2797,10 +2897,10 @@ cell: 100.0,
     #[test]
     fn gate_refused_steps_are_absent_from_every_route_non_gm_grid() {
         // Reverse-parity direction: catches a gate MORE
-        // permissive than the router (e.g. a dropped segments_cross check).
+        // permissive than the router (e.g. a gate that omits the `segments_cross` check).
         let (ecs, scene, token, user) =
             scene_with_wall_between_adjacent_cells_and_default_footprint();
-        let fp = ecs.resolve_token_footprint(token).expect("in-range"); // 0.4
+        let fp = ecs.resolve_token_footprint(token, scene).expect("in-range"); // 0.4
         let mask = ecs.visible_cells(user, scene, false);
         let candidates = [
             [(50.0, 50.0), (150.0, 50.0)],
@@ -2814,7 +2914,7 @@ cell: 100.0,
                     scene,
                     restriction: MovementRestriction::Visible,
                     visible: &mask,
-                    cell: 100.0,
+                    cell: FIXTURE_GRID_SIZE,
                 },
                 token,
                 &path,
@@ -2847,9 +2947,10 @@ cell: 100.0,
     }
 
     #[test]
-    fn a_default_footprint_step_across_a_wall_is_still_truncated() {
-        // Regression for the dropped segments_cross check: a wall between two adjacent cell
-        // centers sits 0.5 cell from each, so the 0.4-radius disc test alone would pass it.
+    fn a_default_footprint_step_across_a_wall_is_truncated() {
+        // The center-to-center `segments_cross` test is load-bearing here, not redundant with the
+        // disc test: a wall between two adjacent cell centers sits 0.5 cell from each, so the
+        // 0.4-radius disc test alone would pass it.
         let (ecs, scene, token, user) =
             scene_with_wall_between_adjacent_cells_and_default_footprint();
         let mask = ecs.visible_cells(user, scene, false);
@@ -2859,7 +2960,7 @@ cell: 100.0,
                 scene,
                 restriction: MovementRestriction::Visible,
                 visible: &mask,
-                cell: 100.0,
+                cell: FIXTURE_GRID_SIZE,
             },
             token,
             &[(50.0, 50.0), (150.0, 50.0)],
@@ -2867,16 +2968,13 @@ cell: 100.0,
             0.4,
         )
         .expect("admissible");
-        assert!(
-            out.truncated,
-            "the wall still blocks a default-footprint step"
-        );
+        assert!(out.truncated, "the wall blocks a default-footprint step");
     }
 
     #[test]
     fn a_wide_token_cannot_enter_a_cell_whose_footprint_overlaps_fog() {
         let (ecs, scene, token, user) = scene_with_lit_center_line_only();
-        let fp = ecs.resolve_token_footprint(token).expect("in-range"); // > 0.5
+        let fp = ecs.resolve_token_footprint(token, scene).expect("in-range"); // > 0.5
         let mask = ecs.visible_cells(user, scene, false);
         let out = execute_move(
             &ecs,
@@ -2884,7 +2982,7 @@ cell: 100.0,
                 scene,
                 restriction: MovementRestriction::Visible,
                 visible: &mask,
-                cell: 100.0,
+                cell: FIXTURE_GRID_SIZE,
             },
             token,
             &[(50.0, 50.0), (150.0, 50.0)],
@@ -2899,8 +2997,9 @@ cell: 100.0,
     }
 
     #[test]
-    fn a_sub_half_cell_footprint_diagonal_stays_admissible() {
-        // A small footprint's diagonal must not regress.
+    fn a_sub_half_cell_footprint_diagonal_is_admissible() {
+        // A footprint disc smaller than half a cell clears both corner flankers of a diagonal
+        // step in a fully-lit area, so the step is admissible.
         let (ecs, scene, token, user) = scene_with_open_lit_area();
         let mask = ecs.visible_cells(user, scene, false);
         let out = execute_move(
@@ -2909,7 +3008,7 @@ cell: 100.0,
                 scene,
                 restriction: MovementRestriction::Visible,
                 visible: &mask,
-                cell: 100.0,
+                cell: FIXTURE_GRID_SIZE,
             },
             token,
             &[(50.0, 50.0), (150.0, 150.0)],
@@ -2917,10 +3016,7 @@ cell: 100.0,
             0.4,
         )
         .expect("admissible");
-        assert!(
-            !out.truncated,
-            "a 0.4-radius diagonal step is still allowed"
-        );
+        assert!(!out.truncated, "a 0.4-radius diagonal step is allowed");
     }
 
     #[test]
@@ -2929,7 +3025,7 @@ cell: 100.0,
         // token whose FOOTPRINT touches an arrest cell but whose CENTER does not must not be
         // arrested, or the gate becomes stricter than the router and route-gate parity breaks.
         let (ecs, scene, token, user) = scene_with_arrest_cell_beside_the_path_and_wide_token();
-        let fp = ecs.resolve_token_footprint(token).expect("in-range"); // > 0.5
+        let fp = ecs.resolve_token_footprint(token, scene).expect("in-range"); // > 0.5
         let mask = ecs.visible_cells(user, scene, false);
         let out = execute_move(
             &ecs,
@@ -2937,7 +3033,7 @@ cell: 100.0,
                 scene,
                 restriction: MovementRestriction::Visible,
                 visible: &mask,
-                cell: 100.0,
+                cell: FIXTURE_GRID_SIZE,
             },
             token,
             &[(50.0, 50.0), (150.0, 50.0)],
@@ -2961,7 +3057,7 @@ cell: 100.0,
                 scene,
                 restriction: MovementRestriction::Unrestricted,
                 visible: &empty_mask(),
-                cell: 100.0,
+                cell: FIXTURE_GRID_SIZE,
             },
             token,
             &[start, goal],
@@ -2991,7 +3087,7 @@ cell: 100.0,
                     scene,
                     restriction: MovementRestriction::Unrestricted,
                     visible: &empty_mask(),
-                    cell: 100.0,
+                    cell: FIXTURE_GRID_SIZE,
                 },
                 token,
                 &[(50.0, 50.0), (150.0, 50.0)],

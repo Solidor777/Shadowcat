@@ -132,7 +132,7 @@ pub(crate) fn rasterize(
     // `floor(min/cell)..=floor(max/cell)` row-major rectangle; hex: axial-bounds superset), capped
     // at `MAX_REGION_CELLS` — the 40× tighter region DoS bound, passed explicitly so routing
     // through the shared primitive can't loosen it to the vision scans' cap. The per-cell center
-    // test below (via the SAME `GridShape`) narrows the superset to the exact covered cells, so
+    // test (via the SAME `GridShape`) narrows the superset to the exact covered cells, so
     // rasterize and `move_exec`'s `grid.cell_of` lookup agree on which cell (square or hex) the
     // shape occupies.
     let candidates = grid.cells_in_bounds((minx, miny), (maxx, maxy), cell, MAX_REGION_CELLS)?;
@@ -306,7 +306,8 @@ impl RegionFieldBuilder {
 
 /// Parse a region doc's ingress-validated `engine.shape` (`data::engine::RegionShape` — a raw
 /// `{kind, points}` pair, `deny_unknown_fields`-checked at write time) into this module's
-/// `RegionShape` enum. Still structural-only past the kind/point-count dispatch below: an
+/// `RegionShape` enum. Still structural-only past this function's own kind/point-count
+/// dispatch: an
 /// unrecognized `kind` or a `points` length that doesn't match the kind fails closed to `None`
 /// (the caller then drops the region entirely, never half-parses it).
 pub(crate) fn parse_region_shape(shape: &crate::data::engine::RegionShape) -> Option<RegionShape> {
@@ -399,7 +400,7 @@ mod tests {
             cell: 100.0,
             rule: DiagonalRule::Chebyshev,
         };
-        let cells = rasterize(&shape, 100.0, &grid_shape).unwrap();
+        let cells = rasterize(&shape, grid_shape.cell, &grid_shape).unwrap();
         assert!(cells.contains(&(0, 0)));
         assert!(cells.contains(&(1, 0)));
         assert!(cells.contains(&(0, 1)));
@@ -668,8 +669,8 @@ mod tests {
         );
     }
 
-    // A raw `system`-body shape with a missing `/shape` key or a non-numeric point entry can no
-    // longer reach this function at all: `parse_region_shape` now takes the typed, already
+    // A raw `system`-body shape with a missing `/shape` key or a non-numeric point entry cannot
+    // reach this function at all: `parse_region_shape` takes the typed, already
     // ingress-validated `engine::RegionShape { kind: String, points: Vec<f64> }` directly (a
     // document carrying either defect fails ingress validation before persistence, so no caller
     // of this function can ever hand it one). Only the two structural checks internal to this

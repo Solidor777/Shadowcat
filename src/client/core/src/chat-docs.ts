@@ -1,8 +1,8 @@
 // Client mirror of the chat message content model (`chat::MessageEngine` et al).
 // `MessageEngine` is deliberately NOT ts-rs-exported (server comment: "Opaque on the
 // WIRE" — the server enforces `deny_unknown_fields` structurally, the exact segment/
-// outcome union is the client's own concern) — this file is the manually-kept-in-sync
-// Zod mirror; a Rust body-shape change MUST update it. Fail-closed: a body that does
+// outcome union is the client's own concern) — the Zod mirror is kept in sync by hand,
+// so a Rust body-shape change MUST update it. Fail-closed: a body that does
 // not parse renders as nothing, never partially. Re-rooted onto the three-band
 // document shape: the message body lives in `doc.engine`, `doc.system` stays `{}`.
 import { z } from "zod";
@@ -60,12 +60,12 @@ export type DieRecord = {
 // Unannotated impl const: typed `z.ZodType<T> = expr` only requires `expr`'s inferred output be
 // ASSIGNABLE to `T`, so a field narrowed to a literal subtype would pass silently under the
 // exported annotation alone. Kept unannotated so the drift-guard test can assert
-// `z.infer<typeof dieRecordSchemaImpl>` against `DieRecord` directly (see `wire.ts`'s module note
-// for the full rationale, shared across both files). Deliberately WITHOUT `.passthrough()` here —
-// that call adds a `[k: string]: unknown` index signature to the inferred output, which is a
-// real (intentional) WIDENING of `DieRecord` that a strict `toEqualTypeOf` would always flag as
-// a mismatch, defeating the guard for a reason unrelated to drift. `.passthrough()` is applied
-// only at the exported `DieRecordSchema`, so runtime validation is unchanged.
+// `z.infer<typeof dieRecordSchemaImpl>` against `DieRecord` directly. Deliberately WITHOUT
+// `.passthrough()` here — that call adds a `[k: string]: unknown` index signature to the
+// inferred output, which is a real (intentional) WIDENING of `DieRecord` that a strict
+// `toEqualTypeOf` would always flag as a mismatch, defeating the guard for a reason unrelated
+// to drift. `.passthrough()` is applied only at the exported `DieRecordSchema`, so runtime
+// validation is unchanged.
 export const dieRecordSchemaImpl = z.object({
   value: z.number(),
   natural: z.number(),
@@ -94,7 +94,7 @@ export type ConstTerm = {
   label?: string | null;
 };
 
-// Unannotated impl const — see `dieRecordSchemaImpl`'s note above / `wire.ts`'s module note.
+// Unannotated impl const — see `dieRecordSchemaImpl`'s note above.
 export const constTermSchemaImpl = z.object({
   value: z.number(),
   label: z.string().nullish(),
@@ -142,7 +142,7 @@ export type RollOutcome = {
   labeled_consts: ConstTerm[];
 };
 
-// Unannotated impl const — see `dieRecordSchemaImpl`'s note above / `wire.ts`'s module note.
+// Unannotated impl const — see `dieRecordSchemaImpl`'s note above.
 export const rollOutcomeSchemaImpl = z.object({
   total: z.number(),
   records: z.array(DieRecordSchema),
@@ -213,7 +213,7 @@ export type ChatSegment =
       description: string;
     };
 
-// Unannotated impl const — see `dieRecordSchemaImpl`'s note above / `wire.ts`'s module note.
+// Unannotated impl const — see `dieRecordSchemaImpl`'s note above.
 // The union-narrowing case this pattern guards against is exactly what a segment-kind arm
 // removal or a `kind: z.literal(...)` narrowing inside one would be.
 export const chatSegmentSchemaImpl = z.discriminatedUnion("kind", [
@@ -301,7 +301,7 @@ export type ChatMessageEngine = {
   deleted_at?: number | null;
 };
 
-// Unannotated impl const — see `dieRecordSchemaImpl`'s note above / `wire.ts`'s module note.
+// Unannotated impl const — see `dieRecordSchemaImpl`'s note above.
 export const chatMessageEngineSchemaImpl = z.object({
   channel: z.string(),
   user_owner: z.string(),

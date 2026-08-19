@@ -17,7 +17,7 @@ already-shipped `PanelHost` ([[shadowcat-codebase-panels]]). A separate `shadowc
 contract family (plus an always-registered `shadowcat.sheet:*` fallback) resolves which sheet
 COMPONENT to show for a document; `ctx.openDocument(ref)` resolves the doc + its write site, picks
 the sheet, and opens/focuses the panel. This is the seam mods use to add their own sheets — see
-`shadowcat-codebase-documents-permissions` for the `item` doc_type this milestone introduces.
+`shadowcat-codebase-documents-permissions` for the client-only `ITEM_DOC_TYPE` document type.
 
 ## Key files & seams
 
@@ -34,7 +34,7 @@ the sheet, and opens/focuses the panel. This is the seam mods use to add their o
       resolve to the identical `SheetTarget`, including `panelId`).
     - instanced token (embedded actor copy) → the TOKEN doc's `/embedded/actor/0/system`, with
       panelId `sheet:<tokenId>/embedded/actor/0` — self-describing, NOT the bare `sheet:<tokenId>`
-      (see Hard Invariants: the panelId-collision fix).
+      (see Hard Invariants: the panelId-collision rule).
     - embedded child (`docId` + `embeddedPath`) → `/embedded/<coll>/<idx>/system`.
     - fail-closed: every dangling/raw/malformed ref returns `null`, never throws.
   - `pickSheet(registry, doc) -> component | null` — doc_type providers + the `*` fallback,
@@ -51,14 +51,14 @@ the sheet, and opens/focuses the panel. This is the seam mods use to add their o
   `PanelsBridge`; imports no module): `openDocument(ref)` (resolve → dedup via internal panelId
   map → `pickSheet` → register `Contribution` → `panels.open`, or `panels.focus` if already
   registered), `closeDocument(panelId)` (disposes the contribution AND closes the panel —
-  symmetric), `restoreFromPersisted(blob)` (§7 boot restore: deep-walks the persisted layout blob
+  symmetric), `restoreFromPersisted(blob)` (boot restore: deep-walks the persisted layout blob
   for any `sheet:*` string, reverse-parses `docId`+`embeddedPath` from the id shape, re-registers
   only resolvable ones — NEVER calls `open()`, relying entirely on the panel manager's own
   late-registration/`placeFromPersistedLocation` path to restore float/dock/minimize state;
   idempotent).
   - **`#register` registers `SheetHost`, not the picked sheet directly.** The picked
-    `component` (from `pickSheet`) is no longer registered as the contribution's own `component`;
-    instead `#register` ALWAYS registers `SheetHost` (`@shadowcat/ui-kit`) as the panel's
+    `component` (from `pickSheet`) is never the contribution's own `component`;
+    `#register` ALWAYS registers `SheetHost` (`@shadowcat/ui-kit`) as the panel's
     `component`, forwarding the picked component as `props.inner` alongside `props.docId`/
     `props.systemPrefix`/`props.close`. `SheetHost` renders `TemplateControls` (the source
     badge + pull/revert/push chrome, see `shadowcat-codebase-templates`) above `props.inner`, so
@@ -79,7 +79,7 @@ the sheet, and opens/focuses the panel. This is the seam mods use to add their o
   `basePath` via a fresh `getPointer(doc, path)` read.
 - `@shadowcat/module-sheet-fallback`/`-actor`/`-item` — the three generic sheets, each `sheetContract`
   registered (fallback at `-Infinity`, actor/item at `0`). `sheet-item` introduces the client-only
-  `item` doc_type ([[shadowcat-codebase-documents-permissions]]) and the roll-to-chat affordance
+  `ITEM_DOC_TYPE` doc_type ([[shadowcat-codebase-documents-permissions]]) and the roll-to-chat affordance
   (`ctx.chat.send({channel:"general", content:"/roll <formula>"})`, gated by `isDiceNotation`).
   Seam-only: none of the three imports any other `@shadowcat/module-*`.
   **`basePrefix` derivation pattern (`ActorSheet`/`ItemSheet`):** the three-band document
@@ -93,13 +93,12 @@ the sheet, and opens/focuses the panel. This is the seam mods use to add their o
   `writePrefix` ITSELF still genuinely means `/system` — game-system
   data is untouched by the three-band restructure; only the DERIVED `enginePrefix`/`namePrefix`
   are new. `setField`'s `old` for an engine-field edit reads the RAW current value via
-  `getPointer(doc, enginePrefix + "/" + field)`, mirroring the pre-existing raw-`old` invariant
-  above — no special-casing needed since `setField` is already path-generic. **Critical bug
-  caught + fixed:** `ItemSheet` initially read/wrote the envelope
-  `/name` path DIRECTLY rather than via `namePrefix` — for an embedded item (opened from an
-  actor's inventory) `/name` targets the PARENT ACTOR's name, not the item's own, corrupting
-  reads and, on edit, renaming the wrong document. Fixed by mirroring `ActorSheet`'s
-  `basePrefix`/`namePrefix` derivation exactly. Any future sheet touching an embedded child must
+  `getPointer(doc, enginePrefix + "/" + field)`, mirroring the raw-`old` invariant
+  above — no special-casing needed since `setField` is already path-generic. **Reading the
+  envelope `/name` path DIRECTLY, rather than via `namePrefix`, corrupts an embedded item:** for
+  an item opened from an actor's inventory, `/name` targets the PARENT ACTOR's name, not the
+  item's own, so a read shows the wrong name and an edit renames the wrong document. Both sheets
+  therefore derive `namePrefix` from `basePrefix`. Any future sheet touching an embedded child must
   derive `namePrefix`/`enginePrefix` from ITS OWN `systemPrefix`, never read `/name`/`/engine` as
   a hardcoded top-level path — treat any new envelope-band access in a sheet as needing
   independent review by default.
@@ -113,24 +112,24 @@ the sheet, and opens/focuses the panel. This is the seam mods use to add their o
 - **`old` in every `setField`/`SystemTreeEditor` dispatch is the RAW current stored value** — never
   `null` when the field is present, never a resolved/defaulted value. The server's `apply_intent`
   enforces field-level OCC (`actual != change.old` → `Conflict`); a wrong `old` either permanently
-  rejects the sheet's own edits or (worse) can overwrite a concurrent edit. This is the
-  `GameSettingsPanel` Critical, generalized into a hard rule for every sheet.
+  rejects the sheet's own edits or (worse) can overwrite a concurrent edit. The rule is the same
+  one `GameSettingsPanel`'s own field toggles obey, generalized to every sheet.
 - **Every sheet component's `doc`/`system`-derived `$derived` MUST bridge `ctx.documents` reactivity
   via `createSubscriber`/`subscribe()`** (mirrors `GameSettingsPanel`). `ctx.documents`
   (`OptimisticClient`) is a plain-callback store, not a Svelte rune — a `$derived.by(() =>
   ctx.documents.get(docId))` with no `subscribe()` call freezes at the component's FIRST read and
   never re-derives, including in response to the sheet's OWN prior edits in the same session. This
   silently corrupts the OCC `old` on any second edit, and for a compound field (e.g. `size:{w,h}`),
-  silently reverts the untouched sibling sub-field. Empirically reproduced against a real
-  `OptimisticClient`, fixed in all three generic sheets —
-  the single highest-value catch found in this subsystem. `subscribe()` is called as the FIRST
+  silently reverts the untouched sibling sub-field. It reproduces against a real
+  `OptimisticClient`, and is the highest-consequence mistake available in this subsystem —
+  it produces no error, only wrong data. `subscribe()` is called as the FIRST
   statement inside every `$derived.by` that reads `ctx.documents` DIRECTLY (`doc`, and any sibling
   derived independently calling `ctx.documents.query(...)`, e.g. `factions`); a derived that reads
   another already-reactive derived (`system`/`readOnly` off `doc`) needs no separate call.
 - **Sheets read the OPTIMISTIC view (`ctx.documents`), never `ctx.store`**
   [[render-from-optimistic-view]] — this is also load-bearing for the OCC-pre-image invariant
   above: a sheet wired to `ctx.store` would read a pre-optimistic-update snapshot and dispatch a
-  stale `old`, the same failure mode as the missing-subscription bug.
+  stale `old`, the same failure mode as a missing subscription.
 - **The instanced-token `panelId` is self-describing** (`sheet:<tokenId>/embedded/actor/0`, not the
   bare `sheet:<tokenId>`) — the bare form is string-identical to a plain top-level docId panelId,
   which would make `restoreFromPersisted`'s reverse-parse silently rebind an instanced token's
@@ -142,7 +141,7 @@ the sheet, and opens/focuses the panel. This is the seam mods use to add their o
   tie-break) rather than throwing; two providers sharing a non-finite priority (e.g. two modules
   both registering a generic fallback) would silently fall back to registration order.
 - **Sheet modules import ONLY `@shadowcat/core`/`@shadowcat/ui-kit`/`@shadowcat/types`** — no
-  cross-module import (ARCHITECTURE §2 invariant 7); `openDocument`/the registry resolver are
+  cross-module import; `openDocument`/the registry resolver are
   generic host glue (core/ui-kit), never a module.
 
 ## Gotchas
@@ -173,6 +172,6 @@ the sheet, and opens/focuses the panel. This is the seam mods use to add their o
   `_shadowcat_module-sheet-item.html`. Produce with `pnpm build:all`.
 - Relationships: `graphify query "sheets registry openDocument SheetsController resolveDocRef pickSheet setField"`.
 - Panel-manager internals sheets mount into: [[shadowcat-codebase-panels]].
-- Document/permission model + the client-only `item` doc_type: [[shadowcat-codebase-documents-permissions]].
+- Document/permission model + the client-only `ITEM_DOC_TYPE` doc_type: [[shadowcat-codebase-documents-permissions]].
 - `SheetHost`'s `TemplateControls` chrome + the 3-way merge engine it drives:
   [[shadowcat-codebase-templates]].

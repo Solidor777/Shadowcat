@@ -34,7 +34,7 @@ export interface TestServer {
   stop(): void;
 }
 
-// .../src/client/core/src/e2e/server-process.ts -> repo root is five levels up.
+// This module's directory sits five levels below the repo root.
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../../..");
 
 /** Builds and launches the Rust `test_server` binary directly, waits for its

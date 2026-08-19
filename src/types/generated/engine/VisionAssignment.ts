@@ -10,6 +10,11 @@ export type VisionAssignment = {
  */
 mode: string, 
 /**
- * Effective range in grid CELLS (not scene units).
+ * Effective range in grid CELLS (not scene units). `None` inherits the
+ * referenced mode's own `VisionMode::default_range` — an omitted key
+ * deserializes to `None` (serde special-cases `Option` regardless of
+ * `#[serde(default)]`; verified in `token_vision_floors_falls_back_to_mode_default_range_when_assignment_omits_range`),
+ * so the GM-authored mode default becomes live only once a caller resolves
+ * it against the mode, never by a struct-level fallback here.
  */
-range: number, };
+range: number | null, };

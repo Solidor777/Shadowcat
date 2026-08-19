@@ -1,5 +1,5 @@
 import { getContext, setContext } from "svelte";
-import type { ContributionRegistry, DocumentStore, ReadableDocuments, AssetResolver, SceneFrame, SceneSubscription, WireOperation, WireDocument, PathResult, MoveStream, ChatSendOptions, SheetRef, SubscriptionHandle, WireSearchHit, StampOpts, SyncState } from "@shadowcat/core";
+import type { ContributionRegistry, DocumentStore, ReadableDocuments, AssetResolver, SceneFrame, SceneSubscription, WireOperation, WireDocument, PathResult, MoveStream, ChatSendOptions, SheetRef, SubscriptionHandle, WireSearchHit, StampOpts, SyncState, FootprintLookup } from "@shadowcat/core";
 import type { WorldRole } from "@shadowcat/types";
 import type { SceneInteraction } from "./sceneInteraction";
 import type { ActorSelection } from "./actorSelection.svelte";
@@ -40,7 +40,7 @@ export interface ChatApi {
   delete(messageId: string): Promise<void>;
 }
 
-/** Template pull/push/revert/stamp seam (§6.3). Thin orchestration over `store`/`documents` +
+/** Template pull/push/revert/stamp seam. Thin orchestration over `store`/`documents` +
  * `dispatchIntent`; the controller opens the conflict modal when needed. */
 export interface TemplatesApi {
   /** Deep-clone `source` into a new stamped instance; the caller dispatches the Create.
@@ -155,6 +155,11 @@ export interface AppContext {
   actorSelection: ActorSelection;
   /** Selected token ids for group-select; set by the factions panel, read by the select tool. */
   tokenSelection: TokenSelection;
+  /** The server's resolved token footprints, from the `"footprints"` derived channel. The client
+   * computes no footprint geometry of its own: the extent drawn, picked and ringed is the one the
+   * movement gate collides with, stated by the server. Getter — reactive when read through a
+   * `documents.subscribe` bridge, and `EMPTY_FOOTPRINTS` until the first frame arrives. */
+  footprints: FootprintLookup;
   /** The scene THIS client renders + subscribes to. Players follow
    * `world-settings.activeScene`; a GM roaming via `setGmViewedScene` overrides locally. Getter —
    * reactive when read through a `documents.subscribe` bridge. */

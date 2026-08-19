@@ -12,9 +12,13 @@ export type FormulaErrorKind =
   | "resolver-error"; // resolver threw, or returned a value that is neither a number
                       // nor a well-formed FormulaError (consumer-originated boundary fault)
 
-/** Runtime mirror of `FormulaErrorKind`, kept in sync by hand — the single source of truth
- * consumers use to validate an untrusted `error` tag against the actual union (rather than
- * merely checking `typeof === "string"`, which admits any string). */
+/** Runtime mirror of `FormulaErrorKind` — the single source of truth consumers use to validate an
+ * untrusted `error` tag against the actual union (rather than merely checking
+ * `typeof === "string"`, which admits any string).
+ *
+ * Written out by hand, but not kept in sync by hand: the `satisfies` clause below rejects an entry
+ * this union does not declare, and `types.test`'s exhaustive keyed record rejects a union member
+ * this array omits. Adding a kind fails one of the two until both are updated. */
 export const FORMULA_ERROR_KINDS = [
   "parse",
   "unknown-ref",

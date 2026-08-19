@@ -56,7 +56,7 @@
     logger: consoleLogger(),
   });
 
-  // Boot restore (§7): re-open every persisted sheet whose document resolves. Sheets are
+  // Boot restore: re-open every persisted sheet whose document resolves. Sheets are
   // registered only when their doc is present, so this runs reactively — panels mount
   // during #onWelcome BEFORE the resync stream fills the store, so a one-shot scan would
   // find no resolvable docs. `createSubscriber` re-runs it as the store fills;
@@ -92,6 +92,9 @@
     tokenSelection: session.tokenSelection,
     get viewedSceneId() {
       return session.viewedSceneId;
+    },
+    get footprints() {
+      return session.footprints;
     },
     setGmViewedScene: (id) => session.setGmViewedScene(id),
     searchDocuments: (query, opts, onUpdate) => session.searchDocuments(query, opts, onUpdate),

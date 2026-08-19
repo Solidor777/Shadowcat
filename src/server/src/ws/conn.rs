@@ -684,18 +684,27 @@ async fn handle_pathfind(
             };
         }
     }
-    // Step 1: check movement_restriction under a short read guard, then drop it.
-    let need_explored = !is_gm && {
+    // Step 1: check movement_restriction under a short read guard, then drop it. The grid kind is
+    // captured in the SAME guard from the `ResolvedScene` already being resolved, so the decode
+    // below never re-acquires the lock for it.
+    let (need_explored, grid_kind) = {
         let s = room.scene().read().await;
-        matches!(
-            s.resolve_scene(scene).movement_restriction,
-            crate::scene::MovementRestriction::Revealed
+        let resolved = s.resolve_scene(scene);
+        (
+            !is_gm
+                && matches!(
+                    resolved.movement_restriction,
+                    crate::scene::MovementRestriction::Revealed
+                ),
+            resolved.grid_kind,
         )
     };
     // Step 2: fetch explored (if needed) after the lock is dropped.
     let explored = if need_explored {
         match repo.get_explored(scene, ctx.user_id).await {
-            Ok(Some(blob)) => Some(crate::scene::explored::ExploredSet::from_bytes(&blob)),
+            Ok(Some(blob)) => Some(crate::scene::explored::ExploredSet::from_bytes(
+                &blob, grid_kind,
+            )),
             // Fail closed: Revealed degrades to visible-only on any error/miss.
             _ => None,
         }
@@ -718,7 +727,7 @@ async fn handle_pathfind(
             let derived = match s.token_scene_and_effective_owner(t) {
                 Some((t_scene, _)) if t_scene != scene => None,
                 Some((_, owner)) if !is_gm && owner != Some(ctx.user_id) => None,
-                Some(_) => s.resolve_token_footprint(t),
+                Some(_) => s.resolve_token_footprint(t, scene),
                 None => None,
             };
             match derived {
@@ -924,11 +933,13 @@ async fn enrich_vision_explored(
             continue;
         };
         let mut set = match repo.get_explored(scene, user).await {
-            Ok(Some(blob)) => crate::scene::explored::ExploredSet::from_bytes(&blob),
+            Ok(Some(blob)) => crate::scene::explored::ExploredSet::from_bytes(&blob, shape.kind()),
             _ => crate::scene::explored::ExploredSet::new(),
         };
         if accumulate && set.mark_polygons(&scene_polys, shape, cell) > 0 {
-            let _ = repo.set_explored(world, scene, user, &set.to_bytes()).await;
+            let _ = repo
+                .set_explored(world, scene, user, &set.to_bytes(shape.kind()))
+                .await;
         }
         let cells: Vec<i32> = set.iter().flat_map(|(i, j)| [i, j]).collect();
         explored_out.push(serde_json::json!({ "scene": scene, "cell": cell, "cells": cells }));
@@ -1407,7 +1418,7 @@ async fn egress_loop<S>(
                         // post-lock explored step. Computed for `view_ctx` (own, or the see-as target).
                         let (payload, seq, grid, grid_shapes) = {
                             let ecs = room.scene().read().await;
-                            (crate::scene::compute_derived(&channel, &ecs, &view_ctx), ecs.committed_seq(), ecs.scene_grid_sizes(), ecs.scene_grid_shapes())
+                            (crate::scene::compute_derived(&channel, &ecs, &view_ctx, &world_defaults), ecs.committed_seq(), ecs.scene_grid_sizes(), ecs.scene_grid_shapes())
                         };
                         match payload {
                             Some(mut p) => {
@@ -1586,7 +1597,7 @@ async fn egress_loop<S>(
                             *id,
                             s.channel.clone(),
                             s.view_ctx,
-                            crate::scene::compute_derived(&s.channel, &ecs, &s.view_ctx),
+                            crate::scene::compute_derived(&s.channel, &ecs, &s.view_ctx, &world_defaults),
                         ));
                     }
                     (ecs.committed_seq(), out, ecs.scene_grid_sizes(), ecs.scene_grid_shapes())
@@ -1673,8 +1684,8 @@ mod tests {
 
     /// Deterministic broadcast-`Lagged` → resync guard, driven directly against the
     /// generic `egress_loop` with a credit-gated in-process sink — no real socket, so
-    /// it does not depend on any OS's TCP buffer sizing (the prior socket-backpressure
-    /// approach was non-portable: `SO_SNDBUF`/`SO_RCVBUF` are advisory and each OS
+    /// it does not depend on any OS's TCP buffer sizing (a socket-backpressure approach
+    /// is non-portable: `SO_SNDBUF`/`SO_RCVBUF` are advisory and each OS
     /// clamps/autotunes them differently). The sink starts with exactly one credit
     /// (consumed by `Welcome`); with zero credits the egress drains at most one
     /// broadcast event before parking on the gated send, so publishing
@@ -2045,7 +2056,7 @@ mod tests {
 
     /// Build the square `GridShape` companion map the production `enrich_vision_explored` captures
     /// via `SceneEcs::scene_grid_shapes` — one `SquareGrid` per scene at its cell size, so a
-    /// square-grid test indexes explored fog byte-identically to the pre-migration hardcoded math.
+    /// square-grid test indexes explored fog byte-identically to the production path.
     fn square_grid_shapes(
         grid: &std::collections::HashMap<Uuid, f64>,
     ) -> std::collections::HashMap<Uuid, Box<dyn crate::scene::grid_shape::GridShape + Send + Sync>>
@@ -2093,6 +2104,7 @@ mod tests {
         // It persisted: a fresh read returns the same 9 cells.
         let stored = crate::scene::explored::ExploredSet::from_bytes(
             &repo.get_explored(scene, user).await.unwrap().unwrap(),
+            crate::scene::GridKind::Square,
         );
         assert_eq!(stored.len(), 9);
 
@@ -2108,7 +2120,8 @@ mod tests {
         );
         assert_eq!(
             crate::scene::explored::ExploredSet::from_bytes(
-                &repo.get_explored(scene, user).await.unwrap().unwrap()
+                &repo.get_explored(scene, user).await.unwrap().unwrap(),
+                crate::scene::GridKind::Square,
             )
             .len(),
             9,
@@ -2175,9 +2188,14 @@ mod tests {
             },
             100.0,
         );
-        repo.set_explored(world, scene, target, &seed.to_bytes())
-            .await
-            .unwrap();
+        repo.set_explored(
+            world,
+            scene,
+            target,
+            &seed.to_bytes(crate::scene::GridKind::Square),
+        )
+        .await
+        .unwrap();
 
         // The GM views as the target over a polygon covering a 3×3 block (would mark 9 cells if it
         // accumulated). Read-only: emits the stored 1 cell, persists nothing new.
@@ -2202,7 +2220,8 @@ mod tests {
         );
         assert_eq!(
             crate::scene::explored::ExploredSet::from_bytes(
-                &repo.get_explored(scene, target).await.unwrap().unwrap()
+                &repo.get_explored(scene, target).await.unwrap().unwrap(),
+                crate::scene::GridKind::Square,
             )
             .len(),
             1,
@@ -3816,8 +3835,8 @@ mod tests {
                     "visible sample must be (50,50)"
                 );
                 assert_eq!(mv, None, "mover_vision must be None for observers");
-                // Critical 2 regression: stop and duration_ms must be clipped to
-                // the last visible sample, NOT the true goal/full travel distance.
+                // stop and duration_ms must be clipped to the last visible sample,
+                // NOT the true goal/full travel distance.
                 assert_eq!(
                     out_stop,
                     [50.0_f64, 50.0_f64],
@@ -3827,7 +3846,7 @@ mod tests {
                     (out_duration_ms - 0.0_f64).abs() < 1e-9,
                     "duration_ms must be clipped to last visible sample t_ms (0 ms), got {out_duration_ms}"
                 );
-                // Critical security fix regression: a clipped observer must never learn the
+                // Secrecy: a clipped observer must never learn the
                 // true authoritative cost — it may reflect secret (gm_only) region terrain
                 // the observer's clipped samples never reveal.
                 assert_eq!(
@@ -3913,7 +3932,7 @@ mod tests {
                     [50.0_f64, 60.0_f64],
                     "stop clips to the last visible sample, not the true diagonal goal"
                 );
-                // Critical 2 regression: duration_ms must be clipped to the last visible
+                // duration_ms must be clipped to the last visible
                 // sample's t_ms, NOT the true goal/full travel duration (mirrors the
                 // axis-aligned sibling `clip_observer_sees_near_side_prefix`).
                 assert!(

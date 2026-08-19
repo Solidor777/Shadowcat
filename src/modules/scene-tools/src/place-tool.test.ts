@@ -1,5 +1,5 @@
 import { test, expect } from "vitest";
-import { DocumentStore, AssetResolver, buildSceneDoc, buildActorDoc, type WireOperation } from "@shadowcat/core";
+import { DocumentStore, AssetResolver, buildSceneDoc, buildActorDoc, type WireOperation, type FootprintLookup } from "@shadowcat/core";
 import { SceneInteractionBridge, ActorSelection } from "@shadowcat/ui-kit";
 import { fakeSceneHost } from "@shadowcat/ui-kit/test";
 import { ToolController, makePlaceTool, type ToolContext } from "./controller.svelte";
@@ -22,6 +22,10 @@ function snapBridge(): SceneInteractionBridge {
   return bridge;
 }
 
+/** A lookup stating a 100x100 unit footprint for every scene, standing in for a `"footprints"`
+ * frame on a 100-unit square grid. */
+const unitFootprints: FootprintLookup = { token: () => null, unit: () => ({ w: 100, h: 100 }) };
+
 function ctxWith(documents: DocumentStore): { ctx: ToolContext; sent: WireOperation[][] } {
   const sent: WireOperation[][] = [];
   const ctx: ToolContext = {
@@ -32,6 +36,7 @@ function ctxWith(documents: DocumentStore): { ctx: ToolContext; sent: WireOperat
     world: "w1",
     role: "gm",
     sendPing: () => {},
+    footprints: () => unitFootprints,
   };
   return { ctx, sent };
 }
@@ -53,7 +58,7 @@ test("place stamps a snapped token from the selected asset, parented to the scen
   if (op.op === "create") {
     expect(op.doc.doc_type).toBe("token");
     expect(op.doc.parent_id).toBe("scene-1");
-    // snapped (+1,+1); size from the scene grid (default 100); visual from selection.
+    // snapped (+1,+1); extent from the scene's server-resolved unit footprint; visual from selection.
     expect(op.doc.engine).toMatchObject({ x: 141, y: 161, w: 100, h: 100, visual: { kind: "image", asset: "asset-1" } });
   }
 });

@@ -29,7 +29,7 @@ export function sheetContract(docType: string): string {
 /** What `ctx.openDocument` addresses. `docId` targets a top-level document, optionally
  * one embedded child via `embeddedPath` (`/embedded/<collection>/<index>`, ONE level —
  * an actor's inventory item, etc.). `tokenId` targets a placed token, resolved to its
- * linked actor or its embedded actor copy per §5.2. */
+ * linked actor or its embedded actor copy. */
 export type SheetRef =
   | {
       /** The top-level document's id. */
@@ -102,8 +102,8 @@ export function resolveDocRef(ref: SheetRef, store: ReadableDocuments): SheetTar
   if ("tokenId" in ref) {
     const token = store.get(ref.tokenId);
     if (!token) return null;
-    // `actor_id` is engine-owned (TokenEngine); the sheet itself still reads/writes the
-    // actor's `/system` (game-system data — untouched by the three-band re-root).
+    // `actor_id` is engine-owned (TokenEngine); the sheet itself reads/writes the actor's
+    // `/system` — game-system data, a different band.
     const eng = token.engine as {
       /** The linked actor's id, if this token links rather than embeds one. */
       actor_id?: string | null;

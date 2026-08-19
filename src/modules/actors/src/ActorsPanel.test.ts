@@ -255,6 +255,40 @@ describe("ActorsPanel — darkvision authoring", () => {
     // explicit `null` (never `undefined`, and never a genuinely-absent key).
     expect(dispatchIntent.mock.calls[0][0][0].doc.engine.vision).toBeNull();
   });
+
+  it("per-row darkvision input shows 0 for a vision assignment carrying range: null", async () => {
+    // `VisionAssignment.range` is `number | null` on the wire (an omitted/null range inherits the
+    // mode's own default) — the row reads it via `?? 0`, guarding against exactly this case.
+    const actor = buildActorDoc(
+      "w1",
+      "Troll",
+      {
+        displayName: "Troll",
+        visual: { kind: "image", asset: "a1" },
+        size: { w: 1, h: 1 },
+        shape: "square",
+        faction: null,
+        conditions: [],
+        prototype: false,
+        vision: [{ mode: "darkvision", range: null }],
+      },
+      "act1",
+    );
+    const store = storeWith(actor);
+
+    render(ActorsPanel, {
+      context: setAppContextForTest({
+        role: "gm",
+        world: "w1",
+        documents: store,
+        dispatchIntent: vi.fn(),
+      }),
+    });
+
+    const listItem = screen.getByRole("listitem");
+    const rowDarkvisionInput = within(listItem).getByLabelText("actors.darkvision");
+    expect((rowDarkvisionInput as HTMLInputElement).value).toBe("0");
+  });
 });
 
 describe("ActorsPanel — visual kind editor", () => {
@@ -409,7 +443,7 @@ describe("ActorsPanel — per-token face swap", () => {
 
   it("shows the face palette for a selected token whose visual is 'faces', not for a plain image token", async () => {
     const actor = facesActor();
-    const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, 100, "tok1");
+    const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 }, "tok1");
     const store = storeWith(actor, token);
     const tokenSelection = new TokenSelection();
     tokenSelection.set(["tok1"]);
@@ -424,7 +458,7 @@ describe("ActorsPanel — per-token face swap", () => {
   it("clicking a face dispatches a /system/face update reading the raw stored value for `old`", async () => {
     const dispatchIntent = vi.fn();
     const actor = facesActor();
-    const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, 100, "tok1");
+    const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 }, "tok1");
     const store = storeWith(actor, token);
     const tokenSelection = new TokenSelection();
     tokenSelection.set(["tok1"]);
@@ -441,7 +475,7 @@ describe("ActorsPanel — per-token face swap", () => {
 describe("ActorsPanel — live search + open sheet", () => {
   // Real (not identity) `t` for this describe block: the "Open sheet" assertion below matches
   // the actual rendered label text, not the raw i18n key (the identity default the other
-  // describes in this file rely on has no space between "open" and "Sheet").
+  // `describe` blocks rely on has no space between "open" and "Sheet").
   const realT = (k: string): string => ({ "actors.openSheet": "Open sheet", "actors.search": "Search actors" })[k as "actors.openSheet" | "actors.search"] ?? k;
 
   function actorDoc(id: string, name = "Goblin"): WireDocument {

@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 /// Server health snapshot shared with the client via the ts-rs type pipeline.
-/// INVARIANT: the TS mirror in src/types/generated must be regenerated whenever
+/// INVARIANT: the generated `HealthStatus` TS mirror must be regenerated whenever
 /// this struct changes (CI enforces sync).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]

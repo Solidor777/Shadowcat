@@ -233,3 +233,38 @@ Currently open, confirmed-real defects. Deferrals belong in `TODO.md`, not here.
     seeding `hyperlinks: null`. Runtime change; belongs on the follow-up branch with the
     `makeTemplateTool` fix above. Found during Sweep 12 Task 6 by the dispatcher and
     independently confirmed by both reviewers, from writing the doc comment that sits above it.
+
+- **[hex] The lighting overlay and the explored-fog layer paint axial indices at square
+  positions.** On a hex scene the server sends lit and explored cells as axial `(q, r)`, produced
+  through `HexGrid`'s `GridShape` implementation. `PixiBackend.setLighting` places each at
+  `x = i · cellSize, y = j · cellSize` and fills an axis-aligned rect; `cellsToRects`, which
+  rasterizes the explored-memory layer, does the identical thing. Neither consults the grid shape,
+  and the frame types carry a cell size with no kind for them to consult.
+  - **Why the scene looks half-right:** grid lines, cursor snapping and measurement all go through
+    `Grid`, which owns the correct axial math — privately, on the same `RenderEngine` instance.
+    The currently-visible fog is correct by construction, because the server sends raycast vertices
+    rather than cell indices. So correctly-drawn hexes sit under skewed square overlays.
+  - **Impact:** rendering correctness on every hex scene. The overlays misrepresent which cells are
+    lit and which are remembered, which is misleading rather than merely ugly — but the underlying
+    masks are correct, so nothing is disclosed that should not be.
+
+- **[hex] A token is drawn and collided as something smaller than the hex it occupies, by two
+  different factors.** `resolveTokenBox` sizes the drawn footprint as `actor.size.w * cell` by
+  `actor.size.h * cell`, where `sceneCellSize` supplies the scene's `grid.size` — on hex the cell's
+  CIRCUMRADIUS. Separately `footprintRadius` reduces the same authored size to a bounding-disc
+  radius in grid units, which the server multiplies by the same scalar for `r_scene`.
+  - **Measured, for a 1×1 token at hex circumradius `size`:** drawn box is `size × size` where the
+    hex spans `√3·size` wide by `2·size` tall; collision radius is `0.707·size` against a hex
+    inradius of `0.866·size`. Undersized on both, and the two do not agree with each other.
+  - **Consequence:** a token under-fills its hex visually, and gaps a hex would block stay passable.
+    `topTokenAt`'s hit test and `drawSelection`'s ring read the same resolver, so click targeting and
+    the selection ring inherit it — consumers of one defect, not three.
+  - **The obvious fix is wrong:** substituting the per-step distance for the indexing scale yields a
+    `√3·size` SQUARE — right width, wrong height — because a hex's width and height are not in the
+    same ratio. Any single-scalar substitution is wrong before it starts.
+  - **Ruled:** a token's authored size counts HEXES, and the drawn box and collision footprint derive
+    from ONE resolved geometry rather than two formulas kept in agreement by review. The collision
+    disc circumscribes (fail-closed for a movement gate), extending `footprintRadius`'s existing
+    "conservative enclosure" convention rather than contradicting it.
+  - **Impact:** movement-gate geometry, so this one DOES have a gameplay dimension the other cell-
+    scale defects lack — tokens will refuse gaps they previously passed. Correction, not regression.

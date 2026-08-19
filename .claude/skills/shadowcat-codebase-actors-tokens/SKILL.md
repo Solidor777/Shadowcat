@@ -24,17 +24,23 @@ token/actor name from non-owners via the `OwnerOrGm` visibility tier. Conditions
   `ActorEngine`/`TokenEngine`/`FactionRegistryEngine`/`ConditionRegistryEngine` hold token/actor
   position, vision, conditions, and visual on `doc.engine`, not `doc.system` (there is no
   `ActorSystem`/`TokenSystem`/`FactionRegistrySystem`/`ConditionRegistrySystem` back-compat
-  alias). `ItemSystem` is UNCHANGED — `item` is a client-only doc_type with no Rust-side
+  alias). `ItemSystem` is UNCHANGED — `ITEM_DOC_TYPE` is a client-only doc_type with no Rust-side
   registration, not one of the 17 engine-defined types, so it stays on the opaque `system` band
   ([[shadowcat-codebase-sheets]]/`shadowcat-codebase-documents-permissions` cover it).
-  - `buildActorDoc(worldId, name, engine, id?)` — `name: string | null` is now a DEDICATED
-    parameter (the envelope `name` band), separate from the `ActorEngine` body.
-  - `buildTokenFromActor(worldId, sceneId, actor, "link"|"instance", pos, size, id?)` — link mode
+  - `buildActorDoc(worldId, name, engine, id?)` — `name: string | null` is a DEDICATED parameter
+    (the envelope `name` band), separate from the `ActorEngine` body.
+  - `buildTokenFromActor(worldId, sceneId, actor, "link"|"instance", pos, unit, id?)` — link mode
     sets `token.engine.actor_id` + `overrides`; instance mode embeds an independent (deep-cloned)
-    copy with `source` provenance.
+    copy with `source` provenance. `unit: FootprintExtent | null` is the parent scene's
+    SERVER-RESOLVED unit (1x1) extent, stamped as the new token's `engine.w`/`h`; it is never
+    derived from the actor's size and the grid, because deriving it would be a second footprint
+    formula. It stands until the server states this token's own extent, and permanently for a
+    token no actor sizes. `null` (no `"footprints"` frame yet) stamps `w: 0, h: 0`, which
+    `topTokenAt` skips outright — the token is unpickable until the frame lands. In practice
+    `WorldSession.enter` opens the subscription before any tool use.
   - `TokenOverrides` whitelist includes `shape` (alongside `name`, `visual`, `size`) — a per-token
     `"square" | "circle"` override applied on top of the actor's own shape field.
-  - **Token visual union (replaces the old flat `ActorVisual`):** `RenderVisual = {kind:
+  - **Token visual union:** `RenderVisual = {kind:
     "image", asset} | {kind:"animated", source: AnimatedSource, fps, loop}` — the only two kinds the
     render layer ever draws. `AnimatedSource = {type:"frames", frames: string[]} | {type:"sheet",
     asset, rows, cols, count?}` (asset ids pre-resolution; resolved to URLs at the render boundary,
@@ -53,6 +59,17 @@ token/actor name from non-owners via the `OwnerOrGm` visibility tier. Conditions
     overriding actor data).
   - `VisionAssignment { mode, range }` (mode = a `vision-modes` registry id, range in grid cells);
     `ActorEngine.vision?` + `TokenOverrides.vision?` carry `VisionAssignment[]`.
+    **`range` is OPTIONAL, and `None` inherits the referenced mode's `VisionMode::default_range`** —
+    that is what makes the mode default live at all, since nothing else reads it. The resolution
+    happens where a caller joins an assignment to its mode (`SceneEcs::token_vision_floors`), never
+    as a struct-level default, so a reader holding a bare `VisionAssignment` cannot know the
+    effective range without the registry. Both quantities are authored in CELLS and neither is
+    itself converted — the measured DISTANCE is converted to cells and both are compared against it
+    unconverted, so a resolved default is never scaled relative to an explicit override.
+    **An omitted RANGE is not the same as an omitted ASSIGNMENT**, and confusing the two inverts the
+    meaning: `ActorsPanel` clears darkvision by writing `null`/`[]` — dropping the whole assignment —
+    rather than by writing an assignment with no range, which would now grant the mode's default
+    instead of removing vision.
   - `setNameHidden(doc, hidden)` — sets/clears the `OwnerOrGm` override on `/name` (the envelope
     field).
   - `FactionStance = "friendly"|"neutral"|"hostile"`, `Faction { name, color, stance }`,
@@ -67,15 +84,21 @@ token/actor name from non-owners via the `OwnerOrGm` visibility tier. Conditions
   redaction-aware fallback), `TokenOverrides` projection. Conditions: `resolveConditions(token,
   store)` (effective condition ids → `{id,name,icon}` via the registry, fail-closed) +
   `conditionTarget(token, store) -> {doc, path, conditions}` (the write site: linked →
-  `actor` doc `/engine/conditions`; instanced → token `/embedded/actor/0/engine/conditions` —
-  was `/system/conditions`).
-  Shapes + footprint: `resolveTokenBox(token, store, eff?) -> TokenBox {x,y,w,h,shape}` — the
-  scene-pixel footprint read-through: actor-backed size = `EffectiveActor.size × parent-scene grid
-  cell` (default 100 px); raw/dangling token → `token.engine.w/h` + `"square"`; fail-closed (never
-  throws); optional pre-resolved `eff` avoids a double `resolveTokenActor` call. `TokenBox` is
-  exported from `@shadowcat/core`. `footprintRadius(eff) -> number` — grid-unit bounding-disc radius
-  for the pathfinder: circle = `max(w,h)/2`, square = half-diagonal (`√(w²+h²)/2`); both in
-  grid-cell units. `EffectiveActor.visionModes: VisionAssignment[]` — projected by `project()` as
+  `actor` doc `/engine/conditions`; instanced → token `/embedded/actor/0/engine/conditions`).
+  Shapes + footprint: `resolveTokenBox(token, store, footprints, eff?) -> TokenBox
+  {x,y,w,h,shape}` — a scene-pixel footprint READ-THROUGH that computes no geometry of its own.
+  **There is no client-side footprint formula.** `w`/`h` come from the server's resolved extent
+  (`FootprintLookup.token(id)`, off the `"footprints"` derived channel), falling back to the
+  token's own authored `token.engine.w/h` when the lookup states none — an unconfirmed optimistic
+  token, a token no actor sizes, or an extent the server REFUSED. `shape` is the only field `resolveTokenBox.eff`
+  decides (`actor?.shape ?? "square"`); that optional pre-resolved actor avoids a double
+  `resolveTokenActor` call, and `null` skips resolution for a known actorless token. Fail-closed,
+  never throws. `TokenBox` is exported from `@shadowcat/core`. The definition both the drawn box
+  and the movement gate's collision radius are read from is `scene::footprint`
+  (`shadowcat-codebase-scene-rendering`) — a size formula re-derived here would be the
+  forked-decision defect that seam exists to remove, and the shape/size an extent is computed from
+  are additionally gated per recipient, so a client cannot assume one exists for every token it can
+  see. `EffectiveActor.visionModes: VisionAssignment[]` — projected by `project()` as
   `overrides?.vision ?? base.vision ?? []` (per-token override **replaces** actor base, not merged).
   **`resolveTokenVisual(token, store, eff?) -> RenderVisual | null`** — the render-boundary
   visual resolver, sibling to `resolveTokenActor`/`resolveTokenBox`/`resolveConditions`. Reads
@@ -90,19 +113,21 @@ token/actor name from non-owners via the `OwnerOrGm` visibility tier. Conditions
   `kind` isn't `"image"`/`"animated"` (defense against a malformed nested `faces`-within-`faces`
   value, which the type system forbids but a hand-edited/legacy doc could still contain); and a
   malformed `AnimatedSource` (`isValidAnimated`: non-finite/`<=0` `fps`, an empty `frames` array, or
-  a non-positive/non-integer `rows`/`cols` for a `sheet` source). Optional pre-resolved `eff` avoids
+  a non-positive/non-integer `rows`/`cols` for a `sheet` source). Optional pre-resolved `resolveTokenVisual.eff` avoids
   a second `resolveTokenActor` call, mirroring `resolveTokenBox`'s convention.
   `selectedFaceNamesFor(token, store) -> string[]` — the effective face-name list for a
   `"faces"`-union visual (`[]` if the effective visual isn't `"faces"`); shares `resolveTokenActor`'s
   projection with `resolveTokenVisual`, so the face-swap palette (`FaceSwapPalette`, below)
   can't diverge from what actually renders.
 - The `actors` module (`ActorsPanel`, `VisualKindEditor`, `FaceSwapPalette`)
-  — `ActorsPanel`: create/list/pick actors; hide-name control; faction assignment; shape
-  (`square`/`circle`) + size (fractional grid-cells) editing in the create form and in the per-row
+  — `ActorsPanel`: create/list/pick actors; hide-name control; faction assignment; shape editing —
+  the authored field is `ActorEngine.shape`, a bare string on the server, so its two values are
+  enumerated only by the read-through projection's literal union
+  (`EffectiveActor.square`/`EffectiveActor.circle`), which is what the citation names — plus size
+  (fractional grid-cells) editing, both in the create form and in the per-row
   GM inline editor; darkvision range authoring (create + per-row), writing `engine.vision: [{
-  mode: "darkvision", range }]` (was `system.vision`; omitted when range 0).
-  **Visual authoring (extracted into `VisualKindEditor`, a pure intra-module split
-  with no behavior change):** a visual-kind editor (image / faces / animated) in the
+  mode: "darkvision", range }]` (omitted when range 0).
+  **Visual authoring (`VisualKindEditor`):** a visual-kind editor (image / faces / animated) in the
   actor-creation form, mounted by `ActorsPanel` and driven by an `onBuild` callback prop
   (`ActorsPanel` still owns `conditionOptions` and the aggregate create-form reset, calling the
   child's exposed `reset()`). `buildVisual()` (in `VisualKindEditor`) validates per-kind
@@ -114,7 +139,7 @@ token/actor name from non-owners via the `OwnerOrGm` visibility tier. Conditions
   names an existing row (else nulls the visual); a stale `faceMapRows` entry referencing an
   absent face (row name changed or row deleted) is silently DROPPED rather than failing the
   whole visual.
-  **Per-TOKEN face-swap palette (extracted into `FaceSwapPalette`, prop `{ tokenId: string
+  **Per-TOKEN face-swap palette (`FaceSwapPalette`, prop `{ tokenId: string
   | null }`, mounted by `ActorsPanel` as `<FaceSwapPalette tokenId={selectedTokenId} />`):**
   distinct from the per-actor creation-form editor; shows only when the selected token's effective
   visual is `"faces"`, resolved via `selectedFaceNamesFor(token, store)` — a thin
@@ -122,8 +147,8 @@ token/actor name from non-owners via the `OwnerOrGm` visibility tier. Conditions
   `resolveTokenVisual` independently resolves through `resolveTokenActor` too, so a token's
   `overrides.visual` faces-union can never diverge between what renders and what the palette
   offers to swap to (pinned by an `actor.test` case combining an `overrides.visual` faces-union
-  with an active `token.engine.face`). Clicking a face name dispatches a `/engine/face` (was
-  `/system/face`) update on the TOKEN doc.
+  with an active `token.engine.face`). Clicking a face name dispatches a `/engine/face` update on
+  the TOKEN doc.
   **Load-bearing convention: the dispatched update's `old` reads the RAW stored `token.engine.face`**
   (never a resolved/defaulted value) — the same raw-`old` convention already established for other
   config-doc field-toggle editors in this codebase (e.g. the `snapToGrid` toggle) — a
@@ -173,9 +198,10 @@ token/actor name from non-owners via the `OwnerOrGm` visibility tier. Conditions
   side in `SceneEcs::token_effective_owner`, client mirror `effectiveOwner`). A GM sets
   the per-token override; actor ownership is assigned on the actor, so re-assigning an actor moves
   authority over **every** linked token with no re-stamp — which is the whole point of resolving
-  rather than copying. **State the precedence rule exactly ONCE**: an earlier version short-circuited
-  on `doc.owner.is_some()` in the DB join, duplicating it, and an inverted-precedence mutation
-  survived until the short-circuit was removed.
+  rather than copying. **State the precedence rule exactly ONCE**: a DB join that
+  short-circuits on the token's own owner expresses the same precedence a second time, and two
+  copies of one rule cover for each other — an inverted-precedence mutation then survives, because
+  either copy alone still produces the right answer.
   - **Fail-closed** on a missing link, a dangling link, an `actor.id` that does not match the link, a
     non-`actor` `doc_type`, or an unowned actor — no owner means no write, never a fallback to
     "world member". (Cycles are unrepresentable: only tokens carry the link.) The actor join is **scope-checked**: an actor whose
@@ -190,17 +216,21 @@ token/actor name from non-owners via the `OwnerOrGm` visibility tier. Conditions
     `{READ, WRITE_FIELDS}` and excludes `EDIT_PERMISSIONS`, so an effective owner cannot steal or
     hand off ownership — but the floored role also selects additive `by_role[Owner]` grants, so a
     deployment that puts `EDIT_PERMISSIONS` there lets an owner pin `/owner = self` (defeating
-    GM re-assignment) and rewrite `/permissions` to lock the GM out. Parity with a *stamped* owner
-    holds exactly; what changed is the POPULATION — "Owner" is now every player with an assigned
-    actor rather than a hand-enumerated set.
+    GM re-assignment) and rewrite `/permissions` to lock the GM out. The capability semantics are
+    exactly a *stamped* owner's; what differs is the POPULATION — "Owner" is every player with an
+    assigned actor, not a hand-enumerated set.
   - **Egress redaction resolves ownership through this same rule** — `resolve_access`'s
     `is_owner` comes from an explicit effective-owner parameter, so redaction and write authz
     cannot disagree about who owns a token. The per-call-site join sources are egress territory:
     `shadowcat-codebase-documents-permissions`.
 - **Rendered token size, hit-test, and the selection ring all resolve through `resolveTokenBox`** —
-  never read `token.system.w/h` directly for an actor-backed token; doing so bypasses the
-  `EffectiveActor.size × grid-cell` scaling, breaks multi-cell tokens, and ignores the shape
-  override, causing the render size, click target, and selection ring to diverge.
+  never read `token.engine.w/h` directly for an actor-backed token. Those authored fields are only
+  the FALLBACK the read-through applies when the server has stated no extent; reading them
+  directly ignores the server's resolved extent whenever one exists (they differ for a multi-cell
+  token, and on hex for every token) and ignores the shape override, causing the render size, click
+  target and selection ring to diverge. Deriving a size instead — from `EffectiveActor.size` times
+  the grid cell — is worse still: that is a second footprint formula, and the drawn geometry would
+  then disagree with the geometry the server's movement gate collides with.
 - **Instanced token's embedded actor copy needs `structuredClone`, not `{...}`** — a shallow copy
   aliases nested `system`/`permissions`/`embedded` with the source until the wire round-trip
   [[embedded-copy-needs-deep-clone]].
@@ -243,7 +273,7 @@ token/actor name from non-owners via the `OwnerOrGm` visibility tier. Conditions
   selection can make the palette chip's active/mixed display, and the click's no-op-or-not
   outcome, diverge from what the editable tokens alone would show. Client-side UX inconsistency
   only (every write still goes through `canEdit` then the server's independent re-check);
-  accepted as-is, not fixed.
+  accepted as-is.
 - **Docs-ratchet is live on `data::engine::token`:** it carries
   `#![deny(missing_docs)]` + the private-items twin — a new undocumented field/variant on
   `TokenEngine`/`ActorEngine`/`TokenVisual`/`AnimatedSource` fails the 3-OS CI clippy step, and
@@ -253,13 +283,13 @@ token/actor name from non-owners via the `OwnerOrGm` visibility tier. Conditions
   instanced copy is frozen at placement. Instanced re-sync against the source is deferred
   [[document-inheritance-merge-model]].
 - **Tokens are Container sprites behind a `TokenVisual` source abstraction — image, animated, and
-  multi-face (`"faces"`) visuals all ship today.** `generated` (procedural) and `fx`/emotes
+  multi-face (`"faces"`) visuals all ship today.** `generated` (procedural) and fx/emote
   remain forward-looking [[token-architecture-forward-looking]]. Don't bind rendering
   to raw image URLs or assume a token has exactly one static image — always resolve through
   `resolveTokenVisual`, never read `actor.visual`/`token.system.visual` directly.
 - **Token on-scene placement is excluded from template merge:** `/engine/x`, `/engine/y`,
   `/engine/rotation` are always instance-owned — never pulled, pushed, reverted, or flagged
-  `template_changed` by the merge engine (`placementExclusions("token")`). See
+  `SyncState.template_changed` by the merge engine (`placementExclusions("token")`). See
   `shadowcat-codebase-templates`.
 
 ## Pointers

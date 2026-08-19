@@ -2,7 +2,7 @@
 
 /**
  * Server health snapshot shared with the client via the ts-rs type pipeline.
- * INVARIANT: the TS mirror in src/types/generated must be regenerated whenever
+ * INVARIANT: the generated `HealthStatus` TS mirror must be regenerated whenever
  * this struct changes (CI enforces sync).
  */
 export type HealthStatus = { 

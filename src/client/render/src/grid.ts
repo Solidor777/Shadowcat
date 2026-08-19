@@ -54,8 +54,9 @@ export class Grid {
    * Snaps a scene point to the active grid's nearest CELL CENTER — never a
    * vertex/corner, on either grid kind. Square: the containing cell's center. Hex: the
    * nearest hex's center, via `axialRound`-then-`axialToPixel` — the same
-   * `axialToPixel` call `hexLines` uses as the origin it draws the six corners
-   * around, so this is provably a center, not a vertex.
+   * `axialToPixel` call `cellVertices` uses as the origin it generates the six corners
+   * around (and `hexLines` reaches through `cellVertices`), so this is provably a center,
+   * not a vertex.
    * @param p A scene-coordinate point.
    * @returns `p` snapped to the nearest cell center.
    * @example
@@ -69,11 +70,33 @@ export class Grid {
   snap(p: Point): Point {
     if (this.spec.kind === "square") {
       const { col, row } = this.cellOf(p);
-      const s = this.spec.size;
-      return { x: col * s + s / 2, y: row * s + s / 2 };
+      return this.cellCenter(col, row);
     }
     const { q, r } = this.axialRound(this.pixelToAxial(p));
     return this.axialToPixel(q, r);
+  }
+
+  /**
+   * The world distance between two adjacent cell centres — `size` on square (the edge length IS
+   * the center-to-center step), `size * sqrt(3)` on hex (every axial neighbour sits `sqrt(3) ·
+   * size` away; `axialToPixel` confirms this for the six unit-axial offsets). This is NOT
+   * the grid's indexing scale (`spec.size`, the square edge length or hex outer radius/
+   * circumradius) — the two coincide on square grids and diverge by a factor of `sqrt(3)` on hex,
+   * which is why a caller converting a travelled world distance into a cell count must use this
+   * method, never `spec.size` directly. Mirrors the server's `GridShape::world_units_per_cell`
+   * (same quantity, same name in the client's casing) so the two conventions are greppable as one
+   * concept.
+   * @returns The world distance spanned by one grid step, in scene (px) units.
+   * @example
+   * ```ts
+   * import { Grid } from "@shadowcat/render";
+   *
+   * const grid = new Grid({ kind: "hex", size: 100 });
+   * grid.worldUnitsPerCell(); // 173.20508075688772 (100 * sqrt(3))
+   * ```
+   */
+  worldUnitsPerCell(): number {
+    return this.spec.kind === "square" ? this.spec.size : this.spec.size * Math.sqrt(3);
   }
 
   /** Whole-cell distance between two scene points.
@@ -163,6 +186,71 @@ export class Grid {
   }
 
   /**
+   * The scene-coordinate CENTER of the cell at `(col, row)` — square column/row indices, or hex
+   * axial `q`/`r` (mirrors {@link cellOf}'s return shape). Square: `col*size+size/2,
+   * row*size+size/2`. Hex: `axialToPixel`, the same call `snap`'s hex branch uses directly and
+   * `hexLines` reaches through `cellVertices` to locate a hex's center — this promotes that
+   * private call onto the public surface rather than a second formula.
+   * @param col Square column index, or hex axial q.
+   * @param row Square row index, or hex axial r.
+   * @returns The cell's center, in scene coordinates.
+   * @example
+   * ```ts
+   * import { Grid } from "@shadowcat/render";
+   *
+   * const grid = new Grid({ kind: "square", size: 100 });
+   * grid.cellCenter(2, 0); // { x: 250, y: 50 }
+   * ```
+   */
+  cellCenter(col: number, row: number): Point {
+    if (this.spec.kind === "square") {
+      const s = this.spec.size;
+      return { x: col * s + s / 2, y: row * s + s / 2 };
+    }
+    return this.axialToPixel(col, row);
+  }
+
+  /**
+   * The scene-coordinate CORNERS of the cell at `(col, row)`, in draw order — square column/row
+   * indices, or hex axial `q`/`r`. Square: the 4 axis-aligned corners of a `size`-edge rect
+   * anchored at `(col*size, row*size)`. Hex: the 6 corners of the pointy-top hexagon centered on
+   * {@link cellCenter}, using the SAME per-corner angle formula `hexLines` draws its
+   * outlines with — `hexLines` calls this method rather than recomputing the corners a
+   * second time, so there is exactly one hex-corner formula in this class.
+   * @param col Square column index, or hex axial q.
+   * @param row Square row index, or hex axial r.
+   * @returns The cell's corner points, in draw order (a closed polygon; the last point does not
+   * repeat the first).
+   * @example
+   * ```ts
+   * import { Grid } from "@shadowcat/render";
+   *
+   * const grid = new Grid({ kind: "square", size: 100 });
+   * grid.cellVertices(0, 0); // [{x:0,y:0},{x:100,y:0},{x:100,y:100},{x:0,y:100}]
+   * ```
+   */
+  cellVertices(col: number, row: number): Point[] {
+    if (this.spec.kind === "square") {
+      const s = this.spec.size;
+      const x0 = col * s, y0 = row * s;
+      return [
+        { x: x0, y: y0 },
+        { x: x0 + s, y: y0 },
+        { x: x0 + s, y: y0 + s },
+        { x: x0, y: y0 + s },
+      ];
+    }
+    const c = this.axialToPixel(col, row);
+    const size = this.spec.size;
+    const pts: Point[] = [];
+    for (let i = 0; i < 6; i++) {
+      const ang = (Math.PI / 180) * (60 * i - 30); // pointy-top
+      pts.push({ x: c.x + size * Math.cos(ang), y: c.y + size * Math.sin(ang) });
+    }
+    return pts;
+  }
+
+  /**
    * Grid-overlay line segments covering `rect` (plus a margin), for the grid render
    * layer to draw. Dispatches on `spec.kind` — square and hex never share a code path.
    * @param rect The visible scene rectangle to cover.
@@ -238,10 +326,10 @@ export class Grid {
   }
 
   /**
-   * Axial `(q,r)` → the CENTER pixel of that hex, pointy-top orientation. {@link
-   * hexLines} calls this to get each hex's center, then generates its six corners at
-   * `size` (the circumradius) around it — the same call this function makes proves
-   * `snap`'s hex branch also returns a center, never a vertex.
+   * Axial `(q,r)` → the CENTER pixel of that hex, pointy-top orientation. `cellVertices`
+   * calls this to get each hex's center, then generates its six corners at `size` (the
+   * circumradius) around it, and {@link hexLines} draws those corners — the same call this
+   * function makes proves `snap`'s hex branch also returns a center, never a vertex.
    * @param q Axial q.
    * @param r Axial r.
    * @returns The hex's center, in scene coordinates.
@@ -342,12 +430,7 @@ export class Grid {
     const rHi = Math.ceil(Math.max(...rs)) + 1;
     for (let r = rLo; r <= rHi; r++) {
       for (let q = qLo; q <= qHi; q++) {
-        const c = this.axialToPixel(q, r);
-        const pts: Point[] = [];
-        for (let i = 0; i < 6; i++) {
-          const ang = (Math.PI / 180) * (60 * i - 30); // pointy-top
-          pts.push({ x: c.x + size * Math.cos(ang), y: c.y + size * Math.sin(ang) });
-        }
+        const pts = this.cellVertices(q, r); // the single hex-corner formula (see cellVertices)
         for (let i = 0; i < 6; i++) {
           const a = pts[i];
           const b = pts[(i + 1) % 6];

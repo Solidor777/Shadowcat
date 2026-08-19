@@ -65,8 +65,9 @@ test("a deleted template removes its node", () => {
 });
 
 // Pins template-view to the same non-finite rejection its three sibling views enforce. A
-// non-finite `direction` is the case unique to this file: it becomes NaN through cos/sin even
-// when x/y/size are perfectly finite, so guarding only the authored inputs would miss it.
+// non-finite `direction` is the case unique to the template view: it becomes NaN through
+// cos/sin even when x/y/size are perfectly finite, so guarding only the authored inputs would
+// miss it.
 test("a template with a non-finite coordinate does not render", () => {
   const store = new DocumentStore();
   const backend = new MockBackend();

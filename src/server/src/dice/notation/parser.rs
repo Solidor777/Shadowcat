@@ -27,7 +27,7 @@ struct P {
     /// Success rule set by a `cs` (or `cf`-implied) modifier; forces
     /// SuccessCount mode once seen.
     success: Option<SuccessRule>,
-    /// Mode-agnostic `t<N>` target (design's notation pillar, §10): resolves to
+    /// Mode-agnostic `t<N>` target: resolves to
     /// `TotalConfig::difficulty` in Total mode, or a direction-derived
     /// `SuccessRule` in SuccessCount mode.
     t_target: Option<i32>,
@@ -652,8 +652,8 @@ mod tests {
 
     #[test]
     fn parses_dice_group_plus_labeled_constant() {
-        // The exact failing case from the e2e report: a dice group followed by an
-        // additive labeled constant must no longer error as trailing input.
+        // A dice group followed by an additive labeled constant parses as a binary
+        // expression, never as trailing input.
         let spec = parse("1d20 + 3[dex]", ParseContext::default()).unwrap();
         match spec.expr {
             Expr::Bin { lhs, rhs, .. } => {

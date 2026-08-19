@@ -1,4 +1,5 @@
 import { type FormulaError, MAX_FORMULA_LENGTH } from "./types";
+import { isDigit, isWordChar, isWordStart } from "./chars";
 
 /** Operator token payloads. `.` is a bare operator — the parser assembles
  * dotted reference paths (e.g. `parent.dex`) from adjacent word/op tokens. */
@@ -32,55 +33,6 @@ export type Tok =
     };
 
 const OPS = new Set<string>(["+", "-", "*", "/", "%", "(", ")", ",", "."]);
-
-/**
- * True for an ASCII decimal digit — used wherever one must be recognized:
- * starting a numeric literal, continuing one, the post-`.` lookahead, and
- * (via `isWordChar`) mid-identifier. IMPLICIT COUPLING: changing this set
- * changes IDENTIFIER lexing too, not just numeric-literal entry.
- * A leading `.` is NOT in this set, so a formula like `.5` is not recognized
- * as a number (it lexes `.` as a bare operator token instead; write `0.5`).
- * @param ch A single character.
- * @returns `true` when `ch` is `'0'`–`'9'`.
- * @example
- * ```
- * isDigit("7"); // true
- * isDigit("."); // false
- * ```
- */
-function isDigit(ch: string): boolean {
-  return ch >= "0" && ch <= "9";
-}
-
-/**
- * True for a character that may START an identifier: ASCII letter or `_`.
- * @param ch A single character.
- * @returns `true` when `ch` may begin a `word` token.
- * @example
- * ```
- * isWordStart("_"); // true
- * isWordStart("1"); // false
- * ```
- */
-function isWordStart(ch: string): boolean {
-  return (ch >= "a" && ch <= "z") || (ch >= "A" && ch <= "Z") || ch === "_";
-}
-
-/**
- * True for a character that may CONTINUE an identifier already begun by
- * `isWordStart` — letters, digits, and `_` (digits are legal mid-identifier,
- * just not as the first character).
- * @param ch A single character.
- * @returns `true` when `ch` may continue a `word` token.
- * @example
- * ```
- * isWordChar("3"); // true — legal after the first character
- * isWordChar("."); // false — dots separate ref segments, not part of a word
- * ```
- */
-function isWordChar(ch: string): boolean {
-  return isWordStart(ch) || isDigit(ch);
-}
 
 /** Single left-to-right scan into tokens. Identifiers are lowercased on read
  * (identifiers are case-insensitive). Never throws — unrecognized

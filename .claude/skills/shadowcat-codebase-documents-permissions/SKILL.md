@@ -1,6 +1,6 @@
 ---
 name: shadowcat-codebase-documents-permissions
-description: "Use when touching Shadowcat documents, permissions, redaction, visibility tiers (all / gm_only / owner_or_gm), per-recipient broadcast filtering, the search index, the `Document.base` merge-snapshot field (its authz/size-cap/egress rules — not the client merge algorithm), or the client wire/Zod types. Covers src/server/src/data and its src/client/core wire mirror. Invoke shadowcat-codebase-core first."
+description: "Use when touching Shadowcat documents, permissions, redaction, visibility tiers (all / gm_only / owner_or_gm), per-recipient broadcast filtering (document stream AND derived channels, which owe the same two gates), the search index, the `Document.base` merge-snapshot field (its authz/size-cap/egress rules — not the client merge algorithm), or the client wire/Zod types. Covers src/server/src/data and its src/client/core wire mirror. Invoke shadowcat-codebase-core first."
 ---
 
 # Shadowcat — Documents & Permissions
@@ -21,7 +21,7 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
 
 - `data::document` — the `Document` envelope: `name: Option<String>` (universal
   display name, `#[serde(default)]`) and `engine: Option<serde_json::Value>` (`#[ts(type =
-  "unknown")]`, present iff `doc_type` is engine-defined) alongside the pre-existing `system`
+  "unknown")]`, present iff `doc_type` is engine-defined) alongside the `system`
   body; `enum Visibility { All, GmOnly, OwnerOrGm }` (the per-property visibility tiers);
   `PermissionSet.gm_role: Option<DocRole>` (`#[serde(default)]`, ts-rs exported) — see Hard
   Invariants below.
@@ -57,13 +57,18 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
   registry, one submodule per doc-type family (`data::engine::token`, `data::engine::scene`,
   `data::engine::geometry`, `data::engine::registries`) plus the `data::engine` module itself:
   `is_engine_doc_type(doc_type) -> bool` (the 17-entry registry:
-  `token`/`scene`/`wall`/`region`/`light`/`drawing`/`template`/`actor`/`message`/
-  `world-settings`/`vision-modes`/`light-gradation`/`chat-settings`/`dice-settings`/
-  `channel-registry`/`faction-registry`/`condition-registry`), `validate_engine(doc_type, engine)
+  `is_engine_doc_type::token`/`is_engine_doc_type::scene`/`is_engine_doc_type::wall`/
+  `is_engine_doc_type::region`/`is_engine_doc_type::light`/`is_engine_doc_type::drawing`/
+  `is_engine_doc_type::template`/`is_engine_doc_type::actor`/`is_engine_doc_type::message`/
+  `is_engine_doc_type::world-settings`/`is_engine_doc_type::vision-modes`/
+  `is_engine_doc_type::light-gradation`/`is_engine_doc_type::chat-settings`/
+  `is_engine_doc_type::dice-settings`/`is_engine_doc_type::channel-registry`/
+  `is_engine_doc_type::faction-registry`/`is_engine_doc_type::condition-registry`),
+  `validate_engine(doc_type, engine)
   -> Result<(), DataError>` (deserializes the body against that doc_type's typed struct;
   `deny_unknown_fields` on every struct — engine-defined types WITHOUT an `engine` body error, and
   non-engine types WITH one error too, so a non-engine `doc_type` can never smuggle a typed body
-  in). `data::command::validate_engine_tree` is the recursive ingress
+  in). `data::validation::validate_engine_tree` is the recursive ingress
   chokepoint — called on every Create/Update POST-IMAGE (after all `FieldChange`s apply),
   including embedded children, so a wholesale `/engine` replacement, a leaf `/engine/x` write, and
   an embedded child's engine write are all covered by one call site. `normalize_engine` also
@@ -79,8 +84,9 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
   Update-writable under `cap::EDIT_PERMISSIONS`; `DocRole::Owner`'s BUILT-IN floor is
   `{READ, WRITE_FIELDS}` and excludes it, but the floored role also selects additive
   `by_role[Owner]` grants. **State the precedence rule exactly ONCE** — duplicating it via a
-  short-circuit in the DB join let an inverted-precedence mutation survive. Full rule, the
-  fail-closed list, and the instanced-token exclusion: `shadowcat-codebase-actors-tokens`.
+  short-circuit in the DB join lets an inverted-precedence mutation survive, because either copy
+  alone still produces the right answer. Full rule, the fail-closed list, and the instanced-token
+  exclusion: `shadowcat-codebase-actors-tokens`.
   **Egress ownership is unified with write ownership.** Every egress site resolves
   `is_owner` through the same `effective_owner`/`effective_owner_via` rule the write path uses —
   the owner is an EXPLICIT parameter of `resolve_access`/`resolve_access_world`
@@ -88,9 +94,11 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
   wrapper exists, so a new egress call site must state where its owner comes from or it fails to
   compile. Three join sources, one per hot-path shape:
   - **WS hot path** (`ws::conn::send_filtered`'s `Event` branch; `http::routes::write_ops`'s
-    HTTP-write receive) — `data::permission::filter_command` is a SYNC core over
+    HTTP-write receive; and the per-recipient derived-channel egress in `SceneEcs::ctx_access`,
+    which resolves the SAME `effective_owner_via` + `resolve_access_world` pair against the same
+    in-memory actor table) — `data::permission::filter_command` is a SYNC core over
     `load_update_docs` (Update pre-images, awaited ONCE per event before the sync core runs — no
-    lock held across that await) and an `actor_lookup` closure backed by the room's in-memory
+    lock held across that await) and a `filter_command::actor_lookup` closure backed by the room's in-memory
     `SceneEcs` actor table (`|id| ecs.actor(id)`). No pool read on this path at all — the join is
     entirely in-memory, preserving the no-pool-query-on-the-hot-path property. The scene read
     guard around `filter_command` itself is short (sync core, no await inside it), the same
@@ -234,14 +242,15 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
   genuinely-mixed pair (one integer variant, one `Float`) falls back to an `f64` comparison, gated
   by a `|n| <= 2^53` exactness guard (`MAX_EXACT_F64_INT`) — outside that range a mixed-variant
   pair is unconditionally unequal, never a false-positive OCC pass. Recurses through
-  `Object`/`Array` structure; any non-Number mismatch falls back to serde's derived `PartialEq`.
+  `serde_json::Value::Object`/`serde_json::Value::Array` structure; any non-Number mismatch falls
+  back to serde's derived `PartialEq`.
   `apply_intent` is also the tier-2 enforcement chokepoint: `validate_system_schema_tree` runs
   immediately after `validate_engine_tree`, at BOTH call sites — Create (Phase-1, against the
   new document) and Update (Phase-2, against the merged post-image: existing row + applied
   `FieldChange`s, never the pre-image) — recursing through embedded children by their own
   `doc_type` exactly as `validate_engine_tree` does. A violation returns `Err` before the
   transaction commits, so the per-world seq counter is NOT consumed on rejection, and surfaces
-  to the client via the pre-existing rejected-intent path (`DataError::SchemaViolation { pointer,
+  to the client via the rejected-intent path (`DataError::SchemaViolation { pointer,
   reason }`) — no new wire frame.
 - The client `wire` module — Zod mirror: `VisibilitySchema = z.enum(["all","gm_only",
   "owner_or_gm"])`, `property_overrides`. ts-rs generates the TS types from the Rust source.
@@ -252,8 +261,8 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
     distinguish "absent" from "present and `undefined`"), because the Rust `FieldChange` carries
     no `skip_serializing_if` on either value, so a frame lacking one is malformed. The declared
     type nevertheless stays optional because **Zod v3 infers an object field's declared
-    optionality STRUCTURALLY**: any field whose output type admits `undefined` — which
-    `z.unknown()`'s always does — is inferred optional regardless of what a whole-object
+    optionality STRUCTURALLY**: any field whose output type admits `undefined` — which an
+    unknown-valued `zod` field's always does — is inferred optional regardless of what a whole-object
     `.refine()` enforces, so the declared type cannot be tightened to "required key, unknown
     value" while the impl still satisfies `z.ZodType<WireFieldChange>`. Tightening the type
     breaks that annotation; dropping the refine restores the hole. An explicit `null` is valid on
@@ -272,7 +281,7 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
     `data::validation`, so the hostile-input surface includes the envelope, not just the two
     opaque bodies.
 - The client `scene-docs` module — `ITEM_DOC_TYPE = "item"`, `ItemSystem`, `buildItemDoc`:
-  a **client-only doc_type** — the server has NO Rust-side knowledge of `item` and
+  a **client-only doc_type** — the server has NO Rust-side knowledge of `ITEM_DOC_TYPE` and
   requires none, since `doc_type` is an unconstrained wire string and `system` is opaque JSONB the
   server never interprets. An item document lives standalone (top-level, `parent_id: null`) or
   embedded in an actor's inventory (`actor.embedded.item[]`); write-site resolution for an embedded
@@ -294,15 +303,32 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
   first, then (optionally) `filter_properties` for property redaction. Gating whole-doc delivery
   on `see_gm_only`/GM-ness alone instead of `has(cap::READ)` would leak a `gm_role`-capped
   document (see below) straight past its intended cap.
+  - **"Egress path" includes a DERIVED CHANNEL, not just the document stream — and a channel
+    inherits NONE of the document stream's filtering.** A derived frame computed from documents
+    restates their content on the wire, so it owes the recipient the same two gates in the same
+    order, at EVERY document it is computed from — including a linked parent it joins to and an
+    embedded child it reads. Both gates must be reached through the same symbols the document
+    stream uses (`resolve_access_world` + `effective_owner_via` for READ, `Access::can_see` on the
+    `property_overrides` tier for the band), never a same-shaped copy. **The way this defect
+    arrives is a helper written as an internal GATE input being promoted to a wire surface:** such
+    a helper enumerates without filtering because every prior caller was authoritative, so
+    promoting it is a permissions change even when no formula changes and no new query is written.
+    Two consequences follow. (1) Redact by ABSENCE of the whole entry — an id paired with an empty
+    child list is itself the disclosure, so a nulled field or an emptied list is not a redaction of
+    an entry the recipient may not see. (2) An EMBEDDED child is tested on the tier alone, against
+    the PARENT's `Access`: `filter_properties` recurses into `embedded` carrying the parent's
+    access and no whole-document READ is ever resolved for a child, so demanding one there would
+    diverge from the document stream rather than match it. The `"footprints"` channel is the worked
+    instance, symbols and levels named in `shadowcat-codebase-scene-rendering`.
 - **`PermissionSet.gm_role: Option<DocRole>` makes the GM's usual unconditional access
   conditional, per document.** `resolve_access`'s GM branch normally short-circuits to
   `Access { all: true, see_gm_only: true, is_owner: true, caps: {} }` for every `WorldRole::Gm`
   user, before any document-level permission is consulted — correct and load-bearing for every
-  pre-existing document type (actors, scenes, secret regions: the GM must always see a secret
+  document type (actors, scenes, secret regions: the GM must always see a secret
   region even though it's `default: DocRole::None`).
-  - `gm_role: None` (the field's default via `#[serde(default)]`; every document type that
-    predates this field deserializes to `None`) preserves that unconditional short-circuit
-    exactly — no behavior change for anything but the new consumer below.
+  - `gm_role: None` (the field's default via `#[serde(default)]`, so a stored document carrying
+    no `gm_role` key deserializes to `None`) preserves that unconditional short-circuit exactly —
+    every doc_type but the one consumer below is unaffected by the field's existence.
   - `gm_role: Some(role)` caps a GM to the SAME per-document role-floor resolution every other
     actor uses: `effective_role` looks the GM up in `doc.permissions.users` first, falling back to
     `role` (NOT `doc.permissions.default`) only if the GM isn't individually listed. This lets a
@@ -314,8 +340,8 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
     `doc.permissions.default`) to layer world-level capability grants, so a world-default grant
     for the GM's fallback role applies consistently even when that GM is `gm_role`-capped.
     Recomputing the role independently from `doc.permissions.default` here would silently
-    diverge for a capped GM — this is a real, caught-before-shipping bug class, not a
-    hypothetical, which is why the two call sites must share one `effective_role`.
+    diverge for a capped GM — a real defect class, not a hypothetical, which is why the two call
+    sites must share one `effective_role`.
   - First (and so far only) consumer: `shadowcat-codebase-chat`'s `Audience`→`PermissionSet`
     mapping (`Whisper` sets `Some(DocRole::None)`, `GmOnly` sets `Some(DocRole::Observer)`,
     `Public` leaves it `None`).
@@ -333,7 +359,7 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
   conflate the two bands' authority models when reasoning about what the server does and doesn't
   validate.
 - **OCC pre-image comparison at `apply_intent` is numeric-variant-aware, not raw equality.** A
-  naive raw-`==` assumption is now wrong: `data::sqlite::values_semantically_eq` exists
+  naive raw-`==` assumption is wrong: `data::sqlite::values_semantically_eq` exists
   because JS clients cannot preserve the whole-number-vs-float distinction through a JSON
   round-trip (e.g. a server-computed `100.0` comes back over the wire and reparses as `PosInt(100)`,
   which raw `==` would treat as unequal to a stored `100`, causing a spurious `Conflict` on an
@@ -352,9 +378,9 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
   `filter_properties` and `collect_hidden` each append `/base` to their own hidden list from their
   own `can_see(Visibility::OwnerOrGm)` test. That one decision is genuinely duplicated, so any
   change to `base`'s visibility must land at both call sites.
-- **Tier-2 validates the `system` band's SHAPE only, never values — it EXTENDS invariant 6
-  (three-band document shape), it does not replace it.** `engine`-band validation
-  (`validate_engine`/`validate_engine_tree`) remains the separate, pre-existing REAL semantic
+- **Tier-2 validates the `system` band's SHAPE only, never values — it EXTENDS the three-band
+  document shape, it does not replace it.** `engine`-band validation
+  (`validate_engine`/`validate_engine_tree`) remains the separate REAL semantic
   ingress gate for the 17 engine-defined doc types (see the `engine ingress validation` invariant
   above); tier-2 is the `system`-band's analogous but strictly structural enforcement floor. The
   declarable `Schema` type-tree grammar (`type`/`properties`/`required`/`items`/
@@ -447,7 +473,7 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
   via two independent mechanisms.** A tx-scoped DB existence check alone is sufficient for
   cross-call races (serialized by the single-writer pool) but NOT for two same-doc_type Creates
   inside one `apply_intent` batch, since Phase 1 validates every op before Phase 2 inserts any of
-  them — both same-batch DB reads see an empty table. The in-memory `claimed_singletons` HashSet
+  them — both same-batch DB reads see an empty table. The in-memory `apply_intent::claimed_singletons` HashSet
   closes that second gap; do not remove either mechanism assuming the other already covers it.
 - **Check-then-act across two queries needs one transaction** — TOCTOU-racy even at
   `max_connections(1)` [[two-query-guard-needs-tx]].
@@ -497,10 +523,10 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
   submodule tree), `/api/ts/modules/_shadowcat_core.html` (TypeDoc — the `wire` Zod mirror),
   `/api/ts/modules/_shadowcat_types.html` (TypeDoc — the ts-rs generated bindings the Zod mirror
   is checked against). Produce with `pnpm build:all`.
-- Rationale: `docs/design/M2-data-foundation.md`; invariants in `docs/design/ARCHITECTURE.md`
-  §2 invariant 4 (per-recipient permissions) + invariant 6 (three-band document shape) + §6 (data
-  model). Design rationale for the three-band document shape and the tier-2 structural schema
-  registry lives under `docs/superpowers/specs/`.
+- Rationale: `docs/design/ARCHITECTURE.md` §2 invariant 4 (per-recipient permissions) + invariant 6 (three bands) + §6 (data model),
+  plus `docs/design/M2-data-foundation.md` for the data foundation. Design rationale for the
+  three-band document shape and the tier-2 structural schema registry lives under
+  `docs/superpowers/specs/`.
 - Relationships: `graphify query "document permissions redaction filter_properties can_see"`,
   `graphify path "permission.rs" "search.rs"`.
 - Deferred merge model: [[document-inheritance-merge-model]].

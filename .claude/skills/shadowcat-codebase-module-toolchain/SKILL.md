@@ -1,6 +1,6 @@
 ---
 name: shadowcat-codebase-module-toolchain
-description: "Use when touching the external/community module toolchain: server-side installed-module discovery + path-traversal-guarded static serving + per-world enablement (`scan_installed_modules`, `http::module_routes`, `Config.modules_dir`), the engine-compat semver gate, the Welcome server_version + capability-requirements union, or the client consumption path (the `loader`/`modules`/`module-rest`/`manifest` modules' engine checks, shell import-map single-instance build + `WorldSession.#loadExternalModules`, `ModuleManager` UI). Covers out-of-tree modules (the Nightfox reference repo), the authoring guide docs/site/guides/creating-a-module.md (docs/design/module-authoring.md is a pointer stub), and the examples/* scaffold packages. Invoke shadowcat-codebase-core first; for the shell/AppContext seams invoke shadowcat-codebase-client-shell."
+description: "Use when touching the external/community module toolchain: server-side installed-module discovery + path-traversal-guarded static serving + per-world enablement (`scan_installed_modules`, `http::module_routes`, `Config.modules_dir`), the engine-compat semver gate, the Welcome server_version + capability-requirements union, or the client consumption path (the `loader`/`modules`/`module-rest`/`manifest` modules' engine checks, shell import-map single-instance build + `WorldSession.#loadExternalModules`, `ModuleManager` UI). Covers out-of-tree modules developed in their own repositories, the authoring guide docs/site/guides/creating-a-module.md (docs/design/module-authoring.md is a pointer stub), and the examples/* scaffold packages. Invoke shadowcat-codebase-core first; for the shell/AppContext seams invoke shadowcat-codebase-client-shell."
 ---
 
 # Shadowcat — External Module Toolchain
@@ -13,7 +13,7 @@ points INTO graphify, `docs/design/`, and memory.
 
 An installed module lives at `<data-dir>/modules/<folder-id>/` as a `module.json` manifest plus a
 pre-built ESM bundle. The **server discovers and serves it as static files but NEVER executes any
-module code** (ARCHITECTURE §2 invariant 6). A GM enables a module per-world; the client shell
+module code**. A GM enables a module per-world; the client shell
 supplies exactly one runtime instance of `svelte`/`@shadowcat/*` via an import map, fetches the
 enabled set after `Welcome`, dynamically imports each enabled module through the real
 modules-folder → server → import-map path (identical in dev and prod), and activates it through the
@@ -43,7 +43,7 @@ existing `ModuleRegistry`.
 
 **Client core (framework-neutral):**
 - The client `loader` module — `loadModules(...) → Promise<ModuleLoadResult { loaded, failed }>`
-  — **per-module contained, NON-throwing** (a single module's import/compat failure no longer aborts
+  — **per-module contained, NON-throwing** (a single module's import/compat failure never aborts
   the batch); `checkEngineCompat`; fail-closed when `opts.shadowcatVersion` is absent.
 - The client `modules` module — `ModuleRegistry.activate()` is per-module isolated: a throwing
   `register()` or a singleton-contract collision is logged + skipped, the topo loop continues, the
@@ -70,17 +70,50 @@ existing `ModuleRegistry`.
   source for `svelte/*` bare-specifier imports, failing if any resolve to a subpath NOT present in
   `RUNTIME_ENTRIES` — catches the "import map serves a FIXED svelte-subpath set" gotcha below at
   build time instead of a runtime `SyntaxError`. Wired into `.github/workflows/ci.yml`'s web job +
-  `package.json`'s `check:svelte-runtime` script. Its CLI-entry-point detection uses
-  `pathToFileURL(...).href` (not a raw `file://${argv[1]}` string compare, which never matches on
-  Windows — wrong scheme/separator/drive-letter handling).
+  `package.json`'s `check:svelte-runtime` script. Its CLI-entry-point detection routes through the
+  shared `isDirectEntry`, which resolves `argv[1]` before comparing it against
+  `fileURLToPath(import.meta.url)` — so a relative or unnormalized invocation still matches, while a
+  raw `file://${argv[1]}` string compare never matches on Windows (wrong scheme/separator/
+  drive-letter handling). Every additional spelling of that decision is free to disagree with the
+  others on an `argv[1]` nobody tested, and its failure mode is a gate that scans nothing and exits
+  0, so `isDirectEntry`'s own unit pin asserts it is the sole reader of `argv[1]` across the
+  scripts tree.
 - The shell `worldSession` module — `#loadExternalModules(world, serverVersion)`
   sourced from `w.server_version`; fetch enabled set → `loadModules` → activate; keyed on `info.id`.
 - **`ModuleManager`** (`@shadowcat/module-settings`) — GM installed-module management UI; toggle/save
   keyed on the canonical folder `info.id` (manifest id is display-only).
 
-**Out-of-tree reference + guide:** the Nightfox repo (its own git repo, nested into a checkout at
-`src/modules/nightfox/` for dev, never bundled statically even in dev). The authoring guide lives
-in the docs site: `docs/site/guides/creating-a-module.md` (`docs/design/module-authoring.md` is a
+**Out-of-tree reference + guide:** an external module is developed in its own git repository and
+may be nested into a Shadowcat checkout under `src/modules/` so the pnpm workspace resolves
+`@shadowcat/core`/`@shadowcat/formula` for dev; it is never bundled statically, even in dev.
+**A nested checkout is inside this repo's gate perimeter.** `check-lint-allowances` walks every
+entry of its `ROOTS` recursively and prunes only what its `SKIP_DIRS` names — build outputs and
+dependency trees — and the ephemeral-reference gate scopes itself the same way. The client source
+tree is a root and a nested module checkout lives under it, so this repo's suppression ban and
+ephemeral-reference ban apply to the nested repository's SOURCE and the comments in it, and fail
+here even though that repository has its own lint config or none. Its Markdown is not gated: the
+ephemeral-reference gate's prose corpus is `MD_ROOTS`, which names the skills directory alone; out
+of `ROOTS` it reads only the code extensions `EXTS` lists. Nesting is a dev convenience with no entry
+in either gate's skip set: unnest before running the gates, or expect the nested contents to be
+judged by them.
+**The documentation build sits inside the same perimeter, by a different mechanism.**
+`entryPoints` includes the client-module glob, and the
+root `exclude` is consulted while the packages strategy EXPANDS that glob: an excluded directory is
+never selected as a package at all. So a nested checkout carrying a `package.json` becomes a
+converted package the moment nothing excludes it. What that does NOT produce is a coverage failure:
+`Options.copyForPackage` resets every value to its default, `validation`'s `notDocumented` default
+is off, and a foreign package extends none of this repo's shared configuration — so it opts into no
+coverage check and `treatValidationWarningsAsErrors` has no warning to escalate. The real break is
+coarser: a selected package that fails to CONVERT aborts the whole run, and `skipErrorChecking`
+defaults to off, so a TypeScript diagnostic in a checkout this repo does not build (an uninstalled
+dependency, a type error), an unreadable options file, or a nested `entryPointStrategy` of packages
+takes the documentation build down with it — and one that converts cleanly instead joins the local
+API output unannounced. The position is the two gates' above: unnest before running the build. A
+nested-checkout exclusion here would make the documentation build the one gate in this repo that
+carves them out, and a name-keyed one would go stale the first time a developer chose a different
+directory name.
+The
+authoring guide lives in the docs site: `docs/site/guides/creating-a-module.md` (`docs/design/module-authoring.md` is a
 pointer stub to it). Two in-repo CI-built worked examples double as copyable scaffolds:
 `examples/module-initiative-tracker/` (panel + document read/write) and `examples/system-minimal/`
 (sheet takeover + formula rules) — workspace members, so `pnpm -r test/typecheck` and the web CI
@@ -89,7 +122,7 @@ job's example-build step keep them green; the guides code-import their sources r
 ## Hard invariants
 
 - **The server NEVER executes installed module code** — it only discovers + serves it as static
-  bytes (ARCHITECTURE §2 invariant 6). Authority over the `system` band stays structural.
+  bytes. Authority over the `system` band stays structural.
 - **Exactly one runtime instance** of `svelte`/`svelte/*`/`@shadowcat/*` —
   requires `preserveEntrySignatures: "strict"` so runtime chunks export real API names, verified by
   a test that IMPORTS each chunk (not just checks existence) [[build-artifact-tests-must-consume-not-just-exist]].
@@ -114,8 +147,9 @@ job's example-build step keep them green; the guides code-import their sources r
   one is a host change (`RUNTIME_ENTRIES` + import map), not a module change. See the
   creating-a-module guide (`docs/site/guides/creating-a-module.md`).
   The `check-svelte-runtime-entries` script (above) catches an unserved subpath import at CI time.
-- **`loadModules`'s contract CHANGED** from `Promise<void>` throw-on-first-failure to the contained
-  `ModuleLoadResult`; any doc describing the old throw behavior is stale.
+- **`loadModules` never rejects.** Its contract is the contained `ModuleLoadResult { loaded,
+  failed }`, so a caller must read `failed` to see a module's import or compat failure — nothing
+  propagates out of the batch.
 - **Adding a required field to `Welcome`** (e.g. `server_version`) breaks untyped frame fixtures in
   every package — gate with `pnpm -r test`, not a single filter [[shared-wire-schema-change-needs-full-repo-test]].
 - **`InstalledModuleInfo` is ts-rs generated** — edit the Rust struct, regenerate, never hand-edit

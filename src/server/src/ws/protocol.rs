@@ -114,9 +114,8 @@ pub enum ClientMsg {
     /// document, IGNORING `footprint_radius` — so a route preview and the authoritative gate cannot
     /// disagree about the mover's size. It is NOT a presence proof: scene presence remains the
     /// separate ownership scan in `handle_pathfind`, which naming a token neither replaces nor
-    /// satisfies. When absent, `footprint_radius` (grid units, the client's `footprintRadius`) is
-    /// honored and the result is an explicitly hypothetical preview carrying no
-    /// preview-equals-execution guarantee.
+    /// satisfies. When absent, `footprint_radius` (grid units) is honored and the result is an
+    /// explicitly hypothetical preview carrying no preview-equals-execution guarantee.
     Pathfind {
         /// Correlation token for `PathResult`/`PathError`.
         request_id: Uuid,
@@ -126,7 +125,9 @@ pub enum ClientMsg {
         start: (f64, f64),
         /// Intermediate points; the LAST element is the goal, scene coords.
         waypoints: Vec<(f64, f64)>,
-        /// Mover radius in grid units; IGNORED when `token` is named.
+        /// Mover radius in grid units, on `scene::footprint::resolve_footprint_cells`'s
+        /// convention (a hex scene's radius is the circumscribing radius of the authored hex
+        /// count, never a square approximation). IGNORED when `token` is named.
         footprint_radius: f64,
         /// The token the route is for; authorized server-side and the source
         /// of the authoritative footprint (see the variant doc).

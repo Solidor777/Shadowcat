@@ -2568,7 +2568,7 @@ pub(crate) mod tests {
 
         // Valid declaration accepted.
         let ok = serde_json::json!([{
-            "module_id": "nightfox", "version": "1.0.0", "schema_format": 1,
+            "module_id": "example-system", "version": "1.0.0", "schema_format": 1,
             "doc_type": "actor", "subtree_pointer": "/system/stats",
             "schema": { "type": "object", "additionalProperties": { "type": "object",
                 "properties": { "kind": { "type": "string" } } } }
@@ -2605,13 +2605,13 @@ pub(crate) mod tests {
         // Same module_id declaring two non-overlapping subtrees of the same
         // doc_type is accepted -- a SchemaDeclaration is a single
         // (doc_type, subtree_pointer, schema) triple, not a per-module bundle,
-        // so one module legitimately governs several subtrees (e.g. a
-        // Nightfox-style module declaring both `/system/stats` and
+        // so one module legitimately governs several subtrees (e.g. a game-system
+        // module declaring both of the reserved directories, `/system/stats` and
         // `/system/mechanics`).
         let same_module_disjoint_subtrees = serde_json::json!([
-            { "module_id": "nightfox", "version": "1", "schema_format": 1, "doc_type": "actor",
+            { "module_id": "example-system", "version": "1", "schema_format": 1, "doc_type": "actor",
               "subtree_pointer": "/system/stats", "schema": {} },
-            { "module_id": "nightfox", "version": "1", "schema_format": 1, "doc_type": "actor",
+            { "module_id": "example-system", "version": "1", "schema_format": 1, "doc_type": "actor",
               "subtree_pointer": "/system/mechanics", "schema": {} }
         ]);
         gm.put(&base)
@@ -2621,9 +2621,9 @@ pub(crate) mod tests {
 
         // Same module_id declaring two DIFFERENT doc_types is also accepted.
         let same_module_different_doc_types = serde_json::json!([
-            { "module_id": "nightfox", "version": "1", "schema_format": 1, "doc_type": "actor",
+            { "module_id": "example-system", "version": "1", "schema_format": 1, "doc_type": "actor",
               "subtree_pointer": "/system/stats", "schema": {} },
-            { "module_id": "nightfox", "version": "1", "schema_format": 1, "doc_type": "item",
+            { "module_id": "example-system", "version": "1", "schema_format": 1, "doc_type": "item",
               "subtree_pointer": "/system/stats", "schema": {} }
         ]);
         gm.put(&base)

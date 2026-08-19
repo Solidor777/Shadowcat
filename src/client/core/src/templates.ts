@@ -130,7 +130,7 @@ export function stampInstance(source: WireDocument, opts: StampOpts): WireDocume
   return stamped;
 }
 
-/** Provenance/sync state of a document for the sheet chrome (§6.4). */
+/** Provenance/sync state of a document for the sheet chrome. */
 export type SyncState = "none" | "up_to_date" | "template_changed";
 
 /** 3-way pull: merge the template's current state into the child, preserving child-local diffs.

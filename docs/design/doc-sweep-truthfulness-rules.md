@@ -364,7 +364,72 @@ The rot is silent, it accumulates, and every instance aims a future reader at wh
 drifted into those coordinates — which is strictly worse than no citation, because it still reads as
 diligence. **A symbol name has none of this failure mode: it survives every insertion, every reflow,
 and every move between files. It breaks only on rename or deletion — precisely the edit where a grep
-for the old name finds it.**
+for the old name finds it.** That grep is no longer a manual step someone has to remember to run:
+`node scripts/check-skill-symbol-refs-cli.mjs` builds a symbol index from what the tree actually
+declares and verifies every code-symbol citation in a TRACKED skill directory against it — fatal,
+no baseline, wired into CI beside `check-skill-api-refs-cli.mjs`. The index reads Rust items,
+impl/trait methods, struct fields, enum variants, serde wire names, `let` bindings, function
+parameters and string-literal alternation sets; the SQL baseline's tables and columns; Cargo
+manifest keys; every TS/JS/Svelte declaration, member (at any nesting depth), object-literal key,
+import and literal type, through the TypeScript parser rather than line patterns; JSON config keys;
+and module, package-directory and skill-directory names.
+
+**A token's SHAPE decides only whether it is a citation at all — never whether a citation gets
+checked.** A shape-based exclusion is invisible in two directions at once: it hides the citations it
+skips, and it hides every gap in the index behind them, since a name the index cannot see is
+indistinguishable from a name the shape rule declined to look at. Every code span therefore lands in
+exactly one printed bucket — verified, acknowledged non-symbol, broken, EXAMPLE-exempt,
+not citation-shaped, or empty — and each acknowledgement entry is hit-counted, with a zero-hit entry
+failing the gate so the list cannot quietly hold a slot that absorbs a future defect. That
+enumeration is not maintained by hand: `check-skill-symbol-refs-cli.mjs`'s `SPAN_BUCKETS` generates
+the banner, and a test asserts this sentence lists exactly those labels, because this sentence has
+twice been false about the code it describes.
+
+**The bucket list is checked by conservation, not by inspection.** `spanAccountingDelta` requires
+every backtick RUN a document carries to be one of the two delimiters of a span that reached a
+bucket, or else to have left before classification by one of the ways out printed beside the
+buckets: block-blanked, unpaired inside a span, unpaired at top level — the last of which is always
+a prose defect and fails the gate on its own, because a stray delimiter shifts pairing across its
+whole paragraph while conservation still balances and every total stays healthy. The gate fails on
+any imbalance and reports it per file and in aggregate. Every widening of this gate's reach creates
+a new early-exit path, so an audit can only ever cover the paths already written, while the
+identity covers the ones nobody has written yet. A span written
+as `NAME=value` is checked on its NAME rather than discarded as unshaped, and a file that carries
+backticks yet yields no CHECKED citation fails on its own, because one unpaired delimiter is
+enough to take a whole file out of the gate while every total stays healthy. That floor asks only
+whether a citation was checked: the shifted-pairing failure it exists for turns real citations into
+prose spans, which climb the not-citation-shaped bucket, so a floor that waited for a file to yield
+literally nothing would be held shut on its own failure mode.
+
+One residual is deliberate and is NOT covered by the gate, exactly as the lowercase-hyphenated
+marker is not for RULE 16: a bare citation can verify against an unrelated same-named member. The
+citation rule is narrow — its target is citing a LOCATION instead of a symbol, and a bare member
+name is grep-findable and rename-breaking, so it satisfies the rule. Which member a bare citation
+meant is a review obligation, and the gate must not be described as covering it.
+
+**A function-LOCAL name is cited through its owner.** A let binding, a for-loop pattern's binding, a
+parameter and a function-scoped object key are all indexed only under the function that declares
+them (`supercover_cells::t_max_i`, `restore_backup::db_path`), never bare, and under the FULL owner
+chain rather than every suffix of it: a chain whose head is itself a local (`WorldSession`'s
+`loadExternalModules`, then one of its bindings) would otherwise register a path headed by a name
+invisible outside that function. A bare local carries no owner relation while the rest of the index
+does, so indexing one bare makes the index answer "the tree declares that" to any citation spelling
+any local anywhere — which is how a renamed field stays green because some unrelated function
+happens to bind the old name. Owner-qualification is what this rule already asks of the citation
+itself.
+
+**A closed VALUE SET is cited through the constant that declares it.** `NOTATION_KEYWORDS.kh`, not
+the member spelled bare: a one- or two-letter member indexed bare answers for every citation that
+happens to spell it, which is how a skill's mention of the i18n shell's `t` came to verify against
+a dice-notation keyword. Value-set extraction is scoped to the PRODUCT roots for the same reason — a
+string literal in a build script is that gate's own configuration, and indexing it lets a citation
+resolve against the tooling that checks it. Declarations under `scripts/` stay indexed; a gate that
+excludes its own directory guarantees exactly one blind spot.
+
+**Corpus scoping is by tracked-ness, not by directory name.** A skill directory holding no committed
+file is vendored third-party content documenting an external tool's own API, which this repo neither
+wrote nor maintains; a name pattern would encode the wrong reason and silently drop a future
+first-party skill named anything else. The excluded directories and their count print on every run.
 
 **Disambiguation without paths.** Rule 13's motivating problem was real: this repo has two
 `controller.svelte.ts` and 26 `index.ts`. Symbols solve it better than paths did. Qualify with the
@@ -512,12 +577,46 @@ stronger constraint and it wins wherever the two touch.
 | Dates, bare or narrative | `2026-07-30`, `(user directive 2026-08-05)` |
 | Dated plan/spec filenames | `docs/superpowers/plans/2026-07-15-m13a-formula-library.md` |
 
-**Not banned in a skill:** a durable document cited by path plus a section anchor —
-`docs/design/ARCHITECTURE.md §2`, `docs/design/doc-sweep-truthfulness-rules.md` RULE 16 — since
-that citation names something that does not get renumbered, closed, or superseded out from under
-it. Repo-document pointers to non-durable trackers, unnamed spec references, history narration and
-process markers are not yet ruled on for skills; widening the skill subset to cover them is a
-decision for whoever owns the rule, not an inference to draw from this table.
+**Also banned in a skill, by a later owner ruling:** repo-document pointers to NON-DURABLE
+trackers (a churn tracker named as a pointer, as distinct from a durable design doc), unnamed spec
+references, and history narration. Process markers are not in the skill subset. Widening the subset
+further is a decision for whoever owns the rule, not an inference to draw from this table.
+
+**Not banned in a skill:** a durable document cited by path plus a section anchor, since that
+citation names something that does not get renumbered, closed, or superseded out from under it.
+
+**That carve-out is a GUARD on the check, never the check dropped.** The PATHLESS forms of the same
+reference — a bare architecture reference, a bare numbered invariant, a bare section anchor — are
+precisely what the carve-out has to make room for, so they are IN the skill subset and permitted
+only where the line also carries the full durable design-doc path. Implementing the carve-out by
+substituting a narrower entry is how a permission for one form silently drops the ban on all of
+them: the pathless form is strictly worse than a stale named citation, because nothing tells a
+reader which file to go and fail to find.
+
+Two properties of the guard are load-bearing. It evaluates against the RAW line, because the
+Markdown subject has every design-doc citation replaced by the empty string before matching (that
+strip exists so a durable filename's digits cannot feed the milestone-id pattern) and would delete
+the evidence the guard needs. And its unit is the LINE: not the token, since a permitted citation
+may name the path once and carry a second anchor later on the same line; and not the group, since
+one permitted citation would then exempt every bare anchor sharing its paragraph. The cost is that
+a citation wrapped across two lines must carry its path on the line its anchor sits on — a visible
+failure an author fixes by reflowing, rather than an invisible hole.
+
+**Two spellings the reference entries did not reach, banned in CODE only.** A comment naming a
+codebase skill BY NAME is the same class of process-assigned referent: skills are created, renamed,
+split and retired, and when one goes the comment points at nothing. It is deliberately absent from
+the skill subset, where a skill naming a sibling skill is the documented structure of that
+knowledge layer. Separately, a churn tracker named WITHOUT its extension is the identical pointer
+four characters shorter; matching it requires a POINTER CONSTRUCTION — a preposition or verb of
+reference in front of the name — because the bare marker form stays permitted and these names also
+occur as ordinary prose.
+
+**The skill corpus is scoped to the TRACKED skill directories**, from the same derivation the
+skill-symbol-citation gate uses. An untracked skill directory is vendored third-party prose: this
+repo neither wrote it nor may edit it, so holding it to a rule about how this repo writes prose
+leaves only a vendored-file edit or a carve-out, and both are wrong. Tracked-ness is the durable
+property that says whose prose it is; a name pattern would have to be updated per vendored tool and
+would read as clean when it was not. The excluded count prints on every run.
 
 **Local numbering is not an exception.** An `I4` whose definition lives in a sibling comment of the
 same subsystem still forces the reader to resolve a number that no compiler, test or tool binds to
@@ -570,6 +669,84 @@ no baseline and no allowlist: every hit fails, legacy included. The reason a bas
 available here is structural — a grandfathered site is indistinguishable from a new one to every
 future reader, so exempting the backlog would preserve exactly the defect the rule removes.
 
+**Its coverage control's acknowledgement entries are hit-counted, and a zero-hit entry is fatal.**
+The same rule the symbol gate applies to its own lists, for the same reason: an entry that absorbs
+nothing stays on the list and silently absorbs the first future candidate that happens to spell it,
+with nothing in any output moving. The count of REACHED entries prints beside the EXAMPLE-exempt
+count on every full-corpus run, because an exemption whose size nobody sees is indistinguishable
+from a rule that does not apply. The measurement is only sound over the whole corpus, so a scoped
+run makes no zero-hit claim at all — on a subset a zero says the scope missed the token. The
+instance the rule was written from: narrowing the corpus to the tracked skill directories killed
+six entries at once, all of them naming tokens that live only in vendored third-party prose, and
+nothing said so.
+
+**The scan SUBJECT is a comment BLOCK, or a Markdown PARAGRAPH — never a line.** A line is only
+where the text happened to wrap, so a line-scoped subject reads every multi-word ban as clean the
+moment ordinary prose wrapping puts a break at one of the phrase's spaces, and the two halves are
+individually innocent: nothing in the output says a phrase was split. The GROUP BOUNDARY is what
+makes joining safe, and it is the load-bearing part of the design rather than an implementation
+detail. A group ends at a blank line, at any line contributing no prose, and — in code — at any
+line that is not purely commentary, so a doc comment is never joined to the declaration beneath it,
+a string-literal-bearing line stands alone, and a comment TRAILING a statement stands alone too
+(it is written against that statement, not as a continuation of the block above it). Joining across
+that boundary manufactures phrases nobody wrote out of one line's last words and the next line's
+first, turning a false negative into a false positive — the failure the boundary exists to prevent.
+
+**A separator between two WORDS of a marker is a SPELLING, never part of the marker's identity.**
+A hyphen, an underscore and a space all name the same process artifact, so each ban pattern is also
+matched under a separator-flexible form DERIVED from that pattern's own source. Deriving rather
+than enumerating is the point: an enumerated list can only ever carry the spellings someone
+remembered, while a derivation covers every entry at once, including entries not yet written. The
+rewrite is applied to the PATTERN and never to the subject — `_` is a word character while `-` and
+a space are not, so a subject-side substitution retokenizes the text and exposes boundaries the
+patterns rely on. Two spellings of a separator are widened:
+
+- a BARE separator character, only between two LITERAL ALPHABETIC characters, since the pattern
+  source offers nothing else to tell a word separator from regex punctuation;
+- a CHARACTER CLASS whose every member is a separator, written as a literal or as a
+  single-character escape, with no neighbour requirement, since such a class cannot be anything
+  else. A class carrying any non-separator member is left untouched: a `-` inside a range is a
+  range operator, and widening it corrupts the pattern outright. A separator spelled as a numeric
+  escape is rejected too, which leaves the class unwidened — the visible failure direction.
+
+**RESIDUAL, stated because the coverage claim is bounded rather than universal:** the neighbour
+test requires a LITERAL ALPHABETIC character on BOTH sides, so a bare separator keeps its single
+spelling whenever either neighbour is anything else — a group boundary, an escape, a class, a
+quantifier or a punctuation mark. Naming only the escape case would state a bound narrower than the
+code's and read as better coverage than exists; the group boundary is the commoner of the two,
+because an alternation of writers is how a marker with several spellings gets written at all.
+
+**The fix at a site is to respell that separator as a ONE-MEMBER CHARACTER CLASS**, which routes it
+through the class path above with no new mechanism and no new residual. The source still declares
+exactly one spelling; the class is what marks it as a word separator rather than regex punctuation,
+supplying the evidence the neighbours could not. Loosening the neighbour test instead is the wrong
+repair: it is correct for every separator that is not a word separator, and relaxing it is how a
+matcher acquires silent over-widening.
+
+**Respelling is not unconditionally safe, and the direction decides.** Adding a hyphen or an
+underscore between two words is safe — nobody writes English that way by accident. Adding a SPACE
+where the pattern had a hyphen is not: it fuses two ordinary tokens into a marker. Two entries are
+therefore left at their single spelling on measured grounds — the local letter+digit marker, where
+the space writer collides with an indefinite article in front of a quantity, and the hyphenated
+spec compound, where hyphenation turns the noun into an adjectival compound naming a code symbol's
+scope rather than a document.
+
+**An entry whose own spelling carries NO separator is a different repair: an added ALTERNATIVE, not
+a respelling.** There is nothing in the source to widen, and a one-member class would route the
+entry through the class path straight into the space writer — which for the phase/workstream/
+invariant id is a capital letter, a space and a quantity, ordinary English. Writing the separated
+writers as their own alternatives keeps them at exactly the spellings written, because each
+separator then sits between a group boundary and an escape, which is precisely the residual named
+above. A writer reached by neither the derivation nor a live corpus line is evidenced only by its
+positive control, so the control is mandatory in both directions: each added writer flagged, and
+the space form left clean.
+
+**Nothing inside a NEGATIVE lookaround is widened, at any nesting depth.** Widening a separator
+inside an exclusion widens the exclusion, so the pattern matches strictly less and the gate reports
+strictly cleaner — the one direction nothing in the output distinguishes from a clean corpus, and
+the inverse of what every other widening here does. A positive lookaround and a named group are
+ordinary: widening inside them adds matches, which is this gate's deliberate failure direction.
+
 **What the detector can and cannot see.** The patterns cover the id-shaped and pointer-shaped forms
 at high precision. History narration is only partly detectable: `previously`/`formerly` match, but
 `no longer` overwhelmingly describes *runtime data* ("an id that no longer names a scene is
@@ -578,10 +755,39 @@ of dropping the narration. **A green detector is therefore not a satisfied rule*
 narration is a review obligation. Reword to evade a pattern while still speaking of something
 outside the code and you have violated RULE 0, not fixed anything.
 
-**Scope.** Code comments and code-facing strings, plus the narrower subset below for
+**`still`/`nonetheless`/`all the same` are concessive, not historical, unless they narrate a PRIOR
+state of the code.** A concessive word joins two clauses of the SAME present-tense claim ("despite
+X, Y holds") and carries no narration at all; history narration is a word describing what the code
+`used to` do. The test: does the word refer to a PAST VERSION of the code, or to ANOTHER CLAUSE in
+the same sentence? `"the divergence must nonetheless be reported, at debug"` concedes one part of
+a present claim (a divergence that fails one severity check is still reported at another) against
+another, with no past version in view — ordinary prose, not narration, and not converted. A
+genuine historical `still` — "the check still uses the array-based approach" — narrates a state
+that used to be true and remains true, and that IS the banned form. Do not run a blanket
+`still`/`nonetheless`/`all the same` → deletion pass; classify each site by this test first, or a
+sweep churns a real concession into a flatter sentence and a later sweep churns it back.
+
+**The lowercase hyphenated marker shape is deliberately ungated, and this is the decision rather
+than an open gap.** A local checkpoint id written as one lowercase letter, a hyphen and one digit —
+`c-1`, `b-2`, `f-3` — is a banned marker: it is the same id the uppercase `M11c-1` writer names,
+with the milestone prefix dropped, and it resolves only for a reader holding the artifact that
+assigned it. No pattern can detect it. It is character-for-character the shape of ordinary
+arithmetic in a comment (`0..n-1`, `w-1`, `h-1`, `s_i = i/(n-1) * L`), and no casing, length or
+adjacency test separates the two: every candidate separator is a narrowing tuned to whichever
+specimens are in front of the author, which makes the next instance invisible. The collision is
+also not fixable at its source the way a single mis-spelled term is — arithmetic in a comment is
+legitimate, open-ended prose, and rewriting `0..n-1` to dodge a detector is exactly the
+reword-to-evade RULE 0 forbids.
+
+So the shape is a **review obligation, not a gate obligation**, on the same footing as history
+narration above: the ban is real and a reviewer enforces it, and a clean
+`scripts/check-comment-refs.mjs` run is not evidence that none remains.
+
+**Scope.** Code comments and code-facing strings, plus the narrower subset above for
 `.claude/skills/`. A codebase-skill brief is prose, not code, and may reference a durable document
 by path + section anchor — prose has no symbols, and a durable document is read as one. But a
-skill may not carry a milestone id, a task id, a sweep/round/review marker, or a date: those are
+skill may not carry a milestone id, a task id, a sweep/round/review marker, a date, a pointer to a
+non-durable tracker, an unnamed spec reference, or history narration: those are
 process ephemera regardless of the file that names them, and a "Pointers" section that cites a
 dated plan or spec by its dated filename is citing a superseded-by-construction record, not a
 durable one, so that citation stays banned too. `.superpowers/` artifacts and dated plan/spec

@@ -48,6 +48,39 @@ test("hex grid emits a non-empty line set over a viewport", () => {
   expect(lines.length).toBeGreaterThan(0);
 });
 
+// Self-consistency pin. `TokenAnimator` must use the per-step distance on hex, not the outer
+// radius — the two differ by a factor of √3. This measures the real
+// distance between two adjacent hex centers via `snap` (which round-trips through the production
+// `axialToPixel`, the same call `worldUnitsPerCell` itself must agree with) and derives its
+// expectation from that measured geometry rather than restating the `size * sqrt(3)` formula — but
+// the oracle is derived from `Grid`'s OWN geometry, so a formula change that updates
+// `axialToPixel`/`worldUnitsPerCell` together stays self-consistent and passes this test even if it
+// drifts from the server's convention. This test alone is NOT a cross-language parity pin; see the
+// literal-value pin below for that.
+test("hex per-step distance (worldUnitsPerCell) equals the measured distance between adjacent cell centers", () => {
+  const g = new Grid({ kind: "hex", size: 50 });
+  // Snap the origin to its hex's center, then snap a point known to fall inside the (1,0)
+  // neighbor to that hex's center — both via the real production round-trip, not a restated
+  // formula.
+  const origin = g.snap({ x: 0, y: 0 });
+  const neighbor = g.snap({ x: 90, y: 0 }); // inside the (1,0) hex for size 50
+  const measured = Math.hypot(neighbor.x - origin.x, neighbor.y - origin.y);
+  expect(g.worldUnitsPerCell()).toBeCloseTo(measured, 9);
+});
+
+// Cross-language parity pin. Neither side can share a symbol across the Rust/TS boundary, so both
+// this test and the server's `hex_world_units_per_cell_matches_the_cross_language_pinned_literal`
+// sibling state the SAME literal value (`50 * sqrt(3)`) independently, rather
+// than each deriving its expectation from its own implementation as the self-consistency test
+// above does. A literal is not a decision-maker two sites can disagree over — it is the ground
+// truth both sides are checked against — so a formula change on EITHER side alone now fails that
+// side's own comparison against this literal, where two self-derived oracles could update in
+// lockstep and silently diverge from the other language.
+test("hex per-step distance (worldUnitsPerCell) equals the cross-language pinned literal", () => {
+  const g = new Grid({ kind: "hex", size: 50 });
+  expect(g.worldUnitsPerCell()).toBeCloseTo(86.60254037844386, 9);
+});
+
 // `pixelToAxial`'s q mixes x and y with opposite signs, so its extrema sit on the
 // top-right/bottom-left diagonal. Sampling only the other diagonal understated the
 // q-range and left hexes CENTERED INSIDE the viewport undrawn (50 of them at
@@ -117,4 +150,71 @@ test("alternating (5-10-5) rule: two diagonal steps (dmin=2) cost 3, not 2", () 
   // dmin=dmax=2 → (dmax-dmin) + dmin + floor(dmin/2) = 0 + 2 + 1 = 3.
   // Costing this as dmin*1=2 (ignoring the 1,2,1,2… alternation) would be wrong.
   expect(g.distance({ x: 50, y: 50 }, { x: 250, y: 250 })).toBe(3);
+});
+
+test("square cellCenter/cellVertices: axis-aligned rect anchored at (col*size, row*size)", () => {
+  const g = new Grid({ kind: "square", size: 100 });
+  expect(g.cellCenter(2, 0)).toEqual({ x: 250, y: 50 });
+  expect(g.cellVertices(0, 0)).toEqual([
+    { x: 0, y: 0 }, { x: 100, y: 0 }, { x: 100, y: 100 }, { x: 0, y: 100 },
+  ]);
+  expect(g.cellVertices(1, 0)).toEqual([
+    { x: 100, y: 0 }, { x: 200, y: 0 }, { x: 200, y: 100 }, { x: 100, y: 100 },
+  ]);
+});
+
+test("square cellVertices' centroid equals cellCenter for every cell", () => {
+  const g = new Grid({ kind: "square", size: 70 });
+  for (const [col, row] of [[0, 0], [3, -2], [-4, 5]] as const) {
+    const corners = g.cellVertices(col, row);
+    const cx = corners.reduce((s, p) => s + p.x, 0) / corners.length;
+    const cy = corners.reduce((s, p) => s + p.y, 0) / corners.length;
+    const center = g.cellCenter(col, row);
+    expect(cx).toBeCloseTo(center.x, 9);
+    expect(cy).toBeCloseTo(center.y, 9);
+  }
+});
+
+// Hex cellCenter must equal the axial-to-pixel formula (the same math `snap`'s hex branch and
+// `hexLines` already use) — this is the ground truth `cellsToRects`/`toLighting` now paint
+// against instead of a square `i*size, j*size` position.
+test("hex cellCenter matches the axial-to-pixel formula", () => {
+  const g = new Grid({ kind: "hex", size: 100 });
+  const c = g.cellCenter(1, 1);
+  expect(c.x).toBeCloseTo(100 * (Math.sqrt(3) * 1 + (Math.sqrt(3) / 2) * 1), 9);
+  expect(c.y).toBeCloseTo(100 * 1.5 * 1, 9);
+});
+
+test("hex cellVertices: 6 points, centroid equals cellCenter, every corner exactly `size` from center", () => {
+  const g = new Grid({ kind: "hex", size: 50 });
+  for (const [q, r] of [[0, 0], [1, 1], [-2, 3]] as const) {
+    const corners = g.cellVertices(q, r);
+    expect(corners.length).toBe(6);
+    const center = g.cellCenter(q, r);
+    const cx = corners.reduce((s, p) => s + p.x, 0) / 6;
+    const cy = corners.reduce((s, p) => s + p.y, 0) / 6;
+    expect(cx).toBeCloseTo(center.x, 9);
+    expect(cy).toBeCloseTo(center.y, 9);
+    for (const p of corners) {
+      expect(Math.hypot(p.x - center.x, p.y - center.y)).toBeCloseTo(50, 9);
+    }
+  }
+});
+
+// `hexLines` must not carry a second hex-corner formula — pins that its emitted outline for a
+// given hex is exactly `cellVertices`'s own output (in the same order), not merely
+// geometrically equivalent.
+test("hexLines' outline for a cell matches cellVertices exactly (single formula, not a duplicate)", () => {
+  const g = new Grid({ kind: "hex", size: 50 });
+  const corners = g.cellVertices(0, 0); // the (0,0) hex, centered inside a viewport starting at origin
+  const lines = g.lines({ x: 0, y: 0, w: 10, h: 10 }); // tiny rect margined to still cover (0,0)
+  // Collect the 6-segment outline whose first point matches corners[0].
+  const outline = [];
+  for (let i = 0; i + 5 < lines.length; i += 6) {
+    if (Math.abs(lines[i].x1 - corners[0].x) < 1e-9 && Math.abs(lines[i].y1 - corners[0].y) < 1e-9) {
+      for (let k = 0; k < 6; k++) outline.push({ x: lines[i + k].x1, y: lines[i + k].y1 });
+      break;
+    }
+  }
+  expect(outline).toEqual(corners);
 });

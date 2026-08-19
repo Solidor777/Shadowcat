@@ -55,9 +55,9 @@ describe("per-scene overrides", () => {
   });
 
   it("selecting inherit on a boolean override that was null dispatches null (not coercing null to false)", async () => {
-    // Exercises the FIX 1 null-as-inherit path: a pre-existing fog=null override must render the
-    // inherit option as selected ("" value), and selecting it again must dispatch null (not boolean
-    // false, which the old === undefined test would have produced for a null wire value).
+    // The null-as-inherit path: a `fog=null` override renders the inherit option as selected
+    // ("" value), and selecting it again dispatches null, never boolean false — a presence test
+    // written as `=== undefined` reads a null wire value as absent and coerces it.
     const dispatchIntent = vi.fn();
     const ws = buildWorldSettingsDoc("w1", undefined, "ws1");
     // Pre-populate scene with fog explicitly set to true; selecting inherit clears it with null.

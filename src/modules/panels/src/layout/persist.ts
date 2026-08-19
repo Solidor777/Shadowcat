@@ -1,7 +1,6 @@
 // Persistence codec for PanelLayoutV1. Pure; no Svelte, no shell coupling. The shell's
-// `UiState.worlds[world].panelLayout` field is `unknown` (Zod-free by design — see
-// shadowcat-codebase-client-shell), so decoding must hand-roll its own structural guards
-// rather than lean on a schema library.
+// `UiState.worlds[world].panelLayout` field is `unknown` (Zod-free by design), so decoding must
+// hand-roll its own structural guards rather than lean on a schema library.
 import { prune, type CompactLayout, type ExpandedLayout, type GroupNode, type PanelLayoutV1, type Rect, type ZoneNode } from "./tree";
 
 const ZONE_IDS = ["right", "bottom", "left"] as const;
@@ -193,8 +192,7 @@ function isCompactLayout(v: unknown): v is CompactLayout {
 
 /** Structural validation for a raw `PanelLayoutV1` blob. Every panel id anywhere in the
  * tree must be a string (checked transitively by the `isString`/`isStringArray` guards
- * above) — a non-string id anywhere fails the whole blob, matching the brief's "any panel
- * id non-string" clause.
+ * above) — a non-string id anywhere fails the whole blob.
  * @param v The value to check.
  * @returns Whether `v` structurally satisfies `PanelLayoutV1` (does NOT check the
  * cross-field referential invariants `isReferentiallyConsistent` checks separately).
@@ -279,7 +277,8 @@ function withPoppedOut(l: PanelLayoutV1): PanelLayoutV1 {
  * pruning against that partial set would otherwise permanently drop every not-yet-registered
  * panel's saved position. `PanelsController` retains `source` to reconstruct later-registering
  * panels' persisted locations via `placeNewRegistrations` instead of losing them to that race.
- * @param raw The persisted blob, of unknown shape (see the file header).
+ * @param raw The persisted blob, of unknown shape — `UiState.worlds[world].panelLayout` is
+ * `unknown`, so the structural guards here are hand-rolled rather than schema-driven.
  * @param known The panel ids the caller already has registered at decode time — consumed only
  * by the post-validation `prune` pass, not by the structural/referential validity check.
  * @param fallback Builds the layout to use when `raw` fails validation — typically

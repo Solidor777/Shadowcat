@@ -23,7 +23,10 @@
   };
   /** Shape of an actor's `engine.shape` field. */
   type ShapeEngineShape = {
-    /** The token footprint shape; falls back to `"square"` when unset. */
+    /** The token's render shape; falls back to `"square"` when unset. It reaches the resolved
+     * footprint on square grids only — `footprint::resolve_footprint_cells` ignores it on hex,
+     * where an authored size counts HEXES and a hex tessellation draws no square/circle
+     * distinction. */
     shape?: string;
   };
   /** Shape of an actor's `engine.size` field. */
@@ -43,8 +46,8 @@
     vision?: {
       /** The vision-modes registry id this assignment applies. */
       mode: string;
-      /** The assignment's range in grid cells. */
-      range: number;
+      /** The assignment's range in grid cells; `null`/absent inherits the mode's own default. */
+      range: number | null;
     }[];
   };
 
@@ -253,7 +256,8 @@
             <option value="circle">{t("actors.shapeCircle")}</option>
           </select>
           <!-- Per-row size inputs dispatch an update op (not bind:value), so e.currentTarget.value
-               is a string; Number(...) coerces it to keep engine.size numeric for actor.size × cell math. -->
+               is a string; Number(...) coerces it because `ActorEngine.size` is numeric — the
+               server reads those fields as `f64` in `footprint::resolve_footprint_cells`. -->
           <input
             type="number" min="0.5" step="0.5" class="size-edit" aria-label={t("actors.width")}
             value={(a.engine as SizeEngineShape | undefined)?.size?.w ?? 1}

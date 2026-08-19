@@ -50,7 +50,7 @@ and serves uploads unconverted (the conversion pipeline is deferred).
   harmless dead disk space. Two-store writes (file + metadata row) without a spanning txn always
   order around whichever failure mode is unrecoverable for that operation — row-first for
   replace, file-first for create.
-- **`upload`/`replace`/`delete` all take `AppState.write_barrier.read()` around their
+- **`upload`/`replace`/`delete` all hold a read permit on `AppState.write_barrier` around their
   commit+rename/commit+unlink critical section** (`http::assets`) — never around the earlier
   network-bound multipart stream, which has no timeout (`DefaultBodyLimit::disable()` on these
   routes) and would otherwise let a slow uploader hold the write-preferring
@@ -58,7 +58,7 @@ and serves uploads unconverted (the conversion pipeline is deferred).
   side across its `VACUUM INTO` + assets copy, so no asset write's row-commit+file-op pair can
   interleave with an in-server backup snapshot (`shadowcat-codebase-server-ops`).
 - **ETag == `"{id}-{version}"`**; `version` is the single monotonic cache key. Stable UUID identity
-  means a replace keeps the id and only bumps the version, so links survive (ARCHITECTURE §6).
+  means a replace keeps the id and only bumps the version, so links survive.
 - **Upload limits are tiered + configurable** (GM ≈ 2× regular); uploads stream to disk, not buffered.
 - **World deletion removes the whole `<assets_path>/<world_id>/` directory AFTER the row
   transaction commits** (`http::routes::delete_world` — the delete convention: rows first, files second;

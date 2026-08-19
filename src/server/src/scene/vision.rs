@@ -97,22 +97,53 @@ pub fn bound_for(viewpoint: P, walls: &[Seg], margin: f64) -> Rect {
     }
 }
 
-/// `bound_for`, unioned with the scene's own extent (`(0,0)` to `scene_bounds`, clamped to
-/// non-negative). A wall-derived bound smaller than the scene's extent is grown to cover the
-/// whole scene instead — a wall-less (or near-wall-less) scene reveals its own full bounded
-/// extent rather than a small `margin` box around the viewpoint. A wall-derived bound that
-/// already exceeds the scene's extent (e.g. a wall placed beyond the authored bounds) is left
-/// unchanged: this only ever grows the bound, never shrinks it.
-pub fn bound_for_scene(viewpoint: P, walls: &[Seg], scene_bounds: (f64, f64), margin: f64) -> Rect {
+/// `bound_for`, UNIONED with a `reach`-radius square around `viewpoint` — never a replacement, so
+/// the wall-endpoint growth `bound_for` already does still applies on top. `reach` is a WORLD-unit
+/// distance (a caller converts an authored cell radius through `GridShape::world_units_per_cell`
+/// before calling this); a non-finite or non-positive `reach` contributes nothing, leaving the
+/// plain `margin` box `bound_for` already computes — the same fail-closed handling
+/// `light_illumination` gives a degenerate radius, not an invented fallback distance. This is what
+/// keeps a placed light's occlusion polygon growing to the light's OWN authored reach instead of
+/// capping at `margin` regardless of how far the light was told to shine.
+pub(crate) fn bound_for_reach(viewpoint: P, walls: &[Seg], margin: f64, reach: f64) -> Rect {
+    let mut b = bound_for(viewpoint, walls, margin);
+    if reach.is_finite() && reach > 0.0 {
+        b.minx = b.minx.min(viewpoint.0 - reach);
+        b.miny = b.miny.min(viewpoint.1 - reach);
+        b.maxx = b.maxx.max(viewpoint.0 + reach);
+        b.maxy = b.maxy.max(viewpoint.1 + reach);
+    }
+    b
+}
+
+/// `bound_for`, UNIONED with the scene's own world-unit envelope. `scene_extent` is in WORLD units
+/// — a caller passes
+/// `GridShape::world_extent` of the scene's authored bounds, never those raw bounds, which are
+/// measured in grid units (cells), continuous, and would otherwise be compared here against wall
+/// coordinates in world units. A wall-derived bound smaller than the scene's envelope is grown to
+/// cover the whole scene instead, so a wall-less (or near-wall-less) scene reveals its own full
+/// extent rather than a small `margin` box around the viewpoint. A wall-derived bound that already
+/// exceeds the envelope on some edge (e.g. a
+/// wall placed beyond the authored bounds) is left unchanged there: this only ever grows the bound.
+///
+/// Union, never replacement, on every edge — a degenerate envelope (the refused zero-area one) has
+/// its `min` and `max` both at the origin, so it cannot SHRINK the wall-derived bound on any side.
+/// It does not leave that bound untouched either: the low edges are still `min`ed against `(0.0,
+/// 0.0)`, so a wall-derived bound sitting wholly clear of the origin is pulled back to it on both
+/// low axes — the same clamp a square scene's own minimum applies, and the reason a refused
+/// envelope is a widening of the bound rather than an absence from it.
+pub(crate) fn bound_for_scene(
+    viewpoint: P,
+    walls: &[Seg],
+    scene_extent: crate::scene::grid_shape::WorldExtent,
+    margin: f64,
+) -> Rect {
     let wall_bound = bound_for(viewpoint, walls, margin);
-    let (width, height) = scene_bounds;
-    let scene_maxx = width.max(0.0);
-    let scene_maxy = height.max(0.0);
     Rect {
-        minx: wall_bound.minx.min(0.0),
-        miny: wall_bound.miny.min(0.0),
-        maxx: wall_bound.maxx.max(scene_maxx),
-        maxy: wall_bound.maxy.max(scene_maxy),
+        minx: wall_bound.minx.min(scene_extent.min.0),
+        miny: wall_bound.miny.min(scene_extent.min.1),
+        maxx: wall_bound.maxx.max(scene_extent.max.0),
+        maxy: wall_bound.maxy.max(scene_extent.max.1),
     }
 }
 
@@ -351,6 +382,96 @@ mod tests {
         }];
         let b = bound_for((10.0, 10.0), &walls, 5.0);
         assert!(b.minx <= -5.0 && b.maxx >= 45.0 && b.maxy >= 15.0);
+    }
+
+    #[test]
+    fn bound_for_scene_unions_the_envelopes_minimum_and_a_refused_one_cannot_shrink_it() {
+        use crate::scene::grid_shape::{GridShape, HexGrid, REFUSED_EXTENT};
+        // The scene's contribution to the bound is a UNION on all four edges, so the envelope's
+        // own minimum grows the bound wherever it reaches past the wall-derived one. A hex block
+        // large relative to the caller's margin is where that bites: its origin cell reaches a
+        // full circumradius below the origin, past a viewpoint-derived bound that only extends by
+        // the margin.
+        //
+        // Discrimination, per assertion, each naming a mutation that breaks THAT assertion while
+        // the others still hold:
+        // - the low-edge assertions fail if the minimum is clamped to zero instead of unioned,
+        //   and the fixture guard on the envelope's reach fails first if it stops reaching past
+        //   the margin, so neither can pass vacuously.
+        // - the high-edge assertion fails if the maximum stops being unioned, which the low edges
+        //   cannot detect.
+        // - the refused-envelope assertions fail if the union becomes a replacement, which the
+        //   real-envelope assertions still tolerate, their corners being the outer ones anyway.
+        // - the far-from-the-origin refused arm fails if the union starts SKIPPING a zero-area
+        //   envelope, which every other assertion here tolerates.
+        let g = HexGrid { size: 400.0 };
+        let envelope = g.world_extent((3.0, 3.0));
+        let margin = 100.0;
+        let vp = (0.0, 0.0);
+        assert!(
+            envelope.min.0 < vp.0 - margin && envelope.min.1 < vp.1 - margin,
+            "fixture: the envelope's minimum {:?} must reach past the margin box around {vp:?}",
+            envelope.min
+        );
+        let b = bound_for_scene(vp, &[], envelope, margin);
+        assert!(
+            (b.minx - envelope.min.0).abs() < 1e-9 && (b.miny - envelope.min.1).abs() < 1e-9,
+            "the bound's low edges must be the envelope's own minimum, got ({}, {})",
+            b.minx,
+            b.miny
+        );
+        assert!(
+            (b.maxx - envelope.max.0).abs() < 1e-9 && (b.maxy - envelope.max.1).abs() < 1e-9,
+            "the bound's high edges must be the envelope's own maximum, got ({}, {})",
+            b.maxx,
+            b.maxy
+        );
+        // A refused (zero-area) envelope cannot SHRINK the bound: it is unioned like any other,
+        // never substituted for the wall-derived one. Its corners are the ORIGIN, though, so it is
+        // not inert — which takes two arms to state, because a wall-derived bound that already
+        // spans the origin cannot tell "untouched" from "clamped to the origin".
+        let walls = [Seg {
+            a: (-500.0, -500.0),
+            b: (500.0, 500.0),
+        }];
+        let wall_only = bound_for(vp, &walls, margin);
+        assert!(
+            wall_only.minx < 0.0 && wall_only.miny < 0.0,
+            "fixture: these walls must already span the origin, got ({}, {})",
+            wall_only.minx,
+            wall_only.miny
+        );
+        let refused = bound_for_scene(vp, &walls, REFUSED_EXTENT, margin);
+        assert!(
+            refused.minx == wall_only.minx
+                && refused.miny == wall_only.miny
+                && refused.maxx == wall_only.maxx
+                && refused.maxy == wall_only.maxy,
+            "a refused envelope must leave a bound that already spans the origin untouched"
+        );
+        // The other side of the same union: a wall-derived bound sitting wholly clear of the
+        // origin IS moved, its low edges landing on the refused envelope's own corners rather than
+        // on the wall-derived values. This is the arm a union that skipped a zero-area envelope
+        // would fail while every other assertion here still passed.
+        let far_walls = [Seg {
+            a: (1000.0, 1000.0),
+            b: (2000.0, 2000.0),
+        }];
+        let far_vp = (1500.0, 1500.0);
+        let far_wall_only = bound_for(far_vp, &far_walls, margin);
+        assert!(
+            far_wall_only.minx > 0.0 && far_wall_only.miny > 0.0,
+            "fixture: these walls must sit clear of the origin, got ({}, {})",
+            far_wall_only.minx,
+            far_wall_only.miny
+        );
+        let far_refused = bound_for_scene(far_vp, &far_walls, REFUSED_EXTENT, margin);
+        assert!(
+            far_refused.minx == 0.0 && far_refused.miny == 0.0,
+            "a refused envelope pulls the low edges to the origin all the same, got ({}, {})",
+            far_refused.minx,
+            far_refused.miny
+        );
     }
 
     #[test]

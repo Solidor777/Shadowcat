@@ -101,7 +101,9 @@ start: [number, number],
  */
 waypoints: Array<[number, number]>, 
 /**
- * Mover radius in grid units; IGNORED when `token` is named.
+ * Mover radius in grid units, on `scene::footprint::resolve_footprint_cells`'s
+ * convention (a hex scene's radius is the circumscribing radius of the authored hex
+ * count, never a square approximation). IGNORED when `token` is named.
  */
 footprint_radius: number, 
 /**
