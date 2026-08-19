@@ -490,7 +490,7 @@ Confirmed-real defects that have since been fixed, kept for provenance. New fixe
   rect — correct on a square grid, but on a hex scene the server sends lit/explored cells as axial
   `(q, r)`, so this painted skewed square overlays under correctly-drawn hexes (grid lines, cursor
   snapping and measurement already went through `Grid`'s correct axial math privately). Fixed
-  (`c3fb921c`) by delegating to `Grid.cellVertices`/the active `GridShape`'s corner geometry instead
+  (`c3fb921c`) by delegating to `Grid.cellVertices`, the active grid's resolved corner geometry, instead
   of assuming a square shape — `cellsToRects` and `LightingFrame`'s cells now carry resolved
   `corners: Point[]` (a rect on square, a hexagon on hex), and the paint methods treat `corners`
   opaquely, performing no grid-kind math of their own.
