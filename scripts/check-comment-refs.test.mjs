@@ -204,6 +204,14 @@ test("code mode flags a definite reference to an incident by allusion", () => {
   expect(hits.map((h) => h.kind)).toEqual(["history narration by allusion"]);
 });
 
+// Positive control for the plural noun form: "bugs" carries a trailing word character after the
+// singular stem, so a boundary assertion placed right after the stem alone would miss it.
+test("code mode flags the allusion construction with a plural incident noun", () => {
+  const fixture = "// A regression suite for the documented bugs in the retry path.\n"; // EXAMPLE:
+  const { hits } = scanContent(fixture, { isMd: false });
+  expect(hits.map((h) => h.kind)).toEqual(["history narration by allusion"]);
+});
+
 // Reaches CODE-FACING STRINGS, not just comments — the logged instance was a test name.
 test("code mode flags a definite reference to an incident by allusion inside a test name", () => {
   const fixture =

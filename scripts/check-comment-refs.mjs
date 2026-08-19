@@ -308,17 +308,25 @@ export const BANNED = [
   // incident noun, since the participle alone does not resolve a compound like "the observed
   // failure mode" — that phrase describes the mode's observability, not a reported incident.
   //
-  // RESIDUAL, by design, and this is half of the deliverable, not an afterthought: this pattern
-  // requires the participle to sit directly between the determiner and the noun. A reordered
-  // allusion ("the panic that was reported"), an allusion carrying no participle at all, or an
-  // incident noun outside this enumerated set is invisible to it — allusion is semantic and this
-  // pattern is lexical, so a clean run over this construction is NOT evidence that no allusive
-  // reference remains. Catching those is a review obligation, on the same footing as the
-  // lowercase hyphenated local-marker class the core skill documents as permanently ungated by
-  // design.
+  // RESIDUAL, by design: this pattern requires the participle to sit directly between the
+  // determiner and the noun. A reordered allusion ("the panic that was reported"), an allusion
+  // carrying no participle at all, or an incident noun outside this enumerated set is invisible
+  // to it — allusion is semantic and this pattern is lexical, so a clean run over this
+  // construction is NOT evidence that no allusive reference remains. Catching those is a review
+  // obligation, on the same footing as the lowercase hyphenated local-marker class the core skill
+  // documents as permanently ungated by design.
+  //
+  // The asymmetric direction is also real and stated here rather than left to be rediscovered
+  // under pressure: the construct-noun suffix guard below is itself a closed word list (`mode`,
+  // `path`, `handler`, `type`, `kind`, `variant`, `case`), so a construct compound using a suffix
+  // outside that list (a reported error STATE, a known crash recovery MECHANISM) still reads as a
+  // false positive. A false positive is visible on the next run and a false negative is not, so
+  // the pressure this produces always points toward narrowing the pattern — the correct response
+  // to a genuine miss here is to extend the suffix list, never to drop the participle requirement
+  // or narrow the noun sets that make the construction detectable at all.
   {
     name: "history narration by allusion",
-    re: /\b(?:the|that|this|these|those)\s+(?:reported|logged|observed|documented|noted|described|discovered|identified|known|flagged|surfaced|raised|witnessed|filed)\s+(?:panic|crash|bug|failure|incident|regression|outage|defect|deadlock|leak|corruption|exploit|vulnerability)\b(?!\s+(?:path|handler|mode|type|kind|variant|case))/i,
+    re: /\b(?:the|that|this|these|those)\s+(?:reported|logged|observed|documented|noted|described|discovered|identified|known|flagged|surfaced|raised|witnessed|filed)\s+(?:panic|crash|bug|failure|incident|regression|outage|defect|deadlock|leak|corruption|exploit|vulnerability)s?\b(?!\s+(?:path|handler|mode|type|kind|variant|case))/i,
   },
   // EXAMPLE: An unnamed reference to "the spec" is the same defect as a named one and strictly
   // worse to resolve: the reader cannot even tell which document went stale. Matches a spec

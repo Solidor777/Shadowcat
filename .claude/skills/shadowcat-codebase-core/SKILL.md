@@ -250,18 +250,24 @@ source of truth. The ones agents break most:
   A THIRD detectable-but-bounded class sits beside it: **history narration by allusion**, a
   definite reference to an event with no fixed lexical marker — the incident is named as though
   the reader already knows it, unlike a fixed marker word or compound.
-  <!-- EXAMPLE: the canonical shape is a determiner, a reporting participle, an incident noun -->
+  <!-- EXAMPLE: "the reported panic" carries no fixed marker word on the incident itself, unlike
+  EXAMPLE: `previously`/`formerly` or a "used to" compound. -->
   Its pattern is a CONSTRUCTION — a determiner, an
   observation/reporting participle, and an incident noun — designed against the collision where
   the same nouns name a CODE CONSTRUCT rather than an event (`the panic path`, `the crash
   handler`, `the failure mode`, `the error type`): the participle is what separates a construct
   name from a reference to something that happened, and a construct-noun suffix immediately after
   the incident noun (`mode`, `path`, `handler`, `type`, `kind`, `variant`, `case`) is refused even
-  when a participle precedes it. **Bounded, not complete**: the pattern requires the participle to
-  sit directly between the determiner and the noun, so a reordered allusion, an allusion with no
-  participle at all, or an incident noun outside its enumerated set is invisible to it — a clean
-  run over this shape is not evidence none remains, on the same review-obligation footing as
-  `history narration`'s own bound above it.
+  when a participle precedes it. **Bounded on BOTH sides, not complete**: the pattern requires the
+  participle to sit directly between the determiner and the noun, so a reordered allusion, an
+  allusion with no participle at all, or an incident noun outside its enumerated set is invisible
+  to it — a clean run over this shape is not evidence none remains, on the same review-obligation
+  footing as `history narration`'s own bound above it. The suffix guard is ALSO a closed word
+  list, so it runs the opposite risk: a construct compound using a suffix outside that list (a
+  reported error STATE, a known crash recovery MECHANISM) still reads as a false positive. A false
+  positive is visible on the next run and a false negative is not, so the pressure this produces
+  always points toward narrowing the pattern back — the correct response to a genuine miss here is
+  to extend the suffix list, never to drop the participle requirement.
   A second class sits beside it on the same footing: the lowercase hyphenated marker shape
   (`c-1`, `b-2`) is character-for-character ordinary comment arithmetic (`0..n-1`, `w-1`) with no
   separator a pattern can key on, so it is **permanently ungated by design**, not an open gap — a
