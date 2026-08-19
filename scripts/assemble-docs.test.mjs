@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -293,5 +293,26 @@ describe("assemble", () => {
     for (const p of ["index.html", join("api", "ts", "index.html"), join("api", "rust", "shadowcat.html")]) {
       expect(existsSync(join(out, p))).toBe(true);
     }
+  });
+
+  it("removes a file from a prior build whose current inputs no longer produce it", () => {
+    const src = mkdtempSync(join(tmpdir(), "docs-src-"));
+    const out = join(mkdtempSync(join(tmpdir(), "docs-out-")), "dist-docs");
+    const portal = join(src, "portal");
+    const ts = join(src, "ts");
+    const rust = join(src, "rust");
+    for (const dir of [portal, ts, rust]) mkdirSync(dir, { recursive: true });
+    writeFileSync(join(portal, "index.html"), "<html></html>");
+    writeFileSync(join(portal, "stale-page.html"), "<html>gone next build</html>");
+    writeFileSync(join(ts, "index.html"), "<html></html>");
+    writeFileSync(join(rust, "shadowcat.html"), "<html></html>");
+    assemble({ portal, ts, rust, out });
+    expect(existsSync(join(out, "stale-page.html"))).toBe(true);
+
+    // Second build's inputs no longer produce stale-page.html.
+    unlinkSync(join(portal, "stale-page.html"));
+    assemble({ portal, ts, rust, out });
+    expect(existsSync(join(out, "stale-page.html"))).toBe(false);
+    expect(existsSync(join(out, "index.html"))).toBe(true);
   });
 });

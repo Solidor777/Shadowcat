@@ -3,7 +3,7 @@
 // references guarantee their own internal integrity; portal links INTO them are
 // validated because the copied files are on disk by check time).
 // Cross-platform invariant: node:path/node:fs only — no shell, no separators.
-import { cpSync, existsSync, readdirSync, readFileSync, statSync, mkdirSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, readdirSync, readFileSync, statSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import process from "node:process";
@@ -135,8 +135,12 @@ export function survivingAbsoluteRefs(files) {
   return files.filter((f) => hasSurvivingAbsoluteRef(f, readFileSync(f, "utf8")));
 }
 
-/** Copy portal/ts/rust trees into out (portal at root, refs under api/). */
+/** Copy portal/ts/rust trees into out (portal at root, refs under api/).
+ * `out` is regenerated wholesale from these three inputs on every call, so it is cleared first:
+ * `cpSync` overwrites a destination file whose source still produces it, but never removes one
+ * whose source no longer does, which would otherwise accumulate stale files across rebuilds. */
 export function assemble({ portal, ts, rust, out }) {
+  rmSync(out, { recursive: true, force: true });
   mkdirSync(out, { recursive: true });
   cpSync(portal, out, { recursive: true });
   cpSync(ts, join(out, "api", "ts"), { recursive: true });
