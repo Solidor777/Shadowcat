@@ -482,3 +482,32 @@ Confirmed-real defects that have since been fixed, kept for provenance. New fixe
   expression is correct and unchanged — it mirrors the read path's own `unwrap_or(false)`).
   Regression test seeds `hyperlinks: null` specifically, since the pre-existing test's
   `hyperlinks: false` seed is the one value this bug is invisible for (`false ?? false` is a no-op).
+
+## Client / render — hex lighting/fog overlays painted axial indices at square positions
+
+- [hex, FIXED] `PixiBackend.setLighting` and `cellsToRects` (the explored-fog rasterizer) each
+  placed a lit/explored cell at `x = i · cellSize, y = j · cellSize` and filled an axis-aligned
+  rect — correct on a square grid, but on a hex scene the server sends lit/explored cells as axial
+  `(q, r)`, so this painted skewed square overlays under correctly-drawn hexes (grid lines, cursor
+  snapping and measurement already went through `Grid`'s correct axial math privately). Fixed
+  (`c3fb921c`) by delegating to `Grid.cellVertices`/the active `GridShape`'s corner geometry instead
+  of assuming a square shape — `cellsToRects` and `LightingFrame`'s cells now carry resolved
+  `corners: Point[]` (a rect on square, a hexagon on hex), and the paint methods treat `corners`
+  opaquely, performing no grid-kind math of their own.
+
+## Server + client / scene — a hex token was drawn and collided as smaller than the hex it occupies
+
+- [hex, FIXED] `resolveTokenBox` sized a token's drawn footprint as `actor.size.w * cell` using the
+  scene's `grid.size` — on hex, the cell's CIRCUMRADIUS, not a usable per-axis scalar — while a
+  separate `footprintRadius` reduced the same authored size to a collision disc via an unrelated
+  formula; the two didn't agree with each other, and both undersized a hex token (measured, for a
+  1×1 token at hex circumradius `size`: drawn box `size × size` against a hex spanning `√3·size` by
+  `2·size`; collision radius `0.707·size` against a hex inradius of `0.866·size`), letting gaps a
+  hex should block stay passable. Fixed (`0e22c913`) by resolving a token's footprint ONCE,
+  server-side, and putting it on the wire — `SceneEcs::resolve_token_footprint` computes a single
+  collision radius (a token's authored size counts HEXES; the conservative enclosure of one hex is
+  its own circumradius, never the square half-diagonal a square/circle formula gives on hex) and a
+  `FootprintsPayload`/`SceneFootprints`/`TokenFootprint` channel carries the matching drawn extent
+  to the client, which renders the authoritative resolved geometry instead of mirroring the formula
+  that produced it — so the drawn box and the collision disc can no longer disagree, by
+  construction rather than by review.
