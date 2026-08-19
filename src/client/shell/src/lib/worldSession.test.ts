@@ -180,7 +180,7 @@ test("applies asset_changed to the resolver and notifies subscribers", async () 
     modules: [coreUiStub],
     logger: silentLogger,
   });
-  const got: Array<{ uuid: string; op: string; version: number | null }> = [];
+  const got: Array<{ uuid: string; op: string; version: number }> = [];
   session.onAssetChanged((m) => got.push(m));
   await session.enter("w1");
 

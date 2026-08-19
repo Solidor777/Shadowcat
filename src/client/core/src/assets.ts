@@ -11,9 +11,10 @@ export interface AssetChangedNotice {
   uuid: string;
   /** Whether the asset's bytes were replaced or the asset was deleted. */
   op: AssetOp;
-  /** The asset's authoritative version after the mutation: a number for `op: "replaced"`,
-   * `null` for `op: "deleted"` (a deleted asset has no version). */
-  version: number | null;
+  /** The asset's authoritative version at the time of the mutation: the bumped version for
+   * `op: "replaced"`, or the version the row held immediately before removal for
+   * `op: "deleted"` — a real ordering token in both cases. */
+  version: number;
 }
 
 /**
@@ -66,14 +67,35 @@ export class AssetResolver {
     return rev === undefined ? `/api/assets/${uuid}` : `/api/assets/${uuid}?v=${rev}`;
   }
 
-  /** Invalidate a uuid in response to an AssetChanged frame. `op: "replaced"` sets the
-   * cache-busting revision to `msg.version` — the AUTHORITATIVE value, not a relative bump —
-   * unless a higher version is already held (see the class doc: a frame that never arrives at
-   * all is not fixed by this method; `reconcile` closes that gap). `op: "deleted"` switches
-   * `url()` to the placeholder.
-   * @param msg The broadcast frame; `op: "replaced"` sets the cache-busting revision to
-   * `msg.version` (if higher than any version already held), `op: "deleted"` switches `url()`
-   * to the placeholder.
+  /** Adopts an observed `version` for a uuid if and only if it is strictly higher than any
+   * version already held, gating BOTH state changes a mutation notice can carry — the
+   * cache-busting revision and the deleted marker — behind the same comparison, so a stale
+   * write (`version <= current`) is a no-op across the board rather than a partial one. Shared
+   * by `onAssetChanged` and `reconcile`, the two touchpoints that can observe a version for a
+   * uuid: an out-of-band mutation notice, and a listing snapshot that may predate one.
+   * @param uuid The asset's stable uuid.
+   * @param version The observed authoritative version.
+   * @param isDeleted Whether the observation reports the asset as deleted at that version.
+   * @example
+   * ```
+   * // internal helper; not part of the public API
+   * this.adoptVersion("00000000-0000-0000-0000-000000000001", 2, false);
+   * ```
+   */
+  private adoptVersion(uuid: string, version: number, isDeleted: boolean): void {
+    const current = this.revs.get(uuid) ?? -1;
+    if (version <= current) return;
+    this.revs.set(uuid, version);
+    if (isDeleted) this.deleted.add(uuid);
+    else this.deleted.delete(uuid);
+  }
+
+  /** Invalidate a uuid in response to an AssetChanged frame, routed through `adoptVersion` so a
+   * stale or out-of-order frame (`msg.version` not higher than any version already held) is a
+   * no-op — including for `op: "deleted"`, which now carries a real ordering token rather than
+   * discarding all version memory for the uuid (see the class doc: a frame that never arrives at
+   * all is not fixed by this method; `reconcile` closes that gap).
+   * @param msg The broadcast frame; adopted via `adoptVersion` against `msg.version`.
    * @example
    * ```ts
    * import { AssetResolver } from "@shadowcat/core";
@@ -87,25 +109,16 @@ export class AssetResolver {
    * ```
    */
   onAssetChanged(msg: AssetChangedNotice): void {
-    if (msg.op === "deleted") {
-      this.deleted.add(msg.uuid);
-      this.revs.delete(msg.uuid);
-      return;
-    }
-    // replaced: drop any delete marker and adopt the authoritative version, never
-    // regressing below a higher version already held (out-of-order delivery guard —
-    // the server broadcasts in commit order over one connection, so this is defensive).
-    this.deleted.delete(msg.uuid);
-    const current = this.revs.get(msg.uuid) ?? -1;
-    if (msg.version !== null && msg.version > current) this.revs.set(msg.uuid, msg.version);
+    this.adoptVersion(msg.uuid, msg.version, msg.op === "deleted");
   }
 
   /** Reconciles `revs`/`deleted` against a listing's authoritative records — the self-healing
    * path for an `AssetChanged` frame this connection never received at all (see the class doc).
-   * For each record, adopts its `version` if higher than any version already held, and clears a
-   * stale `deleted` marker for its id (an asset present in a fresh listing is definitionally not
-   * deleted from this client's perspective, whatever a missed `AssetChanged{deleted}` frame might
-   * have implied).
+   * For each record, routes through `adoptVersion`: a listing whose snapshot predates a delete
+   * this resolver already observed carries the SAME version the delete broadcast did, so the
+   * comparison rejects it as stale rather than resurrecting the asset; a listing whose snapshot
+   * postdates the delete (a genuinely higher version, e.g. a re-upload reusing the id) clears the
+   * `deleted` marker and adopts the new version.
    * @param assets The listing's records (e.g. from `listAssets`).
    * @example
    * ```ts
@@ -129,13 +142,10 @@ export class AssetResolver {
    */
   reconcile(assets: readonly Asset[]): void {
     for (const a of assets) {
-      this.deleted.delete(a.id);
       // Asset.version is ts-rs's bigint mapping of the server's i64; JSON.parse (the actual
       // decode path for a listAssets response) always yields number, so this narrows back to
       // the same representation `revs`/onAssetChanged already use.
-      const version = Number(a.version);
-      const current = this.revs.get(a.id) ?? -1;
-      if (version > current) this.revs.set(a.id, version);
+      this.adoptVersion(a.id, Number(a.version), false);
     }
   }
 }

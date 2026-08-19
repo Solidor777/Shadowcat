@@ -4,6 +4,7 @@ import {
   DocumentStore,
   ContributionRegistry,
   AssetResolver,
+  type AssetChangedNotice,
   ModuleRegistry,
   HookBus,
   ServiceRegistry,
@@ -96,14 +97,7 @@ export class WorldSession {
   /** Selected token ids for group-select; set by the factions panel, read by the select tool. Stable. */
   readonly tokenSelection = new TokenSelection();
   /** `onAssetChanged` subscriber set. */
-  #assetListeners = new Set<
-    (msg: {
-      /** The changed asset's id. */
-      uuid: string;
-      /** Which change occurred. */
-      op: "replaced" | "deleted";
-    }) => void
-  >();
+  #assetListeners = new Set<(msg: AssetChangedNotice) => void>();
   /** `onPing` subscriber set. */
   #pingListeners = new Set<
     (msg: {
@@ -424,14 +418,7 @@ export class WorldSession {
    * off();
    * ```
    */
-  onAssetChanged(
-    cb: (msg: {
-      /** The changed asset's id. */
-      uuid: string;
-      /** Which change occurred. */
-      op: "replaced" | "deleted";
-    }) => void,
-  ): () => void {
+  onAssetChanged(cb: (msg: AssetChangedNotice) => void): () => void {
     this.#assetListeners.add(cb);
     return () => this.#assetListeners.delete(cb);
   }

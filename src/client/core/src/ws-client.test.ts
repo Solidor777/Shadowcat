@@ -90,7 +90,7 @@ describe("WsClient", () => {
   });
 
   it("dispatches asset_changed frames to onAssetChanged", async () => {
-    const seen: Array<{ uuid: string; op: string; version: number | null }> = [];
+    const seen: Array<{ uuid: string; op: string; version: number }> = [];
     // A bare transport whose handlers we capture, so the test can push an
     // arbitrary out-of-band server frame.
     let push!: (frame: ServerMsg) => void;

@@ -34,7 +34,7 @@ describe("AssetResolver", () => {
 
   it("after delete, the uuid resolves to the placeholder", () => {
     const r = new AssetResolver();
-    r.onAssetChanged({ uuid: "abc", op: "deleted", version: null });
+    r.onAssetChanged({ uuid: "abc", op: "deleted", version: 1 });
     expect(r.url("abc")).toBe(r.placeholder());
   });
 
@@ -48,7 +48,7 @@ describe("AssetResolver", () => {
     // The server broadcasts in commit order over one connection, so this ordering shouldn't
     // occur in practice; the resolver still guards against it rather than trusting arrival
     // order, since a regression here would re-introduce a cache-bust key that goes BACKWARDS
-    // (the same class of staleness the reconciliation fix as a whole exists to close).
+    // (the same class of staleness reconciliation exists to close).
     const r = new AssetResolver();
     r.onAssetChanged({ uuid: "abc", op: "replaced", version: 5 });
     r.onAssetChanged({ uuid: "abc", op: "replaced", version: 3 });
@@ -70,11 +70,22 @@ describe("AssetResolver", () => {
     expect(r.url("abc")).toBe("/api/assets/abc?v=9");
   });
 
-  it("reconcile clears a stale deleted marker for an id present in the listing", () => {
+  it("reconcile clears a deleted marker when the listing carries a genuinely newer version", () => {
     const r = new AssetResolver();
-    r.onAssetChanged({ uuid: "abc", op: "deleted", version: null });
+    r.onAssetChanged({ uuid: "abc", op: "deleted", version: 1 });
     expect(r.url("abc")).toBe(r.placeholder());
     r.reconcile([asset("abc", 2)]);
     expect(r.url("abc")).toBe("/api/assets/abc?v=2");
+  });
+
+  it("a reconcile carrying the SAME version as a delete it raced does not resurrect the asset", () => {
+    // The exact race: a listing request in flight when a delete lands. The delete's broadcast
+    // and the stale listing snapshot report the same version (deletion removes the row; it does
+    // not bump its version), so the version comparison correctly rejects the stale reconcile.
+    const r = new AssetResolver();
+    r.onAssetChanged({ uuid: "abc", op: "deleted", version: 5 });
+    expect(r.url("abc")).toBe(r.placeholder());
+    r.reconcile([asset("abc", 5)]);
+    expect(r.url("abc")).toBe(r.placeholder());
   });
 });

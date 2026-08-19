@@ -89,7 +89,7 @@ export type {
   WireMoveStreamVisionSample,
 } from "./wire";
 export { AssetResolver } from "./assets";
-export type { AssetOp } from "./assets";
+export type { AssetOp, AssetChangedNotice } from "./assets";
 export { listAssets, uploadAsset, replaceAsset, deleteAsset } from "./asset-rest";
 export { listInstalledModules, getEnabledModules, setEnabledModules } from "./module-rest";
 export type { InstalledModuleInfo } from "@shadowcat/types";
