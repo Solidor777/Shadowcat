@@ -67,12 +67,14 @@ export interface PanelsControllerDeps {
    * was rejected and the default was substituted in its place; the caller
    * resolves + surfaces it (e.g. a statusbar live-region toast). */
   onReset?: (key: string) => void;
-  /** Fired with an op every time `dispatch` actually changes the layout
-   * (never for a no-op op) — drag gestures and `PanelMenu` commands both
-   * funnel through `dispatch`, so this is the ONE hook that sees every
-   * layout-changing op regardless of origin. `PanelHost` uses it to drive
-   * the a11y live-region announcement. */
-  onOp?: (op: LayoutOp) => void;
+  /** Fired with an op and the layout as it stood immediately BEFORE that op,
+   * every time `dispatch` actually changes the layout (never for a no-op
+   * op) — drag gestures and `PanelMenu` commands both funnel through
+   * `dispatch`, so this is the ONE hook that sees every layout-changing op
+   * regardless of origin. `PanelHost` uses `prev` to distinguish a real
+   * placement change from a focus bump (e.g. `"open"` on an already-docked
+   * panel) when it drives the a11y live-region announcement. */
+  onOp?: (op: LayoutOp, prev: PanelLayoutV1) => void;
   /** Fired with a user-facing i18n key for a CONTROLLER-originated notice the
    * caller surfaces (live region / toast) — today, only ever
    * `panels.popoutRestoredFloating`, queued by `#rehydratePoppedOut` when
@@ -309,11 +311,12 @@ export class PanelsController implements PanelsApi, PanelsChipsView {
    * ```
    */
   dispatch(op: LayoutOp): void {
-    const next = applyOp(this.#layout, op);
-    if (next === this.#layout) return;
+    const prev = this.#layout;
+    const next = applyOp(prev, op);
+    if (next === prev) return;
     this.#layout = next;
     this.#persist(next);
-    this.#deps.onOp?.(op);
+    this.#deps.onOp?.(op, prev);
   }
 
   /** Drops any panel id no longer present among current registrations

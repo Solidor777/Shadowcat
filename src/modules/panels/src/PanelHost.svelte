@@ -5,7 +5,7 @@
   import type { EngineAdapter } from "./engine/adapter";
   import { FakeEngine } from "./engine/fake";
   import { PanelsController, type PanelsBridgeLike } from "./controller.svelte";
-  import type { LayoutOp } from "./layout/tree";
+  import { locate, type LayoutOp, type PanelLayoutV1 } from "./layout/tree";
   import CompactSwitcher from "./CompactSwitcher.svelte";
 
   /** `engine` defaults to `FakeEngine` (the bespoke-fallback engine); a real
@@ -46,29 +46,31 @@
    * switch). Reuses the existing `panels.dockRight`/`dockBottom`/`dockLeft`/
    * `float`/`minimize`/`restore`/`close` keys as the "where" phrase — the
    * same words a sighted user already sees on the chip strip/menu.
-   * `"open"` is NOT narrated as a "move" here even though `applyOp`'s
-   * `"open"` case can be a real placement change (surfacing a minimized or
-   * closed panel into a docked group, via `placeByPlacement`) rather than a
-   * mere focus bump within an already-open group/floating window. No control
-   * THIS host renders dispatches it, but the op is reachable: `PanelsApi.open`
-   * is public, and `SceneBrowserPanel`'s per-scene configure button and
-   * `SheetsController.openDocument` both call it, reaching `describeOp`
-   * through `PanelsController.dispatch` like any other op. So a real
-   * placement change currently goes unannounced — a live narration gap, not
-   * an unreachable branch. TODO: narrate `"open"` when it changes placement
-   * (distinguish a placement change from a focus bump within an already-open
-   * group).
+   * `"open"` narrates only when `applyOp`'s `"open"` case actually changed
+   * placement (surfaced a minimized or closed panel via `placeByPlacement`,
+   * per `prevLayout`'s recorded location) rather than merely bumping focus
+   * within an already-docked group or an already-floating window — the
+   * latter two stay silent, unchanged from every other case here.
+   * `PanelsApi.open` is public and reachable outside any control this host
+   * renders (`SceneBrowserPanel`'s per-scene configure button,
+   * `SheetsController.openDocument`), both routing through
+   * `PanelsController.dispatch` like any other op.
    * @param op The layout-changing op `PanelsController.onOp` fired.
+   * @param prevLayout The layout as it stood immediately before `op` was
+   * applied — the sole way to tell a real "open" placement change from a
+   * focus bump, since `ctrl.layout` already reflects the post-op state by
+   * the time this runs.
    * @returns The `panels.moved` announcement text, or `null` for an op not
    * worth narrating.
    * @example
    * ```
    * // private function; not part of the public API — invoked only from
    * // the controller's onOp callback below
-   * describeOp({ op: "minimize", id: "chat" });
+   * declare const prevLayout: PanelLayoutV1;
+   * describeOp({ op: "minimize", id: "chat" }, prevLayout);
    * ```
    */
-  function describeOp(op: LayoutOp): string | null {
+  function describeOp(op: LayoutOp, prevLayout: PanelLayoutV1): string | null {
     const label = (id: string): string => {
       const meta = ctrl.metaMap.get(id);
       return meta ? t(meta.labelKey) : t("panels.unknownPanel", { id });
@@ -96,9 +98,26 @@
       case "popIn":
         where = t("panels.restore");
         break;
+      case "open": {
+        const prevWhere = locate(prevLayout, op.id).where;
+        if (prevWhere !== "minimized" && prevWhere !== "closed") return null;
+        // Placement changed: read where it actually landed from the
+        // post-op state (`ctrl.layout`), since `placeByPlacement` maps
+        // `DefaultPlacement.kind` onto exactly these three shapes.
+        const loc = locate(ctrl.layout, op.id);
+        if (loc.where === "docked") {
+          where = t(loc.zone === "right" ? "panels.dockRight" : loc.zone === "bottom" ? "panels.dockBottom" : "panels.dockLeft");
+        } else if (loc.where === "floating") {
+          where = t("panels.float");
+        } else if (loc.where === "minimized") {
+          where = t("panels.minimize");
+        } else {
+          return null;
+        }
+        break;
+      }
       default:
-        // resizeZone/resizeGroup/activeTab/compactView/open: not narrated —
-        // see the doc comment above for why "open" specifically is excluded.
+        // resizeZone/resizeGroup/activeTab/compactView: not narrated.
         return null;
     }
     return t("panels.moved", { panel: label(op.id), where });
@@ -136,8 +155,8 @@
         onNotice: (key) => {
           announce = t(key);
         },
-        onOp: (op) => {
-          const text = describeOp(op);
+        onOp: (op, prev) => {
+          const text = describeOp(op, prev);
           if (text !== null) announce = text;
         },
       }),

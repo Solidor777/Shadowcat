@@ -401,6 +401,201 @@ test("live region: a pure focus/resize op (activeTab) does not announce", async 
   expect(liveRegion.textContent).toBe("");
 });
 
+test("live region: opening a panel that starts minimized announces its docked destination", async () => {
+  const registry = new ContributionRegistry();
+  registry.contribute({
+    id: "chat:panel",
+    contract: PANEL_CONTRACT,
+    component: CountingPanel,
+    props: { onMountFn: () => {} },
+    panel: { icon: "c", labelKey: "chat.tab", defaultPlacement: { kind: "docked", zone: "right" } },
+  });
+
+  // Starts minimized, not launcher-closed — proves branch 3 of `applyOp`'s
+  // `"open"` case (detach then `placeByPlacement`) fires from EITHER prior
+  // state, not just "closed".
+  let saved = defaultLayout([{ id: "chat:panel", placement: { kind: "docked", zone: "right" } }]);
+  saved = applyOp(saved, { op: "minimize", id: "chat:panel" });
+
+  const engine = new FakeEngine();
+  const context = setAppContextForTest({
+    contributions: registry,
+    role: "gm",
+    t: (k, p) => i18n.t(k, p),
+    uiState: { getPanelLayout: () => saved, setPanelLayout: () => {}, getChatRead: () => null, setChatRead: () => {} },
+  });
+  const { container } = render(PanelHost, { props: { engine }, context });
+  await Promise.resolve();
+
+  const liveRegion = container.querySelector('[role="status"]')!;
+  expect(liveRegion.textContent).toBe("");
+
+  engine.emitOp({ op: "open", id: "chat:panel", placement: { kind: "docked", zone: "right" } });
+  await Promise.resolve();
+
+  expect(liveRegion.textContent).toBe("Chat moved to Dock right");
+});
+
+test("live region: opening a panel that starts closed (never placed) announces its docked destination", async () => {
+  const registry = new ContributionRegistry();
+  registry.contribute({
+    id: "chat:panel",
+    contract: PANEL_CONTRACT,
+    component: CountingPanel,
+    props: { onMountFn: () => {} },
+    panel: { icon: "c", labelKey: "chat.tab", defaultPlacement: { kind: "docked", zone: "right" } },
+  });
+
+  // No placement passed to `defaultLayout` — launcher-only/closed, absent
+  // from every location `locate` checks.
+  const saved = defaultLayout([{ id: "chat:panel" }]);
+
+  const engine = new FakeEngine();
+  const context = setAppContextForTest({
+    contributions: registry,
+    role: "gm",
+    t: (k, p) => i18n.t(k, p),
+    uiState: { getPanelLayout: () => saved, setPanelLayout: () => {}, getChatRead: () => null, setChatRead: () => {} },
+  });
+  const { container } = render(PanelHost, { props: { engine }, context });
+  await Promise.resolve();
+
+  const liveRegion = container.querySelector('[role="status"]')!;
+
+  engine.emitOp({ op: "open", id: "chat:panel", placement: { kind: "docked", zone: "right" } });
+  await Promise.resolve();
+
+  expect(liveRegion.textContent).toBe("Chat moved to Dock right");
+});
+
+test("live region: opening an already-docked panel that becomes the active tab does not announce (focus bump)", async () => {
+  const registry = new ContributionRegistry();
+  registry.contribute({
+    id: "chat:panel",
+    contract: PANEL_CONTRACT,
+    component: CountingPanel,
+    props: { onMountFn: () => {} },
+    panel: { icon: "c", labelKey: "chat.tab", defaultPlacement: { kind: "docked", zone: "right" } },
+  });
+  registry.contribute({
+    id: "notes:panel",
+    contract: PANEL_CONTRACT,
+    component: CountingPanel,
+    props: { onMountFn: () => {} },
+    panel: { icon: "n", labelKey: "chat.tab", defaultPlacement: { kind: "docked", zone: "right" } },
+  });
+
+  // Both docked into the SAME zone-0 group; docking "notes:panel" second
+  // makes it the active tab, leaving "chat:panel" present-but-inactive —
+  // exactly the fixture the brief calls for (two panels, one active docked
+  // group, then open the other).
+  let saved = defaultLayout([{ id: "chat:panel", placement: { kind: "docked", zone: "right" } }]);
+  saved = applyOp(saved, { op: "dock", id: "notes:panel", zone: "right", group: 0 });
+  expect(saved.expanded.zones.right.groups[0]).toEqual({ tabs: ["chat:panel", "notes:panel"], active: "notes:panel", size: 1 });
+
+  const engine = new FakeEngine();
+  const context = setAppContextForTest({
+    contributions: registry,
+    role: "gm",
+    t: (k, p) => i18n.t(k, p),
+    uiState: { getPanelLayout: () => saved, setPanelLayout: () => {}, getChatRead: () => null, setChatRead: () => {} },
+  });
+  const { container } = render(PanelHost, { props: { engine }, context });
+  await Promise.resolve();
+
+  const liveRegion = container.querySelector('[role="status"]')!;
+
+  engine.emitOp({ op: "open", id: "chat:panel", placement: { kind: "docked", zone: "right" } });
+  await Promise.resolve();
+
+  expect(liveRegion.textContent).toBe("");
+});
+
+test("live region: opening an already-floating panel that gets bumped in z-order does not announce (focus bump)", async () => {
+  const registry = new ContributionRegistry();
+  registry.contribute({
+    id: "chat:panel",
+    contract: PANEL_CONTRACT,
+    component: CountingPanel,
+    props: { onMountFn: () => {} },
+    panel: { icon: "c", labelKey: "chat.tab", defaultPlacement: { kind: "floating" } },
+  });
+  registry.contribute({
+    id: "notes:panel",
+    contract: PANEL_CONTRACT,
+    component: CountingPanel,
+    props: { onMountFn: () => {} },
+    panel: { icon: "n", labelKey: "chat.tab", defaultPlacement: { kind: "floating" } },
+  });
+
+  // Both floating; registration order cascades "chat:panel" to z=0 and
+  // "notes:panel" to z=1 — "chat:panel" starts NOT topmost.
+  const saved = defaultLayout([
+    { id: "chat:panel", placement: { kind: "floating" } },
+    { id: "notes:panel", placement: { kind: "floating" } },
+  ]);
+  expect(saved.expanded.floating.find((f) => f.id === "chat:panel")!.z).toBeLessThan(
+    saved.expanded.floating.find((f) => f.id === "notes:panel")!.z,
+  );
+
+  const engine = new FakeEngine();
+  const context = setAppContextForTest({
+    contributions: registry,
+    role: "gm",
+    t: (k, p) => i18n.t(k, p),
+    uiState: { getPanelLayout: () => saved, setPanelLayout: () => {}, getChatRead: () => null, setChatRead: () => {} },
+  });
+  const { container } = render(PanelHost, { props: { engine }, context });
+  await Promise.resolve();
+
+  const liveRegion = container.querySelector('[role="status"]')!;
+
+  engine.emitOp({ op: "open", id: "chat:panel", placement: { kind: "floating" } });
+  await Promise.resolve();
+
+  expect(liveRegion.textContent).toBe("");
+});
+
+test("PanelsController.dispatch: a true no-op open (already active docked / already topmost floating) never calls onOp", () => {
+  const registry = new ContributionRegistry();
+  registry.contribute({
+    id: "chat:panel",
+    contract: PANEL_CONTRACT,
+    component: CountingPanel,
+    props: { onMountFn: () => {} },
+    panel: { icon: "c", labelKey: "chat.tab", defaultPlacement: { kind: "docked", zone: "right" } },
+  });
+
+  const saved = defaultLayout([{ id: "chat:panel", placement: { kind: "docked", zone: "right" } }]);
+  const ops: unknown[] = [];
+  const ctrl = new PanelsController({
+    contributions: registry,
+    role: "gm",
+    getPanelLayout: () => saved,
+    setPanelLayout: () => {},
+    bridge: { bind: () => {} },
+    logger: silentLogger,
+    onOp: (op) => ops.push(op),
+  });
+
+  // Already the sole tab in its group and already active — `applyOp`'s
+  // "open" case's `group.active === o.id` guard returns the SAME reference,
+  // so `dispatch` never calls `onOp` at all (the SAME-REFERENCE NO-OP
+  // CONTRACT `dispatch` documents).
+  ctrl.dispatch({ op: "open", id: "chat:panel", placement: { kind: "docked", zone: "right" } });
+  expect(ops).toEqual([]);
+
+  // Already floating and already topmost — `applyOp`'s "open" case's
+  // `current.z === maxZ` guard returns the SAME reference for the same
+  // reason. The preceding "float" dispatch is a real change (docked ->
+  // floating) and DOES call `onOp`; only the subsequent "open" on an
+  // already-topmost floating panel must not.
+  ctrl.dispatch({ op: "float", id: "chat:panel", rect: { x: 0, y: 0, w: 200, h: 200 } });
+  expect(ops).toHaveLength(1);
+  ctrl.dispatch({ op: "open", id: "chat:panel", placement: { kind: "docked", zone: "right" } });
+  expect(ops).toHaveLength(1);
+});
+
 test("FakeEngine.init adopts the stageEl into a center-well container", async () => {
   const registry = new ContributionRegistry();
   registry.contribute({
