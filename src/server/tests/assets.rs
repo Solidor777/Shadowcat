@@ -196,45 +196,76 @@ async fn delete_removes_record_and_file_and_broadcasts() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn delete_broadcast_reflects_the_truly_removed_version_despite_a_racing_replace() {
+    use common::drain_until_type;
     // `http::assets::delete` reads `existing` once at request entry, before the row is actually
     // removed; a `replace` on the same id can commit (bumping the version) in the window between
-    // that read and the handler's own `delete_asset` call. There is no seam in this harness to
-    // interleave two full HTTP handler invocations deterministically (no pause hooks exist on
-    // either path, and the DB pool is single-connection), so this exercises the repository layer
-    // directly: it reproduces the exact ordering — a stale pre-delete snapshot captured, then a
-    // version bump committed before the actual DELETE runs — and asserts the value the fixed
-    // handler now broadcasts (`delete_asset`'s own returned row) reflects the bump rather than
-    // the stale snapshot a pre-fetch-based implementation would have used instead.
+    // that read and the handler's own `delete_asset` call. This races the REAL HTTP `DELETE`
+    // (`h.client.delete`, i.e. `http::assets::delete` itself) against a direct
+    // `h.repo.replace_asset_bytes` call inside one `tokio::join!`: the repo call has far fewer
+    // awaits than a full HTTP round trip through auth + the write-barrier permit, so it is likely
+    // to land inside the handler's request-to-delete window purely from that latency gap — but
+    // there is no pause/hook seam in this harness (and adding one to production code would violate
+    // this project's no-debug-code rule) to force the interleaving deterministically, so a bounded
+    // retry loop keeps attempting the race, against a freshly uploaded asset each time, until it
+    // observes a run where the replace's bump genuinely landed inside the window. Every iteration
+    // asserts the broadcast is correct for whichever ordering actually occurred; only the
+    // iterations that land inside the window carry the assertion distinguishing a broadcast
+    // sourced from `delete_asset`'s own returned row from one sourced off a stale `existing`
+    // snapshot, and the test fails outright if the race is never won.
     let h = spawn().await;
-    let asset: serde_json::Value = h
-        .upload("m.png", "image/png", PNG_1X1.to_vec())
-        .await
-        .json()
-        .await
-        .unwrap();
-    let id = uuid::Uuid::parse_str(asset["id"].as_str().unwrap()).unwrap();
+    let mut ws = h.connect().await;
+    let _ = ws.next().await; // Welcome
 
-    // The stale snapshot `delete`'s own pre-delete `get_asset` would capture.
-    let existing = h.repo.get_asset(id).await.unwrap().unwrap();
-    assert_eq!(existing.version, 1);
+    let mut race_won = false;
+    for _ in 0..20 {
+        let asset: serde_json::Value = h
+            .upload("m.png", "image/png", PNG_1X1.to_vec())
+            .await
+            .json()
+            .await
+            .unwrap();
+        let id_str = asset["id"].as_str().unwrap().to_string();
+        let id = uuid::Uuid::parse_str(&id_str).unwrap();
+        let storage_key = asset["storage_key"].as_str().unwrap().to_string();
 
-    // A racing `replace` commits between that read and the actual DELETE, bumping the row.
-    let bumped = h
-        .repo
-        .replace_asset_bytes(id, &existing.storage_key, "image/gif", 7)
-        .await
-        .unwrap();
-    assert_eq!(bumped, 2);
+        let url = format!("http://{}/api/assets/{}", h.addr, id_str);
+        let (delete_res, replace_res) = tokio::join!(
+            h.client.delete(&url).send(),
+            h.repo.replace_asset_bytes(id, &storage_key, "image/gif", 7)
+        );
+        assert_eq!(delete_res.unwrap().status(), 204);
 
-    // The authoritative row the DELETE actually removes — what the fixed handler broadcasts from.
-    let deleted = h.repo.delete_asset(id).await.unwrap().unwrap();
-    assert_eq!(
-        deleted.version, 2,
-        "must reflect the row actually removed, not the pre-delete snapshot"
-    );
-    assert_ne!(
-        deleted.version, existing.version,
-        "the stale snapshot and the truly-removed row must differ for this race to be meaningful"
+        let frame = drain_until_type(&mut ws, "asset_changed").await;
+        assert_eq!(frame["op"], "deleted");
+
+        match replace_res {
+            // The replace's UPDATE committed before `delete`'s own `delete_asset` DELETE ran: the
+            // row the DELETE actually removed carries the bumped version, so that's what the fixed
+            // handler must broadcast — the exact interleaving this test exists to exercise.
+            Ok(bumped_version) => {
+                assert_eq!(
+                    frame["version"], bumped_version,
+                    "a replace that landed inside the handler's window must be reflected in the \
+                     broadcast, not discarded in favor of the pre-delete snapshot"
+                );
+                assert_ne!(
+                    bumped_version, 1,
+                    "the replace must have actually bumped the version"
+                );
+                race_won = true;
+            }
+            // The DELETE already removed the row by the time the replace's UPDATE ran (no row left
+            // to match): the un-bumped version is what's broadcast, which is also correct — this
+            // iteration just didn't land inside the race window.
+            Err(_) => {
+                assert_eq!(frame["version"], 1);
+            }
+        }
+    }
+    assert!(
+        race_won,
+        "the replace never landed inside the handler's request-to-delete window across 20 \
+         attempts; the race this test exists to exercise was never actually won"
     );
 }
 

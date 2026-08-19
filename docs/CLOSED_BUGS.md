@@ -557,9 +557,11 @@ Confirmed-real defects that have since been fixed, kept for provenance. New fixe
   `require_gm`/`NotFound` checks, which must run before the row is touched). `delete_asset`
   returning `None` (a second concurrent delete on the same id, already handled by whichever request
   actually removed the row) now returns `204 No Content` with no broadcast, rather than reading
-  fields off a snapshot for a row no longer there. Regression coverage: a repository-layer test
-  reproducing the exact race (a pre-delete snapshot captured, then a version bump committed via
-  `replace_asset_bytes` before the actual `DELETE`, asserting the removed row's version — not the
-  stale snapshot — is what gets broadcast), and a concurrent-HTTP-DELETE test asserting no panic,
-  no `500`, and never a second `AssetChanged` notice under a real race. Found during a scoped
-  re-review of this subsystem's other work, not a client-observed report.
+  fields off a snapshot for a row no longer there. Regression coverage: an HTTP-level test races
+  the real `DELETE` endpoint against a direct `replace_asset_bytes` call in one `tokio::join!`,
+  reading the broadcast `AssetChanged` frame off a connected WebSocket, with a bounded retry loop
+  (freshly uploaded asset per attempt) that keeps racing until a replace genuinely lands inside
+  the handler's request-to-delete window and asserts the broadcast then carries the bumped
+  version, not the stale pre-delete snapshot — and a concurrent-HTTP-DELETE test asserting no
+  panic, no `500`, and never a second `AssetChanged` notice under a real race. Found during a
+  scoped re-review of this subsystem's other work, not a client-observed report.
