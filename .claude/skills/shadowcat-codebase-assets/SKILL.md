@@ -33,15 +33,18 @@ and serves uploads unconverted (the conversion pipeline is deferred).
 - **`@shadowcat/module-assets`** (`Assets` component) — the client asset panel (upload/list/replace).
 - `AssetResolver` (`src/client/core/src/assets.ts`) — client-side cache-bust resolver. Its
   private `adoptVersion` helper is the single gate both `onAssetChanged` and `reconcile` route
-  through: it adopts an observed `version` for a uuid — updating the cache-busting revision AND
-  the deleted marker together — only if strictly higher than any version already held, so a stale
-  observation (`version <= current`) is a no-op across the board, not just for the revision.
-  `reconcile(assets: Asset[])` re-syncs from any touchpoint that already fetches full `Asset`
-  records (`Assets.svelte`'s `reload`, `AssetPicker.svelte`, `VisualKindEditor.svelte`'s
-  `refreshAssets`), closing the gap for an `AssetChanged` frame this connection never received at
-  all — including a delete: since a listing snapshot captured before a delete carries the SAME
-  version the delete broadcast does (deletion removes the row; it does not bump its version), the
-  shared gate rejects the stale reconcile rather than resurrecting the asset.
+  through, updating the cache-busting revision AND the deleted marker together — but its
+  rejection strictness is ASYMMETRIC, keyed on `AssetResolver.adoptVersion.isDeleted`: a delete transition adopts at
+  `version >= current` (equality is the ordinary case, since deletion never bumps the version
+  column, and the delete notice is authoritative and must be honored), while every other
+  adoption — always via `reconcile`, which never itself carries a delete signal — requires
+  `version > current` strictly, because a reconcile snapshot may predate a delete already
+  adopted at that same version and must not resurrect it. `reconcile(assets: Asset[])` re-syncs
+  from any touchpoint that already fetches full `Asset` records (`Assets.svelte`'s `reload`,
+  `AssetPicker.svelte`, `VisualKindEditor.svelte`'s `refreshAssets`), closing the gap for an
+  `AssetChanged` frame this connection never received at all — including a delete: since a
+  listing snapshot captured before a delete carries the SAME version the delete broadcast does,
+  the strict `reconcile` branch rejects the stale reconcile rather than resurrecting the asset.
 
 ## Hard invariants
 
