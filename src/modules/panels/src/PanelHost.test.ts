@@ -496,12 +496,12 @@ test("live region: opening a panel that starts popped-out announces its docked d
   // persisted `poppedOut` id — `PanelsController`'s constructor-time
   // `#rehydratePoppedOut` would otherwise convert a persisted popped-out id
   // straight to floating before this test ever gets to open it, hiding the
-  // "popped-out" prior state this test needs to exercise. This is the
-  // third member of `applyOp`'s "open" case's minimized/closed/popped-out
-  // fallthrough — the one the original guard
-  // (`prevWhere !== "minimized" && prevWhere !== "closed"`) missed: a panel
-  // reopened from its own popped-out window is a real placement change,
-  // same as reopening a minimized or closed one.
+  // "popped-out" prior state this test needs to exercise. Popped-out is the
+  // third fallthrough member of `applyOp`'s "open" case, alongside minimized
+  // and closed, and requires the same narration: a panel reopened from its
+  // own popped-out window is a real placement change, same as reopening a
+  // minimized or closed one — a guard keyed on only two of the three would
+  // silently miss it.
   engine.emitOp({ op: "popOut", id: "chat:panel" });
   await Promise.resolve();
   // The "popOut" op itself narrates too (an existing, unchanged case in
