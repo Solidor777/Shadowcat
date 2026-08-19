@@ -75,61 +75,6 @@ Currently open, confirmed-real defects. Deferrals belong in `TODO.md`, not here.
     command at commit time) is expected to close this one too; fixed together in the same phase
     rather than forked across phases.
 
-- **`makeTemplateTool`'s near-zero-drag fallback effectively never fires in a snapping scene, so a
-  plain click places an arbitrarily-sized template instead of the intended one-cell default.**
-  `makeTemplateTool`'s `onPointerDown` snaps the anchor (`anchor = ctx.scene.snap(p)`) but its
-  `onPointerMove`/`onPointerUp` pass the RAW pointer point to
-  `sizeDir`. `sizeDir`'s fallback is `if (d < 1) return { size: cell,
-  direction: 0 }`, with `d` the distance between those two points — so it fires only
-  when the click lands within one scene unit of the snapped anchor. `Grid.snap` returns the cell
-  CENTER on BOTH grid kinds, so an ordinary click sits
-  some arbitrary distance from the anchor — for a click that presses and releases within one
-  cell, bounded by that cell's circumradius, which is the half-diagonal on a square grid and on a
-  hex grid `GridSpec.size` itself, the outer radius; a release outside the press
-  cell is not bounded by it at all. It takes the normal branch and yields `size = d`, an
-  arbitrary template rather than the intended one-cell default. The fallback is reachable only
-  by a click landing almost exactly on the snap point.
-  - **This is a defect, not a missing feature.** The `d < 1` branch exists precisely to turn a
-    click into a real default-sized template rather than a degenerate one; it was written assuming
-    both points share a coordinate frame. Mixing a snapped anchor with a raw pointer defeats its
-    own stated purpose.
-  - **Sibling divergence:** `makeTemplateTool` is the only one of the four authoring tools with no
-    extent guard on persist. `makeDrawTool` gates on `hasExtent`, `makeWallTool` on a
-    `>= 1` length check, `makeRegionTool` on its own `hasExtentForRegion` check.
-  - **Reachability/impact:** GM-only (the `template` tool is `gmOnly`) and non-destructive — no
-    data loss and no authz effect. Impact is nonetheless persistent: **no client code anywhere
-    constructs an `Operation` with `op: "delete"`.** Outside tests that variant appears only in
-    the SHARED wire type and schema (`Operation`'s "delete" variant,
-    `OperationSchema`) and in `applyOperation`'s receive-side `case "delete"`. The schema is
-    emphatically not receive-only — the
-    client's own outbound `intent` frame is typed `ops: WireOperation[]` (in `ClientMsg`'s
-    `"intent"` variant) and the
-    server executes a client-sent Delete, which is exactly what makes the raw-protocol escape
-    below real. That path is `Room::publish` (via `Room::commit_ops_locked`), whose
-    `Operation::Delete` arm in `SqliteRepository::apply_intent` authorizes against the stored doc
-    under `cap::DELETE` and then executes via `delete_document_tx`
-    (called from `SqliteRepository::apply_intent`). Do NOT cite `apply_command`'s Delete arms for
-    this: no client frame reaches
-    `apply_command`, which is the trusted undo/replay substrate and deliberately does not
-    capability-check descendants (`SqliteRepository::apply_command`). The gap is that nothing in the
-    client ever CONSTRUCTS one. (Neighbouring `delete` names sit on other axes and are not
-    counterexamples. Nearest first: chat's Delete button is the one user-facing document delete
-    in the client, and it sends a dedicated `delete_message` frame the server applies as an
-    `Operation::Update` tombstone via `handle_delete_message`, explicitly not a hard
-    `Operation::Delete`; `unsetField` dispatches `{ op: "update", …,
-    remove: true }`, a `FieldChange`-axis key removal, not a document Delete;
-    `deleteAsset`/`deleteUser`/`deleteWorld` are REST calls against assets, users and worlds;
-    `Diff`'s `"delete"` variant is a template-merge field op; and `deletePointer`/
-    `removePointer` are pure JSON-pointer helpers.) So no scene-entity delete UI exists to
-    remove the junk template; it
-    persists until such a UI ships or a raw protocol Delete is sent. Cost is accumulating scene
-    and event-log clutter plus a confusing authoring experience.
-  - **Fix shape:** make the two `sizeDir` call sites agree on a frame — either snap the pointer
-    point alongside the anchor, or compare the raw pointer against the raw pointer-down point.
-    Then add the extent guard its three siblings already carry. Belongs on the runtime follow-up
-    branch; found by the Sweep 11 whole-branch review,
-    which is comment-only and cannot carry a behavior change.
-
 - **A WS connection that misses an `AssetChanged{replaced}` frame keeps a stale image forever, with
   no self-healing path — and an ordinary reconnect is enough to miss it.** `Room::broadcast_aux`
   sends AssetChanged out-of-band: it does not push to the
@@ -210,9 +155,7 @@ Currently open, confirmed-real defects. Deferrals belong in `TODO.md`, not here.
   - **Fix shape:** change the `old` argument to `chatsys.hyperlinks ?? null`. The
     `checked={chatsys.hyperlinks ?? false}` display expression is correct and stays — it
     mirrors `ChatContentPolicy::hyperlinks()`'s `unwrap_or(false)` on the read path. Add a test
-    seeding `hyperlinks: null`. Runtime change; belongs on the follow-up branch with the
-    `makeTemplateTool` fix above. Found during Sweep 12 Task 6 by the dispatcher and
-    independently confirmed by both reviewers, from writing the doc comment that sits above it.
+    seeding `hyperlinks: null`. Runtime change; belongs on the follow-up branch.
 
 - **[hex] The lighting overlay and the explored-fog layer paint axial indices at square
   positions.** On a hex scene the server sends lit and explored cells as axial `(q, r)`, produced

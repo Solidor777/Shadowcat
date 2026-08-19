@@ -1183,8 +1183,8 @@ function templatePath(mode: TemplateMode, ax: number, ay: number, size: number, 
  * drag (`< 1` scene unit) falls back to one grid cell (`cell`) at `direction: 0`, so a click
  * (no visible drag) still places a default-sized template rather than a degenerate zero-size one.
  * @param a The drag anchor (scene coords, post-snap).
- * @param b The current/drag-end point (raw pointer scene coords, never snapped — see
- * `onPointerMove`/`onPointerUp` below).
+ * @param b The current/drag-end point (scene coords, post-snap — see `onPointerMove`/
+ * `onPointerUp` below).
  * @param cell The active scene's grid cell size (the near-zero-drag fallback size).
  * @returns The resolved size (scene units) and direction (degrees).
  * @example
@@ -1209,16 +1209,13 @@ function sizeDir(a: Point, b: Point, cell: number): {
 }
 
 /** Drag to place a template area (circle/cone/rect/line) anchored at the snapped cell; the
- * drag sets size + direction via `sizeDir`. Live preview; release ALWAYS persists a `template`
- * doc (optimistic) — unlike `makeDrawTool`/`makeWallTool`/`makeRegionTool`, there is no
- * has-extent skip here. This is NOT because `sizeDir`'s near-zero-drag fallback reliably
- * substitutes for one: `onPointerDown` snaps the anchor but `onPointerMove`/`onPointerUp` pass
- * `sizeDir` the RAW pointer point, so the fallback (`d < 1`) only fires when the drag-end lands
- * within one scene unit of the SNAPPED anchor — in a snapping scene an ordinary click lands
- * some arbitrary fraction of a cell away from that anchor, so it takes the normal branch and
- * produces a small, effectively arbitrary template instead of the intended one-cell default.
- * TODO: make an ordinary (unsnapped) click produce the intended one-cell default template
- * instead of an arbitrary small one.
+ * drag sets size + direction via `sizeDir`, fed the drag-end point post-snap (matching the
+ * anchor's own frame) so a plain click lands within `sizeDir`'s `d < 1` fallback and yields the
+ * intended one-cell default rather than an arbitrary small size. Live preview; release ALWAYS
+ * persists a `template` doc (optimistic) — unlike `makeDrawTool`/`makeWallTool`/
+ * `makeRegionTool`, there is no has-extent skip here: `sizeDir`'s near-zero-drag fallback IS this
+ * tool's extent guard, substituting the one-cell default for a degenerate size rather than
+ * skipping document creation.
  * @param ctx The tool context; reads the active scene, snaps the anchor, dispatches the create.
  * @param controller Supplies the configured `templateMode`/`templateColor`.
  * @returns A `SceneTool` implementing the drag-to-place gesture.
@@ -1243,7 +1240,7 @@ export function makeTemplateTool(ctx: ToolContext, controller: ToolController): 
     },
     onPointerMove(p: Point): void {
       if (!anchor) return;
-      const { size, direction } = sizeDir(anchor, p, cell);
+      const { size, direction } = sizeDir(anchor, ctx.scene.snap(p), cell);
       const { points, closed } = templatePath(controller.templateMode, anchor.x, anchor.y, size, direction);
       const color = parseColor(controller.templateColor);
       ctx.scene.previewOverlay([{ points, closed, stroke: { color, width: 2 }, fill: closed ? { color, alpha: 0.25 } : null }]);
@@ -1252,7 +1249,7 @@ export function makeTemplateTool(ctx: ToolContext, controller: ToolController): 
       if (!anchor) return;
       const scene = activeScene(ctx);
       if (scene) {
-        const { size, direction } = sizeDir(anchor, p, cell);
+        const { size, direction } = sizeDir(anchor, ctx.scene.snap(p), cell);
         ctx.dispatchIntent([
           {
             op: "create",
