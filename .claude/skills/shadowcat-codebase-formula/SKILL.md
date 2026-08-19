@@ -149,14 +149,11 @@ which no prose can do.
   here. **The two also FAIL DIFFERENTLY on one written key**: a key whose dotted segment starts
   with a digit is a loud parse error in `parseFormula` and a silent split in
   `resolveNotationTemplate`, which is why testing a key against one grammar tells a consumer
-  nothing about the other. **A template-grammar collision is not reliably loud, and how one
-  scan can end is enumerated on `NotationKeyCheck`, keyed on whether an identifier claim SURVIVES
-  rather than on how many claims there are — read the outcomes there rather than restating them
-  here.** That enumeration discriminates on TWO levels, and reading it as one flat set is how a
-  consumer ends up branching on a value two outcomes describe: `rejects` is the first
-  discriminator and excludes the rest, since `segments` then covers only the prefix claimed ahead
-  of the rejecting position; the shape outcomes are properties of a value that carries no
-  rejection, and are total and mutually exclusive over those. What binds a consumer is the coupling: a consuming system validates a stat key by
+  nothing about the other. **A template-grammar collision is not reliably loud, and how one scan
+  can end is enumerated on `NotationKeyCheck` — read the outcomes there.** The one thing to know
+  before reading them is that the discriminator is TWO-LEVEL: branch on `rejects` first, or the
+  shape outcomes get read off a value whose `segments` holds only the prefix claimed ahead of the
+  rejection. What binds a consumer is the coupling: a consuming system validates a stat key by
   CALLING `checkNotationKey`, never by reasoning over `NOTATION_KEYWORDS`, because a collision it
   misses can change the number a roll produces with no error on any path. A spy resolver answering
   every path hides the split outcome, so `template.test` pins it with a resolver that knows only
@@ -164,28 +161,37 @@ which no prose can do.
   `template.test`'s `checkNotationKey` cases derive their keyword
   shapes from `NOTATION_KEYWORDS` itself, so a keyword added there is covered without a second
   edit, and one case asserts the checker's verdict against what the rewrite observably does to each
-  key, so the two cannot drift apart. Beside the hand-written cases sits a generated sweep:
-  `template.test` enumerates every string over a bounded alphabet mechanically, classifies each
-  from what `checkNotationKey` returns, and checks that classification's consequence against what
-  `resolveNotationTemplate` observably does to the same key. It
-  exists because an author's list of shapes — prose, corpus and predicate set alike — cannot
-  contain the shape nobody thought of, and it is what a claim about this taxonomy is answerable
-  against. It is NOT independent of the recognizer chain, which both sides run, so a defect inside
+  key, so the two cannot drift apart. Beside the hand-written cases sit TWO generated sweeps
+  sharing one consequence oracle, a `template.test`-local helper that classifies a key from what
+  `checkNotationKey` returns and checks that classification against what
+  `resolveNotationTemplate` observably does to it. One sweep is wide and shallow, over a
+  keyword-derived alphabet; the other narrow and deep, over a four-member alphabet that buys the
+  dotted-path depth the wide one's length cannot spell; what each bound leaves unreachable is
+  stated at that bound's own declaration rather than here. They
+  exist because an author's list of shapes — prose, corpus and predicate set alike — cannot
+  contain the shape nobody thought of, and they are what a claim about this taxonomy is answerable
+  against. Neither is independent of the recognizer chain, which both sides run, so a defect inside
   a recognizer still moves both answers together.
 
 ## Gotchas
 
-- **`checkNotationKey` answers over the key in ISOLATION, and that is the one place it CAN disagree
-  with the rewrite.** Both run `claimAt`, so an intact verdict cannot drift. A REJECTION can:
-  `claimLabelSpan`'s extent is not key-local — it scans forward for a `]` through whatever source it
-  is handed. A key holding an unmatched `[` therefore rejects when checked alone, while a template
-  supplying a `]` further along returns notation with no error and absorbs everything between the
-  two brackets as a label. An authoring UI told "this will not run" about a key that runs WRONG is
-  the worse of the two errors. The positions differ for the same reason: the checker counts from the
-  start of the key, a template's own error from the start of the template. Both behaviours are
-  measured and pinned by `template.test`. Whether a bracket inside a written key should be
-  absorbable as a label at all is an open runtime question awaiting a ruling — do not change the
-  behaviour to close the gap.
+- **`checkNotationKey` answers over the key in ISOLATION, and TWO things can part its answer from
+  the rewrite's. Both sit outside the grammar** — within the grammar both run `claimAt`, so an
+  intact verdict cannot drift there.
+  - **The length cap.** `checkNotationKey` is scoped to the grammar and deliberately does not
+    apply `MAX_FORMULA_LENGTH`, which bounds a whole template rather than a key. A key past that
+    length is therefore scanned here and refused UNSCANNED by `resolveNotationTemplate`, whose cap
+    error returns before any recognizer runs. The behaviour is deliberate and stays; only the
+    claim about it needed bounding.
+  - **`claimLabelSpan`'s extent**, which is not key-local — it scans forward for a `]` through
+    whatever source it is handed. A key holding an unmatched `[` therefore rejects when checked
+    alone, while a template supplying a `]` further along returns notation with no error and
+    absorbs everything between the two brackets as a label. An authoring UI told "this will not
+    run" about a key that runs WRONG is the worse of the two errors. The positions differ for the
+    same reason: the checker counts from the start of the key, a template's own error from the
+    start of the template. Both behaviours are measured and pinned by `template.test`. Whether a
+    bracket inside a written key should be absorbable as a label at all is an open runtime
+    question awaiting a ruling — do not change the behaviour to close the gap.
 - **An `intact` verdict is not a safe-in-every-position verdict.** `checkNotationKey` scans the key
   from position ZERO, so it says nothing about the text a template puts in FRONT of it: an intact
   key immediately following a digit run has that run emitted ahead of the substituted value, and

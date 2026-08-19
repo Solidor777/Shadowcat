@@ -16,12 +16,10 @@ const DICE_OPERATOR = "d";
  * any difference.
  *
  * **This list is not the set of unsafe stat keys, and no list is.** The notation grammar
- * reserves more than these words, and what it reserves is negative space over an ordered
- * chain of recognizers (`RECOGNIZERS`): a key survives exactly when one
- * `claimIdentifierSpan` claim covers all of it. That set has no closed-form description;
- * the chain is its definition. So a consuming system's stat-key authoring validation calls
- * `checkNotationKey`, which runs the chain, and must not reimplement a rule over this list
- * instead.
+ * reserves more than these words, and what it reserves has no closed-form description — it is
+ * negative space over `RECOGNIZERS`. `checkNotationKey` answers by running that chain and is
+ * the only answer, so a consuming system's stat-key authoring validation calls it and must not
+ * reimplement a rule over this list instead.
  *
  * **A collision is not reliably loud.** How a scan of a colliding key can end is enumerated
  * on `NotationKeyCheck` and nowhere else, so no second copy of that taxonomy can drift from
@@ -31,27 +29,25 @@ export const NOTATION_KEYWORDS: readonly string[] =
 
 const I32_MAX = 2147483647;
 
-/** Which recognizer claimed a span of notation-template source. The grammar is an ordered
- * chain (`RECOGNIZERS`) plus a total fallthrough, and this names the outcome of that
- * chain — the vocabulary `checkNotationKey` reports its claim structure in, a rejection
- * aside, since a key survives only when one `"identifier"` claim covers it.
+/** Which recognizer claimed a span of notation-template source — the vocabulary
+ * `checkNotationKey` reports its claim structure in, a rejection aside.
  *
- * - `"label"` — a bracketed span, emitted verbatim.
- * - `"integer"` — a run of digits, emitted verbatim.
- * - `"keyword"` — an identifier-start run that is a `NOTATION_KEYWORDS` member when
- *   lowercased, emitted as notation.
- * - `"identifier"` — a dotted reference span, handed to the consumer's resolver and
- *   replaced by the resolved value.
- * - `"literal"` — one character no recognizer claimed, emitted verbatim.
+ * - `"label"` — a bracketed span.
+ * - `"integer"` — a run of digits.
+ * - `"keyword"` — an identifier-start run that is a `NOTATION_KEYWORDS` member when lowercased.
+ * - `"identifier"` — a dotted reference span.
+ * - `"literal"` — one character no recognizer claimed.
+ *
+ * What a consumer needs from the five is one distinction: `"identifier"` is the only kind whose
+ * span reaches the consumer's resolver, and what each of the other four contributes to the
+ * rewritten notation is `emitClaim`'s decision rather than a property of the kind.
  *
  * These five names are stable public vocabulary. An authoring UI branches on them to explain
  * a verdict, so they are committed to independently of how `RECOGNIZERS` is later split or
  * merged — a claim CATEGORY outlives the recognizer that currently produces it. */
 export type NotationClaimKind = "label" | "integer" | "keyword" | "identifier" | "literal";
 
-/** One recognizer's claim over a span of source, before any consumer resolution.
- * Recognition carries NO state: what claims a position depends only on the source and the
- * position. The scan's carry is consumed by `emitClaim` alone. */
+/** One recognizer's claim over a span of source, before any consumer resolution. */
 interface Claim {
   /** Which recognizer claimed the span. */
   readonly kind: NotationClaimKind;
@@ -71,8 +67,9 @@ interface Recognizer {
 }
 
 /** Reads the maximal run of identifier-START characters at `i` — the run
- * `claimNotationKeyword` tests for membership. Stops at the first character `isWordStart`
- * does not accept; a digit and a dot are both rejected by it, so neither continues a run.
+ * `claimNotationKeyword` tests for membership. The run's extent is `isWordStart`'s, and that
+ * is what decides which written keys collide: `"kh_max"` offers the whole key to the
+ * membership probe and survives, `"kh1"` offers only `"kh"` and does not.
  * @param src The template source text.
  * @param i Index to start scanning from.
  * @returns The run, empty when `src[i]` is not an identifier-start character.
@@ -88,14 +85,12 @@ function readKeywordRun(src: string, i: number): string {
   return src.slice(i, j);
 }
 
-/** A bracketed label span, from `[` through the next `]`, emitted verbatim
- * so an author-written label survives the rewrite. An unterminated bracket rejects the
+/** A bracketed label span, from `[` through the next `]`. An unterminated bracket rejects the
  * whole SCAN it is running in: the template under `resolveNotationTemplate`, the key alone
- * under `checkNotationKey`. What keeps a label's contents from being scanned for keywords or
- * identifiers is the claim's EXTENT rather than its place in the chain — the claim covers
- * the closing bracket, and the scan resumes past it. Its position is unobservable while it
- * is the only recognizer that claims a `[`; a later recognizer claiming that character
- * would make the ordering load-bearing. */
+ * under `checkNotationKey`. A label's contents are never scanned for keywords or identifiers,
+ * so an author-written label survives the rewrite whatever it spells; that follows from the
+ * claim's EXTENT rather than from its place in the chain, because `[` is in no other
+ * recognizer's start set and this recognizer's position is therefore unobservable. */
 const claimLabelSpan: Recognizer = {
   kind: "label",
   claim: (src, at) => {
@@ -106,12 +101,10 @@ const claimLabelSpan: Recognizer = {
   },
 };
 
-/** A maximal run of digits, emitted verbatim as a notation count/sides
- * literal. Its position in the chain is unobservable: `claimIdentifierSpan` declines unless
- * `isWordStart` accepts the character, and that set admits only letters and the underscore, so
- * no position is claimable by both. What costs a key whose first character is a digit that
- * digit is the identifier span's START SET, not this recognizer's place in the chain — the run
- * is emitted into the notation stream and the remainder is claimed separately. */
+/** A maximal run of digits, starting at `at` while `isDigit` holds and declining (`null`)
+ * otherwise. Its position in the chain is unobservable: a digit is in no other recognizer's
+ * start set. Unlike `claimLabelSpan`, this recognizer has no rejecting branch — it only
+ * declines or claims a slice. */
 const claimIntegerRun: Recognizer = {
   kind: "integer",
   claim: (src, at) => {
@@ -122,12 +115,11 @@ const claimIntegerRun: Recognizer = {
   },
 };
 
-/** An identifier-start run that is a `NOTATION_KEYWORDS` member when
- * lowercased. Only the run is tested, and `readKeywordRun` stops at the first character
- * outside `isWordStart`, so whatever follows the run is claimed by later iterations on its
- * own terms. Ordered BEFORE the identifier span, which is what makes the reserved set
- * wider than the list — and the one adjacency in the chain whose order is observable, the two
- * sharing `isWordStart` as their start set. */
+/** An identifier-start run that is a `NOTATION_KEYWORDS` member when lowercased —
+ * `readKeywordRun` fixes the run's extent, and only the whole run is tested. Ordered BEFORE
+ * `claimIdentifierSpan`, which is what makes the reserved set wider than the list, and the one
+ * adjacency in the chain whose order is observable: the two share `isWordStart` as their start
+ * set. */
 const claimNotationKeyword: Recognizer = {
   kind: "keyword",
   claim: (src, at) => {
@@ -137,14 +129,11 @@ const claimNotationKeyword: Recognizer = {
   },
 };
 
-/** A dotted reference span — an identifier-start character, then `isWordChar`
- * characters, then any number of `.`-joined segments, each of which must itself begin with an
- * identifier-start character. A dot NOT followed by such a character ends the span, splitting
- * what the author wrote into separate references. Ordered LAST, so it claims only what no
- * earlier recognizer took — which is what makes a key's safety negative space rather than a
- * rule; only its position after `claimNotationKeyword` is observable, the other two
- * recognizers starting on characters `isWordStart` rejects.
- * The only recognizer whose emission reaches the consumer's resolver. */
+/** A dotted reference span: an `isWordStart` run continued by `isWordChar`, joined by a `.` to
+ * a further such run only when the character immediately after that `.` is itself an
+ * identifier-start character — a `.` not followed by one is not crossed and the span ends
+ * before it. Ordered LAST in the chain; only its position after `claimNotationKeyword` is
+ * observable, since the two share `isWordStart` as their start set. */
 const claimIdentifierSpan: Recognizer = {
   kind: "identifier",
   claim: (src, at) => {
@@ -160,15 +149,13 @@ const claimIdentifierSpan: Recognizer = {
   },
 };
 
-/** The template grammar's recognizer chain, tried in this order at every position: each
- * claims only what no earlier one took, so "does this key survive" means "does
- * `claimIdentifierSpan` get all of it". Exactly ONE pair's relative order is observable —
- * `claimNotationKeyword` ahead of `claimIdentifierSpan`, which share `isWordStart` as their
- * start set. `claimLabelSpan` and `claimIntegerRun` start on characters neither of the other
- * two accepts, so their positions are free and an ordering claim about them would be
- * unfalsifiable. Ordering is data here rather than nested control flow precisely so the
- * survival question is answerable by RUNNING the chain (`checkNotationKey`) instead of by
- * describing it. */
+/** The template grammar's recognizer chain, tried in this order at every position. Exactly ONE
+ * pair's relative order is observable — `claimNotationKeyword` ahead of `claimIdentifierSpan`,
+ * which share `isWordStart` as their start set. `claimLabelSpan`'s `[` and `claimIntegerRun`'s
+ * digits are each in no other recognizer's start set, so those two positions are free and an
+ * ordering claim about them would be unfalsifiable. Ordering is data here rather than nested
+ * control flow precisely so the survival question is answerable by RUNNING the chain
+ * (`checkNotationKey`) instead of by describing it. */
 const RECOGNIZERS: readonly Recognizer[] = [
   claimLabelSpan,
   claimIntegerRun,
@@ -273,12 +260,10 @@ function substituteIdentifier(
   if (Math.abs(value) > I32_MAX) {
     return { error: "cap", detail: `'${originalText}' = ${value}: out of i32 range` };
   }
-  // A negative value is emitted as an unlabeled parenthesized subtraction; a
-  // positive one as a labeled constant (below). There is NO arithmetic reason
-  // for the asymmetry: `(0 - N)` and `-N` denote the same number, and the
-  // server's recursive-descent grammar evaluates either to the same total in
-  // every preceding context — `x - (0 - N)` and `x - Neg(N)` both fold to
-  // `x + N`.
+  // There is NO arithmetic reason for the asymmetry between the two returns
+  // below: `(0 - N)` and `-N` denote the same number, and the server's
+  // recursive-descent grammar evaluates either to the same total in every
+  // preceding context — `x - (0 - N)` and `x - Neg(N)` both fold to `x + N`.
   //
   // It does have one observable consequence, in the roll breakdown rather than
   // the total: `collect_labeled_consts` emits
@@ -323,10 +308,9 @@ export interface NotationKeySegment {
  * - **No `"identifier"` claim among the segments, including none at all.** No span of the key
  *   reaches the consumer's identifier resolver and the scan returns no error on any path — the
  *   outcome no consumer data can make loud. The roll runs and the number changes. The key's
- *   text is emitted as notation rather than resolved, verbatim save for the ONE span the
- *   emission rewrites: a `DICE_OPERATOR` keyword with no integer run immediately before it
- *   gains the synthesized count that keyword's own declaration describes, so the key `"d"`
- *   emits `1d`.
+ *   text becomes notation rather than a reference, span by span as `emitClaim` decides; a
+ *   reader wanting the emitted text for a given claim structure reads that function, since no
+ *   count of rewritten spans holds — `"d.d"` emits `1d.1d`.
  * - **One `"identifier"` claim covering the whole key.** The `intact` verdict: the resolver is
  *   offered the path the author wrote, and nothing else is emitted for the key.
  * - **An `"identifier"` claim alongside others.** SPLIT: each identifier span is offered to
@@ -341,12 +325,10 @@ export interface NotationKeyCheck {
    * in front of it: an intact key placed immediately after a digit run still has that run
    * emitted ahead of the substituted value, where the two concatenate into one number. */
   readonly intact: boolean;
-  /** Every claim over the key, in order. On a rejection this holds the PREFIX claimed ahead
-   * of the rejecting position and nothing beyond it, so the three shape cases above describe
-   * it only while `rejects` is `null`: one `"identifier"` claim covering the whole key is the
-   * `intact` case; an `"identifier"` claim beside any other claim is the SPLIT outcome above;
-   * no `"identifier"` claim among them is the silent outcome, at whatever number of claims the
-   * grammar consumed the key in, none at all included. */
+  /** Every claim over the key, in order. On a rejection this holds only the PREFIX claimed
+   * ahead of the rejecting position, which is why the three shape outcomes above are scoped to
+   * `rejects === null`: read on a rejected value they answer about a prefix the consumer never
+   * asked about. */
   readonly segments: readonly NotationKeySegment[];
   /** The error a recognizer rejected the key with — the REJECTED outcome above — or `null`
    * when no recognizer rejected it. */
@@ -355,8 +337,9 @@ export interface NotationKeyCheck {
 
 /** Answers whether a written key survives the notation-template grammar intact, by
  * RUNNING that grammar's recognizer chain over it — `claimAt`, the same chain
- * `resolveNotationTemplate` runs at every position, so the two cannot disagree about what
- * claims a key.
+ * `resolveNotationTemplate` runs at every position, so within the grammar the two cannot
+ * disagree about what claims a key. Two things sit outside the grammar and CAN part them: the
+ * length cap named under Scope below, and `claimLabelSpan`'s extent.
  *
  * This is the authority a consuming system's stat-key authoring validation calls.
  * `NOTATION_KEYWORDS` membership is one of several ways a key fails and there is no closed
@@ -364,8 +347,10 @@ export interface NotationKeyCheck {
  * recognizer beat to the position. Reimplementing a rule instead of calling this is the
  * failure this function exists to end.
  *
- * Scope: the grammar only. `MAX_FORMULA_LENGTH` bounds a whole template rather than a key,
- * so it is not applied here, and no resolution is attempted — no resolver is accepted.
+ * Scope: the grammar only. `MAX_FORMULA_LENGTH` bounds a whole template rather than a key, so
+ * it is not applied here, and no resolution is attempted — no resolver is accepted. A key past
+ * that length is therefore scanned here and refused UNSCANNED by `resolveNotationTemplate`,
+ * which returns its cap error before any recognizer runs.
  *
  * **The answer is over the key in ISOLATION, and one recognizer's extent is not key-local.**
  * `claimLabelSpan` scans FORWARD for a closing `]` through whatever source it is handed, so
@@ -402,16 +387,22 @@ export function checkNotationKey(key: string): NotationKeyCheck {
   return { intact, segments, rejects: null };
 }
 
-/** Rewrites a dice-notation template: identifiers resolve to labeled constants, existing
- * dice-notation atoms (and label spans) pass through untouched.
+/** Scans a template left to right through `claimAt`, emitting each claim's text via
+ * `emitClaim` — which delegates to `substituteIdentifier` for an `"identifier"` claim and
+ * decides the emitted text itself for every other kind. An unclaimed character always passes
+ * through as a `"literal"` claim, so the scan never fails on unfamiliar input; the returned
+ * `notation` is therefore NOT guaranteed to be text the server's parser accepts — e.g.
+ * `resolveNotationTemplate("]", () => 7)` returns `{ notation: "]" }` unchanged.
  * INVARIANT: never throws; every failure path returns a FormulaError.
  *
- * Scanning is `RECOGNIZERS` tried in order at each position (`claimAt`), then `emitClaim`
- * on the winner. Which recognizer claims a position is what decides whether an author's
- * stat key survives as a reference at all. How a key that loses ends is enumerated on
- * `NotationKeyCheck`, so a consuming system validates its keys by CALLING
- * `checkNotationKey` — which runs this same chain — rather than reasoning about the chain
- * itself.
+ * `emitClaim` is not a pass-through for either branch, so a caller can expect neither the
+ * non-identifier text back unchanged nor a label on every substitution: it may prepend a
+ * synthesized count, and `substituteIdentifier` emits a negative value unlabeled.
+ *
+ * Which recognizer claims a position is what decides whether an author's stat key survives as
+ * a reference at all. How a key that loses ends is enumerated on `NotationKeyCheck`, so a
+ * consuming system validates its keys by CALLING `checkNotationKey` — which runs this same
+ * chain — rather than reasoning about the chain itself.
  * @param src Template text, e.g. `"1d20 + str"` — a mix of dice-notation atoms
  * (numbers, the dice operator, `NOTATION_KEYWORDS` modifiers, bracketed label spans)
  * and dotted identifier references.
@@ -439,8 +430,7 @@ export function resolveNotationTemplate(
 
   let out = "";
   let i = 0;
-  // The scan's only carried state: whether the immediately preceding claim was an integer
-  // run. Read by `emitClaim` alone, and passed to it explicitly.
+  // The scan's only carried state: whether the immediately preceding claim was an integer run.
   let prevWasInt = false;
 
   while (i < src.length) {
