@@ -257,8 +257,13 @@ source of truth. The ones agents break most:
   the same nouns name a CODE CONSTRUCT rather than an event (`the panic path`, `the crash
   handler`, `the failure mode`, `the error type`): the participle is what separates a construct
   name from a reference to something that happened, and a construct-noun suffix immediately after
-  the incident noun (`mode, path, handler, type, kind, variant, case`) is refused even
-  when a participle precedes it. **Bounded on BOTH sides, not complete**: the pattern requires the
+  the incident noun (the alternation's seven members: `mode, path, handler, type, kind, variant,
+  case`) is refused even when a participle precedes it. Cited as one list rather than as seven
+  individual spans: each is a literal string in `check-comment-refs.mjs`'s own regex alternation,
+  not a name this tree declares, and citing them bare would either fail outright (two of the seven
+  match nothing) or pass by coincidence against an unrelated same-spelled field or parameter
+  elsewhere in the tree — a citation that "resolves" for the wrong reason is worse than one that is
+  honestly not a symbol reference at all. **Bounded on BOTH sides, not complete**: the pattern requires the
   participle to sit directly between the determiner and the noun, so a reordered allusion, an
   allusion with no participle at all, or an incident noun outside its enumerated set is invisible
   to it — a clean run over this shape is not evidence none remains, on the same review-obligation
