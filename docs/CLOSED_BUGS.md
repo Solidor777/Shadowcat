@@ -535,3 +535,31 @@ Confirmed-real defects that have since been fixed, kept for provenance. New fixe
   `AssetPicker.svelte`, and `VisualKindEditor.svelte`'s `refreshAssets` — so opening any of those
   panels self-heals a stale cache-bust state for that session with no new polling mechanism.
   No data loss or authz effect: this was a staleness bug, not a security one.
+
+## Server / assets — `http::assets::delete` broadcast a stale pre-delete version under a racing `replace`
+
+- [High, FIXED] `http::assets::delete` fetched the asset row once at request entry (`existing`),
+  before the row was actually removed, and broadcast `existing.version` in the `AssetChanged`
+  notice — discarding the authoritative row `delete_asset`'s `DELETE ... RETURNING *` already
+  returned. `write_barrier`'s read side (held by both `delete` and `replace`) excludes only a
+  backup's write side, not a racing `replace` on the same asset id: a `replace` could commit
+  (bumping the version and broadcasting `Replaced{N+1}`) in the window between `delete`'s initial
+  read (capturing version `N`) and its own `delete_asset` call — a window with no upper bound,
+  since these routes disable `DefaultBodyLimit`. When `delete`'s broadcast then fired with the
+  stale `version: N`, a client that had already adopted `Replaced{N+1}` correctly rejected the
+  stale `Deleted{N}` notice under `AssetResolver.adoptVersion`'s asymmetric gate — so the client
+  never learned the asset was deleted at all, and since a deleted asset is absent from every future
+  `listAssets` response, `reconcile` never revisited it either: the client kept resolving a URL that
+  now 404s indefinitely, the exact "no self-healing path" failure class the sibling `AssetResolver`
+  fix above closed, reintroduced from the server side. Fixed by binding `delete_asset`'s returned
+  row and using its `version`/`storage_key`/`world_id` for the post-delete file removal and
+  broadcast, instead of the stale `existing` snapshot (`existing` is still used for the pre-delete
+  `require_gm`/`NotFound` checks, which must run before the row is touched). `delete_asset`
+  returning `None` (a second concurrent delete on the same id, already handled by whichever request
+  actually removed the row) now returns `204 No Content` with no broadcast, rather than reading
+  fields off a snapshot for a row no longer there. Regression coverage: a repository-layer test
+  reproducing the exact race (a pre-delete snapshot captured, then a version bump committed via
+  `replace_asset_bytes` before the actual `DELETE`, asserting the removed row's version — not the
+  stale snapshot — is what gets broadcast), and a concurrent-HTTP-DELETE test asserting no panic,
+  no `500`, and never a second `AssetChanged` notice under a real race. Found during a scoped
+  re-review of this subsystem's other work, not a client-observed report.
