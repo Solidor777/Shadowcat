@@ -290,16 +290,15 @@ on.
   resolved identifier as a labeled constant (`value[name]`) even with no dice roll present, so
   the parser must accept such a label on a bare `Const`, not only immediately adjacent to a
   dice group.
-  **Exception — a NEGATIVE substitution carries no label at all**: `substituteIdentifier`
-  emits `(0 - N)`, an unlabeled parenthesized subtraction,
-  and only the non-negative branch emits `N[name]`. The totals are identical either way, but
-  `collect_labeled_consts` emits a `ConstTerm` only for a `Const` CARRYING a label — and it
-  recurses through `Expr::Neg`, so a labeled `-N[name]` would still contribute a signed chip while
-  this form's two unlabeled `Const`s contribute none. A negative stat therefore shows no `[label]`
-  chip in the breakdown. `template.test`'s "negative values emit parenthesized zero-minus form
-  (no label)" test pins the notation output (deliberately, naming the absent label), so the
-  client shape is a choice; what is untested and undecided is that downstream breakdown
-  consequence. Do not restate the substitution rule without this exception.
+  **A NEGATIVE substitution is labeled the same way a positive one is.** `substituteIdentifier`
+  emits `-N[name]` (a unary minus directly before the labeled integer literal), which parses as
+  `Expr::Neg` wrapping a labeled `Const` — `factor`'s `Token::Minus` arm applies wherever a factor
+  is expected, including immediately after a binary operator, so this parses in every additive
+  context a positive substitution reaches. `collect_labeled_consts` recurses through `Expr::Neg`
+  with a sign flip and emits a `ConstTerm` for any `Const` carrying a label, so a negative
+  substitution surfaces a correctly-signed chip in the breakdown, same as a positive one.
+  `eval::sum`'s `additive_negative_labeled_constant_surfaces_a_correctly_signed_chip` test pins
+  the parse and the signed chip together for this exact shape.
 
 ## Hard invariants
 

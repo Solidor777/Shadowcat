@@ -36,9 +36,9 @@ describe("resolveNotationTemplate", () => {
     expect(resolveNotationTemplate("2d6[kh fire] + str", env({ str: 1 })))
       .toEqual({ notation: "2d6[kh fire] + 1[str]" });
   });
-  it("negative values emit parenthesized zero-minus form (no label)", () => {
+  it("negative values emit a labeled unary-minus form (same shape as positive, sign-prefixed)", () => {
     expect(resolveNotationTemplate("d20 + mod", env({ mod: -2 })))
-      .toEqual({ notation: "1d20 + (0 - 2)" });
+      .toEqual({ notation: "1d20 + -2[mod]" });
   });
   it("non-integer values are a type error (explicit rounding required)", () => {
     expect(resolveNotationTemplate("d20 + mod", env({ mod: 2.5 })))

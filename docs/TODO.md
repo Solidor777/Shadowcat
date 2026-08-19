@@ -321,28 +321,6 @@ Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one de
   nature confirmed by the dispatcher — the task's own report characterized only `core` as the
   stronger version.)
 
-## Actionable now — negative template substitutions lose their breakdown label (docs sweep 9 Task 4)
-- TODO: `substituteIdentifier` emits a negative resolved value as an UNLABELED
-  `(0 - N)` while a positive one becomes a labeled `N[originalText]`. The totals are identical
-  either way, but the roll BREAKDOWN differs: `collect_labeled_consts`
-  emits a `ConstTerm` only for a `Const` carrying a label, and
-  it recurses through `Expr::Neg` — so a labeled `-N[label]` would contribute a correctly-signed
-  chip, whereas the current form's two unlabeled `Const`s contribute none. **A negative modifier
-  therefore vanishes from the breakdown UI** while a positive one is attributed.
-  Decide whether that is intended. If the chip is wanted, emitting `-N[originalText]` restores it
-  and is arithmetically identical (verified: `x - Neg(N)` and `x - (0 - N)` both fold to `x + N`).
-  **The notation output IS already tested and the absent label is deliberate at that layer** —
-  the test "negative values emit parenthesized zero-minus form (no label)" asserts `"d20 + mod"`
-  with `mod: -2` produces `"1d20 + (0 - 2)"`. So the client-side
-  shape was a choice, not an accident. What is NOT established is whether its DOWNSTREAM effect was
-  considered: nothing connects that output to the server-side breakdown, and no test covers the
-  missing chip (that would need a Rust test around `collect_labeled_consts`, or the `roll-wire`
-  differential harness). Decide at that layer, not this one.
-  Surfaced by the formula doc sweep: the code carried a detailed, triple-cited comment claiming the
-  parenthesized form prevented a `--N` sign cancellation. Both reviewers independently traced the
-  server evaluator and found no such cancellation exists; the label difference is the only real
-  consequence, and it was unmentioned. The comment now states the verified behavior.
-
 ## Actionable now — `EngineAdapter.focus` has no production caller (docs sweep 10 Task 3 backlog)
 - TODO: decide whether the panel host should perform imperative DOM-level focus, then either wire
   `EngineAdapter.focus` up or delete the seam. Today it is defined on the adapter interface

@@ -261,20 +261,14 @@ function substituteIdentifier(
   if (Math.abs(value) > I32_MAX) {
     return { error: "cap", detail: `'${originalText}' = ${value}: out of i32 range` };
   }
-  // There is NO arithmetic reason for the asymmetry between the two returns
-  // below: `(0 - N)` and `-N` denote the same number, and the server's
-  // recursive-descent grammar evaluates either to the same total in every
-  // preceding context — `x - (0 - N)` and `x - Neg(N)` both fold to `x + N`.
-  //
-  // It does have one observable consequence, in the roll breakdown rather than
-  // the total: `collect_labeled_consts` emits
-  // a ConstTerm only for a `Const` carrying a label, and it RECURSES through
-  // `Expr::Neg` — so a labeled `-N[label]` would still contribute a signed chip,
-  // while this form's two unlabeled `Const`s contribute none. A negative
-  // substitution therefore shows no `[label]` chip in the breakdown.
-  // TODO: decide whether that is intended; if the chip is wanted, emit `-N[originalText]`
-  // instead (arithmetically identical per the fold above).
-  if (value < 0) return `(0 - ${-value})`;
+  // A negative value emits the same labeled shape as a positive one, prefixed with a unary
+  // minus, so the server parses `Expr::Neg` wrapping a labeled `Const` rather than two
+  // unlabeled `Const`s: `collect_labeled_consts` recurses through `Expr::Neg` with a sign
+  // flip and emits a `ConstTerm` for any `Const` carrying a label, so this form surfaces a
+  // correctly-signed chip in the roll breakdown where `(0 - N)`'s two unlabeled consts would
+  // not. Arithmetically identical to `(0 - N)` in every preceding context — the server's
+  // recursive-descent grammar folds `x - (0 - N)` and `x - Neg(N)` to the same `x + N`.
+  if (value < 0) return `-${-value}[${originalText}]`;
   return `${value}[${originalText}]`;
 }
 
@@ -396,9 +390,8 @@ export function checkNotationKey(key: string): NotationKeyCheck {
  * `resolveNotationTemplate("]", () => 7)` returns `{ notation: "]" }` unchanged.
  * INVARIANT: never throws; every failure path returns a FormulaError.
  *
- * `emitClaim` is not a pass-through for either branch, so a caller can expect neither the
- * non-identifier text back unchanged nor a label on every substitution: it may prepend a
- * synthesized count, and `substituteIdentifier` emits a negative value unlabeled.
+ * `emitClaim` is not a pass-through for the non-identifier branch: it may prepend a synthesized
+ * count. Every identifier substitution is labeled, positive or negative.
  *
  * Which recognizer claims a position is what decides whether an author's stat key survives as
  * a reference at all. How a key that loses ends is enumerated on `NotationKeyCheck`, so a

@@ -390,6 +390,22 @@ mod tests {
     }
 
     #[test]
+    fn additive_negative_labeled_constant_surfaces_a_correctly_signed_chip() {
+        // "1d20 + -3[dex]" is the shape a template-rewrite substitution emits for a
+        // negative resolved value: a unary minus directly before a labeled integer, after
+        // a binary `+`. `factor` checks for `Token::Minus` regardless of what precedes it,
+        // so this parses as `Bin{Add, Dice, Neg(Const{value: 3, label: "dex"})}`, and
+        // `collect_labeled_consts` flips the sign through `Expr::Neg`.
+        let spec = notation::parse("1d20 + -3[dex]", total_ctx()).unwrap();
+        let raws = roll(&spec, &mut NoiseRng::from_seed(1));
+        let out = evaluate(&spec, &raws);
+        assert_eq!(out.labeled_consts.len(), 1);
+        assert_eq!(out.labeled_consts[0].value, -3);
+        assert_eq!(out.labeled_consts[0].label, Some("dex".to_string()));
+        assert_eq!(out.total, out.records[0].value as i64 - 3);
+    }
+
+    #[test]
     fn dice_group_plus_labeled_constant_parses_and_surfaces_both() {
         // A dice group followed by an additive labeled constant parses, and the
         // labeled constant shows up in labeled_consts alongside the dice group's
