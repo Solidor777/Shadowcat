@@ -29,6 +29,19 @@ describe("chat settings editor", () => {
     ]);
   });
 
+  it("toggling hyperlinks from a null stored value dispatches old: null, not old: false", async () => {
+    const dispatchIntent = vi.fn();
+    const chat = buildChatSettingsDoc("w1", chatEngine({ hyperlinks: null }), "chat1");
+    render(GameSettingsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: gmStoreWith(chat), dispatchIntent }) });
+
+    const cb = screen.getByLabelText("gameSettings.chat.hyperlinks") as HTMLInputElement;
+    await fireEvent.change(cb, { target: { checked: true } });
+
+    expect(dispatchIntent).toHaveBeenCalledWith([
+      { op: "update", doc_id: "chat1", changes: [{ path: "/engine/hyperlinks", old: null, new: true }] },
+    ]);
+  });
+
   it("hyperlinks checkbox reflects the stored value", () => {
     const dispatchIntent = vi.fn();
     const chat = buildChatSettingsDoc("w1", chatEngine({ hyperlinks: true }), "chat1");

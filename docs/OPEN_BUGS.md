@@ -118,47 +118,6 @@ Currently open, confirmed-real defects. Deferrals belong in `TODO.md`, not here.
     which the `replace` route is deliberately exempt from. Found by the
     Sweep 12 Task 6 Rule 11 dimension pass, which is comment-only and cannot carry the change.
 
-- **The GM Settings "hyperlinks" checkbox is permanently non-functional on every world: it sends a
-  coalesced OCC pre-image the server always rejects.** 100% reproducible, not a race.
-  `GameSettingsPanel` passes `chatsys.hyperlinks ?? false` as the `old` argument to
-  its local `set`. `set`'s own `old ?? null` cannot repair this — `false` is not nullish, so the
-  coalesced value is forwarded verbatim as the pre-image.
-  - **Why it fires on a fresh world.** `GameSettingsPanel`'s GM-seed effect creates
-    the `chat-settings` doc with an explicit JSON `hyperlinks: null` — a literal stored null, not an
-    absent key. So the first value ever at `/engine/hyperlinks` is `null`, while the checkbox sends
-    `old: false`. **The null is guaranteed, not incidental:** ingress normalization re-serializes
-    the typed struct, so an absent optional field is stored as an explicit null rather than a
-    missing key — `normalize_engine_opt`, whose own
-    doctest asserts exactly that for a `{}` chat-settings body. Seeding the field or
-    omitting it therefore reach the same stored state, and no path leaves a `false` there for the
-    checkbox's pre-image to match.
-  - **Why the server rejects it.** `SqliteRepository::apply_intent`'s field-level OCC check
-    computes
-    `actual = whole.pointer(&ch.path).cloned().unwrap_or(Value::Null)` and compares it to `ch.old`
-    through `values_semantically_eq`. That helper special-cases only Object/Object,
-    Array/Array and Number/Number; a `Null` vs `Bool(false)` mismatch falls through to the catch-all
-    `_ => a == b`, which is false. Result:
-    `DataError::Conflict("stale pre-image at /engine/hyperlinks")`.
-  - **Why it never self-heals.** A rejected intent mutates nothing, so the field stays `null` and
-    every subsequent click fails identically. No other code path writes a real boolean there.
-  - **It is the sole offender in the file.** Every other nullable control passes the raw value:
-    `link_previews` uses `?? null`, scene overrides use `?? null`, and `lightingEnabled`
-    passes the value directly because its field is a plain `bool` with no null case. `set`'s own
-    docblock states the contract this one call site violates: `old` must be the field's real
-    current value.
-  - **Why the tests miss it.** The test "toggling hyperlinks dispatches a
-    JSON-pointer update with the real pre-image" seeds `hyperlinks: false` — the one
-    value for which `?? false` is a no-op. The `chatEngine` fixture's own default is
-    `hyperlinks: null`,
-    the broken case, and no test exercises it. Client tests mock `dispatchIntent`, so they prove
-    what is SENT, never what the server ACCEPTS.
-  - **Fix shape:** change the `old` argument to `chatsys.hyperlinks ?? null`. The
-    `checked={chatsys.hyperlinks ?? false}` display expression is correct and stays — it
-    mirrors `ChatContentPolicy::hyperlinks()`'s `unwrap_or(false)` on the read path. Add a test
-    seeding `hyperlinks: null`. Runtime change; belongs on the follow-up branch. Found during
-    Sweep 12 Task 6 by the dispatcher and independently confirmed by both reviewers, from writing
-    the doc comment that sits above it.
-
 - **[hex] The lighting overlay and the explored-fog layer paint axial indices at square
   positions.** On a hex scene the server sends lit and explored cells as axial `(q, r)`, produced
   through `HexGrid`'s `GridShape` implementation. `PixiBackend.setLighting` places each at

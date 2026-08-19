@@ -319,9 +319,8 @@
          mirroring is scoped to the read path only: the accessors resolve a
          stored value for reading, and nothing server-side ever normalizes a
          stored null to false, so an OCC `old` pre-image must still carry the
-         RAW value. The hyperlinks `onchange` below violates that and is a known
-         bug; do not copy its `?? false` into the `old`
-         argument of any new control. hyperlinks has no inherit
+         RAW value — every control here, including hyperlinks, passes `?? null`
+         as its `old` argument. hyperlinks has no inherit
          concept: `ChatContentPolicy::hyperlinks` resolves absent to false
          (`unwrap_or(false)`), so this
          panel exposes it as a plain two-state checkbox coalescing null the same
@@ -336,7 +335,7 @@
       <label>
         {ctx.t("gameSettings.chat.hyperlinks")}
         <input type="checkbox" aria-label="gameSettings.chat.hyperlinks" checked={chatsys.hyperlinks ?? false}
-          onchange={(e) => set(chatDoc.id, "/engine/hyperlinks", chatsys.hyperlinks ?? false, (e.currentTarget as HTMLInputElement).checked)} />
+          onchange={(e) => set(chatDoc.id, "/engine/hyperlinks", chatsys.hyperlinks ?? null, (e.currentTarget as HTMLInputElement).checked)} />
       </label>
 
       <label>
