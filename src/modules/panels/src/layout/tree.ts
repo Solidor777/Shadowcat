@@ -491,7 +491,7 @@ export function applyOp(l: PanelLayoutV1, o: LayoutOp): PanelLayoutV1 {
         );
         return { ...l, expanded: { ...l.expanded, floating } };
       }
-      // minimized or closed: detach (no-op if already closed), then surface it.
+      // minimized, closed, or popped-out: detach (no-op if already closed), then surface it.
       const [l1] = detach(l, o.id);
       return placeByPlacement(l1, o.id, o.placement);
     }

@@ -446,8 +446,8 @@ Confirmed-real defects that have since been fixed, kept for provenance. New fixe
   BEFORE state and narrate exactly when it was `"docked"`/`"floating"` and skip otherwise — inverted
   to match `applyOp`'s actual condition (`prevWhere === "docked" || prevWhere === "floating"` skips)
   rather than enumerating the fallthrough's members, so a future `PanelLocation` variant can't be
-  missed the same way a first attempt at this fix missed `"popped-out"` before review caught it.
-  Regression tests cover all three real-placement-change priors, both focus-bump priors, and the
+  missed the same way an enumerated-member guard would miss one. Regression tests cover all three
+  real-placement-change priors, both focus-bump priors, and the
   true no-op case (asserting `onOp` isn't even called, per `dispatch`'s SAME-REFERENCE NO-OP
   CONTRACT).
 
