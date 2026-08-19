@@ -257,7 +257,7 @@ source of truth. The ones agents break most:
   the same nouns name a CODE CONSTRUCT rather than an event (`the panic path`, `the crash
   handler`, `the failure mode`, `the error type`): the participle is what separates a construct
   name from a reference to something that happened, and a construct-noun suffix immediately after
-  the incident noun (`mode`, `path`, `handler`, `type`, `kind`, `variant`, `case`) is refused even
+  the incident noun (`mode, path, handler, type, kind, variant, case`) is refused even
   when a participle precedes it. **Bounded on BOTH sides, not complete**: the pattern requires the
   participle to sit directly between the determiner and the noun, so a reordered allusion, an
   allusion with no participle at all, or an incident noun outside its enumerated set is invisible

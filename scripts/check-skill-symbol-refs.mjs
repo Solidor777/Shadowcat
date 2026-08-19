@@ -1587,7 +1587,7 @@ export const ACKNOWLEDGED_EXTERNAL_PREFIX = new Set([
   // Rust primitive and std types.
   "f64", "u32", "i128", "Vec", "Option", "Some", "Result", "Err", "HashSet", "BTreeMap",
   "Uuid", "Arc", "Mutex", "Rc", "RefCell", "Sync", "Display", "PartialEq", "Path", "PathBuf",
-  "SqlitePool", "SyntaxError", "Sink", "ConnectInfo", "JoinSet",
+  "SqlitePoolOptions", "SyntaxError", "Sink", "ConnectInfo", "JoinSet",
   // TS/JS standard and Web globals, and the `crypto` global whose members this repo calls.
   "undefined", "Map", "Window", "IntersectionObserver", "structuredClone", "crypto",
   // Third-party UI libraries this repo depends on but does not declare (the dockview panel

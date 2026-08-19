@@ -31,7 +31,8 @@ and restore as a deployment-operator tool, not an in-app feature.
   pool) and `axum::serve` are structurally unreachable on that path, not just conditionally
   skipped.
 - `db` — `connect_pool(url) -> Result<SqlitePool, sqlx::Error>`: the SHARED pool-open bootstrap
-  (`SqlitePoolOptions::max_connections(1)` + a `PRAGMA foreign_keys = ON;` `after_connect` hook),
+  (`SqlitePoolOptions::max_connections(1)` + a `PRAGMA foreign_keys = ON;`
+  `SqlitePoolOptions::after_connect` hook),
   stated once here rather than restated per site. Every pool-opening call in the crate routes
   through it: `data::sqlite::SqliteRepository::connect` (which then runs migrations —
   `connect_pool` deliberately does not, since a caller opening a short-lived pool against an
@@ -60,9 +61,9 @@ and restore as a deployment-operator tool, not an in-app feature.
 ## Hard invariants
 
 - **Pool-open options are derived from one shared constructor, never restated per site** —
-  `db::connect_pool` is the sole place `max_connections(1)` and the foreign-keys `after_connect`
-  hook are set; a new pool-opening call site must call it rather than reconstructing
-  `SqlitePoolOptions` inline, or the two decisions silently fork again the moment one site's
+  `db::connect_pool` is the sole place `max_connections(1)` and the foreign-keys
+  `SqlitePoolOptions::after_connect` hook are set; a new pool-opening call site must call it rather
+  than reconstructing `SqlitePoolOptions` inline, or the two decisions silently fork again the moment one site's
   requirements change and the other isn't updated to match.
 - **`VACUUM INTO`, never a raw `.db` file copy** — a raw byte-copy of a live SQLite file is unsafe
   (a concurrent writer or WAL journal can leave it mid-write); `VACUUM INTO` is SQLite's own
