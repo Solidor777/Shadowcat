@@ -17,7 +17,6 @@
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
-use sqlx::sqlite::SqlitePoolOptions;
 use thiserror::Error;
 
 /// All fallible backup/restore operations return this.
@@ -172,10 +171,7 @@ pub async fn create_backup(
         tokio::fs::remove_file(&db_out).await?;
     }
     let db_url = format!("sqlite://{}", db_path.to_string_lossy());
-    let pool = SqlitePoolOptions::new()
-        .max_connections(1)
-        .connect(&db_url)
-        .await?;
+    let pool = crate::db::connect_pool(&db_url).await?;
     // Standard SQL string-literal escaping (doubled single quotes) rather than
     // a bound parameter in the VACUUM INTO filename position — the safer,
     // universally-supported form across sqlite driver versions. The only
@@ -357,11 +353,7 @@ mod tests {
     /// and `restore_backup` must work with any SQLite file content.
     async fn seed_db(path: &Path) {
         let url = format!("sqlite://{}?mode=rwc", path.to_string_lossy());
-        let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect(&url)
-            .await
-            .unwrap();
+        let pool = crate::db::connect_pool(&url).await.unwrap();
         sqlx::query("CREATE TABLE t (id INTEGER PRIMARY KEY, val TEXT NOT NULL)")
             .execute(&pool)
             .await
@@ -419,11 +411,7 @@ mod tests {
 
         // world.db opens and round-trips the known row.
         let out_db_url = format!("sqlite://{}", out_dir.join("world.db").to_string_lossy());
-        let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect(&out_db_url)
-            .await
-            .unwrap();
+        let pool = crate::db::connect_pool(&out_db_url).await.unwrap();
         let row = sqlx::query("SELECT val FROM t WHERE id = 1")
             .fetch_one(&pool)
             .await
@@ -512,11 +500,7 @@ mod tests {
             .unwrap();
 
         let restored_url = format!("sqlite://{}", restored_db.to_string_lossy());
-        let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect(&restored_url)
-            .await
-            .unwrap();
+        let pool = crate::db::connect_pool(&restored_url).await.unwrap();
         let row = sqlx::query("SELECT val FROM t WHERE id = 1")
             .fetch_one(&pool)
             .await
@@ -620,11 +604,7 @@ mod tests {
         );
         assert!(!restored_assets.join("stale.png").exists());
         let restored_url = format!("sqlite://{}", restored_db.to_string_lossy());
-        let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect(&restored_url)
-            .await
-            .unwrap();
+        let pool = crate::db::connect_pool(&restored_url).await.unwrap();
         let row = sqlx::query("SELECT val FROM t WHERE id = 1")
             .fetch_one(&pool)
             .await

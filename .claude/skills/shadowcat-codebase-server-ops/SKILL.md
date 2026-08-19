@@ -1,6 +1,6 @@
 ---
 name: shadowcat-codebase-server-ops
-description: "Use when touching Shadowcat's server bootstrap/config/CLI/deployment surface: the `main` module (entry point, early one-shot CLI branches), the `config` module (`Cli`/`Config` layering: CLI flag > SHADOWCAT_* env > TOML > default), the `db` module (single-connection SqlitePool open), or the `backup` module (whole-server VACUUM-INTO backup/restore). Covers the single-binary deployment story, not any one data/document subsystem. Invoke shadowcat-codebase-core first."
+description: "Use when touching Shadowcat's server bootstrap/config/CLI/deployment surface: the `main` module (entry point, early one-shot CLI branches), the `config` module (`Cli`/`Config` layering: CLI flag > SHADOWCAT_* env > TOML > default), the `db` module (the shared `connect_pool` single-connection SqlitePool bootstrap every pool-opening site in the crate calls), or the `backup` module (whole-server VACUUM-INTO backup/restore). Covers the single-binary deployment story, not any one data/document subsystem. Invoke shadowcat-codebase-core first."
 ---
 
 # Shadowcat — Server Bootstrap, Config, and Backup/Restore
@@ -30,20 +30,24 @@ and restore as a deployment-operator tool, not an in-app feature.
   `run_backup`/`run_restore` and `return Ok(())` — `SqliteRepository::connect` (the long-lived
   pool) and `axum::serve` are structurally unreachable on that path, not just conditionally
   skipped.
-- `db` — `open_pool(url)`: `SqlitePoolOptions::max_connections(1)`. **Dead
-  code** — its only caller is its own unit test; production startup (`main`) and
-  `backup::create_backup`/`backup::restore_backup` (plus `backup`'s own `tests` module) all open
-  pools independently. The whole server's actual
-  single-connection invariant lives in `data::sqlite::SqliteRepository::connect`
-  ([[shadowcat-codebase-documents-permissions]]), which
-  separately sets the same `max_connections(1)` — editing `db` does NOT affect the live
-  server's connection pool.
+- `db` — `connect_pool(url) -> Result<SqlitePool, sqlx::Error>`: the SHARED pool-open bootstrap
+  (`SqlitePoolOptions::max_connections(1)` + a `PRAGMA foreign_keys = ON;` `after_connect` hook),
+  stated once here rather than restated per site. Every pool-opening call in the crate routes
+  through it: `data::sqlite::SqliteRepository::connect` (which then runs migrations —
+  `connect_pool` deliberately does not, since a caller opening a short-lived pool against an
+  already-migrated database, e.g. `backup::create_backup`'s `VACUUM INTO` connection, must never
+  trigger a schema migration as a side effect of backing up), `backup::create_backup`, and every
+  ad hoc test-scaffolding pool in `backup`'s own `tests` module. There is exactly one pool-options
+  decision in the crate now; nothing calls `SqlitePoolOptions::new()` directly outside this
+  function.
 - `backup` — `BackupManifest`, `BackupError`, `dir_is_empty_or_absent`,
   `create_backup(db_path, assets_dir, out_dir) -> Result<BackupManifest, BackupError>`,
   `restore_backup(backup_dir, db_path, assets_dir, force) -> Result<(), BackupError>`. Opens its
-  own short-lived `SqlitePool` directly (does not reuse `SqliteRepository`/`AppState`) — pure
-  file I/O + one SQL statement, deliberately decoupled from the rest of the server so it works
-  even when `main()`'s normal startup path never runs.
+  own short-lived pool via `db::connect_pool` (does not reuse `SqliteRepository`/`AppState`) —
+  pure file I/O + one SQL statement, deliberately decoupled from the rest of the server so it
+  works even when `main()`'s normal startup path never runs. `restore_backup` opens no SQL pool at
+  all (file copy/rename only), so the foreign-keys pragma `connect_pool` always enables has no
+  restore-time counterpart to diverge from.
 - `POST /api/admin/backup` (`http::routes::admin_backup`, admin-only via `AdminUser`)
   — in-server backup trigger, layered ABOVE `backup`. Writes into
   `Config::backups_path()` (`config`, `None` → sibling `backups/` beside the db file, mirroring
@@ -55,6 +59,11 @@ and restore as a deployment-operator tool, not an in-app feature.
 
 ## Hard invariants
 
+- **Pool-open options are derived from one shared constructor, never restated per site** —
+  `db::connect_pool` is the sole place `max_connections(1)` and the foreign-keys `after_connect`
+  hook are set; a new pool-opening call site must call it rather than reconstructing
+  `SqlitePoolOptions` inline, or the two decisions silently fork again the moment one site's
+  requirements change and the other isn't updated to match.
 - **`VACUUM INTO`, never a raw `.db` file copy** — a raw byte-copy of a live SQLite file is unsafe
   (a concurrent writer or WAL journal can leave it mid-write); `VACUUM INTO` is SQLite's own
   atomic, consistency-guaranteed live-snapshot primitive.

@@ -4,7 +4,6 @@
 #![deny(clippy::missing_docs_in_private_items)]
 
 use async_trait::async_trait;
-use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::{Row, SqlitePool};
 use uuid::Uuid;
 
@@ -148,22 +147,11 @@ pub struct SqliteRepository {
 
 impl SqliteRepository {
     /// Connect to `url` (e.g. "sqlite::memory:" or "sqlite:///path/to.db")
-    /// and run migrations. Foreign keys are enabled per connection.
+    /// and run migrations. Pool options (single-connection cap, foreign keys
+    /// enabled per connection) come from the shared [`crate::db::connect_pool`]
+    /// bootstrap, never restated here.
     pub async fn connect(url: &str) -> Result<Self, DataError> {
-        let pool = SqlitePoolOptions::new()
-            // Single writer connection serializes apply_command transactions,
-            // avoiding SQLITE_BUSY contention on the per-world seq allocation.
-            .max_connections(1)
-            .after_connect(|conn, _meta| {
-                Box::pin(async move {
-                    sqlx::query("PRAGMA foreign_keys = ON;")
-                        .execute(conn)
-                        .await?;
-                    Ok(())
-                })
-            })
-            .connect(url)
-            .await?;
+        let pool = crate::db::connect_pool(url).await?;
         sqlx::migrate!()
             .run(&pool)
             .await
