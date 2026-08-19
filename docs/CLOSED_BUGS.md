@@ -3,6 +3,24 @@
 Confirmed-real defects that have since been fixed, kept for provenance. New fixes append a new
 `##` section (or bullet under an existing one); do not delete resolved entries.
 
+## Tooling — `WORD_NARRATION_TOKEN` false-positived on an enum-variant name cited in a skill
+
+- [CI-fatal, FIXED] `scripts/check-comment-refs.mjs`'s coverage control
+  (`"coverage control: the governed skill corpus has no unrecognised candidate tokens"`, run by
+  `pnpm run test:scripts`, the `web` CI job's own step, not wrapped by any `pnpm lint:*` alias)
+  reported RESIDUE for `Replaced` in `shadowcat-codebase-assets`'s `ws::protocol` bullet, which
+  cites `AssetOp::Replaced`'s bare variant name inline in backticks as a wire-protocol value. The
+  skill-only half of `WORD_NARRATION_TOKEN` treats `replaced` (among five other words) as
+  narration of the code's own past, correctly for ordinary prose but not for a code symbol quoted
+  as a value — the same "value, not a process id" collision the general `ACKNOWLEDGED` list
+  already resolves for `PanelLayoutV1`/`Vec2`, just unresolved for this checker's separate
+  `ACKNOWLEDGED_NARRATION` list. Fixed by adding a new `ACKNOWLEDGED_NARRATION` entry recognizing
+  a PascalCase word immediately followed by a closing backtick within the class's `contextChars`
+  window — case-sensitive, so it exempts only the enum-variant spelling convention and leaves
+  lowercase prose narration, backtick-quoted or not, flagged as residue. Regression coverage: a
+  positive control on the exact live occurrence and a second PascalCase word, plus negative
+  controls for unquoted lowercase narration and lowercase-backtick-quoted narration.
+
 ## Server / data — unrestricted `property_overrides` pointer substituted or panicked the envelope
 
 - [Critical, FIXED] A `property_overrides` pointer was unrestricted to the four content bands the

@@ -645,6 +645,26 @@ const ACKNOWLEDGED_NARRATION = [
     name: "'legacy' naming a still-supported compatibility path or a third-party product's own version",
     re: /^legacy\b/i,
   },
+  // The general ACKNOWLEDGED list already names this shape once for a different checker class
+  // ("a code symbol cited as a value, not a process id" — PanelLayoutV1/Vec2): a symbol quoted in
+  // backticks is program vocabulary, not prose about the code's own history. This class needs its
+  // own entry rather than reuse because the two lists key on different windows — ACKNOWLEDGED tests
+  // the bare token (contextChars: 0), while this class must see past the token to the backtick that
+  // follows it (contextChars: 8).
+  //
+  // CASE-SENSITIVE and requiring the backtick to sit IMMEDIATELY after the matched word, deliberately
+  // narrower than "any backtick-adjacent spelling": this codebase's enum variants are single
+  // PascalCase words (`Replaced`, `Deleted`, `Renamed`), so a capital letter followed by lowercase
+  // letters and a backtick is the real shape a wire-protocol/code citation takes. Lowercase prose
+  // narration ("this endpoint was replaced`" for some unrelated reason) must NOT be exempted just
+  // because a backtick happens to follow it — the capitalization requirement is what keeps the
+  // exemption to the code-symbol form and nothing wider. A lowercase word cited in backticks as a
+  // literal string value (`` `replaced` ``) is likewise NOT this shape: it carries no PascalCase
+  // signal distinguishing it from quoted prose, so it stays residue rather than being acknowledged.
+  {
+    name: "an enum-variant name (PascalCase) cited inline in backticks as a wire-protocol/code value, not narration of the code's own past",
+    re: /^[A-Z][a-z]+`/,
+  },
 ];
 
 /**

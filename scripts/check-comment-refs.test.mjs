@@ -447,6 +447,52 @@ test("scanCandidates names and counts a legitimate acknowledged token", () => {
   ]);
 });
 
+// The collision the coverage control found live: `WORD_NARRATION_TOKEN`'s six banned words are
+// also PascalCase enum-variant names, cited inline in backticks as wire-protocol values rather
+// than narration of the code's own past.
+test("scanCandidates acknowledges a PascalCase enum-variant word cited inline in backticks", () => {
+  const { residue, acknowledged } = scanCandidates(
+    "REQUIRED for both ops: the bumped, authoritative value for `Replaced`, and the version the row\n",
+  );
+  expect(residue).toEqual([]);
+  expect(acknowledged).toContainEqual({
+    line: 1,
+    token: "Replaced",
+    reason:
+      "an enum-variant name (PascalCase) cited inline in backticks as a wire-protocol/code value, not narration of the code's own past",
+  });
+});
+
+test("scanCandidates acknowledges a second PascalCase enum-variant word cited inline in backticks", () => {
+  const { residue, acknowledged } = scanCandidates(
+    "the wire type carries a `Renamed` variant for this transition.\n",
+  );
+  expect(residue).toEqual([]);
+  expect(
+    acknowledged.some(
+      (a) =>
+        a.token === "Renamed" &&
+        a.reason ===
+          "an enum-variant name (PascalCase) cited inline in backticks as a wire-protocol/code value, not narration of the code's own past",
+    ),
+  ).toBe(true);
+});
+
+// Negative control: lowercase prose narration, not backtick-quoted, must still flag as residue —
+// the new entry must not accidentally widen coverage to ordinary narration.
+test("scanCandidates still flags lowercase prose narration with no backtick as residue", () => {
+  const { residue } = scanCandidates("this endpoint was replaced last cycle.\n");
+  expect(residue.map((r) => r.token)).toEqual(["replaced"]);
+});
+
+// Negative control, explicit decision: the same word backtick-quoted but LOWERCASE (a literal
+// string value, not a PascalCase enum variant) is NOT acknowledged and still flags as residue —
+// case sensitivity is what keeps the exemption narrow to the code-symbol form.
+test("scanCandidates still flags a lowercase word cited in backticks as residue", () => {
+  const { residue } = scanCandidates("the field stores the literal string `replaced` on disk.\n");
+  expect(residue.map((r) => r.token)).toEqual(["replaced"]);
+});
+
 test("scanCandidates respects the EXAMPLE: exemption", () => {
   const { residue, acknowledged, exempted } = scanCandidates(
     "- EXAMPLE: `Sprint 4` is not a real reference.\n",
