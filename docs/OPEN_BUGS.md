@@ -155,7 +155,9 @@ Currently open, confirmed-real defects. Deferrals belong in `TODO.md`, not here.
   - **Fix shape:** change the `old` argument to `chatsys.hyperlinks ?? null`. The
     `checked={chatsys.hyperlinks ?? false}` display expression is correct and stays — it
     mirrors `ChatContentPolicy::hyperlinks()`'s `unwrap_or(false)` on the read path. Add a test
-    seeding `hyperlinks: null`. Runtime change; belongs on the follow-up branch.
+    seeding `hyperlinks: null`. Runtime change; belongs on the follow-up branch. Found during
+    Sweep 12 Task 6 by the dispatcher and independently confirmed by both reviewers, from writing
+    the doc comment that sits above it.
 
 - **[hex] The lighting overlay and the explored-fog layer paint axial indices at square
   positions.** On a hex scene the server sends lit and explored cells as axial `(q, r)`, produced

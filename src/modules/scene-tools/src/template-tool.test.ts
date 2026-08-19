@@ -25,8 +25,8 @@ function setup(mode: TemplateMode, snap: (p: { x: number; y: number }) => { x: n
 }
 
 /** Snaps to the nearest 100-unit cell center, matching the default scene's `size: 100` grid —
- * mirrors the real `RenderEngine`'s grid-snap behavior closely enough to exercise the
- * anchor/release coordinate-frame bug `makeTemplateTool` had. */
+ * mirrors real grid-snap closely enough to prove `onPointerMove`/`onPointerUp` share the
+ * anchor's coordinate frame. */
 function snapTo100(p: { x: number; y: number }): { x: number; y: number } {
   return { x: Math.round(p.x / 100) * 100, y: Math.round(p.y / 100) * 100 };
 }
