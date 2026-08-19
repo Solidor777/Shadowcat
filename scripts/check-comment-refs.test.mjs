@@ -902,6 +902,36 @@ test("a hyphenated spec compound is not an unnamed spec reference", () => {
   expect(compound.hits.map((h) => h.kind)).not.toContain("unnamed spec reference");
 });
 
+// The widened "unnamed brief pointer" construction: a deferring verb reachable under "this" as
+// well as "the", matching the determiner set "unnamed spec reference" already carries for "spec".
+test("a determiner-plus-brief phrase deferring to it is an unnamed brief pointer", () => {
+  const the = scanContent("// Not exactly the fixture the brief calls for.\n", { isMd: false }); // EXAMPLE:
+  expect(the.hits.map((h) => h.kind)).toContain("unnamed brief pointer");
+  const thisOne = scanContent("// This brief specifies the fixture shape.\n", { isMd: false }); // EXAMPLE:
+  expect(thisOne.hits.map((h) => h.kind)).toContain("unnamed brief pointer");
+});
+
+// The ordinary-adjective collision "brief" is designed against: neither uses the determiner-plus-
+// deferring-verb construction, so both stay unmatched.
+test("'brief' as an ordinary adjective is not an unnamed brief pointer", () => {
+  const pause = scanContent("// Logs a brief pause before the retry.\n", { isMd: false }); // EXAMPLE:
+  expect(pause.hits.map((h) => h.kind)).not.toContain("unnamed brief pointer");
+  const keepIt = scanContent("// Keep the summary short; keep it brief.\n", { isMd: false }); // EXAMPLE:
+  expect(keepIt.hits.map((h) => h.kind)).not.toContain("unnamed brief pointer");
+});
+
+// The real collision found by reading `check-brief-rules.mjs`'s own prose: "brief" as the deferring
+// verb's OBJECT describes the category of dispatch briefs, not one specific document, and must stay
+// unmatched even though "the brief" appears immediately before a comma the way a genuine pointer
+// does.
+test("'brief' as a deferring verb's object describing the category is not an unnamed brief pointer", () => {
+  const { hits } = scanContent(
+    "// An implementer obeys the brief, not the guidance.\n", // EXAMPLE:
+    { isMd: false },
+  );
+  expect(hits.map((h) => h.kind)).not.toContain("unnamed brief pointer");
+});
+
 // A date's hyphens are its FORMAT, not a word separator: widening them would read a
 // space-separated triple of numbers as a date.
 test("a date's own hyphens are not widened into other separators", () => {

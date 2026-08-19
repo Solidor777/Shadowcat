@@ -74,23 +74,3 @@ Currently open, confirmed-real defects. Deferrals belong in `TODO.md`, not here.
     already-ruled remediation for that defect (snapshotting the relevant state into the event or
     command at commit time) is expected to close this one too; fixed together in the same phase
     rather than forked across phases.
-
-- **`check-comment-refs.mjs`'s "unnamed spec reference" detector does not catch "the brief"/"this
-  brief" as the same class of ephemeral-document referent it already catches for "spec".** The
-  pattern (`\b(?:the|this|design|parent|wire|per)\s+spec\b|\bspec'?d\b|\bspec\s*§|\bspec\s*:(?!:)`)
-  is keyed on the literal word `spec`; "brief" never appears in its vocabulary. RULE 16 bans
-  "unnamed spec references" as one instance of a broader class — any reference to an ephemeral
-  planning document whose identity a process assigns — and a dispatcher brief is exactly that class
-  of document, used throughout this project's own subagent-dispatch workflow (files literally named
-  `task-N-brief.md`). A committed test comment reading "...exactly the fixture the brief calls for"
-  passed `pnpm lint:comments` cleanly, both before and after being written, confirming the gap by
-  direct observation rather than by reading the pattern alone.
-  - **Reachability:** any comment written by (or dictated to) a subagent that refers to its own
-    dispatch brief by that name, which is common — dispatcher briefs across this project's own
-    subagent-driven-development workflow are routinely called "the brief" in prose.
-  - **Fix shape:** widen the pattern to also match `(?:the|this|per)\s+brief\b`, mirroring the
-    existing `spec` pattern's determiner set and word-boundary care (avoid the false-positive risk
-    of "brief" as an ordinary adjective — "a brief pause", "keep it brief" — which the determiner-
-    gated shape already avoids for equivalent `spec` cases). Needs the same population-enumeration-
-    by-reading and positive/negative-control test discipline this file's other detectors already
-    carry; not a one-line patch without that verification.

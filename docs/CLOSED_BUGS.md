@@ -565,3 +565,32 @@ Confirmed-real defects that have since been fixed, kept for provenance. New fixe
   version, not the stale pre-delete snapshot — and a concurrent-HTTP-DELETE test asserting no
   panic, no `500`, and never a second `AssetChanged` notice under a real race. Found during a
   scoped re-review of this subsystem's other work, not a client-observed report.
+
+## Tooling — `check-comment-refs.mjs`'s "unnamed spec reference" detector missed the same referent class for "brief"
+
+- [Tooling, FIXED] The `"unnamed spec reference"` pattern was keyed on the literal word `spec` and
+  carried no vocabulary for a dispatcher brief, an ephemeral, process-assigned document the same
+  RULE 16 class covers. A `"unnamed brief pointer"` entry already existed, but its construction
+  (a possessive, or "the brief" as a deferring verb's subject followed by `requires`/`says`/
+  `specifies`/`states`) matched only the `the` determiner and missed the exact confirmed instance
+  ("...exactly the fixture the brief calls for" — "calls for" was absent from the verb list).
+  Fixed by widening the entry to `(?:the|this)[\s]+brief'?s\b` and
+  `(?:the|this)[\s]+brief[\s]+(?:requires|says|specifies|states|calls for)\b`, adding `this` as a
+  second determiner and `calls for` to the verb list. `per` was deliberately left out: reading
+  `src`/`scripts`/`examples` and the tracked skill directories found no `per brief` occurrence, and
+  unlike `per spec` (an established compound this project already writes) nothing in the corpus
+  shows "per brief" used the same way, so adding it would widen the pattern beyond what the
+  population needs.
+  The determiner-plus-brief-as-SUBJECT construction was kept, rather than switched to a bare
+  `(?:the|this|per)\s+brief\b` match, because reading (not grepping) `check-brief-rules.mjs`'s own
+  prose surfaced a real collision: "an implementer obeys the brief, not the guidance" uses "the
+  brief" as the deferring verb's OBJECT to describe the category of dispatch briefs in general, not
+  to point at one specific, now-gone document. A bare determiner-plus-noun match would have flagged
+  it; the subject-side construction does not, because "the brief" there is followed by a comma, not
+  a deferring verb.
+  Regression coverage: a positive control for each of "the brief calls for" and "this brief
+  specifies", negative controls for "a brief pause" and "keep it brief" (the ordinary-adjective
+  collision the determiner gate already excluded), and a negative control reproducing the
+  `check-brief-rules.mjs` collision verbatim. Verified end-to-end: `node
+  scripts/check-comment-refs.mjs` rejects a real "the brief calls for" comment with a nonzero exit,
+  not just a report.

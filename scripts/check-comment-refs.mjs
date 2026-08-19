@@ -358,17 +358,21 @@ export const BANNED = [
     // strictly less.
     re: /(?<!\b(?:RFC|ISO|IEC|IEEE|ANSI|W3C|WHATWG|Unicode)[\s-]?\d{1,5}[,;:]?\s{0,3})§\s*\d|\bSection[\s]+\d+(?:\.\d+)*\b/,
   },
-  // EXAMPLE: "the brief" names the same scaffolding as "task brief"/"dispatch brief" above, but the
-  // EXAMPLE: bare noun collides with the brief-rules checker's own subject matter, which describes
-  // EXAMPLE: what a dispatch brief IS throughout its prose. The pointer CONSTRUCTION — a
-  // EXAMPLE: possessive ("the brief's X") or an imperative deferring to it ("the brief requires" /
-  // EXAMPLE: "says" / "specifies" / "states") — is what a genuine reference to one specific,
-  // now-gone document looks like; a generic description of the category uses neither shape.
+  // EXAMPLE: "the brief"/"this brief" names the same scaffolding as "task brief"/"dispatch brief"
+  // EXAMPLE: above, but the bare noun collides with the brief-rules checker's own subject matter,
+  // EXAMPLE: which describes what a dispatch brief IS throughout its prose ("an implementer obeys
+  // EXAMPLE: the brief, not the guidance" — "brief" as the deferring verb's OBJECT, describing the
+  // EXAMPLE: category rather than pointing at one specific, now-gone document). The pointer
+  // EXAMPLE: CONSTRUCTION — a possessive ("the brief's X" / "this brief's X") or the determiner-
+  // EXAMPLE: plus-brief phrase acting as a deferring verb's SUBJECT ("the brief requires" / "says" /
+  // EXAMPLE: "specifies" / "states" / "calls for") — is what a genuine reference looks like; the
+  // EXAMPLE: collision above puts "brief" on the other side of the verb and stays unmatched.
   {
     name: "unnamed brief pointer",
-    // The separator before the deferring verb is spelled as a one-member class, so the whole
-    // construction widens together rather than reaching only its spaced writer.
-    re: /\bthe brief'?s\b|\bthe brief[\s]+(?:requires|says|specifies|states)\b/i,
+    // The separator between the determiner group and "brief", and the one before the deferring
+    // verb, both sit next to a group boundary the bare-separator widening cannot read, so both are
+    // spelled as one-member classes.
+    re: /\b(?:the|this)[\s]+brief'?s\b|\b(?:the|this)[\s]+brief[\s]+(?:requires|says|specifies|states|calls for)\b/i,
   },
   {
     name: "sweep / round / review marker",
