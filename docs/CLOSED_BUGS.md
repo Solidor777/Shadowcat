@@ -416,3 +416,69 @@ Confirmed-real defects that have since been fixed, kept for provenance. New fixe
   restated formula) equals `worldUnitsPerCell()` for a stated hex size — witnessed on both the
   client and server sides by mutating each `world_units_per_cell` to return the bare size and
   confirming the corresponding test fails.
+
+## Client / docs tooling — the assembled documentation site was not a valid diff instrument
+
+- [Docs tooling, FIXED] `scripts/assemble-docs.mjs`'s `assemble()` composed `dist-docs/` by
+  `cpSync`-ing three source trees into `out` without ever clearing `out` first — `cpSync` overwrites
+  a file both sides produce but never removes a destination file whose source stopped producing it,
+  so a page renamed or deleted upstream survived in `out` across every local rebuild indefinitely.
+  Confirmed as a genuine false-positive generator, not just clutter: a prior comparison of
+  `dist-docs/` before/after a real config change showed a 6-file delta that a control build with an
+  UNCHANGED config reproduced identically, because the baseline already held roughly 40 stale files
+  from unrelated earlier builds. Fixed by calling `rmSync(out, { recursive: true, force: true })` at
+  the top of `assemble()`, scoped strictly to the caller-supplied `out` path — treated as cleaning
+  disposable, git-ignored, machine-regenerated build output (the same class as `cargo clean`), not a
+  case where the project's ban on permanent-deletion commands applies. Regression test: builds into
+  a temp `out` twice, with the second build's inputs missing a file the first build's inputs had;
+  confirmed failing against the pre-fix code (the stale file survived) before the fix landed.
+
+## Client / panels — `PanelsApi.open` narrated nothing when it changed a panel's placement
+
+- [a11y, FIXED] `PanelHost.svelte`'s `describeOp` mapped every layout-changing op to a `panels.moved`
+  screen-reader announcement except `"open"`, on the documented reasoning that no control the host
+  renders dispatches it — false: `PanelsApi.open` is public and reachable via
+  `SceneBrowserPanel`'s configure button and `SheetsController.openDocument`. `applyOp`'s `"open"`
+  case has two focus-bump branches (already docked/floating) and one real-placement-change
+  fallthrough covering THREE prior states — minimized, closed, and popped-out — surfacing the panel
+  via `detach` + `placeByPlacement`. Fixed by threading the pre-op layout through
+  `PanelsController.dispatch` → `onOp` → `describeOp`, so the `"open"` case can call `locate` on the
+  BEFORE state and narrate exactly when it was `"docked"`/`"floating"` and skip otherwise — inverted
+  to match `applyOp`'s actual condition (`prevWhere === "docked" || prevWhere === "floating"` skips)
+  rather than enumerating the fallthrough's members, so a future `PanelLocation` variant can't be
+  missed the same way a first attempt at this fix missed `"popped-out"` before review caught it.
+  Regression tests cover all three real-placement-change priors, both focus-bump priors, and the
+  true no-op case (asserting `onOp` isn't even called, per `dispatch`'s SAME-REFERENCE NO-OP
+  CONTRACT).
+
+## Client / scene-tools — `makeTemplateTool`'s click-to-place default never fired in a snapping scene
+
+- [UI, FIXED] `makeTemplateTool` snapped its drag anchor (`onPointerDown`) but passed the RAW
+  pointer point to `sizeDir` from `onPointerMove`/`onPointerUp` — a coordinate-frame mismatch that
+  meant `sizeDir`'s own near-zero-drag fallback (`d < 1` → the intended one-cell default template)
+  almost never fired in a snapping scene, since an ordinary click lands some arbitrary sub-cell
+  distance from the snapped anchor rather than within one scene unit of it. A plain click instead
+  took the normal branch and created an arbitrarily small, unintended template. Fixed by snapping
+  the pointer point at both call sites before passing it to `sizeDir`, restoring the same
+  coordinate frame `onPointerDown`'s anchor already uses — matching this tool's own documented
+  design (grouped with `makeWallTool`/`makeRegionTool`/`makePlaceTool` as snapped-point tools,
+  `makeDrawTool` the sole documented exception). Deliberately did NOT add a create-skipping extent
+  guard (unlike `makeDrawTool`/`makeWallTool`/`makeRegionTool`, which correctly skip persistence on
+  a zero-extent gesture): `sizeDir`'s `d < 1` fallback IS this tool's extent guard by design — a
+  plain click is meant to place a real, sensibly-sized default template, not skip creation, which is
+  what the fallback existed to guarantee before the frame bug defeated it.
+
+## Client / game-settings — the "hyperlinks" checkbox was permanently non-functional on every world
+
+- [UI, FIXED] `GameSettingsPanel`'s hyperlinks checkbox sent `chatsys.hyperlinks ?? false` as the
+  OCC pre-image, while the field's actual stored value is `null` (never a bare `false` — ingress
+  normalization always stores an explicit `null` for an absent optional field, and no code path
+  ever writes a literal `false` there). The server's field-level OCC check compares `Null` against
+  `Bool(false)` via the catch-all `_ => a == b`, which is always false, so every toggle was rejected
+  as a stale-pre-image conflict, 100% reproducible, with no self-heal since a rejected intent
+  mutates nothing and the field stays `null` forever. Every other nullable control in the same panel
+  already passed `?? null`; hyperlinks was the sole offender. Fixed by changing the `onchange`
+  handler's pre-image argument to `chatsys.hyperlinks ?? null` (the `checked={... ?? false}` DISPLAY
+  expression is correct and unchanged — it mirrors the read path's own `unwrap_or(false)`).
+  Regression test seeds `hyperlinks: null` specifically, since the pre-existing test's
+  `hyperlinks: false` seed is the one value this bug is invisible for (`false ?? false` is a no-op).
