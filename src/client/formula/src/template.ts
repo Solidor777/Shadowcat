@@ -67,9 +67,10 @@ interface Recognizer {
 }
 
 /** Reads the maximal run of identifier-START characters at `i` — the run
- * `claimNotationKeyword` tests for membership. The run's extent is `isWordStart`'s, and that
- * is what decides which written keys collide: `"kh_max"` offers the whole key to the
- * membership probe and survives, `"kh1"` offers only `"kh"` and does not.
+ * `claimNotationKeyword` tests for membership. The run's extent is `isWordStart`'s alone:
+ * over `"kh_max"` it returns the whole six characters, over `"kh1"` only `"kh"` before the
+ * digit stops it. What that extent means for whether the written key survives the grammar is
+ * `NotationKeyCheck`'s to state, not this function's.
  * @param src The template source text.
  * @param i Index to start scanning from.
  * @returns The run, empty when `src[i]` is not an identifier-start character.

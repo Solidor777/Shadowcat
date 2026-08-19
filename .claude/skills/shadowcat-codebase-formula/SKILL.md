@@ -155,7 +155,11 @@ which no prose can do.
   shape outcomes get read off a value whose `segments` holds only the prefix claimed ahead of the
   rejection. What binds a consumer is the coupling: a consuming system validates a stat key by
   CALLING `checkNotationKey`, never by reasoning over `NOTATION_KEYWORDS`, because a collision it
-  misses can change the number a roll produces with no error on any path. A spy resolver answering
+  misses can change the number a roll produces with no error on any path FOR SOME of
+  `NotationKeyCheck`'s outcomes and not others: the outcome with no surviving identifier claim
+  never errors, while the split outcome errors loudly whenever one of its split paths fails to
+  resolve. `NOTATION_KEYWORDS` cannot tell a caller which outcome a given key falls into; only
+  `checkNotationKey` can. A spy resolver answering
   every path hides the split outcome, so `template.test` pins it with a resolver that knows only
   the key as written.
   `template.test`'s `checkNotationKey` cases derive their keyword
@@ -174,9 +178,7 @@ which no prose can do.
   wide or deep, can see such a defect; only a hand-written case with its own independent
   expectation can (the `"a.b.c"` case is what actually covers a multi-join dotted path, for
   exactly this reason: it asserts `intact` against a literal, not against a value this oracle
-  reads back off the same scan). Measured: a sweep wide enough to spell a three-segment dotted
-  path reports zero violations against a `claimIdentifierSpan` restricted to a single dot-join,
-  where that hand-written case alone catches it.
+  reads back off the same scan).
 
 ## Gotchas
 

@@ -543,8 +543,9 @@ describe("checkNotationKey", () => {
    *   reaches the literal fallthrough, same as an unmatched closing bracket or a dot not
    *   followed by an identifier start. What earns it a separate place in the alphabet is that
    *   it is ABSORBED whole inside a label span's contents — `claimLabelSpan` scans forward for
-   *   `]` regardless of what lies between, so `[a-b]` passes through unchanged — while never
-   *   crossed by `claimIdentifierSpan`'s dot-join loop, so `hp-max` splits at it. */
+   *   `]` regardless of what lies between, so `[a-b]` passes through unchanged — while
+   *   `claimIdentifierSpan`'s dot-join loop never crosses it, so that recognizer's own span
+   *   over `hp-max` ends at the hyphen rather than continuing through it. */
   const ALPHABET: readonly string[] = [
     ...KEYWORD_LETTERS, DICE_OPERATOR.toUpperCase(), NON_KEYWORD_LETTER, "1", ".", "_", "[", "]", "-",
   ];
