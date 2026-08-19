@@ -411,9 +411,9 @@ test("live region: opening a panel that starts minimized announces its docked de
     panel: { icon: "c", labelKey: "chat.tab", defaultPlacement: { kind: "docked", zone: "right" } },
   });
 
-  // Starts minimized, not launcher-closed — proves branch 3 of `applyOp`'s
-  // `"open"` case (detach then `placeByPlacement`) fires from EITHER prior
-  // state, not just "closed".
+  // Starts minimized, not launcher-closed — proves the minimized/closed/
+  // popped-out fallthrough branch of `applyOp`'s `"open"` case (detach then
+  // `placeByPlacement`) fires from EITHER prior state, not just "closed".
   let saved = defaultLayout([{ id: "chat:panel", placement: { kind: "docked", zone: "right" } }]);
   saved = applyOp(saved, { op: "minimize", id: "chat:panel" });
 
@@ -468,6 +468,53 @@ test("live region: opening a panel that starts closed (never placed) announces i
   expect(liveRegion.textContent).toBe("Chat moved to Dock right");
 });
 
+test("live region: opening a panel that starts popped-out announces its docked destination", async () => {
+  const registry = new ContributionRegistry();
+  registry.contribute({
+    id: "chat:panel",
+    contract: PANEL_CONTRACT,
+    component: CountingPanel,
+    props: { onMountFn: () => {} },
+    panel: { icon: "c", labelKey: "chat.tab", defaultPlacement: { kind: "docked", zone: "right" } },
+  });
+
+  const saved = defaultLayout([{ id: "chat:panel", placement: { kind: "docked", zone: "right" } }]);
+
+  const engine = new FakeEngine();
+  const context = setAppContextForTest({
+    contributions: registry,
+    role: "gm",
+    t: (k, p) => i18n.t(k, p),
+    uiState: { getPanelLayout: () => saved, setPanelLayout: () => {}, getChatRead: () => null, setChatRead: () => {} },
+  });
+  const { container } = render(PanelHost, { props: { engine }, context });
+  await Promise.resolve();
+
+  const liveRegion = container.querySelector('[role="status"]')!;
+
+  // Pop out LIVE (via a gesture, post-mount) rather than seeding a
+  // persisted `poppedOut` id — `PanelsController`'s constructor-time
+  // `#rehydratePoppedOut` would otherwise convert a persisted popped-out id
+  // straight to floating before this test ever gets to open it, hiding the
+  // "popped-out" prior state this test needs to exercise. This is the
+  // third member of `applyOp`'s "open" case's minimized/closed/popped-out
+  // fallthrough — the one the original guard
+  // (`prevWhere !== "minimized" && prevWhere !== "closed"`) missed: a panel
+  // reopened from its own popped-out window is a real placement change,
+  // same as reopening a minimized or closed one.
+  engine.emitOp({ op: "popOut", id: "chat:panel" });
+  await Promise.resolve();
+  // The "popOut" op itself narrates too (an existing, unchanged case in
+  // `describeOp`'s switch) — confirms the panel is actually popped-out
+  // before the "open" assertion below, rather than assuming it silently.
+  expect(liveRegion.textContent).toBe("Chat moved to Pop out");
+
+  engine.emitOp({ op: "open", id: "chat:panel", placement: { kind: "docked", zone: "right" } });
+  await Promise.resolve();
+
+  expect(liveRegion.textContent).toBe("Chat moved to Dock right");
+});
+
 test("live region: opening an already-docked panel that becomes the active tab does not announce (focus bump)", async () => {
   const registry = new ContributionRegistry();
   registry.contribute({
@@ -486,9 +533,7 @@ test("live region: opening an already-docked panel that becomes the active tab d
   });
 
   // Both docked into the SAME zone-0 group; docking "notes:panel" second
-  // makes it the active tab, leaving "chat:panel" present-but-inactive —
-  // exactly the fixture the brief calls for (two panels, one active docked
-  // group, then open the other).
+  // makes it the active tab, leaving "chat:panel" present-but-inactive.
   let saved = defaultLayout([{ id: "chat:panel", placement: { kind: "docked", zone: "right" } }]);
   saved = applyOp(saved, { op: "dock", id: "notes:panel", zone: "right", group: 0 });
   expect(saved.expanded.zones.right.groups[0]).toEqual({ tabs: ["chat:panel", "notes:panel"], active: "notes:panel", size: 1 });

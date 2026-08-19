@@ -47,10 +47,11 @@
    * `float`/`minimize`/`restore`/`close` keys as the "where" phrase — the
    * same words a sighted user already sees on the chip strip/menu.
    * `"open"` narrates only when `applyOp`'s `"open"` case actually changed
-   * placement (surfaced a minimized or closed panel via `placeByPlacement`,
-   * per `prevLayout`'s recorded location) rather than merely bumping focus
-   * within an already-docked group or an already-floating window — the
-   * latter two stay silent, unchanged from every other case here.
+   * placement (surfaced a minimized, closed, or popped-out panel via
+   * `placeByPlacement`, per `prevLayout`'s recorded location) rather than
+   * merely bumping focus within an already-docked group or an
+   * already-floating window — the latter two stay silent, unchanged from
+   * every other case here.
    * `PanelsApi.open` is public and reachable outside any control this host
    * renders (`SceneBrowserPanel`'s per-scene configure button,
    * `SheetsController.openDocument`), both routing through
@@ -100,7 +101,13 @@
         break;
       case "open": {
         const prevWhere = locate(prevLayout, op.id).where;
-        if (prevWhere !== "minimized" && prevWhere !== "closed") return null;
+        // Matches `applyOp`'s ACTUAL condition (docked/floating are the
+        // only two branches it special-cases as a focus bump) rather than
+        // enumerating the fallthrough's members — structurally can't miss
+        // a future `PanelLocation` variant the way an allow-list of
+        // "minimized"/"closed" alone would (it silently omitted
+        // "popped-out", also part of the fallthrough).
+        if (prevWhere === "docked" || prevWhere === "floating") return null;
         // Placement changed: read where it actually landed from the
         // post-op state (`ctrl.layout`), since `placeByPlacement` maps
         // `DefaultPlacement.kind` onto exactly these three shapes.
