@@ -112,20 +112,22 @@ interprets or merges anything itself.
   `#isOwnerOrGm(template)` AND `canEdit(template, "/embedded")` AND
   `findInstances(templateId).length > 0`. The two predicates are NOT the same check and neither
   is a superset by accident — `canPull` gates the bands a pull writes onto the INSTANCE, while
-  `canPush` gates the TEMPLATE only. `push` then per-instance-filters by
-  `canEdit(inst, "/base")`/`canEdit(inst, "/system")`, additionally filtering `findInstances`'
-  same-world result before splitting into dispatch-now (no conflicts) vs. conflict-modal groups
-  (same-world see+write, not just same-world see). **That per-instance filter has a known gap:
-  `planToUpdate` emits paths the filter never checks — notably `/embedded/<coll>`, which needs a
-  DIFFERENT capability — so an instance the pusher can write base/system but not `/embedded` on is
-  included, and its ENTIRE Update is then refused: `data::sqlite::apply_intent` returns `Forbidden`
-  at the FIRST uncapped path and aborts the whole intent. That instance receives none of the
-  push — not even the `/name`/`/engine`/`/system` merge — and its `/base` is not refreshed, so it
-  stays `SyncState.template_changed`. Nothing in the push path retries, so it stays stale until
-  someone
-  holding `/embedded` on THAT instance pulls or reverts (both terminate in `planToUpdate`, which
-  always re-emits `/base`) — a different principal from the pusher who lacked the capability.
-  Contained to the one instance (`push` dispatches one intent PER instance).**
+  `canPush` gates the TEMPLATE only. Per-instance write authorization is DERIVED, not enumerated:
+  `TemplatesController.#canApplyUpdate(inst, op)` checks every `op.changes[].path` of an actual
+  computed `Update` (from `planToUpdate`) against `canEdit(inst, path)`, so the check always
+  matches whatever bands that instance's merge happens to touch — including `/embedded/<coll>` —
+  with nothing to keep in sync by hand. `push` calls it twice per instance: once against the
+  provisional Update built from `computePull`'s pre-resolution `mergedBands` (gates entry into the
+  dispatch-now/conflict-modal split — an instance failing here never reaches the modal at all),
+  and — for an instance that entered the conflict modal — again inside `#openSession`'s `resolve`,
+  against the FINAL Update built after `applyResolutions`, since resolving a conflict toward
+  "theirs" can newly touch a path the provisional Update never touched (e.g. taking the template's
+  side of an embedded-deletion conflict). Either exclusion is logged via the injected `logger.warn`,
+  listing every excluded instance in one call, rather than silently leaving that instance stale.
+  `#openSession`'s `resolve` runs the same derivation for BOTH its callers (`push`'s multi-group
+  sessions and `pull`'s single-group session), closing what was previously a real gap: prior to
+  this derivation, `resolve` dispatched every entry's Update with no capability filter at all,
+  including for `pull`'s conflict path.
 - `MergeConflictModal` (+ `TemplateModalHost`) — the
   field-level conflict resolution UI: renders one `ConflictGroup` per pending child
   (`{ key, label, conflicts: Conflict[] }`; the type lives in
@@ -176,9 +178,11 @@ interprets or merges anything itself.
   exclude the same paths, or a token's own on-scene position would spuriously flag as
   "template_changed" or get clobbered by a pull.
 - **`push`'s instance scope is same-world SEE **and** WRITE**, not just `findInstances`' same-
-  world SEE — `TemplatesController.push` filters by `canEdit` before deciding dispatch-now vs.
-  conflict groups; skipping this filter would attempt to silently write instances the pusher
-  cannot edit.
+  world SEE — `TemplatesController.push` derives write authorization per instance via
+  `#canApplyUpdate` (against the actual computed Update, never a guessed band list) before
+  deciding dispatch-now vs. conflict groups, and `#openSession`'s `resolve` re-derives it against
+  the FINAL resolved Update before dispatch; skipping either derivation would attempt to silently
+  write instances the pusher cannot edit.
 - **`Document.base` is the client-owned merge snapshot; the server treats it as fully opaque** —
   see `shadowcat-codebase-documents-permissions` for its `#[ts(type="unknown")]` typing, its
   exemption from `validate_engine_tree`, its independent size cap, and its hardcoded

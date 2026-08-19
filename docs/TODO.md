@@ -343,36 +343,6 @@ Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one de
   server evaluator and found no such cancellation exists; the label difference is the only real
   consequence, and it was unmentioned. The comment now states the verified behavior.
 
-## Actionable now — `push`'s per-instance filter omits `/embedded` (docs sweep 9 Task 5 backlog)
-- TODO: `TemplatesController.push` filters
-  candidate instances on `canEdit(inst, "/base") && canEdit(inst, "/system")`, but the Update it
-  then builds — `planToUpdate` — also emits
-  `/embedded/<coll>` changes whenever a collection differs. `/embedded` is gated by a DIFFERENT
-  capability (`MANAGE_EMBEDDED`) than the WRITE_FIELDS bands, so an instance the pusher can write
-  base/system but not `/embedded` on passes the client filter and is then refused server-side.
-  **Not a security hole and not a whole-push failure, but worse for the affected instance than a
-  dropped band:** `apply_intent` returns `Forbidden` at the FIRST uncapped path and aborts the whole
-  intent, so that instance receives NONE of the push — not even the `/name`/`/engine`/`/system`
-  merge — and its `/base` is not refreshed, so it stays `template_changed` rather than being
-  partially updated. Nothing in the push path retries; it stays stale until someone holding
-  `/embedded` on THAT instance pulls or reverts (both terminate in `planToUpdate`, which always
-  re-emits `/base`) — necessarily a different principal from the pusher who lacked the capability.
-  `push` dispatches one intent PER INSTANCE, so the damage is contained to that instance while the
-  others apply. It is an affordance mismatch — the UI offers a push it knows will fail for some
-  targets, and gives no signal about which.
-  **Fix requires a design decision, which is why this is logged rather than fixed inline:**
-  - (a) Add `canEdit(inst, "/embedded")` to the filter. Consistent with how `/base`+`/system`
-    already work (exclude the instance wholesale) and with `canPull`'s documented preference for
-    the false-negative direction — but over-strict, since it excludes instances even when the
-    computed plan touches no embedded content at all.
-  - (b) Filter AFTER computing the plan, requiring `/embedded` only when that instance's plan
-    actually emits an `/embedded/*` change. Precise, and cheap here because `push` already calls
-    `computePull(inst, template)` immediately after filtering — but it reorders the loop.
-  Needs a runtime change plus tests either way, so out of scope for a docs-only sweep.
-  (Surfaced by the sweep-9 whole-branch code review, while checking a doc comment's causal claim
-  about why `canPush` omits the WRITE_FIELDS legs — the doc was wrong, and the code gap behind it
-  was real.)
-
 ## Actionable now — `EngineAdapter.focus` has no production caller (docs sweep 10 Task 3 backlog)
 - TODO: decide whether the panel host should perform imperative DOM-level focus, then either wire
   `EngineAdapter.focus` up or delete the seam. Today it is defined on the adapter interface

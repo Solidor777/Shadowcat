@@ -119,6 +119,87 @@ describe("TemplatesController", () => {
     expect(ctrl.pending!.groups.map((g) => g.key)).toEqual(["A"]);
   });
 
+  it("push excludes a conflict-free instance whose Update touches /embedded when the pusher lacks that capability, and warns", () => {
+    // Template adds a brand-new embedded child (template-added case: no conflict). The instance
+    // can write /base and /system but not /embedded, so the derived check must exclude it even
+    // though the merge itself is conflict-free.
+    const item = doc({ id: "item-1", doc_type: "item", system: { weight: 1 } });
+    const tmpl = doc({ id: "T", embedded: { items: [item] } });
+    const child = doc({ id: "A", source: { id: "T", pack: null, version: 1 } });
+    child.base = { name: null, engine: null, system: {}, embedded: {} };
+    const store = new DocumentStore();
+    store.applyCommand({
+      seq: 1, world_id: "w1", author: "a", ts: 0,
+      ops: [tmpl, child].map((d) => ({ op: "create", doc: d } as WireOperation)),
+    });
+    const warned: string[] = [];
+    const calls: WireOperation[][] = [];
+    const ctrl = new TemplatesController({
+      store, documents: store, dispatchIntent: (ops) => calls.push(ops),
+      role: "player", selfId: "u-self",
+      canEdit: (_doc, path) => !path.startsWith("/embedded"),
+      logger: { ...silentLogger, warn: (m: string) => warned.push(m) },
+    });
+    ctrl.push("T");
+    expect(calls).toHaveLength(0);
+    expect(ctrl.pending).toBeNull();
+    expect(warned).toHaveLength(1);
+    expect(warned[0]).toContain("A");
+  });
+
+  it("push dispatches a conflict-free instance whose Update touches /embedded when the pusher CAN write it", () => {
+    const item = doc({ id: "item-1", doc_type: "item", system: { weight: 1 } });
+    const tmpl = doc({ id: "T", embedded: { items: [item] } });
+    const child = doc({ id: "A", source: { id: "T", pack: null, version: 1 } });
+    child.base = { name: null, engine: null, system: {}, embedded: {} };
+    const { ctrl, calls } = make([tmpl, child]);
+    ctrl.push("T");
+    expect(calls).toHaveLength(1);
+    const changes = (calls[0][0] as { changes: { path: string }[] }).changes;
+    expect(changes.some((c) => c.path === "/embedded/items")).toBe(true);
+  });
+
+  it("push's conflict-resolution path (#openSession's resolve) applies the same derived check: a resolution that newly touches /embedded is excluded and warned, not silently dispatched", () => {
+    // Base recorded a template-owned item; the template has since deleted it, and the instance
+    // locally modified it (a real conflict, not an auto-drop). Pre-resolution the merge KEEPS the
+    // instance's item unchanged, so /embedded never appears in the provisional Update and the
+    // instance is admitted to the conflict modal. Choosing "theirs" (take the deletion) changes
+    // /embedded/items in the FINAL Update — and the pusher cannot write /embedded.
+    const tmpl = doc({ id: "T", embedded: {} });
+    const childItem = doc({
+      id: "child-item", doc_type: "item",
+      source: { id: "orig-item", pack: null, version: 1 }, system: { foo: 2 },
+    });
+    const child = doc({ id: "C", source: { id: "T", pack: null, version: 1 }, embedded: { items: [childItem] } });
+    child.base = {
+      name: null, engine: null, system: {},
+      embedded: { items: [{ sourceId: "orig-item", name: null, engine: null, system: { foo: 1 }, embedded: {} }] },
+    };
+    const store = new DocumentStore();
+    store.applyCommand({
+      seq: 1, world_id: "w1", author: "a", ts: 0,
+      ops: [tmpl, child].map((d) => ({ op: "create", doc: d } as WireOperation)),
+    });
+    const warned: string[] = [];
+    const calls: WireOperation[][] = [];
+    const ctrl = new TemplatesController({
+      store, documents: store, dispatchIntent: (ops) => calls.push(ops),
+      role: "player", selfId: "u-self",
+      canEdit: (_doc, path) => !path.startsWith("/embedded"),
+      logger: { ...silentLogger, warn: (m: string) => warned.push(m) },
+    });
+    ctrl.push("T");
+    expect(calls).toHaveLength(0); // admitted to the conflict session, not excluded up front
+    expect(ctrl.pending).not.toBeNull();
+    const conflictPath = ctrl.pending!.groups[0].conflicts[0].path;
+    expect(conflictPath).toBe("/embedded/items/0");
+    ctrl.pending!.resolve(new Map([["C", new Set([conflictPath])]])); // take template's deletion
+    expect(calls).toHaveLength(0); // still excluded: the resolved Update now touches /embedded
+    expect(ctrl.pending).toBeNull();
+    expect(warned).toHaveLength(1);
+    expect(warned[0]).toContain("C");
+  });
+
   it("canPull is false for a non-owner non-GM", () => {
     const tmpl = doc({ id: "T" });
     const child = doc({ id: "C", owner: "someone-else", source: { id: "T", pack: null, version: 1 } });

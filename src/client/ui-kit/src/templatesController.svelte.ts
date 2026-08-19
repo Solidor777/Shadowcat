@@ -158,17 +158,9 @@ export class TemplatesController {
    * (`canPull` also requires `/base` + `/system` on the instance). `false` when the template
    * has no in-store instances to push to.
    *
-   * This gate covers the TEMPLATE only. Per-instance write authorization is filtered
-   * separately inside `push`, on `/base` + `/system` — but `planToUpdate` emits paths that
-   * filter never checks, notably `/embedded/<coll>` (a different capability). An instance the
-   * pusher can write base/system but not `/embedded` on is therefore included, and its ENTIRE
-   * Update is refused: `Repository::apply_intent` returns `Forbidden` at the first uncapped path and aborts
-   * the whole intent, so that instance receives none of the push — not even
-   * the `/name`/`/engine`/`/system` merge — and its `/base` is not refreshed, so it stays
-   * `template_changed`. Nothing in the push path retries; it stays stale until someone holding
-   * `/embedded` on THAT instance pulls or reverts (both terminate in `planToUpdate`, which always
-   * re-emits `/base`). Each instance is its own intent, so this is contained to that one
-   * instance.
+   * This gate covers the TEMPLATE only. Per-instance write authorization is derived
+   * separately inside `push`, via `#canApplyUpdate` against the Update each instance's merge
+   * actually produces — see that method's doc comment.
    * @param templateId - The template document's id.
    * @returns Whether push is currently permitted.
    * @example templates.canPush(templateId);
@@ -229,12 +221,36 @@ export class TemplatesController {
     this.#deps.dispatchIntent([computeRevert(child, template)]);
   }
 
-  /** Push `templateId` to every in-store instance the pusher can see + write. Write-scope
-   * filter: `findInstances` is same-world only (see the core `findInstances` doc comment);
-   * it says nothing about per-instance write authorization, which can differ from the
-   * template's own ownership (an instance may belong to a different player) — this excludes
-   * any instance the pusher cannot write before splitting conflict-free (dispatched
-   * immediately) from conflicted (grouped into one conflict session for the modal).
+  /** Whether every field path `op` writes is one `inst`'s current writer may write, derived
+   * from the Update actually produced rather than a guessed list of bands — the paths
+   * `planToUpdate` emits vary per instance (a whole-band write only appears when that band
+   * changed), so a fixed list of capabilities to check drifts the moment `planToUpdate` starts
+   * emitting a path nobody enumerated. Both `push` and `#openSession`'s `resolve` compute their
+   * Update first, then call this on the result, so agreement is structural rather than a
+   * pairing someone has to keep in sync by hand.
+   * @param inst - The instance the Update targets.
+   * @param op - The computed Update, e.g. from `planToUpdate`.
+   * @returns Whether every changed path in `op` passes `canEdit`; `false` for any operation
+   * kind other than `"update"`.
+   * @example this.#canApplyUpdate(inst, planToUpdate(inst, template, plan.mergedBands));
+   */
+  #canApplyUpdate(inst: WireDocument, op: WireOperation): boolean {
+    if (op.op !== "update") return false;
+    return op.changes.every((change) => this.#deps.canEdit(inst, change.path));
+  }
+
+  /** Push `templateId` to every in-store instance the pusher can see + write. `findInstances`
+   * is same-world only (see the core `findInstances` doc comment) and says nothing about
+   * per-instance write authorization, which can differ from the template's own ownership (an
+   * instance may belong to a different player) — write authorization is derived per instance via
+   * `#canApplyUpdate`, computed against the actual Update that instance's merge produces, never
+   * against a guessed set of bands. An instance whose provisional Update (from its
+   * `computePull`-produced `mergedBands`, before any conflict resolution) already touches a path
+   * the pusher cannot write is excluded before it can even enter the conflict modal; an instance
+   * that clears that gate but whose FINAL resolved Update touches a path the pusher cannot write
+   * (`#openSession`'s `resolve` checks this) is excluded there instead. Either way the caller
+   * is warned once, listing every excluded instance, so the push's partial reach is visible
+   * rather than silently stale.
    * A no-op (with a logged warning) if `templateId` is unresolvable.
    * @param templateId - The template document's id to push.
    * @example templates.push(templateId);
@@ -245,19 +261,27 @@ export class TemplatesController {
       this.#deps.logger.warn(`templates.push: template ${templateId} not in store; push unavailable`);
       return;
     }
-    const instances = this.findInstances(templateId).filter(
-      (inst) => this.#deps.canEdit(inst, "/base") && this.#deps.canEdit(inst, "/system"),
-    );
     const groups: ConflictGroup[] = [];
     const conflicted = new Map<string, ConflictEntry>();
-    for (const inst of instances) {
+    const excluded: string[] = [];
+    for (const inst of this.findInstances(templateId)) {
       const plan = computePull(inst, template);
+      const op = planToUpdate(inst, template, plan.mergedBands);
+      if (!this.#canApplyUpdate(inst, op)) {
+        excluded.push(inst.id);
+        continue;
+      }
       if (plan.conflicts.length === 0) {
-        this.#deps.dispatchIntent([planToUpdate(inst, template, plan.mergedBands)]);
+        this.#deps.dispatchIntent([op]);
       } else {
         groups.push({ key: inst.id, label: inst.name ?? inst.id, conflicts: plan.conflicts });
         conflicted.set(inst.id, { child: inst, template, plan });
       }
+    }
+    if (excluded.length > 0) {
+      this.#deps.logger.warn(
+        `templates.push: excluded instance(s) not writable by the pusher: ${excluded.join(", ")}`,
+      );
     }
     if (groups.length > 0) this.#openSession(groups, conflicted);
   }
@@ -270,9 +294,11 @@ export class TemplatesController {
   }
 
   /** Open a conflict-resolution session: publish `pending` for `TemplateModalHost` to
-   * render, and wire its `resolve` to apply each group's chosen theirs-paths and dispatch
-   * the resulting Update, then clear `pending`. A group absent from the resolver's map
-   * (nothing chosen "theirs") resolves with an empty theirs-set — everything stays "mine".
+   * render, and wire its `resolve` to apply each group's chosen theirs-paths, derive write
+   * authorization from the resulting Update via `#canApplyUpdate`, dispatch it if authorized
+   * (warning once, listing every excluded instance, if not), then clear `pending`. A group
+   * absent from the resolver's map (nothing chosen "theirs") resolves with an empty
+   * theirs-set — everything stays "mine".
    * @param groups - The conflict groups to present, one per instance.
    * @param byKey - Each group's child/template/plan, keyed by the same key used in `groups`.
    * @example this.#openSession(groups, byKey);
@@ -284,12 +310,23 @@ export class TemplatesController {
     this.pending = {
       groups,
       resolve: (theirsByGroup) => {
+        const excluded: string[] = [];
         for (const [key, entry] of byKey) {
           const theirs = theirsByGroup.get(key) ?? new Set<string>();
           const resolved = applyResolutions(entry.plan.mergedBands, entry.plan.conflicts, theirs);
-          this.#deps.dispatchIntent([planToUpdate(entry.child, entry.template, resolved)]);
+          const op = planToUpdate(entry.child, entry.template, resolved);
+          if (this.#canApplyUpdate(entry.child, op)) {
+            this.#deps.dispatchIntent([op]);
+          } else {
+            excluded.push(entry.child.id);
+          }
         }
         this.pending = null;
+        if (excluded.length > 0) {
+          this.#deps.logger.warn(
+            `templates: excluded instance(s) not writable by the resolving user: ${excluded.join(", ")}`,
+          );
+        }
       },
     };
   }
