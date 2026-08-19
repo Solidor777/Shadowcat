@@ -174,11 +174,14 @@ uuid: string,
  */
 op: AssetOp, 
 /**
- * The asset's authoritative version after the mutation. `Some` for
- * `Replaced` (the bumped version a receiver's cache-bust key must
- * converge to); `None` for `Deleted` (a deleted asset has no version).
+ * The asset's authoritative version at the time of the mutation: the
+ * bumped version for `Replaced` (the value a receiver's cache-bust
+ * key must converge to), or the version the row held immediately
+ * before removal for `Deleted` — a real ordering token in both
+ * cases, letting a receiver compare it against any listing snapshot
+ * straddling the mutation.
  */
-version: bigint | null, } | { "type": "scene_ping", 
+version: bigint, } | { "type": "scene_ping", 
 /**
  * Scene the ping landed on.
  */

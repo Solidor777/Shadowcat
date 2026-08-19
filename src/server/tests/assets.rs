@@ -172,6 +172,7 @@ async fn delete_removes_record_and_file_and_broadcasts() {
         .unwrap();
     let id = asset["id"].as_str().unwrap().to_string();
     let uuid = uuid::Uuid::parse_str(&id).unwrap();
+    let pre_delete_version = asset["version"].as_i64().unwrap();
 
     let mut ws = h.connect().await;
     let _ = ws.next().await;
@@ -187,7 +188,10 @@ async fn delete_removes_record_and_file_and_broadcasts() {
 
     let frame = drain_until_type(&mut ws, "asset_changed").await;
     assert_eq!(frame["op"], "deleted");
-    assert!(frame["version"].is_null(), "a deleted asset has no version");
+    assert_eq!(
+        frame["version"], pre_delete_version,
+        "carries the version the row held immediately before removal"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
