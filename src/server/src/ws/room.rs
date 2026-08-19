@@ -242,8 +242,11 @@ impl Room {
     /// Broadcast a non-sequenced, out-of-band frame (e.g. AssetChanged). Unlike
     /// `publish`, it does NOT push to the ring or bump `current_seq`, so a
     /// lagging receiver that resyncs from the ring/log never replays it, and it
-    /// also drops when there are no receivers. DELIVERY IS NOT GUARANTEED and an
-    /// AssetChanged loss is NOT self-healing — see `Assets`'s `onReplace`.
+    /// also drops when there are no receivers. DELIVERY IS NOT GUARANTEED — a
+    /// dropped `AssetChanged` frame is reconciled opportunistically instead: the
+    /// frame carries the asset's authoritative `version`, and `AssetResolver.reconcile`
+    /// re-syncs any uuid still stale the next time a listing (e.g. `Assets`'s
+    /// own `reload`) fetches the true value.
     pub fn broadcast_aux(&self, msg: ServerMsg) {
         let _ = self.tx.send(std::sync::Arc::new(msg));
     }

@@ -364,6 +364,7 @@ pub async fn replace(
             room.broadcast_aux(ServerMsg::AssetChanged {
                 uuid: id,
                 op: AssetOp::Replaced,
+                version: Some(version),
             });
         }
 
@@ -411,6 +412,7 @@ pub async fn delete(
         room.broadcast_aux(ServerMsg::AssetChanged {
             uuid: id,
             op: AssetOp::Deleted,
+            version: None,
         });
     }
     Ok(StatusCode::NO_CONTENT)

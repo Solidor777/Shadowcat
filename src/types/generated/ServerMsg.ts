@@ -172,7 +172,13 @@ uuid: string,
 /**
  * What happened to it.
  */
-op: AssetOp, } | { "type": "scene_ping", 
+op: AssetOp, 
+/**
+ * The asset's authoritative version after the mutation. `Some` for
+ * `Replaced` (the bumped version a receiver's cache-bust key must
+ * converge to); `None` for `Deleted` (a deleted asset has no version).
+ */
+version: bigint | null, } | { "type": "scene_ping", 
 /**
  * Scene the ping landed on.
  */

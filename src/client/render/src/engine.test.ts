@@ -76,7 +76,7 @@ test("reconcileNow re-resolves the background after an asset rev bump", () => {
   expect(first).toBe(assets.url("u1"));
   // An out-of-band AssetChanged(replaced) bumps the resolver rev (no store change);
   // reconcileNow must re-resolve to the cache-busted URL.
-  assets.onAssetChanged({ uuid: "u1", op: "replaced" });
+  assets.onAssetChanged({ uuid: "u1", op: "replaced", version: 1 });
   engine.reconcileNow();
   expect(backend.background?.url).not.toBe(first);
   expect(backend.background?.url).toBe(assets.url("u1"));
@@ -409,7 +409,7 @@ test("reconcileNow re-resolves token images (AssetChanged path)", () => {
   });
   engine.start();
   const before = backend.tokens.get("t1")!.visual;
-  assets.onAssetChanged({ uuid: "i1", op: "replaced" }); // cache-bust, no store change
+  assets.onAssetChanged({ uuid: "i1", op: "replaced", version: 1 }); // cache-bust, no store change
   engine.reconcileNow();
   expect(backend.tokens.get("t1")!.visual).not.toEqual(before);
   expect((backend.tokens.get("t1")!.visual as { kind: "image"; url: string }).url).toBe(assets.url("i1"));

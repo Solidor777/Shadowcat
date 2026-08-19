@@ -90,7 +90,7 @@ describe("WsClient", () => {
   });
 
   it("dispatches asset_changed frames to onAssetChanged", async () => {
-    const seen: Array<{ uuid: string; op: string }> = [];
+    const seen: Array<{ uuid: string; op: string; version: number | null }> = [];
     // A bare transport whose handlers we capture, so the test can push an
     // arbitrary out-of-band server frame.
     let push!: (frame: ServerMsg) => void;
@@ -103,9 +103,9 @@ describe("WsClient", () => {
       handlers: { onCommand: () => {}, onAssetChanged: (m) => seen.push(m) },
     });
     await client.start();
-    push({ type: "asset_changed", uuid: "a1", op: "replaced" });
+    push({ type: "asset_changed", uuid: "a1", op: "replaced", version: 3 });
     await flush();
-    expect(seen).toEqual([{ uuid: "a1", op: "replaced" }]);
+    expect(seen).toEqual([{ uuid: "a1", op: "replaced", version: 3 }]);
   });
 
   it("evicted frame stops the client (no reconnect) and fires onEvicted", async () => {

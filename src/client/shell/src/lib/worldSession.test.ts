@@ -180,16 +180,16 @@ test("applies asset_changed to the resolver and notifies subscribers", async () 
     modules: [coreUiStub],
     logger: silentLogger,
   });
-  const got: Array<{ uuid: string; op: string }> = [];
+  const got: Array<{ uuid: string; op: string; version: number | null }> = [];
   session.onAssetChanged((m) => got.push(m));
   await session.enter("w1");
 
   const before = session.assets.url("a1"); // "/api/assets/a1"
-  push({ type: "asset_changed", uuid: "a1", op: "replaced" });
+  push({ type: "asset_changed", uuid: "a1", op: "replaced", version: 2 });
   await vi.waitFor(() => expect(got).toHaveLength(1));
-  // Resolver cache-busts on replace, and subscribers are notified.
+  // Resolver adopts the frame's authoritative version, and subscribers are notified.
   expect(session.assets.url("a1")).not.toBe(before);
-  expect(got).toEqual([{ uuid: "a1", op: "replaced" }]);
+  expect(got).toEqual([{ uuid: "a1", op: "replaced", version: 2 }]);
 });
 
 test("evicted frame surfaces through onEvicted", async () => {

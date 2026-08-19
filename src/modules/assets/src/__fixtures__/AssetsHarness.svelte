@@ -5,7 +5,10 @@
   import { t } from "@shadowcat/ui-kit";
   import Assets from "../Assets.svelte";
 
-  let { onAssetChanged = () => () => {} }: {
+  let {
+    onAssetChanged = () => () => {},
+    assets = new AssetResolver(),
+  }: {
     /** Fixture stand-in for `AppContext.onAssetChanged`; defaults to a subscriber that never
      * fires, since no real `AssetChanged` broadcast reaches this harness. */
     onAssetChanged?: (cb: (m: {
@@ -14,6 +17,10 @@
       /** Which mutation fired, mirroring `ServerMsg::AssetChanged.op` (`AssetOp`). */
       op: "replaced" | "deleted";
     }) => void) => () => void;
+    /** Fixture stand-in for `AppContext.assets`; a caller-supplied instance lets a test pre-seed
+     * `revs`/`deleted` state before render, to prove `Assets.svelte`'s `reload` self-heals it via
+     * `reconcile`. Defaults to a fresh `AssetResolver`. */
+    assets?: AssetResolver;
   } = $props();
   // svelte-ignore state_referenced_locally
   setAppContext({
@@ -28,7 +35,7 @@
     openDocument: () => {},
     members: new Map(),
     t,
-    assets: new AssetResolver(),
+    assets,
     onAssetChanged,
     subscribeScene: () => ({ unsubscribe() {} }),
     dispatchIntent: () => {},

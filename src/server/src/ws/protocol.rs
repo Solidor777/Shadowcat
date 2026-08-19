@@ -419,6 +419,10 @@ pub enum ServerMsg {
         uuid: Uuid,
         /// What happened to it.
         op: AssetOp,
+        /// The asset's authoritative version after the mutation. `Some` for
+        /// `Replaced` (the bumped version a receiver's cache-bust key must
+        /// converge to); `None` for `Deleted` (a deleted asset has no version).
+        version: Option<i64>,
     },
     /// A relayed location ping: the sender's transient marker at scene coords.
     /// Out-of-band (no seq, never buffered/resynced), mirroring `AssetChanged`.
@@ -567,12 +571,23 @@ mod protocol_tests {
         let m = ServerMsg::AssetChanged {
             uuid: Uuid::from_u128(7),
             op: AssetOp::Replaced,
+            version: Some(3),
         };
         // Out-of-band: no event seq, so egress sends it without gap/resync logic.
         assert_eq!(m.event_seq(), None);
         let s = serde_json::to_string(&m).unwrap();
         assert!(s.contains("\"type\":\"asset_changed\""), "got {s}");
         assert!(s.contains("\"op\":\"replaced\""), "got {s}");
+        assert!(s.contains("\"version\":3"), "got {s}");
+
+        // Deleted carries no version.
+        let d = ServerMsg::AssetChanged {
+            uuid: Uuid::from_u128(7),
+            op: AssetOp::Deleted,
+            version: None,
+        };
+        let s = serde_json::to_string(&d).unwrap();
+        assert!(s.contains("\"version\":null"), "got {s}");
     }
 
     #[test]

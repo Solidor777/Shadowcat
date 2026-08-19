@@ -451,7 +451,7 @@ describe("parseServerMsg — exhaustive per-tag coverage", () => {
     search_update: { type: "search_update", request_id: "r", hits: [] },
     scene_derived: { type: "scene_derived", request_id: "r", channel: "c", computed_at_seq: 0 },
     scene_error: { type: "scene_error", request_id: "r", message: "x" },
-    asset_changed: { type: "asset_changed", uuid: "u", op: "replaced" },
+    asset_changed: { type: "asset_changed", uuid: "u", op: "replaced", version: 1 },
     scene_ping: { type: "scene_ping", scene: "s", x: 0, y: 0, user: "u" },
     path_result: { type: "path_result", request_id: "r", path: [], cost: 0, arrested: false },
     path_error: { type: "path_error", request_id: "r", message: "x" },

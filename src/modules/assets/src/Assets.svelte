@@ -27,6 +27,10 @@
   async function reload(): Promise<void> {
     try {
       items = await listAssets(world);
+      // Self-heals any uuid whose cache-bust state went stale because this connection missed
+      // its AssetChanged frame (an ordinary reconnect is sufficient — see AssetResolver's class
+      // doc): every record here carries the true, current version.
+      resolver.reconcile(items);
       error = null;
     } catch (e) {
       error = t("assets.error", { message: String(e) });
@@ -72,18 +76,14 @@
   }
 
   /** Replaces the asset's bytes behind its stable `uuid`, without an explicit
-   * reload. Refresh here is driven entirely by the server's out-of-band
-   * `asset_changed{replaced}` broadcast (`Room::broadcast_aux` — best-effort, dropped
-   * if there are no
-   * receivers, and never replayed on resync): the `onAssetChanged` effect
-   * above both reloads `items` and lets `resolver` bump its cache-busting
-   * revision so the `<img>` tag re-requests fresh bytes. If that one broadcast
-   * is lost — e.g. a receiver briefly disconnected when it fires — nothing
-   * else in this component notices: `AssetResolver.url` only cache-busts in
-   * response to `onAssetChanged`, not
-   * from the asset's server-side `version`, so the tile keeps its pre-replace
-   * URL and may go on being served from the browser cache until some
-   * unrelated reload happens.
+   * reload. Refresh here is primarily driven by the server's out-of-band
+   * `asset_changed{replaced}` broadcast (`Room::broadcast_aux` — best-effort, dropped if there
+   * are no receivers, and never replayed on resync): the `onAssetChanged` effect above both
+   * reloads `items` and lets `resolver` adopt the frame's authoritative version so the `<img>`
+   * tag re-requests fresh bytes. If that one broadcast is lost — e.g. a receiver briefly
+   * disconnected when it fires — the tile keeps its pre-replace URL until this panel is next
+   * opened or reloaded: `reload`'s `resolver.reconcile(items)` call then re-syncs `resolver`
+   * against the listing's true `version`, closing the gap without waiting on a second broadcast.
    * @param uuid The asset's stable id (unchanged by a replace).
    * @param e The `<input type="file">` change event; the input's value is
    * reset so choosing the same filename again still fires `onchange`.

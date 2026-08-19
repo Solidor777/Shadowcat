@@ -647,9 +647,10 @@ BAD    // Kept minimal for M8c-1 (background + grid + camera); M8d generalizes t
 GOOD   // Minimal by construction: background + grid + camera only. Adding a node kind requires
        // a matching `DisplayBackend` member and an implementation in every backend.
 
-BAD    // KNOWN DEFECT (`docs/OPEN_BUGS.md`, the AssetChanged entry): `revs` is not bumped.
-GOOD   // `revs` is NOT bumped by `onAssetChanged`, so a re-uploaded asset keeps its cached URL
-       // until the next full resync. Callers needing freshness must re-fetch explicitly.
+BAD    // KNOWN DEFECT (`docs/OPEN_BUGS.md`, the AssetChanged entry): `revs` never self-heals.
+GOOD   // `revs` is set from the AssetChanged frame's authoritative `version`, never a relative
+       // bump, so a frame this connection missed leaves `revs` stale until `reconcile` next
+       // runs against a listing carrying the true value.
 
 BAD    // Richer mismatch detection is deferred to module management (see TODO.md).
 GOOD   // TODO: Detect version mismatches beyond exact-equality.

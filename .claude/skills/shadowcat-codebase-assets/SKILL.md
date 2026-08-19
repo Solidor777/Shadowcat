@@ -25,9 +25,17 @@ and serves uploads unconverted (the conversion pipeline is deferred).
   - `serve(...)` — `GET /api/assets/{uuid}`, membership-gated; ETag = `"{id}-{version}"`;
     `If-None-Match` is an RFC 7232 comma-separated list → 304 if our ETag appears anywhere in it.
   - `replace(...)` — swaps bytes, keeping the stable UUID; broadcasts `AssetChanged`.
-- `ws::protocol` — `ServerMsg::AssetChanged { uuid, op: AssetOp }`, broadcast
-  **out-of-band** via `Room::broadcast_aux` (not in the per-world event sequence).
+- `ws::protocol` — `ServerMsg::AssetChanged { uuid, op: AssetOp, version: Option<i64> }`, broadcast
+  **out-of-band** via `Room::broadcast_aux` (not in the per-world event sequence). `version` is
+  `Some` (the bumped, authoritative value) for `Replaced`, `None` for `Deleted` (a deleted asset
+  has no version).
 - **`@shadowcat/module-assets`** (`Assets` component) — the client asset panel (upload/list/replace).
+- `AssetResolver` (`src/client/core/src/assets.ts`) — client-side cache-bust resolver.
+  `onAssetChanged` sets its per-uuid revision to a frame's `version` directly (never a relative
+  bump, and never regressing below a version already held); `reconcile(assets: Asset[])` re-syncs
+  from any touchpoint that already fetches full `Asset` records (`Assets.svelte`'s `reload`,
+  `AssetPicker.svelte`, `VisualKindEditor.svelte`'s `refreshAssets`), closing the gap for an
+  `AssetChanged` frame this connection never received at all.
 
 ## Hard invariants
 
@@ -70,7 +78,10 @@ and serves uploads unconverted (the conversion pipeline is deferred).
 ## Gotchas
 
 - **`AssetChanged` is out-of-band** (`broadcast_aux`), so it is not gap-recovered by the event
-  RingBuffer — clients treat it as a cache-bust hint, then re-fetch (ETag revalidated).
+  RingBuffer — a plain reconnect or a resync (`replay` against the ring/log) never redelivers a
+  missed frame. This is self-healed opportunistically rather than avoided: `AssetResolver.reconcile`
+  re-syncs any stale uuid the next time a listing (e.g. opening the assets panel) fetches the
+  asset's true `version` — not a background poll, a repair path reachable through ordinary use.
 - A `replace` rate-limited mid-flight should `refund` the limiter slot.
 
 ## Pointers

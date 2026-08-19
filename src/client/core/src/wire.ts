@@ -709,6 +709,9 @@ export type ServerMsg =
       uuid: string;
       /** What happened to it. */
       op: "replaced" | "deleted";
+      /** The asset's authoritative version after the mutation. `Some` (a number) for
+       * `"replaced"`; `null` for `"deleted"` (a deleted asset has no version). */
+      version: number | null;
     }
   | {
       /** A relayed location ping: the sender's transient marker at scene coords. Out-of-band
@@ -908,6 +911,7 @@ export const serverMsgSchemaImpl = z.discriminatedUnion("type", [
     type: z.literal("asset_changed"),
     uuid: z.string(),
     op: z.enum(["replaced", "deleted"]),
+    version: int.nullable(),
   }),
   z.object({
     type: z.literal("scene_ping"),

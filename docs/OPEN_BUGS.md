@@ -75,49 +75,6 @@ Currently open, confirmed-real defects. Deferrals belong in `TODO.md`, not here.
     command at commit time) is expected to close this one too; fixed together in the same phase
     rather than forked across phases.
 
-- **A WS connection that misses an `AssetChanged{replaced}` frame keeps a stale image forever, with
-  no self-healing path — and an ordinary reconnect is enough to miss it.** `Room::broadcast_aux`
-  sends AssetChanged out-of-band: it does not push to the
-  ring or bump `current_seq`. **Two independent paths reach the identical failure**, and the
-  reconnect one is far more common than the lag one:
-  - **Plain reconnect (dominant).** `Room::subscribe` returns
-    `self.tx.subscribe()` — a fresh `broadcast::Receiver` positioned at the channel's CURRENT TAIL —
-    and every new connection calls it, inside `handle_socket`. A client whose socket drops
-    for any reason (network blip, laptop sleep/wake, `WsClient.scheduleReconnect`'s own backoff)
-    during
-    the window a GM replaces an asset comes back subscribed past the frame. No lag, no buffer
-    overflow, no unusual load. The `Welcome`/ring resync that follows cannot supply it, because the
-    frame was never in the ring.
-  - **Broadcast lag.** When a connection falls behind, the egress loop's `Err(RecvError::Lagged(n))`
-    arm (inside `egress_loop`) resyncs by calling `replay` against the ring/log
-    tiers — which never held the aux frame. The connection is NOT torn down, so the client's
-    `AssetResolver` survives with its counter unbumped.
-  - **Why nothing recovers it.** `AssetResolver.revs` is a client-local map incremented only by
-    `AssetResolver.onAssetChanged`; `AssetResolver.url` appends it as `?v={rev}`
-    and reads the asset's server-side `version` nowhere. A missed frame therefore
-    leaves the serve URL byte-identical, so no new request is issued at all, so the
-    `"{id}-{version}"` ETag built in `serve` is never
-    revalidated, and the unchanged URL may additionally be served from cache (`serve` sends no
-    `Cache-Control` or `Last-Modified`, so browser behavior here is heuristic and not itself
-    load-bearing to this bug). The same lost frame also skips the `items` reload and the render
-    re-reconcile that
-    `RenderEngine.reconcileNow` documents as required for out-of-band notices.
-  - **Reachability/impact:** routine, not load-dependent. The lag path needs a receiver to fall
-    past the broadcast channel's capacity (the window `lagged_drops` counts), but the reconnect
-    path needs only a dropped socket coinciding with a GM's byte-replace — everyday mobile/sleep
-    flakiness is sufficient. Triage this as "happens occasionally in normal use", not "needs
-    sustained heavy load". No data loss and no authz effect: `serve` is gated on world membership,
-    not per-asset ACL, and a replace changes only bytes and `version`, never permissions — so the
-    stale view is strictly the pre-replace image that client was already entitled to see. It
-    persists for that connection until a page reload.
-  - **Fix shape:** make the cache-bust derive from the asset's authoritative `version` rather
-    than a local counter — e.g. carry `version` in the AssetChanged frame and have `AssetResolver.url`
-    fall
-    back to the version last seen in a document/asset listing, so a resync repairs it. Sending
-    AssetChanged through `publish` instead would also fix it but costs a world seq per byte-swap,
-    which the `replace` route is deliberately exempt from. Found by the
-    Sweep 12 Task 6 Rule 11 dimension pass, which is comment-only and cannot carry the change.
-
 - **`check-comment-refs.mjs`'s "unnamed spec reference" detector does not catch "the brief"/"this
   brief" as the same class of ephemeral-document referent it already catches for "spec".** The
   pattern (`\b(?:the|this|design|parent|wire|per)\s+spec\b|\bspec'?d\b|\bspec\s*§|\bspec\s*:(?!:)`)

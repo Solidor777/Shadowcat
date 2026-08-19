@@ -21,7 +21,7 @@ describe("VisualKindEditor", () => {
       { id: "asset-1", world_id: "w1", original_name: "hero.png", content_type: "image/png" } as never,
     ]);
     render(VisualKindEditor, {
-      context: setAppContextForTest({ role: "gm", world: "w1", documents: new DocumentStore(), dispatchIntent: vi.fn(), assets: { url: (id: string) => `/assets/${id}` } as never }),
+      context: setAppContextForTest({ role: "gm", world: "w1", documents: new DocumentStore(), dispatchIntent: vi.fn(), assets: { url: (id: string) => `/assets/${id}`, reconcile: () => {} } as never }),
       props: { conditionOptions: [], onBuild },
     });
 
@@ -34,7 +34,7 @@ describe("VisualKindEditor", () => {
   it("emits null via onBuild for an incomplete faces row (no asset picked)", async () => {
     const onBuild = vi.fn();
     render(VisualKindEditor, {
-      context: setAppContextForTest({ role: "gm", world: "w1", documents: new DocumentStore(), dispatchIntent: vi.fn(), assets: { url: (id: string) => `/assets/${id}` } as never }),
+      context: setAppContextForTest({ role: "gm", world: "w1", documents: new DocumentStore(), dispatchIntent: vi.fn(), assets: { url: (id: string) => `/assets/${id}`, reconcile: () => {} } as never }),
       props: { conditionOptions: [], onBuild },
     });
 

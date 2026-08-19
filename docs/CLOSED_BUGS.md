@@ -511,3 +511,27 @@ Confirmed-real defects that have since been fixed, kept for provenance. New fixe
   to the client, which renders the authoritative resolved geometry instead of mirroring the formula
   that produced it — so the drawn box and the collision disc can no longer disagree, by
   construction rather than by review.
+
+## Client / assets — `AssetResolver`'s cache-bust never self-healed from a missed `AssetChanged` frame
+
+- [Client, FIXED] `AssetResolver.revs` was a client-local, purely relative counter bumped by
+  exactly one step whenever `onAssetChanged({op: "replaced"})` fired — it never read the asset's
+  server-side authoritative `version`. `AssetChanged` is broadcast out-of-band
+  (`Room::broadcast_aux`): it is never pushed to the ring, never resynced, and drops entirely if
+  there are no receivers. An ordinary reconnect during the window a GM replaces an asset — no lag,
+  no unusual load — comes back subscribed past the frame, and a connection that falls behind
+  resyncs via the ring/log tiers, which never held the aux frame either. Because the counter was
+  purely relative, a missed bump was invisible and unrecoverable: `url()` returned the same
+  cache-busted string forever, no new request was ever issued, and the stale image persisted until
+  a page reload. Fixed in two parts. Part A: `ServerMsg::AssetChanged` gained a `version: Option<i64>`
+  field (`Some` the bumped, authoritative value for `Replaced`; `None` for `Deleted`, which has no
+  version), threaded from `http::assets::replace`'s already-bound `version`; `AssetResolver.onAssetChanged`
+  now SETS its per-uuid revision to the frame's absolute `version` (never regressing below a
+  version already held) instead of incrementing a relative counter, so two clients that each missed
+  a different number of frames still converge once a live frame does arrive. Part B: a new
+  `AssetResolver.reconcile(assets: Asset[])` method adopts each listed asset's true `version` (and
+  clears a stale `deleted` marker for any id present in the listing), wired into every existing
+  touchpoint that already fetches full `Asset[]` records — `Assets.svelte`'s `reload`,
+  `AssetPicker.svelte`, and `VisualKindEditor.svelte`'s `refreshAssets` — so opening any of those
+  panels self-heals a stale cache-bust state for that session with no new polling mechanism.
+  No data loss or authz effect: this was a staleness bug, not a security one.

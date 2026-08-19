@@ -154,6 +154,10 @@ async fn replace_swaps_bytes_bumps_version_and_broadcasts() {
     let frame = drain_until_type(&mut ws, "asset_changed").await;
     assert_eq!(frame["uuid"], id);
     assert_eq!(frame["op"], "replaced");
+    assert_eq!(
+        frame["version"], 2,
+        "carries the bumped, authoritative version"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -183,6 +187,7 @@ async fn delete_removes_record_and_file_and_broadcasts() {
 
     let frame = drain_until_type(&mut ws, "asset_changed").await;
     assert_eq!(frame["op"], "deleted");
+    assert!(frame["version"].is_null(), "a deleted asset has no version");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

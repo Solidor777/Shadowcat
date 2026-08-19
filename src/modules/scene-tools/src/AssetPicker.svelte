@@ -19,6 +19,9 @@
     listAssets(world)
       .then((a) => {
         if (alive) items = a.filter((x) => x.content_type.startsWith("image/"));
+        // Every record here carries the true, current version — reconciling on each load
+        // self-heals a uuid whose cache-bust state went stale from a missed AssetChanged frame.
+        assets.reconcile(a);
       })
       .catch(() => {
         if (alive) failed = true;

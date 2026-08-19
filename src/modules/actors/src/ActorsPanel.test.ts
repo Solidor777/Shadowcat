@@ -76,7 +76,7 @@ describe("ActorsPanel — shape + size", () => {
         world: "w1",
         documents: new DocumentStore(),
         dispatchIntent,
-        assets: { url: (id: string) => `/assets/${id}` } as never,
+        assets: { url: (id: string) => `/assets/${id}`, reconcile: () => {} } as never,
       }),
     });
 
@@ -226,7 +226,7 @@ describe("ActorsPanel — darkvision authoring", () => {
       { id: "asset-1", world_id: "w1", original_name: "hero.png", content_type: "image/png" } as never,
     ]);
     render(ActorsPanel, {
-      context: setAppContextForTest({ role: "gm", world: "w1", documents: new DocumentStore(), dispatchIntent, assets: { url: (id: string) => `/assets/${id}` } as never }),
+      context: setAppContextForTest({ role: "gm", world: "w1", documents: new DocumentStore(), dispatchIntent, assets: { url: (id: string) => `/assets/${id}`, reconcile: () => {} } as never }),
     });
     await vi.waitFor(() => expect(screen.queryAllByRole("button", { name: "hero.png" }).length).toBeGreaterThan(0));
     await fireEvent.input(screen.getByPlaceholderText("actors.name"), { target: { value: "Drow" } });
@@ -245,7 +245,7 @@ describe("ActorsPanel — darkvision authoring", () => {
       { id: "asset-1", world_id: "w1", original_name: "hero.png", content_type: "image/png" } as never,
     ]);
     render(ActorsPanel, {
-      context: setAppContextForTest({ role: "gm", world: "w1", documents: new DocumentStore(), dispatchIntent, assets: { url: (id: string) => `/assets/${id}` } as never }),
+      context: setAppContextForTest({ role: "gm", world: "w1", documents: new DocumentStore(), dispatchIntent, assets: { url: (id: string) => `/assets/${id}`, reconcile: () => {} } as never }),
     });
     await vi.waitFor(() => expect(screen.queryAllByRole("button", { name: "hero.png" }).length).toBeGreaterThan(0));
     await fireEvent.input(screen.getByPlaceholderText("actors.name"), { target: { value: "Human" } });
@@ -299,7 +299,7 @@ describe("ActorsPanel — visual kind editor", () => {
       { id: "asset-1", world_id: "w1", original_name: "hero.png", content_type: "image/png" } as never,
     ]);
     render(ActorsPanel, {
-      context: setAppContextForTest({ role: "gm", world: "w1", documents: new DocumentStore(), dispatchIntent, assets: { url: (id: string) => `/assets/${id}` } as never }),
+      context: setAppContextForTest({ role: "gm", world: "w1", documents: new DocumentStore(), dispatchIntent, assets: { url: (id: string) => `/assets/${id}`, reconcile: () => {} } as never }),
     });
     await vi.waitFor(() => expect(screen.queryAllByRole("button", { name: "hero.png" }).length).toBeGreaterThan(0));
     await fireEvent.input(screen.getByPlaceholderText("actors.name"), { target: { value: "Ogre" } });
@@ -318,7 +318,7 @@ describe("ActorsPanel — visual kind editor", () => {
       { id: "f2", world_id: "w1", original_name: "f2.png", content_type: "image/png" } as never,
     ]);
     render(ActorsPanel, {
-      context: setAppContextForTest({ role: "gm", world: "w1", documents: new DocumentStore(), dispatchIntent, assets: { url: (id: string) => `/assets/${id}` } as never }),
+      context: setAppContextForTest({ role: "gm", world: "w1", documents: new DocumentStore(), dispatchIntent, assets: { url: (id: string) => `/assets/${id}`, reconcile: () => {} } as never }),
     });
     await vi.waitFor(() => expect(screen.queryAllByRole("button", { name: "f1.png" }).length).toBeGreaterThan(0));
     await fireEvent.input(screen.getByPlaceholderText("actors.name"), { target: { value: "Wisp" } });
@@ -340,7 +340,7 @@ describe("ActorsPanel — visual kind editor", () => {
       { id: "b1", world_id: "w1", original_name: "bloodied.png", content_type: "image/png" } as never,
     ]);
     const { container } = render(ActorsPanel, {
-      context: setAppContextForTest({ role: "gm", world: "w1", documents: new DocumentStore(), dispatchIntent, assets: { url: (id: string) => `/assets/${id}` } as never }),
+      context: setAppContextForTest({ role: "gm", world: "w1", documents: new DocumentStore(), dispatchIntent, assets: { url: (id: string) => `/assets/${id}`, reconcile: () => {} } as never }),
     });
     await vi.waitFor(() => expect(screen.queryAllByRole("button", { name: "normal.png" }).length).toBeGreaterThan(0));
     await fireEvent.input(screen.getByPlaceholderText("actors.name"), { target: { value: "Goblin" } });
@@ -374,7 +374,7 @@ describe("ActorsPanel — visual kind editor", () => {
       { id: "n1", world_id: "w1", original_name: "normal.png", content_type: "image/png" } as never,
     ]);
     render(ActorsPanel, {
-      context: setAppContextForTest({ role: "gm", world: "w1", documents: new DocumentStore(), dispatchIntent, assets: { url: (id: string) => `/assets/${id}` } as never }),
+      context: setAppContextForTest({ role: "gm", world: "w1", documents: new DocumentStore(), dispatchIntent, assets: { url: (id: string) => `/assets/${id}`, reconcile: () => {} } as never }),
     });
     await vi.waitFor(() => expect(screen.queryAllByRole("button", { name: "normal.png" }).length).toBeGreaterThan(0));
     await fireEvent.input(screen.getByPlaceholderText("actors.name"), { target: { value: "Goblin" } });
@@ -399,7 +399,7 @@ describe("ActorsPanel — visual kind editor", () => {
       { id: "b1", world_id: "w1", original_name: "bloodied.png", content_type: "image/png" } as never,
     ]);
     const { container } = render(ActorsPanel, {
-      context: setAppContextForTest({ role: "gm", world: "w1", documents: new DocumentStore(), dispatchIntent, assets: { url: (id: string) => `/assets/${id}` } as never }),
+      context: setAppContextForTest({ role: "gm", world: "w1", documents: new DocumentStore(), dispatchIntent, assets: { url: (id: string) => `/assets/${id}`, reconcile: () => {} } as never }),
     });
     await vi.waitFor(() => expect(screen.queryAllByRole("button", { name: "normal.png" }).length).toBeGreaterThan(0));
     await fireEvent.input(screen.getByPlaceholderText("actors.name"), { target: { value: "Goblin" } });

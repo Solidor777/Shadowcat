@@ -248,7 +248,12 @@
    * ```
    */
   function refreshAssets(): void {
-    void listAssets(ctx.world).then((a) => (assetList = a.filter((x) => x.content_type.startsWith("image/"))));
+    void listAssets(ctx.world).then((a) => {
+      assetList = a.filter((x) => x.content_type.startsWith("image/"));
+      // Every record here carries the true, current version — reconciling on each load
+      // self-heals a uuid whose cache-bust state went stale from a missed AssetChanged frame.
+      ctx.assets.reconcile(a);
+    });
   }
   $effect(() => {
     refreshAssets();

@@ -842,7 +842,9 @@ export class WsClient {
         break;
       }
       case "asset_changed":
-        this.safeEmit(() => this.opts.handlers.onAssetChanged?.({ uuid: msg.uuid, op: msg.op }));
+        this.safeEmit(() =>
+          this.opts.handlers.onAssetChanged?.({ uuid: msg.uuid, op: msg.op, version: msg.version }),
+        );
         break;
       case "scene_ping":
         this.safeEmit(() =>
