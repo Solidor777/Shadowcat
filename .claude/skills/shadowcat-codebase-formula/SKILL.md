@@ -156,10 +156,8 @@ which no prose can do.
   rejection. What binds a consumer is the coupling: a consuming system validates a stat key by
   CALLING `checkNotationKey`, never by reasoning over `NOTATION_KEYWORDS`, because a collision it
   misses can change the number a roll produces with no error on any path FOR SOME of
-  `NotationKeyCheck`'s outcomes and not others: the outcome with no surviving identifier claim
-  never errors, while the split outcome errors loudly whenever one of its split paths fails to
-  resolve. `NOTATION_KEYWORDS` cannot tell a caller which outcome a given key falls into; only
-  `checkNotationKey` can. A spy resolver answering
+  `NotationKeyCheck`'s outcomes and not others. `NOTATION_KEYWORDS` cannot tell a caller which
+  outcome a given key falls into; only `checkNotationKey` can. A spy resolver answering
   every path hides the split outcome, so `template.test` pins it with a resolver that knows only
   the key as written.
   `template.test`'s `checkNotationKey` cases derive their keyword

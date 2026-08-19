@@ -173,10 +173,10 @@ describe("the reservation split between the two grammars", () => {
   });
 
   it("the dotted split is LOUD whenever the consumer holds no stat at the remainder", () => {
-    // The split is silent only while the remainder happens to resolve. A consuming system
-    // whose stat sits at the path the author WROTE has nothing at the remainder, answers
-    // its own unknown-reference error, and that error fails the whole template — the
-    // common real-world shape, and the one a spy resolver answering every path hides.
+    // A consuming system whose stat sits at the path the author WROTE has nothing at the
+    // remainder, answers its own unknown-reference error, and that error fails the whole
+    // template — the common real-world shape, and the one a spy resolver answering every
+    // path hides.
     for (const kw of NOTATION_KEYWORDS) {
       const written = `${kw}.max`;
       expect(resolveNotationTemplate(`2d20 + ${written}`, env({ [written]: 7 })), written)
