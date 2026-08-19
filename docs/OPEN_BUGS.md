@@ -248,6 +248,23 @@ Currently open, confirmed-real defects. Deferrals belong in `TODO.md`, not here.
     lit and which are remembered, which is misleading rather than merely ugly — but the underlying
     masks are correct, so nothing is disclosed that should not be.
 
+- **`assemble`'s `out` directory accumulates stale files across rebuilds, and any diff taken
+  against it is unreliable.** `assemble` `cpSync`-copies the portal/TypeDoc/rustdoc trees into
+  `out` without ever clearing `out` first. `cpSync` overwrites a file that exists in both source
+  and destination, but never removes a destination file whose source no longer produces it, so a
+  page renamed or deleted upstream leaves its old copy behind forever. The output directory is
+  git-ignored, so nothing resets it except a human manually clearing it.
+  - **Why it matters:** this was found as a false-positive generator, not just clutter. A
+    before/after comparison of the assembled output across a real config change showed a spurious
+    delta that only a separate control build (unchanged config, identical delta shape) revealed as
+    noise from roughly 40 stale files already sitting in the directory from unrelated earlier
+    builds. Any future comparison against the assembled output across two builds lies unless the
+    directory starts from a known-empty state each time, and can as easily hide a real regression
+    as manufacture a fake one.
+  - **Fix shape:** clear `out` at the start of `assemble` (or immediately before the call in the
+    direct-entry block) using a recursive-removal primitive scoped strictly to the `out` path the
+    caller passed in.
+
 - **[hex] A token is drawn and collided as something smaller than the hex it occupies, by two
   different factors.** `resolveTokenBox` sizes the drawn footprint as `actor.size.w * cell` by
   `actor.size.h * cell`, where `sceneCellSize` supplies the scene's `grid.size` — on hex the cell's
