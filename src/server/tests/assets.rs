@@ -11,6 +11,7 @@
 use common::{spawn, PNG_1X1};
 use futures_util::StreamExt;
 use shadowcat::data::repository::Repository;
+use shadowcat::data::DataError;
 use shadowcat_test_support as common;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -240,7 +241,7 @@ async fn delete_broadcast_reflects_the_truly_removed_version_despite_a_racing_re
 
         match replace_res {
             // The replace's UPDATE committed before `delete`'s own `delete_asset` DELETE ran: the
-            // row the DELETE actually removed carries the bumped version, so that's what the fixed
+            // row the DELETE actually removed carries the bumped version, so that's what the
             // handler must broadcast — the exact interleaving this test exists to exercise.
             Ok(bumped_version) => {
                 assert_eq!(
@@ -255,10 +256,16 @@ async fn delete_broadcast_reflects_the_truly_removed_version_despite_a_racing_re
                 race_won = true;
             }
             // The DELETE already removed the row by the time the replace's UPDATE ran (no row left
-            // to match): the un-bumped version is what's broadcast, which is also correct — this
-            // iteration just didn't land inside the race window.
-            Err(_) => {
+            // to match): `replace_asset_bytes`'s `UPDATE ... RETURNING version` matched zero rows,
+            // which it reports as `DataError::NotFound` specifically — the un-bumped version is
+            // what's broadcast, which is also correct; this iteration just didn't land inside the
+            // race window. Any other `Err` variant is a genuine DB fault distinct from a lost race
+            // and must fail the test loudly rather than being folded into this branch.
+            Err(DataError::NotFound) => {
                 assert_eq!(frame["version"], 1);
+            }
+            Err(e) => {
+                panic!("replace_asset_bytes failed for a reason other than losing the race: {e}")
             }
         }
     }
