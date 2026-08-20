@@ -138,11 +138,6 @@ Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one de
   caller ever exercising the recovery path. Add client-side pruning (e.g. dropping a
   `worlds.<id>` entry for a world no longer in the caller's membership list) so an over-cap blob
   is actually recovered, not just theoretically recoverable.
-- TODO: `put_ui_state` opens the single-connection tx via `merge_ui_state`
-  before the merged-size check runs (the check happens inside the tx, after the read). A cheap
-  route-level pre-check (e.g. rejecting a patch whose own serialized size already exceeds
-  `MAX_UI_STATE_BYTES`, before touching the pool) would reject an obviously-oversized patch
-  without holding the single-writer connection for the read+merge+serialize round trip.
 - TODO: the `sessionState` module has no in-flight-PUT ordering guard — `schedulePersist`'s leading
   edge can fire a second `persist()` while an earlier one's `putUiState` is still unresolved (e.g.
   a slow network on the first write, a new mutation arriving before it settles), so two writes for

@@ -131,13 +131,19 @@ pub async fn get_ui_state(
 
 /// Merge a partial UI-state patch into the caller's stored state; the merge
 /// rule itself is stated once, on `SqliteRepository::merge_ui_state`,
-/// including its `null`-removes-key/entry semantics. This route only
-/// validates the wire shape (`body` and any `worlds` value must be JSON
-/// objects) before delegating. Sending only changed slices/keys is the
-/// concurrency control: concurrent sessions of one account contend only on
-/// the individual keys both write, instead of last-writer-wins on the whole
-/// blob. The size cap applies to the merged result (422 via
-/// `DataError::TooLarge`).
+/// including its `null`-removes-key/entry semantics. This route validates
+/// the wire shape (`body` and any `worlds` value must be JSON objects), then
+/// runs two DISTINCT size checks that catch two DISTINCT cases — neither is
+/// a duplicate of the other: this route's own pre-check rejects a patch
+/// whose OWN serialized size already exceeds the cap before the pool is
+/// touched at all, while `merge_ui_state`'s in-tx check (which alone sees
+/// the full merged result) still catches a small patch that pushes an
+/// already-large STORED blob over the cap. The pre-check exists to avoid
+/// holding the single-writer connection for a read+merge+serialize round
+/// trip on a patch that is obviously oversized on its own. Sending only
+/// changed slices/keys is the concurrency control: concurrent sessions of
+/// one account contend only on the individual keys both write, instead of
+/// last-writer-wins on the whole blob.
 pub async fn put_ui_state(
     user: AuthUser,
     State(state): State<AppState>,
@@ -154,6 +160,14 @@ pub async fn put_ui_state(
                 "ui_state `worlds` must be a JSON object".into(),
             ));
         }
+    }
+    let patch_bytes = serde_json::to_vec(&body)
+        .map_err(|_| AppError::Internal)?
+        .len();
+    if patch_bytes > MAX_UI_STATE_BYTES {
+        return Err(AppError::Unprocessable(format!(
+            "ui_state patch too large: {patch_bytes} bytes"
+        )));
     }
     state
         .repo

@@ -473,6 +473,23 @@ pub(crate) mod tests {
             .assert_status(StatusCode::NO_CONTENT);
         let got: serde_json::Value = u.get("/api/me/ui-state").await.json();
         assert_eq!(got["worlds"].get("w1"), None);
+
+        // A patch well under MAX_UI_STATE_BYTES on its own (60KB) can still
+        // land a small follow-up patch (6KB, also well under the cap alone)
+        // that pushes the MERGED result over 64KB — this is the case only
+        // the in-tx merged-size check catches, distinct from the route-level
+        // pre-check on the patch's own size covered by the over-cap-body
+        // case above.
+        let near_cap = "x".repeat(60 * 1024);
+        u.put("/api/me/ui-state")
+            .json(&serde_json::json!({ "nearCap": near_cap }))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+        let small_push = "y".repeat(6 * 1024);
+        u.put("/api/me/ui-state")
+            .json(&serde_json::json!({ "push": small_push }))
+            .await
+            .assert_status(StatusCode::UNPROCESSABLE_ENTITY);
     }
 
     #[tokio::test]
