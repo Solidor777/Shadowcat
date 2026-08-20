@@ -308,6 +308,14 @@ Settled by direct observation, kept because each is a property to re-check after
   `merge_all_available_skills = true`, suggesting skills may be merged into context rather than
   invoked; if so the bodies' BLOCKED branch could fire in a consumer repo even when the context
   is already present. Both need one real dispatch in a consumer workspace to settle.
+  - **Attempted, genuinely blocked (not a deferral):** the `kimi` CLI is installed and its
+    `config.toml` validates clean (`kimi doctor config`), but `kimi -p "..."` returns
+    `provider.api_error: 403 You've reached your usage limit for this billing cycle` — the
+    account's quota is exhausted, refreshing next billing cycle. This blocks any real dispatch
+    through Kimi (TUI or `-p`/`--agent-file` non-interactive mode) regardless of plugin-install
+    status, so the agent-registration and skill-invocation questions above remain unverified for
+    a reason outside this session's control. Re-attempt once quota refreshes or extra usage is
+    purchased.
 
 ## Actionable now — no UI-visible notification channel exists in `ui-kit`
 - TODO: Build a UI-visible notification/toast affordance in `@shadowcat/ui-kit` (or wherever the
