@@ -186,28 +186,6 @@ Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one de
 - TODO: `Stage`'s backend-init failure path sets `data-render-error="true"` silently. Route
   it through the project logger so a real WebGL/backend init failure is distinguishable from a
   timeout in e2e output and user bug reports.
-- TODO: `WsClient.open()` adopts a resolving transport (`this.transport =
-  await this.opts.connect(...)`) without re-checking `running_` after the await — a `stop()`
-  call during a pending connect leaves an adopted-but-unwatched socket assigned to
-  `this.transport`. Re-check `running_` immediately after the connect await and close/discard the
-  transport if the client was stopped in the meantime.
-- TODO: `App`'s `boot()` captures `currentRoute()` once, BEFORE the `listWorlds` await (and
-  the `withRetry` delays widening that window further) — a hash change that lands during that
-  await (e.g. a user clicking a different deep link while "Loading…" is showing) is silently
-  ignored; `resolveBootWorld` resolves against the STALE route captured before the await, not the
-  URL the page now shows. Re-read `currentRoute()` immediately before calling `resolveBootWorld`,
-  or detect and re-resolve on a hash change observed during boot.
-- TODO: `WorldSession#onWelcome`'s activation `catch` rethrows out of
-  the inner `try` around `#modules.activate()`, which is caught by the OUTER per-Welcome `try` that
-  wraps the entire handler body — so while activation keeps failing (e.g. a persistent contract
-  cycle), EVERY subsequent step (the member-username fetch, `reconcileTopology`, scene
-  re-subscription, the GM first-scene seed) is skipped on every single Welcome, not just the
-  failing one. Pre-fix (single `#bootstrapped` latch) those steps ran on subsequent Welcomes once
-  the latch was set regardless of activation success; this is a narrower-but-still-real regression
-  of that behavior. Fix direction: log the activation failure in place (already logged via
-  `#logger.error` in the outer catch) and continue running the rest of the handler instead of
-  letting the rethrow short-circuit it — activation failure should degrade Surfaces, not silently
-  skip member names/topology/scene resubscription too.
 - TODO: `effectiveOwner` mirrors the server's `effective_owner` PRECEDENCE (token's
   own `/owner`, else the linked actor's owner) but omits the server's `actor.scope === doc.scope`
   guard (`effective_owner` rejects a resolved actor whose `scope` differs
