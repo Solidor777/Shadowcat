@@ -253,8 +253,10 @@ with zero message-specific plumbing in any of those subsystems.
   binary search, O(n), UTF-8-boundary-safe, no policy toggle — typing sugar, zero security
   surface since output is plain unicode). Runs as the FIRST line of `sanitize()`, so it applies
   identically to the plain-text early-return and the enriched path, on send AND edit; `source`
-  is captured BEFORE it runs, so shortcodes stay literal in edit-prefill. v1 limitation
-  (documented): pre-parse replacement also fires inside markdown code spans. Table sortedness
+  is captured BEFORE it runs, so shortcodes stay literal in edit-prefill. A `:name:` whose
+  opening `:` falls inside a markdown inline code span (backtick-run-delimited, computed by
+  `code_span_ranges` before the scan) is skipped — not a full CommonMark parser, only the
+  backtick-run/code-span rule. Table sortedness
   is pinned by a test (`binary_search_by_key` silently breaks on a mis-sorted row).
 - `chat::sanitize` — `sanitize(raw: &str, policy: &ChatContentPolicy) ->
   Vec<Segment>`, the content-security boundary. `!policy.markdown && !policy.html` short-
