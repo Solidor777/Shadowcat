@@ -130,9 +130,10 @@ pub async fn get_ui_state(
 }
 
 /// Merge a partial UI-state patch into the caller's stored state; the merge
-/// rule itself is stated once, on `SqliteRepository::merge_ui_state`. This
-/// route only validates the wire shape (`body` and any `worlds` value must be
-/// JSON objects) before delegating. Sending only changed slices/keys is the
+/// rule itself is stated once, on `SqliteRepository::merge_ui_state`,
+/// including its `null`-removes-key/entry semantics. This route only
+/// validates the wire shape (`body` and any `worlds` value must be JSON
+/// objects) before delegating. Sending only changed slices/keys is the
 /// concurrency control: concurrent sessions of one account contend only on
 /// the individual keys both write, instead of last-writer-wins on the whole
 /// blob. The size cap applies to the merged result (422 via

@@ -45,14 +45,23 @@ const SINGLETON_DOC_TYPES: &[&str] = &[
 /// entries into the existing object (each of THOSE entries replaces
 /// wholesale — this never recurses past one level, so an opaque leaf blob
 /// like `panelLayout` is never deep-merged); otherwise `value` replaces
-/// `map[key]` wholesale. The shared leaf-key merge step behind
-/// `SqliteRepository::merge_ui_state`'s per-top-level-key and per-`worlds.<id>`
-/// merge rule.
+/// `map[key]` wholesale. `null` REMOVES rather than replaces: a `null`
+/// `value` removes `key` from `map` entirely (a conceptual counterpart to
+/// `FieldChange.remove` elsewhere in the data layer — `ui_state` patches are
+/// plain JSON, not typed `FieldChange`s, so there is no shared wire shape),
+/// and inside the object-merge branch a `null` entry of `value` removes that
+/// leaf key from the existing object instead of storing a literal `null`.
+/// The shared leaf-key merge step behind `SqliteRepository::merge_ui_state`'s
+/// per-top-level-key and per-`worlds.<id>` merge rule.
 fn merge_one_level(
     map: &mut serde_json::Map<String, serde_json::Value>,
     key: &str,
     value: &serde_json::Value,
 ) {
+    if value.is_null() {
+        map.remove(key);
+        return;
+    }
     let existing_is_object = map.get(key).is_some_and(serde_json::Value::is_object);
     if existing_is_object && value.is_object() {
         // Safe: `existing_is_object` just confirmed `map[key]` is present and an object.
@@ -61,7 +70,11 @@ fn merge_one_level(
             .and_then(serde_json::Value::as_object_mut)
             .expect("existing_is_object confirmed map[key] is a present object");
         for (k, v) in value.as_object().expect("value.is_object() checked above") {
-            existing_obj.insert(k.clone(), v.clone());
+            if v.is_null() {
+                existing_obj.remove(k);
+            } else {
+                existing_obj.insert(k.clone(), v.clone());
+            }
         }
     } else {
         map.insert(key.to_string(), value.clone());
@@ -759,7 +772,12 @@ impl SqliteRepository {
     /// and NEVER deep-merged); otherwise insert `slice` wholesale. For any
     /// other `K` (e.g. `global`) — when BOTH `stored[K]` and `patch[K]` are
     /// objects, merge one level (each second-level key replaces wholesale);
-    /// otherwise replace `stored[K]` wholesale. Absent keys are untouched.
+    /// otherwise replace `stored[K]` wholesale. Absent keys are untouched. A
+    /// `null` in the patch REMOVES rather than replaces: `null` at
+    /// `worlds.<id>` removes that whole entry, `null` at a leaf key inside a
+    /// `worlds.<id>` slice (or inside `global`) removes just that key, and
+    /// `null` at any other top-level `K` removes it entirely — see
+    /// `merge_one_level`. This is the recovery path for an over-cap blob.
     /// This leaf-key granularity is the concurrency control — concurrent
     /// sessions of the same user (two tabs, two mutating owners of the same
     /// slice: e.g. the panels module writing `panelLayout` and the chat
@@ -4190,6 +4208,78 @@ mod tests {
                 .await,
             Err(DataError::NotFound)
         ));
+    }
+
+    #[tokio::test]
+    async fn ui_state_merge_null_removes_key_and_entry() {
+        let repo = repo().await;
+        let user = repo
+            .create_user("u", Some("hash"), ServerRole::User, 0)
+            .await
+            .unwrap();
+
+        // Seed two worlds and a global slice with two keys.
+        repo.merge_ui_state(
+            user,
+            &serde_json::json!({
+                "global": { "locale": "en", "lastWorld": "w1" },
+                "worlds": {
+                    "w1": { "panelLayout": { "v": 1 }, "chatRead": { "general": 3 } },
+                    "w2": { "panelLayout": { "v": 2 } },
+                },
+            }),
+            64 * 1024,
+        )
+        .await
+        .unwrap();
+
+        // `worlds.w1: null` removes the WHOLE w1 entry; the sibling w2 entry
+        // survives untouched.
+        repo.merge_ui_state(
+            user,
+            &serde_json::json!({ "worlds": { "w1": null } }),
+            64 * 1024,
+        )
+        .await
+        .unwrap();
+        let v = ui_state_of(&repo, user).await;
+        assert_eq!(v["worlds"].get("w1"), None);
+        assert_eq!(v["worlds"]["w2"]["panelLayout"]["v"], 2);
+
+        // Reseed w1 with two leaf keys, then remove just one of them via a
+        // leaf-level `null` — the sibling leaf key survives.
+        repo.merge_ui_state(
+            user,
+            &serde_json::json!({
+                "worlds": { "w1": { "panelLayout": { "v": 1 }, "chatRead": { "general": 3 } } },
+            }),
+            64 * 1024,
+        )
+        .await
+        .unwrap();
+        repo.merge_ui_state(
+            user,
+            &serde_json::json!({ "worlds": { "w1": { "chatRead": null } } }),
+            64 * 1024,
+        )
+        .await
+        .unwrap();
+        let v = ui_state_of(&repo, user).await;
+        assert_eq!(v["worlds"]["w1"]["panelLayout"]["v"], 1);
+        assert_eq!(v["worlds"]["w1"].get("chatRead"), None);
+
+        // A leaf-level `null` inside `global` removes only that key; the
+        // sibling global key survives.
+        repo.merge_ui_state(
+            user,
+            &serde_json::json!({ "global": { "locale": null } }),
+            64 * 1024,
+        )
+        .await
+        .unwrap();
+        let v = ui_state_of(&repo, user).await;
+        assert_eq!(v["global"].get("locale"), None);
+        assert_eq!(v["global"]["lastWorld"], "w1");
     }
 
     #[tokio::test]

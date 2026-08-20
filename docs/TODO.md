@@ -132,13 +132,12 @@ Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one de
    no first-party producer) — build the composer/token-context UX and lift the rejection together.
 
 ## Actionable now — ui-state per-key merge (Task 4 final-review backlog)
-- TODO: `worlds` in the stored `ui_state` blob is grow-only — `merge_ui_state` never removes a
-  `worlds.<id>` entry or a leaf key within it, only inserts/replaces. A world a user leaves (or a
-  stale panel-layout/chat-read key a module retires) accumulates forever, and there is no recovery
-  path if an accumulated blob ever exceeds the 64KB merged cap short of a manual DB edit. Add
-  `null`-removes-entry/key semantics to the merge rule (mirroring `FieldChange.remove` elsewhere in
-  the data layer) plus client-side pruning (e.g. dropping a `worlds.<id>` entry for a world no
-  longer in the caller's membership list) so an over-cap blob is recoverable.
+- TODO: the server-side `null`-removes-entry/key merge semantics exist (`merge_one_level`) but
+  nothing on the client emits a `null` yet — a world a user leaves (or a stale panel-layout/
+  chat-read key a module retires) still accumulates forever in the stored `ui_state` blob with no
+  caller ever exercising the recovery path. Add client-side pruning (e.g. dropping a
+  `worlds.<id>` entry for a world no longer in the caller's membership list) so an over-cap blob
+  is actually recovered, not just theoretically recoverable.
 - TODO: `put_ui_state` opens the single-connection tx via `merge_ui_state`
   before the merged-size check runs (the check happens inside the tx, after the read). A cheap
   route-level pre-check (e.g. rejecting a patch whose own serialized size already exceeds

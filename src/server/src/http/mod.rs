@@ -464,6 +464,15 @@ pub(crate) mod tests {
             .json(&serde_json::json!({ "blob": big }))
             .await
             .assert_status(StatusCode::UNPROCESSABLE_ENTITY);
+
+        // A `worlds.w1: null` PUT removes the stored w1 entry — confirmed via
+        // a subsequent GET.
+        u.put("/api/me/ui-state")
+            .json(&serde_json::json!({ "worlds": { "w1": null } }))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+        let got: serde_json::Value = u.get("/api/me/ui-state").await.json();
+        assert_eq!(got["worlds"].get("w1"), None);
     }
 
     #[tokio::test]
