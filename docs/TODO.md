@@ -321,23 +321,6 @@ Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one de
   nature confirmed by the dispatcher — the task's own report characterized only `core` as the
   stronger version.)
 
-## Actionable now — `ConditionsPanel`'s registry seed doesn't use a deterministic id (docs sweep 11 Task 5 backlog)
-- TODO: give the condition-registry seed the same `deterministicId(worldId, ...)` convergence
-  property its sibling `seedFactionRegistryIfAbsent` already
-  has. `ConditionsPanel`'s inline seed `$effect` calls
-  `buildConditionRegistryDoc(ctx.world, SEED)` with no explicit `id`, even though
-  `buildConditionRegistryDoc`'s own doc comment says to pass `deterministicId`
-  for exactly this "singleton seed" case. Two GMs racing to seed a brand-new world therefore
-  compute two DIFFERENT random ids, unlike the faction-registry seed's same-id convergence.
-  **Not a correctness bug today:** `CONDITION_REGISTRY_DOC_TYPE` is in the server's doc_type-scoped
-  `SINGLETON_DOC_TYPES` list, so the loser's Create is rejected regardless of
-  id, and `OptimisticClient.reject` rolls the local prediction back the normal way — the outcome
-  converges correctly either way. Fix is a one-line fold of `seedConditionRegistryIfAbsent` into
-  the `conditions` module's own `seed` module (mirroring the `factions` module's `seed` module)
-  for consistency and testability; out of scope for
-  a comment-only docs sweep. (Surfaced by sweep 11 Task 5's Rule-11 sibling audit of
-  `FactionsPanel` vs `ConditionsPanel`.)
-
 ## Actionable now — `ConditionsPanel`'s `isActive`/`toggle` disagree on which selected tokens count (docs sweep 11 Task 5 backlog)
 - TODO: `ConditionsPanel`'s `isActive(conditionId)` reports
   whether EVERY selected token resolving a conditions target has the condition, counting a

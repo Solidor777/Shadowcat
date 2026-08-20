@@ -185,7 +185,10 @@ token/actor name from non-owners via the `OwnerOrGm` visibility tier. Conditions
   `AppContext.dispatchIntent` is fire-and-forget with no per-call reject signal exposed to
   modules). `seedFactionRegistryIfAbsent` short-circuits via `store.get(id)` before dispatching.
 - The `conditions` module (`ConditionsPanel`) — GM editor + idempotent emoji seed
-  of the condition registry + a token-selection-driven toggle palette; render via
+  of the condition registry (extracted into `seedConditionRegistryIfAbsent(store, worldId,
+  dispatchIntent)`, mirroring `seedFactionRegistryIfAbsent`'s shape exactly, including the
+  deterministic `deterministicId(worldId, "condition-registry")` seed id) + a
+  token-selection-driven toggle palette; render via
   `TokenNodeSpec.badges` (upright glyph chips). Toggle gated by `AppContext.canEdit(doc, path)`
   (GM or token owner).
 
@@ -257,15 +260,6 @@ token/actor name from non-owners via the `OwnerOrGm` visibility tier. Conditions
 
 ## Gotchas
 
-- **`ConditionsPanel`'s registry seed does NOT follow the deterministic-id reference pattern
-  `seedFactionRegistryIfAbsent` establishes above.** Its inline seed `$effect`
-  calls `buildConditionRegistryDoc(ctx.world, SEED)` with no explicit `id`, so two racing GMs
-  compute two DIFFERENT random ids instead of converging on one. Harmless today only because
-  `CONDITION_REGISTRY_DOC_TYPE` is in the server's doc_type-scoped `data::sqlite::SINGLETON_DOC_TYPES`
-  list — the loser's Create is rejected regardless of id, same rollback path as the
-  faction registry, just without the same-id convergence property. Accepted as-is (a
-  consistency/testability gap, not a correctness bug); don't copy this shape into a new registry
-  seeder — copy the faction one instead.
 - **`ConditionsPanel`'s `isActive`/`toggle` count different token sets.**
   `isActive(conditionId)` does NOT filter by `ctx.canEdit` (only excludes tokens with no
   resolvable `conditionTarget`); `toggle(conditionId)` mutates only the `canEdit`-passing subset

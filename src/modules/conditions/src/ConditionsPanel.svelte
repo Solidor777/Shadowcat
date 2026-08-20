@@ -1,7 +1,8 @@
 <script lang="ts">
   import { createSubscriber } from "svelte/reactivity";
   import { getAppContext } from "@shadowcat/ui-kit";
-  import { buildConditionRegistryDoc, conditionTarget, type Condition, type ConditionRegistryEngine, type WireDocument } from "@shadowcat/core";
+  import { conditionTarget, type Condition, type ConditionRegistryEngine, type WireDocument } from "@shadowcat/core";
+  import { seedConditionRegistryIfAbsent } from "./seed";
 
   const ctx = getAppContext();
   const t = ctx.t;
@@ -24,40 +25,18 @@
     return ctx.documents.query("token").filter((tok) => ids.has(tok.id));
   });
 
-  // Idempotent GM seed: a generic emoji set, created once when the registry is absent — this
-  // default content is replaceable, per the `conditions` module's own modding contract: a
-  // game-system module can supply its own seed/editor instead. The optimistic dispatch adds it
-  // to the store immediately, so a second reactive run sees it and this effect no-ops.
-  // Divergence from the sibling faction-registry seed (`factions`'s `seedFactionRegistryIfAbsent`):
-  // that seed dispatches its Create under a `deterministicId(worldId, ...)` id so
-  // two racing GMs converge on the same id; this one calls `buildConditionRegistryDoc` with no
-  // explicit id, so two racing GMs' Creates carry two DIFFERENT random ids. This is still
-  // correctness-safe — CONDITION_REGISTRY_DOC_TYPE is in the server's doc_type-scoped
-  // `data::sqlite`'s `SINGLETON_DOC_TYPES` list, so the loser's Create is rejected regardless
-  // of id, and `OptimisticClient.reject` rolls its local prediction back the same way — but it
-  // means this seed doesn't need (and doesn't use) the id-convergence property the faction
-  // seed's own doc comment relies on.
-  const SEED: Record<string, Condition> = {
-    dead: { name: "Dead", icon: "💀" },
-    unconscious: { name: "Unconscious", icon: "😵" },
-    prone: { name: "Prone", icon: "🛌" },
-    stunned: { name: "Stunned", icon: "💫" },
-    poisoned: { name: "Poisoned", icon: "🤢" },
-    blinded: { name: "Blinded", icon: "🙈" },
-    invisible: { name: "Invisible", icon: "👻" },
-    hasted: { name: "Hasted", icon: "⚡" },
-    slowed: { name: "Slowed", icon: "🐌" },
-  };
+  // Idempotent GM seed: create the registry (deterministic id, so racing GMs converge on one)
+  // once, only when absent — this default content is replaceable, per the `conditions` module's
+  // own modding contract: a game-system module can supply its own seed/editor instead. The
+  // optimistic dispatch adds it to the store immediately, so a second reactive run sees it and
+  // `seeded` short-circuits further attempts. Mirrors the sibling faction-registry seed
+  // (`factions`'s `seedFactionRegistryIfAbsent`) exactly.
   let seeded = false;
   $effect(() => {
     if (ctx.role !== "gm" || seeded) return;
     subscribe();
-    if (ctx.documents.query("condition-registry").length > 0) {
-      seeded = true;
-      return;
-    }
     seeded = true;
-    ctx.dispatchIntent([{ op: "create", doc: buildConditionRegistryDoc(ctx.world, SEED) }]);
+    seedConditionRegistryIfAbsent(ctx.documents, ctx.world, ctx.dispatchIntent);
   });
 
   /** GM registry editor: patches one or more fields of a condition entry, dispatching one
