@@ -49,8 +49,16 @@ existing `ModuleRegistry`.
   — **per-module contained, NON-throwing** (a single module's import/compat failure never aborts
   the batch); `checkEngineCompat`; fail-closed when `opts.shadowcatVersion` is absent.
 - The client `modules` module — `ModuleRegistry.activate()` is per-module isolated: a throwing
-  `register()` or a singleton-contract collision is logged + skipped, the topo loop continues, the
-  first provider stays sole-active. **Rollback-on-throw:** a `register()` throw mid-registration is
+  `register()` is logged + skipped (rolled back), the topo loop continues. A `singleton`-cardinality
+  `provides` collision does NOT abort or skip: `computeSingletonWinners` picks one winner per
+  contested contract (an already-active provider wins unconditionally — stability, activation never
+  unseats live state; otherwise the highest `ContractProvide.priority`, default `0`, ties broken by
+  `topoSort` order) and every losing claimant is demoted (`ModuleRecord.demoted`) rather than
+  blocked — it still activates in full, it just doesn't count as an active/declared provider of the
+  one contract it lost (`activeProvidersOf`/`declarations()` both filter through `demoted`). A
+  module can opt in to checking its own outcome via `ModuleContext.isSingletonProvider`. `provides`
+  stays purely declarative: nothing gates a module's own `register()` calls against demotion unless
+  the module checks itself. **Rollback-on-throw:** a `register()` throw mid-registration is
   caught, then `activate()` calls the module's own `unload(id)` to roll back any partial side
   effects (hooks/services/middleware/contributions) it already registered before throwing — safe by
   construction since `r.active` is still `false` at the catch point (`activeDependentsOf(id)` is

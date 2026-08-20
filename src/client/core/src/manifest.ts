@@ -35,9 +35,15 @@ export interface HookDecl {
 export interface ContractProvide {
   /** The contract id, e.g. `"shadowcat.panel"` or `"shadowcat.sheet:actor"`. */
   contract: string;
-  /** `"singleton"` (one active provider, collision aborts activation of the second) or
-   * `"multi"` (`ModuleRegistry.activate`'s singleton-collision check). */
+  /** `"singleton"` (one active provider; `ModuleRegistry.activate`'s singleton-conflict policy
+   * decides the winner among competing claimants) or `"multi"` (every active provider counts). */
   cardinality: Cardinality;
+  /** Tie-break weight among competing `singleton`-cardinality claimants of the same contract;
+   * higher wins. Absent means `0`. Ties (including the common case where no claimant sets this)
+   * fall back to `ModuleRegistry`'s activation order — the same de facto behavior as before this
+   * field existed. Meaningless for `"multi"` cardinality (every claimant is active; nothing to
+   * break a tie between). */
+  priority?: number;
 }
 
 /** A module's UI contract declaration (structurally matches the ts-rs type). */
@@ -47,8 +53,11 @@ export interface ContractDeclaration {
   /** The declaring module's semver version. */
   version: string;
   /** Contracts this module provides; compared locally by `reconcileTopology` against the
-   * server-broadcast `Welcome.contract_declarations`. */
-  provides: ContractProvide[];
+   * server-broadcast `Welcome.contract_declarations`. Never carries `ContractProvide.priority` —
+   * priority is local singleton-tie-break metadata with no wire counterpart (see that field's own
+   * doc comment), so a wire-comparable declaration omits it structurally rather than merely by
+   * convention. */
+  provides: Omit<ContractProvide, "priority">[];
   /** Contract ids this module requires at least one active provider of. */
   requires: string[];
 }
@@ -135,7 +144,13 @@ export const ManifestSchema: z.ZodType<ModuleManifest> = z.object({
     .array(z.object({ name: z.string(), version: z.string(), kind: HookKindSchema }))
     .optional(),
   provides: z
-    .array(z.object({ contract: z.string(), cardinality: z.enum(["singleton", "multi"]) }))
+    .array(
+      z.object({
+        contract: z.string(),
+        cardinality: z.enum(["singleton", "multi"]),
+        priority: z.number().optional(),
+      }),
+    )
     .optional(),
   requires: z.array(z.string()).optional(),
   engines: ModuleEnginesSchema.optional(),
@@ -171,7 +186,7 @@ export function declarationOf(m: ModuleManifest): ContractDeclaration {
   return {
     module_id: m.id,
     version: m.version,
-    provides: m.provides ?? [],
+    provides: (m.provides ?? []).map(({ contract, cardinality }) => ({ contract, cardinality })),
     requires: m.requires ?? [],
   };
 }

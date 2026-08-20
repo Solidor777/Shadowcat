@@ -28,9 +28,11 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
   statusbar's `shadowcat.surface:panel-dock`. Keep-mounted rule carries over: panels hide via
   CSS/slot adoption, never `{#if}`; hidden content reads `scrollHeight = 0` (module-chat's
   IntersectionObserver pattern still applies). Internals → [[shadowcat-codebase-panels]].
-- `ModuleRegistry`; `ServiceRegistry`;
-  `reconcileTopology(...)` resolves `provides`/`requires` contracts (singleton
-  loud-fail). Contract schemas: `ContractProvideSchema`.
+- `ModuleRegistry`; `ServiceRegistry`; a `singleton`-cardinality `provides` collision is resolved
+  by graceful demotion + explicit `ContractProvide.priority` (see `shadowcat-codebase-module-toolchain`),
+  not an abort. `reconcileTopology(...)` is a separate, warn-only comparison of the client's own
+  resolved `provides`/`requires` against the server-broadcast topology. Contract schemas:
+  `ContractProvideSchema`.
 - `<Surface>` is the host that renders contributions for a
   surface id; `AppContext`, `setAppContext`/`getAppContext`, `__APP_CONTEXT_KEY__`.
 - `t(key, params)`, `locale()`, the `i18n` adapter over

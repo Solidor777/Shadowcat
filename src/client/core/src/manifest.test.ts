@@ -9,10 +9,14 @@ import {
 
 // Drift guard: the hand-written manifest declaration shapes (consumed by
 // declarationOf / ModuleRegistry.declarations() and reconciled against the wire
-// topology) must stay pinned to the ts-rs generated types.
+// topology) must stay pinned to the ts-rs generated types. `ContractProvide.priority` is
+// excluded here deliberately: it is local singleton-tie-break metadata with no wire
+// counterpart (see that field's own doc comment), and `ContractDeclaration.provides` is
+// itself typed to omit it, so the declaration-level assertion below already covers the
+// wire-relevant fields exactly.
 test("manifest contract declaration shapes match the ts-rs types", () => {
   expectTypeOf<ContractDeclaration>().toEqualTypeOf<Ts.ContractDeclaration>();
-  expectTypeOf<ContractProvide>().toEqualTypeOf<Ts.ContractProvide>();
+  expectTypeOf<Omit<ContractProvide, "priority">>().toEqualTypeOf<Ts.ContractProvide>();
 });
 
 test("accepts provides/requires and projects to a declaration", () => {

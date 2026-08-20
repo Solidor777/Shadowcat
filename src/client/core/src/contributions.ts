@@ -5,8 +5,8 @@
 
 import type { WireDocument } from "./wire";
 
-/** One provider or many for a surface contract. `"singleton"` enforcement (collision aborts
- * activation of the second provider) lives on the consumer, `ContractProvide.cardinality`
+/** One provider or many for a surface contract. `"singleton"` enforcement (a collision demotes
+ * every losing claimant rather than aborting it) lives on the consumer, `ContractProvide.cardinality`
  * — see that field's own doc comment for the enforcing citation; not restated here. */
 export type Cardinality = "singleton" | "multi";
 

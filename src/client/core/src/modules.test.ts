@@ -62,6 +62,108 @@ test("a singleton contract collision is reported but does not abort activation o
   const warnings: string[] = [];
   const logger = { ...silentLogger, warn: (m: string) => warnings.push(m) };
   const r = new ModuleRegistry({ ...deps(), logger });
+  const registerA = vi.fn();
+  const registerB = vi.fn();
+  r.add({
+    manifest: { id: "a", version: "1.0.0", dependencies: {},
+      provides: [{ contract: "s:sidebar", cardinality: "singleton" }] },
+    register: registerA,
+  });
+  r.add({
+    manifest: { id: "b", version: "1.0.0", dependencies: {},
+      provides: [{ contract: "s:sidebar", cardinality: "singleton" }] },
+    register: registerB,
+  });
+  r.add({ manifest: { id: "c", version: "1.0.0", dependencies: {} }, register: vi.fn() });
+  await expect(r.activate()).resolves.toBeUndefined();
+  expect(r.list().find((m) => m.id === "a")!.active).toBe(true);
+  // b loses the collision (a activated first in insertion/topological order), but still
+  // activates in full — only its claim to the contested contract is demoted.
+  expect(r.list().find((m) => m.id === "b")!.active).toBe(true);
+  expect(registerB).toHaveBeenCalled();
+  // An unrelated sibling module is unaffected by b's collision.
+  expect(r.list().find((m) => m.id === "c")!.active).toBe(true);
+  expect(warnings.some((w) => w.includes("singleton") && w.includes("s:sidebar"))).toBe(true);
+});
+
+test("priority decides the singleton winner regardless of registration order", async () => {
+  const r = new ModuleRegistry(deps());
+  let aIsSingletonProvider = false;
+  let bIsSingletonProvider = false;
+  r.add({
+    manifest: { id: "a", version: "1.0.0", dependencies: {},
+      provides: [{ contract: "s:sidebar", cardinality: "singleton" }] },
+    register: (ctx) => {
+      aIsSingletonProvider = ctx.isSingletonProvider("s:sidebar");
+    },
+  });
+  r.add({
+    manifest: { id: "b", version: "1.0.0", dependencies: {},
+      provides: [{ contract: "s:sidebar", cardinality: "singleton", priority: 10 }] },
+    register: (ctx) => {
+      bIsSingletonProvider = ctx.isSingletonProvider("s:sidebar");
+    },
+  });
+  await r.activate();
+  expect(aIsSingletonProvider).toBe(false);
+  expect(bIsSingletonProvider).toBe(true);
+});
+
+test("an already-active provider is stable against a later higher-priority latecomer", async () => {
+  const r = new ModuleRegistry(deps());
+  r.add({
+    manifest: { id: "a", version: "1.0.0", dependencies: {},
+      provides: [{ contract: "s:sidebar", cardinality: "singleton" }] },
+    register: vi.fn(),
+  });
+  await r.activate();
+  expect(r.list().find((m) => m.id === "a")!.active).toBe(true);
+
+  const registerB = vi.fn();
+  r.add({
+    manifest: { id: "b", version: "1.0.0", dependencies: {},
+      provides: [{ contract: "s:sidebar", cardinality: "singleton", priority: 100 }] },
+    register: registerB,
+  });
+  await r.activate();
+  // a remains the active provider: activation never unseats a live provider's
+  // registrations, regardless of a later-registered higher-priority latecomer.
+  expect(r.list().find((m) => m.id === "b")!.active).toBe(true);
+  expect(registerB).toHaveBeenCalled();
+  expect(r.declarations().find((d) => d.module_id === "a")!.provides).toEqual([
+    { contract: "s:sidebar", cardinality: "singleton" },
+  ]);
+  expect(r.declarations().find((d) => d.module_id === "b")!.provides).toEqual([]);
+});
+
+test("isSingletonProvider reflects the outcome, including for an unclaimed contract", async () => {
+  const r = new ModuleRegistry(deps());
+  let winnerUnclaimed = false;
+  let loserClaimed = false;
+  let loserUnclaimed = false;
+  r.add({
+    manifest: { id: "a", version: "1.0.0", dependencies: {},
+      provides: [{ contract: "s:sidebar", cardinality: "singleton" }] },
+    register: (ctx) => {
+      winnerUnclaimed = ctx.isSingletonProvider("s:other");
+    },
+  });
+  r.add({
+    manifest: { id: "b", version: "1.0.0", dependencies: {},
+      provides: [{ contract: "s:sidebar", cardinality: "singleton" }] },
+    register: (ctx) => {
+      loserClaimed = ctx.isSingletonProvider("s:sidebar");
+      loserUnclaimed = ctx.isSingletonProvider("s:other");
+    },
+  });
+  await r.activate();
+  expect(winnerUnclaimed).toBe(true);
+  expect(loserClaimed).toBe(false);
+  expect(loserUnclaimed).toBe(true);
+});
+
+test("declarations() excludes a demoted contract from the losing module's provides", async () => {
+  const r = new ModuleRegistry(deps());
   r.add({
     manifest: { id: "a", version: "1.0.0", dependencies: {},
       provides: [{ contract: "s:sidebar", cardinality: "singleton" }] },
@@ -72,14 +174,12 @@ test("a singleton contract collision is reported but does not abort activation o
       provides: [{ contract: "s:sidebar", cardinality: "singleton" }] },
     register: vi.fn(),
   });
-  r.add({ manifest: { id: "c", version: "1.0.0", dependencies: {} }, register: vi.fn() });
-  await expect(r.activate()).resolves.toBeUndefined();
-  expect(r.list().find((m) => m.id === "a")!.active).toBe(true);
-  // b loses the collision (a activated first in insertion/topological order).
-  expect(r.list().find((m) => m.id === "b")!.active).toBe(false);
-  // An unrelated sibling module is unaffected by b's collision.
-  expect(r.list().find((m) => m.id === "c")!.active).toBe(true);
-  expect(warnings.some((w) => w.includes("singleton") && w.includes("s:sidebar"))).toBe(true);
+  await r.activate();
+  const decls = r.declarations();
+  expect(decls.find((d) => d.module_id === "a")!.provides).toEqual([
+    { contract: "s:sidebar", cardinality: "singleton" },
+  ]);
+  expect(decls.find((d) => d.module_id === "b")!.provides).toEqual([]);
 });
 
 test("a module whose register() throws is left inactive but a sibling module still activates (containment)", async () => {

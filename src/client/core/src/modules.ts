@@ -110,6 +110,15 @@ export interface ModuleContext {
   logger: Logger;
   /** This module's id, as declared in its manifest. */
   moduleId: string;
+  /** Whether this module currently holds a `singleton` contract it claims in its own `provides` —
+   * `true` for any contract it doesn't claim at all (nothing to lose), `false` only if it claims
+   * the contract AND lost the collision to another module. Most modules never need this:
+   * `provides` is purely declarative and nothing gates a module's own registrations against it —
+   * this exists for a module whose `register()` does something contract-specific it must skip on
+   * a loss (e.g. avoiding a double-mount into a shared surface).
+   * @param contract The contract id to check.
+   * @returns Whether this module currently holds it. */
+  isSingletonProvider(contract: string): boolean;
 }
 
 /** A registrable unit: a manifest plus lifecycle hooks. */
@@ -161,6 +170,10 @@ interface ModuleRecord {
   module: Module;
   /** Whether this module is currently active. */
   active: boolean;
+  /** Singleton contract ids this module's own `provides` claims but currently does NOT hold —
+   * lost to another module's higher priority or earlier activation order. Recomputed fresh at the
+   * top of every `activate()` pass (never accumulates stale state across calls). */
+  demoted: Set<string>;
 }
 
 /** The import-agnostic module registry: validates manifests, resolves
@@ -219,7 +232,7 @@ export class ModuleRegistry {
     parseManifest(module.manifest); // throws on invalid
     const id = module.manifest.id;
     if (this.records.has(id)) throw new Error(`module ${id} already added`);
-    this.records.set(id, { module, active: false });
+    this.records.set(id, { module, active: false, demoted: new Set() });
   }
 
   /** Every registered module's id, version, and active state.
@@ -275,17 +288,23 @@ export class ModuleRegistry {
   declarations(): ContractDeclaration[] {
     return [...this.records.values()]
       .filter((r) => r.active)
-      .map((r) => declarationOf(r.module.manifest));
+      .map((r) => {
+        const d = declarationOf(r.module.manifest);
+        return { ...d, provides: d.provides.filter((p) => !r.demoted.has(p.contract)) };
+      });
   }
 
   /** Activates every registered, not-yet-active module in dependency order
    * (`topoSort`: explicit `dependencies` plus provides/requires contract edges).
    * A module whose dependencies aren't satisfied is skipped (warned, left
    * inactive) rather than failing the batch. Per-module isolated beyond that: a
-   * colliding singleton contract or a throwing `register()` is caught, logged,
-   * and left inactive WITHOUT aborting the topological loop — one broken or
-   * colliding module (first-party or external) must never brick the modules
-   * ordered after it. An already-active module is skipped as a no-op.
+   * throwing `register()` is caught, logged, and left inactive WITHOUT aborting
+   * the topological loop — one broken module (first-party or external) must
+   * never brick the modules ordered after it. A losing singleton-contract
+   * claimant is demoted (`ModuleRecord.demoted`) rather than aborted: it still
+   * activates in full, it just doesn't become the active provider of the one
+   * contract it lost (`computeSingletonWinners` decides the winner). An
+   * already-active module is skipped as a no-op.
    * @returns Resolves once every module has been attempted (activated, skipped,
    * or rolled back on failure) — a single module's activation failure never
    * rejects the call. Rejects only if the dependency graph itself has a cycle
@@ -300,6 +319,7 @@ export class ModuleRegistry {
    */
   async activate(): Promise<void> {
     const order = this.topoSort(); // throws on cycle
+    const singletonWinners = this.computeSingletonWinners(order);
     for (const id of order) {
       const r = this.records.get(id)!;
       if (r.active) continue;
@@ -307,19 +327,17 @@ export class ModuleRegistry {
         this.deps.logger.warn(`module ${id} not activated: dependency unmet`);
         continue;
       }
-      try {
-        // A singleton contract must have exactly one active provider; a collision
-        // is reported below (caught) rather than aborting the whole batch.
-        for (const p of r.module.manifest.provides ?? []) {
-          if (p.cardinality === "singleton") {
-            const others = this.activeProvidersOf(p.contract).filter((x) => x !== id);
-            if (others.length > 0) {
-              throw new Error(
-                `singleton contract ${p.contract} already provided by ${others[0]}`,
-              );
-            }
-          }
+      r.demoted = new Set();
+      for (const p of r.module.manifest.provides ?? []) {
+        if (p.cardinality === "singleton" && singletonWinners.get(p.contract) !== id) {
+          const winner = singletonWinners.get(p.contract);
+          this.deps.logger.warn(
+            `module ${id} lost singleton contract ${p.contract} to ${winner}; ${id} still activates but does not provide it`,
+          );
+          r.demoted.add(p.contract);
         }
+      }
+      try {
         await r.module.register(this.contextFor(id));
         r.active = true;
       } catch (e) {
@@ -492,6 +510,7 @@ export class ModuleRegistry {
       store,
       client,
       logger,
+      isSingletonProvider: (contract) => !this.records.get(moduleId)!.demoted.has(contract),
       hooks: {
         defineHook: (name, def) => hooks.defineHook(name, def),
         on: (name, handler, opts) => hooks.on(name, handler, { ...opts, module: moduleId }),
@@ -526,8 +545,63 @@ export class ModuleRegistry {
       .filter(
         (r) =>
           r.active &&
+          !r.demoted.has(contract) &&
           (r.module.manifest.provides ?? []).some((p) => p.contract === contract),
       )
       .map((r) => r.module.manifest.id);
+  }
+
+  /** Computes the winning module id for every `singleton`-cardinality contract contested this
+   * `activate()` pass. An already-ACTIVE provider always wins unconditionally (stability —
+   * activation never unseats a live provider's registrations, regardless of a later-registered
+   * higher-priority latecomer). Among modules not yet active, the highest `priority` (default `0`)
+   * wins; ties break by earliest position in `order` (this method's own tie-break, matching the
+   * pre-existing de facto behavior when no priority is set). Not exported — folded into `activate`'s
+   * public surface.
+   * @param order The dependency-ordered module ids `activate()` is about to process
+   * (`topoSort`'s output).
+   * @returns Contract id → winning module id, for every singleton contract with at least one
+   * claimant.
+   * @example
+   * ```
+   * // internal helper; not part of the public API
+   * this.computeSingletonWinners(["a", "b"]);
+   * ```
+   */
+  private computeSingletonWinners(order: string[]): Map<string, string> {
+    const winners = new Map<string, string>();
+    for (const r of this.records.values()) {
+      if (!r.active) continue;
+      for (const p of r.module.manifest.provides ?? []) {
+        if (p.cardinality === "singleton" && !winners.has(p.contract)) {
+          winners.set(p.contract, r.module.manifest.id);
+        }
+      }
+    }
+    const orderIndex = new Map(order.map((id, i) => [id, i]));
+    const candidates = new Map<
+      string,
+      {
+        /** The candidate module's id. */
+        id: string;
+        /** The candidate's `ContractProvide.priority`, defaulted to `0`. */
+        priority: number;
+      }[]
+    >();
+    for (const id of order) {
+      const r = this.records.get(id);
+      if (!r || r.active) continue;
+      for (const p of r.module.manifest.provides ?? []) {
+        if (p.cardinality !== "singleton" || winners.has(p.contract)) continue;
+        const arr = candidates.get(p.contract) ?? [];
+        arr.push({ id, priority: p.priority ?? 0 });
+        candidates.set(p.contract, arr);
+      }
+    }
+    for (const [contract, list] of candidates) {
+      list.sort((a, b) => b.priority - a.priority || orderIndex.get(a.id)! - orderIndex.get(b.id)!);
+      winners.set(contract, list[0].id);
+    }
+    return winners;
   }
 }
