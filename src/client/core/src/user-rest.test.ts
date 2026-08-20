@@ -75,6 +75,24 @@ test("listWorldMembers GETs the world roster", async () => {
   expect(got).toEqual([member]);
 });
 
+test("listWorldMembers encodes the world id and surfaces the server's error text", async () => {
+  const fetchMock = vi
+    .fn()
+    .mockResolvedValue({ ok: false, status: 403, json: async () => ({ error: "not a member" }) });
+  vi.stubGlobal("fetch", fetchMock);
+  await expect(listWorldMembers("w 1")).rejects.toThrow(/not a member/);
+  expect(fetchMock.mock.calls[0][0]).toBe("/api/worlds/w%201/members");
+});
+
+test("listWorldMembers passes a bounded AbortSignal to fetch", async () => {
+  const member = { user: "u-1", username: "player-one", role: "player" };
+  const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => [member] });
+  vi.stubGlobal("fetch", fetchMock);
+  await listWorldMembers("w1");
+  const init = fetchMock.mock.calls[0][1] as RequestInit;
+  expect(init.signal).toBeInstanceOf(AbortSignal);
+});
+
 test("createUser POSTs the credential once and omits server_role when unset", async () => {
   const fetchMock = vi.fn().mockResolvedValue({
     ok: true,

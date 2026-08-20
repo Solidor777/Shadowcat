@@ -39,10 +39,10 @@ import {
   type ModuleManifest,
   listInstalledModules,
   getEnabledModules,
+  listWorldMembers,
 } from "@shadowcat/core";
 import type { WorldRole } from "@shadowcat/types";
 import { SceneInteractionBridge, ActorSelection, TokenSelection } from "@shadowcat/ui-kit";
-import { listWorldMembers } from "./api";
 import { SvelteMap } from "svelte/reactivity";
 
 /** The WS connection lifecycle a `WorldSession` exposes as its reactive `state`. */

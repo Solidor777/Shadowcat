@@ -11,28 +11,22 @@ import {
   type WireDocument,
 } from "@shadowcat/core";
 import { WorldSession } from "./worldSession.svelte";
-import { listWorldMembers } from "./api";
+import { listWorldMembers } from "@shadowcat/core";
 
 // The members fetch hits the network; stub it (safe default, overridable per
-// test). The server version now arrives on the Welcome payload, not a fetch —
-// ensure the mock Welcome message `mockConnect` builds includes a
-// `server_version: "0.1.0"` field, since the `WireWelcome` schema now requires it.
-vi.mock("./api", async (importActual) => {
-  const actual = await importActual<typeof import("./api")>();
-  return {
-    ...actual,
-    listWorldMembers: vi.fn().mockResolvedValue([]),
-  };
-});
-
-// The external-module discovery fetches (installed set + a world's enabled
-// set) also hit the network; default to "nothing enabled" so the 25+ existing
-// Welcome-flow tests below are unaffected (empty enabled set → #loadExternalModules
-// returns before ever calling loadModules/import()).
+// test), alongside the external-module discovery fetches (installed set + a
+// world's enabled set), which also hit the network — default to "nothing
+// enabled" so the 25+ existing Welcome-flow tests below are unaffected (empty
+// enabled set → #loadExternalModules returns before ever calling
+// loadModules/import()). The server version now arrives on the Welcome
+// payload, not a fetch — ensure the mock Welcome message `mockConnect` builds
+// includes a `server_version: "0.1.0"` field, since the `WireWelcome` schema
+// now requires it.
 vi.mock("@shadowcat/core", async (importActual) => {
   const actual = await importActual<typeof import("@shadowcat/core")>();
   return {
     ...actual,
+    listWorldMembers: vi.fn().mockResolvedValue([]),
     listInstalledModules: vi.fn().mockResolvedValue([]),
     getEnabledModules: vi.fn().mockResolvedValue([]),
   };

@@ -131,29 +131,6 @@ export function listWorlds(): Promise<WorldEntry[]> {
   return getJson<WorldEntry[]>("/api/worlds");
 }
 
-/** A world member (visible to every world member). Mirrors the server's MemberEntry. */
-export interface WorldMember {
-  /** The member's user id. */
-  user: string;
-  /** The member's display username. */
-  username: string;
-  /** The member's effective role in this world. */
-  role: "gm" | "player" | "spectator";
-}
-
-/** Lists a world's member roster. Visible to every member of that world —
- * the endpoint is not GM-restricted.
- * @param world - World id.
- * @returns Each member's user id, username, and world role.
- * @example
- * ```
- * const members = await listWorldMembers("w1");
- * ```
- */
-export function listWorldMembers(world: string): Promise<WorldMember[]> {
-  return getJson<WorldMember[]>(`/api/worlds/${world}/members`);
-}
-
 /** Per-user UI session state. The server stores this opaquely (object + size cap);
  * the client owns the structure. */
 export interface UiState {

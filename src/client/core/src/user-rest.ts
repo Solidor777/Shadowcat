@@ -36,6 +36,10 @@ export async function listUsers(): Promise<ServerUser[]> {
   return (await res.json()) as ServerUser[];
 }
 
+/** Bound on `listWorldMembers`'s fetch. A hung backend request otherwise leaves
+ * the caller's roster read pending forever. */
+const LIST_WORLD_MEMBERS_TIMEOUT_MS = 15_000;
+
 /** A world member. Visible to every member of that world. */
 export interface WorldMember {
   /** The member's account id (`ServerUser.id`). */
@@ -65,6 +69,7 @@ export interface WorldMember {
 export async function listWorldMembers(world: string): Promise<WorldMember[]> {
   const res = await fetch(`/api/worlds/${encodeURIComponent(world)}/members`, {
     headers: { accept: "application/json" },
+    signal: AbortSignal.timeout(LIST_WORLD_MEMBERS_TIMEOUT_MS),
   });
   if (!res.ok) throw new Error(await restError(res, "list members failed"));
   return (await res.json()) as WorldMember[];
