@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { setAppContext, Surface, PanelsBridge, SheetsController, SceneSelection, TemplatesController, TemplateModalHost } from "@shadowcat/ui-kit";
+  import { setAppContext, Surface, PanelsBridge, SheetsController, SceneSelection, TemplatesController, TemplateModalHost, NotificationHost, notifications } from "@shadowcat/ui-kit";
   import { t } from "@shadowcat/ui-kit";
   import { consoleLogger } from "@shadowcat/core";
   import { createSubscriber } from "svelte/reactivity";
@@ -54,6 +54,7 @@
     selfId: session.selfId,
     canEdit: (doc, path) => session.canEdit(doc, path),
     logger: consoleLogger(),
+    notify: (message, level) => notifications.push(level ?? "warning", message),
   });
 
   // Boot restore: re-open every persisted sheet whose document resolves. Sheets are
@@ -81,6 +82,7 @@
     selfId: session.selfId,
     canEdit: (doc, path) => session.canEdit(doc, path),
     openDocument: (ref) => sheets.openDocument(ref),
+    notify: (message, level) => notifications.push(level ?? "warning", message),
     members: session.members,
     t,
     assets: session.assets,
@@ -138,3 +140,4 @@
 
 <Surface contract="shadowcat.surface:root" />
 <TemplateModalHost controller={templates} />
+<NotificationHost />

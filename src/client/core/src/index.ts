@@ -42,6 +42,8 @@ export type { Contribution, Cardinality, PanelMeta, PanelBadge, DefaultPlacement
 export { reconcileTopology } from "./topology";
 export { I18n } from "./i18n";
 export type { Messages, I18nParams, AddMessagesOptions } from "./i18n";
+export { NotificationCenter } from "./notifications";
+export type { NotificationLevel, Notification, NotificationListener } from "./notifications";
 export { OptimisticClient } from "./optimistic";
 export { WsClient } from "./ws-client";
 export type {

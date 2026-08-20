@@ -254,6 +254,7 @@ export const en: Messages = {
   "chat.roll.fail": "Failure",
   "chat.roll.details": "Roll details",
   "chat.roll.dropped": "dropped",
+  "notifications.dismiss": "Dismiss",
   "panels.minimize": "Minimize",
   "panels.restore": "Restore",
   "panels.close": "Close",

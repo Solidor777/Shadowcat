@@ -40,6 +40,7 @@ export function setAppContextForTest(over: Partial<AppContext> = {}): Map<unknow
     selfId: over.selfId ?? "u-self",
     canEdit: over.canEdit ?? (() => true),
     openDocument: over.openDocument ?? (() => {}),
+    notify: over.notify ?? (() => {}),
     members: over.members ?? new Map(),
     t: over.t ?? ((k: string) => k),
     onAssetChanged: over.onAssetChanged ?? (() => () => {}),

@@ -19,7 +19,7 @@ function make(docs: WireDocument[], over: Partial<{ role: "gm" | "player"; selfI
   const ctrl = new TemplatesController({
     store, documents: store, dispatchIntent: (ops) => calls.push(ops),
     role: over.role ?? "gm", selfId: over.selfId ?? "u-self",
-    canEdit: () => true, logger: silentLogger,
+    canEdit: () => true, logger: silentLogger, notify: () => {},
   });
   return { store, ctrl, calls };
 }
@@ -69,6 +69,7 @@ describe("TemplatesController", () => {
       store, documents: store, dispatchIntent: () => {},
       role: "gm", selfId: "u-self", canEdit: () => true,
       logger: { ...silentLogger, warn: (m: string) => warned.push(m) },
+      notify: () => {},
     });
 
     ctrl.pull("ABSENT");
@@ -106,17 +107,22 @@ describe("TemplatesController", () => {
       ops: [tmpl, writable, notWritable].map((d) => ({ op: "create", doc: d } as WireOperation)),
     });
     const calls: WireOperation[][] = [];
+    const notified: { message: string; level?: string }[] = [];
     const ctrl = new TemplatesController({
       store, documents: store, dispatchIntent: (ops) => calls.push(ops),
       role: "player", selfId: "u-self",
       canEdit: (doc) => doc.owner === "u-self",
       logger: silentLogger,
+      notify: (message, level) => notified.push({ message, level }),
     });
     ctrl.push("T");
     // Both instances conflict, but only the writable one should surface at all.
     expect(calls).toHaveLength(0);
     expect(ctrl.pending).not.toBeNull();
     expect(ctrl.pending!.groups.map((g) => g.key)).toEqual(["A"]);
+    expect(notified).toHaveLength(1);
+    expect(notified[0].level).toBe("warning");
+    expect(notified[0].message).not.toContain("B"); // player-presentable: no raw instance id
   });
 
   it("push excludes a conflict-free instance whose Update touches /embedded when the pusher lacks that capability, and warns", () => {
@@ -139,6 +145,7 @@ describe("TemplatesController", () => {
       role: "player", selfId: "u-self",
       canEdit: (_doc, path) => !path.startsWith("/embedded"),
       logger: { ...silentLogger, warn: (m: string) => warned.push(m) },
+      notify: () => {},
     });
     ctrl.push("T");
     expect(calls).toHaveLength(0);
@@ -181,12 +188,14 @@ describe("TemplatesController", () => {
       ops: [tmpl, child].map((d) => ({ op: "create", doc: d } as WireOperation)),
     });
     const warned: string[] = [];
+    const notified: { message: string; level?: string }[] = [];
     const calls: WireOperation[][] = [];
     const ctrl = new TemplatesController({
       store, documents: store, dispatchIntent: (ops) => calls.push(ops),
       role: "player", selfId: "u-self",
       canEdit: (_doc, path) => !path.startsWith("/embedded"),
       logger: { ...silentLogger, warn: (m: string) => warned.push(m) },
+      notify: (message, level) => notified.push({ message, level }),
     });
     ctrl.push("T");
     expect(calls).toHaveLength(0); // admitted to the conflict session, not excluded up front
@@ -198,6 +207,9 @@ describe("TemplatesController", () => {
     expect(ctrl.pending).toBeNull();
     expect(warned).toHaveLength(1);
     expect(warned[0]).toContain("C");
+    expect(notified).toHaveLength(1);
+    expect(notified[0].level).toBe("warning");
+    expect(notified[0].message).not.toContain("C"); // player-presentable: no raw instance id
   });
 
   it("canPull is false for a non-owner non-GM", () => {
@@ -219,7 +231,7 @@ describe("TemplatesController", () => {
       store, documents: store, dispatchIntent: () => {},
       role: "player", selfId: "u-self",
       canEdit: (_doc, path) => path === "/base" || path === "/system",
-      logger: silentLogger,
+      logger: silentLogger, notify: () => {},
     });
     expect(ctrl.canPull("C")).toBe(false);
   });
@@ -236,7 +248,7 @@ describe("TemplatesController", () => {
       store, documents: store, dispatchIntent: () => {},
       role: "player", selfId: "u-self",
       canEdit: (_doc, path) => path === "/base" || path === "/system",
-      logger: silentLogger,
+      logger: silentLogger, notify: () => {},
     });
     expect(ctrl.canPush("T")).toBe(false);
   });
@@ -265,7 +277,7 @@ describe("TemplatesController", () => {
     const ctrl = new TemplatesController({
       store, documents: store, dispatchIntent: () => {},
       role: "player", selfId: "u-self",
-      canEdit: () => true, logger: silentLogger,
+      canEdit: () => true, logger: silentLogger, notify: () => {},
     });
     expect(ctrl.canPull("TOK")).toBe(true);
   });

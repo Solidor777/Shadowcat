@@ -5,7 +5,7 @@ import {
   computePull, computeRevert, planToUpdate, applyResolutions, findInstances, syncState, stampInstance,
   effectiveOwner,
   type WireDocument, type WireOperation, type StampOpts, type SyncState, type Logger,
-  type DocumentStore, type ReadableDocuments, type MergePlan,
+  type DocumentStore, type ReadableDocuments, type MergePlan, type NotificationLevel,
 } from "@shadowcat/core";
 import type { ConflictGroup } from "./mergeConflict";
 
@@ -37,6 +37,10 @@ export interface TemplatesControllerDeps {
   canEdit: (doc: WireDocument, path: string) => boolean;
   /** Sink for the warnings logged on an unresolvable child/template. */
   logger: Logger;
+  /** UI-visible notification seam (`AppContext.notify`), called alongside `logger.warn` at both
+   * exclusion-warning sites with a player-presentable message — the logger's own message lists
+   * raw instance ids, useful for a developer but not meaningful to a GM. */
+  notify: (message: string, level?: NotificationLevel) => void;
 }
 
 /** An open conflict-resolution session: the grouped conflicts + a resolver the modal calls. */
@@ -282,6 +286,10 @@ export class TemplatesController {
       this.#deps.logger.warn(
         `templates.push: excluded instance(s) not writable by the pusher: ${excluded.join(", ")}`,
       );
+      this.#deps.notify(
+        `Push skipped ${excluded.length} instance(s) you don't have permission to edit.`,
+        "warning",
+      );
     }
     if (groups.length > 0) this.#openSession(groups, conflicted);
   }
@@ -325,6 +333,10 @@ export class TemplatesController {
         if (excluded.length > 0) {
           this.#deps.logger.warn(
             `templates: excluded instance(s) not writable by the resolving user: ${excluded.join(", ")}`,
+          );
+          this.#deps.notify(
+            `Push skipped ${excluded.length} instance(s) you don't have permission to edit.`,
+            "warning",
           );
         }
       },

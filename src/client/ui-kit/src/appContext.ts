@@ -1,5 +1,5 @@
 import { getContext, setContext } from "svelte";
-import type { ContributionRegistry, DocumentStore, ReadableDocuments, AssetResolver, SceneFrame, SceneSubscription, WireOperation, WireDocument, PathResult, MoveStream, ChatSendOptions, SheetRef, SubscriptionHandle, WireSearchHit, StampOpts, SyncState, FootprintLookup } from "@shadowcat/core";
+import type { ContributionRegistry, DocumentStore, ReadableDocuments, AssetResolver, SceneFrame, SceneSubscription, WireOperation, WireDocument, PathResult, MoveStream, ChatSendOptions, SheetRef, SubscriptionHandle, WireSearchHit, StampOpts, SyncState, FootprintLookup, NotificationLevel } from "@shadowcat/core";
 import type { WorldRole } from "@shadowcat/types";
 import type { SceneInteraction } from "./sceneInteraction";
 import type { ActorSelection } from "./actorSelection.svelte";
@@ -119,6 +119,14 @@ export interface AppContext {
    * nothing (logged), never a crash.
    * @param ref - The document/token/embedded-child reference to open. */
   openDocument(ref: SheetRef): void;
+  /** Show a UI-visible notification for operation-level feedback the user needs to see (e.g. "an
+   * operation partially applied," "some targets were skipped") — distinct from `Logger`, which is
+   * a developer-facing diagnostic sink only. Not itself an i18n lookup; resolve any key via `t`
+   * before calling this.
+   * @param message The message text, already resolved/interpolated.
+   * @param level Severity, driving visual treatment; defaults to `"warning"` (the class of message
+   * this channel exists for is more often a warning than a pure info toast). */
+  notify: (message: string, level?: NotificationLevel) => void;
   /** userId → username for the world's members (all roles; used for chat name resolution + GM see-as labels). */
   members: Map<string, string>;
   /** Translate a key to the active locale's string. */

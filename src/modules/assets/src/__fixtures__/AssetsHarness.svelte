@@ -33,6 +33,7 @@
     selfId: "u1",
     canEdit: () => true,
     openDocument: () => {},
+    notify: () => {},
     members: new Map(),
     t,
     assets,
