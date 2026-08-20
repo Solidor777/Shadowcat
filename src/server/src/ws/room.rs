@@ -189,6 +189,28 @@ pub struct Room {
     /// `now_millis() >= end`; expired/absent entries are treated as available (lazy expiry,
     /// no timer). Updated by `execute_move` after a successful commit.
     moving: Mutex<HashMap<Uuid, i64>>,
+    /// Per-user resync floor: user_id → this room's `current_seq` at their most recent
+    /// cold-start `ClientMsg::Hello { last_seq: None }`. When `resync_floor_enforced`,
+    /// an explicit `ResyncRequest.from_seq` is clamped to never go below `floor + 1` for
+    /// that user — this is what bounds "any member can request the entire world history
+    /// unvalidated". In-memory only: a server restart or room eviction resets it, which
+    /// only ever WIDENS the bound back toward the fully-open behavior (never narrows it
+    /// below a value a client legitimately established), and self-heals as clients send a
+    /// fresh `Hello` on reconnect. Never persisted to the database — deliberately out of
+    /// scope: the floor only needs to survive for the lifetime of the room, exactly like
+    /// `moving`.
+    session_floors: Mutex<HashMap<Uuid, i64>>,
+    /// Whether an explicit `ClientMsg::ResyncRequest` is clamped against `resync_floor`
+    /// (`ws::conn`'s `Egress::Resync` handler reads this via `Room::resync_floor_enforced`
+    /// — the internal `Lagged`-driven auto-resync deliberately does NOT consult it, since
+    /// that path replays from a connection's own live-tracked watermark, not an untrusted
+    /// client-supplied `from_seq`). `false` in production (`RoomRegistry::new`) until the
+    /// client unconditionally sends a cold-start `Hello { last_seq: None }` on connect —
+    /// enforcing before then would clamp every explicit resync to empty for a client that
+    /// has never sent one, breaking today's reconnect-driven gap recovery. `true` via
+    /// `RoomRegistry::with_resync_floor_enforced`, which exercises the enforced path
+    /// end-to-end in tests without needing the client change to land first.
+    resync_floor_enforced_flag: bool,
 }
 
 impl Room {
@@ -199,7 +221,13 @@ impl Room {
     /// ```text
     /// RoomRegistry::get_or_create hydrates and constructs rooms; never build one directly.
     /// ```
-    fn new(world_id: Uuid, seed_seq: i64, scene: SceneEcs, broadcast_capacity: usize) -> Self {
+    fn new(
+        world_id: Uuid,
+        seed_seq: i64,
+        scene: SceneEcs,
+        broadcast_capacity: usize,
+        resync_floor_enforced: bool,
+    ) -> Self {
         let (tx, _rx) = broadcast::channel(broadcast_capacity);
         Self {
             world_id,
@@ -210,6 +238,8 @@ impl Room {
             scene: RwLock::new(scene),
             stats: RoomStats::default(),
             moving: Mutex::new(HashMap::new()),
+            session_floors: Mutex::new(HashMap::new()),
+            resync_floor_enforced_flag: resync_floor_enforced,
         }
     }
 
@@ -814,6 +844,34 @@ impl Room {
         Ok((frames, ResyncSource::Log))
     }
 
+    /// Records `user_id`'s resync floor at this room's CURRENT `current_seq` — called on a
+    /// cold-start `ClientMsg::Hello { last_seq: None }`. Idempotent-safe to call repeatedly:
+    /// each call simply advances the floor to whatever `current_seq` is at that moment, which
+    /// can only move forward over time (a later cold start never legitimately needs an
+    /// EARLIER floor than one already established).
+    pub async fn establish_resync_floor(&self, user_id: Uuid) {
+        let seq = self.current_seq();
+        self.session_floors.lock().await.insert(user_id, seq);
+    }
+
+    /// The lowest `from_seq` `user_id` may currently resync from (INCLUSIVE — matches
+    /// `ClientMsg::ResyncRequest.from_seq`'s own inclusive semantics). A `user_id` with no
+    /// recorded floor (never sent a cold-start `Hello` this room's lifetime) fails closed to
+    /// `current_seq() + 1` — an EMPTY resync, not an unbounded one.
+    pub async fn resync_floor(&self, user_id: Uuid) -> i64 {
+        match self.session_floors.lock().await.get(&user_id) {
+            Some(&floor) => floor + 1,
+            None => self.current_seq() + 1,
+        }
+    }
+
+    /// Whether an explicit `ClientMsg::ResyncRequest` should be clamped against
+    /// `resync_floor`. See the `resync_floor_enforced_flag` field doc for why this is off
+    /// by default and how a test turns it on.
+    pub fn resync_floor_enforced(&self) -> bool {
+        self.resync_floor_enforced_flag
+    }
+
     /// One consistent-enough telemetry snapshot (relaxed loads; counters may
     /// skew by in-flight increments).
     ///
@@ -850,10 +908,15 @@ pub struct RoomRegistry {
     /// Broadcast ring capacity for rooms created by this registry. Production uses
     /// `BROADCAST_CAPACITY`; test harnesses shrink it to force the lag path.
     broadcast_capacity: usize,
+    /// Whether rooms created by this registry enforce the resync floor against an
+    /// explicit `ResyncRequest` (`Room::resync_floor_enforced`). `false` for every
+    /// production constructor; `with_resync_floor_enforced` flips it on for tests.
+    resync_floor_enforced: bool,
 }
 
 impl RoomRegistry {
-    /// A registry with the production broadcast capacity.
+    /// A registry with the production broadcast capacity and the resync floor NOT
+    /// enforced (see `Room`'s `resync_floor_enforced_flag` doc for why).
     ///
     /// # Examples
     ///
@@ -868,6 +931,7 @@ impl RoomRegistry {
             rooms: DashMap::new(),
             deleting: DashSet::new(),
             broadcast_capacity: BROADCAST_CAPACITY,
+            resync_floor_enforced: false,
         }
     }
 
@@ -879,6 +943,20 @@ impl RoomRegistry {
             rooms: DashMap::new(),
             deleting: DashSet::new(),
             broadcast_capacity,
+            resync_floor_enforced: false,
+        }
+    }
+
+    /// A registry with the production broadcast capacity whose rooms enforce the
+    /// resync floor against an explicit `ResyncRequest`. Test-only: exercises the
+    /// closed-reachability behavior end-to-end without depending on a client that
+    /// sends a cold-start `Hello` yet.
+    pub fn with_resync_floor_enforced() -> Self {
+        Self {
+            rooms: DashMap::new(),
+            deleting: DashSet::new(),
+            broadcast_capacity: BROADCAST_CAPACITY,
+            resync_floor_enforced: true,
         }
     }
 
@@ -943,6 +1021,7 @@ impl RoomRegistry {
                     world.seq,
                     scene_ecs,
                     self.broadcast_capacity,
+                    self.resync_floor_enforced,
                 ))
             })
             .clone();
@@ -1200,6 +1279,9 @@ mod room_tests {
             self.inner
                 .query_documents_by_types(world_id, doc_types)
                 .await
+        }
+        async fn query_all_documents(&self, world_id: Uuid) -> Result<Vec<Document>, DataError> {
+            self.inner.query_all_documents(world_id).await
         }
         async fn query_children(&self, parent: Uuid) -> Result<Vec<Document>, DataError> {
             self.inner.query_children(parent).await
@@ -4189,6 +4271,106 @@ mod room_tests {
             (out.duration_ms - expected_ms).abs() < 1.0,
             "one grid step at {HEX_MOVE_SPEED_CELLS_PER_SEC} cells per second lasts {expected_ms} ms, got {}",
             out.duration_ms
+        );
+    }
+
+    #[tokio::test]
+    async fn resync_floor_is_established_seq_plus_one() {
+        let (repo, world_id, ctx) = repo_with_world().await;
+        let reg = RoomRegistry::new();
+        let room = reg.get_or_create(&repo, world_id).await.unwrap().unwrap();
+
+        room.establish_resync_floor(ctx.user_id).await;
+        assert_eq!(
+            room.resync_floor(ctx.user_id).await,
+            room.current_seq() + 1,
+            "floor established at seq 0 permits resync starting at seq 1"
+        );
+    }
+
+    /// Discriminating test for the whole feature: a user who never called
+    /// `establish_resync_floor` fails closed to `current_seq() + 1` (empty resync), NOT to
+    /// `1` (today's effectively-unbounded reach). Verified by hand: temporarily changing
+    /// `resync_floor`'s `None` branch to `1` makes this assertion fail (`1 != current_seq()
+    /// + 1` once at least one event has committed), confirming the test actually catches a
+    /// regression back to the unbounded default rather than passing vacuously.
+    #[tokio::test]
+    async fn resync_floor_fails_closed_for_a_user_who_never_established_one() {
+        let (repo, world_id, ctx) = repo_with_world().await;
+        let reg = RoomRegistry::new();
+        let room = reg.get_or_create(&repo, world_id).await.unwrap().unwrap();
+
+        // Advance current_seq so `1` (the old unbounded default) and
+        // `current_seq() + 1` (the fail-closed default) are distinguishable.
+        let mut scene =
+            crate::data::document::tests::world_scoped_doc(world_id, Uuid::from_u128(30), "scene");
+        scene.owner = Some(ctx.user_id);
+        room.publish(
+            &repo,
+            &ctx,
+            vec![Operation::Create { doc: scene }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+        assert!(room.current_seq() > 0, "precondition: seq has advanced");
+
+        let stranger = Uuid::new_v4();
+        assert_eq!(
+            room.resync_floor(stranger).await,
+            room.current_seq() + 1,
+            "no floor recorded ⇒ fail-closed to current_seq()+1, not the unbounded default of 1"
+        );
+    }
+
+    #[tokio::test]
+    async fn resync_floor_only_ever_advances_across_repeated_cold_starts() {
+        let (repo, world_id, ctx) = repo_with_world().await;
+        let reg = RoomRegistry::new();
+        let room = reg.get_or_create(&repo, world_id).await.unwrap().unwrap();
+
+        // First cold start at seq 0.
+        room.establish_resync_floor(ctx.user_id).await;
+        let first_floor = room.resync_floor(ctx.user_id).await;
+
+        // Advance current_seq, then a second cold start (e.g. a reload / a second tab).
+        let mut scene =
+            crate::data::document::tests::world_scoped_doc(world_id, Uuid::from_u128(31), "scene");
+        scene.owner = Some(ctx.user_id);
+        room.publish(
+            &repo,
+            &ctx,
+            vec![Operation::Create { doc: scene }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+        room.establish_resync_floor(ctx.user_id).await;
+        let second_floor = room.resync_floor(ctx.user_id).await;
+
+        assert!(
+            second_floor > first_floor,
+            "a later cold start moves the floor forward, never backward: {first_floor} -> {second_floor}"
+        );
+    }
+
+    #[tokio::test]
+    async fn resync_floors_are_independent_per_user() {
+        let (repo, world_id, ctx) = repo_with_world().await;
+        let reg = RoomRegistry::new();
+        let room = reg.get_or_create(&repo, world_id).await.unwrap().unwrap();
+
+        let other_user = Uuid::new_v4();
+        room.establish_resync_floor(ctx.user_id).await;
+
+        // The other user never established a floor: still fails closed, unaffected by the
+        // first user's established floor.
+        assert_eq!(
+            room.resync_floor(other_user).await,
+            room.current_seq() + 1,
+            "establishing one user's floor must not affect another user's"
         );
     }
 }

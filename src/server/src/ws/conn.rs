@@ -386,7 +386,19 @@ async fn handle_socket(
                                         break;
                                     }
                                 }
-                                Ok(ClientMsg::Hello { .. }) | Ok(ClientMsg::Pong) => {}
+                                Ok(ClientMsg::Hello { last_seq, .. }) => {
+                                    // `world` is redundant here: the connection's own
+                                    // `world_id`/`room` were already resolved from the WS
+                                    // upgrade route/auth, not from this frame — `Hello` only
+                                    // signals cold-start-vs-reconnect in-band. `None` establishes
+                                    // this user's resync floor at the room's current seq;
+                                    // `Some(_)` (a reconnect reporting real progress) does not
+                                    // touch it.
+                                    if last_seq.is_none() {
+                                        room.establish_resync_floor(ctx.user_id).await;
+                                    }
+                                }
+                                Ok(ClientMsg::Pong) => {}
                                 Ok(ClientMsg::SceneSubscribe { request_id, channel, as_user }) => {
                                     if etx
                                         .send(Egress::SceneSubscribe { request_id, channel, as_user })
@@ -1357,6 +1369,20 @@ async fn egress_loop<S>(
                     if sink.send(text(&ServerMsg::TimePong { client_t0, server_t })).await.is_err() { break; }
                 }
                 Some(Egress::Resync(from)) => {
+                    // Clamp an EXPLICIT client-driven resync against this user's floor —
+                    // closes the "any member can request the entire world history
+                    // unvalidated" gap. Deliberately NOT applied to the `Lagged`-driven
+                    // auto-resync below: that path replays from this connection's own
+                    // live-tracked `next_expected` watermark, not an untrusted
+                    // client-supplied `from_seq`, so it is not the reachability gap this
+                    // clamp exists for. Gated by `Room::resync_floor_enforced` — see its
+                    // doc for why production leaves it off until the client sends a
+                    // cold-start `Hello`.
+                    let from = if room.resync_floor_enforced() {
+                        from.max(room.resync_floor(ctx.user_id).await)
+                    } else {
+                        from
+                    };
                     match replay(&mut sink, &room, repo.as_ref(), &ctx, &world_defaults, from).await {
                         Ok(to_seq) => next_expected = (to_seq + 1).max(next_expected),
                         Err(_) => break,
@@ -1646,7 +1672,11 @@ async fn egress_loop<S>(
 /// exactly what was delivered — NOT a fresh `current_seq` read, which can race
 /// ahead of the snapshot and silently drop events published during this replay's
 /// I/O. `ResyncEnd.current_seq` reports the same `to_seq` so the client's
-/// watermark matches; events after `to_seq` arrive via normal live delivery.
+/// watermark matches; events after `to_seq` arrive via normal live delivery. Callers that
+/// need `from_seq` clamped against a resync floor (the `Egress::Resync` handler) must do
+/// so BEFORE calling this — the `Lagged`-driven auto-resync call site deliberately clamps
+/// nothing, since it replays from this connection's own live-tracked watermark, not an
+/// untrusted client-supplied `from_seq`.
 async fn replay<S>(
     sink: &mut S,
     room: &Room,

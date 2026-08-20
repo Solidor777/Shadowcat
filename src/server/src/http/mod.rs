@@ -168,6 +168,7 @@ pub async fn router(state: AppState) -> Router {
             "/api/worlds/{id}/documents",
             get(routes::list_documents).post(routes::create_document),
         )
+        .route("/api/worlds/{id}/snapshot", get(routes::world_snapshot))
         .route(
             "/api/documents/{id}",
             get(routes::get_document)

@@ -38,6 +38,14 @@ async fn spawn_with_capacity(capacity: usize) -> Harness {
     spawn_with_ws(shadowcat::ws::WsState::with_broadcast_capacity(capacity)).await
 }
 
+/// Like `spawn`, but rooms enforce the resync floor against an explicit
+/// `ResyncRequest` — production leaves this off until a client sends a cold-start
+/// `Hello` (see `RoomRegistry::new`'s own doc); this exercises the enforced behavior
+/// end-to-end without depending on that client change.
+async fn spawn_enforced() -> Harness {
+    spawn_with_ws(shadowcat::ws::WsState::with_resync_floor_enforced()).await
+}
+
 async fn spawn_with_ws(ws: shadowcat::ws::WsState) -> Harness {
     let repo = Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
     let hash = hash_password("pw").unwrap();
@@ -224,6 +232,14 @@ fn create_intent(world: Uuid, n: u64) -> Message {
 /// An explicit gap-recovery request from `from_seq`.
 fn resync_request(from_seq: i64) -> Message {
     Message::Text(serde_json::json!({ "type": "resync_request", "from_seq": from_seq }).to_string())
+}
+
+/// A cold-start `Hello { last_seq: None }` — establishes this connection's resync
+/// floor at the room's current seq when the room enforces it.
+fn hello_cold_start(world: Uuid) -> Message {
+    Message::Text(
+        serde_json::json!({ "type": "hello", "world": world, "last_seq": null }).to_string(),
+    )
 }
 
 /// Drain `event` and `reject` frames (skipping welcome/ping/time_pong) until
@@ -468,6 +484,111 @@ async fn converges_with_publishing_during_resync() {
     assert!(
         recovered.windows(2).all(|w| w[1] == w[0] + 1),
         "gap in full resync: {recovered:?}"
+    );
+}
+
+/// Sends nothing; reads frames from a `resync_begin` through the matching `resync_end`,
+/// returning the Event seqs replayed in between plus the `resync_end` frame itself. Panics
+/// if either bracket frame does not arrive within budget.
+async fn drain_resync(ws: &mut Ws) -> (Vec<i64>, serde_json::Value) {
+    let _begin = drain_until_type(ws, "resync_begin").await;
+    let mut seqs = vec![];
+    loop {
+        let Ok(Some(Ok(m))) =
+            tokio::time::timeout(std::time::Duration::from_secs(5), ws.next()).await
+        else {
+            panic!("timed out waiting for resync_end");
+        };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(m.to_text().unwrap_or("")) else {
+            continue;
+        };
+        match v["type"].as_str() {
+            Some("event") => seqs.push(v["command"]["seq"].as_i64().unwrap()),
+            Some("resync_end") => return (seqs, v),
+            _ => {}
+        }
+    }
+}
+
+/// Read frames until one of type `ty` arrives (5s budget), returning it.
+async fn drain_until_type(ws: &mut Ws, ty: &str) -> serde_json::Value {
+    loop {
+        let Ok(Some(Ok(m))) =
+            tokio::time::timeout(std::time::Duration::from_secs(5), ws.next()).await
+        else {
+            panic!("timed out waiting for frame of type {ty}");
+        };
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(m.to_text().unwrap_or("")) {
+            if v["type"].as_str() == Some(ty) {
+                return v;
+            }
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn resync_floor_bounds_a_late_clients_reach_when_enforced() {
+    // A connection sends a cold-start Hello (establishing its floor at the room's current
+    // seq) only AFTER several events have already been committed, then asks for the entire
+    // history via an unbounded ResyncRequest. With enforcement on, the reply is bounded to
+    // its own floor forward — none of the events committed before the Hello are replayed.
+    let h = spawn_enforced().await;
+
+    let mut pubc = h.connect().await;
+    let _ = pubc.next().await; // Welcome
+    for n in 0..3 {
+        pubc.send(create_intent(h.world, n)).await.unwrap();
+    }
+    let mut waited = 0;
+    while h.authoritative_seqs().await.len() < 3 {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        waited += 1;
+        assert!(waited < 100, "3 events did not commit in time");
+    }
+
+    let mut late = h.connect().await;
+    let _ = late.next().await; // Welcome (current_seq = 3)
+    late.send(hello_cold_start(h.world)).await.unwrap();
+    late.send(resync_request(1)).await.unwrap();
+
+    let (seqs, end) = drain_resync(&mut late).await;
+    assert!(
+        seqs.is_empty(),
+        "resync must not replay events committed before the client's own cold-start floor: {seqs:?}"
+    );
+    assert_eq!(
+        end["current_seq"], 3,
+        "resync_end still reports the true tail"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn resync_without_a_prior_hello_fails_closed_when_enforced() {
+    // No floor was ever established for this connection (it never sent Hello). With
+    // enforcement on, the resync floor defaults to `current_seq() + 1` — an explicit
+    // ResyncRequest for the whole history returns nothing, forcing a proper bootstrap.
+    let h = spawn_enforced().await;
+
+    let mut pubc = h.connect().await;
+    let _ = pubc.next().await;
+    for n in 0..3 {
+        pubc.send(create_intent(h.world, n)).await.unwrap();
+    }
+    let mut waited = 0;
+    while h.authoritative_seqs().await.len() < 3 {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        waited += 1;
+        assert!(waited < 100, "3 events did not commit in time");
+    }
+
+    let mut late = h.connect().await;
+    let _ = late.next().await; // Welcome — deliberately no Hello sent.
+    late.send(resync_request(1)).await.unwrap();
+
+    let (seqs, _end) = drain_resync(&mut late).await;
+    assert!(
+        seqs.is_empty(),
+        "no floor established ⇒ empty resync, not the unbounded default: {seqs:?}"
     );
 }
 

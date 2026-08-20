@@ -1000,6 +1000,84 @@ pub async fn list_documents(
     Ok(Json(visible))
 }
 
+/// `GET /api/worlds/{id}/snapshot` response: every document the caller can currently see,
+/// per-recipient filtered exactly like `list_documents`, plus the room's `current_seq` at read
+/// time — the client uses this to initialize its own sequence watermark
+/// (`next_expected = seq + 1`) without replaying history it does not need.
+#[derive(Serialize, TS)]
+#[ts(export, export_to = "../../types/generated/")]
+pub struct WorldSnapshot {
+    /// Every visible document, per-recipient filtered.
+    pub documents: Vec<Document>,
+    /// The room's `current_seq` this snapshot was read as-of.
+    pub seq: i64,
+}
+
+/// Every document the caller can currently see in `world`, per-recipient filtered exactly
+/// like `list_documents` (READ-gated per doc, properties redacted via `filter_properties`,
+/// tokens joined to their effective owner) but across EVERY `doc_type` in one call, plus the
+/// seq this snapshot was read as-of. This is the client's cold-start bootstrap source — it
+/// replaces full event replay from seq 1 for a fresh session.
+pub async fn world_snapshot(
+    user: AuthUser,
+    State(state): State<AppState>,
+    Path(world): Path<Uuid>,
+) -> Result<Json<WorldSnapshot>, AppError> {
+    let ctx = state
+        .repo
+        .permission_context(world, user.id, user.role)
+        .await?;
+    let world_defaults = state.repo.world_cap_defaults(world).await?;
+    let docs = state.repo.query_all_documents(world).await?;
+    // `docs` already contains every type, including "actor", so the owner-join map is built
+    // from the already-fetched result — no separate `query_documents(world, "actor")` call,
+    // unlike `list_documents`'s token-only listing which cannot assume actors are present.
+    let actors: std::collections::HashMap<Uuid, Document> = docs
+        .iter()
+        .filter(|d| d.doc_type == "actor")
+        .map(|a| (a.id, a.clone()))
+        .collect();
+    // Per-document-type grants are resolved lazily and cached: unlike `list_documents` (one
+    // shared `q.type` for every result), a snapshot spans many types, so caching avoids
+    // recomputing `grants_for`'s merge once per document of the same type.
+    let mut grants_cache: std::collections::HashMap<
+        String,
+        crate::data::document::CapabilityGrants,
+    > = std::collections::HashMap::new();
+    let documents = docs
+        .into_iter()
+        .filter_map(|d| {
+            let world_grants = grants_cache
+                .entry(d.doc_type.clone())
+                .or_insert_with(|| world_defaults.grants_for(&d.doc_type))
+                .clone();
+            let owner = crate::data::permission::effective_owner_via(&d, &|id| actors.get(id));
+            let access =
+                resolve_access_world(ctx.user_id, ctx.world_role, &d, &world_grants, owner);
+            if !access.has(cap::READ) {
+                return None;
+            }
+            match filter_properties(&d, &access) {
+                Ok(filtered) => Some(filtered),
+                Err(e) => {
+                    tracing::warn!(doc_id = %d.id, error = %e, "omitting document from snapshot");
+                    None
+                }
+            }
+        })
+        .collect();
+    let room = state
+        .ws
+        .rooms
+        .get_or_create(state.repo.as_ref(), world)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    Ok(Json(WorldSnapshot {
+        documents,
+        seq: room.current_seq(),
+    }))
+}
+
 /// On by-id document routes a non-member's `Forbidden` is remapped to `NotFound`:
 /// a 403-vs-404 split would let a non-member confirm a document id exists.
 /// World-scoped routes keep `Forbidden` — the world id is supplied by the caller,

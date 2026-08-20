@@ -104,6 +104,14 @@ pub trait Repository: Send + Sync {
         doc_types: &[&str],
     ) -> Result<Vec<Document>, DataError>;
 
+    /// Every document in `world`, regardless of `doc_type`. Used by the current-state
+    /// snapshot endpoint (`http::routes::world_snapshot`) — unlike `query_documents`/
+    /// `query_documents_by_types`, which require the caller to already know which
+    /// type(s) it wants, a snapshot needs every document a recipient might have
+    /// access to, including arbitrary community-module-defined `system`-band doc_types
+    /// this server has no fixed enum of.
+    async fn query_all_documents(&self, world_id: Uuid) -> Result<Vec<Document>, DataError>;
+
     /// All documents whose `parent_id` equals `parent` (a scene's direct
     /// children). Ordered by id for determinism.
     async fn query_children(&self, parent: Uuid) -> Result<Vec<Document>, DataError>;

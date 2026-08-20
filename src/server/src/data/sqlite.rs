@@ -2583,6 +2583,16 @@ impl Repository for SqliteRepository {
             .collect()
     }
 
+    async fn query_all_documents(&self, world_id: Uuid) -> Result<Vec<Document>, DataError> {
+        let rows = sqlx::query("SELECT json FROM documents WHERE world_id = ? ORDER BY id")
+            .bind(world_id.to_string())
+            .fetch_all(&self.pool)
+            .await?;
+        rows.into_iter()
+            .map(|r| Ok(serde_json::from_str(r.get::<String, _>("json").as_str())?))
+            .collect()
+    }
+
     async fn query_children(&self, parent: Uuid) -> Result<Vec<Document>, DataError> {
         let rows = sqlx::query("SELECT json FROM documents WHERE parent_id = ? ORDER BY id")
             .bind(parent.to_string())
@@ -7125,6 +7135,41 @@ mod tests {
         let actors = r.query_documents(w.id, "actor").await.unwrap();
         assert_eq!(actors.len(), 2);
         assert!(r.query_documents(w.id, "item").await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn query_all_documents_spans_multiple_doc_types() {
+        let r = repo().await;
+        let w = r.create_world("W", 0).await.unwrap();
+        let author = r
+            .create_user("author", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        for (id, doc_type) in [(1u128, "actor"), (2, "scene"), (3, "wall")] {
+            let mut doc = world_doc(id, w.id, serde_json::json!({}));
+            doc.doc_type = doc_type.into();
+            doc.engine = crate::data::document::tests::default_test_engine(doc_type);
+            r.apply_command(UnsequencedCommand {
+                world_id: w.id,
+                author,
+                ts: 1,
+                ops: vec![Operation::Create { doc }],
+            })
+            .await
+            .unwrap();
+        }
+
+        let all = r.query_all_documents(w.id).await.unwrap();
+        let types: std::collections::BTreeSet<_> = all.iter().map(|d| d.doc_type.clone()).collect();
+        assert_eq!(all.len(), 3, "query_all_documents is not type-scoped");
+        assert_eq!(
+            types,
+            ["actor", "scene", "wall"]
+                .into_iter()
+                .map(String::from)
+                .collect(),
+            "every doc_type created appears in one call"
+        );
     }
 
     #[tokio::test]

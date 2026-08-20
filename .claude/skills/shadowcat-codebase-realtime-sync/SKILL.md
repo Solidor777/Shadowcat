@@ -48,6 +48,23 @@ optimistically and roll back on divergence.
     expiry (no timer); absent or expired entry allows the move. Updated after each successful commit
     (still inside `publish_guard`). In-memory only — cleared on server restart (move state is derived,
     not durable).
+  - `Room::establish_resync_floor(user_id)` / `Room::resync_floor(user_id)` — the per-user resync
+    floor: `session_floors: Mutex<HashMap<Uuid, i64>>`, same in-memory/room-lifetime pattern as
+    `moving`. `establish_resync_floor` is called from `ws::conn`'s `ClientMsg::Hello { last_seq:
+    None }` arm (the field is no longer vestigial — see the Gotchas entry below). `resync_floor`
+    fails closed to `current_seq() + 1` (empty) for a user with no recorded floor, never to `1`.
+    Bounds "any member can request the entire world history via `ResyncRequest`" — the reachability
+    half of the historical-replay confidentiality gap; the redaction-policy half is untouched.
+  - `Room::resync_floor_enforced()` — whether `ws::conn`'s explicit-`ResyncRequest` handler
+    (`Egress::Resync`) actually clamps against the floor. `false` for every production
+    `RoomRegistry` constructor (`new`, `with_capacity`) — the client does not send a cold-start
+    `Hello` yet, so enforcing now would clamp every resync to empty for every existing connection.
+    `true` only via the test-only `RoomRegistry::with_resync_floor_enforced` /
+    `WsState::with_resync_floor_enforced`. Deliberately NOT consulted by `egress_loop`'s
+    broadcast-lag auto-resync branch — that path replays from the connection's own live-tracked
+    watermark, not an untrusted client-supplied `from_seq`, so it is orthogonal to the gap this
+    flag closes; clamping it there would break ordinary lag recovery independent of any client
+    change.
 - `ws::protocol` — client/server message frames; `ServerMsg`, `event_seq()`.
 - `ws::conn` — per-connection loop + egress; `ws::time` — server time source +
   client offset calibration (exists before its consumer).
@@ -193,6 +210,18 @@ optimistically and roll back on divergence.
 
 ## Gotchas
 
+- **`ClientMsg::Hello { world, last_seq }` is live, not vestigial** — `ws::conn`'s ingress match
+  reacts to `Hello { last_seq: None, .. }` by calling `Room::establish_resync_floor`; `world` is
+  destructured away (redundant with the connection's already-resolved `world_id`/`room` from the
+  WS upgrade route). No client sends `Hello` yet, so the floor is never established in production
+  today — see `Room::resync_floor_enforced`'s own doc for why the clamp is gated off until one does.
+- **`GET /api/worlds/{id}/snapshot`** (`http::routes::world_snapshot`) — every document the caller
+  can currently see, filtered exactly like `list_documents` (READ-gated, `filter_properties`
+  redaction, token→actor owner join) but across every `doc_type` via `Repository::query_all_documents`
+  in one call, plus the room's `current_seq` at read time (`WorldSnapshot.seq`). The intended
+  cold-start bootstrap source once a client stops relying on an unbounded `ResyncRequest` for initial
+  sync; per-document-type grants (`WorldCapDefaults::grants_for`) are cached locally in the handler
+  since a snapshot spans many types, unlike `list_documents`'s single shared `q.type`.
 - **`WsClient.open()` does not re-check `running_` after its connect await** — a `stop()` call
   during a pending connect can leave an adopted-but-unwatched transport assigned to
   `this.transport`.
