@@ -1173,11 +1173,11 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   corner; both implementations resolve it to `footprint_cells::anchor` (the single cell
   `GridShape::cell_of` would assign), never a multi-cell tie. `pathfinding::footprint_cells` (the
   `SquareGrid` delegate) resolves this via an explicit `r_scene <= 0.0` early return — its
-  axis-aligned loop bounds (`floor((ctr∓r)/cell)`) already collapsed to one index at r=0 before
-  that guard was added, so the guard documents the invariant rather than changing behavior.
-  `HexGrid::footprint_cells`'s ring-scan + `distance_to_cell_polygon` test had NO such collapse and
-  genuinely tied across 2-3 hexes at r=0 before the same explicit early return was added — same
-  contract, independently implemented, independently broken until fixed together. A
+  axis-aligned loop bounds (`floor((ctr∓r)/cell)`) collapse to one index at r=0 independently of
+  the guard, so the guard states the invariant explicitly rather than changing behavior.
+  `HexGrid::footprint_cells`'s ring-scan + `distance_to_cell_polygon` test has no such collapse and
+  genuinely ties across 2-3 hexes at r=0 without an explicit early return — same trait contract,
+  independently implemented, independently subject to the identical tie. A
   positive-radius disc on a boundary correctly admits every touching cell on BOTH shapes (genuine
   positive-area overlap, not a bug) — never narrow that case when touching this guard.
   `scene::move_exec::execute_move`'s mask/impassable footprint disc is anchored at the true
