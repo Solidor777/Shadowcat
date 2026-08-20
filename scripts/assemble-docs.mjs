@@ -101,12 +101,29 @@ const ROOT_ABSOLUTE_ATTR = /[a-zA-Z_:][-\w:.]*\s*=\s*(?:"\/(?!\/)[^"]*"|'\/(?!\/
  * CSS syntax permits) would produce. */
 const ROOT_ABSOLUTE_URL = /url\(\s*(?:"\s*\/(?!\/)[^"]*"|'\s*\/(?!\/)[^']*'|\/(?!\/)[^"')]*)\s*\)/;
 
+/** Extracts the text CONTENT of every `<style>...</style>` block in an HTML string —
+ * never the whole document. Scoping to the block itself is what lets the CSS
+ * predicate (`ROOT_ABSOLUTE_URL`) be reused for an HTML file's inline styles without
+ * false-positiving on a guide page's fenced CSS example in prose (e.g.
+ * `url(/assets/x.png)` inside a `` ```css `` code block in the body), which is not a
+ * real stylesheet reference and lives outside any `<style>` tag. */
+export function extractStyleBlocks(html) {
+  const out = [];
+  for (const m of html.matchAll(/<style\b[^>]*>([\s\S]*?)<\/style>/gi)) out.push(m[1]);
+  return out;
+}
+
 /** True if a root-absolute local reference survives in a portal file — checks the
- * attribute predicate for HTML, the url() predicate for CSS, verifying the REWRITE'S
- * RESULT rather than merely echoing the rewrite's own recognition of what needed
- * changing. */
+ * attribute predicate for HTML (plus, for HTML, the CSS url() predicate applied to
+ * each inline `<style>` block's own isolated content — never the whole HTML file,
+ * which would false-positive on prose containing `url(/...)` as a fenced-code
+ * example rather than a real reference), or the url() predicate directly for a
+ * `.css` file — verifying the REWRITE'S RESULT rather than merely echoing the
+ * rewrite's own recognition of what needed changing. */
 export function hasSurvivingAbsoluteRef(file, content) {
-  return file.endsWith(".css") ? ROOT_ABSOLUTE_URL.test(content) : ROOT_ABSOLUTE_ATTR.test(content);
+  if (file.endsWith(".css")) return ROOT_ABSOLUTE_URL.test(content);
+  if (ROOT_ABSOLUTE_ATTR.test(content)) return true;
+  return extractStyleBlocks(content).some((css) => ROOT_ABSOLUTE_URL.test(css));
 }
 
 /** Rewrite root-absolute local refs in the given portal files to depth-relative

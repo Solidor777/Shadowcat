@@ -10,6 +10,7 @@ import {
   htmlFilesUnder,
   cssFilesUnder,
   rewriteAbsolutePaths,
+  extractStyleBlocks,
   hasSurvivingAbsoluteRef,
   survivingAbsoluteRefs,
 } from "./assemble-docs.mjs";
@@ -254,10 +255,33 @@ describe("hasSurvivingAbsoluteRef", () => {
       ),
     ).toBe(false);
   });
-  it("dispatches on the CSS extension rather than content, so a .html file's url() text is ignored", () => {
+  it("HTML: catches a root-absolute url() inside a real inline <style> block (positive control)", () => {
     expect(hasSurvivingAbsoluteRef("page.html", `<style>.a{background:url(/x.png)}</style>`)).toBe(
-      false,
+      true,
     );
+  });
+  it("HTML: ignores the SAME url(/...) pattern in a fenced CSS example in the body, outside any <style> tag (negative control)", () => {
+    expect(
+      hasSurvivingAbsoluteRef(
+        "page.html",
+        `<body><pre><code class="language-css">.a{background:url(/x.png)}</code></pre></body>`,
+      ),
+    ).toBe(false);
+  });
+  it("HTML: a clean inline <style> block (relative/scheme-prefixed only) does not report", () => {
+    expect(
+      hasSurvivingAbsoluteRef("page.html", `<style>.a{background:url(../assets/a.png)}</style>`),
+    ).toBe(false);
+  });
+});
+
+describe("extractStyleBlocks", () => {
+  it("extracts the content of one or more <style> blocks, case-insensitively and with attributes", () => {
+    const html = `<STYLE type="text/css">.a{color:red}</STYLE><p>x</p><style>.b{color:blue}</style>`;
+    expect(extractStyleBlocks(html)).toEqual([".a{color:red}", ".b{color:blue}"]);
+  });
+  it("returns an empty list when there is no <style> block", () => {
+    expect(extractStyleBlocks(`<body><pre><code>.a{color:red}</code></pre></body>`)).toEqual([]);
   });
 });
 
