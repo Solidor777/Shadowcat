@@ -693,7 +693,7 @@ impl Room {
             // is used as for static vision. Hoisting:
             // player_vision_inputs collects walls + static-token polygons ONCE per move; each
             // sample calls polygons_at (one moving-token raycast only, no repeated ECS scan).
-            mover_vision = if ctx.world_role == crate::data::document::WorldRole::Gm {
+            mover_vision = if is_gm {
                 None
             } else {
                 let vision_inputs = scene.player_vision_inputs(ctx.user_id, token_scene, token);

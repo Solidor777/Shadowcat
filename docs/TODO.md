@@ -176,11 +176,6 @@ Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one de
   an exhaustive `Record<WorldKey, …>`/switch so a widened union becomes a type error.
 
 ## Actionable now — Phase D-alpha (movement authority & secrecy) backlog
-- TODO: `Room::execute_move` re-derives `is_gm` via its own
-  `ctx.world_role == WorldRole::Gm` comparison a second time, instead of reusing the `is_gm`
-  binding already in scope from earlier in the same function. Harmless (both read the same
-  field), but two spellings of one role decision in one function is exactly the kind of thing
-  that drifts. (Surfaced by Phase D-alpha's final whole-branch review.)
 - TODO: `SceneEcs::blocks_move` lost its last production caller
   when Task 9 (Phase D-alpha) moved the wall-crossing check onto `crate::scene::segments_cross`
   directly — only test callers remain. It is deliberately retained (one home for wall-crossing
