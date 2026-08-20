@@ -24,50 +24,6 @@ capability already exists — but are deferred as out-of-scope-for-now work.
   a log column; capture per COMMAND, not per op; cover all three operation arms, since create and
   delete are not point-in-time correct despite carrying their document.
 
-## Actionable now: suppression allowlist gate (user-specced)
-
-- TODO: Build the allowlist and its checker, then AUDIT the existing sites into it. Applies to
-  ALL suppressions, not only clippy (user directive). Rule text lives in `.claude/CLAUDE.md`,
-  "Lint Suppressions Require Explicit User Approval".
-
-  **Allowlist file** — one entry per approved instance: file, item, lint, reason.
-
-  **Checker** fails on four conditions:
-  1. a suppression not in the allowlist;
-  2. an entry whose site no longer exists;
-  3. an entry with an empty reason;
-  4. a lint lowered at manifest level (Cargo `[lints]`, `clippy.toml`, or an eslint config
-     turning a rule `off`). This one matters: a manifest-level lowering suppresses the same
-     diagnostic from further away and is otherwise the one surviving route around the gate.
-
-  **Keyed by file + item symbol, never line number.** A positional key rots on the next edit and
-  nothing fails when it does. Moving a function within a file keeps its entry; renaming or
-  deleting it invalidates the entry, which is correct — a renamed item is a new claim.
-
-  **Stale entries fail too.** A one-directional check quietly accumulates permission nobody
-  asked for, which is how an allowance list turns back into an exemption mechanism.
-
-  **Populating is an AUDIT, not a transcription.** The reason field is the entire mechanism, so
-  entries reading "constructor, threshold is arbitrary" would be a rubber stamp reporting green
-  forever — the same defect as an empty comment block satisfying a documentation gate, authored
-  by the very task meant to close the hole. A site with no honest, site-specific reason is a fix
-  or a proposal, NEVER an entry. Diagnose each dominant lint as ONE cause before writing any
-  entry.
-
-  **Census (26 sites, two dominant causes — so this is nearer two judgements than 26):**
-  - 10 × `clippy::too_many_arguments` — `chat::mod` ×3, `scene::mod` ×2, `ws::conn` ×2,
-    `dice::eval::groups`, `scene::move_exec`, `scene::pathfinding`. Usually removable by
-    grouping the arguments into the struct they already implicitly form.
-  - 1 × `clippy::result_large_err` in `config` — usually removable by boxing the error variant.
-  - 14 × `@typescript-eslint/no-explicit-any`, 1 × `@typescript-eslint/no-empty-object-type`.
-
-  **Two deviations from the spec as handed over, flagged for overrule:** the file and script are
-  named for suppressions generally rather than clippy, since the rule covers all allows; and the
-  checker extends the existing `scripts/check-lint-allowances.mjs` rather than adding a parallel
-  Python script, because two instruments measuring one property is the drift this campaign has
-  repeatedly been bitten by, and Node is already the toolchain every other gate uses (no Python
-  dependency on CI runners).
-
 ## Blocked on a reverse-proxy deployment story
 - TODO: `ClientIp` resolves solely from `ConnectInfo<SocketAddr>` — the real
   peer address of the accepted TCP connection — with no `X-Forwarded-For`/`Forwarded` handling.
