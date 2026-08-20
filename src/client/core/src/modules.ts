@@ -13,6 +13,7 @@ import type { Logger } from "./logger";
 import {
   parseManifest,
   declarationOf,
+  normalizeRequires,
   type ModuleManifest,
   type CapRequirement,
   type ContractDeclaration,
@@ -396,7 +397,8 @@ export class ModuleRegistry {
 
   /** Whether every explicit `dependencies` entry (present, active, and
    * satisfying the required semver range) and every `requires` contract (at
-   * least one active provider) of `m` is currently satisfied. Not exported —
+   * least one active provider, additionally satisfying `ContractRequire.version`
+   * when set) of `m` is currently satisfied. Not exported —
    * folded into `activate`'s public surface.
    * @param m The module to check.
    * @returns `true` if `m` is eligible to activate right now.
@@ -413,9 +415,20 @@ export class ModuleRegistry {
       if (!dep || !dep.active) return false;
       if (!satisfies(dep.module.manifest.version, range)) return false;
     }
-    // Every required contract needs at least one active provider.
-    for (const contract of m.manifest.requires ?? []) {
-      if (this.activeProvidersOf(contract).length === 0) return false;
+    // Every required contract needs at least one active provider; a `ContractRequire.version`
+    // range additionally requires at least one active provider whose own module `version`
+    // satisfies it (mirrors `dependencies`' version matching above, against a provider's version
+    // rather than a fixed dependency target).
+    for (const req of normalizeRequires(m.manifest.requires)) {
+      const providers = this.activeProvidersOf(req.contract);
+      if (providers.length === 0) return false;
+      if (req.version) {
+        const anySatisfies = providers.some((id) => {
+          const provider = this.records.get(id)?.module;
+          return provider ? satisfies(provider.manifest.version, req.version!) : false;
+        });
+        if (!anySatisfies) return false;
+      }
     }
     return true;
   }
@@ -473,9 +486,11 @@ export class ModuleRegistry {
         visit(depId, [...path, id]);
       }
       // Contract edges: a requirer is ordered after every provider of its
-      // required contracts.
-      for (const contract of r.module.manifest.requires ?? []) {
-        for (const providerId of providersByContract.get(contract) ?? []) {
+      // required contracts. Ordering only needs the contract id, not a version
+      // range — version compatibility is checked later, in `depsSatisfied`,
+      // once activation is actually attempted.
+      for (const req of normalizeRequires(r.module.manifest.requires)) {
+        for (const providerId of providersByContract.get(req.contract) ?? []) {
           visit(providerId, [...path, id]);
         }
       }

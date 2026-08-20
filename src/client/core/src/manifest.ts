@@ -46,6 +46,17 @@ export interface ContractProvide {
   priority?: number;
 }
 
+/** A required UI contract, optionally version-ranged against the PROVIDING module's own semver
+ * `version` (contracts have no separate per-contract version — matching mirrors how
+ * `ModuleManifest.dependencies` already matches a required module's own `version`). */
+export interface ContractRequire {
+  /** The contract id required. */
+  contract: string;
+  /** Semver range the ACTIVE PROVIDER's module `version` must satisfy (`satisfies`, from
+   * `./semver`). Absent means any version satisfies — today's presence-only behavior. */
+  version?: string;
+}
+
 /** A module's UI contract declaration (structurally matches the ts-rs type). */
 export interface ContractDeclaration {
   /** The declaring module's id. */
@@ -58,7 +69,11 @@ export interface ContractDeclaration {
    * doc comment), so a wire-comparable declaration omits it structurally rather than merely by
    * convention. */
   provides: Omit<ContractProvide, "priority">[];
-  /** Contract ids this module requires at least one active provider of. */
+  /** Contract ids this module requires at least one active provider of; down-projected from
+   * `ModuleManifest.requires` (via `normalizeRequires`) to bare contract ids — `reconcileTopology`
+   * compares this as a set-of-contract-ids drift check against `Welcome.contract_declarations` and
+   * has no use for a `ContractRequire.version` range, so this field stays `string[]` rather than
+   * widening to the richer manifest-level union. */
   requires: string[];
 }
 
@@ -114,9 +129,12 @@ export interface ModuleManifest {
   /** UI surface contracts this module provides; absent means none (`declarationOf` normalizes
    * to `[]`). */
   provides?: ContractProvide[];
-  /** UI surface contract ids this module requires at least one active provider of; absent means
-   * none (`declarationOf` normalizes to `[]`). */
-  requires?: string[];
+  /** UI surface contracts this module requires at least one active provider of; absent means
+   * none (`declarationOf` normalizes to `[]`). A bare string requires presence only (any provider
+   * version); a `ContractRequire` object additionally constrains the active provider's module
+   * `version` via `ContractRequire.version`. Normalize with `normalizeRequires` rather than
+   * hand-rolling the `typeof` check. */
+  requires?: (string | ContractRequire)[];
   /** Engine-compat range; optional because first-party modules never set it (see `ModuleEngines`
    * doc) while community modules must. */
   engines?: ModuleEngines;
@@ -152,7 +170,11 @@ export const ManifestSchema: z.ZodType<ModuleManifest> = z.object({
       }),
     )
     .optional(),
-  requires: z.array(z.string()).optional(),
+  requires: z
+    .array(
+      z.union([z.string(), z.object({ contract: z.string(), version: z.string().optional() })]),
+    )
+    .optional(),
   engines: ModuleEnginesSchema.optional(),
 });
 
@@ -171,6 +193,25 @@ export function parseManifest(value: unknown): ModuleManifest {
   return ManifestSchema.parse(value);
 }
 
+/** Normalizes a `requires` entry to `ContractRequire` shape — a bare string becomes `{contract,
+ * version: undefined}` (any version satisfies), matching today's presence-only behavior for a
+ * manifest that never opts into version ranges.
+ * @param entries A manifest's raw `requires` array (bare strings and/or `ContractRequire`
+ * objects, possibly `undefined`).
+ * @returns Every entry normalized to `ContractRequire` shape.
+ * @example
+ * ```ts
+ * import { normalizeRequires } from "@shadowcat/core";
+ *
+ * normalizeRequires(["a", { contract: "b", version: "^2.0.0" }]);
+ * ```
+ */
+export function normalizeRequires(
+  entries: (string | ContractRequire)[] | undefined,
+): ContractRequire[] {
+  return (entries ?? []).map((e) => (typeof e === "string" ? { contract: e } : e));
+}
+
 /** Project a manifest to its UI contract declaration (empty arrays when unset).
  * @param m The module manifest.
  * @returns The `ContractDeclaration`, compared locally by `reconcileTopology` against the server-broadcast `Welcome.contract_declarations`.
@@ -187,6 +228,6 @@ export function declarationOf(m: ModuleManifest): ContractDeclaration {
     module_id: m.id,
     version: m.version,
     provides: (m.provides ?? []).map(({ contract, cardinality }) => ({ contract, cardinality })),
-    requires: m.requires ?? [],
+    requires: normalizeRequires(m.requires).map((r) => r.contract),
   };
 }

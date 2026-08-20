@@ -58,6 +58,98 @@ test("does not activate a module whose required contract has no provider", async
   expect(r.list().find((m) => m.id === "combat")!.active).toBe(false);
 });
 
+test("a bare-string requires entry activates once any active provider exists, regardless of version", async () => {
+  const r = new ModuleRegistry(deps());
+  const reg = vi.fn();
+  r.add({
+    manifest: { id: "combat", version: "1.0.0", dependencies: {}, requires: ["s:sidebar"] },
+    register: reg,
+  });
+  r.add({
+    manifest: {
+      id: "sidebar", version: "0.0.1", dependencies: {},
+      provides: [{ contract: "s:sidebar", cardinality: "singleton" }],
+    },
+    register: vi.fn(),
+  });
+  await r.activate();
+  expect(reg).toHaveBeenCalled();
+  expect(r.list().find((m) => m.id === "combat")!.active).toBe(true);
+});
+
+test("a version-ranged requires entry activates when the active provider's version satisfies it", async () => {
+  const r = new ModuleRegistry(deps());
+  const reg = vi.fn();
+  r.add({
+    manifest: {
+      id: "combat", version: "1.0.0", dependencies: {},
+      requires: [{ contract: "s:sidebar", version: "^2.0.0" }],
+    },
+    register: reg,
+  });
+  r.add({
+    manifest: {
+      id: "sidebar", version: "2.3.0", dependencies: {},
+      provides: [{ contract: "s:sidebar", cardinality: "singleton" }],
+    },
+    register: vi.fn(),
+  });
+  await r.activate();
+  expect(reg).toHaveBeenCalled();
+  expect(r.list().find((m) => m.id === "combat")!.active).toBe(true);
+});
+
+test("a version-ranged requires entry does not activate when no active provider's version satisfies it", async () => {
+  const r = new ModuleRegistry(deps());
+  const reg = vi.fn();
+  r.add({
+    manifest: {
+      id: "combat", version: "1.0.0", dependencies: {},
+      requires: [{ contract: "s:sidebar", version: "^2.0.0" }],
+    },
+    register: reg,
+  });
+  r.add({
+    manifest: {
+      id: "sidebar", version: "1.0.0", dependencies: {},
+      provides: [{ contract: "s:sidebar", cardinality: "singleton" }],
+    },
+    register: vi.fn(),
+  });
+  await r.activate();
+  expect(reg).not.toHaveBeenCalled();
+  expect(r.list().find((m) => m.id === "combat")!.active).toBe(false);
+});
+
+test("a version-ranged requires entry activates when at least one of multiple providers satisfies it", async () => {
+  const r = new ModuleRegistry(deps());
+  const reg = vi.fn();
+  r.add({
+    manifest: {
+      id: "combat", version: "1.0.0", dependencies: {},
+      requires: [{ contract: "s:sidebar", version: "^2.0.0" }],
+    },
+    register: reg,
+  });
+  r.add({
+    manifest: {
+      id: "sidebar-old", version: "1.0.0", dependencies: {},
+      provides: [{ contract: "s:sidebar", cardinality: "multi" }],
+    },
+    register: vi.fn(),
+  });
+  r.add({
+    manifest: {
+      id: "sidebar-new", version: "2.1.0", dependencies: {},
+      provides: [{ contract: "s:sidebar", cardinality: "multi" }],
+    },
+    register: vi.fn(),
+  });
+  await r.activate();
+  expect(reg).toHaveBeenCalled();
+  expect(r.list().find((m) => m.id === "combat")!.active).toBe(true);
+});
+
 test("a singleton contract collision is reported but does not abort activation of other modules", async () => {
   const warnings: string[] = [];
   const logger = { ...silentLogger, warn: (m: string) => warnings.push(m) };

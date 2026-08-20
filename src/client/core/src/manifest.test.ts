@@ -3,6 +3,7 @@ import type * as Ts from "@shadowcat/types";
 import {
   parseManifest,
   declarationOf,
+  normalizeRequires,
   type ContractDeclaration,
   type ContractProvide,
 } from "./manifest";
@@ -43,6 +44,30 @@ test("defaults provides/requires to empty in a projection", () => {
     provides: [],
     requires: [],
   });
+});
+
+test("accepts a version-ranged requires entry and projects it to a bare contract id", () => {
+  const m = parseManifest({
+    id: "combat",
+    version: "1.0.0",
+    dependencies: {},
+    requires: ["s:sidebar", { contract: "s:root", version: "^2.0.0" }],
+  });
+  expect(m.requires).toEqual(["s:sidebar", { contract: "s:root", version: "^2.0.0" }]);
+  expect(declarationOf(m)).toEqual({
+    module_id: "combat",
+    version: "1.0.0",
+    provides: [],
+    requires: ["s:sidebar", "s:root"],
+  });
+});
+
+test("normalizeRequires normalizes a bare string and passes an object through unchanged", () => {
+  expect(normalizeRequires(["a", { contract: "b", version: "^2.0.0" }])).toEqual([
+    { contract: "a" },
+    { contract: "b", version: "^2.0.0" },
+  ]);
+  expect(normalizeRequires(undefined)).toEqual([]);
 });
 
 test("rejects an invalid cardinality", () => {

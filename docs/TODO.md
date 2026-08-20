@@ -42,10 +42,6 @@ capability already exists — but are deferred as out-of-scope-for-now work.
 ## Blocked on module management / hard topology enforcement
 - TODO: `LauncherMenu` has no handling/test for `metaMap` mutating while the menu is open (a panel uninstall would drop focus out of the menu's closed loop). Modules only install/uninstall at world entry today; add a focus-recovery path (or at least a pinning test) when live module management lands.
 
-## Blocked on a real 2nd provider / multiple contract versions
-- TODO: Resolve multi-provider conflict policy for `singleton` surface contracts in the UI contribution architecture — when two modules provide the same `singleton` contract (e.g. both claim "the sidebar"), decide the winner (load order, explicit priority, or user selection) instead of the current deterministic loud-fail. Design once a real second provider exists to validate the semantics; the contract model already carries the `singleton`/`multi` cardinality marker the policy slots into.
-- TODO: Add capability version negotiation to contract-based module dependencies (`requires`) — match a required contract against a provider by version range, not presence alone. Deferred until multiple providers of a contract exist at differing versions.
-
 ## Blocked on real pointer-gesture QA (unsimulable under jsdom)
 - TODO: `DockviewEngine#toDropSite`'s one remaining fallback branch (a drop's target group
   falling outside the engine's own zone bookkeeping) is a best-effort approximation (falls back
