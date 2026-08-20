@@ -521,6 +521,22 @@ test("subscribeScene sends scene_subscribe and re-establishes on a reconnect Wel
   );
 });
 
+test("sendChatMessage forwards ChatSendOptions verbatim into a send_message frame", async () => {
+  const sent: Array<Record<string, unknown>> = [];
+  const connect: Connect = (handlers) => {
+    queueMicrotask(() => handlers.onMessage(JSON.stringify(welcomeFrame)));
+    return Promise.resolve({ send: (d) => sent.push(JSON.parse(d)), close: () => handlers.onClose() });
+  };
+  const session = new WorldSession({ selfId: "u1", connect, modules: [coreUiStub], logger: silentLogger });
+  await session.enter("w1");
+  await vi.waitFor(() => expect(session.role).toBe("player"));
+
+  void session.sendChatMessage({ channel: "general", content: "hi" });
+  await vi.waitFor(() =>
+    expect(sent.some((m) => m.type === "send_message" && m.channel === "general" && m.content === "hi")).toBe(true),
+  );
+});
+
 test("the session subscribes to footprints itself and publishes each frame's resolved extents", async () => {
   let push!: (frame: unknown) => void;
   const sent: Array<Record<string, unknown>> = [];
