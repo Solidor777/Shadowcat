@@ -1086,3 +1086,213 @@ test("an enabled set with nothing to load never calls listInstalledModules a sec
   // External-module loading is bootstrap-once, exactly like core-ui activation.
   expect(vi.mocked(core.getEnabledModules)).toHaveBeenCalledTimes(1);
 });
+
+// `reconcileInstalledModules` tests below need a REAL dynamic import() to succeed —
+// `WorldSession`'s loader hardcodes `importFn: (url) => import(url)`, so a mock of `loadModules`
+// itself would not exercise this task's actual diff/load/unload logic. A `data:` URL is the only
+// entry-URL shape confirmed to work under this repo's jsdom+Vite test harness: a relative or
+// `file:`-resolved specifier gets rewritten by Vite's dev-server module transform into an
+// `http://localhost:.../...` URL that Node's native ESM loader then rejects (jsdom test
+// environment; verified empirically — Node's dynamic import() only accepts `file:`/`data:`
+// schemes, and Vite's browser-mode transform, triggered by the mere presence of a dynamic
+// `import()` call in this test file, rewrites `import.meta.url`-relative specifiers to `http:`
+// before they ever reach the loader). A `data:text/javascript,...` URL bypasses that rewrite
+// entirely and, per the ES module spec, is cached by its exact string — two `import()` calls
+// with the identical `data:` string return the SAME module instance, which is what makes
+// `getRegisterCalls()` below a genuine "was this module actually re-registered" probe rather
+// than an artifact of re-running the source.
+const MARKER_CONTRACT = "ext-fixture:marker";
+
+/** Builds a `data:` URL for a synthetic external module that contributes one marker into
+ * `MARKER_CONTRACT` and tracks how many times its own `register` has run, via an exported
+ * `getRegisterCalls()` this file calls (through its own `import()` of the same URL) to confirm
+ * a module the reconcile diff should leave alone was genuinely never re-registered.
+ * @param manifestId The synthetic module's manifest id.
+ * @param markerId The contribution id it registers into `MARKER_CONTRACT`.
+ * @returns A `data:text/javascript,...` URL importable via `import()`.
+ * @example
+ * ```
+ * // private test helper; not part of the public API
+ * const url = fixtureModuleUrl("ext-module-a", "ext-module-a-marker");
+ * ```
+ */
+function fixtureModuleUrl(manifestId: string, markerId: string): string {
+  const src = `
+    let registerCalls = 0;
+    export function getRegisterCalls() { return registerCalls; }
+    export default {
+      manifest: { id: ${JSON.stringify(manifestId)}, version: "1.0.0", dependencies: {} },
+      register(ctx) {
+        registerCalls++;
+        ctx.contributions.contribute({
+          id: ${JSON.stringify(markerId)},
+          contract: ${JSON.stringify(MARKER_CONTRACT)},
+          component: {},
+        });
+      },
+    };
+  `;
+  return `data:text/javascript,${encodeURIComponent(src)}`;
+}
+
+const FIXTURE_A_URL = fixtureModuleUrl("ext-module-a", "ext-module-a-marker");
+const FIXTURE_B_URL = fixtureModuleUrl("ext-module-b", "ext-module-b-marker");
+
+/** Reads `getRegisterCalls()` off a fixture module by re-importing its (cached) `data:` URL.
+ * @param url The fixture module's `data:` URL, as built by `fixtureModuleUrl`.
+ * @returns The number of times that module's `register` has run so far.
+ * @example
+ * ```
+ * // private test helper; not part of the public API
+ * const calls = await registerCallsOf(FIXTURE_A_URL);
+ * ```
+ */
+async function registerCallsOf(url: string): Promise<number> {
+  const mod = (await import(/* @vite-ignore */ url)) as { getRegisterCalls: () => number };
+  return mod.getRegisterCalls();
+}
+
+/** Builds a `WorldSession` and drives it through `enter("w1")` to a settled Welcome, with no
+ * external modules enabled at bootstrap (so every `reconcileInstalledModules` call below is
+ * the first thing that ever touches the external-module set).
+ * @returns The entered session, ready for `reconcileInstalledModules` calls.
+ * @example
+ * ```
+ * // private test helper; not part of the public API
+ * const session = await enteredSession();
+ * ```
+ */
+async function enteredSession(): Promise<WorldSession> {
+  const session = new WorldSession({
+    selfId: "u1",
+    connect: mockConnect(),
+    modules: [coreUiStub],
+    logger: silentLogger,
+  });
+  await session.enter("w1");
+  await vi.waitFor(() => expect(session.role).toBe("player"));
+  return session;
+}
+
+test("reconcileInstalledModules loads a newly-enabled module and activates it", async () => {
+  const core = await import("@shadowcat/core");
+  const session = await enteredSession();
+
+  vi.mocked(core.getEnabledModules).mockResolvedValueOnce(["ext-a-folder"]);
+  vi.mocked(core.listInstalledModules).mockResolvedValueOnce([
+    {
+      id: "ext-a-folder",
+      manifest: { id: "ext-module-a", version: "1.0.0", dependencies: {} },
+      entry_url: FIXTURE_A_URL,
+    },
+  ]);
+
+  await session.reconcileInstalledModules();
+
+  expect(session.contributions.contributionsFor(MARKER_CONTRACT).map((c) => c.id)).toEqual([
+    "ext-module-a-marker",
+  ]);
+});
+
+test("reconcileInstalledModules unloads (cascade) a module no longer in the enabled set", async () => {
+  const core = await import("@shadowcat/core");
+  const session = await enteredSession();
+
+  vi.mocked(core.getEnabledModules).mockResolvedValueOnce(["ext-a-folder"]);
+  vi.mocked(core.listInstalledModules).mockResolvedValueOnce([
+    {
+      id: "ext-a-folder",
+      manifest: { id: "ext-module-a", version: "1.0.0", dependencies: {} },
+      entry_url: FIXTURE_A_URL,
+    },
+  ]);
+  await session.reconcileInstalledModules();
+  expect(session.contributions.contributionsFor(MARKER_CONTRACT)).toHaveLength(1);
+
+  // No longer enabled: nothing installed either (mirrors an uninstall, but an unload only
+  // needs the id to have dropped out of the enabled set).
+  vi.mocked(core.getEnabledModules).mockResolvedValueOnce([]);
+  vi.mocked(core.listInstalledModules).mockResolvedValueOnce([]);
+  await session.reconcileInstalledModules();
+
+  expect(session.contributions.contributionsFor(MARKER_CONTRACT)).toEqual([]);
+});
+
+test("reconcileInstalledModules is idempotent when nothing changed since the last reconcile", async () => {
+  const core = await import("@shadowcat/core");
+  const session = await enteredSession();
+  const installed = [
+    {
+      id: "ext-a-folder",
+      manifest: { id: "ext-module-a", version: "1.0.0", dependencies: {} },
+      entry_url: FIXTURE_A_URL,
+    },
+  ];
+
+  vi.mocked(core.getEnabledModules).mockResolvedValueOnce(["ext-a-folder"]);
+  vi.mocked(core.listInstalledModules).mockResolvedValueOnce(installed);
+  await session.reconcileInstalledModules();
+  expect(session.contributions.contributionsFor(MARKER_CONTRACT)).toHaveLength(1);
+
+  const before = await registerCallsOf(FIXTURE_A_URL);
+
+  // Same enabled set, same installed catalog: nothing to diff.
+  vi.mocked(core.getEnabledModules).mockResolvedValueOnce(["ext-a-folder"]);
+  vi.mocked(core.listInstalledModules).mockResolvedValueOnce(installed);
+  await session.reconcileInstalledModules();
+
+  const after = await registerCallsOf(FIXTURE_A_URL);
+  expect(after).toBe(before); // no spurious re-register
+  expect(session.contributions.contributionsFor(MARKER_CONTRACT)).toHaveLength(1); // no duplicate
+});
+
+test("reconcileInstalledModules leaves a module present in BOTH the old and new enabled set untouched", async () => {
+  const core = await import("@shadowcat/core");
+  const session = await enteredSession();
+
+  vi.mocked(core.getEnabledModules).mockResolvedValueOnce(["ext-a-folder", "ext-b-folder"]);
+  vi.mocked(core.listInstalledModules).mockResolvedValueOnce([
+    {
+      id: "ext-a-folder",
+      manifest: { id: "ext-module-a", version: "1.0.0", dependencies: {} },
+      entry_url: FIXTURE_A_URL,
+    },
+    {
+      id: "ext-b-folder",
+      manifest: { id: "ext-module-b", version: "1.0.0", dependencies: {} },
+      entry_url: FIXTURE_B_URL,
+    },
+  ]);
+  await session.reconcileInstalledModules();
+  expect(session.contributions.contributionsFor(MARKER_CONTRACT)).toHaveLength(2);
+
+  const bBefore = await registerCallsOf(FIXTURE_B_URL);
+
+  // A drops out of the enabled set; B stays enabled.
+  vi.mocked(core.getEnabledModules).mockResolvedValueOnce(["ext-b-folder"]);
+  vi.mocked(core.listInstalledModules).mockResolvedValueOnce([
+    {
+      id: "ext-b-folder",
+      manifest: { id: "ext-module-b", version: "1.0.0", dependencies: {} },
+      entry_url: FIXTURE_B_URL,
+    },
+  ]);
+  await session.reconcileInstalledModules();
+
+  const bAfter = await registerCallsOf(FIXTURE_B_URL);
+  expect(bAfter).toBe(bBefore); // B was never unloaded+reloaded, only A was diffed out
+  expect(session.contributions.contributionsFor(MARKER_CONTRACT).map((c) => c.id)).toEqual([
+    "ext-module-b-marker",
+  ]);
+});
+
+test("reconcileInstalledModules called before any world was ever entered is a safe no-op", async () => {
+  const session = new WorldSession({
+    selfId: "u1",
+    connect: mockConnect(),
+    modules: [coreUiStub],
+    logger: silentLogger,
+  });
+  await expect(session.reconcileInstalledModules()).resolves.toBeUndefined();
+  expect(session.contributions.contributionsFor(MARKER_CONTRACT)).toEqual([]);
+});

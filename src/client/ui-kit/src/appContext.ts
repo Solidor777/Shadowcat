@@ -236,6 +236,13 @@ export interface AppContext {
   chat: ChatApi;
   /** Template merge seam: stamp + pull/push/revert. */
   templates: TemplatesApi;
+  /** Re-reconciles this world's enabled EXTERNAL (community) module set against the running
+   * session — loads newly-enabled modules, unloads newly-disabled ones. First-party modules are
+   * never affected. Called by `ModuleManager.svelte` after a successful save so a toggle takes
+   * effect immediately, without requiring the user to leave and re-enter the world.
+   * @returns Resolves once the reconcile completes; never rejects (per-module failures are logged,
+   * not thrown). */
+  reconcileInstalledModules: () => Promise<void>;
   /** Leave the current world and return to world-select. */
   leaveWorld: () => void;
   /** Log out of the server session and return to the pre-world (login) view. */

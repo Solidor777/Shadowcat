@@ -91,8 +91,13 @@ existing `ModuleRegistry`.
   scripts tree.
 - The shell `worldSession` module — `#loadExternalModules(world, serverVersion)`
   sourced from `w.server_version`; fetch enabled set → `loadModules` → activate; keyed on `info.id`.
+  `WorldSession.reconcileInstalledModules()` is the live-reconcile sibling, called after a
+  `ModuleManager` save (client-shell skill has the full seam + the folder-id/manifest-id dual
+  key-space it must track to unload the right registered module).
 - **`ModuleManager`** (`@shadowcat/module-settings`) — GM installed-module management UI; toggle/save
-  keyed on the canonical folder `info.id` (manifest id is display-only).
+  keyed on the canonical folder `info.id` (manifest id is display-only); a successful save also
+  calls `AppContext.reconcileInstalledModules()` so the toggle takes effect in the running session
+  immediately.
 
 **Out-of-tree reference + guide:** an external module is developed in its own git repository and
 may be nested into a Shadowcat checkout under `src/modules/` so the pnpm workspace resolves
@@ -190,8 +195,13 @@ job's example-build step keep them green; the guides code-import their sources r
   design intent).
 - **Scope deliberately excluded** (manual/admin-trusted tier): no module upload/install UI
   (install stays manual-extract into `<data-dir>/modules/<id>/`); no sandboxing/permissions for
-  installed module JS (modules are admin-trusted, same tier as the server binary); no hot
-  enable/disable without a client reload; no marketplace/registry, signing, or update channels.
+  installed module JS (modules are admin-trusted, same tier as the server binary); no
+  marketplace/registry, signing, or update channels. Per-world ENABLE/DISABLE of an already-
+  installed module DOES hot-reload a running session without a client reload —
+  `WorldSession.reconcileInstalledModules()` (client-shell skill) — but that is scoped to
+  EXTERNAL/community modules only; a first-party module (`opts.modules`) is never torn down live,
+  since first-party modules were never written expecting hot-unload (render/stage resources, WS
+  channels, ECS state).
 
 ## Pointers
 

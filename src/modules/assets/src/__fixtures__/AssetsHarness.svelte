@@ -48,6 +48,7 @@
     onPing: () => () => {},
     onMoveOutcome: () => () => {},
     chat: { send: () => Promise.resolve(), edit: () => Promise.resolve(), delete: () => Promise.resolve() },
+    reconcileInstalledModules: () => Promise.resolve(),
     leaveWorld: () => {},
     logout: async () => {},
     uiState: { getPanelLayout: () => null, setPanelLayout: () => {}, getChatRead: () => null, setChatRead: () => {} },

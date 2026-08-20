@@ -116,6 +116,7 @@
       setChatRead: (blob) => setChatRead(session.world!, blob),
     },
     panels,
+    reconcileInstalledModules: () => session.reconcileInstalledModules(),
     leaveWorld,
     logout: async () => {
       await logout();

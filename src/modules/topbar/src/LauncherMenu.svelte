@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from "svelte";
   import { getAppContext, sizeClass, createMenuKeyboard } from "@shadowcat/ui-kit";
 
   const ctx = getAppContext();
@@ -76,6 +77,29 @@
     ctx.panels.toggle(id);
     closeMenu();
   }
+  // Focus recovery: a live module unload can remove the currently-focused menu item's
+  // panel from `metaMap` while the menu is open (`panels`'s own $derived above already
+  // tracks that removal reactively). A detached focused element leaves focus on
+  // `document.body` (browser default) — this effect responds to exactly that signal,
+  // narrowly: only when the menu is open AND focus currently sits on `document.body`
+  // (the focused item is gone), never merely because `panels` changed (a different item
+  // being removed while focus stays on an unrelated, still-attached item must NOT close
+  // the menu). `open` is read via `untrack` so this effect's only TRACKED dependency is
+  // `panels` — `openMenu` moves focus to the first item asynchronously
+  // (`queueMicrotask`), so if `open` were a tracked dependency this effect would also
+  // fire on the open transition itself, observe `document.activeElement` still sitting on
+  // `document.body` before that microtask lands, and misread a menu that just opened as
+  // one whose focused item disappeared (confirmed empirically: an earlier version of this
+  // effect that tracked `open` directly closed the menu immediately on every open).
+  $effect(() => {
+    panels; // re-run when the live panel set changes
+    if (untrack(() => open) && document.activeElement === document.body) {
+      // Recover by closing the menu and returning focus to the trigger, rather than
+      // leaving focus stranded on <body>.
+      closeMenu();
+    }
+  });
+
   const menuKeyboard = createMenuKeyboard(() => itemEls, closeMenu);
   /**
    * Delegates a menu item's keydown to `@shadowcat/ui-kit`'s

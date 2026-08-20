@@ -7,7 +7,7 @@
     type InstalledModuleInfo,
   } from "@shadowcat/core";
 
-  const { world, t } = getAppContext();
+  const { world, t, reconcileInstalledModules } = getAppContext();
 
   let installed = $state<InstalledModuleInfo[]>([]);
   let enabled = $state<Set<string>>(new Set());
@@ -125,7 +125,9 @@
    * calls `set_setting` with no read-then-check-then-write guard). Two GMs
    * saving concurrently is last-write-wins — the second save silently
    * clobbers whatever the first enabled, including modules the second GM
-   * never saw toggled off.
+   * never saw toggled off. A successful save also live-reconciles the running
+   * session (`ctx.reconcileInstalledModules()`) so the toggle takes effect immediately,
+   * without requiring the user to leave and re-enter the world.
    * @returns Resolves once `saving`/`error` reflect the outcome; never
    *   rejects.
    * @example
@@ -139,6 +141,7 @@
     error = null;
     try {
       await setEnabledModules(world, [...enabled]);
+      await reconcileInstalledModules();
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
     } finally {

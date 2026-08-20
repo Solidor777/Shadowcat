@@ -34,13 +34,12 @@ import {
   type SubscriptionHandle,
   type WireSearchHit,
   loadModules,
-  type ModuleEntry,
   type ModuleManifest,
   listInstalledModules,
   getEnabledModules,
   listWorldMembers,
 } from "@shadowcat/core";
-import type { WorldRole } from "@shadowcat/types";
+import type { WorldRole, InstalledModuleInfo } from "@shadowcat/types";
 import { SceneInteractionBridge, ActorSelection, TokenSelection, i18n } from "@shadowcat/ui-kit";
 import { SvelteMap } from "svelte/reactivity";
 
@@ -84,6 +83,21 @@ export interface WorldSessionOpts {
   /** Terminal eviction (this world or this account was deleted). The WsClient
    *  has already stopped — the shell routes the user out of the world. */
   onEvicted?: () => void;
+}
+
+/** One enabled external module resolved against the installed catalog, as built by
+ * `WorldSession.#buildEntries` and consumed by `WorldSession.#recordLoaded`. Carries the
+ * install FOLDER id alongside the `(manifest, entry)` pair `loadModules` itself consumes,
+ * because that pair alone loses the folder id — the key space `#externalModuleIds` is diffed
+ * against — the moment it's handed to `loadModules`. */
+interface ResolvedModuleEntry {
+  /** The canonical install-folder id (`InstalledModuleInfo.id`); the server's enabled-set key
+   * space, distinct from `manifest.id` (see `WorldSession.#buildEntries`'s own doc). */
+  folderId: string;
+  /** The discovered manifest, re-validated by `loadModules` before import. */
+  manifest: ModuleManifest;
+  /** The importable specifier/URL passed to `loadModules`' `ImportFn`. */
+  entry: string;
 }
 
 /**
@@ -343,6 +357,20 @@ export class WorldSession {
   /** Latches only on a SUCCESSFUL `activate()`; reverted to `false` in the catch on
    * a thrown activation so the next Welcome retries — see the field-level doc above. */
   #activated = false;
+  /** The connected server's version, captured at Welcome for `reconcileInstalledModules`'s later
+   * use (the original `#loadExternalModules` call already has it as a local; a live reconcile
+   * triggered later — e.g. from `ModuleManager.svelte`'s save() — needs its own copy). */
+  #serverVersion: string | undefined;
+  /** Every EXTERNAL (community) module currently loaded into `#modules`, keyed on the canonical
+   * install FOLDER id (`InstalledModuleInfo.id` — the same key space `getEnabledModules`/
+   * `listInstalledModules` use) and mapped to that module's own declared manifest id — first-party
+   * modules (`opts.modules`) are never tracked here. Two distinct id spaces, both load-bearing:
+   * `reconcileInstalledModules` diffs the FOLDER-id keys against a freshly-fetched enabled set
+   * (which is folder-id-keyed), but `ModuleRegistry.unload` operates on `module.manifest.id`
+   * (what `ModuleRegistry.add` actually keys the module under) — a folder id and its manifest id
+   * may legitimately differ (see `#buildEntries`'s own doc), so unloading by the wrong one either
+   * throws (module not found) or silently no-ops. */
+  #externalModuleIds = new Map<string, string>();
 
   /** Construct a session bound to one connection factory + default module set; call
    * `enter(worldId)` to open the world connection.
@@ -832,6 +860,7 @@ export class WorldSession {
       this.role = w.user_role;
       this.#worldGrants = w.world_default_grants;
       this.#requirements = w.capability_requirements;
+      this.#serverVersion = w.server_version;
       // Snapshot BEFORE any await below: a scene subscription added while this
       // Welcome's async chain is still in flight (module activation / external-module
       // load / member fetch) already self-establishes via `subscribeScene`'s own
@@ -918,13 +947,11 @@ export class WorldSession {
   /** Fetch the world's enabled installed-module set + their (manifest,
    * entry_url) pairs and load them through the shared, per-module-contained
    * loader. Runs exactly once per WorldSession (called only inside
-   * the `#activated` guard, after a successful `activate()`) — external
-   * modules never hot-reload across a reconnect within one session (there is no hot-unload
-   * path); "next client load
-   * of that world" means a fresh WorldSession (page load / re-enter), not a
-   * WS reconnect. A discovery-level failure (network, malformed response)
-   * degrades to a logged warning; the session still enters the world with
-   * only its first-party modules active — a broken pipeline must never brick
+   * the `#activated` guard, after a successful `activate()`) — a reconnect within one session
+   * never re-runs this bootstrap load; `reconcileInstalledModules` is the separate, explicitly
+   * triggered path that hot-reloads a running session's external-module set. A discovery-level
+   * failure (network, malformed response) degrades to a logged warning; the session still enters
+   * the world with only its first-party modules active — a broken pipeline must never brick
    * a world.
    * @param world The world id to load enabled external modules for.
    * @param serverVersion The connected server's version, passed through to `loadModules`'
@@ -942,29 +969,10 @@ export class WorldSession {
         getEnabledModules(world),
         listInstalledModules(),
       ]);
-      // Keyed on the canonical install folder id (`info.id`), matching the
-      // server's own enabled-set key space — NOT `manifest.id`, which is an
-      // opaque, author-declared value the folder id may legitimately differ
-      // from (or collide with another module's).
-      const byId = new Map<string, (typeof installed)[number]>();
-      for (const info of installed) {
-        byId.set(info.id, info);
-      }
-      const entries: ModuleEntry[] = [];
-      for (const id of enabledIds) {
-        const info = byId.get(id);
-        if (!info) {
-          this.#logger.warn(`enabled module ${id} is not installed; skipping`);
-          continue;
-        }
-        entries.push({
-          manifest: info.manifest as ModuleManifest,
-          entry: info.entry_url,
-        });
-      }
-      if (entries.length === 0) return;
+      const resolved = WorldSession.#buildEntries(enabledIds, installed, this.#logger);
+      if (resolved.length === 0) return;
       const result = await loadModules({
-        entries,
+        entries: resolved.map(({ manifest, entry }) => ({ manifest, entry })),
         importFn: (url) => import(/* @vite-ignore */ url),
         registry: this.#modules,
         shadowcatVersion: serverVersion,
@@ -972,9 +980,135 @@ export class WorldSession {
       for (const f of result.failed) {
         this.#logger.warn(`external module ${f.id} (${f.entry}) failed to load: ${f.error}`);
       }
+      WorldSession.#recordLoaded(this.#externalModuleIds, resolved, result.loaded);
       if (result.loaded.length > 0) await this.#modules.activate();
     } catch (e) {
       this.#logger.warn("external module discovery failed", e);
+    }
+  }
+
+  /** Resolves an enabled-id list against the installed catalog, keyed on the canonical install
+   * folder id (`info.id`) — matching the server's own enabled-set key space, NOT `manifest.id`,
+   * which is an opaque, author-declared value the folder id may legitimately differ from (or
+   * collide with another module's). An enabled id absent from `installed` is logged and skipped.
+   * Shared by `#loadExternalModules` and `reconcileInstalledModules` so the lookup logic can't
+   * drift between the two. Returns the folder id alongside each entry (not just the bare
+   * `ModuleEntry` `loadModules` consumes) because `#recordLoaded` needs it to map a load result's
+   * manifest id back to the folder id `#externalModuleIds` is keyed on.
+   * @param ids The enabled module (folder) ids to resolve.
+   * @param installed The full installed-module catalog to resolve `ids` against.
+   * @param logger Diagnostics sink for a skipped (not-installed) id.
+   * @returns The resolved folder id + `(manifest, entry)` triples, in `ids` order.
+   * @example
+   * ```
+   * declare const ids: string[];
+   * declare const installed: InstalledModuleInfo[];
+   * declare const logger: Logger;
+   * // called from #loadExternalModules and reconcileInstalledModules; not part of the public API
+   * WorldSession.#buildEntries(ids, installed, logger);
+   * ```
+   */
+  static #buildEntries(
+    ids: string[],
+    installed: InstalledModuleInfo[],
+    logger: Logger,
+  ): ResolvedModuleEntry[] {
+    const byId = new Map<string, InstalledModuleInfo>();
+    for (const info of installed) byId.set(info.id, info);
+    const resolved: ResolvedModuleEntry[] = [];
+    for (const id of ids) {
+      const info = byId.get(id);
+      if (!info) {
+        logger.warn(`enabled module ${id} is not installed; skipping`);
+        continue;
+      }
+      resolved.push({
+        folderId: id,
+        manifest: info.manifest as ModuleManifest,
+        entry: info.entry_url,
+      });
+    }
+    return resolved;
+  }
+
+  /** Records every successfully loaded module from a `loadModules` result into `into`, mapping
+   * each loaded manifest id back to the folder id `#buildEntries` resolved it from — `loaded`
+   * carries only manifest ids (`loadModules`' own `ModuleLoadResult.loaded` doc), which is not
+   * the key space `#externalModuleIds` is diffed against (see that field's own doc for why both
+   * id spaces are load-bearing).
+   * @param into The map to record into (mutated in place); folder id → manifest id.
+   * @param resolved The same triples passed to `loadModules` (via `#buildEntries`), used to
+   * recover each loaded manifest id's folder id.
+   * @param loaded The manifest ids `loadModules` reports as successfully loaded.
+   * @example
+   * ```
+   * declare const into: Map<string, string>;
+   * declare const resolved: ResolvedModuleEntry[];
+   * declare const loaded: string[];
+   * // called from #loadExternalModules and reconcileInstalledModules; not part of the public API
+   * WorldSession.#recordLoaded(into, resolved, loaded);
+   * ```
+   */
+  static #recordLoaded(
+    into: Map<string, string>,
+    resolved: ResolvedModuleEntry[],
+    loaded: string[],
+  ): void {
+    const folderIdByManifestId = new Map(resolved.map((r) => [r.manifest.id, r.folderId]));
+    for (const manifestId of loaded) {
+      const folderId = folderIdByManifestId.get(manifestId);
+      if (folderId !== undefined) into.set(folderId, manifestId);
+    }
+  }
+
+  /** Re-fetches this world's enabled external-module set and reconciles the running session
+   * against it: unloads (cascade) any currently-loaded external module no longer enabled, and
+   * loads + activates any newly-enabled one. First-party modules (`opts.modules`) are never
+   * touched — this is deliberately scoped to external/community modules only, mirroring the
+   * `ModuleManager.svelte` GM UI's own scope. Per-entry contained: one module's load/unload
+   * failure is logged and does not abort the others. A no-op if called before `#onWelcome` has
+   * ever run (`world`/`#serverVersion` unset).
+   * @returns Resolves once every diffed module has been attempted; never rejects.
+   * @example
+   * ```
+   * declare const session: WorldSession;
+   * await session.reconcileInstalledModules();
+   * ```
+   */
+  async reconcileInstalledModules(): Promise<void> {
+    if (!this.world || this.#serverVersion === undefined) return;
+    try {
+      const [enabledIds, installed] = await Promise.all([
+        getEnabledModules(this.world),
+        listInstalledModules(),
+      ]);
+      const enabledSet = new Set(enabledIds);
+      const toUnload = [...this.#externalModuleIds].filter(([folderId]) => !enabledSet.has(folderId));
+      for (const [folderId, manifestId] of toUnload) {
+        try {
+          await this.#modules.unload(manifestId, { cascade: true });
+          this.#externalModuleIds.delete(folderId);
+        } catch (e) {
+          this.#logger.warn(`external module ${manifestId} failed to unload during reconcile`, e);
+        }
+      }
+      const toLoadIds = enabledIds.filter((id) => !this.#externalModuleIds.has(id));
+      if (toLoadIds.length === 0) return;
+      const resolved = WorldSession.#buildEntries(toLoadIds, installed, this.#logger);
+      if (resolved.length === 0) return;
+      const result = await loadModules({
+        entries: resolved.map(({ manifest, entry }) => ({ manifest, entry })),
+        importFn: (url) => import(/* @vite-ignore */ url),
+        registry: this.#modules,
+        shadowcatVersion: this.#serverVersion,
+      });
+      for (const f of result.failed) {
+        this.#logger.warn(`external module ${f.id} (${f.entry}) failed to load during reconcile: ${f.error}`);
+      }
+      WorldSession.#recordLoaded(this.#externalModuleIds, resolved, result.loaded);
+      if (result.loaded.length > 0) await this.#modules.activate();
+    } catch (e) {
+      this.#logger.warn("external module reconcile failed", e);
     }
   }
 

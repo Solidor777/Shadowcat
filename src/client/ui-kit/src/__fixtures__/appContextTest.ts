@@ -63,6 +63,7 @@ export function setAppContextForTest(over: Partial<AppContext> = {}): Map<unknow
       setChatRead: () => {},
     },
     panels: over.panels ?? new PanelsBridge(silentLogger),
+    reconcileInstalledModules: over.reconcileInstalledModules ?? (async () => {}),
     viewedSceneId: over.viewedSceneId ?? null,
     footprints: over.footprints ?? EMPTY_FOOTPRINTS,
     setGmViewedScene: over.setGmViewedScene ?? (() => {}),

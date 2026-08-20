@@ -100,15 +100,30 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
   forwards through `RenderEngine` to `TokenView`/`TokenAnimator` (position tween) and, when
   `moverVision` is present (mover only), the engine's `visionSweeps` fog-sweep playback (see
   `shadowcat-codebase-scene-rendering`).
-- **External-module loading** — `WorldSession`'s `#loadExternalModules(world,
-  serverVersion)` runs after `Welcome` (`WorldSession.loadExternalModules.serverVersion` =
-  `w.server_version`): fetches the world's
-  enabled set (keyed on the install FOLDER id, `InstalledModuleInfo.id`, never manifest id), calls
-  core `loadModules` (per-module-contained, non-throwing `ModuleLoadResult`), then activates. The
-  shell serves ONE runtime instance of `svelte`/`@shadowcat/*` via `RUNTIME_ENTRIES`
-  + `preserveEntrySignatures:"strict"` + the `index.html` import map. GM management UI =
-  `ModuleManager`. Full subsystem (server discovery/serving/enablement,
-  engine-compat gate) → [[shadowcat-codebase-module-toolchain]].
+- **External-module loading, and live hot-reload** — `WorldSession`'s `#loadExternalModules(world,
+  serverVersion)` runs once, after the FIRST successful `#onWelcome` activation
+  (`WorldSession.loadExternalModules.serverVersion` = `w.server_version`, also captured onto
+  `#serverVersion` for later reuse): fetches the world's enabled set (keyed on the install FOLDER
+  id, `InstalledModuleInfo.id`, never manifest id), calls core `loadModules`
+  (per-module-contained, non-throwing `ModuleLoadResult`), then activates. `WorldSession.
+  reconcileInstalledModules()` is the separate, explicitly-triggered live path: re-fetches the
+  enabled set and diffs it against `#externalModuleIds` (a folder-id → manifest-id map — BOTH id
+  spaces are load-bearing, since the diff must key on the folder id `getEnabledModules` uses while
+  `ModuleRegistry.unload` must be called with the manifest id `ModuleRegistry.add` actually
+  registered the module under), unloading (`cascade: true`) anything no longer enabled and
+  loading+activating anything newly enabled — first-party modules (`opts.modules`) are never
+  touched. Exposed through `AppContext.reconcileInstalledModules`, wired in `Table.svelte`, and
+  called by `ModuleManager.svelte`'s `save()` after a successful `setEnabledModules` so a GM's
+  toggle takes effect in the running session immediately, not just on next world entry. This is
+  also what makes `LauncherMenu`'s focus-recovery `$effect` reachable outside a unit test: a live
+  unload can drop the launcher's currently-focused item out of `panels.metaMap` while the menu is
+  open, and the effect closes the menu + returns focus to the trigger when that happens (reads
+  `open` via `untrack` so the effect's only TRACKED dependency is the `panels` derived — tracking
+  `open` directly makes the effect misfire on the OPEN transition itself, before `openMenu`'s
+  `queueMicrotask` has moved focus onto the first item). The shell serves ONE runtime instance of
+  `svelte`/`@shadowcat/*` via `RUNTIME_ENTRIES` + `preserveEntrySignatures:"strict"` + the
+  `index.html` import map. GM management UI = `ModuleManager`. Full subsystem (server
+  discovery/serving/enablement, engine-compat gate) → [[shadowcat-codebase-module-toolchain]].
 - **`boot()` resolves the world route-first, not `lastWorld`-first** —
   `App`'s `boot()` reads `currentRoute()` once, AFTER the `getMe`/`getUiState` awaits and
   BEFORE both the `withRetry(() => listWorlds())` await and consulting `ui.global.lastWorld` (a

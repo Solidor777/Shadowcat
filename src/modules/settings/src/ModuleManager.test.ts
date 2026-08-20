@@ -30,6 +30,35 @@ describe("ModuleManager", () => {
     await vi.waitFor(() => expect(vi.mocked(setEnabledModules)).toHaveBeenCalledWith("w1", ["example-system"]));
   });
 
+  it("calls ctx.reconcileInstalledModules exactly once after a successful save", async () => {
+    const reconcileInstalledModules = vi.fn().mockResolvedValue(undefined);
+    render(ModuleManager, {
+      context: setAppContextForTest({ world: "w1", role: "gm", reconcileInstalledModules }),
+    });
+
+    const checkbox = await screen.findByLabelText("example-system");
+    await fireEvent.click(checkbox);
+    await fireEvent.click(screen.getByText("settings.modules.save"));
+
+    await vi.waitFor(() => expect(reconcileInstalledModules).toHaveBeenCalledOnce());
+  });
+
+  it("does NOT call ctx.reconcileInstalledModules when setEnabledModules rejects", async () => {
+    const { setEnabledModules } = await import("@shadowcat/core");
+    vi.mocked(setEnabledModules).mockRejectedValueOnce(new Error("save failed"));
+    const reconcileInstalledModules = vi.fn().mockResolvedValue(undefined);
+    render(ModuleManager, {
+      context: setAppContextForTest({ world: "w1", role: "gm", reconcileInstalledModules }),
+    });
+
+    const checkbox = await screen.findByLabelText("example-system");
+    await fireEvent.click(checkbox);
+    await fireEvent.click(screen.getByText("settings.modules.save"));
+
+    await vi.waitFor(() => expect(screen.getByText("settings.modules.error")).toBeTruthy());
+    expect(reconcileInstalledModules).not.toHaveBeenCalled();
+  });
+
   it("shows an empty state when nothing is installed", async () => {
     const { listInstalledModules } = await import("@shadowcat/core");
     vi.mocked(listInstalledModules).mockResolvedValueOnce([]);
