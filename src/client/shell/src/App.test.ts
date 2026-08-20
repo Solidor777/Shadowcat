@@ -3,6 +3,7 @@ import { test, expect, vi, afterEach } from "vitest";
 import App from "./App.svelte";
 import * as api from "./lib/api";
 import { WorldSession } from "./lib/worldSession.svelte";
+import type { WorldEntry } from "@shadowcat/types";
 
 // Stub the entry package: assert the shell renders it for pre-world routes without
 // exercising entry's internals (covered by @shadowcat/module-entry's own tests).
@@ -73,5 +74,33 @@ test("reload on a valid world route enters THAT world, not a different valid las
   await screen.findByText("Connecting…");
   expect(enterSpy).toHaveBeenCalledWith("route-world");
   expect(enterSpy).not.toHaveBeenCalledWith("last-world");
+  vi.unstubAllGlobals();
+});
+
+test("a hash change during the listWorlds await is honored, not the route captured before it", async () => {
+  vi.stubGlobal("WebSocket", class { addEventListener() {} send() {} close() {} } as unknown);
+  location.hash = "#/world/stale-world";
+  window.dispatchEvent(new HashChangeEvent("hashchange"));
+  const enterSpy = vi.spyOn(WorldSession.prototype, "enter").mockResolvedValue(undefined);
+  vi.spyOn(api, "getMe").mockResolvedValue({ id: "u1", username: "gm", server_role: "user" });
+  vi.spyOn(api, "getUiState").mockResolvedValue({ global: { locale: "en", lastWorld: null }, worlds: {} });
+  vi.spyOn(api, "putUiState").mockResolvedValue();
+  let resolveWorlds!: (worlds: WorldEntry[]) => void;
+  vi.spyOn(api, "listWorlds").mockReturnValue(
+    new Promise((resolve) => {
+      resolveWorlds = resolve;
+    }),
+  );
+  render(App);
+  await screen.findByText("Loading…");
+  location.hash = "#/world/fresh-world";
+  window.dispatchEvent(new HashChangeEvent("hashchange"));
+  resolveWorlds([
+    { id: "stale-world", name: "Stale", role: "gm" },
+    { id: "fresh-world", name: "Fresh", role: "gm" },
+  ]);
+  await screen.findByText("Connecting…");
+  expect(enterSpy).toHaveBeenCalledWith("fresh-world");
+  expect(enterSpy).not.toHaveBeenCalledWith("stale-world");
   vi.unstubAllGlobals();
 });

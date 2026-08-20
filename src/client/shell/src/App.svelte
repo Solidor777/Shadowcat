@@ -60,7 +60,7 @@
           // A transient /api/worlds failure here degrades to entry, not a hard error.
           try {
             const worlds = await withRetry(() => listWorlds());
-            const resolved = resolveBootWorld(route, last, worlds);
+            const resolved = resolveBootWorld(currentRoute(), last, worlds);
             if (resolved.enterWorldId) {
               enterWorld(resolved.enterWorldId); // reload returns you to the URL's/last world
               return;
