@@ -179,10 +179,6 @@ Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one de
 - TODO: `welcome_capability_requirements`'s Welcome preamble runs `spawn_blocking(scan_installed_modules)` — a full
   filesystem scan — on EVERY WS connect. Cache the scan result (invalidate on module
   install/uninstall) so reconnect storms and multi-client entry don't re-walk the modules dir.
-- TODO: tower-sessions shares the single-connection SQLite pool (`session_layer` builds
-  `SqlxSqliteStore` over `repo.pool()`), so every authenticated request queues the session read
-  behind app writes on `max_connections(1)`. Give the session store its own connection (or a read
-  pool) — the write path's deliberate single-writer serialization stays untouched.
 - TODO: `Stage`'s backend-init failure path sets `data-render-error="true"` silently. Route
   it through the project logger so a real WebGL/backend init failure is distinguishable from a
   timeout in e2e output and user bug reports.

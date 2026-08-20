@@ -34,20 +34,29 @@ const SESSION_KEY_SETTING: &str = "session_key";
 /// invariant. Sharing the existing pool keeps one writer and one sqlx version.
 #[derive(Debug, Clone)]
 pub struct SqlxSqliteStore {
-    /// The shared single-writer pool (never a second pool/driver).
+    /// The shared single-writer pool — every write (`create`/`save`/
+    /// `delete`/`delete_expired`/`migrate`) goes through this, never
+    /// `read_pool`. `delete_user` (`data::sqlite::SqliteRepository`) relies
+    /// on session deletion sharing this pool's transaction semantics.
     pool: SqlitePool,
+    /// A dedicated read-only pool for the hot path (`load`/`id_exists`),
+    /// which runs on every authenticated request and must not queue behind
+    /// an in-flight app write on `pool`. See
+    /// `data::sqlite::SqliteRepository::open_read_pool`'s doc for why this
+    /// can't be built from a second, independent parse of the same URL.
+    read_pool: SqlitePool,
 }
 
 impl SqlxSqliteStore {
-    /// A store over the shared pool.
+    /// A store over the shared write pool and a dedicated read pool.
     ///
     /// # Examples
     ///
     /// ```text
-    /// let store = SqlxSqliteStore::new(repo.pool().clone()); // session_layer wires this
+    /// let store = SqlxSqliteStore::new(repo.pool().clone(), repo.open_read_pool().await?); // session_layer wires this
     /// ```
-    pub fn new(pool: SqlitePool) -> Self {
-        Self { pool }
+    pub fn new(pool: SqlitePool, read_pool: SqlitePool) -> Self {
+        Self { pool, read_pool }
     }
 
     /// Create the session table if absent. Run once at startup.
@@ -71,7 +80,7 @@ impl SqlxSqliteStore {
     async fn id_exists(&self, id: &Id) -> session_store::Result<bool> {
         let row = sqlx::query("SELECT 1 FROM tower_sessions WHERE id = ?")
             .bind(id.to_string())
-            .fetch_optional(&self.pool)
+            .fetch_optional(&self.read_pool)
             .await
             .map_err(|e| session_store::Error::Backend(e.to_string()))?;
         Ok(row.is_some())
@@ -109,7 +118,7 @@ impl SessionStore for SqlxSqliteStore {
         let row = sqlx::query("SELECT data FROM tower_sessions WHERE id = ? AND expiry_date > ?")
             .bind(id.to_string())
             .bind(now)
-            .fetch_optional(&self.pool)
+            .fetch_optional(&self.read_pool)
             .await
             .map_err(|e| session_store::Error::Backend(e.to_string()))?;
         match row {
@@ -180,7 +189,11 @@ pub(crate) async fn sweep_spent_invites(
 /// growth. Sweeps once at startup, then every `SESSION_SWEEP_PERIOD`. A
 /// failed sweep is logged and retried next tick — it never aborts the server.
 pub fn spawn_session_sweep(repo: &SqliteRepository) {
-    let store = SqlxSqliteStore::new(repo.pool().clone());
+    // Synchronous fn (no `open_read_pool().await` available here) and this
+    // sweep only ever calls `delete_expired` (a write), never `load`/
+    // `id_exists` — the write pool suffices for both arguments; this is the
+    // one deliberate exception to "every caller passes a real read pool".
+    let store = SqlxSqliteStore::new(repo.pool().clone(), repo.pool().clone());
     let pool = repo.pool().clone();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(SESSION_SWEEP_PERIOD);
@@ -283,7 +296,8 @@ pub async fn session_layer(
     repo: &SqliteRepository,
     config: &Config,
 ) -> anyhow::Result<SessionManagerLayer<SqlxSqliteStore, SignedCookie>> {
-    let store = SqlxSqliteStore::new(repo.pool().clone());
+    let read_pool = repo.open_read_pool().await?;
+    let store = SqlxSqliteStore::new(repo.pool().clone(), read_pool);
     store.migrate().await?;
     let key = load_or_create_key(repo, config).await?;
     Ok(SessionManagerLayer::new(store)
@@ -389,7 +403,8 @@ mod tests {
         let repo = crate::data::sqlite::SqliteRepository::connect("sqlite::memory:")
             .await
             .unwrap();
-        let store = SqlxSqliteStore::new(repo.pool().clone());
+        let read_pool = repo.open_read_pool().await.unwrap();
+        let store = SqlxSqliteStore::new(repo.pool().clone(), read_pool);
         store.migrate().await.unwrap();
         let now = OffsetDateTime::now_utc().unix_timestamp();
 
@@ -466,5 +481,86 @@ mod tests {
             .await
             .unwrap()
             .is_some());
+    }
+
+    #[tokio::test]
+    async fn session_load_does_not_queue_behind_an_open_write_transaction() {
+        let repo = crate::data::sqlite::SqliteRepository::connect("sqlite::memory:")
+            .await
+            .unwrap();
+        let read_pool = repo.open_read_pool().await.unwrap();
+        let store = SqlxSqliteStore::new(repo.pool().clone(), read_pool);
+        store.migrate().await.unwrap();
+
+        let mut record = Record {
+            id: Id::default(),
+            data: Default::default(),
+            expiry_date: OffsetDateTime::now_utc() + Duration::days(1),
+        };
+        store.create(&mut record).await.unwrap();
+
+        // Hold the write pool's single connection open in an uncommitted
+        // transaction. Before this fix, `load()` shared this exact pool
+        // (max_connections(1)), so it would have zero free connections to
+        // acquire and block until this transaction ends.
+        let tx = repo.pool().begin().await.unwrap();
+
+        let loaded =
+            tokio::time::timeout(std::time::Duration::from_secs(2), store.load(&record.id))
+                .await
+                .expect("load() must not queue behind an open write-pool transaction")
+                .unwrap();
+        assert_eq!(loaded.unwrap().id, record.id);
+
+        tx.rollback().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn read_pool_shares_the_same_in_memory_database_as_the_write_pool() {
+        let repo = crate::data::sqlite::SqliteRepository::connect("sqlite::memory:")
+            .await
+            .unwrap();
+        let read_pool = repo.open_read_pool().await.unwrap();
+        let store = SqlxSqliteStore::new(repo.pool().clone(), read_pool);
+        store.migrate().await.unwrap();
+
+        let mut record = Record {
+            id: Id::default(),
+            data: Default::default(),
+            expiry_date: OffsetDateTime::now_utc() + Duration::days(1),
+        };
+        store.create(&mut record).await.unwrap();
+
+        // If the read pool were built from a second, independent parse of
+        // "sqlite::memory:" (the landmine this brief investigated), it would
+        // point at a different, empty database and this would return None.
+        let loaded = store.load(&record.id).await.unwrap();
+        assert!(
+            loaded.is_some(),
+            "read pool must see data written via the write pool"
+        );
+    }
+
+    #[tokio::test]
+    async fn read_pool_rejects_a_write() {
+        // File-backed, not "sqlite::memory:": a named shared-cache in-memory
+        // database does not enforce `SQLITE_OPEN_READONLY` against a write
+        // from a connection sharing that cache (measured — a raw sqlx probe
+        // with no shadowcat code in the loop still lets the write through),
+        // while a real on-disk database does. Production always connects to
+        // a real file, so this exercises the shape that matters; the
+        // in-memory URL this repo's other tests share would pass unconditionally
+        // here regardless of whether `.read_only(true)` is even applied.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("read_only_probe.db");
+        let url = format!("sqlite://{}?mode=rwc", path.to_string_lossy());
+        let repo = crate::data::sqlite::SqliteRepository::connect(&url)
+            .await
+            .unwrap();
+        let read_pool = repo.open_read_pool().await.unwrap();
+        let result = sqlx::query("CREATE TABLE t (x INTEGER)")
+            .execute(&read_pool)
+            .await;
+        assert!(result.is_err(), "a read-only pool must reject a write");
     }
 }

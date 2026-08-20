@@ -143,20 +143,30 @@ pub struct NewInvite<'a> {
 pub struct SqliteRepository {
     /// Single-connection pool: the one writer serializing every transaction.
     pool: SqlitePool,
+    /// The connect options `pool` was opened from — cloned to open a second
+    /// pool against the identical database (see `open_read_pool`); never
+    /// re-derive this by re-parsing a URL string (see
+    /// `crate::db::parse_connect_options`'s doc for why).
+    connect_options: sqlx::sqlite::SqliteConnectOptions,
 }
 
 impl SqliteRepository {
     /// Connect to `url` (e.g. "sqlite::memory:" or "sqlite:///path/to.db")
-    /// and run migrations. Pool options (single-connection cap, foreign keys
-    /// enabled per connection) come from the shared [`crate::db::connect_pool`]
-    /// bootstrap, never restated here.
+    /// and run migrations. `url` is parsed once via
+    /// [`crate::db::parse_connect_options`] and the resulting options open
+    /// the pool through [`crate::db::connect_pool_with_options`] — never
+    /// restated here.
     pub async fn connect(url: &str) -> Result<Self, DataError> {
-        let pool = crate::db::connect_pool(url).await?;
+        let connect_options = crate::db::parse_connect_options(url)?;
+        let pool = crate::db::connect_pool_with_options(connect_options.clone()).await?;
         sqlx::migrate!()
             .run(&pool)
             .await
             .map_err(sqlx::Error::from)?;
-        Ok(Self { pool })
+        Ok(Self {
+            pool,
+            connect_options,
+        })
     }
 
     /// The underlying pool, for callers that run their own queries (tests,
@@ -177,6 +187,28 @@ impl SqliteRepository {
     /// ```
     pub fn pool(&self) -> &SqlitePool {
         &self.pool
+    }
+
+    /// Opens a second, read-only pool against the same database `pool`
+    /// writes through — see [`crate::db::open_read_only_pool`]. For a
+    /// `sqlite::memory:`-backed repository this shares the SAME generated
+    /// in-memory database [`Self::connect`] opened, never a fresh, empty one.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// let read_pool = repo.open_read_pool().await?;
+    /// let row: (i64,) = sqlx::query_as("SELECT 1").fetch_one(&read_pool).await?;
+    /// assert_eq!(row.0, 1);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn open_read_pool(&self) -> Result<SqlitePool, sqlx::Error> {
+        crate::db::open_read_only_pool(self.connect_options.clone()).await
     }
 
     /// Insert a new asset record. `version` starts at 1.
@@ -3275,7 +3307,8 @@ mod tests {
     /// serialization, not a hand-rolled imitation of it.
     async fn seed_session(repo: &SqliteRepository, key: i128, user: Uuid, name: &str) {
         use tower_sessions::session_store::SessionStore;
-        let store = crate::auth::session::SqlxSqliteStore::new(repo.pool().clone());
+        let read_pool = repo.open_read_pool().await.unwrap();
+        let store = crate::auth::session::SqlxSqliteStore::new(repo.pool().clone(), read_pool);
         store.migrate().await.unwrap();
         let mut data = std::collections::HashMap::new();
         data.insert(
@@ -3428,10 +3461,13 @@ mod tests {
         let repo = repo().await;
         // delete_user's documented boot coupling: the session table exists
         // before any route can reach it; repo-level tests create it themselves.
-        crate::auth::session::SqlxSqliteStore::new(repo.pool().clone())
-            .migrate()
-            .await
-            .unwrap();
+        crate::auth::session::SqlxSqliteStore::new(
+            repo.pool().clone(),
+            repo.open_read_pool().await.unwrap(),
+        )
+        .migrate()
+        .await
+        .unwrap();
         assert!(matches!(
             repo.delete_user(Uuid::new_v4()).await,
             Err(DataError::NotFound)

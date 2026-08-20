@@ -1,6 +1,6 @@
 ---
 name: shadowcat-codebase-server-ops
-description: "Use when touching Shadowcat's server bootstrap/config/CLI/deployment surface: the `main` module (entry point, early one-shot CLI branches), the `config` module (`Cli`/`Config` layering: CLI flag > SHADOWCAT_* env > TOML > default), the `db` module (the shared `connect_pool` single-connection SqlitePool bootstrap every pool-opening site in the crate calls), or the `backup` module (whole-server VACUUM-INTO backup/restore). Covers the single-binary deployment story, not any one data/document subsystem. Invoke shadowcat-codebase-core first."
+description: "Use when touching Shadowcat's server bootstrap/config/CLI/deployment surface: the `main` module (entry point, early one-shot CLI branches), the `config` module (`Cli`/`Config` layering: CLI flag > SHADOWCAT_* env > TOML > default), the `db` module (the shared `connect_pool` single-writer SqlitePool bootstrap plus `open_read_only_pool`'s dedicated read-only bootstrap, every pool-opening site in the crate calls one of the two), or the `backup` module (whole-server VACUUM-INTO backup/restore). Covers the single-binary deployment story, not any one data/document subsystem. Invoke shadowcat-codebase-core first."
 ---
 
 # Shadowcat — Server Bootstrap, Config, and Backup/Restore
@@ -30,17 +30,29 @@ and restore as a deployment-operator tool, not an in-app feature.
   `run_backup`/`run_restore` and `return Ok(())` — `SqliteRepository::connect` (the long-lived
   pool) and `axum::serve` are structurally unreachable on that path, not just conditionally
   skipped.
-- `db` — `connect_pool(url) -> Result<SqlitePool, sqlx::Error>`: the SHARED pool-open bootstrap
+- `db` — `parse_connect_options(url) -> Result<SqliteConnectOptions, sqlx::Error>` parses a URL
+  into connect options exactly ONCE; `connect_pool_with_options(options) -> Result<SqlitePool,
+  sqlx::Error>` is the SHARED single-writer pool-open bootstrap over already-parsed options
   (`SqlitePoolOptions::max_connections(1)` + a `PRAGMA foreign_keys = ON;`
-  `SqlitePoolOptions::after_connect` hook),
-  stated once here rather than restated per site. Every pool-opening call in the crate routes
-  through it: `data::sqlite::SqliteRepository::connect` (which then runs migrations —
-  `connect_pool` deliberately does not, since a caller opening a short-lived pool against an
-  already-migrated database, e.g. `backup::create_backup`'s `VACUUM INTO` connection, must never
-  trigger a schema migration as a side effect of backing up), `backup::create_backup`, and every
-  ad hoc test-scaffolding pool in `backup`'s own `tests` module. There is exactly one pool-options
-  decision in the crate now; nothing calls `SqlitePoolOptions::new()` directly outside this
-  function.
+  `SqlitePoolOptions::after_connect` hook); `connect_pool(url)` is the URL-string convenience that
+  chains the two for callers with no need to share the parsed connect options with a second pool.
+  Every
+  write-pool-opening call in the crate routes through `connect_pool`/`connect_pool_with_options`:
+  `data::sqlite::SqliteRepository::connect` (which then runs migrations — `connect_pool`
+  deliberately does not, since a caller opening a short-lived pool against an already-migrated
+  database, e.g. `backup::create_backup`'s `VACUUM INTO` connection, must never trigger a schema
+  migration as a side effect of backing up), `backup::create_backup`, and every ad hoc
+  test-scaffolding pool in `backup`'s own `tests` module. A second, dedicated function,
+  `open_read_only_pool(options) -> Result<SqlitePool, sqlx::Error>`, opens a small
+  (`max_connections(4)`) read-only pool against the SAME already-parsed connect options passed in
+  — never a fresh parse of the URL string, since a second parse of an in-memory URL creates an
+  unrelated, empty in-memory database (see `parse_connect_options`'s doc).
+  `data::sqlite::SqliteRepository::open_read_pool`
+  is the sole caller, clone-ing the repository's own stored `connect_options`; `auth::session`'s
+  `SqlxSqliteStore` is the one consumer, using this read pool for its hot `load`/`id_exists` path
+  ([[shadowcat-codebase-realtime-sync]]). There are now exactly two pool-options decisions in the
+  crate (the write bootstrap and the read-only bootstrap); nothing calls `SqlitePoolOptions::new()`
+  directly outside these two functions.
 - `backup` — `BackupManifest`, `BackupError`, `dir_is_empty_or_absent`,
   `create_backup(db_path, assets_dir, out_dir) -> Result<BackupManifest, BackupError>`,
   `restore_backup(backup_dir, db_path, assets_dir, force) -> Result<(), BackupError>`. Opens its
@@ -60,11 +72,16 @@ and restore as a deployment-operator tool, not an in-app feature.
 
 ## Hard invariants
 
-- **Pool-open options are derived from one shared constructor, never restated per site** —
-  `db::connect_pool` is the sole place `max_connections(1)` and the foreign-keys
-  `SqlitePoolOptions::after_connect` hook are set; a new pool-opening call site must call it rather
-  than reconstructing `SqlitePoolOptions` inline, or the two decisions silently fork again the moment one site's
-  requirements change and the other isn't updated to match.
+- **Pool-open options are derived from shared constructors, never restated per site** —
+  `db::connect_pool_with_options` is the sole place `max_connections(1)` and the foreign-keys
+  `SqlitePoolOptions::after_connect` hook are set for a WRITE pool, and `db::open_read_only_pool`
+  is the sole place a READ-ONLY pool's `max_connections(4)` + `.read_only(true)` are set; a new
+  pool-opening call site must call one of these rather than reconstructing `SqlitePoolOptions`
+  inline, or the decisions silently fork again the moment one site's requirements change and the
+  other isn't updated to match. A second pool sharing an existing pool's database must be built by
+  cloning that pool's already-parsed connect options, returned by `db::parse_connect_options` and
+  stored on `data::sqlite::SqliteRepository.connect_options`, never by re-parsing the URL string —
+  a fresh parse of an in-memory URL is a unique, unrelated, empty database.
 - **`VACUUM INTO`, never a raw `.db` file copy** — a raw byte-copy of a live SQLite file is unsafe
   (a concurrent writer or WAL journal can leave it mid-write); `VACUUM INTO` is SQLite's own
   atomic, consistency-guaranteed live-snapshot primitive.
