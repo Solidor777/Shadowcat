@@ -42,6 +42,7 @@ import {
 import type { WorldRole, InstalledModuleInfo } from "@shadowcat/types";
 import { SceneInteractionBridge, ActorSelection, TokenSelection, i18n } from "@shadowcat/ui-kit";
 import { SvelteMap } from "svelte/reactivity";
+import { getWorldSnapshot } from "./api";
 
 /** The WS connection lifecycle a `WorldSession` exposes as its reactive `state`. */
 export type ConnState = "connecting" | "open" | "closed";
@@ -755,6 +756,15 @@ export class WorldSession {
    * the transport is up. It certainly does not imply the world is usable: the server's
    * Welcome, module activation, member fetch, and external-module loading all happen
    * asynchronously afterward inside `#onWelcome` and are NOT awaited by this call.
+   *
+   * Before opening the socket, fetches a current-state snapshot (`getWorldSnapshot`) and seeds
+   * both `store` and `documents` from it, then pre-seeds the `WsClient`'s sequence watermark
+   * (`WsClient.seedWatermark`) so a genuine cold start bootstraps from current state instead of
+   * replaying the world's full history — the first `Welcome`'s existing gap-check only resyncs
+   * whatever committed after the snapshot was read. A snapshot-fetch failure degrades
+   * gracefully: it is logged and `enter` falls through to today's full-replay behavior (the
+   * watermark stays unseeded, so the Welcome-triggered resync catches up from scratch), mirroring
+   * `#loadExternalModules`'s own "a broken pipeline must never brick a world" pattern.
    * @param worldId The world to connect to.
    * @example
    * ```
@@ -769,7 +779,17 @@ export class WorldSession {
   async enter(worldId: string): Promise<void> {
     this.world = worldId;
     this.state = "connecting";
+    let snapshotSeq: number | null = null;
+    try {
+      const snapshot = await getWorldSnapshot(worldId);
+      this.store.seedDocuments(snapshot.documents);
+      this.#optimistic.seedDocuments(snapshot.documents);
+      snapshotSeq = snapshot.seq;
+    } catch (e) {
+      this.#logger.warn("world snapshot bootstrap failed; falling back to full replay", e);
+    }
     this.#ws = new WsClient({
+      world: worldId,
       connect: this.opts.connect,
       handlers: {
         // Feed both mirrors: the authoritative DocumentStore (exposed via
@@ -803,6 +823,9 @@ export class WorldSession {
         },
       },
     });
+    // Pre-seed the watermark BEFORE start()/open() sends the first Hello — a call after open()
+    // would move it backward instead (see WsClient.seedWatermark's own doc).
+    if (snapshotSeq !== null) this.#ws.seedWatermark(snapshotSeq);
     // Broadcast-driven animation: drive all scene viewers (mover + observers) from the
     // MoveStream frame. serverNow() aligns startServerMs to local time for catch-up.
     // Coupling: sceneInteraction.animateSamples no-ops until Stage attaches the engine.

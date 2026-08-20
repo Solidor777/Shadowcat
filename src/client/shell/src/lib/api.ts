@@ -1,4 +1,5 @@
 import type { WorldEntry } from "@shadowcat/types";
+import type { WireDocument } from "@shadowcat/core";
 
 /** Local mirror of the server's MeResponse (not ts-rs-exported). */
 export interface Me {
@@ -135,6 +136,32 @@ export async function logout(): Promise<void> {
  */
 export function listWorlds(): Promise<WorldEntry[]> {
   return getJson<WorldEntry[]>("/api/worlds");
+}
+
+/** `GET /api/worlds/{id}/snapshot` response: every document the caller can currently see,
+ * per-recipient filtered, plus the room's `current_seq` at read time. Hand-typed (rather than
+ * the ts-rs-generated `WorldSnapshot`, whose `seq: bigint` reflects the Rust `i64` field, not
+ * the JSON number `fetch` actually parses it into) to match this module's other hand-written
+ * response shapes (`Me`, `UiState`). */
+export interface WorldSnapshotResponse {
+  /** Every visible document, per-recipient filtered. */
+  documents: WireDocument[];
+  /** The room's `current_seq` this snapshot was read as-of. */
+  seq: number;
+}
+
+/** Fetches a current-state snapshot of every document the caller can see in `worldId`, plus the
+ * seq it was read as-of. `WorldSession.enter` calls this before opening the WS connection so a
+ * genuine cold start bootstraps from current state instead of replaying the world's full history.
+ * @param worldId The world to snapshot.
+ * @returns The visible documents and the snapshot's `seq`.
+ * @example
+ * ```
+ * const snapshot = await getWorldSnapshot("00000000-0000-0000-0000-000000000001");
+ * ```
+ */
+export function getWorldSnapshot(worldId: string): Promise<WorldSnapshotResponse> {
+  return getJson<WorldSnapshotResponse>(`/api/worlds/${encodeURIComponent(worldId)}/snapshot`);
 }
 
 /** Per-user UI session state. The server stores this opaquely (object + size cap);

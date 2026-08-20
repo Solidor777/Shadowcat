@@ -3,7 +3,7 @@ import { OptimisticClient } from "./optimistic";
 import { WsClient } from "./ws-client";
 import { MockServer } from "./mock-server";
 import { buildFactionRegistryDoc, deterministicId } from "./scene-docs";
-import type { ClientMsg, WireOperation } from "./wire";
+import type { ClientMsg, WireDocument, WireOperation } from "./wire";
 
 const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
 
@@ -42,6 +42,12 @@ function createOp(id: string, hp: number): WireOperation {
   };
 }
 
+function doc(id: string, hp: number): WireDocument {
+  const op = createOp(id, hp);
+  if (op.op !== "create") throw new Error("unreachable: createOp always returns a create op");
+  return op.doc;
+}
+
 function updateOp(id: string, hp: number, prev: number): WireOperation {
   return {
     op: "update",
@@ -64,6 +70,7 @@ async function connect(server: MockServer, author: string) {
   const oc = new OptimisticClient(author);
   let n = 0;
   const ws = new WsClient({
+    world: "w1",
     connect: server.connector(author),
     handlers: {
       onCommand: (c) => oc.applyCommand(c),
@@ -253,5 +260,35 @@ describe("OptimisticClient", () => {
     // Rejecting the bad intent must not throw either, and clears it.
     expect(() => oc.reject("bad")).not.toThrow();
     expect(oc.pendingIntents()).toEqual([]);
+  });
+
+  describe("seedDocuments", () => {
+    it("populates get(id) for every seeded document", () => {
+      const oc = new OptimisticClient("u1");
+      oc.seedDocuments([doc("d1", 10), doc("d2", 5)]);
+      expect(oc.get("d1")).toBeDefined();
+      expect(oc.get("d2")).toBeDefined();
+      expect((oc.get("d1")!.system as { hp: number }).hp).toBe(10);
+    });
+
+    it("fires the subscribe listener exactly once for the whole batch", () => {
+      const oc = new OptimisticClient("u1");
+      let calls = 0;
+      oc.subscribe(() => calls++);
+      oc.seedDocuments([doc("d1", 1), doc("d2", 2), doc("d3", 3)]);
+      expect(calls).toBe(1);
+    });
+
+    it("replaces prior state wholesale rather than merging", () => {
+      const oc = new OptimisticClient("u1");
+      oc.seedDocuments([doc("d1", 1), doc("d2", 2)]);
+      expect(oc.get("d1")).toBeDefined();
+      // A naive "merge into existing base" implementation would still have d1
+      // defined here; a wholesale replace does not.
+      oc.seedDocuments([doc("d2", 2), doc("d3", 3)]);
+      expect(oc.get("d1")).toBeUndefined();
+      expect(oc.get("d2")).toBeDefined();
+      expect(oc.get("d3")).toBeDefined();
+    });
   });
 });

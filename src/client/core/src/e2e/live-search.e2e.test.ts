@@ -79,6 +79,7 @@ test("a player's live subscription updates on a readable create and never leaks 
   const { world } = server.fixture;
 
   const player = new WsClient({
+    world: "w1",
     connect: nodeConnect(server.wsUrl, world, plCookie),
     handlers: { onCommand: () => {} },
   });
@@ -91,6 +92,7 @@ test("a player's live subscription updates on a readable create and never leaks 
 
   // GM connects and creates one readable + one GM-only doc, both matching "griffon".
   const gm = new WsClient({
+    world: "w1",
     connect: nodeConnect(server.wsUrl, world, gmCookie),
     handlers: { onCommand: () => {} },
   });

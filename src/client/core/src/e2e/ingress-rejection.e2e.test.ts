@@ -43,6 +43,7 @@ async function tryCreate(
   let rejected: RejectReason | null = null;
   let accepted = false;
   const client = new WsClient({
+    world: "w1",
     connect: nodeConnect(wsUrl, world, cookie),
     handlers: {
       // Resync replays every pre-existing fixture doc as an "event" too — only

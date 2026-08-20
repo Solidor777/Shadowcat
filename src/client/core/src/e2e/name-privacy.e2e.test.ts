@@ -39,6 +39,7 @@ test("/name owner_or_gm override: owner+GM see the name, a non-owner player gets
   // The player joins first so it observes the live Create.
   let observedName: string | null | undefined;
   const playerWatch = new WsClient({
+    world: "w1",
     connect: nodeConnect(server.wsUrl, world, plCookie),
     handlers: {
       onCommand: (cmd: WireCommand) => {
@@ -54,6 +55,7 @@ test("/name owner_or_gm override: owner+GM see the name, a non-owner player gets
   await sleep(300);
 
   const gm = new WsClient({
+    world: "w1",
     connect: nodeConnect(server.wsUrl, world, gmCookie),
     handlers: { onCommand: () => {} },
   });
@@ -117,6 +119,7 @@ test("/name owner_or_gm override: owner+GM see the name, a non-owner player gets
   // The non-owner player cannot find it by the hidden name (the public FTS
   // partition never indexed the redacted /name).
   const plSearch = new WsClient({
+    world: "w1",
     connect: nodeConnect(server.wsUrl, world, plCookie),
     handlers: { onCommand: () => {} },
   });

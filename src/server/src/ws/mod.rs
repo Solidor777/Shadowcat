@@ -122,21 +122,6 @@ impl WsState {
             module_scan_cache: Arc::new(crate::modules::ModuleScanCache::new()),
         }
     }
-
-    /// A `WsState` whose rooms enforce the resync floor against an explicit
-    /// `ClientMsg::ResyncRequest`. Test-only: production rooms leave it unenforced
-    /// until a client sends a cold-start `Hello` (see `RoomRegistry::new`'s own doc).
-    pub fn with_resync_floor_enforced() -> Self {
-        Self {
-            rooms: Arc::new(RoomRegistry::with_resync_floor_enforced()),
-            ping_rate: Arc::new(PingRateLimiter::new()),
-            message_rate: Arc::new(PingRateLimiter::new()),
-            link_preview_client: Arc::new(crate::chat::build_link_preview_client()),
-            link_preview_cache: Arc::new(crate::chat::LinkPreviewCache::new()),
-            preview_rate: Arc::new(crate::chat::PreviewRateLimiter::new()),
-            module_scan_cache: Arc::new(crate::modules::ModuleScanCache::new()),
-        }
-    }
 }
 
 impl Default for WsState {

@@ -12,6 +12,18 @@ import {
 } from "@shadowcat/core";
 import { WorldSession } from "./worldSession.svelte";
 import { listWorldMembers } from "@shadowcat/core";
+import { getWorldSnapshot } from "./api";
+
+// The snapshot-bootstrap fetch hits the network on every enter(); stub it (safe default: no
+// documents, seq 0) so the 25+ existing Welcome-flow tests below are unaffected, alongside the
+// two dedicated snapshot-bootstrap tests further down which override it per-call.
+vi.mock("./api", async (importActual) => {
+  const actual = await importActual<typeof import("./api")>();
+  return {
+    ...actual,
+    getWorldSnapshot: vi.fn().mockResolvedValue({ documents: [], seq: 0 }),
+  };
+});
 
 // The members fetch hits the network; stub it (safe default, overridable per
 // test), alongside the external-module discovery fetches (installed set + a
@@ -1295,4 +1307,53 @@ test("reconcileInstalledModules called before any world was ever entered is a sa
   });
   await expect(session.reconcileInstalledModules()).resolves.toBeUndefined();
   expect(session.contributions.contributionsFor(MARKER_CONTRACT)).toEqual([]);
+});
+
+test("enter() fetches the snapshot before opening the WS connection, and the returned documents are queryable before any WS frame is received", async () => {
+  const snapshotDoc = buildActorDoc(
+    "w1",
+    "G",
+    {
+      displayName: "G",
+      visual: { kind: "image", asset: "a" },
+      size: { w: 1, h: 1 },
+      shape: "square",
+      faction: null,
+      conditions: [],
+      prototype: false,
+      vision: null,
+    },
+    "snap-actor",
+  );
+  vi.mocked(getWorldSnapshot).mockResolvedValueOnce({ documents: [snapshotDoc], seq: 7 });
+
+  // A connect that never delivers any frame at all until the test explicitly triggers one —
+  // proves the snapshot's documents are already queryable purely from the pre-connect fetch,
+  // with no WS frame involved yet.
+  let connectCalled = false;
+  const connect: Connect = () => {
+    connectCalled = true;
+    return Promise.resolve({ send: () => {}, close: () => {} });
+  };
+  const session = new WorldSession({ selfId: "u1", connect, modules: [], logger: silentLogger });
+
+  await session.enter("w1");
+
+  expect(connectCalled).toBe(true); // the WS connection was still attempted afterward
+  expect(session.store.get("snap-actor")).toBeDefined();
+  expect(session.documents.get("snap-actor")).toBeDefined();
+});
+
+test("a snapshot-fetch failure does not throw out of enter() and does not prevent the WS connection from being attempted", async () => {
+  vi.mocked(getWorldSnapshot).mockRejectedValueOnce(new Error("snapshot endpoint down"));
+
+  let connectCalled = false;
+  const connect: Connect = () => {
+    connectCalled = true;
+    return Promise.resolve({ send: () => {}, close: () => {} });
+  };
+  const session = new WorldSession({ selfId: "u1", connect, modules: [], logger: silentLogger });
+
+  await expect(session.enter("w1")).resolves.toBeUndefined();
+  expect(connectCalled).toBe(true);
 });

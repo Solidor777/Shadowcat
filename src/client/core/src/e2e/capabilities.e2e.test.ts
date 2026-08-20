@@ -42,6 +42,7 @@ test("player is rejected writing a GM-gated path; Welcome carries projected caps
   let rejected: RejectReason | null = null;
   let welcome: WireWelcome | null = null;
   const client = new WsClient({
+    world: "w1",
     connect: nodeConnect(server.wsUrl, world, cookie),
     handlers: {
       onCommand: () => {},

@@ -18,9 +18,7 @@ capability already exists — but are deferred as out-of-scope-for-now work.
   operation and the current view may only WITHHOLD visibility, never grant it. A pure snapshot
   closes the loosening leak and opens a tightening one, because reading current state is exactly
   what makes retroactive hiding work — both reviewers found that independently.
-  Owner rulings already taken: build the resync lower bound as well as the snapshot (the bound is
-  fail-closed, immediate, and independently valuable, since any member can currently request the
-  entire world history unvalidated); carry the context on the operation rather than a sibling map or
+  Owner rulings already taken: carry the context on the operation rather than a sibling map or
   a log column; capture per COMMAND, not per op; cover all three operation arms, since create and
   delete are not point-in-time correct despite carrying their document.
 

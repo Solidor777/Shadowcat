@@ -38,14 +38,6 @@ async fn spawn_with_capacity(capacity: usize) -> Harness {
     spawn_with_ws(shadowcat::ws::WsState::with_broadcast_capacity(capacity)).await
 }
 
-/// Like `spawn`, but rooms enforce the resync floor against an explicit
-/// `ResyncRequest` — production leaves this off until a client sends a cold-start
-/// `Hello` (see `RoomRegistry::new`'s own doc); this exercises the enforced behavior
-/// end-to-end without depending on that client change.
-async fn spawn_enforced() -> Harness {
-    spawn_with_ws(shadowcat::ws::WsState::with_resync_floor_enforced()).await
-}
-
 async fn spawn_with_ws(ws: shadowcat::ws::WsState) -> Harness {
     let repo = Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
     let hash = hash_password("pw").unwrap();
@@ -335,9 +327,25 @@ async fn join_welcome_emit_receive() {
 async fn all_clients_converge_after_reconnect() {
     let h = spawn().await;
 
-    // Client A stays connected the whole time.
+    // Client A stays connected the whole time. A cold-start Hello (sent before any
+    // event is published) establishes this user's resync floor at seq 0 — mirroring
+    // the real client's unconditional first-open Hello — so a LATER connection for
+    // the same user (client B below; this harness's connections all share one
+    // authenticated user) inherits that floor and is not clamped when it later
+    // requests the full backlog (the floor is keyed by user_id, not by connection).
     let mut a = h.connect().await;
     let _ = a.next().await; // Welcome
+    a.send(hello_cold_start(h.world)).await.unwrap();
+    // A time_ping/time_pong round trip on this SAME connection is a synchronization
+    // barrier: per-connection ingress frames are processed in send order, so the pong
+    // proves the Hello above was already applied (floor established) before the
+    // publisher below opens its own connection — no cross-connection race.
+    a.send(Message::Text(
+        serde_json::json!({ "type": "time_ping", "client_t0": 0 }).to_string(),
+    ))
+    .await
+    .unwrap();
+    let _ = drain_until_type(&mut a, "time_pong").await;
 
     // Emit 5 events from a publisher client.
     let mut pubc = h.connect().await;
@@ -432,6 +440,21 @@ async fn converges_with_publishing_during_resync() {
     let h = spawn().await;
     let mut reader = h.connect().await;
     let _ = reader.next().await; // Welcome
+                                 // A cold-start Hello (before any event is published) establishes this user's
+                                 // resync floor at seq 0 — mirroring the real client's unconditional first-open
+                                 // Hello — so the LATER `late` connection below (same authenticated user; the
+                                 // floor is keyed by user_id, not by connection) inherits it and its full-history
+                                 // resync isn't clamped. The time_ping/time_pong round trip on this SAME
+                                 // connection is a synchronization barrier proving the Hello was applied before
+                                 // the publisher below opens its own connection — no cross-connection race.
+    reader.send(hello_cold_start(h.world)).await.unwrap();
+    reader
+        .send(Message::Text(
+            serde_json::json!({ "type": "time_ping", "client_t0": 0 }).to_string(),
+        ))
+        .await
+        .unwrap();
+    let _ = drain_until_type(&mut reader, "time_pong").await;
 
     let mut pubc = h.connect().await;
     let _ = pubc.next().await;
@@ -532,7 +555,7 @@ async fn resync_floor_bounds_a_late_clients_reach_when_enforced() {
     // seq) only AFTER several events have already been committed, then asks for the entire
     // history via an unbounded ResyncRequest. With enforcement on, the reply is bounded to
     // its own floor forward — none of the events committed before the Hello are replayed.
-    let h = spawn_enforced().await;
+    let h = spawn().await;
 
     let mut pubc = h.connect().await;
     let _ = pubc.next().await; // Welcome
@@ -567,7 +590,7 @@ async fn resync_without_a_prior_hello_fails_closed_when_enforced() {
     // No floor was ever established for this connection (it never sent Hello). With
     // enforcement on, the resync floor defaults to `current_seq() + 1` — an explicit
     // ResyncRequest for the whole history returns nothing, forcing a proper bootstrap.
-    let h = spawn_enforced().await;
+    let h = spawn().await;
 
     let mut pubc = h.connect().await;
     let _ = pubc.next().await;

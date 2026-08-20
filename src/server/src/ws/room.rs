@@ -204,12 +204,10 @@ pub struct Room {
     /// (`ws::conn`'s `Egress::Resync` handler reads this via `Room::resync_floor_enforced`
     /// — the internal `Lagged`-driven auto-resync deliberately does NOT consult it, since
     /// that path replays from a connection's own live-tracked watermark, not an untrusted
-    /// client-supplied `from_seq`). `false` in production (`RoomRegistry::new`) until the
-    /// client unconditionally sends a cold-start `Hello { last_seq: None }` on connect —
-    /// enforcing before then would clamp every explicit resync to empty for a client that
-    /// has never sent one, breaking today's reconnect-driven gap recovery. `true` via
-    /// `RoomRegistry::with_resync_floor_enforced`, which exercises the enforced path
-    /// end-to-end in tests without needing the client change to land first.
+    /// client-supplied `from_seq`). `true` for every production `RoomRegistry` constructor:
+    /// the client unconditionally sends a cold-start `Hello { last_seq: None }` as the first
+    /// frame on every socket open (`WsClient`'s `open()`), so every connection this room ever
+    /// sees establishes its floor before it could plausibly send a `ResyncRequest`.
     resync_floor_enforced_flag: bool,
 }
 
@@ -866,8 +864,8 @@ impl Room {
     }
 
     /// Whether an explicit `ClientMsg::ResyncRequest` should be clamped against
-    /// `resync_floor`. See the `resync_floor_enforced_flag` field doc for why this is off
-    /// by default and how a test turns it on.
+    /// `resync_floor`. See the `resync_floor_enforced_flag` field doc for why this is `true`
+    /// for every production constructor.
     pub fn resync_floor_enforced(&self) -> bool {
         self.resync_floor_enforced_flag
     }
@@ -909,14 +907,16 @@ pub struct RoomRegistry {
     /// `BROADCAST_CAPACITY`; test harnesses shrink it to force the lag path.
     broadcast_capacity: usize,
     /// Whether rooms created by this registry enforce the resync floor against an
-    /// explicit `ResyncRequest` (`Room::resync_floor_enforced`). `false` for every
-    /// production constructor; `with_resync_floor_enforced` flips it on for tests.
+    /// explicit `ResyncRequest` (`Room::resync_floor_enforced`). `true` for every
+    /// production constructor: the client unconditionally sends a cold-start `Hello`
+    /// as the first frame on every socket open, so enforcement is always safe.
     resync_floor_enforced: bool,
 }
 
 impl RoomRegistry {
-    /// A registry with the production broadcast capacity and the resync floor NOT
-    /// enforced (see `Room`'s `resync_floor_enforced_flag` doc for why).
+    /// A registry with the production broadcast capacity, whose rooms enforce the
+    /// resync floor against an explicit `ResyncRequest` (see `Room`'s
+    /// `resync_floor_enforced_flag` doc for why this is safe unconditionally).
     ///
     /// # Examples
     ///
@@ -931,7 +931,7 @@ impl RoomRegistry {
             rooms: DashMap::new(),
             deleting: DashSet::new(),
             broadcast_capacity: BROADCAST_CAPACITY,
-            resync_floor_enforced: false,
+            resync_floor_enforced: true,
         }
     }
 
@@ -943,19 +943,6 @@ impl RoomRegistry {
             rooms: DashMap::new(),
             deleting: DashSet::new(),
             broadcast_capacity,
-            resync_floor_enforced: false,
-        }
-    }
-
-    /// A registry with the production broadcast capacity whose rooms enforce the
-    /// resync floor against an explicit `ResyncRequest`. Test-only: exercises the
-    /// closed-reachability behavior end-to-end without depending on a client that
-    /// sends a cold-start `Hello` yet.
-    pub fn with_resync_floor_enforced() -> Self {
-        Self {
-            rooms: DashMap::new(),
-            deleting: DashSet::new(),
-            broadcast_capacity: BROADCAST_CAPACITY,
             resync_floor_enforced: true,
         }
     }

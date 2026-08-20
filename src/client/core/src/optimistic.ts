@@ -91,6 +91,28 @@ export class OptimisticClient implements ReadableDocuments {
     this.rebuildView();
   }
 
+  /** Bulk-loads a current-state snapshot into `base`, bypassing the operation-log abstraction
+   * (this is a LOAD, not a sequence of operations that occurred) — replaces `base` wholesale
+   * rather than merging, then rebuilds `view` on top of it so any already-pending prediction
+   * still applies over the seeded state. Fires listeners once at the end, not once per document.
+   * Does not touch `appliedSeq`: the snapshot's own seq feeds `WsClient.seedWatermark` instead,
+   * a separate watermark from the document contents.
+   * @param documents Every document to seed, already per-recipient filtered by the server.
+   * @example
+   * ```ts
+   * import { OptimisticClient } from "@shadowcat/core";
+   * import type { WireDocument } from "@shadowcat/core";
+   *
+   * const client = new OptimisticClient("00000000-0000-0000-0000-000000000001");
+   * declare const documents: WireDocument[];
+   * client.seedDocuments(documents);
+   * ```
+   */
+  seedDocuments(documents: WireDocument[]): void {
+    this.base = new Map(documents.map((d) => [d.id, d]));
+    this.rebuildView();
+  }
+
   /** Discard a rejected intent's prediction (wire `WsClient.onReject` to this).
    * @param intentId The id of the intent the server rejected.
    * @example

@@ -246,6 +246,8 @@ export interface WsClientOptions {
    * wait no reconnect machinery can see. Same 10s convention as the
    * correlated-request timeouts below. */
   welcomeTimeoutMs?: number;
+  /** The world id sent as `Hello.world` on every socket open. */
+  world: string;
 }
 
 /** Default `WsClientOptions.sleep`: a bare `setTimeout` wrapped as a promise.
@@ -277,6 +279,7 @@ const CHAT_ERROR_WINDOW_MS = 15_000;
  *
  * const client = new WsClient({
  *   connect: webSocketConnect("wss://example.test/ws"),
+ *   world: "world-1",
  *   handlers: { onCommand: (cmd) => console.log(cmd.seq) },
  * });
  * await client.start();
@@ -374,6 +377,12 @@ export class WsClient {
    * would ever disarm it (Welcome already came and went) — the healthy
    * connection would be closed at the watchdog window, forever. */
   private welcomedGeneration = -1;
+  /** True once this instance has ever successfully opened a transport. Identity fact about
+   * the INSTANCE, not derived from `nextExpected` — `nextExpected` is pre-seeded from a
+   * snapshot (`seedWatermark`) before the first `open()` in the normal bootstrap path, so by
+   * the time the first `Hello` is sent it is already past 1; deriving cold-start-ness from it
+   * would never report `None` and the server would never learn this is a genuine cold start. */
+  #hasEverOpened = false;
 
   /**
    * Construct a client bound to one connection factory + handler set; call `start()` to open it.
@@ -385,6 +394,7 @@ export class WsClient {
    *
    * const client = new WsClient({
    *   connect: webSocketConnect("wss://example.test/ws"),
+   *   world: "world-1",
    *   handlers: { onCommand: () => {} },
    * });
    * ```
@@ -448,6 +458,7 @@ export class WsClient {
    *
    * const client = new WsClient({
    *   connect: webSocketConnect("wss://example.test/ws"),
+   *   world: "world-1",
    *   handlers: { onCommand: () => {} },
    * });
    * await client.start();
@@ -469,6 +480,7 @@ export class WsClient {
    *
    * const client = new WsClient({
    *   connect: webSocketConnect("wss://example.test/ws"),
+   *   world: "world-1",
    *   handlers: { onCommand: () => {} },
    * });
    * client.stop();
@@ -552,6 +564,7 @@ export class WsClient {
    *
    * const client = new WsClient({
    *   connect: webSocketConnect("wss://example.test/ws"),
+   *   world: "world-1",
    *   handlers: { onCommand: () => {} },
    * });
    * client.send({ type: "time_ping", client_t0: Date.now() });
@@ -591,6 +604,7 @@ export class WsClient {
    *
    * const client = new WsClient({
    *   connect: webSocketConnect("wss://example.test/ws"),
+   *   world: "world-1",
    *   handlers: { onCommand: () => {} },
    * });
    * const t: number = client.serverNow();
@@ -598,6 +612,23 @@ export class WsClient {
    */
   serverNow(): number {
     return this.now() + this.serverOffsetMs;
+  }
+
+  /** Pre-seeds the sequence watermark from a current-state snapshot's `seq`, so the first
+   * `Welcome`'s existing gap-check (`current_seq >= nextExpected`) only triggers a resync for
+   * whatever committed AFTER the snapshot was read, never a full replay from the start. Must be
+   * called BEFORE the first `open()` — calling it after a connection has already advanced
+   * `nextExpected` further would incorrectly move the watermark BACKWARD.
+   * @param seq The snapshot's own `seq` field — the caller has already applied every document as
+   * of this point.
+   * @example
+   * ```ts
+   * declare const client: WsClient;
+   * client.seedWatermark(42);
+   * ```
+   */
+  seedWatermark(seq: number): void {
+    this.nextExpected = Math.max(this.nextExpected, seq + 1);
   }
 
   /** One connection attempt: bumps `connGeneration`, awaits `opts.connect`, and on success arms
@@ -625,6 +656,16 @@ export class WsClient {
         return;
       }
       this.transport = transport;
+      // Hello is the FIRST outgoing frame on every open (including internal
+      // reconnects). Cold-start-ness is the instance's own open history, never
+      // derived from `nextExpected` (see `#hasEverOpened`'s field doc).
+      const isColdStart = !this.#hasEverOpened;
+      this.#hasEverOpened = true;
+      this.send({
+        type: "hello",
+        world: this.opts.world,
+        last_seq: isColdStart ? null : this.nextExpected - 1,
+      });
       // reconnectAttempt resets on WELCOME (handleFrame's "welcome" case), not
       // here: a server that accepts the socket but never sends Welcome must
       // keep backing off on each watchdog-close/reconnect cycle, not retry at
@@ -898,6 +939,7 @@ export class WsClient {
    *
    * const client = new WsClient({
    *   connect: webSocketConnect("wss://example.test/ws"),
+   *   world: "world-1",
    *   handlers: { onCommand: () => {} },
    * });
    * const page = await client.search("goblin", { limit: 10 });
@@ -943,6 +985,7 @@ export class WsClient {
    *
    * const client = new WsClient({
    *   connect: webSocketConnect("wss://example.test/ws"),
+   *   world: "world-1",
    *   handlers: { onCommand: () => {} },
    * });
    * const handle = await client.subscribeSearch("goblin", {}, (hits) => console.log(hits.length));
@@ -1006,6 +1049,7 @@ export class WsClient {
    *
    * const client = new WsClient({
    *   connect: webSocketConnect("wss://example.test/ws"),
+   *   world: "world-1",
    *   handlers: { onCommand: () => {} },
    * });
    * const sub = await client.subscribeScene("vision", (frame) => console.log(frame.computedAtSeq));
@@ -1061,6 +1105,7 @@ export class WsClient {
    *
    * const client = new WsClient({
    *   connect: webSocketConnect("wss://example.test/ws"),
+   *   world: "world-1",
    *   handlers: { onCommand: () => {} },
    * });
    * const result = await client.pathfind("scene-1", [0, 0], [[5, 5]], 0.5);
@@ -1116,6 +1161,7 @@ export class WsClient {
    *
    * const client = new WsClient({
    *   connect: webSocketConnect("wss://example.test/ws"),
+   *   world: "world-1",
    *   handlers: { onCommand: () => {} },
    * });
    * const stream = await client.moveRequest("scene-1", "token-1", [[1, 1]]);
@@ -1160,6 +1206,7 @@ export class WsClient {
    *
    * const client = new WsClient({
    *   connect: webSocketConnect("wss://example.test/ws"),
+   *   world: "world-1",
    *   handlers: { onCommand: () => {} },
    * });
    * const off = client.onMoveStream((s) => console.log(s.tokenId));
@@ -1221,6 +1268,7 @@ export class WsClient {
    *
    * const client = new WsClient({
    *   connect: webSocketConnect("wss://example.test/ws"),
+   *   world: "world-1",
    *   handlers: { onCommand: () => {} },
    * });
    * await client.sendChatMessage({ channel: "main", content: "hello" });
@@ -1252,6 +1300,7 @@ export class WsClient {
    *
    * const client = new WsClient({
    *   connect: webSocketConnect("wss://example.test/ws"),
+   *   world: "world-1",
    *   handlers: { onCommand: () => {} },
    * });
    * await client.editChatMessage("msg-1", "corrected text");
@@ -1275,6 +1324,7 @@ export class WsClient {
    *
    * const client = new WsClient({
    *   connect: webSocketConnect("wss://example.test/ws"),
+   *   world: "world-1",
    *   handlers: { onCommand: () => {} },
    * });
    * await client.deleteChatMessage("msg-1");

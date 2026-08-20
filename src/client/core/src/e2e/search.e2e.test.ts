@@ -33,6 +33,7 @@ test("search excludes documents the player cannot read", async () => {
   const cookie = await login(server.baseUrl, "pl", "pw");
   const { world } = server.fixture;
   const client = new WsClient({
+    world: "w1",
     connect: nodeConnect(server.wsUrl, world, cookie),
     handlers: { onCommand: () => {} },
   });

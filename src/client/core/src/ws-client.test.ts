@@ -68,6 +68,7 @@ describe("WsClient", () => {
   it("syncs existing events on join", async () => {
     const server = new MockServer();
     const pub = new WsClient({
+      world: "w1",
       connect: server.connector("u1"),
       handlers: noop,
     });
@@ -79,6 +80,7 @@ describe("WsClient", () => {
 
     const store = new DocumentStore();
     const sub = new WsClient({
+      world: "w1",
       connect: server.connector("u2"),
       handlers: { onCommand: (c) => store.applyCommand(c) },
     });
@@ -99,6 +101,7 @@ describe("WsClient", () => {
       return Promise.resolve({ send: () => {}, close: () => {} });
     };
     const client = new WsClient({
+      world: "w1",
       connect,
       handlers: { onCommand: () => {}, onAssetChanged: (m) => seen.push(m) },
     });
@@ -118,6 +121,7 @@ describe("WsClient", () => {
     };
     let evictions = 0;
     const client = new WsClient({
+      world: "w1",
       connect,
       handlers: { onCommand: () => {}, onEvicted: () => evictions++ },
     });
@@ -134,6 +138,7 @@ describe("WsClient", () => {
     const server = new MockServer();
     const store = new DocumentStore();
     const sub = new WsClient({
+      world: "w1",
       connect: server.connector("u2"),
       handlers: { onCommand: (c) => store.applyCommand(c) },
     });
@@ -141,6 +146,7 @@ describe("WsClient", () => {
     await flush();
 
     const pub = new WsClient({
+      world: "w1",
       connect: server.connector("u1"),
       handlers: noop,
     });
@@ -156,6 +162,7 @@ describe("WsClient", () => {
     let applied = 0;
     const store = new DocumentStore();
     const sub = new WsClient({
+      world: "w1",
       connect: server.connector("u2"),
       handlers: {
         onCommand: (c) => {
@@ -167,6 +174,7 @@ describe("WsClient", () => {
     await sub.start();
     await flush();
     const pub = new WsClient({
+      world: "w1",
       connect: server.connector("u1"),
       handlers: noop,
     });
@@ -195,6 +203,7 @@ describe("WsClient", () => {
     };
     const delays: number[] = [];
     const client = new WsClient({
+      world: "w1",
       connect,
       handlers: noop,
       sleep: (ms) => {
@@ -225,6 +234,7 @@ describe("WsClient", () => {
     const server = new MockServer();
     const store = new DocumentStore();
     const sub = new WsClient({
+      world: "w1",
       connect: server.connector("u2"),
       handlers: { onCommand: (c) => store.applyCommand(c) },
       sleep: () => Promise.resolve(),
@@ -232,6 +242,7 @@ describe("WsClient", () => {
     await sub.start();
     await flush();
     const pub = new WsClient({
+      world: "w1",
       connect: server.connector("u1"),
       handlers: noop,
     });
@@ -264,6 +275,7 @@ describe("WsClient", () => {
       });
     };
     const client = new WsClient({
+      world: "w1",
       connect,
       handlers: noop,
       sleep: () => Promise.resolve(),
@@ -293,6 +305,7 @@ describe("WsClient", () => {
       });
     };
     const client = new WsClient({
+      world: "w1",
       connect,
       handlers: noop,
       sleep: () => Promise.resolve(),
@@ -322,6 +335,7 @@ describe("WsClient", () => {
       });
     };
     const client = new WsClient({
+      world: "w1",
       connect,
       handlers: noop,
       sleep: () => Promise.resolve(),
@@ -360,6 +374,7 @@ describe("WsClient", () => {
       });
     };
     const client = new WsClient({
+      world: "w1",
       connect,
       handlers: noop,
       sleep: () => Promise.resolve(),
@@ -388,6 +403,7 @@ describe("WsClient", () => {
       });
     };
     const client = new WsClient({
+      world: "w1",
       connect,
       handlers: noop,
       sleep: (ms) => {
@@ -434,6 +450,7 @@ describe("WsClient", () => {
       return Promise.resolve({ send: () => {}, close });
     };
     const client = new WsClient({
+      world: "w1",
       connect,
       handlers: noop,
       sleep: (ms) => {
@@ -488,6 +505,7 @@ describe("WsClient", () => {
       });
     };
     const client = new WsClient({
+      world: "w1",
       connect,
       handlers: noop,
       sleep: () => Promise.resolve(),
@@ -520,6 +538,7 @@ describe("WsClient", () => {
     };
     let resyncCompletes = 0;
     const client = new WsClient({
+      world: "w1",
       connect,
       handlers: { onCommand: () => {}, onResyncComplete: () => resyncCompletes++ },
       sleep: () => Promise.resolve(),
@@ -541,6 +560,7 @@ describe("WsClient", () => {
     const errors: unknown[] = [];
     let seen = 0;
     const sub = new WsClient({
+      world: "w1",
       connect: server.connector("u2"),
       handlers: {
         onCommand: () => {
@@ -553,6 +573,7 @@ describe("WsClient", () => {
     await sub.start();
     await flush();
     const pub = new WsClient({
+      world: "w1",
       connect: server.connector("u1"),
       handlers: noop,
     });
@@ -569,6 +590,7 @@ describe("WsClient", () => {
   it("computes the server time offset from Welcome", async () => {
     const server = new MockServer({ now: () => 5000 });
     const c = new WsClient({
+      world: "w1",
       connect: server.connector("u1"),
       handlers: noop,
       now: () => 1000,
@@ -582,6 +604,7 @@ describe("WsClient", () => {
     const sent: string[] = [];
     let onMessage: (d: string) => void = () => {};
     const client = new WsClient({
+      world: "w1",
       connect: (h) => {
         onMessage = h.onMessage;
         return Promise.resolve({ send: (d) => sent.push(d), close: () => {} });
@@ -607,6 +630,7 @@ describe("WsClient", () => {
     const sent: string[] = [];
     let onMessage: (d: string) => void = () => {};
     const client = new WsClient({
+      world: "w1",
       connect: (h) => {
         onMessage = h.onMessage;
         return Promise.resolve({ send: (d) => sent.push(d), close: () => {} });
@@ -628,6 +652,7 @@ describe("WsClient", () => {
 
   it("search rejects on timeout", async () => {
     const client = new WsClient({
+      world: "w1",
       connect: () => Promise.resolve({ send: () => {}, close: () => {} }),
       handlers: noop,
     });
@@ -639,6 +664,7 @@ describe("WsClient", () => {
     const sent: string[] = [];
     let onMessage: (d: string) => void = () => {};
     const client = new WsClient({
+      world: "w1",
       connect: (h) => {
         onMessage = h.onMessage;
         return Promise.resolve({ send: (d) => sent.push(d), close: () => {} });
@@ -669,6 +695,7 @@ describe("WsClient", () => {
 
   it("stop() rejects in-flight searches instead of leaving them hanging", async () => {
     const client = new WsClient({
+      world: "w1",
       connect: () => Promise.resolve({ send: () => {}, close: () => {} }),
       handlers: noop,
     });
@@ -680,6 +707,7 @@ describe("WsClient", () => {
 
   it("search rejects immediately when there is no live transport", async () => {
     const client = new WsClient({
+      world: "w1",
       connect: () => Promise.resolve({ send: () => {}, close: () => {} }),
       handlers: noop,
     });
@@ -691,6 +719,7 @@ describe("WsClient", () => {
 
   it("subscribeSearch rejects immediately when there is no live transport", async () => {
     const client = new WsClient({
+      world: "w1",
       connect: () => Promise.resolve({ send: () => {}, close: () => {} }),
       handlers: noop,
     });
@@ -704,6 +733,7 @@ describe("WsClient", () => {
     let onMessage: (d: string) => void = () => {};
     const errors: unknown[] = [];
     const client = new WsClient({
+      world: "w1",
       connect: (h) => {
         onMessage = h.onMessage;
         return Promise.resolve({ send: (d) => sent.push(d), close: () => {} });
@@ -735,6 +765,7 @@ describe("WsClient", () => {
     const sent: string[] = [];
     let onMessage: (d: string) => void = () => {};
     const client = new WsClient({
+      world: "w1",
       connect: (h) => { onMessage = h.onMessage; return Promise.resolve({ send: (d) => sent.push(d), close: () => {} }); },
       handlers: noop,
     });
@@ -758,6 +789,7 @@ describe("WsClient", () => {
     const sent: string[] = [];
     let onMessage: (d: string) => void = () => {};
     const client = new WsClient({
+      world: "w1",
       connect: (h) => { onMessage = h.onMessage; return Promise.resolve({ send: (d) => sent.push(d), close: () => {} }); },
       handlers: noop,
     });
@@ -769,7 +801,7 @@ describe("WsClient", () => {
   });
 
   it("subscribeScene rejects immediately with no live transport", async () => {
-    const client = new WsClient({ connect: () => Promise.resolve({ send: () => {}, close: () => {} }), handlers: noop });
+    const client = new WsClient({ world: "w1", connect: () => Promise.resolve({ send: () => {}, close: () => {} }), handlers: noop });
     await expect(client.subscribeScene("identity", () => {}, { timeoutMs: 60_000 })).rejects.toThrow(/not connected/i);
   });
 
@@ -777,6 +809,7 @@ describe("WsClient", () => {
     const sent: string[] = [];
     let onMessage: (d: string) => void = () => {};
     const client = new WsClient({
+      world: "w1",
       connect: (h) => {
         onMessage = h.onMessage;
         return Promise.resolve({ send: (d) => sent.push(d), close: () => {} });
@@ -815,6 +848,7 @@ describe("WsClient", () => {
   it("pathfind sends the token id when given, and omits it when absent", async () => {
     const sent: string[] = [];
     const client = new WsClient({
+      world: "w1",
       connect: () => Promise.resolve({ send: (d) => sent.push(d), close: () => {} }),
       handlers: noop,
     });
@@ -833,6 +867,7 @@ describe("WsClient", () => {
     const sent: string[] = [];
     let onMessage: (d: string) => void = () => {};
     const client = new WsClient({
+      world: "w1",
       connect: (h) => {
         onMessage = h.onMessage;
         return Promise.resolve({ send: (d) => sent.push(d), close: () => {} });
@@ -888,6 +923,7 @@ describe("WsClient", () => {
   it("move_stream with unknown request_id (observer) fires onMoveStream without rejecting", async () => {
     let onMessage: (d: string) => void = () => {};
     const client = new WsClient({
+      world: "w1",
       connect: (h) => {
         onMessage = h.onMessage;
         return Promise.resolve({ send: () => {}, close: () => {} });
@@ -936,6 +972,7 @@ describe("WsClient", () => {
     const sent: string[] = [];
     let onMessage: (d: string) => void = () => {};
     const client = new WsClient({
+      world: "w1",
       connect: (h) => {
         onMessage = h.onMessage;
         return Promise.resolve({ send: (d) => sent.push(d), close: () => {} });
@@ -958,6 +995,7 @@ describe("WsClient", () => {
 
   it("moveRequest rejects immediately when there is no live transport", async () => {
     const client = new WsClient({
+      world: "w1",
       connect: () => Promise.resolve({ send: () => {}, close: () => {} }),
       handlers: noop,
     });
@@ -970,6 +1008,7 @@ describe("WsClient", () => {
   it("sendChatMessage sends a send_message frame with defaulted audience and actor_owner", async () => {
     const sent: string[] = [];
     const client = new WsClient({
+      world: "w1",
       connect: () => Promise.resolve({ send: (d) => sent.push(d), close: () => {} }),
       handlers: noop,
     });
@@ -991,6 +1030,7 @@ describe("WsClient", () => {
   it("sendChatMessage forwards actor_owner and audience when given", async () => {
     const sent: string[] = [];
     const client = new WsClient({
+      world: "w1",
       connect: () => Promise.resolve({ send: (d) => sent.push(d), close: () => {} }),
       handlers: noop,
     });
@@ -1016,6 +1056,7 @@ describe("WsClient", () => {
   it("editChatMessage sends an edit_message frame with a request_id", async () => {
     const sent: string[] = [];
     const client = new WsClient({
+      world: "w1",
       connect: () => Promise.resolve({ send: (d) => sent.push(d), close: () => {} }),
       handlers: noop,
     });
@@ -1030,6 +1071,7 @@ describe("WsClient", () => {
   it("deleteChatMessage sends a delete_message frame with a request_id", async () => {
     const sent: string[] = [];
     const client = new WsClient({
+      world: "w1",
       connect: () => Promise.resolve({ send: (d) => sent.push(d), close: () => {} }),
       handlers: noop,
     });
@@ -1045,6 +1087,7 @@ describe("WsClient", () => {
     const sent: string[] = [];
     let onMessage: (d: string) => void = () => {};
     const client = new WsClient({
+      world: "w1",
       connect: (h) => {
         onMessage = h.onMessage;
         return Promise.resolve({ send: (d) => sent.push(d), close: () => {} });
@@ -1062,5 +1105,123 @@ describe("WsClient", () => {
       }),
     );
     await expect(p).rejects.toThrow(/too quickly/i);
+  });
+
+  describe("Hello / seedWatermark", () => {
+    it("sends Hello{last_seq: null} as the first frame on a first socket open", async () => {
+      const sent: string[] = [];
+      const client = new WsClient({
+        world: "w1",
+        connect: () => Promise.resolve({ send: (d) => sent.push(d), close: () => {} }),
+        handlers: noop,
+      });
+      await client.start();
+      await flush();
+      expect(sent.length).toBeGreaterThan(0);
+      expect(JSON.parse(sent[0])).toEqual({ type: "hello", world: "w1", last_seq: null });
+    });
+
+    // The discriminating test: `seedWatermark` pre-advances `nextExpected` BEFORE the first
+    // `open()`, exactly as `WorldSession.enter` does with a snapshot's `seq`. A `last_seq`
+    // computed from `nextExpected`'s live value would ALWAYS report `Some(...)` at this point
+    // (nextExpected is already > 1), never signaling cold start. Only `#hasEverOpened` — an
+    // identity fact about the instance's own open history — gets this right.
+    it("still sends Hello{last_seq: null} on the first open even after seedWatermark pre-advanced the watermark", async () => {
+      const sent: string[] = [];
+      const client = new WsClient({
+        world: "w1",
+        connect: () => Promise.resolve({ send: (d) => sent.push(d), close: () => {} }),
+        handlers: noop,
+      });
+      client.seedWatermark(9); // nextExpected = 10, before any open() at all
+      await client.start();
+      await flush();
+      expect(JSON.parse(sent[0])).toEqual({ type: "hello", world: "w1", last_seq: null });
+    });
+
+    it("sends Hello{last_seq: nextExpected - 1} (not null) on a second open of the same instance", async () => {
+      const opens: string[][] = [];
+      let onClose!: () => void;
+      const connect: Connect = (h) => {
+        const sent: string[] = [];
+        opens.push(sent);
+        onClose = h.onClose;
+        return Promise.resolve({ send: (d) => sent.push(d), close: () => {} });
+      };
+      const client = new WsClient({
+        world: "w1",
+        connect,
+        handlers: noop,
+        sleep: () => Promise.resolve(),
+      });
+      client.seedWatermark(9); // nextExpected = 10
+      await client.start();
+      await flush();
+      expect(opens.length).toBe(1);
+      expect(JSON.parse(opens[0][0])).toEqual({ type: "hello", world: "w1", last_seq: null });
+
+      // Simulate a dropped connection: the transport's own onClose fires, triggering a
+      // reconnect (second open) on the SAME WsClient instance.
+      onClose();
+      await waitFor(() => opens.length === 2);
+      expect(JSON.parse(opens[1][0])).toEqual({ type: "hello", world: "w1", last_seq: 9 });
+    });
+
+    it("seedWatermark(seq) makes a subsequent Welcome{current_seq: seq} trigger no resync, while current_seq: seq + 3 triggers a small resync_request from seq + 1", async () => {
+      const sent: string[] = [];
+      let onMessage: (d: string) => void = () => {};
+      const client = new WsClient({
+        world: "w1",
+        connect: (h) => {
+          onMessage = h.onMessage;
+          return Promise.resolve({ send: (d) => sent.push(d), close: () => {} });
+        },
+        handlers: noop,
+      });
+      client.seedWatermark(42); // nextExpected = 43
+      await client.start();
+      await flush();
+      onMessage(JSON.stringify({ ...welcomeFrame(), current_seq: 42 }));
+      await flush();
+      expect(sent.some((s) => (JSON.parse(s) as ClientMsg).type === "resync_request")).toBe(false);
+
+      const opens2: string[] = [];
+      let onMessage2: (d: string) => void = () => {};
+      const client2 = new WsClient({
+        world: "w1",
+        connect: (h) => {
+          onMessage2 = h.onMessage;
+          return Promise.resolve({ send: (d) => opens2.push(d), close: () => {} });
+        },
+        handlers: noop,
+      });
+      client2.seedWatermark(42); // nextExpected = 43
+      await client2.start();
+      await flush();
+      onMessage2(JSON.stringify({ ...welcomeFrame(), current_seq: 45 }));
+      await flush();
+      const resync = opens2.map((s) => JSON.parse(s) as ClientMsg).find((m) => m.type === "resync_request");
+      expect(resync).toEqual({ type: "resync_request", from_seq: 43 });
+    });
+
+    it("seedWatermark called with a value lower than the current watermark does not move it backward", async () => {
+      const sent: string[] = [];
+      let onMessage: (d: string) => void = () => {};
+      const client = new WsClient({
+        world: "w1",
+        connect: (h) => {
+          onMessage = h.onMessage;
+          return Promise.resolve({ send: (d) => sent.push(d), close: () => {} });
+        },
+        handlers: noop,
+      });
+      client.seedWatermark(100); // nextExpected = 101
+      client.seedWatermark(5); // must NOT move nextExpected backward to 6
+      await client.start();
+      await flush();
+      onMessage(JSON.stringify({ ...welcomeFrame(), current_seq: 100 }));
+      await flush();
+      expect(sent.some((s) => (JSON.parse(s) as ClientMsg).type === "resync_request")).toBe(false);
+    });
   });
 });

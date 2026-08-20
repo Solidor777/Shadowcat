@@ -249,6 +249,27 @@ export class DocumentStore implements ReadableDocuments {
     this.emit();
   }
 
+  /** Bulk-loads a current-state snapshot directly, bypassing the operation-log abstraction (this
+   * is a LOAD, not a sequence of operations that occurred) — replaces `docs` wholesale rather
+   * than merging. Fires listeners once at the end, not once per document. Does not touch
+   * `appliedSeq`: the snapshot's own seq feeds `WsClient.seedWatermark` instead, a separate
+   * watermark from the document contents.
+   * @param documents Every document to seed, already per-recipient filtered by the server.
+   * @example
+   * ```ts
+   * import { DocumentStore } from "@shadowcat/core";
+   * import type { WireDocument } from "@shadowcat/core";
+   *
+   * const store = new DocumentStore();
+   * declare const documents: WireDocument[];
+   * store.seedDocuments(documents);
+   * ```
+   */
+  seedDocuments(documents: WireDocument[]): void {
+    this.docs = new Map(documents.map((d) => [d.id, d]));
+    this.emit();
+  }
+
   /** Look up one document by id.
    * @param id The document id.
    * @returns The document, or `undefined` if not present in this world's store.

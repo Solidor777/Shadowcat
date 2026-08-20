@@ -159,6 +159,36 @@ describe("DocumentStore", () => {
         .movementRestriction,
     ).toBe("revealed");
   });
+
+  describe("seedDocuments", () => {
+    it("populates get(id) for every seeded document", () => {
+      const s = new DocumentStore();
+      s.seedDocuments([doc("d1", { hp: 10 }), doc("d2", { hp: 5 })]);
+      expect(s.get("d1")).toBeDefined();
+      expect(s.get("d2")).toBeDefined();
+      expect((s.get("d1")!.system as { hp: number }).hp).toBe(10);
+    });
+
+    it("fires the subscribe listener exactly once for the whole batch", () => {
+      const s = new DocumentStore();
+      let calls = 0;
+      s.subscribe(() => calls++);
+      s.seedDocuments([doc("d1", {}), doc("d2", {}), doc("d3", {})]);
+      expect(calls).toBe(1);
+    });
+
+    it("replaces prior state wholesale rather than merging", () => {
+      const s = new DocumentStore();
+      s.seedDocuments([doc("d1", {}), doc("d2", {})]);
+      expect(s.get("d1")).toBeDefined();
+      // A naive "merge into existing docs" implementation would still have d1
+      // defined here; a wholesale replace does not.
+      s.seedDocuments([doc("d2", {}), doc("d3", {})]);
+      expect(s.get("d1")).toBeUndefined();
+      expect(s.get("d2")).toBeDefined();
+      expect(s.get("d3")).toBeDefined();
+    });
+  });
 });
 
 describe("setPointer", () => {

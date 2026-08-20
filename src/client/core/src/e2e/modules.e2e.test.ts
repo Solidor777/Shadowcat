@@ -35,6 +35,7 @@ async function fetchRunningServerVersion(server: TestServer, cookie: string): Pr
   const { world } = server.fixture;
   let welcome: WireWelcome | null = null;
   const client = new WsClient({
+    world: "w1",
     connect: nodeConnect(server.wsUrl, world, cookie),
     handlers: {
       onCommand: () => {},
