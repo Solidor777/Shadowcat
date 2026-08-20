@@ -424,4 +424,19 @@ describe("effectiveOwner", () => {
     // ...but confers no capability floor there, mirroring the server.
     expect(ownerFloorApplies(actor, P1, storeWith(actor))).toBe(false);
   });
+
+  it("rejects a resolved actor whose scope differs from the token's (fails closed)", () => {
+    const actor = ownedActor(P1);
+    const token = buildTokenFromActor("w1", "s1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 }, "tok1");
+    // Same id as `actor`, but a DIFFERENT world scope — simulates a resolver bug or a
+    // future relaxation of the "world-stream-only" invariant this check is defense-in-depth
+    // against, not something reachable via today's normal WS flow.
+    const crossScopeActor: WireDocument = { ...actor, scope: { kind: "world", world_id: "w2" } };
+    expect(effectiveOwner(token, storeWith(crossScopeActor))).toBeNull();
+
+    // Control: the same shape with a matching scope DOES resolve, so the rejection
+    // above is the guard, not a constant null.
+    const sameScopeActor: WireDocument = { ...actor, scope: { kind: "world", world_id: "w1" } };
+    expect(effectiveOwner(token, storeWith(sameScopeActor))).toBe(P1);
+  });
 });

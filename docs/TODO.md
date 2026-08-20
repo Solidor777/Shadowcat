@@ -179,16 +179,6 @@ Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one de
 - TODO: `welcome_capability_requirements`'s Welcome preamble runs `spawn_blocking(scan_installed_modules)` — a full
   filesystem scan — on EVERY WS connect. Cache the scan result (invalidate on module
   install/uninstall) so reconnect storms and multi-client entry don't re-walk the modules dir.
-- TODO: `effectiveOwner` mirrors the server's `effective_owner` PRECEDENCE (token's
-  own `/owner`, else the linked actor's owner) but omits the server's `actor.scope === doc.scope`
-  guard (`effective_owner` rejects a resolved actor whose `scope` differs
-  from the token's; `store.get(actorId)` in the client is a plain id lookup with no scope filter).
-  Add the same `actor.scope === doc.scope` check to the client so the parity is STRUCTURAL rather
-  than dependent on an unstated invariant. This is defense-in-depth, not a live bug: the client's
-  `DocumentStore` is fed only by the single connected world's WS stream (a `"compendium"`-scoped
-  id never enters `store`; ids are globally unique), so `store.get()` cannot today return a
-  cross-scope document, and `effectiveOwner` is advisory-only (the server re-resolves in its own
-  transaction). Needs its own runtime-change test + review, not a docs-only edit.
 
 ## Actionable now — Phase D-alpha (movement authority & secrecy) backlog
 - TODO: `Room::execute_move` re-derives `is_gm` via its own

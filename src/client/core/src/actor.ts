@@ -4,7 +4,7 @@
 // their embedded copy. Returns null for a raw (actorless) or dangling-link token.
 // Re-rooted onto the three-band document shape: `name` (the actor's real identity) lives on
 // the envelope; `ActorEngine`/`TokenEngine` carry every other engine-owned field.
-import type { WireDocument } from "./wire";
+import type { WireDocument, WireScope } from "./wire";
 import type { ReadableDocuments } from "./store";
 import type { ActorEngine, TokenEngine, TokenVisual, TokenOverrides, ConditionRegistryEngine, VisionAssignment, RenderVisual, FaceVisual } from "./scene-docs";
 import type { FootprintLookup } from "./footprints";
@@ -126,6 +126,25 @@ export function resolveTokenActor(token: WireDocument, store: ReadableDocuments)
   return null;
 }
 
+/** Structural equality for the discriminated `WireScope` union — never `===`, which compares
+ * object identity rather than the `kind`-keyed payload. Not exported (folded into
+ * `effectiveOwner`'s public surface).
+ * @param a The first scope to compare.
+ * @param b The second scope to compare.
+ * @returns `true` iff `a` and `b` name the same `kind` AND the same `world_id`/`pack`.
+ * @example
+ * ```
+ * // internal helper; not part of the public API (see effectiveOwner for the public entry point)
+ * declare const a: WireScope;
+ * declare const b: WireScope;
+ * scopesEqual(a, b);
+ * ```
+ */
+function scopesEqual(a: WireScope, b: WireScope): boolean {
+  if (a.kind !== b.kind) return false;
+  return a.kind === "world" ? a.world_id === (b as typeof a).world_id : a.pack === (b as typeof a).pack;
+}
+
 /**
  * The user a document effectively belongs to — the client mirror of the server's
  * `data::permission::effective_owner`, which is the authority. `doc.owner` is the
@@ -133,20 +152,19 @@ export function resolveTokenActor(token: WireDocument, store: ReadableDocuments)
  * owner, resolved live from the store so re-assigning an actor re-owns its tokens with no
  * re-stamp.
  *
- * Mirrors the server's PRECEDENCE (token's own `/owner`, else the linked actor's owner) but
- * OMITS the server's `actor.scope === doc.scope` guard (`effective_owner`
- * rejects a resolved actor whose `scope` differs from the token's) — `store.get(actorId)` here
- * is a plain id lookup with no scope filter. This is safe only because the client's
- * `DocumentStore` never holds a cross-scope document today (it is fed solely by the single
- * connected world's WS stream; a `"compendium"`-scoped id never enters `store`), not because
- * the check is unnecessary in principle.
- * TODO: enforce the scope guard structurally instead of relying on `store`'s current feed shape.
+ * Mirrors the server's full PRECEDENCE AND its `actor.scope === doc.scope` guard
+ * (`effective_owner` rejects a resolved actor whose `scope` differs from the token's) via
+ * `scopesEqual`, so the parity is structural rather than dependent on `store`'s current feed
+ * shape — the client's `DocumentStore` never holds a cross-scope document today (fed solely by
+ * the single connected world's WS stream; a `"compendium"`-scoped id never enters `store`), but
+ * this check no longer relies on that being true.
  *
- * Fail-closed: no link, a dangling link, a resolved document that is not an actor, and an
- * unowned actor all yield `null`. INSTANCED tokens deliberately do NOT inherit from their
- * embedded `actor[0]` copy (unlike `resolveTokenActor`, which reads it for display): that copy
- * is a frozen placement-time snapshot, so inheriting from it would be the stamped semantics
- * this rule exists to avoid. An instanced/raw token uses its own `owner` override.
+ * Fail-closed: no link, a dangling link, a resolved document that is not an actor, a
+ * cross-scope actor, and an unowned actor all yield `null`. INSTANCED tokens deliberately do NOT
+ * inherit from their embedded `actor[0]` copy (unlike `resolveTokenActor`, which reads it for
+ * display): that copy is a frozen placement-time snapshot, so inheriting from it would be the
+ * stamped semantics this rule exists to avoid. An instanced/raw token uses its own `owner`
+ * override.
  *
  * Advisory ONLY, like every other client capability mirror — the server re-resolves this
  * against its own transaction and rejects a bypass.
@@ -168,7 +186,7 @@ export function effectiveOwner(doc: WireDocument, store: ReadableDocuments): str
   const actorId = (doc.engine as TokenEngine | undefined)?.actor_id;
   if (!actorId) return null;
   const actor = store.get(actorId);
-  if (!actor || actor.doc_type !== "actor") return null;
+  if (!actor || actor.doc_type !== "actor" || !scopesEqual(actor.scope, doc.scope)) return null;
   return actor.owner ?? null;
 }
 
