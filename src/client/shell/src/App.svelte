@@ -27,8 +27,23 @@
   import { WorldSession } from "./lib/worldSession.svelte";
   import Table from "./lib/Table.svelte";
 
+  /** Overall cap on `boot()`'s wall-clock time before it gives up and falls back to the
+   * login/worlds route, even if a `withRetry` chain is still in flight. Comfortably less than half
+   * of the ~141s worst case for three full sequential `withRetry` cycles (see `boot()`'s own doc),
+   * while still covering a SINGLE `withRetry` call's own worst case (~47s: 3 attempts at
+   * `FETCH_TIMEOUT_MS` plus inter-attempt delays) with margin, so a user on a slow-but-live
+   * connection is not cut off mid-way through just the first network call. */
+  const BOOT_DEADLINE_MS = 60_000;
+
+  /** How long `boot()` waits before switching its loading message from "Loading…" to "Still
+   * trying…" — shorter than a single fetch attempt's own `FETCH_TIMEOUT_MS` (15s), so the message
+   * changes while the very first attempt of the very first `withRetry` call may still be in
+   * flight on a slow-but-live connection, giving feedback before any retry has even happened. */
+  const STILL_TRYING_AFTER_MS = 8_000;
+
   let me = $state<Me | null>(null);
   let booted = $state(false);
+  let bootStillTrying = $state(false);
   let session = $state<WorldSession | null>(null);
 
   /** Resolves the app's initial route on load: fetches identity, applies the
@@ -36,22 +51,40 @@
    * resolve to a world — fetches the worlds list and re-enters via
    * `resolveBootWorld`. Falls back to the login/worlds route on any failure
    * (a hung/failing backend must not wedge the SPA on "Loading…" forever)
-   * and always sets `booted = true` on exit.
-   * @returns Resolves once the initial route has been decided; never rejects. Which route a
-   *   failure degrades to depends on where it happened: a `getMe`/`loadSessionState` failure
-   *   (outer catch) goes to `login`, while a `listWorlds` failure once `me` is known falls
-   *   through to `navigate({ name: me ? "worlds" : "login" })` — i.e. `worlds`, since `me` is
-   *   truthy on that path.
+   * and always sets `booted = true` on exit. Bounded overall by
+   * `BOOT_DEADLINE_MS`: past that deadline it abandons any in-flight fetch
+   * and falls back to `login` regardless of `me`, and a late resolution of an
+   * abandoned fetch is a no-op (checked after every await via the
+   * closure-local `abandoned` flag). Switches the caller's rendered message
+   * from "Loading…" to "Still trying…" via `bootStillTrying` after
+   * `STILL_TRYING_AFTER_MS`.
+   * @returns Resolves once the initial route has been decided (or the deadline fires); never
+   *   rejects. Which route a failure degrades to depends on where it happened: a
+   *   `getMe`/`loadSessionState` failure (outer catch) goes to `login`, a `listWorlds` failure
+   *   once `me` is known falls through to `navigate({ name: me ? "worlds" : "login" })` — i.e.
+   *   `worlds`, since `me` is truthy on that path — and the overall deadline always goes to
+   *   `login`.
    * @example
    * ```
    * boot();
    * ```
    */
   async function boot() {
+    let abandoned = false;
+    const deadlineTimer = setTimeout(() => {
+      abandoned = true;
+      navigate({ name: "login" });
+      booted = true;
+    }, BOOT_DEADLINE_MS);
+    const stillTryingTimer = setTimeout(() => {
+      bootStillTrying = true;
+    }, STILL_TRYING_AFTER_MS);
     try {
       me = await withRetry(() => getMe());
+      if (abandoned) return;
       if (me) {
         const ui = await withRetry(() => loadSessionState()); // applies the saved locale
+        if (abandoned) return;
         const last = ui.global.lastWorld;
         // A world route in the URL always wins over lastWorld (resolveBootWorld) —
         // only call /api/worlds when either could resolve to an entry.
@@ -60,6 +93,7 @@
           // A transient /api/worlds failure here degrades to entry, not a hard error.
           try {
             const worlds = await withRetry(() => listWorlds());
+            if (abandoned) return;
             const resolved = resolveBootWorld(currentRoute(), last, worlds);
             if (resolved.enterWorldId) {
               enterWorld(resolved.enterWorldId); // reload returns you to the URL's/last world
@@ -71,14 +105,18 @@
           }
         }
       }
+      if (abandoned) return;
       // Seeds the URL hash only; <Entry> derives the actual pre-world step (setup/
       // login/world-select) internally — every pre-world route renders <Entry>.
       navigate({ name: me ? "worlds" : "login" });
     } catch {
       // A transient backend failure must not wedge the SPA on "Loading…".
-      navigate({ name: "login" });
+      if (!abandoned) navigate({ name: "login" });
     } finally {
+      clearTimeout(deadlineTimer);
+      clearTimeout(stillTryingTimer);
       booted = true;
+      bootStillTrying = false;
     }
   }
   boot();
@@ -151,7 +189,7 @@
 </script>
 
 {#if !booted}
-  <p class="connecting">Loading…</p>
+  <p class="connecting">{bootStillTrying ? "Still trying…" : "Loading…"}</p>
 {:else if route.name === "world" && session?.role && session?.world}
   <Table {session} {leaveWorld} serverRole={me?.server_role === "admin" ? "admin" : "user"} />
 {:else if route.name === "world"}

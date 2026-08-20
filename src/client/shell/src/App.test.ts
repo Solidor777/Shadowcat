@@ -77,6 +77,48 @@ test("reload on a valid world route enters THAT world, not a different valid las
   vi.unstubAllGlobals();
 });
 
+test("boot shows a still-trying message after the threshold when the backend is slow", async () => {
+  vi.useFakeTimers();
+  try {
+    let resolveMe!: (me: Awaited<ReturnType<typeof api.getMe>>) => void;
+    vi.spyOn(api, "getMe").mockReturnValue(
+      new Promise((resolve) => {
+        resolveMe = resolve;
+      }),
+    );
+    render(App);
+    expect(screen.getByText("Loading…")).toBeTruthy();
+    await vi.advanceTimersByTimeAsync(8_000);
+    expect(screen.getByText("Still trying…")).toBeTruthy();
+    resolveMe(null);
+    await vi.runOnlyPendingTimersAsync();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("boot gives up at the deadline and a late-resolving fetch afterward is a no-op", async () => {
+  vi.useFakeTimers();
+  try {
+    let resolveMe!: (me: Awaited<ReturnType<typeof api.getMe>>) => void;
+    vi.spyOn(api, "getMe").mockReturnValue(
+      new Promise((resolve) => {
+        resolveMe = resolve;
+      }),
+    );
+    render(App);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(await screen.findByTestId("entry-stub")).toBeTruthy();
+    // The abandoned getMe() call finally resolves well after the deadline fired.
+    resolveMe({ id: "u1", username: "gm", server_role: "user" });
+    await vi.runOnlyPendingTimersAsync();
+    // Still on entry — the late resolution must not retroactively navigate anywhere.
+    expect(screen.getByTestId("entry-stub")).toBeTruthy();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 test("a hash change during the listWorlds await is honored, not the route captured before it", async () => {
   vi.stubGlobal("WebSocket", class { addEventListener() {} send() {} close() {} } as unknown);
   location.hash = "#/world/stale-world";

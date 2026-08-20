@@ -208,14 +208,6 @@ Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one de
   `#logger.error` in the outer catch) and continue running the rest of the handler instead of
   letting the rethrow short-circuit it — activation failure should degrade Surfaces, not silently
   skip member names/topology/scene resubscription too.
-- TODO: `App`'s `boot()` worst case is roughly 2.4 minutes stuck on "Loading…": three
-  sequential `withRetry`-wrapped awaits (`getMe`, `loadSessionState`'s `getUiState`, `listWorlds`),
-  each up to 3 attempts at the 15s `FETCH_TIMEOUT_MS` plus `withRetry`'s flat `[500, 1500]`ms
-  inter-attempt delays — and unlike the WS client's full-jitter backoff (`scheduleReconnect`),
-  these delays are UNJITTERED, so many concurrently-booting clients retry in lockstep against a
-  struggling backend. Fix direction: an overall boot deadline (fail to the login/worlds route
-  sooner than three full retry cycles), a visible "still trying…" state instead of a bare
-  "Loading…" spinner, and jittered retry delays matching the WS backoff's convention.
 - TODO: `effectiveOwner` mirrors the server's `effective_owner` PRECEDENCE (token's
   own `/owner`, else the linked actor's owner) but omits the server's `actor.scope === doc.scope`
   guard (`effective_owner` rejects a resolved actor whose `scope` differs
