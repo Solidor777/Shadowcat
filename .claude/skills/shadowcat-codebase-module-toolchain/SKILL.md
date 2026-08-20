@@ -39,7 +39,10 @@ existing `ModuleRegistry`.
   `test_server --modules-dir` flag (the `test_server` binary) sets it for e2e.
 - `ws::conn`/`ws::protocol` — `ServerMsg::Welcome.server_version`
   (`env!("CARGO_PKG_VERSION")`); `welcome_capability_requirements` non-destructively UNIONs the GM's
-  `world_cap_requirements` with each `engine_compat_ok` enabled module's `requirements`.
+  `world_cap_requirements` with each `engine_compat_ok` enabled module's `requirements`. Its
+  `scan_installed_modules` call runs through `modules::ModuleScanCache` (one instance shared
+  server-wide via `ws::WsState::module_scan_cache`), not a fresh scan on every `Welcome` — see the
+  Gotchas entry below for the invalidation rule this cache depends on.
 
 **Client core (framework-neutral):**
 - The client `loader` module — `loadModules(...) → Promise<ModuleLoadResult { loaded, failed }>`
@@ -165,6 +168,18 @@ job's example-build step keep them green; the guides code-import their sources r
   Write such tests as (a) a pure unit test of the containment predicate, (b) a symlink/alias HTTP
   repro (`http::module_routes`'s `self-link`-style test), or (c) an encoded segment embedded in a longer
   non-exact-match string.
+- **`ModuleScanCache` invalidates on TWO independent mtimes, not one — dropping either silently
+  reintroduces staleness.** There is no server-side install/uninstall route to hook (an operator
+  installs by dropping/removing a folder directly under `modules_dir` on disk), so invalidation is
+  structural: (1) `modules_dir`'s OWN mtime, bumped by the OS on any entry add/remove, catches
+  install/uninstall; (2) each cached module's own `module.json` mtime, tracked separately, catches
+  an IN-PLACE edit to an already-installed module's manifest (e.g. hand-editing `engines.shadowcat`
+  after a server downgrade) — such an edit does NOT bump the parent directory's mtime. Tracking only
+  (1) would silently break `welcome_capability_requirements`'s own documented guarantee that it
+  re-checks `engine_compat_ok` per enabled module on every `Welcome`, not just at enable time. Not a
+  TTL: a TTL is either too short (defeats the cache under a reconnect storm) or too long (an
+  operator-installed module should go live on the next connect, per this project's hot-swappable
+  design intent).
 - **Scope deliberately excluded** (manual/admin-trusted tier): no module upload/install UI
   (install stays manual-extract into `<data-dir>/modules/<id>/`); no sandboxing/permissions for
   installed module JS (modules are admin-trusted, same tier as the server binary); no hot

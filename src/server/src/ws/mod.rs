@@ -81,6 +81,11 @@ pub struct WsState {
     /// Per-user outbound-fetch budget for the link-preview fetcher (shared
     /// across a user's connections, same shape as `message_rate`).
     pub preview_rate: Arc<crate::chat::PreviewRateLimiter>,
+    /// In-memory installed-module scan cache, shared across every
+    /// connection/world (the installed-module set is server-wide, not
+    /// per-world). See `crate::modules::ModuleScanCache`'s own doc for the
+    /// invalidation rule.
+    pub module_scan_cache: Arc<crate::modules::ModuleScanCache>,
 }
 
 impl WsState {
@@ -100,6 +105,7 @@ impl WsState {
             link_preview_client: Arc::new(crate::chat::build_link_preview_client()),
             link_preview_cache: Arc::new(crate::chat::LinkPreviewCache::new()),
             preview_rate: Arc::new(crate::chat::PreviewRateLimiter::new()),
+            module_scan_cache: Arc::new(crate::modules::ModuleScanCache::new()),
         }
     }
 
@@ -113,6 +119,7 @@ impl WsState {
             link_preview_client: Arc::new(crate::chat::build_link_preview_client()),
             link_preview_cache: Arc::new(crate::chat::LinkPreviewCache::new()),
             preview_rate: Arc::new(crate::chat::PreviewRateLimiter::new()),
+            module_scan_cache: Arc::new(crate::modules::ModuleScanCache::new()),
         }
     }
 }

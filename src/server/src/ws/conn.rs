@@ -278,6 +278,7 @@ async fn handle_socket(
     let egress_room = room.clone();
     let egress_repo = repo.clone();
     let modules_dir = state.config.modules_path();
+    let module_scan_cache = state.ws.module_scan_cache.clone();
     let mut egress = tokio::spawn(egress_loop(
         sink,
         rx,
@@ -288,6 +289,7 @@ async fn handle_socket(
             ctx,
             current_seq,
             modules_dir,
+            module_scan_cache,
         },
     ));
 
@@ -1173,6 +1175,7 @@ async fn welcome_capability_requirements(
     repo: &dyn Repository,
     world_id: Uuid,
     modules_dir: &std::path::Path,
+    cache: &Arc<crate::modules::ModuleScanCache>,
 ) -> Vec<crate::data::document::CapabilityRequirement> {
     // Keyed by path_prefix so a GM-authored requirement and a module-declared
     // requirement on the same prefix union their caps into one entry instead
@@ -1202,10 +1205,10 @@ async fn welcome_capability_requirements(
         // A panicked scan (JoinError) degrades to an empty Vec, matching the
         // missing-modules_dir behavior already in scan_installed_modules.
         let dir = modules_dir.to_path_buf();
-        let installed =
-            tokio::task::spawn_blocking(move || crate::modules::scan_installed_modules(&dir))
-                .await
-                .unwrap_or_default();
+        let cache = cache.clone();
+        let installed = tokio::task::spawn_blocking(move || cache.get_or_scan(&dir))
+            .await
+            .unwrap_or_default();
         for id in &enabled {
             // Re-check engine-compat here (not just at enable time): a module
             // enabled while compatible can go stale after a server downgrade
@@ -1254,6 +1257,9 @@ struct EgressConnState {
     /// The installed-modules directory scanned for the Welcome frame's
     /// capability requirements.
     modules_dir: std::path::PathBuf,
+    /// Shared cache for the installed-module scan behind the Welcome frame's
+    /// capability requirements — see `crate::modules::ModuleScanCache`.
+    module_scan_cache: Arc<crate::modules::ModuleScanCache>,
 }
 
 /// The egress half: fans room broadcasts into this connection with
@@ -1280,6 +1286,7 @@ async fn egress_loop<S>(
         ctx,
         current_seq,
         modules_dir,
+        module_scan_cache,
     } = conn;
     let world_id = room.world_id;
     // Loaded once per connection (not per event): a per-event read would contend
@@ -1288,7 +1295,9 @@ async fn egress_loop<S>(
     let world_defaults = repo.world_cap_defaults(world_id).await.unwrap_or_default();
     // Fail open for the advisory client copy only; server-side enforcement
     // reads requirements freshly per intent and fails closed.
-    let world_reqs = welcome_capability_requirements(repo.as_ref(), world_id, &modules_dir).await;
+    let world_reqs =
+        welcome_capability_requirements(repo.as_ref(), world_id, &modules_dir, &module_scan_cache)
+            .await;
     let world_contracts = match repo.world_contract_declarations(world_id).await {
         Ok(c) => c,
         Err(e) => {
@@ -1789,6 +1798,7 @@ mod tests {
                 modules_dir: std::path::PathBuf::from(
                     "nonexistent-test-modules-dir-for-egress-lag-test",
                 ),
+                module_scan_cache: Arc::new(crate::modules::ModuleScanCache::new()),
             },
         ));
 
@@ -1887,7 +1897,13 @@ mod tests {
         .unwrap();
 
         // With nothing enabled, only the GM-authored requirement is published.
-        let reqs = welcome_capability_requirements(repo.as_ref(), world.id, dir.path()).await;
+        let reqs = welcome_capability_requirements(
+            repo.as_ref(),
+            world.id,
+            dir.path(),
+            &Arc::new(crate::modules::ModuleScanCache::new()),
+        )
+        .await;
         assert_eq!(reqs.len(), 1);
         assert_eq!(reqs[0].path_prefix, "/system/vision");
 
@@ -1895,7 +1911,13 @@ mod tests {
         repo.set_world_enabled_modules(world.id, &["actors-plus".to_string()])
             .await
             .unwrap();
-        let reqs = welcome_capability_requirements(repo.as_ref(), world.id, dir.path()).await;
+        let reqs = welcome_capability_requirements(
+            repo.as_ref(),
+            world.id,
+            dir.path(),
+            &Arc::new(crate::modules::ModuleScanCache::new()),
+        )
+        .await;
         assert_eq!(reqs.len(), 2);
         assert!(reqs.iter().any(|r| r.path_prefix == "/system/vision"));
         assert!(reqs.iter().any(|r| r.path_prefix == "/system/plus"));
@@ -1946,7 +1968,13 @@ mod tests {
             .await
             .unwrap();
 
-        let reqs = welcome_capability_requirements(repo.as_ref(), world.id, dir.path()).await;
+        let reqs = welcome_capability_requirements(
+            repo.as_ref(),
+            world.id,
+            dir.path(),
+            &Arc::new(crate::modules::ModuleScanCache::new()),
+        )
+        .await;
 
         let scene_reqs: Vec<_> = reqs.iter().filter(|r| r.path_prefix == "/scene").collect();
         assert_eq!(
@@ -2004,7 +2032,13 @@ mod tests {
             .await
             .unwrap();
 
-        let reqs = welcome_capability_requirements(repo.as_ref(), world.id, dir.path()).await;
+        let reqs = welcome_capability_requirements(
+            repo.as_ref(),
+            world.id,
+            dir.path(),
+            &Arc::new(crate::modules::ModuleScanCache::new()),
+        )
+        .await;
         assert_eq!(
             reqs.len(),
             1,
@@ -2047,11 +2081,87 @@ mod tests {
             .await
             .unwrap();
 
-        let reqs = welcome_capability_requirements(repo.as_ref(), world.id, dir.path()).await;
+        let reqs = welcome_capability_requirements(
+            repo.as_ref(),
+            world.id,
+            dir.path(),
+            &Arc::new(crate::modules::ModuleScanCache::new()),
+        )
+        .await;
         assert!(
             reqs.iter().any(|r| r.path_prefix == "/system/blocking"),
             "module-declared requirements must still resolve correctly when scan runs via spawn_blocking"
         );
+    }
+
+    /// Wiring regression: `welcome_capability_requirements` reuses ONE shared
+    /// `ModuleScanCache` across two calls, with an in-place `module.json` edit
+    /// in between (same shape as
+    /// `modules::tests::module_scan_cache_detects_an_in_place_manifest_edit`).
+    /// Proves the Welcome path routes through `ModuleScanCache::get_or_scan`
+    /// in a way that does NOT reintroduce staleness for the guarantee this
+    /// function's own doc comment already makes ("a module that has gone
+    /// incompatible since being enabled... stops contributing") — it does
+    /// not, by itself, prove caching happened at all (see
+    /// `modules::tests::module_scan_cache_detects_an_in_place_manifest_edit`
+    /// for that).
+    #[tokio::test]
+    async fn welcome_capability_requirements_reflects_an_in_place_manifest_edit_through_a_shared_cache(
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("editable-mod")).unwrap();
+        std::fs::write(
+            dir.path().join("editable-mod").join("module.json"),
+            format!(
+                r#"{{"id":"editable-mod","version":"1.0.0","engines":{{"shadowcat":"^{}"}},"requirements":[{{"path_prefix":"/system/editable","caps":["v1:write"]}}]}}"#,
+                env!("CARGO_PKG_VERSION")
+            ),
+        )
+        .unwrap();
+
+        let repo = Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+        let gm = repo
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let world = repo.create_world_owned("W", gm, 0).await.unwrap();
+        repo.set_world_enabled_modules(world.id, &["editable-mod".to_string()])
+            .await
+            .unwrap();
+
+        let cache = Arc::new(crate::modules::ModuleScanCache::new());
+        let reqs1 =
+            welcome_capability_requirements(repo.as_ref(), world.id, dir.path(), &cache).await;
+        assert!(reqs1.iter().any(|r| r.path_prefix == "/system/editable"));
+        assert!(!reqs1
+            .iter()
+            .any(|r| r.caps.contains("v2:write") && r.path_prefix == "/system/editable"));
+
+        // In-place edit: same folder, no add/remove under `dir`, so the parent
+        // directory's own mtime does not change — the manifest's own mtime is
+        // the only signal this edit produces.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        std::fs::write(
+            dir.path().join("editable-mod").join("module.json"),
+            format!(
+                r#"{{"id":"editable-mod","version":"1.0.0","engines":{{"shadowcat":"^{}"}},"requirements":[{{"path_prefix":"/system/editable","caps":["v2:write"]}}]}}"#,
+                env!("CARGO_PKG_VERSION")
+            ),
+        )
+        .unwrap();
+
+        let reqs2 =
+            welcome_capability_requirements(repo.as_ref(), world.id, dir.path(), &cache).await;
+        let editable: Vec<_> = reqs2
+            .iter()
+            .filter(|r| r.path_prefix == "/system/editable")
+            .collect();
+        assert_eq!(editable.len(), 1);
+        assert!(
+            editable[0].caps.contains("v2:write"),
+            "the second call must reflect the edited manifest, not a stale cached scan"
+        );
+        assert!(!editable[0].caps.contains("v1:write"));
     }
 
     /// Build the square `GridShape` companion map the production `enrich_vision_explored` captures

@@ -250,6 +250,95 @@ pub fn engine_compat_ok(m: &InstalledModule) -> bool {
     }
 }
 
+/// Caches `scan_installed_modules`'s result, invalidated by comparing the
+/// modules directory's own mtime (bumped by the OS on any entry add/remove —
+/// operators install/uninstall modules by dropping/removing folders directly
+/// on disk; there is no server-side install route to hook a cache
+/// invalidation into) AND each cached module's `module.json` mtime (catches
+/// an in-place manifest edit to an already-installed module, which does NOT
+/// change the parent directory's own mtime). One instance shared across every
+/// WS connection on the server (see `crate::ws::WsState::module_scan_cache`).
+#[derive(Default)]
+pub struct ModuleScanCache {
+    /// The current cached scan, if any.
+    entry: std::sync::Mutex<Option<CachedScan>>,
+}
+
+/// One cached scan result plus the mtimes it was valid against.
+struct CachedScan {
+    /// `modules_dir`'s own mtime at scan time.
+    dir_mtime: std::time::SystemTime,
+    /// Each cached module's id -> its `module.json`'s mtime at scan time.
+    manifest_mtimes: std::collections::BTreeMap<String, std::time::SystemTime>,
+    /// The scan result itself.
+    modules: Vec<InstalledModule>,
+}
+
+impl ModuleScanCache {
+    /// An empty cache (one per server).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let cache = shadowcat::modules::ModuleScanCache::new();
+    /// ```
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Returns the cached scan if `modules_dir` and every cached module's
+    /// `module.json` mtime are unchanged since the cache was populated;
+    /// otherwise rescans (`scan_installed_modules`) and replaces the cache.
+    /// Blocking filesystem I/O — call only from within `spawn_blocking`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let cache = shadowcat::modules::ModuleScanCache::new();
+    /// let modules = cache.get_or_scan(std::path::Path::new("no-such-modules-dir"));
+    /// assert!(modules.is_empty());
+    /// ```
+    pub fn get_or_scan(&self, modules_dir: &Path) -> Vec<InstalledModule> {
+        let dir_mtime = std::fs::metadata(modules_dir)
+            .and_then(|m| m.modified())
+            .ok();
+        let mut guard = self.entry.lock().expect("module scan cache mutex poisoned");
+        if let (Some(cached), Some(dir_mtime)) = (guard.as_ref(), dir_mtime) {
+            if cached.dir_mtime == dir_mtime
+                && cached
+                    .manifest_mtimes
+                    .iter()
+                    .all(|(id, mtime)| Self::manifest_mtime(modules_dir, id) == Some(*mtime))
+            {
+                return cached.modules.clone();
+            }
+        }
+        let modules = scan_installed_modules(modules_dir);
+        let manifest_mtimes = modules
+            .iter()
+            .filter_map(|m| Self::manifest_mtime(modules_dir, &m.id).map(|mt| (m.id.clone(), mt)))
+            .collect();
+        // A missing/unreadable modules_dir yields no dir_mtime; fall back to
+        // UNIX_EPOCH so the cache is still populated (empty modules list) but
+        // never spuriously "matches" a later, real directory at the same path
+        // (a real mtime is never UNIX_EPOCH in practice).
+        let dir_mtime = dir_mtime.unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        *guard = Some(CachedScan {
+            dir_mtime,
+            manifest_mtimes,
+            modules: modules.clone(),
+        });
+        modules
+    }
+
+    /// `<modules_dir>/<id>/module.json`'s mtime, or `None` if it can't be stat'd.
+    fn manifest_mtime(modules_dir: &Path, id: &str) -> Option<std::time::SystemTime> {
+        std::fs::metadata(modules_dir.join(id).join("module.json"))
+            .and_then(|m| m.modified())
+            .ok()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -437,5 +526,94 @@ mod tests {
         let incompatible = found.iter().find(|m| m.id == "incompatible").unwrap();
         assert!(engine_compat_ok(compatible));
         assert!(!engine_compat_ok(incompatible));
+    }
+
+    #[test]
+    fn module_scan_cache_reuses_an_equal_result_when_nothing_on_disk_changed() {
+        let dir = tempfile::tempdir().unwrap();
+        write_module(
+            dir.path(),
+            "cached-mod",
+            r#"{"id":"cached-mod","version":"1.0.0"}"#,
+        );
+        let cache = ModuleScanCache::new();
+        let first = cache.get_or_scan(dir.path());
+        let second = cache.get_or_scan(dir.path());
+        assert_eq!(
+            first.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+            second.iter().map(|m| m.id.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn module_scan_cache_detects_an_added_module_via_the_directory_mtime() {
+        let dir = tempfile::tempdir().unwrap();
+        write_module(
+            dir.path(),
+            "first-mod",
+            r#"{"id":"first-mod","version":"1.0.0"}"#,
+        );
+        let cache = ModuleScanCache::new();
+        let before = cache.get_or_scan(dir.path());
+        assert_eq!(before.len(), 1);
+
+        // Adding a new folder directly under `dir` bumps `dir`'s own mtime on
+        // every platform this project targets — the install/uninstall signal.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        write_module(
+            dir.path(),
+            "second-mod",
+            r#"{"id":"second-mod","version":"1.0.0"}"#,
+        );
+
+        let after = cache.get_or_scan(dir.path());
+        assert_eq!(
+            after.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+            ["first-mod", "second-mod"]
+        );
+    }
+
+    /// Discriminating case: with the directory otherwise unchanged (no
+    /// add/remove of any entry directly under `dir`), an IN-PLACE edit to an
+    /// already-cached module's `module.json` does NOT bump `dir`'s own mtime
+    /// — only the manifest file's own mtime changes. A cache keyed solely on
+    /// the top-level directory mtime would return the STALE pre-edit result
+    /// here; `ModuleScanCache` must also track each cached module's own
+    /// manifest mtime to catch this, matching the guarantee
+    /// `welcome_capability_requirements`'s own doc comment already makes
+    /// (re-checking `engine_compat_ok` on every Welcome, not just at enable
+    /// time, so an on-disk manifest edit is visible without a restart).
+    #[test]
+    fn module_scan_cache_detects_an_in_place_manifest_edit() {
+        let dir = tempfile::tempdir().unwrap();
+        write_module(
+            dir.path(),
+            "editable",
+            r#"{"id":"editable","version":"1.0.0","engines":{"shadowcat":"^0.1.0"}}"#,
+        );
+        let cache = ModuleScanCache::new();
+        let before = cache.get_or_scan(dir.path());
+        assert_eq!(
+            before[0].engines_shadowcat.as_deref(),
+            Some("^0.1.0"),
+            "precondition: original manifest content observed"
+        );
+
+        // Overwrite the SAME module's manifest in place; `dir` itself gains no
+        // new/removed entry, so only the manifest file's own mtime advances.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        write_module(
+            dir.path(),
+            "editable",
+            r#"{"id":"editable","version":"1.0.0","engines":{"shadowcat":"^99.0.0"}}"#,
+        );
+
+        let after = cache.get_or_scan(dir.path());
+        assert_eq!(
+            after[0].engines_shadowcat.as_deref(),
+            Some("^99.0.0"),
+            "an in-place manifest edit must invalidate the cache even though the \
+             parent directory's own mtime never changed"
+        );
     }
 }
