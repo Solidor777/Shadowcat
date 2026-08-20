@@ -95,13 +95,12 @@ pub struct StoredCommand {
 }
 
 impl StoredCommand {
-    /// Deserialize a `world_events.command_json` row, tolerating pre-fix rows written before
-    /// this design (bare `Command` JSON, with neither a `command` nor a `snapshot` key at the
-    /// top level — the two shapes are structurally disjoint, so `Command`'s own fields never
-    /// satisfy `StoredCommand`'s). A pre-fix row is wrapped with an all-`None` `CommandSnapshot`
-    /// and an empty `world_gm_at_commit` map: `filter_command` then drops every op in it on
-    /// replay rather than falling back to a live-lookup redaction — a one-time, accepted cost
-    /// against pre-fix history, never a silent gap.
+    /// Deserialize a `world_events.command_json` row, tolerating a legacy bare-`Command` row
+    /// (neither a `command` nor a `snapshot` key at the top level — the two shapes are
+    /// structurally disjoint, so `Command`'s own fields never satisfy `StoredCommand`'s). Such a
+    /// row is wrapped with an all-`None` `CommandSnapshot` and an empty `world_gm_at_commit` map:
+    /// `filter_command` then drops every op in it on replay rather than falling back to a
+    /// live-lookup redaction — an accepted cost against undated history, never a silent gap.
     pub fn from_stored_json(raw: &str) -> Result<Self, serde_json::Error> {
         if let Ok(stored) = serde_json::from_str::<StoredCommand>(raw) {
             return Ok(stored);
