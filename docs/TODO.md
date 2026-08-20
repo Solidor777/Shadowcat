@@ -71,22 +71,6 @@ Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one de
 7. **Speak-as-token-instance** — `ActorOwnerRef::TokenInstance` is REJECTED at ingest (fail-closed,
    no first-party producer) — build the composer/token-context UX and lift the rejection together.
 
-## Actionable now — Phase D-alpha (movement authority & secrecy) backlog
-- TODO: `execute_move`'s footprint-aware wall/mask gate has a residual anchor asymmetry on
-  off-center input: the wall-disc check is anchored at the literal continuous point `next`,
-  while the mask/impassable-disc checks are anchored at `grid.cell_center(next_cell)` (a
-  deliberate fix for a corner-anchoring bug found during Task 9). The two anchors coincide for
-  routed `GridStepped` input (where I4's route↔gate equivalence is claimed), but a
-  client-supplied `MoveRequest` path is not re-snapped to cell centers, so on `Continuous` or
-  off-center `GridStepped` input a wide token's mask-check disc can miss a cell its
-  wall-check disc genuinely overlaps. This is strictly SAFER than the pre-Phase-D-alpha gate
-  (which had no footprint mask check at all) and is not a regression, but full I4-equivalence
-  on the `Continuous` engine would need the mask disc anchored at the true point too. Resolve
-  if/when the `Continuous` engine gets its own full I4 parity pass. (Surfaced by Phase
-  D-alpha's final whole-branch review.)
-
-
-
 ## Actionable now — a literal-field-name key survey misses keys built through a helper
 - TODO: When surveying every constructed value of a specific document field (e.g. every
   `property_overrides` pointer key ever set, to confirm none falls outside an allow-listed set),

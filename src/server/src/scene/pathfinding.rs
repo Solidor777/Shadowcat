@@ -79,9 +79,20 @@ pub fn cell_center(c: Cell, cell: f64) -> vision::P {
 }
 
 /// Cells whose AABB the footprint disc (center `ctr`, radius `r_scene`) overlaps. A cell overlaps
-/// the disc iff the disc center is within `r_scene` of the cell's AABB. The anchor cell is always
-/// included (a zero-radius disc overlaps exactly its own cell).
+/// the disc iff the disc center is within `r_scene` of the cell's AABB.
+///
+/// INVARIANT: `anchor` is always the single cell `GridShape::cell_of` assigns `ctr` to (every
+/// caller passes `anchor = to_cell(ctr)`). A positive-radius disc centered exactly on a shared
+/// cell boundary or corner has genuine POSITIVE-AREA overlap with every cell touching that point
+/// (not a spurious tie) and correctly admits all of them. A zero-radius `ctr` is a literal point,
+/// not a disc, so "which cell does it belong to" is genuinely ambiguous exactly on a boundary;
+/// this resolves it to `anchor` — the same single cell `cell_of`'s floor-based assignment gives —
+/// rather than tying with every cell sharing that point, matching the trait contract
+/// (`GridShape::footprint_cells`'s doc: "the anchor cell is always included").
 pub(crate) fn footprint_cells(anchor: Cell, ctr: vision::P, r_scene: f64, cell: f64) -> Vec<Cell> {
+    if r_scene <= 0.0 {
+        return vec![anchor];
+    }
     let mut out = Vec::new();
     let i0 = ((ctr.0 - r_scene) / cell).floor() as i32;
     let i1 = ((ctr.0 + r_scene) / cell).floor() as i32;
@@ -1367,6 +1378,79 @@ mod tests {
         assert!(
             !cell_enterable(&g, (0, 0), (1, 0)),
             "cell (1,0) center (150,50) is inside the impassable rect"
+        );
+    }
+
+    // --- footprint_cells boundary-tie characterization ---
+    // Pins the geometric analysis behind the r=0 tie-break: a positive-radius disc centered
+    // exactly on a shared cell boundary has genuine positive-area overlap with every cell
+    // touching that point and must keep admitting all of them (NOT a bug); only the
+    // zero-radius point case is a true degenerate tie.
+
+    #[test]
+    fn positive_radius_disc_on_a_two_cell_edge_tie_admits_both_with_positive_area_overlap() {
+        // cell=100, ctr=(200,150) sits exactly on the shared vertical edge between (1,1) and
+        // (2,1). r=40 > 0: both cells have genuine positive-area overlap with the disc.
+        let cells = footprint_cells((1, 1), (200.0, 150.0), 40.0, 100.0);
+        assert!(
+            cells.contains(&(1, 1)),
+            "must admit the cell on the near side of the tie"
+        );
+        assert!(
+            cells.contains(&(2, 1)),
+            "must admit the cell on the far side of the tie"
+        );
+        // Positive-area spot check: (180,150) is inside both the disc (dist 20 < 40) and cell
+        // (1,1) ([100,200)x[100,200)); (220,150) is inside both the disc and cell (2,1).
+        let d1 = ((180.0_f64 - 200.0).powi(2) + (150.0_f64 - 150.0).powi(2)).sqrt();
+        assert!(d1 < 40.0, "(180,150) genuinely inside the disc");
+        let d2 = ((220.0_f64 - 200.0).powi(2) + (150.0_f64 - 150.0).powi(2)).sqrt();
+        assert!(d2 < 40.0, "(220,150) genuinely inside the disc");
+    }
+
+    #[test]
+    fn positive_radius_disc_on_a_four_cell_corner_tie_admits_all_four_with_positive_area_overlap() {
+        // cell=100, ctr=(200,200) sits exactly on the 4-way corner shared by (1,1),(2,1),(1,2),(2,2).
+        // r=40 > 0.
+        let cells = footprint_cells((1, 1), (200.0, 200.0), 40.0, 100.0);
+        for c in [(1, 1), (2, 1), (1, 2), (2, 2)] {
+            assert!(cells.contains(&c), "must admit corner-tied cell {c:?}");
+        }
+        // Positive-area spot check for each quadrant.
+        for (px, py) in [
+            (180.0, 180.0),
+            (220.0, 180.0),
+            (180.0, 220.0),
+            (220.0, 220.0),
+        ] {
+            let d = ((px - 200.0_f64).powi(2) + (py - 200.0_f64).powi(2)).sqrt();
+            assert!(d < 40.0, "({px},{py}) genuinely inside the disc");
+        }
+    }
+
+    #[test]
+    fn zero_radius_point_on_a_two_cell_edge_tie_resolves_to_the_single_canonical_cell() {
+        // r=0.0 exactly: a literal point on the shared edge between (1,1) and (2,1). Must
+        // resolve to exactly the single cell `to_cell`/`GridShape::cell_of` (floor-based) would
+        // assign: floor(200/100)=2, so (2,1) is canonical (the caller always passes anchor =
+        // to_cell(ctr)).
+        let cells = footprint_cells((2, 1), (200.0, 150.0), 0.0, 100.0);
+        assert_eq!(
+            cells,
+            vec![(2, 1)],
+            "a zero-radius boundary point must resolve to exactly one cell, matching cell_of"
+        );
+    }
+
+    #[test]
+    fn zero_radius_point_on_a_four_cell_corner_tie_resolves_to_the_single_canonical_cell() {
+        // r=0.0 exactly: a literal point on the 4-way corner shared by (1,1),(2,1),(1,2),(2,2).
+        // floor(200/100)=2 on both axes, so (2,2) is canonical.
+        let cells = footprint_cells((2, 2), (200.0, 200.0), 0.0, 100.0);
+        assert_eq!(
+            cells,
+            vec![(2, 2)],
+            "a zero-radius corner point must resolve to exactly one cell, matching cell_of"
         );
     }
 

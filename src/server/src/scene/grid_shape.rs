@@ -629,6 +629,15 @@ impl GridShape for HexGrid {
     /// `r_scene + size` from `ctr`. `anchor` is returned alone when nothing overlaps, mirroring
     /// the square implementation's zero-radius guarantee.
     fn footprint_cells(&self, anchor: Cell, ctr: vision::P, r_scene: f64, cell: f64) -> Vec<Cell> {
+        // A zero-radius `ctr` is a literal point, not a disc: exactly on a shared hex edge or
+        // vertex it sits at distance 0 from EVERY touching hex's polygon, which the annulus/
+        // inradius tests below would otherwise tie across 2 or 3 hexes. `anchor` is always
+        // `cell_of(ctr)` (the caller's own single-cell resolution), so this matches
+        // `pathfinding::footprint_cells`'s identical r=0 resolution and the trait contract
+        // (`GridShape::footprint_cells`'s doc: "the anchor cell is always included").
+        if r_scene <= 0.0 {
+            return vec![anchor];
+        }
         let mut out = Vec::new();
         let r = r_scene.max(0.0);
         let inradius = self.size * 3.0_f64.sqrt() / 2.0;
@@ -899,6 +908,25 @@ mod tests {
         };
         assert_eq!(g.cell_of((250.0, 149.0)), (2, 1));
         assert_eq!(g.cell_of((-10.0, -1.0)), (-1, -1));
+    }
+
+    #[test]
+    fn hex_grid_zero_radius_point_on_a_shared_edge_resolves_to_the_single_canonical_cell() {
+        // A zero-radius point sitting exactly on the edge shared by axial hexes (0,0) and (1,0),
+        // at the edge midpoint, is equidistant (== the inradius) from both hex centers — the
+        // hex-grid analog of the square grid's boundary tie.
+        let hx = HexGrid { size: 100.0 };
+        let c0 = hx.cell_center((0, 0));
+        let c1 = hx.cell_center((1, 0));
+        let mid = ((c0.0 + c1.0) / 2.0, (c0.1 + c1.1) / 2.0);
+        let canonical = hx.cell_of(mid);
+        let cells = hx.footprint_cells(canonical, mid, 0.0, hx.size);
+        assert_eq!(
+            cells,
+            vec![canonical],
+            "a zero-radius boundary point must resolve to exactly the single canonical cell, \
+             matching cell_of, mirroring the square grid's own resolution"
+        );
     }
 
     #[test]

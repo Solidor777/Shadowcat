@@ -1167,6 +1167,23 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   `Room::publish` — the stale-citation class); hex `size` docs state the outer-radius
   (circumradius) convention — keep both true when touching those seams.
 
+- **`GridShape::footprint_cells`'s r=0 tie-break is a TRAIT-LEVEL contract, not a
+  `SquareGrid`-only accident.** A zero-radius `footprint_cells::ctr` is a literal point, not a
+  disc, so "which cell does it belong to" is genuinely ambiguous exactly on a shared boundary or
+  corner; both implementations resolve it to `footprint_cells::anchor` (the single cell
+  `GridShape::cell_of` would assign), never a multi-cell tie. `pathfinding::footprint_cells` (the
+  `SquareGrid` delegate) resolves this via an explicit `r_scene <= 0.0` early return — its
+  axis-aligned loop bounds (`floor((ctr∓r)/cell)`) already collapsed to one index at r=0 before
+  that guard was added, so the guard documents the invariant rather than changing behavior.
+  `HexGrid::footprint_cells`'s ring-scan + `distance_to_cell_polygon` test had NO such collapse and
+  genuinely tied across 2-3 hexes at r=0 before the same explicit early return was added — same
+  contract, independently implemented, independently broken until fixed together. A
+  positive-radius disc on a boundary correctly admits every touching cell on BOTH shapes (genuine
+  positive-area overlap, not a bug) — never narrow that case when touching this guard.
+  `scene::move_exec::execute_move`'s mask/impassable footprint disc is anchored at the true
+  continuous dense-walk sample (`execute_move::next`, not a `cell_center(next_cell)`
+  substitution), matching the wall disc's anchor exactly — this guard is what makes that anchoring
+  safe on both grid kinds.
 - **Scene auto-creates on GM entry** (scene system schema `{grid, background}`); Stage reads the
   grid [[scene-lifecycle-gap]].
 - **Clear tool overlays/previews on a mid-gesture tool swap** (draw preview, measure overlay) or

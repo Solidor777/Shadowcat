@@ -409,14 +409,13 @@ pub(crate) fn execute_move(
         let prev = walk[i - 1].pos;
         let next = walk[i].pos;
         let next_cell = to_cell(next);
-        // The footprint disc's anchor for every CELL-MEMBERSHIP test (mask, impassable):
-        // the cell's own center, exactly mirroring `cell_enterable`'s `ctr = cell_center(to)`.
-        // This is NOT optional polish — anchoring at the raw dense-walk
-        // point `next` instead is degenerate whenever `next` lands exactly on a cell boundary
-        // (common: any axis-aligned continuous step subdivides into boundary-exact samples),
-        // where `footprint_cells`'s zero-distance-to-AABB test spuriously admits every cell
-        // touching that corner, not just the cells the footprint actually occupies.
-        let fp_ctr = grid.cell_center(next_cell);
+        // The footprint disc's anchor for every CELL-MEMBERSHIP test (mask, impassable) is the
+        // mover's true continuous position `next`, matching the wall-disc anchor exactly (both
+        // checks below pass `next`, not a cell center). A positive-radius disc anchored on a
+        // cell boundary has genuine positive-area overlap with every cell it touches there;
+        // `footprint_cells`'s own r=0 tie-break (see its doc comment) resolves a zero-radius
+        // point to a single canonical cell, so the mask/impassable disc and the wall disc can
+        // share one anchor with no degenerate multi-cell admission at any radius.
 
         // Step 1: wall gate — every dense sub-segment, exempt for a GM. TWO checks,
         // both from `cell_enterable`: the footprint disc at
@@ -447,7 +446,7 @@ pub(crate) fn execute_move(
                 stopped_early = true;
                 break;
             };
-            cells.extend(grid.footprint_cells(next_cell, fp_ctr, r_scene, cell));
+            cells.extend(grid.footprint_cells(next_cell, next, r_scene, cell));
             if !cells.iter().all(|c| visible.contains(c)) {
                 stopped_early = true;
                 break;
@@ -472,7 +471,7 @@ pub(crate) fn execute_move(
             // Impassable IS footprint-gated (`cell_enterable`'s check 4):
             // a wide body cannot fit past impassable terrain any more than past a wall.
             if check_regions {
-                let fp_cells = grid.footprint_cells(next_cell, fp_ctr, r_scene, cell);
+                let fp_cells = grid.footprint_cells(next_cell, next, r_scene, cell);
                 if fp_cells.iter().any(|c| regions.is_impassable(*c)) {
                     stopped_early = true;
                     break;
@@ -586,10 +585,15 @@ mod tests {
         (ecs, scene_id, token_id)
     }
 
-    /// Visible set covering all (i,j) in [0,range) × [0,range).
+    /// Visible set covering all (i,j) in [-1,range) × [-1,range). The lower bound starts at -1,
+    /// not 0: every fixture's token sits at the scene origin (0.0, 0.0), so a footprint disc
+    /// anchored anywhere along an axis-hugging path can genuinely reach across x=0/y=0 into the
+    /// i=-1/j=-1 row or column at up to a 0.5-cell radius — real positive-area overlap, not a
+    /// gap in the fixture's intent, so the visible set must cover it for a "fully visible"
+    /// scenario to mean what it says.
     fn visible_grid(range: i32) -> BTreeSet<(i32, i32)> {
-        (0..range)
-            .flat_map(|i| (0..range).map(move |j| (i, j)))
+        (-1..range)
+            .flat_map(|i| (-1..range).map(move |j| (i, j)))
             .collect()
     }
 
@@ -638,8 +642,7 @@ mod tests {
     fn full_clear_path_reaches_goal() {
         let (ecs, scene, token) = clear_scene();
         // Cells (0,0), (1,0), (1,1) — all visible.
-        let visible: BTreeSet<(i32, i32)> =
-            (0..3).flat_map(|i| (0..3).map(move |j| (i, j))).collect();
+        let visible = visible_grid(3);
         let out = execute_move(
             &ecs,
             MoveGateInputs {
@@ -686,10 +689,16 @@ mod tests {
     #[test]
     fn unseen_cell_truncates_under_visible_restriction() {
         let (ecs, scene, token) = clear_scene();
-        // (0,0) and (1,0) visible; (1,1) NOT in the set.
+        // (0,0) and (1,0) visible; (1,1) NOT in the set. (0,-1)/(1,-1) are also required: the
+        // token starts at the scene origin (0,0), so the footprint disc at the first step's
+        // destination (100,0) — exactly on the y=0 grid line — genuinely reaches into the j=-1
+        // row (real positive-area overlap at a 0.4-cell radius), which must be visible too for
+        // the first step to succeed as this test intends.
         let mut visible: BTreeSet<(i32, i32)> = BTreeSet::new();
         visible.insert((0, 0));
         visible.insert((1, 0));
+        visible.insert((0, -1));
+        visible.insert((1, -1));
         let out = execute_move(
             &ecs,
             MoveGateInputs {
@@ -749,10 +758,18 @@ mod tests {
         let (ecs, scene, token) = clear_scene();
         // Cell (1,1) is NOT in the raw visible set but IS in the explored union.
         // The caller is responsible for supplying the union; the executor treats it as opaque.
+        // (0,-1)/(1,-1) are also required: the token starts at the scene origin, so the
+        // footprint disc at the first step's destination (100,0) genuinely reaches into the
+        // j=-1 row at a 0.4-cell radius (see `unseen_cell_truncates_under_visible_restriction`).
+        // (0,1) is required too: the second step's destination (100,100) is the 4-way corner
+        // shared by (0,0),(1,0),(0,1),(1,1), all genuinely footprint-overlapped at that radius.
         let mut union_mask: BTreeSet<(i32, i32)> = BTreeSet::new();
         union_mask.insert((0, 0));
         union_mask.insert((1, 0));
         union_mask.insert((1, 1)); // explored cell included by caller in the union
+        union_mask.insert((0, -1));
+        union_mask.insert((1, -1));
+        union_mask.insert((0, 1));
 
         // With the union mask: all supercover cells are present → reaches goal.
         let out = execute_move(
@@ -776,6 +793,8 @@ mod tests {
         let mut raw_mask: BTreeSet<(i32, i32)> = BTreeSet::new();
         raw_mask.insert((0, 0));
         raw_mask.insert((1, 0));
+        raw_mask.insert((0, -1));
+        raw_mask.insert((1, -1));
         // (1,1) absent — caller did NOT union in explored; step (100,0)→(100,100) blocked.
         let out2 = execute_move(
             &ecs,
@@ -872,10 +891,16 @@ mod tests {
         // NOT an authored vertex), not admit the whole jump nor reject it outright.
         let (ecs, scene, token) = clear_scene();
         // Only cells (0,0),(1,0),(2,0) are visible; the 5-cell jump would reach unseen (3,0).
+        // (0,-1)/(1,-1)/(2,-1) are also required: the token starts at the scene origin and the
+        // path runs along y=0, so every dense sample's footprint disc genuinely reaches into the
+        // j=-1 row at a 0.4-cell radius (see `unseen_cell_truncates_under_visible_restriction`).
         let mut visible: BTreeSet<(i32, i32)> = BTreeSet::new();
         visible.insert((0, 0));
         visible.insert((1, 0));
         visible.insert((2, 0));
+        visible.insert((0, -1));
+        visible.insert((1, -1));
+        visible.insert((2, -1));
         let out = execute_move(
             &ecs,
             MoveGateInputs {
@@ -1055,6 +1080,69 @@ mod tests {
             out.stop,
             (0.0, 0.0),
             "stops BEFORE entering the impassable cell, like a wall"
+        );
+        assert!(out.truncated);
+    }
+
+    /// Root-cause fix regression: the mask gate's footprint disc is anchored at the true
+    /// continuous dense-walk sample (`next`), matching the wall gate's anchor exactly, so the two
+    /// gates now agree on where an off-center `Continuous`-style step truncates. A token starting
+    /// at (0,30) — interior in y, boundary-exact in x — moving along an axis-aligned segment whose
+    /// dense subdivision (`k=3`) lands its FIRST intermediate sample exactly at (100,30): that
+    /// point sits on the x=100 cell-boundary tie, so a 0.4-cell-radius footprint genuinely
+    /// overlaps BOTH (0,-1) and (1,-1) — cells off the line of travel, not swept by
+    /// `line_traversal` — in addition to (0,0)/(1,0). Masking out (0,-1)/(1,-1) alone (no wall, no
+    /// region) must truncate the move exactly at that first dense sample, proving the mask gate's
+    /// reach now matches the wall gate's `point_segment_distance` reach at the identical anchor.
+    #[test]
+    fn continuous_axis_aligned_move_mask_gate_reaches_the_same_boundary_point_the_wall_gate_does() {
+        let scene_id = Uuid::from_u128(10);
+        let token_id = Uuid::from_u128(11);
+        let ecs = SceneEcs::from_documents(
+            vec![
+                entity_doc(
+                    10,
+                    0,
+                    "scene",
+                    json!({ "grid": { "kind": "square", "size": FIXTURE_GRID_SIZE }, "background": null }),
+                ),
+                entity_doc(
+                    11,
+                    10,
+                    "token",
+                    json!({ "x": 0.0, "y": 30.0, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+                ),
+            ],
+            0,
+        );
+        // (0,-1) and (1,-1) deliberately absent — the flanker cells a boundary-exact footprint
+        // disc at (100,30) genuinely overlaps, off the line of travel.
+        let mut visible: BTreeSet<(i32, i32)> = BTreeSet::new();
+        visible.insert((0, 0));
+        visible.insert((1, 0));
+        visible.insert((2, 0));
+        let out = execute_move(
+            &ecs,
+            MoveGateInputs {
+                scene: scene_id,
+                restriction: MovementRestriction::Visible,
+                visible: &visible,
+                cell: FIXTURE_GRID_SIZE,
+            },
+            token_id,
+            // k=3 subdivision (Chebyshev distance 300 over cell 100): dense samples land exactly
+            // at x=100,200,300 — none of them an authored vertex.
+            &[(0.0, 30.0), (300.0, 30.0)],
+            false,
+            0.4,
+        )
+        .unwrap();
+        assert_eq!(
+            out.stop,
+            (0.0, 30.0),
+            "mask gate truncates at the START, before the first mid-subdivision sample \
+             (100,30) — matching where a wall gate anchored at the same point would react, not \
+             one dense step further in (the old cell-center-anchored asymmetry)"
         );
         assert!(out.truncated);
     }
@@ -1966,6 +2054,11 @@ mod tests {
                     let mut v = BTreeSet::new();
                     v.insert((0, 0));
                     v.insert((1, 0));
+                    // The token starts at the scene origin, so the first step's destination
+                    // (100,0) genuinely reaches the j=-1 row at a 0.4-cell radius (see
+                    // `unseen_cell_truncates_under_visible_restriction`).
+                    v.insert((0, -1));
+                    v.insert((1, -1));
                     v
                 },
                 restriction: MovementRestriction::Visible,
