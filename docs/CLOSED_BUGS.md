@@ -612,3 +612,21 @@ Confirmed-real defects that have since been fixed, kept for provenance. New fixe
   `check-brief-rules.mjs` collision verbatim. Verified end-to-end: `node
   scripts/check-comment-refs.mjs` rejects a real "the brief calls for" comment with a nonzero exit,
   not just a report.
+
+## Client / shell — a world-route deep link could render a stale "Connecting…" frame after boot() fell back to login
+
+- [routing, FIXED] `App.svelte`'s `boot()` navigates away (e.g. to `login`) and sets `booted =
+  true` in the same synchronous tick on a deadline or a failed `getMe`/`loadSessionState` fetch,
+  but `navigate()` (`route.svelte.ts`) only wrote `location.hash`; `currentRoute()`'s reactive
+  `route` state updated only off the hashchange listener, which a real browser dispatches
+  asynchronously and jsdom does not dispatch at all on a bare hash assignment. On a page loaded at
+  a `#/world/<id>` deep link with a down/unreachable backend, this left a window where `booted` was
+  already `true` but `route.name` was still `"world"`, hitting the template's `{:else if
+  route.name === "world"}` branch (no session) and rendering a stale "Connecting…" before the
+  hashchange event landed and flipped the view to `<Entry>`. Fixed by having `navigate()` update
+  `currentRoute()`'s state synchronously in the same call, alongside setting `location.hash` — the
+  listener still fires afterward for a self-triggered navigation (a harmless redundant
+  re-assignment of the same route) and remains the only update path for a navigation this module
+  did not initiate (back/forward, the user editing the URL bar). Regression coverage: a
+  `route.svelte.ts` unit test proving `currentRoute()` updates with no hashchange event dispatched
+  at all, plus an `App.svelte` end-to-end test of the deep-link-with-failing-backend scenario.

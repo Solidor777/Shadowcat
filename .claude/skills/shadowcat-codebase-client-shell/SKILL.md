@@ -110,6 +110,15 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
   ahead of the URL restores whichever world that account last entered from any other session, so a
   deep-linked reload teleports away from its own URL — a product defect, not merely a
   parallel-test artifact.
+- **`navigate()` (`route.svelte.ts`) updates `currentRoute()`'s reactive state synchronously, in
+  the same call, not only via its hashchange listener** — a caller that reads `currentRoute()` in
+  the same tick as its own `navigate()` call (e.g. `boot()`'s catch/deadline paths setting
+  `booted = true` immediately after navigating away on a failure) would otherwise observe the
+  PRE-navigation route for one render, since a real browser dispatches the hashchange event as a
+  separate async task and jsdom does not dispatch it at all on a bare hash assignment. The
+  listener still fires afterward for a self-triggered navigation (a harmless redundant
+  re-assignment of the same route) and remains the only update path for a navigation this module
+  did not initiate (back/forward, the user editing the URL bar).
 - **Bounded + retried boot fetches, against a silent hang at startup** — `FETCH_TIMEOUT_MS`
   (15s) covers every fetch in its module, not only the session/boot trio: `getMe`, `getUiState`,
   `listWorlds`, `postJson` (login/logout), and `putUiState` (including the unload keepalive PUT)

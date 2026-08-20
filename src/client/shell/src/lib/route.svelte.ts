@@ -66,23 +66,32 @@ export function routeToHash(route: Route): string {
   }
 }
 
-/** Navigates by setting `location.hash`, which fires the `hashchange`
- * listener that updates `currentRoute()`'s reactive state.
- * @param route - The route to navigate to.
- * @example
- * ```
- * navigate({ name: "worlds" });
- * ```
- */
-export function navigate(route: Route): void {
-  location.hash = routeToHash(route);
-}
-
 let route = $state<Route>(parseHash(location.hash));
 if (typeof window !== "undefined") {
   window.addEventListener("hashchange", () => {
     route = parseHash(location.hash);
   });
+}
+
+/** Navigates by setting `location.hash` AND updating `currentRoute()`'s reactive state in the
+ * same synchronous call — never only the former. `hashchange` fires asynchronously (a real
+ * browser dispatches it as a separate task; jsdom does not dispatch it at all on a bare
+ * `location.hash` assignment), so a caller that reads `currentRoute()` in the same tick as a
+ * `navigate()` call — as `App.svelte`'s `boot()` does when it sets `booted = true` immediately
+ * after navigating away on a failure — would otherwise observe the PRE-navigation route for one
+ * render. The `hashchange` listener above still fires afterward for a self-triggered navigation
+ * (a harmless redundant re-assignment of the same route) and remains the only update path for a
+ * navigation this module did not initiate — the back/forward buttons, or the user editing the
+ * URL bar directly.
+ * @param next - The route to navigate to.
+ * @example
+ * ```
+ * navigate({ name: "worlds" });
+ * ```
+ */
+export function navigate(next: Route): void {
+  location.hash = routeToHash(next);
+  route = next;
 }
 
 /** The current route, reactive: reading it in a rune context (`$derived`,

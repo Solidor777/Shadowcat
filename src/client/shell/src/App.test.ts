@@ -55,6 +55,22 @@ test("falls back to entry when the saved lastWorld is no longer accessible", asy
   expect(await screen.findByTestId("entry-stub")).toBeTruthy();
 });
 
+test("a world-route deep link with a failing backend falls back to entry, not a stuck stale Connecting frame", async () => {
+  // End-to-end regression for navigate()'s synchronous currentRoute() update (see
+  // route.svelte.ts's own doc comment and route.test.ts's discriminating unit test for the
+  // mechanism): boot()'s catch calls navigate({name:"login"}) on a getMe() failure, and this
+  // asserts the app actually reaches <Entry> rather than the stale `{:else if route.name ===
+  // "world"}` branch (which renders "Connecting…" with no session).
+  location.hash = "#/world/abc-123";
+  window.dispatchEvent(new HashChangeEvent("hashchange"));
+  vi.spyOn(api, "getMe").mockRejectedValue(new Error("network"));
+  render(App);
+  // A rejecting getMe() exhausts withRetry's real (unmocked) 3-attempt/500-1500ms-jittered
+  // backoff before boot()'s catch navigates away — comfortably under 5s worst case.
+  expect(await screen.findByTestId("entry-stub", {}, { timeout: 5000 })).toBeTruthy();
+  expect(screen.queryByText("Connecting…")).toBeNull();
+});
+
 test("reload on a valid world route enters THAT world, not a different valid lastWorld", async () => {
   // Pins the App↔currentRoute wiring (not just resolveBootWorld's pure logic):
   // a stale-fix regression here (boot() reverting to lastWorld-first) would
