@@ -1525,6 +1525,7 @@ export const ACKNOWLEDGED_NON_SYMBOLS = new Set([
   // calls or subscribes to, all declared inside the dependency.
   "addStyles", "addPopoutGroup", "onDidRemovePopoutGroup", "onDidRemovePanel", "onDidLayoutChange",
   "onDidDimensionsChange", "onDidChangeEnd", "mutation", "getNextGroupId",
+  "onWillDrop", "onDidAddPanel", "addPanel",
   // Test-framework API: a Vitest matcher and a Playwright locator method, named while describing
   // what a test can and cannot observe.
   "toBe", "boundingBox",

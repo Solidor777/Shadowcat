@@ -202,10 +202,14 @@ the reducer (intercept-and-redispatch), so the engine never owns state.
 - On any dockview-core version bump, re-verify `--z-popover` (1000, defined in `_semantic.scss`)
   still clears dockview's floating-overlay z-index (`--dv-overlay-z-index`, 999 at 7.0.2) — the
   popover menus stack above floating panel groups only by that numeric margin.
-- Dragging a panel INTO an already-open popout group bypasses the reducer — `#groupWillDropSubs`
-  is not wired for popout groups, so that specific gesture does not flow through `applyOp` (this
-  gesture's scope is menu-only by design; the drop-classification gap for popout targets is a
-  known, unimplemented case, not a defect in shipped scope).
+- Dragging a panel into an already-open popout group now flows through `applyOp` too:
+  `DockviewEngine.#popoutGroupSubs` wires the popout group's own `onWillDrop` (closing the veto
+  bypass, mirroring `#groupWillDropSubs`'s per-zone-group wiring) plus `onDidAddPanel`/
+  `onDidRemovePanel` (keeping `#poppedOutGroupPanels`'s per-group array in sync with dockview's
+  own nested-gridview drop target) the moment a pop-out succeeds, in `#requestPopOut`'s success
+  branch — the only place this engine creates a popout group, since `apply()`'s zone loop never
+  touches one. Disposed in `#handleRemovePopoutGroup` (unconditionally, alongside the existing
+  `#poppedOutGroupPanels`/`#poppedOutOriginGroups` cleanup) and in bulk by `destroy()`.
 - `DockviewEngine.#expandGroupDockOp`'s "new group" index computation assumes the dragged whole
   group is not already a member of the target zone — a same-zone whole-group reorder is a
   KNOWN, code-documented index-computation gap (an inline `TODO` beside that method),
@@ -221,6 +225,13 @@ the reducer (intercept-and-redispatch), so the engine never owns state.
   verified against the vendored source) rather than simulating a real popup; the actual
   cross-window re-parent + stylesheet clone is dockview's own machinery plus a manual-QA item,
   same class as the real-pointer-drag gap above.
+- **The default stub `popoutDriver` (`() => Promise.resolve(true)`) never actually moves the
+  panel to a new group** — after a "successful" stub pop-out, `api.getPanel(id)?.group.id` still
+  resolves to the panel's ORIGINAL, already-`#groupWillDropSubs`-tracked group, not a genuinely
+  distinct popout group. A test targeting `#popoutGroupSubs`'s OWN wiring (not the pre-existing
+  zone-managed one) needs a driver that behaves like real `addPopoutGroup` and actually relocates
+  the panel — `dockview.test`'s `popOutToRealGroup` helper does this via `api.addGroup` +
+  `api.removePanel`, then a fresh `addPanel` into that new group, synchronously inside the driver.
 - jsdom never runs real layout, so `boundingBox` (backed by `getBoundingClientRect()`) always
   reads all-zero unless a test stubs it — `dockview.test`'s live floating re-drag/resize sync tests assign a replacement
   `getBoundingClientRect` directly onto the floating panel's `group.element`, then fire

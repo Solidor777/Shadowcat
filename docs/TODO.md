@@ -46,17 +46,6 @@ capability already exists — but are deferred as out-of-scope-for-now work.
 - TODO: Resolve multi-provider conflict policy for `singleton` surface contracts in the UI contribution architecture — when two modules provide the same `singleton` contract (e.g. both claim "the sidebar"), decide the winner (load order, explicit priority, or user selection) instead of the current deterministic loud-fail. Design once a real second provider exists to validate the semantics; the contract model already carries the `singleton`/`multi` cardinality marker the policy slots into.
 - TODO: Add capability version negotiation to contract-based module dependencies (`requires`) — match a required contract against a provider by version range, not presence alone. Deferred until multiple providers of a contract exist at differing versions.
 
-## Blocked on multi-panel popout groups
-- TODO: an already-open popout window has no `onWillDrop` subscription wired
-  (`#groupWillDropSubs` is populated only inside `apply()`'s zone loop) — dockview-core's own
-  popout design supports drag-and-drop of a further panel into the popout's nested gridview, so a
-  same-origin cross-window drag into an open popout would bypass the reducer's veto/classify
-  pipeline entirely (`applyOp` invariant "all layout mutations flow through applyOp" would not
-  hold for that gesture), and `#poppedOutGroupPanels`'s single-panel-array assumption wouldn't be
-  updated to include the dragged-in panel — silently unaccounted for on window close. Out of the
-  M12e Task 5 brief's scope (menu pop-out + its own close translation only); wire it if/when
-  multi-panel popout groups become a supported gesture.
-
 ## Blocked on real pointer-gesture QA (unsimulable under jsdom)
 - TODO: `DockviewEngine#toDropSite`'s one remaining fallback branch (a drop's target group
   falling outside the engine's own zone bookkeeping) is a best-effort approximation (falls back

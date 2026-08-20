@@ -589,6 +589,21 @@ export class DockviewEngine implements EngineAdapter {
    * (now-orphaned) group id, corrupting the tree on the eventual window close. Refuse a
    * duplicate until the first request settles. */
   #pendingPopouts = new Set<string>();
+  /** One live subscription bundle per open popout group — `onWillDrop` (closing the group-onto-
+   * group veto bypass for a popout, the same way `#groupWillDropSubs` closes it for zone-tree
+   * groups) plus `onDidAddPanel`/`onDidRemovePanel` (keeping `#poppedOutGroupPanels`'s per-group
+   * panel list in sync with dockview's own nested-gridview drop target, which natively accepts a
+   * further panel being dragged into an already-open popout). Added the moment a pop-out succeeds
+   * (`#requestPopOut`), disposed the moment `#handleRemovePopoutGroup` fires for that group id —
+   * same add/dispose lifecycle shape as `#groupWillDropSubs`/`#groupResizeSubs`, applied here to
+   * the separate popout-group lifecycle (which `apply()`'s zone loop never touches). */
+  #popoutGroupSubs = new Map<
+    string,
+    {
+      /** Tears down this one subscription. */
+      dispose(): void;
+    }[]
+  >();
   /** Popped-out panel id -> the group id it lived in BEFORE pop-out (its ORIGIN group).
    * dockview keeps that group alive-but-hidden (`setVisible(false)`) and its window-close
    * path (`disposePopoutWindow`) hands the panel back to that exact group object; the
@@ -787,6 +802,29 @@ export class DockviewEngine implements EngineAdapter {
           this.#poppedOutOriginGroups.set(id, originGroupId);
           const gid = api.getPanel(id)?.group.id;
           if (gid) this.#poppedOutGroupPanels.set(gid, [id]);
+          // The freshly-created popout group is never touched by apply()'s
+          // zone loop (see `#popoutGroupSubs`'s doc comment) — wire its own
+          // veto bypass closure and panel-list sync here, at the only point
+          // this engine ever creates a popout group.
+          const popoutGroup = gid ? api.getGroup(gid) : undefined;
+          if (gid && popoutGroup) {
+            this.#popoutGroupSubs.set(gid, [
+              popoutGroup.model.onWillDrop((event) => this.#handleWillDrop(event)),
+              popoutGroup.model.onDidAddPanel((addEvent) => {
+                const ids = this.#poppedOutGroupPanels.get(gid) ?? [];
+                if (!ids.includes(addEvent.panel.id)) {
+                  this.#poppedOutGroupPanels.set(gid, [...ids, addEvent.panel.id]);
+                }
+              }),
+              popoutGroup.model.onDidRemovePanel((removeEvent) => {
+                const ids = this.#poppedOutGroupPanels.get(gid) ?? [];
+                this.#poppedOutGroupPanels.set(
+                  gid,
+                  ids.filter((pid) => pid !== removeEvent.panel.id),
+                );
+              }),
+            ]);
+          }
           for (const cb of this.#opListeners) cb({ op: "popOut", id });
         } else {
           for (const cb of this.#opListeners) cb({ op: "float", id, rect: MENU_FLOAT_RECT });
@@ -1023,6 +1061,12 @@ export class DockviewEngine implements EngineAdapter {
   }): void {
     const ids = this.#poppedOutGroupPanels.get(event.id) ?? event.group.model.panels.map((p) => p.id);
     this.#poppedOutGroupPanels.delete(event.id);
+    // This group's own subscription bundle (`onWillDrop`/`onDidAddPanel`/
+    // `onDidRemovePanel`, wired at pop-out success in `#requestPopOut`) is
+    // scoped to exactly this popout group's lifetime — dispose it unconditionally,
+    // the same way `#poppedOutGroupPanels` above is cleared unconditionally.
+    for (const d of this.#popoutGroupSubs.get(event.id) ?? []) d.dispose();
+    this.#popoutGroupSubs.delete(event.id);
     // Origin-group tracking clears unconditionally (like `#poppedOutGroupPanels`
     // above), for both a user window-close and our own `apply()`-driven pop-in:
     // once the panel leaves the popped-out state its origin group is a normal
@@ -1712,8 +1756,9 @@ export class DockviewEngine implements EngineAdapter {
   }
 
   /** `EngineAdapter.destroy`: disposes every subscription this engine created
-   * (component-level, per-group resize/drop, per-floating-panel Escape),
-   * clears every internal tracking map, and disposes the underlying
+   * (component-level, per-group resize/drop, per-popout-group `#popoutGroupSubs`
+   * bundle, per-floating-panel Escape), clears every internal tracking map, and
+   * disposes the underlying
    * `DockviewApi` itself. Slot elements are NOT destroyed — ownership returns
    * to `PanelHost`'s staging container, per the `EngineAdapter` contract.
    * @example
@@ -1731,6 +1776,10 @@ export class DockviewEngine implements EngineAdapter {
     this.#groupResizeSubs.clear();
     for (const d of this.#groupWillDropSubs.values()) d.dispose();
     this.#groupWillDropSubs.clear();
+    for (const subs of this.#popoutGroupSubs.values()) {
+      for (const d of subs) d.dispose();
+    }
+    this.#popoutGroupSubs.clear();
     for (const dispose of this.#floatingEscapeSubs.values()) dispose();
     this.#floatingEscapeSubs.clear();
     this.#floatInvokers.clear();

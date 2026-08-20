@@ -40,6 +40,7 @@ interface ComponentInternals {
 /** Group-level internals, reached per group rather than through the component. */
 interface GroupModelInternals {
   _onWillDrop: InternalEmitter<WillDropProbe>;
+  _onDidAddPanel: InternalEmitter<{ panel: IDockviewPanel }>;
 }
 interface GroupApiInternals {
   _onDidDimensionChange: InternalEmitter<{ width: number; height: number }>;
@@ -1367,4 +1368,114 @@ test("onDidRemovePopoutGroup fired mid-apply() (our own reconcile) suppresses po
   // Cleanup still runs unconditionally, regardless of the `#applying` guard.
   expect(engine!.debugPoppedOutGroupPanels.has(groupId)).toBe(false);
   expect(engine!.debugPoppedOutOriginGroups.has("chat")).toBe(false);
+});
+
+/** Mounts an engine on a body-attached host with one docked panel and pops it
+ * out via a driver that moves the panel into a genuinely NEW group
+ * (`popoutGroupId`), the way real dockview's `addPopoutGroup` does — unlike
+ * the stub driver `popOutViaMenu` uses elsewhere in this file, which resolves
+ * `true` without moving anything, leaving `panel.group.id` equal to its
+ * ORIGINAL zone-managed group (already tracked by `#groupWillDropSubs`). A
+ * test exercising `#popoutGroupSubs`'s OWN wiring needs a group that wiring
+ * alone reaches — reusing the original group could not tell the two apart.
+ * Returns the live api and the popout group itself, for a caller to fire
+ * further group-model events against directly. */
+async function popOutToRealGroup(popoutGroupId: string): Promise<{ api: DockviewApi; group: IDockviewGroupPanel }> {
+  const host = document.createElement("div");
+  document.body.appendChild(host);
+  attachedHost = host;
+  const stageEl = document.createElement("div");
+  const slotFor = makeSlots(["chat", "notes"]);
+  const driver = (panel: IDockviewPanel): Promise<boolean> => {
+    const api = engine!.debugApi!;
+    const group = api.addGroup({ id: popoutGroupId, direction: "right" });
+    api.removePanel(panel);
+    api.addPanel({ id: panel.id, component: "sc-panel", position: { referenceGroup: group.id, direction: "within" } });
+    return Promise.resolve(true);
+  };
+  engine = new DockviewEngine(silentLogger, driver);
+  engine.init(host, slotFor, stageEl);
+
+  let l = defaultLayout([{ id: "chat" }, { id: "notes" }]);
+  l = applyOp(l, { op: "dock", id: "chat", zone: "right", group: "new" });
+  engine.apply(l.expanded, new Map([["chat", { icon: "c", labelKey: "chat.tab" } as PanelMeta]]));
+
+  const menuBtn = host.querySelector<HTMLButtonElement>(".sc-tab-menu-btn");
+  menuBtn?.click();
+  const popOutItem = document.querySelector<HTMLButtonElement>('[data-testid="panel-menu-popOut"]');
+  popOutItem?.click();
+  await Promise.resolve();
+  await Promise.resolve();
+
+  const api = engine.debugApi!;
+  const group = api.getGroup(popoutGroupId)!;
+  return { api, group };
+}
+
+test("popout veto-bypass closed: a drop targeting an open popout group's own group model is intercepted (defaultPrevented) via the popout group's own onWillDrop wire", async () => {
+  // Discrimination: with the `onWillDrop` entry removed from
+  // `#requestPopOut`'s `#popoutGroupSubs` wiring, this test fails —
+  // `prevented` stays `false`, because nothing subscribes to this popout
+  // group's model `_onWillDrop` emitter and the event is never intercepted.
+  // Manually verified by temporarily deleting that one subscription line and
+  // confirming the failure, then restoring it.
+  const { group } = await popOutToRealGroup("sc-real-popout-group");
+
+  const ops: LayoutOp[] = [];
+  engine!.onOp((op) => ops.push(op));
+
+  let prevented = false;
+  const event: WillDropProbe = {
+    kind: "content",
+    position: "center",
+    panel: undefined,
+    group,
+    getData: () => ({ viewId: "v", groupId: "sc-real-popout-group", panelId: "chat" }),
+    get defaultPrevented() {
+      return prevented;
+    },
+    preventDefault() {
+      prevented = true;
+    },
+  };
+  modelOf(group)._onWillDrop.fire(event);
+
+  expect(prevented).toBe(true);
+});
+
+test("popout panel list grows: dragging a second panel into an open popout group's own gridview updates debugPoppedOutGroupPanels to include it", async () => {
+  const { api, group } = await popOutToRealGroup("sc-real-popout-group");
+
+  // A real drop of a second panel into the popout group's own nested
+  // gridview — dockview-core natively accepts this drop target and fires the
+  // group model's own `onDidAddPanel`, which `#popoutGroupSubs` now listens
+  // for.
+  api.addPanel({ id: "notes", component: "sc-panel", position: { referenceGroup: group.id, direction: "within" } });
+
+  expect(engine!.debugPoppedOutGroupPanels.get("sc-real-popout-group")).toEqual(["chat", "notes"]);
+});
+
+test("popout panel list shrinks: removing one of two panels from an open popout group drops just that id, keeping the other", async () => {
+  const { api, group } = await popOutToRealGroup("sc-real-popout-group");
+  api.addPanel({ id: "notes", component: "sc-panel", position: { referenceGroup: group.id, direction: "within" } });
+  expect(engine!.debugPoppedOutGroupPanels.get("sc-real-popout-group")).toEqual(["chat", "notes"]);
+
+  api.removePanel(api.getPanel("notes")!);
+
+  expect(engine!.debugPoppedOutGroupPanels.get("sc-real-popout-group")).toEqual(["chat"]);
+});
+
+test("popout group subscriptions are disposed on window close: a later onDidAddPanel on the same (now-detached) group model no longer updates tracking", async () => {
+  const { api, group } = await popOutToRealGroup("sc-real-popout-group");
+
+  fireRemovePopoutGroup(api, "sc-real-popout-group", group);
+  expect(engine!.debugPoppedOutGroupPanels.has("sc-real-popout-group")).toBe(false);
+
+  // Fire the group model's own internal onDidAddPanel emitter directly (the
+  // group object itself still exists as a JS value even though dockview's
+  // removal path has already torn it out of the live api) — a leaked
+  // subscription would resurrect a `sc-real-popout-group` entry here.
+  modelOf(group)._onDidAddPanel.fire({ panel: api.getPanel("chat")! });
+
+  expect(engine!.debugPoppedOutGroupPanels.has("sc-real-popout-group")).toBe(false);
 });
