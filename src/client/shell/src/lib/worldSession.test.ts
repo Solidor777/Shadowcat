@@ -153,11 +153,27 @@ test("a failed first activation is re-attempted on the next Welcome (no permanen
   // Pins: the bootstrap guard does not latch a failed activation as done, so a second
   // Welcome re-attempts activation and both Welcomes log the failure.
   await vi.waitFor(() => expect(errors).toHaveLength(1));
-  expect(errors[0][0]).toBe("world session welcome handling failed");
+  expect(errors[0][0]).toBe("module activation failed; Surfaces degrade until a later Welcome retries");
 
   push(welcomeFrame);
   await vi.waitFor(() => expect(errors).toHaveLength(2));
-  expect(errors[1][0]).toBe("world session welcome handling failed");
+  expect(errors[1][0]).toBe("module activation failed; Surfaces degrade until a later Welcome retries");
+});
+
+test("a failed activation still runs the rest of the Welcome handler", async () => {
+  const { connect, push } = pushConnect([]);
+  const errors: unknown[][] = [];
+  const logger = { ...silentLogger, error: (...args: unknown[]) => errors.push(args) };
+  const session = new WorldSession({
+    selfId: "u1",
+    connect,
+    modules: [cycleModA, cycleModB],
+    logger,
+  });
+  await session.enter("w1");
+  push(welcomeFrame);
+  await vi.waitFor(() => expect(errors).toHaveLength(1));
+  expect(listWorldMembers).toHaveBeenCalledWith("w1");
 });
 
 test("applies asset_changed to the resolver and notifies subscribers", async () => {

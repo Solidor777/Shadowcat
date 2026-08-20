@@ -146,12 +146,14 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
   ATTEMPT SETTLES — `WsClient.open` catches a failed `connect` and schedules a reconnect instead of
   rejecting — so resolution implies neither an open transport nor a usable world; Welcome, module
   activation, the member fetch, and external module loading all happen afterward and are not
-  awaited. And `#onWelcome` contains its failures asymmetrically: the member fetch has its own inner
-  catch (logged, non-blocking), whereas an activation throw reverts `#activated` and RE-throws,
-  skipping EVERY later step in that Welcome — external-module loading, the member fetch, topology
-  reconcile, scene re-establishment, the GM first-scene seed — so a failed activation also costs
-  that Welcome's scene re-subscription, not just its modules. An outer catch means the method
-  itself never rejects, so neither failure surfaces to a caller.
+  awaited. `#onWelcome` contains BOTH failure sources at the point of failure and neither
+  propagates: the member fetch has its own inner catch (logged, non-blocking), and a thrown
+  `activate()` (a genuine contract cycle) reverts `#activated` and logs
+  `"module activation failed; Surfaces degrade until a later Welcome retries"` without rethrowing —
+  external-module loading is skipped for that Welcome (it stays gated behind a successful
+  `activate()`), but the member fetch, topology reconcile, scene re-establishment, and the GM
+  first-scene seed all still run. An outer catch remains around the whole method for any other,
+  genuinely unexpected failure, so the method itself never rejects.
 - The shell package — `App`, the `main` entry module, and its `lib/` directory (hash router, api client, session,
   WorldSession controller, default-module wiring). The `sessionState` module owns the
   `ui_state` blob: `getPanelLayout(world)`/`setPanelLayout(world, blob)` persist the

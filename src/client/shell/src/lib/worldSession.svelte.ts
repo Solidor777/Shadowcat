@@ -804,9 +804,11 @@ export class WorldSession {
    * topology, re-establishes scene subscriptions, and (GM only) seeds the world's first
    * scene. The member fetch has its own inner try/catch: a failure there is logged as a
    * warning and does not block the remaining steps. Module activation's inner catch instead
-   * reverts `#activated` (so the next Welcome retries it) and RE-throws, which skips every
-   * later step in this call; the whole method is wrapped in one outer try/catch that logs and
-   * swallows that (or any other) failure, so this promise never rejects.
+   * reverts `#activated` (so the next Welcome retries it) and logs at the point of failure —
+   * it does not rethrow, so every later step in this call (member fetch, `reconcileTopology`,
+   * scene resubscription, the GM first-scene seed) still runs even when activation fails; the
+   * whole method is also wrapped in one outer try/catch that logs and swallows any other
+   * failure, so this promise never rejects.
    * @param w The Welcome frame.
    * @example
    * ```
@@ -847,11 +849,14 @@ export class WorldSession {
         this.#activated = true;
         try {
           await this.#modules.activate();
+          await this.#loadExternalModules(w.world, w.server_version);
         } catch (e) {
           this.#activated = false;
-          throw e;
+          this.#logger.error(
+            "module activation failed; Surfaces degrade until a later Welcome retries",
+            e,
+          );
         }
-        await this.#loadExternalModules(w.world, w.server_version);
       }
       // Fetch member usernames: every role needs these to resolve chat author
       // names and whisper recipient labels; the GM additionally uses them for
