@@ -94,9 +94,26 @@ Full key reference (flag = `--<key>` with dashes, env = `SHADOWCAT_<KEY>`):
 | `upload_max_bytes_gm` / `upload_rate_per_min_gm` | 2× player values | GM upload caps |
 | `login_per_min_per_identity` / `login_per_min_per_ip` | built-in | `/api/login` throttle budgets |
 | `invite_per_min_per_account` / `invite_per_min_per_ip` | built-in | Invite-accept throttle budgets |
+| `trusted_proxies` | *(empty)* | Reverse-proxy IPs trusted to set `X-Forwarded-For` |
 
 Logging: `SHADOWCAT_LOG` (falling back to `RUST_LOG`, then `info`) — e.g.
 `SHADOWCAT_LOG=debug`.
+
+### Behind a reverse proxy
+
+By default the per-IP login/invite throttle keys off the raw TCP peer address. Behind a reverse
+proxy that terminates the client connection, that peer is always the proxy itself, so every real
+client collapses into one shared throttle bucket. Setting `trusted_proxies` to the proxy's address
+(e.g. `SHADOWCAT_TRUSTED_PROXIES=127.0.0.1` for a reverse proxy on the same host) makes the server
+trust that peer's `X-Forwarded-For` header and resolve the real client address from it instead.
+Entries are matched by exact IP address only, never a CIDR range — list every trusted proxy
+explicitly. A request whose immediate TCP peer is not in this list has its `X-Forwarded-For` header
+ignored entirely, so an untrusted client cannot spoof its own address by sending the header
+directly.
+
+`trusted_proxies` is a list, so the env-var form needs bracket syntax even for one entry:
+`SHADOWCAT_TRUSTED_PROXIES=[127.0.0.1]` (a bare `SHADOWCAT_TRUSTED_PROXIES=127.0.0.1` fails to
+parse). In `shadowcat.toml`, use ordinary TOML array syntax: `trusted_proxies = ["127.0.0.1"]`.
 
 ## Worlds and players
 

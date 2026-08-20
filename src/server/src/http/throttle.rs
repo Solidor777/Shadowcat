@@ -90,28 +90,81 @@ impl Default for AuthThrottle {
     }
 }
 
-/// Infallible client-IP extractor: `Some` when the server is served with
-/// connect-info (production, via `into_make_service_with_connect_info`), `None` under the axum-test mock
-/// transport — IP throttling degrades to identity-only there, never a 500.
+/// Infallible client-IP extractor: `Some` when the server is served with connect-info (production,
+/// via `into_make_service_with_connect_info`), `None` under the axum-test mock transport — IP
+/// throttling degrades to identity-only there, never a 500. Behind a configured trusted reverse
+/// proxy (`Config::trusted_proxies`), resolves through `X-Forwarded-For` instead of the raw TCP
+/// peer — see `resolve_client_ip`'s doc for the exact trust-walk algorithm. Default configuration
+/// (`trusted_proxies` empty) preserves the original TCP-peer-only behavior exactly.
 pub struct ClientIp(pub Option<std::net::IpAddr>);
 
-impl<S> axum::extract::FromRequestParts<S> for ClientIp
-where
-    S: Send + Sync,
-{
+impl axum::extract::FromRequestParts<crate::http::AppState> for ClientIp {
     type Rejection = std::convert::Infallible;
 
     async fn from_request_parts(
         parts: &mut axum::http::request::Parts,
-        _state: &S,
+        state: &crate::http::AppState,
     ) -> Result<Self, Self::Rejection> {
-        Ok(ClientIp(
-            parts
-                .extensions
-                .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
-                .map(|ci| ci.0.ip()),
-        ))
+        let peer = parts
+            .extensions
+            .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+            .map(|ci| ci.0.ip());
+        let Some(peer) = peer else {
+            return Ok(ClientIp(None));
+        };
+        if !state.config.is_trusted_proxy(peer) {
+            return Ok(ClientIp(Some(peer)));
+        }
+        let forwarded = parts
+            .headers
+            .get("x-forwarded-for")
+            .and_then(|v| v.to_str().ok());
+        Ok(ClientIp(Some(resolve_client_ip(
+            peer,
+            forwarded,
+            &state.config,
+        ))))
     }
+}
+
+/// Resolves the real client address from a trusted peer's `X-Forwarded-For` header, walking
+/// entries right-to-left (nearest hop first): each trusted-proxy entry is a hop to skip past; the
+/// first non-trusted or unparseable entry is the client. Falls back to `peer` if the header is
+/// absent/empty, or every entry turns out to be a trusted-proxy address.
+/// @param peer The already-verified-trusted immediate TCP peer address.
+/// @param forwarded The raw `X-Forwarded-For` header value, if present.
+/// @param config Supplies `is_trusted_proxy` for the hop-walk.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::config::Config;
+/// use shadowcat::http::throttle::resolve_client_ip;
+///
+/// let cfg = Config { trusted_proxies: vec!["10.0.0.1".into()], ..Default::default() };
+/// let peer = "10.0.0.1".parse().unwrap();
+/// let real = resolve_client_ip(peer, Some("203.0.113.9"), &cfg);
+/// assert_eq!(real, "203.0.113.9".parse::<std::net::IpAddr>().unwrap());
+/// ```
+pub fn resolve_client_ip(
+    peer: std::net::IpAddr,
+    forwarded: Option<&str>,
+    config: &crate::config::Config,
+) -> std::net::IpAddr {
+    let Some(header) = forwarded else { return peer };
+    let entries: Vec<&str> = header
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect();
+    for entry in entries.iter().rev() {
+        match entry.parse::<std::net::IpAddr>() {
+            Ok(ip) if config.is_trusted_proxy(ip) => continue, // another trusted hop; keep walking left
+            Ok(ip) => return ip,   // first non-trusted entry: the real client
+            Err(_) => return peer, // malformed entry: fail safe to the verified TCP peer
+        }
+    }
+    peer // every entry was itself a trusted proxy (or the header was empty) — fall back
 }
 
 #[cfg(test)]
@@ -144,5 +197,83 @@ mod tests {
         assert!(!t.check("k3", 1_500, 5));
         // 61s later k1/k2's hits are expired; the sweep frees room.
         assert!(t.check("k3", 62_000, 5));
+    }
+
+    #[test]
+    fn resolve_client_ip_trusted_peer_no_header_returns_peer() {
+        let cfg = crate::config::Config {
+            trusted_proxies: vec!["10.0.0.1".into()],
+            ..Default::default()
+        };
+        let peer: std::net::IpAddr = "10.0.0.1".parse().unwrap();
+        assert_eq!(resolve_client_ip(peer, None, &cfg), peer);
+    }
+
+    #[test]
+    fn resolve_client_ip_single_hop_header_returns_the_client() {
+        let cfg = crate::config::Config {
+            trusted_proxies: vec!["10.0.0.1".into()],
+            ..Default::default()
+        };
+        let peer: std::net::IpAddr = "10.0.0.1".parse().unwrap();
+        assert_eq!(
+            resolve_client_ip(peer, Some("203.0.113.9"), &cfg),
+            "203.0.113.9".parse::<std::net::IpAddr>().unwrap()
+        );
+    }
+
+    #[test]
+    fn resolve_client_ip_walks_past_trusted_hops_to_the_untrusted_entry() {
+        let cfg = crate::config::Config {
+            trusted_proxies: vec!["10.0.0.1".into()],
+            ..Default::default()
+        };
+        let peer: std::net::IpAddr = "10.0.0.1".parse().unwrap();
+        assert_eq!(
+            resolve_client_ip(peer, Some("203.0.113.9, 10.0.0.1"), &cfg),
+            "203.0.113.9".parse::<std::net::IpAddr>().unwrap()
+        );
+    }
+
+    // Discrimination check for the all-hops-trusted fallback: every header entry is itself a
+    // configured trusted proxy, so the walk must exhaust and fall back to `peer`, not return the
+    // last-scanned (leftmost) trusted entry. A version of `resolve_client_ip` that returned the
+    // last scanned trusted entry instead of falling back to `peer` would return `10.0.0.1` here
+    // (the leftmost/last-scanned entry) rather than `peer` (`10.0.0.1` too, since both proxies
+    // share the same address in this fixture) — verified below with a second fixture using two
+    // DISTINCT trusted addresses so the two outcomes are actually distinguishable.
+    #[test]
+    fn resolve_client_ip_falls_back_to_peer_when_every_hop_is_trusted() {
+        let cfg = crate::config::Config {
+            trusted_proxies: vec!["10.0.0.1".into(), "10.0.0.2".into()],
+            ..Default::default()
+        };
+        let peer: std::net::IpAddr = "10.0.0.1".parse().unwrap();
+        // Header's sole entry is the OTHER trusted proxy (10.0.0.2), distinct from `peer`
+        // (10.0.0.1) — a last-scanned-trusted-entry implementation would return 10.0.0.2, while
+        // the fall-back-to-peer implementation returns 10.0.0.1. The two are different addresses,
+        // so this fixture actually discriminates between the two behaviors.
+        assert_eq!(resolve_client_ip(peer, Some("10.0.0.2"), &cfg), peer);
+    }
+
+    #[test]
+    fn resolve_client_ip_malformed_entry_falls_back_to_peer() {
+        let cfg = crate::config::Config {
+            trusted_proxies: vec!["10.0.0.1".into()],
+            ..Default::default()
+        };
+        let peer: std::net::IpAddr = "10.0.0.1".parse().unwrap();
+        assert_eq!(resolve_client_ip(peer, Some("not-an-ip"), &cfg), peer);
+    }
+
+    #[test]
+    fn resolve_client_ip_empty_or_whitespace_header_falls_back_to_peer() {
+        let cfg = crate::config::Config {
+            trusted_proxies: vec!["10.0.0.1".into()],
+            ..Default::default()
+        };
+        let peer: std::net::IpAddr = "10.0.0.1".parse().unwrap();
+        assert_eq!(resolve_client_ip(peer, Some(""), &cfg), peer);
+        assert_eq!(resolve_client_ip(peer, Some("  "), &cfg), peer);
     }
 }

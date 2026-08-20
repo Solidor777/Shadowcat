@@ -82,9 +82,15 @@ optimistically and roll back on divergence.
   `INVITE_PER_MIN_PER_ACCOUNT=10`/`INVITE_PER_MIN_PER_IP=30`) so identity-rotating stuffing from
   one address is bounded too. `MAX_TRACKED_KEYS=65_536` caps the map; at capacity, expired keys
   are swept first, and if still full a NEW key FAILS CLOSED (throttled) rather than evicting live
-  state. `ClientIp` (axum extractor) is infallible: `Some` under real `ConnectInfo`,
-  `None` under the axum-test mock transport (IP throttling degrades to identity-only there, never
-  a 500) — `AppState.auth_throttle: Arc<AuthThrottle>`. All four budgets are config-tunable
+  state. `ClientIp` (axum extractor, `FromRequestParts<AppState>`) is infallible: `Some` under
+  real `ConnectInfo`, `None` under the axum-test mock transport (IP throttling degrades to
+  identity-only there, never a 500) — `AppState.auth_throttle: Arc<AuthThrottle>`. Behind a
+  reverse proxy, the raw TCP peer is the proxy itself; `Config.trusted_proxies` (default empty,
+  exact-IP match only, never CIDR) opts a peer into `X-Forwarded-For` resolution via
+  `throttle::resolve_client_ip`, which walks the header right-to-left skipping further trusted-hop
+  entries and stops at the first non-trusted/unparseable one, falling back to the TCP peer if the
+  header is absent or every entry is itself trusted. Default configuration preserves TCP-peer-only
+  resolution exactly. All four budgets are config-tunable
   (`Config.login_per_min_per_identity`/`login_per_min_per_ip`/`invite_per_min_per_account`/
   `invite_per_min_per_ip`, `None` → the constants above, env/TOML-layered like every other optional
   `Config` field) — the shell e2e suite relaxes them via `playwright.config.ts`'s `webServer.env`

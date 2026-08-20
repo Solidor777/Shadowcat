@@ -24,17 +24,6 @@ capability already exists — but are deferred as out-of-scope-for-now work.
   a log column; capture per COMMAND, not per op; cover all three operation arms, since create and
   delete are not point-in-time correct despite carrying their document.
 
-## Blocked on a reverse-proxy deployment story
-- TODO: `ClientIp` resolves solely from `ConnectInfo<SocketAddr>` — the real
-  peer address of the accepted TCP connection — with no `X-Forwarded-For`/`Forwarded` handling.
-  Behind a reverse proxy that does not preserve the original client address, every request
-  resolves to the proxy's own address, so the per-IP throttle bucket (`login:ip:<>`/
-  `invite:ip:<>`) degrades to a single shared bucket across every real client — throttling still
-  functions per-identity, just not per-real-IP. No reverse-proxy deployment story exists or is
-  scoped today (verified: `docs/design/` and the `config` module have no proxy/trusted-header handling);
-  resolve alongside whatever design adds one (a naive trust-any-`X-Forwarded-For` fix would be
-  its own spoofing vulnerability without a configured trusted-proxy list).
-
 ## Blocked on a per-turn movement-budget system (Phase-2 combat)
 - TODO: `move_exec::execute_move`'s `MoveOutcome.cost` accumulates only the entered cell's terrain multiplier per step (`cost += regions.terrain_multiplier(region_cell)`); the `pathfinding` module's router cost also multiplies by the diagonal-rule `step_cost` (`sc * mult`, where `sc` is 1.0/2.0/√2/alternating depending on `world-settings.pathfinding.diagonalRule`). The two "cost" values are not numerically comparable once diagonal movement is involved under any non-Chebyshev rule — they coincide only because Chebyshev's diagonal step cost is 1.0. This is a deliberate M10g Task 7 scoping decision (`move_exec`'s center-cell, terrain-only accounting model), not an oversight, and nothing currently consumes or compares the two values. Resolve before any per-turn movement-budget system consumes `MoveOutcome.cost`/`MoveStream.cost`: decide whether `move_exec` should thread the diagonal rule + per-step parity to match the router's preview cost, or whether route-preview cost and execution cost are intentionally distinct quantities. (Surfaced by the M10g Task 7 buddy check.)
 - TODO: `navmesh::los_smooth` (M10f-4) reports the smoothed continuous route's `cost` as the PRE-smoothing weighted grid cost, unchanged — it does not recompute an exact per-span cost for the straightened any-angle chords, only guarantees the reported value is a conservative (never cheaper) budget preview. Same preview-vs-execution divergence class as the `MoveOutcome.cost`/router-cost split logged above: a per-cell-exact smoothed continuous cost is deferred, not implemented. Resolve alongside the item above if a per-turn movement-budget system ever needs an exact continuous-engine cost.

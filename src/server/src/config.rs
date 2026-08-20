@@ -111,6 +111,15 @@ pub struct Config {
     /// Per-IP `/api/invites/accept` budget (trailing 60s); `None` →
     /// `throttle::INVITE_PER_MIN_PER_IP`.
     pub invite_per_min_per_ip: Option<usize>,
+    /// Exact peer IP addresses trusted to set `X-Forwarded-For` (reverse-proxy deployments only).
+    /// Default empty — `ClientIp` never consults the header and resolves solely from the TCP peer
+    /// address, exactly as before this field existed. Matched by EXACT address only, not CIDR range
+    /// (self-hosting operators list every trusted proxy's address explicitly; a typical single
+    /// reverse-proxy-on-the-same-host deployment needs one entry, e.g. `"127.0.0.1"`). A request
+    /// whose immediate TCP peer is NOT in this list gets its `X-Forwarded-For` header ignored
+    /// entirely, regardless of content — this is what prevents an arbitrary internet client from
+    /// spoofing its own address by sending the header directly.
+    pub trusted_proxies: Vec<String>,
 }
 
 impl Default for Config {
@@ -133,6 +142,7 @@ impl Default for Config {
             login_per_min_per_ip: None,
             invite_per_min_per_account: None,
             invite_per_min_per_ip: None,
+            trusted_proxies: Vec::new(),
         }
     }
 }
@@ -359,6 +369,32 @@ impl Config {
             explicit => SetupTokenPolicy::Required(Some(explicit.to_string())),
         }
     }
+
+    /// Whether `ip` is a configured trusted proxy (`trusted_proxies`), matched by exact address.
+    /// An unparseable entry in `trusted_proxies` is skipped (warned), not fatal.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::net::IpAddr;
+    /// let cfg = shadowcat::config::Config {
+    ///     trusted_proxies: vec!["127.0.0.1".into()],
+    ///     ..Default::default()
+    /// };
+    /// assert!(cfg.is_trusted_proxy("127.0.0.1".parse::<IpAddr>().unwrap()));
+    /// assert!(!cfg.is_trusted_proxy("8.8.8.8".parse::<IpAddr>().unwrap()));
+    /// ```
+    pub fn is_trusted_proxy(&self, ip: std::net::IpAddr) -> bool {
+        self.trusted_proxies
+            .iter()
+            .any(|s| match s.parse::<std::net::IpAddr>() {
+                Ok(configured) => configured == ip,
+                Err(_) => {
+                    tracing::warn!(entry = %s, "trusted_proxies: unparseable IP address, skipped");
+                    false
+                }
+            })
+    }
 }
 
 #[cfg(test)]
@@ -516,5 +552,34 @@ mod tests {
         assert!(
             matches!(cfg.setup_token_policy(), SetupTokenPolicy::Required(Some(ref v)) if v == "s3cret")
         );
+    }
+
+    #[test]
+    fn trusted_proxy_matches_exact_configured_ip_only() {
+        let cfg = Config {
+            trusted_proxies: vec!["127.0.0.1".into(), "10.0.0.5".into()],
+            ..Config::default()
+        };
+        assert!(cfg.is_trusted_proxy("127.0.0.1".parse().unwrap()));
+        assert!(cfg.is_trusted_proxy("10.0.0.5".parse().unwrap()));
+        assert!(!cfg.is_trusted_proxy("10.0.0.6".parse().unwrap()));
+        assert!(!cfg.is_trusted_proxy("8.8.8.8".parse().unwrap()));
+    }
+
+    #[test]
+    fn trusted_proxy_default_is_empty_and_trusts_nothing() {
+        let cfg = Config::default();
+        assert!(cfg.trusted_proxies.is_empty());
+        assert!(!cfg.is_trusted_proxy("127.0.0.1".parse().unwrap()));
+    }
+
+    #[test]
+    fn trusted_proxy_skips_unparseable_entries_without_panicking() {
+        let cfg = Config {
+            trusted_proxies: vec!["not-an-ip".into(), "127.0.0.1".into()],
+            ..Config::default()
+        };
+        assert!(cfg.is_trusted_proxy("127.0.0.1".parse().unwrap()));
+        assert!(!cfg.is_trusted_proxy("not-an-ip".parse().unwrap_or("0.0.0.0".parse().unwrap())));
     }
 }
