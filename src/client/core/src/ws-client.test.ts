@@ -183,6 +183,27 @@ describe("WsClient", () => {
     expect(sub.appliedSeq).toBe(1);
   });
 
+  it("stop() during a pending connect discards the resolved transport instead of adopting it", async () => {
+    let resolveConnect!: (t: { send: () => void; close: () => void }) => void;
+    let closed = false;
+    const connect: Connect = () =>
+      new Promise((resolve) => {
+        resolveConnect = resolve;
+      });
+    const client = new WsClient({ connect, handlers: noop });
+    const startPromise = client.start();
+    client.stop();
+    resolveConnect({
+      send: () => {},
+      close: () => {
+        closed = true;
+      },
+    });
+    await startPromise;
+    expect(closed).toBe(true);
+    expect(client.connected).toBe(false);
+  });
+
   it("reconnects and catches up after a dropped connection", async () => {
     const server = new MockServer();
     const store = new DocumentStore();

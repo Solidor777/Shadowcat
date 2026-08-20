@@ -601,9 +601,9 @@ export class WsClient {
   }
 
   /** One connection attempt: bumps `connGeneration`, awaits `opts.connect`, and on success arms
-   * the Welcome watchdog; on failure schedules a reconnect instead. `running_` is checked only
-   * BEFORE the `opts.connect` await, not after — a `stop()` call while the connect is pending
-   * still lets the resolved transport be adopted into `this.transport` unwatched.
+   * the Welcome watchdog; on failure schedules a reconnect instead. `running_` is re-checked
+   * immediately after `opts.connect` resolves; a `stop()` call while the connect is pending
+   * closes and discards the resolved transport rather than adopting it unwatched.
    * Called by `start()` and by `scheduleReconnect`'s resolved sleep. Not exported.
    * @returns Resolves once this attempt has either armed the watchdog or scheduled a retry.
    * @example
@@ -616,10 +616,15 @@ export class WsClient {
     if (!this.running_) return;
     const gen = ++this.connGeneration;
     try {
-      this.transport = await this.opts.connect({
+      const transport = await this.opts.connect({
         onMessage: (d) => this.handleFrame(d, gen),
         onClose: () => this.handleClose(),
       });
+      if (!this.running_) {
+        transport.close();
+        return;
+      }
+      this.transport = transport;
       // reconnectAttempt resets on WELCOME (handleFrame's "welcome" case), not
       // here: a server that accepts the socket but never sends Welcome must
       // keep backing off on each watchdog-close/reconnect cycle, not retry at
