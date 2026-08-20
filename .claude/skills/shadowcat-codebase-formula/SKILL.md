@@ -40,10 +40,13 @@ engine holds.
   identifier, which words are reserved, how a malformed reference fails — so a difference between
   them never belongs here.
 - The `internal` module — the shared trust-boundary helpers `isWellFormedError`,
-  `validateResolverOutput` and `finite`. **Deliberately not re-exported from the `index` module**:
-  every injected-callback boundary (the `evaluate` module's reference case, `resolveAll`'s call to
-  `resolveAll.evalNode`, the `template` module's identifier resolver) validates a consumer
-  callback's return through these before trusting it as a `FormulaValue`.
+  `validateResolverOutput`, `finite`, and `callResolver` (the try/catch shared by `evaluate`'s
+  `ref` case and `substituteIdentifier`, converting a thrown consumer callback into a synthetic
+  `"resolver-error"`; its result still needs `validateResolverOutput`, which it does not apply
+  itself). **Deliberately not re-exported from the `index` module**: every injected-callback
+  boundary (the `evaluate` module's reference case, `resolveAll`'s call to `resolveAll.evalNode`,
+  the `template` module's identifier resolver) validates a consumer callback's return through
+  these before trusting it as a `FormulaValue`.
 - The `index` module — the only public entry point, re-exporting `types`, `parser`, `evaluate`,
   `graph` and `template`.
 
@@ -110,10 +113,11 @@ which no prose can do.
   requires that support but states no call-stack bound of its own. **A consumer's
   `resolveAll.evalNode` body must NEVER wrap its own call(s) to the injected getter in
   try/catch**: that swallows the signal driving the trampoline and silently
-  memoizes a wrong, partial result. The `evaluate` module's own reference-case try/catch guards a
-  DIFFERENT concern (turning a malformed resolver return into a `FormulaError`) and must not be
-  reused to catch the trampoline signal — prefetch every reference path unwrapped before calling
-  `evaluate` instead.
+  memoizes a wrong, partial result. `evaluate`'s `ref` case and `substituteIdentifier` both
+  invoke `internal`'s `callResolver`, which wraps a consumer resolver call in its own try/catch
+  guarding a DIFFERENT concern (turning a malformed resolver return into a `FormulaError`) and
+  must not be reused to catch the trampoline signal — prefetch every reference path unwrapped
+  before calling `evaluate` instead.
 - **`resolveAll` is a pure function of the key set.** Sorted-root traversal means the same set of
   requested keys always produces the same result regardless of call or iteration order; traversing
   in the caller's key order instead makes the result order-dependent. Cycle-error detail names the
@@ -208,10 +212,12 @@ which no prose can do.
   other's declaration. `modifierParityDifference` reads both and fails `pnpm test:scripts` on a
   difference in either direction, so a new modifier lands in both declarations or the build breaks.
   Without that gate the only signal is a wrong roll, seen by whoever wrote the template.
-- The `internal` module's three helpers are the ONLY sanctioned way to cross a consumer-callback
+- The `internal` module's four helpers are the ONLY sanctioned way to cross a consumer-callback
   boundary. A gap at one boundary reopens the class of bug the others already guard against
   [[injected-callback-boundary-must-validate-every-site]] — treat any NEW injected-callback seam as
-  needing the same validation, never a bespoke check.
+  needing the same validation, never a bespoke check. `resolveAll`'s own try/catch around
+  `resolveAll.evalNode` stays entangled with the `NeedsDependency` trampoline signal and does not
+  route through `callResolver` — only `evaluate`'s `ref` case and `substituteIdentifier` share it.
 - Arithmetic semantics (`/`, `%`, rounding, `finite` gating, the leading-dot decimal) are stated
   ONCE, under **Key files & seams** above, so two copies cannot drift apart.
 - `property.test` uses a hand-rolled seeded PRNG — do not add `fast-check` or any other new

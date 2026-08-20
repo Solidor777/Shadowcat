@@ -1,6 +1,6 @@
 import type { Expr } from "./parser";
 import { type FormulaValue, isFormulaError } from "./types";
-import { finite, validateResolverOutput } from "./internal";
+import { callResolver, finite, validateResolverOutput } from "./internal";
 
 /** Structural recursion over `Expr`. Resolver errors and non-finite arithmetic
  * results both short-circuit as `FormulaValue` errors — the evaluator never
@@ -35,19 +35,7 @@ export function evaluate(
       return expr.value;
 
     case "ref": {
-      let v: unknown;
-      try {
-        v = resolve(expr.path);
-      } catch {
-        // Never interpolate the caught exception's message: `FormulaError.detail` is
-        // player-presentable, and a consumer resolver's thrown
-        // message is an internal implementation detail, not for players.
-        return {
-          error: "resolver-error",
-          detail: `resolver threw for '${expr.path.join(".")}'`,
-        };
-      }
-      return validateResolverOutput(v);
+      return validateResolverOutput(callResolver(expr.path, resolve));
     }
 
     case "neg": {

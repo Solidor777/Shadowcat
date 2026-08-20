@@ -1,5 +1,5 @@
 import { MAX_FORMULA_LENGTH, type FormulaError, type FormulaValue, isFormulaError } from "./types";
-import { validateResolverOutput } from "./internal";
+import { callResolver, validateResolverOutput } from "./internal";
 import { isDigit, isWordChar, isWordStart } from "./chars";
 
 /** The dice operator: both a `NOTATION_KEYWORDS` member and the one keyword whose
@@ -237,16 +237,10 @@ function substituteIdentifier(
   resolve: (path: string[]) => FormulaValue,
 ): string | FormulaError {
   const path = originalText.split(".");
-  let rawValue: unknown;
-  try {
-    rawValue = resolve(path);
-  } catch {
-    return { error: "resolver-error", detail: `resolver threw for '${originalText}'` };
-  }
   // Trust-boundary validation: `resolve` is a consumer-supplied callback and is not
   // guaranteed to honor the `FormulaValue` contract (same boundary `evaluate`'s `ref`
   // case and the `evalNode` callback already cross via this shared helper).
-  const value = validateResolverOutput(rawValue);
+  const value = validateResolverOutput(callResolver(path, resolve));
   if (isFormulaError(value)) return value;
   if (!Number.isInteger(value)) {
     return {

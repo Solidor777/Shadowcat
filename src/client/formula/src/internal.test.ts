@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isWellFormedError, validateResolverOutput } from "./internal";
+import { callResolver, isWellFormedError, validateResolverOutput } from "./internal";
 
 describe("isWellFormedError", () => {
   it("accepts a well-formed FormulaError with a real FormulaErrorKind", () => {
@@ -22,5 +22,20 @@ describe("validateResolverOutput", () => {
   it("passes a genuinely well-formed FormulaError through unchanged", () => {
     const err = { error: "cycle", detail: "a -> b -> a" };
     expect(validateResolverOutput(err)).toEqual(err);
+  });
+});
+
+describe("callResolver", () => {
+  it("passes through a resolver's return value unchanged", () => {
+    expect(callResolver(["hp", "max"], () => 10)).toBe(10);
+  });
+  it("converts a thrown value into a synthetic resolver-error naming the joined path", () => {
+    const result = callResolver(["hp", "max"], () => {
+      throw new Error("boom");
+    });
+    expect(result).toEqual({
+      error: "resolver-error",
+      detail: "resolver threw for 'hp.max'",
+    });
   });
 });

@@ -93,3 +93,36 @@ export function validateResolverOutput(v: unknown): FormulaValue {
     detail: `resolver returned a malformed value (expected number or FormulaError, got ${typeof v})`,
   };
 }
+
+/** Invokes a consumer resolver callback, converting a thrown value into a synthetic
+ * `"resolver-error"` `FormulaError` rather than letting it propagate — the try/catch boundary
+ * shared by `evaluate`'s `ref` case and `substituteIdentifier`. Does not itself validate a
+ * non-throwing return value; the caller still applies `validateResolverOutput` to the result
+ * (safe unconditionally — a synthesized resolver-error here passes back through it unchanged,
+ * the same `isWellFormedError` path a resolver's own directly-returned `FormulaError` already
+ * takes). Never interpolates the caught exception's message: `FormulaError.detail` is
+ * player-presentable, a resolver's own thrown message is not.
+ * @param path The dotted ref path passed to `resolve`, used only for the error detail if it
+ * throws.
+ * @param resolve The consumer resolver callback to invoke.
+ * @returns `resolve`'s raw, unvalidated return value, or a `"resolver-error"` `FormulaError` if
+ * `resolve` threw.
+ * @example
+ * ```ts
+ * import { callResolver, validateResolverOutput } from "./internal"; // not exported from @shadowcat/formula
+ * validateResolverOutput(callResolver(["hp", "max"], () => 10)); // 10
+ * ```
+ */
+export function callResolver(
+  path: string[],
+  resolve: (path: string[]) => FormulaValue,
+): unknown {
+  try {
+    return resolve(path);
+  } catch {
+    return {
+      error: "resolver-error",
+      detail: `resolver threw for '${path.join(".")}'`,
+    };
+  }
+}
