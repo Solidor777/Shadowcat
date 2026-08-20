@@ -401,6 +401,17 @@ impl Config {
 mod tests {
     use super::*;
 
+    /// Serializes every test that calls `Config::load` — its `figment::providers::Env` layer
+    /// reads real process env vars, which are shared process-global state; a test that
+    /// temporarily sets one (even to an intentionally-invalid value, to prove a parse-failure
+    /// case) would otherwise race any OTHER `Config::load` call running concurrently in this
+    /// same test binary and observe the pollution. Recovers from a poisoned lock (a prior test
+    /// panicking mid-guard) rather than propagating the poison to every later test.
+    fn config_env_test_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     #[test]
     fn asset_defaults_and_tiering() {
         use crate::data::document::WorldRole;
@@ -474,6 +485,7 @@ mod tests {
 
         // Layering: SHADOWCAT_* env overrides the built-in default, matching
         // every other optional Config field's precedence.
+        let _guard = config_env_test_lock();
         // SAFETY: single-threaded test-only env mutation, restored below.
         unsafe {
             std::env::set_var("SHADOWCAT_LOGIN_PER_MIN_PER_IDENTITY", "10000");
@@ -501,6 +513,11 @@ mod tests {
 
     #[test]
     fn cli_overrides_take_precedence_over_defaults() {
+        // Vulnerable to the same env-var-pollution race `config_env_test_lock` guards against —
+        // this test doesn't mutate env vars itself, but `Config::load`'s env layer would still
+        // observe another concurrently-running test's temporarily-set (and possibly
+        // intentionally-invalid) value without this guard.
+        let _guard = config_env_test_lock();
         let cli = Cli {
             bind: Some("0.0.0.0:8080".into()),
             db: None,
@@ -588,6 +605,7 @@ mod tests {
         // Pins the operator-facing claim in docs/site/guides/hosting.md: a bare scalar value
         // for a Vec<String> field fails to parse through figment's Env provider, even for a
         // single entry — the bracketed form is required.
+        let _guard = config_env_test_lock();
         // SAFETY: single-threaded test-only env mutation, restored below.
         unsafe {
             std::env::set_var("SHADOWCAT_TRUSTED_PROXIES", "127.0.0.1");
