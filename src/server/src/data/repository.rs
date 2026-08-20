@@ -65,6 +65,16 @@ pub trait Repository: Send + Sync {
     /// ```
     async fn get_document(&self, id: Uuid) -> Result<Option<Document>, DataError>;
 
+    /// A document by id together with its `documents.created_seq` generation marker, or `None`
+    /// if it does not exist. One round trip, not two: this is the redaction hot path's own read
+    /// (`permission::load_current_docs`, called once per recipient per event), where a second
+    /// separate `created_seq` query would double an already-hot per-recipient cost. Unredacted,
+    /// like `get_document` — callers gate egress themselves.
+    async fn get_document_with_created_seq(
+        &self,
+        id: Uuid,
+    ) -> Result<Option<(Document, i64)>, DataError>;
+
     /// Resolve `doc`'s effective owner against LIVE actor state — the same
     /// `permission::effective_owner` rule the write path enforces, joining the
     /// linked actor with one pool read when `doc` is a linked token. For egress

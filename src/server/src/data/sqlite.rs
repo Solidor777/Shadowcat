@@ -1562,6 +1562,51 @@ impl SqliteRepository {
         ))
     }
 
+    /// `documents.created_seq` for `id`, or `None` if the row doesn't exist. Set once at a
+    /// row's genuine first INSERT (`upsert_document`'s `ON CONFLICT` clause omits it, so
+    /// SQLite's `excluded.*` semantics leave it untouched across an update) and never touched
+    /// again by subsequent updates to a still-live row — the generation marker
+    /// `OpSnapshot::created_seq_at_commit` compares against to detect an id reused after a hard
+    /// delete. Runs on the caller's transaction (never `&self.pool`, which would deadlock
+    /// mid-transaction on the single-writer pool).
+    async fn document_created_seq<'e, E>(executor: E, id: Uuid) -> Result<Option<i64>, DataError>
+    where
+        E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+    {
+        let row = sqlx::query("SELECT created_seq FROM documents WHERE id = ?")
+            .bind(id.to_string())
+            .fetch_optional(executor)
+            .await?;
+        Ok(row.map(|r| r.get::<i64, _>("created_seq")))
+    }
+
+    /// Every CURRENT member's world role, on an arbitrary executor (so it can run inside the
+    /// `apply_command`/`apply_intent` transaction). Feeds `CommandSnapshot::world_gm_at_commit`
+    /// — captured once per command, at the point the command is committing, which IS "at commit
+    /// time" for this purpose: the whole point of capturing it now is to freeze what would
+    /// otherwise be re-derived live on every future replay.
+    async fn world_member_roles<'e, E>(
+        executor: E,
+        world_id: Uuid,
+    ) -> Result<std::collections::HashMap<Uuid, WorldRole>, DataError>
+    where
+        E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+    {
+        let rows = sqlx::query("SELECT user_id, role FROM world_members WHERE world_id = ?")
+            .bind(world_id.to_string())
+            .fetch_all(executor)
+            .await?;
+        rows.into_iter()
+            .map(|r| {
+                let uid = Uuid::parse_str(r.get::<String, _>("user_id").as_str())
+                    .map_err(|e| DataError::OpFailed(e.to_string()))?;
+                let role: WorldRole =
+                    serde_json::from_value(serde_json::Value::String(r.get::<String, _>("role")))?;
+                Ok((uid, role))
+            })
+            .collect()
+    }
+
     /// Whether a document of `doc_type` already exists in `world_id`, on an
     /// arbitrary executor (so it can run inside the `apply_intent`
     /// transaction — see `SINGLETON_DOC_TYPES`). Mirrors `load_document`'s
@@ -1659,8 +1704,9 @@ impl SqliteRepository {
         let json = serde_json::to_string(doc)?;
         sqlx::query(
             "INSERT INTO documents (id, scope_kind, world_id, pack, doc_type, schema_version, \
-             source_id, source_pack, source_version, owner_id, parent_id, seq, json, created_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+             source_id, source_pack, source_version, owner_id, parent_id, seq, created_seq, json, \
+             created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
              ON CONFLICT(id) DO UPDATE SET scope_kind=excluded.scope_kind, world_id=excluded.world_id, \
              pack=excluded.pack, doc_type=excluded.doc_type, schema_version=excluded.schema_version, \
              source_id=excluded.source_id, source_pack=excluded.source_pack, \
@@ -1679,6 +1725,7 @@ impl SqliteRepository {
         .bind(source_version)
         .bind(doc.owner.map(|o| o.to_string()))
         .bind(doc.parent_id.map(|p| p.to_string()))
+        .bind(seq)
         .bind(seq)
         .bind(json)
         .bind(doc.created_at)
@@ -2531,6 +2578,24 @@ impl Repository for SqliteRepository {
             Some(r) => Ok(Some(serde_json::from_str(
                 r.get::<String, _>("json").as_str(),
             )?)),
+            None => Ok(None),
+        }
+    }
+
+    async fn get_document_with_created_seq(
+        &self,
+        id: Uuid,
+    ) -> Result<Option<(Document, i64)>, DataError> {
+        let row = sqlx::query("SELECT json, created_seq FROM documents WHERE id = ?")
+            .bind(id.to_string())
+            .fetch_optional(&self.pool)
+            .await?;
+        match row {
+            Some(r) => {
+                let doc: Document = serde_json::from_str(r.get::<String, _>("json").as_str())?;
+                let created_seq: i64 = r.get("created_seq");
+                Ok(Some((doc, created_seq)))
+            }
             None => Ok(None),
         }
     }
@@ -9069,5 +9134,154 @@ mod tests {
         )
         .await
         .expect("a same-world actor link confers ownership");
+    }
+
+    #[tokio::test]
+    async fn created_seq_is_set_once_and_survives_updates() {
+        use crate::data::command::{FieldChange, Operation};
+        use crate::data::document::{DocRole, PermissionSet, Scope};
+        use crate::data::membership::PermissionContext;
+
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+        let mut perms = PermissionSet::default();
+        perms.users.insert(gm, DocRole::Owner);
+        let mut d = tests_doc(perms, serde_json::json!({ "hp": 1 }));
+        d.scope = Scope::World { world_id: w.id };
+        let doc_id = d.id;
+
+        let stored = r
+            .apply_intent(
+                &ctx,
+                w.id,
+                vec![Operation::Create { doc: d }],
+                1,
+                WriteOrigin::Client,
+            )
+            .await
+            .unwrap();
+        let first_seq = stored.seq;
+
+        let mut tx = r.pool.begin().await.unwrap();
+        let created_after_create = SqliteRepository::document_created_seq(&mut *tx, doc_id)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        assert_eq!(created_after_create, Some(first_seq));
+
+        r.apply_intent(
+            &ctx,
+            w.id,
+            vec![Operation::Update {
+                doc_id,
+                changes: vec![FieldChange {
+                    remove: false,
+                    path: "/system/hp".into(),
+                    old: serde_json::json!(1),
+                    new: serde_json::json!(2),
+                }],
+            }],
+            2,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+        let mut tx = r.pool.begin().await.unwrap();
+        let created_after_update = SqliteRepository::document_created_seq(&mut *tx, doc_id)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        assert_eq!(
+            created_after_update, created_after_create,
+            "created_seq must not change across an update to a still-live row"
+        );
+    }
+
+    #[tokio::test]
+    async fn created_seq_is_absent_for_a_missing_document() {
+        let r = repo().await;
+        let mut tx = r.pool.begin().await.unwrap();
+        let missing = SqliteRepository::document_created_seq(&mut *tx, Uuid::new_v4())
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        assert_eq!(missing, None);
+    }
+
+    #[tokio::test]
+    async fn world_member_roles_reflects_every_current_member() {
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let player = r
+            .create_user("pl", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        r.add_member(w.id, player, WorldRole::Player).await.unwrap();
+
+        let mut tx = r.pool.begin().await.unwrap();
+        let roles = SqliteRepository::world_member_roles(&mut *tx, w.id)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        assert_eq!(roles.get(&gm), Some(&WorldRole::Gm));
+        assert_eq!(roles.get(&player), Some(&WorldRole::Player));
+    }
+
+    #[tokio::test]
+    async fn get_document_with_created_seq_matches_a_separate_created_seq_read() {
+        use crate::data::command::Operation;
+        use crate::data::document::{DocRole, PermissionSet, Scope};
+        use crate::data::membership::PermissionContext;
+
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+        let mut perms = PermissionSet::default();
+        perms.users.insert(gm, DocRole::Owner);
+        let mut d = tests_doc(perms, serde_json::json!({ "hp": 1 }));
+        d.scope = Scope::World { world_id: w.id };
+        let doc_id = d.id;
+        r.apply_intent(
+            &ctx,
+            w.id,
+            vec![Operation::Create { doc: d }],
+            1,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+        let (doc, created_seq) = r
+            .get_document_with_created_seq(doc_id)
+            .await
+            .unwrap()
+            .expect("document must exist");
+        assert_eq!(doc.id, doc_id);
+        let mut tx = r.pool.begin().await.unwrap();
+        let separate = SqliteRepository::document_created_seq(&mut *tx, doc_id)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        assert_eq!(Some(created_seq), separate);
     }
 }

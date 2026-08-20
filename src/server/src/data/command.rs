@@ -111,6 +111,12 @@ pub struct Command {
 impl Operation {
     /// The inverse operation: Create<->Delete; Update swaps old/new per change, reversed.
     ///
+    /// Operates on the wire `Operation` only — `StoredCommand`/`CommandSnapshot` (server-internal
+    /// commit-time redaction state) do not exist at this layer and are not this function's
+    /// concern; a future undo/redo feature that resurrects a `StoredCommand`'s `command` via
+    /// `invert` must derive a FRESH snapshot for the inverted write, never carry the original's
+    /// forward.
+    ///
     /// # Examples
     ///
     /// ```

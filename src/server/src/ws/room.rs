@@ -1243,6 +1243,12 @@ mod room_tests {
         async fn get_document(&self, id: Uuid) -> Result<Option<Document>, DataError> {
             self.inner.get_document(id).await
         }
+        async fn get_document_with_created_seq(
+            &self,
+            id: Uuid,
+        ) -> Result<Option<(Document, i64)>, DataError> {
+            self.inner.get_document_with_created_seq(id).await
+        }
         async fn effective_owner_of(&self, doc: &Document) -> Result<Option<Uuid>, DataError> {
             self.inner.effective_owner_of(doc).await
         }

@@ -21,6 +21,9 @@ pub mod permission;
 /// The storage seam (`Repository` trait) the HTTP/WS layers program against.
 pub mod repository;
 pub mod search;
+/// Commit-time redaction snapshot types (`StoredCommand`/`CommandSnapshot`/`OpSnapshot`) —
+/// server-internal transport, never serialized to the wire.
+pub mod snapshot;
 /// The SQLite `Repository` implementation + the authoritative apply loops.
 pub mod sqlite;
 /// Structural (never semantic) validation: size caps, paths, tier-2 shape.

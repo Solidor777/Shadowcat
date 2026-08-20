@@ -41,6 +41,7 @@ CREATE TABLE documents (
   source_version INTEGER,
   owner_id TEXT REFERENCES users(id) ON DELETE SET NULL,
   seq INTEGER NOT NULL DEFAULT 0,
+  created_seq INTEGER NOT NULL DEFAULT 0,
   json TEXT NOT NULL,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
