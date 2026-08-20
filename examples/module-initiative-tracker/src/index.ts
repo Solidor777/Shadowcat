@@ -66,20 +66,14 @@ const initiativeTracker: Module = {
   // #endregion manifest
   // #region register
   register(ctx) {
+    ctx.i18n.addMessages("en", { "example-initiative-tracker.panelLabel": "Initiative" });
     ctx.contributions.contribute({
       id: "example-initiative-tracker:panel",
       contract: PANEL_CONTRACT,
       component: InitiativePanel,
-      // labelKey falls back to its literal value for keys absent from the host
-      // catalog (`I18n.t`, and the ui-kit `t` wrapping it)
-      // — community modules have no i18n registration seam today: the host's
-      // catalogs are fixed at construction (the ui-kit `i18n` singleton),
-      // and no method on the `I18n` class (the whole class, not just its
-      // constructor: `I18n.setLocale` writes `#locale` only, `I18n.t` READS
-      // `#catalogs` to look up a key but neither writes nor returns it,
-      // `I18n.subscribe` manages the listener set only) mutates or
-      // exposes `#catalogs` — so none of them offers a way to add or extend one.
-      panel: { icon: "⚔️", labelKey: "Initiative", gmOnly: true },
+      // labelKey resolves against the host's i18n catalog via `ctx.i18n.addMessages`, registered
+      // just above — a key with no registered message falls back to its literal string (`I18n.t`).
+      panel: { icon: "⚔️", labelKey: "example-initiative-tracker.panelLabel", gmOnly: true },
     });
   },
   // #endregion register

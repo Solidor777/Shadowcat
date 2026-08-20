@@ -56,16 +56,6 @@ capability already exists — but are deferred as out-of-scope-for-now work.
 ## Blocked on real-world need (low-priority polish, inert until it matters in practice)
 - Stored `explored_fog` blobs (`ExploredSet::to_bytes`, `(i32,i32)` per cell) carry no grid-kind tag. A blob is indexed in the scene's grid kind at write time (square `(i,j)` or hex axial `(q,r)`); reads (`ExploredSet::contains`/`iter`) are pure set membership, so a fixed-grid-kind scene has one consistent interpretation and needs no migration. A GM switching a LIVE scene square<->hex would reinterpret an existing blob under the new kind's coordinate system (stale explored cells until re-fogged) — an accepted edge, not corruption. Add a grid-kind tag to the blob header + a re-index-or-clear-on-switch step only if live grid-kind switching of populated scenes becomes a real workflow.
 
-## Blocked on a module-facing i18n registration seam
-- Community/external modules cannot add entries to the host i18n catalog — `Ii18n.t` resolves
-  only the built-in `locales/*` catalogs and a missing key falls back to the key string itself
-  (verified 2026-07-30: no `addMessages`/`registerLocale`-style API exists in `@shadowcat/core`
-  i18n or ui-kit). Consequence: a community module's `PanelMeta.labelKey` renders as its literal
-  value, so the creating-a-module guide instructs authors to use a human-readable label as the
-  key. When the seam lands (module-supplied catalog fragments merged per locale, collision
-  rules), update the guide + the `examples/module-initiative-tracker` comment to register real
-  keys.
-
 ## Follow-on feature sub-projects (own brainstorm → spec → plan each)
 
 Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one design pass each

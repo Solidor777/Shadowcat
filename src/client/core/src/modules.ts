@@ -20,6 +20,7 @@ import {
 } from "./manifest";
 import { ContributionRegistry, type Contribution } from "./contributions";
 import { satisfies } from "./semver";
+import type { I18n, Messages } from "./i18n";
 
 /** Options for `ModuleContext.services.provide` — narrower than `ServiceProvideOptions`
  * (no `module` field: the wrapper stamps the calling module's id automatically). */
@@ -102,6 +103,15 @@ export interface ModuleContext {
      * @returns A dispose function that removes it. */
     contribute(c: Contribution): () => void;
   };
+  /** Module-supplied i18n catalog registration, scoped to this module for teardown. */
+  i18n: {
+    /** Merges `messages` into `locale`'s host catalog, stamped with this module's id so
+     * `unload` can remove them again. See `I18n.addMessages` for the merge/collision semantics
+     * (last write wins, including over a built-in key).
+     * @param locale The locale to merge into.
+     * @param messages The key→message fragment to merge in. */
+    addMessages(locale: string, messages: Messages): void;
+  };
   /** The shared document store every module reads through. */
   store: DocumentStore;
   /** The shared optimistic client every module dispatches intents through. */
@@ -163,6 +173,8 @@ interface Deps {
   logger: Logger;
   /** The shared contribution registry every module's `contributions` wrapper delegates to. */
   contributions: ContributionRegistry;
+  /** The shared i18n instance every module's `i18n.addMessages` wrapper delegates to. */
+  i18n: I18n;
 }
 
 /** Internal per-module bookkeeping: the module plus its current activation state. Not exported. */
@@ -200,6 +212,7 @@ export class ModuleRegistry {
    *   DocumentStore,
    *   OptimisticClient,
    *   ContributionRegistry,
+   *   I18n,
    *   silentLogger,
    * } from "@shadowcat/core";
    *
@@ -210,6 +223,7 @@ export class ModuleRegistry {
    *   store: new DocumentStore(),
    *   client: new OptimisticClient("00000000-0000-0000-0000-000000000001"),
    *   logger: silentLogger,
+   *   i18n: new I18n("en", { en: {} }),
    *   contributions: new ContributionRegistry(),
    * });
    * ```
@@ -392,6 +406,7 @@ export class ModuleRegistry {
     this.deps.services.removeModule(id);
     this.deps.middleware.removeModule(id);
     this.deps.contributions.removeModule(id);
+    this.deps.i18n.removeModule(id);
     r.active = false;
   }
 
@@ -519,7 +534,7 @@ export class ModuleRegistry {
    * ```
    */
   private contextFor(moduleId: string): ModuleContext {
-    const { hooks, services, middleware, store, client, logger, contributions } = this.deps;
+    const { hooks, services, middleware, store, client, logger, contributions, i18n } = this.deps;
     return {
       moduleId,
       store,
@@ -541,6 +556,9 @@ export class ModuleRegistry {
       use: (pipeline, mw) => middleware.use(pipeline, mw, { module: moduleId }),
       contributions: {
         contribute: (c) => contributions.contribute(c, { module: moduleId }),
+      },
+      i18n: {
+        addMessages: (locale, messages) => i18n.addMessages(locale, messages, { module: moduleId }),
       },
     };
   }

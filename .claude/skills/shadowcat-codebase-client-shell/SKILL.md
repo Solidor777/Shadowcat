@@ -37,6 +37,19 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
   surface id; `AppContext`, `setAppContext`/`getAppContext`, `__APP_CONTEXT_KEY__`.
 - `t(key, params)`, `locale()`, the `i18n` adapter over
   core's `I18n`; catalogs in `ui-kit/src/locales/`.
+- **Module-facing i18n registration**: `I18n.addMessages(locale, messages, opts)` merges a
+  fragment into a locale's catalog (last write wins — a later call for the same `(locale, key)`
+  overwrites an earlier one, including a BUILT-IN key; no collision arbitration beyond that).
+  `ModuleContext.i18n.addMessages(locale, messages)` is the module-scoped wrapper `ModuleRegistry`
+  builds (stamps the calling module's id via `opts.module`), and `I18n.removeModule(moduleId)` —
+  wired into `ModuleRegistry.unload` alongside `hooks`/`services`/`middleware`/
+  `contributions.removeModule` — undoes exactly that module's own inserted `(locale, key)` pairs on
+  unload. It does NOT restore a value the module's insertion shadowed (e.g. a module overwriting a
+  built-in key): the key is simply absent afterward, falling back to the raw key string in `t()`
+  like any other missing key — an accepted limitation, not a bug. The shell wires the ui-kit `i18n`
+  singleton into `WorldSession`'s `ModuleRegistry` construction (`i18n` import alongside
+  `SceneInteractionBridge`/`ActorSelection`/`TokenSelection`), the same precedented pattern for
+  pulling a ui-kit-owned singleton into shell-built `Deps`.
 - `src/client/ui-kit/src/{sceneInteraction,actorSelection,tokenSelection}.*` — AppContext seams.
 - **The three selection classes share a shape but NOT their repeat-set reactivity.** All of
   `ActorSelection`, `TokenSelection`, `SceneSelection` are stable instances mutated in place (never

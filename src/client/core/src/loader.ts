@@ -113,6 +113,7 @@ function checkEngineCompat(manifest: ModuleManifest, shadowcatVersion: string): 
  *   DocumentStore,
  *   OptimisticClient,
  *   ContributionRegistry,
+ *   I18n,
  *   silentLogger,
  * } from "@shadowcat/core";
  *
@@ -123,6 +124,7 @@ function checkEngineCompat(manifest: ModuleManifest, shadowcatVersion: string): 
  *   store: new DocumentStore(),
  *   client: new OptimisticClient("00000000-0000-0000-0000-000000000001"),
  *   logger: silentLogger,
+ *   i18n: new I18n("en", { en: {} }),
  *   contributions: new ContributionRegistry(),
  * });
  * await loadModules({

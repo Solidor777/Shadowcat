@@ -112,9 +112,14 @@ the tab, `gmOnly: true` hides the panel from non-GM users (a UI filter — the
 server still enforces real permissions on everything the panel does), and an
 absent `defaultPlacement` means the panel starts launcher-only (closed).
 
-Note the `labelKey` caveat: keys are resolved against the host's i18n catalog,
-and community modules currently have no way to register catalog entries — an
-unknown key renders as its literal string. Use a human-readable label as the key.
+`labelKey` is resolved against the host's i18n catalog. Register your module's own
+messages via `ctx.i18n.addMessages(locale, messages)` before contributing the panel
+(see `register` above, which registers `example-initiative-tracker.panelLabel`
+before contributing it) — a later call for the same `(locale, key)` overwrites an
+earlier one, including a built-in key, so prefix your keys with your module's id
+by convention to avoid colliding with another module's or the host's own keys (this
+is a convention, not an enforced uniqueness constraint). A key with no registered
+message renders as its literal string.
 
 ## Reading documents
 

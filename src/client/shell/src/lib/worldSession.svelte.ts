@@ -41,7 +41,7 @@ import {
   listWorldMembers,
 } from "@shadowcat/core";
 import type { WorldRole } from "@shadowcat/types";
-import { SceneInteractionBridge, ActorSelection, TokenSelection } from "@shadowcat/ui-kit";
+import { SceneInteractionBridge, ActorSelection, TokenSelection, i18n } from "@shadowcat/ui-kit";
 import { SvelteMap } from "svelte/reactivity";
 
 /** The WS connection lifecycle a `WorldSession` exposes as its reactive `state`. */
@@ -366,6 +366,7 @@ export class WorldSession {
       client: this.#optimistic,
       logger: this.#logger,
       contributions: this.contributions,
+      i18n,
     });
   }
 

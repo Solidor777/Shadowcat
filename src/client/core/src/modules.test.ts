@@ -7,6 +7,7 @@ import { DocumentStore } from "./store";
 import { OptimisticClient } from "./optimistic";
 import { ContributionRegistry } from "./contributions";
 import { silentLogger } from "./logger";
+import { I18n } from "./i18n";
 
 function deps() {
   return {
@@ -17,6 +18,7 @@ function deps() {
     client: new OptimisticClient("self"),
     logger: silentLogger,
     contributions: new ContributionRegistry(),
+    i18n: new I18n("en", { en: {} }),
   };
 }
 
@@ -361,6 +363,36 @@ test("removes a module's contributions on unload", async () => {
   expect(reg.contributionsFor("s:sidebar")).toHaveLength(1);
   await r.unload("m");
   expect(reg.contributionsFor("s:sidebar")).toHaveLength(0);
+});
+
+test("ctx.i18n.addMessages merges into the shared I18n instance", async () => {
+  const i18n = new I18n("en", { en: {} });
+  const d = { ...deps(), i18n };
+  const r = new ModuleRegistry(d);
+  r.add({
+    manifest: { id: "m", version: "1.0.0", dependencies: {} },
+    register: (ctx) => {
+      ctx.i18n.addMessages("en", { "m.greeting": "Hi!" });
+    },
+  });
+  await r.activate();
+  expect(i18n.t("m.greeting")).toBe("Hi!");
+});
+
+test("unload removes a module's i18n messages", async () => {
+  const i18n = new I18n("en", { en: {} });
+  const d = { ...deps(), i18n };
+  const r = new ModuleRegistry(d);
+  r.add({
+    manifest: { id: "m", version: "1.0.0", dependencies: {} },
+    register: (ctx) => {
+      ctx.i18n.addMessages("en", { "m.greeting": "Hi!" });
+    },
+  });
+  await r.activate();
+  expect(i18n.t("m.greeting")).toBe("Hi!");
+  await r.unload("m");
+  expect(i18n.t("m.greeting")).toBe("m.greeting");
 });
 
 test("activate calls register in dependency order", async () => {

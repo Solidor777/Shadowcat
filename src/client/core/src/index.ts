@@ -41,7 +41,7 @@ export { ContributionRegistry, PANEL_CONTRACT } from "./contributions";
 export type { Contribution, Cardinality, PanelMeta, PanelBadge, DefaultPlacement, ZoneId, SheetMeta } from "./contributions";
 export { reconcileTopology } from "./topology";
 export { I18n } from "./i18n";
-export type { Messages, I18nParams } from "./i18n";
+export type { Messages, I18nParams, AddMessagesOptions } from "./i18n";
 export { OptimisticClient } from "./optimistic";
 export { WsClient } from "./ws-client";
 export type {

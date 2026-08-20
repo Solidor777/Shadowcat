@@ -9,6 +9,7 @@ import { DocumentStore } from "./store";
 import { OptimisticClient } from "./optimistic";
 import { ContributionRegistry } from "./contributions";
 import { silentLogger } from "./logger";
+import { I18n } from "./i18n";
 
 function registry() {
   return new ModuleRegistry({
@@ -19,6 +20,7 @@ function registry() {
     client: new OptimisticClient("self"),
     logger: silentLogger,
     contributions: new ContributionRegistry(),
+    i18n: new I18n("en", { en: {} }),
   });
 }
 

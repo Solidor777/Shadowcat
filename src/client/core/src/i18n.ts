@@ -8,6 +8,22 @@ export type I18nParams = Record<string, string | number>;
 /** A `subscribe()` callback, invoked with no arguments on locale change. */
 export type Listener = () => void;
 
+/** One `(locale, key)` pair a module's `addMessages` call inserted; recorded so
+ * `I18n.removeModule` can undo precisely those insertions on unload. Not exported. */
+interface ModuleMessageKey {
+  /** The locale the key was inserted into. */
+  locale: string;
+  /** The inserted key. */
+  key: string;
+}
+
+/** Options for `I18n.addMessages`. */
+export interface AddMessagesOptions {
+  /** The registering module's id, recorded for `removeModule` teardown; omitted for a
+   * host-registered (non-module) call. */
+  module?: string;
+}
+
 /** The framework-neutral i18n primitive: current locale, per-locale message
  * catalogs, and `subscribe`/snapshot reactivity (mirrors `DocumentStore` and
  * `ContributionRegistry`) so any framework (Svelte via `createSubscriber`, Vue,
@@ -20,6 +36,10 @@ export class I18n {
   #catalogs: Record<string, Messages>;
   /** Subscribers notified on a locale change that actually took effect. */
   #listeners = new Set<Listener>();
+  /** Tracks which `(locale, key)` pairs a module's `addMessages` call inserted, so
+   * `removeModule` can undo precisely those insertions on unload. Not stamped for
+   * a host-registered (non-module) call. */
+  #moduleKeys = new Map<string, Set<ModuleMessageKey>>();
 
   /** Builds an `I18n` instance already loaded with every catalog.
    * @param locale The active locale key (e.g. `"en"`); must be a key of `catalogs`.
@@ -102,6 +122,70 @@ export class I18n {
   subscribe(listener: Listener): () => void {
     this.#listeners.add(listener);
     return () => this.#listeners.delete(listener);
+  }
+
+  /** Merges `messages` into `locale`'s catalog — new keys are added, an existing key (including a
+   * BUILT-IN one) is overwritten (last write wins; no collision arbitration beyond that). Notifies
+   * subscribers only if `locale` is the currently active one (a change to a non-active locale's
+   * catalog has nothing observable to react to yet).
+   * @param locale The locale to merge into; created if it doesn't already have a catalog.
+   * @param messages The key→message fragment to merge in.
+   * @param opts Registration options.
+   * @param opts.module The registering module's id, recorded for `removeModule` teardown;
+   * omitted for a host-registered (non-module) call.
+   * @example
+   * ```ts
+   * import { I18n } from "@shadowcat/core";
+   *
+   * const i18n = new I18n("en", { en: {} });
+   * i18n.addMessages("en", { "myModule.greeting": "Hi!" }, { module: "my-module" });
+   * i18n.t("myModule.greeting"); // "Hi!"
+   * ```
+   */
+  addMessages(locale: string, messages: Messages, opts: AddMessagesOptions = {}): void {
+    const catalog = this.#catalogs[locale] ?? (this.#catalogs[locale] = {});
+    for (const [key, value] of Object.entries(messages)) {
+      catalog[key] = value;
+      if (opts.module) {
+        const set = this.#moduleKeys.get(opts.module) ?? new Set();
+        set.add({ locale, key });
+        this.#moduleKeys.set(opts.module, set);
+      }
+    }
+    if (locale === this.#locale) {
+      for (const fn of this.#listeners) fn();
+    }
+  }
+
+  /** Removes every `(locale, key)` pair `moduleId` inserted via `addMessages` (module unload
+   * teardown) — a no-op if the module never called `addMessages`. Does NOT restore a value the
+   * module's insertion overwrote (e.g. a shadowed built-in key); the key is simply absent
+   * afterward, falling back to the raw key string in `t()` like any other missing key.
+   * @param moduleId The module id whose inserted messages should be removed.
+   * @example
+   * ```ts
+   * import { I18n } from "@shadowcat/core";
+   *
+   * const i18n = new I18n("en", { en: {} });
+   * i18n.addMessages("en", { "myModule.greeting": "Hi!" }, { module: "my-module" });
+   * i18n.removeModule("my-module");
+   * i18n.t("myModule.greeting"); // "myModule.greeting" (fell back to the key)
+   * ```
+   */
+  removeModule(moduleId: string): void {
+    const keys = this.#moduleKeys.get(moduleId);
+    if (!keys) return;
+    let changed = false;
+    for (const { locale, key } of keys) {
+      if (this.#catalogs[locale] && key in this.#catalogs[locale]) {
+        delete this.#catalogs[locale][key];
+        changed = true;
+      }
+    }
+    this.#moduleKeys.delete(moduleId);
+    if (changed && this.#catalogs[this.#locale]) {
+      for (const fn of this.#listeners) fn();
+    }
   }
 }
 
