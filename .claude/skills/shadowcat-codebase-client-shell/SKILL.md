@@ -120,7 +120,7 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
   open, and the effect closes the menu + returns focus to the trigger when that happens (reads
   `open` via `untrack` so the effect's only TRACKED dependency is the `panels` derived — tracking
   `open` directly makes the effect misfire on the OPEN transition itself, before `openMenu`'s
-  `queueMicrotask` has moved focus onto the first item). The shell serves ONE runtime instance of
+  `queueMicrotask` moves focus onto the first item). The shell serves ONE runtime instance of
   `svelte`/`@shadowcat/*` via `RUNTIME_ENTRIES` + `preserveEntrySignatures:"strict"` + the
   `index.html` import map. GM management UI = `ModuleManager`. Full subsystem (server
   discovery/serving/enablement, engine-compat gate) → [[shadowcat-codebase-module-toolchain]].
