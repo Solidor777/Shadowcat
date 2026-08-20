@@ -7,8 +7,15 @@ unblocking condition, not a "someday maybe." A few headings are explicitly
 labeled "Actionable now": these are NOT blocked on anything — the underlying
 capability already exists — but are deferred as out-of-scope-for-now work.
 
-## Scheduled after the debt-burndown phases — re-brainstorm point-in-time replay redaction
-- TODO: Re-run the design pass for the commit-time redaction context that closes the two
+## Actionable now — Phase 1b re-brainstorm: point-in-time replay redaction (commit-time snapshot)
+- TODO: The design findings' "do both" ruling had two halves. The resync-bound half is DONE
+  (`Room::resync_floor`/`establish_resync_floor`/`resync_floor_enforced`, enforced by default) —
+  see `docs/OPEN_BUGS.md`'s updated Reachability note. The commit-time-snapshot half — the actual
+  fix for redacting replay against the policy in force at the historical seq, not today's policy —
+  is what remains, and is the real body of this item. `docs/PLAN.md`'s Phase 1b entry confirms its
+  scheduling trigger (the server-scene-geometry work merging to `main`) has fired: this is
+  unblocked, not scheduled-for-later.
+  Re-run the design pass for the commit-time redaction context that closes the two
   replay-redaction defects in `OPEN_BUGS.md`. The first proposal was reviewed by two blind reviewers
   and returned needs-rework; **do not restart from scratch and do not patch that proposal** — its
   reviewed findings are the input, captured under `docs/superpowers/specs/` as the Phase-1b design

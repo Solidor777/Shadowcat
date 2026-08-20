@@ -19,10 +19,15 @@ Currently open, confirmed-real defects. Deferrals belong in `TODO.md`, not here.
     who authored them: `world_events.author_id` is `ON DELETE SET NULL`, and
     `SqliteRepository::delete_user` never deletes event rows, so a deleted user's authored events
     persist with the author nulled. Only world deletion removes them, via
-    `SqliteRepository::delete_world`'s `world_id` FK cascade. `ResyncRequest{from_seq}` is
-    entirely client-supplied with no lower
-    bound (`Room::resync_range` → `Repository::events_since` queries `seq > from_seq - 1`), so any
-    client can pull a document's entire history at any time.
+    `SqliteRepository::delete_world`'s `world_id` FK cascade. An explicit `ResyncRequest{from_seq}`
+    is clamped against `Room::resync_floor` (`ws::conn`'s `Egress::Resync` handler, gated by
+    `Room::resync_floor_enforced`, `true` in every production `RoomRegistry` constructor) — a
+    per-user floor established at that user's most recent cold-start `Hello`, closing the
+    "any client can pull a document's entire history at any time" read amplification the design
+    findings priced. This narrows reachability (a session can no longer resync earlier than its
+    own most recent cold start) but does not close the redaction defect itself: a long-lived
+    session's floor can still predate a permission tightening, and the defect below governs
+    exactly what's disclosed within whatever range remains reachable.
   - **Fix shape DECIDED (ruled, not yet built): snapshot the relevant visibility into the
     event/command at commit time**, so replay redacts against the policy in force at that sequence
     rather than against today's policy — the redaction decision is made once, at commit, and
