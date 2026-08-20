@@ -19,8 +19,8 @@ const FETCH_TIMEOUT_MS = 15_000;
 /** Bounded retry for the boot chain (`withRetry`'s only caller is
  * `App`'s `boot()`): a transient backend blip (restart, single 5xx)
  * must not permanently strand the SPA on the login/worlds route with no
- * retry and no error surface. Delays are flat values, not a policy knob
- * (YAGNI). Rethrows the last error if every attempt fails.
+ * retry and no error surface. Delays are base values for full jitter, not
+ * a policy knob (YAGNI). Rethrows the last error if every attempt fails.
  * @param fn - The operation to retry; invoked again from scratch each
  *   attempt.
  * @param attempts - Maximum number of calls to `fn`.
