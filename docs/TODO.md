@@ -138,13 +138,6 @@ Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one de
   caller ever exercising the recovery path. Add client-side pruning (e.g. dropping a
   `worlds.<id>` entry for a world no longer in the caller's membership list) so an over-cap blob
   is actually recovered, not just theoretically recoverable.
-- TODO: the `sessionState` module has no in-flight-PUT ordering guard — `schedulePersist`'s leading
-  edge can fire a second `persist()` while an earlier one's `putUiState` is still unresolved (e.g.
-  a slow network on the first write, a new mutation arriving before it settles), so two writes for
-  the same account can be in flight concurrently with no ordering guarantee on which lands last at
-  the server. Defer the leading edge while a persist is unresolved (a simple in-flight flag,
-  scheduling the deferred attempt for when the current one settles) instead of the current
-  fire-and-forget leading edge.
 - TODO: the `sessionState` module's `loaded` flag is never reset to `false` on logout, so a
   mutation landing inside a re-login `loadSessionState()`'s `await getUiState()` window passes the
   `loaded` guard and can persist a pre-login `state` value under the new session's cookie.

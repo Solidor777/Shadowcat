@@ -185,6 +185,51 @@ test("flushOnUnload keepalive-persists a change made during the cooldown", async
   );
 });
 
+test("a second persist attempt while one is unresolved is deferred, not raced", async () => {
+  vi.useFakeTimers();
+  try {
+    vi.spyOn(api, "getUiState").mockResolvedValue({
+      global: { locale: "en", lastWorld: null },
+      worlds: {},
+    });
+    let resolveFirst!: () => void;
+    const put = vi
+      .spyOn(api, "putUiState")
+      .mockImplementationOnce(() => new Promise<void>((resolve) => { resolveFirst = resolve; }))
+      .mockResolvedValue(undefined);
+    await loadSessionState();
+    // A preceding real-timer test can leave its own cooldown `timer` still armed for up to
+    // COOLDOWN_MS after that test ends (neither `loadSessionState` nor `flushOnUnload` cancels
+    // it); with `timer` non-null, `schedulePersist` would take its cooldown branch instead of
+    // firing the leading edge this test depends on. `flushSessionState` cancels that leftover
+    // timer; dirty tracking is already empty at this point (`loadSessionState` just cleared it),
+    // so this is a no-op PUT and does not consume the mocked hanging first call below.
+    await flushSessionState();
+    put.mockClear();
+
+    setLastWorld("w1"); // leading edge: persist() starts immediately, putUiState #1 pending
+    expect(put).toHaveBeenCalledTimes(1);
+
+    // Still inside the cooldown window: this only sets pendingDuringCooldown, no new persist() yet.
+    await vi.advanceTimersByTimeAsync(100);
+    setLastWorld("w2");
+    expect(put).toHaveBeenCalledTimes(1);
+
+    // Cooldown elapses (400ms remaining of the 500ms window) while putUiState #1 is STILL pending
+    // (resolveFirst has not been called). Without the fix, this would fire a second, overlapping
+    // putUiState call right here.
+    await vi.advanceTimersByTimeAsync(400);
+    expect(put).toHaveBeenCalledTimes(1); // deferred, not raced
+
+    // Settle the first PUT; the deferred attempt runs automatically and picks up w2.
+    resolveFirst();
+    await vi.waitFor(() => expect(put).toHaveBeenCalledTimes(2));
+    expect(put.mock.calls[1]?.[0].global?.lastWorld).toBe("w2");
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 test("flushOnUnload re-marks the slice on a rejected keepalive PUT so a later flush retries it", async () => {
   vi.spyOn(api, "getUiState").mockResolvedValue({
     global: { locale: "en", lastWorld: null },

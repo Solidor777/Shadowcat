@@ -14,6 +14,14 @@ const COOLDOWN_MS = 500;
 let timer: ReturnType<typeof setTimeout> | null = null;
 let pendingDuringCooldown = false;
 
+/** True while a `persist()` call's `putUiState` is unresolved — the in-flight
+ * guard `persist()` itself checks before starting a second overlapping PUT. */
+let persistInFlight = false;
+/** Set when `persist()` is called while `persistInFlight` is already true;
+ * consumed by the in-flight call's `finally` to re-run `persist()` once it
+ * settles, so the deferred attempt picks up everything dirtied meanwhile. */
+let persistDeferred = false;
+
 /** A dirty-trackable key of `UiState.global` (`"locale"` or `"lastWorld"`). */
 type GlobalField = keyof UiState["global"];
 /** A dirty-trackable key of one `UiState.worlds[id]` entry (`"panelLayout"` or
@@ -174,22 +182,40 @@ function buildPatch(): UiStatePatch {
  * so the next scheduled persist retries them; on success the clear is
  * permanent. A no-op (no PUT; dirty tracking stays cleared) when the current
  * dirty state builds an empty patch.
+ *
+ * In-flight-PUT ordering guard: a call arriving while an earlier call's
+ * `putUiState` is still unresolved only sets `persistDeferred` and returns —
+ * it does NOT snapshot/build/clear dirty tracking itself, so the deferred
+ * attempt (run from the in-flight call's `finally`, once `putUiState`
+ * settles) picks up everything dirtied in the meantime rather than racing a
+ * second overlapping PUT.
  * @example
  * ```
  * await persist();
  * ```
  */
 async function persist(): Promise<void> {
+  if (persistInFlight) {
+    persistDeferred = true;
+    return;
+  }
   const snap = snapshotDirty();
   const patch = buildPatch();
   clearDirty();
   if (patch.global === undefined && patch.worlds === undefined) return;
+  persistInFlight = true;
   try {
     await putUiState(patch);
   } catch (e) {
     // Re-mark the lost fields/keys so the next scheduled persist retries them.
     remarkDirty(snap);
     logger.warn("ui_state persist failed", e);
+  } finally {
+    persistInFlight = false;
+    if (persistDeferred) {
+      persistDeferred = false;
+      void persist();
+    }
   }
 }
 
