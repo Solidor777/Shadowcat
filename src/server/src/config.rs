@@ -582,4 +582,42 @@ mod tests {
         assert!(cfg.is_trusted_proxy("127.0.0.1".parse().unwrap()));
         assert!(!cfg.is_trusted_proxy("not-an-ip".parse().unwrap_or("0.0.0.0".parse().unwrap())));
     }
+
+    #[test]
+    fn trusted_proxies_env_var_needs_bracket_syntax_for_a_list() {
+        // Pins the operator-facing claim in docs/site/guides/hosting.md: a bare scalar value
+        // for a Vec<String> field fails to parse through figment's Env provider, even for a
+        // single entry — the bracketed form is required.
+        // SAFETY: single-threaded test-only env mutation, restored below.
+        unsafe {
+            std::env::set_var("SHADOWCAT_TRUSTED_PROXIES", "127.0.0.1");
+        }
+        let cli = Cli {
+            config: Some("/nonexistent/shadowcat.toml".into()),
+            ..Default::default()
+        };
+        let bare_result = Config::load(cli);
+        unsafe {
+            std::env::remove_var("SHADOWCAT_TRUSTED_PROXIES");
+        }
+        assert!(
+            bare_result.is_err(),
+            "a bare scalar env value for a Vec<String> field was expected to fail to parse"
+        );
+
+        // SAFETY: single-threaded test-only env mutation, restored below.
+        unsafe {
+            std::env::set_var("SHADOWCAT_TRUSTED_PROXIES", "[127.0.0.1]");
+        }
+        let cli = Cli {
+            config: Some("/nonexistent/shadowcat.toml".into()),
+            ..Default::default()
+        };
+        let cfg = Config::load(cli).expect("bracketed single-entry list should load");
+        // SAFETY: matches the set_var above.
+        unsafe {
+            std::env::remove_var("SHADOWCAT_TRUSTED_PROXIES");
+        }
+        assert_eq!(cfg.trusted_proxies, vec!["127.0.0.1".to_string()]);
+    }
 }
