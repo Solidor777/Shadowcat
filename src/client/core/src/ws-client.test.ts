@@ -185,23 +185,40 @@ describe("WsClient", () => {
 
   it("stop() during a pending connect discards the resolved transport instead of adopting it", async () => {
     let resolveConnect!: (t: { send: () => void; close: () => void }) => void;
+    let onCloseHandler!: () => void;
     let closed = false;
-    const connect: Connect = () =>
-      new Promise((resolve) => {
+    const connect: Connect = (handlers) => {
+      onCloseHandler = handlers.onClose;
+      return new Promise((resolve) => {
         resolveConnect = resolve;
       });
-    const client = new WsClient({ connect, handlers: noop });
+    };
+    const delays: number[] = [];
+    const client = new WsClient({
+      connect,
+      handlers: noop,
+      sleep: (ms) => {
+        delays.push(ms);
+        return Promise.resolve();
+      },
+    });
     const startPromise = client.start();
     client.stop();
     resolveConnect({
       send: () => {},
       close: () => {
         closed = true;
+        onCloseHandler();
       },
     });
     await startPromise;
     expect(closed).toBe(true);
     expect(client.connected).toBe(false);
+    // close() invoked the real onClose handler, running handleClose() end-to-end — but running_
+    // is false, so handleClose()'s own `if (this.running_) this.scheduleReconnect()` guard must
+    // skip scheduling a reconnect. An empty `delays` array proves that guard held, not just that
+    // the two flags above happened to be set correctly.
+    expect(delays).toHaveLength(0);
   });
 
   it("reconnects and catches up after a dropped connection", async () => {
