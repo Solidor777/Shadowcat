@@ -602,9 +602,8 @@ mod tests {
 
     #[test]
     fn trusted_proxies_env_var_needs_bracket_syntax_for_a_list() {
-        // Pins the operator-facing claim in docs/site/guides/hosting.md: a bare scalar value
-        // for a Vec<String> field fails to parse through figment's Env provider, even for a
-        // single entry — the bracketed form is required.
+        // A bare scalar value for a Vec<String> field fails to parse through figment's Env
+        // provider, even for a single entry — the bracketed form is required.
         let _guard = config_env_test_lock();
         // SAFETY: single-threaded test-only env mutation, restored below.
         unsafe {
