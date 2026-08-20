@@ -1569,6 +1569,8 @@ impl SqliteRepository {
     /// `OpSnapshot::created_seq_at_commit` compares against to detect an id reused after a hard
     /// delete. Runs on the caller's transaction (never `&self.pool`, which would deadlock
     /// mid-transaction on the single-writer pool).
+    // TODO: remove this #[cfg(test)] once a non-test caller invokes this function.
+    #[cfg(test)]
     async fn document_created_seq<'e, E>(executor: E, id: Uuid) -> Result<Option<i64>, DataError>
     where
         E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
@@ -1585,6 +1587,8 @@ impl SqliteRepository {
     /// — captured once per command, at the point the command is committing, which IS "at commit
     /// time" for this purpose: the whole point of capturing it now is to freeze what would
     /// otherwise be re-derived live on every future replay.
+    // TODO: remove this #[cfg(test)] once a non-test caller invokes this function.
+    #[cfg(test)]
     async fn world_member_roles<'e, E>(
         executor: E,
         world_id: Uuid,
