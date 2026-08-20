@@ -11,7 +11,9 @@ import type { SceneSelection } from "./sceneSelection.svelte";
  * reactive implementation). */
 export type TFunc = (key: string, params?: Record<string, string | number>) => string;
 
-/** Options for `AppContext.subscribeScene`. */
+/** Options for `AppContext.subscribeScene`. Shares its one field's shape with `@shadowcat/shell`'s
+ * `SubscribeSceneOpts` by coincidence, not by a package-boundary dependency — check that type too
+ * if this one's fields change. */
 export interface AppSubscribeSceneOptions {
   /** Userid to view the channel as; GM-only, server-rejected otherwise. */
   asUser?: string;

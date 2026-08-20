@@ -26,12 +26,11 @@ import {
   type WireOperation,
   type WireDocument,
   type WireCapabilityRequirement,
+  type ChatSendOptions,
   type SceneFrame,
   type SceneSubscription,
   type PathResult,
   type MoveStream,
-  type WireActorOwnerRef,
-  type WireAudience,
   type SubscriptionHandle,
   type WireSearchHit,
   loadModules,
@@ -48,22 +47,27 @@ import { SvelteMap } from "svelte/reactivity";
 /** The WS connection lifecycle a `WorldSession` exposes as its reactive `state`. */
 export type ConnState = "connecting" | "open" | "closed";
 
-/** Options for {@link WorldSession.sendChatMessage}. */
-export interface SendChatMessageOpts {
-  /** The channel to post to. */
-  channel: string;
-  /** The raw (unsanitized) message text. */
-  content: string;
-  /** Optional actor to speak as, for name/avatar attribution. */
-  actorOwner?: WireActorOwnerRef | null;
-  /** Optional restricted audience (whisper/GM-only); defaults to public. */
-  audience?: WireAudience;
-}
-
-/** Options for {@link WorldSession.subscribeScene}. */
+/** Options for {@link WorldSession.subscribeScene}. Shares its one field's shape with
+ * `AppSubscribeSceneOptions` in `@shadowcat/ui-kit`'s `appContext` module by coincidence, not
+ * by a package-boundary dependency — check that type too if this one's fields change. */
 export interface SubscribeSceneOpts {
   /** GM-only see-as: resolve the channel as if for this user instead of self. */
   asUser?: string;
+}
+
+/** One `subscribeScene` record, keyed by a locally-generated id in `WorldSession.#sceneSubs`
+ * and (re-)established by `WorldSession.#establishScene`. */
+interface SceneSubRecord {
+  /** The SceneDerived channel name. */
+  channel: string;
+  /** Called with each new frame on that channel. */
+  onUpdate: (f: SceneFrame) => void;
+  /** GM-only see-as override, if this subscription used one. */
+  asUser?: string;
+  /** The currently-live WS handle, or `null` while (re-)establishing. */
+  handle: SceneSubscription | null;
+  /** Generation counter; bumped to invalidate a superseded establish attempt. */
+  gen: number;
 }
 
 /** Construction options for `WorldSession`. */
@@ -141,19 +145,7 @@ export class WorldSession {
     }) => void
   >();
   /** Live `subscribeScene` records, keyed by a locally-generated subscription id. */
-  #sceneSubs = new Map<
-    string,
-    {
-      /** The SceneDerived channel name. */
-      channel: string;
-      /** Called with each new frame on that channel. */
-      onUpdate: (f: SceneFrame) => void;
-      /** The currently-live WS handle, or `null` while (re-)establishing. */
-      handle: SceneSubscription | null;
-      /** Generation counter; bumped to invalidate a superseded establish attempt. */
-      gen: number;
-    }
-  >();
+  #sceneSubs = new Map<string, SceneSubRecord>();
   /** The WS connection lifecycle; `"open"` after `enter()`'s `WsClient.start()`
    * resolves, `"closed"` after `leave()`. */
   state = $state<ConnState>("closed");
@@ -603,7 +595,7 @@ export class WorldSession {
 
   /** Send a chat message. Resolves/rejects with the correlated outcome; rejects
    * immediately when there is no live transport (the caller surfaces it).
-   * @param opts The message to send; see {@link SendChatMessageOpts}.
+   * @param opts The message to send; see {@link ChatSendOptions}.
    * @returns Resolves when `CHAT_ERROR_WINDOW_MS` elapses with no correlated `chat_error` —
    * success is ASSUMED from silence, not acknowledged: the server sends no ack frame and the
    * broadcast Event carries no correlation back to this promise. Rejects with the server's
@@ -615,7 +607,7 @@ export class WorldSession {
    * await session.sendChatMessage({ channel: "main", content: "Hello!" });
    * ```
    */
-  sendChatMessage(opts: SendChatMessageOpts): Promise<void> {
+  sendChatMessage(opts: ChatSendOptions): Promise<void> {
     if (!this.#ws) return Promise.reject(new Error("not connected"));
     return this.#ws.sendChatMessage(opts);
   }
@@ -692,41 +684,16 @@ export class WorldSession {
    * a superseded attempt (unsubscribed, or a newer establish for the same record) self-disposes
    * its resolved handle instead of leaking a duplicate server subscription.
    * @param id The record's key in `#sceneSubs`.
-   * @param rec The subscription record to (re)establish.
-   * @param rec.channel The SceneDerived channel name.
-   * @param rec.onUpdate Called with each new frame on that channel.
-   * @param rec.asUser GM-only see-as override, if this subscription used one.
-   * @param rec.handle The currently-live handle, if any (replaced once the new one resolves).
-   * @param rec.gen This record's generation counter; bumped to invalidate a superseded attempt.
+   * @param rec The subscription record to (re)establish; see `SceneSubRecord`'s own field docs.
    * @example
    * ```
    * declare const id: string;
-   * declare const rec: {
-   *   channel: string;
-   *   onUpdate: (f: SceneFrame) => void;
-   *   asUser?: string;
-   *   handle: SceneSubscription | null;
-   *   gen: number;
-   * };
+   * declare const rec: SceneSubRecord;
    * // called from subscribeScene and from #onWelcome; not part of the public API
    * this.#establishScene(id, rec);
    * ```
    */
-  #establishScene(
-    id: string,
-    rec: {
-      /** See the `@param rec.channel` doc above. */
-      channel: string;
-      /** See the `@param rec.onUpdate` doc above. */
-      onUpdate: (f: SceneFrame) => void;
-      /** See the `@param rec.asUser` doc above. */
-      asUser?: string;
-      /** See the `@param rec.handle` doc above. */
-      handle: SceneSubscription | null;
-      /** See the `@param rec.gen` doc above. */
-      gen: number;
-    },
-  ): void {
+  #establishScene(id: string, rec: SceneSubRecord): void {
     const ws = this.#ws;
     if (!ws) return;
     const gen = ++rec.gen; // this attempt's generation
