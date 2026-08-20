@@ -127,13 +127,11 @@ impl axum::extract::FromRequestParts<crate::http::AppState> for ClientIp {
     }
 }
 
-/// Resolves the real client address from a trusted peer's `X-Forwarded-For` header, walking
-/// entries right-to-left (nearest hop first): each trusted-proxy entry is a hop to skip past; the
-/// first non-trusted or unparseable entry is the client. Falls back to `peer` if the header is
-/// absent/empty, or every entry turns out to be a trusted-proxy address.
-/// @param peer The already-verified-trusted immediate TCP peer address.
-/// @param forwarded The raw `X-Forwarded-For` header value, if present.
-/// @param config Supplies `is_trusted_proxy` for the hop-walk.
+/// Resolves the real client address from `peer` (the already-verified-trusted immediate TCP peer)
+/// and `forwarded` (the raw `X-Forwarded-For` header value, if present), walking entries
+/// right-to-left (nearest hop first) against `config.is_trusted_proxy`: each trusted-proxy entry
+/// is a hop to skip past; the first non-trusted or unparseable entry is the client. Falls back to
+/// `peer` if the header is absent/empty, or every entry turns out to be a trusted-proxy address.
 ///
 /// # Examples
 ///
