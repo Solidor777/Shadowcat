@@ -7,6 +7,7 @@
 import type { PanelMeta } from "@shadowcat/core";
 import type { ExpandedLayout, LayoutOp } from "../layout/tree";
 import type { EngineAdapter } from "./adapter";
+import { STAGE_ID } from "./policy";
 
 const ZONE_IDS = ["right", "bottom", "left"] as const;
 /** The three fixed dock zones this engine builds DOM for; mirrors `@shadowcat/core`'s
@@ -319,11 +320,10 @@ export class FakeEngine implements EngineAdapter {
 
   /** `EngineAdapter.focus`: records `id` as the last-focused panel — read
    * back via the `focused` test getter. No visible DOM effect (this
-   * bespoke-fallback engine renders no focus chrome of its own). Unlike
-   * `DockviewEngine.focus`, this has no `STAGE_ID` guard — a sibling
-   * divergence with no observed production impact today, since no caller in
-   * this package invokes `EngineAdapter.focus` at all (see `PanelsController.
-   * focus`'s doc comment).
+   * bespoke-fallback engine renders no focus chrome of its own). No-ops for
+   * the stage id (defense-in-depth), mirroring `DockviewEngine.focus`'s same
+   * guard — the two engines must agree structurally, not by coincidence of
+   * neither being called.
    * @param id The panel id to focus.
    * @example
    * ```ts
@@ -334,6 +334,7 @@ export class FakeEngine implements EngineAdapter {
    * ```
    */
   focus(id: string): void {
+    if (id === STAGE_ID) return; // defense-in-depth: never a normal focus subject
     this.#focused = id;
   }
 

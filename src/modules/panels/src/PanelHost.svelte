@@ -163,6 +163,17 @@
           announce = t(key);
         },
         onOp: (op, prev) => {
+          // Wires the reachable `SheetsController.openDocument` ->
+          // `PanelsBridge.focus` -> `PanelsController.focus` chain (and every
+          // other `"open"` origin: the topbar launcher, an engine-originated
+          // reopen gesture) onto the engine's own imperative focus, not just
+          // the reducer's tree state — an already-open panel that's scrolled
+          // out of view or behind another window gets properly activated/
+          // raised. `dispatch`'s same-reference no-op contract means `onOp`
+          // never fires for an "open" that changed nothing (e.g. an
+          // already-active docked tab), so there is nothing to raise in that
+          // case either.
+          if (op.op === "open") eng.focus(op.id);
           const text = describeOp(op, prev);
           if (text !== null) announce = text;
         },

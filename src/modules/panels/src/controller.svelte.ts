@@ -414,11 +414,11 @@ export class PanelsController implements PanelsApi, PanelsChipsView {
 
   /** Brings a panel to the foreground via `applyOp`'s `open` op — the
    * layout-tree's own focus operation (activates its tab if docked, or bumps
-   * a floating window's z-order). `EngineAdapter.focus(id)` exists on the
-   * engine seam for imperative DOM-level focus (e.g. scrolling a floating
-   * window into view), but no production caller in this package invokes it
-   * today — `PanelHost` never calls `eng.focus`, so this method's effect is
-   * entirely the `dispatch`ed `open` op above.
+   * a floating window's z-order). `PanelHost`'s `onOp` callback additionally
+   * calls the active engine's `EngineAdapter.focus(id)` for every `"open"`
+   * op this dispatches (imperative DOM-level focus, e.g. raising a floating
+   * window), so this method's effect is the `dispatch`ed `open` op above PLUS
+   * that engine-level focus, not the tree state alone.
    * @param id The panel id to bring to the foreground.
    * @example
    * ```ts

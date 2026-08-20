@@ -170,14 +170,17 @@ the reducer (intercept-and-redispatch), so the engine never owns state.
   (`PanelHost`'s `engine ?? new FakeEngine()`), and the shipped module's `register()` always
   supplies a `DockviewEngine` — so that branch is taken today only by the test suite. It remains a
   real fallback SEAM any bespoke host could use; it is not dead code, and it is not production code.
-- **`EngineAdapter.focus` has no production caller at all.** Both engines implement it and nothing
-  invokes either: `PanelsController.focus(id)` is `this.open(id)` (a `LayoutOp`, so the tab activates
-  and floating z bumps in the TREE), and `PanelHost` calls `init`/`apply`/`onOp`/`onNotice`/`destroy`
-  but never `eng.focus`. The reachable chain is `sheetsController` → `PanelsBridge` →
-  `PanelsController.focus` and stops there. Consequence to know before wiring it up:
-  `DockviewEngine.focus` early-returns on `STAGE_ID` (stage-well defense-in-depth) and
-  `FakeEngine.focus` has NO such guard — a never-fork-a-decision violation that is inert only
-  because the seam is uncalled.
+- **`EngineAdapter.focus` is wired at `PanelHost`'s `onOp` callback, not inside `PanelsController`
+  itself** — the controller holds no engine reference (only `PanelHost` does), so `PanelHost` calls
+  `eng.focus(op.id)` for every `LayoutOp.open` its `PanelsController` construction-time `onOp`
+  callback observes, alongside the existing `describeOp` live-region narration. This reaches
+  `PanelsController.focus(id)` (→ `this.open(id)` → `dispatch`) from ANY caller of the reachable
+  chain — `sheetsController` → `PanelsBridge` → `PanelsController.focus`, the topbar launcher's
+  `open`, and an engine-originated reopen gesture alike. `dispatch`'s same-reference no-op contract
+  means `onOp` (and so `eng.focus`) never fires for an "open" that changed nothing (e.g. an
+  already-active docked tab or already-topmost floating window) — there is nothing to raise in
+  that case. `DockviewEngine.focus` and `FakeEngine.focus` both early-return on `STAGE_ID`
+  (structurally identical guard, not a coincidence of neither being called).
 - Panel modules `requires` `PANEL_CONTRACT`, which topologically activates `panels` FIRST —
   late panel registration is the ROUTINE order, not an edge case.
 - dockview's `onDidRemovePanel` fires synchronously inside `removePanel` — transition guards

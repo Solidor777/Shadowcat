@@ -6,6 +6,7 @@ import { ContributionRegistry, PANEL_CONTRACT, silentLogger } from "@shadowcat/c
 import type { EngineAdapter } from "./engine/adapter";
 import { applyOp, defaultLayout } from "./layout/tree";
 import { PanelsController } from "./controller.svelte";
+import { STAGE_ID } from "./engine/policy";
 
 /** Minimal fake MediaQueryList (mirrors `@shadowcat/ui-kit`'s own
  * `FakeMediaQueryList`) so
@@ -42,7 +43,11 @@ const { default: CrashOnceCountingPanel } = await import("./__fixtures__/CrashOn
 // from "@shadowcat/ui-kit"` would pull in the whole ui-kit barrel (including
 // `sizeClass()`'s module, which reads `matchMedia` at module load) BEFORE the
 // `vi.stubGlobal` call above runs, breaking the ordering that comment warns about.
-const { i18n } = await import("@shadowcat/ui-kit");
+const { i18n, PanelsBridge } = await import("@shadowcat/ui-kit");
+// Same hazard applies transitively: `./engine/dockview` itself statically
+// imports `i18n` from `@shadowcat/ui-kit` (for its panel-menu labels), so it
+// must be dynamic here too, after the stub above.
+const { DockviewEngine } = await import("./engine/dockview");
 
 afterEach(() => {
   cleanup();
@@ -812,4 +817,92 @@ test("PanelHost mounts normally when ctx.panels has a bind method", () => {
     panels: { bind: vi.fn() } as unknown as AppContext["panels"],
   });
   expect(() => render(PanelHost, { context })).not.toThrow();
+});
+
+/** Builds a two-panel layout with both panels docked into the same "right"
+ * zone group-0, "notes:panel" active — mirrors the existing
+ * "live region: opening an already-docked panel that becomes the active tab"
+ * fixture. Reopening the present-but-inactive "chat:panel" is a REAL
+ * placement change (`applyOp`'s "open" case flips `group.active`), the exact
+ * "off-screen/behind another window" shape `EngineAdapter.focus` wiring
+ * exists to raise. */
+function inactiveTabLayout(): { registry: ContributionRegistry; saved: ReturnType<typeof defaultLayout> } {
+  const registry = new ContributionRegistry();
+  registry.contribute({
+    id: "chat:panel",
+    contract: PANEL_CONTRACT,
+    component: CountingPanel,
+    props: { onMountFn: () => {} },
+    panel: { icon: "c", labelKey: "chat.tab", defaultPlacement: { kind: "docked", zone: "right" } },
+  });
+  registry.contribute({
+    id: "notes:panel",
+    contract: PANEL_CONTRACT,
+    component: CountingPanel,
+    props: { onMountFn: () => {} },
+    panel: { icon: "n", labelKey: "chat.tab", defaultPlacement: { kind: "docked", zone: "right" } },
+  });
+  let saved = defaultLayout([{ id: "chat:panel", placement: { kind: "docked", zone: "right" } }]);
+  saved = applyOp(saved, { op: "dock", id: "notes:panel", zone: "right", group: 0 });
+  return { registry, saved };
+}
+
+test("focus wiring (FakeEngine): reopening an already-docked, present-but-inactive panel via ctx.panels.focus calls the engine's focus(id)", async () => {
+  const { registry, saved } = inactiveTabLayout();
+  const engine = new FakeEngine();
+  const focusSpy = vi.spyOn(engine, "focus");
+  const bridge = new PanelsBridge(silentLogger);
+  const context = setAppContextForTest({
+    contributions: registry,
+    role: "gm",
+    panels: bridge,
+    uiState: { getPanelLayout: () => saved, setPanelLayout: () => {}, getChatRead: () => null, setChatRead: () => {} },
+  });
+  render(PanelHost, { props: { engine }, context });
+  await Promise.resolve();
+
+  expect(focusSpy).not.toHaveBeenCalled();
+
+  // The reachable chain the TODO names: SheetsController.openDocument ->
+  // PanelsBridge.focus -> PanelsController.focus -> this.open(id) -> dispatch
+  // -> PanelHost's onOp -> eng.focus(id).
+  bridge.focus("chat:panel");
+  await Promise.resolve();
+
+  expect(focusSpy).toHaveBeenCalledWith("chat:panel");
+});
+
+test("focus wiring (DockviewEngine): reopening an already-docked, present-but-inactive panel via ctx.panels.focus calls the engine's focus(id)", async () => {
+  const { registry, saved } = inactiveTabLayout();
+  const engine = new DockviewEngine(silentLogger);
+  const focusSpy = vi.spyOn(engine, "focus");
+  const bridge = new PanelsBridge(silentLogger);
+  const context = setAppContextForTest({
+    contributions: registry,
+    role: "gm",
+    panels: bridge,
+    uiState: { getPanelLayout: () => saved, setPanelLayout: () => {}, getChatRead: () => null, setChatRead: () => {} },
+  });
+  render(PanelHost, { props: { engine }, context });
+  await Promise.resolve();
+
+  expect(focusSpy).not.toHaveBeenCalled();
+
+  bridge.focus("chat:panel");
+  await Promise.resolve();
+
+  expect(focusSpy).toHaveBeenCalledWith("chat:panel");
+});
+
+test("FakeEngine.focus no-ops on STAGE_ID, mirroring DockviewEngine.focus's own guard", () => {
+  const engine = new FakeEngine();
+  const host = document.createElement("div");
+  const stageEl = document.createElement("div");
+  engine.init(host, () => document.createElement("div"), stageEl);
+
+  expect(() => engine.focus(STAGE_ID)).not.toThrow();
+  expect(engine.focused).toBeNull();
+
+  engine.focus("chat:panel");
+  expect(engine.focused).toBe("chat:panel");
 });
