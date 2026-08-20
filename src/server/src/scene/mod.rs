@@ -2724,9 +2724,16 @@ impl SceneEcs {
     }
 
     /// Engine-owned movement collision. True if the move segment `a0→a1` crosses any `blocksMove`
-    /// wall in `scene`.
-    /// A no-op move (`a0 == a1`) never blocks.
-    pub fn blocks_move(&self, scene: Uuid, a0: (f64, f64), a1: (f64, f64)) -> bool {
+    /// wall in `scene`. A no-op move (`a0 == a1`) never blocks.
+    ///
+    /// This is the REFERENCE implementation of wall-crossing semantics — one home for it, per the
+    /// module's own INVARIANT on `move_walls`. `move_exec::execute_move`'s per-cell wall gate is
+    /// the production traversal path and does not call this function directly (it composes
+    /// `move_walls(scene, None)` with `segments_cross` inline instead); an anti-drift test pins
+    /// the two to agreement, so a change to either wall filter that drifts them apart fails it.
+    /// Test-only: it has no production caller, so it compiles only into test builds.
+    #[cfg(test)]
+    pub(crate) fn blocks_move(&self, scene: Uuid, a0: (f64, f64), a1: (f64, f64)) -> bool {
         if a0 == a1 {
             return false;
         }
@@ -3457,6 +3464,53 @@ mod tests {
             0,
         );
         assert!(!ecs2.blocks_move(scene, (0.0, 0.0), (10.0, 10.0)));
+    }
+
+    /// Anti-drift check: `blocks_move` (the reference implementation) must agree with the
+    /// production traversal path (`move_walls(scene, None)` filtered by `segments_cross`, as
+    /// used by `move_exec`'s per-cell wall gate) on every segment tried here, evaluated against
+    /// BOTH scenes in the fixture — including the case where a segment would cross a wall that
+    /// belongs to the OTHER scene. A mutation of either `blocks_move`'s or `move_walls`'s wall
+    /// filter is expected to fail this test.
+    #[test]
+    fn blocks_move_agrees_with_the_production_move_walls_segments_cross_path() {
+        let scene = Uuid::from_u128(10);
+        let other_scene = Uuid::from_u128(20);
+        let blocking = json!({ "seg": {"x1":0,"y1":10,"x2":10,"y2":0}, "blocksMove": true });
+        let non_blocking = json!({ "seg": {"x1":0,"y1":0,"x2":0,"y2":20}, "blocksMove": false });
+        let other_scene_wall =
+            json!({ "seg": {"x1":20,"y1":30,"x2":30,"y2":20}, "blocksMove": true });
+
+        let ecs = SceneEcs::from_documents(
+            vec![
+                doc(10, None, "scene"),
+                doc(20, None, "scene"),
+                entity_doc_eng(12, 10, "wall", blocking),
+                entity_doc_eng(13, 10, "wall", non_blocking),
+                entity_doc_eng(24, 20, "wall", other_scene_wall),
+            ],
+            0,
+        );
+
+        let segments = [
+            ((0.0, 0.0), (10.0, 10.0)),   // crosses the scene-10 blocking wall
+            ((0.0, 0.0), (1.0, 1.0)),     // crosses nothing
+            ((0.0, 5.0), (5.0, 5.0)),     // crosses the scene-10 non-blocking wall only
+            ((20.0, 20.0), (30.0, 30.0)), // would cross the OTHER scene's wall, not scene 10's
+        ];
+        for (a0, a1) in segments {
+            for s in [scene, other_scene] {
+                let production = ecs
+                    .move_walls(s, None)
+                    .iter()
+                    .any(|w| segments_cross(a0, a1, w.a, w.b));
+                assert_eq!(
+                    ecs.blocks_move(s, a0, a1),
+                    production,
+                    "blocks_move disagreed with the production move_walls/segments_cross path for {a0:?}->{a1:?} in scene {s:?}"
+                );
+            }
+        }
     }
 
     #[test]

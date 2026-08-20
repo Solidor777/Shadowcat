@@ -176,14 +176,6 @@ Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one de
   an exhaustive `Record<WorldKey, …>`/switch so a widened union becomes a type error.
 
 ## Actionable now — Phase D-alpha (movement authority & secrecy) backlog
-- TODO: `SceneEcs::blocks_move` lost its last production caller
-  when Task 9 (Phase D-alpha) moved the wall-crossing check onto `crate::scene::segments_cross`
-  directly — only test callers remain. It is deliberately retained (one home for wall-crossing
-  semantics) rather than deleted. It is `pub`, not `pub(crate)`, so `clippy -D warnings`'
-  `dead_code` lint does not fire regardless of caller count — if a future change narrows its
-  visibility to `pub(crate)`, `-D warnings` will immediately flag it as dead code and it should
-  be revisited then (either re-wire a caller or delete it for real). (Surfaced by Phase
-  D-alpha's final whole-branch review.)
 - TODO: `execute_move`'s footprint-aware wall/mask gate has a residual anchor asymmetry on
   off-center input: the wall-disc check is anchored at the literal continuous point `next`,
   while the mask/impassable-disc checks are anchored at `grid.cell_center(next_cell)` (a
