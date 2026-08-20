@@ -300,28 +300,6 @@ Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one de
 
 
 
-## Actionable now — `ConditionsPanel`'s `isActive`/`toggle` disagree on which selected tokens count (docs sweep 11 Task 5 backlog)
-- TODO: `ConditionsPanel`'s `isActive(conditionId)` reports
-  whether EVERY selected token resolving a conditions target has the condition, counting a
-  non-editable selected token (one `ctx.canEdit` would refuse) the same as an editable one.
-  `ConditionsPanel`'s `toggle(conditionId)` mutates only the editable subset, but decides ADD-vs-REMOVE from
-  `isActive`'s broader verdict. Net effect, reachable whenever a selection mixes an editable and a
-  non-editable token (scene token selection is not restricted to owned tokens): the palette chip's
-  active/mixed display can be governed by a token the click cannot affect, and in the case where
-  every editable token already agrees with each other but a non-editable token disagrees, `toggle`
-  computes a direction that changes nothing (an editable token "already there" is left untouched in
-  the add branch) — the chip's `active` styling stays exactly as before the click, with no
-  indication to the user why. **Not a correctness bug**: no document is ever mutated incorrectly —
-  every write in `toggle` is still gated by `ctx.canEdit` (client-advisory only; the server
-  independently re-checks each `Update`), so the sole effect is a client-side display/interaction
-  inconsistency, never an authorization bypass or a wrong stored value. Fix shape undecided —
-  candidates are making `isActive` canEdit-filtered to match `toggle`'s mutation set, or giving the
-  chip a third (disabled/mixed-uneditable) visual state — deferred as a UX refinement, out of scope
-  for a comment-only docs sweep. Both functions already document the asymmetry precisely in their
-  own JSDoc. (Surfaced by sweep 11 Task 5's Rule-11 sibling audit; routed here rather than
-  `OPEN_BUGS.md` in sweep 11 Task 6 because the divergence never produces an incorrect state,
-  server-authoritative or otherwise — only a possibly-confusing no-op click.)
-
 ## Actionable now — a literal-field-name key survey misses keys built through a helper
 - TODO: When surveying every constructed value of a specific document field (e.g. every
   `property_overrides` pointer key ever set, to confirm none falls outside an allow-listed set),

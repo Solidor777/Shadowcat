@@ -1,7 +1,7 @@
 <script lang="ts">
   import { createSubscriber } from "svelte/reactivity";
   import { getAppContext } from "@shadowcat/ui-kit";
-  import { conditionTarget, type Condition, type ConditionRegistryEngine, type WireDocument } from "@shadowcat/core";
+  import { conditionTarget, type Condition, type ConditionRegistryEngine, type ConditionTarget, type WireDocument } from "@shadowcat/core";
   import { seedConditionRegistryIfAbsent } from "./seed";
 
   const ctx = getAppContext();
@@ -96,15 +96,32 @@
     ctx.dispatchIntent([{ op: "update", doc_id: registry.id, changes: [{ path: "/engine/conditions", old: sys.conditions, new: next }] }]);
   }
 
-  /** Selection-driven toggle palette: whether `conditionId` is set on every selected token
-   * that resolves a conditions target at all (`conditionTarget` — a token whose actor link is
-   * dangling, or that has neither a link nor an embedded actor, is excluded). Unlike `toggle`,
-   * this does NOT filter by `canEdit` — a token the current user cannot edit still counts
-   * toward the "every token has it" check, so the palette's active/mixed chip state can
-   * reflect a token whose own condition a click on the chip would not actually change.
+  /** The canEdit-gated target set both `isActive` and `toggle` read: every selected token that
+   * resolves a conditions target (`conditionTarget` — a token whose actor link is dangling, or
+   * that has neither a link nor an embedded actor, is excluded) AND whose target the current
+   * user may edit (`AppContext.canEdit`, GM or token owner — a client-advisory gate only; the
+   * server independently re-checks each Update). A single shared symbol, so the palette's
+   * displayed state and its click's mutated set can never diverge on which tokens count.
+   * @returns Every editable conditions target in the current selection.
+   * @example
+   * ```
+   * // private function; not part of the public API
+   * const targets = editableTargets();
+   * ```
+   */
+  function editableTargets(): ConditionTarget[] {
+    return selectedTokens
+      .map((tok) => conditionTarget(tok, ctx.documents))
+      .filter((x): x is NonNullable<typeof x> => x !== null)
+      .filter((tgt) => ctx.canEdit(tgt.doc, tgt.path));
+  }
+
+  /** Selection-driven toggle palette: whether `conditionId` is set on every `editableTargets`
+   * entry — the same canEdit-gated set `toggle` mutates, so the palette's active/mixed chip
+   * state always reflects what a click can actually change.
    * @param conditionId The registry key to check.
-   * @returns `true` only when at least one target-resolving selected token exists and every
-   * one of them currently has the condition set.
+   * @returns `true` only when at least one editable target exists and every one of them
+   * currently has the condition set.
    * @example
    * ```
    * // private function; not part of the public API — invoked from the palette chip's
@@ -113,19 +130,15 @@
    * ```
    */
   function isActive(conditionId: string): boolean {
-    const targets = selectedTokens.map((tok) => conditionTarget(tok, ctx.documents)).filter((x): x is NonNullable<typeof x> => x !== null);
+    const targets = editableTargets();
     return targets.length > 0 && targets.every((tgt) => tgt.conditions.includes(conditionId));
   }
 
-  /** Selection-driven toggle palette: toggles a condition across the selected tokens whose
-   * conditions the current user may edit (`AppContext.canEdit`, GM or token owner — a
-   * client-advisory gate only; the server independently re-checks each Update). Direction is
-   * decided by `isActive`'s BROADER verdict (which also counts non-editable selected tokens):
-   * when `isActive` reports uniformly active, this REMOVES the condition from each editable
-   * token that currently has it; otherwise (mixed or none), this ADDS it to each editable
-   * token currently missing it — an editable token that already has it is left untouched in
-   * that second branch. A non-editable token is never mutated either way, only (potentially)
-   * counted by `isActive` when deciding which of the two directions to take.
+  /** Selection-driven toggle palette: toggles a condition across `editableTargets` — the same
+   * set `isActive` reads. Direction is decided by `isActive`'s verdict over that identical set:
+   * when uniformly active, this REMOVES the condition from each target that currently has it;
+   * otherwise (mixed or none), this ADDS it to each target currently missing it — a target that
+   * already has it is left untouched in that second branch.
    * @param conditionId The registry key to toggle.
    * @example
    * ```
@@ -135,9 +148,7 @@
    */
   function toggle(conditionId: string): void {
     const active = isActive(conditionId);
-    for (const tok of selectedTokens) {
-      const tgt = conditionTarget(tok, ctx.documents);
-      if (!tgt || !ctx.canEdit(tgt.doc, tgt.path)) continue;
+    for (const tgt of editableTargets()) {
       const has = tgt.conditions.includes(conditionId);
       if (active === has) {
         const next = has ? tgt.conditions.filter((c) => c !== conditionId) : [...tgt.conditions, conditionId];

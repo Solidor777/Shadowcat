@@ -65,6 +65,77 @@ describe("ConditionsPanel", () => {
     expect(ops[0]).toMatchObject({ op: "update", doc_id: "act1", changes: [{ path: "/engine/conditions", new: ["dead"] }] });
   });
 
+  it("isActive counts only editable targets: an editable token uniformly has it, a non-editable token in the same selection lacks it", async () => {
+    const dispatchIntent = vi.fn();
+    const editableActor = actorDoc("act-editable", ["dead"]);
+    const nonEditableActor = actorDoc("act-non-editable", []);
+    const editableToken = buildTokenFromActor("w1", "scene1", editableActor, "link", { x: 0, y: 0 }, { w: 100, h: 100 }, "tok-editable");
+    const nonEditableToken = buildTokenFromActor("w1", "scene1", nonEditableActor, "link", { x: 100, y: 0 }, { w: 100, h: 100 }, "tok-non-editable");
+    const store = storeWith(
+      buildConditionRegistryDoc("w1", { dead: { name: "Dead", icon: "💀" } }, "creg1"),
+      editableActor,
+      nonEditableActor,
+      editableToken,
+      nonEditableToken,
+    );
+    const tokenSelection = new TokenSelection();
+    tokenSelection.set(["tok-editable", "tok-non-editable"]);
+    render(ConditionsPanel, {
+      context: setAppContextForTest({
+        role: "player",
+        world: "w1",
+        documents: store,
+        dispatchIntent,
+        tokenSelection,
+        canEdit: (doc) => doc.id === "act-editable",
+      }),
+    });
+
+    // The palette chip reads active (matches the editable subset's true state), not mixed —
+    // the non-editable token, which lacks the condition, no longer governs the display.
+    const chip = screen.getByTitle("Dead");
+    expect(chip.getAttribute("aria-pressed")).toBe("true");
+
+    // Clicking correctly computes REMOVE for the editable target: `toggle` derives direction
+    // from `isActive`'s verdict over the SAME canEdit-gated set it mutates, so the direction
+    // and the target always agree.
+    await fireEvent.click(chip);
+    expect(dispatchIntent).toHaveBeenCalledTimes(1);
+    const ops = dispatchIntent.mock.calls[0][0] as WireOperation[];
+    expect(ops[0]).toMatchObject({ op: "update", doc_id: "act-editable", changes: [{ path: "/engine/conditions", new: [] }] });
+  });
+
+  it("isActive reports inactive when the selection has only non-editable targets", async () => {
+    const dispatchIntent = vi.fn();
+    const nonEditableActor = actorDoc("act-non-editable", ["dead"]);
+    const nonEditableToken = buildTokenFromActor("w1", "scene1", nonEditableActor, "link", { x: 0, y: 0 }, { w: 100, h: 100 }, "tok-non-editable");
+    const store = storeWith(
+      buildConditionRegistryDoc("w1", { dead: { name: "Dead", icon: "💀" } }, "creg1"),
+      nonEditableActor,
+      nonEditableToken,
+    );
+    const tokenSelection = new TokenSelection();
+    tokenSelection.set(["tok-non-editable"]);
+    render(ConditionsPanel, {
+      context: setAppContextForTest({
+        role: "player",
+        world: "w1",
+        documents: store,
+        dispatchIntent,
+        tokenSelection,
+        canEdit: () => false,
+      }),
+    });
+
+    // Zero editable targets: matches isActive's existing "no targets → false" convention rather
+    // than reflecting a token the user cannot affect as "active".
+    const chip = screen.getByTitle("Dead");
+    expect(chip.getAttribute("aria-pressed")).toBe("false");
+
+    await fireEvent.click(chip);
+    expect(dispatchIntent).not.toHaveBeenCalled();
+  });
+
   it("reads the raw stored value as `old` on a SECOND edit to the same field (OCC regression)", async () => {
     const dispatchIntent = vi.fn();
     const registry = buildConditionRegistryDoc("w1", { dead: { name: "Dead", icon: "💀" } }, "creg1");

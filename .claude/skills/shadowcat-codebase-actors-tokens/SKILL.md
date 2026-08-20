@@ -260,14 +260,12 @@ token/actor name from non-owners via the `OwnerOrGm` visibility tier. Conditions
 
 ## Gotchas
 
-- **`ConditionsPanel`'s `isActive`/`toggle` count different token sets.**
-  `isActive(conditionId)` does NOT filter by `ctx.canEdit` (only excludes tokens with no
-  resolvable `conditionTarget`); `toggle(conditionId)` mutates only the `canEdit`-passing subset
-  but decides ADD-vs-REMOVE from `isActive`'s broader verdict — so a non-editable token in the
-  selection can make the palette chip's active/mixed display, and the click's no-op-or-not
-  outcome, diverge from what the editable tokens alone would show. Client-side UX inconsistency
-  only (every write still goes through `canEdit` then the server's independent re-check);
-  accepted as-is.
+- **`ConditionsPanel`'s `isActive`/`toggle` share ONE canEdit-gated target set.** Both read
+  `editableTargets()` — every selected token resolving a `conditionTarget` AND passing
+  `ctx.canEdit` — so a non-editable token in the selection can no longer make the palette chip's
+  active/mixed display, or the click's ADD/REMOVE direction, diverge from what the editable
+  tokens alone would show. `isActive` reports `false` (never "active") when zero editable
+  targets exist, mirroring its prior no-targets convention.
 - **Docs-ratchet is live on `data::engine::token`:** it carries
   `#![deny(missing_docs)]` + the private-items twin — a new undocumented field/variant on
   `TokenEngine`/`ActorEngine`/`TokenVisual`/`AnimatedSource` fails the 3-OS CI clippy step, and
