@@ -729,6 +729,43 @@ test("a GM roams locally with gmViewedScene; clearing it follows activeScene aga
   expect(session.viewedSceneId).toBe(first); // follows active again
 });
 
+test("setGmViewedScene scene-scopes tokenSelection instead of leaking or clearing it", async () => {
+  const sent: Array<Record<string, unknown>> = [];
+  const { connect, push } = pushConnect(sent);
+  const session = new WorldSession({ selfId: "u1", connect, modules: [coreUiStub], logger: silentLogger });
+  await session.enter("w1");
+  push({ ...welcomeFrame, user_role: "gm" });
+  await vi.waitFor(() => expect(sceneCreates(sent).length).toBe(1));
+  const first = (sceneCreates(sent)[0] as { ops: Array<{ doc?: { id?: string } }> }).ops.find((o) => o.doc)!.doc!.id as string;
+  session.dispatchIntent([{ op: "create", doc: buildSceneDoc("w1", {}, "sB") }]);
+
+  // Select a token while viewing the first (auto-created, active-by-default) scene.
+  session.tokenSelection.set(["tokA"]);
+  expect(session.tokenSelection.has("tokA")).toBe(true);
+
+  // Roam to sB: the selection must not leak (tokA lives in the first scene, not sB).
+  session.setGmViewedScene("sB");
+  expect(session.tokenSelection.ids.size).toBe(0);
+
+  // Select a different token while viewing sB.
+  session.tokenSelection.set(["tokB"]);
+
+  // Roam back to the first scene: its stashed selection is restored, sB's is stashed.
+  session.setGmViewedScene(first);
+  expect(session.tokenSelection.has("tokA")).toBe(true);
+  expect(session.tokenSelection.has("tokB")).toBe(false);
+
+  // Roam to sB again: restores tokB, not tokA.
+  session.setGmViewedScene("sB");
+  expect(session.tokenSelection.has("tokB")).toBe(true);
+  expect(session.tokenSelection.has("tokA")).toBe(false);
+
+  // Roam to a never-visited third scene: empty, not a leak from either stash.
+  session.dispatchIntent([{ op: "create", doc: buildSceneDoc("w1", {}, "sC") }]);
+  session.setGmViewedScene("sC");
+  expect(session.tokenSelection.ids.size).toBe(0);
+});
+
 test("onMoveStream gates on the GM's LOCAL viewed scene, not activeScene", async () => {
   const sent: Array<Record<string, unknown>> = [];
   const { connect, push } = pushConnect(sent);

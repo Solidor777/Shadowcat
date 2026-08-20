@@ -812,7 +812,11 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   leaking a stale scene's channel. `WorldSession.viewedSceneId` (the `worldSession` module) is the
   live getter (`resolveViewedScene(this.#optimistic, {gmViewedScene: role==="gm" ?
   this.#gmViewedScene : null})`); `setGmViewedScene(id)` sets the GM-only `#gmViewedScene` $state
-  (warns + no-ops for a non-GM). `sendPing`, `onMoveStream`, and the `scene_ping` handler all
+  (warns + no-ops for a non-GM), and also scene-scopes `tokenSelection`: it stashes the live
+  `TokenSelection`'s ids into `WorldSession`'s private `#tokenSelectionByScene` map (keyed by the
+  scene being left, read via `viewedSceneId` before the switch) and restores whatever was stashed
+  for the scene being entered (empty if never visited) — a GM roaming away and back keeps their
+  selection instead of leaking it across scenes or losing it. `sendPing`, `onMoveStream`, and the `scene_ping` handler all
   resolve through `viewedSceneId` (not a fixed `query("scene")[0]`) and drop a frame whose `scene`
   doesn't match — closing a cross-scene leak (see Gotchas). The `scene-scope` module (client/render)
   — `sceneScopedDocs(store, docType, viewedSceneId)` filters a doc-type query to `d.parent_id ===

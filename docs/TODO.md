@@ -131,20 +131,6 @@ Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one de
 7. **Speak-as-token-instance** — `ActorOwnerRef::TokenInstance` is REJECTED at ingest (fail-closed,
    no first-party producer) — build the composer/token-context UX and lift the rejection together.
 
-## Actionable now — `setGmViewedScene` leaves a stale cross-scene token selection
-- TODO: `WorldSession`'s `setGmViewedScene` does not scene-scope
-  or clear `tokenSelection`, while `commitRoute`
-  sends `activeScene(ctx).id`. So a GM who selects a token in scene A, roams to scene B, then
-  commits a measured route sends `scene: B` with a token that lives in A and gets a silent
-  `MoveError`. **The rejection is CORRECT and must not be relaxed** — before Task 14j that exact
-  request shape was the cross-scene movement-gate bypass, and the server now derives the gate's
-  scene from the token and refuses the mismatch. This is purely a client UX gap: the failure is
-  silent. **Prefer scene-scoping `tokenSelection` over clearing it** — a GM roaming B and back to A
-  would otherwise lose their selection for no reason. Client-package change, so gate it with
-  `pnpm -r test` rather than a filtered run (a client change can break sibling packages' fixtures).
-  (Surfaced by the Task 14j `[sec]` review; deliberately kept out of the server security commit to
-  avoid batching unrelated concerns.)
-
 ## Actionable now — ui-state per-key merge (Task 4 final-review backlog)
 - TODO: `worlds` in the stored `ui_state` blob is grow-only — `merge_ui_state` never removes a
   `worlds.<id>` entry or a leaf key within it, only inserts/replaces. A world a user leaves (or a

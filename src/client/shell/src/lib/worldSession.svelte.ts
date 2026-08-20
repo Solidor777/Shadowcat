@@ -158,6 +158,11 @@ export class WorldSession {
    * a player (they follow `world-settings.activeScene`). Overrides `viewedSceneId` for THIS
    * client's own render + vision + see-as channels only; the server is unaware of it. */
   #gmViewedScene = $state<string | null>(null);
+  /** GM per-scene token-selection stash: `setGmViewedScene` moves the live `tokenSelection` into
+   * this map (keyed by the scene being LEFT) before switching, and restores whatever was stashed
+   * for the scene being ENTERED (empty if never selected there) — so roaming away and back
+   * preserves a selection instead of leaking it across scenes or losing it. */
+  #tokenSelectionByScene = new Map<string, Set<string>>();
   /** The server's resolved token footprints, replaced wholesale by each `"footprints"` frame.
    * `$state` so every consumer — canvas reconcile, hit-test, selection ring, the place tool —
    * re-reads the same authoritative extents the moment a frame lands. `EMPTY_FOOTPRINTS` until
@@ -238,7 +243,11 @@ export class WorldSession {
       this.#logger.warn("setGmViewedScene ignored: caller is not a GM");
       return;
     }
+    const leaving = this.viewedSceneId;
+    if (leaving) this.#tokenSelectionByScene.set(leaving, new Set(this.tokenSelection.ids));
     this.#gmViewedScene = id;
+    const entering = this.viewedSceneId;
+    this.tokenSelection.set(entering ? (this.#tokenSelectionByScene.get(entering) ?? []) : []);
   }
 
   /** Live full-text search over documents (subscription seam). Ephemeral: NOT re-established
