@@ -1451,6 +1451,28 @@ Decomposed **M11a–d**:
 
 **▶ Dogfood alpha gate** — backups (M12.5) must exist before real worlds accrue.
 
+### Phase 1b · Replay redaction — commit-time visibility snapshot
+Not yet started. Own branch, own brainstorm → spec → plan cycle, scheduled immediately after the
+current server-scene-geometry work merges and before Phase 2 continues: the fix changes the command
+representation, the event log, and resync semantics, which is foundational enough that no later
+Phase-2 work should be built on the current shape. Nothing later hard-blocks on it functionally —
+it exists to close two confirmed defects tracked in `docs/OPEN_BUGS.md`:
+`filter_command`/`collect_hidden` (and the `OwnerOrGm`-tier analog under ownership reassignment)
+redacting historical replay against a document's CURRENT permission set instead of the policy in
+force at the historical seq; and a stale `Update` from before a document's deletion redacting
+against a NEW document that later reuses the same id.
+- Fix shape already ruled (not yet built): snapshot the relevant visibility into the event/command
+  at commit time, so replay redacts against the policy in force at that sequence rather than
+  re-deriving it from current state on every replay — the same shape as any two paths required to
+  agree deriving from one, instead of separately re-verifying agreement. Two other shapes were
+  considered and rejected: an append-only "ever hidden" set (permanently over-redacts once a
+  pointer is ever restricted); current-state snapshots for non-GM resync only (sidesteps the
+  problem rather than solving it, and changes resync semantics for every document carrying an
+  override).
+- Phase 4's "Audit-grade point-in-time replay" generalizes this phase's commit-time redaction
+  context into a queryable history once this phase lands — see that entry for the forward
+  reference; this phase is the prerequisite, not a duplicate of it.
+
 ## Phase 2 — Full table
 Combat tracker (initiative, hidden combatants, turn-event triggers; depends on M11 dice) → real asset pipeline (chunked upload, image conversion, tags, derived tags) + asset browser (regex / tag / dir search, preview / rename / move / tag) + bulk import/export → layout / theming completion (drag-resize, pop-out, multi / user themes, module styling modes) → vision / lighting / movement completion (photometric, darkvision / tremorsense / height; **per-actor/faction movement exemptions — flying/incorporeal ignore difficult terrain, deferred from M10g; needs movement-type tags on actors**) → token enrichment (aura / light / sound / VFX emitters, **trigger regions — mechanical/trigger effects built on the M10g region primitive: damage, condition application, scripted triggers on enter/arrest**, token-art, **generated token visuals (deferred from M10i) — a parametric compositor that frames existing actor art into a token: decorative border + shape-crop mask + background, distinct from the dynamic faction ring; a new additive `{kind:"generated"}` on the M10h `RenderVisual` union**, **per-token built-in fx (deferred from M10j) — condition-driven tint / desaturate / highlight + selection/faction/target highlight via a per-token Pixi `.filters` attach point on the M10h token `Container`; custom shader-filter seam stays Phase 3 VFX**, **emote / reaction overlays (deferred from M10j) — transient overlay above the token via a new ping-style `emote` aux frame + fading child**) → rollable tables (on the dice engine + document model), rich-text notes (on the document model), chat media linking (images; YouTube as thumbnail + external link only — no IFrame / Data API) → full default module suite → search consolidated into one milestone (single backend; no three-backend split).
 
