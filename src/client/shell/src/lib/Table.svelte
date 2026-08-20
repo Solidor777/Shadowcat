@@ -5,7 +5,7 @@
   import { createSubscriber } from "svelte/reactivity";
   import { logout } from "./api";
   import { navigate } from "./route.svelte";
-  import { getPanelLayout, setPanelLayout, getChatRead, setChatRead } from "./sessionState.svelte";
+  import { getPanelLayout, setPanelLayout, getChatRead, setChatRead, resetSessionState } from "./sessionState.svelte";
   import type { WorldSession } from "./worldSession.svelte";
 
   // `PanelHost` binds the real implementation into this bridge at its own
@@ -119,6 +119,7 @@
     leaveWorld,
     logout: async () => {
       await logout();
+      resetSessionState();
       navigate({ name: "login" });
     },
     templates: {

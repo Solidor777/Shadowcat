@@ -11,6 +11,7 @@ import {
   setChatRead,
   flushSessionState,
   flushOnUnload,
+  resetSessionState,
 } from "./sessionState.svelte";
 
 beforeEach(() => i18n.setLocale("en"));
@@ -228,6 +229,30 @@ test("a second persist attempt while one is unresolved is deferred, not raced", 
   } finally {
     vi.useRealTimers();
   }
+});
+
+test("resetSessionState clears loaded, dirty tracking, and any pending timer", async () => {
+  vi.spyOn(api, "getUiState").mockResolvedValue({
+    global: { locale: "en", lastWorld: null },
+    worlds: {},
+  });
+  const put = vi.spyOn(api, "putUiState").mockResolvedValue();
+  await loadSessionState();
+  setLastWorld("w1"); // schedules a persist (leading edge fires immediately + starts cooldown)
+  resetSessionState();
+
+  // A mutation attempted after reset must not schedule a persist — `loaded` is false again,
+  // mirroring the state before the first loadSessionState() call.
+  const callsBeforeReattempt = put.mock.calls.length;
+  setLastWorld("w2");
+  await new Promise((r) => setTimeout(r, 10));
+  expect(put.mock.calls.length).toBe(callsBeforeReattempt); // no new persist scheduled while unloaded
+
+  // A subsequent loadSessionState() (re-login) restores normal operation.
+  await loadSessionState();
+  setLastWorld("w3");
+  await flushSessionState();
+  expect(put.mock.calls.at(-1)?.[0].global?.lastWorld).toBe("w3");
 });
 
 test("flushOnUnload re-marks the slice on a rejected keepalive PUT so a later flush retries it", async () => {

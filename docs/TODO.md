@@ -138,11 +138,6 @@ Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one de
   caller ever exercising the recovery path. Add client-side pruning (e.g. dropping a
   `worlds.<id>` entry for a world no longer in the caller's membership list) so an over-cap blob
   is actually recovered, not just theoretically recoverable.
-- TODO: the `sessionState` module's `loaded` flag is never reset to `false` on logout, so a
-  mutation landing inside a re-login `loadSessionState()`'s `await getUiState()` window passes the
-  `loaded` guard and can persist a pre-login `state` value under the new session's cookie.
-  `clearDirty()` at load start covers only the marker half of re-login hygiene; reset `loaded`
-  (and cancel the cooldown timer) at logout so the write guard is structural.
 - TODO: `buildGlobalPatch`/`buildWorldPatch` enumerate the leaf keys by
   hand — adding a third key to `UiState["worlds"][string]` (or a new `global` field) widens the
   type but silently drops the new key from every patch, with no compile error. Drive the copy from

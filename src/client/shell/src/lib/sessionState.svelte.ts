@@ -412,3 +412,23 @@ export function flushOnUnload(): void {
     logger.warn("ui_state unload flush failed", e);
   });
 }
+
+/** Resets session-scoped in-memory state on logout: cancels the cooldown timer, clears dirty
+ * tracking, and resets `loaded` to `false`. Without this, a mutation landing inside a re-login
+ * `loadSessionState()`'s `await getUiState()` window could pass the `loaded` guard and persist a
+ * pre-login `state` value under the new session's cookie — `clearDirty()` at load start only
+ * covers the dirty-marker half of re-login hygiene, not the guard itself.
+ * @example
+ * ```
+ * resetSessionState();
+ * ```
+ */
+export function resetSessionState(): void {
+  if (timer) {
+    clearTimeout(timer);
+    timer = null;
+  }
+  pendingDuringCooldown = false;
+  clearDirty();
+  loaded = false;
+}
