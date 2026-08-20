@@ -354,14 +354,6 @@ Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one de
   `property_overrides` band-classifier work was hand-audited and confirmed compliant — but the
   method gap persists for the next survey of this shape.
 
-## Actionable now — `WorldSession` repeats the unbound-`@param` defect
-- TODO: Give `WorldSession.subscribeScene` and `WorldSession.sendChatMessage` named options
-  types, the same treatment applied across the client API surface. Their field docs sit on an
-  undestructured parameter, so they bind to nothing, and one carries a self-referential comment
-  ("See the `@param opts.channel` doc above.") that conveys nothing to a reader of the
-  generated output. These emit no TypeDoc warning today — `WorldSession` is not reached by the
-  documented entry points — which is why the warning-driven sweep did not cover them.
-
 ## Actionable now — the surviving-absolute-ref check cannot see an inline `<style>` block
 - TODO: Scan `<style>` block contents inside portal HTML with the same root-absolute
   `url(...)` predicate `hasSurvivingAbsoluteRef` applies to `.css` files. It currently routes

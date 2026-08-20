@@ -48,6 +48,24 @@ import { SvelteMap } from "svelte/reactivity";
 /** The WS connection lifecycle a `WorldSession` exposes as its reactive `state`. */
 export type ConnState = "connecting" | "open" | "closed";
 
+/** Options for {@link WorldSession.sendChatMessage}. */
+export interface SendChatMessageOpts {
+  /** The channel to post to. */
+  channel: string;
+  /** The raw (unsanitized) message text. */
+  content: string;
+  /** Optional actor to speak as, for name/avatar attribution. */
+  actorOwner?: WireActorOwnerRef | null;
+  /** Optional restricted audience (whisper/GM-only); defaults to public. */
+  audience?: WireAudience;
+}
+
+/** Options for {@link WorldSession.subscribeScene}. */
+export interface SubscribeSceneOpts {
+  /** GM-only see-as: resolve the channel as if for this user instead of self. */
+  asUser?: string;
+}
+
 /** Construction options for `WorldSession`. */
 export interface WorldSessionOpts {
   /** This client's own user id (ownership checks; see `WorldSession.selfId`). */
@@ -585,11 +603,7 @@ export class WorldSession {
 
   /** Send a chat message. Resolves/rejects with the correlated outcome; rejects
    * immediately when there is no live transport (the caller surfaces it).
-   * @param opts The message to send.
-   * @param opts.channel The channel to post to.
-   * @param opts.content The raw (unsanitized) message text.
-   * @param opts.actorOwner Optional actor to speak as, for name/avatar attribution.
-   * @param opts.audience Optional restricted audience (whisper/GM-only); defaults to public.
+   * @param opts The message to send; see {@link SendChatMessageOpts}.
    * @returns Resolves when `CHAT_ERROR_WINDOW_MS` elapses with no correlated `chat_error` —
    * success is ASSUMED from silence, not acknowledged: the server sends no ack frame and the
    * broadcast Event carries no correlation back to this promise. Rejects with the server's
@@ -601,16 +615,7 @@ export class WorldSession {
    * await session.sendChatMessage({ channel: "main", content: "Hello!" });
    * ```
    */
-  sendChatMessage(opts: {
-    /** See the `@param opts.channel` doc above. */
-    channel: string;
-    /** See the `@param opts.content` doc above. */
-    content: string;
-    /** See the `@param opts.actorOwner` doc above. */
-    actorOwner?: WireActorOwnerRef | null;
-    /** See the `@param opts.audience` doc above. */
-    audience?: WireAudience;
-  }): Promise<void> {
+  sendChatMessage(opts: SendChatMessageOpts): Promise<void> {
     if (!this.#ws) return Promise.reject(new Error("not connected"));
     return this.#ws.sendChatMessage(opts);
   }
@@ -653,8 +658,7 @@ export class WorldSession {
    * survives a reconnect.
    * @param channel The SceneDerived channel name (e.g. a vision/lighting derivation).
    * @param onUpdate Called with each new frame on that channel.
-   * @param opts Subscription options.
-   * @param opts.asUser GM-only see-as: resolve the channel as if for this user instead of self.
+   * @param opts Subscription options; see {@link SubscribeSceneOpts}.
    * @returns A synchronous handle; call `unsubscribe()` on it to stop receiving frames.
    * @example
    * ```
@@ -667,10 +671,7 @@ export class WorldSession {
   subscribeScene(
     channel: string,
     onUpdate: (f: SceneFrame) => void,
-    opts: {
-      /** See the `@param opts.asUser` doc above. */
-      asUser?: string;
-    } = {},
+    opts: SubscribeSceneOpts = {},
   ): SceneSubscription {
     const id = crypto.randomUUID();
     const rec = { channel, onUpdate, asUser: opts.asUser, handle: null as SceneSubscription | null, gen: 0 };
