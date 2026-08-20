@@ -1452,8 +1452,9 @@ Decomposed **M11a–d**:
 **▶ Dogfood alpha gate** — backups (M12.5) must exist before real worlds accrue.
 
 ### Phase 1b · Replay redaction — commit-time visibility snapshot
-Not yet started. Own branch, own brainstorm → spec → plan cycle, scheduled immediately after the
-current server-scene-geometry work merges and before Phase 2 continues: the fix changes the command
+Not yet started. Its scheduling trigger — the server-scene-geometry work merging to `main` — has
+fired (`main`'s own log carries that merge commit; verified 2026-08-19). Own branch, own
+brainstorm → spec → plan cycle, due before Phase 2 continues: the fix changes the command
 representation, the event log, and resync semantics, which is foundational enough that no later
 Phase-2 work should be built on the current shape. Nothing later hard-blocks on it functionally —
 it exists to close two confirmed defects tracked in `docs/OPEN_BUGS.md`:
