@@ -1,4 +1,5 @@
-import { test, expect, type Page, type Locator } from "@playwright/test";
+import { test, expect, login } from "./fixtures";
+import type { Page, Locator } from "@playwright/test";
 
 // A 1×1 PNG used as token art (same fixture the stage suite uses).
 const PNG_1X1 = Buffer.from(
@@ -57,18 +58,14 @@ function stageHost(page: Page): Locator {
   return page.locator(".stage-host");
 }
 
-async function login(page: Page, username: string, password: string): Promise<void> {
-  await page.goto("/");
-  await page.getByLabel("Username").fill(username);
-  await page.getByLabel("Password").fill(password);
-  await page.getByRole("button", { name: "Log in" }).click();
-}
-
 /** Canvas-local → page coordinates. Re-read per gesture: opening or closing a panel
  * resizes the canvas (which moves its origin) without moving the camera. */
 async function canvasOrigin(page: Page): Promise<Point> {
   const box = await page.getByTestId("stage-canvas").boundingBox();
-  expect(box, "the stage canvas must be laid out before a pointer gesture").not.toBeNull();
+  expect(
+    box,
+    "the stage canvas must be laid out before a pointer gesture",
+  ).not.toBeNull();
   // Gestures below address scene coordinates out to (ILLEGAL_X, WALL_Y1). A canvas
   // that small keeps the pointer inside the element for every gesture, so no gesture
   // depends on Stage's pointer capture retargeting an out-of-canvas move.
@@ -97,7 +94,9 @@ async function dragScene(page: Page, from: Point, to: Point): Promise<void> {
 /** `data-token-positions` is `id:x,y` pairs, id-sorted and `;`-joined (set by `Stage`'s `$effect`). */
 function parseX(positions: string): number {
   const entries = positions.split(";").filter((s) => s.length > 0);
-  expect(entries, "exactly one token is expected on this scene").toHaveLength(1);
+  expect(entries, "exactly one token is expected on this scene").toHaveLength(
+    1,
+  );
   const coords = entries[0].slice(entries[0].indexOf(":") + 1).split(",");
   return Number(coords[0]);
 }
@@ -120,18 +119,26 @@ async function watchPositions(page: Page): Promise<void> {
     new MutationObserver(() => {
       const v = host.dataset.tokenPositions ?? "";
       if (w.__posLog[w.__posLog.length - 1] !== v) w.__posLog.push(v);
-    }).observe(host, { attributes: true, attributeFilter: ["data-token-positions"] });
+    }).observe(host, {
+      attributes: true,
+      attributeFilter: ["data-token-positions"],
+    });
   });
 }
 
 async function positionLog(page: Page): Promise<string[]> {
-  return page.evaluate(() => (window as unknown as { __posLog: string[] }).__posLog);
+  return page.evaluate(
+    () => (window as unknown as { __posLog: string[] }).__posLog,
+  );
 }
 
 /** Wait for a page to observe the token at (approximately) a scene x. */
 async function expectTokenX(page: Page, x: number, why: string): Promise<void> {
   await expect
-    .poll(async () => parseX(await currentPositions(page)), { message: why, timeout: 20_000 })
+    .poll(async () => parseX(await currentPositions(page)), {
+      message: why,
+      timeout: 20_000,
+    })
     .toBeCloseTo(x, -1);
 }
 
@@ -170,6 +177,7 @@ async function expectTokenX(page: Page, x: number, why: string): Promise<void> {
 test("a non-GM player's wall-crossing drag on a hex scene is rejected by the server and rolled back", async ({
   page,
   browser,
+  account,
 }) => {
   test.setTimeout(180_000);
 
@@ -179,12 +187,14 @@ test("a non-GM player's wall-crossing drag on a hex scene is rejected by the ser
   const playerPassword = "pw-player-e2e";
   const worldName = `Hex Gate World ${Date.now().toString(36)}`;
 
-  // --- GM session: the seeded admin, who is also the world's owner/GM. ---
+  // --- GM session: the worker's admin account, who is also the world's owner/GM. ---
   const gm = page;
-  await login(gm, "ops", "pw-boot");
+  await login(gm, account.username, account.password);
   await gm.getByLabel("New world name").fill(worldName);
   await gm.getByRole("button", { name: "Create world" }).click();
-  await expect(stageHost(gm)).toHaveAttribute("data-render-ready", "true", { timeout: 30_000 });
+  await expect(stageHost(gm)).toHaveAttribute("data-render-ready", "true", {
+    timeout: 30_000,
+  });
 
   // The Settings panel hosts both admin-tier account creation and the GM's invite
   // minting; it starts launcher-closed.
@@ -195,7 +205,9 @@ test("a non-GM player's wall-crossing drag on a hex scene is rejected by the ser
   await gm.getByLabel("Account name").fill(playerName);
   await gm.getByLabel("Password", { exact: true }).fill(playerPassword);
   await gm.getByRole("button", { name: "Create account" }).click();
-  await expect(gm.getByText(`Created account ${playerName}.`)).toBeVisible({ timeout: 15_000 });
+  await expect(gm.getByText(`Created account ${playerName}.`)).toBeVisible({
+    timeout: 15_000,
+  });
 
   // Mint a player-role invite. The GM never names the account — the invitee redeems
   // the code from their own session — so this is the only seating path there is.
@@ -227,16 +239,24 @@ test("a non-GM player's wall-crossing drag on a hex scene is rejected by the ser
   try {
     await login(player, playerName, playerPassword);
     await player.getByLabel("Invite code").fill(code);
-    await player.getByRole("button", { name: "Join with an invite code" }).click();
-    await expect(stageHost(player)).toHaveAttribute("data-render-ready", "true", {
-      timeout: 30_000,
-    });
+    await player
+      .getByRole("button", { name: "Join with an invite code" })
+      .click();
+    await expect(stageHost(player)).toHaveAttribute(
+      "data-render-ready",
+      "true",
+      {
+        timeout: 30_000,
+      },
+    );
 
     // AppContext's member roster is a session-start snapshot, so the GM must re-enter
     // the world for the freshly seated player to be assignable as a token owner.
     await gm.getByRole("button", { name: /leave world/i }).click();
     await gm.getByRole("button", { name: new RegExp(worldName) }).click();
-    await expect(stageHost(gm)).toHaveAttribute("data-render-ready", "true", { timeout: 30_000 });
+    await expect(stageHost(gm)).toHaveAttribute("data-render-ready", "true", {
+      timeout: 30_000,
+    });
 
     // --- GM authors the scene through the real game-settings controls. ---
     await gm.getByTestId("launcher-trigger").click();
@@ -247,11 +267,15 @@ test("a non-GM player's wall-crossing drag on a hex scene is rejected by the ser
     // Set at the WORLD tier, which the scene inherits. The per-scene override control
     // cannot be used: a scene document's `engine.vision` is `null` until something
     // writes it, and `/engine/vision/movementRestriction` cannot descend through null.
-    await gm.getByLabel("gameSettings.movementRestriction").selectOption("unrestricted");
+    await gm
+      .getByLabel("gameSettings.movementRestriction")
+      .selectOption("unrestricted");
     // Pin that it persisted. Silently falling back to `Visible` would move the rejection
     // below onto the visibility mask, re-entering the very ambiguity the control leg closes —
     // and on a lit scene the control leg would still pass, so nothing else would catch it.
-    await expect(gm.getByLabel("gameSettings.movementRestriction")).toHaveValue("unrestricted");
+    await expect(gm.getByLabel("gameSettings.movementRestriction")).toHaveValue(
+      "unrestricted",
+    );
     await gm.getByTestId("launcher-trigger").click();
     await gm.getByTestId("launcher-item-game-settings:panel").click();
 
@@ -269,7 +293,11 @@ test("a non-GM player's wall-crossing drag on a hex scene is rejected by the ser
     await gm.getByTestId("launcher-item-assets:panel").click();
     await gm
       .getByTestId("asset-upload")
-      .setInputFiles({ name: "tok.png", mimeType: "image/png", buffer: PNG_1X1 });
+      .setInputFiles({
+        name: "tok.png",
+        mimeType: "image/png",
+        buffer: PNG_1X1,
+      });
     await expect(gm.getByTestId("asset-tile")).toHaveCount(1);
 
     // Place the player's token on the near side of the wall.
@@ -279,7 +307,9 @@ test("a non-GM player's wall-crossing drag on a hex scene is rejected by the ser
     await pick.click();
     let origin = await canvasOrigin(gm);
     await gm.mouse.click(origin.x + PLACE_X, origin.y + TOKEN_Y);
-    await expect(stageHost(gm)).toHaveAttribute("data-token-count", "1", { timeout: 15_000 });
+    await expect(stageHost(gm)).toHaveAttribute("data-token-count", "1", {
+      timeout: 15_000,
+    });
     await gm.getByTestId("launcher-trigger").click();
     await gm.getByTestId("launcher-item-assets:panel").click();
 
@@ -297,7 +327,9 @@ test("a non-GM player's wall-crossing drag on a hex scene is rejected by the ser
     await dragScene(gm, { x: BOX_X0, y: WALL_Y0 }, { x: WALL_X, y: WALL_Y0 }); // top
     await dragScene(gm, { x: WALL_X, y: WALL_Y0 }, { x: WALL_X, y: WALL_Y1 }); // right
     await dragScene(gm, { x: BOX_X0, y: WALL_Y1 }, { x: WALL_X, y: WALL_Y1 }); // bottom
-    await expect(stageHost(gm)).toHaveAttribute("data-wall-count", "4", { timeout: 15_000 });
+    await expect(stageHost(gm)).toHaveAttribute("data-wall-count", "4", {
+      timeout: 15_000,
+    });
 
     // Hand the token to the player. The per-token override lives in the Actors panel
     // and needs the token selected, which is the select tool's job.
@@ -307,7 +339,9 @@ test("a non-GM player's wall-crossing drag on a hex scene is rejected by the ser
     origin = await canvasOrigin(gm);
     await gm.mouse.click(origin.x + PLACE_X, origin.y + TOKEN_Y);
     await gm.getByLabel("Token owner").selectOption({ label: playerName });
-    await expect(gm.getByText(`Effective owner: ${playerName}`)).toBeVisible({ timeout: 15_000 });
+    await expect(gm.getByText(`Effective owner: ${playerName}`)).toBeVisible({
+      timeout: 15_000,
+    });
     await gm.getByTestId("launcher-trigger").click();
     await gm.getByTestId("launcher-item-actors:panel").click();
 
@@ -315,8 +349,16 @@ test("a non-GM player's wall-crossing drag on a hex scene is rejected by the ser
     // Frames arrive in sequence order on one socket, so once the player has rendered this
     // move it has necessarily already applied the ownership write that preceded it — the
     // player's drags below cannot race ahead of their own authorization.
-    await dragScene(gm, { x: PLACE_X, y: TOKEN_Y }, { x: HANDOFF_X, y: TOKEN_Y });
-    await expectTokenX(player, HANDOFF_X, "the player must observe the GM's ownership handoff");
+    await dragScene(
+      gm,
+      { x: PLACE_X, y: TOKEN_Y },
+      { x: HANDOFF_X, y: TOKEN_Y },
+    );
+    await expectTokenX(
+      player,
+      HANDOFF_X,
+      "the player must observe the GM's ownership handoff",
+    );
     await expectTokenX(gm, HANDOFF_X, "the GM's own nudge must commit");
 
     // The GM page is the AUTHORITATIVE observer from here on: it issues no optimistic
@@ -326,14 +368,30 @@ test("a non-GM player's wall-crossing drag on a hex scene is rejected by the ser
     await player.getByTestId("tool-select").click();
 
     // --- Control leg: a LEGAL drag by the same player, same token, same session. ---
-    await dragScene(player, { x: HANDOFF_X, y: TOKEN_Y }, { x: LEGAL_X, y: TOKEN_Y });
-    await expectTokenX(gm, LEGAL_X, "the server must ACCEPT a legal player move (control leg)");
-    await expectTokenX(player, LEGAL_X, "the accepted move must stand on the player's client");
+    await dragScene(
+      player,
+      { x: HANDOFF_X, y: TOKEN_Y },
+      { x: LEGAL_X, y: TOKEN_Y },
+    );
+    await expectTokenX(
+      gm,
+      LEGAL_X,
+      "the server must ACCEPT a legal player move (control leg)",
+    );
+    await expectTokenX(
+      player,
+      LEGAL_X,
+      "the accepted move must stand on the player's client",
+    );
     const beforeIllegal = await currentPositions(player);
 
     // --- Rejected leg: the same drag, but across the wall (now a closed box — see above). ---
     const pathfindsBeforeIllegalDrag = pathfindCount();
-    await dragScene(player, { x: LEGAL_X, y: TOKEN_Y }, { x: ILLEGAL_X, y: TOKEN_Y });
+    await dragScene(
+      player,
+      { x: LEGAL_X, y: TOKEN_Y },
+      { x: ILLEGAL_X, y: TOKEN_Y },
+    );
 
     // The position must never change: a gated player move issues no optimistic write, so
     // a rejection has nothing to "roll back" — it simply never applies. The enclosing box makes
@@ -354,24 +412,34 @@ test("a non-GM player's wall-crossing drag on a hex scene is rejected by the ser
     // so the client never gets far enough to issue a `move_request` at all.
     await expect
       .poll(pathfindCount, {
-        message: "the illegal drag must have dispatched a pathfind request the router then refused",
+        message:
+          "the illegal drag must have dispatched a pathfind request the router then refused",
         timeout: 20_000,
       })
       .toBeGreaterThan(pathfindsBeforeIllegalDrag);
 
     // Second sync barrier: a legal move the GM observes. Once it lands, the rejected
     // move's round trip is provably complete, so the authoritative log below is final.
-    await dragScene(player, { x: LEGAL_X, y: TOKEN_Y }, { x: SETTLE_X, y: TOKEN_Y });
-    await expectTokenX(gm, SETTLE_X, "a legal move after the rejection must still commit");
+    await dragScene(
+      player,
+      { x: LEGAL_X, y: TOKEN_Y },
+      { x: SETTLE_X, y: TOKEN_Y },
+    );
+    await expectTokenX(
+      gm,
+      SETTLE_X,
+      "a legal move after the rejection must still commit",
+    );
 
     // The server never committed a position past the wall — the whole point.
     const gmLog = await positionLog(gm);
     expect(gmLog.length).toBeGreaterThan(0);
     for (const p of gmLog) {
       if (p.length === 0) continue;
-      expect(parseX(p), `authoritative position ${p} must never cross the wall`).toBeLessThan(
-        WALL_X,
-      );
+      expect(
+        parseX(p),
+        `authoritative position ${p} must never cross the wall`,
+      ).toBeLessThan(WALL_X);
     }
 
     // Re-read the restriction now that many server round trips have completed. The check at
@@ -379,7 +447,9 @@ test("a non-GM player's wall-crossing drag on a hex scene is rejected by the ser
     // rejected would have rolled back well before this point.
     await gm.getByTestId("launcher-trigger").click();
     await gm.getByTestId("launcher-item-game-settings:panel").click();
-    await expect(gm.getByLabel("gameSettings.movementRestriction")).toHaveValue("unrestricted");
+    await expect(gm.getByLabel("gameSettings.movementRestriction")).toHaveValue(
+      "unrestricted",
+    );
   } finally {
     await playerCtx.close();
   }

@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, login } from "./fixtures";
 
 // A 1×1 PNG, uploaded as an in-memory buffer.
 const PNG_1X1 = Buffer.from(
@@ -7,11 +7,11 @@ const PNG_1X1 = Buffer.from(
   "base64",
 );
 
-test("upload an image, see the thumbnail, replace it, then delete it", async ({ page }) => {
-  await page.goto("/");
-  await page.getByLabel("Username").fill("ops");
-  await page.getByLabel("Password").fill("pw-boot");
-  await page.getByRole("button", { name: "Log in" }).click();
+test("upload an image, see the thumbnail, replace it, then delete it", async ({
+  page,
+  account,
+}) => {
+  await login(page, account.username, account.password);
 
   await expect(page.getByText("Your worlds")).toBeVisible();
   await page.getByLabel("New world name").fill("Asset World");

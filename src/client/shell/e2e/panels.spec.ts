@@ -1,22 +1,30 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, login, type WorkerAccount } from "./fixtures";
 
-async function enterFreshWorld(page: import("@playwright/test").Page, name: string): Promise<void> {
-  await page.goto("/");
-  await page.getByLabel("Username").fill("ops");
-  await page.getByLabel("Password").fill("pw-boot");
-  await page.getByRole("button", { name: "Log in" }).click();
+async function enterFreshWorld(
+  page: import("@playwright/test").Page,
+  name: string,
+  account: WorkerAccount,
+): Promise<void> {
+  await login(page, account.username, account.password);
   await page.getByLabel("New world name").fill(name);
   await page.getByRole("button", { name: "Create world" }).click();
-  await expect(page.locator(".stage-host")).toHaveAttribute("data-render-ready", "true", {
-    timeout: 30_000,
-  });
+  await expect(page.locator(".stage-host")).toHaveAttribute(
+    "data-render-ready",
+    "true",
+    {
+      timeout: 30_000,
+    },
+  );
 }
 
 // Non-chat panels start launcher-closed (absent from the layout), not minimized
 // chips. Assets opens from the topbar launcher, docks right on first toggle, and
 // survives a full reload (the persisted-source path).
-test("a panel opened from the launcher docks and survives a full page reload", async ({ page }) => {
-  await enterFreshWorld(page, "Launcher Persistence World");
+test("a panel opened from the launcher docks and survives a full page reload", async ({
+  page,
+  account,
+}) => {
+  await enterFreshWorld(page, "Launcher Persistence World", account);
 
   const uploadInput = page.getByTestId("asset-upload");
   // Launcher-closed: assets content is not mounted-visible, and there is no chip.
@@ -37,7 +45,11 @@ test("a panel opened from the launcher docks and survives a full page reload", a
   // compact switcher order). Docking adds the id to the expanded zone groups
   // too, so >=2 occurrences marks the dock-carrying body.
   const persistResponse = page.waitForResponse((r) => {
-    if (!/\/api\/me\/ui-state$/.test(r.url()) || r.request().method() !== "PUT" || !r.ok()) {
+    if (
+      !/\/api\/me\/ui-state$/.test(r.url()) ||
+      r.request().method() !== "PUT" ||
+      !r.ok()
+    ) {
       return false;
     }
     const body = JSON.stringify(r.request().postDataJSON());
@@ -49,9 +61,13 @@ test("a panel opened from the launcher docks and survives a full page reload", a
 
   // Full reload re-runs module registration/activation from scratch.
   await page.reload();
-  await expect(page.locator(".stage-host")).toHaveAttribute("data-render-ready", "true", {
-    timeout: 30_000,
-  });
+  await expect(page.locator(".stage-host")).toHaveAttribute(
+    "data-render-ready",
+    "true",
+    {
+      timeout: 30_000,
+    },
+  );
 
   // The docked assets panel survives instead of reverting to launcher-closed.
   await expect(page.getByTestId("asset-upload")).toBeVisible();
@@ -59,8 +75,11 @@ test("a panel opened from the launcher docks and survives a full page reload", a
 
 // Toggling the same launcher item again minimizes the (now docked) panel — the
 // dock-chip metaphor: it hides the body and drops a statusbar restore chip.
-test("re-toggling a launcher item minimizes the open panel to a dock chip", async ({ page }) => {
-  await enterFreshWorld(page, "Launcher Toggle World");
+test("re-toggling a launcher item minimizes the open panel to a dock chip", async ({
+  page,
+  account,
+}) => {
+  await enterFreshWorld(page, "Launcher Toggle World", account);
 
   await page.getByTestId("launcher-trigger").click();
   await page.getByTestId("launcher-item-assets:panel").click();
@@ -75,9 +94,12 @@ test("re-toggling a launcher item minimizes the open panel to a dock chip", asyn
 // Single breakpoint axis (48rem): a narrow viewport puts the layout into compact
 // (grid switch + bottom tool strip); a wide viewport does not. Directly pins the
 // ui-kit sizeClass axis.
-test("the layout grid keys compact/expanded off the single 48rem axis", async ({ page }) => {
+test("the layout grid keys compact/expanded off the single 48rem axis", async ({
+  page,
+  account,
+}) => {
   await page.setViewportSize({ width: 1200, height: 900 });
-  await enterFreshWorld(page, "Compact Axis World");
+  await enterFreshWorld(page, "Compact Axis World", account);
 
   await expect(page.locator(".layout")).not.toHaveClass(/\bcompact\b/);
 
