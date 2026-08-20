@@ -71,9 +71,9 @@ pub struct OpSnapshot {
 /// ONCE per command, after every op in the command has applied.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CommandSnapshot {
-    /// `None` at an index means "no snapshot recorded for this op" — the back-compat case (a
-    /// `world_events` row written before this design existed). `filter_command` DROPS an op
-    /// whose snapshot is `None` on replay, rather than falling back to a live-lookup redaction.
+    /// `None` at an index means "no snapshot recorded for this op" — the back-compat case for a
+    /// legacy `world_events` row carrying no `snapshot` key. `filter_command` DROPS an op whose
+    /// snapshot is `None` on replay, rather than falling back to a live-lookup redaction.
     pub per_op: Vec<Option<OpSnapshot>>,
     /// Whether each of the world's members held GM standing in this world AT THIS COMMAND'S
     /// COMMIT — computed once per command (world role has nothing to do with which documents an
@@ -157,7 +157,7 @@ mod tests {
     }
 
     #[test]
-    fn from_stored_json_falls_back_for_a_pre_fix_bare_command_row() {
+    fn from_stored_json_falls_back_for_a_legacy_bare_command_row() {
         let cmd = sample_command();
         let raw = serde_json::to_string(&cmd).unwrap();
         let stored = StoredCommand::from_stored_json(&raw).unwrap();
