@@ -193,6 +193,8 @@ function buildPatch(): UiStatePatch {
  * run time, picking up everything dirtied since) has actually completed —
  * `flushSessionState()`'s callers depend on this: a call made while a PUT is
  * in flight still awaits a real, later write, not an immediate no-op return.
+ * @returns Nothing; resolves once the (possibly coalesced) PUT this call is waiting on
+ * has completed, or immediately if the current dirty state builds an empty patch.
  * @example
  * ```
  * await persist();

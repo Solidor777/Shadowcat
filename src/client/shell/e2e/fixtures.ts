@@ -42,9 +42,38 @@ export interface WorkerAccount {
  * never bypassing the UI even for setup.
  */
 export const test = base.extend<
-  Record<string, never>,
-  { account: WorkerAccount }
+  NonNullable<unknown>,
+  {
+    /** The worker-scoped account fixture — see the class doc above.
+     * @example
+     * ```
+     * declare const account: { username: string; password: string };
+     * account.username;
+     * ```
+     */
+    account: WorkerAccount;
+  }
 >({
+  /** The worker-scoped fixture value: a `[setup, options]` tuple per Playwright's
+   * fixture-registration shape, `options` selecting `scope: "worker"` (see the class doc above).
+   * The setup function itself mints the worker's admin account (see the class doc above) and
+   * hands it to `use`.
+   * @param root0 The fixtures this setup function depends on.
+   * @param root0.browser The Playwright-managed browser instance, used to open a throwaway
+   * context/page for the one-time account-creation flow (closed before `use` resolves).
+   * @param use Playwright's fixture-provider callback; invoked once with the minted account.
+   * @param workerInfo Identifies this worker (`parallelIndex`), used to make the minted
+   * account's username unique per worker.
+   * @returns Nothing; resolves once `use`'s callback (every test in this worker, run in
+   * sequence) has completed.
+   * @example
+   * ```
+   * declare const account: [
+   *   (fx: { browser: import("@playwright/test").Browser }, use: (v: unknown) => Promise<void>, info: { parallelIndex: number }) => Promise<void>,
+   *   { scope: "worker" },
+   * ];
+   * ```
+   */
   account: [
     async ({ browser }, use, workerInfo) => {
       const suffix = `${workerInfo.parallelIndex}-${Date.now().toString(36)}`;

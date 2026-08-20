@@ -5,6 +5,7 @@
   import VisualKindEditor from "./VisualKindEditor.svelte";
   import FaceSwapPalette from "./FaceSwapPalette.svelte";
   import TokenOwnerControl from "./TokenOwnerControl.svelte";
+  import TokenRotationControl from "./TokenRotationControl.svelte";
 
   const ctx = getAppContext();
   const t = ctx.t;
@@ -111,9 +112,9 @@
     return Object.entries(reg?.conditions ?? {});
   });
 
-  /** The single selected token's id, if any — drives both per-token controls below: the
-   * face-swap palette (`FaceSwapPalette`) and the ownership override control
-   * (`TokenOwnerControl`). */
+  /** The single selected token's id, if any — drives every per-token control below: the
+   * face-swap palette (`FaceSwapPalette`), the ownership override control
+   * (`TokenOwnerControl`), and the rotation control (`TokenRotationControl`). */
   const selectedTokenId = $derived.by((): string | null => {
     subscribe();
     const ids = ctx.tokenSelection.ids;
@@ -202,6 +203,7 @@
 <section class="actors">
   <h3>{t("actors.title")}</h3>
   <TokenOwnerControl tokenId={selectedTokenId} />
+  <TokenRotationControl tokenId={selectedTokenId} />
   <FaceSwapPalette tokenId={selectedTokenId} />
   <input
     class="actor-search"

@@ -1,7 +1,11 @@
 import { describe, it, expect } from "vitest";
 import { TokenAnimator } from "./token-animator";
 
-const cfg = { speedCellsPerSec: 6, easing: "linear" as const, worldUnitsPerCell: 100 };
+const cfg = {
+  speedCellsPerSec: 6,
+  easing: "linear" as const,
+  worldUnitsPerCell: 100,
+};
 
 function fresh(): TokenAnimator {
   const a = new TokenAnimator();
@@ -41,7 +45,15 @@ describe("TokenAnimator duration model", () => {
     const a = fresh();
     a.setTarget("t1", { x: 0, y: 0, rotation: 0 }); // snap to start
     // start (0,0) → (300,0) → (300,300): total 6 cells → 1000ms.
-    a.animateAlongPath("t1", [[0, 0], [300, 0], [300, 300]], 0);
+    a.animateAlongPath(
+      "t1",
+      [
+        [0, 0],
+        [300, 0],
+        [300, 300],
+      ],
+      0,
+    );
     a.tick(500); // half distance (3 cells) → end of first leg, at the corner
     expect(a.get("t1")!.x).toBeCloseTo(300, 0);
     expect(a.get("t1")!.y).toBeCloseTo(0, 0);
@@ -52,7 +64,15 @@ describe("TokenAnimator duration model", () => {
   it("optimistic route-vertex setTarget does NOT clobber an active path walk", () => {
     const a = fresh();
     a.setTarget("t1", { x: 0, y: 0, rotation: 0 });
-    a.animateAlongPath("t1", [[0, 0], [300, 0], [300, 300]], 0);
+    a.animateAlongPath(
+      "t1",
+      [
+        [0, 0],
+        [300, 0],
+        [300, 300],
+      ],
+      0,
+    );
     a.tick(100); // partway along leg 1
     const mid = a.get("t1")!.x;
     // Authoritative store steps to the corner vertex (a run endpoint) with a distinct rotation.
@@ -74,7 +94,15 @@ describe("TokenAnimator duration model", () => {
     // (300,300).
     const a = fresh();
     a.setTarget("t1", { x: 0, y: 0, rotation: 0 });
-    a.animateAlongPath("t1", [[0, 0], [300, 0], [300, 300]], 0);
+    a.animateAlongPath(
+      "t1",
+      [
+        [0, 0],
+        [300, 0],
+        [300, 300],
+      ],
+      0,
+    );
     // No tick between these — both arrive at segIndex 0.
     a.setTarget("t1", { x: 300, y: 0, rotation: 0 }); // the corner vertex
     a.setTarget("t1", { x: 300, y: 300, rotation: 0 }); // goal
@@ -85,7 +113,14 @@ describe("TokenAnimator duration model", () => {
   it("a foreign authoritative position interrupts the path walk and retargets", () => {
     const a = fresh();
     a.setTarget("t1", { x: 0, y: 0, rotation: 0 });
-    a.animateAlongPath("t1", [[0, 0], [300, 0]], 0);
+    a.animateAlongPath(
+      "t1",
+      [
+        [0, 0],
+        [300, 0],
+      ],
+      0,
+    );
     a.tick(100);
     a.setTarget("t1", { x: -600, y: 0, rotation: 0 }); // off-path (another mover)
     a.tick(10_000); // settle
@@ -112,7 +147,11 @@ describe("TokenAnimator duration model", () => {
     // regardless of grid shape.
     const a = new TokenAnimator();
     const step = 100 * Math.sqrt(3);
-    a.setConfig({ speedCellsPerSec: 6, easing: "linear", worldUnitsPerCell: step });
+    a.setConfig({
+      speedCellsPerSec: 6,
+      easing: "linear",
+      worldUnitsPerCell: step,
+    });
     a.setTarget("t1", { x: 0, y: 0, rotation: 0 }); // snap
     a.setTarget("t1", { x: step, y: 0, rotation: 0 }); // one hex step
     const expectedMs = (1 / 6) * 1000; // 166.667ms for one cell at 6 cells/sec
@@ -122,7 +161,11 @@ describe("TokenAnimator duration model", () => {
 
   it("zero-distance / degenerate config snaps", () => {
     const a = new TokenAnimator();
-    a.setConfig({ speedCellsPerSec: 0, easing: "linear", worldUnitsPerCell: 100 });
+    a.setConfig({
+      speedCellsPerSec: 0,
+      easing: "linear",
+      worldUnitsPerCell: 100,
+    });
     a.setTarget("t1", { x: 0, y: 0, rotation: 0 });
     a.setTarget("t1", { x: 500, y: 0, rotation: 0 });
     expect(a.get("t1")!.x).toBe(500); // speed 0 → snap, never freeze
@@ -151,7 +194,11 @@ describe("TokenAnimator duration model", () => {
     // `cells = total / NaN` is NaN, `duration` is NaN, `tRaw` never reaches 1, and the anim
     // reports moved every tick forever.
     const a = fresh();
-    a.setConfig({ speedCellsPerSec: 6, easing: "linear", worldUnitsPerCell: NaN });
+    a.setConfig({
+      speedCellsPerSec: 6,
+      easing: "linear",
+      worldUnitsPerCell: NaN,
+    });
     a.setTarget("t1", { x: 0, y: 0, rotation: 0 }); // snap
     a.setTarget("t1", { x: 500, y: 0, rotation: 0 }); // degenerate config → startAnim snaps
     expect(a.get("t1")!.x).toBe(500);
@@ -160,7 +207,11 @@ describe("TokenAnimator duration model", () => {
 
   it("NaN speedCellsPerSec does not pin the token or produce moved forever", () => {
     const a = fresh();
-    a.setConfig({ speedCellsPerSec: NaN, easing: "linear", worldUnitsPerCell: 100 });
+    a.setConfig({
+      speedCellsPerSec: NaN,
+      easing: "linear",
+      worldUnitsPerCell: 100,
+    });
     a.setTarget("t1", { x: 0, y: 0, rotation: 0 }); // snap
     a.setTarget("t1", { x: 500, y: 0, rotation: 0 }); // degenerate config → startAnim snaps
     expect(a.get("t1")!.x).toBe(500);
@@ -174,6 +225,37 @@ describe("TokenAnimator duration model", () => {
     expect(a.has("t1")).toBe(false);
     expect(a.get("t1")).toBeUndefined();
   });
+
+  it("rotation tweens along the SHORTER arc across the 0/360 wrap, not the raw scalar delta", () => {
+    const a = fresh();
+    a.setTarget("t1", { x: 0, y: 0, rotation: 350 }); // brand-new id → snap
+    // 6 cells @ 6 c/s → 1000ms; the short arc from 350° to 10° is +20° (through 360/0), not the
+    // raw-scalar -340° a naive `lerp(350, 10, t)` would sweep.
+    a.setTarget("t1", { x: 600, y: 0, rotation: 10 });
+    a.tick(500); // halfway
+    // Halfway along the +20° short arc is 360°, not lerp(350,10,0.5)=180 (the long way).
+    expect(a.get("t1")!.rotation).toBeCloseTo(360, 5);
+    a.tick(500); // settle
+    expect(a.get("t1")!.rotation).toBe(10);
+  });
+
+  it("rotation tweens the short way for a backward wrap too (10° → 350° is -20°)", () => {
+    const a = fresh();
+    a.setTarget("t1", { x: 0, y: 0, rotation: 10 });
+    a.setTarget("t1", { x: 600, y: 0, rotation: 350 });
+    a.tick(500); // halfway along the -20° short arc: 10 - 10 = 0
+    expect(a.get("t1")!.rotation).toBeCloseTo(0, 5);
+    a.tick(500);
+    expect(a.get("t1")!.rotation).toBe(350);
+  });
+
+  it("rotation with no wrap tweens identically to a plain scalar lerp", () => {
+    const a = fresh();
+    a.setTarget("t1", { x: 0, y: 0, rotation: 0 });
+    a.setTarget("t1", { x: 600, y: 0, rotation: 90 });
+    a.tick(500);
+    expect(a.get("t1")!.rotation).toBeCloseTo(45, 5);
+  });
 });
 
 describe("TokenAnimator.animateSamples", () => {
@@ -181,7 +263,16 @@ describe("TokenAnimator.animateSamples", () => {
     const a = fresh();
     a.setTarget("t1", { x: 0, y: 0, rotation: 0 });
     // serverNow returns startServerMs → initialElapsed = 0.
-    a.animateSamples("t1", [{ tMs: 0, pos: [0, 0] }, { tMs: 500, pos: [300, 0] }], 1000, 1000, () => 1000);
+    a.animateSamples(
+      "t1",
+      [
+        { tMs: 0, pos: [0, 0] },
+        { tMs: 500, pos: [300, 0] },
+      ],
+      1000,
+      1000,
+      () => 1000,
+    );
     expect(a.get("t1")).toEqual({ x: 0, y: 0, rotation: 0 }); // at t=0
     expect(a.isHidden("t1")).toBe(false);
     a.tick(250); // 250 ms elapsed → 50% of [0→300] = 150
@@ -201,11 +292,17 @@ describe("TokenAnimator.animateSamples", () => {
     // interior gap detection.
     a.animateSamples(
       "t1",
-      [{ tMs: 0, pos: [0, 0] }, { tMs: 100, pos: [100, 0] }, { tMs: 900, pos: [900, 0] }],
-      1000, 1000, () => 1000,
+      [
+        { tMs: 0, pos: [0, 0] },
+        { tMs: 100, pos: [100, 0] },
+        { tMs: 900, pos: [900, 0] },
+      ],
+      1000,
+      1000,
+      () => 1000,
     );
     expect(a.isHidden("t1")).toBe(false); // visible at first sample (t=0)
-    a.tick(1);   // t=1: inside segment 0→100 (gap=100 ≤ threshold=150) → visible
+    a.tick(1); // t=1: inside segment 0→100 (gap=100 ≤ threshold=150) → visible
     expect(a.isHidden("t1")).toBe(false);
     a.tick(100); // t=101: inside gap 100→900 (gap=800 > threshold=150) → hidden
     expect(a.isHidden("t1")).toBe(true);
@@ -222,7 +319,7 @@ describe("TokenAnimator.animateSamples", () => {
     const a = fresh();
     a.setTarget("t1", { x: 0, y: 0, rotation: 0 });
     const samples = [
-      { tMs:   0, pos: [  0, 0] as [number, number] },
+      { tMs: 0, pos: [0, 0] as [number, number] },
       { tMs: 100, pos: [100, 0] as [number, number] },
       { tMs: 200, pos: [200, 0] as [number, number] },
       { tMs: 600, pos: [600, 0] as [number, number] },
@@ -291,8 +388,13 @@ describe("TokenAnimator.animateSamples", () => {
     // MoveStream arrives: samples along y=500 (perpendicular to the ease path).
     a.animateSamples(
       "t1",
-      [{ tMs: 0, pos: [0, 500] }, { tMs: 500, pos: [500, 500] }],
-      500, 0, () => 0,
+      [
+        { tMs: 0, pos: [0, 500] },
+        { tMs: 500, pos: [500, 500] },
+      ],
+      500,
+      0,
+      () => 0,
     );
     // Tick to mid-animation.
     a.tick(250);
@@ -319,7 +421,16 @@ describe("TokenAnimator.animateSamples", () => {
   it("settles at last sample position and clears hidden after durationMs", () => {
     const a = fresh();
     a.setTarget("t1", { x: 0, y: 0, rotation: 0 });
-    a.animateSamples("t1", [{ tMs: 0, pos: [10, 20] }, { tMs: 500, pos: [100, 200] }], 500, 0, () => 0);
+    a.animateSamples(
+      "t1",
+      [
+        { tMs: 0, pos: [10, 20] },
+        { tMs: 500, pos: [100, 200] },
+      ],
+      500,
+      0,
+      () => 0,
+    );
     a.tick(10_000);
     expect(a.get("t1")).toEqual({ x: 100, y: 200, rotation: 0 });
     expect(a.isHidden("t1")).toBe(false);

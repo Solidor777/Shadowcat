@@ -61,7 +61,8 @@ export const en: Messages = {
   "settings.users.loading": "Loading accounts…",
   "settings.users.error": "Could not create account: {message}",
   "settings.users.delete": "Delete",
-  "settings.users.deleteConfirm": "Delete account {username}? This cannot be undone.",
+  "settings.users.deleteConfirm":
+    "Delete account {username}? This cannot be undone.",
   "settings.users.deleteError": "Could not delete account: {message}",
   "assets.tab": "Assets",
   "assets.title": "Assets",
@@ -74,7 +75,8 @@ export const en: Messages = {
   "actors.tab": "Actors",
   "actors.title": "Actors",
   "actors.name": "Name",
-  "actors.displayName": "Display name (shown to players when the name is hidden)",
+  "actors.displayName":
+    "Display name (shown to players when the name is hidden)",
   "actors.instanceOnDrop": "New independent copy on each placement",
   "actors.keepAfterPlace": "Keep selected after placing",
   "actors.create": "Create actor",
@@ -95,7 +97,8 @@ export const en: Messages = {
   "actors.animSourceType": "Source",
   "actors.animSourceFrames": "Frame list",
   "actors.animSourceSheet": "Grid sheet",
-  "actors.animFramesHint": "Click assets below to append them as ordered frames.",
+  "actors.animFramesHint":
+    "Click assets below to append them as ordered frames.",
   "actors.animRemoveFrame": "Remove frame",
   "actors.animRows": "Sheet rows",
   "actors.animCols": "Sheet columns",
@@ -107,7 +110,8 @@ export const en: Messages = {
   "actors.faceAdd": "Add face",
   "actors.faceRemove": "Remove",
   "actors.faceDefault": "Default face",
-  "actors.faceMapHint": "Optional: auto-swap to a face when a condition is active.",
+  "actors.faceMapHint":
+    "Optional: auto-swap to a face when a condition is active.",
   "actors.faceMapCondition": "Condition",
   "actors.faceMapFace": "Face",
   "actors.faceMapAdd": "Add condition mapping",
@@ -116,6 +120,7 @@ export const en: Messages = {
   "actors.ownerInherit": "Inherit from actor",
   "actors.ownerNobody": "Nobody",
   "actors.tokenOwnerEffective": "Effective owner: {owner}",
+  "actors.tokenRotation": "Rotation (degrees)",
   "actors.actorOwner": "Owner",
   "actors.search": "Search actors",
   "actors.openSheet": "Open sheet",
@@ -210,7 +215,8 @@ export const en: Messages = {
   "gameSettings.chat.title": "Chat",
   "gameSettings.chat.hyperlinks": "Hyperlinks",
   "gameSettings.chat.linkPreviews": "Link previews",
-  "gameSettings.chat.linkPreviewsDefault": "Default (on when hyperlinks enabled)",
+  "gameSettings.chat.linkPreviewsDefault":
+    "Default (on when hyperlinks enabled)",
   "chat.tab": "Chat",
   "chat.channels": "Channels",
   "chat.all": "All",
@@ -254,8 +260,10 @@ export const en: Messages = {
   "panels.dockLeft": "Dock left",
   "panels.float": "Float",
   "panels.popOut": "Pop out",
-  "panels.popoutBlocked": "Pop-out was blocked; opened as a floating window instead",
-  "panels.popoutRestoredFloating": "Popped-out panels reopen as floating windows after reload",
+  "panels.popoutBlocked":
+    "Pop-out was blocked; opened as a floating window instead",
+  "panels.popoutRestoredFloating":
+    "Popped-out panels reopen as floating windows after reload",
   "panels.moreViews": "More views",
   "panels.unknownPanel": "Unknown panel ({id})",
   "panels.crashed": "Panel crashed",

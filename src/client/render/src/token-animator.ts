@@ -54,6 +54,42 @@ export interface AnimationConfig {
  */
 const lerp = (a: number, b: number, t: number): number => a + (b - a) * t;
 
+/** Shortest signed angular delta from `a` to `b`, in degrees, wrapped into `[-180, 180)`.
+ * The double-modulo (`((x % 360) + 540) % 360 - 180`) is sign-safe for any finite `a`/`b` —
+ * JS `%` can return a negative result for a negative dividend, and the `+540` pre-bias absorbs
+ * that before the second `%360` normalizes into `[0, 360)`.
+ * @param a The starting angle, in degrees.
+ * @param b The target angle, in degrees.
+ * @returns The signed delta `d` such that `a + d` reaches `b` (mod 360) via the shorter arc.
+ * @example
+ * ```
+ * // module-private helper; not exported from @shadowcat/render
+ * shortestAngleDelta(350, 10); // 20 — the short way is forward through 360/0, not backward 340°
+ * ```
+ */
+function shortestAngleDelta(a: number, b: number): number {
+  return ((((b - a) % 360) + 540) % 360) - 180;
+}
+
+/** Interpolates an angle (degrees) from `a` toward `b` along the SHORTER arc — unlike `lerp`,
+ * never sweeps the long way around when `a`/`b` straddle the 0°/360° wrap (e.g. 350°→10° tweens
+ * +20° forward through 360/0, not -340° backward). Built on `shortestAngleDelta`; the caller's
+ * own end-of-tween settle (`cur.rotation = a.finalRot` at `tRaw>=1`) is what makes the eventual
+ * value exact regardless of any wrap taken mid-tween.
+ * @param a The starting angle, in degrees.
+ * @param b The target angle, in degrees.
+ * @param t Interpolation position (typically `[0,1]`, unclamped).
+ * @returns The interpolated angle, in degrees (not normalized into `[0,360)`; a mid-tween value
+ * may exceed that range, which renders identically since rotation is periodic).
+ * @example
+ * ```
+ * // module-private helper; not exported from @shadowcat/render
+ * lerpAngle(350, 10, 0.5); // 360 — halfway along the +20° short arc, not halfway along -340°
+ * ```
+ */
+const lerpAngle = (a: number, b: number, t: number): number =>
+  a + shortestAngleDelta(a, b) * t;
+
 /** Compute the gap detection threshold for occlusion spans from a sample list.
  * Strategy: minimum positive consecutive inter-sample interval × 1.5. Contiguous (non-occluded)
  * sample pairs produce ≈ the nominal inter-sample interval; occlusion gaps are larger and exceed
@@ -130,7 +166,11 @@ export class TokenAnimator {
   /** Token ids currently in an occlusion gap (server-clipped visibility span). */
   private hidden = new Set<string>();
   /** Tween-duration tuning applied to newly-started animations — see `setConfig`. */
-  private cfg: AnimationConfig = { speedCellsPerSec: 6, easing: "easeInOut", worldUnitsPerCell: 100 };
+  private cfg: AnimationConfig = {
+    speedCellsPerSec: 6,
+    easing: "easeInOut",
+    worldUnitsPerCell: 100,
+  };
 
   /** Replace the tween-duration tuning (speed/easing/worldUnitsPerCell). Affects only FUTURE
    * tweens started by `startAnim` — an animation already in progress keeps the duration computed
@@ -243,9 +283,16 @@ export class TokenAnimator {
     serverNow?: () => number,
   ): void {
     if (samples.length === 0) return;
-    const initialElapsed = serverNow ? Math.max(0, serverNow() - startServerMs) : 0;
+    const initialElapsed = serverNow
+      ? Math.max(0, serverNow() - startServerMs)
+      : 0;
     const gapThreshold = computeGapThreshold(samples);
-    const sa: SamplesAnim = { samples, elapsed: initialElapsed, durationMs, gapThreshold };
+    const sa: SamplesAnim = {
+      samples,
+      elapsed: initialElapsed,
+      durationMs,
+      gapThreshold,
+    };
     // Cancel any competing ease-to-stop Anim: samplesAnim takes exclusive precedence.
     // Coupling: the authoritative position Event arrives before the MoveStream broadcast
     // (normal server ordering), so reconcile() → setTarget already registered an ease entry.
@@ -253,7 +300,11 @@ export class TokenAnimator {
     this.samplesAnim.set(id, sa);
     // Ensure cur exists so tick + push work even if the token was never setTarget-ed locally.
     if (!this.cur.has(id)) {
-      this.cur.set(id, { x: samples[0].pos[0], y: samples[0].pos[1], rotation: 0 });
+      this.cur.set(id, {
+        x: samples[0].pos[0],
+        y: samples[0].pos[1],
+        rotation: 0,
+      });
     }
     // Apply initial position immediately (no wait for tick).
     this.applySamplesAt(id, sa);
@@ -311,7 +362,16 @@ export class TokenAnimator {
         }
       }
     }
-    this.startAnim(id, c, [[c.x, c.y], [t.x, t.y]], t.rotation, false);
+    this.startAnim(
+      id,
+      c,
+      [
+        [c.x, c.y],
+        [t.x, t.y],
+      ],
+      t.rotation,
+      false,
+    );
   }
 
   /** Has no production caller today (`WorldSession` drives route playback exclusively through
@@ -340,7 +400,11 @@ export class TokenAnimator {
    * animator.animateAlongPath("token-1", [[0, 0], [1, 0], [1, 1]], 0);
    * ```
    */
-  animateAlongPath(id: string, path: [number, number][], rotation: number): void {
+  animateAlongPath(
+    id: string,
+    path: [number, number][],
+    rotation: number,
+  ): void {
     const c = this.cur.get(id);
     if (!c) {
       const last = path[path.length - 1] ?? [0, 0];
@@ -351,7 +415,11 @@ export class TokenAnimator {
     const pts: [number, number][] = [[c.x, c.y]];
     for (const p of path) {
       const prev = pts[pts.length - 1];
-      if (Math.abs(prev[0] - p[0]) >= EPSILON || Math.abs(prev[1] - p[1]) >= EPSILON) pts.push([p[0], p[1]]);
+      if (
+        Math.abs(prev[0] - p[0]) >= EPSILON ||
+        Math.abs(prev[1] - p[1]) >= EPSILON
+      )
+        pts.push([p[0], p[1]]);
     }
     if (pts.length < 2) {
       this.setTarget(id, { x: pts[0][0], y: pts[0][1], rotation });
@@ -453,7 +521,13 @@ export class TokenAnimator {
    * this.startAnim("token-1", { x: 0, y: 0, rotation: 0 }, [[0, 0], [100, 0]], 0, false);
    * ```
    */
-  private startAnim(id: string, c: TokenTransform, poly: [number, number][], finalRot: number, pathDriven: boolean): void {
+  private startAnim(
+    id: string,
+    c: TokenTransform,
+    poly: [number, number][],
+    finalRot: number,
+    pathDriven: boolean,
+  ): void {
     const segLen: number[] = [];
     let total = 0;
     for (let i = 1; i < poly.length; i++) {
@@ -491,10 +565,16 @@ export class TokenAnimator {
     }
     const cells = total / this.cfg.worldUnitsPerCell;
     this.anim.set(id, {
-      poly, segLen, total, elapsed: 0,
+      poly,
+      segLen,
+      total,
+      elapsed: 0,
       duration: (cells / this.cfg.speedCellsPerSec) * 1000,
-      startRot: c.rotation, finalRot, easing: this.cfg.easing,
-      pathDriven, segIndex: 0,
+      startRot: c.rotation,
+      finalRot,
+      easing: this.cfg.easing,
+      pathDriven,
+      segIndex: 0,
     });
   }
 
@@ -519,7 +599,10 @@ export class TokenAnimator {
         // Playback complete: settle at the last sample, clear hidden, remove entry.
         const last = sa.samples[sa.samples.length - 1];
         const cur = this.cur.get(id);
-        if (cur) { cur.x = last.pos[0]; cur.y = last.pos[1]; }
+        if (cur) {
+          cur.x = last.pos[0];
+          cur.y = last.pos[1];
+        }
         this.hidden.delete(id);
         this.samplesAnim.delete(id);
         moved.push(id);
@@ -542,8 +625,12 @@ export class TokenAnimator {
       let idx = a.poly.length - 1;
       for (let i = 0; i < a.segLen.length; i++) {
         if (target <= acc + a.segLen[i] || i === a.segLen.length - 1) {
-          const f = a.segLen[i] > 0 ? Math.min(1, (target - acc) / a.segLen[i]) : 1;
-          pos = [lerp(a.poly[i][0], a.poly[i + 1][0], f), lerp(a.poly[i][1], a.poly[i + 1][1], f)];
+          const f =
+            a.segLen[i] > 0 ? Math.min(1, (target - acc) / a.segLen[i]) : 1;
+          pos = [
+            lerp(a.poly[i][0], a.poly[i + 1][0], f),
+            lerp(a.poly[i][1], a.poly[i + 1][1], f),
+          ];
           idx = f >= 1 ? i + 1 : i;
           break;
         }
@@ -553,7 +640,7 @@ export class TokenAnimator {
       const cur = this.cur.get(id)!;
       cur.x = pos[0];
       cur.y = pos[1];
-      cur.rotation = lerp(a.startRot, a.finalRot, e);
+      cur.rotation = lerpAngle(a.startRot, a.finalRot, e);
       moved.push(id);
       if (tRaw >= 1) {
         const last = a.poly[a.poly.length - 1];
