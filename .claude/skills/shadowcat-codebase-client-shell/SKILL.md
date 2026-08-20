@@ -100,6 +100,24 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
   forwards through `RenderEngine` to `TokenView`/`TokenAnimator` (position tween) and, when
   `moverVision` is present (mover only), the engine's `visionSweeps` fog-sweep playback (see
   `shadowcat-codebase-scene-rendering`).
+- **Cold-start bootstrap: snapshot before WS, never full replay** — `WorldSession.enter(worldId)`,
+  BEFORE constructing `WsClient`, fetches `GET /api/worlds/{id}/snapshot` (`getWorldSnapshot`,
+  `shadowcat-codebase-realtime-sync`'s `http::routes::world_snapshot`) and seeds both `store` and
+  `documents` from it (`DocumentStore.seedDocuments`/`OptimisticClient.seedDocuments` — a wholesale
+  replace, not an operation-log merge, since these are LOADED documents, not events that occurred).
+  It then pre-seeds `WsClient`'s sequence watermark via `WsClient.seedWatermark(snapshot.seq)`
+  BEFORE `start()`/`open()` — so the existing Welcome-triggered gap-check
+  (`current_seq >= nextExpected`) only resyncs whatever committed after the snapshot was read,
+  never a full replay from seq 1. A snapshot-fetch failure degrades gracefully (logged, falls
+  through to full replay), mirroring `#loadExternalModules`'s own "a broken pipeline must never
+  brick a world" pattern below. `WsClient.open()` sends a real `ClientMsg::Hello` as the FIRST
+  frame on every socket open (including internal reconnects) — `last_seq` is `null` if-and-only-if
+  this is the FIRST open this `WsClient` INSTANCE has ever made (`#hasEverOpened`, an identity fact
+  about the instance's own open history), NEVER derived from `nextExpected`'s live value: since
+  `seedWatermark` runs before the first `open()`, `nextExpected` is already > 1 by the time the
+  first `Hello` sends, so a `nextExpected`-derived `last_seq` would never report `null` and the
+  server would never learn this was a genuine cold start (see `shadowcat-codebase-realtime-sync`'s
+  `Room::resync_floor_enforced` for the server-side consequence this seam feeds).
 - **External-module loading, and live hot-reload** — `WorldSession`'s `#loadExternalModules(world,
   serverVersion)` runs once, after the FIRST successful `#onWelcome` activation
   (`WorldSession.loadExternalModules.serverVersion` = `w.server_version`, also captured onto
