@@ -175,11 +175,6 @@ Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one de
   type but silently drops the new key from every patch, with no compile error. Drive the copy from
   an exhaustive `Record<WorldKey, …>`/switch so a widened union becomes a type error.
 
-## Actionable now — render-ready audit backlog (2026-07-31, non-defect items)
-- TODO: `welcome_capability_requirements`'s Welcome preamble runs `spawn_blocking(scan_installed_modules)` — a full
-  filesystem scan — on EVERY WS connect. Cache the scan result (invalidate on module
-  install/uninstall) so reconnect storms and multi-client entry don't re-walk the modules dir.
-
 ## Actionable now — Phase D-alpha (movement authority & secrecy) backlog
 - TODO: `Room::execute_move` re-derives `is_gm` via its own
   `ctx.world_role == WorldRole::Gm` comparison a second time, instead of reusing the `is_gm`
