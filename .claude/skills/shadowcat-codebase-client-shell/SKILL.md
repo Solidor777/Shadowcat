@@ -114,9 +114,25 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
   (15s) covers every fetch in its module, not only the session/boot trio: `getMe`, `getUiState`,
   `listWorlds`, `postJson` (login/logout), and `putUiState` (including the unload keepalive PUT)
   all carry `AbortSignal.timeout(FETCH_TIMEOUT_MS)`, so a hung backend rejects instead of leaving
-  any of them unsettled forever. `App.boot()` wraps each of the three awaits in `withRetry` (3 attempts, flat delays) before
+  any of them unsettled forever. `App.boot()` wraps each of the three awaits in `withRetry`
+  (3 attempts, full-jitter delays — `withRetry`'s base delays are jittered the same way
+  `WsClient.scheduleReconnect` jitters its backoff, not applied as a literal flat wait) before
   degrading to the login/worlds route, so a transient non-2xx or connection reset during startup
   does not permanently strand the SPA on that fallback route with no retry.
+- **`App.boot()`'s overall deadline is a closure-local abandon flag, not a cancelled fetch** —
+  `BOOT_DEADLINE_MS` (60s) bounds `boot()`'s total wall-clock time independent of the three
+  `withRetry` chains above (whose own combined worst case is ~141s); `STILL_TRYING_AFTER_MS` (8s)
+  switches the rendered "Loading…" message to "Still trying…" before that deadline. Neither timer
+  cancels the underlying fetch — `boot()` instead threads a closure-local abandonment flag through
+  an `if (abandoned) return;` check after every await (a generation counter is unwarranted:
+  `boot()` has exactly one call site, so a per-invocation closure flag is sufficient). That flag
+  gates every navigation/session-entry action AND the `me` assignment itself (`me` is read into a
+  local before the check, so a late `getMe()` resolution after abandonment cannot clobber a `me`
+  set afterward by `onAuthenticated()`) — but it cannot gate a side effect embedded INSIDE an
+  awaited call before that call resolves (e.g. `loadSessionState`'s own `i18n.setLocale` write
+  still applies once that call settles, even after abandonment), since true cancellation would
+  need an abort signal threaded through `withRetry`/`getMe`/`getUiState`/`fetch`, out of scope for
+  this mechanism.
 - **`WorldSession`'s activation latch is split, and the split order is load-bearing** —
   latching a single `#bootstrapped` boolean BEFORE `await #modules.activate()` would let a
   failed/hung first activation (e.g. a manifest dependency cycle) cache "done" for the
