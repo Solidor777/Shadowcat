@@ -332,3 +332,61 @@ test("compact viewport (mobile width): the stage canvas stays visible, outside a
   expect(box?.width ?? 0).toBeGreaterThan(0);
   expect(box?.height ?? 0).toBeGreaterThan(0);
 });
+
+// Authors a scene background via the SceneBrowserPanel's asset picker and confirms it reaches
+// the render layer (`data-background`, set from the same `engine.background` field the stage's
+// background sprite paints from) — the authoring half of the render-consumption path that already
+// worked before this picker existed.
+test("pick a scene background via the scene browser; it reaches the stage", async ({
+  page,
+  account,
+}) => {
+  await login(page, account.username, account.password);
+  await page.getByLabel("New world name").fill("Background World");
+  await page.getByRole("button", { name: "Create world" }).click();
+
+  const host = page.locator(".stage-host");
+  await expect(host).toHaveAttribute("data-render-ready", "true", {
+    timeout: 30_000,
+  });
+  await expect(host).toHaveAttribute("data-background", "", { timeout: 15_000 });
+
+  // Upload the background image asset.
+  await page.getByTestId("launcher-trigger").click();
+  await page.getByTestId("launcher-item-assets:panel").click();
+  await page
+    .getByTestId("asset-upload")
+    .setInputFiles({ name: "bg.png", mimeType: "image/png", buffer: PNG_1X1 });
+  await expect(page.getByTestId("asset-tile")).toHaveCount(1);
+
+  // The scene-browser panel's asset picker list is fetched once at mount and has no
+  // live-refresh hook for a newly-CREATED asset (only replace/delete broadcast an
+  // AssetChanged — mirrors ActorsPanel/VisualKindEditor's identical picker convention
+  // above); leave and re-enter the world so the panel remounts and its picker sees the
+  // upload.
+  await page.getByTestId("launcher-trigger").click();
+  await page.getByTestId("launcher-item-settings:panel").click();
+  await page.getByRole("button", { name: /leave world/i }).click();
+  await page.getByRole("button", { name: /Background World/ }).click();
+  await expect(host).toHaveAttribute("data-render-ready", "true", {
+    timeout: 30_000,
+  });
+
+  // Open the Scenes panel and pick the uploaded image as the (auto-created) scene's background.
+  // Scoped to the panel's own labelled region: the Assets panel (re-docked from the layout
+  // persisted across leave/re-enter) renders its own "bg.png"-accessible-named tile button, and
+  // an unscoped role query would match both.
+  await page.getByTestId("launcher-trigger").click();
+  await page.getByTestId("launcher-item-scene-browser:panel").click();
+  const scenesPanel = page.getByRole("region", { name: "Scenes" });
+  await scenesPanel.getByRole("button", { name: "Set background image" }).first().click();
+  const pick = scenesPanel.getByRole("button", { name: "bg.png" });
+  await expect(pick).toBeVisible({ timeout: 10_000 });
+  await pick.click();
+
+  // The scene doc's engine.background is now the uploaded asset's id, and the stage's
+  // observability signal (mirroring the reconciler's own read of that field) reflects it.
+  await expect(host).not.toHaveAttribute("data-background", "", {
+    timeout: 15_000,
+  });
+});

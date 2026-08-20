@@ -192,6 +192,33 @@ test("drives the initial reconcile from ctx.viewedSceneId", async () => {
   expect(host.dataset.tokenCount).toBe("0");
 });
 
+test("exposes the viewed scene's engine.background as data-background, empty when unset", async () => {
+  const store = new DocumentStore();
+  store.applyCommand({
+    seq: 1,
+    world_id: "w1",
+    author: "u",
+    ts: 0,
+    ops: [
+      { op: "create", doc: buildSceneDoc("w1", { grid: { kind: "square", size: 100, distance: null }, background: "asset-1" }, "sA") },
+    ],
+  } as never);
+  const createBackend = vi.fn(async () => fakeBackend());
+  const { container } = render(Stage, {
+    props: { createBackend },
+    context: setAppContextForTest({
+      documents: store,
+      store,
+      assets: new AssetResolver(),
+      viewedSceneId: "sA",
+      subscribeScene: () => ({ unsubscribe() {} }),
+    }),
+  });
+  const host = container.querySelector(".stage-host") as HTMLElement;
+  await vi.waitFor(() => expect(host.dataset.renderReady).toBe("true"));
+  expect(host.dataset.background).toBe("asset-1");
+});
+
 test("exposes the viewed scene's committed token positions as data-token-positions", async () => {
   const store = new DocumentStore();
   const token = (id: string, scene: string, x: number, y: number): unknown => ({

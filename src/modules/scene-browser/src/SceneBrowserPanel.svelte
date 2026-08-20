@@ -1,10 +1,38 @@
 <script lang="ts">
   import { createSubscriber } from "svelte/reactivity";
   import { getAppContext } from "@shadowcat/ui-kit";
-  import { buildSceneDoc, type WireDocument, type WorldSettingsEngine, type SceneEngine } from "@shadowcat/core";
+  import { buildSceneDoc, listAssets, type WireDocument, type WorldSettingsEngine, type SceneEngine } from "@shadowcat/core";
+  import type { Asset } from "@shadowcat/types";
 
   const ctx = getAppContext();
   const t = ctx.t;
+
+  let assetList = $state<Asset[]>([]);
+
+  /**
+   * Refetches the world's image assets (filtered to `image/*` content types) into `assetList`,
+   * feeding the background-picker snippet. Called once at mount and on every `AssetChanged`
+   * broadcast, via the `$effect` below.
+   * @returns Nothing; assigns the component's own `assetList` `$state`.
+   * @example
+   * ```
+   * // private helper; not part of the public API — invoked from the `$effect` below
+   * refreshAssets();
+   * ```
+   */
+  function refreshAssets(): void {
+    void listAssets(ctx.world).then((a) => {
+      assetList = a.filter((x) => x.content_type.startsWith("image/"));
+      ctx.assets.reconcile(a);
+    });
+  }
+  $effect(() => {
+    refreshAssets();
+    return ctx.onAssetChanged(refreshAssets);
+  });
+
+  /** The scene id whose background picker is currently open, or `null` when none is. */
+  let pickerOpenFor = $state<string | null>(null);
 
   // Reactive bridge (mandatory): register a dependency on the doc store so the list re-renders on
   // create/activate and the viewed/active badges track edits.
@@ -129,6 +157,24 @@
   function create(): void {
     ctx.dispatchIntent([{ op: "create", doc: buildSceneDoc(ctx.world) }]);
   }
+
+  /**
+   * Sets (or clears, when `assetId` is `null`) a scene's `engine.background`, OCC-dispatched with
+   * the RAW current stored value (via `bgOf`) as `old` — mirrors `activate()`'s convention.
+   * @param scene The scene document to update.
+   * @param assetId The new background asset id, or `null` to clear it.
+   * @returns Nothing; dispatches an intent as a side effect.
+   * @example
+   * ```
+   * declare const scene: WireDocument;
+   * // private helper; not part of the public API — invoked from the background picker
+   * setBackground(scene, "asset-1");
+   * ```
+   */
+  function setBackground(scene: WireDocument, assetId: string | null): void {
+    ctx.dispatchIntent([{ op: "update", doc_id: scene.id, changes: [{ path: "/engine/background", old: bgOf(scene), new: assetId }] }]);
+    pickerOpenFor = null;
+  }
 </script>
 
 <section class="scene-browser" aria-label={t("sceneBrowser.title")}>
@@ -142,13 +188,21 @@
   <ul class="list">
     {#each scenes as scene, i (scene.id)}
       <li class:active={scene.id === activeSceneId} class:viewed={scene.id === viewedSceneId}>
-        <div class="thumb">
+        <button
+          type="button"
+          class="thumb"
+          aria-label={t("sceneBrowser.backgroundPicker")}
+          onclick={() => (pickerOpenFor = pickerOpenFor === scene.id ? null : scene.id)}
+        >
           {#if bgOf(scene)}
             <img src={ctx.assets.url(bgOf(scene)!)} alt="" />
           {:else}
             <span class="placeholder" aria-hidden="true">🗺️</span>
           {/if}
-        </div>
+        </button>
+        {#if pickerOpenFor === scene.id}
+          {@render assetPicker(bgOf(scene), (id) => setBackground(scene, id))}
+        {/if}
         <span class="label">
           {t("sceneBrowser.sceneLabel", { n: i + 1 })}
           {#if scene.id === activeSceneId}<span class="badge">{t("sceneBrowser.activeBadge")}</span>{/if}
@@ -164,6 +218,17 @@
   </ul>
   <button type="button" class="create" onclick={create}>{t("sceneBrowser.create")}</button>
 </section>
+
+{#snippet assetPicker(selected: string | null, onPick: (id: string | null) => void)}
+  <div class="picker">
+    <button type="button" class="clear" onclick={() => onPick(null)}>{t("sceneBrowser.backgroundClear")}</button>
+    {#each assetList as a (a.id)}
+      <button type="button" class:selected={selected === a.id} title={a.original_name} onclick={() => onPick(a.id)}>
+        <img src={ctx.assets.url(a.id)} alt={a.original_name} />
+      </button>
+    {/each}
+  </div>
+{/snippet}
 
 <style lang="scss">
   .scene-browser {
@@ -204,14 +269,48 @@
     width: 48px;
     height: 48px;
     flex: none;
+    border: none;
     border-radius: var(--radius-1);
     overflow: hidden;
     display: flex;
     align-items: center;
     justify-content: center;
     background: var(--surface-base);
+    padding: 0;
+    cursor: pointer;
+  }
+  .thumb:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
   }
   .thumb img {
+    width: 48px;
+    height: 48px;
+    object-fit: cover;
+    display: block;
+  }
+  .picker {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-1);
+  }
+  .picker button {
+    padding: 0;
+    border: 2px solid transparent;
+    border-radius: var(--radius-1);
+    background: none;
+    cursor: pointer;
+  }
+  .picker button.selected {
+    border-color: var(--accent);
+  }
+  .picker button.clear {
+    padding: var(--space-1) var(--space-2);
+    border: 1px solid var(--border);
+    color: var(--text-primary);
+    min-height: 44px;
+  }
+  .picker img {
     width: 48px;
     height: 48px;
     object-fit: cover;

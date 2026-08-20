@@ -205,6 +205,8 @@ export const en: Messages = {
   "sceneBrowser.viewingBadge": "Viewing",
   "sceneBrowser.roaming": "Viewing a scene other than the active one.",
   "sceneBrowser.followActive": "Follow active",
+  "sceneBrowser.backgroundPicker": "Set background image",
+  "sceneBrowser.backgroundClear": "No background",
   "gameSettings.dice.title": "Dice",
   "gameSettings.dice.mode": "Mode",
   "gameSettings.dice.modeTotal": "Total",

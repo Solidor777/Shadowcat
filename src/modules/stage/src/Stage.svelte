@@ -1,6 +1,6 @@
 <script lang="ts">
   import { getAppContext } from "@shadowcat/ui-kit";
-  import { resolveSceneSettings, consoleLogger, type Logger } from "@shadowcat/core";
+  import { resolveSceneSettings, consoleLogger, type Logger, type SceneEngine } from "@shadowcat/core";
   import {
     RenderEngine,
     createPixiBackend,
@@ -227,6 +227,11 @@
           .join(";");
         host.dataset.shapeCount = String(documents.query("drawing").length + documents.query("template").length);
         host.dataset.wallCount = String(documents.query("wall").length);
+        // Read-only observability signal mirroring the reconciler's own background
+        // resolution (the viewed scene's `engine.background`) — "" when unset, so an
+        // e2e assertion can confirm the authored background reached the render layer
+        // without inspecting WebGL pixels directly.
+        host.dataset.background = (activeSceneDoc?.engine as SceneEngine | undefined)?.background ?? "";
         // See-as-player candidates: distinct token owners the GM sees (best-effort labels).
         playerOptions = [...new Set(documents.query("token").map((t) => t.owner).filter((o): o is string => !!o))];
         // If the selected see-as target's token left, fall back to "See all" (drops the stale sub).
