@@ -101,30 +101,29 @@ test("boot gives up at the deadline and a late-resolving fetch afterward is a no
   vi.useFakeTimers();
   try {
     const enterSpy = vi.spyOn(WorldSession.prototype, "enter").mockResolvedValue(undefined);
-    let resolveMe!: (me: Awaited<ReturnType<typeof api.getMe>>) => void;
-    vi.spyOn(api, "getMe").mockReturnValue(
-      new Promise((resolve) => {
-        resolveMe = resolve;
-      }),
-    );
+    vi.spyOn(api, "getMe").mockResolvedValue({ id: "u1", username: "gm", server_role: "user" });
     vi.spyOn(api, "getUiState").mockResolvedValue({
       global: { locale: "en", lastWorld: "w1" },
       worlds: {},
     });
     vi.spyOn(api, "putUiState").mockResolvedValue();
-    vi.spyOn(api, "listWorlds").mockResolvedValue([{ id: "w1", name: "W", role: "gm" }]);
+    let resolveWorlds!: (worlds: WorldEntry[]) => void;
+    vi.spyOn(api, "listWorlds").mockReturnValue(
+      new Promise((resolve) => {
+        resolveWorlds = resolve;
+      }),
+    );
     render(App);
     await vi.advanceTimersByTimeAsync(60_000);
     expect(await screen.findByTestId("entry-stub")).toBeTruthy();
-    // The abandoned getMe() call finally resolves well after the deadline fired, with a
-    // lastWorld that WOULD resolve to an enterable world if the abandoned-check right after
-    // this resolution (or any guard downstream of it) were removed.
-    resolveMe({ id: "u1", username: "gm", server_role: "user" });
+    // getMe/getUiState resolved promptly (not delayed) and boot() is sitting at the listWorlds
+    // await — past the first two `if (abandoned) return;` guards, with `abandoned` still false at
+    // the time this await was reached — when the deadline fires. Resolving listWorlds() now, with
+    // a world matching lastWorld, exercises SPECIFICALLY the guard immediately before
+    // resolveBootWorld/enterWorld: if it were removed, this would call enterWorld("w1") and
+    // render "Connecting…" instead of leaving entry-stub in place.
+    resolveWorlds([{ id: "w1", name: "W", role: "gm" }]);
     await vi.runOnlyPendingTimersAsync();
-    // Still on entry, and the world was never entered — the late resolution must not
-    // retroactively enter a world. If `boot()`'s final `if (abandoned) return;` guard (the one
-    // immediately before `enterWorld`) were removed, this would instead call
-    // enterWorld("w1") and render "Connecting…".
     expect(screen.getByTestId("entry-stub")).toBeTruthy();
     expect(enterSpy).not.toHaveBeenCalled();
   } finally {
