@@ -74,3 +74,23 @@ Currently open, confirmed-real defects. Deferrals belong in `TODO.md`, not here.
     already-ruled remediation for that defect (snapshotting the relevant state into the event or
     command at commit time) is expected to close this one too; fixed together in the same phase
     rather than forked across phases.
+
+- **`App.svelte`'s `boot()` can render one stale frame of `<Table>`'s "Connecting…" branch after
+  falling back to `login` on a `#/world/<id>` deep link.** `navigate()` only writes
+  `location.hash` synchronously; `currentRoute()`'s reactive `route` state updates asynchronously,
+  off the `hashchange` listener (`route.svelte.ts`). `boot()`'s deadline-timeout callback and its
+  `catch` block both call `navigate({ name: "login" })` and then set `booted = true` in the same
+  synchronous tick — so on a page loaded at a world deep link, there is a one-tick window where
+  `booted` is already `true` but `route.name` is still `"world"`, hitting the template's
+  `{:else if route.name === "world"}` branch and rendering a stale "Connecting…" before the
+  `hashchange` event lands and flips the view to `<Entry>`.
+  - **Reachable sequence:** load the SPA on a `#/world/<id>` link with a backend that is down or
+    unreachable for the whole boot window; either the deadline fires or the outer `getMe`/
+    `loadSessionState` `catch` fires, both of which navigate to `login` — the flicker window is the
+    same either way, since `navigate()`'s hash-write-then-async-listener structure predates the
+    boot deadline and is not specific to it.
+  - **Fix shape not yet decided:** either make `navigate()`'s effect on `route` synchronous
+    (removing the `hashchange`-listener indirection for same-tick reads) or have `boot()`'s
+    fallback paths await a microtask/the dispatched `hashchange` before setting `booted = true`.
+    Needs its own investigation into every other `navigate()` call site before choosing, since the
+    fix touches the router primitive itself, not just `boot()`.
