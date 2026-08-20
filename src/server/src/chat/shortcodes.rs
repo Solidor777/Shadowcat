@@ -92,9 +92,8 @@ fn is_name_char(c: char) -> bool {
 /// of the closing run (inclusive of the backticks). An unmatched opening run (no closing run of
 /// equal length before the string ends) is NOT a code span, matching CommonMark's own rule —
 /// scanning resumes immediately after the unmatched run rather than treating the rest of the
-/// string as code. Ranges are produced in increasing, non-overlapping order.
-/// @param raw The raw chat text to scan.
-/// @returns Every code-span byte range, `(start, end)` with `end` exclusive.
+/// string as code. Ranges are produced in increasing, non-overlapping order, as `(start, end)`
+/// pairs with `end` exclusive.
 fn code_span_ranges(raw: &str) -> Vec<(usize, usize)> {
     let bytes = raw.as_bytes();
     let mut ranges = Vec::new();
@@ -139,10 +138,8 @@ fn code_span_ranges(raw: &str) -> Vec<(usize, usize)> {
     ranges
 }
 
-/// Whether byte position `pos` in `raw` falls inside one of `ranges` (`code_span_ranges`'s output).
-/// @param ranges Non-overlapping, increasing `(start, end)` byte ranges.
-/// @param pos The byte position to test.
-/// @returns Whether `pos` is covered by any range.
+/// Whether byte position `pos` in `raw` falls inside one of `ranges` (`code_span_ranges`'s
+/// non-overlapping, increasing `(start, end)` output).
 fn in_code_span(ranges: &[(usize, usize)], pos: usize) -> bool {
     ranges.iter().any(|&(start, end)| pos >= start && pos < end)
 }
