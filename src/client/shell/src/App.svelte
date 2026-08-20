@@ -2,7 +2,12 @@
   import { webSocketConnect } from "@shadowcat/core";
   import { Entry } from "@shadowcat/module-entry";
   import { getMe, listWorlds, withRetry, type Me } from "./lib/api";
-  import { loadSessionState, setLastWorld, flushOnUnload } from "./lib/sessionState.svelte";
+  import {
+    loadSessionState,
+    setLastWorld,
+    flushOnUnload,
+    pruneStaleWorlds,
+  } from "./lib/sessionState.svelte";
   import { currentRoute, navigate } from "./lib/route.svelte";
   import { resolveBootWorld } from "./lib/bootResolution";
   import { coreUi } from "@shadowcat/module-core-ui";
@@ -97,6 +102,7 @@
           try {
             const worlds = await withRetry(() => listWorlds());
             if (abandoned) return;
+            pruneStaleWorlds(worlds.map((w) => w.id));
             const resolved = resolveBootWorld(currentRoute(), last, worlds);
             if (resolved.enterWorldId) {
               enterWorld(resolved.enterWorldId); // reload returns you to the URL's/last world

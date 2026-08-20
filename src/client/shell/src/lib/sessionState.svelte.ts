@@ -39,6 +39,10 @@ type WorldKey = keyof UiState["worlds"][string];
 const dirty = {
   global: new Set<GlobalField>(),
   worlds: new Map<string, Set<WorldKey>>(),
+  /** World ids whose ENTIRE `worlds.<id>` entry should be removed on the next persist — distinct
+   * from `worlds`, which tracks per-key dirty leaves of an entry that still exists. Populated only
+   * by `pruneStaleWorlds`. */
+  removedWorlds: new Set<string>(),
 };
 
 /** A structural copy of `dirty`, taken before clearing it for a persist
@@ -48,6 +52,8 @@ type DirtySnapshot = {
   global: Set<GlobalField>;
   /** Copy of the dirty per-world key sets at snapshot time, keyed by world id. */
   worlds: Map<string, Set<WorldKey>>;
+  /** Copy of the dirty removed-world-id set at snapshot time. */
+  removedWorlds: Set<string>;
 };
 
 /** Deep-copies the live `dirty` tracking into new `Set`/`Map` instances, not
@@ -63,10 +69,12 @@ function snapshotDirty(): DirtySnapshot {
   return {
     global: new Set(dirty.global),
     worlds: new Map([...dirty.worlds].map(([id, keys]) => [id, new Set(keys)])),
+    removedWorlds: new Set(dirty.removedWorlds),
   };
 }
 
-/** Clears all dirty tracking: the global field set and every world's key set.
+/** Clears all dirty tracking: the global field set, every world's key set, and the
+ * whole-entry-removal set.
  * @example
  * ```
  * clearDirty();
@@ -75,6 +83,7 @@ function snapshotDirty(): DirtySnapshot {
 function clearDirty(): void {
   dirty.global.clear();
   dirty.worlds.clear();
+  dirty.removedWorlds.clear();
 }
 
 /** Re-adds every field/key from `snap` into the live dirty tracking (deep
@@ -94,6 +103,7 @@ function remarkDirty(snap: DirtySnapshot): void {
     for (const key of keys) set.add(key);
     dirty.worlds.set(id, set);
   }
+  for (const id of snap.removedWorlds) dirty.removedWorlds.add(id);
 }
 
 /** Marks a single per-world key dirty, creating that world's key set on
@@ -112,6 +122,37 @@ function markWorldDirty(world: string, key: WorldKey): void {
   dirty.worlds.set(world, set);
 }
 
+/** Copies `field`'s current value from `g` into `patch`, keyed by `field` itself. A `switch`
+ * (not an `if` chain) so a `GlobalField` union widened by a new `UiState.global` property fails to
+ * compile here (the `default` branch's `field satisfies never` check) rather than silently
+ * dropping the new field from every patch.
+ * @param patch The in-progress global patch slice to write into.
+ * @param g The current `UiState.global` to read from.
+ * @param field The dirty field to copy.
+ * @example
+ * ```ts
+ * declare const patch: Partial<UiState["global"]>;
+ * declare const g: UiState["global"];
+ * copyGlobalField(patch, g, "locale");
+ * ```
+ */
+function copyGlobalField(
+  patch: Partial<UiState["global"]>,
+  g: UiState["global"],
+  field: GlobalField,
+): void {
+  switch (field) {
+    case "locale":
+      patch.locale = g.locale;
+      return;
+    case "lastWorld":
+      patch.lastWorld = g.lastWorld;
+      return;
+    default:
+      field satisfies never;
+  }
+}
+
 /** Builds the `global` slice of a `UiStatePatch` from the currently dirty
  * global fields, reading current values from `state.global`.
  * @returns The dirty fields only, or `undefined` if no global field is dirty.
@@ -123,9 +164,38 @@ function markWorldDirty(world: string, key: WorldKey): void {
 function buildGlobalPatch(): Partial<UiState["global"]> | undefined {
   if (dirty.global.size === 0) return undefined;
   const patch: Partial<UiState["global"]> = {};
-  if (dirty.global.has("locale")) patch.locale = state.global.locale;
-  if (dirty.global.has("lastWorld")) patch.lastWorld = state.global.lastWorld;
+  for (const field of dirty.global) copyGlobalField(patch, state.global, field);
   return patch;
+}
+
+/** Copies `key`'s current value from `w` into `slice`, keyed by `key` itself. Same exhaustiveness
+ * discipline as `copyGlobalField` — see its doc for why a `switch` over the leaf-key union,
+ * not an `if` chain.
+ * @param slice The in-progress world patch slice to write into.
+ * @param w The current `UiState.worlds[id]` entry to read from.
+ * @param key The dirty key to copy.
+ * @example
+ * ```ts
+ * declare const slice: Partial<{ panelLayout?: unknown; chatRead?: unknown }>;
+ * declare const w: { panelLayout?: unknown; chatRead?: unknown };
+ * copyWorldKey(slice, w, "panelLayout");
+ * ```
+ */
+function copyWorldKey(
+  slice: Partial<UiState["worlds"][string]>,
+  w: UiState["worlds"][string],
+  key: WorldKey,
+): void {
+  switch (key) {
+    case "panelLayout":
+      slice.panelLayout = w.panelLayout;
+      return;
+    case "chatRead":
+      slice.chatRead = w.chatRead;
+      return;
+    default:
+      key satisfies never;
+  }
 }
 
 /** Builds one world's slice of a `UiStatePatch` from a set of dirty keys,
@@ -146,14 +216,16 @@ function buildWorldPatch(
   const w = state.worlds[id];
   if (!w || keys.size === 0) return undefined;
   const slice: Partial<UiState["worlds"][string]> = {};
-  if (keys.has("panelLayout")) slice.panelLayout = w.panelLayout;
-  if (keys.has("chatRead")) slice.chatRead = w.chatRead;
+  for (const key of keys) copyWorldKey(slice, w, key);
   return slice;
 }
 
 /** Builds a full `UiStatePatch` from the current `dirty` tracking: a
- * `global` slice via `buildGlobalPatch`, plus one `worlds[id]` slice per
- * world whose dirty keys still resolve through `buildWorldPatch`. Omits
+ * `global` slice via `buildGlobalPatch`, one `worlds[id]` slice per
+ * world whose dirty keys still resolve through `buildWorldPatch`, and a `null` entry for
+ * each world id marked in `dirty.removedWorlds` (see `pruneStaleWorlds`) — written LAST so a
+ * removal wins over any leftover per-key slice for the same id, though `pruneStaleWorlds`
+ * itself already prevents that id from appearing in both sets by construction. Omits
  * `global`/`worlds` entirely when there is nothing to send on that side.
  * @returns The patch to PUT — may have neither `global` nor `worlds` set if
  *   nothing is dirty.
@@ -166,12 +238,13 @@ function buildPatch(): UiStatePatch {
   const patch: UiStatePatch = {};
   const global = buildGlobalPatch();
   if (global) patch.global = global;
-  if (dirty.worlds.size > 0) {
-    const worlds: Record<string, Partial<UiState["worlds"][string]>> = {};
+  if (dirty.worlds.size > 0 || dirty.removedWorlds.size > 0) {
+    const worlds: Record<string, Partial<UiState["worlds"][string]> | null> = {};
     for (const [id, keys] of dirty.worlds) {
       const slice = buildWorldPatch(id, keys);
       if (slice) worlds[id] = slice;
     }
+    for (const id of dirty.removedWorlds) worlds[id] = null;
     if (Object.keys(worlds).length > 0) patch.worlds = worlds;
   }
   return patch;
@@ -382,6 +455,31 @@ export function setChatRead(world: string, blob: unknown): void {
   schedulePersist();
 }
 
+/** Removes every local `worlds.<id>` entry whose id is NOT in `memberWorldIds`, marking each for
+ * whole-entry removal on the next persist (`merge_one_level`'s null-removes-key semantics
+ * server-side) and scheduling that persist. A no-op if nothing is stale. This is how an
+ * accumulated-forever `ui_state.worlds` blob (a world the caller left, or whose access was
+ * revoked) actually gets pruned — see `App.svelte`'s `boot()` for the call site and why it's tied
+ * to an existing `listWorlds()` fetch rather than an added unconditional one.
+ * @param memberWorldIds Every world id the caller currently has access to.
+ * @example
+ * ```ts
+ * declare const memberWorldIds: string[];
+ * pruneStaleWorlds(memberWorldIds);
+ * ```
+ */
+export function pruneStaleWorlds(memberWorldIds: string[]): void {
+  const memberSet = new Set(memberWorldIds);
+  const staleIds = Object.keys(state.worlds).filter((id) => !memberSet.has(id));
+  if (staleIds.length === 0) return;
+  for (const id of staleIds) {
+    delete state.worlds[id];
+    dirty.worlds.delete(id);
+    dirty.removedWorlds.add(id);
+  }
+  schedulePersist();
+}
+
 /** Force any pending persist to run now (test/teardown helper). Cancels the
  * cooldown timer and the pending-during-cooldown flag, then calls
  * `persist()` directly — whatever is dirty at call time is sent immediately.
@@ -411,7 +509,11 @@ export async function flushSessionState(): Promise<void> {
  * ```
  */
 export function flushOnUnload(): void {
-  if (!loaded || (dirty.global.size === 0 && dirty.worlds.size === 0)) return;
+  if (
+    !loaded ||
+    (dirty.global.size === 0 && dirty.worlds.size === 0 && dirty.removedWorlds.size === 0)
+  )
+    return;
   const snap = snapshotDirty();
   const patch = buildPatch();
   clearDirty();

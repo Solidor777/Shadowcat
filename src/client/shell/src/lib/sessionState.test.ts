@@ -12,6 +12,7 @@ import {
   flushSessionState,
   flushOnUnload,
   resetSessionState,
+  pruneStaleWorlds,
 } from "./sessionState.svelte";
 
 // Module-level state (loaded/dirty/the cooldown timer) persists across tests otherwise — a
@@ -274,4 +275,93 @@ test("flushOnUnload re-marks the slice on a rejected keepalive PUT so a later fl
   await flushSessionState(); // this time lastWorld is dirty again → retries
   const patch = put.mock.calls.at(-1)?.[0];
   expect(patch?.global).toEqual({ lastWorld: "w2" });
+});
+
+test("pruneStaleWorlds is a no-op when every stored world id is still a member", async () => {
+  vi.spyOn(api, "getUiState").mockResolvedValue({
+    global: { locale: "en", lastWorld: null },
+    worlds: { w1: { panelLayout: { version: 1 } } },
+  });
+  const put = vi.spyOn(api, "putUiState").mockResolvedValue();
+  await loadSessionState();
+  pruneStaleWorlds(["w1"]);
+  expect(getSessionState().worlds).toEqual({ w1: { panelLayout: { version: 1 } } });
+  expect(put).not.toHaveBeenCalled();
+});
+
+test("pruneStaleWorlds removes a stale entry from session state immediately", async () => {
+  vi.spyOn(api, "getUiState").mockResolvedValue({
+    global: { locale: "en", lastWorld: null },
+    worlds: { w1: { panelLayout: { version: 1 } }, w2: { chatRead: { general: 1 } } },
+  });
+  vi.spyOn(api, "putUiState").mockResolvedValue();
+  await loadSessionState();
+  pruneStaleWorlds(["w2"]); // w1 is stale
+  expect(getSessionState().worlds).toEqual({ w2: { chatRead: { general: 1 } } });
+});
+
+test("pruneStaleWorlds triggers a persist sending a null removal for the stale id", async () => {
+  vi.spyOn(api, "getUiState").mockResolvedValue({
+    global: { locale: "en", lastWorld: null },
+    worlds: { w1: { panelLayout: { version: 1 } } },
+  });
+  const put = vi.spyOn(api, "putUiState").mockResolvedValue();
+  await loadSessionState();
+  pruneStaleWorlds([]); // w1 is stale
+  await flushSessionState();
+  expect(put).toHaveBeenCalled();
+  expect(put.mock.calls.at(-1)?.[0].worlds).toEqual({ w1: null });
+});
+
+test("pruneStaleWorlds removing a world with pending per-key dirty state sends ONLY the null removal", async () => {
+  vi.spyOn(api, "getUiState").mockResolvedValue({
+    global: { locale: "en", lastWorld: null },
+    worlds: {},
+  });
+  const put = vi.spyOn(api, "putUiState").mockResolvedValue();
+  await loadSessionState();
+  setPanelLayout("w1", { version: 1 }); // leading-edge persist fires + starts cooldown
+  pruneStaleWorlds([]); // w1 pruned while its panelLayout write is still pending/in-flight
+  await flushSessionState();
+  const patch = put.mock.calls.at(-1)?.[0];
+  expect(patch?.worlds).toEqual({ w1: null });
+});
+
+test("pruneStaleWorlds retries a failed removal via remarkDirty", async () => {
+  vi.spyOn(api, "getUiState").mockResolvedValue({
+    global: { locale: "en", lastWorld: null },
+    worlds: { w1: { panelLayout: { version: 1 } } },
+  });
+  const put = vi
+    .spyOn(api, "putUiState")
+    .mockRejectedValueOnce(new Error("network"))
+    .mockResolvedValue();
+  await loadSessionState();
+  pruneStaleWorlds([]); // leading-edge persist rejects
+  await flushSessionState();
+  expect(put).toHaveBeenCalledTimes(2);
+  expect(put.mock.calls[1]?.[0].worlds).toEqual({ w1: null });
+
+  // A second successful flush retries the same null removal.
+  await flushSessionState();
+  expect(put).toHaveBeenCalledTimes(2); // nothing dirty left after the successful retry above
+});
+
+test("flushOnUnload flushes a pending pruneStaleWorlds removal", async () => {
+  vi.spyOn(api, "getUiState").mockResolvedValue({
+    global: { locale: "en", lastWorld: null },
+    worlds: {
+      w1: { panelLayout: { version: 1 } },
+      w2: { panelLayout: { version: 1 } },
+      w3: { panelLayout: { version: 1 } },
+    },
+  });
+  const put = vi.spyOn(api, "putUiState").mockResolvedValue();
+  await loadSessionState();
+  pruneStaleWorlds(["w2", "w3"]); // removes w1: leading-edge persist fires + starts cooldown
+  pruneStaleWorlds(["w3"]); // removes w2: lands during cooldown → pending, not yet written
+  flushOnUnload();
+  expect(put).toHaveBeenLastCalledWith(expect.objectContaining({ worlds: { w2: null } }), {
+    keepalive: true,
+  });
 });

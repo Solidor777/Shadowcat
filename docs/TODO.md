@@ -73,18 +73,6 @@ Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one de
 7. **Speak-as-token-instance** — `ActorOwnerRef::TokenInstance` is REJECTED at ingest (fail-closed,
    no first-party producer) — build the composer/token-context UX and lift the rejection together.
 
-## Actionable now — ui-state per-key merge (Task 4 final-review backlog)
-- TODO: the server-side `null`-removes-entry/key merge semantics exist (`merge_one_level`) but
-  nothing on the client emits a `null` yet — a world a user leaves (or a stale panel-layout/
-  chat-read key a module retires) still accumulates forever in the stored `ui_state` blob with no
-  caller ever exercising the recovery path. Add client-side pruning (e.g. dropping a
-  `worlds.<id>` entry for a world no longer in the caller's membership list) so an over-cap blob
-  is actually recovered, not just theoretically recoverable.
-- TODO: `buildGlobalPatch`/`buildWorldPatch` enumerate the leaf keys by
-  hand — adding a third key to `UiState["worlds"][string]` (or a new `global` field) widens the
-  type but silently drops the new key from every patch, with no compile error. Drive the copy from
-  an exhaustive `Record<WorldKey, …>`/switch so a widened union becomes a type error.
-
 ## Actionable now — Phase D-alpha (movement authority & secrecy) backlog
 - TODO: `execute_move`'s footprint-aware wall/mask gate has a residual anchor asymmetry on
   off-center input: the wall-disc check is anchored at the literal continuous point `next`,

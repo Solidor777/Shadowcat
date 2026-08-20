@@ -3,6 +3,7 @@ import { test, expect, vi, afterEach } from "vitest";
 import App from "./App.svelte";
 import * as api from "./lib/api";
 import { WorldSession } from "./lib/worldSession.svelte";
+import { getSessionState } from "./lib/sessionState.svelte";
 import type { WorldEntry } from "@shadowcat/types";
 
 // Stub the entry package: assert the shell renders it for pre-world routes without
@@ -145,6 +146,21 @@ test("boot gives up at the deadline and a late-resolving fetch afterward is a no
   } finally {
     vi.useRealTimers();
   }
+});
+
+test("boot prunes a stored world absent from the fetched worlds list", async () => {
+  vi.stubGlobal("WebSocket", class { addEventListener() {} send() {} close() {} } as unknown);
+  vi.spyOn(api, "getMe").mockResolvedValue({ id: "u1", username: "gm", server_role: "user" });
+  vi.spyOn(api, "getUiState").mockResolvedValue({
+    global: { locale: "en", lastWorld: "w1" },
+    worlds: { w1: { panelLayout: { version: 1 } }, stale: { chatRead: { general: 1 } } },
+  });
+  vi.spyOn(api, "putUiState").mockResolvedValue();
+  vi.spyOn(api, "listWorlds").mockResolvedValue([{ id: "w1", name: "W", role: "gm" }]); // "stale" gone
+  render(App);
+  await screen.findByText("Connecting…");
+  expect(getSessionState().worlds).toEqual({ w1: { panelLayout: { version: 1 } } });
+  vi.unstubAllGlobals();
 });
 
 test("a hash change during the listWorlds await is honored, not the route captured before it", async () => {

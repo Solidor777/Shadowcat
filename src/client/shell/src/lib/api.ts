@@ -204,16 +204,22 @@ export async function getUiState(): Promise<UiState> {
  * `worlds.<id>` object unless every key happens to be present. A present
  * value still replaces its leaf wholesale (a `panelLayout`/`chatRead` blob is
  * opaque and is never itself deep-merged). Absent fields/keys are untouched.
- * Sending only changed leaves is the concurrency control — concurrent
- * sessions of one account (two tabs, or two independent module owners of the
- * same world's slice) contend only on the individual fields/keys both
- * actually write. */
+ * A `null` value for a whole `worlds.<id>` entry instead REMOVES that entry
+ * server-side (`merge_one_level`'s whole-key-removal branch) — distinct from
+ * a `null` leaf value nested inside a per-world object, which removes just
+ * that one leaf key. Sending only changed leaves is the concurrency control —
+ * concurrent sessions of one account (two tabs, or two independent module
+ * owners of the same world's slice) contend only on the individual
+ * fields/keys both actually write. */
 export interface UiStatePatch {
   /** Dirty `global` fields only; absent fields are untouched server-side. */
   global?: Partial<UiState["global"]>;
   /** Dirty per-world keys only, keyed by world id; absent keys/worlds are
-   * untouched server-side. */
-  worlds?: Record<string, Partial<UiState["worlds"][string]>>;
+   * untouched server-side. A `null` value for a world id removes that
+   * world's ENTIRE entry server-side (`merge_one_level`'s whole-key-removal
+   * branch) — distinct from a per-leaf-key `null` inside an object value,
+   * which removes just that one key. */
+  worlds?: Record<string, Partial<UiState["worlds"][string]> | null>;
 }
 
 /** Writes a partial UI-state patch (see `UiStatePatch` for the merge rule).

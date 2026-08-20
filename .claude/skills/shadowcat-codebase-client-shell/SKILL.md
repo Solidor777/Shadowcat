@@ -242,6 +242,21 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
   `http::routes::put_ui_state`. The client never sends the whole `{global, worlds}` blob.
   Concurrent same-user sessions (two tabs) now contend only on the individual fields/keys both
   sessions actually write, instead of last-writer-wins on a whole slice or the whole blob.
+  **`pruneStaleWorlds(memberWorldIds)`** is the client-side caller that actually exercises the
+  server's whole-entry-removal path: it deletes every local `worlds.<id>` entry absent from the
+  caller's current membership list, tracks each removed id in a third `dirty` set
+  (`removedWorlds`, alongside `global`/`worlds`, mirrored through `DirtySnapshot`/
+  `snapshotDirty`/`clearDirty`/`remarkDirty` like the other two), and `buildPatch` emits a `null`
+  for each — written after the per-key `worlds` loop so a removal wins if an id somehow lands in
+  both sets, though `pruneStaleWorlds` itself already deletes any stale `dirty.worlds` entry for
+  an id it removes so that collision shouldn't arise by construction. `App.svelte`'s `boot()`
+  calls it right after its existing conditional `listWorlds()` fetch (not an added unconditional
+  call) — this is deliberately not comprehensive: a boot with no `lastWorld` and no world-route
+  URL skips the `listWorlds()` branch entirely and prunes nothing that boot. `buildGlobalPatch`/
+  `buildWorldPatch` copy their dirty leaves through `copyGlobalField`/`copyWorldKey`, a switch
+  statement ending in `field satisfies never`/`key satisfies never` — a `GlobalField`/`WorldKey`
+  union widened by a new `UiState.global`/`worlds[id]` member fails to compile in that `default`
+  branch rather than silently dropping the new field from every patch.
 - **Multi-scene / viewed-scene seams** — `AppContext.viewedSceneId: string | null`
   (a live getter, `Table`: `get viewedSceneId() { return session.viewedSceneId; }` —
   NEVER destructure a snapshot of it), `AppContext.setGmViewedScene(id): void` (GM-only local
