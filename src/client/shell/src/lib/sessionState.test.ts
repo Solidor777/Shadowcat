@@ -14,7 +14,12 @@ import {
   resetSessionState,
 } from "./sessionState.svelte";
 
-beforeEach(() => i18n.setLocale("en"));
+// Module-level state (loaded/dirty/the cooldown timer) persists across tests otherwise — a
+// real-timer test's cooldown can still be armed up to COOLDOWN_MS into the next test.
+beforeEach(() => {
+  i18n.setLocale("en");
+  resetSessionState();
+});
 afterEach(() => vi.restoreAllMocks());
 
 test("load applies the saved locale and exposes the blob", async () => {
@@ -149,7 +154,7 @@ test("a locale-only change persists locale without lastWorld", async () => {
   expect(patch?.global).toEqual({ locale: "zz" });
 });
 
-test("a failed persist re-marks the lost slice so a later flush retries it alongside a new one", async () => {
+test("a failed persist's re-marked slice is retried once the in-flight attempt settles, not lost", async () => {
   vi.spyOn(api, "getUiState").mockResolvedValue({
     global: { locale: "en", lastWorld: null },
     worlds: {},
@@ -160,14 +165,18 @@ test("a failed persist re-marks the lost slice so a later flush retries it along
     .mockResolvedValue();
   await loadSessionState();
   setPanelLayout("w1", { version: 1 }); // leading-edge persist rejects
-  await flushSessionState(); // lets the rejection's catch re-mark w1.panelLayout
-  setChatRead("w2", { general: 1 }); // a new mutation while w1 is still dirty from the failure
+  // The in-flight-PUT ordering guard's queued retry runs (and this await genuinely waits for
+  // it, not just the failed first attempt) BEFORE this line returns — the retry succeeds on
+  // its own, independent of any later mutation, rather than waiting to be combined with one.
   await flushSessionState();
-  const patch = put.mock.calls.at(-1)?.[0];
-  expect(patch?.worlds).toEqual({
-    w1: { panelLayout: { version: 1 } },
-    w2: { chatRead: { general: 1 } },
-  });
+  expect(put).toHaveBeenCalledTimes(2);
+  expect(put.mock.calls[1]?.[0].worlds).toEqual({ w1: { panelLayout: { version: 1 } } });
+
+  // A later, independent mutation sends its own patch normally.
+  setChatRead("w2", { general: 1 });
+  await flushSessionState();
+  expect(put).toHaveBeenCalledTimes(3);
+  expect(put.mock.calls[2]?.[0].worlds).toEqual({ w2: { chatRead: { general: 1 } } });
 });
 
 test("flushOnUnload keepalive-persists a change made during the cooldown", async () => {
@@ -199,14 +208,6 @@ test("a second persist attempt while one is unresolved is deferred, not raced", 
       .mockImplementationOnce(() => new Promise<void>((resolve) => { resolveFirst = resolve; }))
       .mockResolvedValue(undefined);
     await loadSessionState();
-    // A preceding real-timer test can leave its own cooldown `timer` still armed for up to
-    // COOLDOWN_MS after that test ends (neither `loadSessionState` nor `flushOnUnload` cancels
-    // it); with `timer` non-null, `schedulePersist` would take its cooldown branch instead of
-    // firing the leading edge this test depends on. `flushSessionState` cancels that leftover
-    // timer; dirty tracking is already empty at this point (`loadSessionState` just cleared it),
-    // so this is a no-op PUT and does not consume the mocked hanging first call below.
-    await flushSessionState();
-    put.mockClear();
 
     setLastWorld("w1"); // leading edge: persist() starts immediately, putUiState #1 pending
     expect(put).toHaveBeenCalledTimes(1);

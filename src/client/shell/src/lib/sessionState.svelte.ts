@@ -14,13 +14,14 @@ const COOLDOWN_MS = 500;
 let timer: ReturnType<typeof setTimeout> | null = null;
 let pendingDuringCooldown = false;
 
-/** True while a `persist()` call's `putUiState` is unresolved — the in-flight
- * guard `persist()` itself checks before starting a second overlapping PUT. */
-let persistInFlight = false;
-/** Set when `persist()` is called while `persistInFlight` is already true;
- * consumed by the in-flight call's `finally` to re-run `persist()` once it
- * settles, so the deferred attempt picks up everything dirtied meanwhile. */
-let persistDeferred = false;
+/** The current `persist()` attempt's PUT, while one is unresolved — `persist()`
+ * checks this before starting a second overlapping PUT. */
+let persistInFlight: Promise<void> | null = null;
+/** The single coalesced retry `persist()` schedules once `persistInFlight`
+ * settles — every call arriving while a PUT is in flight shares this SAME
+ * promise (never one retry per caller) and awaits it, so `persistInFlight`
+ * settling always resolves every waiting caller together, once. */
+let persistQueued: Promise<void> | null = null;
 
 /** A dirty-trackable key of `UiState.global` (`"locale"` or `"lastWorld"`). */
 type GlobalField = keyof UiState["global"];
@@ -184,11 +185,14 @@ function buildPatch(): UiStatePatch {
  * dirty state builds an empty patch.
  *
  * In-flight-PUT ordering guard: a call arriving while an earlier call's
- * `putUiState` is still unresolved only sets `persistDeferred` and returns —
- * it does NOT snapshot/build/clear dirty tracking itself, so the deferred
- * attempt (run from the in-flight call's `finally`, once `putUiState`
- * settles) picks up everything dirtied in the meantime rather than racing a
- * second overlapping PUT.
+ * `putUiState` is still unresolved does NOT start a second overlapping PUT.
+ * It shares (creating if absent) `persistQueued`, a single coalesced retry
+ * chained onto `persistInFlight` — so every such caller awaits the SAME
+ * eventual retry rather than each firing its own, and none of them resolve
+ * until that retry (which snapshots/builds/clears dirty tracking at ITS OWN
+ * run time, picking up everything dirtied since) has actually completed —
+ * `flushSessionState()`'s callers depend on this: a call made while a PUT is
+ * in flight still awaits a real, later write, not an immediate no-op return.
  * @example
  * ```
  * await persist();
@@ -196,26 +200,29 @@ function buildPatch(): UiStatePatch {
  */
 async function persist(): Promise<void> {
   if (persistInFlight) {
-    persistDeferred = true;
-    return;
+    persistQueued ??= persistInFlight.then(() => {
+      persistQueued = null;
+      return persist();
+    });
+    return persistQueued;
   }
   const snap = snapshotDirty();
   const patch = buildPatch();
   clearDirty();
   if (patch.global === undefined && patch.worlds === undefined) return;
-  persistInFlight = true;
-  try {
-    await putUiState(patch);
-  } catch (e) {
-    // Re-mark the lost fields/keys so the next scheduled persist retries them.
-    remarkDirty(snap);
-    logger.warn("ui_state persist failed", e);
-  } finally {
-    persistInFlight = false;
-    if (persistDeferred) {
-      persistDeferred = false;
-      void persist();
+  persistInFlight = (async () => {
+    try {
+      await putUiState(patch);
+    } catch (e) {
+      // Re-mark the lost fields/keys so the next scheduled persist retries them.
+      remarkDirty(snap);
+      logger.warn("ui_state persist failed", e);
     }
+  })();
+  try {
+    await persistInFlight;
+  } finally {
+    persistInFlight = null;
   }
 }
 

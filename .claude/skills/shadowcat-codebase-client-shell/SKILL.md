@@ -185,11 +185,22 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
   `UiStatePatch` covering only those dirty leaves — never the whole slice, and never
   the whole `{global, worlds}` blob — clearing them before the write and re-marking on failure
   (both functions snapshot the dirty structure, clear it, attempt the write, and on rejection
-  re-add every snapshotted field/key) so a retry doesn't lose the write. Server-side,
-  `SqliteRepository::merge_ui_state` merges the patch one level inside
-  `worlds.<id>` and inside any other top-level object key — a leaf blob (`panelLayout`, etc.)
-  still replaces wholesale, never deep-merged — in one transaction; the HTTP surface and size cap
-  live in `http::routes::put_ui_state`. The client never sends the whole `{global, worlds}` blob.
+  re-add every snapshotted field/key) so a retry doesn't lose the write. `persist()` also carries
+  an in-flight-PUT ordering guard (`persistInFlight`/`persistQueued`): a call arriving while an
+  earlier call's `putUiState` is still unresolved shares a single coalesced retry chained onto
+  the in-flight attempt instead of racing a second overlapping PUT — every such caller awaits
+  that SAME retry, which runs (picking up everything dirtied meanwhile) once the in-flight
+  attempt settles. `resetSessionState()` — wired into `Table.svelte`'s `logout` handler,
+  after the server-side session invalidation and before navigating away — cancels the cooldown
+  timer, clears dirty tracking, and resets `loaded` to `false`, so a mutation landing inside a
+  re-login `loadSessionState()`'s `await getUiState()` window cannot pass the write guard under
+  the new session's cookie. Server-side, `SqliteRepository::merge_ui_state` merges the patch one
+  level inside `worlds.<id>` and inside any other top-level object key — a leaf blob
+  (`panelLayout`, etc.) still replaces wholesale, never deep-merged — in one transaction, and a
+  `null` patch value REMOVES rather than replaces (a whole `worlds.<id>` entry, or a single leaf
+  key inside `worlds.<id>`/`global`) via `merge_one_level`; the HTTP surface, size cap, and a
+  route-level pre-check on the patch's own serialized size (before the pool is touched) live in
+  `http::routes::put_ui_state`. The client never sends the whole `{global, worlds}` blob.
   Concurrent same-user sessions (two tabs) now contend only on the individual fields/keys both
   sessions actually write, instead of last-writer-wins on a whole slice or the whole blob.
 - **Multi-scene / viewed-scene seams** — `AppContext.viewedSceneId: string | null`
