@@ -179,9 +179,6 @@ Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one de
 - TODO: `welcome_capability_requirements`'s Welcome preamble runs `spawn_blocking(scan_installed_modules)` — a full
   filesystem scan — on EVERY WS connect. Cache the scan result (invalidate on module
   install/uninstall) so reconnect storms and multi-client entry don't re-walk the modules dir.
-- TODO: `Stage`'s backend-init failure path sets `data-render-error="true"` silently. Route
-  it through the project logger so a real WebGL/backend init failure is distinguishable from a
-  timeout in e2e output and user bug reports.
 - TODO: `effectiveOwner` mirrors the server's `effective_owner` PRECEDENCE (token's
   own `/owner`, else the linked actor's owner) but omits the server's `actor.scope === doc.scope`
   guard (`effective_owner` rejects a resolved actor whose `scope` differs

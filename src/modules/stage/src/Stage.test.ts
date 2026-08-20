@@ -3,8 +3,8 @@ import { render } from "@testing-library/svelte";
 import Stage from "./Stage.svelte";
 import type { DisplayBackend } from "@shadowcat/render";
 import { RenderEngine } from "@shadowcat/render";
-import { DocumentStore, AssetResolver, buildSceneDoc, buildTokenDoc, EMPTY_FOOTPRINTS } from "@shadowcat/core";
-import type { ReadableDocuments, FootprintLookup } from "@shadowcat/core";
+import { DocumentStore, AssetResolver, buildSceneDoc, buildTokenDoc, EMPTY_FOOTPRINTS, silentLogger } from "@shadowcat/core";
+import type { ReadableDocuments, FootprintLookup, Logger } from "@shadowcat/core";
 import { setAppContextForTest } from "@shadowcat/ui-kit/test";
 import { __APP_CONTEXT_KEY__ } from "@shadowcat/ui-kit";
 
@@ -103,6 +103,25 @@ test("see-as picker falls back to the short id for an unknown owner", async () =
     }),
   });
   await vi.waitFor(() => expect(getByText(`See as ${OWNER.slice(0, 8)}`)).toBeTruthy());
+});
+
+test("a backend-init failure logs through the injected logger, not silently", async () => {
+  const failure = new Error("no webgl context");
+  const createBackend = vi.fn(async () => {
+    throw failure;
+  });
+  const errors: unknown[][] = [];
+  const logger: Logger = { ...silentLogger, error: (...args) => errors.push(args) };
+  const { container } = render(Stage, {
+    props: { createBackend, logger },
+    context: setAppContextForTest({ subscribeScene: () => ({ unsubscribe: () => {} }) }),
+  });
+  const host = container.querySelector(".stage-host") as HTMLElement | null;
+  await vi.waitFor(() => {
+    expect(host?.dataset.renderError).toBe("true");
+  });
+  expect(errors).toHaveLength(1);
+  expect(errors[0][0]).toContain("Stage backend init failed");
 });
 
 test("pushes the resolved snapToGrid to the engine (grid-stepped scene: default true)", async () => {

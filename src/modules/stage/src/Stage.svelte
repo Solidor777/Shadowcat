@@ -1,12 +1,13 @@
 <script lang="ts">
   import { getAppContext } from "@shadowcat/ui-kit";
-  import { resolveSceneSettings } from "@shadowcat/core";
+  import { resolveSceneSettings, consoleLogger, type Logger } from "@shadowcat/core";
   import {
     RenderEngine,
     createPixiBackend,
     type DisplayBackend,
     type Point,
   } from "@shadowcat/render";
+  import { untrack } from "svelte";
   import { createSubscriber } from "svelte/reactivity";
 
   /** Backend factory; defaults to the real Pixi backend. Tests inject a fake
@@ -14,10 +15,17 @@
   let {
     createBackend = (canvas: HTMLCanvasElement): Promise<DisplayBackend> =>
       createPixiBackend(canvas, { background: readColor("--surface-base", 0x101014) }),
+    logger,
   }: {
     /** See the doc comment on the destructured default above. */
     createBackend?: (canvas: HTMLCanvasElement) => Promise<DisplayBackend>;
+    /** Diagnostic sink for a backend-init failure; no logger seam exists on
+     * AppContext (mirrors `PanelHost`'s identical pattern), so this component
+     * accepts one as an optional prop and falls back to the production
+     * console logger. */
+    logger?: Logger;
   } = $props();
+  const log = untrack(() => logger ?? consoleLogger());
 
   // `ctx` is a live object (AppContext.viewedSceneId reads the session's reactive
   // `gmViewedScene` $state) — kept intact rather than destructured so reads through it
@@ -250,10 +258,12 @@
       observer.observe(host);
       host.dataset.gmView = gmView;
       host.dataset.renderReady = "true";
-    })().catch(() => {
-      // Pixi init failed (e.g. no WebGL context). Mark the host so the failure is
-      // observable rather than an unhandled rejection; real-GL init is covered by
-      // the Playwright suite.
+    })().catch((e) => {
+      // Pixi init failed (e.g. no WebGL context). Log through the project logger so
+      // this is distinguishable from a timeout in e2e output/bug reports, and mark
+      // the host so the failure is also observable in the DOM; real-GL init is
+      // covered by the Playwright suite.
+      log.error("Stage backend init failed", e);
       if (host) host.dataset.renderError = "true";
     });
 
