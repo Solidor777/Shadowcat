@@ -170,6 +170,11 @@ test("a failed activation still runs the rest of the Welcome handler", async () 
     modules: [cycleModA, cycleModB],
     logger,
   });
+  // This suite has no `clearMocks` config, so the shared `listWorldMembers` mock's call
+  // history otherwise carries over from every earlier test that also calls `session.enter()`;
+  // clear it here so the assertion below proves THIS session's failed activation still triggers
+  // the member fetch, not residual calls from an earlier test.
+  vi.mocked(listWorldMembers).mockClear();
   await session.enter("w1");
   push(welcomeFrame);
   await vi.waitFor(() => expect(errors).toHaveLength(1));
