@@ -1242,8 +1242,9 @@ async fn welcome_capability_requirements(
 /// What a connection knows about its world, fixed for the connection's
 /// duration: the room it publishes/subscribes through, the document
 /// repository, the caller's resolved identity and role, the resync watermark
-/// `egress_loop` starts from, and the installed-modules directory used to
-/// build the Welcome capability requirements.
+/// `egress_loop` starts from, the installed-modules directory used to
+/// build the Welcome capability requirements, and the shared module-scan
+/// cache backing it.
 struct EgressConnState {
     /// The world's room — the authoritative publish/subscribe path.
     room: Arc<Room>,

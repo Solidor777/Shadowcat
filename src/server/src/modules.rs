@@ -4,6 +4,7 @@
 #![deny(clippy::missing_docs_in_private_items)]
 
 use std::path::Path;
+use std::sync::Arc;
 
 use serde::Deserialize;
 
@@ -260,8 +261,10 @@ pub fn engine_compat_ok(m: &InstalledModule) -> bool {
 /// WS connection on the server (see `crate::ws::WsState::module_scan_cache`).
 #[derive(Default)]
 pub struct ModuleScanCache {
-    /// The current cached scan, if any.
-    entry: std::sync::Mutex<Option<CachedScan>>,
+    /// The current cached scan, if any. Stored behind an `Arc` so
+    /// `get_or_scan` can clone the current entry out under the lock and run
+    /// its freshness check and any rescan entirely outside it.
+    entry: std::sync::Mutex<Option<Arc<CachedScan>>>,
 }
 
 /// One cached scan result plus the mtimes it was valid against.
@@ -302,8 +305,17 @@ impl ModuleScanCache {
         let dir_mtime = std::fs::metadata(modules_dir)
             .and_then(|m| m.modified())
             .ok();
-        let mut guard = self.entry.lock().expect("module scan cache mutex poisoned");
-        if let (Some(cached), Some(dir_mtime)) = (guard.as_ref(), dir_mtime) {
+
+        // Snapshot the current entry; the lock is held only for this clone,
+        // never across the freshness check's stat() loop or a rescan — both
+        // run below with no lock held, so one caller's rescan never blocks
+        // another caller's cache-hit validation.
+        let current = self
+            .entry
+            .lock()
+            .expect("module scan cache mutex poisoned")
+            .clone();
+        if let (Some(cached), Some(dir_mtime)) = (current.as_ref(), dir_mtime) {
             if cached.dir_mtime == dir_mtime
                 && cached
                     .manifest_mtimes
@@ -323,11 +335,17 @@ impl ModuleScanCache {
         // never spuriously "matches" a later, real directory at the same path
         // (a real mtime is never UNIX_EPOCH in practice).
         let dir_mtime = dir_mtime.unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-        *guard = Some(CachedScan {
+        let fresh = Arc::new(CachedScan {
             dir_mtime,
             manifest_mtimes,
             modules: modules.clone(),
         });
+        // Lock taken again only to swap in the fresh entry. Two concurrent
+        // misses may each independently rescan and each write their own
+        // fresh entry here — last writer wins, matching `LinkPreviewCache`'s
+        // miss-path semantics: both scans observed the same or a
+        // monotonically later on-disk state, so either result is valid.
+        *self.entry.lock().expect("module scan cache mutex poisoned") = Some(fresh);
         modules
     }
 
