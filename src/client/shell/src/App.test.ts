@@ -100,20 +100,33 @@ test("boot shows a still-trying message after the threshold when the backend is 
 test("boot gives up at the deadline and a late-resolving fetch afterward is a no-op", async () => {
   vi.useFakeTimers();
   try {
+    const enterSpy = vi.spyOn(WorldSession.prototype, "enter").mockResolvedValue(undefined);
     let resolveMe!: (me: Awaited<ReturnType<typeof api.getMe>>) => void;
     vi.spyOn(api, "getMe").mockReturnValue(
       new Promise((resolve) => {
         resolveMe = resolve;
       }),
     );
+    vi.spyOn(api, "getUiState").mockResolvedValue({
+      global: { locale: "en", lastWorld: "w1" },
+      worlds: {},
+    });
+    vi.spyOn(api, "putUiState").mockResolvedValue();
+    vi.spyOn(api, "listWorlds").mockResolvedValue([{ id: "w1", name: "W", role: "gm" }]);
     render(App);
     await vi.advanceTimersByTimeAsync(60_000);
     expect(await screen.findByTestId("entry-stub")).toBeTruthy();
-    // The abandoned getMe() call finally resolves well after the deadline fired.
+    // The abandoned getMe() call finally resolves well after the deadline fired, with a
+    // lastWorld that WOULD resolve to an enterable world if the abandoned-check right after
+    // this resolution (or any guard downstream of it) were removed.
     resolveMe({ id: "u1", username: "gm", server_role: "user" });
     await vi.runOnlyPendingTimersAsync();
-    // Still on entry — the late resolution must not retroactively navigate anywhere.
+    // Still on entry, and the world was never entered — the late resolution must not
+    // retroactively enter a world. If `boot()`'s final `if (abandoned) return;` guard (the one
+    // immediately before `enterWorld`) were removed, this would instead call
+    // enterWorld("w1") and render "Connecting…".
     expect(screen.getByTestId("entry-stub")).toBeTruthy();
+    expect(enterSpy).not.toHaveBeenCalled();
   } finally {
     vi.useRealTimers();
   }

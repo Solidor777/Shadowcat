@@ -53,9 +53,11 @@
    * (a hung/failing backend must not wedge the SPA on "Loading…" forever)
    * and always sets `booted = true` on exit. Bounded overall by
    * `BOOT_DEADLINE_MS`: past that deadline it abandons any in-flight fetch
-   * and falls back to `login` regardless of `me`, and a late resolution of an
-   * abandoned fetch is a no-op (checked after every await via the
-   * closure-local `abandoned` flag). Switches the caller's rendered message
+   * and falls back to `login` regardless of `me`, and further navigation/session-entry from an
+   * abandoned fetch is a no-op (checked after every await via the closure-local `abandoned` flag,
+   * which also gates the `me` assignment itself) — a side effect embedded inside an awaited call
+   * (e.g. `loadSessionState`'s locale write) still applies once that call resolves, since the
+   * underlying fetch itself is not cancelled. Switches the caller's rendered message
    * from "Loading…" to "Still trying…" via `bootStillTrying` after
    * `STILL_TRYING_AFTER_MS`.
    * @returns Resolves once the initial route has been decided (or the deadline fires); never
@@ -80,8 +82,9 @@
       bootStillTrying = true;
     }, STILL_TRYING_AFTER_MS);
     try {
-      me = await withRetry(() => getMe());
+      const fetchedMe = await withRetry(() => getMe());
       if (abandoned) return;
+      me = fetchedMe;
       if (me) {
         const ui = await withRetry(() => loadSessionState()); // applies the saved locale
         if (abandoned) return;
