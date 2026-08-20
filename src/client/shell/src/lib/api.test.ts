@@ -102,3 +102,46 @@ test("withRetry retries the configured attempts then rethrows the LAST (not firs
   }
 });
 
+test("withRetry applies full jitter to each retry delay (pinned to the ceiling)", async () => {
+  vi.useFakeTimers();
+  const randomSpy = vi.spyOn(Math, "random").mockReturnValue(1);
+  try {
+    let calls = 0;
+    const fn = vi.fn(async () => {
+      calls++;
+      if (calls < 3) throw new Error(`fail ${calls}`);
+      return "ok";
+    });
+    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
+    const p = api.withRetry(fn, 3, [500, 1500]);
+    await vi.runAllTimersAsync();
+    await expect(p).resolves.toBe("ok");
+    const delays = setTimeoutSpy.mock.calls.map((c) => c[1]);
+    expect(delays).toEqual([500, 1500]);
+  } finally {
+    randomSpy.mockRestore();
+    vi.useRealTimers();
+  }
+});
+
+test("withRetry's jittered delay never exceeds the base value (pinned to the floor)", async () => {
+  vi.useFakeTimers();
+  const randomSpy = vi.spyOn(Math, "random").mockReturnValue(0);
+  try {
+    let calls = 0;
+    const fn = vi.fn(async () => {
+      calls++;
+      if (calls < 2) throw new Error("fail");
+      return "ok";
+    });
+    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
+    const p = api.withRetry(fn, 2, [1000]);
+    await vi.runAllTimersAsync();
+    await expect(p).resolves.toBe("ok");
+    expect(setTimeoutSpy.mock.calls[0][1]).toBe(500);
+  } finally {
+    randomSpy.mockRestore();
+    vi.useRealTimers();
+  }
+});
+

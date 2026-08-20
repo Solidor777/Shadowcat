@@ -24,10 +24,10 @@ const FETCH_TIMEOUT_MS = 15_000;
  * @param fn - The operation to retry; invoked again from scratch each
  *   attempt.
  * @param attempts - Maximum number of calls to `fn`.
- * @param delays - Flat delay in ms before each retry, indexed by attempt
- *   number and clamped to the last entry once attempts exceed the array
- *   length (default: 500ms after the first failure, 1500ms after the
- *   second).
+ * @param delays - Base delay in ms before each retry (full jitter applied,
+ *   not the literal wait), indexed by attempt number and clamped to the
+ *   last entry once attempts exceed the array length (default: 500ms after
+ *   the first failure, 1500ms after the second).
  * @returns The resolved value of the first successful call to `fn`.
  * @example
  * ```
@@ -45,7 +45,13 @@ export async function withRetry<T>(
       return await fn();
     } catch (e) {
       lastErr = e;
-      if (i < attempts - 1) await new Promise((r) => setTimeout(r, delays[Math.min(i, delays.length - 1)]));
+      if (i < attempts - 1) {
+        const base = delays[Math.min(i, delays.length - 1)];
+        // Full jitter (half..full of `base`), matching WsClient.scheduleReconnect's convention —
+        // avoids many concurrently-retrying clients converging on the same lockstep cadence.
+        const delay = base * (0.5 + Math.random() * 0.5);
+        await new Promise((r) => setTimeout(r, delay));
+      }
     }
   }
   throw lastErr;
