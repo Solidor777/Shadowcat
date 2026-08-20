@@ -1,5 +1,5 @@
 {
   "name": "shadowcat-codebase",
   "description": "Shadowcat codebase orientation skills (shadowcat-codebase-*), the coder/reviewer agent set, and the codebase-skill routing hook, shared with downstream consumers of the engine.",
-  "version": "1.0.38"
+  "version": "1.0.39"
 }
