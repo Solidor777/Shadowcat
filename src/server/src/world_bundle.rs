@@ -54,8 +54,8 @@ pub enum WorldBundleError {
 }
 
 /// Append one in-memory JSON blob as a tar entry at `name`.
-fn append_bytes(
-    builder: &mut tar::Builder<Vec<u8>>,
+fn append_bytes<W: std::io::Write>(
+    builder: &mut tar::Builder<W>,
     name: &str,
     bytes: &[u8],
 ) -> Result<(), WorldBundleError> {
@@ -78,25 +78,34 @@ fn to_jsonl<T: serde::Serialize>(rows: &[T]) -> Result<Vec<u8>, WorldBundleError
     Ok(out)
 }
 
-/// Build the `.tar` bundle for `data`, streaming each `assets` row's bytes
-/// directly from `assets_dir.join(<world_id>).join(<asset_id>)` (the
-/// standard `storage_key` scheme) — `data.assets` carries no `storage_key`
-/// field by design (see `data::world_bundle::ExportedAssetRow`'s doc).
-/// `manifest.json` is written FIRST, always — `read_bundle` relies on this
-/// ordering to resolve the asset extraction root before any `assets/*` entry
-/// arrives.
+/// Build the `.tar` bundle for `data` into `dest`, streaming each `assets`
+/// row's bytes directly from `assets_dir.join(<world_id>).join(<asset_id>)`
+/// (the standard `storage_key` scheme) — `data.assets` carries no
+/// `storage_key` field by design (see
+/// `data::world_bundle::ExportedAssetRow`'s doc). `manifest.json` is written
+/// FIRST, always — `read_bundle` relies on this ordering to resolve the
+/// asset extraction root before any `assets/*` entry arrives.
+///
+/// Generic over the destination `Write` so a caller can hand this an owned
+/// `Vec<u8>` (tests, or a future local-file export), a `File`, or a
+/// channel-backed adapter that forwards each tar-internal `write` call
+/// straight to an HTTP response body as it happens — `write_bundle` itself
+/// never accumulates the whole tar in memory; each asset's bytes flow
+/// through `dest` via `std::io::copy`'s bounded internal buffer rather than
+/// being read fully into a `Vec` first.
 ///
 /// # Examples
 ///
 /// ```text
-/// let bytes = write_bundle(&data, Path::new("/srv/shadowcat/assets"))?;
+/// let bytes = write_bundle(&data, Path::new("/srv/shadowcat/assets"), Vec::new())?;
 /// std::fs::write("world.tar", bytes)?;
 /// ```
-pub fn write_bundle(
+pub fn write_bundle<W: std::io::Write>(
     data: &WorldExportData,
     assets_dir: &Path,
-) -> Result<Vec<u8>, WorldBundleError> {
-    let mut builder = tar::Builder::new(Vec::new());
+    dest: W,
+) -> Result<W, WorldBundleError> {
+    let mut builder = tar::Builder::new(dest);
 
     let manifest_bytes = serde_json::to_vec(&data.manifest)?;
     append_bytes(&mut builder, "manifest.json", &manifest_bytes)?;
@@ -364,7 +373,7 @@ mod tests {
         let world = Uuid::from_u128(42);
         let data = sample_data(world);
 
-        let bytes = write_bundle(&data, tmp.path()).unwrap();
+        let bytes = write_bundle(&data, tmp.path(), Vec::new()).unwrap();
         let mut archive = tar::Archive::new(bytes.as_slice());
         let mut entries = archive.entries().unwrap();
         let mut first = entries.next().unwrap().unwrap();
@@ -399,7 +408,7 @@ mod tests {
             });
         data.manifest.row_counts.insert("assets".to_string(), 1);
 
-        let bytes = write_bundle(&data, tmp.path()).unwrap();
+        let bytes = write_bundle(&data, tmp.path(), Vec::new()).unwrap();
         let mut archive = tar::Archive::new(bytes.as_slice());
         let found = archive
             .entries()
@@ -424,7 +433,7 @@ mod tests {
                 created_at: 0,
                 version: 1,
             });
-        let err = write_bundle(&data, tmp.path()).unwrap_err();
+        let err = write_bundle(&data, tmp.path(), Vec::new()).unwrap_err();
         assert!(matches!(err, WorldBundleError::Io(_)));
     }
 }

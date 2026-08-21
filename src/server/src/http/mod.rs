@@ -717,27 +717,40 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn export_world_requires_gm() {
-        let server = server_with_user("gm-user", "pw-gm", ServerRole::User).await;
-        server
-            .post("/api/login")
-            .json(&serde_json::json!({"username": "gm-user", "password": "pw-gm"}))
+        use crate::data::document::WorldRole;
+        let state = initialized_state().await;
+        let gm = seed_user(&state, "gm-user").await;
+        let player = seed_user(&state, "player-user").await;
+        let _stranger = seed_user(&state, "outsider").await;
+        let world_id = state
+            .repo
+            .create_world_owned("Exportable", gm, 0)
             .await
-            .assert_status_success();
-        let world: crate::data::document::World = server
-            .post("/api/worlds")
-            .json(&serde_json::json!({"name": "Exportable"}))
+            .unwrap()
+            .id;
+        state
+            .repo
+            .add_member(world_id, player, WorldRole::Player)
             .await
-            .json();
+            .unwrap();
 
-        // A second, non-member user cannot export it.
-        let outsider = server_with_user("outsider", "pw-out", ServerRole::User).await;
+        // A non-member user cannot export it — rejected by
+        // `permission_context`'s membership lookup, before `require_gm`'s
+        // own role comparison is ever reached.
+        let outsider = login_server(&state, "outsider").await;
         outsider
-            .post("/api/login")
-            .json(&serde_json::json!({"username": "outsider", "password": "pw-out"}))
+            .post(&format!("/api/worlds/{world_id}/export"))
             .await
-            .assert_status_success();
-        outsider
-            .post(&format!("/api/worlds/{}/export", world.id))
+            .assert_status(axum::http::StatusCode::FORBIDDEN);
+
+        // A world member with a non-GM role is also rejected — this
+        // reaches and exercises `require_gm`'s own
+        // `ctx.world_role != WorldRole::Gm` comparison, since `player` is a
+        // genuine world member and clears `permission_context`'s
+        // membership lookup.
+        let player_server = login_server(&state, "player-user").await;
+        player_server
+            .post(&format!("/api/worlds/{world_id}/export"))
             .await
             .assert_status(axum::http::StatusCode::FORBIDDEN);
     }
