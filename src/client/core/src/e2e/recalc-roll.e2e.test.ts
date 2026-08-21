@@ -93,7 +93,7 @@ test("GM recalc: spec/raw stay GM-only, recalc_history is visible to everyone an
   expect(playerSawRaw).toBeNull();
 
   // Recalc as GM.
-  let playerSawRecalcHistory: unknown[] | null = null;
+  let playerSawRecalcHistoryLength: number | null = null;
   let playerSawRecalcHistoryRaw: unknown = "unset";
   const playerWatch2 = new WsClient({
     world,
@@ -107,7 +107,7 @@ test("GM recalc: spec/raw stay GM-only, recalc_history is visible to everyone an
               const content = (engineChange.new as { content: { kind: string; recalc_history?: { previous_raw?: unknown }[] }[] }).content;
               const embed = content.find((s) => s.kind === "roll_embed");
               if (embed?.recalc_history) {
-                playerSawRecalcHistory = embed.recalc_history;
+                playerSawRecalcHistoryLength = embed.recalc_history.length;
                 playerSawRecalcHistoryRaw = embed.recalc_history[0]?.previous_raw ?? null;
               }
             }
@@ -122,8 +122,7 @@ test("GM recalc: spec/raw stay GM-only, recalc_history is visible to everyone an
   await gm.recalcRoll(messageId, rollId, []);
   await sleep(500);
 
-  expect(playerSawRecalcHistory).not.toBeNull();
-  expect((playerSawRecalcHistory as unknown[]).length).toBe(1);
+  expect(playerSawRecalcHistoryLength).toBe(1);
   expect(playerSawRecalcHistoryRaw).toBeNull();
 
   gm.stop();
