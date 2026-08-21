@@ -534,6 +534,13 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
   and go undetected by any gate.
 - **Wire types are generated** — change the Rust `Visibility`/`Document`, regenerate ts-rs, then
   mirror in the Zod schema (a drift guard enforces parity). Never hand-edit `src/types/generated`.
+- **A repo-wide grep for a `property_overrides` pointer's literal field name misses a key built
+  through a helper whose call site never spells the field name itself** — `collect_overrides`
+  accumulates matched pointers into its `out` parameter, so the values it writes are what actually
+  reach the field, not anything the call site itself spells. A survey confirming every constructed
+  `property_overrides` key falls inside an allow-listed set must also grep the constructing
+  type/helper names, not only the literal field. Same family as scoping a search to the shape you
+  imagined rather than the shape that exists.
 - **A naive raw-equality assumption about OCC pre-images is wrong.** Any code (or reviewer)
   reasoning about `apply_intent`'s Phase-1 conflict check must account for
   `values_semantically_eq`'s numeric-variant awareness — see the Hard Invariants entry above and

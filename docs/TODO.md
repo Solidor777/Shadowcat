@@ -30,12 +30,6 @@ capability already exists — but are deferred as out-of-scope-for-now work.
   through any UI affordance. Orthogonal to the width-containment fix (`docs/CLOSED_BUGS.md`):
   giving `FakeEngine` its own menu is future work if a bespoke-fallback caller needs it.
 
-## Blocked on real-time per-recipient move-streaming
-- TODO: Live cross-animation concurrency for streamed move vision (`MoveStream`). M2 precomputes each move's per-recipient vision clip at *its* execute time, so two tokens moving simultaneously do NOT reveal each other mid-walk when a watcher's vision opens after the clip — it reconciles at the stop + next `vision` rebroadcast. Wanted eventually. Needs real-time per-recipient streaming (a per-move server loop recomputing each recipient's visibility of every concurrently-moving token as positions advance) instead of execute-time precompute. No correctness/secrecy impact today — only a missed transient reveal. (Design `2026-06-25-m2-streamed-continuous-vision-design.md` §8; user wants it as a follow-up.)
-
-## Blocked on real-world need (low-priority polish, inert until it matters in practice)
-- Stored `explored_fog` blobs (`ExploredSet::to_bytes`, `(i32,i32)` per cell) carry no grid-kind tag. A blob is indexed in the scene's grid kind at write time (square `(i,j)` or hex axial `(q,r)`); reads (`ExploredSet::contains`/`iter`) are pure set membership, so a fixed-grid-kind scene has one consistent interpretation and needs no migration. A GM switching a LIVE scene square<->hex would reinterpret an existing blob under the new kind's coordinate system (stale explored cells until re-fogged) — an accepted edge, not corruption. Add a grid-kind tag to the blob header + a re-index-or-clear-on-switch step only if live grid-kind switching of populated scenes becomes a real workflow.
-
 ## Follow-on feature sub-projects (own brainstorm → spec → plan each)
 
 Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one design pass each
@@ -55,17 +49,12 @@ Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one de
    needs a server producer + authoring affordance.
 7. **Speak-as-token-instance** — `ActorOwnerRef::TokenInstance` is REJECTED at ingest (fail-closed,
    no first-party producer) — build the composer/token-context UX and lift the rejection together.
-
-## Actionable now — a literal-field-name key survey misses keys built through a helper
-- TODO: When surveying every constructed value of a specific document field (e.g. every
-  `property_overrides` pointer key ever set, to confirm none falls outside an allow-listed set),
-  a repo-wide grep for the literal field name misses a key built through a helper function whose
-  call site never spells the field name itself — the helper's return value is what actually
-  reaches the field. Such a survey must also grep the constructing type/helper names, not only
-  the literal field. Same family as scoping a search to the shape you imagined rather than the
-  shape that exists. No known live miss today — the one such helper found during the
-  `property_overrides` band-classifier work was hand-audited and confirmed compliant — but the
-  method gap persists for the next survey of this shape.
+8. **Real-time per-recipient move-streaming** — `MoveStream` precomputes each move's
+   per-recipient vision clip at execute time, so two tokens moving simultaneously do not reveal
+   each other mid-walk when a watcher's vision opens after the clip; it reconciles only at the
+   stop + next `vision` rebroadcast. No correctness/secrecy impact today — only a missed
+   transient reveal. Needs a per-move server loop recomputing each recipient's visibility of
+   every concurrently moving token as positions advance, replacing execute-time precompute.
 
 ## Registered and exercised — plugin distribution properties
 Registration is per-machine state no committed file can carry. The supported non-interactive path
