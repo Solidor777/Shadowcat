@@ -257,7 +257,7 @@ export const en: Messages = {
   "chat.roll.reroll": "Reroll this die",
   "chat.roll.remove": "Remove this die",
   "chat.roll.replace": "Replace this die's face",
-  "chat.roll.replaceInput": "Replacement face value",
+  "chat.roll.replaceInput": "Replacement face value for die {index}",
   "chat.roll.recalculated": "Recalculated",
   "notifications.dismiss": "Dismiss",
   "panels.minimize": "Minimize",

@@ -420,21 +420,22 @@
               <span class="chip recalculated">{t("chat.roll.recalculated")}</span>
             {/if}
             {#if isGm && rollBlock.raw}
+              {@const rollId = rollBlock!.roll_id!}
               <div class="recalc-menu">
-                {#each baseRollDice(rollBlock.raw) as die (die.id)}
+                {#each baseRollDice(rollBlock.raw) as die, i (die.id)}
+                  {@const bounds = numericBounds(die.kind)}
                   <div class="recalc-die-row">
                     <span class="recalc-die-natural">{die.natural}</span>
-                    <button type="button" onclick={() => sendRecalc(rollBlock!.roll_id!, { kind: "reroll_dice", ids: [die.id] })}>
+                    <button type="button" onclick={() => sendRecalc(rollId, { kind: "reroll_dice", ids: [die.id] })}>
                       {t("chat.roll.reroll")}
                     </button>
-                    <button type="button" onclick={() => sendRecalc(rollBlock!.roll_id!, { kind: "remove_dice", ids: [die.id] })}>
+                    <button type="button" onclick={() => sendRecalc(rollId, { kind: "remove_dice", ids: [die.id] })}>
                       {t("chat.roll.remove")}
                     </button>
-                    {#if numericBounds(die.kind)}
-                      {@const bounds = numericBounds(die.kind)!}
+                    {#if bounds}
                       <input
                         type="number"
-                        aria-label={t("chat.roll.replaceInput")}
+                        aria-label={t("chat.roll.replaceInput", { index: i + 1 })}
                         min={bounds.min}
                         max={bounds.max}
                         value={replaceDrafts[die.id] ?? ""}
@@ -444,7 +445,7 @@
                         type="button"
                         onclick={() => {
                           const n = Number(replaceDrafts[die.id]);
-                          if (Number.isFinite(n)) sendRecalc(rollBlock!.roll_id!, { kind: "replace_die", id: die.id, natural: n });
+                          if (Number.isFinite(n)) sendRecalc(rollId, { kind: "replace_die", id: die.id, natural: n });
                         }}
                       >
                         {t("chat.roll.replace")}

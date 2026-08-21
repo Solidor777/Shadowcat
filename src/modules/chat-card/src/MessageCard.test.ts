@@ -78,7 +78,7 @@ function fakeT(key: string, params?: Record<string, string | number>): string {
     "chat.roll.reroll": "chat.roll.reroll",
     "chat.roll.remove": "chat.roll.remove",
     "chat.roll.replace": "chat.roll.replace",
-    "chat.roll.replaceInput": "chat.roll.replaceInput",
+    "chat.roll.replaceInput": "Replacement face value for die {index}",
     "chat.roll.recalculated": "chat.roll.recalculated",
   };
   let s = templates[key] ?? key;
@@ -599,6 +599,26 @@ describe("MessageCard — GM recalc menu", () => {
     expect(container.querySelector(".recalc-menu")).not.toBeNull();
   });
 
+  it("gives each die's replace input a distinct aria-label on a multi-die roll", () => {
+    const doc = rollDoc({
+      raw: {
+        dice: [
+          { id: 0, kind: { Numeric: { min: 1, max: 6 } }, natural: 4 },
+          { id: 1, kind: { Numeric: { min: 1, max: 6 } }, natural: 2 },
+        ],
+        group_spans: [[0, 2]],
+      },
+    });
+    const { container } = render(MessageCard, {
+      props: { message: doc, showChannel: false },
+      context: setAppContextForTest({ documents: storeWith(doc), role: "gm", t: fakeT }),
+    });
+    const inputs = Array.from(container.querySelectorAll('input[type="number"]')) as HTMLInputElement[];
+    expect(inputs).toHaveLength(2);
+    const labels = inputs.map((el) => el.getAttribute("aria-label"));
+    expect(new Set(labels).size).toBe(2);
+  });
+
   it("does not render a recalc menu for a non-GM even when raw is present", () => {
     const doc = rollDoc();
     const { container } = render(MessageCard, {
@@ -658,10 +678,11 @@ describe("MessageCard — GM recalc menu", () => {
       context: setAppContextForTest({
         documents: storeWith(doc),
         role: "gm",
+        t: fakeT,
         chat: { send: () => Promise.resolve(), edit: () => Promise.resolve(), delete: () => Promise.resolve(), recalc },
       }),
     });
-    const input = screen.getByLabelText("chat.roll.replaceInput") as HTMLInputElement;
+    const input = screen.getByLabelText("Replacement face value for die 1") as HTMLInputElement;
     await fireEvent.input(input, { target: { value: "6" } });
     await fireEvent.click(screen.getByText("chat.roll.replace"));
     expect(recalc).toHaveBeenCalledWith("m1", "roll-1", [{ kind: "replace_die", id: 0, natural: 6 }]);
