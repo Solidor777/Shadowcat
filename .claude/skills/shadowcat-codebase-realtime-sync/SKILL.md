@@ -218,6 +218,13 @@ optimistically and roll back on divergence.
 - **Debounce on the leading edge, arm only when idle** (or cap max staleness) — re-arming on every
   event starves under load [[debounce-leading-edge-not-trailing-rearm]].
 - **Check-then-act across two pool queries needs one transaction** [[two-query-guard-needs-tx]].
+- **`Room.tx`/`RingBuffer` carry `RoomEvent`, never `Arc<ServerMsg>` directly, for the `Event`
+  case.** `Room.tx: broadcast::Sender<RoomEvent>` and `RingBuffer.events: VecDeque<RoomEvent>` —
+  the internal broadcast/ring element is `RoomEvent { Event(Arc<StoredCommand>), Other(Arc<
+  ServerMsg>) }` (`ws::room`), not the client-facing wire type. The client-facing
+  `ServerMsg::Event` shape is reconstructed only at `send_filtered_event`, the single
+  serialization point — every other consumer of a broadcast/ring entry sees the unredacted
+  `StoredCommand` (command plus its commit-time snapshot), never a pre-redacted wire frame.
 
 ## Gotchas
 
@@ -301,6 +308,12 @@ optimistically and roll back on divergence.
   cosmetic animation for all scene viewers. The `moveRequest` promise resolves on success (the
   `MoveStream` frame) but the animation is broadcast-driven — no local `animateAlongPath` call
   on the mover side.
+- **`Egress::Frame`'s payload stays plain `Arc<ServerMsg>`** — every construction site
+  (`ws::conn`) is a locally-synthesized non-`Event` frame (a `Reject`, a chat error, a plain
+  forwarded frame already reduced from a `RoomEvent::Other`), never a raw `RoomEvent`. Do not
+  widen `Egress::Frame` to carry `RoomEvent` without first re-verifying that invariant against
+  every current construction site — doing so would let an unredacted `StoredCommand` reach the
+  egress sink through a path that skips `send_filtered_event`'s redaction call.
 
 ## Pointers
 

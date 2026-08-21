@@ -7,28 +7,6 @@ unblocking condition, not a "someday maybe." A few headings are explicitly
 labeled "Actionable now": these are NOT blocked on anything — the underlying
 capability already exists — but are deferred as out-of-scope-for-now work.
 
-## Actionable now — Phase 1b re-brainstorm: point-in-time replay redaction (commit-time snapshot)
-- TODO: The design findings' "do both" ruling had two halves. The resync-bound half is DONE
-  (`Room::resync_floor`/`establish_resync_floor`/`resync_floor_enforced`, enforced by default) —
-  see `docs/OPEN_BUGS.md`'s updated Reachability note. The commit-time-snapshot half — the actual
-  fix for redacting replay against the policy in force at the historical seq, not today's policy —
-  is what remains, and is the real body of this item. `docs/PLAN.md`'s Phase 1b entry confirms its
-  scheduling trigger (the server-scene-geometry work merging to `main`) has fired: this is
-  unblocked, not scheduled-for-later.
-  Re-run the design pass for the commit-time redaction context that closes the two
-  replay-redaction defects in `OPEN_BUGS.md`. The first proposal was reviewed by two blind reviewers
-  and returned needs-rework; **do not restart from scratch and do not patch that proposal** — its
-  reviewed findings are the input, captured under `docs/superpowers/specs/` as the Phase-1b design
-  findings.
-  The corrected framing established by that review: redaction must be the CONJUNCTION of what was
-  permitted at commit and what is permitted now, where the commit-time view is carried by the
-  operation and the current view may only WITHHOLD visibility, never grant it. A pure snapshot
-  closes the loosening leak and opens a tightening one, because reading current state is exactly
-  what makes retroactive hiding work — both reviewers found that independently.
-  Owner rulings already taken: carry the context on the operation rather than a sibling map or
-  a log column; capture per COMMAND, not per op; cover all three operation arms, since create and
-  delete are not point-in-time correct despite carrying their document.
-
 ## Blocked on a per-turn movement-budget system (Phase-2 combat)
 - TODO: `move_exec::execute_move`'s `MoveOutcome.cost` accumulates only the entered cell's terrain multiplier per step (`cost += regions.terrain_multiplier(region_cell)`); the `pathfinding` module's router cost also multiplies by the diagonal-rule `step_cost` (`sc * mult`, where `sc` is 1.0/2.0/√2/alternating depending on `world-settings.pathfinding.diagonalRule`). The two "cost" values are not numerically comparable once diagonal movement is involved under any non-Chebyshev rule — they coincide only because Chebyshev's diagonal step cost is 1.0. This is a deliberate M10g Task 7 scoping decision (`move_exec`'s center-cell, terrain-only accounting model), not an oversight, and nothing currently consumes or compares the two values. Resolve before any per-turn movement-budget system consumes `MoveOutcome.cost`/`MoveStream.cost`: decide whether `move_exec` should thread the diagonal rule + per-step parity to match the router's preview cost, or whether route-preview cost and execution cost are intentionally distinct quantities. (Surfaced by the M10g Task 7 buddy check.)
 - TODO: `navmesh::los_smooth` (M10f-4) reports the smoothed continuous route's `cost` as the PRE-smoothing weighted grid cost, unchanged — it does not recompute an exact per-span cost for the straightened any-angle chords, only guarantees the reported value is a conservative (never cheaper) budget preview. Same preview-vs-execution divergence class as the `MoveOutcome.cost`/router-cost split logged above: a per-cell-exact smoothed continuous cost is deferred, not implemented. Resolve alongside the item above if a per-turn movement-budget system ever needs an exact continuous-engine cost.

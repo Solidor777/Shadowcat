@@ -3,6 +3,38 @@
 Confirmed-real defects that have since been fixed, kept for provenance. New fixes append a new
 `##` section (or bullet under an existing one); do not delete resolved entries.
 
+## Server / realtime — replay redaction resolved a document's permission set against current policy instead of the policy in force at the historical seq being replayed
+
+- [Critical, FIXED] `filter_command`'s `Update` arm and `collect_hidden` derived the hidden-pointer
+  set from a document's current `property_overrides`, with no knowledge of what the override was
+  when a given historical `FieldChange` was committed — so once a `GmOnly` pointer was later made
+  visible, every historical `FieldChange` for it, including intermediate values never intended for
+  release, replayed unredacted to any recipient who gained visibility of the current value. The
+  same shape recurred for the `OwnerOrGm` tier under ownership reassignment: a newly-assigned
+  owner's replay disclosed the previous owner's historical `OwnerOrGm` values. Fixed by carrying a
+  commit-time redaction snapshot (`StoredCommand`/`CommandSnapshot`/`OpSnapshot`,
+  `src/server/src/data/snapshot.rs`) alongside every `Command` through both authoritative write
+  loops, `world_events`, and the room broadcast/ring/resync path — `filter_command` now redacts
+  against the CONJUNCTION `hidden_current ∪ hidden_commit`: a pointer is redacted iff it was hidden
+  at commit OR is hidden now, and a whole op is dropped unless BOTH the commit-time and
+  current-time whole-document `cap::READ` gate admit it. Regression coverage includes
+  `world_role_promotion_does_not_disclose_pre_promotion_gm_only_or_owner_or_gm_history` and an
+  end-to-end resync test,
+  `e2e_replay_redacts_a_field_that_was_gm_only_at_commit_after_the_override_is_later_widened`.
+
+- [Critical, FIXED] A stale `Update` from before a document's deletion was redacted against a NEW
+  document that later reused the same id, rather than dropped: `permission::load_update_docs`
+  resolved the reused id to the new document via a present-tense lookup with no sequence
+  parameter, so the recipient could receive a field from the deleted generation that only its GM
+  was meant to see (over-reveal), or have the update dropped entirely because the new document's
+  owner differed from the old one's (under-reveal) — reachable via an ordinary two-call sequence
+  (delete a document, then create an unrelated one that happens to reuse the id) needing no id
+  guessing and no cross-user interaction. Fixed by comparing `documents.created_seq` — set once at
+  a document's genuine first INSERT and left untouched by every subsequent update — against the
+  `created_seq_at_commit` witness carried in the op's commit-time snapshot: a generation mismatch
+  drops the op instead of redacting it against the wrong document's permission set. Regression
+  coverage includes `reused_id_drops_a_stale_update_against_the_new_generation`.
+
 ## Tooling — `WORD_NARRATION_TOKEN` false-positived on an enum-variant name cited in a skill
 
 - [CI-fatal, FIXED] `scripts/check-comment-refs.mjs`'s coverage control

@@ -298,6 +298,16 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
   embedded in an actor's inventory (`actor.embedded.item[]`); write-site resolution for an embedded
   item is `/embedded/item/<idx>/system`, the same one-level `embeddedPath` scheme
   `resolveDocRef` uses for any embedded child ([[shadowcat-codebase-sheets]]).
+- `data::snapshot` — the commit-time redaction snapshot: `StoredCommand` (a `Command` paired with
+  its `CommandSnapshot`, the server-internal transport persisted into `world_events.command_json`
+  and carried through the room broadcast/ring/resync path in place of a bare `Command`),
+  `CommandSnapshot` (index-aligned `per_op: Vec<Option<OpSnapshot>>` plus `world_gm_at_commit`),
+  and `OpSnapshot` (`owner_at_commit`, `doc_type`, `overrides_at_commit`,
+  `retraction_hidden_at_commit`, `created_seq_at_commit`, `permissions_at_commit` — the
+  commit-time redaction inputs for one op, built once per command from its own post-image).
+  `StoredCommand::from_stored_json` tolerates a legacy bare-`Command` `world_events` row (no
+  `command`/`snapshot` keys), wrapping it with an all-`None` `per_op` so `filter_command` drops
+  every op in it on replay rather than falling back to a live-lookup redaction.
 
 ## Hard invariants
 
@@ -502,6 +512,14 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
   means the uploading account was deleted; never assume attribution is present.
 - **`INSERT … ON CONFLICT(id)` on a mutated id duplicates rather than moves** the row
   [[upsert-on-conflict-duplicates-not-moves]].
+- **Replay redaction is the CONJUNCTION of commit-time and current-time policy, never either
+  alone.** `permission::filter_command` takes a `CommandSnapshot` alongside the `Command` it
+  redacts; a pointer is hidden iff hidden at commit OR hidden now, and a whole op is dropped
+  unless BOTH the commit-time and current-time whole-document `cap::READ` gate admit it. A
+  a check against current policy alone discloses a pointer's whole historical value once a later
+  permission change happens to widen it back to visible; a commit-only check would instead leak a
+  value a later TIGHTENING was meant to retroactively hide — the conjunction closes both leaks at
+  once, per `filter_command`'s own doc comment.
 
 ## Gotchas
 
@@ -526,6 +544,21 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
   [[embedded-copy-needs-deep-clone]].
 - **Test harness:** `doc(perms, system)` not `doc(id)`; an `owner_id` is a FK, so a test owner
   must be a real `create_user`, not a synthetic `Uuid` [[server-test-doc-helper-and-owner-fk]].
+- **`filter_command`'s commit-time half must never take a live parameter.** Its signature takes
+  `cmd`, `snapshot: &CommandSnapshot`, `ctx`, and two live-state parameters (`filter_command::
+  world_defaults`, `filter_command::actor_lookup`) that are consulted ONLY for the current-time
+  half — no live-lookup argument exists for the commit-time half by construction, which is fully
+  derived from `snapshot` alone. A future "just add a quick lookup" change to resolve some
+  commit-time value from current state would need to widen this signature, which is a loud diff
+  any reviewer will catch; do not add such a parameter without re-justifying the whole conjunction
+  invariant above.
+- **`documents.created_seq` is set once, at a document's genuine first INSERT.**
+  `SqliteRepository::upsert_document`'s `ON CONFLICT(id) DO UPDATE` clause omits `created_seq` from
+  its column-update list, so a subsequent update to the same row never touches it — it is the sole signal
+  distinguishing a reused document id from its predecessor generation. `OpSnapshot::
+  created_seq_at_commit` captures it at commit time; a mismatch against the CURRENT document's
+  `created_seq` at redaction time means the id was hard-deleted and recreated since commit, and the
+  op is dropped rather than redacted against the wrong generation's permission set.
 
 ## Pointers
 
