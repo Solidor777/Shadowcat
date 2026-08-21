@@ -2454,13 +2454,22 @@ impl Repository for SqliteRepository {
                     // declared anywhere under `/engine`, regardless of which
                     // doc_type that requirement was authored for (e.g. an
                     // actor's `/engine/vision`). A `ServerMessageRevision`
-                    // write is therefore additionally exempted from that
-                    // ADDITIVE check below (`is_server_message_revision`) — the
-                    // calling handler has already vetted owner-or-GM
+                    // write to EXACTLY `/engine` or
+                    // `/permissions/property_overrides` is therefore exempted
+                    // from that ADDITIVE check below (`is_scoped_smr_write`) —
+                    // the calling handler has already vetted owner-or-GM
                     // authority, and this origin's writes are hard-scoped to
-                    // `/engine` and `/permissions/property_overrides` only, so
-                    // there is no message-specific declared requirement for it
-                    // to legitimately satisfy.
+                    // those two paths only, so there is no message-specific
+                    // declared requirement for them to legitimately satisfy.
+                    // The exemption is scoped by PATH, not just by origin: a
+                    // `ServerMessageRevision` write to any OTHER path (e.g.
+                    // `/name`, `/system`) still passes through
+                    // `declared_caps_for_path` like any other write — the
+                    // structural cap check above would almost certainly deny
+                    // such a write first (this origin's grant is `all: false`
+                    // and holds only `READ`/`WRITE_FIELDS`), but the additive
+                    // check must not be silently bypassed for a path this
+                    // origin was never meant to touch.
                     let is_server_message_revision = cur.doc_type == crate::chat::MESSAGE_DOC_TYPE
                         && origin == WriteOrigin::ServerMessageRevision;
                     let access = if is_server_message_revision {
@@ -2526,14 +2535,23 @@ impl Repository for SqliteRepository {
                         }
                         // Declarative requirements are additive: a module/world
                         // may demand extra capabilities for a sub-path on top of
-                        // the structural base above. SKIPPED for a
-                        // `ServerMessageRevision` message write (see the
-                        // `is_server_message_revision` doc above) — a world's
+                        // the structural base above. SKIPPED only for a
+                        // `ServerMessageRevision` write to exactly `/engine` or
+                        // `/permissions/property_overrides` (see the
+                        // `is_scoped_smr_write` doc above) — a world's
                         // `CapabilityRequirement` carries no `doc_type`, so an
                         // ancestor write to `/engine` would otherwise inherit a
                         // requirement declared for a wholly unrelated doc_type's
                         // field, blocking a GM's already-vetted moderation write.
-                        if !is_server_message_revision {
+                        // Any OTHER path under this origin still goes through
+                        // this check, matching `is_recalc_override_write`'s
+                        // exact-path shape above.
+                        let is_scoped_smr_write = is_server_message_revision
+                            && matches!(
+                                ch.path.as_str(),
+                                "/engine" | "/permissions/property_overrides"
+                            );
+                        if !is_scoped_smr_write {
                             for extra in declared_caps_for_path(&ch.path, &world_reqs) {
                                 if !access.has(extra) {
                                     tracing::debug!(
@@ -8209,6 +8227,101 @@ mod tests {
             ok.is_ok(),
             "a ServerMessageRevision /engine write must ignore a declared \
              requirement scoped to an unrelated doc_type's field: {ok:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_intent_server_message_revision_write_to_an_unscoped_path_still_enforces_declared_requirements(
+    ) {
+        // The `is_scoped_smr_write` exemption must be a THREE-way conjunction
+        // (origin + doc_type + exact scoped path), not a two-way one keyed on
+        // origin alone. A `ServerMessageRevision` write to `/name` (a path this
+        // origin's real callers never touch) must still go through the
+        // additive `declared_caps_for_path` check like any other write, and be
+        // denied when a matching requirement exists that the scoped access
+        // grant does not hold.
+        use crate::chat::MESSAGE_DOC_TYPE;
+        use crate::data::document::{CapabilityRequirement, DocRole, PermissionSet};
+        use crate::data::membership::PermissionContext;
+
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+
+        r.set_world_cap_requirements(
+            w.id,
+            &[CapabilityRequirement {
+                path_prefix: "/name".into(),
+                caps: ["dnd5e:rename_message".to_string()].into_iter().collect(),
+            }],
+        )
+        .await
+        .unwrap();
+
+        let doc_id = Uuid::new_v4();
+        let engine = serde_json::json!({
+            "channel": "all", "user_owner": gm, "kind": "normal",
+            "audience": {"kind": "public"}, "content": []
+        });
+        let doc = Document {
+            id: doc_id,
+            scope: Scope::World { world_id: w.id },
+            doc_type: MESSAGE_DOC_TYPE.to_string(),
+            schema_version: 1,
+            name: None,
+            source: None,
+            base: None,
+            owner: Some(gm),
+            permissions: PermissionSet {
+                default: DocRole::Observer,
+                ..Default::default()
+            },
+            embedded: Default::default(),
+            parent_id: None,
+            engine: Some(engine),
+            system: serde_json::json!({}),
+            created_at: 0,
+            updated_at: 0,
+        };
+        r.apply_intent(
+            &ctx,
+            w.id,
+            vec![Operation::Create { doc: doc.clone() }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+        let denied = r
+            .apply_intent(
+                &ctx,
+                w.id,
+                vec![Operation::Update {
+                    doc_id,
+                    changes: vec![FieldChange {
+                        remove: false,
+                        path: "/name".into(),
+                        old: serde_json::json!(null),
+                        new: serde_json::json!("renamed"),
+                    }],
+                }],
+                1,
+                WriteOrigin::ServerMessageRevision,
+            )
+            .await;
+        assert!(
+            matches!(denied, Err(DataError::Forbidden)),
+            "a ServerMessageRevision write to a path outside the \
+             /engine + /permissions/property_overrides scope must still be \
+             gated by a matching declared requirement, got {denied:?}"
         );
     }
 

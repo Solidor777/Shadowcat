@@ -357,11 +357,17 @@ with zero message-specific plumbing in any of those subsystems.
      its owner-or-GM check. This is proven correct for BOTH edit and delete, across all three
      `Audience` variants, for both the owner and a non-addressed GM. `all: false` (not `all:
      true`) is deliberate — it authorizes writing `/engine` only,
-     not `/permissions`/`/embedded`, even for this trusted origin. **Caveat:** this scoped grant
-     does NOT auto-satisfy an additive `declared_caps_for_path` world/module requirement on a
-     message `/engine` (sub-)path — no first-party module declares one today (inert), but a future one would
-     silently block a GM's already-vetted moderation edit/delete; re-review this chokepoint
-     before adding such a requirement.
+     not `/permissions`/`/embedded`, even for this trusted origin. A write scoped to EXACTLY
+     `/engine` or `/permissions/property_overrides` is ALSO exempted from the additive
+     `declared_caps_for_path` world/module-requirement check (`apply_intent::is_scoped_smr_write`
+     in the `Operation::Update` arm, a three-way conjunction: origin + doc_type + exact
+     path) — `CapabilityRequirement` carries no `doc_type`, so its ancestor-overlap rule would
+     otherwise make ANY world-declared requirement under `/engine` (e.g. an actor's
+     `/engine/vision`) block every `ServerMessageRevision` `/engine` write in that world,
+     regardless of doc_type, denying a GM's already-vetted moderation edit/delete/recalc. A
+     `ServerMessageRevision` write to any OTHER path still goes through the additive check —
+     the exemption is scoped by path, not by origin alone, so it cannot silently widen if a
+     future caller of this origin ever targets a path outside those two.
 
 - **`SendMessage` is the SOLE message-authoring path.** A stored `message` doc can only be
   produced by `chat::handle_send_message` → `chat::build_message_doc` → `Room::publish`. No other
