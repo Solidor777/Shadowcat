@@ -242,6 +242,12 @@ on.
   `Numeric`, a fresh face INDEX via `roll_uniform(rng, 0, faces.len()-1)` for `Faces` — mirrors the
   same formula used at `eval::groups`'s two other draw sites. `ReplaceDie`/`RemoveDice` needed no
   `Faces` change (both are `DieKind`-agnostic, operating only on `natural`/id).
+  `chat::rolls::execute_roll`/`execute_roll_with_seed` (in `chat`, not here) now return the
+  parsed `RollSpec` and rolled `RawRoll` alongside `formula`/`outcome`, so they can be persisted
+  onto a `Segment::RollEmbed`; `chat::handle_recalc_roll` (also in `chat`) is `recalculate`'s
+  FIRST production caller — it re-derives from the message's stored `spec`/`raw` under a fresh
+  `entropy_seed()`-keyed `NoiseRng`, same as any other roll, and never bypasses this function's
+  own base-naturals-only reconstruction.
 - `dice::notation` (its `lexer` and `parser` submodules) — `lex`/`Token`/`ParseError` +
   `parse(input: &str, ctx: ParseContext) -> Result<RollSpec, ParseError>` (recursive descent:
   `expr := term (('+'|'-') term)*`; `term := factor (('*'|'/') factor)*`; `factor := '(' expr ')'
@@ -369,11 +375,16 @@ on.
   construction path bypassing the parser needs the identical guard independently.
 - **Pure library — `dice` must never depend on `ws`/`data`/`http`/`scene`.** Still NO wire
   frames and NO `#[derive(TS)]`/ts-rs bindings: roll outcomes ride the
-  opaque chat `system` body (`Segment::RollEmbed{formula, outcome}`) and the client mirrors
-  them by hand in the `chat-docs` module's Zod (`RollOutcomeSchema`/`DieRecordSchema`) — a shape change
-  to `RollOutcome`/`DieRecord` MUST update that mirror, not regenerate a binding. All
-  transport policy (caps, entropy, settings, error surfacing) lives in `chat::rolls`, never
-  here.
+  opaque chat `engine` body (`Segment::RollEmbed{formula, outcome, roll_id, spec, raw,
+  recalc_history}`) and the client mirrors them by hand in the `chat-docs` module's Zod
+  (`RollOutcomeSchema`/`DieRecordSchema`) — a shape change to `RollOutcome`/`DieRecord` MUST
+  update that mirror, not regenerate a binding. `dice::recalc::RecalcOp` now derives
+  `#[derive(Serialize, Deserialize)]` (so it can be stored inside `chat::RecalcEntry.ops`) but
+  still carries no `#[derive(TS)]` — this crate's wire boundary stays serde-only by design; the
+  wire-facing mirror (`chat::WireRecalcOp`, ts-rs exported) and its `into_recalc_op` conversion
+  live in `chat`, not here, preserving the crate boundary the same way `RollOutcome`'s Zod
+  mirror does. All transport policy (caps, entropy, settings, error surfacing) lives in
+  `chat::rolls`, never here.
 - **The notation-modifier vocabulary is ONE decision declared in TWO languages.** The keyword set
   `P::modifiers` matches is mirrored on the client by `@shadowcat/formula`'s `NOTATION_KEYWORDS`,
   and neither language can read the other's declaration. Adding, renaming or removing a modifier

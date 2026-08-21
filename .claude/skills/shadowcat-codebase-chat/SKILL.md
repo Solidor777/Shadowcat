@@ -82,7 +82,12 @@ guarded, per `validate_url` below).
   `roll:`-prefixed spans are buttons, `|` splits a label), `execute_roll` /
   `validate_formula` (parse+caps without rolling, for buttons), `RollError` + Display.
 - `handle_send_message` roll stage (post-parse, pre-sanitize): kind `Roll` ⇒ the body is the
-  formula, content becomes ONE `RollEmbed{formula, outcome}` (sanitize skipped — no text);
+  formula, content becomes ONE `RollEmbed{formula, outcome, roll_id, spec, raw,
+  recalc_history: None}` (sanitize skipped — no text). `chat::rolls::execute_roll`/
+  `execute_roll_with_seed` return the parsed `RollSpec` and rolled `RawRoll` alongside
+  `formula`/`outcome`, and both are PERSISTED (not discarded) onto the embed — `spec`/`raw` are
+  what let a GM later recalculate the roll via `handle_recalc_roll`; `roll_id` (a fresh `Uuid`) is
+  the stable identity a recalc targets, never the segment's array index.
   Normal/Emote bodies are `scan_body`-chunked — Text chunks sanitize EACH INDEPENDENTLY
   (markdown spanning an inline roll doesn't survive, documented), Inline chunks execute,
   Button chunks validate-only. Ambient `ParseContext` = `resolve_dice_context` (the
@@ -98,7 +103,36 @@ guarded, per `validate_url` below).
   new content parses to kind `Roll` (no editing INTO a roll). The stored-kind check is
   deliberately UNCONDITIONAL because `kind: Roll` + `audience: Whisper` IS reachable via the
   frame `audience` field (no `/w` token ⇒ `parse_command` still runs). Edits never call
-  `scan_body` — `[[…]]` in an edit stays literal text.
+  `scan_body` — `[[…]]` in an edit stays literal text. **Recalculation is the one deliberate
+  exception to immutability**, gated entirely differently (see the next bullet) — it does not
+  weaken this check, since `handle_edit_message` still refuses to touch `content` at all.
+- **Recalculation (`handle_recalc_roll`):** the ONLY path that ever mutates an existing
+  `RollEmbed`. GM-only (`ctx.world_role == WorldRole::Gm`) — deliberately NEVER owner-or-GM,
+  unlike `handle_edit_message`/`handle_delete_message`: the roll's own author has no
+  self-service correction path (`RecalcRollError::Forbidden`). Locates the targeted roll inside
+  the message's `content` by `roll_id` (never array index — survives link-preview enrichment
+  appending later segments), and refuses (`RecalcRollError::NoStoredState`) when the targeted
+  `RollEmbed` carries no `spec`/`raw` (a roll embedded before this feature shipped) rather than
+  guessing a spec back from `outcome`. Draws a fresh `entropy_seed()`, applies
+  `dice::recalculate(&spec, &raw, &ops, &mut rng)`, overwrites `raw`/`outcome` in place, and
+  appends a `RecalcEntry{ops, previous_raw, previous_outcome, recalculated_by,
+  recalculated_at}` to `recalc_history` capturing the PRE-recalc state — the roll's original
+  result is never silently discarded (`recalc_history` is append-only; `previous_raw`/
+  `previous_outcome` on the Nth entry are exactly what the (N-1)th recalc, or the original roll,
+  produced). Reuses `WriteOrigin::ServerMessageRevision` as this origin's THIRD producer (after
+  `handle_edit_message`/`handle_delete_message`), publishing a single `Operation::Update` that
+  writes BOTH `/engine` (the mutated content) AND `/permissions/property_overrides`
+  (recomputed via `roll_embed_property_overrides`, since a freshly-appended
+  `RecalcEntry.previous_raw` needs its own GM-only override entry) — the exact two-path
+  admission `apply_intent`'s `ServerMessageRevision` branch grants (see chokepoint 4 below).
+  Rate-limited via the same `PingRateLimiter`/`budget_per_min` shape as
+  `handle_send_message`/`handle_edit_message`. `WireRecalcOp` (`RerollDice`/`ReplaceDie`/
+  `RemoveDice`, ts-rs exported — the wire frame's op vocabulary) converts via
+  `WireRecalcOp::into_recalc_op` to `dice::recalc::RecalcOp` before reaching
+  `dice::recalculate`; see `shadowcat-codebase-dice` for the engine-side op semantics.
+  `ws::protocol`'s `ClientMsg::RecalcRoll{request_id, message_id, roll_id, ops}` and
+  `ws::conn`'s dispatch arm are documented below alongside `SendMessage`/`EditMessage`/
+  `DeleteMessage`.
 - **Attribution authz (world-pinned):** `handle_send_message`
   fail-closed-validates `actor_owner` BEFORE `build_message_doc` — an `Actor` ref must resolve to
   an existing `doc_type=="actor"` doc, IN THE SENDING ROOM'S WORLD
@@ -304,26 +338,32 @@ with zero message-specific plumbing in any of those subsystems.
 - `ws::protocol` — `ClientMsg::SendMessage { request_id, channel, content,
   actor_owner: Option<ActorOwnerRef>, audience: Audience }` (ts-rs exported; `audience` is
   `#[serde(default)]`, so an omitted field parses as `Audience::Public`).
-  `ClientMsg::EditMessage { request_id, message_id, content }` and
-  `ClientMsg::DeleteMessage { request_id, message_id }` (both ts-rs exported) are the ONLY
-  client-facing ways to mutate an existing stored message. **All three carry a REQUIRED
-  `request_id: Uuid`** (mirroring the `Search`/`Pathfind`/`MoveRequest` correlation pattern):
-  success is confirmed only by the broadcast `Event` echo, while a rejection is surfaced
-  to the sender as a `ServerMsg::ChatError { request_id, message }` (one shared error frame for all
-  three ops — they share one `SendMessageError` enum + one `Display`). `message` is
-  `SendMessageError`'s `Display`, which is `[sec]`-classified: validation-class variants surface a
-  specific reason, but authorization/existence/internal-class variants (`ActorNotSpeakable`,
-  `Forbidden`, `NotFound`, `Data`) collapse to a fixed generic string — `NotFound`==`Forbidden`
-  (no existence oracle), `Data` never leaks its inner detail. See the `Display` impl on
-  `chat::SendMessageError`.
-- `ws::conn` — three chat dispatch points plus the `Intent` guard:
+  `ClientMsg::EditMessage { request_id, message_id, content }`,
+  `ClientMsg::DeleteMessage { request_id, message_id }`, and
+  `ClientMsg::RecalcRoll { request_id, message_id, roll_id, ops: Vec<WireRecalcOp> }` (all three
+  ts-rs exported) are the ONLY client-facing ways to mutate an existing stored message. **All
+  four carry a REQUIRED `request_id: Uuid`** (mirroring the `Search`/`Pathfind`/`MoveRequest`
+  correlation pattern): success is confirmed only by the broadcast `Event` echo, while a
+  rejection is surfaced to the sender as a `ServerMsg::ChatError { request_id, message }`.
+  `SendMessage`/`EditMessage`/`DeleteMessage` share one `SendMessageError` enum + one `Display`;
+  `RecalcRoll` uses its own `RecalcRollError` + `Display` (see `handle_recalc_roll` above) but
+  the SAME `ServerMsg::ChatError` frame shape and asymmetric confirm-by-broadcast-echo protocol.
+  `message` is `SendMessageError`'s (or `RecalcRollError`'s) `Display`, which is
+  `[sec]`-classified: validation-class variants surface a specific reason, but
+  authorization/existence/internal-class variants (`ActorNotSpeakable`, `Forbidden`, `NotFound`,
+  `Data`; `RecalcRollError::Forbidden`/`NotFound`/`RollNotFound`) collapse to a fixed generic
+  string — `NotFound`==`Forbidden` (no existence oracle), `Data` never leaks its inner detail.
+  See the `Display` impls on `chat::SendMessageError` and `chat::RecalcRollError`.
+- `ws::conn` — four chat dispatch points plus the `Intent` guard:
   - `ClientMsg::Intent { ops, .. }` arm: calls `chat::ops_target_message(&ops)` BEFORE
     `room.publish`; if true, sends `ServerMsg::Reject{reason: Forbidden}` and continues without
     ever reaching `apply_intent`.
   - `ClientMsg::SendMessage { .. }` arm: calls `chat::handle_send_message`.
   - `ClientMsg::EditMessage { .. }` arm: calls `chat::handle_edit_message`.
   - `ClientMsg::DeleteMessage { .. }` arm: calls `chat::handle_delete_message`.
-  - All three chat arms confirm success only by the broadcast echo of the authored `Event` (same
+  - `ClientMsg::RecalcRoll { .. }` arm: converts each `WireRecalcOp` via
+    `WireRecalcOp::into_recalc_op` and calls `chat::handle_recalc_roll`.
+  - All four chat arms confirm success only by the broadcast echo of the authored `Event` (same
     pattern as `Intent`), not a direct reply; a failure is `tracing::debug!`-logged AND emits a
     `ServerMsg::ChatError { request_id, message: e.to_string() }` to the SENDER's connection only
     (`handle_socket::etx`, never broadcast) so the rejection is surfaced instead of vanishing.
@@ -441,6 +481,16 @@ with zero message-specific plumbing in any of those subsystems.
   (`shadowcat-codebase-realtime-sync`). Any change to those subsystems' redaction or indexing
   logic implicitly changes chat behavior too — there is no separate chat-specific override to
   audit, but also no chat-specific safety net.
+- **`spec`/`raw` on a `RollEmbed` (and every `RecalcEntry.previous_raw`) are GM-only via
+  `permissions.property_overrides`, populated by `roll_embed_property_overrides` at
+  message-Create time and re-populated on every recalc — never a chat-specific redaction
+  filter; `outcome`/`recalc_history`/`roll_id` stay visible to every recipient.**
+  `roll_embed_property_overrides` is recomputed from scratch against the CURRENT `content` on
+  every call (never incrementally patched), so a message's override set always matches what it
+  actually carries; `build_message_doc` calls it at Create, `handle_recalc_roll` calls it again
+  after every recalculation and writes the result to `/permissions/property_overrides` in the
+  SAME `Operation::Update` as the mutated `/engine` — the one write shape `apply_intent`'s
+  `ServerMessageRevision` branch admits at that exact path (chokepoint 4 above).
 
 ## Gotchas
 
@@ -546,6 +596,16 @@ Three independently replaceable modules (UI-is-modules; swap any one without the
   (`/`-commands ride verbatim — the server parses); the "Speak as" picker sends
   `actor_owner` `Actor` refs, server-ownership-validated at ingest (see Dice wire above).
 - **`@shadowcat/module-chat-card`** — fail-closed render (`parseMessageEngine` null ⇒ nothing).
+  **GM recalc menu + recalculated badge:** `MessageCard.svelte` renders a `recalc-menu` (one row
+  per base die — reroll/remove buttons plus a bounded numeric replace input, each calling
+  `sendRecalc` → `ctx.chat.recalc(message.id, rollId, [op])`) ONLY for the BLOCK form (a
+  standalone `kind: "roll"` message), gated on `isGm && rollBlock.raw` — `raw` is present in the
+  parsed wire doc only when the viewer is GM (server-side `property_overrides` gating, see Hard
+  Invariants above), so the menu's visibility is a structural consequence of that redaction, not
+  a separate client-side GM check duplicating it. A passive "recalculated" chip
+  (`t("chat.roll.recalculated")`) renders whenever `recalc_history?.length` is truthy, in BOTH
+  the block form (`MessageCard.svelte`) and the inline-chip form (`RollTooltip.svelte`, via its
+  `recalcHistory` prop) — never interactive in `RollTooltip`, only in the block form's menu.
   **`RollTooltip`:** an accessible focus/hover-triggered popover on a roll segment, showing the full
   `outcome.records[]` table with dropped dice distinguished. Popover `id` is derived per-instance
   (`$props.id()`, the `LauncherMenu` convention) — never hardcoded, since a message can
