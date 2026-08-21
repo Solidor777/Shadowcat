@@ -516,7 +516,7 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
   alone.** `permission::filter_command` takes a `CommandSnapshot` alongside the `Command` it
   redacts; a pointer is hidden iff hidden at commit OR hidden now, and a whole op is dropped
   unless BOTH the commit-time and current-time whole-document `cap::READ` gate admit it. A
-  a check against current policy alone discloses a pointer's whole historical value once a later
+  check against current policy alone discloses a pointer's whole historical value once a later
   permission change happens to widen it back to visible; a commit-only check would instead leak a
   value a later TIGHTENING was meant to retroactively hide — the conjunction closes both leaks at
   once, per `filter_command`'s own doc comment.

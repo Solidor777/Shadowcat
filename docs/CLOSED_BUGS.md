@@ -18,8 +18,9 @@ Confirmed-real defects that have since been fixed, kept for provenance. New fixe
   against the CONJUNCTION `hidden_current ∪ hidden_commit`: a pointer is redacted iff it was hidden
   at commit OR is hidden now, and a whole op is dropped unless BOTH the commit-time and
   current-time whole-document `cap::READ` gate admit it. Regression coverage includes
-  `world_role_promotion_does_not_disclose_pre_promotion_gm_only_or_owner_or_gm_history` and an
-  end-to-end resync test,
+  `world_role_promotion_does_not_disclose_pre_promotion_gm_only_or_owner_or_gm_history` (world-role
+  promotion), `linked_token_actor_owner_mutation_only_affects_the_current_time_half` (ownership
+  reassignment), and an end-to-end resync test,
   `e2e_replay_redacts_a_field_that_was_gm_only_at_commit_after_the_override_is_later_widened`.
 
 - [Critical, FIXED] A stale `Update` from before a document's deletion was redacted against a NEW

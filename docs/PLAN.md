@@ -1451,25 +1451,19 @@ Decomposed **M11a–d**:
 
 **▶ Dogfood alpha gate** — backups (M12.5) must exist before real worlds accrue.
 
-### Phase 1b · Replay redaction — commit-time visibility snapshot
-Not yet started. Its scheduling trigger — the server-scene-geometry work merging to `main` — has
-fired (`main`'s own log carries that merge commit; verified 2026-08-19). Own branch, own
-brainstorm → spec → plan cycle, due before Phase 2 continues: the fix changes the command
-representation, the event log, and resync semantics, which is foundational enough that no later
-Phase-2 work should be built on the current shape. Nothing later hard-blocks on it functionally —
-it exists to close two confirmed defects tracked in `docs/OPEN_BUGS.md`:
+### Phase 1b · Replay redaction — commit-time visibility snapshot ✅
+**COMPLETE.** Closed two confirmed defects, now recorded in `docs/CLOSED_BUGS.md`:
 `filter_command`/`collect_hidden` (and the `OwnerOrGm`-tier analog under ownership reassignment)
-redacting historical replay against a document's CURRENT permission set instead of the policy in
-force at the historical seq; and a stale `Update` from before a document's deletion redacting
-against a NEW document that later reuses the same id.
-- Fix shape already ruled (not yet built): snapshot the relevant visibility into the event/command
-  at commit time, so replay redacts against the policy in force at that sequence rather than
-  re-deriving it from current state on every replay — the same shape as any two paths required to
-  agree deriving from one, instead of separately re-verifying agreement. Two other shapes were
-  considered and rejected: an append-only "ever hidden" set (permanently over-redacts once a
-  pointer is ever restricted); current-state snapshots for non-GM resync only (sidesteps the
-  problem rather than solving it, and changes resync semantics for every document carrying an
-  override).
+redacted historical replay against a document's CURRENT permission set instead of the policy in
+force at the historical seq; and a stale `Update` from before a document's deletion redacted
+against a NEW document that later reused the same id.
+- Fix shape: a commit-time redaction snapshot (`StoredCommand`/`CommandSnapshot`/`OpSnapshot`,
+  `src/server/src/data/snapshot.rs`) carried alongside every `Command` through both authoritative
+  write loops, `world_events`, and the room broadcast/ring/resync path — `filter_command` redacts
+  against the CONJUNCTION `hidden_current ∪ hidden_commit`. A document id reused after hard delete
+  is detected via `documents.created_seq` generation-marker comparison. See
+  `shadowcat-codebase-documents-permissions`/`shadowcat-codebase-realtime-sync` for the full
+  mechanism.
 - Phase 4's "Audit-grade point-in-time replay" generalizes this phase's commit-time redaction
   context into a queryable history once this phase lands — see that entry for the forward
   reference; this phase is the prerequisite, not a duplicate of it.
