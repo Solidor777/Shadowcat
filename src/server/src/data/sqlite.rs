@@ -27,8 +27,8 @@ use crate::data::snapshot::{CommandSnapshot, StoredCommand};
 use crate::data::validation;
 use crate::data::world_bundle::{
     BundleManifest, ExportedAssetRow, ExportedDocumentRow, ExportedEventRow, ExportedFogRow,
-    ExportedInviteRow, ExportedMemberRow, ExportedSettingRow, WorldExportData,
-    BUNDLE_SCHEMA_VERSION,
+    ExportedInviteRow, ExportedMemberRow, ExportedSettingRow, ImportSummary, WorldExportData,
+    WorldImportData, BUNDLE_SCHEMA_VERSION,
 };
 use crate::data::DataError;
 
@@ -1084,6 +1084,314 @@ impl SqliteRepository {
             assets,
             fog,
             settings,
+        })
+    }
+
+    /// Resolve a portable username to a target-local user id inside `tx`, or
+    /// `None` when `username` is `None` (no source owner) OR the username
+    /// does not exist on this server — the degradation
+    /// `documents.owner_id`/`world_events.author_id`/
+    /// `world_invites.{created_by,consumed_by}` are already `ON DELETE SET
+    /// NULL`-designed around.
+    async fn resolve_username_tx(
+        tx: &mut sqlx::SqliteConnection,
+        username: Option<&str>,
+    ) -> Result<Option<Uuid>, DataError> {
+        let Some(username) = username else {
+            return Ok(None);
+        };
+        let id: Option<String> = sqlx::query_scalar("SELECT id FROM users WHERE username = ?")
+            .bind(username)
+            .fetch_optional(&mut *tx)
+            .await?;
+        id.map(|s| Uuid::parse_str(&s).map_err(|e| DataError::OpFailed(e.to_string())))
+            .transpose()
+    }
+
+    /// Insert one imported document row with EXPLICIT `seq`/`created_seq`,
+    /// independently preserved from the source server — unlike the live
+    /// write path's `upsert_document`, where a fresh Create always sets
+    /// `seq == created_seq`. Re-derives every column from `doc` the same way
+    /// `upsert_document` does, and reindexes both FTS tables from
+    /// `doc`'s content so search state is rebuilt rather than carried across
+    /// servers (`documents_fts_public`/`documents_fts_gm` are never
+    /// exported/imported directly — see `data::world_bundle`'s module doc).
+    /// A plain `INSERT` (not `upsert_document`'s `ON CONFLICT(id) DO
+    /// UPDATE`): a document id colliding with an existing row anywhere on
+    /// the target server (a separate axis from the already-gated world-id
+    /// collision) is a genuine data-integrity fault, and letting the
+    /// `UNIQUE` constraint violation surface as an ordinary `DataError::Sqlx`
+    /// — aborting and rolling back the whole import transaction — is exactly
+    /// the "any row-insert failure mid-transaction rolls back the whole
+    /// import" behavior `import_world` already provides, not a case needing
+    /// special handling.
+    async fn insert_imported_document(
+        conn: &mut sqlx::SqliteConnection,
+        doc: &Document,
+        seq: i64,
+        created_seq: i64,
+    ) -> Result<(), DataError> {
+        let (scope_kind, world_id, pack) = match &doc.scope {
+            Scope::Compendium { pack } => ("compendium", None, Some(pack.clone())),
+            Scope::World { world_id } => ("world", Some(world_id.to_string()), None),
+        };
+        let (source_id, source_pack, source_version) = match &doc.source {
+            Some(s) => (
+                Some(s.id.to_string()),
+                s.pack.clone(),
+                Some(s.version as i64),
+            ),
+            None => (None, None, None),
+        };
+        let json = serde_json::to_string(doc)?;
+        sqlx::query(
+            "INSERT INTO documents (id, scope_kind, world_id, pack, doc_type, schema_version, \
+             source_id, source_pack, source_version, owner_id, parent_id, seq, created_seq, json, \
+             created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(doc.id.to_string())
+        .bind(scope_kind)
+        .bind(world_id.clone())
+        .bind(pack)
+        .bind(&doc.doc_type)
+        .bind(doc.schema_version as i64)
+        .bind(source_id)
+        .bind(source_pack)
+        .bind(source_version)
+        .bind(doc.owner.map(|o| o.to_string()))
+        .bind(doc.parent_id.map(|p| p.to_string()))
+        .bind(seq)
+        .bind(created_seq)
+        .bind(json)
+        .bind(doc.created_at)
+        .bind(doc.updated_at)
+        .execute(&mut *conn)
+        .await?;
+        sqlx::query("DELETE FROM documents_fts_public WHERE doc_id = ?")
+            .bind(doc.id.to_string())
+            .execute(&mut *conn)
+            .await?;
+        sqlx::query("DELETE FROM documents_fts_gm WHERE doc_id = ?")
+            .bind(doc.id.to_string())
+            .execute(&mut *conn)
+            .await?;
+        sqlx::query(
+            "INSERT INTO documents_fts_public (content, doc_id, world_id) VALUES (?, ?, ?)",
+        )
+        .bind(crate::data::search::index_content_public(doc))
+        .bind(doc.id.to_string())
+        .bind(world_id.clone())
+        .execute(&mut *conn)
+        .await?;
+        sqlx::query(
+            "INSERT INTO documents_fts_gm (content_all, doc_id, world_id) VALUES (?, ?, ?)",
+        )
+        .bind(crate::data::search::index_content(doc))
+        .bind(doc.id.to_string())
+        .bind(world_id)
+        .execute(&mut *conn)
+        .await?;
+        Ok(())
+    }
+
+    /// Import one `WorldImportData` bundle in a single transaction: reject a
+    /// world-id collision with `worlds.id` before any row is written, insert
+    /// `worlds` then every table in FK-safe order (`documents`/
+    /// `world_events`/`world_members`/`world_invites`/`assets`, then the
+    /// FK-less `explored_fog`/`settings`), resolving each row's portable
+    /// username(s) against THIS server's `users` table, then finalize every
+    /// staged asset file (rename into place beside itself — see
+    /// `data::world_bundle::WorldImportData.staged_assets`) before
+    /// committing — a failure at any point (including a rename) drops the
+    /// transaction unrolled-back, so no partial world is ever visible.
+    /// `world_members`/`explored_fog` rows whose username does not resolve
+    /// are DROPPED (their `user_id` column is `NOT NULL`, so there is no
+    /// `SET NULL` degradation to fall back to, unlike the four nullable
+    /// owner/author/created_by/consumed_by columns) — counted in the
+    /// returned `ImportSummary` rather than silently absorbed.
+    pub async fn import_world(&self, data: WorldImportData) -> Result<ImportSummary, DataError> {
+        let mut tx = self.pool.begin().await?;
+        let world = data.manifest.world_id;
+
+        let exists: Option<i64> = sqlx::query_scalar("SELECT 1 FROM worlds WHERE id = ?")
+            .bind(world.to_string())
+            .fetch_optional(&mut *tx)
+            .await?;
+        if exists.is_some() {
+            return Err(DataError::Conflict(format!(
+                "world {world} already exists on this server"
+            )));
+        }
+
+        sqlx::query(
+            "INSERT INTO worlds (id, name, seq, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(world.to_string())
+        .bind(&data.manifest.world_name)
+        .bind(data.manifest.world_seq)
+        .bind(data.manifest.world_created_at)
+        .bind(data.manifest.world_updated_at)
+        .execute(&mut *tx)
+        .await?;
+
+        for row in &data.documents {
+            let owner = Self::resolve_username_tx(&mut tx, row.owner_username.as_deref()).await?;
+            let mut document = row.document.clone();
+            document.owner = owner;
+            Self::insert_imported_document(&mut tx, &document, row.seq, row.created_seq).await?;
+        }
+
+        for row in &data.events {
+            let author = Self::resolve_username_tx(&mut tx, row.author_username.as_deref()).await?;
+            sqlx::query(
+                "INSERT INTO world_events (world_id, seq, author_id, ts, command_json) \
+                 VALUES (?, ?, ?, ?, ?)",
+            )
+            .bind(world.to_string())
+            .bind(row.seq)
+            .bind(author.map(|u| u.to_string()))
+            .bind(row.ts)
+            .bind(&row.command_json)
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        let mut skipped_members = 0usize;
+        for row in &data.members {
+            match Self::resolve_username_tx(&mut tx, Some(row.username.as_str())).await? {
+                Some(user_id) => {
+                    sqlx::query(
+                        "INSERT INTO world_members (world_id, user_id, role) VALUES (?, ?, ?)",
+                    )
+                    .bind(world.to_string())
+                    .bind(user_id.to_string())
+                    .bind(
+                        serde_json::to_value(row.role)?
+                            .as_str()
+                            .expect("WorldRole serializes as a string")
+                            .to_string(),
+                    )
+                    .execute(&mut *tx)
+                    .await?;
+                }
+                None => skipped_members += 1,
+            }
+        }
+
+        for row in &data.invites {
+            let created_by =
+                Self::resolve_username_tx(&mut tx, row.created_by_username.as_deref()).await?;
+            let consumed_by =
+                Self::resolve_username_tx(&mut tx, row.consumed_by_username.as_deref()).await?;
+            sqlx::query(
+                "INSERT INTO world_invites \
+                 (id, world_id, secret_hash, role, created_by, created_at, expires_at, \
+                  revoked_at, consumed_at, consumed_by) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(row.id.to_string())
+            .bind(world.to_string())
+            .bind(&row.secret_hash)
+            .bind(
+                serde_json::to_value(row.role)?
+                    .as_str()
+                    .expect("WorldRole serializes as a string")
+                    .to_string(),
+            )
+            .bind(created_by.map(|u| u.to_string()))
+            .bind(row.created_at)
+            .bind(row.expires_at)
+            .bind(row.revoked_at)
+            .bind(row.consumed_at)
+            .bind(consumed_by.map(|u| u.to_string()))
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        for row in &data.assets {
+            let created_by =
+                Self::resolve_username_tx(&mut tx, row.created_by_username.as_deref()).await?;
+            let storage_key = format!("{world}/{}", row.id);
+            sqlx::query(
+                "INSERT INTO assets \
+                 (id, world_id, storage_key, original_name, content_type, byte_size, created_by, \
+                  created_at, version) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(row.id.to_string())
+            .bind(world.to_string())
+            .bind(storage_key)
+            .bind(&row.original_name)
+            .bind(&row.content_type)
+            .bind(row.byte_size)
+            .bind(created_by.map(|u| u.to_string()))
+            .bind(row.created_at)
+            .bind(row.version)
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        let mut skipped_fog = 0usize;
+        for row in &data.fog {
+            match Self::resolve_username_tx(&mut tx, Some(row.username.as_str())).await? {
+                Some(user_id) => {
+                    sqlx::query(
+                        "INSERT INTO explored_fog (world_id, scene_id, user_id, cells) \
+                         VALUES (?, ?, ?, ?)",
+                    )
+                    .bind(world.to_string())
+                    .bind(row.scene_id.to_string())
+                    .bind(user_id.to_string())
+                    .bind(row.cells.as_slice())
+                    .execute(&mut *tx)
+                    .await?;
+                }
+                None => skipped_fog += 1,
+            }
+        }
+
+        for row in &data.settings {
+            sqlx::query("INSERT INTO settings (key, value) VALUES (?, ?)")
+                .bind(&row.key)
+                .bind(&row.value)
+                .execute(&mut *tx)
+                .await?;
+        }
+
+        // Finalize staged asset files: rename each staged temp file (already
+        // living in the target world's asset directory, per
+        // `world_bundle::read_bundle`) to its final `<id>` name in that same
+        // directory, only after every row above has been accepted by the
+        // transaction. A failure here still rolls the WHOLE transaction back
+        // (the early `?` return drops `tx` unrolled-back), and best-effort
+        // removes every staged/finalized file so a rolled-back import leaves
+        // no orphan bytes behind.
+        let mut finalized: Vec<std::path::PathBuf> = Vec::with_capacity(data.staged_assets.len());
+        for (id, staged) in &data.staged_assets {
+            let dest = staged
+                .parent()
+                .expect("staged asset path always has a parent directory")
+                .join(id.to_string());
+            if let Err(e) = tokio::fs::rename(staged, &dest).await {
+                for done in &finalized {
+                    let _ = tokio::fs::remove_file(done).await;
+                }
+                for (_, remaining) in &data.staged_assets {
+                    let _ = tokio::fs::remove_file(remaining).await;
+                }
+                return Err(DataError::OpFailed(format!(
+                    "failed to finalize imported asset {id}: {e}"
+                )));
+            }
+            finalized.push(dest);
+        }
+
+        tx.commit().await?;
+
+        Ok(ImportSummary {
+            world_id: world,
+            skipped_members,
+            skipped_fog,
         })
     }
 
@@ -6933,6 +7241,244 @@ mod tests {
         let r = repo().await;
         let err = r.export_world_rows(Uuid::from_u128(999)).await.unwrap_err();
         assert!(matches!(err, DataError::NotFound));
+    }
+
+    #[tokio::test]
+    async fn import_world_round_trips_every_table_through_a_real_tar_bundle() {
+        let src = repo().await;
+        let gm = src
+            .create_user("gm3", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let owner = src
+            .create_user("actor-owner", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = src
+            .create_world_owned("Round Trip World", gm, 0)
+            .await
+            .unwrap();
+
+        let mut doc = world_doc(10, w.id, serde_json::json!({"hp": 5}));
+        doc.owner = Some(owner);
+        let mut conn = src.pool().acquire().await.unwrap();
+        SqliteRepository::upsert_document(&mut conn, &doc, 1)
+            .await
+            .unwrap();
+        drop(conn);
+
+        sqlx::query(
+            "INSERT INTO world_events (world_id, seq, author_id, ts, command_json) \
+             VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(w.id.to_string())
+        .bind(2i64)
+        .bind(gm.to_string())
+        .bind(0i64)
+        .bind(r#"{"kind":"Noop","payload":{"embedded_ref":"deadbeef"}}"#)
+        .execute(src.pool())
+        .await
+        .unwrap();
+
+        let export_tmp = tempfile::tempdir().unwrap();
+        let asset_id = Uuid::new_v4();
+        let asset_dir = export_tmp.path().join(w.id.to_string());
+        tokio::fs::create_dir_all(&asset_dir).await.unwrap();
+        tokio::fs::write(asset_dir.join(asset_id.to_string()), b"ASSETBYTES")
+            .await
+            .unwrap();
+        src.insert_asset(&crate::data::asset::Asset {
+            id: asset_id,
+            world_id: w.id,
+            storage_key: format!("{}/{asset_id}", w.id),
+            original_name: "token.png".to_string(),
+            content_type: "image/png".to_string(),
+            byte_size: 10,
+            created_by: Some(owner),
+            created_at: 0,
+            version: 1,
+        })
+        .await
+        .unwrap();
+        src.set_explored(w.id, doc.id, owner, &[1, 2, 3])
+            .await
+            .unwrap();
+
+        let export_data = src.export_world_rows(w.id).await.unwrap();
+        let bytes =
+            crate::world_bundle::write_bundle(&export_data, export_tmp.path(), Vec::new()).unwrap();
+        let tar_path = export_tmp.path().join("bundle.tar");
+        tokio::fs::write(&tar_path, &bytes).await.unwrap();
+
+        // Target server: same usernames, different underlying ids.
+        let target = repo().await;
+        let target_gm = target
+            .create_user("gm3", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let target_owner = target
+            .create_user("actor-owner", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        assert_ne!(target_gm, gm);
+        assert_ne!(target_owner, owner);
+
+        let import_tmp = tempfile::tempdir().unwrap();
+        let import_data = crate::world_bundle::read_bundle(&tar_path, import_tmp.path()).unwrap();
+        let summary = target.import_world(import_data).await.unwrap();
+
+        assert_eq!(summary.world_id, w.id);
+        assert_eq!(summary.skipped_members, 0);
+        assert_eq!(summary.skipped_fog, 0);
+
+        // worlds row: id preserved, seq/created_at/updated_at preserved.
+        let target_world: (String, i64, i64, i64) =
+            sqlx::query_as("SELECT id, seq, created_at, updated_at FROM worlds WHERE id = ?")
+                .bind(w.id.to_string())
+                .fetch_one(target.pool())
+                .await
+                .unwrap();
+        assert_eq!(target_world.0, w.id.to_string());
+        assert_eq!(target_world.1, w.seq);
+
+        // documents: owner re-resolved to the TARGET user's id, both column
+        // and JSON body in lockstep.
+        let row: (Option<String>, String) =
+            sqlx::query_as("SELECT owner_id, json FROM documents WHERE id = ?")
+                .bind(doc.id.to_string())
+                .fetch_one(target.pool())
+                .await
+                .unwrap();
+        assert_eq!(row.0, Some(target_owner.to_string()));
+        let json_doc: serde_json::Value = serde_json::from_str(&row.1).unwrap();
+        assert_eq!(
+            json_doc.get("owner").and_then(|v| v.as_str()),
+            Some(target_owner.to_string().as_str())
+        );
+
+        // world_events: command_json byte-identical, author re-resolved.
+        let event: (String, Option<String>) =
+            sqlx::query_as("SELECT command_json, author_id FROM world_events WHERE world_id = ?")
+                .bind(w.id.to_string())
+                .fetch_one(target.pool())
+                .await
+                .unwrap();
+        assert_eq!(
+            event.0,
+            r#"{"kind":"Noop","payload":{"embedded_ref":"deadbeef"}}"#
+        );
+        assert_eq!(event.1, Some(target_gm.to_string()));
+
+        // assets: storage_key recomputed under the standard scheme, bytes
+        // byte-identical after finalize.
+        let asset_row = target.get_asset(asset_id).await.unwrap().unwrap();
+        assert_eq!(asset_row.storage_key, format!("{}/{asset_id}", w.id));
+        let final_path = import_tmp
+            .path()
+            .join(w.id.to_string())
+            .join(asset_id.to_string());
+        assert_eq!(tokio::fs::read(&final_path).await.unwrap(), b"ASSETBYTES");
+
+        // explored_fog: user re-resolved.
+        let fog_user: String =
+            sqlx::query_scalar("SELECT user_id FROM explored_fog WHERE scene_id = ?")
+                .bind(doc.id.to_string())
+                .fetch_one(target.pool())
+                .await
+                .unwrap();
+        assert_eq!(fog_user, target_owner.to_string());
+    }
+
+    #[tokio::test]
+    async fn import_world_nulls_owner_when_username_unresolvable() {
+        let src = repo().await;
+        let gm = src
+            .create_user("gm4", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let owner = src
+            .create_user("owner-not-on-target", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = src.create_world_owned("W4", gm, 0).await.unwrap();
+        let mut doc = world_doc(11, w.id, serde_json::json!({}));
+        doc.owner = Some(owner);
+        let mut conn = src.pool().acquire().await.unwrap();
+        SqliteRepository::upsert_document(&mut conn, &doc, 1)
+            .await
+            .unwrap();
+        drop(conn);
+
+        let export_data = src.export_world_rows(w.id).await.unwrap();
+
+        // Target has neither `gm4` nor `owner-not-on-target` — but DOES have
+        // a distinct user seated as the sole GM via `worlds` insert directly
+        // (import_world does not require any pre-existing user).
+        let target = repo().await;
+        let import_data = crate::data::world_bundle::WorldImportData {
+            manifest: export_data.manifest.clone(),
+            documents: export_data.documents.clone(),
+            events: export_data.events.clone(),
+            members: export_data.members.clone(),
+            invites: export_data.invites.clone(),
+            assets: export_data.assets.clone(),
+            fog: export_data.fog.clone(),
+            settings: export_data.settings.clone(),
+            staged_assets: Vec::new(),
+        };
+        let summary = target.import_world(import_data).await.unwrap();
+        // `gm4` (the sole world_members row) also doesn't exist on target.
+        assert_eq!(summary.skipped_members, 1);
+
+        let row: (Option<String>, String) =
+            sqlx::query_as("SELECT owner_id, json FROM documents WHERE id = ?")
+                .bind(doc.id.to_string())
+                .fetch_one(target.pool())
+                .await
+                .unwrap();
+        assert_eq!(row.0, None);
+        let json_doc: serde_json::Value = serde_json::from_str(&row.1).unwrap();
+        assert!(json_doc.get("owner").unwrap().is_null());
+    }
+
+    #[tokio::test]
+    async fn import_world_rejects_world_id_collision_before_writing_any_row() {
+        let r = repo().await;
+        let gm = r
+            .create_user("gm5", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("Collider", gm, 0).await.unwrap();
+        let doc = world_doc(12, w.id, serde_json::json!({}));
+        let mut conn = r.pool().acquire().await.unwrap();
+        SqliteRepository::upsert_document(&mut conn, &doc, 1)
+            .await
+            .unwrap();
+        drop(conn);
+
+        let export_data = r.export_world_rows(w.id).await.unwrap();
+        let import_data = crate::data::world_bundle::WorldImportData {
+            manifest: export_data.manifest.clone(),
+            documents: export_data.documents.clone(),
+            events: export_data.events.clone(),
+            members: export_data.members.clone(),
+            invites: export_data.invites.clone(),
+            assets: export_data.assets.clone(),
+            fog: export_data.fog.clone(),
+            settings: export_data.settings.clone(),
+            staged_assets: Vec::new(),
+        };
+
+        let err = r.import_world(import_data).await.unwrap_err();
+        assert!(matches!(err, DataError::Conflict(_)));
+
+        // Zero partial state: still exactly the one original document, not two.
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM documents WHERE world_id = ?")
+            .bind(w.id.to_string())
+            .fetch_one(r.pool())
+            .await
+            .unwrap();
+        assert_eq!(count, 1);
     }
 
     #[tokio::test]
