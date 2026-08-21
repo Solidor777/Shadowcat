@@ -120,13 +120,31 @@ const MAX_IMPORT_BUNDLE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
 /// Removes the wrapped path on drop unless `keep()` was called — the single
 /// source of truth for staged-import-upload cleanup, so a temp file cannot
-/// survive an early return (present or future) or a panic unwind without a
-/// `remove_file` call repeated at every failure site. The removal itself is
-/// a synchronous `std::fs::remove_file`, not a spawned task: `drop` runs
-/// during unwinding, where the enclosing async runtime may already be
-/// tearing down, so a fire-and-forget `tokio::spawn` could be dropped before
-/// it runs — a blocking call on the current thread is guaranteed to
-/// complete before `drop` returns.
+/// survive an early return (present or future) without a `remove_file` call
+/// repeated at every failure site. That alone (multipart error, oversize
+/// upload, I/O failure, `Err(WorldBundleError)`, `Err(DataError)`) is
+/// sufficient reason for this guard to exist: every one of those is an
+/// ordinary early return, unwinding nothing, and the guard's `Drop` fires on
+/// every one of them exactly like any other scope exit.
+///
+/// It additionally covers a `spawn_blocking(read_bundle)` panic reaching
+/// this guard's scope as an unwind — but only in a build where a panic
+/// unwinds at all. This crate's shipped **release** profile sets
+/// `panic = "abort"` (`Cargo.toml`), under which a panic on ANY thread,
+/// including a `spawn_blocking` worker, aborts the whole process
+/// immediately; there is no unwind for any `Drop` to run during, so in a
+/// release binary this guard cannot and does not protect against that case
+/// — an accepted, pre-existing characteristic of the abort profile, not
+/// something a `Drop` impl is ever able to change. In a dev/test build
+/// (default `panic = "unwind"`), `spawn_blocking` itself converts a
+/// panicked task into a `JoinError`, so the panic is caught and re-surfaced
+/// as an ordinary `Err` on the awaiting side well before it would reach
+/// this guard — the shape this guard actually sees there is the same
+/// ordinary early return as every other failure path. The removal itself is
+/// a synchronous `std::fs::remove_file`, not a spawned task: a fire-and-
+/// forget `tokio::spawn` from inside `drop` could be dropped before it runs
+/// if the runtime is tearing down, where a blocking call on the current
+/// thread is guaranteed to complete before `drop` returns.
 struct TempFileGuard(Option<std::path::PathBuf>);
 
 impl TempFileGuard {
@@ -135,9 +153,15 @@ impl TempFileGuard {
         Self(Some(path))
     }
 
-    /// Cancels the cleanup — call once the file must survive past this
-    /// guard's scope (ownership of its removal passes to the caller, or to
-    /// another guard).
+    /// Cancels the cleanup. No production call site needs this today (the
+    /// one `TempFileGuard` this module creates is always explicitly
+    /// `drop`ped once its file is no longer needed — see `import_world`),
+    /// so this stays test-only rather than shipping an unused release-build
+    /// method; it exists to let a test assert the disarmed half of the
+    /// guard's contract directly, the same way
+    /// `temp_file_guard_removes_the_file_on_ordinary_drop` asserts the armed
+    /// half.
+    #[cfg(test)]
     fn keep(mut self) {
         self.0 = None;
     }
@@ -153,14 +177,16 @@ impl Drop for TempFileGuard {
 
 /// Stream the multipart field named `"file"` to `dest`, enforcing
 /// `MAX_IMPORT_BUNDLE_BYTES` as bytes arrive (never buffering the whole
-/// body). A `TempFileGuard` removes `dest` on any early return; the guard is
-/// released (`keep()`) only once every byte has been written and flushed.
+/// body). Cleanup of `dest` on an early return is the CALLER's
+/// responsibility (`import_world` holds the sole `TempFileGuard` for this
+/// path, spanning both this call and the extraction step that follows it) —
+/// this function creates and writes the file but owns no guard of its own,
+/// so exactly one `TempFileGuard` instance ever exists per physical temp
+/// file.
 async fn stream_bundle_upload(
     mut multipart: Multipart,
     dest: &std::path::Path,
 ) -> Result<(), AppError> {
-    let guard = TempFileGuard::new(dest.to_path_buf());
-
     let mut field = loop {
         let Some(f) = multipart
             .next_field()
@@ -201,7 +227,6 @@ async fn stream_bundle_upload(
         tracing::error!(?e, "failed flushing import upload temp file");
         AppError::Internal
     })?;
-    guard.keep();
     Ok(())
 }
 
@@ -210,10 +235,11 @@ async fn stream_bundle_upload(
 /// buffers the whole body), extracts it (schema-version- and
 /// row-count-checked before any DB row is touched), then inserts everything
 /// in one transaction. See `SqliteRepository::import_world` for the
-/// collision-reject/username-resolution/asset-finalize behavior. The staged
-/// temp file is removed by its `TempFileGuard` once extraction has run,
-/// success or failure — including a `spawn_blocking(read_bundle)` panic,
-/// which the guard's `Drop` still catches during unwind.
+/// collision-reject/username-resolution/asset-finalize behavior. Holds the
+/// SOLE `TempFileGuard` for the staged temp file, spanning both the upload
+/// (`stream_bundle_upload`) and the extraction (`read_bundle`) steps, so the
+/// file is removed on any failure in either — see `TempFileGuard`'s own doc
+/// for exactly which failure shapes that covers.
 pub async fn import_world(
     _admin: AdminUser,
     State(state): State<AppState>,
