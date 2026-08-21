@@ -33,8 +33,9 @@ tower-sessions = { version = "0.15", default-features = false, features = ["axum
 base64 = "0.22"
 subtle = "2"
 # Per-world export/import bundle format (`world_bundle`): synchronous, no_std-friendly
-# tar archive reader/writer. No compression feature enabled — the approved bundle format
-# is uncompressed `.tar` (see docs/superpowers/specs/2026-08-21-world-export-import-design.md §6).
+# tar archive reader/writer. No compression feature enabled — the bundle format is
+# uncompressed `.tar`, trading archive size for a format any standard `tar` tool can
+# inspect/repair without a Shadowcat-specific decoder.
 tar = "0.4"
 ammonia = "4.1.3"
 pulldown-cmark = { version = "0.13.4", default-features = false, features = ["html"] }

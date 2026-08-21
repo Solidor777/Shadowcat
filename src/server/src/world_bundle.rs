@@ -206,6 +206,12 @@ pub fn read_bundle(
 
     let mut rows: HashMap<&'static str, Vec<u8>> = HashMap::new();
     let mut staged_assets: Vec<(uuid::Uuid, std::path::PathBuf)> = Vec::new();
+    // Guards against two `assets/<id>` entries sharing an id: without this,
+    // the second entry's staged file would silently overwrite the first in
+    // `staged_assets` bookkeeping while its own file leaks as an orphan temp
+    // file (never referenced by any `staged_assets` entry, so never cleaned
+    // up on the success path either).
+    let mut staged_ids: std::collections::HashSet<uuid::Uuid> = std::collections::HashSet::new();
 
     for entry in entries {
         let mut entry = entry?;
@@ -214,6 +220,18 @@ pub fn read_bundle(
             let id = uuid::Uuid::parse_str(id_str).map_err(|_| {
                 WorldBundleError::Malformed(format!("non-UUID asset entry name: {id_str}"))
             })?;
+            if !staged_ids.insert(id) {
+                // Reject the whole bundle and remove every file already
+                // staged for it — a rejected import must leave no orphan
+                // temp files behind, same as every other `read_bundle`
+                // failure mode.
+                for (_, staged) in &staged_assets {
+                    let _ = std::fs::remove_file(staged);
+                }
+                return Err(WorldBundleError::Malformed(format!(
+                    "duplicate asset entry in bundle: {id}"
+                )));
+            }
             let staged = world_asset_dir.join(format!("{id}.{}.import-tmp", uuid::Uuid::new_v4()));
             let mut out = std::fs::File::create(&staged)?;
             std::io::copy(&mut entry, &mut out)?;

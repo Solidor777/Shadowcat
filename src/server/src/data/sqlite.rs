@@ -1256,10 +1256,25 @@ impl SqliteRepository {
             .transpose()?
             .unwrap_or_default();
 
+        // Mirrors `apply_intent`'s intra-batch `claimed_singletons` tracking
+        // (see `SINGLETON_DOC_TYPES`'s own doc) — a bundle is untrusted
+        // input assembled outside any live `apply_intent` call, so nothing
+        // else in this loop would otherwise catch two documents of the same
+        // singleton doc_type both landing in one import.
+        let mut claimed_singletons: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
         for row in &data.documents {
             let owner = Self::resolve_username_tx(&mut tx, row.owner_username.as_deref()).await?;
             let mut document = row.document.clone();
             document.owner = owner;
+            if SINGLETON_DOC_TYPES.contains(&document.doc_type.as_str())
+                && !claimed_singletons.insert(document.doc_type.clone())
+            {
+                return Err(DataError::Conflict(format!(
+                    "bundle contains more than one '{}' document, which is capped at one per world",
+                    document.doc_type
+                )));
+            }
             // Same ingress-validation chokepoint every live `Create`/`Update`
             // runs before a document reaches storage (see e.g. the
             // `Operation::Update` handler in `apply_intent`) — an imported
@@ -7376,6 +7391,12 @@ mod tests {
         src.set_explored(w.id, doc.id, owner, &[1, 2, 3])
             .await
             .unwrap();
+        // A genuine `settings` row (world capability defaults, same storage
+        // shape as the schema-declarations registry `world_schemas_key`
+        // keys) — exercises the `data.settings` insert loop below.
+        src.set_setting(&world_caps_key(w.id), r#"{"marker":"settings-round-trip"}"#)
+            .await
+            .unwrap();
 
         let export_data = src.export_world_rows(w.id).await.unwrap();
         let bytes =
@@ -7460,6 +7481,13 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(fog_user, target_owner.to_string());
+
+        // settings: the row lands verbatim on the target under the same key.
+        let target_setting = target.get_setting(&world_caps_key(w.id)).await.unwrap();
+        assert_eq!(
+            target_setting.as_deref(),
+            Some(r#"{"marker":"settings-round-trip"}"#)
+        );
     }
 
     #[tokio::test]
@@ -7552,6 +7580,73 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(count, 1);
+    }
+
+    #[tokio::test]
+    async fn import_world_rejects_duplicate_singleton_document_before_writing_any_row() {
+        use crate::data::membership::PermissionContext;
+        let src = repo().await;
+        let gm = src
+            .create_user("gm-singleton-import", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = src
+            .create_world_owned("SingletonImport", gm, 0)
+            .await
+            .unwrap();
+        let gm_ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+        src.apply_intent(
+            &gm_ctx,
+            w.id,
+            vec![Operation::Create {
+                doc: singleton_test_doc(30, w.id, "world-settings"),
+            }],
+            1,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+        let mut export_data = src.export_world_rows(w.id).await.unwrap();
+        // A second `world-settings` document under a fresh id, the shape a
+        // hand-assembled or corrupted bundle could carry — nothing in
+        // `read_bundle` rejects this, so `import_world` itself must.
+        let mut dup = export_data.documents[0].clone();
+        dup.document.id = Uuid::from_u128(31);
+        export_data.documents.push(dup);
+        export_data
+            .manifest
+            .row_counts
+            .insert("documents".to_string(), 2);
+
+        let target = repo().await;
+        let import_data = crate::data::world_bundle::WorldImportData {
+            manifest: export_data.manifest.clone(),
+            documents: export_data.documents.clone(),
+            events: export_data.events.clone(),
+            members: export_data.members.clone(),
+            invites: export_data.invites.clone(),
+            assets: export_data.assets.clone(),
+            fog: export_data.fog.clone(),
+            settings: export_data.settings.clone(),
+            staged_assets: Vec::new(),
+        };
+
+        let err = target.import_world(import_data).await.unwrap_err();
+        assert!(matches!(err, DataError::Conflict(_)));
+
+        // Zero partial state: the whole transaction (including the `worlds`
+        // row insert that precedes the document loop) rolls back, not just
+        // the second document.
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM worlds WHERE id = ?")
+            .bind(w.id.to_string())
+            .fetch_one(target.pool())
+            .await
+            .unwrap();
+        assert_eq!(count, 0);
     }
 
     #[tokio::test]

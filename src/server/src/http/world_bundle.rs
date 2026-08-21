@@ -2,15 +2,24 @@
 //! bundle export/import. The bundle format itself (`manifest.json` +
 //! `rows/<table>.jsonl` + `assets/<asset_id>`, with `manifest.json` always
 //! the tar's first entry) is `crate::world_bundle`'s concern; this module is
-//! the HTTP boundary around it. Export is world-GM-gated (`require_gm`,
-//! mirroring the existing GM-gated asset routes). Import is
-//! server-admin-only: a bulk multi-table insert that bypasses every
-//! capability/schema/OCC gate the live write paths enforce (the same
-//! trusted-substrate posture `apply_command`'s replay path already has) — a
-//! materially more privileged operation than ordinary world CREATION
-//! (`POST /api/worlds`, open to any authenticated user) or GM-level world
-//! management, so it needs the server's highest tier, not a match to either
-//! of those.
+//! the HTTP boundary around it. BOTH routes are server-admin-only
+//! (`AdminUser`): export is not GM-gated, because `export_world_rows`
+//! (`data::sqlite`) selects every `documents` row for the world verbatim
+//! with no `gm_role`-based redaction — a world's own GM could otherwise
+//! export and read whisper content (`chat::mod.rs`'s `Audience::Whisper`
+//! sets `permissions.gm_role: Some(DocRole::None)` specifically so the GM
+//! does not get unconditional access) that the live API denies them, and
+//! `world_events.command_json` carries the same unfiltered content. Import
+//! is server-admin-only for a second, independent reason: a bulk
+//! multi-table insert that bypasses every capability/schema/OCC gate the
+//! live write paths enforce (the same trusted-substrate posture
+//! `apply_command`'s replay path already has) — a materially more
+//! privileged operation than ordinary world CREATION (`POST /api/worlds`,
+//! open to any authenticated user) or GM-level world management. Export and
+//! import are a full-fidelity data-migration primitive, the same category as
+//! `backup`/`restore` (already admin-only and unredacted) — not a live-view
+//! read surface, so redacting content at export time would make bundles
+//! lossy instead.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
@@ -23,10 +32,9 @@ use axum::Json;
 use tokio::io::AsyncWriteExt;
 use uuid::Uuid;
 
-use crate::auth::session::{AdminUser, AuthUser};
+use crate::auth::session::AdminUser;
 use crate::data::world_bundle::ImportSummary;
 use crate::http::error::AppError;
-use crate::http::routes::require_gm;
 use crate::http::AppState;
 use crate::world_bundle::{read_bundle, write_bundle, WorldBundleError};
 
@@ -60,19 +68,29 @@ impl std::io::Write for ChannelWriter {
     }
 }
 
-/// `POST /api/worlds/{id}/export` — world-GM-gated (server admins resolve to
-/// GM via `require_gm`). Streams the world's `.tar` bundle as the response
-/// body: `write_bundle` runs on a blocking thread and writes into a
+/// `POST /api/worlds/{id}/export` — server-admin-only (see this module's own
+/// doc for why this is not GM-gated: `export_world_rows` has no
+/// `gm_role`-based redaction). Holds `state.write_barrier`'s read side across
+/// the whole streamed response, so a concurrent `POST /api/admin/backup`
+/// snapshot can't interleave with the row read + asset streaming below (same
+/// accepted trade-off `assets.rs`'s `DefaultBodyLimit`-disabled upload routes
+/// already document: a slow export download can hold the permit a long time,
+/// same class as a slow uploader). Streams the world's `.tar` bundle as the
+/// response body: `write_bundle` runs on a blocking thread and writes into a
 /// `ChannelWriter`, whose bounded channel this function turns directly into
 /// the response body stream — bytes reach the client as `write_bundle`
 /// produces them, and memory usage stays bounded by
 /// `EXPORT_CHANNEL_CAPACITY` regardless of the world's total asset size.
 pub async fn export_world(
     State(state): State<AppState>,
-    user: AuthUser,
+    _admin: AdminUser,
     Path(world): Path<Uuid>,
 ) -> Result<Response, AppError> {
-    require_gm(&state, &user, world).await?;
+    // Owned (not borrowed) so it can move into the detached task below,
+    // which outlives this function's own async body — an ordinary
+    // `.read().await` guard is tied to a borrow of `state.write_barrier`
+    // and cannot cross that move.
+    let read_permit = state.write_barrier.clone().read_owned().await;
     let data = state.repo.export_world_rows(world).await?;
     let assets_dir = state.config.assets_path();
 
@@ -89,6 +107,11 @@ pub async fn export_world(
         }
     });
     tokio::spawn(async move {
+        // Held until `write_bundle`'s blocking task has produced every
+        // chunk (the whole tar-writing phase), so a concurrent backup
+        // snapshot can never interleave with this export's row read +
+        // asset file reads.
+        let _read_permit = read_permit;
         if let Err(e) = handle.await {
             tracing::error!(?e, %world, "world export task panicked");
         }
@@ -177,18 +200,21 @@ impl Drop for TempFileGuard {
 
 /// Stream the multipart field named `"file"` to `dest`, enforcing
 /// `MAX_IMPORT_BUNDLE_BYTES` as bytes arrive (never buffering the whole
-/// body). Cleanup of `dest` on an early return is the CALLER's
-/// responsibility (`import_world` holds the sole `TempFileGuard` for this
-/// path, spanning both this call and the extraction step that follows it) —
-/// this function creates and writes the file but owns no guard of its own,
-/// so exactly one `TempFileGuard` instance ever exists per physical temp
-/// file.
+/// body) — including bytes belonging to any non-`"file"` field skipped
+/// before it, so a request cannot smuggle unbounded bytes past the cap by
+/// stuffing them into an earlier field. Cleanup of `dest` on an early return
+/// is the CALLER's responsibility (`import_world` holds the sole
+/// `TempFileGuard` for this path, spanning both this call and the
+/// extraction step that follows it) — this function creates and writes the
+/// file but owns no guard of its own, so exactly one `TempFileGuard`
+/// instance ever exists per physical temp file.
 async fn stream_bundle_upload(
     mut multipart: Multipart,
     dest: &std::path::Path,
 ) -> Result<(), AppError> {
+    let mut skip_total: u64 = 0;
     let mut field = loop {
-        let Some(f) = multipart
+        let Some(mut f) = multipart
             .next_field()
             .await
             .map_err(|e| AppError::BadRequest(format!("multipart error: {e}")))?
@@ -197,6 +223,23 @@ async fn stream_bundle_upload(
         };
         if f.name() == Some("file") {
             break f;
+        }
+        // Drain and discard a non-"file" field's bytes ourselves, under the
+        // same running cap the "file" field's own chunk loop enforces below
+        // — otherwise this field's bytes would arrive (and get discarded by
+        // `next_field`'s own internal advance) with no size accounting at
+        // all.
+        while let Some(c) = f
+            .chunk()
+            .await
+            .map_err(|e| AppError::BadRequest(format!("multipart error: {e}")))?
+        {
+            skip_total += c.len() as u64;
+            if skip_total > MAX_IMPORT_BUNDLE_BYTES {
+                return Err(AppError::PayloadTooLarge(format!(
+                    "bundle exceeds {MAX_IMPORT_BUNDLE_BYTES} bytes"
+                )));
+            }
         }
     };
     let mut file = tokio::fs::File::create(dest).await.map_err(|e| {
@@ -239,12 +282,19 @@ async fn stream_bundle_upload(
 /// SOLE `TempFileGuard` for the staged temp file, spanning both the upload
 /// (`stream_bundle_upload`) and the extraction (`read_bundle`) steps, so the
 /// file is removed on any failure in either — see `TempFileGuard`'s own doc
-/// for exactly which failure shapes that covers.
+/// for exactly which failure shapes that covers. Also holds
+/// `state.write_barrier`'s read side across the upload, extraction, and the
+/// `SqliteRepository::import_world` call (whose asset-finalization step
+/// renames staged files into the live asset tree exactly like
+/// `assets::upload` does) — the same protection `assets.rs`'s own
+/// upload/replace routes give that operation, so a concurrent backup
+/// snapshot can't interleave with import's asset writes either.
 pub async fn import_world(
     _admin: AdminUser,
     State(state): State<AppState>,
     multipart: Multipart,
 ) -> Result<Json<ImportSummary>, AppError> {
+    let _read_permit = state.write_barrier.read().await;
     let tmp_tar = std::env::temp_dir().join(format!("shadowcat-import-{}.tar", Uuid::new_v4()));
     let guard = TempFileGuard::new(tmp_tar.clone());
     stream_bundle_upload(multipart, &tmp_tar).await?;

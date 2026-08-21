@@ -173,10 +173,13 @@ and restore as a deployment-operator tool, not an in-app feature.
   above) — the residual gap is CLI-mode-only and inherent to backing up while a separate process
   writes assets outside the barrier's reach.
 - Per-world export/import ships as a SEPARATE surface from `backup`/`restore_backup` — not
-  whole-server snapshot/restore, and not gated the same way. `POST /api/worlds/{id}/export` is
-  world-GM-gated (`require_gm`); `POST /api/worlds/import` is server-admin-only (a bulk multi-table
-  insert bypassing every capability/schema/OCC gate the live write paths enforce — more privileged
-  than ordinary world CREATION, which is open to any authenticated user, not admin-gated). World id
+  whole-server snapshot/restore, and not gated the same way. BOTH `POST /api/worlds/{id}/export`
+  and `POST /api/worlds/import` are server-admin-only (`AdminUser`) — export is not GM-gated
+  because `export_world_rows` selects every `documents` row verbatim with no `gm_role`-based
+  redaction, which would let a world's own GM read whisper content the live API denies them;
+  import is admin-only for the separate reason that it's a bulk multi-table insert bypassing every
+  capability/schema/OCC gate the live write paths enforce — more privileged than ordinary world
+  CREATION, which is open to any authenticated user, not admin-gated. World id
   is preserved verbatim on import; a colliding id refuses cleanly before any row is written.
   `users(id)` references export as portable usernames (the source server's `users` table itself is
   never exported) — resolved back to a target-local id, or NULL/row-drop for the two `NOT NULL`

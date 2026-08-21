@@ -91,6 +91,15 @@ design constraint) containing:
 
 ## 7. HTTP surface & authorization
 
+**Correction (found during final whole-branch review):** export is server-admin-only, not
+world-GM-only as originally specified below — a world GM's export would otherwise bypass
+`gm_role`-based whisper redaction (see `chat::mod.rs`'s `Audience::Whisper` handling, which sets
+`permissions.gm_role: Some(DocRole::None)` specifically so the GM does not get unconditional
+access), a genuine privacy defect the original design didn't consider. The shipped
+`POST /worlds/{id}/export` route takes `AdminUser` directly, exactly like `POST /worlds/import`
+below. The original text stays below as the historical record of what was decided and why it
+changed.
+
 - `POST /worlds/{id}/export` — **world-scoped GM only** (the same authority `delete_world`/world
   settings already require), streams the `.tar` bundle as the response body. Mirrors the existing
   `require_gm`-gated asset routes' authorization shape (§3 of the assets research) rather than

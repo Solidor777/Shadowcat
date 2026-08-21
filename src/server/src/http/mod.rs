@@ -720,51 +720,49 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn export_world_requires_gm() {
-        use crate::data::document::WorldRole;
+    async fn export_world_requires_server_admin() {
         let state = initialized_state().await;
         let gm = seed_user(&state, "gm-user").await;
-        let player = seed_user(&state, "player-user").await;
         let _stranger = seed_user(&state, "outsider").await;
+        let _admin = seed_admin(&state, "admin-user").await;
         let world_id = state
             .repo
             .create_world_owned("Exportable", gm, 0)
             .await
             .unwrap()
             .id;
-        state
-            .repo
-            .add_member(world_id, player, WorldRole::Player)
-            .await
-            .unwrap();
 
-        // A non-member user cannot export it — rejected by
-        // `permission_context`'s membership lookup, before `require_gm`'s
-        // own role comparison is ever reached.
+        // A non-member user cannot export it.
         let outsider = login_server(&state, "outsider").await;
         outsider
             .post(&format!("/api/worlds/{world_id}/export"))
             .await
             .assert_status(axum::http::StatusCode::FORBIDDEN);
 
-        // A world member with a non-GM role is also rejected — this
-        // reaches and exercises `require_gm`'s own
-        // `ctx.world_role != WorldRole::Gm` comparison, since `player` is a
-        // genuine world member and clears `permission_context`'s
-        // membership lookup.
-        let player_server = login_server(&state, "player-user").await;
-        player_server
+        // The world's own GM — a genuine world member holding the GM role —
+        // is ALSO rejected: export is server-admin-only (`AdminUser`), not
+        // GM-gated, because `export_world_rows` has no `gm_role`-based
+        // redaction (see this endpoint's own doc comment).
+        let gm_server = login_server(&state, "gm-user").await;
+        gm_server
             .post(&format!("/api/worlds/{world_id}/export"))
             .await
             .assert_status(axum::http::StatusCode::FORBIDDEN);
+
+        // A server admin succeeds.
+        let admin_server = login_server(&state, "admin-user").await;
+        admin_server
+            .post(&format!("/api/worlds/{world_id}/export"))
+            .await
+            .assert_status_ok();
     }
 
     #[tokio::test]
-    async fn export_world_streams_a_tar_for_the_gm() {
-        let server = server_with_user("gm-export", "pw-gm2", ServerRole::User).await;
+    async fn export_world_streams_a_tar_for_the_admin() {
+        let server = server_with_user("admin-export", "pw-admin2", ServerRole::Admin).await;
         server
             .post("/api/login")
-            .json(&serde_json::json!({"username": "gm-export", "password": "pw-gm2"}))
+            .json(&serde_json::json!({"username": "admin-export", "password": "pw-admin2"}))
             .await
             .assert_status_success();
         let world: crate::data::document::World = server
