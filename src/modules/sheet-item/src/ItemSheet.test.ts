@@ -49,7 +49,7 @@ describe("ItemSheet dice roll-to-chat", () => {
   it("posts /roll to chat for a dice-notation field value", async () => {
     const sent: unknown[] = [];
     const documents = storeWith({ name: "Sword", damage: "1d8+2" });
-    const context = setAppContextForTest({ documents, chat: { send: (o) => { sent.push(o); return Promise.resolve(); }, edit: () => Promise.resolve(), delete: () => Promise.resolve() }, canEdit: () => true });
+    const context = setAppContextForTest({ documents, chat: { send: (o) => { sent.push(o); return Promise.resolve(); }, edit: () => Promise.resolve(), delete: () => Promise.resolve(), recalc: () => Promise.resolve() }, canEdit: () => true });
     // Roll buttons carry no aria-label (their visible text "key: formula" is a distinct,
     // per-item-unique accessible name, unlike a shared static label) — locate by that text.
     const { getByRole } = render(ItemSheet, { props: { docId: "i1", systemPrefix: "/system", close: () => {} }, context });

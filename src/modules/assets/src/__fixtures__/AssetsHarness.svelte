@@ -48,7 +48,12 @@
     moveRequest: () => Promise.reject(new Error("not connected")),
     onPing: () => () => {},
     onMoveOutcome: () => () => {},
-    chat: { send: () => Promise.resolve(), edit: () => Promise.resolve(), delete: () => Promise.resolve() },
+    chat: {
+      send: () => Promise.resolve(),
+      edit: () => Promise.resolve(),
+      delete: () => Promise.resolve(),
+      recalc: () => Promise.resolve(),
+    },
     reconcileInstalledModules: () => Promise.resolve(),
     leaveWorld: () => {},
     logout: async () => {},
