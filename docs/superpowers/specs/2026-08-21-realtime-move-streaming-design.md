@@ -1,12 +1,32 @@
 # Real-Time Per-Recipient Move-Streaming — Design
 
-**Status:** DRAFT — pending buddy-check before an implementation plan is written. This is flagged
-per `buddy-checking`'s own high-risk criteria (concurrency & synchronization, wide-blast-radius
-vision-engine infrastructure) as the one bucket-C-adjacent item large and risky enough to warrant
-adversarial review of the design itself, not just of the eventual diff — consistent with this
-project's own precedent (the Phase 1b design's PW19 question got the same treatment). This is a
-scope/risk-driven caution, not a claim the design question itself is unanswerable — the direction
-below is a considered proposal, not an open question for the user.
+**Status:** BLOCKED ON USER INPUT — buddy-checked (two independent reviewers, full debate to
+convergence) and the §3 mechanism this document proposed **does not work**. Both reviewers
+independently confirmed, then jointly re-confirmed under debate: `Room::execute_move` holds
+`publish_guard` across its entire validate→commit body (`ws/room.rs`), fully serializing move
+execution, and per-move animation happens ENTIRELY client-side (`TokenAnimator.animateSamples`) —
+there is no server-side notion of any token being "mid-flight" at a given wall-clock instant, for
+either a bystander token or the recipient's own vision-source token. §3's core operation
+("resolve a token's interpolated position at timestamp T") therefore has no target to compute
+against under the current architecture, independent of whether an active-stream tracking
+structure is built. A real fix requires either (a) new wall-clock-driven interpolation state
+tracking every in-flight move's position over real time — complexity comparable to or exceeding
+the continuous per-tick loop §2 rejects, not a lighter alternative — or (b) an entirely different
+mechanism not yet evaluated, e.g. a targeted vision-correction rebroadcast fired when the
+RECIPIENT's own move completes (cheaper, unexplored, may not fully close the gap either). Also
+confirmed: the fix as originally scoped is asymmetric (a third token starting mid-animation of an
+earlier move is never folded in — the gap relocates rather than closes), and the GM see-as branch
+of `clip_move_stream` shares the identical staleness shape and was never addressed.
+
+Given zero correctness/secrecy impact today (confirmed, unchanged) and that a real fix now reads
+as its own architecturally deep sub-project — closer in scope to a PLAN.md milestone than a
+bucket-C item — this is parked for explicit user direction rather than committing to a costly
+redesign unreviewed: **is a full new real-time interpolation subsystem worth building for a
+purely cosmetic transient-reveal-timing gap, or is the cheaper "correction on recipient's own
+move completion" idea worth designing and evaluating first, or should this stay parked as
+low-priority polish?** The rest of this document (§1, §2, §4's questions, §5) remains accurate
+background; §3 is superseded by the buddy-check finding above and needs a genuine redesign, not a
+patch, once direction is chosen.
 
 **Spec for:** `docs/TODO.md` bucket-C sub-project 8, "Real-time per-recipient move-streaming."
 
