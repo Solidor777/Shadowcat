@@ -1624,6 +1624,19 @@ impl SqliteRepository {
         use crate::data::snapshot::OpSnapshot;
         match op {
             Operation::Create { doc } => {
+                // Reads the command's FINAL post-image, never `doc` (this op's own
+                // per-iteration intermediate state): a same-command op that later mutates
+                // this same id (e.g. an Update reassigning `/owner` or adding an override)
+                // must be reflected in the Create's own persisted snapshot, or a stale value
+                // is stored forever in `world_events.command_json`. Guaranteed `Some` — both
+                // `apply_command` and `apply_intent` unconditionally insert into
+                // `post_images` immediately after a Create's own document write.
+                let doc = post_images.get(&doc.id).ok_or_else(|| {
+                    DataError::OpFailed(format!(
+                        "post-image missing for created document {}",
+                        doc.id
+                    ))
+                })?;
                 let owner_at_commit = Self::load_effective_owner(&mut *tx, doc).await?;
                 let mut overrides_at_commit = Vec::new();
                 crate::data::permission::collect_overrides(doc, "", &mut overrides_at_commit)
@@ -1637,6 +1650,11 @@ impl SqliteRepository {
                     permissions_at_commit: None,
                 })
             }
+            // Reads the op's OWN carried `doc`, not `post_images` — unlike Create/Update,
+            // there is no coherent "final state" for an id deleted within this same
+            // command: `post_images` holds no entry for it (the mutation loop never
+            // inserts one on Delete), and a later op resurrecting the same id via a fresh
+            // Create is a distinct document, not a continuation of this one.
             Operation::Delete { doc } => {
                 let owner_at_commit = Self::load_effective_owner(&mut *tx, doc).await?;
                 let mut overrides_at_commit = Vec::new();
@@ -7524,6 +7542,67 @@ mod tests {
                 .any(|(p, v)| p == "/system/secret" && *v == Visibility::GmOnly),
             "the FIRST op's snapshot must already carry the override the SECOND op adds: {:?}",
             op0.overrides_at_commit
+        );
+    }
+
+    #[tokio::test]
+    async fn create_op_snapshot_in_a_same_command_create_then_update_reflects_the_post_update_state(
+    ) {
+        // The Create-arm counterpart of multi_op_command_snapshot_reflects_the_final_post_loop_
+        // state_for_every_op: proves the Create op's OWN persisted OpSnapshot carries the SAME
+        // doc_id's later-in-command Update result (a reassigned `/owner`), not the value at the
+        // moment the Create ran within the loop. Uses apply_command (the trusted replay
+        // substrate) because apply_intent's Phase-1 OCC pre-image check rejects an Update
+        // targeting a not-yet-committed same-batch Create (see
+        // apply_intent_same_batch_create_then_engine_update_is_rejected) — a real op sequence
+        // reaching this code path arrives via that substrate, not the client-intent gate.
+        use crate::data::command::{FieldChange, Operation, UnsequencedCommand};
+        use crate::data::document::{DocRole, PermissionSet, Scope};
+
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let other = r
+            .create_user("other", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let mut perms = PermissionSet::default();
+        perms.users.insert(gm, DocRole::Owner);
+        let mut d = tests_doc(perms, serde_json::json!({}));
+        d.scope = Scope::World { world_id: w.id };
+        let doc_id = d.id;
+
+        let stored = r
+            .apply_command(UnsequencedCommand {
+                world_id: w.id,
+                author: gm,
+                ts: 1,
+                ops: vec![
+                    Operation::Create { doc: d },
+                    Operation::Update {
+                        doc_id,
+                        changes: vec![FieldChange {
+                            remove: false,
+                            path: "/owner".into(),
+                            old: serde_json::Value::Null,
+                            new: serde_json::json!(other),
+                        }],
+                    },
+                ],
+            })
+            .await
+            .unwrap();
+
+        let create_snapshot = stored.snapshot.per_op[0].as_ref().unwrap();
+        assert_eq!(
+            create_snapshot.owner_at_commit,
+            Some(other),
+            "the Create op's own snapshot must reflect the POST-Update owner, not the owner \
+             at the moment the Create ran: {:?}",
+            create_snapshot.owner_at_commit
         );
     }
 
