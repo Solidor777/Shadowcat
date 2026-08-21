@@ -51,7 +51,7 @@ pub use settings::{
 };
 
 use crate::data::command::{Command, FieldChange, Operation, WriteOrigin};
-use crate::data::document::{DocRole, Document, PermissionSet, Scope, WorldRole};
+use crate::data::document::{DocRole, Document, PermissionSet, Scope, Visibility, WorldRole};
 use crate::data::membership::PermissionContext;
 use crate::data::repository::Repository;
 use crate::data::DataError;
@@ -265,6 +265,45 @@ pub struct RecalcEntry {
     pub recalculated_at: i64,
 }
 
+/// Computes the `gm_only` `permissions.property_overrides` entries a
+/// message's roll content requires: `spec`/`raw` on every `RollEmbed`, plus
+/// `previous_raw` on every one of its `recalc_history` entries. Applied
+/// uniformly to every `RollSpec`/`RawRoll`-shaped value under a `RollEmbed`
+/// -- `outcome`/`previous_outcome`/`recalc_history` itself stay visible to
+/// every recipient. Recomputed from scratch against the CURRENT `content`
+/// (never incrementally patched), so a message's override set always matches
+/// what it actually carries; called from `build_message_doc` at Create time
+/// and from `handle_recalc_roll` after every recalculation.
+pub(crate) fn roll_embed_property_overrides(content: &[Segment]) -> BTreeMap<String, Visibility> {
+    let mut out = BTreeMap::new();
+    for (i, seg) in content.iter().enumerate() {
+        let Segment::RollEmbed {
+            spec,
+            raw,
+            recalc_history,
+            ..
+        } = seg
+        else {
+            continue;
+        };
+        if spec.is_some() {
+            out.insert(format!("/engine/content/{i}/spec"), Visibility::GmOnly);
+        }
+        if raw.is_some() {
+            out.insert(format!("/engine/content/{i}/raw"), Visibility::GmOnly);
+        }
+        if let Some(history) = recalc_history {
+            for j in 0..history.len() {
+                out.insert(
+                    format!("/engine/content/{i}/recalc_history/{j}/previous_raw"),
+                    Visibility::GmOnly,
+                );
+            }
+        }
+    }
+    out
+}
+
 /// The plain-text producer: wraps raw input as a single literal-text segment.
 /// A richer producer (markdown/HTML) feeds this same content model.
 pub fn plain_text_content(raw: &str) -> Vec<Segment> {
@@ -415,6 +454,7 @@ pub fn build_message_doc(world_id: Uuid, user: Uuid, draft: MessageDraft, now: i
             default,
             users,
             gm_role,
+            property_overrides: roll_embed_property_overrides(&engine.content),
             ..Default::default()
         },
         embedded: BTreeMap::new(),
@@ -1232,6 +1272,105 @@ mod tests {
     }
 
     #[test]
+    fn roll_embed_property_overrides_marks_spec_raw_and_recalc_history_previous_raw_gm_only() {
+        use crate::data::document::Visibility;
+
+        let spec = crate::dice::notation::parse(
+            "1d6",
+            crate::dice::ParseContext {
+                mode: crate::dice::notation::ModeKind::Total,
+                direction: crate::dice::spec::Direction::HighWins,
+            },
+        )
+        .unwrap();
+        let mut rng = crate::dice::rng::NoiseRng::from_seed(3);
+        let raw = crate::dice::roll(&spec, &mut rng);
+        let outcome = crate::dice::evaluate(&spec, &raw);
+
+        let content = vec![
+            Segment::Text {
+                text: "before ".into(),
+            },
+            Segment::RollEmbed {
+                formula: "1d6".into(),
+                outcome: outcome.clone(),
+                roll_id: Uuid::from_u128(1),
+                spec: Some(Box::new(spec.clone())),
+                raw: Some(Box::new(raw.clone())),
+                recalc_history: Some(vec![RecalcEntry {
+                    ops: vec![crate::dice::RecalcOp::RerollDice(vec![0])],
+                    previous_raw: raw.clone(),
+                    previous_outcome: outcome,
+                    recalculated_by: Uuid::from_u128(2),
+                    recalculated_at: 100,
+                }]),
+            },
+        ];
+
+        let overrides = roll_embed_property_overrides(&content);
+        assert_eq!(
+            overrides.get("/engine/content/1/spec"),
+            Some(&Visibility::GmOnly)
+        );
+        assert_eq!(
+            overrides.get("/engine/content/1/raw"),
+            Some(&Visibility::GmOnly)
+        );
+        assert_eq!(
+            overrides.get("/engine/content/1/recalc_history/0/previous_raw"),
+            Some(&Visibility::GmOnly)
+        );
+        assert_eq!(
+            overrides.get("/engine/content/1/recalc_history/0/previous_outcome"),
+            None,
+            "previous_outcome is visible to every recipient, never gm_only"
+        );
+        assert_eq!(overrides.len(), 3, "no other pointers should be marked");
+    }
+
+    #[test]
+    fn roll_embed_property_overrides_is_empty_for_non_roll_content() {
+        let content = vec![Segment::Text { text: "hi".into() }];
+        assert!(roll_embed_property_overrides(&content).is_empty());
+    }
+
+    #[test]
+    fn roll_embed_property_overrides_skips_a_pre_existing_roll_with_no_spec_raw() {
+        // A roll embedded before this feature shipped: spec/raw are None, so no
+        // override entries should be produced for it (nothing to hide).
+        let outcome = crate::dice::evaluate(
+            &crate::dice::notation::parse(
+                "1d6",
+                crate::dice::ParseContext {
+                    mode: crate::dice::notation::ModeKind::Total,
+                    direction: crate::dice::spec::Direction::HighWins,
+                },
+            )
+            .unwrap(),
+            &crate::dice::roll(
+                &crate::dice::notation::parse(
+                    "1d6",
+                    crate::dice::ParseContext {
+                        mode: crate::dice::notation::ModeKind::Total,
+                        direction: crate::dice::spec::Direction::HighWins,
+                    },
+                )
+                .unwrap(),
+                &mut crate::dice::rng::NoiseRng::from_seed(4),
+            ),
+        );
+        let content = vec![Segment::RollEmbed {
+            formula: "1d6".into(),
+            outcome,
+            roll_id: Uuid::from_u128(5),
+            spec: None,
+            raw: None,
+            recalc_history: None,
+        }];
+        assert!(roll_embed_property_overrides(&content).is_empty());
+    }
+
+    #[test]
     fn recalc_entry_round_trips() {
         let spec = crate::dice::notation::parse(
             "1d6",
@@ -1849,6 +1988,82 @@ mod tests {
             seq_before,
             "rejected channel must not publish"
         );
+    }
+
+    #[tokio::test]
+    async fn a_roll_messages_spec_and_raw_are_gm_only_but_outcome_and_roll_id_are_not() {
+        use crate::data::document::WorldRole as DocWorldRole;
+        use crate::data::permission::{filter_properties, resolve_access};
+        use crate::data::sqlite::SqliteRepository;
+        use crate::ws::room::RoomRegistry;
+
+        let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+        let gm = repo
+            .create_user("gm", None, crate::auth::role::ServerRole::User, 0)
+            .await
+            .unwrap();
+        let player = repo
+            .create_user("pl", None, crate::auth::role::ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = repo.create_world_owned("W", gm, 0).await.unwrap();
+        repo.add_member(w.id, player, DocWorldRole::Player)
+            .await
+            .unwrap();
+        let ctx = PermissionContext {
+            user_id: player,
+            world_role: DocWorldRole::Player,
+        };
+        let reg = RoomRegistry::new();
+        let room = reg.get_or_create(&repo, w.id).await.unwrap().unwrap();
+        let rate = PingRateLimiter::new();
+
+        let cmd = handle_send_message(
+            MessageRequestCtx {
+                room: &room,
+                repo: &repo,
+                ctx: &PermissionContext {
+                    user_id: player,
+                    world_role: DocWorldRole::Player,
+                },
+                rate: &rate,
+                preview: LinkPreviewDeps {
+                    client: &link_preview::build_client_allow_loopback(),
+                    cache: &LinkPreviewCache::new(),
+                    rate: &PreviewRateLimiter::new(),
+                },
+                now: 100,
+                budget_per_min: 30,
+            },
+            "all".into(),
+            "/roll 1d6".into(),
+            None,
+            Audience::Public,
+        )
+        .await
+        .unwrap();
+        let doc = match &cmd.ops[0] {
+            Operation::Create { doc } => doc.clone(),
+            other => panic!("expected Create, got {other:?}"),
+        };
+
+        // Non-GM player: spec/raw are nulled; outcome/roll_id survive.
+        let player_access = resolve_access(player, DocWorldRole::Player, &doc, Some(player));
+        let player_view = filter_properties(&doc, &player_access).unwrap();
+        let sys: serde_json::Value = player_view.engine.clone().unwrap();
+        let seg = &sys["content"][0];
+        assert_eq!(seg["spec"], serde_json::Value::Null);
+        assert_eq!(seg["raw"], serde_json::Value::Null);
+        assert!(seg.get("outcome").is_some() && !seg["outcome"].is_null());
+        assert!(seg.get("roll_id").is_some() && !seg["roll_id"].is_null());
+
+        // GM: spec/raw survive unredacted.
+        let gm_access = resolve_access(gm, DocWorldRole::Gm, &doc, Some(player));
+        let gm_view = filter_properties(&doc, &gm_access).unwrap();
+        let gm_sys: serde_json::Value = gm_view.engine.clone().unwrap();
+        let gm_seg = &gm_sys["content"][0];
+        assert!(gm_seg.get("spec").is_some() && !gm_seg["spec"].is_null());
+        assert!(gm_seg.get("raw").is_some() && !gm_seg["raw"].is_null());
     }
 
     #[tokio::test]
