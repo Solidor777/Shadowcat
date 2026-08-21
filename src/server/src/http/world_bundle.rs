@@ -118,44 +118,90 @@ pub async fn export_world(
 /// large.
 const MAX_IMPORT_BUNDLE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
-/// Stream the multipart "file" field to `dest`, enforcing
+/// Removes the wrapped path on drop unless `keep()` was called — the single
+/// source of truth for staged-import-upload cleanup, so a temp file cannot
+/// survive an early return (present or future) or a panic unwind without a
+/// `remove_file` call repeated at every failure site. The removal itself is
+/// a synchronous `std::fs::remove_file`, not a spawned task: `drop` runs
+/// during unwinding, where the enclosing async runtime may already be
+/// tearing down, so a fire-and-forget `tokio::spawn` could be dropped before
+/// it runs — a blocking call on the current thread is guaranteed to
+/// complete before `drop` returns.
+struct TempFileGuard(Option<std::path::PathBuf>);
+
+impl TempFileGuard {
+    /// Arms cleanup for `path`.
+    fn new(path: std::path::PathBuf) -> Self {
+        Self(Some(path))
+    }
+
+    /// Cancels the cleanup — call once the file must survive past this
+    /// guard's scope (ownership of its removal passes to the caller, or to
+    /// another guard).
+    fn keep(mut self) {
+        self.0 = None;
+    }
+}
+
+impl Drop for TempFileGuard {
+    fn drop(&mut self) {
+        if let Some(path) = self.0.take() {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+/// Stream the multipart field named `"file"` to `dest`, enforcing
 /// `MAX_IMPORT_BUNDLE_BYTES` as bytes arrive (never buffering the whole
-/// body). On any failure the partial file is removed.
+/// body). A `TempFileGuard` removes `dest` on any early return; the guard is
+/// released (`keep()`) only once every byte has been written and flushed.
 async fn stream_bundle_upload(
     mut multipart: Multipart,
     dest: &std::path::Path,
 ) -> Result<(), AppError> {
-    let mut field = multipart
-        .next_field()
-        .await
-        .map_err(|e| AppError::BadRequest(format!("multipart error: {e}")))?
-        .ok_or_else(|| AppError::BadRequest("missing file field".into()))?;
-    let mut file = tokio::fs::File::create(dest)
-        .await
-        .map_err(|_| AppError::Internal)?;
+    let guard = TempFileGuard::new(dest.to_path_buf());
+
+    let mut field = loop {
+        let Some(f) = multipart
+            .next_field()
+            .await
+            .map_err(|e| AppError::BadRequest(format!("multipart error: {e}")))?
+        else {
+            return Err(AppError::BadRequest("missing file field".into()));
+        };
+        if f.name() == Some("file") {
+            break f;
+        }
+    };
+    let mut file = tokio::fs::File::create(dest).await.map_err(|e| {
+        tracing::error!(?e, "failed to create import upload temp file");
+        AppError::Internal
+    })?;
     let mut total: u64 = 0;
     loop {
         let chunk = match field.chunk().await {
             Ok(Some(c)) => c,
             Ok(None) => break,
             Err(e) => {
-                let _ = tokio::fs::remove_file(dest).await;
                 return Err(AppError::BadRequest(format!("multipart error: {e}")));
             }
         };
         total += chunk.len() as u64;
         if total > MAX_IMPORT_BUNDLE_BYTES {
-            let _ = tokio::fs::remove_file(dest).await;
             return Err(AppError::PayloadTooLarge(format!(
                 "bundle exceeds {MAX_IMPORT_BUNDLE_BYTES} bytes"
             )));
         }
-        if file.write_all(&chunk).await.is_err() {
-            let _ = tokio::fs::remove_file(dest).await;
+        if let Err(e) = file.write_all(&chunk).await {
+            tracing::error!(?e, "failed writing import upload temp file");
             return Err(AppError::Internal);
         }
     }
-    file.flush().await.map_err(|_| AppError::Internal)?;
+    file.flush().await.map_err(|e| {
+        tracing::error!(?e, "failed flushing import upload temp file");
+        AppError::Internal
+    })?;
+    guard.keep();
     Ok(())
 }
 
@@ -164,13 +210,17 @@ async fn stream_bundle_upload(
 /// buffers the whole body), extracts it (schema-version- and
 /// row-count-checked before any DB row is touched), then inserts everything
 /// in one transaction. See `SqliteRepository::import_world` for the
-/// collision-reject/username-resolution/asset-finalize behavior.
+/// collision-reject/username-resolution/asset-finalize behavior. The staged
+/// temp file is removed by its `TempFileGuard` once extraction has run,
+/// success or failure — including a `spawn_blocking(read_bundle)` panic,
+/// which the guard's `Drop` still catches during unwind.
 pub async fn import_world(
     _admin: AdminUser,
     State(state): State<AppState>,
     multipart: Multipart,
 ) -> Result<Json<ImportSummary>, AppError> {
     let tmp_tar = std::env::temp_dir().join(format!("shadowcat-import-{}.tar", Uuid::new_v4()));
+    let guard = TempFileGuard::new(tmp_tar.clone());
     stream_bundle_upload(multipart, &tmp_tar).await?;
 
     let assets_dir = state.config.assets_path();
@@ -181,7 +231,10 @@ pub async fn import_world(
             tracing::error!(?e, "world import extraction task panicked");
             AppError::Internal
         })?;
-    let _ = tokio::fs::remove_file(&tmp_tar).await;
+    // Extraction is done with the staged file either way — drop the guard
+    // here (rather than letting it ride to the end of the function) so the
+    // temp file is removed before the DB insert, not after.
+    drop(guard);
 
     let import_data = match import_result {
         Ok(d) => d,
@@ -202,8 +255,12 @@ pub async fn import_world(
                     AppError::BadRequest(format!("malformed bundle content: {e}"))
                 }
                 WorldBundleError::Io(e) => {
+                    // Server-side fault (e.g. disk full during asset
+                    // extraction), not necessarily client-caused — mirrors
+                    // `DataError::Sqlx`/`Serde`'s logged-only, no-echo
+                    // mapping rather than `AppError::BadRequest`'s.
                     tracing::error!(?e, "world import extraction I/O error");
-                    AppError::BadRequest(format!("bundle read error: {e}"))
+                    AppError::Internal
                 }
             });
         }
@@ -256,5 +313,68 @@ mod tests {
 
         handle.join().unwrap();
         assert!(second_write_done.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[test]
+    fn temp_file_guard_removes_the_file_on_ordinary_drop() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("guarded.tmp");
+        std::fs::write(&path, b"x").unwrap();
+        {
+            let _guard = TempFileGuard::new(path.clone());
+        }
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn temp_file_guard_keep_prevents_removal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("kept.tmp");
+        std::fs::write(&path, b"x").unwrap();
+        let guard = TempFileGuard::new(path.clone());
+        guard.keep();
+        assert!(path.exists());
+    }
+
+    /// Models the exact shape `import_world` relies on: a guard held across
+    /// a fallible operation, then an early return via `?` (the shape a
+    /// `spawn_blocking(read_bundle)` panic takes once `JoinError` propagates
+    /// out of the `map_err(..)?` — a normal early return, not a Rust panic,
+    /// since `spawn_blocking` converts a panicked task into an `Err` value).
+    /// The guard local goes out of scope on that early return exactly as it
+    /// would on any other path, so cleanup is unconditional.
+    #[test]
+    fn temp_file_guard_removes_the_file_on_early_return_via_question_mark() {
+        fn helper(path: std::path::PathBuf) -> Result<(), AppError> {
+            let _guard = TempFileGuard::new(path);
+            let inner: Result<(), AppError> = Err(AppError::Internal);
+            inner?;
+            Ok(())
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("early-return.tmp");
+        std::fs::write(&path, b"x").unwrap();
+        assert!(helper(path.clone()).is_err());
+        assert!(!path.exists());
+    }
+
+    /// A genuine Rust panic while the guard is live — belt-and-suspenders on
+    /// top of the `?`-based test above, confirming `Drop::drop` also runs
+    /// during unwind, not just on a normal early return.
+    #[test]
+    fn temp_file_guard_removes_the_file_on_panic_unwind() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("panicked.tmp");
+        std::fs::write(&path, b"x").unwrap();
+        let path_for_panic = path.clone();
+        let result = std::panic::catch_unwind(move || {
+            let _guard = TempFileGuard::new(path_for_panic);
+            panic!("simulated panic while the guard is live");
+        });
+        assert!(result.is_err());
+        assert!(
+            !path.exists(),
+            "guard must remove the file during panic unwind"
+        );
     }
 }
