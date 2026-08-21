@@ -3876,7 +3876,8 @@ mod tests {
                 WriteOrigin::Client,
             )
             .await
-            .expect("owner floor grants WRITE_FIELDS: the patch must succeed");
+            .expect("owner floor grants WRITE_FIELDS: the patch must succeed")
+            .command;
 
         // 2. filter_command of the returned command for P, joined through the
         //    same actor link, must RETAIN the op — the owner floor also grants

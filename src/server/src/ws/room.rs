@@ -456,9 +456,13 @@ impl Room {
         ts: i64,
         origin: WriteOrigin,
     ) -> Result<Command, DataError> {
+        // Extracts the wire-shaped `Command` half of `apply_intent`'s `StoredCommand`; the
+        // commit-time snapshot half is not yet threaded through the ring/broadcast path (both
+        // still carry `Arc<ServerMsg>`, not a snapshot-bearing shape).
         let cmd = repo
             .apply_intent(ctx, self.world_id, ops, ts, origin)
-            .await?;
+            .await?
+            .command;
         // Hydrate the derived ECS from the committed command while still holding
         // publish_guard (enforced by the caller), so the ECS is consistent with cmd.seq
         // before the Event (and any derived recompute keyed to that seq) is observable.
@@ -830,11 +834,14 @@ impl Room {
         }
         let cmds = repo.events_since(self.world_id, from_seq - 1).await?;
         self.stats.resyncs_cold.fetch_add(1, Ordering::Relaxed);
+        // Extracts the wire-shaped `Command` half of each `StoredCommand`; the commit-time
+        // snapshot half is not yet threaded through this replay path (`ServerMsg::Event` still
+        // carries a bare `Command`, not a snapshot-bearing shape).
         let frames = cmds
             .into_iter()
             .map(|c| {
                 Arc::new(ServerMsg::Event {
-                    command: c,
+                    command: c.command,
                     intent_id: None,
                 })
             })
@@ -1225,7 +1232,7 @@ mod room_tests {
         async fn apply_command(
             &self,
             cmd: crate::data::command::UnsequencedCommand,
-        ) -> Result<Command, DataError> {
+        ) -> Result<crate::data::snapshot::StoredCommand, DataError> {
             self.inner.apply_command(cmd).await
         }
         async fn apply_intent(
@@ -1235,7 +1242,7 @@ mod room_tests {
             ops: Vec<Operation>,
             ts: i64,
             origin: WriteOrigin,
-        ) -> Result<Command, DataError> {
+        ) -> Result<crate::data::snapshot::StoredCommand, DataError> {
             self.inner
                 .apply_intent(ctx, world_id, ops, ts, origin)
                 .await
@@ -1289,7 +1296,11 @@ mod room_tests {
         ) -> Result<Vec<Document>, DataError> {
             self.inner.documents_by_source(pack, source_id).await
         }
-        async fn events_since(&self, world_id: Uuid, seq: i64) -> Result<Vec<Command>, DataError> {
+        async fn events_since(
+            &self,
+            world_id: Uuid,
+            seq: i64,
+        ) -> Result<Vec<crate::data::snapshot::StoredCommand>, DataError> {
             self.inner.events_since(world_id, seq).await
         }
         async fn get_world(

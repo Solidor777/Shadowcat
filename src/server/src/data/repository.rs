@@ -6,7 +6,7 @@
 use async_trait::async_trait;
 use uuid::Uuid;
 
-use crate::data::command::{Command, UnsequencedCommand};
+use crate::data::command::UnsequencedCommand;
 use crate::data::document::{
     CapabilityRequirement, ContractDeclaration, Document, SchemaDeclaration, World,
     WorldCapDefaults, WorldRole,
@@ -26,8 +26,12 @@ pub trait Repository: Send + Sync {
     /// for `/engine`(/*)) — normalize-then-store is data integrity, not
     /// authz, so it applies regardless of caller trust level. A malformed
     /// or absent engine body on an engine-defined `doc_type` is rejected
-    /// with `DataError::BadEngine`.
-    async fn apply_command(&self, cmd: UnsequencedCommand) -> Result<Command, DataError>;
+    /// with `DataError::BadEngine`. Returns the commit-time redaction snapshot alongside the
+    /// command — see StoredCommand.
+    async fn apply_command(
+        &self,
+        cmd: UnsequencedCommand,
+    ) -> Result<crate::data::snapshot::StoredCommand, DataError>;
 
     /// Authorize (per `ctx`), structurally validate, and check per-op
     /// pre-images, then sequence + apply + log — all in one transaction.
@@ -39,6 +43,7 @@ pub trait Repository: Send + Sync {
     /// requester's own `DocRole`; only `WriteOrigin::ServerMessageRevision` —
     /// set exclusively by the server edit/delete handlers — re-opens it, and
     /// only for that call's sanitized authoritative revision.
+    /// Returns the commit-time redaction snapshot alongside the command — see StoredCommand.
     async fn apply_intent(
         &self,
         ctx: &crate::data::membership::PermissionContext,
@@ -46,7 +51,7 @@ pub trait Repository: Send + Sync {
         ops: Vec<crate::data::command::Operation>,
         ts: i64,
         origin: crate::data::command::WriteOrigin,
-    ) -> Result<Command, DataError>;
+    ) -> Result<crate::data::snapshot::StoredCommand, DataError>;
 
     /// Fetch one document by id, or `None` if it does not exist. Unredacted —
     /// callers gate egress via `resolve_access` + `filter_properties`.
@@ -169,7 +174,13 @@ pub trait Repository: Send + Sync {
     /// # Ok(())
     /// # }
     /// ```
-    async fn events_since(&self, world_id: Uuid, seq: i64) -> Result<Vec<Command>, DataError>;
+    /// Each row's StoredCommand back-compat-parses a bare-Command row (no `command`/`snapshot`
+    /// keys) via StoredCommand::from_stored_json, carrying an all-None snapshot.
+    async fn events_since(
+        &self,
+        world_id: Uuid,
+        seq: i64,
+    ) -> Result<Vec<crate::data::snapshot::StoredCommand>, DataError>;
 
     /// Fetch a world row by id, or `None` if it does not exist.
     async fn get_world(&self, id: Uuid) -> Result<Option<World>, DataError>;

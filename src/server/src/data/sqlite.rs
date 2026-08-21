@@ -23,6 +23,7 @@ use crate::data::permission::{
     resolve_access_world, Access,
 };
 use crate::data::repository::Repository;
+use crate::data::snapshot::{CommandSnapshot, StoredCommand};
 use crate::data::validation;
 use crate::data::DataError;
 
@@ -1569,8 +1570,6 @@ impl SqliteRepository {
     /// `OpSnapshot::created_seq_at_commit` compares against to detect an id reused after a hard
     /// delete. Runs on the caller's transaction (never `&self.pool`, which would deadlock
     /// mid-transaction on the single-writer pool).
-    // TODO: remove this #[cfg(test)] once a non-test caller invokes this function.
-    #[cfg(test)]
     async fn document_created_seq<'e, E>(executor: E, id: Uuid) -> Result<Option<i64>, DataError>
     where
         E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
@@ -1587,8 +1586,6 @@ impl SqliteRepository {
     /// — captured once per command, at the point the command is committing, which IS "at commit
     /// time" for this purpose: the whole point of capturing it now is to freeze what would
     /// otherwise be re-derived live on every future replay.
-    // TODO: remove this #[cfg(test)] once a non-test caller invokes this function.
-    #[cfg(test)]
     async fn world_member_roles<'e, E>(
         executor: E,
         world_id: Uuid,
@@ -1609,6 +1606,92 @@ impl SqliteRepository {
                 Ok((uid, role))
             })
             .collect()
+    }
+
+    /// Build one op's commit-time redaction snapshot from the command's FINAL post-image state
+    /// (`post_images`, accumulated across the WHOLE mutation loop) and, for a `Delete`, its
+    /// created_seq captured BEFORE the row was removed (`deleted_created_seqs` — the row is gone
+    /// by the time this runs, so it cannot be read here). Runs on the caller's open transaction,
+    /// after every op in the command has applied and every write has landed. Shared by
+    /// `apply_command` and `apply_intent` — the ONE place either loop computes a snapshot, so
+    /// they cannot diverge.
+    async fn build_op_snapshot(
+        tx: &mut sqlx::SqliteConnection,
+        op: &Operation,
+        post_images: &std::collections::HashMap<Uuid, Document>,
+        deleted_created_seqs: &std::collections::HashMap<Uuid, i64>,
+    ) -> Result<crate::data::snapshot::OpSnapshot, DataError> {
+        use crate::data::snapshot::OpSnapshot;
+        match op {
+            Operation::Create { doc } => {
+                let owner_at_commit = Self::load_effective_owner(&mut *tx, doc).await?;
+                let mut overrides_at_commit = Vec::new();
+                crate::data::permission::collect_overrides(doc, "", &mut overrides_at_commit)
+                    .map_err(|e| DataError::OpFailed(e.to_string()))?;
+                Ok(OpSnapshot {
+                    owner_at_commit,
+                    doc_type: doc.doc_type.clone(),
+                    overrides_at_commit,
+                    retraction_hidden_at_commit: None,
+                    created_seq_at_commit: None,
+                    permissions_at_commit: None,
+                })
+            }
+            Operation::Delete { doc } => {
+                let owner_at_commit = Self::load_effective_owner(&mut *tx, doc).await?;
+                let mut overrides_at_commit = Vec::new();
+                crate::data::permission::collect_overrides(doc, "", &mut overrides_at_commit)
+                    .map_err(|e| DataError::OpFailed(e.to_string()))?;
+                Ok(OpSnapshot {
+                    owner_at_commit,
+                    doc_type: doc.doc_type.clone(),
+                    overrides_at_commit,
+                    retraction_hidden_at_commit: None,
+                    created_seq_at_commit: deleted_created_seqs.get(&doc.id).copied(),
+                    permissions_at_commit: None,
+                })
+            }
+            Operation::Update { doc_id, changes } => {
+                let doc = post_images.get(doc_id).ok_or_else(|| {
+                    DataError::OpFailed(format!("post-image missing for updated document {doc_id}"))
+                })?;
+                let owner_at_commit = Self::load_effective_owner(&mut *tx, doc).await?;
+                let mut overrides_full = Vec::new();
+                crate::data::permission::collect_overrides(doc, "", &mut overrides_full)
+                    .map_err(|e| DataError::OpFailed(e.to_string()))?;
+                let touches_perms = changes
+                    .iter()
+                    .any(|c| crate::data::permission::touches_permissions(&c.path));
+                let retraction_hidden_at_commit = if touches_perms {
+                    Some(overrides_full.clone())
+                } else {
+                    None
+                };
+                // Pruned to the ancestor/descendant closure of this op's own changed paths —
+                // only an overlapping override can possibly redact THIS op's field-level deltas.
+                let overrides_at_commit: Vec<(String, crate::data::document::Visibility)> =
+                    overrides_full
+                        .into_iter()
+                        .filter(|(p, _)| {
+                            changes
+                                .iter()
+                                .any(|c| crate::data::permission::paths_overlap(p, &c.path))
+                        })
+                        .collect();
+                let created_seq_at_commit = Self::document_created_seq(&mut *tx, *doc_id).await?;
+                Ok(OpSnapshot {
+                    owner_at_commit,
+                    doc_type: doc.doc_type.clone(),
+                    overrides_at_commit,
+                    retraction_hidden_at_commit,
+                    created_seq_at_commit,
+                    permissions_at_commit: Some(crate::data::document::PermissionSet {
+                        property_overrides: Default::default(),
+                        ..doc.permissions.clone()
+                    }),
+                })
+            }
+        }
     }
 
     /// Whether a document of `doc_type` already exists in `world_id`, on an
@@ -1925,7 +2008,7 @@ fn values_semantically_eq(a: &serde_json::Value, b: &serde_json::Value) -> bool 
 
 #[async_trait]
 impl Repository for SqliteRepository {
-    async fn apply_command(&self, cmd: UnsequencedCommand) -> Result<Command, DataError> {
+    async fn apply_command(&self, cmd: UnsequencedCommand) -> Result<StoredCommand, DataError> {
         let mut tx = self.pool.begin().await?;
 
         // Allocate the next per-world seq from the single durable source.
@@ -1985,6 +2068,10 @@ impl Repository for SqliteRepository {
         // callers), but the engine band's normalize-then-store invariant
         // is data integrity, not authz -- it applies regardless of trust
         // level.
+        let mut post_images: std::collections::HashMap<Uuid, Document> =
+            std::collections::HashMap::new();
+        let mut deleted_created_seqs: std::collections::HashMap<Uuid, i64> =
+            std::collections::HashMap::new();
         let mut normalized_ops = Vec::with_capacity(sequenced.ops.len());
         for op in &sequenced.ops {
             match op {
@@ -1997,10 +2084,14 @@ impl Repository for SqliteRepository {
                     crate::data::validation::validate_property_overrides(&doc)?;
                     crate::data::validation::validate_engine_tree(&mut doc)?;
                     Self::upsert_document(&mut tx, &doc, seq).await?;
+                    post_images.insert(doc.id, doc.clone());
                     normalized_ops.push(Operation::Create { doc });
                 }
                 Operation::Delete { doc } => {
                     check_command_scope(doc, sequenced.world_id)?;
+                    if let Some(cs) = Self::document_created_seq(&mut *tx, doc.id).await? {
+                        deleted_created_seqs.insert(doc.id, cs);
+                    }
                     Self::delete_document_tx(&mut tx, doc.id).await?;
                     normalized_ops.push(op.clone());
                 }
@@ -2042,6 +2133,7 @@ impl Repository for SqliteRepository {
                     // updated_at tracks last mutation; the command ts is authoritative.
                     doc.updated_at = sequenced.ts;
                     Self::upsert_document(&mut tx, &doc, seq).await?;
+                    post_images.insert(*doc_id, doc.clone());
 
                     // Re-derive each `/engine`(/*) `FieldChange.new` from
                     // the SAME validated post-image so the returned
@@ -2074,18 +2166,38 @@ impl Repository for SqliteRepository {
         }
         sequenced.ops = normalized_ops;
 
+        let world_gm_at_commit: std::collections::HashMap<Uuid, bool> =
+            Self::world_member_roles(&mut *tx, sequenced.world_id)
+                .await?
+                .into_iter()
+                .map(|(uid, role)| (uid, role == WorldRole::Gm))
+                .collect();
+        let mut per_op = Vec::with_capacity(sequenced.ops.len());
+        for op in &sequenced.ops {
+            per_op.push(Some(
+                Self::build_op_snapshot(&mut tx, op, &post_images, &deleted_created_seqs).await?,
+            ));
+        }
+        let stored = StoredCommand {
+            command: sequenced,
+            snapshot: CommandSnapshot {
+                per_op,
+                world_gm_at_commit,
+            },
+        };
+
         // Append to the log.
         sqlx::query("INSERT INTO world_events (world_id, seq, author_id, ts, command_json) VALUES (?, ?, ?, ?, ?)")
-            .bind(sequenced.world_id.to_string())
+            .bind(stored.command.world_id.to_string())
             .bind(seq)
-            .bind(sequenced.author.to_string())
-            .bind(sequenced.ts)
-            .bind(serde_json::to_string(&sequenced)?)
+            .bind(stored.command.author.to_string())
+            .bind(stored.command.ts)
+            .bind(serde_json::to_string(&stored)?)
             .execute(&mut *tx)
             .await?;
 
         tx.commit().await?;
-        Ok(sequenced)
+        Ok(stored)
     }
 
     async fn apply_intent(
@@ -2095,7 +2207,7 @@ impl Repository for SqliteRepository {
         mut ops: Vec<Operation>,
         ts: i64,
         origin: WriteOrigin,
-    ) -> Result<Command, DataError> {
+    ) -> Result<StoredCommand, DataError> {
         // Load world default grants before opening the transaction: the
         // single-writer pool holds one connection, so a settings query mid-tx
         // would deadlock.
@@ -2472,14 +2584,22 @@ impl Repository for SqliteRepository {
         // (INSERT further down) AND replayed by `events_since`, this is the
         // single chokepoint that keeps all three in sync with the persisted
         // row.
+        let mut post_images: std::collections::HashMap<Uuid, Document> =
+            std::collections::HashMap::new();
+        let mut deleted_created_seqs: std::collections::HashMap<Uuid, i64> =
+            std::collections::HashMap::new();
         let mut normalized_ops = Vec::with_capacity(sequenced.ops.len());
         for op in &sequenced.ops {
             match op {
                 Operation::Create { doc } => {
                     Self::upsert_document(&mut tx, doc, seq).await?;
+                    post_images.insert(doc.id, doc.clone());
                     normalized_ops.push(op.clone());
                 }
                 Operation::Delete { doc } => {
+                    if let Some(cs) = Self::document_created_seq(&mut *tx, doc.id).await? {
+                        deleted_created_seqs.insert(doc.id, cs);
+                    }
                     Self::delete_document_tx(&mut tx, doc.id).await?;
                     normalized_ops.push(op.clone());
                 }
@@ -2518,6 +2638,7 @@ impl Repository for SqliteRepository {
                     validation::validate_system_schema_tree(&doc, &world_schemas)?;
                     doc.updated_at = ts;
                     Self::upsert_document(&mut tx, &doc, seq).await?;
+                    post_images.insert(*doc_id, doc.clone());
 
                     // `validate_engine_tree` above normalizes `doc.engine` (a
                     // JSON-number literal coerced to its typed f64
@@ -2560,17 +2681,37 @@ impl Repository for SqliteRepository {
         }
         sequenced.ops = normalized_ops;
 
+        let world_gm_at_commit: std::collections::HashMap<Uuid, bool> =
+            Self::world_member_roles(&mut *tx, world_id)
+                .await?
+                .into_iter()
+                .map(|(uid, role)| (uid, role == WorldRole::Gm))
+                .collect();
+        let mut per_op = Vec::with_capacity(sequenced.ops.len());
+        for op in &sequenced.ops {
+            per_op.push(Some(
+                Self::build_op_snapshot(&mut tx, op, &post_images, &deleted_created_seqs).await?,
+            ));
+        }
+        let stored = StoredCommand {
+            command: sequenced,
+            snapshot: CommandSnapshot {
+                per_op,
+                world_gm_at_commit,
+            },
+        };
+
         sqlx::query("INSERT INTO world_events (world_id, seq, author_id, ts, command_json) VALUES (?, ?, ?, ?, ?)")
-            .bind(sequenced.world_id.to_string())
+            .bind(stored.command.world_id.to_string())
             .bind(seq)
-            .bind(sequenced.author.to_string())
-            .bind(ts)
-            .bind(serde_json::to_string(&sequenced)?)
+            .bind(stored.command.author.to_string())
+            .bind(stored.command.ts)
+            .bind(serde_json::to_string(&stored)?)
             .execute(&mut *tx)
             .await?;
 
         tx.commit().await?;
-        Ok(sequenced)
+        Ok(stored)
     }
 
     async fn get_document(&self, id: Uuid) -> Result<Option<Document>, DataError> {
@@ -2714,7 +2855,11 @@ impl Repository for SqliteRepository {
             .collect()
     }
 
-    async fn events_since(&self, world_id: Uuid, seq: i64) -> Result<Vec<Command>, DataError> {
+    async fn events_since(
+        &self,
+        world_id: Uuid,
+        seq: i64,
+    ) -> Result<Vec<StoredCommand>, DataError> {
         let rows = sqlx::query(
             "SELECT command_json FROM world_events WHERE world_id = ? AND seq > ? ORDER BY seq",
         )
@@ -2724,9 +2869,8 @@ impl Repository for SqliteRepository {
         .await?;
         rows.into_iter()
             .map(|r| {
-                Ok(serde_json::from_str(
-                    r.get::<String, _>("command_json").as_str(),
-                )?)
+                StoredCommand::from_stored_json(r.get::<String, _>("command_json").as_str())
+                    .map_err(DataError::from)
             })
             .collect()
     }
@@ -3848,7 +3992,8 @@ mod tests {
                 WriteOrigin::Client,
             )
             .await
-            .unwrap();
+            .unwrap()
+            .command;
         let deleted: Vec<Uuid> = cmd
             .ops
             .iter()
@@ -3985,7 +4130,8 @@ mod tests {
                 ops: vec![Operation::Delete { doc: d }],
             })
             .await
-            .unwrap();
+            .unwrap()
+            .command;
         // The self-reference yields no extra descendant op — just the row itself.
         let deletes = cmd
             .ops
@@ -4974,7 +5120,8 @@ mod tests {
                 WriteOrigin::Client,
             )
             .await
-            .unwrap();
+            .unwrap()
+            .command;
 
         // The returned Command (broadcast payload) already carries the
         // normalized engine body.
@@ -5087,7 +5234,8 @@ mod tests {
                 WriteOrigin::Client,
             )
             .await
-            .unwrap();
+            .unwrap()
+            .command;
 
         // (i) The returned Command's FieldChange.new is already normalized.
         let broadcast_new = cmd
@@ -5115,9 +5263,10 @@ mod tests {
         let replayed = r.events_since(w.id, 1).await.unwrap();
         let replayed_cmd = replayed
             .iter()
-            .find(|c| c.seq == cmd.seq)
+            .find(|c| c.command.seq == cmd.seq)
             .expect("replayed command present");
         let replayed_new = replayed_cmd
+            .command
             .ops
             .iter()
             .find_map(|o| match o {
@@ -5203,7 +5352,8 @@ mod tests {
                 WriteOrigin::Client,
             )
             .await
-            .unwrap();
+            .unwrap()
+            .command;
 
         let broadcast_new = cmd
             .ops
@@ -5311,7 +5461,8 @@ mod tests {
                 }],
             })
             .await
-            .unwrap();
+            .unwrap()
+            .command;
 
         // (a) stored row holds the normalized engine value.
         let stored = r.get_document(doc_id).await.unwrap().unwrap();
@@ -5395,7 +5546,8 @@ mod tests {
                 }],
             })
             .await
-            .unwrap();
+            .unwrap()
+            .command;
 
         let broadcast_new = cmd
             .ops
@@ -6945,7 +7097,7 @@ mod tests {
             }],
         };
         let c1 = r.apply_command(create.clone()).await.unwrap();
-        assert_eq!(c1.seq, 1);
+        assert_eq!(c1.command.seq, 1);
         assert!(r.get_document(Uuid::from_u128(1)).await.unwrap().is_some());
 
         // Update
@@ -6964,7 +7116,7 @@ mod tests {
             }],
         };
         let c2 = r.apply_command(update.clone()).await.unwrap();
-        assert_eq!(c2.seq, 2);
+        assert_eq!(c2.command.seq, 2);
         assert_eq!(
             r.get_document(Uuid::from_u128(1))
                 .await
@@ -6975,7 +7127,7 @@ mod tests {
         );
 
         // Invert the update — hp returns to 10
-        r.apply_command(c2.invert()).await.unwrap();
+        r.apply_command(c2.command.invert()).await.unwrap();
         assert_eq!(
             r.get_document(Uuid::from_u128(1))
                 .await
@@ -6986,7 +7138,7 @@ mod tests {
         );
 
         // Invert the create — document gone
-        r.apply_command(c1.invert()).await.unwrap();
+        r.apply_command(c1.command.invert()).await.unwrap();
         assert!(r.get_document(Uuid::from_u128(1)).await.unwrap().is_none());
     }
 
@@ -7049,7 +7201,7 @@ mod tests {
             })
             .await
             .unwrap();
-        assert_eq!(c.seq, 2);
+        assert_eq!(c.command.seq, 2);
     }
 
     #[tokio::test]
@@ -7296,8 +7448,206 @@ mod tests {
         }
         let tail = r.events_since(w.id, 1).await.unwrap();
         assert_eq!(tail.len(), 2);
-        assert_eq!(tail[0].seq, 2);
-        assert_eq!(tail[1].seq, 3);
+        assert_eq!(tail[0].command.seq, 2);
+        assert_eq!(tail[1].command.seq, 3);
+    }
+
+    #[tokio::test]
+    async fn multi_op_command_snapshot_reflects_the_final_post_loop_state_for_every_op() {
+        // The write-loop counterpart of permission.rs's
+        // multi_op_leak_within_one_command_is_closed_by_the_post_loop_accumulator: proves
+        // apply_intent's OWN snapshot construction (not a hand-built one) gives the FIRST op's
+        // OpSnapshot the override the SECOND op in the SAME command adds.
+        use crate::data::command::{FieldChange, Operation};
+        use crate::data::document::{DocRole, PermissionSet, Scope, Visibility};
+        use crate::data::membership::PermissionContext;
+
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+        let mut perms = PermissionSet::default();
+        perms.users.insert(gm, DocRole::Owner);
+        let mut d = tests_doc(perms, serde_json::json!({ "secret": "X" }));
+        d.scope = Scope::World { world_id: w.id };
+        let doc_id = d.id;
+        r.apply_intent(
+            &ctx,
+            w.id,
+            vec![Operation::Create { doc: d }],
+            1,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+        let stored = r
+            .apply_intent(
+                &ctx,
+                w.id,
+                vec![
+                    Operation::Update {
+                        doc_id,
+                        changes: vec![FieldChange {
+                            remove: false,
+                            path: "/system/secret".into(),
+                            old: serde_json::json!("X"),
+                            new: serde_json::json!("Y"),
+                        }],
+                    },
+                    Operation::Update {
+                        doc_id,
+                        changes: vec![FieldChange {
+                            remove: false,
+                            path: "/permissions/property_overrides/~1system~1secret".into(),
+                            old: serde_json::Value::Null,
+                            new: serde_json::json!("gm_only"),
+                        }],
+                    },
+                ],
+                2,
+                WriteOrigin::Client,
+            )
+            .await
+            .unwrap();
+
+        let op0 = stored.snapshot.per_op[0].as_ref().unwrap();
+        assert!(
+            op0.overrides_at_commit
+                .iter()
+                .any(|(p, v)| p == "/system/secret" && *v == Visibility::GmOnly),
+            "the FIRST op's snapshot must already carry the override the SECOND op adds: {:?}",
+            op0.overrides_at_commit
+        );
+    }
+
+    #[tokio::test]
+    async fn reused_id_gets_a_fresh_created_seq_and_the_stale_ops_own_snapshot_witnesses_the_old_one(
+    ) {
+        use crate::data::command::Operation;
+        use crate::data::document::{DocRole, PermissionSet, Scope};
+        use crate::data::membership::PermissionContext;
+
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+        let mut perms = PermissionSet::default();
+        perms.users.insert(gm, DocRole::Owner);
+        let reused_id = Uuid::new_v4();
+        // "item" is not engine-defined (a client-only doc_type) — `engine` must be `None`,
+        // unlike `tests_engine_doc`'s always-`Some` shape.
+        let mut d1 = tests_doc(perms.clone(), serde_json::json!({}));
+        d1.doc_type = "item".into();
+        d1.engine = None;
+        d1.id = reused_id;
+        d1.scope = Scope::World { world_id: w.id };
+        let stored_create1 = r
+            .apply_intent(
+                &ctx,
+                w.id,
+                vec![Operation::Create { doc: d1 }],
+                1,
+                WriteOrigin::Client,
+            )
+            .await
+            .unwrap();
+        let old_created_seq = stored_create1.command.seq;
+
+        let old_doc = r.get_document(reused_id).await.unwrap().unwrap();
+        r.apply_intent(
+            &ctx,
+            w.id,
+            vec![Operation::Delete { doc: old_doc }],
+            2,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+        let mut d2 = tests_doc(perms, serde_json::json!({}));
+        d2.doc_type = "item".into();
+        d2.engine = None;
+        d2.id = reused_id;
+        d2.scope = Scope::World { world_id: w.id };
+        let stored_create2 = r
+            .apply_intent(
+                &ctx,
+                w.id,
+                vec![Operation::Create { doc: d2 }],
+                3,
+                WriteOrigin::Client,
+            )
+            .await
+            .unwrap();
+        let new_created_seq = stored_create2.command.seq;
+        assert_ne!(
+            old_created_seq, new_created_seq,
+            "a reused id must get a FRESH created_seq"
+        );
+
+        let (_, current_created_seq) = r
+            .get_document_with_created_seq(reused_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(current_created_seq, new_created_seq);
+    }
+
+    #[tokio::test]
+    async fn events_since_back_compat_parses_a_bare_command_row_carrying_no_snapshot() {
+        use crate::data::command::Command;
+
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+
+        // Simulate a bare-Command row: bump the world seq and insert a bare Command directly,
+        // bypassing apply_command/apply_intent's StoredCommand-shaped persistence.
+        let cmd = Command {
+            seq: 1,
+            world_id: w.id,
+            author: gm,
+            ts: 0,
+            ops: vec![],
+        };
+        sqlx::query(
+            "INSERT INTO world_events (world_id, seq, author_id, ts, command_json) VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(cmd.world_id.to_string())
+        .bind(cmd.seq)
+        .bind(cmd.author.to_string())
+        .bind(cmd.ts)
+        .bind(serde_json::to_string(&cmd).unwrap())
+        .execute(&r.pool)
+        .await
+        .unwrap();
+        sqlx::query("UPDATE worlds SET seq = 1 WHERE id = ?")
+            .bind(w.id.to_string())
+            .execute(&r.pool)
+            .await
+            .unwrap();
+
+        let replayed = r.events_since(w.id, 0).await.unwrap();
+        assert_eq!(replayed.len(), 1);
+        assert_eq!(replayed[0].command, cmd);
+        assert!(replayed[0].snapshot.per_op.is_empty());
+        assert!(replayed[0].snapshot.world_gm_at_commit.is_empty());
     }
 
     #[tokio::test]
@@ -7324,7 +7674,7 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(c1.seq, 1);
+        assert_eq!(c1.command.seq, 1);
         // Matching pre-image update succeeds.
         let ok = r
             .apply_intent(
@@ -7344,7 +7694,7 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(ok.seq, 2);
+        assert_eq!(ok.command.seq, 2);
         // Stale pre-image (current is 5, not 10) → Conflict, no mutation.
         let conflict = r
             .apply_intent(
@@ -7903,7 +8253,7 @@ mod tests {
             )
             .await
             .unwrap();
-        let Operation::Delete { doc } = &cmd.ops[0] else {
+        let Operation::Delete { doc } = &cmd.command.ops[0] else {
             panic!("expected Delete");
         };
         assert_eq!(doc.permissions.default, DocRole::None);
@@ -8714,6 +9064,7 @@ mod tests {
             WriteOrigin::Client,
         )
         .await
+        .map(|stored| stored.command)
     }
 
     /// GM, world, and two ordinary player accounts (`owner_id` is a FK, so every
@@ -9172,7 +9523,7 @@ mod tests {
             )
             .await
             .unwrap();
-        let first_seq = stored.seq;
+        let first_seq = stored.command.seq;
 
         let mut tx = r.pool.begin().await.unwrap();
         let created_after_create = SqliteRepository::document_created_seq(&mut *tx, doc_id)

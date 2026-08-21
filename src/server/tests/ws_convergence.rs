@@ -154,7 +154,7 @@ impl Harness {
             .await
             .unwrap()
             .into_iter()
-            .map(|c| c.seq)
+            .map(|c| c.command.seq)
             .collect()
     }
 }
