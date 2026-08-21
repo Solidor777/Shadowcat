@@ -301,7 +301,8 @@ optimistically and roll back on divergence.
   `Pathfind`→`PathResult`/`PathError`) route replies to the requesting connection only (never
   broadcast); correlated by `request_id` via the `pending` map in `WsClient`. See
   `WsClient` and `ws::protocol`. **Chat ops
-  (`SendMessage`/`EditMessage`/`DeleteMessage`) also carry `request_id` but are ASYMMETRIC**: only
+  (`SendMessage`/`EditMessage`/`DeleteMessage`/`RecalcRoll`) also carry `request_id` but are
+  ASYMMETRIC**: only
   a REJECTION replies (`ServerMsg::ChatError`, sender-only), while success is confirmed by the
   broadcast `Event` echo. They use a separate `chatPending` map whose timer resolves
   (success-assumed) rather than rejects on timeout — see `shadowcat-codebase-chat`.

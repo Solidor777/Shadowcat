@@ -302,8 +302,8 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
   (narrow; the shell owns storage), `panels: PanelsApi & PanelsChipsView` — the shell
   constructs ONE `PanelsBridge` (`$state`-backed so
   pre-bind readers unfreeze at bind; details → [[shadowcat-codebase-panels]]) — and
-  `chat: ChatApi {send, edit, delete}`
-  (over `WsClient.sendChatMessage`/`editChatMessage`/`deleteChatMessage`. These frames DO carry a
+  `chat: ChatApi {send, edit, delete, recalc}`
+  (over `WsClient.sendChatMessage`/`editChatMessage`/`deleteChatMessage`/`recalcRoll`. These frames DO carry a
   `request_id` and `chatPending` is keyed by it: a `chat_error` correlates back and REJECTS the
   caller's promise with the server's player-presentable reason, which the composer surfaces.
   SUCCESS is the asymmetric case — the broadcast Event echo carries no `request_id`, so nothing

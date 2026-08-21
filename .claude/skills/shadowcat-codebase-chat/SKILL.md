@@ -369,12 +369,12 @@ with zero message-specific plumbing in any of those subsystems.
     (`handle_socket::etx`, never broadcast) so the rejection is surfaced instead of vanishing.
 - `http::routes::write_ops` — mirrors the WS ingress guard:
   `if chat::ops_target_message(&ops) { return Err(AppError::Forbidden); }` before the room/repo
-  write path. Both transports must independently apply this guard. (`EditMessage`/`DeleteMessage`
-  have no HTTP equivalent — they are WS-only frames, same as `SendMessage`.)
+  write path. Both transports must independently apply this guard. (`EditMessage`/`DeleteMessage`/
+  `RecalcRoll` have no HTTP equivalent — they are WS-only frames, same as `SendMessage`.)
 - `data::sqlite::apply_intent` — takes a `WriteOrigin` (`Client` |
   `ServerMessageRevision`, from `data::command`) parameter, threaded from
   `Room::publish` through ~60+ call sites (every existing caller passes `WriteOrigin::Client`;
-  ONLY `handle_edit_message`/`handle_delete_message` ever construct
+  ONLY `handle_edit_message`/`handle_delete_message`/`handle_recalc_roll` ever construct
   `WriteOrigin::ServerMessageRevision`, and only after their own owner-or-GM check has already
   passed). FOUR coupled chokepoints:
   1. **Create-gate exemption** (`apply_intent::is_baseline_message = doc.doc_type == MESSAGE_DOC_TYPE &&
@@ -394,8 +394,10 @@ with zero message-specific plumbing in any of those subsystems.
      non-listed GM editing/deleting a `Whisper`/`GmOnly` message, since their capped role there
      has no `WRITE_FIELDS`). Instead it grants a narrowly SCOPED `Access { caps: {READ,
      WRITE_FIELDS}, all: false, ... }`, trusting that the calling handler has ALREADY completed
-     its owner-or-GM check. This is proven correct for BOTH edit and delete, across all three
-     `Audience` variants, for both the owner and a non-addressed GM. `all: false` (not `all:
+     its owner-or-GM check. This is proven correct for edit, delete, AND recalc, across all three
+     `Audience` variants, for both the owner and a non-addressed GM —
+     `handle_recalc_roll_succeeds_for_public_whisper_and_gmonly_audiences` independently
+     test-proves the recalc case. `all: false` (not `all:
      true`) is deliberate — it authorizes writing `/engine` only,
      not `/permissions`/`/embedded`, even for this trusted origin. A write scoped to EXACTLY
      `/engine` or `/permissions/property_overrides` is ALSO exempted from the additive
@@ -500,15 +502,15 @@ with zero message-specific plumbing in any of those subsystems.
   (`ActorOwnerRef`, `Audience`) flow into the generated bindings (regenerate + commit with any
   change). SSRF docs state BOTH guard arms (literal-IP in `validate_url`, domain resolution in
   `GuardedResolver`) — keep the arm citations true when touching the preview pipeline.
-- **The three chat frames carry `request_id`, NOT `intent_id`, and correlate to `ChatError`, not
-  `Reject`.** A rejected send/edit/delete is surfaced to the sender via a `request_id`-
+- **The four chat frames carry `request_id`, NOT `intent_id`, and correlate to `ChatError`, not
+  `Reject`.** A rejected send/edit/delete/recalc is surfaced to the sender via a `request_id`-
   correlated `ServerMsg::ChatError` (sender-only, never broadcast). Client
-  side: `WsClient.sendChatMessage`/`editChatMessage`/`deleteChatMessage` return `Promise<void>`
-  tracked in a `chatPending` map. Chat correlation is ASYMMETRIC: only a rejection replies, so the
-  promise RESOLVES on a `CHAT_ERROR_WINDOW_MS` (15s) timeout (success-assumed) and REJECTS on a
-  `chat_error` frame; `failPending` rejects in-flight ops on disconnect. `AppContext.chat.send`/
-  `edit`/`delete` (ui-kit) return `Promise<void>`; the composer surfaces the reason inline
-  (`errorMsg`).
+  side: `WsClient.sendChatMessage`/`editChatMessage`/`deleteChatMessage`/`recalcRoll` return
+  `Promise<void>` tracked in a `chatPending` map. Chat correlation is ASYMMETRIC: only a rejection
+  replies, so the promise RESOLVES on a `CHAT_ERROR_WINDOW_MS` (15s) timeout (success-assumed) and
+  REJECTS on a `chat_error` frame; `failPending` rejects in-flight ops on disconnect.
+  `AppContext.chat.send`/`edit`/`delete`/`recalc` (ui-kit) return `Promise<void>`; the composer
+  surfaces the reason inline (`errorMsg`).
 - **`SendMessageError`'s `Display` is a `[sec]` security boundary — do not widen it.** It is what
   `ChatError.message` carries. Validation-class variants (`Empty`/`TooLong`/`RateLimited`/
   `UnknownRecipient`/`AudienceLocked`/`RollImmutable`) surface a specific reason; authorization/
