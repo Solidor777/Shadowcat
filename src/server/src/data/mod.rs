@@ -28,6 +28,9 @@ pub mod snapshot;
 pub mod sqlite;
 /// Structural (never semantic) validation: size caps, paths, tier-2 shape.
 pub mod validation;
+/// Per-world export/import bundle row/manifest DTOs (see `crate::world_bundle`
+/// for the tar file-format I/O built from them).
+pub mod world_bundle;
 
 pub use asset::Asset;
 
