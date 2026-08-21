@@ -2447,17 +2447,23 @@ impl Repository for SqliteRepository {
                     // writes by construction, closing the gap even for a
                     // hypothetical future `ServerMessageRevision` caller with
                     // a broader op.
-                    // CAVEAT: this concrete cap set does NOT auto-satisfy an ADDITIVE
-                    // `declared_caps_for_path` world/module requirement on a
-                    // message `/engine` (sub-)path (checked further below).
-                    // No first-party module declares one today, so this is
-                    // inert; if one is ever added for `doc_type: "message"`,
-                    // it would block a GM's already-vetted moderation write —
-                    // review this branch again before adding such a
-                    // requirement.
-                    let access = if cur.doc_type == crate::chat::MESSAGE_DOC_TYPE
-                        && origin == WriteOrigin::ServerMessageRevision
-                    {
+                    // A `CapabilityRequirement` carries no `doc_type` — it is a
+                    // world-wide policy keyed on `path_prefix` alone, and
+                    // `declared_caps_for_path`'s ancestor-overlap rule treats a
+                    // whole-band `/engine` write as covering EVERY requirement
+                    // declared anywhere under `/engine`, regardless of which
+                    // doc_type that requirement was authored for (e.g. an
+                    // actor's `/engine/vision`). A `ServerMessageRevision`
+                    // write is therefore additionally exempted from that
+                    // ADDITIVE check below (`is_server_message_revision`) — the
+                    // calling handler has already vetted owner-or-GM
+                    // authority, and this origin's writes are hard-scoped to
+                    // `/engine` and `/permissions/property_overrides` only, so
+                    // there is no message-specific declared requirement for it
+                    // to legitimately satisfy.
+                    let is_server_message_revision = cur.doc_type == crate::chat::MESSAGE_DOC_TYPE
+                        && origin == WriteOrigin::ServerMessageRevision;
+                    let access = if is_server_message_revision {
                         Access {
                             caps: [cap::READ.to_string(), cap::WRITE_FIELDS.to_string()]
                                 .into_iter()
@@ -2508,9 +2514,7 @@ impl Repository for SqliteRepository {
                             // excludes (see the `ServerMessageRevision` access-grant
                             // construction above). This exact-path admission widens
                             // nothing for any other doc_type/origin/path.
-                            let is_recalc_override_write = cur.doc_type
-                                == crate::chat::MESSAGE_DOC_TYPE
-                                && origin == WriteOrigin::ServerMessageRevision
+                            let is_recalc_override_write = is_server_message_revision
                                 && ch.path == "/permissions/property_overrides";
                             if !is_recalc_override_write {
                                 tracing::debug!(
@@ -2522,14 +2526,22 @@ impl Repository for SqliteRepository {
                         }
                         // Declarative requirements are additive: a module/world
                         // may demand extra capabilities for a sub-path on top of
-                        // the structural base above.
-                        for extra in declared_caps_for_path(&ch.path, &world_reqs) {
-                            if !access.has(extra) {
-                                tracing::debug!(
-                                    user = %ctx.user_id, path = %ch.path, capability = extra,
-                                    "intent denied: missing declared capability"
-                                );
-                                return Err(DataError::Forbidden);
+                        // the structural base above. SKIPPED for a
+                        // `ServerMessageRevision` message write (see the
+                        // `is_server_message_revision` doc above) — a world's
+                        // `CapabilityRequirement` carries no `doc_type`, so an
+                        // ancestor write to `/engine` would otherwise inherit a
+                        // requirement declared for a wholly unrelated doc_type's
+                        // field, blocking a GM's already-vetted moderation write.
+                        if !is_server_message_revision {
+                            for extra in declared_caps_for_path(&ch.path, &world_reqs) {
+                                if !access.has(extra) {
+                                    tracing::debug!(
+                                        user = %ctx.user_id, path = %ch.path, capability = extra,
+                                        "intent denied: missing declared capability"
+                                    );
+                                    return Err(DataError::Forbidden);
+                                }
                             }
                         }
                         let actual = whole
@@ -8097,6 +8109,106 @@ mod tests {
         assert!(
             matches!(denied, Err(DataError::Forbidden)),
             "widening /permissions/default must stay forbidden under ServerMessageRevision, got {denied:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_intent_server_message_revision_engine_write_ignores_a_declared_requirement_on_an_unrelated_doc_type(
+    ) {
+        // A world's `CapabilityRequirement` carries no `doc_type` (see
+        // `CapabilityRequirement`'s doc), so a requirement declared for an
+        // actor's `/engine/vision` still ancestor-overlaps ANY doc's whole-band
+        // `/engine` write (`declared_caps_for_path`'s ancestor rule). Without
+        // the `is_server_message_revision` exemption, this would deny every
+        // `handle_recalc_roll`/`handle_edit_message`/`handle_delete_message`
+        // `/engine` write in a world that happens to declare any such
+        // requirement, even though the GM's moderation authority was already
+        // vetted upstream and the write never touches `/engine/vision` at all.
+        use crate::chat::MESSAGE_DOC_TYPE;
+        use crate::data::document::{CapabilityRequirement, DocRole, PermissionSet};
+        use crate::data::membership::PermissionContext;
+
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+
+        r.set_world_cap_requirements(
+            w.id,
+            &[CapabilityRequirement {
+                path_prefix: "/engine/vision".into(),
+                caps: ["dnd5e:gm_vision".to_string()].into_iter().collect(),
+            }],
+        )
+        .await
+        .unwrap();
+
+        let doc_id = Uuid::new_v4();
+        let old_engine = serde_json::json!({
+            "channel": "all", "user_owner": gm, "kind": "normal",
+            "audience": {"kind": "public"}, "content": []
+        });
+        let doc = Document {
+            id: doc_id,
+            scope: Scope::World { world_id: w.id },
+            doc_type: MESSAGE_DOC_TYPE.to_string(),
+            schema_version: 1,
+            name: None,
+            source: None,
+            base: None,
+            owner: Some(gm),
+            permissions: PermissionSet {
+                default: DocRole::Observer,
+                ..Default::default()
+            },
+            embedded: Default::default(),
+            parent_id: None,
+            engine: Some(old_engine.clone()),
+            system: serde_json::json!({}),
+            created_at: 0,
+            updated_at: 0,
+        };
+        r.apply_intent(
+            &ctx,
+            w.id,
+            vec![Operation::Create { doc: doc.clone() }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+        let new_engine = serde_json::json!({
+            "channel": "all", "user_owner": gm, "kind": "normal",
+            "audience": {"kind": "public"}, "content": [], "edited_at": 1
+        });
+        let ok = r
+            .apply_intent(
+                &ctx,
+                w.id,
+                vec![Operation::Update {
+                    doc_id,
+                    changes: vec![FieldChange {
+                        remove: false,
+                        path: "/engine".into(),
+                        old: old_engine,
+                        new: new_engine,
+                    }],
+                }],
+                1,
+                WriteOrigin::ServerMessageRevision,
+            )
+            .await;
+        assert!(
+            ok.is_ok(),
+            "a ServerMessageRevision /engine write must ignore a declared \
+             requirement scoped to an unrelated doc_type's field: {ok:?}"
         );
     }
 
