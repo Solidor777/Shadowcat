@@ -25,6 +25,11 @@ use crate::data::permission::{
 use crate::data::repository::Repository;
 use crate::data::snapshot::{CommandSnapshot, StoredCommand};
 use crate::data::validation;
+use crate::data::world_bundle::{
+    BundleManifest, ExportedAssetRow, ExportedDocumentRow, ExportedEventRow, ExportedFogRow,
+    ExportedInviteRow, ExportedMemberRow, ExportedSettingRow, WorldExportData,
+    BUNDLE_SCHEMA_VERSION,
+};
 use crate::data::DataError;
 
 /// Doc_types capped at one document per world. Checked (transactionally,
@@ -889,6 +894,197 @@ impl SqliteRepository {
         }
         tx.commit().await?;
         Ok(())
+    }
+
+    /// Every world-scoped row `delete_world` would delete, read instead — the
+    /// per-world export data source. `users(id)` references are resolved to
+    /// portable usernames inline (one `LEFT JOIN`/`JOIN` per table, no N+1
+    /// lookups) exactly as documented on each `data::world_bundle::Exported*Row`
+    /// type. `NotFound` if `world` does not exist.
+    pub async fn export_world_rows(&self, world: Uuid) -> Result<WorldExportData, DataError> {
+        let world_row =
+            sqlx::query("SELECT name, seq, created_at, updated_at FROM worlds WHERE id = ?")
+                .bind(world.to_string())
+                .fetch_optional(&self.pool)
+                .await?
+                .ok_or(DataError::NotFound)?;
+
+        let doc_rows = sqlx::query(
+            "SELECT documents.json AS json, documents.seq AS seq, \
+             documents.created_seq AS created_seq, users.username AS owner_username \
+             FROM documents LEFT JOIN users ON users.id = documents.owner_id \
+             WHERE documents.world_id = ? ORDER BY documents.id",
+        )
+        .bind(world.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+        let mut documents = Vec::with_capacity(doc_rows.len());
+        for r in doc_rows {
+            let mut document: Document = serde_json::from_str(&r.get::<String, _>("json"))?;
+            document.owner = None;
+            documents.push(ExportedDocumentRow {
+                document,
+                owner_username: r.get::<Option<String>, _>("owner_username"),
+                seq: r.get("seq"),
+                created_seq: r.get("created_seq"),
+            });
+        }
+
+        let event_rows = sqlx::query(
+            "SELECT world_events.seq AS seq, world_events.ts AS ts, \
+             world_events.command_json AS command_json, users.username AS author_username \
+             FROM world_events LEFT JOIN users ON users.id = world_events.author_id \
+             WHERE world_events.world_id = ? ORDER BY world_events.seq",
+        )
+        .bind(world.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+        let events: Vec<ExportedEventRow> = event_rows
+            .into_iter()
+            .map(|r| ExportedEventRow {
+                seq: r.get("seq"),
+                author_username: r.get::<Option<String>, _>("author_username"),
+                ts: r.get("ts"),
+                command_json: r.get("command_json"),
+            })
+            .collect();
+
+        let member_rows = sqlx::query(
+            "SELECT users.username AS username, world_members.role AS role \
+             FROM world_members JOIN users ON users.id = world_members.user_id \
+             WHERE world_members.world_id = ? ORDER BY users.username",
+        )
+        .bind(world.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+        let mut members = Vec::with_capacity(member_rows.len());
+        for r in member_rows {
+            let role: WorldRole =
+                serde_json::from_value(serde_json::Value::String(r.get::<String, _>("role")))?;
+            members.push(ExportedMemberRow {
+                username: r.get("username"),
+                role,
+            });
+        }
+
+        let invite_rows = sqlx::query(
+            "SELECT world_invites.id AS id, world_invites.secret_hash AS secret_hash, \
+             world_invites.role AS role, world_invites.created_at AS created_at, \
+             world_invites.expires_at AS expires_at, world_invites.revoked_at AS revoked_at, \
+             world_invites.consumed_at AS consumed_at, \
+             creator.username AS created_by_username, consumer.username AS consumed_by_username \
+             FROM world_invites \
+             LEFT JOIN users creator ON creator.id = world_invites.created_by \
+             LEFT JOIN users consumer ON consumer.id = world_invites.consumed_by \
+             WHERE world_invites.world_id = ? ORDER BY world_invites.id",
+        )
+        .bind(world.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+        let mut invites = Vec::with_capacity(invite_rows.len());
+        for r in invite_rows {
+            let role: WorldRole =
+                serde_json::from_value(serde_json::Value::String(r.get::<String, _>("role")))?;
+            invites.push(ExportedInviteRow {
+                id: Uuid::parse_str(r.get::<String, _>("id").as_str())
+                    .map_err(|e| DataError::OpFailed(e.to_string()))?,
+                secret_hash: r.get("secret_hash"),
+                role,
+                created_by_username: r.get::<Option<String>, _>("created_by_username"),
+                created_at: r.get("created_at"),
+                expires_at: r.get("expires_at"),
+                revoked_at: r.get::<Option<i64>, _>("revoked_at"),
+                consumed_at: r.get::<Option<i64>, _>("consumed_at"),
+                consumed_by_username: r.get::<Option<String>, _>("consumed_by_username"),
+            });
+        }
+
+        let asset_rows = sqlx::query(
+            "SELECT assets.id AS id, assets.original_name AS original_name, \
+             assets.content_type AS content_type, assets.byte_size AS byte_size, \
+             assets.created_at AS created_at, assets.version AS version, \
+             users.username AS created_by_username \
+             FROM assets LEFT JOIN users ON users.id = assets.created_by \
+             WHERE assets.world_id = ? ORDER BY assets.id",
+        )
+        .bind(world.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+        let mut assets = Vec::with_capacity(asset_rows.len());
+        for r in asset_rows {
+            assets.push(ExportedAssetRow {
+                id: Uuid::parse_str(r.get::<String, _>("id").as_str())
+                    .map_err(|e| DataError::OpFailed(e.to_string()))?,
+                original_name: r.get("original_name"),
+                content_type: r.get("content_type"),
+                byte_size: r.get("byte_size"),
+                created_by_username: r.get::<Option<String>, _>("created_by_username"),
+                created_at: r.get("created_at"),
+                version: r.get("version"),
+            });
+        }
+
+        let fog_rows = sqlx::query(
+            "SELECT explored_fog.scene_id AS scene_id, explored_fog.cells AS cells, \
+             users.username AS username \
+             FROM explored_fog JOIN users ON users.id = explored_fog.user_id \
+             WHERE explored_fog.world_id = ? ORDER BY explored_fog.scene_id, users.username",
+        )
+        .bind(world.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+        let mut fog = Vec::with_capacity(fog_rows.len());
+        for r in fog_rows {
+            fog.push(ExportedFogRow {
+                scene_id: Uuid::parse_str(r.get::<String, _>("scene_id").as_str())
+                    .map_err(|e| DataError::OpFailed(e.to_string()))?,
+                username: r.get("username"),
+                cells: r.get("cells"),
+            });
+        }
+
+        let mut settings = Vec::new();
+        for key in world_settings_keys(world) {
+            let value: Option<String> =
+                sqlx::query_scalar("SELECT value FROM settings WHERE key = ?")
+                    .bind(&key)
+                    .fetch_optional(&self.pool)
+                    .await?;
+            if let Some(value) = value {
+                settings.push(ExportedSettingRow { key, value });
+            }
+        }
+
+        let mut row_counts = std::collections::BTreeMap::new();
+        row_counts.insert("documents".to_string(), documents.len());
+        row_counts.insert("world_events".to_string(), events.len());
+        row_counts.insert("world_members".to_string(), members.len());
+        row_counts.insert("world_invites".to_string(), invites.len());
+        row_counts.insert("assets".to_string(), assets.len());
+        row_counts.insert("explored_fog".to_string(), fog.len());
+        row_counts.insert("settings".to_string(), settings.len());
+
+        let manifest = BundleManifest {
+            schema_version: BUNDLE_SCHEMA_VERSION,
+            world_id: world,
+            world_name: world_row.get("name"),
+            world_seq: world_row.get("seq"),
+            world_created_at: world_row.get("created_at"),
+            world_updated_at: world_row.get("updated_at"),
+            exported_at_unix_ms: crate::ws::time::now_millis(),
+            row_counts,
+        };
+
+        Ok(WorldExportData {
+            manifest,
+            documents,
+            events,
+            members,
+            invites,
+            assets,
+            fog,
+            settings,
+        })
     }
 
     /// Upsert the player's explored-cell blob for a scene. Keyed `(scene_id, user_id)`; `world_id`
@@ -6672,6 +6868,71 @@ mod tests {
             created_at: 0,
             updated_at: 0,
         }
+    }
+
+    #[tokio::test]
+    async fn export_world_rows_resolves_owner_username_and_nulls_owner_in_json() {
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let owner = r
+            .create_user("owner-user", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let mut doc = world_doc(1, w.id, serde_json::json!({}));
+        doc.owner = Some(owner);
+        let mut conn = r.pool().acquire().await.unwrap();
+        SqliteRepository::upsert_document(&mut conn, &doc, 1)
+            .await
+            .unwrap();
+        drop(conn);
+
+        let data = r.export_world_rows(w.id).await.unwrap();
+        assert_eq!(data.documents.len(), 1);
+        let exported = &data.documents[0];
+        assert_eq!(exported.owner_username.as_deref(), Some("owner-user"));
+        assert_eq!(exported.document.owner, None);
+        assert_eq!(exported.seq, 1);
+        assert_eq!(exported.created_seq, 1);
+    }
+
+    #[tokio::test]
+    async fn export_world_rows_carries_manifest_watermark_and_row_counts() {
+        let r = repo().await;
+        let gm = r
+            .create_user("gm2", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r
+            .create_world_owned("Watermark World", gm, 0)
+            .await
+            .unwrap();
+        let doc = world_doc(2, w.id, serde_json::json!({}));
+        let mut conn = r.pool().acquire().await.unwrap();
+        SqliteRepository::upsert_document(&mut conn, &doc, 1)
+            .await
+            .unwrap();
+        drop(conn);
+
+        let data = r.export_world_rows(w.id).await.unwrap();
+        assert_eq!(data.manifest.world_id, w.id);
+        assert_eq!(data.manifest.world_name, "Watermark World");
+        assert_eq!(data.manifest.world_seq, w.seq);
+        assert_eq!(data.manifest.world_created_at, w.created_at);
+        assert_eq!(data.manifest.row_counts.get("documents"), Some(&1));
+        // world_members always has at least the creating GM.
+        assert_eq!(data.members.len(), 1);
+        assert_eq!(data.members[0].username, "gm2");
+    }
+
+    #[tokio::test]
+    async fn export_world_rows_not_found_for_unknown_world() {
+        let r = repo().await;
+        let err = r.export_world_rows(Uuid::from_u128(999)).await.unwrap_err();
+        assert!(matches!(err, DataError::NotFound));
     }
 
     #[tokio::test]
