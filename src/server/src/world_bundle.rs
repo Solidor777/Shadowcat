@@ -436,4 +436,109 @@ mod tests {
         let err = write_bundle(&data, tmp.path(), Vec::new()).unwrap_err();
         assert!(matches!(err, WorldBundleError::Io(_)));
     }
+
+    #[test]
+    fn read_bundle_round_trips_write_bundle_output() {
+        let export_tmp = tempfile::tempdir().unwrap();
+        let world = Uuid::from_u128(55);
+        let asset_id = Uuid::from_u128(555);
+        let asset_dir = export_tmp.path().join(world.to_string());
+        std::fs::create_dir_all(&asset_dir).unwrap();
+        std::fs::write(asset_dir.join(asset_id.to_string()), b"BYTES").unwrap();
+
+        let mut data = sample_data(world);
+        data.assets
+            .push(crate::data::world_bundle::ExportedAssetRow {
+                id: asset_id,
+                original_name: "a.png".to_string(),
+                content_type: "image/png".to_string(),
+                byte_size: 5,
+                created_by_username: None,
+                created_at: 0,
+                version: 1,
+            });
+        data.manifest.row_counts.insert("assets".to_string(), 1);
+
+        let bytes = write_bundle(&data, export_tmp.path(), Vec::new()).unwrap();
+        let tar_path = export_tmp.path().join("bundle.tar");
+        std::fs::write(&tar_path, &bytes).unwrap();
+
+        let import_tmp = tempfile::tempdir().unwrap();
+        let imported = read_bundle(&tar_path, import_tmp.path()).unwrap();
+
+        assert_eq!(imported.manifest.world_id, world);
+        assert_eq!(imported.documents.len(), 1);
+        assert_eq!(imported.staged_assets.len(), 1);
+        let (staged_id, staged_path) = &imported.staged_assets[0];
+        assert_eq!(*staged_id, asset_id);
+        assert_eq!(std::fs::read(staged_path).unwrap(), b"BYTES");
+        // Staged file lives beside where the final `<id>` path will live.
+        assert_eq!(
+            staged_path.parent().unwrap(),
+            import_tmp.path().join(world.to_string())
+        );
+    }
+
+    #[test]
+    fn read_bundle_rejects_row_count_mismatch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let world = Uuid::from_u128(66);
+        let mut data = sample_data(world);
+        // Lie about the document count the manifest promises.
+        data.manifest.row_counts.insert("documents".to_string(), 2);
+
+        let bytes = write_bundle(&data, tmp.path(), Vec::new()).unwrap();
+        let tar_path = tmp.path().join("bad.tar");
+        std::fs::write(&tar_path, &bytes).unwrap();
+
+        let import_tmp = tempfile::tempdir().unwrap();
+        let err = read_bundle(&tar_path, import_tmp.path()).unwrap_err();
+        assert!(matches!(
+            err,
+            WorldBundleError::RowCountMismatch {
+                table,
+                expected: 2,
+                actual: 1
+            } if table == "documents"
+        ));
+    }
+
+    #[test]
+    fn read_bundle_rejects_unsupported_schema_version() {
+        let tmp = tempfile::tempdir().unwrap();
+        let world = Uuid::from_u128(77);
+        let mut data = sample_data(world);
+        data.manifest.schema_version = BUNDLE_SCHEMA_VERSION + 1;
+
+        let bytes = write_bundle(&data, tmp.path(), Vec::new()).unwrap();
+        let tar_path = tmp.path().join("future.tar");
+        std::fs::write(&tar_path, &bytes).unwrap();
+
+        let import_tmp = tempfile::tempdir().unwrap();
+        let err = read_bundle(&tar_path, import_tmp.path()).unwrap_err();
+        assert!(matches!(
+            err,
+            WorldBundleError::UnsupportedSchemaVersion(v) if v == BUNDLE_SCHEMA_VERSION + 1
+        ));
+    }
+
+    #[test]
+    fn read_bundle_rejects_archive_not_starting_with_manifest() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut builder = tar::Builder::new(Vec::new());
+        let mut header = tar::Header::new_gnu();
+        header.set_size(3);
+        header.set_mode(0o644);
+        header.set_cksum();
+        builder
+            .append_data(&mut header, "rows/documents.jsonl", &b"{}\n"[..])
+            .unwrap();
+        let bytes = builder.into_inner().unwrap();
+        let tar_path = tmp.path().join("wrong_order.tar");
+        std::fs::write(&tar_path, &bytes).unwrap();
+
+        let import_tmp = tempfile::tempdir().unwrap();
+        let err = read_bundle(&tar_path, import_tmp.path()).unwrap_err();
+        assert!(matches!(err, WorldBundleError::Malformed(_)));
+    }
 }
