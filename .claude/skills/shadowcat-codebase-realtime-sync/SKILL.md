@@ -212,6 +212,30 @@ optimistically and roll back on divergence.
   an intent id; the server confirmation reconciles; divergence rolls back to `DocumentStore`.
   `appliedSeq` is identical across the two so the derived watermark holds
   [[render-from-optimistic-view]].
+- **`OptimisticClient.applyCommand`'s self-authored confirm is a blind FIFO removal of the
+  oldest entry in `OptimisticClient.pending` — it does NOT match the incoming command against the
+  intent it actually confirms.** This is intentional (`ws::room::Room::publish`'s own doc: "the
+  broadcast `Event` carries `intent_id: None`; an originator confirms its own write by receiving
+  this echo"), and it is SOUND only because `Room::publish` serializes every submitted intent one
+  at a time under `publish_guard` — each intent's `Reject` (sent via this connection's own
+  `egress_loop::erx`) or successful commit (broadcast on `Room.tx`) is fully resolved before the
+  NEXT intent's `publish()` call even starts, so responses arrive in the SAME order the intents
+  were submitted. **`egress_loop`'s `tokio::select!` is now `biased;` with `egress_loop::erx`'s
+  receive arm listed first, for exactly this reason** — an unbiased `select!` gives NO ordering
+  guarantee between two independently-scheduled channels (`egress_loop::erx`, this connection's
+  direct replies, vs `egress_loop::rx`, the room broadcast), so it could deliver a LATER intent's
+  broadcast confirmation before an EARLIER intent's `Reject`, even though the server processed
+  them strictly in order. **A single such inversion — or any self-authored intent that receives
+  NEITHER a matching `Event` NOR a `Reject` at all — permanently misaligns every later
+  self-authored confirm for the rest of the connection's lifetime**: the removal always finds
+  something to take, so it silently confirms whatever pending entry happens to be oldest,
+  cascading a one-slot-per-slot drift with no error, no resync, and no visible symptom until a
+  stale prediction (e.g. an old position) outlives the confirmed value it should have been
+  replaced by. `OptimisticClient.reject` removes by `intentId` (not position) and is safe on its
+  own, but cannot repair an ALREADY-misaligned queue: a failed lookup there is documented as "a
+  correlation/reconnect mismatch... nothing to roll back" — this is also the shape a lost/ignored
+  response takes. Any future confirm-matching change to `OptimisticClient` must preserve this
+  ordering invariant, not merely the removal mechanism.
 - **Socket-buffer backpressure is non-portable** — `SO_SNDBUF`/`SO_RCVBUF` are advisory; test the
   generic egress sink with a credit-gated `Sink`, not real-socket TCP backpressure
   [[socket-buffer-backpressure-nonportable]].
@@ -228,6 +252,24 @@ optimistically and roll back on divergence.
 
 ## Gotchas
 
+- **A malformed field anywhere in a client-authored `Intent` frame produces a generic,
+  UNCORRELATED `ServerMsg::Error` (`WsErrorCode::BadMessage`), never a `Reject` — and the client
+  silently discards it (`case "error": break;`).** `Reject` requires the frame to parse into
+  `ClientMsg` first (it carries the server-VALIDATED `intent_id`); a JSON/type-level failure —
+  e.g. a `Document.id: Uuid` field that isn't a valid UUID string — fails at
+  `serde_json::from_str::<ClientMsg>` before `intent_id` is ever extracted, so `conn.rs`'s
+  `Err(_)` arm (malformed-frame branch) has no `intent_id` to attach and sends the generic
+  `Error` instead. The optimistic prediction that intent pushed via `applyIntent` is now
+  UNRECOVERABLE: no `Event` will ever confirm it (the write never reached `apply_intent`), and no
+  `Reject` will ever roll it back — see the FIFO-misalignment invariant above for the cascading
+  consequence. **`@shadowcat/core`'s `deterministicId(namespace, name)` had exactly this defect**
+  (`scene-docs.ts`): a UUID-reconstruction slicing bug (`hex.slice(13, 16)` instead of
+  `hex.slice(13)`) silently truncated its output to 21 characters instead of 36 — a
+  structurally-plausible-looking but invalid UUID string that passed every existing test (none
+  asserted the SHAPE of the output) and every client-side check, then failed server-side
+  deserialization on every call. Any future id-shaped string builder needs a shape-asserting test
+  (`toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-.../)`), not just a stability/uniqueness test — those alone
+  cannot catch a shape defect since two calls with the same (broken) inputs still compare equal.
 - **`ClientMsg::Hello { world, last_seq }` is live** — `ws::conn`'s ingress match
   reacts to `Hello { last_seq: None, .. }` by calling `Room::establish_resync_floor`; `world` is
   destructured away (redundant with the connection's already-resolved `world_id`/`room` from the

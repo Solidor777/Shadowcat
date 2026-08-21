@@ -260,6 +260,25 @@ token/actor name from non-owners via the `OwnerOrGm` visibility tier. Conditions
 
 ## Gotchas
 
+- **A `$state`-declared value re-wraps ANY object/array assigned into it as a deep reactive
+  Proxy — including one already built as a fresh, plain object literal.** `ActorsPanel`'s
+  `pendingVisual = $state<TokenVisual | null>(null)` is fed by `VisualKindEditor`'s `onBuild`
+  callback; even though `buildVisual()`/`animSourceToSource()` construct fresh literals per the
+  "no stale sibling field" invariant above, the `pendingVisual = v` ASSIGNMENT itself re-proxies
+  the whole tree, because that is how `$state` works for any object it is handed — copying at the
+  BUILD site cannot prevent this. A reactive Proxy array/object surviving into a document
+  `ctx.dispatchIntent` persists then breaks `structuredClone` wherever that document is later
+  deep-cloned (e.g. `buildTokenFromActor`'s instanced-token branch,
+  `structuredClone(actor)`) — Chromium's algorithm reports a generic
+  `DataCloneError: ... could not be cloned` with NO indication which nested field is the
+  culprit, even though every value walked plain-JS-side looks ordinary (a JS array-type check
+  reports true, and its prototype compares equal to the built-in array prototype) — only cloning
+  the SAME array in isolation vs.
+  a fresh spread-copy of it (`[...arr]`) distinguishes a reactive Proxy from a plain array. **The
+  fix is `$state.snapshot(pendingVisual)` at the READ site** (`ActorsPanel.create()`), not a copy
+  at the build site — `VisualKindEditor` cannot prevent the re-wrap its caller's own `$state`
+  imposes after the callback returns. Any future host component reading a `$state` field to embed
+  into a `ctx.dispatchIntent` document must snapshot it the same way.
 - **`ConditionsPanel`'s `isActive`/`toggle` share ONE canEdit-gated target set.** Both read
   `editableTargets()` — every selected token resolving a `conditionTarget` AND passing
   `ctx.canEdit` — so a non-editable token in the selection can no longer make the palette chip's
