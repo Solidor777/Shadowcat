@@ -498,10 +498,20 @@ async fn write_ops(
         )
         .await?;
     let world_defaults = state.repo.world_cap_defaults(world).await?;
-    let current = crate::data::permission::load_update_docs(state.repo.as_ref(), &cmd).await;
+    let current = crate::data::permission::load_current_docs(state.repo.as_ref(), &cmd).await;
     let filtered = {
         let ecs = room.scene().read().await;
-        filter_command(&cmd, &ctx, &world_defaults, &current, |id| ecs.actor(id))
+        let actor_lookup = |id: &Uuid| ecs.actor(id);
+        let snapshot =
+            crate::data::permission::mirror_current_snapshot(&cmd, &ctx, &current, &actor_lookup);
+        filter_command(
+            &cmd,
+            &snapshot,
+            &ctx,
+            &world_defaults,
+            &current,
+            actor_lookup,
+        )
     };
     Ok(Json(filtered))
 }

@@ -96,13 +96,18 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
   - **WS hot path** (`ws::conn::send_filtered`'s `Event` branch; `http::routes::write_ops`'s
     HTTP-write receive; and the per-recipient derived-channel egress in `SceneEcs::ctx_access`,
     which resolves the SAME `effective_owner_via` + `resolve_access_world` pair against the same
-    in-memory actor table) — `data::permission::filter_command` is a SYNC core over
-    `load_update_docs` (Update pre-images, awaited ONCE per event before the sync core runs — no
-    lock held across that await) and a `filter_command::actor_lookup` closure backed by the room's in-memory
-    `SceneEcs` actor table (`|id| ecs.actor(id)`). No pool read on this path at all — the join is
-    entirely in-memory, preserving the no-pool-query-on-the-hot-path property. The scene read
-    guard around `filter_command` itself is short (sync core, no await inside it), the same
-    discipline `clip_move_stream` uses.
+    in-memory actor table) — `data::permission::filter_command` is a SYNC core taking a
+    `CommandSnapshot` (the commit-time half) alongside `load_current_docs`'s per-doc_id
+    `CurrentDoc` map (Create/Update/Delete pre-images, awaited ONCE per event before the sync core
+    runs — no lock held across that await) and a `filter_command::actor_lookup` closure backed by
+    the room's in-memory `SceneEcs` actor table (`|id| ecs.actor(id)`). Neither
+    `ws::conn::send_filtered` nor `http::routes::write_ops` carries a persisted commit-time
+    snapshot yet — both build one via `data::permission::mirror_current_snapshot`, which mirrors
+    the recipient's CURRENT state (commit time and now are the same instant at these two call
+    sites by construction). No pool read on this path at all — the join is entirely in-memory,
+    preserving the no-pool-query-on-the-hot-path property. The scene read guard around
+    `filter_command` itself is short (sync core, no await inside it), the same discipline
+    `clip_move_stream` uses.
   - **`http::routes::list_documents`** — one batched `query_documents(world, "actor")` fetch
     up front when listing tokens, folded into a `HashMap<Uuid, Document>` and joined in-memory via
     `effective_owner_via` per doc; every other `doc_type` never triggers the actor query

@@ -71,11 +71,14 @@ optimistically and roll back on divergence.
   redaction actually happens: only the `Event` branch carries document data, so only it is
   redacted — every other frame (including `MoveStream`, clipped separately by `clip_move_stream`;
   see the invariant below) passes through unredacted via `send_filtered`. The `Event` branch's
-  shape: `load_update_docs` awaits the Update pre-images ONCE, before any lock is taken (no lock
-  across await); then a short `room.scene()` read guard wraps ONLY the synchronous
-  `permission::filter_command(command, ctx, world_defaults, &current, |id| ecs.actor(id))` call —
-  the room's in-memory `SceneEcs` actor table is the egress-side owner join, so this never touches
-  the pool (the same short-read-guard discipline `clip_move_stream` uses for vision). See
+  shape: `load_current_docs` awaits the Create/Update/Delete pre-images ONCE, before any lock is
+  taken (no lock across await); then a short `room.scene()` read guard wraps
+  `permission::mirror_current_snapshot`'s construction of a commit-time-mirrors-current
+  `CommandSnapshot` (this call site carries no persisted commit-time snapshot) followed by the
+  synchronous `permission::filter_command(command, &snapshot, ctx, world_defaults, &current, |id|
+  ecs.actor(id))` call — the room's in-memory `SceneEcs` actor table is the egress-side owner
+  join, so this never touches the pool (the same short-read-guard discipline `clip_move_stream`
+  uses for vision). See
   `shadowcat-codebase-documents-permissions` for `filter_command`'s own internals and the other two
   owner-join sources (`list_documents`'s batched prefetch, `effective_owner_of` on single-doc
   routes/search).

@@ -3,17 +3,18 @@
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
 use uuid::Uuid;
 
 use crate::data::command::{Command, FieldChange, Operation};
 use crate::data::document::{
-    CapabilityGrants, CapabilityRequirement, DocRole, Document, Visibility, WorldCapDefaults,
-    WorldRole,
+    CapabilityGrants, CapabilityRequirement, DocRole, Document, PermissionSet, Visibility,
+    WorldCapDefaults, WorldRole,
 };
 use crate::data::membership::PermissionContext;
 use crate::data::repository::Repository;
+use crate::data::snapshot::{CommandSnapshot, OpSnapshot};
 
 /// Built-in, server-understood capabilities. Modules may grant additional
 /// namespaced capabilities (`<ns>:<verb>`); the server treats those as opaque
@@ -144,27 +145,94 @@ pub fn effective_owner_via<'a>(
     effective_owner(doc, linked)
 }
 
-/// Current documents for every `Update` op in `cmd`, keyed by `doc_id` (a
-/// missing key means the document was deleted or never existed, and the op
-/// is dropped by `filter_command`). Hoisted out of the redaction core so it
-/// can be awaited ONCE, before any scene-guard scope is entered — still one
-/// pool read per distinct Update doc per recipient (count-neutral vs. the
-/// prior per-op `repo.get_document` inside the loop).
-pub async fn load_update_docs(
-    repo: &dyn Repository,
-    cmd: &Command,
-) -> std::collections::HashMap<Uuid, Document> {
-    let mut out = std::collections::HashMap::new();
+/// A document's current state, as loaded for redaction: its live envelope plus its
+/// `documents.created_seq` generation marker. The marker is compared against
+/// `OpSnapshot::created_seq_at_commit` to detect a document id reused since a replayed
+/// command's commit (the id was deleted and a new document created at the same id).
+pub struct CurrentDoc {
+    /// The document's current envelope.
+    pub doc: Document,
+    /// `documents.created_seq` — this id's current generation marker.
+    pub created_seq: i64,
+}
+
+/// Current documents for every `Update`, `Create`, and `Delete` op in `cmd`, keyed by the op's
+/// own doc_id (a `Create`'s newly-created id; an `Update`/`Delete`'s existing target). A missing
+/// key means the document does not currently exist at that id; `filter_command` drops the
+/// corresponding op. The whole-document commit∧current access gate applies uniformly to all three
+/// op kinds (see `filter_command`'s doc comment), so `Create`/`Delete` need a current-state read
+/// just as `Update` does — the gate cannot be evaluated for any of the three without one. Hoisted
+/// out of the redaction core so it can be awaited ONCE, before any scene-guard scope is entered —
+/// one pool read per distinct doc_id in `cmd`, per recipient.
+pub async fn load_current_docs(repo: &dyn Repository, cmd: &Command) -> HashMap<Uuid, CurrentDoc> {
+    let mut out = HashMap::new();
     for op in &cmd.ops {
-        if let Operation::Update { doc_id, .. } = op {
-            if !out.contains_key(doc_id) {
-                if let Ok(Some(d)) = repo.get_document(*doc_id).await {
-                    out.insert(*doc_id, d);
-                }
+        let doc_id = match op {
+            Operation::Update { doc_id, .. } => *doc_id,
+            Operation::Create { doc } => doc.id,
+            Operation::Delete { doc } => doc.id,
+        };
+        if let std::collections::hash_map::Entry::Vacant(e) = out.entry(doc_id) {
+            if let Ok(Some((doc, created_seq))) = repo.get_document_with_created_seq(doc_id).await {
+                e.insert(CurrentDoc { doc, created_seq });
             }
         }
     }
     out
+}
+
+/// A `CommandSnapshot` for `cmd` whose commit-time state mirrors `current`'s live state, scoped
+/// to the single recipient named by `ctx`. Exists only for call sites carrying no persisted
+/// commit-time snapshot (`http::routes::write_ops`'s author-read-back-of-their-own-write, and
+/// `ws::conn::send_filtered`'s live-broadcast call site pending its own real
+/// `StoredCommand`-derived plumbing): at those sites "commit time" and "now" are the same instant
+/// by construction, so mirroring the current document loses no information the commit-time half
+/// of `filter_command` would otherwise see. `world_gm_at_commit` carries exactly the one entry
+/// `filter_command` ever looks up for a given `ctx`: `ctx.user_id -> (ctx.world_role ==
+/// WorldRole::Gm)`.
+pub fn mirror_current_snapshot<'a>(
+    cmd: &Command,
+    ctx: &PermissionContext,
+    current: &HashMap<Uuid, CurrentDoc>,
+    actor_lookup: &impl Fn(&Uuid) -> Option<&'a Document>,
+) -> CommandSnapshot {
+    let mut per_op = Vec::with_capacity(cmd.ops.len());
+    for op in &cmd.ops {
+        let target_doc: Option<&Document> = match op {
+            Operation::Update { doc_id, .. } => current.get(doc_id).map(|c| &c.doc),
+            Operation::Create { doc } => Some(doc),
+            Operation::Delete { doc } => Some(doc),
+        };
+        let Some(d) = target_doc else {
+            per_op.push(None);
+            continue;
+        };
+        // Best-effort: a document reaching this function has already passed
+        // `validation::validate_property_overrides` at its own write time, so this classifier
+        // never meets a genuinely unclassifiable override outside a poisoned test fixture.
+        let mut overrides = Vec::new();
+        let _ = collect_overrides(d, "", &mut overrides);
+        let touches_perms = matches!(
+            op,
+            Operation::Update { changes, .. }
+                if changes.iter().any(|c| touches_permissions(&c.path))
+        );
+        per_op.push(Some(OpSnapshot {
+            owner_at_commit: effective_owner_via(d, actor_lookup),
+            doc_type: d.doc_type.clone(),
+            overrides_at_commit: overrides.clone(),
+            retraction_hidden_at_commit: if touches_perms { Some(overrides) } else { None },
+            created_seq_at_commit: None,
+            permissions_at_commit: Some(PermissionSet {
+                property_overrides: Default::default(),
+                ..d.permissions.clone()
+            }),
+        }));
+    }
+    CommandSnapshot {
+        per_op,
+        world_gm_at_commit: HashMap::from([(ctx.user_id, ctx.world_role == WorldRole::Gm)]),
+    }
 }
 
 /// The four CONTENT bands of a `Document`. Redaction operates on these and never on
@@ -420,7 +488,9 @@ fn is_descendant(p: &str, ancestor: &str) -> bool {
 
 /// Whether two JSON-pointer paths overlap as subtrees: equal, or either is a
 /// descendant of the other.
-fn paths_overlap(a: &str, b: &str) -> bool {
+/// Consumed cross-module by `SqliteRepository::build_op_snapshot` to prune an Update op's
+/// commit-time override set to its own changed-paths closure.
+pub(crate) fn paths_overlap(a: &str, b: &str) -> bool {
     a == b || is_descendant(a, b) || is_descendant(b, a)
 }
 
@@ -908,48 +978,70 @@ pub fn filter_properties(doc: &Document, access: &Access) -> Result<Document, Re
     })
 }
 
-/// Collect every property pointer in `doc` (and embedded descendants) that `access`
-/// may NOT see — `GmOnly` for any non-GM, `OwnerOrGm` for a non-owner non-GM — each
-/// expressed absolute to `doc` (call with `prefix = ""` for parent-absolute paths: a
-/// child at `embedded[key][i]` contributes `/embedded/<key>/<i>{pointer}`). Lets
-/// `Update`-delta redaction honor hidden fields at any embedded depth — the same
-/// coverage `filter_properties` gives whole-document egress. Classifies each
-/// UNPREFIXED override key via `redaction_target` before the prefix is applied
-/// (the same classifier `filter_properties` runs on whole-document egress), and
-/// fails closed with `RedactionError` on a pointer it cannot place — that is what
-/// keeps the change-delta path from diverging from whole-document egress.
+/// Collect every `(absolute_pointer, tier)` pair in `doc`'s own `property_overrides`, plus the
+/// hardcoded `/base` `OwnerOrGm` entry (see `filter_properties`'s doc comment), recursing into
+/// embedded descendants (parent-absolute addressing: a child at `embedded[key][i]` contributes
+/// `/embedded/<key>/<i>{pointer}` — the SAME positional addressing `filter_properties`'s own
+/// recursion uses). Access-independent: every override regardless of tier, so ONE traversal
+/// feeds BOTH the live redaction path (`collect_hidden`, via `hidden_from_overrides`) and
+/// commit-time snapshot construction (`OpSnapshot::overrides_at_commit`) — they cannot diverge
+/// on how an embedded index is addressed because they share this one walk.
+///
+/// Classifies every REAL override pointer via `redaction_target` at traversal time (not lazily,
+/// unlike a per-recipient filter would): safe because every document reaching this function has
+/// already passed `validation::validate_property_overrides` at its OWN write time (both
+/// `apply_command` and `apply_intent` call it on the full post-image, recursing into every
+/// embedded descendant, before any document reaches storage) — an unclassifiable REAL override
+/// pointer cannot exist in persisted data. Still returns `Result` to fail closed on
+/// pre-validation legacy/hand-seeded data. The synthetic `/base` entry is never classified (it
+/// is hardcoded, not user-supplied — mirrors the un-classified unconditional `/base` push this
+/// function replaces).
+pub(crate) fn collect_overrides(
+    doc: &Document,
+    prefix: &str,
+    out: &mut Vec<(String, Visibility)>,
+) -> Result<(), RedactionError> {
+    for (p, v) in &doc.permissions.property_overrides {
+        if redaction_target(p).is_none() {
+            return Err(RedactionError { pointer: p.clone() });
+        }
+        out.push((format!("{prefix}{p}"), *v));
+    }
+    // Mirrors `filter_properties`' hardcoded `OwnerOrGm` policy for `/base` — see that
+    // function's comment. Fires at every embedded depth too (each recursive call gets its own
+    // `prefix`), covering an embedded child's own `base` the same way.
+    out.push((format!("{prefix}/base"), Visibility::OwnerOrGm));
+    for (key, children) in &doc.embedded {
+        for (idx, child) in children.iter().enumerate() {
+            collect_overrides(child, &format!("{prefix}/embedded/{key}/{idx}"), out)?;
+        }
+    }
+    Ok(())
+}
+
+/// Filter `overrides` (as produced by `collect_overrides`) down to the absolute pointers
+/// `access` may NOT see — the `can_see`-filtering half of the traversal split.
+fn hidden_from_overrides(overrides: &[(String, Visibility)], access: &Access) -> Vec<String> {
+    overrides
+        .iter()
+        .filter(|(_, v)| !access.can_see(*v))
+        .map(|(p, _)| p.clone())
+        .collect()
+}
+
+/// Lets `Update`-delta redaction honor hidden fields at any embedded depth — the same coverage
+/// `filter_properties` gives whole-document egress. A thin wrapper: `collect_overrides` performs
+/// the traversal (and classification), `hidden_from_overrides` performs the `can_see` filter —
+/// kept as one function because this is `filter_command`'s ONE call site's exact shape.
 fn collect_hidden(
     doc: &Document,
     access: &Access,
     prefix: &str,
     out: &mut Vec<String>,
 ) -> Result<(), RedactionError> {
-    for (p, v) in &doc.permissions.property_overrides {
-        if !access.can_see(*v) {
-            if redaction_target(p).is_none() {
-                return Err(RedactionError { pointer: p.clone() });
-            }
-            out.push(format!("{prefix}{p}"));
-        }
-    }
-    // Mirrors `filter_properties`' hardcoded `OwnerOrGm` policy for `/base` — see
-    // that function's comment. This recursion structure means the push fires at every
-    // embedded depth too (each recursive call gets its own `prefix`), covering an embedded
-    // child's own `base` the same way, even though `base` is documented as top-level-only —
-    // defense in depth costs nothing here.
-    if !access.can_see(Visibility::OwnerOrGm) {
-        out.push(format!("{prefix}/base"));
-    }
-    for (key, children) in &doc.embedded {
-        for (idx, child) in children.iter().enumerate() {
-            collect_hidden(
-                child,
-                access,
-                &format!("{prefix}/embedded/{key}/{idx}"),
-                out,
-            )?;
-        }
-    }
+    let mut overrides = Vec::new();
+    collect_overrides(doc, prefix, &mut overrides)?;
+    out.extend(hidden_from_overrides(&overrides, access));
     Ok(())
 }
 
@@ -958,120 +1050,188 @@ fn collect_hidden(
 /// just-hidden field is retracted from recipients who can no longer see it. A `system`
 /// field literally named `permissions` over-triggers, which is safe (it only re-nulls
 /// already-hidden fields).
-fn touches_permissions(path: &str) -> bool {
+/// Consumed cross-module by `SqliteRepository::build_op_snapshot` to decide whether an Update
+/// op's commit-time snapshot needs a retraction set.
+pub(crate) fn touches_permissions(path: &str) -> bool {
     path.split('/').any(|seg| seg == "permissions")
 }
 
-/// The recipient's view of a broadcast command: ops on unreadable documents
-/// are dropped, GmOnly properties/changes stripped. seq/world/author/ts are
-/// preserved so the recipient's sequence guard never sees a false gap — a fully
-/// redacted command keeps its seq with empty ops.
+/// The recipient's view of a broadcast command: ops on unreadable documents are dropped,
+/// GmOnly/OwnerOrGm properties/changes stripped. seq/world/author/ts are preserved so the
+/// recipient's sequence guard never sees a false gap — a fully redacted command keeps its seq
+/// with empty ops.
 ///
-/// `effective_owner_via` joined through a caller-supplied in-memory actor
-/// source, so this never queries the pool. Sync core: the loads
-/// this needs (`current`, the Update pre-images) are hoisted to
-/// `load_update_docs` and awaited by the caller BEFORE calling in, and the
-/// actor join reads an in-memory table (the room's `SceneEcs`, or `|_| None`
-/// where no actor table exists), never the pool.
+/// Redaction is the CONJUNCTION of two views: what was permitted at commit (`snapshot`) and what
+/// is permitted now (`current`) — never fewer checks than either view alone would apply. A
+/// pointer is redacted iff it was hidden at commit OR is hidden now; a whole op is dropped
+/// unless BOTH the commit-time and current-time whole-document `cap::READ` gate admit it — this
+/// asymmetry-closing gate applies uniformly to `Create`/`Update`/`Delete`, not just `Update`
+/// (a recipient denied at a document's Create commit-time but currently permitted must not see
+/// a LATER Update to the same doc_id either, or they receive field-level data for a document
+/// they were never told exists).
+///
+/// `effective_owner_via` is joined through a caller-supplied in-memory actor source, so this
+/// never queries the pool for the CURRENT-time half. The loads this needs (`current`, from
+/// `load_current_docs`) are hoisted and awaited by the caller BEFORE calling in. The commit-time
+/// half never queries anything live — it is fully derived from `snapshot`, by construction (no
+/// live-state parameter exists on this function to reintroduce one from).
 pub fn filter_command<'a>(
     cmd: &Command,
+    snapshot: &CommandSnapshot,
     ctx: &PermissionContext,
     world_defaults: &WorldCapDefaults,
-    current: &std::collections::HashMap<Uuid, Document>,
+    current: &HashMap<Uuid, CurrentDoc>,
     actor_lookup: impl Fn(&Uuid) -> Option<&'a Document>,
 ) -> Command {
-    // `world_defaults` is passed in (loaded once per connection / request) rather
-    // than fetched here: this runs per event per recipient on the egress hot
-    // path, and a per-event DB read contends with apply_intent on the
-    // single-writer pool.
     let mut out_ops = Vec::with_capacity(cmd.ops.len());
-    for op in &cmd.ops {
+    for (idx, op) in cmd.ops.iter().enumerate() {
+        // A `None` per-op snapshot entry (a legacy `world_events` row carrying no recorded
+        // snapshot) drops the op on replay rather than falling back to a live-lookup redaction.
+        let Some(op_snapshot) = snapshot.per_op.get(idx).and_then(|s| s.as_ref()) else {
+            continue;
+        };
+        let gm_at_commit = snapshot
+            .world_gm_at_commit
+            .get(&ctx.user_id)
+            .copied()
+            .unwrap_or(false);
+        let world_role_commit = if gm_at_commit {
+            WorldRole::Gm
+        } else {
+            WorldRole::Player
+        };
         match op {
             Operation::Create { doc } => {
-                let owner = effective_owner_via(doc, &actor_lookup);
-                let access = resolve_access_world(
+                let access_commit = resolve_access(
+                    ctx.user_id,
+                    world_role_commit,
+                    doc,
+                    op_snapshot.owner_at_commit,
+                );
+                let owner_current = effective_owner_via(doc, &actor_lookup);
+                let access_current = resolve_access_world(
                     ctx.user_id,
                     ctx.world_role,
                     doc,
                     &world_defaults.grants_for(&doc.doc_type),
-                    owner,
+                    owner_current,
                 );
-                if access.has(cap::READ) {
-                    // Withhold rather than guess: a recipient who cannot be given a
-                    // correctly redacted document is given none.
-                    match filter_properties(doc, &access) {
-                        Ok(filtered) => out_ops.push(Operation::Create { doc: filtered }),
-                        Err(e) => {
-                            tracing::warn!(doc_id = %doc.id, error = %e, "redaction failed; dropping Create op for recipient");
-                        }
+                if !access_commit.has(cap::READ) || !access_current.has(cap::READ) {
+                    continue;
+                }
+                match filter_properties(doc, &access_current) {
+                    Ok(filtered) => out_ops.push(Operation::Create { doc: filtered }),
+                    Err(e) => {
+                        tracing::warn!(doc_id = %doc.id, error = %e, "redaction failed; dropping Create op for recipient");
                     }
                 }
             }
             Operation::Delete { doc } => {
-                // A delete is visible to anyone who could read the document.
-                let owner = effective_owner_via(doc, &actor_lookup);
-                let access = resolve_access_world(
+                // Existence check is INVERTED vs Update: a Delete's current doc is EXPECTED to
+                // be absent (that is the point of the op). The created_seq mismatch check
+                // applies only when a current doc DOES exist (the id was reused).
+                if let Some(commit_seq) = op_snapshot.created_seq_at_commit {
+                    if let Some(cur) = current.get(&doc.id) {
+                        if cur.created_seq != commit_seq {
+                            continue;
+                        }
+                    }
+                }
+                let access_commit = resolve_access(
+                    ctx.user_id,
+                    world_role_commit,
+                    doc,
+                    op_snapshot.owner_at_commit,
+                );
+                let owner_current = effective_owner_via(doc, &actor_lookup);
+                let access_current = resolve_access_world(
                     ctx.user_id,
                     ctx.world_role,
                     doc,
                     &world_defaults.grants_for(&doc.doc_type),
-                    owner,
+                    owner_current,
                 );
-                if access.has(cap::READ) {
-                    match filter_properties(doc, &access) {
-                        Ok(filtered) => out_ops.push(Operation::Delete { doc: filtered }),
-                        Err(e) => {
-                            tracing::warn!(doc_id = %doc.id, error = %e, "redaction failed; dropping Delete op for recipient");
-                        }
+                if !access_commit.has(cap::READ) || !access_current.has(cap::READ) {
+                    continue;
+                }
+                match filter_properties(doc, &access_current) {
+                    Ok(filtered) => out_ops.push(Operation::Delete { doc: filtered }),
+                    Err(e) => {
+                        tracing::warn!(doc_id = %doc.id, error = %e, "redaction failed; dropping Delete op for recipient");
                     }
                 }
             }
             Operation::Update { doc_id, changes } => {
-                // Absent = deleted (or never existed) between commit and this
-                // recipient's redaction pass → drop, preserving today's semantics.
+                // Absent = does not currently exist → drop, preserving today's semantics.
                 let Some(cur) = current.get(doc_id) else {
                     continue;
                 };
-                let owner = effective_owner_via(cur, &actor_lookup);
-                let access = resolve_access_world(
+                if let Some(commit_seq) = op_snapshot.created_seq_at_commit {
+                    if cur.created_seq != commit_seq {
+                        continue;
+                    }
+                }
+                let commit_doc = Document {
+                    doc_type: op_snapshot.doc_type.clone(),
+                    permissions: op_snapshot
+                        .permissions_at_commit
+                        .clone()
+                        .unwrap_or_default(),
+                    ..cur.doc.clone()
+                };
+                let access_commit = resolve_access(
+                    ctx.user_id,
+                    world_role_commit,
+                    &commit_doc,
+                    op_snapshot.owner_at_commit,
+                );
+                let owner_current = effective_owner_via(&cur.doc, &actor_lookup);
+                let access_current = resolve_access_world(
                     ctx.user_id,
                     ctx.world_role,
-                    cur,
-                    &world_defaults.grants_for(&cur.doc_type),
-                    owner,
+                    &cur.doc,
+                    &world_defaults.grants_for(&cur.doc.doc_type),
+                    owner_current,
                 );
-                if !access.has(cap::READ) {
+                if !access_commit.has(cap::READ) || !access_current.has(cap::READ) {
                     continue;
                 }
-                let kept: Vec<FieldChange> = if access.see_gm_only {
+                let kept: Vec<FieldChange> = if access_current.see_gm_only
+                    && access_commit.see_gm_only
+                {
                     changes.clone()
                 } else {
-                    // Collect pointers this recipient cannot see across the parent AND
-                    // its embedded descendants (parent-absolute), so an Update into
-                    // `/embedded/<child>/...` is redacted against the child's own
-                    // overrides — not just the parent's. Matches filter_properties.
-                    let mut hidden = Vec::new();
-                    if let Err(e) = collect_hidden(cur, &access, "", &mut hidden) {
+                    let mut hidden_current = Vec::new();
+                    if let Err(e) =
+                        collect_hidden(&cur.doc, &access_current, "", &mut hidden_current)
+                    {
                         tracing::warn!(doc_id = %doc_id, error = %e, "redaction failed; dropping Update op for recipient");
                         continue;
                     }
+                    let hidden_commit =
+                        hidden_from_overrides(&op_snapshot.overrides_at_commit, &access_commit);
+                    let mut hidden = hidden_current;
+                    hidden.extend(hidden_commit);
+                    hidden.sort();
+                    hidden.dedup();
                     let mut kept: Vec<FieldChange> = changes
                         .iter()
                         .filter_map(|ch| redact_change(ch, &hidden))
                         .collect();
-                    // When the command writes any `permissions`, retract every field this
-                    // recipient cannot see so no stale value persists client-side. old:null
-                    // keeps the pre-image from carrying the real value; new:null clears it.
-                    // Idempotent (re-nulling an absent field is a no-op). Per-recipient: an
-                    // owner's OwnerOrGm fields are absent from `hidden` (can_see), so intact.
+                    // Retraction: use this command's OWN commit-time hidden set, filtered
+                    // through THIS recipient's commit-time access only — never the union, and
+                    // never whatever is live now. Each retracting command owns its own
+                    // retraction moment.
                     if changes.iter().any(|c| touches_permissions(&c.path)) {
-                        for ptr in hidden {
-                            kept.push(FieldChange {
-                                remove: false,
-                                path: ptr,
-                                old: serde_json::Value::Null,
-                                new: serde_json::Value::Null,
-                            });
+                        if let Some(retraction) = &op_snapshot.retraction_hidden_at_commit {
+                            for ptr in hidden_from_overrides(retraction, &access_commit) {
+                                kept.push(FieldChange {
+                                    remove: false,
+                                    path: ptr,
+                                    old: serde_json::Value::Null,
+                                    new: serde_json::Value::Null,
+                                });
+                            }
                         }
                     }
                     kept
@@ -1191,6 +1351,7 @@ fn strip_pointer(root: &mut serde_json::Value, pointer: &str) {
 mod tests {
     use super::*;
     use crate::data::document::{PermissionSet, Scope};
+    use crate::data::snapshot::{CommandSnapshot, OpSnapshot};
 
     fn doc(perms: PermissionSet, system: serde_json::Value) -> Document {
         Document {
@@ -1244,6 +1405,58 @@ mod tests {
             all: false,
             see_gm_only: false,
             is_owner: false,
+        }
+    }
+
+    /// A `CommandSnapshot` for `cmd` whose commit-time state exactly mirrors `current` (and, for
+    /// `Create`/`Delete`, the op's own carried `doc`) — for a pre-existing test that writes and
+    /// redacts at the SAME instant, so the commit-time and current-time halves agree by
+    /// construction and their union changes nothing observable. `gm_at_commit` lists every
+    /// recipient who holds GM standing (both at commit and now, in these single-instant tests).
+    fn immediate_snapshot<'a>(
+        cmd: &Command,
+        current: &HashMap<Uuid, CurrentDoc>,
+        gm_at_commit: &[Uuid],
+        actor_lookup: &impl Fn(&Uuid) -> Option<&'a Document>,
+    ) -> CommandSnapshot {
+        let mut per_op = Vec::with_capacity(cmd.ops.len());
+        for op in &cmd.ops {
+            let target_doc: Option<&Document> = match op {
+                Operation::Update { doc_id, .. } => current.get(doc_id).map(|c| &c.doc),
+                Operation::Create { doc } => Some(doc),
+                Operation::Delete { doc } => Some(doc),
+            };
+            let Some(d) = target_doc else {
+                per_op.push(None);
+                continue;
+            };
+            // A test poisoning a document with an unclassifiable override (to exercise
+            // `filter_properties`'s own fail-closed path) makes this best-effort: the partial
+            // set collected before the error is used as-is, matching what a real snapshot
+            // builder would have to do (this classifier never runs against genuinely
+            // unclassifiable data outside a deliberately-poisoned test fixture).
+            let mut overrides = Vec::new();
+            let _ = collect_overrides(d, "", &mut overrides);
+            let touches_perms = matches!(
+                op,
+                Operation::Update { changes, .. }
+                    if changes.iter().any(|c| touches_permissions(&c.path))
+            );
+            per_op.push(Some(OpSnapshot {
+                owner_at_commit: effective_owner_via(d, actor_lookup),
+                doc_type: d.doc_type.clone(),
+                overrides_at_commit: overrides.clone(),
+                retraction_hidden_at_commit: if touches_perms { Some(overrides) } else { None },
+                created_seq_at_commit: None,
+                permissions_at_commit: Some(PermissionSet {
+                    property_overrides: Default::default(),
+                    ..d.permissions.clone()
+                }),
+            }));
+        }
+        CommandSnapshot {
+            per_op,
+            world_gm_at_commit: gm_at_commit.iter().map(|u| (*u, true)).collect(),
         }
     }
 
@@ -1865,17 +2078,22 @@ mod tests {
             }],
         };
 
-        let current = load_update_docs(&r, &cmd).await;
+        let current = load_current_docs(&r, &cmd).await;
+        let snapshot = immediate_snapshot(&cmd, &current, &[gm], &|_| None);
 
         // Non-owner, non-GM: the change is dropped entirely.
         let other = PermissionContext {
             user_id: Uuid::from_u128(77),
             world_role: WorldRole::Player,
         };
-        let out_other =
-            filter_command(&cmd, &other, &WorldCapDefaults::default(), &current, |_| {
-                None
-            });
+        let out_other = filter_command(
+            &cmd,
+            &snapshot,
+            &other,
+            &WorldCapDefaults::default(),
+            &current,
+            |_| None,
+        );
         let Operation::Update { changes, .. } = &out_other.ops[0] else {
             panic!("expected Update");
         };
@@ -1891,6 +2109,7 @@ mod tests {
         };
         let out_owner = filter_command(
             &cmd,
+            &snapshot,
             &owner_ctx,
             &WorldCapDefaults::default(),
             &current,
@@ -1909,6 +2128,7 @@ mod tests {
         // GM: passed through unchanged.
         let out_gm = filter_command(
             &cmd,
+            &snapshot,
             &gm_ctx,
             &WorldCapDefaults::default(),
             &current,
@@ -1985,8 +2205,8 @@ mod tests {
         // A GM removes `/system/sheet` — a subtree that contains a nested gm_only leaf
         // `/system/sheet/hidden`. The redacted broadcast to a non-privileged recipient must
         // stay a REMOVAL (remove: true, new: Null), never downgrade to a set-to-null: the
-        // latter would leave the key present-as-null on the recipient's client (the
-        // `null` != absent violation this task exists to fix).
+        // latter would leave the key present-as-null on the recipient's client, violating the
+        // `null` != absent invariant.
         let ch = FieldChange {
             remove: true,
             path: "/system/sheet".into(),
@@ -2052,9 +2272,11 @@ mod tests {
             user_id: Uuid::from_u128(77),
             world_role: WorldRole::Player,
         };
-        let current = load_update_docs(&r, &cmd).await;
+        let current = load_current_docs(&r, &cmd).await;
+        let snapshot = immediate_snapshot(&cmd, &current, &[], &|_| None);
         let filtered = filter_command(
             &cmd,
+            &snapshot,
             &player,
             &WorldCapDefaults::default(),
             &current,
@@ -2113,13 +2335,15 @@ mod tests {
             }],
         };
 
-        let current = load_update_docs(&r, &cmd).await;
+        let current = load_current_docs(&r, &cmd).await;
+        let snapshot = immediate_snapshot(&cmd, &current, &[gm], &|_| None);
         let player = PermissionContext {
             user_id: Uuid::from_u128(77),
             world_role: WorldRole::Player,
         };
         let filtered_for_player = filter_command(
             &cmd,
+            &snapshot,
             &player,
             &WorldCapDefaults::default(),
             &current,
@@ -2137,6 +2361,7 @@ mod tests {
         };
         let filtered_for_gm = filter_command(
             &cmd,
+            &snapshot,
             &gm_ctx,
             &WorldCapDefaults::default(),
             &current,
@@ -2187,9 +2412,11 @@ mod tests {
             user_id: Uuid::from_u128(77),
             world_role: WorldRole::Player,
         };
-        let current = load_update_docs(&r, &cmd).await;
+        let current = load_current_docs(&r, &cmd).await;
+        let snapshot = immediate_snapshot(&cmd, &current, &[], &|_| None);
         let out = filter_command(
             &cmd,
+            &snapshot,
             &player,
             &WorldCapDefaults::default(),
             &current,
@@ -2238,9 +2465,11 @@ mod tests {
             user_id: Uuid::from_u128(77),
             world_role: WorldRole::Player,
         };
-        let current = load_update_docs(&r, &cmd).await;
+        let current = load_current_docs(&r, &cmd).await;
+        let snapshot = immediate_snapshot(&cmd, &current, &[], &|_| None);
         let out = filter_command(
             &cmd,
+            &snapshot,
             &player,
             &WorldCapDefaults::default(),
             &current,
@@ -2320,7 +2549,8 @@ mod tests {
             }],
         };
 
-        let current = load_update_docs(&r, &cmd).await;
+        let current = load_current_docs(&r, &cmd).await;
+        let snapshot = immediate_snapshot(&cmd, &current, &[gm], &|_| None);
 
         // Player sees the public change only; seq is preserved.
         let player = PermissionContext {
@@ -2329,6 +2559,7 @@ mod tests {
         };
         let filtered = filter_command(
             &cmd,
+            &snapshot,
             &player,
             &WorldCapDefaults::default(),
             &current,
@@ -2345,6 +2576,7 @@ mod tests {
         // GM sees both changes.
         let gm_view = filter_command(
             &cmd,
+            &snapshot,
             &gm_ctx,
             &WorldCapDefaults::default(),
             &current,
@@ -2420,16 +2652,22 @@ mod tests {
             }],
         };
 
-        let current = load_update_docs(&r, &cmd).await;
+        let current = load_current_docs(&r, &cmd).await;
+        let snapshot = immediate_snapshot(&cmd, &current, &[gm], &|_| None);
 
         // Non-owner player: keeps the permission change PLUS a null retraction of /system/name.
         let other = PermissionContext {
             user_id: Uuid::from_u128(77),
             world_role: WorldRole::Player,
         };
-        let out = filter_command(&cmd, &other, &WorldCapDefaults::default(), &current, |_| {
-            None
-        });
+        let out = filter_command(
+            &cmd,
+            &snapshot,
+            &other,
+            &WorldCapDefaults::default(),
+            &current,
+            |_| None,
+        );
         let Operation::Update { changes, .. } = &out.ops[0] else {
             panic!("expected Update");
         };
@@ -2447,6 +2685,7 @@ mod tests {
         };
         let out_owner = filter_command(
             &cmd,
+            &snapshot,
             &owner_ctx,
             &WorldCapDefaults::default(),
             &current,
@@ -2460,6 +2699,7 @@ mod tests {
         // GM: sees everything; no synthesized retraction.
         let out_gm = filter_command(
             &cmd,
+            &snapshot,
             &gm_ctx,
             &WorldCapDefaults::default(),
             &current,
@@ -2541,16 +2781,22 @@ mod tests {
             }],
         };
 
-        let current = load_update_docs(&r, &cmd).await;
+        let current = load_current_docs(&r, &cmd).await;
+        let snapshot = immediate_snapshot(&cmd, &current, &[gm], &|_| None);
 
         // Non-owner player: the embedded name is retracted with a null pre-image.
         let other = PermissionContext {
             user_id: Uuid::from_u128(77),
             world_role: WorldRole::Player,
         };
-        let out = filter_command(&cmd, &other, &WorldCapDefaults::default(), &current, |_| {
-            None
-        });
+        let out = filter_command(
+            &cmd,
+            &snapshot,
+            &other,
+            &WorldCapDefaults::default(),
+            &current,
+            |_| None,
+        );
         let Operation::Update { changes, .. } = &out.ops[0] else {
             panic!("expected Update");
         };
@@ -2568,6 +2814,7 @@ mod tests {
         };
         let out_owner = filter_command(
             &cmd,
+            &snapshot,
             &owner_ctx,
             &WorldCapDefaults::default(),
             &current,
@@ -2583,6 +2830,7 @@ mod tests {
         // GM: sees everything — no retraction.
         let out_gm = filter_command(
             &cmd,
+            &snapshot,
             &gm_ctx,
             &WorldCapDefaults::default(),
             &current,
@@ -2677,13 +2925,15 @@ mod tests {
             }],
         };
 
-        let current = load_update_docs(&r, &cmd).await;
+        let current = load_current_docs(&r, &cmd).await;
+        let snapshot = immediate_snapshot(&cmd, &current, &[gm], &|_| None);
         let player = PermissionContext {
             user_id: Uuid::from_u128(77),
             world_role: WorldRole::Player,
         };
         let filtered = filter_command(
             &cmd,
+            &snapshot,
             &player,
             &WorldCapDefaults::default(),
             &current,
@@ -2709,6 +2959,7 @@ mod tests {
         // GM sees all three unredacted.
         let gm_view = filter_command(
             &cmd,
+            &snapshot,
             &gm_ctx,
             &WorldCapDefaults::default(),
             &current,
@@ -2781,13 +3032,15 @@ mod tests {
             }],
         };
 
-        let current = load_update_docs(&r, &cmd).await;
+        let current = load_current_docs(&r, &cmd).await;
+        let snapshot = immediate_snapshot(&cmd, &current, &[gm], &|_| None);
         let player = PermissionContext {
             user_id: Uuid::from_u128(77),
             world_role: WorldRole::Player,
         };
         let filtered = filter_command(
             &cmd,
+            &snapshot,
             &player,
             &WorldCapDefaults::default(),
             &current,
@@ -2801,6 +3054,7 @@ mod tests {
 
         let gm_view = filter_command(
             &cmd,
+            &snapshot,
             &gm_ctx,
             &WorldCapDefaults::default(),
             &current,
@@ -3023,13 +3277,15 @@ mod tests {
             }],
         };
 
-        let current = load_update_docs(&r, &cmd).await;
+        let current = load_current_docs(&r, &cmd).await;
+        let snapshot = immediate_snapshot(&cmd, &current, &[gm], &|_| None);
         let player = PermissionContext {
             user_id: Uuid::from_u128(77),
             world_role: WorldRole::Player,
         };
         let filtered = filter_command(
             &cmd,
+            &snapshot,
             &player,
             &WorldCapDefaults::default(),
             &current,
@@ -3055,6 +3311,7 @@ mod tests {
         // The GM sees every change unredacted.
         let gm_view = filter_command(
             &cmd,
+            &snapshot,
             &gm_ctx,
             &WorldCapDefaults::default(),
             &current,
@@ -3342,20 +3599,35 @@ mod tests {
             ops: vec![Operation::Create { doc: token.clone() }],
         };
         let lookup = |id: &Uuid| (id == &actor.id).then_some(&actor);
-        let current = std::collections::HashMap::new();
+        let current: HashMap<Uuid, CurrentDoc> = HashMap::new();
+        let snapshot = immediate_snapshot(&cmd, &current, &[], &lookup);
 
         let p_ctx = PermissionContext {
             user_id: p,
             world_role: WorldRole::Player,
         };
-        let out = filter_command(&cmd, &p_ctx, &WorldCapDefaults::default(), &current, lookup);
+        let out = filter_command(
+            &cmd,
+            &snapshot,
+            &p_ctx,
+            &WorldCapDefaults::default(),
+            &current,
+            lookup,
+        );
         assert_eq!(out.ops.len(), 1, "inheriting owner must RECEIVE the create");
 
         let s_ctx = PermissionContext {
             user_id: stranger,
             world_role: WorldRole::Player,
         };
-        let out = filter_command(&cmd, &s_ctx, &WorldCapDefaults::default(), &current, lookup);
+        let out = filter_command(
+            &cmd,
+            &snapshot,
+            &s_ctx,
+            &WorldCapDefaults::default(),
+            &current,
+            lookup,
+        );
         assert!(
             out.ops.is_empty(),
             "a stranger still receives nothing (fail closed)"
@@ -3363,9 +3635,14 @@ mod tests {
 
         // Without the actor join (dangling source) the op is withheld even from P:
         // degenerate input under-permits, never over-permits.
-        let out = filter_command(&cmd, &p_ctx, &WorldCapDefaults::default(), &current, |_| {
-            None
-        });
+        let out = filter_command(
+            &cmd,
+            &snapshot,
+            &p_ctx,
+            &WorldCapDefaults::default(),
+            &current,
+            |_| None,
+        );
         assert!(out.ops.is_empty());
     }
 
@@ -3453,10 +3730,17 @@ mod tests {
             user_id: p,
             world_role: WorldRole::Player,
         };
-        let current = load_update_docs(&r, &cmd).await;
-        let out = filter_command(&cmd, &p_ctx, &WorldCapDefaults::default(), &current, |id| {
-            (id == &actor.id).then_some(&actor)
-        });
+        let current = load_current_docs(&r, &cmd).await;
+        let lookup = |id: &Uuid| (id == &actor.id).then_some(&actor);
+        let snapshot = immediate_snapshot(&cmd, &current, &[], &lookup);
+        let out = filter_command(
+            &cmd,
+            &snapshot,
+            &p_ctx,
+            &WorldCapDefaults::default(),
+            &current,
+            lookup,
+        );
         let Operation::Update { changes, .. } = &out.ops[0] else {
             panic!("expected Update");
         };
@@ -3472,10 +3756,11 @@ mod tests {
         };
         let out = filter_command(
             &cmd,
+            &snapshot,
             &stranger_ctx,
             &WorldCapDefaults::default(),
             &current,
-            |id| (id == &actor.id).then_some(&actor),
+            lookup,
         );
         assert!(
             out.ops.is_empty(),
@@ -3578,9 +3863,17 @@ mod tests {
         // 2. filter_command of the returned command for P, joined through the
         //    same actor link, must RETAIN the op — the owner floor also grants
         //    READ at egress through the same owner value.
-        let current = load_update_docs(&r, &cmd).await;
+        let current = load_current_docs(&r, &cmd).await;
         let lookup = |id: &Uuid| (id == &actor.id).then_some(&actor);
-        let out_p = filter_command(&cmd, &p_ctx, &WorldCapDefaults::default(), &current, lookup);
+        let snapshot = immediate_snapshot(&cmd, &current, &[], &lookup);
+        let out_p = filter_command(
+            &cmd,
+            &snapshot,
+            &p_ctx,
+            &WorldCapDefaults::default(),
+            &current,
+            lookup,
+        );
         assert_eq!(
             out_p.ops.len(),
             1,
@@ -3594,6 +3887,7 @@ mod tests {
         };
         let out_stranger = filter_command(
             &cmd,
+            &snapshot,
             &stranger_ctx,
             &WorldCapDefaults::default(),
             &current,
@@ -3635,13 +3929,21 @@ mod tests {
             ops: vec![Operation::Create { doc: token.clone() }],
         };
         let lookup = |id: &Uuid| (id == &foreign_actor.id).then_some(&foreign_actor);
-        let current = std::collections::HashMap::new();
+        let current: HashMap<Uuid, CurrentDoc> = HashMap::new();
+        let snapshot = immediate_snapshot(&cmd, &current, &[], &lookup);
 
         let p_ctx = PermissionContext {
             user_id: p,
             world_role: WorldRole::Player,
         };
-        let out = filter_command(&cmd, &p_ctx, &WorldCapDefaults::default(), &current, lookup);
+        let out = filter_command(
+            &cmd,
+            &snapshot,
+            &p_ctx,
+            &WorldCapDefaults::default(),
+            &current,
+            lookup,
+        );
         assert!(
             out.ops.is_empty(),
             "a cross-scope actor join must not be treated as the owner at egress"
@@ -3672,13 +3974,21 @@ mod tests {
             ops: vec![Operation::Create { doc: token.clone() }],
         };
         let lookup = |id: &Uuid| (id == &actor.id).then_some(&actor);
-        let current = std::collections::HashMap::new();
+        let current: HashMap<Uuid, CurrentDoc> = HashMap::new();
+        let snapshot = immediate_snapshot(&cmd, &current, &[], &lookup);
 
         let a_ctx = PermissionContext {
             user_id: a,
             world_role: WorldRole::Player,
         };
-        let out_a = filter_command(&cmd, &a_ctx, &WorldCapDefaults::default(), &current, lookup);
+        let out_a = filter_command(
+            &cmd,
+            &snapshot,
+            &a_ctx,
+            &WorldCapDefaults::default(),
+            &current,
+            lookup,
+        );
         assert_eq!(
             out_a.ops.len(),
             1,
@@ -3689,7 +3999,14 @@ mod tests {
             user_id: b,
             world_role: WorldRole::Player,
         };
-        let out_b = filter_command(&cmd, &b_ctx, &WorldCapDefaults::default(), &current, lookup);
+        let out_b = filter_command(
+            &cmd,
+            &snapshot,
+            &b_ctx,
+            &WorldCapDefaults::default(),
+            &current,
+            lookup,
+        );
         assert!(
             out_b.ops.is_empty(),
             "the override wins over the actor: B (the linked actor's literal owner) does not receive"
@@ -3710,7 +4027,7 @@ mod tests {
             user_id: gm,
             world_role: WorldRole::Gm,
         };
-        let current = std::collections::HashMap::new();
+        let current: HashMap<Uuid, CurrentDoc> = HashMap::new();
 
         // Plain doc: the GM still receives everything unconditionally.
         let plain = doc(PermissionSet::default(), serde_json::json!({ "hp": 10 }));
@@ -3721,8 +4038,10 @@ mod tests {
             ts: 0,
             ops: vec![Operation::Create { doc: plain.clone() }],
         };
+        let snapshot_plain = immediate_snapshot(&cmd_plain, &current, &[gm], &|_| None);
         let out_plain = filter_command(
             &cmd_plain,
+            &snapshot_plain,
             &gm_ctx,
             &WorldCapDefaults::default(),
             &current,
@@ -3747,8 +4066,10 @@ mod tests {
                 doc: capped.clone(),
             }],
         };
+        let snapshot_capped = immediate_snapshot(&cmd_capped, &current, &[gm], &|_| None);
         let out_capped = filter_command(
             &cmd_capped,
+            &snapshot_capped,
             &gm_ctx,
             &WorldCapDefaults::default(),
             &current,
@@ -3876,5 +4197,761 @@ mod tests {
         // `required_cap_for_path`.
         assert_eq!(redaction_target("/name"), Some(RedactionTarget::Band));
         assert_eq!(redaction_target("/name/first"), None);
+    }
+
+    // -------------------------------------------------------------------
+    // Commit-time snapshot redaction — pure `filter_command` unit tests.
+    // Hand-built `CommandSnapshot`/`CurrentDoc` inputs; no repository round trip.
+    // -------------------------------------------------------------------
+
+    /// A `CurrentDoc` wrapping `doc` at generation `created_seq`.
+    fn current_doc(doc: Document, created_seq: i64) -> CurrentDoc {
+        CurrentDoc { doc, created_seq }
+    }
+
+    /// An `OpSnapshot` for an `Update` op: commit-time owner/gm/permissions plus a pruned
+    /// override set, no retraction, no created_seq mismatch (matches the current generation).
+    fn op_snapshot_update(
+        owner_at_commit: Option<Uuid>,
+        overrides_at_commit: Vec<(&str, Visibility)>,
+        permissions_at_commit: PermissionSet,
+    ) -> OpSnapshot {
+        OpSnapshot {
+            owner_at_commit,
+            doc_type: "actor".into(),
+            overrides_at_commit: overrides_at_commit
+                .into_iter()
+                .map(|(p, v)| (p.to_string(), v))
+                .collect(),
+            retraction_hidden_at_commit: None,
+            created_seq_at_commit: None,
+            permissions_at_commit: Some(permissions_at_commit),
+        }
+    }
+
+    fn snapshot_one_op(op: OpSnapshot, world_gm_at_commit: HashMap<Uuid, bool>) -> CommandSnapshot {
+        CommandSnapshot {
+            per_op: vec![Some(op)],
+            world_gm_at_commit,
+        }
+    }
+
+    fn permissions_default_observer() -> PermissionSet {
+        PermissionSet {
+            default: DocRole::Observer,
+            ..Default::default()
+        }
+    }
+
+    fn field_change_update_cmd(
+        world: Uuid,
+        author: Uuid,
+        doc_id: Uuid,
+        path: &str,
+        old: serde_json::Value,
+        new: serde_json::Value,
+    ) -> Command {
+        Command {
+            seq: 1,
+            world_id: world,
+            author,
+            ts: 0,
+            ops: vec![Operation::Update {
+                doc_id,
+                changes: vec![FieldChange {
+                    remove: false,
+                    path: path.into(),
+                    old,
+                    new,
+                }],
+            }],
+        }
+    }
+
+    #[test]
+    fn filter_command_drops_an_op_with_no_recorded_snapshot() {
+        let world = Uuid::from_u128(9);
+        let author = Uuid::from_u128(1);
+        let doc_id = Uuid::from_u128(2);
+        let cmd = field_change_update_cmd(
+            world,
+            author,
+            doc_id,
+            "/system/x",
+            serde_json::json!(1),
+            serde_json::json!(2),
+        );
+        let snapshot = CommandSnapshot {
+            per_op: vec![None],
+            world_gm_at_commit: HashMap::new(),
+        };
+        let cur = doc(
+            permissions_default_observer(),
+            serde_json::json!({ "x": 2 }),
+        );
+        let current = HashMap::from([(doc_id, current_doc(cur, 0))]);
+        let ctx = PermissionContext {
+            user_id: Uuid::from_u128(3),
+            world_role: WorldRole::Player,
+        };
+        let out = filter_command(
+            &cmd,
+            &snapshot,
+            &ctx,
+            &WorldCapDefaults::default(),
+            &current,
+            |_| None,
+        );
+        assert!(
+            out.ops.is_empty(),
+            "a None op-snapshot must drop the op on replay"
+        );
+    }
+
+    #[test]
+    fn world_role_promotion_does_not_disclose_pre_promotion_gm_only_or_owner_or_gm_history() {
+        // A player, hidden from a GmOnly field and a separate OwnerOrGm field while a non-GM
+        // non-owner, is later promoted to GM and resyncs from before the promotion — both
+        // fields must stay hidden. INVARIANT: `Access::can_see(OwnerOrGm)` is a disjunction
+        // (`see_gm_only || is_owner`), so resolving the commit-time half's `see_gm_only` from
+        // the recipient's CURRENT world role would defeat `owner_at_commit` for the OwnerOrGm
+        // tier too, not just leak the GmOnly field — both must come from the snapshot alone.
+        let world = Uuid::from_u128(9);
+        let author = Uuid::from_u128(1);
+        let doc_id = Uuid::from_u128(2);
+        let owner = Uuid::from_u128(10);
+        let recipient = Uuid::from_u128(20);
+        let cmd = Command {
+            seq: 1,
+            world_id: world,
+            author,
+            ts: 0,
+            ops: vec![Operation::Update {
+                doc_id,
+                changes: vec![
+                    FieldChange {
+                        remove: false,
+                        path: "/system/secret".into(),
+                        old: serde_json::Value::Null,
+                        new: serde_json::json!("gm secret"),
+                    },
+                    FieldChange {
+                        remove: false,
+                        path: "/system/owner_note".into(),
+                        old: serde_json::Value::Null,
+                        new: serde_json::json!("owner note"),
+                    },
+                ],
+            }],
+        };
+        let op = op_snapshot_update(
+            Some(owner),
+            vec![
+                ("/system/secret", Visibility::GmOnly),
+                ("/system/owner_note", Visibility::OwnerOrGm),
+            ],
+            permissions_default_observer(),
+        );
+        // The recipient was NOT GM at commit.
+        let snapshot = snapshot_one_op(op, HashMap::from([(recipient, false)]));
+        let mut cur = doc(permissions_default_observer(), serde_json::json!({}));
+        cur.owner = Some(owner);
+        let current = HashMap::from([(doc_id, current_doc(cur, 0))]);
+        // The recipient IS currently GM (post-promotion) — this is the defect scenario.
+        let ctx = PermissionContext {
+            user_id: recipient,
+            world_role: WorldRole::Gm,
+        };
+        let out = filter_command(
+            &cmd,
+            &snapshot,
+            &ctx,
+            &WorldCapDefaults::default(),
+            &current,
+            |_| None,
+        );
+        let Operation::Update { changes, .. } = &out.ops[0] else {
+            panic!("expected an Update op");
+        };
+        assert!(
+            changes.is_empty(),
+            "both the GmOnly and OwnerOrGm fields must stay hidden: {changes:?}"
+        );
+    }
+
+    #[test]
+    fn reused_id_drops_a_stale_update_against_the_new_generation() {
+        let world = Uuid::from_u128(9);
+        let author = Uuid::from_u128(1);
+        let doc_id = Uuid::from_u128(2);
+        let cmd = field_change_update_cmd(
+            world,
+            author,
+            doc_id,
+            "/system/x",
+            serde_json::json!(1),
+            serde_json::json!(2),
+        );
+        let mut op = op_snapshot_update(None, vec![], permissions_default_observer());
+        op.created_seq_at_commit = Some(5); // the OLD generation's created_seq
+        let snapshot = snapshot_one_op(op, HashMap::new());
+        let cur = doc(
+            permissions_default_observer(),
+            serde_json::json!({ "x": 2 }),
+        );
+        // The CURRENT document at this id is generation 9 (a later Create reused the id).
+        let current = HashMap::from([(doc_id, current_doc(cur, 9))]);
+        let ctx = PermissionContext {
+            user_id: Uuid::from_u128(3),
+            world_role: WorldRole::Player,
+        };
+        let out = filter_command(
+            &cmd,
+            &snapshot,
+            &ctx,
+            &WorldCapDefaults::default(),
+            &current,
+            |_| None,
+        );
+        assert!(
+            out.ops.is_empty(),
+            "a created_seq mismatch must drop the stale Update"
+        );
+    }
+
+    #[test]
+    fn cross_op_existence_consistency_drops_an_update_denied_at_create_commit_time() {
+        // A recipient denied commit-time access to a document's Create, later granted current
+        // access, must ALSO have every subsequent Update to that doc_id dropped by the SAME
+        // whole-document gate — not just the Create.
+        let world = Uuid::from_u128(9);
+        let author = Uuid::from_u128(1);
+        let doc_id = Uuid::from_u128(2);
+        let recipient = Uuid::from_u128(3);
+        let cmd = field_change_update_cmd(
+            world,
+            author,
+            doc_id,
+            "/system/x",
+            serde_json::json!(1),
+            serde_json::json!(2),
+        );
+        // Commit-time permissions: default = None (nobody without an explicit grant may read).
+        let denied_at_commit = PermissionSet {
+            default: DocRole::None,
+            ..Default::default()
+        };
+        let op = op_snapshot_update(None, vec![], denied_at_commit);
+        let snapshot = snapshot_one_op(op, HashMap::new());
+        // Current permissions: default = Observer (now anyone may read) — the asymmetry.
+        let cur = doc(
+            permissions_default_observer(),
+            serde_json::json!({ "x": 2 }),
+        );
+        let current = HashMap::from([(doc_id, current_doc(cur, 0))]);
+        let ctx = PermissionContext {
+            user_id: recipient,
+            world_role: WorldRole::Player,
+        };
+        let out = filter_command(
+            &cmd,
+            &snapshot,
+            &ctx,
+            &WorldCapDefaults::default(),
+            &current,
+            |_| None,
+        );
+        assert!(
+            out.ops.is_empty(),
+            "commit-time denial must drop the Update even though current access now permits it"
+        );
+    }
+
+    #[test]
+    fn retraction_uses_the_commands_own_commit_moment_not_whatever_is_live() {
+        // (a) A command that narrows visibility, replayed long after a LATER command has
+        // narrowed it further — the retraction pass must reflect what the CHOSEN command
+        // itself hid at ITS OWN commit, not whatever is live now.
+        let world = Uuid::from_u128(9);
+        let author = Uuid::from_u128(1);
+        let doc_id = Uuid::from_u128(2);
+        let recipient = Uuid::from_u128(3);
+        let cmd = Command {
+            seq: 1,
+            world_id: world,
+            author,
+            ts: 0,
+            ops: vec![Operation::Update {
+                doc_id,
+                changes: vec![FieldChange {
+                    remove: false,
+                    path: "/permissions/property_overrides/~1system~1a".into(),
+                    old: serde_json::Value::Null,
+                    new: serde_json::json!("gm_only"),
+                }],
+            }],
+        };
+        let mut op = op_snapshot_update(None, vec![], permissions_default_observer());
+        // This command's OWN narrowing: only "/system/a" became hidden at ITS commit.
+        op.retraction_hidden_at_commit = Some(vec![("/system/a".to_string(), Visibility::GmOnly)]);
+        let snapshot = snapshot_one_op(op, HashMap::from([(recipient, false)]));
+        let cur = doc(
+            permissions_default_observer(),
+            serde_json::json!({ "a": 1, "b": 2 }),
+        );
+        let current = HashMap::from([(doc_id, current_doc(cur, 0))]);
+        let ctx = PermissionContext {
+            user_id: recipient,
+            world_role: WorldRole::Player,
+        };
+        let out = filter_command(
+            &cmd,
+            &snapshot,
+            &ctx,
+            &WorldCapDefaults::default(),
+            &current,
+            |_| None,
+        );
+        let Operation::Update { changes, .. } = &out.ops[0] else {
+            panic!("expected an Update op");
+        };
+        assert!(
+            changes
+                .iter()
+                .any(|c| c.path == "/system/a" && c.new.is_null()),
+            "retraction must null the field THIS command hid: {changes:?}"
+        );
+        assert!(
+            !changes.iter().any(|c| c.path == "/system/b"),
+            "retraction must not touch a field this command never hid: {changes:?}"
+        );
+    }
+
+    #[test]
+    fn retraction_does_not_null_the_owners_own_owner_or_gm_fields() {
+        // (b) The SAME retracting command, replayed to the document's own OWNER — the owner's
+        // legitimately-visible OwnerOrGm fields must NOT be nulled by retraction.
+        let world = Uuid::from_u128(9);
+        let author = Uuid::from_u128(1);
+        let doc_id = Uuid::from_u128(2);
+        let owner = Uuid::from_u128(3);
+        let cmd = Command {
+            seq: 1,
+            world_id: world,
+            author,
+            ts: 0,
+            ops: vec![Operation::Update {
+                doc_id,
+                changes: vec![FieldChange {
+                    remove: false,
+                    path: "/permissions/property_overrides/~1system~1name".into(),
+                    old: serde_json::Value::Null,
+                    new: serde_json::json!("owner_or_gm"),
+                }],
+            }],
+        };
+        let mut op = op_snapshot_update(Some(owner), vec![], permissions_default_observer());
+        op.retraction_hidden_at_commit =
+            Some(vec![("/system/name".to_string(), Visibility::OwnerOrGm)]);
+        let snapshot = snapshot_one_op(op, HashMap::new());
+        let mut cur = doc(
+            permissions_default_observer(),
+            serde_json::json!({ "name": "PC" }),
+        );
+        cur.owner = Some(owner);
+        let current = HashMap::from([(doc_id, current_doc(cur, 0))]);
+        let ctx = PermissionContext {
+            user_id: owner,
+            world_role: WorldRole::Player,
+        };
+        let out = filter_command(
+            &cmd,
+            &snapshot,
+            &ctx,
+            &WorldCapDefaults::default(),
+            &current,
+            |_| None,
+        );
+        let Operation::Update { changes, .. } = &out.ops[0] else {
+            panic!("expected an Update op");
+        };
+        assert!(
+            !changes.iter().any(|c| c.path == "/system/name"),
+            "the owner's own OwnerOrGm field must not be retracted: {changes:?}"
+        );
+    }
+
+    #[test]
+    fn multi_op_leak_within_one_command_is_closed_by_the_post_loop_accumulator() {
+        // Within ONE command, an Update that sets a secret value followed by an Update that
+        // adds a gm_only override on the SAME pointer must have BOTH ops' snapshots reflect the
+        // FINAL (post-loop) override tree: BOTH ops' `overrides_at_commit` carry the gm_only
+        // override here, even though only the SECOND op is the one that added it. A snapshot
+        // built from each op's own per-iteration local state instead of the whole command's
+        // final post-image would leave the FIRST op's `overrides_at_commit` empty, and this
+        // test would then fail (the secret would leak to a non-GM/non-owner recipient on the
+        // first op).
+        let world = Uuid::from_u128(9);
+        let author = Uuid::from_u128(1);
+        let doc_id = Uuid::from_u128(2);
+        let recipient = Uuid::from_u128(3);
+        let cmd = Command {
+            seq: 1,
+            world_id: world,
+            author,
+            ts: 0,
+            ops: vec![
+                Operation::Update {
+                    doc_id,
+                    changes: vec![FieldChange {
+                        remove: false,
+                        path: "/system/secret".into(),
+                        old: serde_json::Value::Null,
+                        new: serde_json::json!("X"),
+                    }],
+                },
+                Operation::Update {
+                    doc_id,
+                    changes: vec![FieldChange {
+                        remove: false,
+                        path: "/permissions/property_overrides/~1system~1secret".into(),
+                        old: serde_json::Value::Null,
+                        new: serde_json::json!("gm_only"),
+                    }],
+                },
+            ],
+        };
+        let final_overrides = vec![("/system/secret", Visibility::GmOnly)];
+        let op0 = op_snapshot_update(
+            None,
+            final_overrides.clone(),
+            permissions_default_observer(),
+        );
+        let op1 = op_snapshot_update(None, final_overrides, permissions_default_observer());
+        let snapshot = CommandSnapshot {
+            per_op: vec![Some(op0), Some(op1)],
+            world_gm_at_commit: HashMap::new(),
+        };
+        let cur = doc(
+            permissions_default_observer(),
+            serde_json::json!({ "secret": "X" }),
+        );
+        let current = HashMap::from([(doc_id, current_doc(cur, 0))]);
+        let ctx = PermissionContext {
+            user_id: recipient,
+            world_role: WorldRole::Player,
+        };
+        let out = filter_command(
+            &cmd,
+            &snapshot,
+            &ctx,
+            &WorldCapDefaults::default(),
+            &current,
+            |_| None,
+        );
+        let Operation::Update { changes, .. } = &out.ops[0] else {
+            panic!("expected an Update op for the FIRST op");
+        };
+        assert!(
+            changes.is_empty(),
+            "the first op's own snapshot must already reflect the LATER op's override: {changes:?}"
+        );
+    }
+
+    #[test]
+    fn behavioural_mutation_current_output_unaffected_by_history_commit_output_unaffected_by_live()
+    {
+        // Mutate each live input independently — the target's overrides, its default, the
+        // linked actor's owner, an embedded child's index, the recipient's world role — and
+        // assert `filter_command`'s CURRENT-time output is unaffected by history and its
+        // COMMIT-time output is unaffected by anything live.
+        let world = Uuid::from_u128(9);
+        let author = Uuid::from_u128(1);
+        let doc_id = Uuid::from_u128(2);
+        let recipient = Uuid::from_u128(3);
+        let cmd = field_change_update_cmd(
+            world,
+            author,
+            doc_id,
+            "/system/x",
+            serde_json::json!(1),
+            serde_json::json!(2),
+        );
+        // Baseline: nothing hidden at commit, nothing hidden currently.
+        let op = op_snapshot_update(None, vec![], permissions_default_observer());
+        let snapshot = snapshot_one_op(op, HashMap::from([(recipient, false)]));
+        let cur = doc(
+            permissions_default_observer(),
+            serde_json::json!({ "x": 2 }),
+        );
+        let current = HashMap::from([(doc_id, current_doc(cur, 0))]);
+        let ctx = PermissionContext {
+            user_id: recipient,
+            world_role: WorldRole::Player,
+        };
+        let baseline = filter_command(
+            &cmd,
+            &snapshot,
+            &ctx,
+            &WorldCapDefaults::default(),
+            &current,
+            |_| None,
+        );
+        let Operation::Update { changes, .. } = &baseline.ops[0] else {
+            panic!("expected Update")
+        };
+        assert_eq!(changes.len(), 1, "baseline: field visible to everyone");
+
+        // Mutate ONLY the live default (current-time) — commit-time snapshot untouched.
+        let denied_current = PermissionSet {
+            default: DocRole::None,
+            ..Default::default()
+        };
+        let mut cur2 = doc(denied_current, serde_json::json!({ "x": 2 }));
+        cur2.owner = None;
+        let current2 = HashMap::from([(doc_id, current_doc(cur2, 0))]);
+        let out_live_mutated = filter_command(
+            &cmd,
+            &snapshot,
+            &ctx,
+            &WorldCapDefaults::default(),
+            &current2,
+            |_| None,
+        );
+        assert!(
+            out_live_mutated.ops.is_empty(),
+            "mutating ONLY the live default must change the CURRENT-time gate outcome"
+        );
+
+        // Mutate ONLY the commit-time permissions (recipient denied at commit) — live unchanged.
+        let mut op_denied_commit = op_snapshot_update(
+            None,
+            vec![],
+            PermissionSet {
+                default: DocRole::None,
+                ..Default::default()
+            },
+        );
+        op_denied_commit.doc_type = "actor".into();
+        let snapshot_denied_commit =
+            snapshot_one_op(op_denied_commit, HashMap::from([(recipient, false)]));
+        let out_commit_mutated = filter_command(
+            &cmd,
+            &snapshot_denied_commit,
+            &ctx,
+            &WorldCapDefaults::default(),
+            &current,
+            |_| None,
+        );
+        assert!(
+            out_commit_mutated.ops.is_empty(),
+            "mutating ONLY the commit-time permissions must change the COMMIT-time gate outcome"
+        );
+    }
+
+    #[test]
+    fn embedded_child_index_in_the_commit_time_snapshot_is_independent_of_the_current_embedded_array(
+    ) {
+        // The commit-time override set is a flat, ALREADY-ADDRESSED pointer list
+        // (`OpSnapshot::overrides_at_commit`), never re-derived from the CURRENT document's
+        // embedded array. Mutating ONLY the current embedded structure (here: inserting
+        // siblings so the commit-time secret child now sits at a different position) must not
+        // change what the commit-time half redacts at a pointer the snapshot already names.
+        let world = Uuid::from_u128(9);
+        let author = Uuid::from_u128(1);
+        let doc_id = Uuid::from_u128(2);
+        let recipient = Uuid::from_u128(3);
+        let cmd = Command {
+            seq: 1,
+            world_id: world,
+            author,
+            ts: 0,
+            ops: vec![Operation::Update {
+                doc_id,
+                changes: vec![FieldChange {
+                    remove: false,
+                    path: "/embedded/actor/1/system/name".into(),
+                    old: serde_json::Value::Null,
+                    new: serde_json::json!("Hidden At Commit"),
+                }],
+            }],
+        };
+        let op = op_snapshot_update(
+            None,
+            vec![("/embedded/actor/1/system/name", Visibility::GmOnly)],
+            permissions_default_observer(),
+        );
+        let snapshot = snapshot_one_op(op, HashMap::from([(recipient, false)]));
+        // CURRENT structure: THREE children under "actor" — none carries the override (the
+        // override lives only in the snapshot), so hidden_current alone would NOT redact this
+        // pointer; only hidden_commit does.
+        let mut cur = doc(permissions_default_observer(), serde_json::json!({}));
+        cur.embedded.insert(
+            "actor".into(),
+            vec![
+                doc(permissions_default_observer(), serde_json::json!({})),
+                doc(permissions_default_observer(), serde_json::json!({})),
+                doc(permissions_default_observer(), serde_json::json!({})),
+            ],
+        );
+        let current = HashMap::from([(doc_id, current_doc(cur, 0))]);
+        let ctx = PermissionContext {
+            user_id: recipient,
+            world_role: WorldRole::Player,
+        };
+        let out = filter_command(
+            &cmd,
+            &snapshot,
+            &ctx,
+            &WorldCapDefaults::default(),
+            &current,
+            |_| None,
+        );
+        let Operation::Update { changes, .. } = &out.ops[0] else {
+            panic!("expected Update")
+        };
+        assert!(
+            changes.is_empty(),
+            "the commit-time snapshot's own recorded pointer must still redact, regardless of \
+             what the CURRENT embedded array now holds at that index: {changes:?}"
+        );
+    }
+
+    #[test]
+    fn linked_token_actor_owner_mutation_only_affects_the_current_time_half() {
+        // `effective_owner_via` joins the CURRENT actor table via the caller-supplied closure;
+        // mutating what it returns changes ONLY the current-time half's ownership resolution,
+        // never the commit-time half's (`OpSnapshot::owner_at_commit`, frozen at commit).
+        let world = Uuid::from_u128(9);
+        let author = Uuid::from_u128(1);
+        let token_id = Uuid::from_u128(2);
+        let actor_id = Uuid::from_u128(50);
+        let recipient = Uuid::from_u128(3);
+        let mut perms = permissions_default_observer();
+        perms
+            .property_overrides
+            .insert("/system/name".into(), Visibility::OwnerOrGm);
+        let cmd = Command {
+            seq: 1,
+            world_id: world,
+            author,
+            ts: 0,
+            ops: vec![Operation::Update {
+                doc_id: token_id,
+                changes: vec![FieldChange {
+                    remove: false,
+                    path: "/system/name".into(),
+                    old: serde_json::Value::Null,
+                    new: serde_json::json!("Owner-visible name"),
+                }],
+            }],
+        };
+        // Commit-time: the recipient WAS the effective owner at commit (owner_at_commit is
+        // Some(recipient)) — so the commit-time half admits this pointer regardless of what
+        // the CURRENT actor_lookup later resolves. Isolates the mutation to the current-time
+        // half only: union semantics mean a commit-time admission is never overridden into a
+        // reveal, but a current-time denial always adds further hiding on top of it.
+        let mut op = op_snapshot_update(
+            Some(recipient),
+            vec![("/system/name", Visibility::OwnerOrGm)],
+            perms.clone(),
+        );
+        op.doc_type = "token".into();
+        let snapshot = snapshot_one_op(op, HashMap::new());
+        let mut token_doc = doc(perms, serde_json::json!({ "name": "Token PC" }));
+        token_doc.doc_type = "token".into();
+        token_doc.engine = Some(serde_json::json!({ "actor_id": actor_id.to_string() }));
+        let current = HashMap::from([(token_id, current_doc(token_doc, 0))]);
+        let ctx = PermissionContext {
+            user_id: recipient,
+            world_role: WorldRole::Player,
+        };
+
+        // actor_lookup resolves the recipient as the CURRENT linked actor's owner.
+        let mut owning_actor = doc(PermissionSet::default(), serde_json::json!({}));
+        owning_actor.id = actor_id;
+        owning_actor.doc_type = "actor".into();
+        owning_actor.owner = Some(recipient);
+        let out_owner_now = filter_command(
+            &cmd,
+            &snapshot,
+            &ctx,
+            &WorldCapDefaults::default(),
+            &current,
+            |id| {
+                if *id == actor_id {
+                    Some(&owning_actor)
+                } else {
+                    None
+                }
+            },
+        );
+        let Operation::Update { changes, .. } = &out_owner_now.ops[0] else {
+            panic!("expected Update")
+        };
+        assert_eq!(
+            changes.len(),
+            1,
+            "current-time ownership (via the actor_lookup closure) must admit OwnerOrGm now: {changes:?}"
+        );
+
+        // Same command, same snapshot — actor_lookup now resolves NO owner (mutate ONLY the
+        // live input). The commit-time half still admits the pointer (unchanged), but the
+        // current-time half now denies it, and denial from EITHER half hides a pointer.
+        let out_no_owner = filter_command(
+            &cmd,
+            &snapshot,
+            &ctx,
+            &WorldCapDefaults::default(),
+            &current,
+            |_| None,
+        );
+        let Operation::Update { changes, .. } = &out_no_owner.ops[0] else {
+            panic!("expected Update")
+        };
+        assert!(
+            changes.is_empty(),
+            "mutating ONLY the actor_lookup closure must change the CURRENT-time outcome: {changes:?}"
+        );
+    }
+
+    #[test]
+    fn traversal_split_produces_byte_identical_output_for_the_same_document() {
+        // The shared `(doc, prefix) -> Vec<(String, Visibility)>` traversal used by both the
+        // live path (`collect_hidden`, via `hidden_from_overrides`) and snapshot construction
+        // must be exactly the traversal `collect_overrides` performs — pinned here so a future
+        // change to one cannot silently diverge from the other.
+        let child = doc(
+            perms_with(&[("/system/name", Visibility::OwnerOrGm)]),
+            serde_json::json!({ "name": "Hidden" }),
+        );
+        let mut parent = doc(
+            perms_with(&[("/system/secret", Visibility::GmOnly)]),
+            serde_json::json!({ "secret": "S" }),
+        );
+        parent.embedded.insert("actor".into(), vec![child]);
+
+        let mut overrides = Vec::new();
+        collect_overrides(&parent, "", &mut overrides).unwrap();
+        let pointers: std::collections::BTreeSet<&str> =
+            overrides.iter().map(|(p, _)| p.as_str()).collect();
+        assert!(pointers.contains("/system/secret"));
+        assert!(pointers.contains("/base"));
+        assert!(pointers.contains("/embedded/actor/0/system/name"));
+        assert!(pointers.contains("/embedded/actor/0/base"));
+
+        // hidden_from_overrides + collect_overrides together must reproduce collect_hidden's
+        // own output exactly, for the same (doc, access).
+        let mut via_collect_hidden = Vec::new();
+        collect_hidden(&parent, &non_gm(), "", &mut via_collect_hidden).unwrap();
+        let via_split = hidden_from_overrides(&overrides, &non_gm());
+        let mut a: Vec<&str> = via_collect_hidden.iter().map(String::as_str).collect();
+        let mut b: Vec<&str> = via_split.iter().map(String::as_str).collect();
+        a.sort();
+        b.sort();
+        assert_eq!(
+            a, b,
+            "collect_hidden must equal collect_overrides + hidden_from_overrides"
+        );
     }
 }

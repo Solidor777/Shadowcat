@@ -176,15 +176,23 @@ where
             // Loads complete BEFORE the guard: no lock across await. The guard is
             // held only around the synchronous core — the same short-read-guard
             // discipline as clip_move_stream.
-            let current = crate::data::permission::load_update_docs(repo, command).await;
+            let current = crate::data::permission::load_current_docs(repo, command).await;
             let filtered = {
                 let ecs = room.scene().read().await;
+                let actor_lookup = |id: &Uuid| ecs.actor(id);
+                let snapshot = crate::data::permission::mirror_current_snapshot(
+                    command,
+                    ctx,
+                    &current,
+                    &actor_lookup,
+                );
                 crate::data::permission::filter_command(
                     command,
+                    &snapshot,
                     ctx,
                     world_defaults,
                     &current,
-                    |id| ecs.actor(id),
+                    actor_lookup,
                 )
             };
             ServerMsg::Event {
