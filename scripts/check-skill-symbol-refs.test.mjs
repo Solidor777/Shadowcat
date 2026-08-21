@@ -446,18 +446,25 @@ describe("extractJsonDependencyNames", () => {
 // and an acknowledgement of it reports as also-declared on the strength of the spelling nobody
 // looked at.
 describe("a manifest dependency is a reference in BOTH its spellings", () => {
-  it("keeps no qualified dependency key in the declared half", () => {
-    const manifest = readFileSync(join(REPO_ROOT, "package.json"), "utf8");
-    const deps = extractJsonDependencyNames(manifest);
-    const qualified = [...extractJsonKeys(manifest)].filter(
-      (k) => k.includes(".") && deps.has(k.slice(k.lastIndexOf(".") + 1)),
-    );
-    expect(qualified.length, "the manifest declares no dependency to check").toBeGreaterThan(0);
-    const { symbols, declared } = buildSymbolIndex(REPO_ROOT);
-    expect(qualified.filter((k) => declared.has(k))).toEqual([]);
-    // Still INDEXED, so a citation of the qualified spelling resolves: only its half changed.
-    expect(qualified.filter((k) => !symbols.has(k))).toEqual([]);
-  });
+  it(
+    "keeps no qualified dependency key in the declared half",
+    () => {
+      const manifest = readFileSync(join(REPO_ROOT, "package.json"), "utf8");
+      const deps = extractJsonDependencyNames(manifest);
+      const qualified = [...extractJsonKeys(manifest)].filter(
+        (k) => k.includes(".") && deps.has(k.slice(k.lastIndexOf(".") + 1)),
+      );
+      expect(qualified.length, "the manifest declares no dependency to check").toBeGreaterThan(0);
+      const { symbols, declared } = buildSymbolIndex(REPO_ROOT);
+      expect(qualified.filter((k) => declared.has(k))).toEqual([]);
+      // Still INDEXED, so a citation of the qualified spelling resolves: only its half changed.
+      expect(qualified.filter((k) => !symbols.has(k))).toEqual([]);
+    },
+    // buildSymbolIndex parses every tracked source file in the repo from scratch (no cache) —
+    // comfortably under vitest's 5000ms default locally, but margin-negative on a loaded/cold-FS-
+    // cache CI runner. 20s leaves headroom without masking a genuine hang.
+    20_000,
+  );
 });
 
 describe("moduleNameOf", () => {
@@ -800,16 +807,23 @@ describe("extractCitationCandidates", () => {
 // it passes while that precondition holds and fails the moment it breaks, so the arrangement
 // cannot change silently.
 describe("the Array.sort acknowledgement's precondition", () => {
-  it("holds only while the tree declares no `sort`", () => {
-    const { declared } = buildSymbolIndex(REPO_ROOT);
-    expect(declared.has("Array")).toBe(true);
-    expect(
-      declared.has("sort"),
-      "the tree now declares `sort`, so the `Array.sort` citation resolves against it instead of " +
-        "reaching its acknowledgement — the entry will die zero-hit and deleting it would leave " +
-        "the false verify in place. Qualify the citation by its real owner.",
-    ).toBe(false);
-  });
+  it(
+    "holds only while the tree declares no `sort`",
+    () => {
+      const { declared } = buildSymbolIndex(REPO_ROOT);
+      expect(declared.has("Array")).toBe(true);
+      expect(
+        declared.has("sort"),
+        "the tree now declares `sort`, so the `Array.sort` citation resolves against it instead " +
+          "of reaching its acknowledgement — the entry will die zero-hit and deleting it would " +
+          "leave the false verify in place. Qualify the citation by its real owner.",
+      ).toBe(false);
+    },
+    // Same cost profile as the qualified-dependency test above: buildSymbolIndex parses every
+    // tracked source file from scratch, margin-negative against vitest's 5000ms default under CI
+    // load (observed at 2.6-2.9s locally, leaving little headroom).
+    20_000,
+  );
 });
 
 describe("resolvesAgainstIndex", () => {
@@ -969,11 +983,17 @@ describe("span conservation", () => {
     expect(spanAccountingDelta(result.accounting)).toBe(0);
   });
 
-  it("balances every tracked skill file in this repo, and every file individually", () => {
-    const result = checkSkillSymbolRefs(REPO_ROOT);
-    expect(result.conservationDelta).toBe(0);
-    expect(result.conservationFailures).toEqual([]);
-  });
+  it(
+    "balances every tracked skill file in this repo, and every file individually",
+    () => {
+      const result = checkSkillSymbolRefs(REPO_ROOT);
+      expect(result.conservationDelta).toBe(0);
+      expect(result.conservationFailures).toEqual([]);
+    },
+    // Same cost profile as the other full-repo-scan tests in this file: margin-negative against
+    // vitest's 5000ms default under CI load.
+    20_000,
+  );
 });
 
 describe("listSkillDirs", () => {
