@@ -35,26 +35,28 @@ capability already exists — but are deferred as out-of-scope-for-now work.
 Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one design pass each
 (user: build ALL of bucket C):
 
-1. **Recalc-from-chat** — persist `spec`/`raws` on `RollEmbed` (persistence + secrecy fork).
-2. **Link-preview extensions** — server-fetch-cache-as-asset **image** pipeline + async
+1. **Link-preview extensions** — server-fetch-cache-as-asset **image** pipeline + async
    post-publish enrichment (`WriteOrigin` path) + **shared preview cache** + **oEmbed** provider
    embeds (user opted both edge items in; oEmbed carries SSRF/privacy surface → threat-model it).
-3. **Per-world export/import** — world-scoped row subset preserving cross-FK referential
+2. **Per-world export/import** — world-scoped row subset preserving cross-FK referential
    integrity + shared asset references.
-4. **Dice-notation grammar growth** — math fns (floor/ceil/round/abs/min/max) + crit-event /
+3. **Dice-notation grammar growth** — math fns (floor/ceil/round/abs/min/max) + crit-event /
    tier-ladder notation syntax.
-5. **Per-channel / per-message dice-settings overrides** — needs a channel model.
-6. **In-body doc-link chat segment** (`Segment::DocLink`) — actor-name → sheet navigation shipped
+4. **Per-channel / per-message dice-settings overrides** — needs a channel model.
+5. **In-body doc-link chat segment** (`Segment::DocLink`) — actor-name → sheet navigation shipped
    in M12c, but a free-form doc-link segment has no server producer or client authoring path yet;
    needs a server producer + authoring affordance.
-7. **Speak-as-token-instance** — `ActorOwnerRef::TokenInstance` is REJECTED at ingest (fail-closed,
+6. **Speak-as-token-instance** — `ActorOwnerRef::TokenInstance` is REJECTED at ingest (fail-closed,
    no first-party producer) — build the composer/token-context UX and lift the rejection together.
-8. **Real-time per-recipient move-streaming** — `MoveStream` precomputes each move's
+7. **Real-time per-recipient move-streaming** — `MoveStream` precomputes each move's
    per-recipient vision clip at execute time, so two tokens moving simultaneously do not reveal
    each other mid-walk when a watcher's vision opens after the clip; it reconciles only at the
    stop + next `vision` rebroadcast. No correctness/secrecy impact today — only a missed
    transient reveal. Needs a per-move server loop recomputing each recipient's visibility of
    every concurrently moving token as positions advance, replacing execute-time precompute.
+   **BLOCKED ON USER INPUT** — see `docs/superpowers/specs/2026-08-21-realtime-move-streaming-
+   design.md`; the buddy-checked design shows the natural fix needs new infrastructure comparable
+   in cost to the alternative it was meant to avoid.
 
 ## Registered and exercised — plugin distribution properties
 Registration is per-machine state no committed file can carry. The supported non-interactive path
