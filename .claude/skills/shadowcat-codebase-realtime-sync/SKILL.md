@@ -230,8 +230,8 @@ optimistically and roll back on divergence.
   self-authored confirm for the rest of the connection's lifetime**: the removal always finds
   something to take, so it silently confirms whatever pending entry happens to be oldest,
   cascading a one-slot-per-slot drift with no error, no resync, and no visible symptom until a
-  stale prediction (e.g. an old position) outlives the confirmed value it should have been
-  replaced by. `OptimisticClient.reject` removes by `intentId` (not position) and is safe on its
+  stale prediction (e.g. an old position) outlives the confirmed value that should have
+  superseded it. `OptimisticClient.reject` removes by `intentId` (not position) and is safe on its
   own, but cannot repair an ALREADY-misaligned queue: a failed lookup there is documented as "a
   correlation/reconnect mismatch... nothing to roll back" — this is also the shape a lost/ignored
   response takes. Any future confirm-matching change to `OptimisticClient` must preserve this
