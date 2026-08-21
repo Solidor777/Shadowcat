@@ -358,7 +358,7 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   to `None`; a wholly-invisible move (empty clip) is **not sent at all** (suppressed, not an
   empty-`samples` frame — asserted by a dedicated test). The see-as branch can only NARROW what a
   GM receives relative to the plain-GM fallthrough, never widen a non-GM recipient's own view (see-
-  as is GM-only, gated by `SceneSubscribe`'s `as_user` handler). `send_filtered` intentionally
+  as is GM-only, gated by `SceneSubscribe`'s `as_user` handler). `send_plain` intentionally
   panics if a `MoveStream` reaches it — the clip MUST happen in the dedicated `egress_loop` branch,
   never the generic per-recipient filter path. `MoveError` stays mover-only via `handle_socket::etx`, generic (no
   path/vision geometry disclosed).

@@ -19,6 +19,7 @@ use crate::data::command::{Command, FieldChange, Operation, WriteOrigin};
 use crate::data::document::Document;
 use crate::data::membership::PermissionContext;
 use crate::data::repository::Repository;
+use crate::data::snapshot::StoredCommand;
 use crate::data::DataError;
 use crate::scene::SceneEcs;
 use crate::ws::protocol::{ResyncSource, ServerMsg};
@@ -66,8 +67,8 @@ const BROADCAST_CAPACITY: usize = 256;
 /// Recent `Event` frames for hot resync, bounded by count and age. Age is
 /// measured relative to the newest buffered event's `ts`.
 pub struct RingBuffer {
-    /// Buffered frames, ascending seq; every entry is a `ServerMsg::Event`.
-    events: VecDeque<Arc<ServerMsg>>,
+    /// Buffered frames, ascending seq; every entry is a `RoomEvent::Event`.
+    events: VecDeque<RoomEvent>,
 }
 
 impl RingBuffer {
@@ -75,9 +76,7 @@ impl RingBuffer {
     ///
     /// # Examples
     ///
-    /// ```
-    /// use shadowcat::ws::room::RingBuffer;
-    ///
+    /// ```text
     /// // An empty ring cannot serve any range — the caller falls to the log tier.
     /// assert!(RingBuffer::new().range_from(1).is_none());
     /// ```
@@ -88,7 +87,7 @@ impl RingBuffer {
     }
 
     /// Append an `Event` frame and prune by count then age.
-    pub fn push(&mut self, msg: Arc<ServerMsg>) {
+    pub(crate) fn push(&mut self, msg: RoomEvent) {
         debug_assert!(msg.event_seq().is_some(), "only Event frames are buffered");
         self.events.push_back(msg);
         while self.events.len() > MAX_EVENTS {
@@ -109,7 +108,7 @@ impl RingBuffer {
     /// still resident (oldest buffered seq <= from_seq). Otherwise `None` so the
     /// caller falls back to the durable `events_since` cold tier. An empty buffer
     /// returns `None` (cannot prove residency).
-    pub fn range_from(&self, from_seq: i64) -> Option<Vec<Arc<ServerMsg>>> {
+    pub(crate) fn range_from(&self, from_seq: i64) -> Option<Vec<RoomEvent>> {
         match self.events.front().and_then(|m| m.event_seq()) {
             Some(oldest) if oldest <= from_seq => Some(
                 self.events
@@ -126,6 +125,39 @@ impl RingBuffer {
 impl Default for RingBuffer {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Internal broadcast/ring element `Room` fans out on `Room.tx` and buffers in `RingBuffer`.
+/// Never serialized to the wire — the client-facing `ServerMsg` (including its own `Event`
+/// variant) is untouched by this type's existence. Distinguishes a `StoredCommand`-carrying
+/// broadcast (the only case needing the commit-time redaction snapshot) from every OTHER
+/// `ServerMsg` variant `Room` broadcasts (pings, presence, `MoveStream`, ...), which pass
+/// through unchanged.
+#[derive(Debug, Clone)]
+pub(crate) enum RoomEvent {
+    /// A committed command awaiting per-recipient redaction and reduction to a plain wire
+    /// `ServerMsg::Event` at send time.
+    Event(Arc<StoredCommand>),
+    /// Any other broadcast `ServerMsg`, forwarded unchanged.
+    Other(Arc<ServerMsg>),
+}
+
+impl RoomEvent {
+    /// seq of an `Event` variant, else `None`. Mirrors `ServerMsg::event_seq`.
+    pub(crate) fn event_seq(&self) -> Option<i64> {
+        match self {
+            RoomEvent::Event(stored) => Some(stored.command.seq),
+            RoomEvent::Other(msg) => msg.event_seq(),
+        }
+    }
+
+    /// server-stamped ts of an `Event` variant, else `None`. Mirrors `ServerMsg::event_ts`.
+    pub(crate) fn event_ts(&self) -> Option<i64> {
+        match self {
+            RoomEvent::Event(stored) => Some(stored.command.ts),
+            RoomEvent::Other(msg) => msg.event_ts(),
+        }
     }
 }
 
@@ -174,7 +206,7 @@ pub struct Room {
     /// The world this room fans out for.
     pub world_id: Uuid,
     /// The lossy broadcast sender every connection subscribes to.
-    tx: broadcast::Sender<Arc<ServerMsg>>,
+    tx: broadcast::Sender<RoomEvent>,
     /// Hot-resync tier (recent events, count/age bounded).
     ring: Mutex<RingBuffer>,
     /// Serializes publishes so seq order equals broadcast order.
@@ -249,7 +281,7 @@ impl Room {
 
     /// Subscribe to live frames; also returns the room's current seq so a joiner
     /// knows whether it needs to resync.
-    pub fn subscribe(&self) -> (broadcast::Receiver<Arc<ServerMsg>>, i64) {
+    pub(crate) fn subscribe(&self) -> (broadcast::Receiver<RoomEvent>, i64) {
         (
             self.tx.subscribe(),
             self.current_seq.load(Ordering::Acquire),
@@ -276,7 +308,7 @@ impl Room {
     /// re-syncs any uuid still stale the next time a listing (e.g. `Assets`'s
     /// own `reload`) fetches the true value.
     pub fn broadcast_aux(&self, msg: ServerMsg) {
-        let _ = self.tx.send(std::sync::Arc::new(msg));
+        let _ = self.tx.send(RoomEvent::Other(std::sync::Arc::new(msg)));
     }
 
     /// The one authoritative write path: authorize/validate/sequence `ops`
@@ -456,34 +488,29 @@ impl Room {
         ts: i64,
         origin: WriteOrigin,
     ) -> Result<Command, DataError> {
-        // Extracts the wire-shaped `Command` half of `apply_intent`'s `StoredCommand`; the
-        // commit-time snapshot half is not yet threaded through the ring/broadcast path (both
-        // still carry `Arc<ServerMsg>`, not a snapshot-bearing shape).
-        let cmd = repo
+        let stored = repo
             .apply_intent(ctx, self.world_id, ops, ts, origin)
-            .await?
-            .command;
+            .await?;
         // Hydrate the derived ECS from the committed command while still holding
-        // publish_guard (enforced by the caller), so the ECS is consistent with cmd.seq
+        // publish_guard (enforced by the caller), so the ECS is consistent with the seq
         // before the Event (and any derived recompute keyed to that seq) is observable.
         {
             let mut scene = self.scene.write().await;
-            for op in &cmd.ops {
+            for op in &stored.command.ops {
                 scene.apply_op(op);
             }
             // Stamp the seq the ECS now reflects under the same lock, so a
             // derived reader sees a consistent (entities, seq) pair.
-            scene.set_committed_seq(cmd.seq);
+            scene.set_committed_seq(stored.command.seq);
         }
-        let msg = Arc::new(ServerMsg::Event {
-            command: cmd.clone(),
-            intent_id: None,
-        });
-        self.ring.lock().await.push(msg.clone());
-        self.current_seq.store(cmd.seq, Ordering::Release);
-        let _ = self.tx.send(msg); // Err only when there are no receivers
+        let stored = Arc::new(stored);
+        let ev = RoomEvent::Event(stored.clone());
+        self.ring.lock().await.push(ev.clone());
+        self.current_seq
+            .store(stored.command.seq, Ordering::Release);
+        let _ = self.tx.send(ev); // Err only when there are no receivers
         self.stats.events_published.fetch_add(1, Ordering::Relaxed);
-        Ok(cmd)
+        Ok(stored.command.clone())
     }
 
     /// Server-authoritative token move: resolves gate inputs off the ECS read lock, calls the
@@ -823,28 +850,20 @@ impl Room {
 
     /// Resolve a resync range: hot ring tier when fully resident, else the cold
     /// `events_since` tier. Increments the matching telemetry counter.
-    pub async fn resync_range(
+    pub(crate) async fn resync_range(
         &self,
         repo: &dyn Repository,
         from_seq: i64,
-    ) -> Result<(Vec<Arc<ServerMsg>>, ResyncSource), DataError> {
+    ) -> Result<(Vec<RoomEvent>, ResyncSource), DataError> {
         if let Some(hot) = self.ring.lock().await.range_from(from_seq) {
             self.stats.resyncs_hot.fetch_add(1, Ordering::Relaxed);
             return Ok((hot, ResyncSource::Buffer));
         }
         let cmds = repo.events_since(self.world_id, from_seq - 1).await?;
         self.stats.resyncs_cold.fetch_add(1, Ordering::Relaxed);
-        // Extracts the wire-shaped `Command` half of each `StoredCommand`; the commit-time
-        // snapshot half is not yet threaded through this replay path (`ServerMsg::Event` still
-        // carries a bare `Command`, not a snapshot-bearing shape).
         let frames = cmds
             .into_iter()
-            .map(|c| {
-                Arc::new(ServerMsg::Event {
-                    command: c.command,
-                    intent_id: None,
-                })
-            })
+            .map(|stored| RoomEvent::Event(Arc::new(stored)))
             .collect();
         Ok((frames, ResyncSource::Log))
     }
@@ -1098,8 +1117,8 @@ mod ring_tests {
     use crate::data::command::Command;
     use uuid::Uuid;
 
-    fn event(seq: i64, ts: i64) -> Arc<ServerMsg> {
-        Arc::new(ServerMsg::Event {
+    fn event(seq: i64, ts: i64) -> RoomEvent {
+        RoomEvent::Event(Arc::new(StoredCommand {
             command: Command {
                 seq,
                 world_id: Uuid::from_u128(1),
@@ -1107,8 +1126,11 @@ mod ring_tests {
                 ts,
                 ops: vec![],
             },
-            intent_id: None,
-        })
+            snapshot: crate::data::snapshot::CommandSnapshot {
+                per_op: vec![],
+                world_gm_at_commit: std::collections::HashMap::new(),
+            },
+        }))
     }
 
     #[test]
@@ -1406,9 +1428,12 @@ mod room_tests {
         reg.evict_user(target);
 
         for rx in [&mut rx1, &mut rx2] {
-            match rx.recv().await.unwrap().as_ref() {
-                ServerMsg::Evicted { user } => assert_eq!(*user, Some(target)),
-                other => panic!("expected Evicted, got {other:?}"),
+            match rx.recv().await.unwrap() {
+                RoomEvent::Other(msg) => match msg.as_ref() {
+                    ServerMsg::Evicted { user } => assert_eq!(*user, Some(target)),
+                    other => panic!("expected Evicted, got {other:?}"),
+                },
+                RoomEvent::Event(_) => panic!("expected a non-Event broadcast (Evicted)"),
             }
         }
     }
@@ -2956,10 +2981,7 @@ mod room_tests {
         assert_eq!(cmd.seq, 1);
         assert_eq!(room.current_seq(), cmd.seq);
         assert_eq!(room.stats.events_published.load(Ordering::Relaxed), 1);
-        assert!(matches!(
-            &*rx.recv().await.unwrap(),
-            ServerMsg::Event { .. }
-        ));
+        assert!(matches!(rx.recv().await.unwrap(), RoomEvent::Event(_)));
         // Verify the create op landed: cmd carries the committed op and the ECS reflects it.
         assert!(
             !cmd.ops.is_empty(),

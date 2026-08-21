@@ -67,26 +67,30 @@ optimistically and roll back on divergence.
 - `ws::protocol` — client/server message frames; `ServerMsg`, `event_seq()`.
 - `ws::conn` — per-connection loop + egress; `ws::time` — server time source +
   client offset calibration (exists before its consumer).
-  `send_filtered` (takes `room: &Room` alongside `repo`/`ctx`) is where per-recipient
-  redaction actually happens: only the `Event` branch carries document data, so only it is
-  redacted — every other frame (including `MoveStream`, clipped separately by `clip_move_stream`;
-  see the invariant below) passes through unredacted via `send_filtered`. The `Event` branch's
-  shape: `load_current_docs` awaits the Create/Update/Delete pre-images ONCE, before any lock is
-  taken (no lock across await); then a short `room.scene()` read guard wraps
-  `permission::mirror_current_snapshot`'s construction of a commit-time-mirrors-current
-  `CommandSnapshot` (this call site carries no persisted commit-time snapshot) followed by the
-  synchronous `permission::filter_command(command, &snapshot, ctx, world_defaults, &current, |id|
-  ecs.actor(id))` call — the room's in-memory `SceneEcs` actor table is the egress-side owner
-  join, so this never touches the pool (the same short-read-guard discipline `clip_move_stream`
-  uses for vision). `send_filtered` is shared by BOTH live-broadcast callers and `replay()`
-  (`Room::resync_range`-driven, serving `Egress::Resync` and the lag-driven auto-resync branch):
-  for a live event the mirrored snapshot's "commit time" genuinely is now, but for a replayed
-  historical event it is not — `mirror_current_snapshot` still resolves against TODAY's policy, so
-  a resync-delivered historical `Update` is redacted against current, not historical, permission
-  state until the real persisted-snapshot plumbing lands. See
-  `shadowcat-codebase-documents-permissions` for `filter_command`'s own internals and the other two
-  owner-join sources (`list_documents`'s batched prefetch, `effective_owner_of` on single-doc
-  routes/search).
+  `send_room_event` (takes `room: &Room` alongside `repo`/`ctx`) is the single dispatch point
+  every broadcast frame reaches — live delivery (`egress_loop`'s seq-carrying arm) and `replay()`
+  (`Room::resync_range`-driven, serving `Egress::Resync` and the lag-driven auto-resync branch)
+  both route every `ws::room::RoomEvent` through it. A `RoomEvent::Event(Arc<StoredCommand>)` goes
+  to `send_filtered_event`; every other `RoomEvent::Other(Arc<ServerMsg>)` (including `MoveStream`,
+  clipped separately by `clip_move_stream`; see the invariant below) passes through unredacted via
+  `send_plain`. `send_filtered_event`'s shape: `load_current_docs` awaits the
+  Create/Update/Delete pre-images ONCE, before any lock is taken (no lock across await); then a
+  short `room.scene()` read guard wraps the synchronous `permission::filter_command(&stored.command,
+  &stored.snapshot, ctx, world_defaults, &current, |id| ecs.actor(id))` call — `stored.snapshot`
+  is the REAL commit-time redaction snapshot persisted by `apply_intent` and carried end-to-end
+  through `Room.tx`/`RingBuffer`/`resync_range` as part of the `StoredCommand` `RoomEvent::Event`
+  wraps, not a mirror of current state. The room's in-memory `SceneEcs` actor table is the
+  egress-side owner join, so this never touches the pool (the same short-read-guard discipline
+  `clip_move_stream` uses for vision). Because both live delivery and replay redact the SAME
+  persisted snapshot, a resync-delivered historical `Update` resolves against the permission set
+  in force at that event's actual commit, not today's — the confidentiality gap this subsystem
+  used to carry (a replayed event redacted against current, not historical, policy) is closed.
+  `data::permission::mirror_current_snapshot` still exists for the one caller where mirroring
+  current state IS commit-time-correct by construction: `http::routes::write_ops`'s own
+  read-back of the write it just applied (`shadowcat-codebase-documents-permissions` covers this
+  split in full). See `shadowcat-codebase-documents-permissions` for `filter_command`'s own
+  internals and the other two owner-join sources (`list_documents`'s batched prefetch,
+  `effective_owner_of` on single-doc routes/search).
 - `http::routes` (+ the `http` module root) — HTTP routes (login, assets, embed).
 - `auth::session` — `SqlxSqliteStore` (DB-backed sessions), `spawn_session_sweep`
   (also GCs `world_invites` rows via `DELETE FROM world_invites WHERE expires_at <= ?`, bound to

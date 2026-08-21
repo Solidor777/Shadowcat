@@ -93,28 +93,27 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
   (`effective_owner: Option<Uuid>`), never read internally from `doc.owner`, and no literal-owner
   wrapper exists, so a new egress call site must state where its owner comes from or it fails to
   compile. Three join sources, one per hot-path shape:
-  - **WS hot path** (`ws::conn::send_filtered`'s `Event` branch; `http::routes::write_ops`'s
+  - **WS hot path** (`ws::conn::send_filtered_event`; `http::routes::write_ops`'s
     HTTP-write receive; and the per-recipient derived-channel egress in `SceneEcs::ctx_access`,
     which resolves the SAME `effective_owner_via` + `resolve_access_world` pair against the same
     in-memory actor table) — `data::permission::filter_command` is a SYNC core taking a
     `CommandSnapshot` (the commit-time half) alongside `load_current_docs`'s per-doc_id
     `CurrentDoc` map (Create/Update/Delete pre-images, awaited ONCE per event before the sync core
     runs — no lock held across that await) and a `filter_command::actor_lookup` closure backed by
-    the room's in-memory `SceneEcs` actor table (`|id| ecs.actor(id)`). Neither
-    `ws::conn::send_filtered` nor `http::routes::write_ops` carries a persisted commit-time
-    snapshot yet — both build one via `data::permission::mirror_current_snapshot`, which mirrors
-    the recipient's CURRENT state. For `http::routes::write_ops` (an author's read-back of their
-    own just-applied write) commit time and now ARE the same instant by construction, so mirroring
-    is exactly correct. For `ws::conn::send_filtered`, this holds only for its LIVE-broadcast
-    callers — its `replay()` caller (driven by `Room::resync_range`, serving `Egress::Resync` and
-    the lag-driven auto-resync path) redacts a HISTORICAL event through the same mirrored,
-    CURRENT-state snapshot, so replay still resolves against today's policy rather than the
-    policy in force at that event's actual commit — a resync-delivered historical `Update` still
-    discloses or withholds against TODAY's permission set, not the set in force when it was
-    committed, until the real persisted-snapshot plumbing lands for this path. No pool read
-    on this path at all — the join is entirely in-memory, preserving the no-pool-query-on-the-hot-
-    path property. The scene read guard around `filter_command` itself is short (sync core, no
-    await inside it), the same discipline `clip_move_stream` uses.
+    the room's in-memory `SceneEcs` actor table (`|id| ecs.actor(id)`). `send_filtered_event`
+    reads `stored.snapshot` straight off the `data::snapshot::StoredCommand` carried by
+    `ws::room::RoomEvent::Event` — the REAL commit-time redaction snapshot persisted by
+    `apply_intent`, not a mirror of current state — so a HISTORICAL event redacted via
+    `ws::conn::replay` (driven by `Room::resync_range`, serving `Egress::Resync` and the
+    lag-driven auto-resync path) resolves against the permission set in force at that event's
+    actual commit, identically to live delivery: both route through `send_room_event` →
+    `send_filtered_event`. `http::routes::write_ops` is the one remaining
+    `data::permission::mirror_current_snapshot` caller — an author's read-back of their own
+    just-applied write, where commit time and now ARE the same instant by construction, so
+    mirroring is exactly correct there and there is no persisted-snapshot gap left to close. No
+    pool read on the WS hot path at all — the join is entirely in-memory, preserving the
+    no-pool-query-on-the-hot-path property. The scene read guard around `filter_command` itself
+    is short (sync core, no await inside it), the same discipline `clip_move_stream` uses.
   - **`http::routes::list_documents`** — one batched `query_documents(world, "actor")` fetch
     up front when listing tokens, folded into a `HashMap<Uuid, Document>` and joined in-memory via
     `effective_owner_via` per doc; every other `doc_type` never triggers the actor query

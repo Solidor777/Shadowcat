@@ -157,61 +157,75 @@ fn reject_reason(e: &crate::data::DataError) -> RejectReason {
     }
 }
 
-/// Filter an outgoing frame for `ctx` and send it. Only `Event` frames carry
-/// document data, so only they are redacted (per-recipient, seq-preserving);
-/// every other frame passes through unchanged.
-async fn send_filtered<S>(
+/// Redact a `StoredCommand`-carrying `Event` frame for `ctx` (per-recipient, seq-preserving)
+/// and send it, reduced to the plain wire `ServerMsg::Event` at this — the ONLY — point where it
+/// is serialized. Used for live broadcast delivery AND replay (the same path).
+async fn send_filtered_event<S>(
     sink: &mut S,
     repo: &dyn Repository,
     room: &Room,
     ctx: &PermissionContext,
     world_defaults: &WorldCapDefaults,
-    msg: &ServerMsg,
+    stored: &crate::data::snapshot::StoredCommand,
 ) -> Result<(), ()>
 where
     S: Sink<Message> + Unpin,
 {
-    let out = match msg {
-        ServerMsg::Event { command, intent_id } => {
-            // Loads complete BEFORE the guard: no lock across await. The guard is
-            // held only around the synchronous core — the same short-read-guard
-            // discipline as clip_move_stream.
-            let current = crate::data::permission::load_current_docs(repo, command).await;
-            let filtered = {
-                let ecs = room.scene().read().await;
-                let actor_lookup = |id: &Uuid| ecs.actor(id);
-                let snapshot = crate::data::permission::mirror_current_snapshot(
-                    command,
-                    ctx,
-                    &current,
-                    &actor_lookup,
-                );
-                crate::data::permission::filter_command(
-                    command,
-                    &snapshot,
-                    ctx,
-                    world_defaults,
-                    &current,
-                    actor_lookup,
-                )
-            };
-            ServerMsg::Event {
-                command: filtered,
-                intent_id: *intent_id,
-            }
-        }
-        other => {
-            // MoveStream carries per-recipient position geometry and MUST be clipped
-            // through `clip_move_stream` in the egress loop, never passed through here
-            // unredacted. This guard catches a future routing regression at test time.
-            debug_assert!(
-                !matches!(other, ServerMsg::MoveStream { .. }),
-                "MoveStream must be clipped per-recipient in egress_loop, not sent via send_filtered"
-            );
-            other.clone()
-        }
+    // Loads complete BEFORE the guard: no lock across await. The guard is held only around the
+    // synchronous core — the same short-read-guard discipline as clip_move_stream.
+    let current = crate::data::permission::load_current_docs(repo, &stored.command).await;
+    let filtered = {
+        let ecs = room.scene().read().await;
+        crate::data::permission::filter_command(
+            &stored.command,
+            &stored.snapshot,
+            ctx,
+            world_defaults,
+            &current,
+            |id| ecs.actor(id),
+        )
+    };
+    let out = ServerMsg::Event {
+        command: filtered,
+        intent_id: None,
     };
     sink.send(text(&out)).await.map_err(|_| ())
+}
+
+/// Send a non-`Event` broadcast frame unchanged. `MoveStream` must never reach here — it
+/// requires per-recipient clipping in the egress loop (`clip_move_stream`); this guard catches a
+/// future routing regression at test time.
+async fn send_plain<S>(sink: &mut S, msg: &ServerMsg) -> Result<(), ()>
+where
+    S: Sink<Message> + Unpin,
+{
+    debug_assert!(
+        !matches!(msg, ServerMsg::MoveStream { .. }),
+        "MoveStream must be clipped per-recipient in egress_loop, not sent via send_plain"
+    );
+    sink.send(text(msg)).await.map_err(|_| ())
+}
+
+/// Dispatch a `RoomEvent` to its wire representation: `Event` frames are redacted per-recipient
+/// via `send_filtered_event`; every other frame passes through `send_plain` unchanged. Shared by
+/// live broadcast delivery and replay (`replay`).
+async fn send_room_event<S>(
+    sink: &mut S,
+    repo: &dyn Repository,
+    room: &Room,
+    ctx: &PermissionContext,
+    world_defaults: &WorldCapDefaults,
+    ev: &crate::ws::room::RoomEvent,
+) -> Result<(), ()>
+where
+    S: Sink<Message> + Unpin,
+{
+    match ev {
+        crate::ws::room::RoomEvent::Event(stored) => {
+            send_filtered_event(sink, repo, room, ctx, world_defaults, stored).await
+        }
+        crate::ws::room::RoomEvent::Other(msg) => send_plain(sink, msg.as_ref()).await,
+    }
 }
 
 /// One connection's lifetime: splits the socket into an ingress task (parses
@@ -1295,7 +1309,7 @@ struct EgressConnState {
 /// ```
 async fn egress_loop<S>(
     mut sink: S,
-    mut rx: tokio::sync::broadcast::Receiver<Arc<ServerMsg>>,
+    mut rx: tokio::sync::broadcast::Receiver<crate::ws::room::RoomEvent>,
     mut erx: mpsc::Receiver<Egress>,
     conn: EgressConnState,
 ) where
@@ -1371,7 +1385,7 @@ async fn egress_loop<S>(
         tokio::select! {
             cmd = erx.recv() => match cmd {
                 Some(Egress::Frame(f)) => {
-                    if send_filtered(&mut sink, repo.as_ref(), &room, &ctx, &world_defaults, f.as_ref()).await.is_err() { break; }
+                    if send_plain(&mut sink, f.as_ref()).await.is_err() { break; }
                 }
                 Some(Egress::TimePong { client_t0, server_t }) => {
                     if sink.send(text(&ServerMsg::TimePong { client_t0, server_t })).await.is_err() { break; }
@@ -1505,7 +1519,7 @@ async fn egress_loop<S>(
                             }
                             if seq < next_expected { continue; }
                         }
-                        if send_filtered(&mut sink, repo.as_ref(), &room, &ctx, &world_defaults, msg.as_ref()).await.is_err() { break; }
+                        if send_room_event(&mut sink, repo.as_ref(), &room, &ctx, &world_defaults, &msg).await.is_err() { break; }
                         next_expected = seq + 1;
                         // A world change may affect live subscriptions. Arm the
                         // coalescing window on the LEADING edge only: re-arming
@@ -1522,7 +1536,10 @@ async fn egress_loop<S>(
                         // Non-Event, non-sequenced out-of-band frame. `MoveStream` requires
                         // per-recipient egress clipping (the secrecy boundary); every other
                         // frame passes through the generic permission filter unchanged.
-                        let should_break = match msg.as_ref() {
+                        let crate::ws::room::RoomEvent::Other(inner) = &msg else {
+                            unreachable!("event_seq() is Some for every RoomEvent::Event");
+                        };
+                        let should_break = match inner.as_ref() {
                             ServerMsg::MoveStream { .. } => {
                                 // Resolve this connection's active see-as-player target, if any:
                                 // a `vision`-channel scene subscription whose resolved `view_ctx`
@@ -1547,7 +1564,7 @@ async fn egress_loop<S>(
                                 } else {
                                     None
                                 };
-                                match clip_move_stream(msg.as_ref(), &ctx, see_as, &room).await {
+                                match clip_move_stream(inner.as_ref(), &ctx, see_as, &room).await {
                                     Some(out) => sink.send(text(&out)).await.is_err(),
                                     None => false, // suppressed: do not send
                                 }
@@ -1558,23 +1575,14 @@ async fn egress_loop<S>(
                                 // point — the ingress loop tears the connection
                                 // down when this egress task exits.
                                 if user.is_none() || *user == Some(ctx.user_id) {
-                                    let _ = sink.send(text(msg.as_ref())).await;
+                                    let _ = sink.send(text(inner.as_ref())).await;
                                     let _ = sink.send(Message::Close(None)).await;
                                     true
                                 } else {
                                     false
                                 }
                             }
-                            other => send_filtered(
-                                &mut sink,
-                                repo.as_ref(),
-                                &room,
-                                &ctx,
-                                &world_defaults,
-                                other,
-                            )
-                            .await
-                            .is_err(),
+                            other => send_plain(&mut sink, other).await.is_err(),
                         };
                         if should_break {
                             break;
@@ -1710,8 +1718,8 @@ where
     .await
     .map_err(|_| ())?;
     // Replayed events are redacted per recipient, identically to live delivery.
-    for f in frames {
-        send_filtered(sink, repo, room, ctx, world_defaults, f.as_ref()).await?;
+    for f in &frames {
+        send_room_event(sink, repo, room, ctx, world_defaults, f).await?;
     }
     sink.send(text(&ServerMsg::ResyncEnd {
         current_seq: to_seq,
@@ -3610,11 +3618,15 @@ mod tests {
         let bcast = tokio::time::timeout(std::time::Duration::from_secs(2), async {
             loop {
                 match rx.recv().await {
-                    Ok(msg) => {
-                        if matches!(*msg, ServerMsg::MoveStream { .. }) {
+                    Ok(crate::ws::room::RoomEvent::Other(msg)) => {
+                        if matches!(msg.as_ref(), ServerMsg::MoveStream { .. }) {
                             return Some((*msg).clone());
                         }
-                        // Skip other frames (e.g. position Event from commit_ops_locked).
+                        // Skip other out-of-band frames.
+                    }
+                    Ok(crate::ws::room::RoomEvent::Event(_)) => {
+                        // Skip: a committed Event frame (e.g. the move's position Update), not
+                        // MoveStream.
                     }
                     Err(_) => return None,
                 }
@@ -4455,6 +4467,177 @@ mod tests {
         assert!(
             result.is_none(),
             "a see-as preview of a wholly-occluded move must be suppressed (None); got {result:?}"
+        );
+    }
+
+    /// A `Sink<Message>` that collects every sent frame into a `Vec`, for tests that inspect
+    /// serialized output directly rather than driving a real socket.
+    struct CollectingSink(Vec<Message>);
+    impl futures_util::Sink<Message> for CollectingSink {
+        type Error = std::convert::Infallible;
+        fn poll_ready(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+        fn start_send(self: std::pin::Pin<&mut Self>, item: Message) -> Result<(), Self::Error> {
+            self.get_mut().0.push(item);
+            Ok(())
+        }
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+        fn poll_close(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    #[tokio::test]
+    async fn e2e_replay_redacts_a_field_that_was_gm_only_at_commit_after_the_override_is_later_widened(
+    ) {
+        // A field hidden (GmOnly) across several historical writes, then WIDENED to fully
+        // public in a LATER command, must still redact its intermediate historical values on
+        // replay — reading the current value as public does not make its whole secret evolution
+        // public. This is the discriminating shape: by the time redaction runs, hidden_current
+        // is EMPTY (the override was widened), so ONLY hidden_commit (this design's fix) keeps
+        // the historical value hidden; an implementation that redacted against current policy
+        // alone would leak it here.
+        use crate::data::command::{FieldChange, Operation};
+        use crate::data::document::{DocRole, PermissionSet, WorldRole};
+        use crate::data::membership::PermissionContext;
+        use crate::data::sqlite::SqliteRepository;
+
+        let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+        let gm = repo
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let player = repo
+            .create_user("pl", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = repo.create_world_owned("W", gm, 0).await.unwrap();
+        repo.add_member(w.id, player, WorldRole::Player)
+            .await
+            .unwrap();
+        let gm_ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+
+        let mut perms = PermissionSet {
+            default: DocRole::Observer,
+            ..Default::default()
+        };
+        perms.property_overrides.insert(
+            "/system/secret".into(),
+            crate::data::document::Visibility::GmOnly,
+        );
+        let mut d = crate::data::document::tests::world_scoped_doc(w.id, Uuid::new_v4(), "actor");
+        d.permissions = perms;
+        d.system = serde_json::json!({ "secret": "S0" });
+        let doc_id = d.id;
+        repo.apply_intent(
+            &gm_ctx,
+            w.id,
+            vec![Operation::Create { doc: d }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+        // Historical, intermediate value — GmOnly at commit — this is the value that must
+        // never reach the player, at any resync, no matter how the override later changes.
+        repo.apply_intent(
+            &gm_ctx,
+            w.id,
+            vec![Operation::Update {
+                doc_id,
+                changes: vec![FieldChange {
+                    remove: false,
+                    path: "/system/secret".into(),
+                    old: serde_json::json!("S0"),
+                    new: serde_json::json!("S1_NEVER_RELEASED"),
+                }],
+            }],
+            1,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+        // The GM later widens the override to All — the CURRENT value becomes public, but the
+        // historical S1_NEVER_RELEASED value must remain hidden on replay.
+        repo.apply_intent(
+            &gm_ctx,
+            w.id,
+            vec![Operation::Update {
+                doc_id,
+                changes: vec![FieldChange {
+                    remove: false,
+                    path: "/permissions/property_overrides/~1system~1secret".into(),
+                    old: serde_json::json!("gm_only"),
+                    new: serde_json::json!("all"),
+                }],
+            }],
+            2,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+        let reg = crate::ws::room::RoomRegistry::new();
+        let room = reg.get_or_create(&repo, w.id).await.unwrap().unwrap();
+        let (frames, _src) = room.resync_range(&repo, 1).await.unwrap();
+        let player_ctx = PermissionContext {
+            user_id: player,
+            world_role: WorldRole::Player,
+        };
+        let world_defaults = crate::data::document::WorldCapDefaults::default();
+        let mut sink = CollectingSink(Vec::new());
+        for f in &frames {
+            send_room_event(&mut sink, &repo, &room, &player_ctx, &world_defaults, f)
+                .await
+                .unwrap();
+        }
+        let mut saw_the_permission_widening_op = false;
+        for msg in &sink.0 {
+            let text = match msg {
+                Message::Text(t) => t.as_str(),
+                _ => continue,
+            };
+            let v: serde_json::Value = serde_json::from_str(text).unwrap();
+            if v["type"] != "event" {
+                continue;
+            }
+            for op in v["command"]["ops"].as_array().unwrap() {
+                if op["op"] != "update" {
+                    continue;
+                }
+                for ch in op["changes"].as_array().unwrap() {
+                    if ch["path"] == "/permissions/property_overrides/~1system~1secret" {
+                        saw_the_permission_widening_op = true;
+                    }
+                    assert_ne!(
+                        ch["new"], "S1_NEVER_RELEASED",
+                        "a value that was GmOnly at commit must stay hidden even after the \
+                         override is later widened to All"
+                    );
+                }
+            }
+        }
+        assert!(
+            saw_the_permission_widening_op,
+            "sanity check: the widening command itself must be visible to the player \
+             (only the earlier GmOnly value must stay hidden)"
         );
     }
 }
