@@ -3967,11 +3967,11 @@ mod tests {
 
     #[tokio::test]
     async fn handle_recalc_roll_refuses_a_roll_with_no_stored_spec_or_raw() {
-        // A `RollEmbed` seeded directly with `spec: None`/`raw: None` -- the
-        // pre-existing-document case (a roll embedded before this feature
-        // shipped). Seeded by hand-crafting the stored `engine` JSON rather
-        // than going through `handle_send_message` (which always populates
-        // both), since that is the only way to construct this legacy shape.
+        // A `RollEmbed` seeded directly with its `spec`/`raw` fields both
+        // `None` -- a stored document whose roll segment carries neither.
+        // Seeded by hand-crafting the stored `engine` JSON rather than going
+        // through `handle_send_message` (which always populates both), since
+        // that is the only way to construct this shape.
         let (repo, room, world, gm, _player) = seed_gm_and_room().await;
         let rate = PingRateLimiter::new();
         let gm_ctx = PermissionContext {

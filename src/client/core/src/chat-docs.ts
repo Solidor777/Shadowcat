@@ -170,8 +170,27 @@ export const RollOutcomeSchema: z.ZodType<RollOutcome, z.ZodTypeDef, unknown> = 
  * but `numericBounds` returns `null` for it and the "replace this die's
  * face" affordance simply does not render. */
 export type WireDieKind =
-  | { Numeric: { min: number; max: number } }
-  | { Faces: { faces: { value?: number | null; symbols: string[] }[] } };
+  | {
+      /** A bounded numeric face space, e.g. a d6 or d20. */
+      Numeric: {
+        /** Lowest rollable face value, inclusive. */
+        min: number;
+        /** Highest rollable face value, inclusive. */
+        max: number;
+      };
+    }
+  | {
+      /** A symbolic (non-numeric) face space, e.g. a narrative dice pool. */
+      Faces: {
+        /** The die's ordered face list. */
+        faces: {
+          /** Optional numeric reference value for the face, when one exists. */
+          value?: number | null;
+          /** Symbol labels printed on this face. */
+          symbols: string[];
+        }[];
+      };
+    };
 
 // Unannotated impl const — see `dieRecordSchemaImpl`'s note above.
 export const wireDieKindSchemaImpl = z.union([
@@ -194,7 +213,16 @@ export const WireDieKindSchema: z.ZodType<WireDieKind> = wireDieKindSchemaImpl;
  * `next_id` carry no information this client needs and are intentionally
  * unmirrored (tolerated via `.passthrough()`, never rejected). */
 export type WireRawRoll = {
-  dice: { id: number; kind: WireDieKind; natural: number }[];
+  /** Every rolled die (base plus explosion/penetrate children), in roll order. */
+  dice: {
+    /** Stable identifier for this die within the roll. */
+    id: number;
+    /** The die's face space. */
+    kind: WireDieKind;
+    /** Pre-modifier face rolled, before reroll/explode adjustment. */
+    natural: number;
+  }[];
+  /** `[start, count]` ranges into `dice` marking each group's base dice. */
   group_spans: [number, number][];
 };
 
@@ -215,8 +243,11 @@ export const WireRawRollSchema: z.ZodType<WireRawRoll> = wireRawRollSchemaImpl.p
  * server-side, and the client never needs to reconstruct a past recalc's
  * exact die-level state) and pass through unvalidated. */
 export type RecalcHistoryEntry = {
+  /** The roll outcome that was in effect immediately before this recalculation. */
   previous_outcome: RollOutcome;
+  /** Display name of the user who triggered this recalculation. */
   recalculated_by: string;
+  /** Unix-epoch milliseconds when this recalculation was applied. */
   recalculated_at: number;
 };
 
@@ -245,8 +276,22 @@ export const RecalcHistoryEntrySchema: z.ZodType<RecalcHistoryEntry, z.ZodTypeDe
  * baseRollDice({ dice: [{ id: 0, kind: { Numeric: { min: 1, max: 6 } }, natural: 3 }], group_spans: [[0, 1]] });
  * ```
  */
-export function baseRollDice(raw: WireRawRoll): { id: number; kind: WireDieKind; natural: number }[] {
-  const out: { id: number; kind: WireDieKind; natural: number }[] = [];
+export function baseRollDice(raw: WireRawRoll): {
+  /** Stable identifier for this die within the roll. */
+  id: number;
+  /** The die's face space. */
+  kind: WireDieKind;
+  /** Pre-modifier face rolled, before reroll/explode adjustment. */
+  natural: number;
+}[] {
+  const out: {
+    /** Stable identifier for this die within the roll. */
+    id: number;
+    /** The die's face space. */
+    kind: WireDieKind;
+    /** Pre-modifier face rolled, before reroll/explode adjustment. */
+    natural: number;
+  }[] = [];
   for (const [start, count] of raw.group_spans) {
     for (let i = start; i < start + count; i++) {
       const d = raw.dice[i];
@@ -268,7 +313,12 @@ export function baseRollDice(raw: WireRawRoll): { id: number; kind: WireDieKind;
  * numericBounds({ Numeric: { min: 1, max: 20 } }); // { min: 1, max: 20 }
  * ```
  */
-export function numericBounds(kind: WireDieKind): { min: number; max: number } | null {
+export function numericBounds(kind: WireDieKind): {
+  /** Lowest rollable face value, inclusive. */
+  min: number;
+  /** Highest rollable face value, inclusive. */
+  max: number;
+} | null {
   return "Numeric" in kind ? kind.Numeric : null;
 }
 

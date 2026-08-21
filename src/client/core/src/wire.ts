@@ -984,9 +984,26 @@ export type WireScope = z.infer<typeof ScopeSchema>;
  * `recalc_roll` frame. Mirrors `ws::protocol::WireRecalcOp` exactly (a
  * discriminated union on `kind`). */
 export type WireRecalcOp =
-  | { kind: "reroll_dice"; ids: number[] }
-  | { kind: "replace_die"; id: number; natural: number }
-  | { kind: "remove_dice"; ids: number[] };
+  | {
+      /** Draw a fresh natural for each targeted die. */
+      kind: "reroll_dice";
+      /** Targeted die ids. */
+      ids: number[];
+    }
+  | {
+      /** Force a specific natural onto one die. */
+      kind: "replace_die";
+      /** The targeted die. */
+      id: number;
+      /** The natural face to force. */
+      natural: number;
+    }
+  | {
+      /** Drop targeted dice from their group's base naturals entirely. */
+      kind: "remove_dice";
+      /** Targeted die ids. */
+      ids: number[];
+    };
 
 /** Client -> server frames. Plain objects (numbers, JSON.stringify-friendly). Mirrors
  * `ws::protocol::ClientMsg` variant-by-variant; each
