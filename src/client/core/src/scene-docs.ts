@@ -346,7 +346,7 @@ export function deterministicId(namespace: string, name: string): string {
   const hex = [0x811c9dc5, 0x9e3779b9, 0x85ebca6b, 0xc2b2ae35]
     .map((seed) => fnv1a32(input, seed).toString(16).padStart(8, "0"))
     .join("");
-  const versioned = hex.slice(0, 12) + "5" + hex.slice(13, 16);
+  const versioned = hex.slice(0, 12) + "5" + hex.slice(13);
   const variantNibble = ((parseInt(hex[16], 16) & 0x3) | 0x8).toString(16);
   const stamped = versioned.slice(0, 16) + variantNibble + versioned.slice(17);
   return `${stamped.slice(0, 8)}-${stamped.slice(8, 12)}-${stamped.slice(12, 16)}-${stamped.slice(16, 20)}-${stamped.slice(20, 32)}`;

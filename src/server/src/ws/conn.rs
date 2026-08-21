@@ -1382,7 +1382,22 @@ async fn egress_loop<S>(
 
     let mut next_expected = current_seq + 1;
     loop {
+        // `biased` — `erx` (this connection's own direct replies, incl. `Reject`) MUST be
+        // drained ahead of `rx` (the room broadcast, incl. this same connection's own
+        // self-authored `Event` echoes) whenever both are ready. `Room::publish` serializes
+        // intents one at a time (`publish_guard`): an intent's `Reject` is enqueued onto `erx`
+        // and fully sent before the NEXT intent's `publish()` call — which produces any LATER
+        // broadcast `Event` — even starts, so insertion order is always
+        // `erx(reject_1) < erx(reject_2) < rx(event_3)` for a client's own back-to-back
+        // intents. An unbiased `select!` picks among ready branches with no ordering
+        // guarantee, so it can deliver `event_3` before `reject_1`/`reject_2` even though the
+        // server processed them strictly in order — `OptimisticClient.applyCommand`'s
+        // confirm-on-self-authored-echo is a byte-for-byte FIFO shift (see its own doc), and a
+        // single such inversion permanently misaligns every later self-authored confirm for
+        // the rest of the connection's lifetime, since the shift silently confirms whatever
+        // pending entry is oldest rather than the one the arriving command actually completes.
         tokio::select! {
+            biased;
             cmd = erx.recv() => match cmd {
                 Some(Egress::Frame(f)) => {
                     if send_plain(&mut sink, f.as_ref()).await.is_err() { break; }

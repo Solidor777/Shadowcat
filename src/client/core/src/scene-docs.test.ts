@@ -1,5 +1,5 @@
 import { test, expect, describe, it } from "vitest";
-import { buildSceneDoc, buildTokenDoc, buildActorDoc, buildTokenFromActor, setNameHidden, buildFactionRegistryDoc, buildConditionRegistryDoc, buildItemDoc, ITEM_DOC_TYPE, type TokenEngine, type ActorEngine, type Faction, type Condition, type SceneEngine, type SceneDimensions, type TokenVisual, type FaceVisual, type AnimatedSource } from "./scene-docs";
+import { buildSceneDoc, buildTokenDoc, buildActorDoc, buildTokenFromActor, setNameHidden, buildFactionRegistryDoc, buildConditionRegistryDoc, buildItemDoc, ITEM_DOC_TYPE, deterministicId, type TokenEngine, type ActorEngine, type Faction, type Condition, type SceneEngine, type SceneDimensions, type TokenVisual, type FaceVisual, type AnimatedSource } from "./scene-docs";
 import {
   buildWorldSettingsDoc, resolveSceneSettings, resolveViewedScene, DEFAULT_WORLD_SETTINGS, DEFAULT_SCENE_BOUNDS,
   type WireDocument, type WorldSettingsEngine,
@@ -299,6 +299,25 @@ test("buildConditionRegistryDoc builds a world-scoped, parentless registry with 
   expect(d.scope).toEqual({ kind: "world", world_id: "w1" });
   expect((d.engine as { conditions: unknown }).conditions).toEqual(conditions);
   expect(d.id).toBe("creg1");
+});
+
+describe("deterministicId", () => {
+  const UUID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+  test("produces a full 36-character UUIDv5-shaped string, not a truncated one", () => {
+    const id = deterministicId("world-1", "faction-registry");
+    expect(id).toHaveLength(36);
+    expect(id).toMatch(UUID_SHAPE);
+  });
+
+  test("is stable across calls with the same inputs", () => {
+    expect(deterministicId("world-1", "faction-registry")).toBe(deterministicId("world-1", "faction-registry"));
+  });
+
+  test("differs across namespaces and names", () => {
+    expect(deterministicId("world-1", "faction-registry")).not.toBe(deterministicId("world-2", "faction-registry"));
+    expect(deterministicId("world-1", "faction-registry")).not.toBe(deterministicId("world-1", "condition-registry"));
+  });
 });
 
 describe("light-gradation registry", () => {
