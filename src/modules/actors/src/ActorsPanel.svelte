@@ -173,7 +173,11 @@
    * ```
    */
   function create(): void {
-    const visual = pendingVisual;
+    // `$state.snapshot` strips the deep-reactive Proxy wrapping `pendingVisual` (itself a
+    // `$state`) applies to any object/array assigned into it — an unwrapped reactive value
+    // embedded in the document would later fail `structuredClone` (the instanced-token
+    // deep-copy path in `buildTokenFromActor`), which cannot clone a Proxy.
+    const visual = pendingVisual === null ? null : $state.snapshot(pendingVisual);
     if (!name || !visual) return;
     const engine: ActorEngine = {
       displayName: displayName || name,

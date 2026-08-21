@@ -70,8 +70,11 @@
    * ```
    */
   function animSourceToSource(s: AnimSourceState): AnimatedSource {
+    // `[...s.frames]` copies out of the reactive $state array: embedding it by reference would
+    // leak a live Proxy into the built document, which `structuredClone` (the instanced-token
+    // deep-copy path) cannot clone.
     return s.sourceType === "frames"
-      ? { type: "frames", frames: s.frames }
+      ? { type: "frames", frames: [...s.frames] }
       : { type: "sheet", asset: s.sheetAsset ?? "", rows: s.rows, cols: s.cols, count: s.count };
   }
 
