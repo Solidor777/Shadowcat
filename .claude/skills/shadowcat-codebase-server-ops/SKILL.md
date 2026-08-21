@@ -69,6 +69,15 @@ and restore as a deployment-operator tool, not an in-app feature.
   `upload`/`replace` (`http::assets`) each acquire it in READ mode around their own commit+rename
   step, so no asset write can interleave with an in-server backup's file copy. DB writers need no
   gating — `VACUUM INTO` is transactionally consistent against a live writer on its own.
+- `world_bundle` (top-level, pure tar I/O, mirrors `backup`'s no-`AppState`-dependency separation)
+  — `write_bundle`/`read_bundle` build/parse the `.tar` bundle format (`manifest.json` +
+  `rows/<table>.jsonl` + `assets/<asset_id>`); `data::world_bundle` holds the row/manifest DTOs
+  (`BundleManifest`, `Exported*Row`, `WorldExportData`/`WorldImportData`, `ImportSummary`) plus
+  `BUNDLE_SCHEMA_VERSION`. `data::sqlite::SqliteRepository::export_world_rows`/`import_world` are
+  the DB-facing halves — `import_world` rejects a world-id collision before any row is written,
+  inserts `worlds` then every table `delete_world` already walks (read instead of deleted) in
+  FK-safe order, and finalizes staged asset files only after every row is accepted.
+  `http::world_bundle::export_world`/`import_world` are the two routes.
 
 ## Hard invariants
 
@@ -163,10 +172,16 @@ and restore as a deployment-operator tool, not an in-app feature.
   this for THAT invocation path via `write_barrier` (see Key files & seams / Hard invariants
   above) — the residual gap is CLI-mode-only and inherent to backing up while a separate process
   writes assets outside the barrier's reach.
-- Per-world granular export/import is explicitly OUT of scope — the backup/restore surface ships
-  whole-server snapshot/restore only (single shared `shadowcat.db` across all worlds); per-world
-  would need to preserve referential integrity across cross-table FKs and shared asset
-  references, real complexity not currently implemented.
+- Per-world export/import ships as a SEPARATE surface from `backup`/`restore_backup` — not
+  whole-server snapshot/restore, and not gated the same way. `POST /api/worlds/{id}/export` is
+  world-GM-gated (`require_gm`); `POST /api/worlds/import` is server-admin-only (a bulk multi-table
+  insert bypassing every capability/schema/OCC gate the live write paths enforce — more privileged
+  than ordinary world CREATION, which is open to any authenticated user, not admin-gated). World id
+  is preserved verbatim on import; a colliding id refuses cleanly before any row is written.
+  `users(id)` references export as portable usernames (the source server's `users` table itself is
+  never exported) — resolved back to a target-local id, or NULL/row-drop for the two `NOT NULL`
+  user columns with no `SET NULL` degradation (`world_members.user_id`/`explored_fog.user_id`),
+  only at import time.
 
 ## Pointers
 

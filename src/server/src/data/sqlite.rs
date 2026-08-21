@@ -2332,8 +2332,7 @@ impl SqliteRepository {
     /// envelope — the exact derivation `upsert_document` and
     /// `insert_imported_document` both need before their (differing) INSERT
     /// statements, factored out once so the two document-write paths cannot
-    /// silently diverge on it (see `shadowcat-codebase-core`'s "never fork a
-    /// decision across two paths"). Returns `(scope_kind, world_id, pack,
+    /// silently diverge on it. Returns `(scope_kind, world_id, pack,
     /// source_id, source_pack, source_version)`.
     fn document_row_columns(doc: &Document) -> DocumentRowColumns {
         let (scope_kind, world_id, pack) = match &doc.scope {

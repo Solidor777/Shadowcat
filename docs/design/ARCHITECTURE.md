@@ -66,7 +66,6 @@ Each item is *designed for* now (the seam exists) and *built* only when its trig
 | Full-text search engine (Tantivy) | `Core.search` API over FTS5 | FTS5 relevance/scale becomes inadequate (large compendium libraries, BM25 tuning, faceting). |
 | Asset conversion — images (`image` 0.25 + `webp`/libwebp), audio (`symphonia` + `opus`/`vorbis_rs`) | raw upload + static serving; asset pipeline | Phase 2 (images) / Phase 3 (audio). v1 stores and serves uploads unconverted. No FFmpeg; all replacements are royalty-free. |
 | Asset browser (regex/tag/dir search, preview/rename/move/tag) | asset pipeline + `Core.search` | Phase 2. |
-| Bulk import/export (assets + documents) | document CRUD | Phase 2. |
 | Rollable tables | dice engine + document model | Phase 2. |
 | Rich-text notes | document model / `system` body | Phase 2. |
 | Chat media linking (images, YouTube) | chat | Phase 2. YouTube = thumbnail + external link only (no IFrame/Data API), keeping the stack permissive. |
