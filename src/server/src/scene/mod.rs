@@ -421,8 +421,8 @@ pub struct SceneEcs {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum MirrorInput {
     /// Already committed and broadcast (`apply_op`). BOTH authoritative loops —
-    /// `apply_intent` AND `apply_command` (the trusted chat/settings seeding path,
-    /// which does NOT run `validate_field_change`) — apply the same change through
+    /// `apply_intent` AND `apply_command` (the trusted replay/undo substrate, which
+    /// does NOT run `validate_field_change`) — apply the same change through
     /// `apply_field_change` with `?`, so any pointer-op error aborts the transaction
     /// before commit. The guarantee is that `?`, not the ingress gate: attributing it
     /// to `validate_field_change` would cover only one of the two paths and would stop
