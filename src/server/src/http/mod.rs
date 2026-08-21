@@ -16,6 +16,8 @@ pub mod module_routes;
 pub mod routes;
 /// Login/invite sliding-window throttles.
 pub mod throttle;
+/// Per-world export/import bundle routes.
+pub mod world_bundle;
 
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -117,6 +119,7 @@ pub async fn router(state: AppState) -> Router {
         )
         .route("/api/users/{id}", delete(routes::delete_user))
         .route("/api/worlds/{id}", delete(routes::delete_world))
+        .route("/api/worlds/{id}/export", post(world_bundle::export_world))
         .route(
             "/api/worlds/{id}/members",
             get(routes::list_members).post(routes::add_member),
@@ -710,6 +713,63 @@ pub(crate) mod tests {
         let body: crate::health::HealthStatus = res.json();
         assert_eq!(body.status, "ok");
         assert!(body.db_connected);
+    }
+
+    #[tokio::test]
+    async fn export_world_requires_gm() {
+        let server = server_with_user("gm-user", "pw-gm", ServerRole::User).await;
+        server
+            .post("/api/login")
+            .json(&serde_json::json!({"username": "gm-user", "password": "pw-gm"}))
+            .await
+            .assert_status_success();
+        let world: crate::data::document::World = server
+            .post("/api/worlds")
+            .json(&serde_json::json!({"name": "Exportable"}))
+            .await
+            .json();
+
+        // A second, non-member user cannot export it.
+        let outsider = server_with_user("outsider", "pw-out", ServerRole::User).await;
+        outsider
+            .post("/api/login")
+            .json(&serde_json::json!({"username": "outsider", "password": "pw-out"}))
+            .await
+            .assert_status_success();
+        outsider
+            .post(&format!("/api/worlds/{}/export", world.id))
+            .await
+            .assert_status(axum::http::StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn export_world_streams_a_tar_for_the_gm() {
+        let server = server_with_user("gm-export", "pw-gm2", ServerRole::User).await;
+        server
+            .post("/api/login")
+            .json(&serde_json::json!({"username": "gm-export", "password": "pw-gm2"}))
+            .await
+            .assert_status_success();
+        let world: crate::data::document::World = server
+            .post("/api/worlds")
+            .json(&serde_json::json!({"name": "Exportable2"}))
+            .await
+            .json();
+
+        let resp = server
+            .post(&format!("/api/worlds/{}/export", world.id))
+            .await;
+        resp.assert_status_ok();
+        let bytes = resp.into_bytes();
+        // A valid, parseable tar whose first entry is manifest.json.
+        let mut archive = tar::Archive::new(bytes.as_ref());
+        let mut first = archive.entries().unwrap().next().unwrap().unwrap();
+        assert_eq!(first.path().unwrap().to_string_lossy(), "manifest.json");
+        let mut buf = Vec::new();
+        std::io::Read::read_to_end(&mut first, &mut buf).unwrap();
+        let manifest: crate::data::world_bundle::BundleManifest =
+            serde_json::from_slice(&buf).unwrap();
+        assert_eq!(manifest.world_id, world.id);
     }
 
     #[tokio::test]
