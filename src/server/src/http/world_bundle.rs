@@ -16,16 +16,19 @@
 #![deny(clippy::missing_docs_in_private_items)]
 
 use axum::body::Body;
-use axum::extract::{Path, State};
+use axum::extract::{Multipart, Path, State};
 use axum::http::header;
 use axum::response::{IntoResponse, Response};
+use axum::Json;
+use tokio::io::AsyncWriteExt;
 use uuid::Uuid;
 
-use crate::auth::session::AuthUser;
+use crate::auth::session::{AdminUser, AuthUser};
+use crate::data::world_bundle::ImportSummary;
 use crate::http::error::AppError;
 use crate::http::routes::require_gm;
 use crate::http::AppState;
-use crate::world_bundle::write_bundle;
+use crate::world_bundle::{read_bundle, write_bundle, WorldBundleError};
 
 /// Bounds the export channel's in-flight chunk count — memory usage during
 /// export is this times `write_bundle`'s internal write-call size (a few
@@ -106,6 +109,108 @@ pub async fn export_world(
         Body::from_stream(body_stream),
     )
         .into_response())
+}
+
+/// Defensive cap on an uploaded bundle's total byte size — this endpoint has
+/// no per-user rate limit (server-admin-only, not a hot path), so an
+/// unbounded upload would still be an uncapped-disk-write vector even for a
+/// trusted admin session. Generous: a world's assets can legitimately be
+/// large.
+const MAX_IMPORT_BUNDLE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
+/// Stream the multipart "file" field to `dest`, enforcing
+/// `MAX_IMPORT_BUNDLE_BYTES` as bytes arrive (never buffering the whole
+/// body). On any failure the partial file is removed.
+async fn stream_bundle_upload(
+    mut multipart: Multipart,
+    dest: &std::path::Path,
+) -> Result<(), AppError> {
+    let mut field = multipart
+        .next_field()
+        .await
+        .map_err(|e| AppError::BadRequest(format!("multipart error: {e}")))?
+        .ok_or_else(|| AppError::BadRequest("missing file field".into()))?;
+    let mut file = tokio::fs::File::create(dest)
+        .await
+        .map_err(|_| AppError::Internal)?;
+    let mut total: u64 = 0;
+    loop {
+        let chunk = match field.chunk().await {
+            Ok(Some(c)) => c,
+            Ok(None) => break,
+            Err(e) => {
+                let _ = tokio::fs::remove_file(dest).await;
+                return Err(AppError::BadRequest(format!("multipart error: {e}")));
+            }
+        };
+        total += chunk.len() as u64;
+        if total > MAX_IMPORT_BUNDLE_BYTES {
+            let _ = tokio::fs::remove_file(dest).await;
+            return Err(AppError::PayloadTooLarge(format!(
+                "bundle exceeds {MAX_IMPORT_BUNDLE_BYTES} bytes"
+            )));
+        }
+        if file.write_all(&chunk).await.is_err() {
+            let _ = tokio::fs::remove_file(dest).await;
+            return Err(AppError::Internal);
+        }
+    }
+    file.flush().await.map_err(|_| AppError::Internal)?;
+    Ok(())
+}
+
+/// `POST /api/worlds/import` — server-admin-only multipart upload of a
+/// `.tar` bundle. Streams the upload to a local temp file first (never
+/// buffers the whole body), extracts it (schema-version- and
+/// row-count-checked before any DB row is touched), then inserts everything
+/// in one transaction. See `SqliteRepository::import_world` for the
+/// collision-reject/username-resolution/asset-finalize behavior.
+pub async fn import_world(
+    _admin: AdminUser,
+    State(state): State<AppState>,
+    multipart: Multipart,
+) -> Result<Json<ImportSummary>, AppError> {
+    let tmp_tar = std::env::temp_dir().join(format!("shadowcat-import-{}.tar", Uuid::new_v4()));
+    stream_bundle_upload(multipart, &tmp_tar).await?;
+
+    let assets_dir = state.config.assets_path();
+    let tar_path = tmp_tar.clone();
+    let import_result = tokio::task::spawn_blocking(move || read_bundle(&tar_path, &assets_dir))
+        .await
+        .map_err(|e| {
+            tracing::error!(?e, "world import extraction task panicked");
+            AppError::Internal
+        })?;
+    let _ = tokio::fs::remove_file(&tmp_tar).await;
+
+    let import_data = match import_result {
+        Ok(d) => d,
+        Err(e) => {
+            return Err(match e {
+                WorldBundleError::Malformed(m) => AppError::BadRequest(m),
+                WorldBundleError::RowCountMismatch {
+                    table,
+                    expected,
+                    actual,
+                } => AppError::BadRequest(format!(
+                    "row count mismatch for '{table}': expected {expected}, got {actual}"
+                )),
+                WorldBundleError::UnsupportedSchemaVersion(v) => {
+                    AppError::BadRequest(format!("unsupported bundle schema_version {v}"))
+                }
+                WorldBundleError::Serde(e) => {
+                    AppError::BadRequest(format!("malformed bundle content: {e}"))
+                }
+                WorldBundleError::Io(e) => {
+                    tracing::error!(?e, "world import extraction I/O error");
+                    AppError::BadRequest(format!("bundle read error: {e}"))
+                }
+            });
+        }
+    };
+
+    let summary = state.repo.import_world(import_data).await?;
+    Ok(Json(summary))
 }
 
 #[cfg(test)]

@@ -121,6 +121,10 @@ pub async fn router(state: AppState) -> Router {
         .route("/api/worlds/{id}", delete(routes::delete_world))
         .route("/api/worlds/{id}/export", post(world_bundle::export_world))
         .route(
+            "/api/worlds/import",
+            post(world_bundle::import_world).layer(DefaultBodyLimit::disable()),
+        )
+        .route(
             "/api/worlds/{id}/members",
             get(routes::list_members).post(routes::add_member),
         )
@@ -783,6 +787,62 @@ pub(crate) mod tests {
         let manifest: crate::data::world_bundle::BundleManifest =
             serde_json::from_slice(&buf).unwrap();
         assert_eq!(manifest.world_id, world.id);
+    }
+
+    #[tokio::test]
+    async fn import_world_requires_server_admin() {
+        let server = server_with_user("non-admin", "pw-na", ServerRole::User).await;
+        server
+            .post("/api/login")
+            .json(&serde_json::json!({"username": "non-admin", "password": "pw-na"}))
+            .await
+            .assert_status_success();
+        server
+            .post("/api/worlds/import")
+            .multipart(
+                axum_test::multipart::MultipartForm::new()
+                    .add_part("file", axum_test::multipart::Part::bytes(b"junk".to_vec())),
+            )
+            .await
+            .assert_status(axum::http::StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn import_world_round_trips_over_http() {
+        let server = server_with_user("admin-io", "pw-admin-io", ServerRole::Admin).await;
+        server
+            .post("/api/login")
+            .json(&serde_json::json!({"username": "admin-io", "password": "pw-admin-io"}))
+            .await
+            .assert_status_success();
+        let world: crate::data::document::World = server
+            .post("/api/worlds")
+            .json(&serde_json::json!({"name": "HTTP Round Trip"}))
+            .await
+            .json();
+
+        let export_resp = server
+            .post(&format!("/api/worlds/{}/export", world.id))
+            .await;
+        export_resp.assert_status_ok();
+        let bundle_bytes = export_resp.into_bytes();
+
+        // Delete the world so import onto the SAME server does not collide.
+        server
+            .delete(&format!("/api/worlds/{}", world.id))
+            .await
+            .assert_status_success();
+
+        let import_resp = server
+            .post("/api/worlds/import")
+            .multipart(axum_test::multipart::MultipartForm::new().add_part(
+                "file",
+                axum_test::multipart::Part::bytes(bundle_bytes.to_vec()).file_name("world.tar"),
+            ))
+            .await;
+        import_resp.assert_status_ok();
+        let summary: crate::data::world_bundle::ImportSummary = import_resp.json();
+        assert_eq!(summary.world_id, world.id);
     }
 
     #[tokio::test]

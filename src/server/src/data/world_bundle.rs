@@ -254,7 +254,7 @@ pub struct WorldImportData {
 /// `SET NULL` degradation, see `ExportedMemberRow`/`ExportedFogRow`) are
 /// counted rather than silently absorbed, so the triggering admin can see
 /// exactly what was dropped.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImportSummary {
     /// The imported world's id (== the bundle's `manifest.world_id`).
     pub world_id: Uuid,
