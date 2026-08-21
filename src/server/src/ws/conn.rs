@@ -4506,9 +4506,9 @@ mod tests {
         // public in a LATER command, must still redact its intermediate historical values on
         // replay — reading the current value as public does not make its whole secret evolution
         // public. This is the discriminating shape: by the time redaction runs, hidden_current
-        // is EMPTY (the override was widened), so ONLY hidden_commit (this design's fix) keeps
-        // the historical value hidden; an implementation that redacted against current policy
-        // alone would leak it here.
+        // is EMPTY (the override was widened), so ONLY hidden_commit (the commit-time override
+        // set) keeps the historical value hidden; an implementation that redacted against current
+        // policy alone would leak it here.
         use crate::data::command::{FieldChange, Operation};
         use crate::data::document::{DocRole, PermissionSet, WorldRole};
         use crate::data::membership::PermissionContext;

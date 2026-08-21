@@ -23,7 +23,7 @@ optimistically and roll back on divergence.
   scene entities (`query_scene_entities`) **plus** the world config-docs
   `world-settings`/`light-gradation`/`vision-modes` + actors (`query_documents`), seeded via
   `SceneEcs::set_world_config`/`set_actors`; the live `apply_op` path keeps the side-tables current.
-  - `Room::commit_ops_locked(repo, ctx, ops, ts)` (`pub(crate)`) — gate-free authoritative write
+  - `Room::commit_ops_locked(repo, ctx, ops, ts, origin)` (`pub(crate)`) — gate-free authoritative write
     tail (apply_intent → ECS-hydrate → ring/seq → broadcast Event → stats). Extracted from
     `publish`; PRECONDITION: caller MUST already hold `publish_guard`. Non-reentrant — do NOT
     re-acquire `publish_guard` inside (tokio `Mutex` would deadlock). Both `publish` and
@@ -83,8 +83,8 @@ optimistically and roll back on divergence.
   egress-side owner join, so this never touches the pool (the same short-read-guard discipline
   `clip_move_stream` uses for vision). Because both live delivery and replay redact the SAME
   persisted snapshot, a resync-delivered historical `Update` resolves against the permission set
-  in force at that event's actual commit, not today's — the confidentiality gap this subsystem
-  used to carry (a replayed event redacted against current, not historical, policy) is closed.
+  in force at that event's actual commit, not today's — live delivery and replay redact against
+  the identical persisted snapshot.
   `data::permission::mirror_current_snapshot` still exists for the one caller where mirroring
   current state IS commit-time-correct by construction: `http::routes::write_ops`'s own
   read-back of the write it just applied (`shadowcat-codebase-documents-permissions` covers this

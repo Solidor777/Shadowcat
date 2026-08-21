@@ -182,14 +182,15 @@ pub async fn load_current_docs(repo: &dyn Repository, cmd: &Command) -> HashMap<
 }
 
 /// A `CommandSnapshot` for `cmd` whose commit-time state mirrors `current`'s live state, scoped
-/// to the single recipient named by `ctx`. Exists only for call sites carrying no persisted
-/// commit-time snapshot (`http::routes::write_ops`'s author-read-back-of-their-own-write, and
-/// `ws::conn::send_filtered`'s live-broadcast call site pending its own real
-/// `StoredCommand`-derived plumbing): at those sites "commit time" and "now" are the same instant
-/// by construction, so mirroring the current document loses no information the commit-time half
-/// of `filter_command` would otherwise see. `world_gm_at_commit` carries exactly the one entry
-/// `filter_command` ever looks up for a given `ctx`: `ctx.user_id -> (ctx.world_role ==
-/// WorldRole::Gm)`.
+/// to the single recipient named by `ctx`. Its sole caller is `http::routes::write_ops`'s
+/// author-read-back-of-their-own-write, which carries no persisted commit-time snapshot: at that
+/// call site "commit time" and "now" are the same instant by construction (an author reading
+/// back the write they just applied), so mirroring the current document loses no information the
+/// commit-time half of `filter_command` would otherwise see. `ws::conn`'s live-broadcast and
+/// replay paths instead carry the real, persisted commit-time snapshot end to end
+/// (`ws::conn::send_filtered_event` reads `StoredCommand.snapshot` directly) and never call this
+/// function. `world_gm_at_commit` carries exactly the one entry `filter_command` ever looks up
+/// for a given `ctx`: `ctx.user_id -> (ctx.world_role == WorldRole::Gm)`.
 pub fn mirror_current_snapshot<'a>(
     cmd: &Command,
     ctx: &PermissionContext,
