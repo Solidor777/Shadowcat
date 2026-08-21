@@ -1075,6 +1075,12 @@ pub(crate) fn touches_permissions(path: &str) -> bool {
 /// `load_current_docs`) are hoisted and awaited by the caller BEFORE calling in. The commit-time
 /// half never queries anything live — it is fully derived from `snapshot`, by construction (no
 /// live-state parameter exists on this function to reintroduce one from).
+///
+/// World capability GRANTS (`world_defaults`) are never snapshotted — both halves of the READ
+/// conjunction resolve access via `resolve_access_world` with the SAME live `world_defaults`,
+/// differing only in the document state, owner, and world ROLE (`world_role_commit` vs
+/// `ctx.world_role`) each half carries. World ROLE (GM standing) IS snapshotted, via
+/// `world_role_commit`.
 pub fn filter_command<'a>(
     cmd: &Command,
     snapshot: &CommandSnapshot,
@@ -1102,10 +1108,14 @@ pub fn filter_command<'a>(
         };
         match op {
             Operation::Create { doc } => {
-                let access_commit = resolve_access(
+                // World capability GRANTS stay current-only at BOTH halves of the READ
+                // conjunction (world ROLE is still commit-scoped via `world_role_commit`) — the
+                // same live `world_defaults` layered onto `access_current` below.
+                let access_commit = resolve_access_world(
                     ctx.user_id,
                     world_role_commit,
                     doc,
+                    &world_defaults.grants_for(&doc.doc_type),
                     op_snapshot.owner_at_commit,
                 );
                 let owner_current = effective_owner_via(doc, &actor_lookup);
@@ -1137,10 +1147,13 @@ pub fn filter_command<'a>(
                         }
                     }
                 }
-                let access_commit = resolve_access(
+                // World capability GRANTS stay current-only at BOTH halves of the READ
+                // conjunction (world ROLE is still commit-scoped via `world_role_commit`).
+                let access_commit = resolve_access_world(
                     ctx.user_id,
                     world_role_commit,
                     doc,
+                    &world_defaults.grants_for(&doc.doc_type),
                     op_snapshot.owner_at_commit,
                 );
                 let owner_current = effective_owner_via(doc, &actor_lookup);
@@ -1179,10 +1192,15 @@ pub fn filter_command<'a>(
                         .unwrap_or_default(),
                     ..cur.doc.clone()
                 };
-                let access_commit = resolve_access(
+                // World capability GRANTS stay current-only at BOTH halves of the READ
+                // conjunction (world ROLE is still commit-scoped via `world_role_commit`).
+                // Update never changes doc_type, so `commit_doc.doc_type` and `cur.doc.doc_type`
+                // agree; kept on `commit_doc` to pair with the rest of this half's arguments.
+                let access_commit = resolve_access_world(
                     ctx.user_id,
                     world_role_commit,
                     &commit_doc,
+                    &world_defaults.grants_for(&commit_doc.doc_type),
                     op_snapshot.owner_at_commit,
                 );
                 let owner_current = effective_owner_via(&cur.doc, &actor_lookup);
@@ -4952,6 +4970,71 @@ mod tests {
         assert_eq!(
             a, b,
             "collect_hidden must equal collect_overrides + hidden_from_overrides"
+        );
+    }
+
+    #[test]
+    fn world_cap_default_grant_rescues_read_at_both_halves_of_the_commit_current_conjunction() {
+        // A recipient with NO document-level READ (default: DocRole::None, not owner, not
+        // individually listed) but a world `WorldCapDefaults` grant of `cap::READ` for their
+        // floored role must still receive the op — at BOTH the commit-time and current-time
+        // halves of `filter_command`'s READ conjunction, since world capability GRANTS stay
+        // current-only at both halves (never commit-snapshotted).
+        let world = Uuid::from_u128(9);
+        let author = Uuid::from_u128(1);
+        let doc_id = Uuid::from_u128(2);
+        let recipient = Uuid::from_u128(20);
+        let denied = PermissionSet {
+            default: DocRole::None,
+            ..Default::default()
+        };
+        let cmd = field_change_update_cmd(
+            world,
+            author,
+            doc_id,
+            "/system/x",
+            serde_json::json!(1),
+            serde_json::json!(2),
+        );
+        let op = op_snapshot_update(None, vec![], denied.clone());
+        let snapshot = snapshot_one_op(op, HashMap::new());
+        let cur = doc(denied, serde_json::json!({ "x": 2 }));
+        let current = HashMap::from([(doc_id, current_doc(cur, 0))]);
+        let ctx = PermissionContext {
+            user_id: recipient,
+            world_role: WorldRole::Player,
+        };
+
+        let mut world_defaults = WorldCapDefaults::default();
+        world_defaults
+            .all
+            .by_role
+            .entry(DocRole::None)
+            .or_default()
+            .insert(cap::READ.to_string());
+
+        let out_with_grant =
+            filter_command(&cmd, &snapshot, &ctx, &world_defaults, &current, |_| None);
+        assert!(
+            !out_with_grant.ops.is_empty(),
+            "a world-cap-default READ grant must rescue an op the document's own \
+             permissions deny, at both the commit-time and current-time halves"
+        );
+
+        // Negative control: the same recipient, same document, with NO world grant — the op
+        // must still be dropped (confirms the rescue above is attributable to the grant, not
+        // a change to the document/recipient setup).
+        let out_no_grant = filter_command(
+            &cmd,
+            &snapshot,
+            &ctx,
+            &WorldCapDefaults::default(),
+            &current,
+            |_| None,
+        );
+        assert!(
+            out_no_grant.ops.is_empty(),
+            "with neither document access nor a world grant, the op must still be dropped"
         );
     }
 }
