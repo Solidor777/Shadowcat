@@ -239,8 +239,12 @@ pub struct WorldImportData {
     /// entry — bytes already on disk, in the SAME directory their final path
     /// will live in (so `SqliteRepository::import_world`'s finalize step is
     /// a same-filesystem rename), named `"<asset_id>.<random>.import-tmp"`.
-    /// `import_world` renames each into place only after every DB row
-    /// commits successfully.
+    /// `import_world` renames each into place after every DB row has been
+    /// accepted by the transaction but BEFORE that transaction commits — the
+    /// safer of the two orders, since it guarantees a committed/visible
+    /// world's `assets` rows never reference a not-yet-finalized file; a
+    /// rename failure at that point still aborts and rolls back the whole
+    /// transaction.
     pub staged_assets: Vec<(Uuid, PathBuf)>,
 }
 

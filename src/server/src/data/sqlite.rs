@@ -157,6 +157,18 @@ pub struct NewInvite<'a> {
     pub expires_at: i64,
 }
 
+/// The `documents` row's scope/source column tuple `document_row_columns`
+/// derives from a `Document` envelope: `(scope_kind, world_id, pack,
+/// source_id, source_pack, source_version)`.
+type DocumentRowColumns = (
+    &'static str,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<i64>,
+);
+
 /// SQLite-backed storage. Holds a connection pool; migrations are embedded
 /// from `migrations/` and run at connect time.
 pub struct SqliteRepository {
@@ -1111,38 +1123,30 @@ impl SqliteRepository {
     /// Insert one imported document row with EXPLICIT `seq`/`created_seq`,
     /// independently preserved from the source server — unlike the live
     /// write path's `upsert_document`, where a fresh Create always sets
-    /// `seq == created_seq`. Re-derives every column from `doc` the same way
-    /// `upsert_document` does, and reindexes both FTS tables from
-    /// `doc`'s content so search state is rebuilt rather than carried across
-    /// servers (`documents_fts_public`/`documents_fts_gm` are never
-    /// exported/imported directly — see `data::world_bundle`'s module doc).
-    /// A plain `INSERT` (not `upsert_document`'s `ON CONFLICT(id) DO
-    /// UPDATE`): a document id colliding with an existing row anywhere on
-    /// the target server (a separate axis from the already-gated world-id
-    /// collision) is a genuine data-integrity fault, and letting the
-    /// `UNIQUE` constraint violation surface as an ordinary `DataError::Sqlx`
-    /// — aborting and rolling back the whole import transaction — is exactly
-    /// the "any row-insert failure mid-transaction rolls back the whole
-    /// import" behavior `import_world` already provides, not a case needing
-    /// special handling.
+    /// `seq == created_seq`. Shares `document_row_columns`/
+    /// `reindex_document_fts` with `upsert_document` (search state is
+    /// rebuilt from `doc`'s content, never carried across servers —
+    /// `documents_fts_public`/`documents_fts_gm` are never exported/imported
+    /// directly, see `data::world_bundle`'s module doc). A plain `INSERT`
+    /// (not `upsert_document`'s `ON CONFLICT(id) DO UPDATE`): a document id
+    /// colliding with an existing row anywhere on the target server (a
+    /// separate axis from the already-gated world-id collision) is a
+    /// genuine data-integrity fault, and letting the `UNIQUE` constraint
+    /// violation surface as an ordinary `DataError::Sqlx` — aborting and
+    /// rolling back the whole import transaction — is exactly the "any
+    /// row-insert failure mid-transaction rolls back the whole import"
+    /// behavior `import_world` already provides, not a case needing special
+    /// handling. Callers must run `doc` through the same ingress validation
+    /// every live write path runs (`import_world`'s own per-document loop
+    /// does) before calling this — this function itself performs none.
     async fn insert_imported_document(
         conn: &mut sqlx::SqliteConnection,
         doc: &Document,
         seq: i64,
         created_seq: i64,
     ) -> Result<(), DataError> {
-        let (scope_kind, world_id, pack) = match &doc.scope {
-            Scope::Compendium { pack } => ("compendium", None, Some(pack.clone())),
-            Scope::World { world_id } => ("world", Some(world_id.to_string()), None),
-        };
-        let (source_id, source_pack, source_version) = match &doc.source {
-            Some(s) => (
-                Some(s.id.to_string()),
-                s.pack.clone(),
-                Some(s.version as i64),
-            ),
-            None => (None, None, None),
-        };
+        let (scope_kind, world_id, pack, source_id, source_pack, source_version) =
+            Self::document_row_columns(doc);
         let json = serde_json::to_string(doc)?;
         sqlx::query(
             "INSERT INTO documents (id, scope_kind, world_id, pack, doc_type, schema_version, \
@@ -1167,31 +1171,7 @@ impl SqliteRepository {
         .bind(doc.updated_at)
         .execute(&mut *conn)
         .await?;
-        sqlx::query("DELETE FROM documents_fts_public WHERE doc_id = ?")
-            .bind(doc.id.to_string())
-            .execute(&mut *conn)
-            .await?;
-        sqlx::query("DELETE FROM documents_fts_gm WHERE doc_id = ?")
-            .bind(doc.id.to_string())
-            .execute(&mut *conn)
-            .await?;
-        sqlx::query(
-            "INSERT INTO documents_fts_public (content, doc_id, world_id) VALUES (?, ?, ?)",
-        )
-        .bind(crate::data::search::index_content_public(doc))
-        .bind(doc.id.to_string())
-        .bind(world_id.clone())
-        .execute(&mut *conn)
-        .await?;
-        sqlx::query(
-            "INSERT INTO documents_fts_gm (content_all, doc_id, world_id) VALUES (?, ?, ?)",
-        )
-        .bind(crate::data::search::index_content(doc))
-        .bind(doc.id.to_string())
-        .bind(world_id)
-        .execute(&mut *conn)
-        .await?;
-        Ok(())
+        Self::reindex_document_fts(conn, doc, world_id).await
     }
 
     /// Import one `WorldImportData` bundle in a single transaction: reject a
@@ -1208,7 +1188,17 @@ impl SqliteRepository {
     /// are DROPPED (their `user_id` column is `NOT NULL`, so there is no
     /// `SET NULL` degradation to fall back to, unlike the four nullable
     /// owner/author/created_by/consumed_by columns) — counted in the
-    /// returned `ImportSummary` rather than silently absorbed.
+    /// returned `ImportSummary` rather than silently absorbed. Every
+    /// document is run through the same ingress-validation chokepoint the
+    /// live `Create`/`Update` write paths use
+    /// (`validation::validate_system_size`/`validate_engine_tree`/
+    /// `validate_system_schema_tree`) before it reaches storage — an
+    /// imported bundle is untrusted input to THIS server even when it was
+    /// exported by a trusted admin from another one. Holds the pool's single
+    /// writer connection for the entire call, including the asset-rename
+    /// loop — every other server write (chat, moves, document edits) blocks
+    /// for the whole import, the same trade-off `POST /api/admin/backup`
+    /// already accepts for its snapshot.
     pub async fn import_world(&self, data: WorldImportData) -> Result<ImportSummary, DataError> {
         let mut tx = self.pool.begin().await?;
         let world = data.manifest.world_id;
@@ -1223,6 +1213,22 @@ impl SqliteRepository {
             )));
         }
 
+        // Every `assets` row must have a matching staged file, or the
+        // finalize loop below would leave a DB row with no backing bytes on
+        // a truncated/malformed bundle. Checked up front, before any row is
+        // written, so this failure mode is atomic like every other
+        // `import_world` rejection.
+        let staged_ids: std::collections::HashSet<Uuid> =
+            data.staged_assets.iter().map(|(id, _)| *id).collect();
+        for row in &data.assets {
+            if !staged_ids.contains(&row.id) {
+                return Err(DataError::OpFailed(format!(
+                    "asset {} has no corresponding staged file in the bundle",
+                    row.id
+                )));
+            }
+        }
+
         sqlx::query(
             "INSERT INTO worlds (id, name, seq, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
         )
@@ -1234,10 +1240,35 @@ impl SqliteRepository {
         .execute(&mut *tx)
         .await?;
 
+        // The tier-2 structural schema registry `validate_system_schema_tree`
+        // needs, read from the BUNDLE's own imported `settings` rows rather
+        // than `self.world_schema_declarations(world)` — that method queries
+        // `self.pool` via a fresh connection, which would deadlock against
+        // the transaction already held here under this server's
+        // `max_connections(1)` single-writer pool. Mirrors
+        // `world_schema_declarations`'s own `None => Vec::new()` default.
+        let world_schemas: Vec<SchemaDeclaration> = data
+            .settings
+            .iter()
+            .find(|s| s.key == world_schemas_key(world))
+            .map(|s| serde_json::from_str(&s.value))
+            .transpose()?
+            .unwrap_or_default();
+
         for row in &data.documents {
             let owner = Self::resolve_username_tx(&mut tx, row.owner_username.as_deref()).await?;
             let mut document = row.document.clone();
             document.owner = owner;
+            // Same ingress-validation chokepoint every live `Create`/`Update`
+            // runs before a document reaches storage (see e.g. the
+            // `Operation::Update` handler in `apply_intent`) — an imported
+            // bundle is untrusted input, not a trusted internal write.
+            // `validate_engine_tree` mutates `document.engine` in place
+            // (re-normalizes it); the persisted row must hold that
+            // normalized form, same as every other write path.
+            validation::validate_system_size(&document)?;
+            validation::validate_engine_tree(&mut document)?;
+            validation::validate_system_schema_tree(&document, &world_schemas)?;
             Self::insert_imported_document(&mut tx, &document, row.seq, row.created_seq).await?;
         }
 
@@ -1386,6 +1417,12 @@ impl SqliteRepository {
             finalized.push(dest);
         }
 
+        // Accepted low-likelihood risk: if every asset above renamed
+        // successfully but this commit itself then fails, the renamed files
+        // remain on disk with no `assets` row (and no `worlds` row at all)
+        // referencing them — an orphan, not a visible/reachable partial
+        // world. A SQLite commit failure this late (all statements already
+        // succeeded) is rare; no compensating cleanup is implemented for it.
         tx.commit().await?;
 
         Ok(ImportSummary {
@@ -2289,15 +2326,14 @@ impl SqliteRepository {
         Ok(())
     }
 
-    /// Upsert a document row from its envelope, stamping `seq`, and rewrite its
-    /// FTS index row in the same transaction (crash-consistent). Takes a
-    /// `&mut SqliteConnection` because it runs multiple statements; callers pass
-    /// `&mut *tx`.
-    async fn upsert_document(
-        conn: &mut sqlx::SqliteConnection,
-        doc: &Document,
-        seq: i64,
-    ) -> Result<(), DataError> {
+    /// Derives the `documents` row's scope/source columns from `doc`'s
+    /// envelope — the exact derivation `upsert_document` and
+    /// `insert_imported_document` both need before their (differing) INSERT
+    /// statements, factored out once so the two document-write paths cannot
+    /// silently diverge on it (see `shadowcat-codebase-core`'s "never fork a
+    /// decision across two paths"). Returns `(scope_kind, world_id, pack,
+    /// source_id, source_pack, source_version)`.
+    fn document_row_columns(doc: &Document) -> DocumentRowColumns {
         let (scope_kind, world_id, pack) = match &doc.scope {
             Scope::Compendium { pack } => ("compendium", None, Some(pack.clone())),
             Scope::World { world_id } => ("world", Some(world_id.to_string()), None),
@@ -2310,6 +2346,73 @@ impl SqliteRepository {
             ),
             None => (None, None, None),
         };
+        (
+            scope_kind,
+            world_id,
+            pack,
+            source_id,
+            source_pack,
+            source_version,
+        )
+    }
+
+    /// Rewrite `doc`'s FTS index rows (both visibility-tier tables) in the
+    /// caller's transaction — the delete-then-reinsert block
+    /// `upsert_document` and `insert_imported_document` both need after
+    /// their (differing) `documents` INSERT, factored out once for the same
+    /// never-fork reason as `document_row_columns`. `world_id` is passed in
+    /// (rather than re-derived) because both callers already computed it via
+    /// `document_row_columns`.
+    ///
+    /// Two SEPARATE single-column tables, not two columns of one table:
+    /// bm25()'s row-length normalization is computed from the WHOLE ROW (all
+    /// columns), so a shared table would let a non-GM query's score be
+    /// shifted by the mere LENGTH of GM-only text on the same row even when
+    /// column weights zero out that column's term-frequency contribution.
+    /// Separate tables make each tier's row length genuinely isolated.
+    async fn reindex_document_fts(
+        conn: &mut sqlx::SqliteConnection,
+        doc: &Document,
+        world_id: Option<String>,
+    ) -> Result<(), DataError> {
+        sqlx::query("DELETE FROM documents_fts_public WHERE doc_id = ?")
+            .bind(doc.id.to_string())
+            .execute(&mut *conn)
+            .await?;
+        sqlx::query("DELETE FROM documents_fts_gm WHERE doc_id = ?")
+            .bind(doc.id.to_string())
+            .execute(&mut *conn)
+            .await?;
+        sqlx::query(
+            "INSERT INTO documents_fts_public (content, doc_id, world_id) VALUES (?, ?, ?)",
+        )
+        .bind(crate::data::search::index_content_public(doc))
+        .bind(doc.id.to_string())
+        .bind(world_id.clone())
+        .execute(&mut *conn)
+        .await?;
+        sqlx::query(
+            "INSERT INTO documents_fts_gm (content_all, doc_id, world_id) VALUES (?, ?, ?)",
+        )
+        .bind(crate::data::search::index_content(doc))
+        .bind(doc.id.to_string())
+        .bind(world_id)
+        .execute(&mut *conn)
+        .await?;
+        Ok(())
+    }
+
+    /// Upsert a document row from its envelope, stamping `seq`, and rewrite its
+    /// FTS index row in the same transaction (crash-consistent). Takes a
+    /// `&mut SqliteConnection` because it runs multiple statements; callers pass
+    /// `&mut *tx`.
+    async fn upsert_document(
+        conn: &mut sqlx::SqliteConnection,
+        doc: &Document,
+        seq: i64,
+    ) -> Result<(), DataError> {
+        let (scope_kind, world_id, pack, source_id, source_pack, source_version) =
+            Self::document_row_columns(doc);
         let json = serde_json::to_string(doc)?;
         sqlx::query(
             "INSERT INTO documents (id, scope_kind, world_id, pack, doc_type, schema_version, \
@@ -2341,38 +2444,7 @@ impl SqliteRepository {
         .bind(doc.updated_at)
         .execute(&mut *conn)
         .await?;
-        // Two SEPARATE single-column tables, not two columns of one table:
-        // bm25()'s row-length normalization is computed from the WHOLE ROW
-        // (all columns), so a shared table would let a non-GM query's score
-        // be shifted by the mere LENGTH of GM-only text on the same row even
-        // when column weights zero out that column's term-frequency
-        // contribution. Separate tables make each tier's row length genuinely
-        // isolated.
-        sqlx::query("DELETE FROM documents_fts_public WHERE doc_id = ?")
-            .bind(doc.id.to_string())
-            .execute(&mut *conn)
-            .await?;
-        sqlx::query("DELETE FROM documents_fts_gm WHERE doc_id = ?")
-            .bind(doc.id.to_string())
-            .execute(&mut *conn)
-            .await?;
-        sqlx::query(
-            "INSERT INTO documents_fts_public (content, doc_id, world_id) VALUES (?, ?, ?)",
-        )
-        .bind(crate::data::search::index_content_public(doc))
-        .bind(doc.id.to_string())
-        .bind(world_id.clone())
-        .execute(&mut *conn)
-        .await?;
-        sqlx::query(
-            "INSERT INTO documents_fts_gm (content_all, doc_id, world_id) VALUES (?, ?, ?)",
-        )
-        .bind(crate::data::search::index_content(doc))
-        .bind(doc.id.to_string())
-        .bind(world_id)
-        .execute(&mut *conn)
-        .await?;
-        Ok(())
+        Self::reindex_document_fts(conn, doc, world_id).await
     }
 
     /// Remove a document's FTS rows (both visibility-tier tables). Call
@@ -7479,6 +7551,119 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(count, 1);
+    }
+
+    #[tokio::test]
+    async fn import_world_drops_fog_row_when_username_unresolvable() {
+        let src = repo().await;
+        let gm = src
+            .create_user("gm6", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let rememberer = src
+            .create_user("rememberer-not-on-target", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = src.create_world_owned("W6", gm, 0).await.unwrap();
+        let scene = world_doc(13, w.id, serde_json::json!({}));
+        let mut conn = src.pool().acquire().await.unwrap();
+        SqliteRepository::upsert_document(&mut conn, &scene, 1)
+            .await
+            .unwrap();
+        drop(conn);
+        src.set_explored(w.id, scene.id, rememberer, &[9, 9, 9])
+            .await
+            .unwrap();
+
+        let export_data = src.export_world_rows(w.id).await.unwrap();
+        assert_eq!(export_data.fog.len(), 1);
+
+        // Target has neither `gm6` nor `rememberer-not-on-target`.
+        let target = repo().await;
+        let import_data = crate::data::world_bundle::WorldImportData {
+            manifest: export_data.manifest.clone(),
+            documents: export_data.documents.clone(),
+            events: export_data.events.clone(),
+            members: export_data.members.clone(),
+            invites: export_data.invites.clone(),
+            assets: export_data.assets.clone(),
+            fog: export_data.fog.clone(),
+            settings: export_data.settings.clone(),
+            staged_assets: Vec::new(),
+        };
+        let summary = target.import_world(import_data).await.unwrap();
+        assert_eq!(summary.skipped_fog, 1);
+
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM explored_fog WHERE world_id = ?")
+            .bind(w.id.to_string())
+            .fetch_one(target.pool())
+            .await
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[tokio::test]
+    async fn import_world_inserts_world_invites_row() {
+        let src = repo().await;
+        let gm = src
+            .create_user("gm7", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = src.create_world_owned("W7", gm, 0).await.unwrap();
+        let invite_id = Uuid::new_v4();
+        assert!(src
+            .create_invite(
+                NewInvite {
+                    id: invite_id,
+                    world: w.id,
+                    secret_hash: "PHC$fake-hash-for-test",
+                    role: WorldRole::Player,
+                    created_by: gm,
+                    now: 0,
+                    expires_at: 1_000,
+                },
+                10,
+            )
+            .await
+            .unwrap());
+
+        let export_data = src.export_world_rows(w.id).await.unwrap();
+        assert_eq!(export_data.invites.len(), 1);
+        assert_eq!(
+            export_data.invites[0].created_by_username.as_deref(),
+            Some("gm7")
+        );
+        assert_eq!(export_data.invites[0].consumed_by_username, None);
+
+        let target = repo().await;
+        let target_gm = target
+            .create_user("gm7", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let import_data = crate::data::world_bundle::WorldImportData {
+            manifest: export_data.manifest.clone(),
+            documents: export_data.documents.clone(),
+            events: export_data.events.clone(),
+            members: export_data.members.clone(),
+            invites: export_data.invites.clone(),
+            assets: export_data.assets.clone(),
+            fog: export_data.fog.clone(),
+            settings: export_data.settings.clone(),
+            staged_assets: Vec::new(),
+        };
+        target.import_world(import_data).await.unwrap();
+
+        let row: (String, String, Option<String>, Option<String>) = sqlx::query_as(
+            "SELECT secret_hash, role, created_by, consumed_by FROM world_invites WHERE id = ?",
+        )
+        .bind(invite_id.to_string())
+        .fetch_one(target.pool())
+        .await
+        .unwrap();
+        assert_eq!(row.0, "PHC$fake-hash-for-test");
+        assert_eq!(row.1, "player");
+        assert_eq!(row.2, Some(target_gm.to_string()));
+        assert_eq!(row.3, None);
     }
 
     #[tokio::test]
