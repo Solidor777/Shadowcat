@@ -27,6 +27,7 @@ import {
   type WireDocument,
   type WireCapabilityRequirement,
   type ChatSendOptions,
+  type WireRecalcOp,
   type SceneFrame,
   type SceneSubscription,
   type PathResult,
@@ -682,6 +683,23 @@ export class WorldSession {
   deleteChatMessage(messageId: string): Promise<void> {
     if (!this.#ws) return Promise.reject(new Error("not connected"));
     return this.#ws.deleteChatMessage(messageId);
+  }
+
+  /** GM-only roll correction. Resolves/rejects with the correlated outcome.
+   * @param messageId The message carrying the targeted roll.
+   * @param rollId The targeted roll's stable id.
+   * @param ops The targeted mutation(s) to apply.
+   * @returns Same silence-based resolution as `sendChatMessage` -- resolves when the error window
+   * elapses with no correlated `chat_error`, rejects on one or on disconnect.
+   * @example
+   * ```
+   * declare const session: WorldSession;
+   * await session.recalcRoll("msg-1", "roll-1", [{ kind: "remove_dice", ids: [2] }]);
+   * ```
+   */
+  recalcRoll(messageId: string, rollId: string, ops: WireRecalcOp[]): Promise<void> {
+    if (!this.#ws) return Promise.reject(new Error("not connected"));
+    return this.#ws.recalcRoll(messageId, rollId, ops);
   }
 
   /** Subscribe to a SceneDerived channel. Returns a synchronous handle; the

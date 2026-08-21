@@ -163,6 +163,115 @@ export const rollOutcomeSchemaImpl = z.object({
  * hand-written `RollOutcome` output type keeps it required. */
 export const RollOutcomeSchema: z.ZodType<RollOutcome, z.ZodTypeDef, unknown> = rollOutcomeSchemaImpl;
 
+/** A die's face space for the recalc picker. Mirrors `dice::spec::DieKind`
+ * (externally tagged -- the crate's plain serde default; `dice` carries no
+ * ts-rs bindings by design). Only `Numeric` bounds are read by the client
+ * (chat notation cannot produce `Faces` today); a `Faces` die still parses,
+ * but `numericBounds` returns `null` for it and the "replace this die's
+ * face" affordance simply does not render. */
+export type WireDieKind =
+  | { Numeric: { min: number; max: number } }
+  | { Faces: { faces: { value?: number | null; symbols: string[] }[] } };
+
+// Unannotated impl const — see `dieRecordSchemaImpl`'s note above.
+export const wireDieKindSchemaImpl = z.union([
+  z.object({ Numeric: z.object({ min: z.number(), max: z.number() }) }),
+  z.object({
+    Faces: z.object({
+      faces: z.array(z.object({ value: z.number().nullish(), symbols: z.array(z.string()) })),
+    }),
+  }),
+]);
+/** Validator for a `WireDieKind`. */
+export const WireDieKindSchema: z.ZodType<WireDieKind> = wireDieKindSchemaImpl;
+
+/** A roll's natural-face log, mirroring `dice::outcome::RawRoll` -- GM-visible
+ * only (see `ChatSegment`'s `roll_embed.raw` doc). Only `dice`/`group_spans`
+ * are modeled: `baseRollDice` targets a roll's BASE dice only (`group_spans`'
+ * index ranges into `dice`, excluding explosion/penetrate children, matching
+ * `dice::recalc::recalculate`'s own restriction), reading each base die's
+ * stable `id` and pre-modifier `natural` face directly off `dice`; `records`/
+ * `next_id` carry no information this client needs and are intentionally
+ * unmirrored (tolerated via `.passthrough()`, never rejected). */
+export type WireRawRoll = {
+  dice: { id: number; kind: WireDieKind; natural: number }[];
+  group_spans: [number, number][];
+};
+
+// Unannotated impl const — see `dieRecordSchemaImpl`'s note above.
+export const wireRawRollSchemaImpl = z.object({
+  dice: z.array(z.object({ id: z.number(), kind: WireDieKindSchema, natural: z.number() })),
+  group_spans: z.array(z.tuple([z.number(), z.number()])),
+});
+/** Validator for a `WireRawRoll`. `.passthrough()` tolerates server-only
+ * fields (`records`, `next_id`) this mirror does not model. */
+export const WireRawRollSchema: z.ZodType<WireRawRoll> = wireRawRollSchemaImpl.passthrough();
+
+/** One applied recalculation, mirroring `chat::RecalcEntry`. Only
+ * `previous_outcome`/`recalculated_by`/`recalculated_at` are modeled -- the
+ * card's "recalculated" badge shows a prior/after summary from
+ * `previous_outcome` vs. the segment's own current `outcome`; `ops`/
+ * `previous_raw` carry no rendered information (`previous_raw` is GM-only
+ * server-side, and the client never needs to reconstruct a past recalc's
+ * exact die-level state) and pass through unvalidated. */
+export type RecalcHistoryEntry = {
+  previous_outcome: RollOutcome;
+  recalculated_by: string;
+  recalculated_at: number;
+};
+
+// Unannotated impl const — see `dieRecordSchemaImpl`'s note above.
+export const recalcHistoryEntrySchemaImpl = z.object({
+  previous_outcome: RollOutcomeSchema,
+  recalculated_by: z.string(),
+  recalculated_at: z.number(),
+});
+/** Validator for a `RecalcHistoryEntry`. Input type is widened to `unknown`
+ * because `previous_outcome: RollOutcomeSchema` inherits that schema's own
+ * widened input (see `RollOutcomeSchema`'s doc). `.passthrough()` tolerates
+ * `ops`/`previous_raw`, which this mirror does not model. */
+export const RecalcHistoryEntrySchema: z.ZodType<RecalcHistoryEntry, z.ZodTypeDef, unknown> =
+  recalcHistoryEntrySchemaImpl.passthrough();
+
+/** The BASE dice a recalc may target: `raw.dice` sliced by each
+ * `group_spans` range (see `WireRawRoll`'s doc -- explosion/penetrate
+ * children fall outside every span and are never recalc-targetable).
+ * @param raw The roll's stored natural-face log.
+ * @returns Every base die, in roll order.
+ * @example
+ * ```ts
+ * import { baseRollDice } from "@shadowcat/core";
+ *
+ * baseRollDice({ dice: [{ id: 0, kind: { Numeric: { min: 1, max: 6 } }, natural: 3 }], group_spans: [[0, 1]] });
+ * ```
+ */
+export function baseRollDice(raw: WireRawRoll): { id: number; kind: WireDieKind; natural: number }[] {
+  const out: { id: number; kind: WireDieKind; natural: number }[] = [];
+  for (const [start, count] of raw.group_spans) {
+    for (let i = start; i < start + count; i++) {
+      const d = raw.dice[i];
+      if (d) out.push(d);
+    }
+  }
+  return out;
+}
+
+/** Numeric bounds for a die's "replace this die's face" input, or `null` for
+ * a `Faces` die (chat notation cannot produce one today; the affordance
+ * simply does not render -- see `WireDieKind`'s doc).
+ * @param kind The die's face space.
+ * @returns `{min, max}` for a `Numeric` die, else `null`.
+ * @example
+ * ```ts
+ * import { numericBounds } from "@shadowcat/core";
+ *
+ * numericBounds({ Numeric: { min: 1, max: 20 } }); // { min: 1, max: 20 }
+ * ```
+ */
+export function numericBounds(kind: WireDieKind): { min: number; max: number } | null {
+  return "Numeric" in kind ? kind.Numeric : null;
+}
+
 /** One piece of a message's sanitized content model — one of the five known segment
  * kinds. Mirrors `chat::Segment`. `html.sanitized_html` is innerHTML-safe ONLY because
  * the server's `chat::sanitize` (ammonia) produced it — no client code may construct one.
@@ -192,6 +301,22 @@ export type ChatSegment =
       formula: string;
       /** The full deterministic outcome, natural faces included. */
       outcome: RollOutcome;
+      /** Stable identity for this roll; a recalc targets it by this id, never by
+       * array index. Optional here (not `.default(...)`) purely to tolerate a
+       * malformed/legacy test fixture omitting it -- the server always emits it. */
+      roll_id?: string;
+      /** GM-visible only: the parsed spec this roll was scored from. Absent for a
+       * roll embedded before recalc-from-chat shipped, or when this recipient is
+       * not a GM. Kept opaque (`unknown`) -- the client never parses a full
+       * `RollSpec`; only `raw` powers the recalc picker. */
+      spec?: unknown;
+      /** GM-visible only: the natural-face log this roll was evaluated from.
+       * Powers the GM recalc picker (`baseRollDice`/`numericBounds`); absent for
+       * a pre-existing roll or a non-GM recipient. */
+      raw?: WireRawRoll | null;
+      /** Present iff this roll has been recalculated at least once; visible to
+       * every recipient (unlike `spec`/`raw`). */
+      recalc_history?: RecalcHistoryEntry[] | null;
     }
   | {
       /** An unexecuted, validated formula the client renders as a button; clicking it
@@ -219,7 +344,15 @@ export type ChatSegment =
 export const chatSegmentSchemaImpl = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("text"), text: z.string() }),
   z.object({ kind: z.literal("html"), sanitized_html: z.string() }),
-  z.object({ kind: z.literal("roll_embed"), formula: z.string(), outcome: RollOutcomeSchema }),
+  z.object({
+    kind: z.literal("roll_embed"),
+    formula: z.string(),
+    outcome: RollOutcomeSchema,
+    roll_id: z.string().optional(),
+    spec: z.unknown().optional(),
+    raw: WireRawRollSchema.nullish(),
+    recalc_history: z.array(RecalcHistoryEntrySchema).nullish(),
+  }),
   z.object({ kind: z.literal("roll_button"), formula: z.string(), label: z.string().nullish() }),
   z.object({ kind: z.literal("link_preview"), url: z.string(), title: z.string(), description: z.string() }),
 ]);

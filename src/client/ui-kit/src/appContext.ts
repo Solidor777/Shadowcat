@@ -1,5 +1,5 @@
 import { getContext, setContext } from "svelte";
-import type { ContributionRegistry, DocumentStore, ReadableDocuments, AssetResolver, SceneFrame, SceneSubscription, WireOperation, WireDocument, PathResult, MoveStream, ChatSendOptions, SheetRef, SubscriptionHandle, WireSearchHit, StampOpts, SyncState, FootprintLookup, NotificationLevel } from "@shadowcat/core";
+import type { ContributionRegistry, DocumentStore, ReadableDocuments, AssetResolver, SceneFrame, SceneSubscription, WireOperation, WireDocument, PathResult, MoveStream, ChatSendOptions, WireRecalcOp, SheetRef, SubscriptionHandle, WireSearchHit, StampOpts, SyncState, FootprintLookup, NotificationLevel } from "@shadowcat/core";
 import type { WorldRole } from "@shadowcat/types";
 import type { SceneInteraction } from "./sceneInteraction";
 import type { ActorSelection } from "./actorSelection.svelte";
@@ -40,6 +40,15 @@ export interface ChatApi {
    * @param messageId - Id of the message to delete.
    * @returns Resolves once the delete is accepted; rejects on ownership/server refusal. */
   delete(messageId: string): Promise<void>;
+  /** GM-only roll correction: locate a roll by id and apply targeted die
+   * mutations, appending an auditable `recalc_history` entry. Same
+   * correlated-rejection contract as `send`/`edit`/`delete`.
+   * @param messageId - Id of the message carrying the targeted roll.
+   * @param rollId - The targeted roll's stable id.
+   * @param ops - The targeted mutation(s) to apply.
+   * @returns Resolves once the recalc is accepted; rejects on a non-GM sender
+   * or server refusal. */
+  recalc(messageId: string, rollId: string, ops: WireRecalcOp[]): Promise<void>;
 }
 
 /** Template pull/push/revert/stamp seam. Thin orchestration over `store`/`documents` +

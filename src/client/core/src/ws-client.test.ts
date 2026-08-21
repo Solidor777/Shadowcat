@@ -1083,6 +1083,27 @@ describe("WsClient", () => {
     expect(typeof frame.request_id).toBe("string");
   });
 
+  it("recalcRoll sends a recalc_roll frame with a request_id", async () => {
+    const sent: string[] = [];
+    const client = new WsClient({
+      world: "w1",
+      connect: () => Promise.resolve({ send: (d) => sent.push(d), close: () => {} }),
+      handlers: noop,
+    });
+    await client.start();
+
+    void client.recalcRoll("msg-1", "roll-1", [{ kind: "remove_dice", ids: [2] }]).catch(() => {});
+    const frame = JSON.parse(sent.find((s) => JSON.parse(s).type === "recalc_roll")!);
+    expect(frame).toMatchObject({
+      type: "recalc_roll",
+      message_id: "msg-1",
+      roll_id: "roll-1",
+      ops: [{ kind: "remove_dice", ids: [2] }],
+    });
+    expect(typeof frame.request_id).toBe("string");
+    expect(frame.request_id.length).toBeGreaterThan(0);
+  });
+
   it("a rejected chat op rejects the correlated promise with the server reason", async () => {
     const sent: string[] = [];
     let onMessage: (d: string) => void = () => {};

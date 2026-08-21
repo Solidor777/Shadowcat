@@ -89,6 +89,7 @@ export type {
   WirePermissionSet,
   WireMoveStreamSample,
   WireMoveStreamVisionSample,
+  WireRecalcOp,
 } from "./wire";
 export { AssetResolver } from "./assets";
 export type { AssetOp, AssetChangedNotice } from "./assets";
@@ -105,8 +106,8 @@ export { parseFootprints, EMPTY_FOOTPRINTS } from "./footprints";
 export type { FootprintExtent, FootprintLookup } from "./footprints";
 export { SHEET_CONTRACT_PREFIX, SHEET_FALLBACK_CONTRACT, sheetContract, resolveDocRef, pickSheet, isDiceNotation } from "./sheets";
 export type { SheetRef, SheetTarget } from "./sheets";
-export { MESSAGE_DOC_TYPE, CHANNEL_REGISTRY_DOC_TYPE, DICE_SETTINGS_DOC_TYPE, CHAT_SETTINGS_DOC_TYPE, MAX_MESSAGE_CHARS, MessageKindSchema, DieRecordSchema, RollOutcomeSchema, ChatSegmentSchema, ChatMessageEngineSchema, parseMessageEngine, isKnownSegment, buildChannelRegistryDoc, buildDiceSettingsDoc, buildChatSettingsDoc } from "./chat-docs";
-export type { MessageKind, DieRecord, RollOutcome, ChatSegment, UnknownSegment, ChatMessageEngine, ChannelRegistryEngine, ChatSettingsEngine, DiceSettingsEngine, ConstTerm } from "./chat-docs";
+export { MESSAGE_DOC_TYPE, CHANNEL_REGISTRY_DOC_TYPE, DICE_SETTINGS_DOC_TYPE, CHAT_SETTINGS_DOC_TYPE, MAX_MESSAGE_CHARS, MessageKindSchema, DieRecordSchema, RollOutcomeSchema, ChatSegmentSchema, ChatMessageEngineSchema, WireDieKindSchema, WireRawRollSchema, RecalcHistoryEntrySchema, parseMessageEngine, isKnownSegment, baseRollDice, numericBounds, buildChannelRegistryDoc, buildDiceSettingsDoc, buildChatSettingsDoc } from "./chat-docs";
+export type { MessageKind, DieRecord, RollOutcome, ChatSegment, UnknownSegment, ChatMessageEngine, ChannelRegistryEngine, ChatSettingsEngine, DiceSettingsEngine, ConstTerm, WireDieKind, WireRawRoll, RecalcHistoryEntry } from "./chat-docs";
 export { structuralDiff, deletePointer, deepEqual, merge3Tree, takeTemplate, isPlacementExcluded, merge3, restampSubtree, placementExclusions } from "./merge";
 export type { Diff, Conflict, MergeBands, MergeBase, EmbeddedBaseChild, MergePlan } from "./merge";
 export { snapshotBase, stampInstance, computePull, computeRevert, planToUpdate, applyResolutions, findInstances, syncState } from "./templates";

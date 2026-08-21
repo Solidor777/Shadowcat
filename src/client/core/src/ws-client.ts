@@ -12,6 +12,7 @@ import {
   type WireSearchHit,
   type WireActorOwnerRef,
   type WireAudience,
+  type WireRecalcOp,
 } from "./wire";
 import type { AssetChangedNotice } from "./assets";
 
@@ -1334,6 +1335,32 @@ export class WsClient {
     const request_id = crypto.randomUUID();
     const p = this.trackChatOp(request_id);
     this.send({ type: "delete_message", request_id, message_id: messageId });
+    return p;
+  }
+
+  /** GM-only roll correction. Resolves/rejects like `sendChatMessage`; the
+   * server rejects a non-GM sender via a correlated `chat_error`.
+   * @param messageId The message carrying the targeted roll.
+   * @param rollId The targeted roll's stable id.
+   * @param ops The targeted mutation(s) to apply.
+   * @returns Resolves (void) once the recalc is accepted; rejects with the
+   * server's player-presentable reason otherwise.
+   * @example
+   * ```ts
+   * import { WsClient, webSocketConnect } from "@shadowcat/core";
+   *
+   * const client = new WsClient({
+   *   connect: webSocketConnect("wss://example.test/ws"),
+   *   world: "world-1",
+   *   handlers: { onCommand: () => {} },
+   * });
+   * await client.recalcRoll("msg-1", "roll-1", [{ kind: "reroll_dice", ids: [0] }]);
+   * ```
+   */
+  recalcRoll(messageId: string, rollId: string, ops: WireRecalcOp[]): Promise<void> {
+    const request_id = crypto.randomUUID();
+    const p = this.trackChatOp(request_id);
+    this.send({ type: "recalc_roll", request_id, message_id: messageId, roll_id: rollId, ops });
     return p;
   }
 

@@ -54,7 +54,12 @@ export function setAppContextForTest(over: Partial<AppContext> = {}): Map<unknow
     moveRequest: over.moveRequest ?? (() => Promise.reject(new Error("not connected"))),
     onPing: over.onPing ?? (() => () => {}),
     onMoveOutcome: over.onMoveOutcome ?? (() => () => {}),
-    chat: over.chat ?? { send: () => Promise.resolve(), edit: () => Promise.resolve(), delete: () => Promise.resolve() },
+    chat: over.chat ?? {
+      send: () => Promise.resolve(),
+      edit: () => Promise.resolve(),
+      delete: () => Promise.resolve(),
+      recalc: () => Promise.resolve(),
+    },
     leaveWorld: over.leaveWorld ?? (() => {}),
     logout: over.logout ?? (async () => {}),
     uiState: over.uiState ?? {

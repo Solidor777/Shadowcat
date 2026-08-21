@@ -980,6 +980,14 @@ export const ServerMsgSchema: z.ZodType<ServerMsg> = serverMsgSchemaImpl;
 /** The inferred TS shape of `ScopeSchema` above. */
 export type WireScope = z.infer<typeof ScopeSchema>;
 
+/** Client-facing mirror of the dice engine's `RecalcOp`, carried on the
+ * `recalc_roll` frame. Mirrors `ws::protocol::WireRecalcOp` exactly (a
+ * discriminated union on `kind`). */
+export type WireRecalcOp =
+  | { kind: "reroll_dice"; ids: number[] }
+  | { kind: "replace_die"; id: number; natural: number }
+  | { kind: "remove_dice"; ids: number[] };
+
 /** Client -> server frames. Plain objects (numbers, JSON.stringify-friendly). Mirrors
  * `ws::protocol::ClientMsg` variant-by-variant; each
  * variant's per-field doc below cites that Rust doc as the source of truth. */
@@ -1154,6 +1162,21 @@ export type ClientMsg =
       request_id: string;
       /** The message to tombstone. */
       message_id: string;
+    }
+  | {
+      /** GM-only roll correction: locates the targeted `RollEmbed` by `roll_id`
+       * (never by array index) and re-derives it via the dice engine's
+       * `recalculate`, appending an auditable `recalc_history` entry. Same
+       * asymmetric reply protocol as `send_message`. */
+      type: "recalc_roll";
+      /** Correlation token for a `chat_error` rejection. */
+      request_id: string;
+      /** The message carrying the targeted roll. */
+      message_id: string;
+      /** The targeted roll's stable id. */
+      roll_id: string;
+      /** The targeted mutation(s) to apply. */
+      ops: WireRecalcOp[];
     };
 
 /**

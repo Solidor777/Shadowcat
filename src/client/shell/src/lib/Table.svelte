@@ -110,6 +110,7 @@
       send: (o) => session.sendChatMessage(o),
       edit: (id, c) => session.editChatMessage(id, c),
       delete: (id) => session.deleteChatMessage(id),
+      recalc: (id, rollId, ops) => session.recalcRoll(id, rollId, ops),
     },
     uiState: {
       getPanelLayout: () => getPanelLayout(session.world!),

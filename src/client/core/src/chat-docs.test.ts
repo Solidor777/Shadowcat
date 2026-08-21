@@ -12,6 +12,8 @@ import {
   chatSegmentSchemaImpl,
   rollOutcomeSchemaImpl,
   chatMessageEngineSchemaImpl,
+  baseRollDice,
+  numericBounds,
   type DieRecord,
   type ConstTerm,
   type ChatSegment,
@@ -194,6 +196,55 @@ describe("roll segments", () => {
     expect(eng).not.toBeNull();
     expect(eng!.content).toHaveLength(2);
     expect(eng!.content.filter(isKnownSegment)).toEqual([{ kind: "roll_button", formula: "1d20", label: null }]);
+  });
+  test("parses roll_id, GM-visible spec/raw, and recalc_history when present", () => {
+    const eng = parseMessageEngine(msgDoc({
+      ...base, kind: "roll",
+      content: [{
+        kind: "roll_embed", formula: "1d6", outcome: rollOutcome(),
+        roll_id: "11111111-1111-1111-1111-111111111111",
+        raw: {
+          dice: [{ id: 0, kind: { Numeric: { min: 1, max: 6 } }, natural: 4 }],
+          group_spans: [[0, 1]],
+        },
+        recalc_history: [{
+          previous_outcome: rollOutcome({ total: 2 }),
+          recalculated_by: "u-gm",
+          recalculated_at: 100,
+        }],
+      }],
+    }));
+    expect(eng).not.toBeNull();
+    const seg = eng!.content[0] as Extract<NonNullable<typeof eng>["content"][number], { kind: "roll_embed" }>;
+    expect(seg.roll_id).toBe("11111111-1111-1111-1111-111111111111");
+    expect(seg.raw?.dice[0].natural).toBe(4);
+    expect(seg.recalc_history?.[0].recalculated_by).toBe("u-gm");
+  });
+  test("roll_embed without roll_id/spec/raw/recalc_history still parses (legacy/non-GM shape)", () => {
+    const eng = parseMessageEngine(msgDoc({
+      ...base, kind: "roll",
+      content: [{ kind: "roll_embed", formula: "1d6", outcome: rollOutcome() }],
+    }));
+    expect(eng).not.toBeNull();
+    expect(eng!.content).toEqual([{ kind: "roll_embed", formula: "1d6", outcome: rollOutcome() }]);
+  });
+});
+
+describe("baseRollDice / numericBounds", () => {
+  test("baseRollDice slices raw.dice by each group_spans range, in order", () => {
+    const raw = {
+      dice: [
+        { id: 0, kind: { Numeric: { min: 1, max: 6 } }, natural: 3 },
+        { id: 1, kind: { Numeric: { min: 1, max: 6 } }, natural: 5 },
+        { id: 2, kind: { Numeric: { min: 1, max: 6 } }, natural: 6 }, // an explosion child past both spans
+      ],
+      group_spans: [[0, 2]] as [number, number][],
+    };
+    expect(baseRollDice(raw).map((d) => d.id)).toEqual([0, 1]);
+  });
+  test("numericBounds returns the range for a Numeric die, null for Faces", () => {
+    expect(numericBounds({ Numeric: { min: 1, max: 20 } })).toEqual({ min: 1, max: 20 });
+    expect(numericBounds({ Faces: { faces: [{ value: 1, symbols: [] }] } })).toBeNull();
   });
 });
 
