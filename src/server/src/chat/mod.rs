@@ -55,7 +55,7 @@ use crate::data::document::{DocRole, Document, PermissionSet, Scope, WorldRole};
 use crate::data::membership::PermissionContext;
 use crate::data::repository::Repository;
 use crate::data::DataError;
-use crate::dice::RollOutcome;
+use crate::dice::{RawRoll, RecalcOp, RollOutcome, RollSpec};
 use crate::ws::room::Room;
 use crate::ws::PingRateLimiter;
 
@@ -164,19 +164,52 @@ pub enum Segment {
         sanitized_html: String,
     },
     /// A completed roll: the formula plus its full deterministic outcome.
-    /// `outcome` embeds the evaluated `RollOutcome` (records included — the
+    /// `outcome` embeds the evaluated `RollOutcome` (records included -- the
     /// natural faces make the roll reproducible/auditable from the stored
-    /// segment alone). The `RollSpec`/`RawRoll` are deliberately NOT stored —
-    /// recalculate-from-chat is out of scope pre-release, so there is no
-    /// data-continuity promise to a future recalc feature. Produced only by
-    /// `chat::rolls::execute_roll`, called from `handle_send_message`'s roll
-    /// stage; never produced on edit (rolls are immutable, see
-    /// `handle_edit_message`).
+    /// segment alone). `spec`/`raw` are kept (not discarded) so a GM can later
+    /// recalculate this roll via `handle_recalc_roll`; `recalc_history` records
+    /// every such recalculation. Produced only by `chat::rolls::execute_roll`,
+    /// called from `handle_send_message`'s roll stage; a fresh embed is never
+    /// produced on edit (rolls are immutable, see `handle_edit_message`) --
+    /// `handle_recalc_roll` is the only path that ever mutates an existing one.
     RollEmbed {
         /// The formula as the author wrote it.
         formula: String,
-        /// The full deterministic outcome, natural faces included.
+        /// The full deterministic outcome, natural faces included. Overwritten by
+        /// `handle_recalc_roll` on each recalculation; the PRE-recalc value is
+        /// preserved as the newest `recalc_history` entry's `previous_outcome`.
         outcome: RollOutcome,
+        /// Stable identity for this roll, independent of its position in `content`
+        /// -- a recalc targets a roll by this id, never by array index, so it
+        /// survives any future reordering (e.g. link-preview enrichment appending
+        /// later segments). Defaults to a fresh id on deserialize so a roll
+        /// embedded before this field existed still round-trips.
+        #[serde(default = "Uuid::new_v4")]
+        roll_id: Uuid,
+        /// The parsed formula this roll was scored from, kept so a GM can later
+        /// recalculate it. `None` for any roll embedded before this field existed
+        /// -- `handle_recalc_roll` refuses `NoStoredState` on `None`, never
+        /// guesses a spec back from `outcome`. GM-visible only (see
+        /// `roll_embed_property_overrides`). Boxed: `RollSpec` is large enough
+        /// that an unboxed `Option<RollSpec>` here would make `RollEmbed` the
+        /// dominant variant of `Segment` by a wide margin
+        /// (`clippy::large_enum_variant`); `Box` keeps the wire shape identical
+        /// (serde serializes/deserializes `Box<T>` transparently as `T`) while
+        /// moving the payload off every `Segment` value's own stack footprint.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        spec: Option<Box<RollSpec>>,
+        /// The natural-face roll log `outcome` was evaluated from, kept for the
+        /// same recalculation purpose as `spec` (same None-for-pre-existing rule
+        /// and boxing rationale). GM-visible only.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        raw: Option<Box<RawRoll>>,
+        /// Present iff this roll has been recalculated at least once: an ordered,
+        /// append-only audit log, each entry retaining the PRE-recalc
+        /// `raw`/`outcome` it replaced -- the roll's original result is never
+        /// silently discarded. Visible to every recipient (unlike `spec`/`raw`);
+        /// each entry's OWN `previous_raw` is separately GM-gated.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        recalc_history: Option<Vec<RecalcEntry>>,
     },
     /// An unexecuted, parse-and-cap-validated formula the card renders as a
     /// button; clicking it sends a fresh `/roll <formula>` `SendMessage`
@@ -203,6 +236,33 @@ pub enum Segment {
         description: String,
     },
     // Reserved for a future `DocLink` segment variant.
+}
+
+/// One applied recalculation of a `RollEmbed`, appended to its `recalc_history`.
+/// `previous_raw`/`previous_outcome` are the PRE-recalc state this entry
+/// replaced -- the roll's live `raw`/`outcome` after the Nth entry is the Nth
+/// entry's OUTPUT, which is either the (N+1)th entry's
+/// `previous_raw`/`previous_outcome` or, for the last entry, the current
+/// `RollEmbed.raw`/`RollEmbed.outcome`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecalcEntry {
+    /// The targeted mutation(s) applied this recalculation.
+    pub ops: Vec<RecalcOp>,
+    /// The roll's natural-face log immediately BEFORE this recalculation.
+    /// GM-visible only, same as `Segment::RollEmbed`'s `raw` field.
+    pub previous_raw: RawRoll,
+    /// The roll's outcome immediately BEFORE this recalculation. Visible to
+    /// every recipient (not GM-gated) -- same visibility as `RollEmbed::outcome`.
+    pub previous_outcome: RollOutcome,
+    /// The GM who performed this recalculation.
+    pub recalculated_by: Uuid,
+    /// Epoch milliseconds this recalculation was applied -- this codebase's
+    /// timestamp convention throughout `MessageEngine` (`edited_at`/`deleted_at`)
+    /// and `Document` (`created_at`/`updated_at`) is an epoch-millisecond `i64`,
+    /// never `chrono`, which is not a dependency anywhere in this crate; this
+    /// field follows that established sibling-field convention rather than
+    /// introducing a new dependency for one field.
+    pub recalculated_at: i64,
 }
 
 /// The plain-text producer: wraps raw input as a single literal-text segment.
@@ -688,7 +748,14 @@ pub async fn handle_send_message(
     let mut content_segments = if parsed.kind == MessageKind::Roll {
         let dice_ctx = resolve_dice_context(repo, room.world_id).await;
         match rolls::execute_roll(&parsed.body, dice_ctx) {
-            Ok((formula, outcome)) => vec![Segment::RollEmbed { formula, outcome }],
+            Ok((formula, outcome, spec, raw)) => vec![Segment::RollEmbed {
+                formula,
+                outcome,
+                roll_id: Uuid::new_v4(),
+                spec: Some(Box::new(spec)),
+                raw: Some(Box::new(raw)),
+                recalc_history: None,
+            }],
             Err(e) => {
                 let notice = build_roll_error_notice(room.world_id, ctx.user_id, channel, &e, now);
                 return room
@@ -740,8 +807,15 @@ pub async fn handle_send_message(
                             dice_ctx = Some(resolve_dice_context(repo, room.world_id).await);
                         }
                         match rolls::execute_roll(formula, dice_ctx.unwrap()) {
-                            Ok((formula, outcome)) => {
-                                segments.push(Segment::RollEmbed { formula, outcome })
+                            Ok((formula, outcome, spec, raw)) => {
+                                segments.push(Segment::RollEmbed {
+                                    formula,
+                                    outcome,
+                                    roll_id: Uuid::new_v4(),
+                                    spec: Some(Box::new(spec)),
+                                    raw: Some(Box::new(raw)),
+                                    recalc_history: None,
+                                })
                             }
                             Err(e) => {
                                 roll_err = Some(e);
@@ -1092,6 +1166,95 @@ mod tests {
     use crate::data::command::Operation;
     use crate::data::document::{DocRole, Scope};
     use uuid::Uuid;
+
+    #[test]
+    fn roll_embed_carries_roll_id_spec_raw_and_defaults_recalc_history_to_none() {
+        let spec = crate::dice::notation::parse(
+            "1d6",
+            crate::dice::ParseContext {
+                mode: crate::dice::notation::ModeKind::Total,
+                direction: crate::dice::spec::Direction::HighWins,
+            },
+        )
+        .unwrap();
+        let mut rng = crate::dice::rng::NoiseRng::from_seed(1);
+        let raw = crate::dice::roll(&spec, &mut rng);
+        let outcome = crate::dice::evaluate(&spec, &raw);
+        let seg = Segment::RollEmbed {
+            formula: "1d6".into(),
+            outcome,
+            roll_id: Uuid::from_u128(1),
+            spec: Some(Box::new(spec.clone())),
+            raw: Some(Box::new(raw.clone())),
+            recalc_history: None,
+        };
+        let j = serde_json::to_value(&seg).unwrap();
+        assert_eq!(j["roll_id"], serde_json::json!(Uuid::from_u128(1)));
+        assert!(j.get("spec").is_some(), "spec must serialize when Some");
+        assert!(j.get("raw").is_some(), "raw must serialize when Some");
+        assert!(
+            j.get("recalc_history").is_none(),
+            "recalc_history: None must not serialize (skip_serializing_if)"
+        );
+        let back: Segment = serde_json::from_value(j).unwrap();
+        assert_eq!(back, seg);
+    }
+
+    #[test]
+    fn roll_embed_without_roll_id_deserializes_with_a_fresh_generated_one() {
+        // A roll embedded before this field existed has no `roll_id` key at all —
+        // `#[serde(default = "Uuid::new_v4")]` fills one in rather than failing to parse.
+        let old_json = serde_json::json!({
+            "kind": "roll_embed",
+            "formula": "1d6",
+            "outcome": {
+                "total": 3, "records": [], "successes": null, "pass": null, "margin": null,
+                "tier_label": null, "tier_value": null, "crit_successes": 0, "crit_fails": 0,
+                "positive_counter": 0, "negative_counter": 0, "symbol_counts": {}, "labeled_consts": []
+            }
+        });
+        let seg: Segment = serde_json::from_value(old_json).unwrap();
+        match seg {
+            Segment::RollEmbed {
+                roll_id,
+                spec,
+                raw,
+                recalc_history,
+                ..
+            } => {
+                assert_ne!(roll_id, Uuid::nil());
+                assert!(spec.is_none(), "a pre-existing roll has no stored spec");
+                assert!(raw.is_none(), "a pre-existing roll has no stored raw");
+                assert!(recalc_history.is_none());
+            }
+            other => panic!("expected RollEmbed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn recalc_entry_round_trips() {
+        let spec = crate::dice::notation::parse(
+            "1d6",
+            crate::dice::ParseContext {
+                mode: crate::dice::notation::ModeKind::Total,
+                direction: crate::dice::spec::Direction::HighWins,
+            },
+        )
+        .unwrap();
+        let mut rng = crate::dice::rng::NoiseRng::from_seed(2);
+        let raw = crate::dice::roll(&spec, &mut rng);
+        let outcome = crate::dice::evaluate(&spec, &raw);
+        let entry = RecalcEntry {
+            ops: vec![crate::dice::RecalcOp::RerollDice(vec![0])],
+            previous_raw: raw,
+            previous_outcome: outcome,
+            recalculated_by: Uuid::from_u128(9),
+            recalculated_at: 1000,
+        };
+        let j = serde_json::to_value(&entry).unwrap();
+        let back: RecalcEntry = serde_json::from_value(j).unwrap();
+        assert_eq!(back, entry);
+    }
 
     #[test]
     fn html_segment_tagged_roundtrip() {

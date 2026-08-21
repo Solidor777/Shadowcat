@@ -135,7 +135,9 @@ async fn roll_result_message_end_to_end() {
     assert_eq!(sys.kind, MessageKind::Roll);
     assert_eq!(sys.source, Some("/roll 2d6+3".into()));
     match sys.content.as_slice() {
-        [Segment::RollEmbed { formula, outcome }] => {
+        [Segment::RollEmbed {
+            formula, outcome, ..
+        }] => {
             assert_eq!(formula, "2d6+3");
             assert!(
                 (5..=15).contains(&outcome.total),
@@ -157,8 +159,9 @@ async fn inline_roll_interleaves_with_surrounding_text() {
     let sys = f.stored_message_system(&cmd).await;
     assert_eq!(sys.kind, MessageKind::Normal);
     match sys.content.as_slice() {
-        [Segment::Text { text: t1 }, Segment::RollEmbed { formula, outcome }, Segment::Text { text: t2 }] =>
-        {
+        [Segment::Text { text: t1 }, Segment::RollEmbed {
+            formula, outcome, ..
+        }, Segment::Text { text: t2 }] => {
             assert_eq!(t1, "attack! ");
             assert_eq!(formula, "1d6");
             assert!((1..=6).contains(&outcome.total));

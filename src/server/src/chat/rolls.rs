@@ -327,7 +327,7 @@ fn execute_roll_with_seed(
     formula: &str,
     ctx: ParseContext,
     seed: u64,
-) -> Result<(String, RollOutcome), RollError> {
+) -> Result<(String, RollOutcome, RollSpec, crate::dice::RawRoll), RollError> {
     let spec = notation::parse(formula, ctx).map_err(RollError::Parse)?;
     validate_pre_roll(&spec)?;
     let mut rng = NoiseRng::from_seed(seed);
@@ -336,16 +336,20 @@ fn execute_roll_with_seed(
         return Err(RollError::TooManyRecords(raws.records.len()));
     }
     let outcome = eval::evaluate(&spec, &raws);
-    Ok((formula.to_owned(), outcome))
+    Ok((formula.to_owned(), outcome, spec, raws))
 }
 
 /// Parse -> cap-validate -> roll -> evaluate. The ONLY untrusted-notation
 /// execution path in chat. Seeds from `entropy_seed()` -- fresh OS entropy
 /// per call, never a caller-supplied or persisted seed.
+///
+/// Also returns the parsed `RollSpec` and rolled `RawRoll` alongside the
+/// formula/outcome, so a caller can persist them onto `Segment::RollEmbed`
+/// for a later GM recalculation.
 pub(crate) fn execute_roll(
     formula: &str,
     ctx: ParseContext,
-) -> Result<(String, RollOutcome), RollError> {
+) -> Result<(String, RollOutcome, RollSpec, crate::dice::RawRoll), RollError> {
     execute_roll_with_seed(formula, ctx, entropy_seed())
 }
 
@@ -568,8 +572,17 @@ mod tests {
 
     #[test]
     fn execute_roll_returns_the_formula_verbatim() {
-        let (formula, _) = execute_roll_with_seed("2d6+1", total_ctx(), 1).unwrap();
+        let (formula, _, _, _) = execute_roll_with_seed("2d6+1", total_ctx(), 1).unwrap();
         assert_eq!(formula, "2d6+1");
+    }
+
+    #[test]
+    fn execute_roll_with_seed_returns_spec_and_raw_matching_the_outcome() {
+        let (_, outcome, spec, raw) = execute_roll_with_seed("2d6+1", total_ctx(), 5).unwrap();
+        // spec/raw are exactly what `evaluate` was run against -- re-evaluating
+        // them independently must reproduce the same outcome.
+        assert_eq!(crate::dice::evaluate(&spec, &raw), outcome);
+        assert_eq!(raw.dice.len(), 2);
     }
 
     #[test]
@@ -605,7 +618,8 @@ mod tests {
         // `MAX_ROLL_RECORDS` never see this formula. Run under a debug build
         // (overflow-checks on) -- if the fold used raw `*` this would panic;
         // reaching a saturated result proves it does not.
-        let (_, out) = execute_roll_with_seed("2000000000*2000000000*3", total_ctx(), 1).unwrap();
+        let (_, out, _, _) =
+            execute_roll_with_seed("2000000000*2000000000*3", total_ctx(), 1).unwrap();
         assert_eq!(out.total, i64::MAX);
     }
 
@@ -617,7 +631,7 @@ mod tests {
         // completes (no panic) and the total is a finite, non-negative i64
         // (both dice draws are positive, so the true product is always >= 0,
         // never spuriously saturating to `i64::MIN`).
-        let (_, out) = execute_roll_with_seed("1d10000*1d10000", total_ctx(), 7).unwrap();
+        let (_, out, _, _) = execute_roll_with_seed("1d10000*1d10000", total_ctx(), 7).unwrap();
         assert!(out.total >= 0);
     }
 

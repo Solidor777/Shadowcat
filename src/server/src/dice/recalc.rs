@@ -6,6 +6,7 @@ use crate::dice::eval::groups::resolve_group;
 use crate::dice::outcome::{RawDie, RawRoll, RollOutcome};
 use crate::dice::rng::{roll_uniform, RngSource};
 use crate::dice::spec::{DieId, DieKind, Expr, RollSpec};
+use serde::{Deserialize, Serialize};
 
 /// A targeted mutation of a roll's BASE natural dice, applied by `recalculate`
 /// before re-deriving the pipeline. Operates on dice ids assigned by `roll` (or a
@@ -14,7 +15,7 @@ use crate::dice::spec::{DieId, DieKind, Expr, RollSpec};
 /// `RawRoll::group_spans`), or any id not present in the current base set, is
 /// silently ignored rather than treated as an error, as is a `ReplaceDie` face
 /// index outside a `Faces` die's face list.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RecalcOp {
     /// Draw a fresh natural (via `rng`) for each targeted die.
     RerollDice(Vec<DieId>),

@@ -717,7 +717,9 @@ async fn roll_command_produces_roll_kind_with_executed_embed() {
     let sys = f.stored_message_system(&cmd).await;
     assert_eq!(sys.kind, MessageKind::Roll);
     match sys.content.as_slice() {
-        [Segment::RollEmbed { formula, outcome }] => {
+        [Segment::RollEmbed {
+            formula, outcome, ..
+        }] => {
             assert_eq!(formula, "2d6+3");
             assert!(
                 (5..=15).contains(&outcome.total),
