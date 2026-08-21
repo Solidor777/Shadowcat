@@ -565,6 +565,42 @@ async fn handle_socket(
                                         }
                                     }
                                 }
+                                Ok(ClientMsg::RecalcRoll {
+                                    request_id,
+                                    message_id,
+                                    roll_id,
+                                    ops,
+                                }) => {
+                                    // Same confirm-by-broadcast-echo shape as
+                                    // SendMessage/EditMessage/DeleteMessage; a
+                                    // rejection is surfaced to the sender only via a
+                                    // correlated `ChatError`.
+                                    if let Err(e) = crate::chat::handle_recalc_roll(
+                                        crate::chat::RecalcRollRequestCtx {
+                                            room: &room,
+                                            repo: repo.as_ref(),
+                                            ctx: &ctx,
+                                            rate: &message_rate,
+                                            now: now_millis(),
+                                            budget_per_min: MESSAGE_RATE_PER_MIN,
+                                        },
+                                        message_id,
+                                        roll_id,
+                                        ops.into_iter()
+                                            .map(crate::chat::WireRecalcOp::into_recalc_op)
+                                            .collect(),
+                                    )
+                                    .await
+                                    {
+                                        tracing::debug!(world = %world_id, user = %user_id, ?e, "recalc rejected");
+                                        if etx.send(Egress::Frame(Arc::new(ServerMsg::ChatError {
+                                            request_id,
+                                            message: e.to_string(),
+                                        }))).await.is_err() {
+                                            break;
+                                        }
+                                    }
+                                }
                                 Ok(ClientMsg::Pathfind { request_id, scene, start, waypoints, footprint_radius, token }) => {
                                     // One-shot pathfinding: resolve GM status, fetch explored off the lock for
                                     // non-GM Revealed, call SceneEcs::pathfind, reply to this connection only.

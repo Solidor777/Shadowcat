@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
 
-use crate::chat::{ActorOwnerRef, Audience};
+use crate::chat::{ActorOwnerRef, Audience, WireRecalcOp};
 use crate::data::command::{Command, Operation};
 use crate::data::search::SearchHit;
 
@@ -189,6 +189,21 @@ pub enum ClientMsg {
         request_id: Uuid,
         /// The message to tombstone.
         message_id: Uuid,
+    },
+    /// GM-only roll correction: locates the targeted `RollEmbed` by `roll_id`
+    /// (never by array index) and re-derives it via the dice engine's
+    /// `recalculate`, appending an auditable `recalc_history` entry. Same
+    /// asymmetric reply protocol as `SendMessage`; a non-GM sender is
+    /// rejected via a correlated `ChatError`.
+    RecalcRoll {
+        /// Correlation token for a `ChatError` rejection.
+        request_id: Uuid,
+        /// The message carrying the targeted roll.
+        message_id: Uuid,
+        /// The targeted roll's stable id (`Segment::RollEmbed::roll_id`).
+        roll_id: Uuid,
+        /// The targeted mutation(s) to apply.
+        ops: Vec<WireRecalcOp>,
     },
 }
 
@@ -954,6 +969,38 @@ mod protocol_tests {
                 assert_eq!(request_id, Uuid::from_u128(0xac))
             }
             _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn recalc_roll_frame_parses() {
+        let raw = r#"{"type":"recalc_roll","request_id":"00000000-0000-0000-0000-0000000000ad","message_id":"00000000-0000-0000-0000-000000000001","roll_id":"00000000-0000-0000-0000-000000000002","ops":[{"kind":"reroll_dice","ids":[1,2]},{"kind":"replace_die","id":3,"natural":6},{"kind":"remove_dice","ids":[4]}]}"#;
+        let msg: ClientMsg = serde_json::from_str(raw).unwrap();
+        match msg {
+            ClientMsg::RecalcRoll {
+                request_id,
+                message_id,
+                roll_id,
+                ops,
+            } => {
+                assert_eq!(request_id, Uuid::from_u128(0xad));
+                assert_eq!(message_id, Uuid::from_u128(1));
+                assert_eq!(roll_id, Uuid::from_u128(2));
+                assert_eq!(ops.len(), 3);
+                assert!(matches!(
+                    ops[0],
+                    crate::chat::WireRecalcOp::RerollDice { .. }
+                ));
+                assert!(matches!(
+                    ops[1],
+                    crate::chat::WireRecalcOp::ReplaceDie { id: 3, natural: 6 }
+                ));
+                assert!(matches!(
+                    ops[2],
+                    crate::chat::WireRecalcOp::RemoveDice { .. }
+                ));
+            }
+            other => panic!("wrong variant: {other:?}"),
         }
     }
 

@@ -2,6 +2,7 @@
 import type { ActorOwnerRef } from "./ActorOwnerRef";
 import type { Audience } from "./Audience";
 import type { Operation } from "./Operation";
+import type { WireRecalcOp } from "./WireRecalcOp";
 
 /**
  * Client -> server frames.
@@ -167,4 +168,20 @@ request_id: string,
 /**
  * The message to tombstone.
  */
-message_id: string, };
+message_id: string, } | { "type": "recalc_roll", 
+/**
+ * Correlation token for a `ChatError` rejection.
+ */
+request_id: string, 
+/**
+ * The message carrying the targeted roll.
+ */
+message_id: string, 
+/**
+ * The targeted roll's stable id (`Segment::RollEmbed::roll_id`).
+ */
+roll_id: string, 
+/**
+ * The targeted mutation(s) to apply.
+ */
+ops: Array<WireRecalcOp>, };

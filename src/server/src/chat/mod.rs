@@ -17,7 +17,12 @@
 //! document instead), exempting ONLY `WriteOrigin::ServerMessageRevision` — a
 //! marker no wire frame can set, produced solely by `handle_edit_message`/
 //! `handle_delete_message` after their own owner-or-GM check — and granting it a
-//! scoped `Access` (`READ`+`WRITE_FIELDS` only, never `/permissions`/`/embedded`).
+//! scoped `Access` (`READ`+`WRITE_FIELDS` only, plus an exact-path admission in
+//! `data::sqlite::apply_intent` for `/permissions/property_overrides` on a
+//! message doc under this origin -- see `handle_recalc_roll` -- never any
+//! other `/permissions` subpath, and never `/embedded`). `handle_recalc_roll`
+//! is this origin's third producer, after its own GM-only check (never
+//! owner-or-GM -- see `RecalcRollError::Forbidden`).
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
@@ -55,6 +60,7 @@ use crate::data::document::{DocRole, Document, PermissionSet, Scope, Visibility,
 use crate::data::membership::PermissionContext;
 use crate::data::repository::Repository;
 use crate::data::DataError;
+use crate::dice::rng::NoiseRng;
 use crate::dice::{RawRoll, RecalcOp, RollOutcome, RollSpec};
 use crate::ws::room::Room;
 use crate::ws::PingRateLimiter;
@@ -125,6 +131,45 @@ pub enum Audience {
     /// Only whoever currently holds `WorldRole::Gm` (plus the sender) may
     /// read — resolved dynamically, not a frozen roster at send time.
     GmOnly,
+}
+
+/// Client-facing mirror of `dice::RecalcOp`, carried on the `RecalcRoll` wire
+/// frame. `dice` is a pure library with no ts-rs bindings by design (see
+/// `dice`'s crate doc) -- this type exists solely so a `RecalcOp` can ride
+/// `ClientMsg`, converted via `into_recalc_op` before it ever reaches
+/// `dice::recalc::recalculate`.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/")]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum WireRecalcOp {
+    /// Draw a fresh natural for each targeted die.
+    RerollDice {
+        /// Targeted die ids.
+        ids: Vec<u32>,
+    },
+    /// Force a specific natural onto one die.
+    ReplaceDie {
+        /// The targeted die.
+        id: u32,
+        /// The natural face to force.
+        natural: i32,
+    },
+    /// Drop targeted dice from their group's base naturals entirely.
+    RemoveDice {
+        /// Targeted die ids.
+        ids: Vec<u32>,
+    },
+}
+
+impl WireRecalcOp {
+    /// Converts the wire shape into the dice engine's own `RecalcOp`.
+    pub(crate) fn into_recalc_op(self) -> RecalcOp {
+        match self {
+            WireRecalcOp::RerollDice { ids } => RecalcOp::RerollDice(ids),
+            WireRecalcOp::ReplaceDie { id, natural } => RecalcOp::ReplaceDie { id, natural },
+            WireRecalcOp::RemoveDice { ids } => RecalcOp::RemoveDice(ids),
+        }
+    }
 }
 
 /// Message subtype, orthogonal to channel. Rides the opaque body (no ts-rs).
@@ -602,6 +647,53 @@ impl std::fmt::Display for SendMessageError {
             // Never surfaced here (caught upstream, authored as a System notice); kept
             // total + player-safe via RollError's own presentable Display.
             SendMessageError::Roll(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+/// Why `handle_recalc_roll` refused a `RecalcRoll` frame.
+#[derive(Debug)]
+pub enum RecalcRollError {
+    /// The requester holds no GM role in this world. Recalc is GM-only,
+    /// audience-independent -- never owner-or-GM (see the module's design
+    /// note on why there is no player self-service tier).
+    Forbidden,
+    /// The target message does not exist, or is not a `message` doc.
+    NotFound,
+    /// No `RollEmbed` in the message's content carries the given `roll_id`.
+    RollNotFound,
+    /// The targeted `RollEmbed` has no stored `spec`/`raw` -- it was embedded
+    /// before this feature shipped and cannot be recalculated.
+    NoStoredState,
+    /// The user's per-minute flood budget is exhausted.
+    RateLimited,
+    /// The authoritative write failed.
+    Data(DataError),
+}
+
+/// Player-presentable text for a `RecalcRoll` rejection (correlated
+/// `ChatError`). `[sec]`-classified like `SendMessageError::Display`:
+/// `Forbidden`/`NotFound`/`RollNotFound` collapse to one generic string (no
+/// existence oracle); `NoStoredState` is safe to state exactly (recalc is
+/// GM-only, so only an already-authorized GM ever sees it); `Data` never
+/// leaks its inner detail.
+impl std::fmt::Display for RecalcRollError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RecalcRollError::Forbidden
+            | RecalcRollError::NotFound
+            | RecalcRollError::RollNotFound => {
+                f.write_str("You are not permitted to modify this message.")
+            }
+            RecalcRollError::NoStoredState => {
+                f.write_str("This roll has no stored state to recalculate.")
+            }
+            RecalcRollError::RateLimited => {
+                f.write_str("You are sending messages too quickly. Please wait a moment.")
+            }
+            RecalcRollError::Data(_) => {
+                f.write_str("The message could not be delivered. Please try again.")
+            }
         }
     }
 }
@@ -1198,6 +1290,145 @@ pub async fn handle_delete_message(
     room.publish(repo, ctx, vec![op], now, WriteOrigin::ServerMessageRevision)
         .await
         .map_err(SendMessageError::Data)
+}
+
+/// Shared request-scoped dependencies for `handle_recalc_roll`: the same
+/// room/repo/ctx/rate/now/budget grouping `MessageRequestCtx` uses for
+/// `handle_send_message`/`handle_edit_message`, minus `preview` (recalc never
+/// touches link-preview enrichment) -- kept as its own struct rather than
+/// reusing `MessageRequestCtx` so this call site never threads an unused
+/// field. Grouped (instead of nine positional parameters) to stay under
+/// `clippy::too_many_arguments` by restructuring the signature, never by
+/// suppressing the lint.
+pub struct RecalcRollRequestCtx<'a> {
+    /// The world's room -- the authoritative publish path.
+    pub room: &'a Room,
+    /// The document repository.
+    pub repo: &'a dyn Repository,
+    /// The caller's authenticated identity and world role.
+    pub ctx: &'a PermissionContext,
+    /// The per-user chat flood-budget limiter.
+    pub rate: &'a PingRateLimiter,
+    /// The moment of this request (used for `recalculated_at`/rate accounting).
+    pub now: i64,
+    /// The per-user-per-minute flood budget.
+    pub budget_per_min: usize,
+}
+
+/// Server-authoritative roll correction: GM-only (never owner-or-GM -- see
+/// `RecalcRollError::Forbidden`), locates the targeted `RollEmbed` by
+/// `roll_id` (never by array index), re-derives it via `dice::recalculate`,
+/// and appends an auditable `RecalcEntry` capturing the PRE-recalc
+/// `raw`/`outcome` before overwriting them. Reuses
+/// `WriteOrigin::ServerMessageRevision` -- the SAME chokepoint
+/// `handle_edit_message`/`handle_delete_message` use -- as its third caller.
+/// Also writes `/permissions/property_overrides` in the SAME
+/// `Operation::Update`, which `apply_intent`'s `ServerMessageRevision` branch
+/// admits ONLY at that exact path (see `data::sqlite::apply_intent`'s
+/// exact-path admission) -- needed because a freshly-appended
+/// `RecalcEntry.previous_raw` pointer must be added to the GM-only override
+/// set on every recalc.
+pub async fn handle_recalc_roll(
+    req: RecalcRollRequestCtx<'_>,
+    message_id: Uuid,
+    roll_id: Uuid,
+    ops: Vec<RecalcOp>,
+) -> Result<Command, RecalcRollError> {
+    let RecalcRollRequestCtx {
+        room,
+        repo,
+        ctx,
+        rate,
+        now,
+        budget_per_min,
+    } = req;
+    if ctx.world_role != WorldRole::Gm {
+        return Err(RecalcRollError::Forbidden);
+    }
+    if !rate.check(ctx.user_id, now, budget_per_min) {
+        return Err(RecalcRollError::RateLimited);
+    }
+    let cur = repo
+        .get_document(message_id)
+        .await
+        .map_err(RecalcRollError::Data)?
+        .ok_or(RecalcRollError::NotFound)?;
+    if cur.doc_type != MESSAGE_DOC_TYPE {
+        return Err(RecalcRollError::NotFound);
+    }
+    let mut sys: MessageEngine = serde_json::from_value(cur.engine.clone().unwrap_or_default())
+        .map_err(|e| RecalcRollError::Data(DataError::OpFailed(e.to_string())))?;
+
+    let idx = sys
+        .content
+        .iter()
+        .position(|seg| matches!(seg, Segment::RollEmbed { roll_id: rid, .. } if *rid == roll_id))
+        .ok_or(RecalcRollError::RollNotFound)?;
+
+    // First pass: read immutably and clone what's needed, so the mutation
+    // below never overlaps a live borrow.
+    let (spec_val, raw_val, prev_outcome) = match &sys.content[idx] {
+        Segment::RollEmbed {
+            spec: Some(s),
+            raw: Some(r),
+            outcome,
+            ..
+        } => (s.clone(), r.clone(), outcome.clone()),
+        Segment::RollEmbed { .. } => return Err(RecalcRollError::NoStoredState),
+        _ => unreachable!("idx matched only Segment::RollEmbed above"),
+    };
+
+    let seed = rolls::entropy_seed();
+    let mut rng = NoiseRng::from_seed(seed);
+    let (new_raw, new_outcome) = crate::dice::recalculate(&spec_val, &raw_val, &ops, &mut rng);
+
+    let entry = RecalcEntry {
+        ops,
+        previous_raw: *raw_val,
+        previous_outcome: prev_outcome,
+        recalculated_by: ctx.user_id,
+        recalculated_at: now,
+    };
+    if let Segment::RollEmbed {
+        raw,
+        outcome,
+        recalc_history,
+        ..
+    } = &mut sys.content[idx]
+    {
+        recalc_history.get_or_insert_with(Vec::new).push(entry);
+        *raw = Some(Box::new(new_raw));
+        *outcome = new_outcome;
+    }
+
+    let overrides = roll_embed_property_overrides(&sys.content);
+    let new_engine = serde_json::to_value(&sys)
+        .map_err(|e| RecalcRollError::Data(DataError::OpFailed(e.to_string())))?;
+    let new_overrides_json = serde_json::to_value(&overrides)
+        .map_err(|e| RecalcRollError::Data(DataError::OpFailed(e.to_string())))?;
+    let old_overrides_json = serde_json::to_value(&cur.permissions.property_overrides)
+        .map_err(|e| RecalcRollError::Data(DataError::OpFailed(e.to_string())))?;
+
+    let op = Operation::Update {
+        doc_id: message_id,
+        changes: vec![
+            FieldChange {
+                remove: false,
+                path: "/engine".into(),
+                old: cur.engine.clone().unwrap_or_default(),
+                new: new_engine,
+            },
+            FieldChange {
+                remove: false,
+                path: "/permissions/property_overrides".into(),
+                old: old_overrides_json,
+                new: new_overrides_json,
+            },
+        ],
+    };
+    room.publish(repo, ctx, vec![op], now, WriteOrigin::ServerMessageRevision)
+        .await
+        .map_err(RecalcRollError::Data)
 }
 
 #[cfg(test)]
@@ -2022,10 +2253,7 @@ mod tests {
             MessageRequestCtx {
                 room: &room,
                 repo: &repo,
-                ctx: &PermissionContext {
-                    user_id: player,
-                    world_role: DocWorldRole::Player,
-                },
+                ctx: &ctx,
                 rate: &rate,
                 preview: LinkPreviewDeps {
                     client: &link_preview::build_client_allow_loopback(),
@@ -3577,6 +3805,460 @@ mod tests {
         )
         .await;
         assert!(matches!(err, Err(SendMessageError::ActorNotSpeakable)));
+    }
+
+    #[test]
+    fn wire_recalc_op_converts_to_dice_recalc_op() {
+        assert_eq!(
+            WireRecalcOp::RerollDice { ids: vec![1, 2] }.into_recalc_op(),
+            crate::dice::RecalcOp::RerollDice(vec![1, 2])
+        );
+        assert_eq!(
+            WireRecalcOp::ReplaceDie { id: 3, natural: 5 }.into_recalc_op(),
+            crate::dice::RecalcOp::ReplaceDie { id: 3, natural: 5 }
+        );
+        assert_eq!(
+            WireRecalcOp::RemoveDice { ids: vec![4] }.into_recalc_op(),
+            crate::dice::RecalcOp::RemoveDice(vec![4])
+        );
+    }
+
+    async fn seed_gm_and_room() -> (
+        crate::data::sqlite::SqliteRepository,
+        std::sync::Arc<crate::ws::room::Room>,
+        Uuid,
+        Uuid,
+        Uuid,
+    ) {
+        use crate::auth::role::ServerRole;
+        use crate::data::sqlite::SqliteRepository;
+        use crate::ws::room::RoomRegistry;
+
+        let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+        let gm = repo
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let player = repo
+            .create_user("pl", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = repo.create_world_owned("W", gm, 0).await.unwrap();
+        repo.add_member(w.id, player, WorldRole::Player)
+            .await
+            .unwrap();
+        let reg = RoomRegistry::new();
+        let room = reg.get_or_create(&repo, w.id).await.unwrap().unwrap();
+        (repo, room, w.id, gm, player)
+    }
+
+    #[tokio::test]
+    async fn handle_recalc_roll_rejects_a_non_gm_sender() {
+        let (repo, room, _world, gm, player) = seed_gm_and_room().await;
+        let rate = PingRateLimiter::new();
+        let gm_ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+        let cmd = handle_send_message(
+            MessageRequestCtx {
+                room: &room,
+                repo: &repo,
+                ctx: &gm_ctx,
+                rate: &rate,
+                preview: LinkPreviewDeps {
+                    client: &link_preview::build_client_allow_loopback(),
+                    cache: &LinkPreviewCache::new(),
+                    rate: &PreviewRateLimiter::new(),
+                },
+                now: 100,
+                budget_per_min: 30,
+            },
+            "all".into(),
+            "/roll 1d6".into(),
+            None,
+            Audience::Public,
+        )
+        .await
+        .unwrap();
+        let doc = match &cmd.ops[0] {
+            Operation::Create { doc } => doc.clone(),
+            other => panic!("expected Create, got {other:?}"),
+        };
+        let sys: MessageEngine = serde_json::from_value(doc.engine.unwrap()).unwrap();
+        let roll_id = match &sys.content[0] {
+            Segment::RollEmbed { roll_id, .. } => *roll_id,
+            other => panic!("expected RollEmbed, got {other:?}"),
+        };
+
+        let player_ctx = PermissionContext {
+            user_id: player,
+            world_role: WorldRole::Player,
+        };
+        let err = handle_recalc_roll(
+            RecalcRollRequestCtx {
+                room: &room,
+                repo: &repo,
+                ctx: &player_ctx,
+                rate: &rate,
+                now: 101,
+                budget_per_min: 30,
+            },
+            doc.id,
+            roll_id,
+            vec![],
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, RecalcRollError::Forbidden));
+    }
+
+    #[tokio::test]
+    async fn handle_recalc_roll_rejects_unknown_roll_id_and_missing_stored_state() {
+        let (repo, room, _world, gm, _player) = seed_gm_and_room().await;
+        let rate = PingRateLimiter::new();
+        let gm_ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+        let cmd = handle_send_message(
+            MessageRequestCtx {
+                room: &room,
+                repo: &repo,
+                ctx: &gm_ctx,
+                rate: &rate,
+                preview: LinkPreviewDeps {
+                    client: &link_preview::build_client_allow_loopback(),
+                    cache: &LinkPreviewCache::new(),
+                    rate: &PreviewRateLimiter::new(),
+                },
+                now: 100,
+                budget_per_min: 30,
+            },
+            "all".into(),
+            "/roll 1d6".into(),
+            None,
+            Audience::Public,
+        )
+        .await
+        .unwrap();
+        let message_id = match &cmd.ops[0] {
+            Operation::Create { doc } => doc.id,
+            other => panic!("expected Create, got {other:?}"),
+        };
+
+        let err = handle_recalc_roll(
+            RecalcRollRequestCtx {
+                room: &room,
+                repo: &repo,
+                ctx: &gm_ctx,
+                rate: &rate,
+                now: 101,
+                budget_per_min: 30,
+            },
+            message_id,
+            Uuid::from_u128(999_999),
+            vec![],
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, RecalcRollError::RollNotFound));
+    }
+
+    #[tokio::test]
+    async fn handle_recalc_roll_refuses_a_roll_with_no_stored_spec_or_raw() {
+        // A `RollEmbed` seeded directly with `spec: None`/`raw: None` -- the
+        // pre-existing-document case (a roll embedded before this feature
+        // shipped). Seeded by hand-crafting the stored `engine` JSON rather
+        // than going through `handle_send_message` (which always populates
+        // both), since that is the only way to construct this legacy shape.
+        let (repo, room, world, gm, _player) = seed_gm_and_room().await;
+        let rate = PingRateLimiter::new();
+        let gm_ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+        let roll_id = Uuid::from_u128(42);
+        let outcome = crate::dice::evaluate(
+            &crate::dice::notation::parse(
+                "1d6",
+                crate::dice::ParseContext {
+                    mode: crate::dice::notation::ModeKind::Total,
+                    direction: crate::dice::spec::Direction::HighWins,
+                },
+            )
+            .unwrap(),
+            &crate::dice::roll(
+                &crate::dice::notation::parse(
+                    "1d6",
+                    crate::dice::ParseContext {
+                        mode: crate::dice::notation::ModeKind::Total,
+                        direction: crate::dice::spec::Direction::HighWins,
+                    },
+                )
+                .unwrap(),
+                &mut crate::dice::rng::NoiseRng::from_seed(11),
+            ),
+        );
+        let content = vec![Segment::RollEmbed {
+            formula: "1d6".into(),
+            outcome,
+            roll_id,
+            spec: None,
+            raw: None,
+            recalc_history: None,
+        }];
+        let doc = build_message_doc(
+            world,
+            gm,
+            MessageDraft {
+                channel: "all".into(),
+                actor_owner: None,
+                audience: Audience::Public,
+                kind: MessageKind::Roll,
+                content,
+                source: None,
+            },
+            0,
+        );
+        repo.apply_intent(
+            &gm_ctx,
+            world,
+            vec![Operation::Create { doc: doc.clone() }],
+            0,
+            crate::data::command::WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+        let err = handle_recalc_roll(
+            RecalcRollRequestCtx {
+                room: &room,
+                repo: &repo,
+                ctx: &gm_ctx,
+                rate: &rate,
+                now: 101,
+                budget_per_min: 30,
+            },
+            doc.id,
+            roll_id,
+            vec![],
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, RecalcRollError::NoStoredState));
+    }
+
+    #[tokio::test]
+    async fn handle_recalc_roll_succeeds_for_public_whisper_and_gmonly_audiences() {
+        // Audience-independence (mirrors handle_edit_message/handle_delete_message's
+        // own audience-independence tests): a GM's moderation authority to recalc
+        // is the same regardless of who can otherwise READ the message.
+        for audience in [
+            Audience::Public,
+            Audience::Whisper { recipients: vec![] },
+            Audience::GmOnly,
+        ] {
+            let (repo, room, _world, gm, _player) = seed_gm_and_room().await;
+            let rate = PingRateLimiter::new();
+            let gm_ctx = PermissionContext {
+                user_id: gm,
+                world_role: WorldRole::Gm,
+            };
+            let cmd = handle_send_message(
+                MessageRequestCtx {
+                    room: &room,
+                    repo: &repo,
+                    ctx: &gm_ctx,
+                    rate: &rate,
+                    preview: LinkPreviewDeps {
+                        client: &link_preview::build_client_allow_loopback(),
+                        cache: &LinkPreviewCache::new(),
+                        rate: &PreviewRateLimiter::new(),
+                    },
+                    now: 100,
+                    budget_per_min: 30,
+                },
+                "all".into(),
+                "/roll 1d6".into(),
+                None,
+                audience.clone(),
+            )
+            .await
+            .unwrap();
+            let doc = match &cmd.ops[0] {
+                Operation::Create { doc } => doc.clone(),
+                other => panic!("expected Create, got {other:?}"),
+            };
+            let sys: MessageEngine = serde_json::from_value(doc.engine.unwrap()).unwrap();
+            let roll_id = match &sys.content[0] {
+                Segment::RollEmbed { roll_id, .. } => *roll_id,
+                other => panic!("expected RollEmbed, got {other:?}"),
+            };
+            let ok = handle_recalc_roll(
+                RecalcRollRequestCtx {
+                    room: &room,
+                    repo: &repo,
+                    ctx: &gm_ctx,
+                    rate: &rate,
+                    now: 101,
+                    budget_per_min: 30,
+                },
+                doc.id,
+                roll_id,
+                vec![],
+            )
+            .await;
+            assert!(
+                ok.is_ok(),
+                "recalc must succeed under {audience:?}, got {ok:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn handle_recalc_roll_applies_a_reroll_and_appends_recalc_history() {
+        let (repo, room, _world, gm, player) = seed_gm_and_room().await;
+        let rate = PingRateLimiter::new();
+        let gm_ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+        let cmd = handle_send_message(
+            MessageRequestCtx {
+                room: &room,
+                repo: &repo,
+                ctx: &gm_ctx,
+                rate: &rate,
+                preview: LinkPreviewDeps {
+                    client: &link_preview::build_client_allow_loopback(),
+                    cache: &LinkPreviewCache::new(),
+                    rate: &PreviewRateLimiter::new(),
+                },
+                now: 100,
+                budget_per_min: 30,
+            },
+            "gmonly".into(),
+            "/roll 1d6".into(),
+            None,
+            Audience::GmOnly,
+        )
+        .await
+        .unwrap();
+        let doc = match &cmd.ops[0] {
+            Operation::Create { doc } => doc.clone(),
+            other => panic!("expected Create, got {other:?}"),
+        };
+        let before: MessageEngine = serde_json::from_value(doc.engine.clone().unwrap()).unwrap();
+        let (roll_id, before_raw, before_outcome) = match &before.content[0] {
+            Segment::RollEmbed {
+                roll_id,
+                raw,
+                outcome,
+                ..
+            } => (*roll_id, (**raw.as_ref().unwrap()).clone(), outcome.clone()),
+            other => panic!("expected RollEmbed, got {other:?}"),
+        };
+        let target_id = before_raw.dice[0].id;
+
+        let cmd2 = handle_recalc_roll(
+            RecalcRollRequestCtx {
+                room: &room,
+                repo: &repo,
+                ctx: &gm_ctx,
+                rate: &rate,
+                now: 101,
+                budget_per_min: 30,
+            },
+            doc.id,
+            roll_id,
+            vec![WireRecalcOp::RerollDice {
+                ids: vec![target_id],
+            }
+            .into_recalc_op()],
+        )
+        .await
+        .unwrap();
+        assert_eq!(cmd2.ops.len(), 1);
+        let changes = match &cmd2.ops[0] {
+            Operation::Update { changes, .. } => changes,
+            other => panic!("expected Update, got {other:?}"),
+        };
+        assert!(changes.iter().any(|c| c.path == "/engine"));
+        assert!(changes
+            .iter()
+            .any(|c| c.path == "/permissions/property_overrides"));
+
+        let stored = repo.get_document(doc.id).await.unwrap().unwrap();
+        let after: MessageEngine = serde_json::from_value(stored.engine.unwrap()).unwrap();
+        match &after.content[0] {
+            Segment::RollEmbed { recalc_history, .. } => {
+                let history = recalc_history.as_ref().unwrap();
+                assert_eq!(history.len(), 1);
+                assert_eq!(history[0].previous_raw, before_raw);
+                assert_eq!(history[0].previous_outcome, before_outcome);
+                assert_eq!(history[0].recalculated_by, gm);
+            }
+            other => panic!("expected RollEmbed, got {other:?}"),
+        }
+
+        // A second recalc by a GM not individually listed on this GmOnly message
+        // still succeeds (moderation authority is audience-independent) and
+        // accumulates a SECOND history entry.
+        let cmd3 = handle_recalc_roll(
+            RecalcRollRequestCtx {
+                room: &room,
+                repo: &repo,
+                ctx: &gm_ctx,
+                rate: &rate,
+                now: 102,
+                budget_per_min: 30,
+            },
+            doc.id,
+            roll_id,
+            vec![],
+        )
+        .await
+        .unwrap();
+        assert_eq!(cmd3.ops.len(), 1);
+        let stored2 = repo.get_document(doc.id).await.unwrap().unwrap();
+        let after2: MessageEngine =
+            serde_json::from_value(stored2.engine.clone().unwrap()).unwrap();
+        match &after2.content[0] {
+            Segment::RollEmbed { recalc_history, .. } => {
+                assert_eq!(recalc_history.as_ref().unwrap().len(), 2);
+            }
+            other => panic!("expected RollEmbed, got {other:?}"),
+        }
+
+        // Redaction check: a non-GM's filtered view of the message, AFTER two
+        // recalcs, still never contains spec/raw at the top level OR inside
+        // EITHER recalc_history entry's previous_raw -- while
+        // previous_outcome/recalc_history itself stay visible.
+        use crate::data::permission::{filter_properties, resolve_access};
+        let player_access = resolve_access(player, WorldRole::Player, &stored2, Some(gm));
+        let player_view = filter_properties(&stored2, &player_access).unwrap();
+        let player_sys: serde_json::Value = player_view.engine.unwrap();
+        let seg = &player_sys["content"][0];
+        assert_eq!(seg["spec"], serde_json::Value::Null);
+        assert_eq!(seg["raw"], serde_json::Value::Null);
+        let history = seg["recalc_history"].as_array().unwrap();
+        assert_eq!(
+            history.len(),
+            2,
+            "recalc_history itself is visible to a non-GM"
+        );
+        for entry in history {
+            assert_eq!(
+                entry["previous_raw"],
+                serde_json::Value::Null,
+                "every recalc_history entry's previous_raw must stay gm_only"
+            );
+            assert!(
+                entry.get("previous_outcome").is_some() && !entry["previous_outcome"].is_null(),
+                "previous_outcome must stay visible to a non-GM"
+            );
+        }
     }
 }
 

@@ -2495,11 +2495,30 @@ impl Repository for SqliteRepository {
                         // since the DocRole::Owner floor excludes that cap.
                         let need = required_cap_for_path(&ch.path).ok_or(DataError::Forbidden)?;
                         if !access.has(need) {
-                            tracing::debug!(
-                                user = %ctx.user_id, path = %ch.path, capability = need,
-                                "intent denied: missing capability"
-                            );
-                            return Err(DataError::Forbidden);
+                            // A `ServerMessageRevision` write to a message doc may
+                            // ALSO write exactly `/permissions/property_overrides`
+                            // (never any other `/permissions` subpath) without
+                            // holding `cap::EDIT_PERMISSIONS` -- `handle_recalc_roll`
+                            // needs this to register a freshly-appended
+                            // `RecalcEntry`'s gm_only override pointer. Granting
+                            // `EDIT_PERMISSIONS` to this origin instead would ALSO
+                            // authorize rewriting `default`/`gm_role`/`users` -- the
+                            // message's own audience-enforcement fields -- which
+                            // this origin's `all: false` scoping deliberately
+                            // excludes (see the `ServerMessageRevision` access-grant
+                            // construction above). This exact-path admission widens
+                            // nothing for any other doc_type/origin/path.
+                            let is_recalc_override_write = cur.doc_type
+                                == crate::chat::MESSAGE_DOC_TYPE
+                                && origin == WriteOrigin::ServerMessageRevision
+                                && ch.path == "/permissions/property_overrides";
+                            if !is_recalc_override_write {
+                                tracing::debug!(
+                                    user = %ctx.user_id, path = %ch.path, capability = need,
+                                    "intent denied: missing capability"
+                                );
+                                return Err(DataError::Forbidden);
+                            }
                         }
                         // Declarative requirements are additive: a module/world
                         // may demand extra capabilities for a sub-path on top of
@@ -7980,6 +7999,105 @@ mod tests {
         // Nothing committed: the whole batch (including the Create) was rejected, no partial
         // commit of just the Create half.
         assert!(r.get_document(tok.id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn apply_intent_server_message_revision_may_write_property_overrides_but_nothing_else_under_permissions(
+    ) {
+        use crate::chat::MESSAGE_DOC_TYPE;
+        use crate::data::document::{DocRole, PermissionSet};
+        use crate::data::membership::PermissionContext;
+
+        let r = repo().await;
+        let gm = r
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = r.create_world_owned("W", gm, 0).await.unwrap();
+        let ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+
+        let doc_id = Uuid::new_v4();
+        let doc = Document {
+            id: doc_id,
+            scope: Scope::World { world_id: w.id },
+            doc_type: MESSAGE_DOC_TYPE.to_string(),
+            schema_version: 1,
+            name: None,
+            source: None,
+            base: None,
+            owner: Some(gm),
+            permissions: PermissionSet {
+                default: DocRole::Observer,
+                ..Default::default()
+            },
+            embedded: Default::default(),
+            parent_id: None,
+            engine: Some(serde_json::json!({
+                "channel": "all", "user_owner": gm, "kind": "normal",
+                "audience": {"kind": "public"}, "content": []
+            })),
+            system: serde_json::json!({}),
+            created_at: 0,
+            updated_at: 0,
+        };
+        r.apply_intent(
+            &ctx,
+            w.id,
+            vec![Operation::Create { doc: doc.clone() }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+        // `/permissions/property_overrides` is admitted under ServerMessageRevision.
+        let ok = r
+            .apply_intent(
+                &ctx,
+                w.id,
+                vec![Operation::Update {
+                    doc_id,
+                    changes: vec![FieldChange {
+                        remove: false,
+                        path: "/permissions/property_overrides".into(),
+                        old: serde_json::json!({}),
+                        new: serde_json::json!({"/engine/content/0/spec": "gm_only"}),
+                    }],
+                }],
+                1,
+                WriteOrigin::ServerMessageRevision,
+            )
+            .await;
+        assert!(
+            ok.is_ok(),
+            "property_overrides write should be admitted: {ok:?}"
+        );
+
+        // `/permissions/default` is NOT admitted under the same origin.
+        let denied = r
+            .apply_intent(
+                &ctx,
+                w.id,
+                vec![Operation::Update {
+                    doc_id,
+                    changes: vec![FieldChange {
+                        remove: false,
+                        path: "/permissions/default".into(),
+                        old: serde_json::json!("observer"),
+                        new: serde_json::json!("owner"),
+                    }],
+                }],
+                2,
+                WriteOrigin::ServerMessageRevision,
+            )
+            .await;
+        assert!(
+            matches!(denied, Err(DataError::Forbidden)),
+            "widening /permissions/default must stay forbidden under ServerMessageRevision, got {denied:?}"
+        );
     }
 
     #[tokio::test]
