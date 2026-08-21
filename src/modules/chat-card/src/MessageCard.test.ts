@@ -75,6 +75,11 @@ function fakeT(key: string, params?: Record<string, string | number>): string {
     "chat.roll.pass": "Success",
     "chat.roll.fail": "Failure",
     "chat.openActor": "Open {name}'s sheet",
+    "chat.roll.reroll": "chat.roll.reroll",
+    "chat.roll.remove": "chat.roll.remove",
+    "chat.roll.replace": "chat.roll.replace",
+    "chat.roll.replaceInput": "chat.roll.replaceInput",
+    "chat.roll.recalculated": "chat.roll.recalculated",
   };
   let s = templates[key] ?? key;
   if (params) for (const [k, v] of Object.entries(params)) s = s.replaceAll(`{${k}}`, String(v));
@@ -566,6 +571,120 @@ describe("MessageCard — roll block (kind=roll, content = single roll_embed)", 
     });
     expect(container.querySelector(".roll-block")).toBeNull();
     expect(container.querySelector(".roll-pending")).not.toBeNull();
+  });
+});
+
+describe("MessageCard — GM recalc menu", () => {
+  function rollDoc(overrides: Record<string, unknown> = {}) {
+    return msgDoc("m1", baseSystem({
+      kind: "roll",
+      content: [{
+        kind: "roll_embed", formula: "1d6", outcome: rollOutcome(),
+        roll_id: "roll-1",
+        raw: {
+          dice: [{ id: 0, kind: { Numeric: { min: 1, max: 6 } }, natural: 4 }],
+          group_spans: [[0, 1]],
+        },
+        ...overrides,
+      }],
+    }));
+  }
+
+  it("renders a per-die recalc menu for a GM when raw is present", () => {
+    const doc = rollDoc();
+    const { container } = render(MessageCard, {
+      props: { message: doc, showChannel: false },
+      context: setAppContextForTest({ documents: storeWith(doc), role: "gm" }),
+    });
+    expect(container.querySelector(".recalc-menu")).not.toBeNull();
+  });
+
+  it("does not render a recalc menu for a non-GM even when raw is present", () => {
+    const doc = rollDoc();
+    const { container } = render(MessageCard, {
+      props: { message: doc, showChannel: false },
+      context: setAppContextForTest({ documents: storeWith(doc), role: "player" }),
+    });
+    expect(container.querySelector(".recalc-menu")).toBeNull();
+  });
+
+  it("does not render a recalc menu for a GM when raw is absent (non-GM view or legacy roll)", () => {
+    const doc = msgDoc("m1", baseSystem({
+      kind: "roll",
+      content: [{ kind: "roll_embed", formula: "1d6", outcome: rollOutcome(), roll_id: "roll-1" }],
+    }));
+    const { container } = render(MessageCard, {
+      props: { message: doc, showChannel: false },
+      context: setAppContextForTest({ documents: storeWith(doc), role: "gm" }),
+    });
+    expect(container.querySelector(".recalc-menu")).toBeNull();
+  });
+
+  it("Reroll calls ctx.chat.recalc with a reroll_dice op for the clicked die", async () => {
+    const recalc = vi.fn().mockResolvedValue(undefined);
+    const doc = rollDoc();
+    render(MessageCard, {
+      props: { message: doc, showChannel: false },
+      context: setAppContextForTest({
+        documents: storeWith(doc),
+        role: "gm",
+        chat: { send: () => Promise.resolve(), edit: () => Promise.resolve(), delete: () => Promise.resolve(), recalc },
+      }),
+    });
+    await fireEvent.click(screen.getByText("chat.roll.reroll"));
+    expect(recalc).toHaveBeenCalledWith("m1", "roll-1", [{ kind: "reroll_dice", ids: [0] }]);
+  });
+
+  it("Remove calls ctx.chat.recalc with a remove_dice op for the clicked die", async () => {
+    const recalc = vi.fn().mockResolvedValue(undefined);
+    const doc = rollDoc();
+    render(MessageCard, {
+      props: { message: doc, showChannel: false },
+      context: setAppContextForTest({
+        documents: storeWith(doc),
+        role: "gm",
+        chat: { send: () => Promise.resolve(), edit: () => Promise.resolve(), delete: () => Promise.resolve(), recalc },
+      }),
+    });
+    await fireEvent.click(screen.getByText("chat.roll.remove"));
+    expect(recalc).toHaveBeenCalledWith("m1", "roll-1", [{ kind: "remove_dice", ids: [0] }]);
+  });
+
+  it("Replace calls ctx.chat.recalc with a replace_die op using the entered natural", async () => {
+    const recalc = vi.fn().mockResolvedValue(undefined);
+    const doc = rollDoc();
+    render(MessageCard, {
+      props: { message: doc, showChannel: false },
+      context: setAppContextForTest({
+        documents: storeWith(doc),
+        role: "gm",
+        chat: { send: () => Promise.resolve(), edit: () => Promise.resolve(), delete: () => Promise.resolve(), recalc },
+      }),
+    });
+    const input = screen.getByLabelText("chat.roll.replaceInput") as HTMLInputElement;
+    await fireEvent.input(input, { target: { value: "6" } });
+    await fireEvent.click(screen.getByText("chat.roll.replace"));
+    expect(recalc).toHaveBeenCalledWith("m1", "roll-1", [{ kind: "replace_die", id: 0, natural: 6 }]);
+  });
+
+  it("renders a recalculated badge when recalc_history is non-empty", () => {
+    const doc = rollDoc({
+      recalc_history: [{ previous_outcome: rollOutcome({ total: 2 }), recalculated_by: "u-gm", recalculated_at: 100 }],
+    });
+    const { container } = render(MessageCard, {
+      props: { message: doc, showChannel: false },
+      context: setAppContextForTest({ documents: storeWith(doc), role: "player" }),
+    });
+    expect(container.querySelector(".chip.recalculated")).not.toBeNull();
+  });
+
+  it("does not render a recalculated badge when recalc_history is absent", () => {
+    const doc = rollDoc();
+    const { container } = render(MessageCard, {
+      props: { message: doc, showChannel: false },
+      context: setAppContextForTest({ documents: storeWith(doc), role: "player" }),
+    });
+    expect(container.querySelector(".chip.recalculated")).toBeNull();
   });
 });
 

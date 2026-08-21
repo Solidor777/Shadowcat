@@ -5,6 +5,8 @@
     isKnownSegment,
     resolveTokenActor,
     actorDisplayName,
+    baseRollDice,
+    numericBounds,
     type ChatSegment,
     type UnknownSegment,
     type WireActorOwnerRef,
@@ -237,6 +239,47 @@
   // delete); this gate only decides whether to SHOW the actions, never whether one succeeds.
   const canModerate = $derived(!!sys && (sys.user_owner === ctx.selfId || ctx.role === "gm"));
 
+  const isGm = $derived(ctx.role === "gm");
+  // Per-die "replace with" draft input, keyed by die id -- a plain object
+  // (not a Map) so Svelte's reactivity tracks individual key writes.
+  let replaceDrafts = $state<Record<number, string>>({});
+
+  /** Sends a single-op recalc for the given die.
+   * @param rollId The targeted roll's stable id.
+   * @param op The single targeted mutation.
+   * @example
+   * ```
+   * // internal; called from the recalc menu's action buttons
+   * sendRecalc("roll-1", { kind: "reroll_dice", ids: [0] });
+   * ```
+   */
+  function sendRecalc(
+    rollId: string,
+    op:
+      | {
+          /** Discriminant. */
+          kind: "reroll_dice";
+          /** The base die ids to reroll in place. */
+          ids: number[];
+        }
+      | {
+          /** Discriminant. */
+          kind: "replace_die";
+          /** The base die id whose natural is overwritten. */
+          id: number;
+          /** The GM-entered replacement natural. */
+          natural: number;
+        }
+      | {
+          /** Discriminant. */
+          kind: "remove_dice";
+          /** The base die ids to drop from the roll. */
+          ids: number[];
+        },
+  ): void {
+    ctx.chat.recalc(message.id, rollId, [op]);
+  }
+
   let editing = $state(false);
   let draft = $state("");
 
@@ -373,6 +416,44 @@
                 </span>
               {/each}
             </div>
+            {#if rollBlock.recalc_history?.length}
+              <span class="chip recalculated">{t("chat.roll.recalculated")}</span>
+            {/if}
+            {#if isGm && rollBlock.raw}
+              <div class="recalc-menu">
+                {#each baseRollDice(rollBlock.raw) as die (die.id)}
+                  <div class="recalc-die-row">
+                    <span class="recalc-die-natural">{die.natural}</span>
+                    <button type="button" onclick={() => sendRecalc(rollBlock!.roll_id!, { kind: "reroll_dice", ids: [die.id] })}>
+                      {t("chat.roll.reroll")}
+                    </button>
+                    <button type="button" onclick={() => sendRecalc(rollBlock!.roll_id!, { kind: "remove_dice", ids: [die.id] })}>
+                      {t("chat.roll.remove")}
+                    </button>
+                    {#if numericBounds(die.kind)}
+                      {@const bounds = numericBounds(die.kind)!}
+                      <input
+                        type="number"
+                        aria-label={t("chat.roll.replaceInput")}
+                        min={bounds.min}
+                        max={bounds.max}
+                        value={replaceDrafts[die.id] ?? ""}
+                        oninput={(e) => (replaceDrafts[die.id] = (e.currentTarget as HTMLInputElement).value)}
+                      />
+                      <button
+                        type="button"
+                        onclick={() => {
+                          const n = Number(replaceDrafts[die.id]);
+                          if (Number.isFinite(n)) sendRecalc(rollBlock!.roll_id!, { kind: "replace_die", id: die.id, natural: n });
+                        }}
+                      >
+                        {t("chat.roll.replace")}
+                      </button>
+                    {/if}
+                  </div>
+                {/each}
+              </div>
+            {/if}
             {#if rollBlock.outcome.positive_counter !== 0 || rollBlock.outcome.negative_counter !== 0}
               <div class="roll-counters">
                 {#if rollBlock.outcome.positive_counter !== 0}
@@ -409,7 +490,7 @@
                 is rendered with plain `{...}` text bindings, never innerHTML. -->
                 <span class="seg-html">{@html s.sanitized_html}</span>
               {:else if s.kind === "roll_embed"}
-                <RollTooltip outcome={s.outcome} />
+                <RollTooltip outcome={s.outcome} recalcHistory={s.recalc_history} />
               {:else if s.kind === "roll_button"}
                 <button type="button" class="roll-btn" onclick={() => sendRollButton(s)}>
                   {s.label ?? s.formula}
@@ -557,6 +638,29 @@
   }
   .counter.negative {
     color: var(--danger, crimson);
+  }
+  .chip.recalculated {
+    font-style: normal;
+    opacity: 0.9;
+  }
+  .recalc-menu {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    padding-top: var(--space-1);
+    border-top: 1px dashed var(--border);
+  }
+  .recalc-die-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+  }
+  .recalc-die-row input[type="number"] {
+    width: 4em;
+  }
+  .recalc-die-row button {
+    min-height: 44px;
+    padding: 0 var(--space-1);
   }
   .roll-btn {
     // Touch floor: matches `.actions button` below. The 44px target applies to a roll_button too.

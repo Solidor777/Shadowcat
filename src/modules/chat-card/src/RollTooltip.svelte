@@ -1,12 +1,18 @@
 <script lang="ts">
   import { getAppContext } from "@shadowcat/ui-kit";
-  import type { RollOutcome } from "@shadowcat/core";
+  import type { RollOutcome, RecalcHistoryEntry } from "@shadowcat/core";
 
   let {
     outcome,
+    recalcHistory,
   }: {
     /** The executed roll's full audit record — every die, kept/dropped, plus any labeled constants. */
     outcome: RollOutcome;
+    /** Present iff this roll has been recalculated at least once — renders a
+     * passive "recalculated" indicator. Never interactive here (see
+     * `MessageCard.svelte`'s decomposition note for where the GM recalc menu
+     * lives). */
+    recalcHistory?: RecalcHistoryEntry[] | null;
   } = $props();
 
   const ctx = getAppContext();
@@ -115,6 +121,9 @@
   >
     {outcome.successes ?? outcome.total}
   </button>
+  {#if recalcHistory?.length}
+    <span class="chip recalculated">{t("chat.roll.recalculated")}</span>
+  {/if}
   {#if open}
     <div role="tooltip" id={popoverId} class="roll-tooltip-popover">
       <table>
@@ -174,6 +183,13 @@
   .roll-tooltip-trigger:focus-visible {
     outline: 2px solid var(--accent);
     outline-offset: 1px;
+  }
+  .chip.recalculated {
+    font-size: 0.85em;
+    padding: 0 4px;
+    border-radius: var(--radius-1);
+    border: 1px solid var(--border);
+    margin-left: 4px;
   }
   .roll-tooltip-popover {
     position: absolute;

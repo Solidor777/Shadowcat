@@ -161,4 +161,23 @@ describe("RollTooltip", () => {
     expect(tooltips[0].id).not.toBe("");
     expect(tooltips[1].id).not.toBe("");
   });
+
+  it("renders a recalculated badge when recalcHistory is non-empty", () => {
+    const { container } = render(RollTooltip, {
+      props: {
+        outcome: testRollOutcome(),
+        recalcHistory: [{ previous_outcome: testRollOutcome({ total: 2 }), recalculated_by: "u-gm", recalculated_at: 100 }],
+      },
+      context: setAppContextForTest({ t: fakeT }),
+    });
+    expect(container.querySelector(".chip.recalculated")).not.toBeNull();
+  });
+
+  it("renders no badge when recalcHistory is absent", () => {
+    const { container } = render(RollTooltip, {
+      props: { outcome: testRollOutcome() },
+      context: setAppContextForTest({ t: fakeT }),
+    });
+    expect(container.querySelector(".chip.recalculated")).toBeNull();
+  });
 });
