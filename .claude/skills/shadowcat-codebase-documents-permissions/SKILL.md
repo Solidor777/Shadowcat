@@ -103,11 +103,18 @@ sent-then-hidden. This subsystem also owns the visibility-partitioned full-text 
     the room's in-memory `SceneEcs` actor table (`|id| ecs.actor(id)`). Neither
     `ws::conn::send_filtered` nor `http::routes::write_ops` carries a persisted commit-time
     snapshot yet — both build one via `data::permission::mirror_current_snapshot`, which mirrors
-    the recipient's CURRENT state (commit time and now are the same instant at these two call
-    sites by construction). No pool read on this path at all — the join is entirely in-memory,
-    preserving the no-pool-query-on-the-hot-path property. The scene read guard around
-    `filter_command` itself is short (sync core, no await inside it), the same discipline
-    `clip_move_stream` uses.
+    the recipient's CURRENT state. For `http::routes::write_ops` (an author's read-back of their
+    own just-applied write) commit time and now ARE the same instant by construction, so mirroring
+    is exactly correct. For `ws::conn::send_filtered`, this holds only for its LIVE-broadcast
+    callers — its `replay()` caller (driven by `Room::resync_range`, serving `Egress::Resync` and
+    the lag-driven auto-resync path) redacts a HISTORICAL event through the same mirrored,
+    CURRENT-state snapshot, so replay still resolves against today's policy rather than the
+    policy in force at that event's actual commit — a resync-delivered historical `Update` still
+    discloses or withholds against TODAY's permission set, not the set in force when it was
+    committed, until the real persisted-snapshot plumbing lands for this path. No pool read
+    on this path at all — the join is entirely in-memory, preserving the no-pool-query-on-the-hot-
+    path property. The scene read guard around `filter_command` itself is short (sync core, no
+    await inside it), the same discipline `clip_move_stream` uses.
   - **`http::routes::list_documents`** — one batched `query_documents(world, "actor")` fetch
     up front when listing tokens, folded into a `HashMap<Uuid, Document>` and joined in-memory via
     `effective_owner_via` per doc; every other `doc_type` never triggers the actor query

@@ -78,7 +78,12 @@ optimistically and roll back on divergence.
   synchronous `permission::filter_command(command, &snapshot, ctx, world_defaults, &current, |id|
   ecs.actor(id))` call — the room's in-memory `SceneEcs` actor table is the egress-side owner
   join, so this never touches the pool (the same short-read-guard discipline `clip_move_stream`
-  uses for vision). See
+  uses for vision). `send_filtered` is shared by BOTH live-broadcast callers and `replay()`
+  (`Room::resync_range`-driven, serving `Egress::Resync` and the lag-driven auto-resync branch):
+  for a live event the mirrored snapshot's "commit time" genuinely is now, but for a replayed
+  historical event it is not — `mirror_current_snapshot` still resolves against TODAY's policy, so
+  a resync-delivered historical `Update` is redacted against current, not historical, permission
+  state until the real persisted-snapshot plumbing lands. See
   `shadowcat-codebase-documents-permissions` for `filter_command`'s own internals and the other two
   owner-join sources (`list_documents`'s batched prefetch, `effective_owner_of` on single-doc
   routes/search).
