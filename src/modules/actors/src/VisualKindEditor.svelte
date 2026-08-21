@@ -72,7 +72,10 @@
   function animSourceToSource(s: AnimSourceState): AnimatedSource {
     // `[...s.frames]` copies out of the reactive $state array: embedding it by reference would
     // leak a live Proxy into the built document, which `structuredClone` (the instanced-token
-    // deep-copy path) cannot clone.
+    // deep-copy path) cannot clone. Redundant with `ActorsPanel.create()`'s own deep
+    // `$state.snapshot` at its only current call site, kept deliberately: this is a general
+    // builder, and a future caller that reads its result without also snapshotting would
+    // otherwise reintroduce the same leak.
     return s.sourceType === "frames"
       ? { type: "frames", frames: [...s.frames] }
       : { type: "sheet", asset: s.sheetAsset ?? "", rows: s.rows, cols: s.cols, count: s.count };

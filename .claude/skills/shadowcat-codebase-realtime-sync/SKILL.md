@@ -257,19 +257,15 @@ optimistically and roll back on divergence.
   silently discards it (`case "error": break;`).** `Reject` requires the frame to parse into
   `ClientMsg` first (it carries the server-VALIDATED `intent_id`); a JSON/type-level failure —
   e.g. a `Document.id: Uuid` field that isn't a valid UUID string — fails at
-  `serde_json::from_str::<ClientMsg>` before `intent_id` is ever extracted, so `conn.rs`'s
+  `serde_json::from_str::<ClientMsg>` before `intent_id` is ever extracted, so `handle_socket`'s
   `Err(_)` arm (malformed-frame branch) has no `intent_id` to attach and sends the generic
   `Error` instead. The optimistic prediction that intent pushed via `applyIntent` is now
   UNRECOVERABLE: no `Event` will ever confirm it (the write never reached `apply_intent`), and no
   `Reject` will ever roll it back — see the FIFO-misalignment invariant above for the cascading
-  consequence. **`@shadowcat/core`'s `deterministicId(namespace, name)` had exactly this defect**
-  (`scene-docs.ts`): a UUID-reconstruction slicing bug (`hex.slice(13, 16)` instead of
-  `hex.slice(13)`) silently truncated its output to 21 characters instead of 36 — a
-  structurally-plausible-looking but invalid UUID string that passed every existing test (none
-  asserted the SHAPE of the output) and every client-side check, then failed server-side
-  deserialization on every call. Any future id-shaped string builder needs a shape-asserting test
-  (`toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-.../)`), not just a stability/uniqueness test — those alone
-  cannot catch a shape defect since two calls with the same (broken) inputs still compare equal.
+  consequence. Any id-shaped string builder (e.g. `@shadowcat/core`'s `deterministicId`) needs a
+  shape-asserting test (`toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-.../)`), not just a stability/
+  uniqueness test — those alone cannot catch a shape defect, since two calls with the same
+  (broken) inputs still compare equal to each other while still being invalid.
 - **`ClientMsg::Hello { world, last_seq }` is live** — `ws::conn`'s ingress match
   reacts to `Hello { last_seq: None, .. }` by calling `Room::establish_resync_floor`; `world` is
   destructured away (redundant with the connection's already-resolved `world_id`/`room` from the
