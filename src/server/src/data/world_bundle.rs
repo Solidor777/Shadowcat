@@ -1,6 +1,7 @@
 //! Per-world export/import row DTOs — the on-disk-bundle-portable shape of the
-//! six FK-scoped tables `SqliteRepository::delete_world` already walks (read
-//! instead of deleted) plus the world's five keyed `settings` rows. A
+//! five FK-scoped tables `SqliteRepository::delete_world` already walks (read
+//! instead of deleted), the FK-less `explored_fog` table it purges via an
+//! explicit `DELETE`, plus the world's five keyed `settings` rows. A
 //! `users(id)` reference is exported as a portable username string, never a
 //! raw id (source and target servers do not share a `users` table) — resolved
 //! back to a target-local id (or degraded to `NULL`/row-drop when
@@ -94,11 +95,14 @@ pub struct ExportedEventRow {
 }
 
 /// One exported `world_members` row. `world_members.user_id` is `NOT NULL`
-/// (`ON DELETE CASCADE`, not `SET NULL`) — unlike the other exported columns
-/// that resolve a source username against the target `users` table, an
-/// unresolvable username here has no `NULL` to degrade to, so
-/// `SqliteRepository::import_world` drops the row entirely rather than seat
-/// a membership for nobody.
+/// (`ON DELETE CASCADE`, not `SET NULL`), so `username` here is a plain
+/// `String`, not the `Option<String>` shape used by columns that CAN degrade
+/// to `NULL` on the target (`owner_username`, `author_username`,
+/// `created_by_username`, `consumed_by_username`): an unresolvable username
+/// here has no `NULL` to degrade to, so `SqliteRepository::import_world`
+/// drops the row entirely rather than seat a membership for nobody — the
+/// same row-drop behavior `ExportedFogRow.username` uses for the identical
+/// reason.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExportedMemberRow {
     /// The member's username.
