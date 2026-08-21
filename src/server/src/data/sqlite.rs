@@ -1191,8 +1191,9 @@ impl SqliteRepository {
     /// returned `ImportSummary` rather than silently absorbed. Every
     /// document is run through the same ingress-validation chokepoint the
     /// live `Create`/`Update` write paths use
-    /// (`validation::validate_system_size`/`validate_engine_tree`/
-    /// `validate_system_schema_tree`) before it reaches storage — an
+    /// (`validation::validate_system_size`/`validate_property_overrides`/
+    /// `validate_engine_tree`/`validate_system_schema_tree`) before it
+    /// reaches storage — an
     /// imported bundle is untrusted input to THIS server even when it was
     /// exported by a trusted admin from another one. Holds the pool's single
     /// writer connection for the entire call, including the asset-rename
@@ -1267,6 +1268,7 @@ impl SqliteRepository {
             // (re-normalizes it); the persisted row must hold that
             // normalized form, same as every other write path.
             validation::validate_system_size(&document)?;
+            validation::validate_property_overrides(&document)?;
             validation::validate_engine_tree(&mut document)?;
             validation::validate_system_schema_tree(&document, &world_schemas)?;
             Self::insert_imported_document(&mut tx, &document, row.seq, row.created_seq).await?;
@@ -7664,6 +7666,81 @@ mod tests {
         assert_eq!(row.1, "player");
         assert_eq!(row.2, Some(target_gm.to_string()));
         assert_eq!(row.3, None);
+    }
+
+    #[tokio::test]
+    async fn import_world_rejects_document_with_unclassifiable_property_override() {
+        let src = repo().await;
+        let gm = src
+            .create_user("gm8", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = src.create_world_owned("W8", gm, 0).await.unwrap();
+        let mut doc = world_doc(14, w.id, serde_json::json!({}));
+        // `/owner` is a structural envelope field, not one of the four
+        // content bands `redaction_target` classifies — the same pointer
+        // `redaction_target_refuses_every_structural_envelope_field` pins in
+        // `permission.rs`.
+        doc.permissions.property_overrides.insert(
+            "/owner".to_string(),
+            crate::data::document::Visibility::GmOnly,
+        );
+
+        let export_data = WorldExportData {
+            manifest: BundleManifest {
+                schema_version: BUNDLE_SCHEMA_VERSION,
+                world_id: w.id,
+                world_name: "W8".to_string(),
+                world_seq: w.seq,
+                world_created_at: w.created_at,
+                world_updated_at: w.updated_at,
+                exported_at_unix_ms: 0,
+                row_counts: std::collections::BTreeMap::new(),
+            },
+            documents: vec![ExportedDocumentRow {
+                document: doc,
+                owner_username: None,
+                seq: 1,
+                created_seq: 1,
+            }],
+            events: vec![],
+            members: vec![],
+            invites: vec![],
+            assets: vec![],
+            fog: vec![],
+            settings: vec![],
+        };
+
+        let target = repo().await;
+        let import_data = crate::data::world_bundle::WorldImportData {
+            manifest: export_data.manifest.clone(),
+            documents: export_data.documents.clone(),
+            events: export_data.events.clone(),
+            members: export_data.members.clone(),
+            invites: export_data.invites.clone(),
+            assets: export_data.assets.clone(),
+            fog: export_data.fog.clone(),
+            settings: export_data.settings.clone(),
+            staged_assets: Vec::new(),
+        };
+
+        let err = target.import_world(import_data).await.unwrap_err();
+        assert!(matches!(err, DataError::BadPath(_)));
+
+        // Transaction did not commit: neither the world nor its document exist.
+        let world_exists: Option<i64> = sqlx::query_scalar("SELECT 1 FROM worlds WHERE id = ?")
+            .bind(w.id.to_string())
+            .fetch_optional(target.pool())
+            .await
+            .unwrap();
+        assert_eq!(world_exists, None);
+        let doc_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM documents WHERE world_id = ?")
+                .bind(w.id.to_string())
+                .fetch_one(target.pool())
+                .await
+                .unwrap();
+        assert_eq!(doc_count, 0);
     }
 
     #[tokio::test]
