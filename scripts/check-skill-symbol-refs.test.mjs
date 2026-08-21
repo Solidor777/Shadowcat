@@ -977,11 +977,19 @@ describe("span conservation", () => {
 });
 
 describe("listSkillDirs", () => {
-  it("includes a committed skill directory and excludes the untracked vendored one", () => {
+  it("includes a committed skill directory and excludes an untracked one", () => {
+    // A fixed, reused-in-place directory under .claude/skills (this repo permits no
+    // permanent-deletion call, so a per-run temp directory would accumulate forever) — gitignored
+    // by name, so it is real, untracked filesystem state `listSkillDirs` must classify correctly,
+    // without depending on the graphify tool actually having been run locally (a fresh CI checkout
+    // never has that directory).
+    mkdirSync(join(REPO_ROOT, ".claude", "skills", "__listskilldirs_test_fixture__"), {
+      recursive: true,
+    });
     const dirs = listSkillDirs(REPO_ROOT);
     expect(dirs).not.toBeNull();
     expect(dirs.tracked.has("shadowcat-codebase-core")).toBe(true);
-    expect(dirs.untracked).toContain("graphify");
+    expect(dirs.untracked).toContain("__listskilldirs_test_fixture__");
   });
 });
 

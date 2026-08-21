@@ -275,7 +275,12 @@ impl ExploredSet {
             if poly.len() < 6 {
                 continue; // need ≥3 points for an area
             }
-            let pts: Vec<(f64, f64)> = poly.chunks_exact(2).map(|c| (c[0], c[1])).collect();
+            let pts: Vec<(f64, f64)> = poly
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|c| (c[0], c[1]))
+                .collect();
             let (mut minx, mut miny, mut maxx, mut maxy) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
             for &(x, y) in &pts {
                 minx = minx.min(x);
@@ -341,7 +346,7 @@ impl ExploredSet {
             return Self::default();
         }
         let mut cells = BTreeSet::new();
-        for rec in b[EXPLORED_HEADER_LEN..].chunks_exact(8) {
+        for rec in b[EXPLORED_HEADER_LEN..].as_chunks::<8>().0 {
             let i = i32::from_le_bytes([rec[0], rec[1], rec[2], rec[3]]);
             let j = i32::from_le_bytes([rec[4], rec[5], rec[6], rec[7]]);
             cells.insert((i, j));
