@@ -65,6 +65,9 @@ pub enum ParseError {
     /// A second `e<N>` expertise token appeared in one roll. `expertise` is shared
     /// roll-level parser state (one `RollSpec`), so a silent overwrite would lose one.
     DuplicateExpertise,
+    /// A second `rs<N>` required-successes token appeared in one roll. Shared roll-level
+    /// state (one `SuccessConfig.required_successes`), so a silent overwrite would lose one.
+    DuplicateRequiredSuccesses,
     /// A `[...]` label was empty after trimming whitespace (e.g. `1d12[]` or `1d12[ ]`).
     EmptyLabel,
     /// A `[` was never closed by a matching `]` before the input ended.
@@ -93,6 +96,12 @@ impl std::fmt::Display for ParseError {
             }
             ParseError::DuplicateExpertise => {
                 write!(f, "a roll can only set one expertise budget (e<N>)")
+            }
+            ParseError::DuplicateRequiredSuccesses => {
+                write!(
+                    f,
+                    "a roll can only set one required-successes target (rs<N>)"
+                )
             }
             ParseError::EmptyLabel => write!(f, "a dice group label cannot be empty"),
             ParseError::UnterminatedLabel => {
@@ -127,13 +136,14 @@ mod tests {
             ParseError::InvalidDieSides(0),
             ParseError::DuplicateSuccessRule,
             ParseError::DuplicateExpertise,
+            ParseError::DuplicateRequiredSuccesses,
             ParseError::EmptyLabel,
             ParseError::UnterminatedLabel,
             ParseError::InvalidLabelChar,
         ];
         assert_eq!(
             variants.len(),
-            9,
+            10,
             "update this test if a ParseError variant is added or removed"
         );
         for v in variants {
@@ -158,6 +168,7 @@ mod tests {
             "999999999999999999999999", // invalid number literal
             "min(3)",                   // fn_call: wrong arity
             "foo(3)",                   // fn_call: unknown function name
+            "4d6cs>=4rs2rs3",           // duplicate rs
         ];
         for input in inputs {
             let err = parse(input, ParseContext::default())

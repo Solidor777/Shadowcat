@@ -1164,7 +1164,18 @@ use crate::dice::spec::{
 };
 ```
 
-Add two fields to `struct P`, after `tiers`:
+**Correction (post-Task-3 fix, applied to this section before Task 4 execution):** Task 3's own
+review found `SuccessConfig.required_successes` had never been notation-settable — a
+pre-existing, campaign-predating gap that left `tr<offset>`'s tier ladder permanently inert for
+`SuccessCount` mode. Task 3 fixed this by adding an `rs<N>` modifier and a
+`required_successes: Option<i32>` field on `struct P` (mirroring `expertise`'s exact pattern),
+now already present in `parser.rs` ahead of Task 4. The snippets below are updated to carry that
+field/value forward instead of the stale `required_successes: None` this section originally
+specified — applying the ORIGINAL unpatched snippet would silently regress the Task 3 fix (parse
+`rs<N>` successfully, populate `P.required_successes`, then discard it at `Mode` construction with
+no error).
+
+Add two fields to `struct P`, after `required_successes` (added by Task 3):
 
 ```rust
     /// Crit-success trigger from an `xs<N>[:<extra>[:<counter>]]` modifier. Shared roll-level
@@ -1177,7 +1188,8 @@ Add two fields to `struct P`, after `tiers`:
     crit_fail: Option<CritFail>,
 ```
 
-Update the `P { ... }` literal in `parse()`:
+Update the `P { ... }` literal in `parse()` (already carries `required_successes: None` from
+Task 3 — leave that line as-is, add the two new fields):
 
 ```rust
     let mut p = P {
@@ -1186,18 +1198,21 @@ Update the `P { ... }` literal in `parse()`:
         success: None,
         t_target: None,
         expertise: None,
+        required_successes: None,
         tiers: Vec::new(),
         crit_success: None,
         crit_fail: None,
     };
 ```
 
-Update the `SuccessCount` `Mode` construction arm at the end of `parse()`:
+Update the `SuccessCount` `Mode` construction arm at the end of `parse()` (already reads
+`required_successes: p.required_successes` from Task 3 — leave that line as-is, add the two new
+fields):
 
 ```rust
         Mode::SuccessCount(SuccessConfig {
             success: rule,
-            required_successes: None,
+            required_successes: p.required_successes,
             tiers: p.tiers,
             crit_success: p.crit_success,
             crit_fail: p.crit_fail,
@@ -1289,7 +1304,8 @@ Add the matching `Display` arms, after `DuplicateExpertise`'s:
 ```
 
 Update `every_parse_error_variant_displays_without_debug_artifacts`'s `variants` vec and count
-(9 → 11):
+(**10 → 12** — corrected from this section's original 9 → 11: Task 3 already added
+`ParseError::DuplicateRequiredSuccesses`, bringing the pre-Task-4 count to 10, not 9):
 
 ```rust
         let variants: Vec<ParseError> = vec![
@@ -1299,6 +1315,7 @@ Update `every_parse_error_variant_displays_without_debug_artifacts`'s `variants`
             ParseError::InvalidDieSides(0),
             ParseError::DuplicateSuccessRule,
             ParseError::DuplicateExpertise,
+            ParseError::DuplicateRequiredSuccesses,
             ParseError::EmptyLabel,
             ParseError::UnterminatedLabel,
             ParseError::InvalidLabelChar,
@@ -1307,16 +1324,18 @@ Update `every_parse_error_variant_displays_without_debug_artifacts`'s `variants`
         ];
         assert_eq!(
             variants.len(),
-            11,
+            12,
             "update this test if a ParseError variant is added or removed"
         );
 ```
 
-Add one new entry to `real_parse_failures_render_without_debug_artifacts`'s `inputs` array:
+Add one new entry to `real_parse_failures_render_without_debug_artifacts`'s `inputs` array
+(already carries Task 3's `"4d6cs>=4rs2rs3"` entry — leave that as-is, add this one):
 
 ```rust
             "min(3)",                   // fn_call: wrong arity
             "foo(3)",                   // fn_call: unknown function name
+            "4d6cs>=4rs2rs3",           // duplicate rs
             "4d6cs>=4xs5xs6",           // duplicate xs
 ```
 
@@ -1411,11 +1430,13 @@ Add one new entry to `real_parse_failures_render_without_debug_artifacts`'s `inp
 
 ### Step 4: `NOTATION_KEYWORDS` parity update in `template.ts`
 
-In `src/client/formula/src/template.ts`, update the `NOTATION_KEYWORDS` export:
+In `src/client/formula/src/template.ts`, update the `NOTATION_KEYWORDS` export (already carries
+Task 3's `"tr"`/`"rs"` entries — leave those as-is, append `"xs"`/`"xf"`):
 
 ```typescript
-export const NOTATION_KEYWORDS: readonly string[] =
-  [DICE_OPERATOR, "kh", "kl", "dh", "dl", "r", "ro", "cs", "cf", "t", "e", "tr", "xs", "xf"];
+export const NOTATION_KEYWORDS: readonly string[] = [
+  DICE_OPERATOR, "kh", "kl", "dh", "dl", "r", "ro", "cs", "cf", "t", "e", "tr", "rs", "xs", "xf",
+];
 ```
 
 No other change to `template.ts` is needed: `scripts/check-notation-modifier-parity.mjs`'s

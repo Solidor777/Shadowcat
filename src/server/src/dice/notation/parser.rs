@@ -5,7 +5,7 @@ use crate::dice::notation::lexer::{describe_token, lex, Token};
 use crate::dice::notation::{ModeKind, ParseContext, ParseError};
 use crate::dice::spec::{
     BinOp, Comparator, ConstTerm, DiceGroup, DieKind, Direction, ExplodeKind, Expr, FnName,
-    GroupModifier, Mode, RollSpec, SuccessConfig, SuccessRule, TotalConfig,
+    GroupModifier, Mode, RollSpec, SuccessConfig, SuccessRule, Tier, TotalConfig,
 };
 
 /// Recursion depth (via `expr`/`term`/`factor`'s mutual calls, e.g. through
@@ -34,6 +34,21 @@ struct P {
     /// Roll-level expertise budget from an `e<N>` token. Shared state,
     /// not per-`DiceGroup`; applied only when the resolved mode is SuccessCount.
     expertise: Option<u32>,
+    /// Roll-level required-successes target from an `rs<N>` token — the number of net
+    /// successes a `SuccessCount` roll needs to pass overall
+    /// (`SuccessConfig.required_successes`, gating `evaluate_success`'s
+    /// pass/margin/tier classification). Shared state, not per-`DiceGroup`; consumed
+    /// only when the resolved mode is `SuccessCount`, mirroring `expertise`'s
+    /// silent-drop under `Total` — `TotalConfig` has no equivalent field, `t<N>`
+    /// already fills that role via `TotalConfig.difficulty`.
+    required_successes: Option<i32>,
+    /// Tier-ladder rungs accumulated from `tr<offset>[:<value>][<label>]` modifiers, in
+    /// occurrence order. Threaded into whichever `TotalConfig.tiers`/`SuccessConfig.tiers` the
+    /// resolved mode builds; empty means the default 2-rung pass/fail ladder
+    /// (`eval::classify::classify`). Repeatable — unlike `success`/`t_target`/`expertise`, a
+    /// second `tr` is not an error; `chat::rolls::validate_tiers` rejects a duplicate
+    /// `margin_offset` at the wire boundary, not this parser.
+    tiers: Vec<Tier>,
 }
 
 /// Recursive-descent parser: `expr := term (('+'|'-') term)*`;
@@ -53,6 +68,8 @@ pub fn parse(input: &str, ctx: ParseContext) -> Result<RollSpec, ParseError> {
         success: None,
         t_target: None,
         expertise: None,
+        required_successes: None,
+        tiers: Vec::new(),
     };
     let expr = p.expr()?;
     if p.pos != p.toks.len() {
@@ -82,8 +99,8 @@ pub fn parse(input: &str, ctx: ParseContext) -> Result<RollSpec, ParseError> {
         };
         Mode::SuccessCount(SuccessConfig {
             success: rule,
-            required_successes: None,
-            tiers: vec![],
+            required_successes: p.required_successes,
+            tiers: p.tiers,
             crit_success: None,
             crit_fail: None,
             expertise: p.expertise.unwrap_or(0),
@@ -91,7 +108,7 @@ pub fn parse(input: &str, ctx: ParseContext) -> Result<RollSpec, ParseError> {
     } else {
         Mode::Total(TotalConfig {
             difficulty: p.t_target,
-            tiers: vec![],
+            tiers: p.tiers,
         })
     };
     Ok(RollSpec {
@@ -359,6 +376,13 @@ impl P {
                             }
                             self.expertise = Some(n as u32);
                         }
+                        "rs" => {
+                            let n = self.expect_int()?;
+                            if self.required_successes.is_some() {
+                                return Err(ParseError::DuplicateRequiredSuccesses);
+                            }
+                            self.required_successes = Some(n);
+                        }
                         "cf" => {
                             // Failure-counting is parsed as success on the inverted
                             // comparator — the grammar has no separate fail-count
@@ -370,6 +394,21 @@ impl P {
                             self.success = Some(SuccessRule::Numeric {
                                 comp: invert(comp),
                                 target,
+                            });
+                        }
+                        "tr" => {
+                            let margin_offset = self.expect_int()?;
+                            let tier_value = if matches!(self.peek(), Some(Token::Colon)) {
+                                self.bump();
+                                Some(self.expect_int()?)
+                            } else {
+                                None
+                            };
+                            let label = self.take_label();
+                            self.tiers.push(Tier {
+                                margin_offset,
+                                label,
+                                tier_value,
                             });
                         }
                         other => {
@@ -675,6 +714,45 @@ mod tests {
     }
 
     #[test]
+    fn rs_token_sets_required_successes_under_successcount() {
+        let spec = parse(
+            "4d6t5rs2",
+            ParseContext {
+                mode: ModeKind::SuccessCount,
+                direction: Direction::HighWins,
+            },
+        )
+        .unwrap();
+        match spec.mode {
+            Mode::SuccessCount(c) => assert_eq!(c.required_successes, Some(2)),
+            other => panic!("expected SuccessCount, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rs_token_is_discarded_under_total_ambient_without_error() {
+        // A stray rs<N> where the mode can't use it must NOT fail the roll -- mirrors
+        // e<N>'s exact silent-drop-under-Total precedent.
+        let spec = parse("1d20t10rs2", ParseContext::default()).unwrap(); // ambient Total
+        match spec.mode {
+            Mode::Total(c) => assert_eq!(c.difficulty, Some(10)),
+            other => panic!("expected Total, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn duplicate_rs_token_errors() {
+        let e = parse(
+            "4d6t5rs2rs3",
+            ParseContext {
+                mode: ModeKind::SuccessCount,
+                direction: Direction::HighWins,
+            },
+        );
+        assert!(matches!(e, Err(ParseError::DuplicateRequiredSuccesses)));
+    }
+
+    #[test]
     fn parses_label_onto_dice_group() {
         let spec = parse("1d12[Hope]", ParseContext::default()).unwrap();
         match spec.expr {
@@ -834,5 +912,69 @@ mod tests {
     #[test]
     fn bare_ident_not_followed_by_lparen_is_not_a_function_call() {
         assert!(parse("floor", ParseContext::default()).is_err());
+    }
+
+    #[test]
+    fn parses_single_tier_rung_with_value_and_label() {
+        let spec = parse("4d6cs>4tr3:1[Good]", ParseContext::default()).unwrap();
+        match spec.mode {
+            Mode::SuccessCount(c) => assert_eq!(
+                c.tiers,
+                vec![Tier {
+                    margin_offset: 3,
+                    label: Some("Good".into()),
+                    tier_value: Some(1)
+                }]
+            ),
+            other => panic!("expected SuccessCount, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_two_tier_rungs_appended_in_order() {
+        let spec = parse("4d6cs>4tr3:1[Good]tr6:2[Great]", ParseContext::default()).unwrap();
+        match spec.mode {
+            Mode::SuccessCount(c) => assert_eq!(
+                c.tiers,
+                vec![
+                    Tier {
+                        margin_offset: 3,
+                        label: Some("Good".into()),
+                        tier_value: Some(1)
+                    },
+                    Tier {
+                        margin_offset: 6,
+                        label: Some("Great".into()),
+                        tier_value: Some(2)
+                    },
+                ]
+            ),
+            other => panic!("expected SuccessCount, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tr_value_and_label_are_optional() {
+        let spec = parse("1d20t10tr5", ParseContext::default()).unwrap();
+        match spec.mode {
+            Mode::Total(c) => assert_eq!(
+                c.tiers,
+                vec![Tier {
+                    margin_offset: 5,
+                    label: None,
+                    tier_value: None
+                }]
+            ),
+            other => panic!("expected Total, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn no_tr_leaves_tiers_empty() {
+        let spec = parse("1d20t10", ParseContext::default()).unwrap();
+        match spec.mode {
+            Mode::Total(c) => assert!(c.tiers.is_empty()),
+            other => panic!("expected Total, got {other:?}"),
+        }
     }
 }

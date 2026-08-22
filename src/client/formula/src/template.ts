@@ -25,7 +25,7 @@ const DICE_OPERATOR = "d";
  * on `NotationKeyCheck` and nowhere else, so no second copy of that taxonomy can drift from
  * the type a consuming authoring UI actually branches on. */
 export const NOTATION_KEYWORDS: readonly string[] =
-  [DICE_OPERATOR, "kh", "kl", "dh", "dl", "r", "ro", "cs", "cf", "t", "e"];
+  [DICE_OPERATOR, "kh", "kl", "dh", "dl", "r", "ro", "cs", "cf", "t", "e", "tr", "rs"];
 
 const I32_MAX = 2147483647;
 

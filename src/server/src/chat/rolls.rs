@@ -306,10 +306,12 @@ fn validate_pre_roll(spec: &RollSpec) -> Result<(), RollError> {
     Ok(())
 }
 
-/// Uniqueness guard over a classification ladder's `margin_offset`s. Notation
-/// cannot author a non-empty ladder today (`dice::notation::parser` emits `tiers: vec![]`),
-/// so this arms the boundary for the tier-ladder syntax before it exists --
-/// the guard predates the untrusted path by construction.
+/// Uniqueness guard over a classification ladder's `margin_offset`s. Reachable from untrusted
+/// notation via the `tr<offset>[:<value>][<label>]` modifier (`dice::notation::parser`'s `"tr"`
+/// arm), which can append a duplicate offset; `classify::classify`'s `max_by_key`/`min_by_key`
+/// tie on a duplicate `margin_offset` is caller-order-dependent (documented on
+/// `dice::eval::classify`), so a malformed ladder with a repeated offset would otherwise resolve
+/// nondeterministically.
 fn validate_tiers(tiers: &[crate::dice::spec::Tier]) -> Result<(), RollError> {
     let mut seen = std::collections::BTreeSet::new();
     for t in tiers {
@@ -707,5 +709,41 @@ mod tests {
             cfg.tiers[1].margin_offset = 6;
         }
         assert!(validate_pre_roll(&ok).is_ok());
+    }
+
+    #[test]
+    fn duplicate_tr_offsets_from_notation_are_rejected_at_the_wire_boundary() {
+        match validate_formula("4d6cs>4tr3:1[Good]tr3:2[Also]", total_ctx()) {
+            Err(RollError::DuplicateTierOffset(3)) => {}
+            other => panic!("expected DuplicateTierOffset(3), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tr_and_rs_together_produce_a_working_successcount_tier_classification_end_to_end() {
+        // `tr<offset>` alone builds a `SuccessConfig.tiers` ladder, but
+        // `evaluate_success` only classifies over it when `required_successes`
+        // is set (`rs<N>`) -- without `rs`, `tr`'s ladder is inert (pass/margin/
+        // tier stay None on every roll). Proves the pairing works end-to-end,
+        // not just that each parses.
+        let spec = notation::parse("6d6cs>=4rs2tr0[Fail]tr1[Pass]", success_ctx()).unwrap();
+        let raws = roll(&spec, &mut NoiseRng::from_seed(1));
+        let out = eval::evaluate(&spec, &raws);
+        let net = out
+            .successes
+            .expect("SuccessCount mode always reports successes");
+        assert_eq!(
+            out.margin,
+            Some((net - 2) as i64),
+            "margin must be net successes minus the rs<N> required-successes target"
+        );
+        // A non-empty ladder always reports via `tier_label`/`tier_value`, never `pass`
+        // (`classify::classify` sets `pass` only for the default empty-ladder case).
+        assert!(
+            out.tier_label.is_some(),
+            "a tier ladder built by tr<offset> must actually classify once rs<N> supplies \
+             the required-successes reference -- got tier_label={:?}",
+            out.tier_label
+        );
     }
 }

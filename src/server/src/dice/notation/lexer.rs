@@ -37,6 +37,9 @@ pub enum Token {
     Label(String),
     /// `,` — separates arguments in a `fn_call`.
     Comma,
+    /// `:` — separates a modifier's threshold from its optional value fields
+    /// (`tr<offset>:<value>`, `xs<N>:<extra>:<counter>`, `xf<N>:<lost>:<counter>`).
+    Colon,
 }
 
 /// Player-presentable rendering of a single token, used to build `ParseError`
@@ -60,6 +63,7 @@ impl std::fmt::Display for Token {
             Token::BangP => write!(f, "'!p'"),
             Token::Label(s) => write!(f, "the label '{s}'"),
             Token::Comma => write!(f, "','"),
+            Token::Colon => write!(f, "':'"),
         }
     }
 }
@@ -154,6 +158,10 @@ pub fn lex(input: &str) -> Result<Vec<Token>, ParseError> {
             }
             ',' => {
                 out.push(Token::Comma);
+                i += 1;
+            }
+            ':' => {
+                out.push(Token::Colon);
                 i += 1;
             }
             '[' => {
@@ -351,6 +359,20 @@ mod tests {
                 Token::D,
                 Token::Int(12),
                 Token::Label("Hope Fear".to_string())
+            ]
+        );
+    }
+
+    #[test]
+    fn lex_colon_separates_modifier_value_fields() {
+        let toks = lex("tr3:1").unwrap();
+        assert_eq!(
+            toks,
+            vec![
+                Token::Ident("tr".into()),
+                Token::Int(3),
+                Token::Colon,
+                Token::Int(1),
             ]
         );
     }
