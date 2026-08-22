@@ -27,5 +27,5 @@ pub use outcome::{DieRecord, RawDie, RawRoll, RollOutcome, RollResult};
 pub use recalc::{recalculate, RecalcOp};
 pub use spec::{
     BinOp, Comparator, CritFail, CritSuccess, DiceGroup, DieId, DieKind, Direction, ExplodeKind,
-    Expr, GroupModifier, Mode, RollSpec, SuccessConfig, SuccessRule, Tier, TotalConfig,
+    Expr, FnName, GroupModifier, Mode, RollSpec, SuccessConfig, SuccessRule, Tier, TotalConfig,
 };

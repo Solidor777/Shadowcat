@@ -207,6 +207,49 @@ pub enum BinOp {
     Div,
 }
 
+/// A math function name recognized by the `factor := ... | fn_call` grammar production.
+/// Fixed arity per variant (`FnName::arity`): `Floor`/`Ceil`/`Round`/`Abs` take exactly 1
+/// argument, `Min`/`Max` take exactly 2 — checked at parse time
+/// (`dice::notation::parser::P::fn_call`), never at evaluation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FnName {
+    /// Round toward negative infinity.
+    Floor,
+    /// Round toward positive infinity.
+    Ceil,
+    /// Round to nearest, ties AWAY FROM ZERO (Rust's `f64::round` semantics) — differs from
+    /// `@shadowcat/formula`'s own `Round`, which is JS-native and ties toward positive infinity.
+    /// This crate never calls into `@shadowcat/formula`; the two `Round` implementations are
+    /// maintained independently and are not required to agree.
+    Round,
+    /// Absolute value.
+    Abs,
+    /// The lesser of two arguments.
+    Min,
+    /// The greater of two arguments.
+    Max,
+}
+
+impl FnName {
+    /// The fixed argument count this function requires.
+    /// `dice::notation::parser` checks a call's actual argument count against this at parse
+    /// time; `Expr::Call` itself carries no arity guarantee once constructed.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::dice::spec::FnName;
+    /// assert_eq!(FnName::Floor.arity(), 1);
+    /// assert_eq!(FnName::Min.arity(), 2);
+    /// ```
+    pub fn arity(self) -> usize {
+        match self {
+            FnName::Floor | FnName::Ceil | FnName::Round | FnName::Abs => 1,
+            FnName::Min | FnName::Max => 2,
+        }
+    }
+}
+
 /// A constant term. Mirrors `DiceGroup.label` exactly: an optional tag for
 /// chat-embed display only. A bare constant has no dice pool, so `label` is
 /// NEVER threaded into `RollOutcome::by_label`/`compare_labels` — those are
@@ -240,6 +283,20 @@ pub enum Expr {
     },
     /// Unary negation.
     Neg(Box<Expr>),
+    /// A math function call (`floor`/`ceil`/`round`/`abs`/`min`/`max`), reached only via the
+    /// `factor := ... | fn_call` grammar production. `eval::sum::fold` and
+    /// `eval::roll_expr` both recurse through `args` in left-to-right order, threading the
+    /// SAME group-index cursor sequentially through each argument — the same mechanism
+    /// `Bin{lhs, rhs}` already uses for two children, generalized to N. A `Call` node itself
+    /// introduces no new dice groups and consumes no group-index slots beyond what its
+    /// arguments consume.
+    Call {
+        /// Which function.
+        name: FnName,
+        /// Evaluated argument expressions, left-to-right; length is checked against
+        /// `name.arity()` at parse time.
+        args: Vec<Expr>,
+    },
 }
 
 /// SuccessCount dimension 1: the per-die predicate a die must satisfy to score
@@ -639,5 +696,41 @@ mod tests {
         assert_eq!(cfg.required_successes, None);
         assert_eq!(cfg.crit_success, None);
         assert_eq!(cfg.crit_fail, None);
+    }
+
+    #[test]
+    fn fn_name_arity_matches_grammar() {
+        assert_eq!(FnName::Floor.arity(), 1);
+        assert_eq!(FnName::Ceil.arity(), 1);
+        assert_eq!(FnName::Round.arity(), 1);
+        assert_eq!(FnName::Abs.arity(), 1);
+        assert_eq!(FnName::Min.arity(), 2);
+        assert_eq!(FnName::Max.arity(), 2);
+    }
+
+    #[test]
+    fn call_expr_serde_round_trips() {
+        let spec = RollSpec {
+            expr: Expr::Call {
+                name: FnName::Min,
+                args: vec![
+                    Expr::Const(ConstTerm {
+                        value: 3,
+                        label: None,
+                    }),
+                    Expr::Const(ConstTerm {
+                        value: 5,
+                        label: None,
+                    }),
+                ],
+            },
+            direction: Direction::HighWins,
+            mode: Mode::Total(TotalConfig {
+                difficulty: None,
+                tiers: vec![],
+            }),
+        };
+        let json = serde_json::to_string(&spec).unwrap();
+        assert_eq!(spec, serde_json::from_str::<RollSpec>(&json).unwrap());
     }
 }

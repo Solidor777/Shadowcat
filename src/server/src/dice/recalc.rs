@@ -146,6 +146,11 @@ fn rederive(
             rederive(lhs, groups, group_index, rng, out);
             rederive(rhs, groups, group_index, rng, out);
         }
+        Expr::Call { args, .. } => {
+            for arg in args {
+                rederive(arg, groups, group_index, rng, out);
+            }
+        }
     }
 }
 

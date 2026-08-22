@@ -3,7 +3,7 @@
 
 use crate::dice::eval::classify;
 use crate::dice::outcome::{RawRoll, RollOutcome};
-use crate::dice::spec::{BinOp, ConstTerm, Expr, RollSpec, TotalConfig};
+use crate::dice::spec::{BinOp, ConstTerm, Expr, FnName, RollSpec, TotalConfig};
 
 /// Fold the AST to a total. Each `Dice` node contributes the sum of its group's kept
 /// records (matched by `group_index`); a cursor consumes groups in AST order. If
@@ -76,6 +76,11 @@ fn collect_labeled_consts(expr: &Expr, sign: i32, out: &mut Vec<ConstTerm>) {
             collect_labeled_consts(lhs, sign, out);
             collect_labeled_consts(rhs, sign, out);
         }
+        Expr::Call { args, .. } => {
+            for arg in args {
+                collect_labeled_consts(arg, sign, out);
+            }
+        }
     }
 }
 
@@ -127,7 +132,9 @@ fn mul_saturating(l: i64, r: i64) -> i64 {
 }
 
 /// Recursive Total-mode fold: consts as-is, dice groups as their kept-record
-/// sums (consumed left-to-right via `next_group`), operators saturating.
+/// sums (consumed left-to-right via `next_group`), operators saturating, `Call`
+/// nodes folding each argument in left-to-right order (the same cursor-threading
+/// `Bin` uses, generalized to N children) then applying `apply_fn`.
 fn fold(expr: &Expr, raws: &RawRoll, next_group: &mut usize) -> i64 {
     match expr {
         Expr::Const(c) => c.value as i64,
@@ -173,6 +180,37 @@ fn fold(expr: &Expr, raws: &RawRoll, next_group: &mut usize) -> i64 {
                 }
             }
         }
+        Expr::Call { name, args } => {
+            let mut vals = Vec::with_capacity(args.len());
+            for arg in args {
+                vals.push(fold(arg, raws, next_group));
+            }
+            apply_fn(*name, &vals)
+        }
+    }
+}
+
+/// Applies a math function to its already-`fold`ed argument values. Indexes
+/// defensively (`unwrap_or(0)` via the local `a` closure, mirroring `fold`'s own
+/// Div-by-zero-to-0 convention) rather than panicking on an argument count that
+/// disagrees with `name.arity()` — unreachable from `dice::notation::parser`-constructed
+/// input (arity is checked at parse time there), but this crate's own types stay
+/// unvalidated by design for a hand-constructed `RollSpec`.
+/// `Floor`/`Ceil`/`Round` are true integer no-ops (`fold` never produces a fractional
+/// value for any other `Expr` variant — `BinOp::Div` truncates toward zero rather than
+/// producing a fraction), NOT a round-trip through `f64`: an `i64 -> f64` cast itself
+/// loses precision above `f64`'s 53-bit mantissa (~9e15, well under `i64::MAX`), which
+/// would silently corrupt a large already-integer input before any rounding function
+/// ever ran. These three functions exist for functional parity with
+/// `@shadowcat/formula`'s own function set; if a future change gives this grammar a
+/// true fractional value, their implementation must be revisited then.
+fn apply_fn(name: FnName, args: &[i64]) -> i64 {
+    let a = |i: usize| args.get(i).copied().unwrap_or(0);
+    match name {
+        FnName::Floor | FnName::Ceil | FnName::Round => a(0),
+        FnName::Abs => a(0).saturating_abs(),
+        FnName::Min => a(0).min(a(1)),
+        FnName::Max => a(0).max(a(1)),
     }
 }
 
@@ -182,7 +220,8 @@ mod tests {
     use crate::dice::notation::{self, ModeKind, ParseContext};
     use crate::dice::rng::NoiseRng;
     use crate::dice::spec::{
-        BinOp, ConstTerm, DiceGroup, DieKind, Direction, Expr, Mode, RollSpec, Tier, TotalConfig,
+        BinOp, ConstTerm, DiceGroup, DieKind, Direction, Expr, FnName, Mode, RollSpec, Tier,
+        TotalConfig,
     };
 
     fn total_ctx() -> ParseContext {
@@ -574,5 +613,38 @@ mod tests {
         let raws = roll(&spec, &mut NoiseRng::from_seed(1));
         let out = evaluate(&spec, &raws);
         assert_eq!(out.total, i64::MAX);
+    }
+
+    #[test]
+    fn apply_fn_floor_ceil_round_are_noops_over_integer_input() {
+        assert_eq!(super::apply_fn(FnName::Floor, &[7]), 7);
+        assert_eq!(super::apply_fn(FnName::Ceil, &[-3]), -3);
+        assert_eq!(super::apply_fn(FnName::Round, &[4]), 4);
+    }
+
+    #[test]
+    fn apply_fn_floor_ceil_round_preserve_precision_above_f64_mantissa() {
+        // Regression: a naive `as f64` round-trip loses precision above f64's 53-bit
+        // mantissa (~9e15), silently corrupting an already-integer value before any
+        // rounding function runs. `apply_fn` must return these arguments unchanged.
+        let big: i64 = 1999999999 * 1999999999; // 3999999996000000001 -- not exactly f64-representable
+        assert_eq!(super::apply_fn(FnName::Floor, &[big]), big);
+        assert_eq!(super::apply_fn(FnName::Ceil, &[big]), big);
+        assert_eq!(super::apply_fn(FnName::Round, &[big]), big);
+    }
+
+    #[test]
+    fn apply_fn_abs_min_max() {
+        assert_eq!(super::apply_fn(FnName::Abs, &[-7]), 7);
+        assert_eq!(super::apply_fn(FnName::Min, &[3, 5]), 3);
+        assert_eq!(super::apply_fn(FnName::Max, &[3, 5]), 5);
+    }
+
+    #[test]
+    fn apply_fn_defends_against_missing_args_instead_of_panicking() {
+        // Unreachable from parser-constructed input (arity is checked at parse
+        // time), but a hand-constructed `Expr::Call` with too few args must not
+        // panic -- mirrors `fold`'s own Div-by-zero-to-0 convention.
+        assert_eq!(super::apply_fn(FnName::Min, &[3]), 0); // missing arg defaults to 0
     }
 }

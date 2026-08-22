@@ -236,7 +236,10 @@ impl std::error::Error for RollError {}
 /// Recursively sums `DiceGroup.count` over an `Expr` (into a `u64` — the sum
 /// of several near-`u32::MAX` counts could overflow a `u32` accumulator) and
 /// collects a reference to every `DiceGroup` reached, for the per-group cap
-/// checks below.
+/// checks below. Recurses into `Expr::Call`'s `args` too, so a dice
+/// group nested inside a math-function argument still counts toward `MAX_ROLL_DICE` and is validated
+/// by the per-group cap checks below — a `Call` node is not a way to smuggle dice groups past this
+/// walk.
 fn walk_groups<'a>(expr: &'a Expr, total: &mut u64, groups: &mut Vec<&'a DiceGroup>) {
     match expr {
         Expr::Dice(group) => {
@@ -248,6 +251,11 @@ fn walk_groups<'a>(expr: &'a Expr, total: &mut u64, groups: &mut Vec<&'a DiceGro
         Expr::Bin { lhs, rhs, .. } => {
             walk_groups(lhs, total, groups);
             walk_groups(rhs, total, groups);
+        }
+        Expr::Call { args, .. } => {
+            for arg in args {
+                walk_groups(arg, total, groups);
+            }
         }
     }
 }
@@ -607,6 +615,16 @@ mod tests {
         // validate_pre_roll runs before any RNG use, so a cap rejection is
         // identical whether reached via validate_formula or execute_roll.
         match validate_formula("101d6", total_ctx()) {
+            Err(RollError::TooManyDice(101)) => {}
+            other => panic!("expected TooManyDice(101), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dice_nested_inside_a_call_argument_still_counts_toward_max_roll_dice() {
+        // `walk_groups` must recurse into `Expr::Call`'s args -- otherwise a dice group
+        // wrapped in floor/ceil/round/abs/min/max would bypass MAX_ROLL_DICE entirely.
+        match validate_formula("floor(101d6/2)", total_ctx()) {
             Err(RollError::TooManyDice(101)) => {}
             other => panic!("expected TooManyDice(101), got {other:?}"),
         }

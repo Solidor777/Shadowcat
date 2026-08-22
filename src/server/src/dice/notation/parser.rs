@@ -4,8 +4,8 @@
 use crate::dice::notation::lexer::{describe_token, lex, Token};
 use crate::dice::notation::{ModeKind, ParseContext, ParseError};
 use crate::dice::spec::{
-    BinOp, Comparator, ConstTerm, DiceGroup, DieKind, Direction, ExplodeKind, Expr, GroupModifier,
-    Mode, RollSpec, SuccessConfig, SuccessRule, TotalConfig,
+    BinOp, Comparator, ConstTerm, DiceGroup, DieKind, Direction, ExplodeKind, Expr, FnName,
+    GroupModifier, Mode, RollSpec, SuccessConfig, SuccessRule, TotalConfig,
 };
 
 /// Recursion depth (via `expr`/`term`/`factor`'s mutual calls, e.g. through
@@ -37,8 +37,9 @@ struct P {
 }
 
 /// Recursive-descent parser: `expr := term (('+'|'-') term)*`;
-/// `term := factor (('*'|'/') factor)*`; `factor := '(' expr ')' | '-' factor | dice | int`;
-/// a dice factor is `int 'd' int modifier*`. `ctx` supplies the ambient mode/
+/// `term := factor (('*'|'/') factor)*`; `factor := '(' expr ')' | '-' factor | fn_call | dice
+/// | int`; a dice factor is `int 'd' int modifier*`; `fn_call` is `ident '(' expr (',' expr)*
+/// ')'` (see `fn_call`). `ctx` supplies the ambient mode/
 /// direction the notation string itself does not encode; an explicit `cs`/`cf`
 /// forces `SuccessCount` regardless of `ctx.mode`.
 pub fn parse(input: &str, ctx: ParseContext) -> Result<RollSpec, ParseError> {
@@ -177,8 +178,9 @@ impl P {
         Ok(lhs)
     }
 
-    /// `factor := '-' factor | '(' expr ')' | dice | int` — the leaf level;
-    /// dice factors continue into `modifiers`.
+    /// `factor := '-' factor | '(' expr ')' | fn_call | dice | int` — the leaf level;
+    /// dice factors continue into `modifiers`; `fn_call` is `ident '(' expr (',' expr)*
+    /// ')'` (see `fn_call`).
     fn factor(&mut self) -> Result<Expr, ParseError> {
         match self.peek() {
             Some(Token::Minus) => {
@@ -226,11 +228,80 @@ impl P {
                     Ok(Expr::Const(ConstTerm { value: n, label }))
                 }
             }
+            Some(Token::Ident(name)) => {
+                let name = name.clone();
+                if matches!(self.toks.get(self.pos + 1), Some(Token::LParen)) {
+                    self.fn_call(name)
+                } else {
+                    Err(ParseError::Unexpected(format!(
+                        "expected a number or dice expression, found {}",
+                        describe_token(self.peek())
+                    )))
+                }
+            }
             other => Err(ParseError::Unexpected(format!(
                 "expected a number or dice expression, found {}",
                 describe_token(other)
             ))),
         }
+    }
+
+    /// Parses `fn_call := ident '(' expr (',' expr)* ')'`. Called from `factor` after peeking
+    /// (not yet consuming) the leading `Ident` and confirming it is immediately followed by `(`
+    /// — the only place an `Ident` is recognized as a function name rather than a dice-group
+    /// modifier keyword. `name` is the already-lowercased identifier text (the lexer lowercases
+    /// every `Ident` it emits). Checks the parsed argument count against `FnName::arity` before
+    /// returning, so an `Expr::Call` this parser produces always carries the exact argument
+    /// count its `name` requires.
+    fn fn_call(&mut self, name: String) -> Result<Expr, ParseError> {
+        let fn_name = match name.as_str() {
+            "floor" => FnName::Floor,
+            "ceil" => FnName::Ceil,
+            "round" => FnName::Round,
+            "abs" => FnName::Abs,
+            "min" => FnName::Min,
+            "max" => FnName::Max,
+            other => {
+                return Err(ParseError::Unexpected(format!(
+                    "unknown function '{other}'"
+                )))
+            }
+        };
+        self.bump(); // the Ident
+        match self.bump() {
+            Some(Token::LParen) => {}
+            other => {
+                return Err(ParseError::Unexpected(format!(
+                    "expected '(', found {}",
+                    describe_token(other.as_ref())
+                )))
+            }
+        }
+        let mut args = vec![self.expr()?];
+        while matches!(self.peek(), Some(Token::Comma)) {
+            self.bump();
+            args.push(self.expr()?);
+        }
+        match self.bump() {
+            Some(Token::RParen) => {}
+            other => {
+                return Err(ParseError::Unexpected(format!(
+                    "expected ')', found {}",
+                    describe_token(other.as_ref())
+                )))
+            }
+        }
+        let expected = fn_name.arity();
+        if args.len() != expected {
+            return Err(ParseError::Unexpected(format!(
+                "function '{name}' expects {expected} argument(s), found {}",
+                args.len()
+            )));
+        }
+        Ok(Expr::Call {
+            name: fn_name,
+            args,
+        })
     }
 
     /// Zero or more trailing group modifiers (`!`/`!!`/`!p`, keep/drop,
@@ -680,5 +751,88 @@ mod tests {
             }
             other => panic!("expected Const, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn parses_min_call_with_two_bare_consts() {
+        let spec = parse("min(3,5)", ParseContext::default()).unwrap();
+        assert_eq!(
+            spec.expr,
+            Expr::Call {
+                name: FnName::Min,
+                args: vec![
+                    Expr::Const(ConstTerm {
+                        value: 3,
+                        label: None
+                    }),
+                    Expr::Const(ConstTerm {
+                        value: 5,
+                        label: None
+                    }),
+                ],
+            }
+        );
+    }
+
+    #[test]
+    fn parses_floor_call_wrapping_a_dice_group() {
+        let spec = parse("floor(1d20/2)", ParseContext::default()).unwrap();
+        match spec.expr {
+            Expr::Call {
+                name: FnName::Floor,
+                args,
+            } => {
+                assert_eq!(args.len(), 1);
+                assert!(matches!(args[0], Expr::Bin { op: BinOp::Div, .. }));
+            }
+            other => panic!("expected Call, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_nested_min_max_calls() {
+        let spec = parse("max(min(1,2),3)", ParseContext::default()).unwrap();
+        assert!(matches!(
+            spec.expr,
+            Expr::Call {
+                name: FnName::Max,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn rejects_min_with_wrong_arity() {
+        match parse("min(3)", ParseContext::default()) {
+            Err(ParseError::Unexpected(msg)) => {
+                assert!(msg.contains("min"), "{msg}");
+                assert!(msg.contains('2'), "{msg}");
+            }
+            other => panic!("expected an arity Unexpected error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejects_floor_with_wrong_arity() {
+        match parse("floor(3,4)", ParseContext::default()) {
+            Err(ParseError::Unexpected(msg)) => {
+                assert!(msg.contains("floor"), "{msg}");
+                assert!(msg.contains('1'), "{msg}");
+            }
+            other => panic!("expected an arity Unexpected error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejects_unknown_function_name() {
+        match parse("foo(3)", ParseContext::default()) {
+            Err(ParseError::Unexpected(msg)) => assert!(msg.contains("unknown function 'foo'")),
+            other => panic!("expected an unknown-function Unexpected error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bare_ident_not_followed_by_lparen_is_not_a_function_call() {
+        assert!(parse("floor", ParseContext::default()).is_err());
     }
 }

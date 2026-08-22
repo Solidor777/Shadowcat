@@ -30,7 +30,10 @@ pub fn roll(spec: &RollSpec, rng: &mut dyn RngSource) -> RawRoll {
 
 /// `group_index` increments once per `Dice` node in AST left-to-right order —
 /// the same order `eval::sum::evaluate_total` walks, so a `DieRecord`'s stamped
-/// `group_index` always matches the `Dice` node that produced it.
+/// `group_index` always matches the `Dice` node that produced it. A `Call` node's
+/// arguments are walked in the same left-to-right order, threading the same cursor
+/// through each — generalizing `Bin{lhs, rhs}`'s two-child threading to N children;
+/// `Call` itself introduces no new dice groups.
 fn roll_expr(expr: &Expr, rng: &mut dyn RngSource, raws: &mut RawRoll, group_index: &mut usize) {
     match expr {
         Expr::Dice(group) => {
@@ -54,6 +57,11 @@ fn roll_expr(expr: &Expr, rng: &mut dyn RngSource, raws: &mut RawRoll, group_ind
         Expr::Bin { lhs, rhs, .. } => {
             roll_expr(lhs, rng, raws, group_index);
             roll_expr(rhs, rng, raws, group_index);
+        }
+        Expr::Call { args, .. } => {
+            for arg in args {
+                roll_expr(arg, rng, raws, group_index);
+            }
         }
     }
 }

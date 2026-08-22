@@ -156,6 +156,8 @@ mod tests {
             "6d6r",                     // cmp_target_required
             "café",                     // non-ASCII
             "999999999999999999999999", // invalid number literal
+            "min(3)",                   // fn_call: wrong arity
+            "foo(3)",                   // fn_call: unknown function name
         ];
         for input in inputs {
             let err = parse(input, ParseContext::default())
