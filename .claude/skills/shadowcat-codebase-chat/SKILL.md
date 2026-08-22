@@ -74,7 +74,9 @@ guarded, per `validate_url` below).
 
 ## Dice wire — `chat::rolls` + the ingest roll stage
 
-- `chat::rolls`: caps (`MAX_ROLL_DICE=100` summed over the parsed `Expr`; `MAX_ROLL_RECORDS=1000`
+- `chat::rolls`: caps (`MAX_ROLL_DICE=100` summed over the parsed `Expr` — `walk_groups` recurses
+  into `Expr::Call`'s arguments too, so a dice group nested inside a math-function call still
+  counts; `MAX_ROLL_RECORDS=1000`
   post-roll; `MAX_EXPERTISE=100`; `MAX_DIE_SIDES=10_000`; `MAX_INLINE_ROLLS=8`),
   `DieKind::validate()` per group, `entropy_seed()` (fresh `Uuid::new_v4` fold per roll —
   nothing persists the seed; a stored outcome's naturals reproduce it), `scan_body` (BALANCED

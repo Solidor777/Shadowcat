@@ -212,6 +212,13 @@ which no prose can do.
   other's declaration. `modifierParityDifference` reads both and fails `pnpm test:scripts` on a
   difference in either direction, so a new modifier lands in both declarations or the build breaks.
   Without that gate the only signal is a wrong roll, seen by whoever wrote the template.
+  **Math-function names do NOT belong in
+  `NOTATION_KEYWORDS`** — it guards the dice-MECHANIC modifier vocabulary specifically (the same
+  category as kh/cs/tr/rs/xs/xf), not every token the notation grammar's `fn_call`
+  production recognizes; this package's OWN function set (`FN_NAMES`/`FnName` in `parser`:
+  min/max/floor/ceil/round — five names) overlaps with but is not identical to the dice crate's
+  six (`FnName` in `dice::spec`: also has `Abs`, which this package has no counterpart for) — the
+  overlap is coincidental, not a parity-enforced one.
 - The `internal` module's four helpers are the ONLY sanctioned way to cross a consumer-callback
   boundary. A gap at one boundary reopens the class of bug the others already guard against
   [[injected-callback-boundary-must-validate-every-site]] — treat any NEW injected-callback seam as

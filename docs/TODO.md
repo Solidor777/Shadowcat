@@ -38,15 +38,13 @@ Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one de
 1. **Link-preview extensions** — server-fetch-cache-as-asset **image** pipeline + async
    post-publish enrichment (`WriteOrigin` path) + **shared preview cache** + **oEmbed** provider
    embeds (user opted both edge items in; oEmbed carries SSRF/privacy surface → threat-model it).
-2. **Dice-notation grammar growth** — math fns (floor/ceil/round/abs/min/max) + crit-event /
-   tier-ladder notation syntax.
-3. **Per-channel / per-message dice-settings overrides** — needs a channel model.
-4. **In-body doc-link chat segment** (`Segment::DocLink`) — actor-name → sheet navigation shipped
+2. **Per-channel / per-message dice-settings overrides** — needs a channel model.
+3. **In-body doc-link chat segment** (`Segment::DocLink`) — actor-name → sheet navigation shipped
    in M12c, but a free-form doc-link segment has no server producer or client authoring path yet;
    needs a server producer + authoring affordance.
-5. **Speak-as-token-instance** — `ActorOwnerRef::TokenInstance` is REJECTED at ingest (fail-closed,
+4. **Speak-as-token-instance** — `ActorOwnerRef::TokenInstance` is REJECTED at ingest (fail-closed,
    no first-party producer) — build the composer/token-context UX and lift the rejection together.
-6. **Real-time per-recipient move-streaming** — `MoveStream` precomputes each move's
+5. **Real-time per-recipient move-streaming** — `MoveStream` precomputes each move's
    per-recipient vision clip at execute time, so two tokens moving simultaneously do not reveal
    each other mid-walk when a watcher's vision opens after the clip; it reconciles only at the
    stop + next `vision` rebroadcast. No correctness/secrecy impact today — only a missed

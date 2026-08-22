@@ -68,7 +68,9 @@ on.
   keep-then-reroll are different specs; `label` is a tag propagated onto every `DieRecord`
   this group produces, including exploded/penetrated children — read by
   `RollOutcome::by_label`/`compare_labels`, orthogonal to mode; duplicate labels across groups are
-  NOT an error, they pool under `by_label`), `Expr` (Dice(DiceGroup)/Const(ConstTerm)/Bin/Neg).
+  NOT an error, they pool under `by_label`), `Expr` (Dice(DiceGroup)/Const(ConstTerm)/Bin/Neg/
+  Call{name: FnName, args}) — `FnName` (Floor/Ceil/Round/Abs/Min/Max, `arity()` fixed per variant,
+  checked at parse time only).
   `ConstTerm{value: i32, label: Option<String>}` mirrors `DiceGroup`'s label field onto a bare
   constant — the parser's label-consumption (`take_label()`) applies to EITHER atomic factor
   (a `DiceGroup` or a `Const`), not only dice groups; a labeled constant is Total/Sum-mode
@@ -251,7 +253,14 @@ on.
 - `dice::notation` (its `lexer` and `parser` submodules) — `lex`/`Token`/`ParseError` +
   `parse(input: &str, ctx: ParseContext) -> Result<RollSpec, ParseError>` (recursive descent:
   `expr := term (('+'|'-') term)*`; `term := factor (('*'|'/') factor)*`; `factor := '(' expr ')'
-  | '-' factor | dice | int`). `ParseContext{mode: ModeKind, direction: Direction}` is caller-
+  | '-' factor | fn_call | dice | int`, `fn_call := ident '(' expr (',' expr)* ')'`). `fn_call`
+  recognizes an `Ident` as a math function only when immediately followed by `(` at the `factor`
+  position — the same lexer `Ident` token the modifier grammar already consumes, so no lexer
+  change was needed for the six function names themselves; `FnName::arity` is checked at parse
+  time, producing `Expr::Call{name: FnName, args}`. `Token::Comma`/`Token::Colon` are two new
+  single-char tokens: `Comma` separates `fn_call` arguments, `Colon` separates a modifier's
+  threshold from its optional value fields (`tr<offset>:<value>`, `xs<N>:<extra>:<counter>`,
+  `xf<N>:<lost>:<counter>`). `ParseContext{mode: ModeKind, direction: Direction}` is caller-
   supplied ambient state the notation string does not itself encode: `mode` (`ModeKind::Total |
   SuccessCount`) resolves a bare `t<N>` target's `Mode` when the notation has no explicit
   `cs>N`/`cf<N`; `direction` resolves `t<N>`'s comparator under
@@ -267,7 +276,15 @@ on.
   `SuccessCount(SuccessConfig{expertise, ..})` — if the notation instead resolves to `Total`
   (e.g. `t<N>` under Total-ambient context with no
   `cs>N`/`cf<N`), any parsed `e<N>` value is silently
-  dropped, never an error. Explicit `cs>N`/`cf<N` in the notation
+  dropped, never an error. The parser carries an analogous `required_successes: Option<i32>`
+  scratch field set by an `rs<N>` token, mirroring `e<N>`'s exact pattern: a duplicate `rs<N>` is
+  `ParseError::DuplicateRequiredSuccesses`, and the value is consumed only into
+  `SuccessConfig.required_successes` when the resolved mode is `SuccessCount` — silently dropped
+  under `Total` (`TotalConfig` has no equivalent field; `t<N>` already fills that role via
+  `TotalConfig.difficulty`). `required_successes` gates `eval::success::evaluate_success`'s entire
+  pass/margin/tier classification (`match cfg.required_successes { None => ..., Some(req) => ... }`)
+  — without an `rs<N>`, a `tr<offset>`-built tier ladder parses fine but never actually classifies
+  anything on any roll. Explicit `cs>N`/`cf<N` in the notation
   always forces `SuccessCount` regardless of the
   ambient `mode`. A `t<N>` + explicit `cs>N`/`cf<N` together is a
   collision —
@@ -392,7 +409,13 @@ on.
   reads both declarations and fails `pnpm test:scripts` on a difference in either direction. That
   gate is the only signal — without the second edit, a template the client rewrites is notation
   this parser then rejects or reads differently, and the first report is a wrong roll seen by
-  whoever authored the template.
+  whoever authored the template. **The six math-function names
+  (floor/ceil/round/abs/min/max) are deliberately NOT part of this parity set** — they
+  never enter `P::modifiers`'s match at all (`fn_call` is a separate `factor`-level grammar
+  production), so `modifierParityDifference` never sees them. `@shadowcat/formula` reserves an
+  OVERLAPPING but not identical function set independently as its own (`FN_NAMES`/`FnName` in its
+  `parser`: min/max/floor/ceil/round — five names, no abs) — the overlap is coincidental, not a
+  parity-enforced one, and this crate's `FnName::Abs` has no `@shadowcat/formula` counterpart.
 - **Expertise optimizes the CLAMPED (visible) net successes, with a counter-max fallback in the
   all-failed region.** `eval::expertise::allocate` maximizes raw lexicographic `(net, counter)`
   first; only when that raw net is `< 1` AND `allow_negative` is unset (every allocation clamps to
@@ -434,9 +457,15 @@ on.
   `SuccessConfig.crit_success`/`crit_fail` are two unrelated mechanisms that happen to share
   initials.** `cs>N`/`cf<N` in a dice-notation string set
   the ordinary per-die `SuccessRule` (or its inverted-comparator `cf<N`
-  approximation);
-  they do NOT construct a `CritSuccess`/`CritFail` struct. Today, crit events are configurable
-  only by authoring a `RollSpec`/`SuccessConfig` directly — no notation syntax exposes them yet.
+  approximation); they do NOT construct a `CritSuccess`/`CritFail` struct. Those come from the
+  SEPARATE `xs<N>[:<extra>[:<counter>]]`/`xf<N>[:<lost>[:<counter>]][!]` modifiers, which set
+  `SuccessConfig.crit_success`/`crit_fail` directly — `CritTrigger::AtLeast` only (v1 notation has
+  no syntax for `CritTrigger::HasSymbol`, a deliberate scope boundary: it names an opaque,
+  system-defined `Symbol`, and this crate carries zero game-system vocabulary). `xs<N>`/`xf<N>`
+  are roll-level parser scratch state (`P.crit_success`/`P.crit_fail`) consumed into
+  `SuccessConfig` only when the resolved mode is `SuccessCount` — silently dropped under `Total`,
+  mirroring `e<N>`'s existing mode-gating precedent (see the `e<N>`/`rs<N>` gotcha above) rather
+  than FORCING `SuccessCount` the way `cs>N`/`cf<N` do.
 - **Expertise DP is the highest-risk piece of the whole engine** — it is verified via
   differential-oracle testing against a brute-force reference (see the Hard invariants entry
   above). Treat any future change to `dice::eval::expertise` as needing independent two-reviewer
@@ -463,14 +492,15 @@ on.
   bounds-checked inside `dice::recalc` itself (see the `dice::spec` entry above), so it
   needed no wire-boundary gate.
 - **`validate_tiers` (`chat::rolls`) guards `SuccessConfig`/`TotalConfig.tiers`
-  uniqueness at the wire boundary**, ahead of any untrusted construction path existing —
+  uniqueness at the wire boundary** —
   `classify::classify`'s `max_by_key`/`min_by_key` tie on a duplicate `margin_offset` is
   caller-order-dependent (documented on `dice::eval::classify`), so a malformed ladder with a
   repeated offset would otherwise resolve nondeterministically. `validate_pre_roll` calls it on
   every parsed spec's tiers; `RollError::DuplicateTierOffset(i32)` is the player-presentable
-  rejection. Notation still cannot author a non-empty ladder today (`dice::notation::parser`
-  emits `tiers: vec![]`), so this guard arms the boundary before the construction path exists,
-  mirroring the `DieKind::validate()` precedent above.
+  rejection. Reachable from untrusted notation via the repeatable `tr<offset>[:<value>][<label>]`
+  modifier (`dice::notation::parser`'s `"tr"` arm appends one `Tier` rung per occurrence, with no
+  parse-time duplicate check of its own — `validate_tiers` is the sole enforcement point, exactly
+  the `DieKind::validate()` precedent above).
 - **`compare_labels` returns `Some(0)`, not `None`, for an all-dropped-but-ordered label.** `None`
   means the label has ZERO matching records at all, OR at least one matching record is unordered
   (see the Hard invariants entry above); a label whose records all exist, are all ordered, but are
