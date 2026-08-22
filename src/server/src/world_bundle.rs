@@ -213,48 +213,58 @@ pub fn read_bundle(
     // up on the success path either).
     let mut staged_ids: std::collections::HashSet<uuid::Uuid> = std::collections::HashSet::new();
 
-    for entry in entries {
-        let mut entry = entry?;
-        let path = entry.path()?.to_string_lossy().replace('\\', "/");
-        if let Some(id_str) = path.strip_prefix("assets/") {
-            let id = uuid::Uuid::parse_str(id_str).map_err(|_| {
-                WorldBundleError::Malformed(format!("non-UUID asset entry name: {id_str}"))
-            })?;
-            if !staged_ids.insert(id) {
-                // Reject the whole bundle and remove every file already
-                // staged for it — a rejected import must leave no orphan
-                // temp files behind, same as every other `read_bundle`
-                // failure mode.
-                for (_, staged) in &staged_assets {
-                    let _ = std::fs::remove_file(staged);
+    // Runs the per-entry loop behind ONE fallible closure so every early
+    // return inside it — not just the duplicate-asset-id rejection, but also
+    // a malformed tar entry, a non-UUID asset name, an unrecognized
+    // `rows/*.jsonl` path, or any I/O error from `entry?`/`read_to_end`/
+    // `std::io::copy` — reaches the SAME cleanup below. A rejected/failed
+    // import must leave no orphan temp files behind, regardless of which
+    // check inside the loop is what actually failed.
+    let loop_result: Result<(), WorldBundleError> = (|| {
+        for entry in entries {
+            let mut entry = entry?;
+            let path = entry.path()?.to_string_lossy().replace('\\', "/");
+            if let Some(id_str) = path.strip_prefix("assets/") {
+                let id = uuid::Uuid::parse_str(id_str).map_err(|_| {
+                    WorldBundleError::Malformed(format!("non-UUID asset entry name: {id_str}"))
+                })?;
+                if !staged_ids.insert(id) {
+                    return Err(WorldBundleError::Malformed(format!(
+                        "duplicate asset entry in bundle: {id}"
+                    )));
                 }
-                return Err(WorldBundleError::Malformed(format!(
-                    "duplicate asset entry in bundle: {id}"
-                )));
+                let staged =
+                    world_asset_dir.join(format!("{id}.{}.import-tmp", uuid::Uuid::new_v4()));
+                let mut out = std::fs::File::create(&staged)?;
+                std::io::copy(&mut entry, &mut out)?;
+                staged_assets.push((id, staged));
+                continue;
             }
-            let staged = world_asset_dir.join(format!("{id}.{}.import-tmp", uuid::Uuid::new_v4()));
-            let mut out = std::fs::File::create(&staged)?;
-            std::io::copy(&mut entry, &mut out)?;
-            staged_assets.push((id, staged));
-            continue;
+            let table = match path.as_str() {
+                "rows/documents.jsonl" => "documents",
+                "rows/world_events.jsonl" => "world_events",
+                "rows/world_members.jsonl" => "world_members",
+                "rows/world_invites.jsonl" => "world_invites",
+                "rows/assets.jsonl" => "assets",
+                "rows/explored_fog.jsonl" => "explored_fog",
+                "rows/settings.jsonl" => "settings",
+                other => {
+                    return Err(WorldBundleError::Malformed(format!(
+                        "unrecognized bundle entry: {other}"
+                    )))
+                }
+            };
+            let mut bytes = Vec::new();
+            entry.read_to_end(&mut bytes)?;
+            rows.insert(table, bytes);
         }
-        let table = match path.as_str() {
-            "rows/documents.jsonl" => "documents",
-            "rows/world_events.jsonl" => "world_events",
-            "rows/world_members.jsonl" => "world_members",
-            "rows/world_invites.jsonl" => "world_invites",
-            "rows/assets.jsonl" => "assets",
-            "rows/explored_fog.jsonl" => "explored_fog",
-            "rows/settings.jsonl" => "settings",
-            other => {
-                return Err(WorldBundleError::Malformed(format!(
-                    "unrecognized bundle entry: {other}"
-                )))
-            }
-        };
-        let mut bytes = Vec::new();
-        entry.read_to_end(&mut bytes)?;
-        rows.insert(table, bytes);
+        Ok(())
+    })();
+    if let Err(e) = loop_result {
+        for (_, staged) in &staged_assets {
+            let _ = std::fs::remove_file(staged);
+        }
+        return Err(e);
     }
 
     fn from_jsonl<T: serde::de::DeserializeOwned>(
@@ -558,5 +568,75 @@ mod tests {
         let import_tmp = tempfile::tempdir().unwrap();
         let err = read_bundle(&tar_path, import_tmp.path()).unwrap_err();
         assert!(matches!(err, WorldBundleError::Malformed(_)));
+    }
+
+    #[test]
+    fn read_bundle_rejects_duplicate_asset_entry_and_cleans_up_staged_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let world = Uuid::from_u128(88);
+        let asset_id = Uuid::from_u128(888);
+
+        let mut row_counts = std::collections::BTreeMap::new();
+        for table in [
+            "documents",
+            "world_events",
+            "world_members",
+            "world_invites",
+            "explored_fog",
+            "settings",
+        ] {
+            row_counts.insert(table.to_string(), 0);
+        }
+        row_counts.insert("assets".to_string(), 1);
+        let manifest = crate::data::world_bundle::BundleManifest {
+            schema_version: BUNDLE_SCHEMA_VERSION,
+            world_id: world,
+            world_name: "Dup".to_string(),
+            world_seq: 0,
+            world_created_at: 0,
+            world_updated_at: 0,
+            exported_at_unix_ms: 0,
+            row_counts,
+        };
+
+        let mut builder = tar::Builder::new(Vec::new());
+        append_bytes(
+            &mut builder,
+            "manifest.json",
+            &serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+        for table in [
+            "documents",
+            "world_events",
+            "world_members",
+            "world_invites",
+            "assets",
+            "explored_fog",
+            "settings",
+        ] {
+            append_bytes(&mut builder, &format!("rows/{table}.jsonl"), b"").unwrap();
+        }
+        // Two entries sharing the same asset id.
+        append_bytes(&mut builder, &format!("assets/{asset_id}"), b"FIRST").unwrap();
+        append_bytes(&mut builder, &format!("assets/{asset_id}"), b"SECOND").unwrap();
+        let bytes = builder.into_inner().unwrap();
+        let tar_path = tmp.path().join("dup.tar");
+        std::fs::write(&tar_path, &bytes).unwrap();
+
+        let import_tmp = tempfile::tempdir().unwrap();
+        let err = read_bundle(&tar_path, import_tmp.path()).unwrap_err();
+        assert!(
+            matches!(&err, WorldBundleError::Malformed(m) if m.contains("duplicate asset entry")),
+            "unexpected error: {err:?}"
+        );
+
+        // The first entry's staged file must be cleaned up, not orphaned.
+        let world_asset_dir = import_tmp.path().join(world.to_string());
+        let leftover: Vec<_> = std::fs::read_dir(&world_asset_dir).unwrap().collect();
+        assert!(
+            leftover.is_empty(),
+            "duplicate-id rejection must remove any already-staged file"
+        );
     }
 }

@@ -6,8 +6,8 @@
 //! (`AdminUser`): export is not GM-gated, because `export_world_rows`
 //! (`data::sqlite`) selects every `documents` row for the world verbatim
 //! with no `gm_role`-based redaction — a world's own GM could otherwise
-//! export and read whisper content (`chat::mod.rs`'s `Audience::Whisper`
-//! sets `permissions.gm_role: Some(DocRole::None)` specifically so the GM
+//! export and read whisper content (`Audience::Whisper` sets
+//! `permissions.gm_role: Some(DocRole::None)` specifically so the GM
 //! does not get unconditional access) that the live API denies them, and
 //! `world_events.command_json` carries the same unfiltered content. Import
 //! is server-admin-only for a second, independent reason: a bulk
@@ -71,12 +71,17 @@ impl std::io::Write for ChannelWriter {
 /// `POST /api/worlds/{id}/export` — server-admin-only (see this module's own
 /// doc for why this is not GM-gated: `export_world_rows` has no
 /// `gm_role`-based redaction). Holds `state.write_barrier`'s read side across
-/// the whole streamed response, so a concurrent `POST /api/admin/backup`
-/// snapshot can't interleave with the row read + asset streaming below (same
-/// accepted trade-off `assets.rs`'s `DefaultBodyLimit`-disabled upload routes
-/// already document: a slow export download can hold the permit a long time,
-/// same class as a slow uploader). Streams the world's `.tar` bundle as the
-/// response body: `write_bundle` runs on a blocking thread and writes into a
+/// the whole chunk-production phase — from the row read through
+/// `write_bundle`'s `spawn_blocking` task producing every tar chunk — so a
+/// concurrent `POST /api/admin/backup` snapshot can't interleave with this
+/// export's row read + asset file reads; the permit is released once every
+/// chunk has been queued to the channel, not once the client has finished
+/// receiving them (no further filesystem/DB read happens after that point,
+/// so releasing there is exact, not loose). Same accepted trade-off
+/// `assets::upload`/`assets::replace` already document for their own
+/// `DefaultBodyLimit`-disabled routes: a slow producer can hold the permit a
+/// long time. Streams the world's `.tar` bundle as the response body:
+/// `write_bundle` runs on a blocking thread and writes into a
 /// `ChannelWriter`, whose bounded channel this function turns directly into
 /// the response body stream — bytes reach the client as `write_bundle`
 /// produces them, and memory usage stays bounded by
@@ -141,6 +146,24 @@ pub async fn export_world(
 /// large.
 const MAX_IMPORT_BUNDLE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
+/// Checks a running upload byte total against `cap`, the shared check both
+/// of `stream_bundle_upload`'s loops (the non-`"file"` field-skip loop and
+/// the `"file"` field's own chunk loop) call against ONE running total —
+/// never two independent per-loop totals, which would let a request smuggle
+/// up to `2 * cap` bytes past a single-budget cap. Parameterized over `cap`
+/// (rather than reading `MAX_IMPORT_BUNDLE_BYTES` directly) so a test can
+/// exercise the boundary with a small cap instead of materializing gigabytes
+/// of real upload data.
+fn check_upload_cap(total: u64, cap: u64) -> Result<(), AppError> {
+    if total > cap {
+        Err(AppError::PayloadTooLarge(format!(
+            "bundle exceeds {cap} bytes"
+        )))
+    } else {
+        Ok(())
+    }
+}
+
 /// Removes the wrapped path on drop unless `keep()` was called — the single
 /// source of truth for staged-import-upload cleanup, so a temp file cannot
 /// survive an early return (present or future) without a `remove_file` call
@@ -201,18 +224,20 @@ impl Drop for TempFileGuard {
 /// Stream the multipart field named `"file"` to `dest`, enforcing
 /// `MAX_IMPORT_BUNDLE_BYTES` as bytes arrive (never buffering the whole
 /// body) — including bytes belonging to any non-`"file"` field skipped
-/// before it, so a request cannot smuggle unbounded bytes past the cap by
-/// stuffing them into an earlier field. Cleanup of `dest` on an early return
-/// is the CALLER's responsibility (`import_world` holds the sole
-/// `TempFileGuard` for this path, spanning both this call and the
-/// extraction step that follows it) — this function creates and writes the
-/// file but owns no guard of its own, so exactly one `TempFileGuard`
+/// before it, via ONE running total (`check_upload_cap`) shared across both
+/// loops, so a request cannot smuggle bytes past the cap by stuffing them
+/// into an earlier field, and cannot double the effective cap by splitting
+/// bytes across the skipped field(s) and the `"file"` field. Cleanup of
+/// `dest` on an early return is the CALLER's responsibility (`import_world`
+/// holds the sole `TempFileGuard` for this path, spanning both this call and
+/// the extraction step that follows it) — this function creates and writes
+/// the file but owns no guard of its own, so exactly one `TempFileGuard`
 /// instance ever exists per physical temp file.
 async fn stream_bundle_upload(
     mut multipart: Multipart,
     dest: &std::path::Path,
 ) -> Result<(), AppError> {
-    let mut skip_total: u64 = 0;
+    let mut total: u64 = 0;
     let mut field = loop {
         let Some(mut f) = multipart
             .next_field()
@@ -225,28 +250,23 @@ async fn stream_bundle_upload(
             break f;
         }
         // Drain and discard a non-"file" field's bytes ourselves, under the
-        // same running cap the "file" field's own chunk loop enforces below
-        // — otherwise this field's bytes would arrive (and get discarded by
-        // `next_field`'s own internal advance) with no size accounting at
-        // all.
+        // same running `total` the "file" field's own chunk loop below
+        // shares — otherwise this field's bytes would arrive (and get
+        // discarded by `next_field`'s own internal advance) with no size
+        // accounting at all.
         while let Some(c) = f
             .chunk()
             .await
             .map_err(|e| AppError::BadRequest(format!("multipart error: {e}")))?
         {
-            skip_total += c.len() as u64;
-            if skip_total > MAX_IMPORT_BUNDLE_BYTES {
-                return Err(AppError::PayloadTooLarge(format!(
-                    "bundle exceeds {MAX_IMPORT_BUNDLE_BYTES} bytes"
-                )));
-            }
+            total += c.len() as u64;
+            check_upload_cap(total, MAX_IMPORT_BUNDLE_BYTES)?;
         }
     };
     let mut file = tokio::fs::File::create(dest).await.map_err(|e| {
         tracing::error!(?e, "failed to create import upload temp file");
         AppError::Internal
     })?;
-    let mut total: u64 = 0;
     loop {
         let chunk = match field.chunk().await {
             Ok(Some(c)) => c,
@@ -256,11 +276,7 @@ async fn stream_bundle_upload(
             }
         };
         total += chunk.len() as u64;
-        if total > MAX_IMPORT_BUNDLE_BYTES {
-            return Err(AppError::PayloadTooLarge(format!(
-                "bundle exceeds {MAX_IMPORT_BUNDLE_BYTES} bytes"
-            )));
-        }
+        check_upload_cap(total, MAX_IMPORT_BUNDLE_BYTES)?;
         if let Err(e) = file.write_all(&chunk).await {
             tracing::error!(?e, "failed writing import upload temp file");
             return Err(AppError::Internal);
@@ -286,8 +302,8 @@ async fn stream_bundle_upload(
 /// `state.write_barrier`'s read side across the upload, extraction, and the
 /// `SqliteRepository::import_world` call (whose asset-finalization step
 /// renames staged files into the live asset tree exactly like
-/// `assets::upload` does) — the same protection `assets.rs`'s own
-/// upload/replace routes give that operation, so a concurrent backup
+/// `assets::upload` does) — the same protection `assets::upload`/
+/// `assets::replace` already give that operation, so a concurrent backup
 /// snapshot can't interleave with import's asset writes either.
 pub async fn import_world(
     _admin: AdminUser,
@@ -349,6 +365,17 @@ pub async fn import_world(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Exercises the shared cap check with a small `cap`, rather than
+    /// against `MAX_IMPORT_BUNDLE_BYTES` (2 GiB), which no test should
+    /// actually materialize.
+    #[test]
+    fn check_upload_cap_rejects_only_once_the_total_exceeds_cap() {
+        assert!(check_upload_cap(0, 100).is_ok());
+        assert!(check_upload_cap(100, 100).is_ok(), "exactly at cap is fine");
+        let err = check_upload_cap(101, 100).unwrap_err();
+        assert!(matches!(err, AppError::PayloadTooLarge(_)));
+    }
 
     /// Confirms `ChannelWriter` genuinely backpressures its blocking writer
     /// against the channel's capacity, rather than buffering ahead of it —

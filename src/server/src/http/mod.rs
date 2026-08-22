@@ -843,6 +843,115 @@ pub(crate) mod tests {
         assert_eq!(summary.world_id, world.id);
     }
 
+    /// Regression coverage for `export_world` actually acquiring
+    /// `state.write_barrier`'s read side (not just holding SOME lock — a
+    /// future edit that accidentally dropped the guard early would compile
+    /// and pass every other test here). Mirrors
+    /// `write_barrier_blocks_asset_writes_while_backup_holds_it`'s
+    /// external-write-side-held pattern, but through the real HTTP handler.
+    ///
+    /// `axum_test::TestServer`'s request future is not `Send` (it holds a
+    /// `dyn Future` internally), so this runs under a `LocalSet` and
+    /// `spawn_local` rather than plain `tokio::spawn` — `tokio::test`'s
+    /// default current-thread runtime still supports a `LocalSet` driven
+    /// from the test's own top-level future.
+    #[tokio::test]
+    async fn export_world_blocks_while_write_barrier_held() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let state = initialized_state().await;
+                let admin = seed_admin(&state, "wb-export-admin").await;
+                let world_id = state
+                    .repo
+                    .create_world_owned("WriteBarrierExport", admin, 0)
+                    .await
+                    .unwrap()
+                    .id;
+                let admin_server = login_server(&state, "wb-export-admin").await;
+
+                // Simulates a concurrent `POST /api/admin/backup` snapshot.
+                let quiesce = state.write_barrier.write().await;
+                let attempt = tokio::task::spawn_local(async move {
+                    admin_server
+                        .post(&format!("/api/worlds/{world_id}/export"))
+                        .await
+                        .assert_status_ok();
+                });
+                // Give the request time to clear session lookup + admin
+                // authz and reach `export_world`'s own
+                // `write_barrier.clone().read_owned()`.
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                assert!(
+                    !attempt.is_finished(),
+                    "export_world must block on write_barrier's read side while a write is held"
+                );
+
+                drop(quiesce);
+                tokio::time::timeout(std::time::Duration::from_secs(5), attempt)
+                    .await
+                    .expect("export_world did not complete after the write_barrier released")
+                    .unwrap();
+            })
+            .await;
+    }
+
+    /// Same regression coverage as `export_world_blocks_while_write_barrier_held`,
+    /// for `import_world`. Same `LocalSet`/`spawn_local` reasoning applies.
+    #[tokio::test]
+    async fn import_world_blocks_while_write_barrier_held() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let state = initialized_state().await;
+                let admin = seed_admin(&state, "wb-import-admin").await;
+                let world_id = state
+                    .repo
+                    .create_world_owned("WriteBarrierImport", admin, 0)
+                    .await
+                    .unwrap()
+                    .id;
+                let admin_server = login_server(&state, "wb-import-admin").await;
+
+                let export_resp = admin_server
+                    .post(&format!("/api/worlds/{world_id}/export"))
+                    .await;
+                export_resp.assert_status_ok();
+                let bundle_bytes = export_resp.into_bytes();
+                admin_server
+                    .delete(&format!("/api/worlds/{world_id}"))
+                    .await
+                    .assert_status_success();
+
+                let quiesce = state.write_barrier.write().await;
+                let attempt = tokio::task::spawn_local(async move {
+                    admin_server
+                        .post("/api/worlds/import")
+                        .multipart(
+                            axum_test::multipart::MultipartForm::new().add_part(
+                                "file",
+                                axum_test::multipart::Part::bytes(bundle_bytes.to_vec())
+                                    .file_name("world.tar"),
+                            ),
+                        )
+                        .await
+                        .assert_status_ok();
+                });
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                assert!(
+                    !attempt.is_finished(),
+                    "import_world must block on write_barrier's read side while a write is held"
+                );
+
+                drop(quiesce);
+                tokio::time::timeout(std::time::Duration::from_secs(5), attempt)
+                    .await
+                    .expect("import_world did not complete after the write_barrier released")
+                    .unwrap();
+            })
+            .await;
+    }
+
     #[tokio::test]
     async fn debug_rooms_requires_admin() {
         let server = server_with_user("u", "pw", ServerRole::User).await;

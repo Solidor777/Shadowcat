@@ -76,8 +76,18 @@ and restore as a deployment-operator tool, not an in-app feature.
   `BUNDLE_SCHEMA_VERSION`. `data::sqlite::SqliteRepository::export_world_rows`/`import_world` are
   the DB-facing halves — `import_world` rejects a world-id collision before any row is written,
   inserts `worlds` then every table `delete_world` already walks (read instead of deleted) in
-  FK-safe order, and finalizes staged asset files only after every row is accepted.
-  `http::world_bundle::export_world`/`import_world` are the two routes.
+  FK-safe order, and finalizes staged asset files only after every row is accepted. `import_world`
+  also rejects (whole-transaction rollback) a bundle whose `data.documents` carries two documents
+  of the same `SINGLETON_DOC_TYPES` doc_type, mirroring `apply_intent`'s own intra-batch
+  `apply_intent::claimed_singletons` tracking (`import_world` builds its own equivalent local) —
+  a bundle is untrusted input assembled outside any live
+  `apply_intent` call, so nothing else in the insert loop would otherwise catch this.
+  `http::world_bundle::export_world`/`import_world` are the two routes, both server-admin-only
+  (`AdminUser`) and both participating in `AppState.write_barrier` alongside `assets`
+  `upload`/`replace` and `POST /api/admin/backup`: `export_world` holds the read side across its
+  row read + `write_bundle`'s chunk-production phase, `import_world` holds it across the upload +
+  extraction + `SqliteRepository::import_world`'s asset-finalization rename step — so neither can
+  interleave with a concurrent in-server backup snapshot.
 
 ## Hard invariants
 
