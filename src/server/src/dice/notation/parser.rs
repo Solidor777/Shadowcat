@@ -4,8 +4,9 @@
 use crate::dice::notation::lexer::{describe_token, lex, Token};
 use crate::dice::notation::{ModeKind, ParseContext, ParseError};
 use crate::dice::spec::{
-    BinOp, Comparator, ConstTerm, DiceGroup, DieKind, Direction, ExplodeKind, Expr, FnName,
-    GroupModifier, Mode, RollSpec, SuccessConfig, SuccessRule, Tier, TotalConfig,
+    BinOp, Comparator, ConstTerm, CritFail, CritSuccess, CritTrigger, DiceGroup, DieKind,
+    Direction, ExplodeKind, Expr, FnName, GroupModifier, Mode, RollSpec, SuccessConfig,
+    SuccessRule, Tier, TotalConfig,
 };
 
 /// Recursion depth (via `expr`/`term`/`factor`'s mutual calls, e.g. through
@@ -49,6 +50,14 @@ struct P {
     /// second `tr` is not an error; `chat::rolls::validate_tiers` rejects a duplicate
     /// `margin_offset` at the wire boundary, not this parser.
     tiers: Vec<Tier>,
+    /// Crit-success trigger from an `xs<N>[:<extra>[:<counter>]]` modifier. Shared roll-level
+    /// state (a second `xs` errors via `ParseError::DuplicateCritSuccess` rather than silently
+    /// overwriting); consumed into `SuccessConfig.crit_success` only when the resolved mode is
+    /// `SuccessCount`, mirroring `expertise`'s silent-drop under `Total`.
+    crit_success: Option<CritSuccess>,
+    /// Crit-fail trigger from an `xf<N>[:<lost>[:<counter>]][!]`. Same sharing/mode-gating as
+    /// `crit_success`.
+    crit_fail: Option<CritFail>,
 }
 
 /// Recursive-descent parser: `expr := term (('+'|'-') term)*`;
@@ -70,6 +79,8 @@ pub fn parse(input: &str, ctx: ParseContext) -> Result<RollSpec, ParseError> {
         expertise: None,
         required_successes: None,
         tiers: Vec::new(),
+        crit_success: None,
+        crit_fail: None,
     };
     let expr = p.expr()?;
     if p.pos != p.toks.len() {
@@ -101,8 +112,8 @@ pub fn parse(input: &str, ctx: ParseContext) -> Result<RollSpec, ParseError> {
             success: rule,
             required_successes: p.required_successes,
             tiers: p.tiers,
-            crit_success: None,
-            crit_fail: None,
+            crit_success: p.crit_success,
+            crit_fail: p.crit_fail,
             expertise: p.expertise.unwrap_or(0),
         })
     } else {
@@ -411,6 +422,37 @@ impl P {
                                 tier_value,
                             });
                         }
+                        "xs" => {
+                            if self.crit_success.is_some() {
+                                return Err(ParseError::DuplicateCritSuccess);
+                            }
+                            let threshold = self.expect_int()?;
+                            let extra_successes = self.optional_colon_int(1)?;
+                            let positive_counter = self.optional_colon_int(1)?;
+                            self.crit_success = Some(CritSuccess {
+                                trigger: CritTrigger::AtLeast(threshold),
+                                extra_successes,
+                                positive_counter,
+                            });
+                        }
+                        "xf" => {
+                            if self.crit_fail.is_some() {
+                                return Err(ParseError::DuplicateCritFail);
+                            }
+                            let threshold = self.expect_int()?;
+                            let lost = self.optional_colon_int(1)?;
+                            let negative_counter = self.optional_colon_int(1)?;
+                            let allow_negative = matches!(self.peek(), Some(Token::Bang));
+                            if allow_negative {
+                                self.bump();
+                            }
+                            self.crit_fail = Some(CritFail {
+                                trigger: CritTrigger::AtLeast(threshold),
+                                lost,
+                                negative_counter,
+                                allow_negative,
+                            });
+                        }
                         other => {
                             return Err(ParseError::Unexpected(format!(
                                 "unknown dice modifier '{other}'"
@@ -447,6 +489,18 @@ impl P {
                 "expected a comparator or number, found {}",
                 describe_token(other.as_ref())
             ))),
+        }
+    }
+
+    /// Reads an optional `:<int>` suffix, defaulting to `default` when no `Colon` token is
+    /// present. Shared by `xs`/`xf`'s repeated `:<value>[:<value>]` shape: calling this twice in
+    /// a row correctly reads zero, one, or two colon-prefixed values in sequence.
+    fn optional_colon_int(&mut self, default: i32) -> Result<i32, ParseError> {
+        if matches!(self.peek(), Some(Token::Colon)) {
+            self.bump();
+            self.expect_int()
+        } else {
+            Ok(default)
         }
     }
 }
@@ -974,6 +1028,91 @@ mod tests {
         let spec = parse("1d20t10", ParseContext::default()).unwrap();
         match spec.mode {
             Mode::Total(c) => assert!(c.tiers.is_empty()),
+            other => panic!("expected Total, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_xs_with_defaults() {
+        let spec = parse("4d6cs>=4xs20", ParseContext::default()).unwrap();
+        match spec.mode {
+            Mode::SuccessCount(c) => assert_eq!(
+                c.crit_success,
+                Some(CritSuccess {
+                    trigger: CritTrigger::AtLeast(20),
+                    extra_successes: 1,
+                    positive_counter: 1
+                })
+            ),
+            other => panic!("expected SuccessCount, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_xs_with_explicit_extra_and_positive_counter() {
+        let spec = parse("4d6cs>=4xs20:3:2", ParseContext::default()).unwrap();
+        match spec.mode {
+            Mode::SuccessCount(c) => assert_eq!(
+                c.crit_success,
+                Some(CritSuccess {
+                    trigger: CritTrigger::AtLeast(20),
+                    extra_successes: 3,
+                    positive_counter: 2
+                })
+            ),
+            other => panic!("expected SuccessCount, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn duplicate_xs_errors() {
+        assert!(matches!(
+            parse("4d6cs>=4xs20xs19", ParseContext::default()),
+            Err(ParseError::DuplicateCritSuccess)
+        ));
+    }
+
+    #[test]
+    fn parses_xf_with_defaults() {
+        let spec = parse("4d6cs>=4xf1", ParseContext::default()).unwrap();
+        match spec.mode {
+            Mode::SuccessCount(c) => assert_eq!(
+                c.crit_fail,
+                Some(CritFail {
+                    trigger: CritTrigger::AtLeast(1),
+                    lost: 1,
+                    negative_counter: 1,
+                    allow_negative: false
+                })
+            ),
+            other => panic!("expected SuccessCount, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_xf_with_bang_sets_allow_negative() {
+        let spec = parse("4d6cs>=4xf1!", ParseContext::default()).unwrap();
+        match spec.mode {
+            Mode::SuccessCount(c) => assert!(c.crit_fail.unwrap().allow_negative),
+            other => panic!("expected SuccessCount, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn duplicate_xf_errors() {
+        assert!(matches!(
+            parse("4d6cs>=4xf1xf2", ParseContext::default()),
+            Err(ParseError::DuplicateCritFail)
+        ));
+    }
+
+    #[test]
+    fn xs_and_xf_under_total_ambient_are_silently_dropped() {
+        // Mirrors e<N>'s exact silent-drop-under-Total precedent: xs/xf set roll-level
+        // scratch fields that are only consumed when the resolved mode is SuccessCount.
+        let spec = parse("1d20t10xs15xf1", ParseContext::default()).unwrap(); // ambient Total
+        match spec.mode {
+            Mode::Total(c) => assert_eq!(c.difficulty, Some(10)),
             other => panic!("expected Total, got {other:?}"),
         }
     }

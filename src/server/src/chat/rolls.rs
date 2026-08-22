@@ -633,6 +633,26 @@ mod tests {
     }
 
     #[test]
+    fn xs_modifier_from_notation_fires_crit_success_end_to_end() {
+        let spec = notation::parse("6d6cs>=4xs6", total_ctx()).unwrap();
+        // Seed chosen so at least one d6 rolls a 6 (verified: exactly one) -- required
+        // for this test to be non-vacuous; see the assert! below.
+        let raws = roll(&spec, &mut NoiseRng::from_seed(4));
+        let out = eval::evaluate(&spec, &raws);
+        let expected_crits = raws
+            .records
+            .iter()
+            .filter(|r| r.kept && r.value >= 6)
+            .count() as i32;
+        assert!(
+            expected_crits > 0,
+            "test is vacuous for this seed -- no d6 rolled a 6, so it can't distinguish \
+             xs6 firing from xs6 being silently dropped"
+        );
+        assert_eq!(out.crit_successes, expected_crits);
+    }
+
+    #[test]
     fn pure_const_multiplication_chain_saturates_without_panic() {
         // Zero dice groups: `walk_groups` counts none, so `MAX_ROLL_DICE`/
         // `MAX_ROLL_RECORDS` never see this formula. Run under a debug build

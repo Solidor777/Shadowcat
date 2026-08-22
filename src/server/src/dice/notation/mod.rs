@@ -76,6 +76,12 @@ pub enum ParseError {
     /// (e.g. a control byte below `0x20`, or DEL) — a label's charset is restricted to
     /// ASCII printable characters (plus space) except `]`.
     InvalidLabelChar,
+    /// A second `xs<N>` crit-success trigger appeared in one roll. Shared roll-level state (one
+    /// `SuccessConfig.crit_success`), so a silent overwrite would lose one.
+    DuplicateCritSuccess,
+    /// A second `xf<N>` crit-fail trigger appeared in one roll. Same reasoning as
+    /// `DuplicateCritSuccess`.
+    DuplicateCritFail,
 }
 
 /// Player-presentable rendering. `Unexpected`/`Trailing`'s inner `String` is
@@ -110,6 +116,12 @@ impl std::fmt::Display for ParseError {
             ParseError::InvalidLabelChar => {
                 write!(f, "a dice group label contains an unsupported character")
             }
+            ParseError::DuplicateCritSuccess => {
+                write!(f, "a roll can only set one crit-success trigger (xs<N>)")
+            }
+            ParseError::DuplicateCritFail => {
+                write!(f, "a roll can only set one crit-fail trigger (xf<N>)")
+            }
         }
     }
 }
@@ -140,10 +152,12 @@ mod tests {
             ParseError::EmptyLabel,
             ParseError::UnterminatedLabel,
             ParseError::InvalidLabelChar,
+            ParseError::DuplicateCritSuccess,
+            ParseError::DuplicateCritFail,
         ];
         assert_eq!(
             variants.len(),
-            10,
+            12,
             "update this test if a ParseError variant is added or removed"
         );
         for v in variants {
@@ -169,6 +183,7 @@ mod tests {
             "min(3)",                   // fn_call: wrong arity
             "foo(3)",                   // fn_call: unknown function name
             "4d6cs>=4rs2rs3",           // duplicate rs
+            "4d6cs>=4xs5xs6",           // duplicate xs
         ];
         for input in inputs {
             let err = parse(input, ParseContext::default())
