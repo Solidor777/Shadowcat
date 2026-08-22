@@ -647,4 +647,72 @@ mod tests {
         // panic -- mirrors `fold`'s own Div-by-zero-to-0 convention.
         assert_eq!(super::apply_fn(FnName::Min, &[3]), 0); // missing arg defaults to 0
     }
+
+    #[test]
+    fn floor_call_wrapping_dice_group_recurses_into_nested_arithmetic() {
+        // `roll_expr`'s `Call` arm must recurse into `args` to find and roll a dice
+        // group nested inside a `Bin` argument; `fold`'s `Call` arm must recurse the
+        // same way and apply `apply_fn` over the computed value -- the underlying
+        // d20's individual result must still be recoverable in `raws.records`, not
+        // just folded away.
+        let spec = notation::parse("floor(1d20/2)", total_ctx()).unwrap();
+        let raws = roll(&spec, &mut NoiseRng::from_seed(3));
+        let out = evaluate(&spec, &raws);
+        assert_eq!(
+            raws.records.len(),
+            1,
+            "the 1d20 group still produces exactly one record"
+        );
+        let d20_value = raws.records[0].value as i64;
+        assert_eq!(out.total, d20_value / 2);
+    }
+
+    #[test]
+    fn min_call_across_two_dice_groups_threads_group_index_through_both_args() {
+        let spec = notation::parse("min(2d6, 1d20)", total_ctx()).unwrap();
+        // Seed chosen so g1 < g0 (verified: g0=8, g1=6) -- required for this test to
+        // be non-vacuous. A `fold` that fails to thread `next_group` across `Call`
+        // args (re-reading group 0 for both arguments instead of advancing to group
+        // 1) would compute `apply_fn(Min, [g0, g0]) == g0`; with g1 < g0 the correct
+        // answer `g0.min(g1) == g1` differs from that buggy result, so the bug is
+        // caught. Under `g0 <= g1` the two coincide and this assertion alone would
+        // pass either way -- see the record-count checks below for a seed-independent
+        // guard against the same class of bug.
+        let raws = roll(&spec, &mut NoiseRng::from_seed(3));
+        let out = evaluate(&spec, &raws);
+        let group0: Vec<i64> = raws
+            .records
+            .iter()
+            .filter(|r| r.group_index == 0 && r.kept)
+            .map(|r| r.value as i64)
+            .collect();
+        let group1: Vec<i64> = raws
+            .records
+            .iter()
+            .filter(|r| r.group_index == 1 && r.kept)
+            .map(|r| r.value as i64)
+            .collect();
+        // Seed-independent: proves `roll_expr` stamped each Call argument's dice
+        // group with a distinct, correctly-advancing group_index.
+        assert_eq!(group0.len(), 2, "2d6 stamped as group 0");
+        assert_eq!(group1.len(), 1, "1d20 stamped as group 1");
+        let g0: i64 = group0.iter().sum();
+        let g1: i64 = group1.iter().sum();
+        assert!(
+            g1 < g0,
+            "chosen seed must make g1 < g0 so a stuck fold cursor (re-reading group 0 \
+             for both args) is distinguishable from the correct min: g0={g0} g1={g1}"
+        );
+        assert_eq!(out.total, g0.min(g1));
+    }
+
+    #[test]
+    fn call_wrapping_labeled_const_arg_surfaces_in_labeled_consts() {
+        let spec = notation::parse("floor(3[dex] + 2)", total_ctx()).unwrap();
+        let raws = roll(&spec, &mut NoiseRng::from_seed(1));
+        let out = evaluate(&spec, &raws);
+        assert_eq!(out.labeled_consts.len(), 1);
+        assert_eq!(out.labeled_consts[0].value, 3);
+        assert_eq!(out.labeled_consts[0].label, Some("dex".to_string()));
+    }
 }
