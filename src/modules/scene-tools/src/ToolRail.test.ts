@@ -5,7 +5,7 @@ import { SceneInteractionBridge } from "@shadowcat/ui-kit";
 import { fakeSceneHost } from "@shadowcat/ui-kit/test";
 import { setAppContextForTest } from "@shadowcat/ui-kit/test";
 import { DocumentStore, buildSceneDoc, buildTokenDoc, type WireOperation } from "@shadowcat/core";
-import { TokenSelection } from "@shadowcat/ui-kit";
+import { TokenSelection, SpeakAsToken } from "@shadowcat/ui-kit";
 import ToolRail from "./ToolRail.svelte";
 import toolRailSource from "./ToolRail.svelte?raw";
 
@@ -268,6 +268,70 @@ test("the tool rail renders as a non-compact side rail under jsdom (expanded def
   const rail = container.querySelector(".tool-rail");
   expect(rail).toBeTruthy();
   expect(rail?.classList.contains("compact")).toBe(false);
+});
+
+test("a player who owns the single selected token sees and can use the speak-as-token button", async () => {
+  const { scene } = captureScene();
+  const documents = new DocumentStore();
+  const sceneDoc = buildSceneDoc("w1", {}, "S1");
+  documents.applyCommand({ seq: 1, world_id: "w1", author: "gm", ts: 0, ops: [{ op: "create" as const, doc: sceneDoc }] });
+  const token = {
+    ...buildTokenDoc(
+      "w1", sceneDoc.id,
+      { x: 0, y: 0, w: 1, h: 1, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null },
+      "tok1",
+    ),
+    owner: "u-self",
+  };
+  documents.applyCommand({ seq: 2, world_id: "w1", author: "u-self", ts: 0, ops: [{ op: "create" as const, doc: token }] });
+  const tokenSelection = new TokenSelection();
+  tokenSelection.set(["tok1"]);
+  const speakAsToken = new SpeakAsToken();
+  render(ToolRail, { context: setAppContextForTest({ role: "player", selfId: "u-self", scene, documents, tokenSelection, speakAsToken }) });
+  const button = screen.getByTestId("speak-as-token");
+  await fireEvent.click(button);
+  expect(speakAsToken.tokenId).toBe("tok1");
+});
+
+test("a non-owner player does not see the speak-as-token button", () => {
+  const { scene } = captureScene();
+  const documents = new DocumentStore();
+  const sceneDoc = buildSceneDoc("w1", {}, "S1");
+  documents.applyCommand({ seq: 1, world_id: "w1", author: "gm", ts: 0, ops: [{ op: "create" as const, doc: sceneDoc }] });
+  const token = {
+    ...buildTokenDoc(
+      "w1", sceneDoc.id,
+      { x: 0, y: 0, w: 1, h: 1, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null },
+      "tok1",
+    ),
+    owner: "someone-else",
+  };
+  documents.applyCommand({ seq: 2, world_id: "w1", author: "gm", ts: 0, ops: [{ op: "create" as const, doc: token }] });
+  const tokenSelection = new TokenSelection();
+  tokenSelection.set(["tok1"]);
+  render(ToolRail, { context: setAppContextForTest({ role: "player", selfId: "u-self", scene, documents, tokenSelection }) });
+  expect(screen.queryByTestId("speak-as-token")).toBeNull();
+});
+
+test("no button renders when zero tokens are selected", () => {
+  const { scene } = captureScene();
+  render(ToolRail, { context: setAppContextForTest({ role: "gm", scene }) });
+  expect(screen.queryByTestId("speak-as-token")).toBeNull();
+});
+
+test("no button renders when more than one token is selected, even for a GM", () => {
+  const { scene } = captureScene();
+  const documents = new DocumentStore();
+  const sceneDoc = buildSceneDoc("w1", {}, "S1");
+  documents.applyCommand({ seq: 1, world_id: "w1", author: "gm", ts: 0, ops: [{ op: "create" as const, doc: sceneDoc }] });
+  const engine = { x: 0, y: 0, w: 1, h: 1, rotation: 0, visual: { kind: "image" as const, asset: "a" }, actor_id: null, overrides: null, face: null };
+  const tok1 = buildTokenDoc("w1", sceneDoc.id, engine, "tok1");
+  const tok2 = buildTokenDoc("w1", sceneDoc.id, engine, "tok2");
+  documents.applyCommand({ seq: 2, world_id: "w1", author: "gm", ts: 0, ops: [{ op: "create" as const, doc: tok1 }, { op: "create" as const, doc: tok2 }] });
+  const tokenSelection = new TokenSelection();
+  tokenSelection.set(["tok1", "tok2"]);
+  render(ToolRail, { context: setAppContextForTest({ role: "gm", scene, documents, tokenSelection }) });
+  expect(screen.queryByTestId("speak-as-token")).toBeNull();
 });
 
 test("select/input controls get a 44px coarse-pointer min-height", () => {

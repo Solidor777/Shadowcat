@@ -1,7 +1,7 @@
 <script lang="ts">
   import { createSubscriber } from "svelte/reactivity";
   import { getAppContext, sizeClass } from "@shadowcat/ui-kit";
-  import { resolveSceneSettings, type WireDocument } from "@shadowcat/core";
+  import { resolveSceneSettings, ownerFloorApplies, type WireDocument } from "@shadowcat/core";
   import { ToolController, type ToolId, type DrawMode, type TemplateMode, type RegionShapeMode, type RegionBehaviorMode } from "./controller.svelte";
   import AssetPicker from "./AssetPicker.svelte";
 
@@ -115,6 +115,37 @@
     { id: "region", label: t("tools.region"), gmOnly: true },
   ];
   const visibleTools = tools.filter((tool) => isGm || !tool.gmOnly);
+  // Speak-as-token affordance: shown whenever exactly one token is selected and the current
+  // user may plausibly speak as it (GM, or the effective owner) — advisory only, mirroring the
+  // "Speak as" composer picker's own client-side offer/server-reauthorizes split. Reuses the
+  // subscriber bridge already established above for `activeScene`/`snapToGrid`.
+  const selectedSpeakToken = $derived.by((): WireDocument | null => {
+    subscribe();
+    const ids = ctx.tokenSelection.ids;
+    if (ids.size !== 1) return null;
+    const [id] = ids;
+    return ctx.documents.get(id) ?? null;
+  });
+  const canSpeakAsSelected = $derived.by((): boolean => {
+    subscribe();
+    const tok = selectedSpeakToken;
+    if (!tok) return false;
+    return ctx.role === "gm" || ownerFloorApplies(tok, ctx.selfId, ctx.documents);
+  });
+
+  /** Sets the pending speak-as-token selection from the currently selected token (a no-op if
+   * none is selected, guarded by `canSpeakAsSelected` at the call site).
+   * @example
+   * ```
+   * // internal; wired to the "speak as this token" button
+   * speakAsSelectedToken();
+   * ```
+   */
+  function speakAsSelectedToken(): void {
+    const tok = selectedSpeakToken;
+    if (tok) ctx.speakAsToken.select(tok.id);
+  }
+
   const drawModes: DrawMode[] = ["freehand", "rect", "ellipse", "line"];
   const templateModes: TemplateMode[] = ["circle", "cone", "rect", "line"];
   const regionShapeModes: RegionShapeMode[] = ["rect", "circle", "polygon"];
@@ -147,6 +178,18 @@
       onclick={toggleSnap}
     >
       {t("tools.snap")}
+    </button>
+  {/if}
+
+  {#if canSpeakAsSelected}
+    <button
+      type="button"
+      class="tool"
+      data-testid="speak-as-token"
+      title={t("tools.speakAsToken")}
+      onclick={speakAsSelectedToken}
+    >
+      {t("tools.speakAsToken")}
     </button>
   {/if}
 

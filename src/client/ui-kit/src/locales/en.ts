@@ -159,6 +159,7 @@ export const en: Messages = {
   "tools.shape": "Shape",
   "tools.color": "Color",
   "tools.snap": "Snap to grid",
+  "tools.speakAsToken": "Speak as this token",
   "gameSettings.tab": "Game settings",
   "gameSettings.title": "Game settings",
   "gameSettings.movementRestriction": "Movement restriction",
