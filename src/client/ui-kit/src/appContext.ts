@@ -6,6 +6,7 @@ import type { ActorSelection } from "./actorSelection.svelte";
 import type { TokenSelection } from "./tokenSelection.svelte";
 import type { PanelsApi, PanelsChipsView } from "./panelsBridge.svelte";
 import type { SceneSelection } from "./sceneSelection.svelte";
+import type { SpeakAsToken } from "./speakAsToken.svelte";
 
 /** Translate function shape (framework-neutral; the Svelte adapter supplies a
  * reactive implementation). */
@@ -201,6 +202,9 @@ export interface AppContext {
   /** Which scene the game-settings per-scene section edits ("Configure"); set by the scene
    * browser, read by GameSettingsPanel. */
   sceneSelection: SceneSelection;
+  /** The pending "speak as this token" selection for the composer's next send — see
+   * `SpeakAsToken`'s class doc for the one-shot consume contract. */
+  speakAsToken: SpeakAsToken;
   /** Broadcast a transient location ping at scene coords on the active scene. */
   sendPing: (x: number, y: number) => void;
   /** Request a grid A* path from `start` through `waypoints` on `scene`. Resolves

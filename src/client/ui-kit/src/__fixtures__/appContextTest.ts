@@ -6,6 +6,7 @@ import { ActorSelection } from "../actorSelection.svelte";
 import { TokenSelection } from "../tokenSelection.svelte";
 import { PanelsBridge } from "../panelsBridge.svelte";
 import { SceneSelection } from "../sceneSelection.svelte";
+import { SpeakAsToken } from "../speakAsToken.svelte";
 
 /**
  * Build a Map for @testing-library/svelte's `context` option holding a minimal
@@ -75,6 +76,7 @@ export function setAppContextForTest(over: Partial<AppContext> = {}): Map<unknow
     setGmViewedScene: over.setGmViewedScene ?? (() => {}),
     searchDocuments: over.searchDocuments ?? (() => Promise.reject(new Error("not connected"))),
     sceneSelection: over.sceneSelection ?? new SceneSelection(),
+    speakAsToken: over.speakAsToken ?? new SpeakAsToken(),
     templates: over.templates ?? {
       stampInstance: (s) => s,
       pull: () => {},

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { AssetResolver, silentLogger, EMPTY_FOOTPRINTS } from "@shadowcat/core";
   import { setAppContext } from "@shadowcat/ui-kit";
-  import { SceneInteractionBridge, ActorSelection, TokenSelection, PanelsBridge, SceneSelection } from "@shadowcat/ui-kit";
+  import { SceneInteractionBridge, ActorSelection, TokenSelection, PanelsBridge, SceneSelection, SpeakAsToken } from "@shadowcat/ui-kit";
   import { t } from "@shadowcat/ui-kit";
   import Assets from "../Assets.svelte";
 
@@ -63,6 +63,7 @@
     setGmViewedScene: () => {},
     searchDocuments: () => Promise.reject(new Error("not connected")),
     sceneSelection: new SceneSelection(),
+    speakAsToken: new SpeakAsToken(),
     footprints: EMPTY_FOOTPRINTS,
     templates: {
       stampInstance: (s) => s,

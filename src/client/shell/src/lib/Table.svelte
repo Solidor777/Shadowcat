@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { setAppContext, Surface, PanelsBridge, SheetsController, SceneSelection, TemplatesController, TemplateModalHost, NotificationHost, notifications } from "@shadowcat/ui-kit";
+  import { setAppContext, Surface, PanelsBridge, SheetsController, SceneSelection, SpeakAsToken, TemplatesController, TemplateModalHost, NotificationHost, notifications } from "@shadowcat/ui-kit";
   import { t } from "@shadowcat/ui-kit";
   import { consoleLogger } from "@shadowcat/core";
   import { createSubscriber } from "svelte/reactivity";
@@ -41,6 +41,10 @@
   // Scene "Configure" focus: the browser sets it, GameSettingsPanel reads it. Stable per Table,
   // like `panels`/`sheets`.
   const sceneSelection = new SceneSelection();
+
+  // Speak-as-token pending selection: the scene-tools affordance sets it, the composer
+  // consumes it on send. Stable per Table, like `sceneSelection`.
+  const speakAsToken = new SpeakAsToken();
 
   // Template merge controller: stamp/pull/push/revert orchestration + the conflict modal.
   // `session` is fixed per Table, so capturing it once here is intended (see the identical
@@ -101,6 +105,7 @@
     setGmViewedScene: (id) => session.setGmViewedScene(id),
     searchDocuments: (query, opts, onUpdate) => session.searchDocuments(query, opts, onUpdate),
     sceneSelection,
+    speakAsToken,
     sendPing: (x, y) => session.sendPing(x, y),
     pathfind: (s, st, wp, fr, tk) => session.pathfind(s, st, wp, fr, tk),
     moveRequest: (s, tid, p) => session.moveRequest(s, tid, p),
