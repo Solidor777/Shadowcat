@@ -28,7 +28,7 @@ describe("game-settings seed", () => {
     expect(created).toContain("chat-settings");
     const diceOp = ops.find((op) => (op as { op: "create"; doc: { doc_type: string } }).doc.doc_type === "dice-settings") as
       { op: "create"; doc: { engine: unknown } };
-    expect(diceOp.doc.engine).toEqual({ mode: "total", direction: "high_wins" });
+    expect(diceOp.doc.engine).toEqual({ mode: "total", direction: "high_wins", channel_overrides: {} });
     const chatOp = ops.find((op) => (op as { op: "create"; doc: { doc_type: string } }).doc.doc_type === "chat-settings") as
       { op: "create"; doc: { engine: unknown } };
     expect(chatOp.doc.engine).toEqual({ markdown: null, html: null, images: null, hyperlinks: null, emails: null, link_previews: null });

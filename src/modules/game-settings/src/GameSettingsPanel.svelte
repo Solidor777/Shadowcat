@@ -7,7 +7,7 @@
     DEFAULT_WORLD_SETTINGS,
     type WorldSettingsEngine, type LightGradationEngine, type VisionModesEngine,
     type SceneEngine, type WireDocument, DEFAULT_SCENE_BOUNDS, type DiceSettingsEngine,
-    type ChatSettingsEngine,
+    type ChatSettingsEngine, type ChannelRegistryEngine,
   } from "@shadowcat/core";
 
   const ctx = getAppContext();
@@ -29,7 +29,7 @@
     if (ctx.documents.query("light-gradation").length === 0) ops.push({ op: "create" as const, doc: buildLightGradationDoc(ctx.world) });
     if (ctx.documents.query("vision-modes").length === 0) ops.push({ op: "create" as const, doc: buildVisionModesDoc(ctx.world) });
     if (ctx.documents.query("dice-settings").length === 0) {
-      ops.push({ op: "create" as const, doc: buildDiceSettingsDoc(ctx.world, { mode: "total", direction: "high_wins" }) });
+      ops.push({ op: "create" as const, doc: buildDiceSettingsDoc(ctx.world, { mode: "total", direction: "high_wins", channel_overrides: {} }) });
     }
     // chat-settings mirrors the server's ChatContentPolicy::default() (every toggle
     // off/absent — plain text, previews resolve false since hyperlinks is off).
@@ -70,6 +70,18 @@
     return ctx.documents.query("dice-settings")[0];
   });
   const dicesys = $derived.by((): DiceSettingsEngine | undefined => diceDoc?.engine as DiceSettingsEngine | undefined);
+
+  // Read-only: this panel enumerates channel-registry's channels for the
+  // per-channel dice editor below but never creates/edits the registry
+  // itself (the chat module owns that seed/CRUD).
+  const channelRegDoc = $derived.by((): WireDocument | undefined => {
+    subscribe();
+    return ctx.documents.query("channel-registry")[0];
+  });
+  const channelEntries = $derived.by((): [string, { name: string }][] => {
+    const sys = channelRegDoc?.engine as ChannelRegistryEngine | undefined;
+    return Object.entries(sys?.channels ?? {});
+  });
 
   const chatDoc = $derived.by((): WireDocument | undefined => {
     subscribe();
@@ -307,6 +319,56 @@
           {/each}
         </select>
       </label>
+
+      {#if channelEntries.length > 0}
+        <div>
+          <span>{ctx.t("gameSettings.dice.channelOverrides")}</span>
+          {#each channelEntries as [id, channel] (id)}
+            {@const override = dicesys.channel_overrides[id]}
+            <div>
+              <span>{channel.name}</span>
+              <label>
+                {ctx.t("gameSettings.dice.channelOverride")}
+                <select aria-label="gameSettings.dice.channelOverride.{id}"
+                  value={override != null ? "override" : ""}
+                  onchange={(e) => {
+                    const v = (e.currentTarget as HTMLSelectElement).value;
+                    if (v === "") {
+                      const next = { ...dicesys.channel_overrides };
+                      delete next[id];
+                      set(diceDoc.id, "/engine/channel_overrides", dicesys.channel_overrides, next);
+                    } else {
+                      set(diceDoc.id, `/engine/channel_overrides/${id}`, override, { mode: dicesys.mode, direction: dicesys.direction });
+                    }
+                  }}>
+                  <option value="">{ctx.t("gameSettings.inherit")}</option>
+                  <option value="override">{ctx.t("gameSettings.dice.channelOverrideCustom")}</option>
+                </select>
+              </label>
+              {#if override != null}
+                <label>
+                  {ctx.t("gameSettings.dice.mode")}
+                  <select aria-label="gameSettings.dice.channelOverride.{id}.mode" value={override.mode}
+                    onchange={(e) => set(diceDoc.id, `/engine/channel_overrides/${id}`, override, { mode: (e.currentTarget as HTMLSelectElement).value, direction: override.direction })}>
+                    {#each DICE_MODE as m}
+                      <option value={m}>{m === "total" ? ctx.t("gameSettings.dice.modeTotal") : ctx.t("gameSettings.dice.modeSuccess")}</option>
+                    {/each}
+                  </select>
+                </label>
+                <label>
+                  {ctx.t("gameSettings.dice.direction")}
+                  <select aria-label="gameSettings.dice.channelOverride.{id}.direction" value={override.direction}
+                    onchange={(e) => set(diceDoc.id, `/engine/channel_overrides/${id}`, override, { mode: override.mode, direction: (e.currentTarget as HTMLSelectElement).value })}>
+                    {#each DICE_DIRECTION as d}
+                      <option value={d}>{d === "high_wins" ? ctx.t("gameSettings.dice.directionHigh") : ctx.t("gameSettings.dice.directionLow")}</option>
+                    {/each}
+                  </select>
+                </label>
+              {/if}
+            </div>
+          {/each}
+        </div>
+      {/if}
     </fieldset>
   {/if}
 
