@@ -664,10 +664,12 @@ pub enum SendMessageError {
     /// STORED `kind == Roll`, or editing content that itself parses to
     /// `kind == Roll`, are both rejected outright (no re-rolling by edit).
     RollImmutable,
-    /// The requested `actor_owner` cannot be attributed by this sender: the
-    /// referenced actor doc does not exist, is not an `actor` doc_type, or
-    /// is owned by someone else and the sender is not a GM; or the ref is a
-    /// `TokenInstance` (rejected fail-closed pending speak-as-token).
+    /// The requested `actor_owner` cannot be attributed by this sender: for an `Actor` ref,
+    /// the referenced doc does not exist, is not an `actor` doc_type, is outside the sending
+    /// room's world, or is owned by someone else and the sender is not a GM; for a
+    /// `TokenInstance` ref, the referenced doc does not exist, is not a `token` doc_type, is
+    /// outside the sending room's world, or its effective owner (own override, else linked
+    /// actor's owner) is someone else and the sender is not a GM.
     ActorNotSpeakable,
 }
 
@@ -856,13 +858,34 @@ pub async fn handle_send_message(
                     return Err(SendMessageError::ActorNotSpeakable);
                 }
             }
-            // No first-party producer resolves a TokenInstance ref into a
-            // display identity at send time.
-            // TODO: implement speak-as-token attribution.
-            // Until then, reject fail-closed rather than store an
-            // unvalidated ref that a future consumer might trust.
-            ActorOwnerRef::TokenInstance { .. } => {
-                return Err(SendMessageError::ActorNotSpeakable);
+            ActorOwnerRef::TokenInstance { token_id } => {
+                let token_doc = repo
+                    .get_document(*token_id)
+                    .await
+                    .map_err(SendMessageError::Data)?;
+                let is_gm = ctx.world_role == WorldRole::Gm;
+                let allowed = match &token_doc {
+                    // Same world-pinning + GM-bypass shape as the `Actor` arm above.
+                    // Ownership itself resolves through `effective_owner_of` — the
+                    // repo-level chokepoint wrapping `permission::effective_owner` (a
+                    // token's own `owner` override wins, else it inherits its linked
+                    // actor's owner) — never reimplemented here.
+                    Some(d)
+                        if d.doc_type == crate::data::permission::TOKEN_DOC_TYPE
+                            && crate::data::document::world_of(d) == Some(room.world_id) =>
+                    {
+                        is_gm
+                            || repo
+                                .effective_owner_of(d)
+                                .await
+                                .map_err(SendMessageError::Data)?
+                                == Some(ctx.user_id)
+                    }
+                    _ => false,
+                };
+                if !allowed {
+                    return Err(SendMessageError::ActorNotSpeakable);
+                }
             }
         }
     }
@@ -3732,6 +3755,406 @@ mod tests {
         }
     }
 
+    /// A minimal token doc for the speak-as-token ingest gate tests, seeded directly via
+    /// `apply_command` (bypasses permission checks — these tests exercise
+    /// `handle_send_message`'s attribution gate, not the token-create authorization path).
+    /// `engine` must be a well-formed `TokenEngine` body, same rationale as `seed_actor_doc`.
+    fn seed_token_doc(
+        id: Uuid,
+        world: Uuid,
+        owner: Option<Uuid>,
+        actor_id: Option<Uuid>,
+    ) -> Document {
+        Document {
+            id,
+            scope: Scope::World { world_id: world },
+            doc_type: "token".into(),
+            schema_version: 1,
+            name: None,
+            source: None,
+            base: None,
+            owner,
+            permissions: crate::data::document::PermissionSet::default(),
+            embedded: Default::default(),
+            parent_id: None,
+            engine: Some(serde_json::json!({
+                "x": 0.0, "y": 0.0, "w": 1.0, "h": 1.0, "rotation": 0.0,
+                "actor_id": actor_id,
+            })),
+            system: serde_json::json!({}),
+            created_at: 0,
+            updated_at: 0,
+        }
+    }
+
+    #[tokio::test]
+    async fn send_message_allows_token_owner_via_its_own_override_to_speak_as_it() {
+        use crate::auth::role::ServerRole;
+        use crate::data::command::UnsequencedCommand;
+        use crate::data::document::WorldRole;
+        use crate::data::sqlite::SqliteRepository;
+        use crate::ws::room::RoomRegistry;
+
+        let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+        let gm = repo
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let player = repo
+            .create_user("pl", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = repo.create_world_owned("W", gm, 0).await.unwrap();
+        repo.add_member(w.id, player, WorldRole::Player)
+            .await
+            .unwrap();
+        let token_id = Uuid::new_v4();
+        repo.apply_command(UnsequencedCommand {
+            world_id: w.id,
+            author: player,
+            ts: 0,
+            ops: vec![Operation::Create {
+                doc: seed_token_doc(token_id, w.id, Some(player), None),
+            }],
+        })
+        .await
+        .unwrap();
+
+        let ctx = PermissionContext {
+            user_id: player,
+            world_role: WorldRole::Player,
+        };
+        let reg = RoomRegistry::new();
+        let room = reg.get_or_create(&repo, w.id).await.unwrap().unwrap();
+        let rate = PingRateLimiter::new();
+
+        let (cmd, _pending) = handle_send_message(
+            MessageRequestCtx {
+                room: &room,
+                repo: &repo,
+                ctx: &ctx,
+                rate: &rate,
+                preview: LinkPreviewDeps {
+                    client: &super::link_preview::build_client_allow_loopback(),
+                    cache: &LinkPreviewCache::new(),
+                    rate: &PreviewRateLimiter::new(),
+                },
+                now: 100,
+                budget_per_min: 30,
+            },
+            "all".into(),
+            "grr".into(),
+            Some(ActorOwnerRef::TokenInstance { token_id }),
+            Audience::Public,
+        )
+        .await
+        .unwrap();
+        let doc = match &cmd.ops[0] {
+            Operation::Create { doc } => doc,
+            other => panic!("expected Create, got {other:?}"),
+        };
+        let sys: MessageEngine = serde_json::from_value(doc.engine.clone().unwrap()).unwrap();
+        assert_eq!(
+            sys.actor_owner,
+            Some(ActorOwnerRef::TokenInstance { token_id })
+        );
+    }
+
+    #[tokio::test]
+    async fn send_message_allows_the_linked_actors_owner_to_speak_as_its_token() {
+        use crate::auth::role::ServerRole;
+        use crate::data::command::UnsequencedCommand;
+        use crate::data::document::WorldRole;
+        use crate::data::sqlite::SqliteRepository;
+        use crate::ws::room::RoomRegistry;
+
+        let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+        let gm = repo
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let player = repo
+            .create_user("pl", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = repo.create_world_owned("W", gm, 0).await.unwrap();
+        repo.add_member(w.id, player, WorldRole::Player)
+            .await
+            .unwrap();
+        let actor_id = Uuid::new_v4();
+        let token_id = Uuid::new_v4();
+        repo.apply_command(UnsequencedCommand {
+            world_id: w.id,
+            author: player,
+            ts: 0,
+            ops: vec![
+                Operation::Create {
+                    doc: seed_actor_doc(actor_id, w.id, Some(player)),
+                },
+                Operation::Create {
+                    doc: seed_token_doc(token_id, w.id, None, Some(actor_id)),
+                },
+            ],
+        })
+        .await
+        .unwrap();
+
+        let ctx = PermissionContext {
+            user_id: player,
+            world_role: WorldRole::Player,
+        };
+        let reg = RoomRegistry::new();
+        let room = reg.get_or_create(&repo, w.id).await.unwrap().unwrap();
+        let rate = PingRateLimiter::new();
+
+        let (cmd, _pending) = handle_send_message(
+            MessageRequestCtx {
+                room: &room,
+                repo: &repo,
+                ctx: &ctx,
+                rate: &rate,
+                preview: LinkPreviewDeps {
+                    client: &super::link_preview::build_client_allow_loopback(),
+                    cache: &LinkPreviewCache::new(),
+                    rate: &PreviewRateLimiter::new(),
+                },
+                now: 100,
+                budget_per_min: 30,
+            },
+            "all".into(),
+            "grr".into(),
+            Some(ActorOwnerRef::TokenInstance { token_id }),
+            Audience::Public,
+        )
+        .await
+        .unwrap();
+        let doc = match &cmd.ops[0] {
+            Operation::Create { doc } => doc,
+            other => panic!("expected Create, got {other:?}"),
+        };
+        let sys: MessageEngine = serde_json::from_value(doc.engine.clone().unwrap()).unwrap();
+        assert_eq!(
+            sys.actor_owner,
+            Some(ActorOwnerRef::TokenInstance { token_id })
+        );
+    }
+
+    #[tokio::test]
+    async fn send_message_rejects_a_non_owner_non_gm_speaking_as_a_token() {
+        use crate::auth::role::ServerRole;
+        use crate::data::command::UnsequencedCommand;
+        use crate::data::document::WorldRole;
+        use crate::data::sqlite::SqliteRepository;
+        use crate::ws::room::RoomRegistry;
+
+        let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+        let gm = repo
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let player = repo
+            .create_user("pl", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let other = repo
+            .create_user("ot", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = repo.create_world_owned("W", gm, 0).await.unwrap();
+        repo.add_member(w.id, player, WorldRole::Player)
+            .await
+            .unwrap();
+        repo.add_member(w.id, other, WorldRole::Player)
+            .await
+            .unwrap();
+        let token_id = Uuid::new_v4();
+        repo.apply_command(UnsequencedCommand {
+            world_id: w.id,
+            author: other,
+            ts: 0,
+            ops: vec![Operation::Create {
+                doc: seed_token_doc(token_id, w.id, Some(other), None),
+            }],
+        })
+        .await
+        .unwrap();
+
+        let ctx = PermissionContext {
+            user_id: player,
+            world_role: WorldRole::Player,
+        };
+        let reg = RoomRegistry::new();
+        let room = reg.get_or_create(&repo, w.id).await.unwrap().unwrap();
+        let rate = PingRateLimiter::new();
+
+        let err = handle_send_message(
+            MessageRequestCtx {
+                room: &room,
+                repo: &repo,
+                ctx: &ctx,
+                rate: &rate,
+                preview: LinkPreviewDeps {
+                    client: &super::link_preview::build_client_allow_loopback(),
+                    cache: &LinkPreviewCache::new(),
+                    rate: &PreviewRateLimiter::new(),
+                },
+                now: 100,
+                budget_per_min: 30,
+            },
+            "all".into(),
+            "grr".into(),
+            Some(ActorOwnerRef::TokenInstance { token_id }),
+            Audience::Public,
+        )
+        .await;
+        assert!(matches!(err, Err(SendMessageError::ActorNotSpeakable)));
+    }
+
+    #[tokio::test]
+    async fn send_message_rejects_a_token_from_another_world_even_for_its_owner() {
+        use crate::auth::role::ServerRole;
+        use crate::data::command::UnsequencedCommand;
+        use crate::data::document::WorldRole;
+        use crate::data::sqlite::SqliteRepository;
+        use crate::ws::room::RoomRegistry;
+
+        let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+        let gm = repo
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let player = repo
+            .create_user("pl", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let world_a = repo.create_world_owned("A", gm, 0).await.unwrap();
+        let world_b = repo.create_world_owned("B", gm, 0).await.unwrap();
+        repo.add_member(world_a.id, player, WorldRole::Player)
+            .await
+            .unwrap();
+        repo.add_member(world_b.id, player, WorldRole::Player)
+            .await
+            .unwrap();
+
+        // The token lives in world B and IS owned by `player` — ownership alone must not be
+        // enough to speak as it from world A's room.
+        let token_id = Uuid::new_v4();
+        repo.apply_command(UnsequencedCommand {
+            world_id: world_b.id,
+            author: player,
+            ts: 0,
+            ops: vec![Operation::Create {
+                doc: seed_token_doc(token_id, world_b.id, Some(player), None),
+            }],
+        })
+        .await
+        .unwrap();
+
+        let ctx = PermissionContext {
+            user_id: player,
+            world_role: WorldRole::Player,
+        };
+        let reg = RoomRegistry::new();
+        let room_a = reg.get_or_create(&repo, world_a.id).await.unwrap().unwrap();
+        let rate = PingRateLimiter::new();
+
+        let err = handle_send_message(
+            MessageRequestCtx {
+                room: &room_a,
+                repo: &repo,
+                ctx: &ctx,
+                rate: &rate,
+                preview: LinkPreviewDeps {
+                    client: &super::link_preview::build_client_allow_loopback(),
+                    cache: &LinkPreviewCache::new(),
+                    rate: &PreviewRateLimiter::new(),
+                },
+                now: 0,
+                budget_per_min: 30,
+            },
+            "all".into(),
+            "hi".into(),
+            Some(ActorOwnerRef::TokenInstance { token_id }),
+            Audience::Public,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, SendMessageError::ActorNotSpeakable));
+    }
+
+    #[tokio::test]
+    async fn send_message_allows_gm_to_speak_as_any_token_regardless_of_owner() {
+        use crate::auth::role::ServerRole;
+        use crate::data::command::UnsequencedCommand;
+        use crate::data::document::WorldRole;
+        use crate::data::sqlite::SqliteRepository;
+        use crate::ws::room::RoomRegistry;
+
+        let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+        let gm = repo
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let player = repo
+            .create_user("pl", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = repo.create_world_owned("W", gm, 0).await.unwrap();
+        repo.add_member(w.id, player, WorldRole::Player)
+            .await
+            .unwrap();
+        let token_id = Uuid::new_v4();
+        repo.apply_command(UnsequencedCommand {
+            world_id: w.id,
+            author: player,
+            ts: 0,
+            ops: vec![Operation::Create {
+                doc: seed_token_doc(token_id, w.id, Some(player), None),
+            }],
+        })
+        .await
+        .unwrap();
+
+        let ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+        let reg = RoomRegistry::new();
+        let room = reg.get_or_create(&repo, w.id).await.unwrap().unwrap();
+        let rate = PingRateLimiter::new();
+
+        let (cmd, _pending) = handle_send_message(
+            MessageRequestCtx {
+                room: &room,
+                repo: &repo,
+                ctx: &ctx,
+                rate: &rate,
+                preview: LinkPreviewDeps {
+                    client: &super::link_preview::build_client_allow_loopback(),
+                    cache: &LinkPreviewCache::new(),
+                    rate: &PreviewRateLimiter::new(),
+                },
+                now: 100,
+                budget_per_min: 30,
+            },
+            "all".into(),
+            "grr".into(),
+            Some(ActorOwnerRef::TokenInstance { token_id }),
+            Audience::Public,
+        )
+        .await
+        .unwrap();
+        let doc = match &cmd.ops[0] {
+            Operation::Create { doc } => doc,
+            other => panic!("expected Create, got {other:?}"),
+        };
+        let sys: MessageEngine = serde_json::from_value(doc.engine.clone().unwrap()).unwrap();
+        assert_eq!(
+            sys.actor_owner,
+            Some(ActorOwnerRef::TokenInstance { token_id })
+        );
+    }
+
     #[tokio::test]
     async fn send_message_allows_player_attributing_own_actor() {
         use crate::auth::role::ServerRole;
@@ -4075,7 +4498,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn send_message_rejects_token_instance_attribution() {
+    async fn send_message_rejects_attributing_a_nonexistent_token() {
         use crate::auth::role::ServerRole;
         use crate::data::document::WorldRole;
         use crate::data::sqlite::SqliteRepository;
@@ -4127,7 +4550,7 @@ mod tests {
         .await;
         assert!(
             matches!(err, Err(SendMessageError::ActorNotSpeakable)),
-            "token-instance attribution has no first-party producer yet — rejected fail-closed"
+            "a token_id with no matching stored document is rejected fail-closed"
         );
     }
 
