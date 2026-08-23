@@ -71,6 +71,10 @@
   });
   const dicesys = $derived.by((): DiceSettingsEngine | undefined => diceDoc?.engine as DiceSettingsEngine | undefined);
 
+  /** One `channel-registry` entry — `ChannelRegistryEngine.channels`'s value type, named here
+   * since `@shadowcat/core` doesn't re-export the generated `Channel` type on its own. */
+  type ChannelEntry = ChannelRegistryEngine["channels"][string];
+
   // Read-only: this panel enumerates channel-registry's channels for the
   // per-channel dice editor below but never creates/edits the registry
   // itself (the chat module owns that seed/CRUD).
@@ -78,7 +82,7 @@
     subscribe();
     return ctx.documents.query("channel-registry")[0];
   });
-  const channelEntries = $derived.by((): [string, { name: string }][] => {
+  const channelEntries = $derived.by((): [string, ChannelEntry][] => {
     const sys = channelRegDoc?.engine as ChannelRegistryEngine | undefined;
     return Object.entries(sys?.channels ?? {});
   });
