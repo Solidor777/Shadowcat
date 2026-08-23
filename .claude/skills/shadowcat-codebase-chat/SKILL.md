@@ -211,8 +211,11 @@ an allowlisted host) for the caller to run via `post_publish::run_pending_enrich
   an existing `doc_type=="actor"` doc, IN THE SENDING ROOM'S WORLD
   (`crate::data::document::world_of(d) == Some(room.world_id)`), owned by the sender (GM: any
   actor in that world). An actor doc from another world is refused (`ActorNotSpeakable`) even for
-  its owner — ownership alone does not cross world scope. `TokenInstance` refs are REJECTED
-  until speak-as-token ships (same error, nothing persisted). Edits copy `actor_owner` verbatim
+  its owner — ownership alone does not cross world scope. A `TokenInstance` ref is validated the
+  same world-pinned way, except ownership resolves through `Repository::effective_owner_of`
+  (the token's own `owner` override, else the linked actor's owner) rather than a stored `owner`
+  field read directly — the same chokepoint every other ownership decision in this codebase
+  goes through, never reimplemented inline. Edits copy `actor_owner` verbatim
   from the stored doc, so this ingest gate is the only one needed. `world_of` (`data::document`,
   `pub(crate)`) is the SAME helper `ws::conn::scene_ping_permitted` uses for its own
   cross-world scene pin — one idiom for "does this doc belong to world X," not two independent
@@ -253,7 +256,19 @@ with zero message-specific plumbing in any of those subsystems.
     typed `Segment` variants — they stay INSIDE a `Segment::Html` run as ordinary sanitized markup
     (`<strong>`/`<a>`/`<img>`). A separate typed `Link`/`Image` segment would require re-parsing
     already-sanitized HTML to extract them, duplicating work `ammonia` already did; `Html` is the
-    single content-bearing rich variant.
+    single content-bearing rich variant. `Segment::DocLink{target, label}` does not contradict
+    this: it is a structured REFERENCE (a doc/token id + a display label), not inline formatting
+    or markup, so it stays a distinct typed variant rather than folding into `Html`.
+  - `Segment::DocLink{target: DocLinkTarget, label}` — a free-form in-body link to a document or
+    token, recognized by `chat::rolls::scan_body` from a `[[doc:<uuid>|<label>]]` or
+    `[[token:<uuid>|<label>]]` span (same `[[...]]` bracket-depth grammar as `[[roll:...]]`; the
+    `|<label>` half is REQUIRED, unlike roll's optional label). `DocLinkTarget` is `Doc{doc_id,
+    embedded_path: Option<String>}` | `Token{token_id}` (`#[serde(tag="kind",
+    rename_all="snake_case")]`). NO server-side existence or authz check runs on ingest — the
+    referenced doc/token may not exist, may be in another world, or may be invisible to some
+    recipients; the client fails closed at RENDER time (`module-chat-card` only makes it a
+    clickable sheet-open link when the target resolves against the viewer's own `ctx.documents`,
+    else an inert span), mirroring the actor-name-header link's own presence-gate pattern.
   - `plain_text_content(raw) -> Vec<Segment>` — the fail-closed plain-text producer, wraps raw input verbatim as one
     `Segment::Text` (no sanitization yet; the client renders it as a text node, never
     `innerHTML`, so embedded markup is inert).
@@ -676,7 +691,20 @@ Three independently replaceable modules (UI-is-modules; swap any one without the
 - **`@shadowcat/module-chat-composer`** — Enter sends / Shift+Enter newline / `isComposing` IME
   guard; validation on the TRIMMED length (what's actually sent); NO client command parsing
   (`/`-commands ride verbatim — the server parses); the "Speak as" picker sends
-  `actor_owner` `Actor` refs, server-ownership-validated at ingest (see Dice wire above).
+  `actor_owner` `Actor` refs, server-ownership-validated at ingest (see Dice wire above). A
+  `@doc` trigger button opens a live document-search popover (`AppContext.searchDocuments`,
+  same cancellation-guard `$effect` pattern as `ActorsPanel`'s live search) and inserts a
+  `[[doc:<id>|<label>]]`/`[[token:<id>|<label>]]` span at the cursor; the inserted label strips
+  all of `[`/`]`/`|` in one pass (an unstripped `[` would desync `scan_body`'s bracket-depth
+  scan) and falls back to the id's first 8 characters if stripping leaves it empty (an empty
+  label is `RollError::MalformedDocLink`, rejecting the whole message). Separately,
+  `AppContext.speakAsToken` (`SpeakAsToken`, a `ui-kit`-local stable-instance/mutate-in-place
+  class sibling of `SceneSelection`) holds a ONE-SHOT pending "speak as this token" selection:
+  `module-scene-tools`'s `ToolRail` sets it via a button visible only when exactly one token is
+  selected and the current user is GM or the effective owner (`ownerFloorApplies`, advisory-only
+  — the server re-authorizes via `effective_owner_of` regardless), and the composer reads
+  `.tokenId` for a "Speaking as: {name}" indicator and calls `.consume()` on send, giving the
+  pending token precedence over the sticky actor `<select>` when building `actor_owner`.
 - **`@shadowcat/module-chat-card`** — fail-closed render (`parseMessageEngine` null ⇒ nothing).
   **GM recalc menu + recalculated badge:** `MessageCard.svelte` renders a `recalc-menu` (one row
   per base die — reroll/remove buttons plus a bounded numeric replace input, each calling

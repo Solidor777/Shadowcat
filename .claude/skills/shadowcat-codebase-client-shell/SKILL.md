@@ -311,7 +311,12 @@ plain-routed, not contributions. i18n is a framework-neutral core with a thin Sv
   that timer, a `chat_error` reject, and a `failPending` reject — reached from BOTH a disconnect
   and an explicit `stop()` (`WorldSession.leave()`, and the `evicted` frame handler). Details →
   [[shadowcat-codebase-chat]]). `members` is populated for EVERY role, not only GM — chat name
-  resolution needs it, and the roster endpoint is member-visible.
+  resolution needs it, and the roster endpoint is member-visible. `AppContext.speakAsToken:
+  SpeakAsToken` (a `ui-kit`-local stable-instance/mutate-in-place class, shell-constructed in
+  `Table` alongside `sceneSelection`) holds a ONE-SHOT pending "speak as this token" selection —
+  `select(id)`/`consume()`, read-once by design: the scene-tools `ToolRail` sets it, the
+  composer reads `.tokenId` for its indicator and calls `.consume()` on send. Details →
+  [[shadowcat-codebase-chat]].
 - `src/modules/{entry,core-ui,panels,stage,topbar,statusbar,settings,game-settings,scene-browser,
   chat,chat-composer,chat-card}/` — entry = `@shadowcat/module-entry` (login + world mgmt, behind
   `<Entry onEnterWorld>`); core-ui owns the layout grid + region surfaces into the singleton

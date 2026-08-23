@@ -46,12 +46,7 @@ capability already exists — but are deferred as out-of-scope-for-now work.
 Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one design pass each
 (user: build ALL of bucket C):
 
-1. **In-body doc-link chat segment** (`Segment::DocLink`) — actor-name → sheet navigation shipped
-   in M12c, but a free-form doc-link segment has no server producer or client authoring path yet;
-   needs a server producer + authoring affordance.
-2. **Speak-as-token-instance** — `ActorOwnerRef::TokenInstance` is REJECTED at ingest (fail-closed,
-   no first-party producer) — build the composer/token-context UX and lift the rejection together.
-3. **Real-time per-recipient move-streaming** — `MoveStream` precomputes each move's
+1. **Real-time per-recipient move-streaming** — `MoveStream` precomputes each move's
    per-recipient vision clip at execute time, so two tokens moving simultaneously do not reveal
    each other mid-walk when a watcher's vision opens after the clip; it reconciles only at the
    stop + next `vision` rebroadcast. No correctness/secrecy impact today — only a missed

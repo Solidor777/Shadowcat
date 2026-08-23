@@ -1505,6 +1505,25 @@ meaning" claim is corrected to state this one exception. Design:
 Plan:
 [`superpowers/plans/2026-08-21-per-channel-dice-settings.md`](superpowers/plans/2026-08-21-per-channel-dice-settings.md).
 
+### Bucket C · In-body doc-link chat segment + speak-as-token-instance ✅
+**COMPLETE.** Closed bucket-C sub-projects 1 and 2 (`docs/TODO.md`). `Segment::DocLink{target,
+label}` is a new free-form `[[doc:<uuid>|<label>]]`/`[[token:<uuid>|<label>]]` chat-body span
+recognized by `chat::rolls::scan_body` alongside `[[roll:...]]`, ingested with zero server-side
+existence/authz check (fail-closed client render only, matching this system's "structured
+reference, not inline formatting" design), rendered by `module-chat-card` as a clickable
+sheet-open link when the target resolves against the viewer's own `ctx.documents`, and authored
+via a `module-chat-composer` `@doc` trigger with a live document search popover. Separately,
+`ActorOwnerRef::TokenInstance`'s previously fail-closed ingest stub now performs a real
+ownership check reusing `Repository::effective_owner_of` (world-pinned, GM bypass, own `owner`
+override else the linked actor's owner) — the same chokepoint every other ownership decision in
+this codebase already goes through, never reimplemented inline. A `module-scene-tools` ToolRail
+button (advisory-only; server re-authorizes regardless) and a one-shot `AppContext.speakAsToken`
+seam let a GM or a token's effective owner pick "speak as this token" for the composer's next
+send. Design:
+[`superpowers/specs/2026-08-21-doclink-and-speak-as-token-design.md`](superpowers/specs/2026-08-21-doclink-and-speak-as-token-design.md).
+Plan:
+[`superpowers/plans/2026-08-21-doclink-and-speak-as-token.md`](superpowers/plans/2026-08-21-doclink-and-speak-as-token.md).
+
 ## Phase 2 — Full table
 Combat tracker (initiative, hidden combatants, turn-event triggers; depends on M11 dice) → real asset pipeline (chunked upload, image conversion, tags, derived tags) + asset browser (regex / tag / dir search, preview / rename / move / tag) → layout / theming completion (drag-resize, pop-out, multi / user themes, module styling modes) → vision / lighting / movement completion (photometric, darkvision / tremorsense / height; **per-actor/faction movement exemptions — flying/incorporeal ignore difficult terrain, deferred from M10g; needs movement-type tags on actors**) → token enrichment (aura / light / sound / VFX emitters, **trigger regions — mechanical/trigger effects built on the M10g region primitive: damage, condition application, scripted triggers on enter/arrest**, token-art, **generated token visuals (deferred from M10i) — a parametric compositor that frames existing actor art into a token: decorative border + shape-crop mask + background, distinct from the dynamic faction ring; a new additive `{kind:"generated"}` on the M10h `RenderVisual` union**, **per-token built-in fx (deferred from M10j) — condition-driven tint / desaturate / highlight + selection/faction/target highlight via a per-token Pixi `.filters` attach point on the M10h token `Container`; custom shader-filter seam stays Phase 3 VFX**, **emote / reaction overlays (deferred from M10j) — transient overlay above the token via a new ping-style `emote` aux frame + fading child**) → rollable tables (on the dice engine + document model), rich-text notes (on the document model), chat media linking (images; YouTube as thumbnail + external link only — no IFrame / Data API) → full default module suite → search consolidated into one milestone (single backend; no three-backend split).
 

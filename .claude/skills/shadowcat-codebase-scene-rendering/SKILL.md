@@ -551,7 +551,13 @@ runs engine-owned geometry (movement-collision, per-player vision); the client r
   (`Repository::apply_intent`) rejects any subsequent `Update` whose `old` doesn't match the
   actual current stored value. `GameSettingsPanel`, `FactionsPanel` and `ConditionsPanel` carry the
   same rule for the same reason — always read the raw stored value for `old`,
-  never the resolved/defaulted one, in any future editor of this shape.
+  never the resolved/defaulted one, in any future editor of this shape. **Speak-as-token
+  affordance:** `ToolRail` also carries a "speak as this token" button (`data-testid=
+  "speak-as-token"`), visible only when exactly one token is selected AND the current user is GM
+  or the token's effective owner (`ownerFloorApplies`, `@shadowcat/core`) — advisory-only client
+  gating, since the server independently re-authorizes via `effective_owner_of` at send time. On
+  click it sets `AppContext.speakAsToken`, a one-shot pending selection the composer consumes;
+  see [[shadowcat-codebase-chat]] for the full seam.
 - **Regions on the continuous engine.** `SceneEcs::pathfind`'s
   `Continuous` branch (`scene`) computes the per-requester `region_field` once (same call the
   `GridStepped` branch already made — the `GridStepped` branch itself is completely untouched by
