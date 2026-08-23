@@ -387,11 +387,11 @@ test("buildChannelRegistryDoc builds a world-scoped parentless singleton map doc
 });
 
 test("buildDiceSettingsDoc builds a world-scoped parentless singleton doc", () => {
-  const d = buildDiceSettingsDoc("w1", { mode: "success_count", direction: "low_wins" });
+  const d = buildDiceSettingsDoc("w1", { mode: "success_count", direction: "low_wins", channel_overrides: {} });
   expect(d.doc_type).toBe("dice-settings");
   expect(d.parent_id).toBeNull();
   expect(d.scope).toEqual({ kind: "world", world_id: "w1" });
-  expect(d.engine).toEqual({ mode: "success_count", direction: "low_wins" });
+  expect(d.engine).toEqual({ mode: "success_count", direction: "low_wins", channel_overrides: {} });
   expect(d.system).toEqual({});
 });
 

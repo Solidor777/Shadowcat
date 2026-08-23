@@ -18,9 +18,9 @@ pub use geometry::{
     TemplateShape, WallEngine,
 };
 pub use registries::{
-    Channel, ChannelRegistryEngine, ChatSettingsEngine, Condition, ConditionRegistryEngine,
-    DiceDirectionSetting, DiceModeSetting, DiceSettingsEngine, Faction, FactionRegistryEngine,
-    FactionStance,
+    Channel, ChannelDiceOverride, ChannelRegistryEngine, ChatSettingsEngine, Condition,
+    ConditionRegistryEngine, DiceDirectionSetting, DiceModeSetting, DiceSettingsEngine, Faction,
+    FactionRegistryEngine, FactionStance,
 };
 pub use scene::{
     AnimationSettings, DiagonalRule, EasingMode, EnvironmentLight, Falloff, Grid, GridDistance,

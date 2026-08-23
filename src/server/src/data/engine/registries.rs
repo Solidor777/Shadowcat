@@ -1,7 +1,8 @@
 //! Singleton config-document engine bands: `channel-registry`,
 //! `faction-registry`, `condition-registry`, `chat-settings`, `dice-settings`.
 //! Field shapes mirror the client's re-exported `Channel`, `FactionStance`,
-//! `Faction`, `Condition`, `ChatSettingsEngine`, and `DiceSettingsEngine`.
+//! `Faction`, `Condition`, `ChatSettingsEngine`, `DiceSettingsEngine`, and
+//! `ChannelDiceOverride` (`DiceSettingsEngine.channel_overrides`'s value type).
 //!
 //! `chat::settings::ChatContentPolicy` is a type alias onto
 //! `ChatSettingsEngine`; `chat::rolls`/`chat::settings` read `DiceSettingsEngine`
@@ -145,15 +146,41 @@ pub enum DiceDirectionSetting {
     LowWins,
 }
 
+/// A single channel's full override of the world-default dice aggregation
+/// mode + win direction (`DiceSettingsEngine.channel_overrides`'s value
+/// type). Mirrors `DiceSettingsEngine`'s own `{mode, direction}` shape
+/// exactly — full replacement, never a partial-field merge: an override
+/// always carries BOTH fields, so a channel either fully overrides the
+/// world default or (absent from the map) fully inherits it; there is no
+/// "override just mode, inherit direction" state to resolve.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/engine/")]
+#[serde(deny_unknown_fields)]
+pub struct ChannelDiceOverride {
+    /// This channel's aggregation mode, overriding `DiceSettingsEngine.mode`.
+    pub mode: DiceModeSetting,
+    /// This channel's win direction, overriding `DiceSettingsEngine.direction`.
+    pub direction: DiceDirectionSetting,
+}
+
 /// GM-configured ambient dice-notation context (mirrors the client's
 /// `DiceSettingsEngine`). `#[serde(default)]` on the struct means a partial
-/// or absent body fills the rest with the safe default (Total + HighWins).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+/// or absent body fills the rest with the safe default (Total + HighWins,
+/// empty `channel_overrides`).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields, default)]
 pub struct DiceSettingsEngine {
-    /// Aggregation mode ambient dice notation resolves under.
+    /// Aggregation mode ambient dice notation resolves under (the world default).
     pub mode: DiceModeSetting,
-    /// Win direction ambient dice notation resolves under.
+    /// Win direction ambient dice notation resolves under (the world default).
     pub direction: DiceDirectionSetting,
+    /// Per-channel full overrides, keyed by `channel-registry`'s channel id.
+    /// A channel absent from this map (including every channel when the map
+    /// is empty) resolves against `mode`/`direction` above — this is a
+    /// full-replacement override, not a partial merge, matching how the
+    /// world default itself is an unconditional pair rather than
+    /// independently-optional fields (see `ChannelDiceOverride`'s doc).
+    #[serde(default)]
+    pub channel_overrides: BTreeMap<String, ChannelDiceOverride>,
 }

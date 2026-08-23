@@ -603,7 +603,7 @@ export const DICE_SETTINGS_DOC_TYPE = "dice-settings";
  * ```ts
  * import { buildDiceSettingsDoc } from "@shadowcat/core";
  *
- * buildDiceSettingsDoc("00000000-0000-0000-0000-000000000001", { mode: "total", direction: "high_wins" });
+ * buildDiceSettingsDoc("00000000-0000-0000-0000-000000000001", { mode: "total", direction: "high_wins", channel_overrides: {} });
  * ```
  */
 export function buildDiceSettingsDoc(

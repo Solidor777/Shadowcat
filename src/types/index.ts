@@ -102,3 +102,4 @@ export type { ChatSettingsEngine } from "./generated/engine/ChatSettingsEngine";
 export type { DiceSettingsEngine } from "./generated/engine/DiceSettingsEngine";
 export type { DiceModeSetting } from "./generated/engine/DiceModeSetting";
 export type { DiceDirectionSetting } from "./generated/engine/DiceDirectionSetting";
+export type { ChannelDiceOverride } from "./generated/engine/ChannelDiceOverride";

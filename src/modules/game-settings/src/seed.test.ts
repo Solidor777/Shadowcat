@@ -48,7 +48,7 @@ describe("game-settings seed", () => {
       buildWorldSettingsDoc("w1"),
       buildLightGradationDoc("w1"),
       buildVisionModesDoc("w1"),
-      buildDiceSettingsDoc("w1", { mode: "total", direction: "high_wins" }),
+      buildDiceSettingsDoc("w1", { mode: "total", direction: "high_wins", channel_overrides: {} }),
       buildChatSettingsDoc("w1", { markdown: null, html: null, images: null, hyperlinks: null, emails: null, link_previews: null }),
     );
     render(GameSettingsPanel, {

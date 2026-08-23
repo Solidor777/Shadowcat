@@ -13,7 +13,7 @@ function gmStoreWith(...docs: WireDocument[]) {
 describe("dice settings editor", () => {
   it("changing mode dispatches a JSON-pointer update", async () => {
     const dispatchIntent = vi.fn();
-    const dice = buildDiceSettingsDoc("w1", { mode: "total", direction: "high_wins" }, "dice1");
+    const dice = buildDiceSettingsDoc("w1", { mode: "total", direction: "high_wins", channel_overrides: {} }, "dice1");
     render(GameSettingsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: gmStoreWith(dice), dispatchIntent }) });
 
     const sel = screen.getByLabelText("gameSettings.dice.mode") as HTMLSelectElement;
@@ -26,7 +26,7 @@ describe("dice settings editor", () => {
 
   it("changing direction dispatches a JSON-pointer update", async () => {
     const dispatchIntent = vi.fn();
-    const dice = buildDiceSettingsDoc("w1", { mode: "total", direction: "high_wins" }, "dice1");
+    const dice = buildDiceSettingsDoc("w1", { mode: "total", direction: "high_wins", channel_overrides: {} }, "dice1");
     render(GameSettingsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: gmStoreWith(dice), dispatchIntent }) });
 
     const sel = screen.getByLabelText("gameSettings.dice.direction") as HTMLSelectElement;
@@ -39,7 +39,7 @@ describe("dice settings editor", () => {
 
   it("selects reflect the stored doc values", () => {
     const dispatchIntent = vi.fn();
-    const dice = buildDiceSettingsDoc("w1", { mode: "success_count", direction: "low_wins" }, "dice1");
+    const dice = buildDiceSettingsDoc("w1", { mode: "success_count", direction: "low_wins", channel_overrides: {} }, "dice1");
     render(GameSettingsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: gmStoreWith(dice), dispatchIntent }) });
 
     const modeSel = screen.getByLabelText("gameSettings.dice.mode") as HTMLSelectElement;
@@ -50,7 +50,7 @@ describe("dice settings editor", () => {
 
   it("is not rendered for a non-GM", () => {
     const dispatchIntent = vi.fn();
-    const dice = buildDiceSettingsDoc("w1", { mode: "total", direction: "high_wins" }, "dice1");
+    const dice = buildDiceSettingsDoc("w1", { mode: "total", direction: "high_wins", channel_overrides: {} }, "dice1");
     render(GameSettingsPanel, { context: setAppContextForTest({ role: "player", world: "w1", documents: gmStoreWith(dice), dispatchIntent }) });
 
     expect(screen.queryByLabelText("gameSettings.dice.mode")).toBeNull();
@@ -62,7 +62,7 @@ describe("dice settings editor", () => {
   // silently omit an option.
   it("mode/direction selects expose exactly the DiceSettingsSystem literal option sets", () => {
     const dispatchIntent = vi.fn();
-    const dice = buildDiceSettingsDoc("w1", { mode: "total", direction: "high_wins" }, "dice1");
+    const dice = buildDiceSettingsDoc("w1", { mode: "total", direction: "high_wins", channel_overrides: {} }, "dice1");
     render(GameSettingsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: gmStoreWith(dice), dispatchIntent }) });
 
     const modeSel = screen.getByLabelText("gameSettings.dice.mode") as HTMLSelectElement;
