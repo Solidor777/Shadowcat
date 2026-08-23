@@ -589,14 +589,17 @@ export function buildChannelRegistryDoc(
 /** Doc_type for the single per-world dice-settings config `Document`
  * (server: `chat::settings::DICE_SETTINGS_DOC_TYPE`). `doc_type: "dice-settings"` is
  * engine-defined — the body lands in `engine`, `DiceSettingsEngine` mirrors
- * data::engine::registries::DiceSettingsEngine 1:1 (both fields serde-default on the server:
- * Total / high_wins), so a partial body is still safe — the panel always writes the
- * full shape via the reactive seed. */
+ * data::engine::registries::DiceSettingsEngine 1:1 (all three fields serde-default on the
+ * server: Total / high_wins / an empty `channel_overrides` map), so a partial body is still
+ * safe — the panel always writes the full shape via the reactive seed. `channel_overrides`
+ * keys a channel id to a full-replacement `ChannelDiceOverride{mode, direction}` pair; a
+ * channel absent from the map resolves against the world-default `mode`/`direction` above it. */
 export const DICE_SETTINGS_DOC_TYPE = "dice-settings";
 
 /** Builds the singleton per-world `dice-settings` config document.
  * @param worldId The owning world's id.
- * @param engine The dice-settings body (mode + win direction).
+ * @param engine The dice-settings body (world-default mode + win direction, plus any
+ * per-channel overrides).
  * @param id Optional explicit document id; a fresh uuid is generated when omitted.
  * @returns The unsaved `WireDocument`, ready to `Create`.
  * @example

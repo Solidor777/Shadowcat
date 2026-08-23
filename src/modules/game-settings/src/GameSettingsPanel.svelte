@@ -294,10 +294,13 @@
   {/if}
 
   {#if ctx.role === "gm" && dicesys && diceDoc}
-    <!-- Ambient dice-notation context: mode (Total/Success count) and direction
-         (High/Low wins). JSON-pointer paths: /engine/mode, /engine/direction.
-         Matches the server body shape (`DiceSettingsEngine`) exactly:
-         mode "total"|"success_count", direction "high_wins"|"low_wins". -->
+    <!-- Ambient dice-notation context: world-default mode (Total/Success count) and
+         direction (High/Low wins) at /engine/mode, /engine/direction, plus a per-channel
+         override editor below writing /engine/channel_overrides/<id> (or a whole-map
+         replace at /engine/channel_overrides to remove one). Matches the server body shape
+         (`DiceSettingsEngine`) exactly: mode "total"|"success_count", direction
+         "high_wins"|"low_wins", channel_overrides a map of channel id to a full-replacement
+         {mode, direction} pair. -->
     <fieldset>
       <legend>{ctx.t("gameSettings.dice.title")}</legend>
       <label>
@@ -321,10 +324,11 @@
       </label>
 
       {#if channelEntries.length > 0}
+        {@const overrides = dicesys.channel_overrides ?? {}}
         <div>
           <span>{ctx.t("gameSettings.dice.channelOverrides")}</span>
           {#each channelEntries as [id, channel] (id)}
-            {@const override = dicesys.channel_overrides[id]}
+            {@const override = overrides[id]}
             <div>
               <span>{channel.name}</span>
               <label>
@@ -334,9 +338,9 @@
                   onchange={(e) => {
                     const v = (e.currentTarget as HTMLSelectElement).value;
                     if (v === "") {
-                      const next = { ...dicesys.channel_overrides };
+                      const next = { ...overrides };
                       delete next[id];
-                      set(diceDoc.id, "/engine/channel_overrides", dicesys.channel_overrides, next);
+                      set(diceDoc.id, "/engine/channel_overrides", overrides, next);
                     } else {
                       set(diceDoc.id, `/engine/channel_overrides/${id}`, override, { mode: dicesys.mode, direction: dicesys.direction });
                     }

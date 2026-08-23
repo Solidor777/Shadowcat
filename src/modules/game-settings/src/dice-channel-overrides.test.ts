@@ -22,6 +22,27 @@ describe("per-channel dice-settings editor", () => {
     expect(screen.queryByText("gameSettings.dice.channelOverrides")).toBeNull();
   });
 
+  it("renders without crashing when the stored doc predates channel_overrides (no key at all)", () => {
+    // Simulates a dice-settings document created before this feature shipped:
+    // the server's #[serde(default)] only fills the field when DESERIALIZING
+    // into the typed Rust struct, never rewrites the stored JSON, and there
+    // is no document-schema migration path — so the raw engine body can be
+    // missing this key entirely. The client casts raw JSON with no runtime
+    // validation (documented: GM-authored config, not untrusted wire input),
+    // so any nested access must tolerate the key's genuine absence.
+    const dispatchIntent = vi.fn();
+    const dice = buildDiceSettingsDoc("w1", { mode: "total", direction: "high_wins", channel_overrides: {} }, "dice1");
+    delete (dice.engine as { channel_overrides?: unknown }).channel_overrides;
+    const reg = buildChannelRegistryDoc("w1", { general: { name: "General" } }, "reg1");
+
+    expect(() =>
+      render(GameSettingsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: gmStoreWith(dice, reg), dispatchIntent }) }),
+    ).not.toThrow();
+
+    const sel = screen.getByLabelText("gameSettings.dice.channelOverride.general") as HTMLSelectElement;
+    expect(sel.value).toBe("");
+  });
+
   it("renders one row per registered channel, defaulting to inherit", () => {
     const dispatchIntent = vi.fn();
     const dice = buildDiceSettingsDoc("w1", { mode: "total", direction: "high_wins", channel_overrides: {} }, "dice1");
