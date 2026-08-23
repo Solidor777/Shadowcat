@@ -239,6 +239,8 @@ export const en: Messages = {
   "chat.composer.send": "Send",
   "chat.composer.count": "{used} / {max}",
   "chat.composer.sendFailed": "Message could not be sent.",
+  "chat.composer.insertDocLink": "Insert a document link",
+  "chat.composer.docSearchPlaceholder": "Search documents…",
   "chat.edited": "(edited)",
   "chat.deleted": "Message deleted",
   "chat.whisperTo": "to {names}",

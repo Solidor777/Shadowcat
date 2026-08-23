@@ -1,7 +1,7 @@
 <script lang="ts">
   import { createSubscriber } from "svelte/reactivity";
   import { getAppContext } from "@shadowcat/ui-kit";
-  import { actorDisplayName, MAX_MESSAGE_CHARS, type WireActorOwnerRef, type WireAudience, type WireDocument } from "@shadowcat/core";
+  import { actorDisplayName, resolveTokenActor, MAX_MESSAGE_CHARS, type WireActorOwnerRef, type WireAudience, type WireDocument, type WireSearchHit, type SubscriptionHandle } from "@shadowcat/core";
 
   let {
     channel,
@@ -56,6 +56,87 @@
 
   let value = $state("");
   let textarea = $state<HTMLTextAreaElement | undefined>(undefined);
+
+  // `@doc` trigger: a searchable document/token picker parallel in UI weight to the "Speak
+  // as" picker above, wired to the existing `searchDocuments` AppContext seam — no new
+  // search/lookup code. Live-search subscription mirrors ActorsPanel's own pattern
+  // (torn down/recreated on every query change, guarded against a stale callback firing
+  // after a newer query's subscription is already active).
+  let docPickerOpen = $state(false);
+  let docQuery = $state("");
+  let docHits = $state<WireSearchHit[]>([]);
+  $effect(() => {
+    if (!docPickerOpen) { docHits = []; return; }
+    const q = docQuery.trim();
+    if (!q) { docHits = []; return; }
+    let handle: SubscriptionHandle | null = null;
+    let cancelled = false;
+    void ctx
+      .searchDocuments(q, { limit: 20 }, (hits: WireSearchHit[]) => {
+        if (cancelled) return;
+        docHits = hits;
+      })
+      .then((h) => { if (cancelled) h.unsubscribe(); else handle = h; })
+      .catch(() => { /* no transport: leave last hits, re-subscribe on next keystroke */ });
+    return () => { cancelled = true; handle?.unsubscribe(); };
+  });
+
+  /** Display label for a search hit: a token resolves through its linked/embedded actor (the
+   * same `resolveTokenActor`/`actorDisplayName` read-through every other actor/token consumer
+   * uses), any other document falls back to its envelope `name`.
+   * @param doc The candidate document/token.
+   * @returns The label to both display in the picker and capture into the inserted span.
+   * @example
+   * ```
+   * // internal; used by the picker's result list and insertDocLink
+   * declare const doc: WireDocument;
+   * docLinkLabel(doc);
+   * ```
+   */
+  function docLinkLabel(doc: WireDocument): string {
+    if (doc.doc_type === "token") {
+      const eff = resolveTokenActor(doc, ctx.documents);
+      return eff ? actorDisplayName(eff) : ((doc.name ?? "").trim() || doc.id.slice(0, 8));
+    }
+    return (doc.name ?? "").trim() || `${doc.doc_type} ${doc.id.slice(0, 8)}`;
+  }
+
+  /** Inserts a `[[doc:<id>|<label>]]`/`[[token:<id>|<label>]]` span at the textarea's cursor
+   * position and closes the picker. Strips every `[`/`]`/`|` from the label before building the
+   * span — a document/token's authored name is free text, and any of these three characters is
+   * part of `scan_body`'s grammar: an unstripped `[` desyncs its bracket-depth tracking (the
+   * span's own closing `]]` can be silently consumed as an ordinary depth-decrement instead of
+   * recognized as the terminator), and an unstripped `]]` terminates the span early outright —
+   * both corrupt the grammar, not just cosmetically. Falls back to the id's first 8 characters
+   * when stripping leaves the label empty (a name consisting only of these characters, or a
+   * blank/absent name `docLinkLabel` didn't already substitute a fallback for) — an empty label
+   * is `RollError::MalformedDocLink` server-side, rejecting the WHOLE message, not just the link.
+   * @param doc The picked document/token.
+   * @example
+   * ```
+   * // internal; wired to each result row's click handler
+   * declare const doc: WireDocument;
+   * insertDocLink(doc);
+   * ```
+   */
+  function insertDocLink(doc: WireDocument): void {
+    const label = docLinkLabel(doc).replace(/[[\]|]/g, "").trim() || doc.id.slice(0, 8);
+    const span = doc.doc_type === "token" ? `[[token:${doc.id}|${label}]]` : `[[doc:${doc.id}|${label}]]`;
+    const el = textarea;
+    const start = el?.selectionStart ?? value.length;
+    const end = el?.selectionEnd ?? value.length;
+    value = value.slice(0, start) + span + value.slice(end);
+    docPickerOpen = false;
+    docQuery = "";
+    docHits = [];
+    const caret = start + span.length;
+    queueMicrotask(() => {
+      autoGrow();
+      el?.focus();
+      el?.setSelectionRange(caret, caret);
+    });
+  }
+
   // The server's player-presentable rejection reason for the last send, shown
   // inline so a refused message does not vanish silently. Already classified
   // server-side (authorization/existence/internal errors are generic there).
@@ -169,8 +250,22 @@
     oninput={onInput}
     rows="1"
   ></textarea>
+  <button type="button" data-testid="doc-link-trigger" title={t("chat.composer.insertDocLink")} onclick={() => (docPickerOpen = !docPickerOpen)}>@doc</button>
   <button type="button" onclick={send} disabled={!canSend}>{t("chat.composer.send")}</button>
 </div>
+{#if docPickerOpen}
+  <div class="doc-picker">
+    <label class="visually-hidden" for="chat-composer-doc-search">{t("chat.composer.insertDocLink")}</label>
+    <input id="chat-composer-doc-search" type="text" placeholder={t("chat.composer.docSearchPlaceholder")} bind:value={docQuery} />
+    <ul class="doc-picker-results">
+      {#each docHits as hit (hit.document.id)}
+        <li>
+          <button type="button" onclick={() => insertDocLink(hit.document)}>{docLinkLabel(hit.document)}</button>
+        </li>
+      {/each}
+    </ul>
+  </div>
+{/if}
 {#if errorMsg}
   <div class="send-error" role="alert">{errorMsg}</div>
 {/if}
@@ -223,5 +318,31 @@
     clip: rect(0, 0, 0, 0);
     white-space: nowrap;
     border: 0;
+  }
+  .doc-picker {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    margin-top: var(--space-1);
+    padding: var(--space-1);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-1);
+  }
+  .doc-picker input {
+    min-height: 44px;
+    padding: var(--space-1);
+  }
+  .doc-picker-results {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    max-height: 12em;
+    overflow-y: auto;
+  }
+  .doc-picker-results button {
+    width: 100%;
+    min-height: 44px;
+    text-align: left;
+    padding: var(--space-1);
   }
 </style>

@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/svelte";
 import { setAppContextForTest } from "@shadowcat/ui-kit/test";
+import type { AppContext } from "@shadowcat/ui-kit";
 import { DocumentStore, buildActorDoc, MAX_MESSAGE_CHARS, type WireAudience, type WireCommand, type WireDocument } from "@shadowcat/core";
 import type { WorldRole } from "@shadowcat/types";
 import Composer from "./Composer.svelte";
@@ -28,6 +29,7 @@ function renderComposer(
     documents?: DocumentStore;
     role?: WorldRole;
     selfId?: string;
+    searchDocuments?: AppContext["searchDocuments"];
   } = {},
 ) {
   const send = opts.send ?? vi.fn<(o: unknown) => Promise<void>>(async () => {});
@@ -36,6 +38,7 @@ function renderComposer(
     documents: opts.documents ?? new DocumentStore(),
     role: opts.role ?? "player",
     selfId: opts.selfId ?? "u-self",
+    searchDocuments: opts.searchDocuments,
   });
   render(Composer, { props: { channel: "general", audience: opts.audience ?? publicAudience, placeholderName: "Alice" }, context });
   return { send };
@@ -274,5 +277,71 @@ describe("Composer — speak-as-actor picker", () => {
       audience: publicAudience,
       actorOwner: { kind: "actor", actor_id: "act1" },
     });
+  });
+});
+
+describe("Composer — @doc link insertion", () => {
+  it("opens the doc picker, searches, and inserts a [[doc:id|label]] span at the cursor", async () => {
+    const hitDoc = { ...buildActorDoc("w1", "My Doc", { displayName: "My Doc", visual: { kind: "image", asset: "a1" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null }, "doc1") };
+    const searchDocuments: AppContext["searchDocuments"] = vi.fn((_q, _opts, onUpdate) => {
+      onUpdate([{ document: hitDoc, score: 1, snippet: "" }]);
+      return Promise.resolve({ unsubscribe: () => {} });
+    });
+    renderComposer({ searchDocuments });
+    await fireEvent.click(screen.getByTestId("doc-link-trigger"));
+    const search = screen.getByPlaceholderText("chat.composer.docSearchPlaceholder");
+    await fireEvent.input(search, { target: { value: "My" } });
+    await fireEvent.click(await screen.findByText("My Doc"));
+    const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
+    expect(textarea.value).toBe("[[doc:doc1|My Doc]]");
+    expect(screen.queryByPlaceholderText("chat.composer.docSearchPlaceholder")).toBeNull();
+  });
+
+  it("inserts a [[token:id|label]] span for a token-doc_type search hit", async () => {
+    const tokenDoc: WireDocument = { ...buildActorDoc("w1", "unused", { displayName: "x", visual: { kind: "image", asset: "a1" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null }, "tok1"), doc_type: "token", name: "Goblin" };
+    const searchDocuments: AppContext["searchDocuments"] = vi.fn((_q, _opts, onUpdate) => {
+      onUpdate([{ document: tokenDoc, score: 1, snippet: "" }]);
+      return Promise.resolve({ unsubscribe: () => {} });
+    });
+    renderComposer({ searchDocuments });
+    await fireEvent.click(screen.getByTestId("doc-link-trigger"));
+    await fireEvent.input(screen.getByPlaceholderText("chat.composer.docSearchPlaceholder"), { target: { value: "Gob" } });
+    await fireEvent.click(await screen.findByText("Goblin"));
+    const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
+    expect(textarea.value).toBe("[[token:tok1|Goblin]]");
+  });
+
+  it("a name that strips to empty falls back to the id prefix, never an empty label", async () => {
+    // A name made ENTIRELY of grammar-control characters ([, ], |) strips to "" -
+    // an empty label is RollError::MalformedDocLink server-side, rejecting the
+    // whole message. The inserted span must never carry one.
+    const hitDoc = { ...buildActorDoc("w1", "[[||]]", { displayName: "x", visual: { kind: "image", asset: "a1" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null }, "doc1") };
+    const searchDocuments: AppContext["searchDocuments"] = vi.fn((_q, _opts, onUpdate) => {
+      onUpdate([{ document: hitDoc, score: 1, snippet: "" }]);
+      return Promise.resolve({ unsubscribe: () => {} });
+    });
+    renderComposer({ searchDocuments });
+    await fireEvent.click(screen.getByTestId("doc-link-trigger"));
+    await fireEvent.input(screen.getByPlaceholderText("chat.composer.docSearchPlaceholder"), { target: { value: "x" } });
+    await fireEvent.click(await screen.findByText("[[||]]"));
+    const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
+    expect(textarea.value).toBe("[[doc:doc1|doc1]]");
+  });
+
+  it("a name containing an unbalanced [ does not desync scan_body's bracket-depth tracking", async () => {
+    // An unstripped `[` would increment scan_body's nesting depth without a
+    // matching close, causing the span's OWN closing ]] to be silently consumed
+    // as an ordinary depth-decrement instead of recognized as the terminator.
+    const hitDoc = { ...buildActorDoc("w1", "Foo [Bar", { displayName: "x", visual: { kind: "image", asset: "a1" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null }, "doc1") };
+    const searchDocuments: AppContext["searchDocuments"] = vi.fn((_q, _opts, onUpdate) => {
+      onUpdate([{ document: hitDoc, score: 1, snippet: "" }]);
+      return Promise.resolve({ unsubscribe: () => {} });
+    });
+    renderComposer({ searchDocuments });
+    await fireEvent.click(screen.getByTestId("doc-link-trigger"));
+    await fireEvent.input(screen.getByPlaceholderText("chat.composer.docSearchPlaceholder"), { target: { value: "Foo" } });
+    await fireEvent.click(await screen.findByText("Foo [Bar"));
+    const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
+    expect(textarea.value).toBe("[[doc:doc1|Foo Bar]]");
   });
 });
