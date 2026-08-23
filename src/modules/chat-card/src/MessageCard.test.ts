@@ -241,6 +241,84 @@ describe("MessageCard — link preview", () => {
     expect(container.querySelector(".seg-text")?.textContent).toBe("look at this");
     expect(container.querySelector(".link-preview-title")?.textContent).toBe("Example");
   });
+
+  it("renders an <img> whose src starts with /api/assets/ when image_asset_id is present", () => {
+    const doc = msgDoc("m1", baseSystem({
+      content: [
+        {
+          kind: "link_preview",
+          url: "https://example.com/article",
+          title: "An Article",
+          description: "A short summary.",
+          image_asset_id: "00000000-0000-0000-0000-000000000001",
+        },
+      ],
+    }));
+    const { container } = render(MessageCard, {
+      props: { message: doc, showChannel: false },
+      context: setAppContextForTest({ documents: storeWith(doc) }),
+    });
+    const img = container.querySelector("img.link-preview-thumb");
+    expect(img).not.toBeNull();
+    expect(img?.getAttribute("src")).toMatch(/^\/api\/assets\//);
+  });
+
+  it("renders no <img> when image_asset_id is absent", () => {
+    const doc = msgDoc("m1", baseSystem({
+      content: [
+        { kind: "link_preview", url: "https://example.com/article", title: "An Article", description: "A short summary." },
+      ],
+    }));
+    const { container } = render(MessageCard, {
+      props: { message: doc, showChannel: false },
+      context: setAppContextForTest({ documents: storeWith(doc) }),
+    });
+    expect(container.querySelector("img")).toBeNull();
+  });
+});
+
+describe("MessageCard — oembed", () => {
+  it("renders the provider name, title, and the open-on link text", () => {
+    const doc = msgDoc("m1", baseSystem({
+      content: [
+        {
+          kind: "oembed",
+          url: "https://www.youtube.com/watch?v=abc",
+          provider_name: "YouTube",
+          title: "A Video",
+          author_name: "Someone",
+        },
+      ],
+    }));
+    const { container } = render(MessageCard, {
+      props: { message: doc, showChannel: false },
+      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT }),
+    });
+    expect(container.querySelector(".oembed-provider")?.textContent).toBe("YouTube");
+    expect(container.querySelector(".oembed-title")?.textContent).toBe("A Video");
+    expect(container.querySelector(".oembed-author")?.textContent).toBe("Someone");
+    expect(container.querySelector(".oembed-open")?.textContent).toBe("chat.oembedOpenOn");
+  });
+
+  it("renders an <img> whose src starts with /api/assets/ when thumbnail_asset_id is present", () => {
+    const doc = msgDoc("m1", baseSystem({
+      content: [
+        {
+          kind: "oembed",
+          url: "https://www.youtube.com/watch?v=abc",
+          provider_name: "YouTube",
+          thumbnail_asset_id: "00000000-0000-0000-0000-000000000002",
+        },
+      ],
+    }));
+    const { container } = render(MessageCard, {
+      props: { message: doc, showChannel: false },
+      context: setAppContextForTest({ documents: storeWith(doc) }),
+    });
+    const img = container.querySelector("img.oembed-thumb");
+    expect(img).not.toBeNull();
+    expect(img?.getAttribute("src")).toMatch(/^\/api\/assets\//);
+  });
 });
 
 describe("MessageCard — header", () => {

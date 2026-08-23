@@ -1539,10 +1539,9 @@ export const ACKNOWLEDGED_NON_SYMBOLS = new Set([
   "Array.sort",
   // URL grammar terms from the standard the SSRF guard parses against.
   "https", "userinfo",
-  // A request API named beside the crate this repo actually uses for the same job, and the
-  // filesystem RENAME syscall, whose backticks are what mark the one atomic operation apart from
-  // the same sentence's ordinary use of the word.
-  "fetch", "rename",
+  // The filesystem RENAME syscall, whose backticks mark the one atomic operation apart from the
+  // same sentence's ordinary use of the word.
+  "rename",
   // A filesystem copy command named while explaining what this repo's code does NOT shell out to.
   "xcopy", "robocopy",
   // A transitive dependency this repo never names in its own manifest, and two cargo FEATURES of

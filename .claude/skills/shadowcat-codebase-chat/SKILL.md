@@ -23,7 +23,10 @@ errors surface as whispered `MessageKind::System` notices (`build_roll_error_not
 edit-immutable, attribution is ownership-validated at ingest, and the card/composer render/author
 it all. SSRF-guarded link previews are the server's ONLY outbound HTTP, behind a validating DNS
 resolver + IP blocklist, fetched synchronously at ingest, stored as a `Segment::LinkPreview`, and
-rendered client-side (never fetched by the client).
+rendered client-side (never fetched by the client). A `chat::post_publish` background pipeline
+runs AFTER the synchronous send/edit already returned: it resolves a preview's `og:image` and
+allowlisted-provider oEmbed embeds (`chat::oembed`) into asset-ified thumbnails, republishing the
+message via the same `WriteOrigin::ServerMessageRevision` chokepoint edit/delete/recalc use.
 
 ## Link previews — `chat::link_preview` + `chat::preview_cache`
 
@@ -53,16 +56,24 @@ guarded, per `validate_url` below).
 - **Ingest (`chat::link_preview::enrich`, called from `handle_send_message`/`handle_edit_message`):**
   extracts hrefs from GENUINE `<a>` tags in the sanitized `Segment::Html` runs (NOT a raw
   `href=` substring scan — inert body text `see href="http://x"` would otherwise trigger a real
-  outbound fetch), dedups, caps `MAX_PREVIEWS_PER_MESSAGE=3`, fetches
+  outbound fetch), dedups, caps `MAX_PREVIEWS_PER_MESSAGE=3`, resolves each candidate via
+  `cached_or_fetch` (checks the in-memory `LinkPreviewCache` tier first, then the persisted
+  `link_preview_cache` row on a miss, before ever attempting a network fetch), fetches remaining
   cache-misses concurrently (`JoinSet`), appends one `Segment::LinkPreview` per success at the
   END. SYNCHRONOUS before publish (no spawned task/post-hoc revision). Gated on
   `ChatContentPolicy::previews_enabled()` (= `hyperlinks && link_previews.unwrap_or(true)` —
   default-ON only when hyperlinks on) AND an EXPLICIT `kind != MessageKind::Roll` guard. Holds NO
   lock across the fetch await (only the sending connection's own loop blocks, bounded by the 5s
-  deadline). Every failure degrades silently (no card, cached negative).
+  deadline). Every failure degrades silently (no card, cached negative). `enrich`'s own signature
+  takes an `EnrichDeps<'a> { repo, fetch: LinkPreviewDeps<'a> }` bundle rather than a flat
+  parameter list — the repository handle a persisted-cache lookup needs, grouped in with the
+  existing `client`/`cache`/`rate` fetch bundle to stay under clippy's too-many-arguments limit,
+  same restructuring pattern as `PostPublishDeps`/`data::asset::NewAssetBytes`.
 - **`LinkPreviewCache`** (in-memory, on `WsState`): URL→`(Instant, Option<LinkPreview>)`,
   positive/negative TTLs, evict-oldest past a cap; `PreviewRateLimiter` (per-user distinct-URL
-  fetch budget, only on cache MISS). Both mirror `message_rate`'s `WsState` Arc-field pattern.
+  fetch budget, only on cache MISS). Both mirror `message_rate`'s `WsState` Arc-field pattern. This
+  is the FIRST (request-lifetime) tier of a two-tier cache — see `link_preview_cache` below for
+  the persisted second tier the post-publish image pipeline reads/writes.
 - **`ChatContentPolicy.link_previews: Option<bool>`** — tri-state (absent/`None` = default-on;
   `Some(false)`/`Some(true)` = GM override), authored in `module-game-settings`' new chat-settings
   section. Singleton `chat-settings`/`dice-settings` resolution is deterministic-by-lowest-UUID
@@ -70,7 +81,64 @@ guarded, per `validate_url` below).
 - **Client:** the `chat-docs` module mirrors `link_preview` (fail-closed refine); the card renders a
   bordered escaped-text card (title/description/host), the whole card an `<a rel="noopener
   noreferrer nofollow">` whose href is gated by a `safeHref` scheme re-check (http/https only —
-  a stored non-http url renders non-clickable, defense-in-depth). No `<img>`, no `{@html}`.
+  a stored non-http url renders non-clickable, defense-in-depth). An `<img>` renders ONLY when
+  `image_asset_id` is present, its source always resolved via `ctx.assets.url(uuid)` — this
+  server's own asset endpoint, never the raw external image URL (which is never stored on the
+  segment at all).
+
+### Post-publish enrichment — `chat::post_publish` + `chat::oembed`
+
+The image/embed half of link previews, deliberately split from the synchronous scrape above:
+fetching and asset-ifying an image is unbounded-enough latency that it must never sit on the
+`SendMessage`/`EditMessage` request path. `link_preview::enrich` queues zero-to-many
+`PendingEnrichment` jobs (`PreviewImage{preview_url, image_url}` when its synchronous scrape found
+an `og:image` candidate; `OEmbed{post_url, provider}` when `chat::oembed::match_provider` matches
+an allowlisted host) for the caller to run via `post_publish::run_pending_enrichments` AFTER
+`Room::publish`'s synchronous send/edit already returned.
+
+- **`run_pending_enrichments(deps: PostPublishDeps, message_id, world_id, jobs)`** — resolves every
+  job concurrently (`JoinSet`), then issues AT MOST ONE `Operation::Update` on `/engine`
+  re-publishing whichever fields resolved, via `publish_resolved`. Re-reads the CURRENT stored
+  document (OCC pre-image) immediately before publishing — a message edited, deleted, or
+  concurrently modified by the time the fetches complete is not clobbered; a tombstoned message is
+  a silent no-op. `PostPublishDeps` groups `room`/`repo`/`client`/`assets_root`/`write_barrier` —
+  the same `AppState.write_barrier` `http::assets::upload`/`replace`/`delete` hold, since this is
+  the first asset-commit path reachable from outside a direct HTTP request.
+- **`resolve_preview_image`** — checks the persisted `link_preview_cache` row for the preview's
+  URL FIRST and reuses an existing `image_asset_id` verbatim on a hit (never re-fetching/
+  re-creating an asset for a link any message already imaged); on a miss, fetches the image via
+  `fetch_image_bytes` (the same SSRF-guarded client `fetch_preview` uses) and asset-ifies it via
+  `data::asset::create_asset_from_bytes` with `created_by: None` — see `shadowcat-codebase-assets`
+  for that shared commit path and the `created_by: None` convention.
+- **`resolve_oembed`/`resolve_thumbnail_asset`** — queries `provider.endpoint(post_url)` (the
+  allowlisted host, `post_url` only ever contributes the `url` query VALUE — never the endpoint
+  host) via `fetch_json_bytes`, deserializes into `OEmbedResponse` (structurally incapable of
+  carrying a provider's `html` field — no such field exists on the type, so ordinary serde
+  unknown-field handling drops it before it can ever reach `OEmbedSegment`), then resolves an
+  optional thumbnail through the same cache-then-fetch-then-`create_asset_from_bytes` path
+  `resolve_preview_image` uses (keyed by the thumbnail's own URL). Builds a brand-new
+  `Segment::OEmbed` appended to `content` — never patches an existing segment, and never appended
+  alongside a `Segment::LinkPreview` for the same URL (`link_preview::enrich`'s oEmbed-vs-generic
+  routing is mutually exclusive per URL).
+- **`chat::oembed`** — allowlisted provider HOSTS only (`OEmbedProvider::YouTube`/`Vimeo`), NEVER
+  autodiscovery (`<link rel="alternate" type="application/json+oembed">` against an arbitrary
+  posted URL would reintroduce the arbitrary-host-fetch risk this feature exists to avoid).
+  `match_provider(raw_url)` is a synchronous, zero-network host check — the entire SSRF mitigation
+  for oEmbed; a URL failing it falls through to the generic `LinkPreview` scrape unchanged.
+  `OEmbedSegment{url, provider_name, title, author_name, thumbnail_asset_id}` has NO `html` field
+  by construction, mirroring `OEmbedResponse`'s own structural guarantee one layer earlier —
+  `provider_name` is always THIS SERVER'S fixed display name (`OEmbedProvider::name`), never a
+  provider's self-reported `provider_name` JSON field.
+- **`link_preview_cache` (persisted, SQLite)** — the second, durable tier beneath the in-memory
+  `LinkPreviewCache`: `Repository::get_link_preview_cache`/`upsert_link_preview_cache`/
+  `set_link_preview_cache_image`, keyed by URL, storing `image_asset_id` once a background job
+  resolves one. `resolve_preview_image`/`resolve_thumbnail_asset` both check this table before any
+  network fetch, so a link imaged once by any message is never re-fetched or re-asset-ified for a
+  later message reusing the same URL.
+- **`Segment::LinkPreview.image_asset_id: Option<Uuid>`** — `#[serde(default)]` (every
+  `LinkPreview` segment persisted before this field existed has no such key on disk), `None` when
+  `enrich`'s synchronous scrape first appends the segment, set later ONLY via a
+  `WriteOrigin::ServerMessageRevision` republish (`run_pending_enrichments`).
 
 ## Dice wire — `chat::rolls` + the ingest roll stage
 
@@ -376,9 +444,12 @@ with zero message-specific plumbing in any of those subsystems.
 - `data::sqlite::apply_intent` — takes a `WriteOrigin` (`Client` |
   `ServerMessageRevision`, from `data::command`) parameter, threaded from
   `Room::publish` through ~60+ call sites (every existing caller passes `WriteOrigin::Client`;
-  ONLY `handle_edit_message`/`handle_delete_message`/`handle_recalc_roll` ever construct
-  `WriteOrigin::ServerMessageRevision`, and only after their own owner-or-GM check has already
-  passed). FOUR coupled chokepoints:
+  ONLY `handle_edit_message`/`handle_delete_message`/`handle_recalc_roll`/
+  `post_publish::run_pending_enrichments` ever construct `WriteOrigin::ServerMessageRevision`, and
+  only after either their own owner-or-GM check has already passed (edit/delete/recalc) or, for
+  `run_pending_enrichments`, after an OCC re-read against the current stored document (see the
+  post-publish section above — this producer runs unattended, well after the original sender's
+  own authorization already gated the message's existence). FOUR coupled chokepoints:
   1. **Create-gate exemption** (`apply_intent::is_baseline_message = doc.doc_type == MESSAGE_DOC_TYPE &&
      ctx.world_role == WorldRole::Player && doc.owner == Some(ctx.user_id)`) — lets a Player
      create a `message` doc even though `core:create` is otherwise GM-only by world default.
@@ -498,7 +569,7 @@ with zero message-specific plumbing in any of those subsystems.
 
 ## Gotchas
 
-- **Docs-ratchet is live on the whole `chat/` tree:** all eight files carry
+- **Docs-ratchet is live on the whole `chat/` tree:** all ten files carry
   `#![deny(missing_docs)]` + `#![deny(clippy::missing_docs_in_private_items)]` — a new
   undocumented item fails the 3-OS CI clippy step, and doc comments on the ts-rs types
   (`ActorOwnerRef`, `Audience`) flow into the generated bindings (regenerate + commit with any
@@ -639,9 +710,10 @@ Three independently replaceable modules (UI-is-modules; swap any one without the
 ## Pointers
 
 - **Generated API** — `/api/rust/shadowcat/chat/` (rustdoc, private items included — the
-  `rolls`/`link_preview`/`preview_cache`/`sanitize`/`shortcodes`/`settings`/`commands` submodule
-  tree), `/api/ts/modules/_shadowcat_module-chat.html`, `_shadowcat_module-chat-composer.html`,
-  `_shadowcat_module-chat-card.html` (TypeDoc). Produce with `pnpm build:all`.
+  `rolls`/`link_preview`/`preview_cache`/`post_publish`/`oembed`/`sanitize`/`shortcodes`/
+  `settings`/`commands` submodule tree), `/api/ts/modules/_shadowcat_module-chat.html`,
+  `_shadowcat_module-chat-composer.html`, `_shadowcat_module-chat-card.html` (TypeDoc). Produce
+  with `pnpm build:all`.
 - The sanitizer's only new production dependencies are `ammonia` (HTML cleaning) and
   `pulldown-cmark` (Markdown rendering).
 - `shadowcat-codebase-documents-permissions` — the `Document`/`PermissionSet`/redaction/search

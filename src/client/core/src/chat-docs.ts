@@ -322,14 +322,18 @@ export function numericBounds(kind: WireDieKind): {
   return "Numeric" in kind ? kind.Numeric : null;
 }
 
-/** One piece of a message's sanitized content model — one of the five known segment
+/** One piece of a message's sanitized content model — one of the six known segment
  * kinds. Mirrors `chat::Segment`. `html.sanitized_html` is innerHTML-safe ONLY because
  * the server's `chat::sanitize` (ammonia) produced it — no client code may construct one.
  * `roll_embed.outcome` is a completed, immutable roll's full deterministic result;
  * `roll_button` renders an unexecuted formula the user can click to send a fresh `/roll`.
  * `link_preview` is a server-fetched, SSRF-guarded preview of a link in the message; the
- * client renders ONLY the stored `url`/`title`/`description` strings (escaped, never
- * innerHTML) and never fetches `url` itself. */
+ * client renders the stored `url`/`title`/`description` strings (escaped, never
+ * innerHTML) and never fetches `url` itself — the optional `image_asset_id` is a
+ * post-publish-resolved thumbnail, rendered via `ctx.assets.url(uuid)` (this server's own
+ * asset endpoint), never a raw external URL. `oembed` is a provider-native embed from an
+ * allowlisted host, structured fields only — the provider's own `html` is never sent to
+ * the client. */
 export type ChatSegment =
   | {
       /** Literal text; rendered as a DOM text node by the client (never innerHTML),
@@ -386,6 +390,30 @@ export type ChatSegment =
       title: string;
       /** Server-extracted description (may be empty). */
       description: string;
+      /** The asset-ified `og:image`, once the post-publish background
+       * pipeline has resolved one. Absent/`null` until then; the client
+       * resolves it via `ctx.assets.url(uuid)` — the server's OWN
+       * `/api/assets/{uuid}` endpoint, never a raw external URL (which is
+       * never stored on this segment in the first place). */
+      image_asset_id?: string | null;
+    }
+  | {
+      /** A provider-native embed from an allowlisted host (YouTube, Vimeo).
+       * STRUCTURED FIELDS ONLY — the provider's `html` field is never sent
+       * to the client at all (the server's `OEmbedSegment` has no such
+       * field to serialize). The client renders a first-party-templated
+       * card; the provider's own markup is never rendered. */
+      kind: "oembed";
+      /** The posted URL — the card's click-through target. */
+      url: string;
+      /** The server's own fixed provider display name. */
+      provider_name: string;
+      /** Provider-supplied title, if any. */
+      title?: string | null;
+      /** Provider-supplied author/channel name, if any. */
+      author_name?: string | null;
+      /** The asset-ified thumbnail, once resolved. Absent/`null` until then. */
+      thumbnail_asset_id?: string | null;
     };
 
 // Unannotated impl const — see `dieRecordSchemaImpl`'s note above.
@@ -404,7 +432,21 @@ export const chatSegmentSchemaImpl = z.discriminatedUnion("kind", [
     recalc_history: z.array(RecalcHistoryEntrySchema).nullish(),
   }),
   z.object({ kind: z.literal("roll_button"), formula: z.string(), label: z.string().nullish() }),
-  z.object({ kind: z.literal("link_preview"), url: z.string(), title: z.string(), description: z.string() }),
+  z.object({
+    kind: z.literal("link_preview"),
+    url: z.string(),
+    title: z.string(),
+    description: z.string(),
+    image_asset_id: z.string().nullish(),
+  }),
+  z.object({
+    kind: z.literal("oembed"),
+    url: z.string(),
+    provider_name: z.string(),
+    title: z.string().nullish(),
+    author_name: z.string().nullish(),
+    thumbnail_asset_id: z.string().nullish(),
+  }),
 ]);
 /** Validator for a `ChatSegment`. Input type is widened to `unknown` because the
  * `roll_embed` arm's `outcome: RollOutcomeSchema` inherits `RollOutcomeSchema`'s
@@ -413,7 +455,7 @@ export const ChatSegmentSchema: z.ZodType<ChatSegment, z.ZodTypeDef, unknown> = 
 /** Forward-compat: a segment kind this client doesn't know (e.g. a future server's
  * DocLink) parses as opaque and renders as nothing — the message still shows.
  * INVARIANT: refuses every KNOWN kind — without this, a malformed
- * text/html/roll_embed/roll_button/link_preview segment (missing/wrong-typed
+ * text/html/roll_embed/roll_button/link_preview/oembed segment (missing/wrong-typed
  * payload) would be rescued by this fallback and then misclassified as
  * trustworthy by isKnownSegment, breaking fail-closed. */
 const UnknownSegmentSchema = z
@@ -425,7 +467,8 @@ const UnknownSegmentSchema = z
       s.kind !== "html" &&
       s.kind !== "roll_embed" &&
       s.kind !== "roll_button" &&
-      s.kind !== "link_preview",
+      s.kind !== "link_preview" &&
+      s.kind !== "oembed",
   );
 /** The inferred TS shape of `UnknownSegmentSchema` — a forward-compat, not-yet-known segment kind. */
 export type UnknownSegment = z.infer<typeof UnknownSegmentSchema>;
@@ -436,7 +479,7 @@ const SegmentListSchema = z.array(z.union([ChatSegmentSchema, UnknownSegmentSche
  * every known `kind` string, so a malformed known-kind segment fails the
  * whole message rather than being misclassified as trustworthy here.
  * @param s The parsed segment (known or opaque forward-compat).
- * @returns `true` if `s.kind` is one of `text`/`html`/`roll_embed`/`roll_button`/`link_preview`.
+ * @returns `true` if `s.kind` is one of `text`/`html`/`roll_embed`/`roll_button`/`link_preview`/`oembed`.
  * @example
  * ```ts
  * import { isKnownSegment } from "@shadowcat/core";
@@ -450,7 +493,8 @@ export function isKnownSegment(s: ChatSegment | UnknownSegment): s is ChatSegmen
     s.kind === "html" ||
     s.kind === "roll_embed" ||
     s.kind === "roll_button" ||
-    s.kind === "link_preview"
+    s.kind === "link_preview" ||
+    s.kind === "oembed"
   );
 }
 

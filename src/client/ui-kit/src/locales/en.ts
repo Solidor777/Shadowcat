@@ -259,6 +259,7 @@ export const en: Messages = {
   "chat.roll.replace": "Replace this die's face",
   "chat.roll.replaceInput": "Replacement face value for die {index}",
   "chat.roll.recalculated": "Recalculated",
+  "chat.oembedOpenOn": "Open on {provider}",
   "notifications.dismiss": "Dismiss",
   "panels.minimize": "Minimize",
   "panels.restore": "Restore",

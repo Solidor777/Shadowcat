@@ -289,6 +289,92 @@ describe("link_preview segments", () => {
       { kind: "link_preview", url: "https://example.com/a", title: "Example", description: "A page." },
     ]);
   });
+  test("parses a link_preview segment with image_asset_id", () => {
+    const eng = parseMessageEngine(msgDoc({
+      ...base,
+      content: [
+        {
+          kind: "link_preview",
+          url: "https://example.com/a",
+          title: "Example",
+          description: "A page.",
+          image_asset_id: "00000000-0000-0000-0000-000000000001",
+        },
+      ],
+    }));
+    expect(eng).not.toBeNull();
+    expect(eng!.content).toEqual([
+      {
+        kind: "link_preview",
+        url: "https://example.com/a",
+        title: "Example",
+        description: "A page.",
+        image_asset_id: "00000000-0000-0000-0000-000000000001",
+      },
+    ]);
+  });
+  test("parses a link_preview segment without image_asset_id (absent field)", () => {
+    const eng = parseMessageEngine(msgDoc({
+      ...base,
+      content: [{ kind: "link_preview", url: "https://example.com/a", title: "Example", description: "A page." }],
+    }));
+    expect(eng).not.toBeNull();
+    expect(eng!.content).toEqual([
+      { kind: "link_preview", url: "https://example.com/a", title: "Example", description: "A page." },
+    ]);
+  });
+});
+
+describe("oembed segments", () => {
+  test("parses an oembed segment", () => {
+    const eng = parseMessageEngine(msgDoc({
+      ...base,
+      content: [
+        {
+          kind: "oembed",
+          url: "https://www.youtube.com/watch?v=abc",
+          provider_name: "YouTube",
+          title: "A Video",
+          author_name: "Someone",
+          thumbnail_asset_id: "00000000-0000-0000-0000-000000000002",
+        },
+      ],
+    }));
+    expect(eng).not.toBeNull();
+    expect(eng!.content).toEqual([
+      {
+        kind: "oembed",
+        url: "https://www.youtube.com/watch?v=abc",
+        provider_name: "YouTube",
+        title: "A Video",
+        author_name: "Someone",
+        thumbnail_asset_id: "00000000-0000-0000-0000-000000000002",
+      },
+    ]);
+  });
+  test("fail-closed: oembed missing provider_name fails the whole message parse", () => {
+    expect(parseMessageEngine(msgDoc({
+      ...base,
+      content: [{ kind: "oembed", url: "https://www.youtube.com/watch?v=abc" }],
+    }))).toBeNull();
+  });
+  test("a stray html key alongside legitimate oembed fields is stripped from the parsed value", () => {
+    const eng = parseMessageEngine(msgDoc({
+      ...base,
+      content: [
+        {
+          kind: "oembed",
+          url: "https://www.youtube.com/watch?v=abc",
+          provider_name: "YouTube",
+          html: "<script>alert(1)</script>",
+        },
+      ],
+    }));
+    expect(eng).not.toBeNull();
+    const seg = eng!.content[0] as Record<string, unknown>;
+    expect(seg.kind).toBe("oembed");
+    expect(seg).not.toHaveProperty("html");
+  });
 });
 
 test("buildChannelRegistryDoc builds a world-scoped parentless singleton map doc", () => {

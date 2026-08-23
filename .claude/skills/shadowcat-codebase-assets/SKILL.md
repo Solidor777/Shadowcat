@@ -17,7 +17,8 @@ and serves uploads unconverted (the conversion pipeline is deferred).
 ## Key files & seams
 
 - `data::asset` — `Asset { version, … }`; `version` is bumped on every replace and
-  backs the ETag + the resync source of truth.
+  backs the ETag + the resync source of truth. `commit_staged_asset`/`create_asset_from_bytes` are
+  the shared asset-commit path (see the Hard Invariants entry below).
 - `http::assets`:
   - `upload(...)` — streams to disk; `UploadRateLimiter::{check,refund}` enforces tiered per-minute
     limits (configured per role); `detect_image_type`. **The non-GM tier is unreachable from this
@@ -74,6 +75,26 @@ and serves uploads unconverted (the conversion pipeline is deferred).
   `tokio::sync::RwLock`'s read side open indefinitely. `POST /api/admin/backup` holds the write
   side across its `VACUUM INTO` + assets copy, so no asset write's row-commit+file-op pair can
   interleave with an in-server backup snapshot (`shadowcat-codebase-server-ops`).
+- **`data::asset::create_asset_from_bytes`/`commit_staged_asset` are the shared commit path**
+  both `http::assets::upload` and the chat link-preview/oEmbed background pipeline
+  (`chat::post_publish`, see `shadowcat-codebase-chat`'s post-publish section) use.
+  `commit_staged_asset` is the common file-first-then-row tail (rename the already-staged temp
+  file into place, THEN insert the metadata row — same ordering `upload` follows, see the
+  row/file-ordering entry above); `create_asset_from_bytes` wraps it for a caller with an
+  already-in-memory byte buffer (the small, capped background image fetch), staging its own temp
+  file before calling `commit_staged_asset`, while `upload`'s own arbitrarily-large GM uploads
+  stream straight to disk via `store_streamed` and call `commit_staged_asset` directly, never
+  buffering the whole body. Both callers' resulting `Asset` rows are committed through
+  byte-for-byte the same ordering logic. **`created_by: None`** is the convention for a
+  server-authored asset — `Asset.created_by` carries a live `REFERENCES users(id)` foreign key and
+  no real user account backs a server-fetched image, so `chat::post_publish`'s
+  `resolve_preview_image`/`resolve_thumbnail_asset` both pass `created_by: None` through
+  `NewAssetBytes`, the same generalization `Asset.created_by`'s own doc comment already covers for
+  a deleted uploader account. **`write_barrier` now has a second reachable caller class**: this
+  background pipeline holds the same read permit around its own asset commit that `upload`/
+  `replace`/`delete` hold around theirs — the first asset-commit path reachable from outside a
+  direct HTTP request, and it must join the same exclusion or an in-server backup's file-copy
+  could race a half-committed asset.
 - **ETag == `"{id}-{version}"`**; `version` is the single monotonic cache key. Stable UUID identity
   means a replace keeps the id and only bumps the version, so links survive.
 - **Upload limits are tiered + configurable** (GM ≈ 2× regular); uploads stream to disk, not buffered.
