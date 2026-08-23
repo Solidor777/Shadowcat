@@ -37,6 +37,7 @@ use uuid::Uuid;
 
 mod commands;
 mod link_preview;
+mod oembed;
 mod post_publish;
 mod preview_cache;
 mod rolls;
@@ -47,6 +48,9 @@ pub use commands::{parse_command, ParsedCommand};
 pub use link_preview::{
     build_client as build_link_preview_client, enrich as enrich_link_previews, fetch_preview,
     LinkPreview, LinkPreviewDeps, PreviewError, MAX_PREVIEWS_PER_MESSAGE,
+};
+pub use oembed::{
+    match_provider as match_oembed_provider, OEmbedProvider, OEmbedResponse, OEmbedSegment,
 };
 pub use post_publish::{run_pending_enrichments, PendingEnrichment, PostPublishDeps};
 pub use preview_cache::{
@@ -294,6 +298,14 @@ pub enum Segment {
         #[serde(default)]
         image_asset_id: Option<Uuid>,
     },
+    /// A provider-native embed from an ALLOWLISTED host (see `chat::oembed`'s
+    /// module doc — no autodiscovery ever runs). STRUCTURED FIELDS ONLY: the
+    /// provider's own `html` field never reaches this segment (see
+    /// `OEmbedSegment`'s doc for the structural guarantee). A message whose
+    /// posted URL matches the oEmbed allowlist gets exactly one `OEmbed`
+    /// segment for that URL and no accompanying generic `LinkPreview` — the
+    /// two are mutually exclusive per URL (`link_preview::enrich`).
+    OEmbed(OEmbedSegment),
     // Reserved for a future `DocLink` segment variant.
 }
 
@@ -4922,5 +4934,84 @@ mod link_preview_ingest_tests {
         let sys: MessageEngine = serde_json::from_value(j).unwrap();
         assert_eq!(sys.kind, MessageKind::Normal);
         assert_eq!(sys.content, vec![Segment::Text { text: "hi".into() }]);
+    }
+
+    /// A URL matching the oEmbed allowlist is routed to a
+    /// `PendingEnrichment::OEmbed` job and never becomes a generic
+    /// `Segment::LinkPreview`. The endpoint host itself
+    /// (`www.youtube.com`) is a fixed real host, so this exercises
+    /// `match_provider`/`PendingEnrichment` construction only -- no live
+    /// fetch happens on the synchronous send path either way.
+    #[tokio::test]
+    async fn oembed_allowlisted_url_produces_oembed_segment_not_link_preview() {
+        let f = Fixture::new(hyperlinks_on()).await;
+        let (cmd, pending) = f
+            .send_full(
+                "check out [video](https://www.youtube.com/watch?v=abc123)",
+                1,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            pending.len(),
+            1,
+            "an allowlisted URL must queue exactly one PendingEnrichment"
+        );
+        assert!(
+            matches!(pending[0], PendingEnrichment::OEmbed { .. }),
+            "expected a PendingEnrichment::OEmbed, got {:?}",
+            pending[0]
+        );
+        let sys = f.stored_engine(&cmd).await;
+        assert!(
+            !sys.content
+                .iter()
+                .any(|s| matches!(s, Segment::LinkPreview { .. })),
+            "an allowlisted oEmbed URL must never also produce a generic LinkPreview: {:?}",
+            sys.content
+        );
+    }
+
+    /// A message carrying BOTH an allowlisted oEmbed URL and a
+    /// non-allowlisted URL routes each independently: one
+    /// `PendingEnrichment::OEmbed` for the allowlisted URL, and the
+    /// ordinary synchronous generic-preview flow (a trailing
+    /// `Segment::LinkPreview`) for the other, unaffected.
+    #[tokio::test]
+    async fn oembed_and_generic_preview_urls_in_one_message_both_queue_correctly() {
+        let addr = spawn_stub(Router::new().route(
+            "/",
+            get(|| async { axum::response::Html("<title>Generic</title>") }),
+        ))
+        .await;
+        let f = Fixture::new(hyperlinks_on()).await;
+        let (cmd, pending) = f
+            .send_full(
+                &format!(
+                    "[video](https://www.youtube.com/watch?v=abc123) and [page](http://stub.test:{addr}/)"
+                ),
+                1,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            pending.len(),
+            1,
+            "only the allowlisted URL queues a PendingEnrichment (the generic preview fetch is synchronous)"
+        );
+        assert!(matches!(pending[0], PendingEnrichment::OEmbed { .. }));
+        let sys = f.stored_engine(&cmd).await;
+        let generic_preview = sys.content.iter().find_map(|s| match s {
+            Segment::LinkPreview { url, title, .. } => Some((url.clone(), title.clone())),
+            _ => None,
+        });
+        assert!(
+            generic_preview.is_some(),
+            "the non-allowlisted URL must still produce its own generic LinkPreview: {:?}",
+            sys.content
+        );
+        let (url, title) = generic_preview.unwrap();
+        assert!(url.contains(&addr.to_string()));
+        assert_eq!(title, "Generic");
     }
 }

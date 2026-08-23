@@ -14,7 +14,8 @@ use std::time::Duration;
 
 use uuid::Uuid;
 
-use super::link_preview::fetch_image_bytes;
+use super::link_preview::{clean_text, fetch_image_bytes, fetch_json_bytes, MAX_TITLE_CHARS};
+use super::oembed::{OEmbedProvider, OEmbedResponse, OEmbedSegment};
 use super::{MessageEngine, Segment, MESSAGE_DOC_TYPE};
 use crate::data::asset::{create_asset_from_bytes, NewAssetBytes};
 use crate::data::command::{FieldChange, Operation, WriteOrigin};
@@ -40,9 +41,22 @@ pub enum PendingEnrichment {
         /// The extracted (not yet fetched) image URL.
         image_url: String,
     },
+    /// An allowlisted-host URL (see `chat::oembed`) matched during href
+    /// collection at `enrich` time -- queries `provider`'s oEmbed endpoint
+    /// and appends a brand-new `Segment::OEmbed`, never patching an
+    /// existing segment (unlike `PreviewImage`, no `Segment::LinkPreview`
+    /// was ever appended for this URL -- see `link_preview::enrich`'s
+    /// mutually-exclusive routing).
+    OEmbed {
+        /// The URL as posted in the message.
+        post_url: String,
+        /// The allowlisted provider this URL matched.
+        provider: OEmbedProvider,
+    },
 }
 
 /// What one resolved `PendingEnrichment` does to a message's stored `content`.
+#[derive(Debug)]
 enum ResolvedEnrichment {
     /// Patch an existing `Segment::LinkPreview` (matched by `url`) with a
     /// resolved image asset id.
@@ -52,6 +66,9 @@ enum ResolvedEnrichment {
         /// The resolved asset id.
         asset_id: Uuid,
     },
+    /// Append a brand-new `Segment::OEmbed` to `content` -- never patches an
+    /// existing segment (see `PendingEnrichment::OEmbed`'s doc).
+    NewOEmbedSegment(Segment),
 }
 
 /// Grouped dependencies for `run_pending_enrichments` -- grouped instead of
@@ -116,6 +133,24 @@ pub async fn run_pending_enrichments(
             resolved.push(r);
         }
     }
+    publish_resolved(room, repo, message_id, world_id, resolved).await;
+}
+
+/// Applies every already-resolved `ResolvedEnrichment` to `message_id`'s
+/// stored `content` and issues AT MOST ONE `WriteOrigin::ServerMessageRevision`
+/// `Operation::Update` re-publishing the result -- factored out of
+/// `run_pending_enrichments` so a test can exercise this OCC-read/patch/
+/// publish tail directly against a `resolved` list built from constituent
+/// pieces (`fetch_json_bytes`/`resolve_thumbnail_asset`), without needing a
+/// live fetch against `OEmbedProvider::endpoint`'s fixed real provider host.
+/// A no-op on an empty `resolved` list.
+async fn publish_resolved(
+    room: Arc<Room>,
+    repo: Arc<SqliteRepository>,
+    message_id: Uuid,
+    world_id: Uuid,
+    resolved: Vec<ResolvedEnrichment>,
+) {
     if resolved.is_empty() {
         return;
     }
@@ -154,6 +189,10 @@ pub async fn run_pending_enrichments(
                         }
                     }
                 }
+            }
+            ResolvedEnrichment::NewOEmbedSegment(segment) => {
+                sys.content.push(segment);
+                changed = true;
             }
         }
     }
@@ -228,6 +267,18 @@ async fn resolve_job(
             )
             .await
         }
+        PendingEnrichment::OEmbed { post_url, provider } => {
+            resolve_oembed(
+                repo,
+                client,
+                assets_root,
+                write_barrier,
+                world_id,
+                post_url,
+                provider,
+            )
+            .await
+        }
     }
 }
 
@@ -290,6 +341,117 @@ async fn resolve_preview_image(
         preview_url,
         asset_id: asset.id,
     })
+}
+
+/// Queries `provider`'s oEmbed endpoint for `post_url` (see
+/// `OEmbedProvider::endpoint` -- the endpoint HOST is always the fixed
+/// allowlisted host, `post_url` only ever contributes the `url` query
+/// value), deserializes the response into `OEmbedResponse` (structurally
+/// incapable of carrying a provider's `html` field through -- see that
+/// type's doc), resolves a thumbnail asset if one is present, and builds a
+/// brand-new `Segment::OEmbed` for `run_pending_enrichments` to append. `None`
+/// on any failure (network, decode) -- a failed background oEmbed fetch
+/// degrades silently, exactly like `resolve_preview_image`.
+async fn resolve_oembed(
+    repo: Arc<SqliteRepository>,
+    client: Arc<reqwest::Client>,
+    assets_root: std::path::PathBuf,
+    write_barrier: Arc<tokio::sync::RwLock<()>>,
+    world_id: Uuid,
+    post_url: String,
+    provider: OEmbedProvider,
+) -> Option<ResolvedEnrichment> {
+    let endpoint = provider.endpoint(&post_url)?;
+    let body = fetch_json_bytes(&client, &endpoint, Duration::from_secs(5))
+        .await
+        .ok()?;
+    let parsed: OEmbedResponse = serde_json::from_slice(&body).ok()?;
+    let thumbnail_asset_id = match parsed.thumbnail_url {
+        Some(thumbnail_url) => {
+            resolve_thumbnail_asset(
+                repo,
+                client,
+                assets_root,
+                write_barrier,
+                world_id,
+                thumbnail_url,
+            )
+            .await
+        }
+        None => None,
+    };
+    // Capped the same way `link_preview::extract_preview`'s own scraped
+    // title is: a provider's JSON is otherwise bounded only by the whole
+    // response's `MAX_JSON_BYTES`, so an uncapped `title`/`author_name`
+    // could inflate a stored message's `content` far past this codebase's
+    // established title-length invariant.
+    let title = parsed.title.map(|t| clean_text(&t, MAX_TITLE_CHARS));
+    let author_name = parsed.author_name.map(|a| clean_text(&a, MAX_TITLE_CHARS));
+    Some(ResolvedEnrichment::NewOEmbedSegment(Segment::OEmbed(
+        OEmbedSegment {
+            url: post_url,
+            provider_name: provider.name().to_string(),
+            title,
+            author_name,
+            thumbnail_asset_id,
+        },
+    )))
+}
+
+/// De-dup-then-fetch for one oEmbed thumbnail: checks the persisted
+/// `link_preview_cache` row for `thumbnail_url` FIRST (the same table
+/// `resolve_preview_image` uses, keyed here by the thumbnail's own URL
+/// rather than the previewed page's URL) and reuses an existing
+/// `image_asset_id` verbatim on a hit. On a miss, fetches `thumbnail_url`
+/// through the SAME SSRF-guarded client (`fetch_image_bytes`), asset-ifies
+/// it via `create_asset_from_bytes` (`created_by: None`, same
+/// generalization as `resolve_preview_image`), and records the result for
+/// future hits. Holds `write_barrier`'s read side around the asset commit,
+/// same as `resolve_preview_image` -- this is a second asset-commit path
+/// reachable from outside a direct HTTP request and must join the same
+/// exclusion, or an in-server backup's file-copy could race a
+/// half-committed asset.
+async fn resolve_thumbnail_asset(
+    repo: Arc<SqliteRepository>,
+    client: Arc<reqwest::Client>,
+    assets_root: std::path::PathBuf,
+    write_barrier: Arc<tokio::sync::RwLock<()>>,
+    world_id: Uuid,
+    thumbnail_url: String,
+) -> Option<Uuid> {
+    if let Ok(Some(row)) = repo.get_link_preview_cache(&thumbnail_url).await {
+        if let Some(asset_id) = row.image_asset_id {
+            return Some(asset_id);
+        }
+    }
+    let (content_type, bytes) = fetch_image_bytes(&client, &thumbnail_url, Duration::from_secs(5))
+        .await
+        .ok()?;
+    let now = crate::ws::time::now_millis();
+    let asset = {
+        let _read_permit = write_barrier.read().await;
+        create_asset_from_bytes(
+            &repo,
+            &assets_root,
+            world_id,
+            NewAssetBytes {
+                bytes: &bytes,
+                content_type: &content_type,
+                original_name: "oembed-thumbnail",
+                created_by: None,
+            },
+            now,
+        )
+        .await
+        .ok()?
+    };
+    let _ = repo
+        .upsert_link_preview_cache(&thumbnail_url, None, None, now)
+        .await;
+    let _ = repo
+        .set_link_preview_cache_image(&thumbnail_url, asset.id)
+        .await;
+    Some(asset.id)
 }
 
 #[cfg(test)]
@@ -402,6 +564,7 @@ mod tests {
             ResolvedEnrichment::ImageForPreview { asset_id, .. } => {
                 assert_eq!(asset_id, asset.id);
             }
+            other => panic!("expected ImageForPreview, got {other:?}"),
         }
     }
 
@@ -451,7 +614,9 @@ mod tests {
         )
         .await
         .expect("cache miss must fetch and create an asset");
-        let ResolvedEnrichment::ImageForPreview { asset_id, .. } = resolved;
+        let ResolvedEnrichment::ImageForPreview { asset_id, .. } = resolved else {
+            panic!("expected ImageForPreview");
+        };
         let asset = repo.get_asset(asset_id).await.unwrap().unwrap();
         assert_eq!(asset.created_by, None);
         assert_eq!(asset.byte_size, 3);
@@ -782,5 +947,130 @@ mod tests {
             _ => None,
         });
         assert_eq!(patched, Some(Some(asset_id)));
+    }
+
+    #[tokio::test]
+    async fn run_pending_enrichments_appends_new_oembed_segment() {
+        // `OEmbedProvider::endpoint` is fixed to a real provider host
+        // (https://www.youtube.com/oembed | https://vimeo.com/api/oembed.json)
+        // and is not stubbable directly. This test instead builds the exact
+        // `Segment::OEmbed` `resolve_oembed` would, via its constituent
+        // pieces (`fetch_json_bytes`/`resolve_thumbnail_asset`) run against a
+        // stub JSON+image server addressed through the SAME
+        // `build_client_with_resolve_fn` seam `link_preview.rs`'s own tests
+        // use (a fake hostname resolved to the stub's real loopback
+        // address), then feeds the resulting `ResolvedEnrichment` through
+        // `publish_resolved` -- `run_pending_enrichments`'s own
+        // OCC-read/patch/publish tail, factored out precisely so this test
+        // can reach it without a live fetch against the fixed provider host.
+        let img_router = Router::new().route(
+            "/thumb.png",
+            get(|| async {
+                (
+                    [(axum::http::header::CONTENT_TYPE, "image/png")],
+                    vec![7u8, 7, 7],
+                )
+            }),
+        );
+        let (img_addr, _img_handle) = spawn_stub(img_router).await;
+        let img_port: u16 = img_addr.rsplit(':').next().unwrap().parse().unwrap();
+        let thumbnail_url = format!("http://stub.test:{img_port}/thumb.png");
+
+        let json_body = format!(
+            r#"{{"title":"A Video","author_name":"Someone","thumbnail_url":"{thumbnail_url}","html":"<script>alert(1)</script>"}}"#
+        );
+        let json_router = Router::new().route(
+            "/oembed.json",
+            get(move || {
+                let body = json_body.clone();
+                async move {
+                    (
+                        [(axum::http::header::CONTENT_TYPE, "application/json")],
+                        body,
+                    )
+                }
+            }),
+        );
+        let (json_addr, _json_handle) = spawn_stub(json_router).await;
+        let json_port: u16 = json_addr.rsplit(':').next().unwrap().parse().unwrap();
+
+        let client = Arc::new(crate::chat::link_preview::build_client_with_resolve_fn(
+            |_host| Ok(vec!["127.0.0.1".parse().unwrap()]),
+        ));
+
+        let repo = Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+        let owner = repo
+            .create_user("u", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let world = repo.create_world_owned("w", owner, 0).await.unwrap();
+        let reg = RoomRegistry::new();
+        let room = reg
+            .get_or_create(repo.as_ref(), world.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let ctx = PermissionContext {
+            user_id: owner,
+            world_role: WorldRole::Gm,
+        };
+        let message_id = seed_message(&room, &repo, &ctx).await;
+        let root = tempfile::tempdir().unwrap();
+
+        let body = fetch_json_bytes(
+            &client,
+            &format!("http://stub.test:{json_port}/oembed.json"),
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
+        let parsed: OEmbedResponse = serde_json::from_slice(&body).unwrap();
+        assert_eq!(parsed.title.as_deref(), Some("A Video"));
+
+        let thumbnail_asset_id = resolve_thumbnail_asset(
+            repo.clone(),
+            client.clone(),
+            root.path().to_path_buf(),
+            test_write_barrier(),
+            world.id,
+            parsed.thumbnail_url.clone().unwrap(),
+        )
+        .await;
+        assert!(
+            thumbnail_asset_id.is_some(),
+            "the stub thumbnail must resolve to a created asset"
+        );
+
+        let segment = Segment::OEmbed(OEmbedSegment {
+            url: "https://www.youtube.com/watch?v=abc".into(),
+            provider_name: OEmbedProvider::YouTube.name().to_string(),
+            title: parsed.title,
+            author_name: parsed.author_name,
+            thumbnail_asset_id,
+        });
+        // Assembled downstream of the provider's raw `html` field, which
+        // never crossed the `OEmbedResponse` boundary into `OEmbedSegment`.
+        let serialized = serde_json::to_string(&segment).unwrap();
+        assert!(!serialized.contains("<script"));
+
+        publish_resolved(
+            room.clone(),
+            repo.clone(),
+            message_id,
+            world.id,
+            vec![ResolvedEnrichment::NewOEmbedSegment(segment)],
+        )
+        .await;
+
+        let stored = repo.get_document(message_id).await.unwrap().unwrap();
+        let sys: MessageEngine = serde_json::from_value(stored.engine.unwrap()).unwrap();
+        let found = sys.content.iter().find_map(|s| match s {
+            Segment::OEmbed(oe) => Some(oe.clone()),
+            _ => None,
+        });
+        let oe = found.expect("expected an appended OEmbed segment");
+        assert_eq!(oe.provider_name, "YouTube");
+        assert_eq!(oe.title.as_deref(), Some("A Video"));
+        assert!(oe.thumbnail_asset_id.is_some());
     }
 }

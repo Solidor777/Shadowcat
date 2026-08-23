@@ -189,12 +189,14 @@ mod tests {
                 Segment::Text { text } => text.clone(),
                 Segment::Html { sanitized_html } => sanitized_html.clone(),
                 // `sanitize()` (the function under test) never produces a
-                // roll or link-preview segment -- those are `chat::rolls`'s
-                // and `chat::link_preview::enrich`'s own producers.
+                // roll, link-preview, or oembed segment -- those are
+                // `chat::rolls`'s, `chat::link_preview::enrich`'s, and
+                // `chat::post_publish`'s own producers.
                 Segment::RollEmbed { .. }
                 | Segment::RollButton { .. }
-                | Segment::LinkPreview { .. } => {
-                    unreachable!("sanitize() never produces roll or preview segments")
+                | Segment::LinkPreview { .. }
+                | Segment::OEmbed(_) => {
+                    unreachable!("sanitize() never produces roll, preview, or oembed segments")
                 }
             })
             .collect()

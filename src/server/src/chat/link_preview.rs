@@ -235,14 +235,27 @@ pub async fn enrich(
         },
     } = deps;
     let mut urls: Vec<String> = Vec::new();
+    let mut pending: Vec<PendingEnrichment> = Vec::new();
     'outer: for seg in segments.iter() {
         if let Segment::Html { sanitized_html } = seg {
             for url in extract_href_urls(sanitized_html) {
-                if !urls.contains(&url) {
+                if urls.contains(&url)
+                    || pending.iter().any(
+                        |p| matches!(p, PendingEnrichment::OEmbed { post_url, .. } if post_url == &url),
+                    )
+                {
+                    continue;
+                }
+                if let Some(provider) = crate::chat::match_oembed_provider(&url) {
+                    pending.push(PendingEnrichment::OEmbed {
+                        post_url: url,
+                        provider,
+                    });
+                } else {
                     urls.push(url);
-                    if urls.len() >= MAX_PREVIEWS_PER_MESSAGE {
-                        break 'outer;
-                    }
+                }
+                if urls.len() + pending.len() >= MAX_PREVIEWS_PER_MESSAGE {
+                    break 'outer;
                 }
             }
         }
@@ -310,7 +323,6 @@ pub async fn enrich(
         }
     }
 
-    let mut pending: Vec<PendingEnrichment> = Vec::new();
     for preview in previews {
         if let Some(asset_id) = preview.image_asset_id {
             segments.push(Segment::LinkPreview {
@@ -399,8 +411,15 @@ pub const MAX_PREVIEW_BYTES: usize = 512 * 1024;
 /// -- a page's declared preview image or a provider's thumbnail is a small
 /// web graphic, not a page's full HTML.
 pub const MAX_IMAGE_BYTES: usize = 256 * 1024;
+/// Cap on a fetched oEmbed provider JSON response's bytes. An oEmbed
+/// response is a small metadata object (title/author/thumbnail URL), never
+/// a large payload.
+pub const MAX_JSON_BYTES: usize = 64 * 1024;
 /// Stored-title character cap (applied after entity decode + whitespace fold).
-const MAX_TITLE_CHARS: usize = 200;
+/// `pub(super)`: also the cap `post_publish::resolve_oembed` applies to a
+/// provider's `title`/`author_name` via `clean_text` — the same untrusted-text
+/// class as this module's own scraped title, capped the same way.
+pub(super) const MAX_TITLE_CHARS: usize = 200;
 /// Stored-description character cap.
 const MAX_DESCRIPTION_CHARS: usize = 400;
 /// Identifying User-Agent sent with every preview fetch.
@@ -761,6 +780,9 @@ enum ExpectedContentType {
     Html,
     /// Any `image/*` Content-Type (the background image-pipeline gate).
     Image,
+    /// `application/json` or any `*+json` suffix (the oEmbed provider
+    /// endpoint gate).
+    Json,
 }
 
 impl ExpectedContentType {
@@ -775,6 +797,7 @@ impl ExpectedContentType {
         match self {
             ExpectedContentType::Html => base == "text/html" || base == "application/xhtml+xml",
             ExpectedContentType::Image => base.starts_with("image/"),
+            ExpectedContentType::Json => base == "application/json" || base.ends_with("+json"),
         }
     }
 }
@@ -896,6 +919,30 @@ pub async fn fetch_image_bytes(
     .await
     {
         Ok(Ok((_, content_type, body))) => Ok((content_type, body)),
+        Ok(Err(e)) => Err(e),
+        Err(_elapsed) => Err(PreviewError::Timeout),
+    }
+}
+
+/// Fetches `raw_url` through the SAME SSRF-guarded pipeline `fetch_preview`
+/// uses (`guarded_get`), gated on a `application/json`/`*+json`
+/// Content-Type. Used by the post-publish oEmbed background pipeline
+/// (`post_publish::resolve_oembed`) to query an allowlisted provider's
+/// oEmbed endpoint -- never on the synchronous send/edit request path, and
+/// never against an unvalidated host (the endpoint URL's host is always one
+/// of `chat::oembed`'s fixed allowlisted hosts by the time this is called).
+pub async fn fetch_json_bytes(
+    client: &reqwest::Client,
+    raw_url: &str,
+    deadline: Duration,
+) -> Result<Vec<u8>, PreviewError> {
+    match tokio::time::timeout(
+        deadline,
+        guarded_get(client, raw_url, ExpectedContentType::Json, MAX_JSON_BYTES),
+    )
+    .await
+    {
+        Ok(Ok((_, _content_type, body))) => Ok(body),
         Ok(Err(e)) => Err(e),
         Err(_elapsed) => Err(PreviewError::Timeout),
     }
@@ -1150,8 +1197,11 @@ fn extract_tag_text(html: &str, lower: &str, tag: &str) -> Option<String> {
 /// Strips any `<...>` runs (malformed-markup-safe: an unterminated `<` is
 /// kept literal since `in_tag` never closes), decodes the small named/numeric
 /// entity set, collapses whitespace, then caps to `max_chars` (char-boundary
-/// safe via `chars().take`, never a byte-index split).
-fn clean_text(raw: &str, max_chars: usize) -> String {
+/// safe via `chars().take`, never a byte-index split). `pub(super)`: also
+/// applied by `post_publish::resolve_oembed` to a provider's `title`/
+/// `author_name`, which are otherwise bounded only by the whole JSON
+/// response's `MAX_JSON_BYTES` cap.
+pub(super) fn clean_text(raw: &str, max_chars: usize) -> String {
     let stripped = strip_tags(raw);
     let decoded = decode_entities(&stripped);
     decoded
