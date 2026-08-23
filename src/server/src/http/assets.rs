@@ -223,22 +223,9 @@ pub async fn upload(
         // assets copy. Concurrent asset writes share the read side freely;
         // this serializes nothing between uploads.
         let _read_permit = state.write_barrier.read().await;
-        // Create ordering is file-BEFORE-row (inverted from replace's
-        // row-before-swap): a create has no prior bytes and no stale ETag to
-        // protect, so the only failure that matters is an orphan DB row (a
-        // GET that 500s forever) — a rename failure here just leaves the temp
-        // file to clean up, and an insert failure after a successful rename
-        // leaves a harmless orphan FILE, best-effort removed below.
-        if let Err(e) = tokio::fs::rename(&tmp_path, &final_path).await {
-            let _ = tokio::fs::remove_file(&tmp_path).await;
-            tracing::error!(?e, %id, "asset upload rename failed");
-            return Err(AppError::Internal);
-        }
-        if let Err(e) = state.repo.insert_asset(&asset).await {
-            let _ = tokio::fs::remove_file(&final_path).await; // keep disk and DB consistent
-            return Err(e.into());
-        }
-        Ok(asset)
+        crate::data::asset::commit_staged_asset(&state.repo, &tmp_path, &final_path, asset)
+            .await
+            .map_err(AppError::from)
     }
     .await;
 

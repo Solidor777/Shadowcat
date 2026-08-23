@@ -58,6 +58,22 @@ impl From<crate::data::DataError> for AppError {
     }
 }
 
+/// Maps the asset-commit path's failure surface onto the same status codes
+/// `DataError`'s conversion already uses for the `Data` arm; an I/O failure
+/// (rename/write) is a 500 like `DataError::Sqlx`/`Serde` — detail logged,
+/// never echoed.
+impl From<crate::data::asset::AssetError> for AppError {
+    fn from(e: crate::data::asset::AssetError) -> Self {
+        match e {
+            crate::data::asset::AssetError::Io(e) => {
+                tracing::error!(?e, "asset file commit failed");
+                AppError::Internal
+            }
+            crate::data::asset::AssetError::Data(e) => e.into(),
+        }
+    }
+}
+
 /// The uniform JSON error payload: `{ "error": "..." }`.
 #[derive(Serialize)]
 struct ErrorBody {
