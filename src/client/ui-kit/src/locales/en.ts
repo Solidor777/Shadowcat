@@ -242,6 +242,7 @@ export const en: Messages = {
   "chat.composer.sendFailed": "Message could not be sent.",
   "chat.composer.insertDocLink": "Insert a document link",
   "chat.composer.docSearchPlaceholder": "Search documents…",
+  "chat.composer.speakingAsToken": "Speaking as: {name}",
   "chat.edited": "(edited)",
   "chat.deleted": "Message deleted",
   "chat.whisperTo": "to {names}",

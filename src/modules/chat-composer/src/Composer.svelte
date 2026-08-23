@@ -156,6 +156,18 @@
 
   const placeholder = $derived(audience.kind === "gm_only" ? t("chat.composer.placeholderGm") : t("chat.composer.placeholder", { name: placeholderName }));
 
+  // Speak-as-token indicator: mirrors how the sticky actor `<select>` above surfaces its own
+  // selection, but reads the one-shot `ctx.speakAsToken` pending value instead.
+  const speakAsTokenName = $derived.by((): string | null => {
+    subscribe();
+    const id = ctx.speakAsToken.tokenId;
+    if (!id) return null;
+    const tok = ctx.documents.get(id);
+    if (!tok) return null;
+    const eff = resolveTokenActor(tok, ctx.documents);
+    return eff ? actorDisplayName(eff) : ((tok.name ?? "").trim() || id.slice(0, 8));
+  });
+
   /** Auto-grow: reset height before measuring scrollHeight, or the textarea can never shrink
    * back down after a multi-line message is cleared.
    * @example
@@ -186,7 +198,12 @@
     // composer never inspects or branches on content shape before sending. (MessageCard's
     // own ROLL_COMMAND_PREFIXES strips a prefix purely for DISPLAY of an already-server-
     // classified roll message — a separate, read-only concern from parsing at send time.)
-    const actorOwner: WireActorOwnerRef | undefined = selectedActorId ? { kind: "actor", actor_id: selectedActorId } : undefined;
+    const pendingToken = ctx.speakAsToken.consume();
+    const actorOwner: WireActorOwnerRef | undefined = pendingToken
+      ? { kind: "token_instance", token_id: pendingToken }
+      : selectedActorId
+        ? { kind: "actor", actor_id: selectedActorId }
+        : undefined;
     // Clear the input optimistically; a server rejection surfaces inline via `errorMsg`
     // (correlated by request_id under the seam) instead of the message vanishing.
     Promise.resolve(
@@ -232,6 +249,9 @@
   }
 </script>
 
+{#if speakAsTokenName}
+  <div class="speaking-as">{t("chat.composer.speakingAsToken", { name: speakAsTokenName })}</div>
+{/if}
 <div class="composer">
   <label class="visually-hidden" for="chat-composer-speak-as">{t("chat.composer.speakAs")}</label>
   <select id="chat-composer-speak-as" bind:value={selectedActorId}>
@@ -307,6 +327,12 @@
     margin-top: var(--space-1);
     font-size: 0.85em;
     color: var(--danger);
+  }
+  .speaking-as {
+    margin-bottom: var(--space-1);
+    font-size: 0.85em;
+    font-style: italic;
+    opacity: 0.85;
   }
   .visually-hidden {
     position: absolute;

@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/svelte";
 import { setAppContextForTest } from "@shadowcat/ui-kit/test";
 import type { AppContext } from "@shadowcat/ui-kit";
+import { SpeakAsToken } from "@shadowcat/ui-kit";
 import { DocumentStore, buildActorDoc, MAX_MESSAGE_CHARS, type WireAudience, type WireCommand, type WireDocument } from "@shadowcat/core";
 import type { WorldRole } from "@shadowcat/types";
 import Composer from "./Composer.svelte";
@@ -30,6 +31,7 @@ function renderComposer(
     role?: WorldRole;
     selfId?: string;
     searchDocuments?: AppContext["searchDocuments"];
+    speakAsToken?: SpeakAsToken;
   } = {},
 ) {
   const send = opts.send ?? vi.fn<(o: unknown) => Promise<void>>(async () => {});
@@ -39,6 +41,7 @@ function renderComposer(
     role: opts.role ?? "player",
     selfId: opts.selfId ?? "u-self",
     searchDocuments: opts.searchDocuments,
+    speakAsToken: opts.speakAsToken,
   });
   render(Composer, { props: { channel: "general", audience: opts.audience ?? publicAudience, placeholderName: "Alice" }, context });
   return { send };
@@ -343,5 +346,30 @@ describe("Composer — @doc link insertion", () => {
     await fireEvent.click(await screen.findByText("Foo [Bar"));
     const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
     expect(textarea.value).toBe("[[doc:doc1|Foo Bar]]");
+  });
+});
+
+describe("Composer — speak-as-token", () => {
+  it("sends a token_instance actor_owner and consumes the pending selection", async () => {
+    const speakAsToken = new SpeakAsToken();
+    speakAsToken.select("tok1");
+    const token = { ...buildActorDoc("w1", "unused", { displayName: "x", visual: { kind: "image", asset: "a1" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null }, "tok1"), doc_type: "token", name: "Goblin" };
+    const documents = new DocumentStore();
+    documents.applyCommand({ seq: 1, world_id: "w1", author: "gm", ts: 0, ops: [{ op: "create" as const, doc: token }] });
+    const { send } = renderComposer({ documents, speakAsToken });
+    // The default test-harness `t` (`over.t ?? ((k) => k)`) returns the raw key without
+    // interpolating params, matching this file's other localized-text assertions
+    // (e.g. `chat.composer.count`/`chat.composer.placeholder`) — not the interpolated string.
+    expect(screen.getByText("chat.composer.speakingAsToken")).toBeTruthy();
+    const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
+    await fireEvent.input(textarea, { target: { value: "hello" } });
+    await fireEvent.keyDown(textarea, { key: "Enter" });
+    expect(send).toHaveBeenCalledWith({ channel: "general", content: "hello", audience: publicAudience, actorOwner: { kind: "token_instance", token_id: "tok1" } });
+    expect(speakAsToken.tokenId).toBeNull();
+  });
+
+  it("shows no indicator when nothing is pending", () => {
+    renderComposer();
+    expect(screen.queryByText("chat.composer.speakingAsToken")).toBeNull();
   });
 });
