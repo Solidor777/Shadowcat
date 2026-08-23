@@ -9,9 +9,12 @@
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
+use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
+use dashmap::mapref::entry::Entry;
+use dashmap::DashMap;
 use uuid::Uuid;
 
 use super::link_preview::{clean_text, fetch_image_bytes, fetch_json_bytes, MAX_TITLE_CHARS};
@@ -24,6 +27,72 @@ use crate::data::membership::PermissionContext;
 use crate::data::repository::Repository;
 use crate::data::sqlite::SqliteRepository;
 use crate::ws::room::Room;
+
+/// Process-wide registry of per-URL fetch locks: `resolve_preview_image`/
+/// `resolve_thumbnail_asset` key on the target URL (the `preview_url`/
+/// `thumbnail_url` each already keys the persisted `link_preview_cache` table
+/// by) so two concurrent post-publish jobs racing to resolve the identical
+/// URL serialize into one fetch+asset-create instead of each creating its own
+/// orphaned `Asset` row/file for the same link (see `with_preview_url_lock`'s
+/// doc for the full concurrency argument, including why the entry is removed
+/// without a race). Same `DashMap`-keyed-registry shape as
+/// `ws::room::RoomRegistry.rooms` -- unlike that map (bounded by world
+/// count), distinct link-preview URLs are unbounded over a long-running
+/// server's lifetime, so THIS map's entries must be reclaimed once no
+/// concurrent caller still needs them.
+pub type PreviewFetchLocks = Arc<DashMap<String, Arc<tokio::sync::Mutex<()>>>>;
+
+/// Runs `f` while holding the per-`key` lock from `locks`, get-or-inserting a
+/// fresh `Mutex` on first use and reclaiming the map entry once no concurrent
+/// caller still references it.
+///
+/// # Cleanup-race reasoning
+///
+/// The naive version of this (drop the mutex guard, THEN separately check
+/// whether to remove the map entry) has a TOCTOU gap: a new waiter can call
+/// `locks.entry(key)` between this task's guard-drop and its own removal
+/// check, clone the Arc that is about to be removed, and start waiting on a
+/// `Mutex` instance the map is seconds away from discarding -- while a LATER
+/// caller's `or_insert_with` then manufactures a SECOND, different `Mutex`
+/// instance for the same key, so two callers hold two different mutexes for
+/// one URL and the whole point of this registry (mutual exclusion per URL) is
+/// defeated.
+///
+/// This avoids that gap by never separating the strong-count check from the
+/// removal: both happen while holding the SAME `DashMap` shard lock, via one
+/// continuous `locks.entry(key)` call after the mutex guard is already
+/// dropped. `DashMap::entry` blocks any other `entry()`/`get()`/`insert()`
+/// call for the same key for as long as the returned `Entry` is alive, so no
+/// concurrent caller can observe or clone the `Arc` between the strong-count
+/// read and the removal. `Arc::strong_count(occ.get()) <= 2` means only the
+/// map's own stored clone (1) plus this function's local `arc` binding (1,
+/// not yet dropped) remain -- nobody else cloned it while we were not holding
+/// the shard lock, so it is safe to remove. A strong count above 2 means a
+/// concurrent waiter already cloned the same `Arc` (either mid-wait on the
+/// mutex, or about to call `.lock().await` on it), so the entry is left in
+/// place for them to keep using -- removing it here would be the exact bug
+/// this reasoning exists to prevent, just triggered from the opposite
+/// direction.
+async fn with_preview_url_lock<F, Fut, T>(locks: &PreviewFetchLocks, key: &str, f: F) -> T
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = T>,
+{
+    let arc = locks
+        .entry(key.to_string())
+        .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+        .clone();
+    let result = {
+        let _guard = arc.lock().await;
+        f().await
+    };
+    if let Entry::Occupied(occ) = locks.entry(key.to_string()) {
+        if Arc::strong_count(occ.get()) <= 2 {
+            occ.remove();
+        }
+    }
+    result
+}
 
 /// One post-publish background job queued by `link_preview::enrich` for the
 /// caller to run AFTER `Room::publish`'s synchronous send/edit already
@@ -90,6 +159,10 @@ pub struct PostPublishDeps {
     /// commit this pipeline performs, same as `http::assets::upload`/
     /// `replace`/`delete`.
     pub write_barrier: Arc<tokio::sync::RwLock<()>>,
+    /// Per-URL fetch-lock registry serializing concurrent
+    /// `resolve_preview_image`/`resolve_thumbnail_asset` jobs targeting the
+    /// identical URL -- see `PreviewFetchLocks`'s doc.
+    pub preview_fetch_locks: PreviewFetchLocks,
 }
 
 /// Runs every queued `PendingEnrichment` for `message_id` concurrently, then
@@ -116,16 +189,18 @@ pub async fn run_pending_enrichments(
         client,
         assets_root,
         write_barrier,
+        preview_fetch_locks,
     } = deps;
     let mut set = tokio::task::JoinSet::new();
     for job in jobs {
-        let repo = repo.clone();
-        let client = client.clone();
-        let assets_root = assets_root.clone();
-        let write_barrier = write_barrier.clone();
-        set.spawn(async move {
-            resolve_job(repo, client, assets_root, write_barrier, world_id, job).await
-        });
+        let deps = FetchDeps {
+            repo: repo.clone(),
+            client: client.clone(),
+            assets_root: assets_root.clone(),
+            write_barrier: write_barrier.clone(),
+            preview_fetch_locks: preview_fetch_locks.clone(),
+        };
+        set.spawn(async move { resolve_job(deps, world_id, job).await });
     }
     let mut resolved: Vec<ResolvedEnrichment> = Vec::new();
     while let Some(joined) = set.join_next().await {
@@ -238,16 +313,35 @@ async fn publish_resolved(
         .await;
 }
 
+/// Fetch/asset-commit dependencies shared by every resolver
+/// (`resolve_preview_image`/`resolve_oembed`/`resolve_thumbnail_asset`) --
+/// grouped the same way `PostPublishDeps` groups its own five fields, to stay
+/// under `clippy::too_many_arguments` by restructuring the signature, never
+/// by suppressing the lint.
+#[derive(Clone)]
+struct FetchDeps {
+    /// The repository, for the persisted `link_preview_cache` read/write and
+    /// the eventual asset commit.
+    repo: Arc<SqliteRepository>,
+    /// The SSRF-guarded fetch client (the same one `enrich`'s synchronous
+    /// scrape uses).
+    client: Arc<reqwest::Client>,
+    /// The asset-storage root a resolved image is committed under.
+    assets_root: std::path::PathBuf,
+    /// The backup write-quiesce barrier -- held read-side around every asset
+    /// commit, same as `PostPublishDeps.write_barrier`.
+    write_barrier: Arc<tokio::sync::RwLock<()>>,
+    /// Per-URL fetch-lock registry -- see `PreviewFetchLocks`'s doc.
+    preview_fetch_locks: PreviewFetchLocks,
+}
+
 /// Dispatches one job to its resolver. `None` on any failure (network,
 /// decode, asset creation) -- a failed background enrichment degrades
 /// silently, exactly like the synchronous preview fetch it extends; there is
 /// no error surface back to the sender for a job running long after their
 /// own request already succeeded.
 async fn resolve_job(
-    repo: Arc<SqliteRepository>,
-    client: Arc<reqwest::Client>,
-    assets_root: std::path::PathBuf,
-    write_barrier: Arc<tokio::sync::RwLock<()>>,
+    deps: FetchDeps,
     world_id: Uuid,
     job: PendingEnrichment,
 ) -> Option<ResolvedEnrichment> {
@@ -255,29 +349,9 @@ async fn resolve_job(
         PendingEnrichment::PreviewImage {
             preview_url,
             image_url,
-        } => {
-            resolve_preview_image(
-                repo,
-                client,
-                assets_root,
-                write_barrier,
-                world_id,
-                preview_url,
-                image_url,
-            )
-            .await
-        }
+        } => resolve_preview_image(deps, world_id, preview_url, image_url).await,
         PendingEnrichment::OEmbed { post_url, provider } => {
-            resolve_oembed(
-                repo,
-                client,
-                assets_root,
-                write_barrier,
-                world_id,
-                post_url,
-                provider,
-            )
-            .await
+            resolve_oembed(deps, world_id, post_url, provider).await
         }
     }
 }
@@ -295,52 +369,70 @@ async fn resolve_job(
 /// asset commit, same as every other asset writer (`http::assets::upload`/
 /// `replace`/`delete`) -- this is the first asset commit reachable from
 /// outside a direct HTTP request, so it must join that same exclusion or an
-/// in-server backup's file-copy could race a half-committed asset.
+/// in-server backup's file-copy could race a half-committed asset. Runs the
+/// WHOLE check-then-fetch-then-set sequence under `preview_fetch_locks`'
+/// per-`preview_url` lock (see `with_preview_url_lock`) so two concurrent
+/// jobs for the identical URL never both observe a cache miss and each
+/// create their own orphaned `Asset`.
 async fn resolve_preview_image(
-    repo: Arc<SqliteRepository>,
-    client: Arc<reqwest::Client>,
-    assets_root: std::path::PathBuf,
-    write_barrier: Arc<tokio::sync::RwLock<()>>,
+    deps: FetchDeps,
     world_id: Uuid,
     preview_url: String,
     image_url: String,
 ) -> Option<ResolvedEnrichment> {
-    if let Ok(Some(row)) = repo.get_link_preview_cache(&preview_url).await {
-        if let Some(asset_id) = row.image_asset_id {
-            return Some(ResolvedEnrichment::ImageForPreview {
-                preview_url,
-                asset_id,
-            });
+    let FetchDeps {
+        repo,
+        client,
+        assets_root,
+        write_barrier,
+        preview_fetch_locks,
+    } = deps;
+    // Locks for the ENTIRE check-then-fetch-then-set sequence -- a concurrent
+    // waiter for the identical `preview_url` must observe a persisted-cache
+    // HIT here and skip the fetch entirely, never just serialize into a
+    // second redundant fetch+asset-create for the same link. Keyed on a
+    // clone (not `&preview_url`) so the closure below can move the original
+    // `preview_url` into its `ResolvedEnrichment` without a borrow conflict.
+    let lock_key = preview_url.clone();
+    with_preview_url_lock(&preview_fetch_locks, &lock_key, move || async move {
+        if let Ok(Some(row)) = repo.get_link_preview_cache(&preview_url).await {
+            if let Some(asset_id) = row.image_asset_id {
+                return Some(ResolvedEnrichment::ImageForPreview {
+                    preview_url,
+                    asset_id,
+                });
+            }
         }
-    }
-    let (content_type, bytes) = fetch_image_bytes(&client, &image_url, Duration::from_secs(5))
-        .await
-        .ok()?;
-    let now = crate::ws::time::now_millis();
-    let asset = {
-        let _read_permit = write_barrier.read().await;
-        create_asset_from_bytes(
-            &repo,
-            &assets_root,
-            world_id,
-            NewAssetBytes {
-                bytes: &bytes,
-                content_type: &content_type,
-                original_name: "link-preview-image",
-                created_by: None,
-            },
-            now,
-        )
-        .await
-        .ok()?
-    };
-    let _ = repo
-        .set_link_preview_cache_image(&preview_url, asset.id)
-        .await;
-    Some(ResolvedEnrichment::ImageForPreview {
-        preview_url,
-        asset_id: asset.id,
+        let (content_type, bytes) = fetch_image_bytes(&client, &image_url, Duration::from_secs(5))
+            .await
+            .ok()?;
+        let now = crate::ws::time::now_millis();
+        let asset = {
+            let _read_permit = write_barrier.read().await;
+            create_asset_from_bytes(
+                &repo,
+                &assets_root,
+                world_id,
+                NewAssetBytes {
+                    bytes: &bytes,
+                    content_type: &content_type,
+                    original_name: "link-preview-image",
+                    created_by: None,
+                },
+                now,
+            )
+            .await
+            .ok()?
+        };
+        let _ = repo
+            .set_link_preview_cache_image(&preview_url, asset.id)
+            .await;
+        Some(ResolvedEnrichment::ImageForPreview {
+            preview_url,
+            asset_id: asset.id,
+        })
     })
+    .await
 }
 
 /// Queries `provider`'s oEmbed endpoint for `post_url` (see
@@ -353,31 +445,18 @@ async fn resolve_preview_image(
 /// on any failure (network, decode) -- a failed background oEmbed fetch
 /// degrades silently, exactly like `resolve_preview_image`.
 async fn resolve_oembed(
-    repo: Arc<SqliteRepository>,
-    client: Arc<reqwest::Client>,
-    assets_root: std::path::PathBuf,
-    write_barrier: Arc<tokio::sync::RwLock<()>>,
+    deps: FetchDeps,
     world_id: Uuid,
     post_url: String,
     provider: OEmbedProvider,
 ) -> Option<ResolvedEnrichment> {
     let endpoint = provider.endpoint(&post_url)?;
-    let body = fetch_json_bytes(&client, &endpoint, Duration::from_secs(5))
+    let body = fetch_json_bytes(&deps.client, &endpoint, Duration::from_secs(5))
         .await
         .ok()?;
     let parsed: OEmbedResponse = serde_json::from_slice(&body).ok()?;
     let thumbnail_asset_id = match parsed.thumbnail_url {
-        Some(thumbnail_url) => {
-            resolve_thumbnail_asset(
-                repo,
-                client,
-                assets_root,
-                write_barrier,
-                world_id,
-                thumbnail_url,
-            )
-            .await
-        }
+        Some(thumbnail_url) => resolve_thumbnail_asset(deps, world_id, thumbnail_url).await,
         None => None,
     };
     // Capped the same way `link_preview::extract_preview`'s own scraped
@@ -412,46 +491,60 @@ async fn resolve_oembed(
 /// exclusion, or an in-server backup's file-copy could race a
 /// half-committed asset.
 async fn resolve_thumbnail_asset(
-    repo: Arc<SqliteRepository>,
-    client: Arc<reqwest::Client>,
-    assets_root: std::path::PathBuf,
-    write_barrier: Arc<tokio::sync::RwLock<()>>,
+    deps: FetchDeps,
     world_id: Uuid,
     thumbnail_url: String,
 ) -> Option<Uuid> {
-    if let Ok(Some(row)) = repo.get_link_preview_cache(&thumbnail_url).await {
-        if let Some(asset_id) = row.image_asset_id {
-            return Some(asset_id);
+    let FetchDeps {
+        repo,
+        client,
+        assets_root,
+        write_barrier,
+        preview_fetch_locks,
+    } = deps;
+    // Same per-URL exclusion + re-check-after-lock treatment as
+    // `resolve_preview_image`, keyed by the thumbnail's own URL (the same key
+    // space `resolve_preview_image` uses -- a page previewed AND oEmbed-
+    // thumbnailed via the identical image URL serializes against itself
+    // too).
+    let lock_key = thumbnail_url.clone();
+    with_preview_url_lock(&preview_fetch_locks, &lock_key, move || async move {
+        if let Ok(Some(row)) = repo.get_link_preview_cache(&thumbnail_url).await {
+            if let Some(asset_id) = row.image_asset_id {
+                return Some(asset_id);
+            }
         }
-    }
-    let (content_type, bytes) = fetch_image_bytes(&client, &thumbnail_url, Duration::from_secs(5))
-        .await
-        .ok()?;
-    let now = crate::ws::time::now_millis();
-    let asset = {
-        let _read_permit = write_barrier.read().await;
-        create_asset_from_bytes(
-            &repo,
-            &assets_root,
-            world_id,
-            NewAssetBytes {
-                bytes: &bytes,
-                content_type: &content_type,
-                original_name: "oembed-thumbnail",
-                created_by: None,
-            },
-            now,
-        )
-        .await
-        .ok()?
-    };
-    let _ = repo
-        .upsert_link_preview_cache(&thumbnail_url, None, None, now)
-        .await;
-    let _ = repo
-        .set_link_preview_cache_image(&thumbnail_url, asset.id)
-        .await;
-    Some(asset.id)
+        let (content_type, bytes) =
+            fetch_image_bytes(&client, &thumbnail_url, Duration::from_secs(5))
+                .await
+                .ok()?;
+        let now = crate::ws::time::now_millis();
+        let asset = {
+            let _read_permit = write_barrier.read().await;
+            create_asset_from_bytes(
+                &repo,
+                &assets_root,
+                world_id,
+                NewAssetBytes {
+                    bytes: &bytes,
+                    content_type: &content_type,
+                    original_name: "oembed-thumbnail",
+                    created_by: None,
+                },
+                now,
+            )
+            .await
+            .ok()?
+        };
+        let _ = repo
+            .upsert_link_preview_cache(&thumbnail_url, None, None, now)
+            .await;
+        let _ = repo
+            .set_link_preview_cache_image(&thumbnail_url, asset.id)
+            .await;
+        Some(asset.id)
+    })
+    .await
 }
 
 #[cfg(test)]
@@ -482,6 +575,31 @@ mod tests {
     /// read permit `resolve_preview_image` acquires never blocks.
     fn test_write_barrier() -> Arc<tokio::sync::RwLock<()>> {
         Arc::new(tokio::sync::RwLock::new(()))
+    }
+
+    /// A fresh, empty per-URL fetch-lock registry for tests exercising
+    /// `resolve_preview_image`/`resolve_thumbnail_asset` directly.
+    fn test_preview_fetch_locks() -> PreviewFetchLocks {
+        Arc::new(DashMap::new())
+    }
+
+    /// Builds `FetchDeps` for a direct resolver call -- a fresh, uncontended
+    /// write-barrier plus the caller-supplied lock registry (so a test can
+    /// share one registry across several calls to observe cleanup/racing
+    /// behavior, or pass a fresh `test_preview_fetch_locks()` for isolation).
+    fn test_fetch_deps(
+        repo: Arc<SqliteRepository>,
+        client: Arc<reqwest::Client>,
+        assets_root: std::path::PathBuf,
+        preview_fetch_locks: PreviewFetchLocks,
+    ) -> FetchDeps {
+        FetchDeps {
+            repo,
+            client,
+            assets_root,
+            write_barrier: test_write_barrier(),
+            preview_fetch_locks,
+        }
     }
 
     /// A publish helper: sends a plain message and returns its message id --
@@ -550,10 +668,12 @@ mod tests {
         let unreachable_client = Arc::new(build_link_preview_client());
         let root = tempfile::tempdir().unwrap();
         let resolved = resolve_preview_image(
-            repo,
-            unreachable_client,
-            root.path().to_path_buf(),
-            test_write_barrier(),
+            test_fetch_deps(
+                repo,
+                unreachable_client,
+                root.path().to_path_buf(),
+                test_preview_fetch_locks(),
+            ),
             world.id,
             preview_url.to_string(),
             "https://cached.example/og.png".to_string(),
@@ -604,10 +724,12 @@ mod tests {
             .unwrap();
 
         let resolved = resolve_preview_image(
-            repo.clone(),
-            client,
-            root.path().to_path_buf(),
-            test_write_barrier(),
+            test_fetch_deps(
+                repo.clone(),
+                client,
+                root.path().to_path_buf(),
+                test_preview_fetch_locks(),
+            ),
             world.id,
             preview_url.to_string(),
             image_url,
@@ -716,6 +838,7 @@ mod tests {
                 client: Arc::new(build_link_preview_client()),
                 assets_root: std::path::PathBuf::new(),
                 write_barrier: test_write_barrier(),
+                preview_fetch_locks: test_preview_fetch_locks(),
             },
             message_id,
             world.id,
@@ -800,6 +923,7 @@ mod tests {
                 client: Arc::new(build_link_preview_client()),
                 assets_root: std::path::PathBuf::new(),
                 write_barrier: test_write_barrier(),
+                preview_fetch_locks: test_preview_fetch_locks(),
             },
             message_id,
             world.id,
@@ -922,6 +1046,7 @@ mod tests {
                 client: Arc::new(build_link_preview_client()),
                 assets_root: std::path::PathBuf::new(),
                 write_barrier: test_write_barrier(),
+                preview_fetch_locks: test_preview_fetch_locks(),
             },
             message_id,
             world.id,
@@ -1028,10 +1153,12 @@ mod tests {
         assert_eq!(parsed.title.as_deref(), Some("A Video"));
 
         let thumbnail_asset_id = resolve_thumbnail_asset(
-            repo.clone(),
-            client.clone(),
-            root.path().to_path_buf(),
-            test_write_barrier(),
+            test_fetch_deps(
+                repo.clone(),
+                client.clone(),
+                root.path().to_path_buf(),
+                test_preview_fetch_locks(),
+            ),
             world.id,
             parsed.thumbnail_url.clone().unwrap(),
         )
@@ -1072,5 +1199,194 @@ mod tests {
         assert_eq!(oe.provider_name, "YouTube");
         assert_eq!(oe.title.as_deref(), Some("A Video"));
         assert!(oe.thumbnail_asset_id.is_some());
+    }
+
+    /// Confirms `preview_fetch_locks` serializes two simultaneous
+    /// `resolve_preview_image` calls for the IDENTICAL `preview_url`, racing
+    /// against a real cache-miss fetch, into exactly one `Asset` row, with
+    /// both calls resolving to the same `asset_id`. Without that
+    /// serialization, `resolve_preview_image`'s cache check and its eventual
+    /// `set_link_preview_cache_image` write are not mutually exclusive
+    /// against a concurrent caller's own check, so nothing stops two
+    /// independent `create_asset_from_bytes` calls for the one URL. The stub
+    /// image handler sleeps before responding specifically so both spawned
+    /// tasks are genuinely in flight at once -- a lock that merely happened
+    /// to run the two calls one after another with no real overlap would not
+    /// exercise this.
+    #[tokio::test]
+    async fn resolve_preview_image_concurrent_requests_for_same_url_create_one_asset() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let fetch_count = Arc::new(AtomicUsize::new(0));
+        let fetch_count_for_route = fetch_count.clone();
+        let router = Router::new().route(
+            "/img.png",
+            get(move || {
+                let fetch_count = fetch_count_for_route.clone();
+                async move {
+                    fetch_count.fetch_add(1, Ordering::SeqCst);
+                    // Held open long enough that an unserialized second
+                    // caller would reach this handler too, before the first
+                    // caller's asset commit + cache write land.
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                    (
+                        [(axum::http::header::CONTENT_TYPE, "image/png")],
+                        vec![5u8, 5, 5],
+                    )
+                }
+            }),
+        );
+        let (addr, _handle) = spawn_stub(router).await;
+        let port: u16 = addr.rsplit(':').next().unwrap().parse().unwrap();
+
+        let repo = Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+        let owner = repo
+            .create_user("u", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let world = repo.create_world_owned("w", owner, 0).await.unwrap();
+        let root = tempfile::tempdir().unwrap();
+
+        let client = Arc::new(crate::chat::link_preview::build_client_with_resolve_fn(
+            |_host| Ok(vec!["127.0.0.1".parse().unwrap()]),
+        ));
+        let preview_url = "https://race.example/".to_string();
+        let image_url = format!("http://stub.test:{port}/img.png");
+        // Mirrors the production invariant: `enrich`'s synchronous scrape
+        // always upserts the row before a background job runs.
+        repo.upsert_link_preview_cache(&preview_url, Some("T"), Some("D"), 0)
+            .await
+            .unwrap();
+
+        let locks = test_preview_fetch_locks();
+
+        let h1 = tokio::spawn({
+            let repo = repo.clone();
+            let client = client.clone();
+            let root = root.path().to_path_buf();
+            let locks = locks.clone();
+            let world_id = world.id;
+            let preview_url = preview_url.clone();
+            let image_url = image_url.clone();
+            async move {
+                resolve_preview_image(
+                    test_fetch_deps(repo, client, root, locks),
+                    world_id,
+                    preview_url,
+                    image_url,
+                )
+                .await
+            }
+        });
+        let h2 = tokio::spawn({
+            let repo = repo.clone();
+            let client = client.clone();
+            let root = root.path().to_path_buf();
+            let locks = locks.clone();
+            let world_id = world.id;
+            let preview_url = preview_url.clone();
+            let image_url = image_url.clone();
+            async move {
+                resolve_preview_image(
+                    test_fetch_deps(repo, client, root, locks),
+                    world_id,
+                    preview_url,
+                    image_url,
+                )
+                .await
+            }
+        });
+
+        let (r1, r2) = tokio::join!(h1, h2);
+        let r1 = r1.unwrap().expect("first concurrent resolve must succeed");
+        let r2 = r2.unwrap().expect("second concurrent resolve must succeed");
+        let ResolvedEnrichment::ImageForPreview { asset_id: id1, .. } = r1 else {
+            panic!("expected ImageForPreview");
+        };
+        let ResolvedEnrichment::ImageForPreview { asset_id: id2, .. } = r2 else {
+            panic!("expected ImageForPreview");
+        };
+        assert_eq!(
+            id1, id2,
+            "both concurrent resolves for the identical URL must land on the same asset_id"
+        );
+        assert_eq!(
+            fetch_count.load(Ordering::SeqCst),
+            1,
+            "the per-URL lock must serialize the two concurrent resolves into exactly one network fetch"
+        );
+
+        let assets = repo.list_assets_by_world(world.id).await.unwrap();
+        assert_eq!(
+            assets.len(),
+            1,
+            "exactly one Asset row must exist for the raced URL, not one per racing caller"
+        );
+
+        // The registry itself must not retain the URL's lock once both
+        // resolvers have completed -- see `with_preview_url_lock`'s cleanup
+        // reasoning.
+        assert!(
+            locks.is_empty(),
+            "the per-URL lock entry must be reclaimed once no resolver still needs it"
+        );
+    }
+
+    /// The lock-registry map must not grow unboundedly across many distinct
+    /// URLs -- each entry is reclaimed once its resolver completes, not left
+    /// to accumulate for the life of the process.
+    #[tokio::test]
+    async fn preview_fetch_locks_does_not_retain_entries_after_resolvers_complete() {
+        let router = Router::new().route(
+            "/img.png",
+            get(|| async {
+                (
+                    [(axum::http::header::CONTENT_TYPE, "image/png")],
+                    vec![1u8, 2, 3],
+                )
+            }),
+        );
+        let (addr, _handle) = spawn_stub(router).await;
+        let port: u16 = addr.rsplit(':').next().unwrap().parse().unwrap();
+
+        let repo = Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+        let owner = repo
+            .create_user("u", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let world = repo.create_world_owned("w", owner, 0).await.unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let client = Arc::new(crate::chat::link_preview::build_client_with_resolve_fn(
+            |_host| Ok(vec!["127.0.0.1".parse().unwrap()]),
+        ));
+        let locks = test_preview_fetch_locks();
+
+        for i in 0..25 {
+            let preview_url = format!("https://distinct-{i}.example/");
+            repo.upsert_link_preview_cache(&preview_url, Some("T"), Some("D"), 0)
+                .await
+                .unwrap();
+            let image_url = format!("http://stub.test:{port}/img.png");
+            resolve_preview_image(
+                test_fetch_deps(
+                    repo.clone(),
+                    client.clone(),
+                    root.path().to_path_buf(),
+                    locks.clone(),
+                ),
+                world.id,
+                preview_url,
+                image_url,
+            )
+            .await
+            .expect("each distinct URL must resolve");
+        }
+
+        assert!(
+            locks.is_empty(),
+            "the lock registry must not retain an entry per distinct URL once each resolver \
+             has completed -- it would otherwise grow unboundedly over a long-running server's \
+             lifetime"
+        );
     }
 }

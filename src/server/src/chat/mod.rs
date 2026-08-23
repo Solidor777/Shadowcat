@@ -52,7 +52,9 @@ pub use link_preview::{
 pub use oembed::{
     match_provider as match_oembed_provider, OEmbedProvider, OEmbedResponse, OEmbedSegment,
 };
-pub use post_publish::{run_pending_enrichments, PendingEnrichment, PostPublishDeps};
+pub use post_publish::{
+    run_pending_enrichments, PendingEnrichment, PostPublishDeps, PreviewFetchLocks,
+};
 pub use preview_cache::{
     LinkPreviewCache, PreviewRateLimiter, MAX_CACHE_ENTRIES, NEGATIVE_TTL, POSITIVE_TTL,
     PREVIEW_FETCH_PER_MIN,

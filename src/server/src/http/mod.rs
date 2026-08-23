@@ -53,6 +53,10 @@ pub struct AppState {
     /// commit+rename interleaves with the snapshot. Asset writers hold the read
     /// side (shared among themselves, blocked by the writer).
     pub write_barrier: Arc<tokio::sync::RwLock<()>>,
+    /// Process-wide per-URL fetch-lock registry serializing concurrent
+    /// `chat::post_publish` link-preview-image/oEmbed-thumbnail resolves for
+    /// the identical URL -- see `chat::post_publish::PreviewFetchLocks`.
+    pub preview_fetch_locks: crate::chat::PreviewFetchLocks,
 }
 
 impl AppState {
@@ -226,6 +230,7 @@ pub(crate) mod tests {
             upload_rate: Arc::new(assets::UploadRateLimiter::new()),
             auth_throttle: Arc::new(throttle::AuthThrottle::new()),
             write_barrier: Arc::new(tokio::sync::RwLock::new(())),
+            preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
         }
     }
 
@@ -2972,6 +2977,7 @@ pub(crate) mod tests {
             upload_rate: Arc::new(assets::UploadRateLimiter::new()),
             auth_throttle: Arc::new(throttle::AuthThrottle::new()),
             write_barrier: Arc::new(tokio::sync::RwLock::new(())),
+            preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
         };
         (state, tmp)
     }

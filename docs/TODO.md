@@ -30,17 +30,6 @@ capability already exists — but are deferred as out-of-scope-for-now work.
   through any UI affordance. Orthogonal to the width-containment fix (`docs/CLOSED_BUGS.md`):
   giving `FakeEngine` its own menu is future work if a bespoke-fallback caller needs it.
 
-## Actionable now — link-preview image pipeline hardening
-- TODO: `chat::post_publish::resolve_preview_image`'s check-then-fetch-then-set sequence
-  (`Repository::get_link_preview_cache` → on miss, `link_preview::fetch_image_bytes` +
-  `data::asset::create_asset_from_bytes` → `Repository::set_link_preview_cache_image`) has no
-  per-URL exclusion. Two messages posting the same link within the same window can both observe a
-  cache miss and each fetch + create a separate `Asset` row/file for the identical URL, then race
-  to write `set_link_preview_cache_image` (last write wins). Benign today — no corruption, no
-  secrecy impact, only an orphaned duplicate asset/file per race — but worth a per-URL lock or a
-  transactional upsert-then-check if duplicate-asset accumulation ever matters. (Surfaced by the
-  link-preview-extensions Task 3 security review.)
-
 ## Follow-on feature sub-projects (own brainstorm → spec → plan each)
 
 Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one design pass each

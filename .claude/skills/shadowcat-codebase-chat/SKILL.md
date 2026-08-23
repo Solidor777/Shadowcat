@@ -101,9 +101,20 @@ an allowlisted host) for the caller to run via `post_publish::run_pending_enrich
   re-publishing whichever fields resolved, via `publish_resolved`. Re-reads the CURRENT stored
   document (OCC pre-image) immediately before publishing — a message edited, deleted, or
   concurrently modified by the time the fetches complete is not clobbered; a tombstoned message is
-  a silent no-op. `PostPublishDeps` groups `room`/`repo`/`client`/`assets_root`/`write_barrier` —
-  the same `AppState.write_barrier` `http::assets::upload`/`replace`/`delete` hold, since this is
-  the first asset-commit path reachable from outside a direct HTTP request.
+  a silent no-op. `PostPublishDeps` groups `room`/`repo`/`client`/`assets_root`/`write_barrier`/
+  `preview_fetch_locks` — the same `AppState.write_barrier` `http::assets::upload`/`replace`/
+  `delete` hold, since this is the first asset-commit path reachable from outside a direct HTTP
+  request.
+- **`PreviewFetchLocks`** (`AppState.preview_fetch_locks`, `Arc<DashMap<String,
+  Arc<tokio::sync::Mutex<()>>>>`) — a process-wide per-URL fetch lock, same keyed-registry shape as
+  `ws::room::RoomRegistry.rooms`, closing the race where two concurrent post-publish jobs resolving
+  the identical URL both observe a `link_preview_cache` miss and each create their own orphaned
+  `Asset`. `with_preview_url_lock` runs a resolver's WHOLE check-cache-then-fetch-then-set sequence
+  under the per-URL lock (a second caller for the same URL observes a cache HIT and skips the
+  fetch entirely), then reclaims the map entry once no concurrent caller still holds a clone —
+  the strong-count check and the removal happen inside one continuous keyed-entry lookup so no
+  waiter can observe or clone the `Arc` in between, ruling out two different `Mutex` instances ever
+  existing for the same URL at once.
 - **`resolve_preview_image`** — checks the persisted `link_preview_cache` row for the preview's
   URL FIRST and reuses an existing `image_asset_id` verbatim on a hit (never re-fetching/
   re-creating an asset for a link any message already imaged); on a miss, fetches the image via
