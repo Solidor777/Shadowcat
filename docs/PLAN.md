@@ -1468,6 +1468,43 @@ against a NEW document that later reused the same id.
   context into a queryable history once this phase lands — see that entry for the forward
   reference; this phase is the prerequisite, not a duplicate of it.
 
+### Bucket C · Link-preview extensions ✅
+**COMPLETE.** Closed bucket-C sub-project 1 (`docs/TODO.md`): a server-fetched, asset-ified
+`og:image` for generic link previews (`chat::post_publish`, republished via
+`WriteOrigin::ServerMessageRevision` after the synchronous send/edit already returned), a
+restart-surviving persisted `link_preview_cache` table behind the existing in-memory tier, and
+allowlisted-provider (YouTube/Vimeo) oEmbed embeds (`chat::oembed`) — structured fields only, a
+provider's raw `html` field never reaches any stored value or rendered output by construction. The
+existing synchronous title/description scrape and its SSRF guard (`validate_url`/`GuardedResolver`)
+are extracted into one shared `guarded_get`, reused unmodified by every new fetch (image bytes,
+oEmbed JSON). `data::asset::create_asset_from_bytes`/`commit_staged_asset` is the commit path both
+the GM upload route and this background pipeline now share, guarded by the same
+`AppState.write_barrier` every asset writer holds. Design:
+[`superpowers/specs/2026-08-21-link-preview-extensions-design.md`](superpowers/specs/2026-08-21-link-preview-extensions-design.md).
+Plan:
+[`superpowers/plans/2026-08-21-link-preview-extensions.md`](superpowers/plans/2026-08-21-link-preview-extensions.md).
+
+### Bucket C · Per-channel dice-settings overrides ✅
+**COMPLETE.** Closed bucket-C sub-project 5 (`docs/TODO.md`): `DiceSettingsEngine` gained
+`channel_overrides: BTreeMap<String, ChannelDiceOverride>` — a full-replacement (never
+partially-merged) `{mode, direction}` pair keyed by `channel-registry`'s channel ids.
+`chat::settings::resolve_dice_context` gained a `channel: &str` parameter: a registered override
+for the sending channel wins outright; a channel absent from the map, an absent/malformed
+`dice-settings` doc, or a query error all fall back to (or stay on) the existing world-default/
+fail-closed baseline, unchanged and channel-independent. `handle_send_message`'s three existing
+call sites thread the request's own `channel` through with no other behavior change. Per-message
+inline notation (`t<N>`/explicit `cs>=N`/`cf<N`) already forced `SuccessCount` regardless of any
+ambient setting — re-pinned by a new regression test against a per-channel-resolved ambient, per
+spec §1 (no new plumbing needed for that half). A new GM editor in `module-game-settings`'s Dice
+section enumerates `channel-registry`'s channels with an inherit/custom tri-state per row,
+matching the existing world-default controls' shape. `channel`'s server-side role stays narrowly
+scoped to this one resolution decision — it still never gates document visibility, message
+audience, or any capability check; `shadowcat-codebase-chat`'s prior "zero server-enforced
+meaning" claim is corrected to state this one exception. Design:
+[`superpowers/specs/2026-08-21-per-channel-dice-settings-design.md`](superpowers/specs/2026-08-21-per-channel-dice-settings-design.md).
+Plan:
+[`superpowers/plans/2026-08-21-per-channel-dice-settings.md`](superpowers/plans/2026-08-21-per-channel-dice-settings.md).
+
 ## Phase 2 — Full table
 Combat tracker (initiative, hidden combatants, turn-event triggers; depends on M11 dice) → real asset pipeline (chunked upload, image conversion, tags, derived tags) + asset browser (regex / tag / dir search, preview / rename / move / tag) → layout / theming completion (drag-resize, pop-out, multi / user themes, module styling modes) → vision / lighting / movement completion (photometric, darkvision / tremorsense / height; **per-actor/faction movement exemptions — flying/incorporeal ignore difficult terrain, deferred from M10g; needs movement-type tags on actors**) → token enrichment (aura / light / sound / VFX emitters, **trigger regions — mechanical/trigger effects built on the M10g region primitive: damage, condition application, scripted triggers on enter/arrest**, token-art, **generated token visuals (deferred from M10i) — a parametric compositor that frames existing actor art into a token: decorative border + shape-crop mask + background, distinct from the dynamic faction ring; a new additive `{kind:"generated"}` on the M10h `RenderVisual` union**, **per-token built-in fx (deferred from M10j) — condition-driven tint / desaturate / highlight + selection/faction/target highlight via a per-token Pixi `.filters` attach point on the M10h token `Container`; custom shader-filter seam stays Phase 3 VFX**, **emote / reaction overlays (deferred from M10j) — transient overlay above the token via a new ping-style `emote` aux frame + fading child**) → rollable tables (on the dice engine + document model), rich-text notes (on the document model), chat media linking (images; YouTube as thumbnail + external link only — no IFrame / Data API) → full default module suite → search consolidated into one milestone (single backend; no three-backend split).
 

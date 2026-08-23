@@ -160,9 +160,12 @@ an allowlisted host) for the caller to run via `post_publish::run_pending_enrich
   the stable identity a recalc targets, never the segment's array index.
   Normal/Emote bodies are `scan_body`-chunked — Text chunks sanitize EACH INDEPENDENTLY
   (markdown spanning an inline roll doesn't survive, documented), Inline chunks execute,
-  Button chunks validate-only. Ambient `ParseContext` = `resolve_dice_context` (the
-  `dice-settings` config doc, fail-closed Total/HighWins, GM-authored in
-  module-game-settings' Dice section). ANY roll failure ⇒ the message is NOT created; instead
+  Button chunks validate-only. Ambient `ParseContext` = `resolve_dice_context(repo, world,
+  channel)` (the `dice-settings` config doc: a `channel_overrides` entry for the SENDING channel
+  wins outright over the doc's own `mode`/`direction`, full replacement never partial merge; fail-
+  closed to Total/HighWins on any query error, absent doc, or malformed body, REGARDLESS of
+  channel; GM-authored in module-game-settings' Dice section, including a per-channel editor
+  enumerating `channel-registry`'s channels). ANY roll failure ⇒ the message is NOT created; instead
   ONE server-authored `MessageKind::System` notice (audience `Whisper{[sender]}`, same
   channel, sender-owned/deletable, content = the error's Display text) — exactly one message
   per attempted send, so the flood budget stays 1:1. `System` still has NO parse_command
@@ -257,10 +260,14 @@ with zero message-specific plumbing in any of those subsystems.
   - `Audience` (`Public`/`Whisper{recipients: Vec<Uuid>}`/`GmOnly`, `#[default] Public`, tagged
     enum, ts-rs exported same as `ActorOwnerRef`) — the intended readership of a message, carried
     on the `SendMessage` frame and stored verbatim in `MessageEngine`. This is the ONLY
-    server-enforced visibility concept for chat; `channel` is a purely client-chosen label with
-    ZERO server-enforced meaning — the server never validates or branches on it. A client module
-    choosing to post to a "GM" channel is what sets `audience: GmOnly`; the server has no concept
-    of a reserved channel name.
+    server-enforced VISIBILITY concept for chat; `channel` is a client-chosen label the server
+    never uses to gate document visibility, message audience, or any capability check — that
+    boundary is `Audience` alone. `channel` has exactly ONE narrow server-enforced reason to be
+    read: `chat::settings::resolve_dice_context` looks it up against the world's `dice-settings`
+    `channel_overrides` map to select which `mode`/`direction` pair an ambient roll resolves under
+    (see the "Dice wire" section) — misresolving it at worst changes which dice settings a
+    roll uses, never who can see a message. A client module choosing to post to a "GM" channel is
+    what sets `audience: GmOnly`; the server has no concept of a reserved channel name.
   - `MessageEngine{channel, user_owner, actor_owner, kind, audience, content, source,
     edited_at, deleted_at}` lives at
     `Document.engine`, not `Document.system` — a message doc's `system` body is empty `{}` — the

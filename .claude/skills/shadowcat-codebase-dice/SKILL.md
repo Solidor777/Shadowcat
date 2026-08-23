@@ -25,8 +25,13 @@ and player-presentable `Display` for `ParseError`/`Token` (surfaced via chat Sys
 The recursive-descent parser has NO depth counter — callers rely on their input-length cap
 (documented on `struct P`; chat's `MAX_MESSAGE_CHARS=4096` ≈ 2k nesting levels, safe on all
 three target OSes' default stacks). Ambient `ParseContext` for chat rolls comes from the
-world's `dice-settings` config doc (`chat::settings::resolve_dice_context`, fail-closed
-Total/HighWins, GM-authored in `module-game-settings`'s Dice section).
+world's `dice-settings` config doc (`chat::settings::resolve_dice_context`, channel-scoped: a
+`DiceSettingsEngine.channel_overrides` entry for the sending channel wins over the doc's own
+`mode`/`direction`; fail-closed to Total/HighWins on any query error, absent doc, or malformed
+body, regardless of channel; GM-authored in `module-game-settings`'s Dice section). `ChannelDiceOverride`
+(`data::engine::registries`) is a sibling type of `DiceSettingsEngine` in the world-settings-doc
+family — identical `{mode, direction}` shape, so a channel's override and the document's own
+world default share ONE resolution semantics, never a second merge rule.
 
 ## Purpose
 
