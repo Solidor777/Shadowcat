@@ -92,12 +92,21 @@ pub async fn resolve_content_policy(repo: &dyn Repository, world_id: Uuid) -> Ch
 /// Doc_type for the single per-world dice-settings config `Document`.
 pub const DICE_SETTINGS_DOC_TYPE: &str = "dice-settings";
 
-/// Read the world's ambient dice-notation `ParseContext`, fail-closed. A query
-/// error, an absent `dice-settings` doc, or an `engine` body that fails to
-/// deserialize into `DiceSettingsEngine` all yield `ParseContext { mode: Total,
-/// direction: HighWins }` — the same safe baseline `resolve_content_policy`
-/// uses for chat enrichment.
-pub async fn resolve_dice_context(repo: &dyn Repository, world: Uuid) -> ParseContext {
+/// Read the world's ambient dice-notation `ParseContext` for `channel`,
+/// fail-closed. A query error, an absent `dice-settings` doc, or an `engine`
+/// body that fails to deserialize into `DiceSettingsEngine` all yield
+/// `ParseContext { mode: Total, direction: HighWins }` regardless of
+/// `channel` — the same safe baseline `resolve_content_policy` uses for chat
+/// enrichment. When the doc IS present and well-formed, `channel_overrides`
+/// is checked first: a channel with a registered override resolves under
+/// that override's `mode`/`direction` (full replacement, never merged with
+/// the world default); a channel absent from the map falls back to the
+/// doc's own `mode`/`direction`.
+pub async fn resolve_dice_context(
+    repo: &dyn Repository,
+    world: Uuid,
+    channel: &str,
+) -> ParseContext {
     let default = ParseContext::default();
     let docs = match repo.query_documents(world, DICE_SETTINGS_DOC_TYPE).await {
         Ok(d) => d,
@@ -110,12 +119,20 @@ pub async fn resolve_dice_context(repo: &dyn Repository, world: Uuid) -> ParseCo
         Some(b) => b,
         None => return default,
     };
+    // A registered override for the SENDING channel wins outright (full
+    // replacement, per DiceSettingsEngine.channel_overrides' doc); a
+    // channel absent from the map — including every channel when the map
+    // is empty — falls back to the doc's own world-default mode/direction.
+    let (mode, direction) = match body.channel_overrides.get(channel) {
+        Some(o) => (o.mode, o.direction),
+        None => (body.mode, body.direction),
+    };
     ParseContext {
-        mode: match body.mode {
+        mode: match mode {
             DiceModeSetting::Total => ModeKind::Total,
             DiceModeSetting::SuccessCount => ModeKind::SuccessCount,
         },
-        direction: match body.direction {
+        direction: match direction {
             DiceDirectionSetting::HighWins => Direction::HighWins,
             DiceDirectionSetting::LowWins => Direction::LowWins,
         },
@@ -352,15 +369,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn absent_dice_settings_doc_resolves_to_default() {
+    async fn absent_dice_settings_doc_resolves_to_default_regardless_of_channel() {
         let (repo, world_id, _gm) = world().await;
-        let ctx = resolve_dice_context(&repo, world_id).await;
-        assert_eq!(ctx.mode, ModeKind::Total);
-        assert_eq!(ctx.direction, Direction::HighWins);
+        for channel in ["general", "ic"] {
+            let ctx = resolve_dice_context(&repo, world_id, channel).await;
+            assert_eq!(ctx.mode, ModeKind::Total, "channel={channel}");
+            assert_eq!(ctx.direction, Direction::HighWins, "channel={channel}");
+        }
     }
 
     #[tokio::test]
-    async fn malformed_dice_settings_body_resolves_to_default() {
+    async fn malformed_dice_settings_body_resolves_to_default_regardless_of_channel() {
         let (repo, world_id, gm) = world().await;
         // `mode` is a type mismatch (number, not a known string), so
         // deserialization into `DiceSettingsEngine` errors outright. Seeded
@@ -368,9 +387,11 @@ mod tests {
         // and `apply_command` would reject this Create.
         let doc = dice_settings_doc(world_id, gm, serde_json::json!({ "mode": 5 }));
         seed_settings_doc(&repo, world_id, gm, doc).await;
-        let ctx = resolve_dice_context(&repo, world_id).await;
-        assert_eq!(ctx.mode, ModeKind::Total);
-        assert_eq!(ctx.direction, Direction::HighWins);
+        for channel in ["general", "ic"] {
+            let ctx = resolve_dice_context(&repo, world_id, channel).await;
+            assert_eq!(ctx.mode, ModeKind::Total, "channel={channel}");
+            assert_eq!(ctx.direction, Direction::HighWins, "channel={channel}");
+        }
     }
 
     #[tokio::test]
@@ -386,7 +407,7 @@ mod tests {
             serde_json::json!({ "mode": "foobar", "direction": "low_wins" }),
         );
         seed_settings_doc(&repo, world_id, gm, doc).await;
-        let ctx = resolve_dice_context(&repo, world_id).await;
+        let ctx = resolve_dice_context(&repo, world_id, "general").await;
         assert_eq!(ctx.mode, ModeKind::Total);
         assert_eq!(ctx.direction, Direction::HighWins);
     }
@@ -400,7 +421,7 @@ mod tests {
             serde_json::json!({ "mode": "total", "direction": "high_wins" }),
         );
         seed_settings_doc(&repo, world_id, gm, doc).await;
-        let ctx = resolve_dice_context(&repo, world_id).await;
+        let ctx = resolve_dice_context(&repo, world_id, "general").await;
         assert_eq!(ctx.mode, ModeKind::Total);
         assert_eq!(ctx.direction, Direction::HighWins);
     }
@@ -414,7 +435,7 @@ mod tests {
             serde_json::json!({ "mode": "total", "direction": "low_wins" }),
         );
         seed_settings_doc(&repo, world_id, gm, doc).await;
-        let ctx = resolve_dice_context(&repo, world_id).await;
+        let ctx = resolve_dice_context(&repo, world_id, "general").await;
         assert_eq!(ctx.mode, ModeKind::Total);
         assert_eq!(ctx.direction, Direction::LowWins);
     }
@@ -428,7 +449,7 @@ mod tests {
             serde_json::json!({ "mode": "success_count", "direction": "high_wins" }),
         );
         seed_settings_doc(&repo, world_id, gm, doc).await;
-        let ctx = resolve_dice_context(&repo, world_id).await;
+        let ctx = resolve_dice_context(&repo, world_id, "general").await;
         assert_eq!(ctx.mode, ModeKind::SuccessCount);
         assert_eq!(ctx.direction, Direction::HighWins);
     }
@@ -442,7 +463,7 @@ mod tests {
             serde_json::json!({ "mode": "success_count", "direction": "low_wins" }),
         );
         seed_settings_doc(&repo, world_id, gm, doc).await;
-        let ctx = resolve_dice_context(&repo, world_id).await;
+        let ctx = resolve_dice_context(&repo, world_id, "general").await;
         assert_eq!(ctx.mode, ModeKind::SuccessCount);
         assert_eq!(ctx.direction, Direction::LowWins);
     }
@@ -453,7 +474,7 @@ mod tests {
         // Only `mode` set; `direction` must default to `HighWins`.
         let doc = dice_settings_doc(world_id, gm, serde_json::json!({ "mode": "success_count" }));
         seed_settings_doc(&repo, world_id, gm, doc).await;
-        let ctx = resolve_dice_context(&repo, world_id).await;
+        let ctx = resolve_dice_context(&repo, world_id, "general").await;
         assert_eq!(ctx.mode, ModeKind::SuccessCount);
         assert_eq!(ctx.direction, Direction::HighWins);
 
@@ -465,8 +486,50 @@ mod tests {
             serde_json::json!({ "direction": "low_wins" }),
         );
         seed_settings_doc(&repo2, world_id2, gm2, doc2).await;
-        let ctx2 = resolve_dice_context(&repo2, world_id2).await;
+        let ctx2 = resolve_dice_context(&repo2, world_id2, "general").await;
         assert_eq!(ctx2.mode, ModeKind::Total);
         assert_eq!(ctx2.direction, Direction::LowWins);
+    }
+
+    #[tokio::test]
+    async fn channel_with_override_resolves_to_it() {
+        let (repo, world_id, gm) = world().await;
+        let doc = dice_settings_doc(
+            world_id,
+            gm,
+            serde_json::json!({
+                "mode": "total", "direction": "high_wins",
+                "channel_overrides": {
+                    "ic": { "mode": "success_count", "direction": "low_wins" }
+                }
+            }),
+        );
+        seed_settings_doc(&repo, world_id, gm, doc).await;
+        let ctx = resolve_dice_context(&repo, world_id, "ic").await;
+        assert_eq!(ctx.mode, ModeKind::SuccessCount);
+        assert_eq!(ctx.direction, Direction::LowWins);
+    }
+
+    #[tokio::test]
+    async fn channel_absent_from_map_falls_back_to_world_default() {
+        let (repo, world_id, gm) = world().await;
+        let doc = dice_settings_doc(
+            world_id,
+            gm,
+            serde_json::json!({
+                "mode": "total", "direction": "high_wins",
+                "channel_overrides": {
+                    "ic": { "mode": "success_count", "direction": "low_wins" }
+                }
+            }),
+        );
+        seed_settings_doc(&repo, world_id, gm, doc).await;
+        // "ooc" carries no override, so it resolves against the world default
+        // (Total/HighWins here) despite "ic" having a DIFFERENT override
+        // registered in the very same doc — proves the lookup is per-channel,
+        // not "any override present anywhere widens every channel".
+        let ctx = resolve_dice_context(&repo, world_id, "ooc").await;
+        assert_eq!(ctx.mode, ModeKind::Total);
+        assert_eq!(ctx.direction, Direction::HighWins);
     }
 }

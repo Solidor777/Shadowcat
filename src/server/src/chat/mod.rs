@@ -904,7 +904,7 @@ pub async fn handle_send_message(
     // whether this attempt turns out to be a roll.
     let policy = resolve_content_policy(repo, room.world_id).await;
     let mut content_segments = if parsed.kind == MessageKind::Roll {
-        let dice_ctx = resolve_dice_context(repo, room.world_id).await;
+        let dice_ctx = resolve_dice_context(repo, room.world_id, &channel).await;
         match rolls::execute_roll(&parsed.body, dice_ctx) {
             Ok((formula, outcome, spec, raw)) => vec![Segment::RollEmbed {
                 formula,
@@ -964,7 +964,8 @@ pub async fn handle_send_message(
                     rolls::BodyChunk::Text(t) => segments.extend(sanitize(t, &policy)),
                     rolls::BodyChunk::Inline(formula) => {
                         if dice_ctx.is_none() {
-                            dice_ctx = Some(resolve_dice_context(repo, room.world_id).await);
+                            dice_ctx =
+                                Some(resolve_dice_context(repo, room.world_id, &channel).await);
                         }
                         match rolls::execute_roll(formula, dice_ctx.unwrap()) {
                             Ok((formula, outcome, spec, raw)) => {
@@ -985,7 +986,8 @@ pub async fn handle_send_message(
                     }
                     rolls::BodyChunk::Button { formula, label } => {
                         if dice_ctx.is_none() {
-                            dice_ctx = Some(resolve_dice_context(repo, room.world_id).await);
+                            dice_ctx =
+                                Some(resolve_dice_context(repo, room.world_id, &channel).await);
                         }
                         // Stored/validated formula is trimmed — the `roll:`/`|`
                         // split leaves incidental whitespace (e.g.
@@ -4467,6 +4469,68 @@ mod link_preview_ingest_tests {
                 .map(|(cmd, _pending)| cmd)
         }
 
+        /// Same as `send`, but to an explicit `channel` rather than the
+        /// hardcoded `"all"` — needed to exercise per-channel dice-settings
+        /// resolution, which `send` alone cannot reach.
+        async fn send_channel(
+            &self,
+            channel: &str,
+            content: &str,
+            now: i64,
+        ) -> Result<Command, SendMessageError> {
+            handle_send_message(
+                MessageRequestCtx {
+                    room: &self.room,
+                    repo: &self.repo,
+                    ctx: &self.ctx,
+                    rate: &self.rate,
+                    preview: LinkPreviewDeps {
+                        client: &self.preview_client,
+                        cache: &self.preview_cache,
+                        rate: &self.preview_rate,
+                    },
+                    now,
+                    budget_per_min: 60,
+                },
+                channel.into(),
+                content.into(),
+                None,
+                Audience::Public,
+            )
+            .await
+            .map(|(cmd, _pending)| cmd)
+        }
+
+        /// Seeds a `dice-settings` doc with the given `engine` JSON via the
+        /// test-only raw insert (`SqliteRepository::seed_document_unvalidated`)
+        /// — `Fixture` retains no GM `PermissionContext` to drive a normal
+        /// `apply_intent` Create, and a well-formed `channel_overrides` body
+        /// doesn't need ingress validation to exercise `handle_send_message`'s
+        /// channel-threading. `owner` must be a real created user (an FK), so
+        /// this uses the fixture's own player id.
+        async fn seed_dice_settings(&self, engine: serde_json::Value) {
+            let doc = Document {
+                id: Uuid::new_v4(),
+                scope: Scope::World {
+                    world_id: self.room.world_id,
+                },
+                doc_type: DICE_SETTINGS_DOC_TYPE.to_string(),
+                schema_version: 1,
+                name: None,
+                source: None,
+                base: None,
+                owner: Some(self.ctx.user_id),
+                permissions: PermissionSet::default(),
+                embedded: BTreeMap::new(),
+                parent_id: None,
+                engine: Some(engine),
+                system: serde_json::json!({}),
+                created_at: 0,
+                updated_at: 0,
+            };
+            self.repo.seed_document_unvalidated(&doc).await.unwrap();
+        }
+
         /// Same as `send`, but returns the full `(Command, Vec<PendingEnrichment>)`
         /// tuple — `send` discards the pending half, which hides whether
         /// `enrich`'s image-candidate queue actually reaches this call's
@@ -4870,6 +4934,89 @@ mod link_preview_ingest_tests {
                 .any(|s| matches!(s, Segment::LinkPreview { .. })),
             "a roll message must never carry a LinkPreview: {:?}",
             sys.content
+        );
+    }
+
+    /// Ingest-level pin: `handle_send_message` resolves the ambient dice
+    /// context under the SENDING channel, not a hardcoded/ignored one. A
+    /// bare `t<N>` target (mode-agnostic notation — resolves to
+    /// `TotalConfig.difficulty` under Total-ambient, or a SuccessCount
+    /// target under SuccessCount-ambient, per the notation parser's
+    /// `ParseContext`-driven resolution) sent to "ic" (which carries a
+    /// SuccessCount channel override) yields `successes: Some(_)`, while the
+    /// SAME formula sent to "general" (no override, world default Total)
+    /// yields `successes: None`.
+    #[tokio::test]
+    async fn ambient_mode_resolves_per_sending_channel() {
+        let f = Fixture::new(ChatContentPolicy::default()).await;
+        f.seed_dice_settings(serde_json::json!({
+            "mode": "total", "direction": "high_wins",
+            "channel_overrides": {
+                "ic": { "mode": "success_count", "direction": "high_wins" }
+            }
+        }))
+        .await;
+
+        let ic_cmd = f.send_channel("ic", "/roll 4d6t3", 1).await.unwrap();
+        let ic_sys = f.stored_engine(&ic_cmd).await;
+        let Segment::RollEmbed {
+            outcome: ic_outcome,
+            ..
+        } = ic_sys.content.first().unwrap()
+        else {
+            panic!("expected a RollEmbed segment: {:?}", ic_sys.content);
+        };
+        assert!(
+            ic_outcome.successes.is_some(),
+            "channel \"ic\" carries a SuccessCount override, so a bare t<N> \
+             target must resolve as a success count: {ic_outcome:?}"
+        );
+
+        let general_cmd = f.send_channel("general", "/roll 4d6t3", 2).await.unwrap();
+        let general_sys = f.stored_engine(&general_cmd).await;
+        let Segment::RollEmbed {
+            outcome: general_outcome,
+            ..
+        } = general_sys.content.first().unwrap()
+        else {
+            panic!("expected a RollEmbed segment: {:?}", general_sys.content);
+        };
+        assert!(
+            general_outcome.successes.is_none(),
+            "channel \"general\" carries no override, so it must fall back \
+             to the Total world default: {general_outcome:?}"
+        );
+    }
+
+    /// An explicit `cs>=N` (or `t<N>`) notation override already forces
+    /// `SuccessCount` regardless of the AMBIENT resolved dice-settings —
+    /// per-message overrides are fully satisfied by existing parser
+    /// precedence, needing no new plumbing. This re-asserts that precedence
+    /// now that ambient resolution is per-channel, not just per-world: an
+    /// explicit `cs>=3` still wins even though the sending channel's own
+    /// override says Total.
+    #[tokio::test]
+    async fn inline_success_rule_notation_forces_success_count_despite_a_total_channel_override() {
+        let f = Fixture::new(ChatContentPolicy::default()).await;
+        f.seed_dice_settings(serde_json::json!({
+            "mode": "total", "direction": "high_wins",
+            "channel_overrides": {
+                "ic": { "mode": "total", "direction": "high_wins" }
+            }
+        }))
+        .await;
+
+        let cmd = f.send_channel("ic", "/roll 4d6cs>=3", 1).await.unwrap();
+        let sys = f.stored_engine(&cmd).await;
+        assert_eq!(sys.kind, MessageKind::Roll);
+        let Segment::RollEmbed { outcome, .. } = sys.content.first().unwrap() else {
+            panic!("expected a RollEmbed segment: {:?}", sys.content);
+        };
+        assert!(
+            outcome.successes.is_some(),
+            "explicit cs>=N notation must force SuccessCount (successes \
+             populated) regardless of the channel's Total-mode ambient \
+             override: {outcome:?}"
         );
     }
 
