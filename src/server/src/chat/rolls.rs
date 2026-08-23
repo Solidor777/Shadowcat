@@ -18,6 +18,7 @@
 
 use uuid::Uuid;
 
+use super::DocLinkTarget;
 use crate::dice::notation::{self, ParseContext, ParseError};
 use crate::dice::outcome::RollOutcome;
 use crate::dice::rng::NoiseRng;
@@ -45,12 +46,13 @@ pub(crate) const MAX_EXPERTISE: u32 = 100;
 /// construction -- they saturate at `i64::MAX`/`MIN` on overflow instead of
 /// panicking or wrapping (see `eval::sum`'s `*_saturating` helpers).
 pub(crate) const MAX_DIE_SIDES: i64 = 10_000;
-/// Cap on non-text chunks (`Inline`/`Button`) `scan_body` may extract from one
+/// Cap on non-text chunks (`Inline`/`Button`/`DocLink`) `scan_body` may extract from one
 /// message body.
 pub(crate) const MAX_INLINE_ROLLS: usize = 8;
 
 /// One scanned chunk of a message body: literal text between spans, an
-/// inline roll to execute, or a button to validate-and-store.
+/// inline roll to execute, a button to validate-and-store, or a doc/token
+/// link to store directly.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum BodyChunk<'a> {
     /// Literal body text between spans.
@@ -64,6 +66,17 @@ pub(crate) enum BodyChunk<'a> {
         /// Optional label after the `|` separator.
         label: Option<&'a str>,
     },
+    /// A `[[doc:<uuid>[/<embedded_path>]|<label>]]` or `[[token:<uuid>|<label>]]` span: a
+    /// free-form author-inserted link, captured with its target and display label fully
+    /// parsed — `handle_send_message`'s ingest arm does no further parsing (see
+    /// `Segment::DocLink`'s own doc comment).
+    DocLink {
+        /// What the link points at.
+        target: DocLinkTarget,
+        /// Display text captured at authoring time (the composer's `|<label>` suffix); never
+        /// empty (an empty/absent label is a `RollError::MalformedDocLink`).
+        label: &'a str,
+    },
 }
 
 /// Balanced span scanner. A span opens at `[[` and closes at the first `]]`
@@ -71,12 +84,17 @@ pub(crate) enum BodyChunk<'a> {
 /// `[` increments `depth` and a single `]` decrements it (a lone `]` at
 /// `depth == 0` that is NOT immediately followed by a second `]` is left as
 /// literal content — `depth` never goes negative), so a notation label's own
-/// brackets (`[[4d6[atk]]]` -> formula `4d6[atk]`) survive intact. A `roll:`
+/// brackets (`[[4d6[atk]]]` -> formula `4d6[atk]`) survive intact. A `doc:`/
+/// `token:` prefix on the span's content produces a `DocLink`: grammar
+/// `doc:<uuid>[/<embedded_path>]|<label>` or `token:<uuid>|<label>`, fully
+/// parsed here (`handle_send_message`'s ingest arm does no further parsing). A `roll:`
 /// prefix on the span's content produces a `Button`; the content is then
 /// split on the first `|` into `formula`/an optional trimmed `label` (empty
 /// after trim => `None`). Every other span is an `Inline`. Errors: a span
 /// opened but never closed by a balanced `]]` (`RollError::Unterminated`);
-/// more than `MAX_INLINE_ROLLS` non-text chunks (`RollError::TooManyInline`).
+/// more than `MAX_INLINE_ROLLS` non-text chunks (`RollError::TooManyInline`);
+/// a `doc:`/`token:`-prefixed span with an unparseable id or a missing/empty
+/// `|<label>` suffix (`RollError::MalformedDocLink`).
 pub(crate) fn scan_body(body: &str) -> Result<Vec<BodyChunk<'_>>, RollError> {
     let mut chunks = Vec::new();
     let mut non_text = 0usize;
@@ -130,17 +148,23 @@ pub(crate) fn scan_body(body: &str) -> Result<Vec<BodyChunk<'_>>, RollError> {
         if non_text > MAX_INLINE_ROLLS {
             return Err(RollError::TooManyInline(non_text));
         }
-        if let Some(rest) = content.strip_prefix("roll:") {
-            let (formula, label) = match rest.split_once('|') {
-                Some((f, l)) => {
-                    let l = l.trim();
-                    (f, if l.is_empty() { None } else { Some(l) })
+        match parse_doc_link(content) {
+            Ok(Some(chunk)) => chunks.push(chunk),
+            Err(()) => return Err(RollError::MalformedDocLink),
+            Ok(None) => {
+                if let Some(rest) = content.strip_prefix("roll:") {
+                    let (formula, label) = match rest.split_once('|') {
+                        Some((f, l)) => {
+                            let l = l.trim();
+                            (f, if l.is_empty() { None } else { Some(l) })
+                        }
+                        None => (rest, None),
+                    };
+                    chunks.push(BodyChunk::Button { formula, label });
+                } else {
+                    chunks.push(BodyChunk::Inline(content));
                 }
-                None => (rest, None),
-            };
-            chunks.push(BodyChunk::Button { formula, label });
-        } else {
-            chunks.push(BodyChunk::Inline(content));
+            }
         }
 
         pos = content_end + 2; // past the terminating "]]"
@@ -148,6 +172,50 @@ pub(crate) fn scan_body(body: &str) -> Result<Vec<BodyChunk<'_>>, RollError> {
     }
 
     Ok(chunks)
+}
+
+/// Parses `content` as a `doc:`/`token:`-prefixed span. `Ok(None)` when `content` carries
+/// neither prefix (the caller falls through to `roll:`/`Inline` handling); `Err(())` when the
+/// prefix is recognized but the id/label grammar is malformed (the caller returns
+/// `RollError::MalformedDocLink`); `Ok(Some(chunk))` on success. Grammar:
+/// `doc:<uuid>[/<embedded_path>]|<label>` or `token:<uuid>|<label>` — the id/path is
+/// everything before the FIRST `|`, split from an optional `/<embedded_path>` at the first `/`
+/// after the `doc:`/`token:` prefix; the label is everything after that `|`, trimmed, and must
+/// be non-empty (`Segment::DocLink.label` is a required field, unlike `Button`'s optional
+/// label).
+fn parse_doc_link(content: &str) -> Result<Option<BodyChunk<'_>>, ()> {
+    if let Some(rest) = content.strip_prefix("doc:") {
+        let (id_and_path, label) = rest.split_once('|').ok_or(())?;
+        let label = label.trim();
+        if label.is_empty() {
+            return Err(());
+        }
+        let (id_part, embedded_path) = match id_and_path.split_once('/') {
+            Some((id, p)) => (id, Some(format!("/{p}"))),
+            None => (id_and_path, None),
+        };
+        let doc_id = Uuid::parse_str(id_part).map_err(|_| ())?;
+        return Ok(Some(BodyChunk::DocLink {
+            target: DocLinkTarget::Doc {
+                doc_id,
+                embedded_path,
+            },
+            label,
+        }));
+    }
+    if let Some(rest) = content.strip_prefix("token:") {
+        let (id_part, label) = rest.split_once('|').ok_or(())?;
+        let label = label.trim();
+        if label.is_empty() {
+            return Err(());
+        }
+        let token_id = Uuid::parse_str(id_part).map_err(|_| ())?;
+        return Ok(Some(BodyChunk::DocLink {
+            target: DocLinkTarget::Token { token_id },
+            label,
+        }));
+    }
+    Ok(None)
 }
 
 /// Fresh OS-entropy seed per roll: `Uuid::new_v4` (v4 = 122 random bits from
@@ -187,6 +255,9 @@ pub enum RollError {
     /// would be nondeterministic. Refused at construction so every downstream
     /// ladder is unambiguous (`dice::eval::classify`'s doc comment documents the tie).
     DuplicateTierOffset(i32),
+    /// A `[[doc:...]]`/`[[token:...]]` span recognized by its prefix but malformed: an
+    /// unparseable id, or a missing/empty `|<label>` suffix.
+    MalformedDocLink,
 }
 
 /// Player-presentable. `Parse` reuses `ParseError`'s own `Display`; every
@@ -226,6 +297,9 @@ impl std::fmt::Display for RollError {
             }
             RollError::DuplicateTierOffset(o) => {
                 write!(f, "duplicate tier margin offset {o}")
+            }
+            RollError::MalformedDocLink => {
+                write!(f, "that document/token link is malformed")
             }
         }
     }
@@ -551,6 +625,146 @@ mod tests {
     }
 
     #[test]
+    fn scan_doc_link() {
+        let chunks = scan_body("[[doc:00000000-0000-0000-0000-000000000001|My Document]]").unwrap();
+        assert_eq!(
+            chunks,
+            vec![BodyChunk::DocLink {
+                target: DocLinkTarget::Doc {
+                    doc_id: Uuid::from_u128(1),
+                    embedded_path: None,
+                },
+                label: "My Document",
+            }]
+        );
+    }
+
+    #[test]
+    fn scan_doc_link_with_embedded_path() {
+        let chunks =
+            scan_body("[[doc:00000000-0000-0000-0000-000000000001/embedded/actor/0|My Item]]")
+                .unwrap();
+        assert_eq!(
+            chunks,
+            vec![BodyChunk::DocLink {
+                target: DocLinkTarget::Doc {
+                    doc_id: Uuid::from_u128(1),
+                    embedded_path: Some("/embedded/actor/0".into()),
+                },
+                label: "My Item",
+            }]
+        );
+    }
+
+    #[test]
+    fn scan_token_link() {
+        let chunks = scan_body("[[token:00000000-0000-0000-0000-000000000002|Goblin]]").unwrap();
+        assert_eq!(
+            chunks,
+            vec![BodyChunk::DocLink {
+                target: DocLinkTarget::Token {
+                    token_id: Uuid::from_u128(2),
+                },
+                label: "Goblin",
+            }]
+        );
+    }
+
+    #[test]
+    fn scan_doc_link_with_surrounding_text() {
+        let chunks =
+            scan_body("see [[doc:00000000-0000-0000-0000-000000000001|Doc]] please").unwrap();
+        assert_eq!(
+            chunks,
+            vec![
+                BodyChunk::Text("see "),
+                BodyChunk::DocLink {
+                    target: DocLinkTarget::Doc {
+                        doc_id: Uuid::from_u128(1),
+                        embedded_path: None,
+                    },
+                    label: "Doc",
+                },
+                BodyChunk::Text(" please"),
+            ]
+        );
+    }
+
+    #[test]
+    fn scan_doc_link_missing_label_is_malformed() {
+        assert_eq!(
+            scan_body("[[doc:00000000-0000-0000-0000-000000000001]]"),
+            Err(RollError::MalformedDocLink)
+        );
+    }
+
+    #[test]
+    fn scan_doc_link_empty_label_is_malformed() {
+        assert_eq!(
+            scan_body("[[doc:00000000-0000-0000-0000-000000000001|   ]]"),
+            Err(RollError::MalformedDocLink)
+        );
+    }
+
+    #[test]
+    fn scan_doc_link_bad_uuid_is_malformed() {
+        assert_eq!(
+            scan_body("[[doc:not-a-uuid|Label]]"),
+            Err(RollError::MalformedDocLink)
+        );
+    }
+
+    #[test]
+    fn scan_token_link_missing_label_is_malformed() {
+        assert_eq!(
+            scan_body("[[token:00000000-0000-0000-0000-000000000002]]"),
+            Err(RollError::MalformedDocLink)
+        );
+    }
+
+    #[test]
+    fn scan_token_link_empty_label_is_malformed() {
+        assert_eq!(
+            scan_body("[[token:00000000-0000-0000-0000-000000000002|   ]]"),
+            Err(RollError::MalformedDocLink)
+        );
+    }
+
+    #[test]
+    fn scan_token_link_bad_uuid_is_malformed() {
+        assert_eq!(
+            scan_body("[[token:not-a-uuid|Label]]"),
+            Err(RollError::MalformedDocLink)
+        );
+    }
+
+    #[test]
+    fn scan_doc_link_label_may_contain_slash_and_pipe() {
+        // The id/path split only ever runs on the portion BEFORE the first `|`
+        // (`rest.split_once('|')`), so a `/` or `|` inside the label — which is
+        // everything after that first `|` — can never re-enter either split.
+        let chunks = scan_body("[[doc:00000000-0000-0000-0000-000000000001|A/B|C]]").unwrap();
+        assert_eq!(
+            chunks,
+            vec![BodyChunk::DocLink {
+                target: DocLinkTarget::Doc {
+                    doc_id: Uuid::from_u128(1),
+                    embedded_path: None,
+                },
+                label: "A/B|C",
+            }]
+        );
+    }
+
+    #[test]
+    fn scan_doc_link_counts_toward_max_inline_rolls() {
+        let body = "[[doc:00000000-0000-0000-0000-000000000001|D]] ".repeat(MAX_INLINE_ROLLS);
+        assert!(scan_body(&body).is_ok());
+        let over = "[[doc:00000000-0000-0000-0000-000000000001|D]] ".repeat(MAX_INLINE_ROLLS + 1);
+        assert!(matches!(scan_body(&over), Err(RollError::TooManyInline(_))));
+    }
+
+    #[test]
     fn scan_unterminated_nested_span_errors() {
         assert_eq!(scan_body("[[4d6[atk]"), Err(RollError::Unterminated));
     }
@@ -686,6 +900,7 @@ mod tests {
             RollError::TooManyInline(9),
             RollError::Unterminated,
             RollError::DuplicateTierOffset(5),
+            RollError::MalformedDocLink,
         ];
         for v in variants {
             let rendered = v.to_string();

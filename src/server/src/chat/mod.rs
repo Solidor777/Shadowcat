@@ -306,7 +306,49 @@ pub enum Segment {
     /// segment for that URL and no accompanying generic `LinkPreview` — the
     /// two are mutually exclusive per URL (`link_preview::enrich`).
     OEmbed(OEmbedSegment),
-    // Reserved for a future `DocLink` segment variant.
+    /// A free-form, author-inserted link to a document or placed token, captured with its
+    /// display label at authoring time (`label` is never re-resolved at render — only the
+    /// fail-closed existence/visibility gate below re-checks `target`). Distinct from the
+    /// actor-name header link, which is driven by `actor_owner` attribution, not body content.
+    /// Produced by `chat::rolls::scan_body`'s `doc:`/`token:` prefix branch — reuses the SAME
+    /// balanced `[[...]]` span mechanism as `RollEmbed`/`RollButton`, not a new one. No
+    /// existence/visibility check runs against `target` at ingest: the CLIENT fails closed at
+    /// render by checking `ctx.documents` presence for the target id (already redacted
+    /// per-recipient by the normal document pipeline), the exact precedent the actor-name
+    /// header link established.
+    DocLink {
+        /// What the link points at.
+        target: DocLinkTarget,
+        /// Display text captured at authoring time (the composer's `|<label>` span suffix).
+        /// Rendering never re-resolves a live name lookup for this field.
+        label: String,
+    },
+}
+
+/// What a `Segment::DocLink` points at — mirrors the client's `SheetRef` shape (the
+/// established "one anonymous cross-file-shared shape gets one name" precedent), given a
+/// server-side equivalent since `SheetRef` itself is client-only TS. Carried inside
+/// `Segment::DocLink`; parsed in full by `chat::rolls::scan_body`'s `doc:`/`token:` prefix
+/// branch — `handle_send_message`'s ingest arm does no further parsing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum DocLinkTarget {
+    /// A top-level document, optionally one level into an embedded child.
+    Doc {
+        /// The top-level document's id.
+        doc_id: Uuid,
+        /// A `/embedded/<collection>/<index>` pointer, one level deep, or `None` for the
+        /// top-level document itself. Opaque to the server — never validated against the
+        /// referenced document's actual `embedded` shape at ingest (the client's own
+        /// `resolveDocRef` fails closed on a malformed/dangling pointer at open time).
+        embedded_path: Option<String>,
+    },
+    /// A placed token, resolved client-side via its linked/embedded actor — the same
+    /// resolution `ctx.openDocument` already performs for a `{tokenId}` `SheetRef`.
+    Token {
+        /// The placed token's document id.
+        token_id: Uuid,
+    },
 }
 
 /// One applied recalculation of a `RollEmbed`, appended to its `recalc_history`.
@@ -1004,6 +1046,12 @@ pub async fn handle_send_message(
                                 break;
                             }
                         }
+                    }
+                    rolls::BodyChunk::DocLink { target, label } => {
+                        segments.push(Segment::DocLink {
+                            target,
+                            label: label.to_string(),
+                        });
                     }
                 }
             }
@@ -2380,6 +2428,261 @@ mod tests {
         let gm_seg = &gm_sys["content"][0];
         assert!(gm_seg.get("spec").is_some() && !gm_seg["spec"].is_null());
         assert!(gm_seg.get("raw").is_some() && !gm_seg["raw"].is_null());
+    }
+
+    #[tokio::test]
+    async fn send_message_stores_a_doc_link_segment() {
+        use crate::auth::role::ServerRole;
+        use crate::data::document::WorldRole;
+        use crate::data::sqlite::SqliteRepository;
+        use crate::ws::room::RoomRegistry;
+
+        let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+        let gm = repo
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let player = repo
+            .create_user("pl", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = repo.create_world_owned("W", gm, 0).await.unwrap();
+        repo.add_member(w.id, player, WorldRole::Player)
+            .await
+            .unwrap();
+
+        let ctx = PermissionContext {
+            user_id: player,
+            world_role: WorldRole::Player,
+        };
+        let reg = RoomRegistry::new();
+        let room = reg.get_or_create(&repo, w.id).await.unwrap().unwrap();
+        let rate = PingRateLimiter::new();
+        let target_id = Uuid::new_v4();
+
+        let (cmd, _pending) = handle_send_message(
+            MessageRequestCtx {
+                room: &room,
+                repo: &repo,
+                ctx: &ctx,
+                rate: &rate,
+                preview: LinkPreviewDeps {
+                    client: &link_preview::build_client_allow_loopback(),
+                    cache: &LinkPreviewCache::new(),
+                    rate: &PreviewRateLimiter::new(),
+                },
+                now: 0,
+                budget_per_min: 30,
+            },
+            "all".into(),
+            format!("see [[doc:{target_id}|My Doc]] please"),
+            None,
+            Audience::Public,
+        )
+        .await
+        .unwrap();
+        let doc = match &cmd.ops[0] {
+            Operation::Create { doc } => doc,
+            other => panic!("expected Create, got {other:?}"),
+        };
+        let sys: MessageEngine = serde_json::from_value(doc.engine.clone().unwrap()).unwrap();
+        assert_eq!(
+            sys.content,
+            vec![
+                Segment::Text {
+                    text: "see ".into()
+                },
+                Segment::DocLink {
+                    target: DocLinkTarget::Doc {
+                        doc_id: target_id,
+                        embedded_path: None,
+                    },
+                    label: "My Doc".into(),
+                },
+                Segment::Text {
+                    text: " please".into()
+                },
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn send_message_stores_a_token_link_segment() {
+        use crate::auth::role::ServerRole;
+        use crate::data::document::WorldRole;
+        use crate::data::sqlite::SqliteRepository;
+        use crate::ws::room::RoomRegistry;
+
+        let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+        let gm = repo
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = repo.create_world_owned("W", gm, 0).await.unwrap();
+        let ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+        let reg = RoomRegistry::new();
+        let room = reg.get_or_create(&repo, w.id).await.unwrap().unwrap();
+        let rate = PingRateLimiter::new();
+        let token_id = Uuid::new_v4();
+
+        let (cmd, _pending) = handle_send_message(
+            MessageRequestCtx {
+                room: &room,
+                repo: &repo,
+                ctx: &ctx,
+                rate: &rate,
+                preview: LinkPreviewDeps {
+                    client: &link_preview::build_client_allow_loopback(),
+                    cache: &LinkPreviewCache::new(),
+                    rate: &PreviewRateLimiter::new(),
+                },
+                now: 0,
+                budget_per_min: 30,
+            },
+            "all".into(),
+            format!("[[token:{token_id}|Goblin]]"),
+            None,
+            Audience::Public,
+        )
+        .await
+        .unwrap();
+        let doc = match &cmd.ops[0] {
+            Operation::Create { doc } => doc,
+            other => panic!("expected Create, got {other:?}"),
+        };
+        let sys: MessageEngine = serde_json::from_value(doc.engine.clone().unwrap()).unwrap();
+        assert_eq!(
+            sys.content,
+            vec![Segment::DocLink {
+                target: DocLinkTarget::Token { token_id },
+                label: "Goblin".into(),
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn send_message_with_a_dangling_doc_link_target_still_stores_it_unvalidated() {
+        use crate::auth::role::ServerRole;
+        use crate::data::document::WorldRole;
+        use crate::data::sqlite::SqliteRepository;
+        use crate::ws::room::RoomRegistry;
+
+        // No server-side existence check runs against `DocLink`'s target at ingest — a
+        // reference to a document that does not exist (or the sender cannot see) is stored
+        // verbatim; only the client's render-time `ctx.documents` presence check gates it.
+        let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+        let gm = repo
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = repo.create_world_owned("W", gm, 0).await.unwrap();
+        let ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+        let reg = RoomRegistry::new();
+        let room = reg.get_or_create(&repo, w.id).await.unwrap().unwrap();
+        let rate = PingRateLimiter::new();
+        let nonexistent = Uuid::new_v4();
+
+        let (cmd, _pending) = handle_send_message(
+            MessageRequestCtx {
+                room: &room,
+                repo: &repo,
+                ctx: &ctx,
+                rate: &rate,
+                preview: LinkPreviewDeps {
+                    client: &link_preview::build_client_allow_loopback(),
+                    cache: &LinkPreviewCache::new(),
+                    rate: &PreviewRateLimiter::new(),
+                },
+                now: 0,
+                budget_per_min: 30,
+            },
+            "all".into(),
+            format!("[[doc:{nonexistent}|Ghost Doc]]"),
+            None,
+            Audience::Public,
+        )
+        .await
+        .unwrap();
+        let doc = match &cmd.ops[0] {
+            Operation::Create { doc } => doc,
+            other => panic!("expected Create, got {other:?}"),
+        };
+        let sys: MessageEngine = serde_json::from_value(doc.engine.clone().unwrap()).unwrap();
+        assert_eq!(
+            sys.content,
+            vec![Segment::DocLink {
+                target: DocLinkTarget::Doc {
+                    doc_id: nonexistent,
+                    embedded_path: None,
+                },
+                label: "Ghost Doc".into(),
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn send_message_rejects_a_malformed_doc_link_and_authors_no_message() {
+        use crate::auth::role::ServerRole;
+        use crate::data::document::WorldRole;
+        use crate::data::sqlite::SqliteRepository;
+        use crate::ws::room::RoomRegistry;
+
+        let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+        let gm = repo
+            .create_user("gm", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let w = repo.create_world_owned("W", gm, 0).await.unwrap();
+        let ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+        let reg = RoomRegistry::new();
+        let room = reg.get_or_create(&repo, w.id).await.unwrap().unwrap();
+        let rate = PingRateLimiter::new();
+        let seq_before = repo.events_since(w.id, 0).await.unwrap().len();
+
+        let (cmd, _pending) = handle_send_message(
+            MessageRequestCtx {
+                room: &room,
+                repo: &repo,
+                ctx: &ctx,
+                rate: &rate,
+                preview: LinkPreviewDeps {
+                    client: &link_preview::build_client_allow_loopback(),
+                    cache: &LinkPreviewCache::new(),
+                    rate: &PreviewRateLimiter::new(),
+                },
+                now: 0,
+                budget_per_min: 30,
+            },
+            "all".into(),
+            "[[doc:not-a-uuid]]".into(),
+            None,
+            Audience::Public,
+        )
+        .await
+        .unwrap();
+        // A malformed doc-link, like any other roll-stage failure, authors ONE whispered
+        // System notice instead of the intended message — never both, never neither.
+        let doc = match &cmd.ops[0] {
+            Operation::Create { doc } => doc,
+            other => panic!("expected Create, got {other:?}"),
+        };
+        assert_eq!(doc.doc_type, MESSAGE_DOC_TYPE);
+        let sys: MessageEngine = serde_json::from_value(doc.engine.clone().unwrap()).unwrap();
+        assert_eq!(sys.kind, MessageKind::System);
+        assert_eq!(
+            repo.events_since(w.id, 0).await.unwrap().len(),
+            seq_before + 1,
+            "exactly one event (the System notice) authored, not the intended message"
+        );
     }
 
     #[tokio::test]
