@@ -11,6 +11,8 @@
     type UnknownSegment,
     type WireActorOwnerRef,
     type WireDocument,
+    type DocLinkTarget,
+    type SheetRef,
   } from "@shadowcat/core";
   import RollTooltip from "./RollTooltip.svelte";
 
@@ -98,6 +100,29 @@
     if (!token) return null;
     const eff = resolveTokenActor(token, ctx.documents);
     return eff ? actorDisplayName(eff) : null;
+  }
+
+  /** Resolves a `doc_link` segment's target to an openable `SheetRef` when the referenced
+   * document/token is present in the per-recipient OPTIMISTIC store — the identical
+   * presence-gate `actorOpenRef` (above) already applies to actor attribution, reused here
+   * verbatim rather than reimplemented: presence implies READ (server-side redaction withholds
+   * an unauthorized doc from `base` entirely), and absence renders inert plain text.
+   * @param target The `doc_link` segment's target.
+   * @returns The resolved `SheetRef`, or `null` if the target isn't present in the store.
+   * @example
+   * ```
+   * // internal; call sites use the derived per-segment resolution in the template
+   * declare const target: DocLinkTarget;
+   * docLinkOpenRef(target);
+   * ```
+   */
+  function docLinkOpenRef(target: DocLinkTarget): SheetRef | null {
+    if (target.kind === "doc") {
+      return ctx.documents.get(target.doc_id)
+        ? { docId: target.doc_id, embeddedPath: target.embedded_path ?? undefined }
+        : null;
+    }
+    return ctx.documents.get(target.token_id) ? { tokenId: target.token_id } : null;
   }
 
   /** Host caption for a `link_preview` card. Never throws on a malformed `url` — a preview is
@@ -541,6 +566,13 @@
                   {#if s.author_name}<span class="oembed-author">{s.author_name}</span>{/if}
                   <span class="oembed-open">{t("chat.oembedOpenOn", { provider: s.provider_name })}</span>
                 </a>
+              {:else if s.kind === "doc_link"}
+                {@const ref = docLinkOpenRef(s.target)}
+                {#if ref}
+                  <button type="button" class="doc-link" onclick={() => ctx.openDocument(ref)}>{s.label}</button>
+                {:else}
+                  <span class="seg-text">{s.label}</span>
+                {/if}
               {/if}
             {/each}
           </p>
@@ -814,5 +846,18 @@
   .oembed-open {
     font-size: 0.8em;
     opacity: 0.6;
+  }
+  .doc-link {
+    background: none;
+    border: none;
+    padding: 0;
+    color: var(--accent);
+    cursor: pointer;
+    font: inherit;
+    text-decoration: underline;
+  }
+  .doc-link:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
   }
 </style>

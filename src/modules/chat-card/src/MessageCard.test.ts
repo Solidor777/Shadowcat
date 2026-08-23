@@ -1092,3 +1092,58 @@ describe("MessageCard — actor attribution + redaction fixtures (real resolveTo
     expect(container.querySelector(".actor-name")).toBeNull();
   });
 });
+
+describe("doc_link segments", () => {
+  it("renders a resolvable doc_link as a clickable button using the stored label", () => {
+    const target = msgDoc("doc1", baseSystem());
+    const doc = msgDoc("m1", baseSystem({
+      content: [{ kind: "doc_link", target: { kind: "doc", doc_id: "doc1" }, label: "My Doc" }],
+    }));
+    const opened: unknown[] = [];
+    render(MessageCard, {
+      props: { message: doc, showChannel: false },
+      context: setAppContextForTest({ documents: storeWith(target, doc), openDocument: (r: unknown) => opened.push(r) }),
+    });
+    fireEvent.click(screen.getByText("My Doc"));
+    expect(opened).toEqual([{ docId: "doc1", embeddedPath: undefined }]);
+  });
+
+  it("renders a resolvable doc_link with an embedded_path, passed through to openDocument", () => {
+    const target = msgDoc("doc1", baseSystem());
+    const doc = msgDoc("m1", baseSystem({
+      content: [{ kind: "doc_link", target: { kind: "doc", doc_id: "doc1", embedded_path: "/embedded/actor/0" }, label: "My Item" }],
+    }));
+    const opened: unknown[] = [];
+    render(MessageCard, {
+      props: { message: doc, showChannel: false },
+      context: setAppContextForTest({ documents: storeWith(target, doc), openDocument: (r: unknown) => opened.push(r) }),
+    });
+    fireEvent.click(screen.getByText("My Item"));
+    expect(opened).toEqual([{ docId: "doc1", embeddedPath: "/embedded/actor/0" }]);
+  });
+
+  it("renders a resolvable token doc_link as a clickable button", () => {
+    const token = msgDoc("tok1", baseSystem());
+    const doc = msgDoc("m1", baseSystem({
+      content: [{ kind: "doc_link", target: { kind: "token", token_id: "tok1" }, label: "Goblin" }],
+    }));
+    const opened: unknown[] = [];
+    render(MessageCard, {
+      props: { message: doc, showChannel: false },
+      context: setAppContextForTest({ documents: storeWith(token, doc), openDocument: (r: unknown) => opened.push(r) }),
+    });
+    fireEvent.click(screen.getByText("Goblin"));
+    expect(opened).toEqual([{ tokenId: "tok1" }]);
+  });
+
+  it("a dangling doc_link target fails closed to inert text, no throw", () => {
+    const doc = msgDoc("m1", baseSystem({
+      content: [{ kind: "doc_link", target: { kind: "doc", doc_id: "gone" }, label: "Ghost Doc" }],
+    }));
+    render(MessageCard, {
+      props: { message: doc, showChannel: false },
+      context: setAppContextForTest({ documents: storeWith(doc) }),
+    });
+    expect(screen.getByText("Ghost Doc").tagName).toBe("SPAN");
+  });
+});
