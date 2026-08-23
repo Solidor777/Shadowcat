@@ -233,8 +233,9 @@ impl Command {
 pub enum WriteOrigin {
     /// Any wire-derived write (WS intent or HTTP).
     Client,
-    /// The server's own sanitized chat edit/delete revision — never derivable
-    /// from a wire frame.
+    /// The server's own sanitized chat edit/delete revision, OR the post-publish
+    /// image-enrichment republish (`chat::post_publish::run_pending_enrichments`)
+    /// — never derivable from a wire frame.
     ServerMessageRevision,
 }
 

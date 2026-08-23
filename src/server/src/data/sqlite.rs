@@ -3064,7 +3064,8 @@ impl Repository for SqliteRepository {
                     // own message, letting a raw Update forge `kind`/
                     // `user_owner`/`channel` or rewrite `content` unsanitized.
                     // `WriteOrigin::ServerMessageRevision` — set ONLY by the
-                    // server edit/delete handlers, never derivable from any
+                    // server edit/delete handlers or the post-publish
+                    // enrichment republish, never derivable from any
                     // wire frame — re-opens this path for their sanitized
                     // authoritative revision; the ordinary WRITE_FIELDS/OCC
                     // checks below still apply on top of it.
@@ -3080,7 +3081,8 @@ impl Repository for SqliteRepository {
                     // resolves them to `DocRole::Observer`, READ-only) — not
                     // the server's own moderation capability. The handler
                     // that produced this `ServerMessageRevision` write
-                    // (`handle_edit_message`/`handle_delete_message`) already
+                    // (`handle_edit_message`/`handle_delete_message`, or the
+                    // post-publish enrichment republish) already
                     // independently vetted owner-or-GM authority before ever
                     // reaching here, so re-deriving capability from the
                     // document's own permission fields for THIS specific

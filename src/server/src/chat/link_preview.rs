@@ -28,7 +28,7 @@ use uuid::Uuid;
 use super::preview_cache::{
     LinkPreviewCache, PreviewRateLimiter, NEGATIVE_TTL, POSITIVE_TTL, PREVIEW_FETCH_PER_MIN,
 };
-use super::Segment;
+use super::{PendingEnrichment, Segment};
 
 /// A server-fetched preview. Stored verbatim by the ingest stage (a later
 /// checkpoint) as a `Segment::LinkPreview`; the client renders ONLY these
@@ -44,6 +44,18 @@ pub struct LinkPreview {
     /// Extracted description, entity-decoded, capped at
     /// `MAX_DESCRIPTION_CHARS`; may be empty.
     pub description: String,
+    /// A candidate `og:image`/canonical-image URL extracted (never fetched)
+    /// by THIS fetch — `Some` only on a genuinely fresh scrape, always
+    /// `None` on a cache-tier hit (see `image_asset_id`'s doc for why a
+    /// cache hit carries the asset id instead, never the raw URL). Never
+    /// persisted or serialized to any wire type — purely an in-process
+    /// signal from `enrich` to its `PendingEnrichment::PreviewImage` queue.
+    pub image_url: Option<String>,
+    /// The already-known asset id for this URL's image, populated ONLY from
+    /// a persisted-cache hit (`cached_or_fetch`) whose row already carries
+    /// one — a fresh fetch never sets this (an image URL alone is not yet
+    /// an asset). Mutually exclusive with `image_url` by construction.
+    pub image_asset_id: Option<Uuid>,
 }
 
 /// Cap on distinct URLs previewed per message. First-seen
@@ -166,6 +178,8 @@ async fn cached_or_fetch(
             url: url.to_string(),
             title: row.title.unwrap_or_default(),
             description: row.description.unwrap_or_default(),
+            image_url: None,
+            image_asset_id: row.image_asset_id,
         })
     };
     // Backfilled at the row's TRUE age (not a fresh `now` stamp), so the
@@ -199,13 +213,19 @@ async fn cached_or_fetch(
 /// the cache's TTL — both must be consistent with the caller's clock but are
 /// deliberately separate types/precisions, matching each dependency's own
 /// clock source.
+///
+/// Returns any `PendingEnrichment` jobs the caller must run AFTER its own
+/// synchronous publish returns -- an extracted `og:image` candidate not yet
+/// fetched -- for the background image pipeline
+/// (`chat::post_publish::run_pending_enrichments`), never run on this
+/// request path.
 pub async fn enrich(
     segments: &mut Vec<Segment>,
     deps: EnrichDeps<'_>,
     user: Uuid,
     now_ms: i64,
     now: Instant,
-) {
+) -> Vec<PendingEnrichment> {
     let EnrichDeps {
         repo,
         fetch: LinkPreviewDeps {
@@ -290,13 +310,31 @@ pub async fn enrich(
         }
     }
 
+    let mut pending: Vec<PendingEnrichment> = Vec::new();
     for preview in previews {
-        segments.push(Segment::LinkPreview {
-            url: preview.url,
-            title: preview.title,
-            description: preview.description,
-        });
+        if let Some(asset_id) = preview.image_asset_id {
+            segments.push(Segment::LinkPreview {
+                url: preview.url,
+                title: preview.title,
+                description: preview.description,
+                image_asset_id: Some(asset_id),
+            });
+        } else {
+            if let Some(image_url) = preview.image_url.clone() {
+                pending.push(PendingEnrichment::PreviewImage {
+                    preview_url: preview.url.clone(),
+                    image_url,
+                });
+            }
+            segments.push(Segment::LinkPreview {
+                url: preview.url,
+                title: preview.title,
+                description: preview.description,
+                image_asset_id: None,
+            });
+        }
     }
+    pending
 }
 
 /// Why `fetch_preview` failed. Every guard in this module maps to exactly one
@@ -319,7 +357,9 @@ pub enum PreviewError {
     Timeout,
     /// Body exceeded `MAX_PREVIEW_BYTES` (streamed count, not Content-Length).
     TooLarge,
-    /// Response Content-Type was not HTML/XHTML.
+    /// Response Content-Type did not match the family this guarded fetch
+    /// expected -- HTML for a page preview, `image/*` for the background
+    /// image pipeline.
     NotHtml,
     /// HTML fetched but no usable title/description found.
     NoContent,
@@ -354,6 +394,11 @@ pub const MAX_REDIRECTS: u8 = 5;
 /// fast-reject hint (never trusted alone) — the running total during
 /// `bytes_stream()` iteration is the real enforcement.
 pub const MAX_PREVIEW_BYTES: usize = 512 * 1024;
+/// Cap on a fetched image's bytes for the background asset-ification
+/// pipeline (`og:image`/oEmbed thumbnail). Smaller than `MAX_PREVIEW_BYTES`
+/// -- a page's declared preview image or a provider's thumbnail is a small
+/// web graphic, not a page's full HTML.
+pub const MAX_IMAGE_BYTES: usize = 256 * 1024;
 /// Stored-title character cap (applied after entity decode + whitespace fold).
 const MAX_TITLE_CHARS: usize = 200;
 /// Stored-description character cap.
@@ -708,24 +753,55 @@ async fn fetch_preview_with_deadline(
     }
 }
 
-/// The undeadlined fetch pipeline: validate URL (scheme/userinfo/host incl.
-/// literal-IP ranges) -> manual redirect loop (each hop re-validated) ->
-/// status/Content-Type gates -> streamed body capped at `MAX_PREVIEW_BYTES`
-/// -> meta extraction. `fetch_preview` wraps it in the total deadline.
-async fn fetch_preview_inner(
+/// Which Content-Type family a guarded fetch must see to succeed -- shared by
+/// the HTML preview fetch (`fetch_preview_inner`) and the background image
+/// fetch (`fetch_image_bytes`), the guarded-GET consumers in this module.
+enum ExpectedContentType {
+    /// `text/html` or `application/xhtml+xml` (the existing preview gate).
+    Html,
+    /// Any `image/*` Content-Type (the background image-pipeline gate).
+    Image,
+}
+
+impl ExpectedContentType {
+    /// Whether `content_type`'s base (before `;charset=...`) matches this family.
+    fn matches(&self, content_type: &str) -> bool {
+        let base = content_type
+            .split(';')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_ascii_lowercase();
+        match self {
+            ExpectedContentType::Html => base == "text/html" || base == "application/xhtml+xml",
+            ExpectedContentType::Image => base.starts_with("image/"),
+        }
+    }
+}
+
+/// The shared guarded-GET pipeline: validate URL -> manual redirect loop
+/// (each hop re-validated via `validate_url`, capped at `MAX_REDIRECTS`) ->
+/// status/Content-Type gate (`expect`) -> streamed body capped at
+/// `max_bytes`. Returns the final (post-redirect) `Url`, the raw Content-Type
+/// header value, and the accumulated body. Every guarded fetch in this
+/// module -- HTML preview, background image -- goes through this ONE
+/// function, so the SSRF guard (literal-IP rejection in `validate_url`,
+/// `GuardedResolver`, per-hop redirect re-validation, the size cap) is
+/// written and tested exactly once.
+async fn guarded_get(
     client: &reqwest::Client,
     raw_url: &str,
-) -> Result<LinkPreview, PreviewError> {
+    expect: ExpectedContentType,
+    max_bytes: usize,
+) -> Result<(Url, String, Vec<u8>), PreviewError> {
     let mut url = Url::parse(raw_url).map_err(|_| PreviewError::BadScheme)?;
     validate_url(&url)?;
-
     let mut hop: u8 = 0;
     loop {
         let response = match client.get(url.clone()).send().await {
             Ok(r) => r,
             Err(e) => return Err(classify_transport_error(&e)),
         };
-
         let status = response.status();
         if status.is_redirection() {
             hop += 1;
@@ -742,46 +818,86 @@ async fn fetch_preview_inner(
             url = next;
             continue;
         }
-
         if !status.is_success() {
             return Err(PreviewError::Http(status.as_u16()));
         }
-
         let content_type = response
             .headers()
             .get(reqwest::header::CONTENT_TYPE)
             .and_then(|v| v.to_str().ok())
-            .unwrap_or("");
-        if !is_html_content_type(content_type) {
+            .unwrap_or("")
+            .to_string();
+        if !expect.matches(&content_type) {
             return Err(PreviewError::NotHtml);
         }
-
-        // Fast-reject hint only; the streamed running total below is the real
-        // enforcement (a server can omit or lie about Content-Length).
         if let Some(len) = response.content_length() {
-            if len > MAX_PREVIEW_BYTES as u64 {
+            if len > max_bytes as u64 {
                 return Err(PreviewError::TooLarge);
             }
         }
-
         let mut body = Vec::new();
         let mut stream = response.bytes_stream();
         while let Some(chunk) = stream.next().await {
             let chunk = chunk.map_err(|e| classify_transport_error(&e))?;
-            if body.len() + chunk.len() > MAX_PREVIEW_BYTES {
+            if body.len() + chunk.len() > max_bytes {
                 return Err(PreviewError::TooLarge);
             }
             body.extend_from_slice(&chunk);
         }
+        return Ok((url, content_type, body));
+    }
+}
 
-        return match extract_preview(&body) {
-            Some((title, description)) => Ok(LinkPreview {
+/// The undeadlined fetch pipeline: `guarded_get` gated on an HTML
+/// Content-Type, then meta extraction. `fetch_preview` wraps it in the
+/// total deadline.
+async fn fetch_preview_inner(
+    client: &reqwest::Client,
+    raw_url: &str,
+) -> Result<LinkPreview, PreviewError> {
+    let (url, _content_type, body) = guarded_get(
+        client,
+        raw_url,
+        ExpectedContentType::Html,
+        MAX_PREVIEW_BYTES,
+    )
+    .await?;
+    match extract_preview(&body) {
+        Some(extract) => {
+            let image_url = extract
+                .image_url
+                .and_then(|raw| url.join(&raw).ok())
+                .map(|u| u.to_string());
+            Ok(LinkPreview {
                 url: url.to_string(),
-                title,
-                description,
-            }),
-            None => Err(PreviewError::NoContent),
-        };
+                title: extract.title,
+                description: extract.description,
+                image_url,
+                image_asset_id: None,
+            })
+        }
+        None => Err(PreviewError::NoContent),
+    }
+}
+
+/// Fetches `raw_url` through the SAME SSRF-guarded pipeline `fetch_preview`
+/// uses (`guarded_get`), gated on an `image/*` Content-Type. Used by the
+/// post-publish image background pipeline (`post_publish`) -- never on the
+/// synchronous send/edit request path.
+pub async fn fetch_image_bytes(
+    client: &reqwest::Client,
+    raw_url: &str,
+    deadline: Duration,
+) -> Result<(String, Vec<u8>), PreviewError> {
+    match tokio::time::timeout(
+        deadline,
+        guarded_get(client, raw_url, ExpectedContentType::Image, MAX_IMAGE_BYTES),
+    )
+    .await
+    {
+        Ok(Ok((_, content_type, body))) => Ok((content_type, body)),
+        Ok(Err(e)) => Err(e),
+        Err(_elapsed) => Err(PreviewError::Timeout),
     }
 }
 
@@ -820,24 +936,6 @@ fn validate_url(url: &Url) -> Result<(), PreviewError> {
     }
 }
 
-/// Whether the Content-Type's base (before any `;charset=`) is HTML/XHTML.
-///
-/// # Examples
-///
-/// ```text
-/// is_html_content_type("text/html; charset=utf-8") == true
-/// is_html_content_type("application/json") == false
-/// ```
-fn is_html_content_type(content_type: &str) -> bool {
-    let base = content_type
-        .split(';')
-        .next()
-        .unwrap_or("")
-        .trim()
-        .to_ascii_lowercase();
-    base == "text/html" || base == "application/xhtml+xml"
-}
-
 /// Recovers a `PreviewError` from a `reqwest::Error`. Timeouts are reported
 /// directly by reqwest (`is_timeout`); a blocked/unresolvable address is
 /// recovered by walking the `source()` chain for our sentinel error types —
@@ -867,12 +965,30 @@ fn classify_transport_error(err: &reqwest::Error) -> PreviewError {
 // size-capped body.
 // ---------------------------------------------------------------------------
 
+/// Everything `extract_preview` pulls from a fetched HTML document: title,
+/// description, and an optional image candidate -- `og:image` preferred,
+/// falling back to `<link rel="image_src">`. `image_url` may be RELATIVE
+/// (resolved against the page's final URL by the caller, `fetch_preview_inner`,
+/// since this pure function only sees bytes).
+pub struct PreviewExtract {
+    /// Extracted page title, entity-decoded, capped at `MAX_TITLE_CHARS`.
+    pub title: String,
+    /// Extracted description, entity-decoded, capped at `MAX_DESCRIPTION_CHARS`.
+    pub description: String,
+    /// Extracted `og:image`/`<link rel="image_src">` URL, RAW (not
+    /// entity-decoded beyond attribute parsing, not length-capped, possibly
+    /// relative) -- the caller resolves and validates it.
+    pub image_url: Option<String>,
+}
+
 /// Pulls `<title>`, then prefers OpenGraph `og:title`/`og:description`,
-/// falling back to `<title>`/`<meta name="description">`. Whitespace-
-/// collapsed, entity-decoded (small named + numeric set), length-capped
-/// (title <= 200 chars, description <= 400). Returns `None` when both are
-/// empty (no card). Never panics on malformed/truncated/binary input.
-pub fn extract_preview(bytes: &[u8]) -> Option<(String, String)> {
+/// falling back to `<title>`/`<meta name="description">`; also pulls an
+/// image candidate (`og:image` preferred, falling back to
+/// `<link rel="image_src">`). Whitespace-collapsed, entity-decoded (small
+/// named + numeric set), length-capped (title <= 200 chars, description
+/// <= 400). Returns `None` when both title and description are empty (no
+/// card). Never panics on malformed/truncated/binary input.
+pub fn extract_preview(bytes: &[u8]) -> Option<PreviewExtract> {
     let html = String::from_utf8_lossy(bytes);
     let lower = html.to_ascii_lowercase();
 
@@ -881,6 +997,7 @@ pub fn extract_preview(bytes: &[u8]) -> Option<(String, String)> {
 
     let mut og_title = None;
     let mut og_description = None;
+    let mut og_image = None;
     let mut meta_description = None;
     for tag in &meta_tags {
         match tag.property.as_deref() {
@@ -888,12 +1005,14 @@ pub fn extract_preview(bytes: &[u8]) -> Option<(String, String)> {
             Some("og:description") if og_description.is_none() => {
                 og_description = tag.content.clone()
             }
+            Some("og:image") if og_image.is_none() => og_image = tag.content.clone(),
             _ => {}
         }
         if meta_description.is_none() && tag.name.as_deref() == Some("description") {
             meta_description = tag.content.clone();
         }
     }
+    let image_url = og_image.or_else(|| extract_link_image_src(&html, &lower));
 
     let title = clean_text(&og_title.or(title_tag).unwrap_or_default(), MAX_TITLE_CHARS);
     let description = clean_text(
@@ -904,8 +1023,38 @@ pub fn extract_preview(bytes: &[u8]) -> Option<(String, String)> {
     if title.is_empty() && description.is_empty() {
         None
     } else {
-        Some((title, description))
+        Some(PreviewExtract {
+            title,
+            description,
+            image_url,
+        })
     }
+}
+
+/// Bounded scan for `<link rel="image_src" href="...">` -- the non-OpenGraph
+/// canonical-image fallback some pages declare instead of `og:image`. Same
+/// byte-index-aligned/64-tag-capped shape as `extract_meta_tags`.
+fn extract_link_image_src(html: &str, lower: &str) -> Option<String> {
+    let mut from = 0usize;
+    let mut scanned = 0usize;
+    while scanned < 64 {
+        let Some(rel) = lower[from..].find("<link") else {
+            break;
+        };
+        let start = from + rel;
+        let Some(gt_rel) = lower[start..].find('>') else {
+            break;
+        };
+        let end = start + gt_rel;
+        let tag_orig = &html[start..end];
+        let tag_lower = &lower[start..end];
+        if extract_attr(tag_lower, tag_orig, "rel").as_deref() == Some("image_src") {
+            return extract_attr(tag_lower, tag_orig, "href");
+        }
+        from = end + 1;
+        scanned += 1;
+    }
+    None
 }
 
 /// One parsed `<meta>` tag's relevant attributes.
@@ -1206,10 +1355,15 @@ mod tests {
             <meta property="og:title" content="OG Title">
             <meta name="description" content="Meta Description">
             <meta property="og:description" content="OG Description">
+            <meta property="og:image" content="https://example.test/og.png">
         </head></html>"#;
-        let (title, desc) = extract_preview(html).unwrap();
-        assert_eq!(title, "OG Title");
-        assert_eq!(desc, "OG Description");
+        let extract = extract_preview(html).unwrap();
+        assert_eq!(extract.title, "OG Title");
+        assert_eq!(extract.description, "OG Description");
+        assert_eq!(
+            extract.image_url.as_deref(),
+            Some("https://example.test/og.png")
+        );
     }
 
     #[test]
@@ -1218,32 +1372,43 @@ mod tests {
             <title>Just A Title</title>
             <meta name="description" content="Just a description">
         </head></html>"#;
-        let (title, desc) = extract_preview(html).unwrap();
-        assert_eq!(title, "Just A Title");
-        assert_eq!(desc, "Just a description");
+        let extract = extract_preview(html).unwrap();
+        assert_eq!(extract.title, "Just A Title");
+        assert_eq!(extract.description, "Just a description");
+        assert_eq!(extract.image_url, None);
+    }
+
+    #[test]
+    fn falls_back_to_link_image_src_when_no_og_image() {
+        let html = br#"<html><head>
+            <title>Just A Title</title>
+            <link rel="image_src" href="/canonical.png">
+        </head></html>"#;
+        let extract = extract_preview(html).unwrap();
+        assert_eq!(extract.image_url.as_deref(), Some("/canonical.png"));
     }
 
     #[test]
     fn empty_document_yields_no_content() {
-        assert_eq!(extract_preview(b"<html><body>hello</body></html>"), None);
-        assert_eq!(extract_preview(b""), None);
+        assert!(extract_preview(b"<html><body>hello</body></html>").is_none());
+        assert!(extract_preview(b"").is_none());
     }
 
     #[test]
     fn decodes_common_entities() {
         let html =
             br#"<title>Fish &amp; Chips &lt;tasty&gt; &quot;deal&quot; &#39;now&#39;</title>"#;
-        let (title, _) = extract_preview(html).unwrap();
-        assert_eq!(title, "Fish & Chips <tasty> \"deal\" 'now'");
+        let extract = extract_preview(html).unwrap();
+        assert_eq!(extract.title, "Fish & Chips <tasty> \"deal\" 'now'");
     }
 
     #[test]
     fn collapses_whitespace_and_caps_length() {
         let long_title = "A".repeat(500);
         let html = format!("<title>{long_title}</title><meta name=\"description\" content=\"line1\n\n  line2   line3\">");
-        let (title, desc) = extract_preview(html.as_bytes()).unwrap();
-        assert_eq!(title.chars().count(), MAX_TITLE_CHARS);
-        assert_eq!(desc, "line1 line2 line3");
+        let extract = extract_preview(html.as_bytes()).unwrap();
+        assert_eq!(extract.title.chars().count(), MAX_TITLE_CHARS);
+        assert_eq!(extract.description, "line1 line2 line3");
     }
 
     #[test]
@@ -1385,6 +1550,105 @@ mod tests {
         );
         let client = client_with_hosts(hosts);
         let err = fetch_preview(&client, "http://mixed.test/")
+            .await
+            .unwrap_err();
+        assert_eq!(err, PreviewError::BlockedAddress);
+    }
+
+    // -- fetch_image_bytes: shared guarded_get pipeline ----------------------
+    // Proves the guard applies identically to every `guarded_get` consumer,
+    // not just the original HTML path -- both the Content-Type/size gates
+    // AND the SSRF guard itself (literal-IP + resolved-address rejection).
+
+    #[tokio::test]
+    async fn fetch_image_bytes_succeeds_with_correct_content_type() {
+        let router = Router::new().route(
+            "/",
+            get(|| async {
+                (
+                    [(axum::http::header::CONTENT_TYPE, "image/png")],
+                    vec![1u8, 2, 3],
+                )
+            }),
+        );
+        let (addr, _handle) = spawn_stub(router).await;
+        let port: u16 = addr.rsplit(':').next().unwrap().parse().unwrap();
+        let client = stub_client("stub.test");
+        let (content_type, bytes) = fetch_image_bytes(
+            &client,
+            &format!("http://stub.test:{port}/"),
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
+        assert_eq!(content_type, "image/png");
+        assert_eq!(bytes, vec![1, 2, 3]);
+    }
+
+    #[tokio::test]
+    async fn fetch_image_bytes_rejects_wrong_content_type() {
+        let router = Router::new().route(
+            "/",
+            get(|| async {
+                (
+                    [(axum::http::header::CONTENT_TYPE, "text/html")],
+                    "not an image",
+                )
+            }),
+        );
+        let (addr, _handle) = spawn_stub(router).await;
+        let port: u16 = addr.rsplit(':').next().unwrap().parse().unwrap();
+        let client = stub_client("stub.test");
+        let err = fetch_image_bytes(
+            &client,
+            &format!("http://stub.test:{port}/"),
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err, PreviewError::NotHtml);
+    }
+
+    #[tokio::test]
+    async fn fetch_image_bytes_rejects_oversized_body() {
+        let router = Router::new().route(
+            "/",
+            get(|| async {
+                let body = vec![0u8; MAX_IMAGE_BYTES + 1024];
+                ([(axum::http::header::CONTENT_TYPE, "image/png")], body)
+            }),
+        );
+        let (addr, _handle) = spawn_stub(router).await;
+        let port: u16 = addr.rsplit(':').next().unwrap().parse().unwrap();
+        let client = stub_client("stub.test");
+        let err = fetch_image_bytes(
+            &client,
+            &format!("http://stub.test:{port}/"),
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err, PreviewError::TooLarge);
+    }
+
+    #[tokio::test]
+    async fn fetch_image_bytes_rejects_literal_blocked_ip_hosts() {
+        // Same SECURITY-CRITICAL case as `rejects_literal_blocked_ip_hosts`,
+        // re-run against `fetch_image_bytes` directly: the SSRF guard applies
+        // identically to every `guarded_get` consumer.
+        let client = build_client_allow_loopback();
+        let err = fetch_image_bytes(&client, "http://169.254.169.254/", Duration::from_secs(5))
+            .await
+            .unwrap_err();
+        assert_eq!(err, PreviewError::BlockedAddress);
+    }
+
+    #[tokio::test]
+    async fn fetch_image_bytes_rejects_a_host_that_resolves_to_a_blocked_address() {
+        let mut hosts = HashMap::new();
+        hosts.insert("blocked.test", vec!["10.0.0.5".parse().unwrap()]);
+        let client = client_with_hosts(hosts);
+        let err = fetch_image_bytes(&client, "http://blocked.test/", Duration::from_secs(5))
             .await
             .unwrap_err();
         assert_eq!(err, PreviewError::BlockedAddress);
@@ -1697,6 +1961,8 @@ mod tests {
             url: url.to_string(),
             title: "t".to_string(),
             description: "d".to_string(),
+            image_url: None,
+            image_asset_id: None,
         };
         cache.insert(url.to_string(), Some(preview.clone()), now);
 
@@ -1723,6 +1989,8 @@ mod tests {
                 url: url.to_string(),
                 title: "T".to_string(),
                 description: "D".to_string(),
+                image_url: None,
+                image_asset_id: None,
             }))
         );
 

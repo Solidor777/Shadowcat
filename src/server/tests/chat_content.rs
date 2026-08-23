@@ -188,6 +188,7 @@ impl Fixture {
             Audience::Public,
         )
         .await
+        .map(|(cmd, _pending)| cmd)
     }
 }
 
@@ -228,6 +229,7 @@ async fn owner_can_edit_and_content_resanitizes() {
         Audience::Public,
     )
     .await
+    .map(|(cmd, _pending)| cmd)
     .unwrap();
     let id = f.message_id(&sent).await;
     let edited = handle_edit_message(
@@ -248,6 +250,7 @@ async fn owner_can_edit_and_content_resanitizes() {
         "**second**".into(),
     )
     .await
+    .map(|(cmd, _pending)| cmd)
     .unwrap();
     let sys = f.stored_message_system(&edited).await;
     assert!(matches!(sys.content.as_slice(), [Segment::Html { .. }]));
@@ -277,6 +280,7 @@ async fn non_owner_non_gm_cannot_edit() {
         Audience::Public,
     )
     .await
+    .map(|(cmd, _pending)| cmd)
     .unwrap();
     let id = f.message_id(&sent).await;
     let r = handle_edit_message(
@@ -296,7 +300,8 @@ async fn non_owner_non_gm_cannot_edit() {
         id,
         "hax".into(),
     )
-    .await;
+    .await
+    .map(|(cmd, _pending)| cmd);
     assert!(matches!(r, Err(SendMessageError::Forbidden)));
 }
 
@@ -327,6 +332,7 @@ async fn cannot_edit_already_deleted_message() {
         Audience::Public,
     )
     .await
+    .map(|(cmd, _pending)| cmd)
     .unwrap();
     let id = f.message_id(&sent).await;
     handle_delete_message(&f.room, &f.repo, &f.alice, &f.rate, id, 2, 60)
@@ -349,7 +355,8 @@ async fn cannot_edit_already_deleted_message() {
         id,
         "resurrected".into(),
     )
-    .await;
+    .await
+    .map(|(cmd, _pending)| cmd);
     assert!(
         matches!(r, Err(SendMessageError::NotFound)),
         "editing a tombstoned message must return NotFound: {r:?}"
@@ -385,6 +392,7 @@ async fn gm_can_edit_players_message() {
         Audience::Public,
     )
     .await
+    .map(|(cmd, _pending)| cmd)
     .unwrap();
     let id = f.message_id(&sent).await;
     assert!(handle_edit_message(
@@ -405,6 +413,7 @@ async fn gm_can_edit_players_message() {
         "moderated".into(),
     )
     .await
+    .map(|(cmd, _pending)| cmd)
     .is_ok());
 }
 
@@ -439,6 +448,7 @@ async fn gm_can_edit_whisper_message_not_addressed_to_gm() {
         },
     )
     .await
+    .map(|(cmd, _pending)| cmd)
     .unwrap();
     let id = f.message_id(&sent).await;
     let r = handle_edit_message(
@@ -458,7 +468,8 @@ async fn gm_can_edit_whisper_message_not_addressed_to_gm() {
         id,
         "moderated".into(),
     )
-    .await;
+    .await
+    .map(|(cmd, _pending)| cmd);
     assert!(
         r.is_ok(),
         "GM moderation must override whisper audience gating: {r:?}"
@@ -492,6 +503,7 @@ async fn gm_can_edit_gm_only_message_not_individually_listed() {
         Audience::GmOnly,
     )
     .await
+    .map(|(cmd, _pending)| cmd)
     .unwrap();
     let id = f.message_id(&sent).await;
     let r = handle_edit_message(
@@ -511,7 +523,8 @@ async fn gm_can_edit_gm_only_message_not_individually_listed() {
         id,
         "moderated".into(),
     )
-    .await;
+    .await
+    .map(|(cmd, _pending)| cmd);
     assert!(
         r.is_ok(),
         "GM moderation must override gm_only audience gating: {r:?}"
@@ -541,6 +554,7 @@ async fn edit_cannot_retarget_audience() {
         Audience::Public,
     )
     .await
+    .map(|(cmd, _pending)| cmd)
     .unwrap();
     let id = f.message_id(&sent).await;
     let r = handle_edit_message(
@@ -560,7 +574,8 @@ async fn edit_cannot_retarget_audience() {
         id,
         "/w @bob sneaky".into(),
     )
-    .await;
+    .await
+    .map(|(cmd, _pending)| cmd);
     assert!(matches!(r, Err(SendMessageError::AudienceLocked)));
 }
 
@@ -754,6 +769,7 @@ async fn owner_soft_delete_clears_content_and_keeps_doc() {
         Audience::Public,
     )
     .await
+    .map(|(cmd, _pending)| cmd)
     .unwrap();
     let id = f.message_id(&sent).await;
     handle_delete_message(&f.room, &f.repo, &f.alice, &f.rate, id, 2, 60)
@@ -793,6 +809,7 @@ async fn non_owner_non_gm_cannot_delete() {
         Audience::Public,
     )
     .await
+    .map(|(cmd, _pending)| cmd)
     .unwrap();
     let id = f.message_id(&sent).await;
     assert!(matches!(
@@ -829,6 +846,7 @@ async fn repeated_delete_of_same_message_is_rate_limited() {
         Audience::Public,
     )
     .await
+    .map(|(cmd, _pending)| cmd)
     .unwrap();
     let id = f.message_id(&sent).await;
 
@@ -870,6 +888,7 @@ async fn soft_delete_leaves_doc_in_sequenced_log() {
         Audience::Public,
     )
     .await
+    .map(|(cmd, _pending)| cmd)
     .unwrap();
     let id = f.message_id(&sent).await;
     let cmd = handle_delete_message(&f.room, &f.repo, &f.alice, &f.rate, id, 2, 60)
@@ -910,6 +929,7 @@ async fn gm_can_delete_whisper_message_not_addressed_to_gm() {
         },
     )
     .await
+    .map(|(cmd, _pending)| cmd)
     .unwrap();
     let id = f.message_id(&sent).await;
     let r = handle_delete_message(&f.room, &f.repo, &f.gm, &f.rate, id, 2, 60).await;
@@ -949,6 +969,7 @@ async fn gm_can_delete_gm_only_message_not_individually_listed() {
         Audience::GmOnly,
     )
     .await
+    .map(|(cmd, _pending)| cmd)
     .unwrap();
     let id = f.message_id(&sent).await;
     let r = handle_delete_message(&f.room, &f.repo, &f.gm, &f.rate, id, 2, 60).await;
@@ -1000,6 +1021,7 @@ async fn non_recipient_still_cannot_see_deleted_whisper() {
         },
     )
     .await
+    .map(|(cmd, _pending)| cmd)
     .unwrap();
     let id = f.message_id(&sent).await;
     handle_delete_message(&f.room, &f.repo, &f.alice, &f.rate, id, 2, 60)
@@ -1070,6 +1092,7 @@ async fn non_recipient_finds_no_trace_of_edited_whisper_content() {
         },
     )
     .await
+    .map(|(cmd, _pending)| cmd)
     .unwrap();
     let id = f.message_id(&sent).await;
     let edited = handle_edit_message(
@@ -1090,6 +1113,7 @@ async fn non_recipient_finds_no_trace_of_edited_whisper_content() {
         "phoenixnest".into(),
     )
     .await
+    .map(|(cmd, _pending)| cmd)
     .unwrap();
     let sys = f.stored_message_system(&edited).await;
     assert_eq!(

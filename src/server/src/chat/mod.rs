@@ -22,7 +22,9 @@
 //! message doc under this origin -- see `handle_recalc_roll` -- never any
 //! other `/permissions` subpath, and never `/embedded`). `handle_recalc_roll`
 //! is this origin's third producer, after its own GM-only check (never
-//! owner-or-GM -- see `RecalcRollError::Forbidden`).
+//! owner-or-GM -- see `RecalcRollError::Forbidden`); the post-publish
+//! enrichment republish (`chat::post_publish::run_pending_enrichments`) is a
+//! fourth producer, after its own tombstone/OCC checks.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
@@ -35,6 +37,7 @@ use uuid::Uuid;
 
 mod commands;
 mod link_preview;
+mod post_publish;
 mod preview_cache;
 mod rolls;
 mod sanitize;
@@ -45,6 +48,7 @@ pub use link_preview::{
     build_client as build_link_preview_client, enrich as enrich_link_previews, fetch_preview,
     LinkPreview, LinkPreviewDeps, PreviewError, MAX_PREVIEWS_PER_MESSAGE,
 };
+pub use post_publish::{run_pending_enrichments, PendingEnrichment, PostPublishDeps};
 pub use preview_cache::{
     LinkPreviewCache, PreviewRateLimiter, MAX_CACHE_ENTRIES, NEGATIVE_TTL, POSITIVE_TTL,
     PREVIEW_FETCH_PER_MIN,
@@ -279,6 +283,16 @@ pub enum Segment {
         title: String,
         /// Server-extracted description (may be empty).
         description: String,
+        /// The asset-ified `og:image`/canonical-image, once the post-publish
+        /// background pipeline (`chat::post_publish`) has resolved one.
+        /// Always `None` when `enrich` first appends this segment -- set
+        /// later ONLY via a `WriteOrigin::ServerMessageRevision` republish
+        /// (`run_pending_enrichments`), the same chokepoint
+        /// `handle_edit_message`/`handle_delete_message` use.
+        /// `#[serde(default)]`: every `LinkPreview` segment persisted before
+        /// this field existed has no `image_asset_id` key on disk.
+        #[serde(default)]
+        image_asset_id: Option<Uuid>,
     },
     // Reserved for a future `DocLink` segment variant.
 }
@@ -728,7 +742,7 @@ pub async fn handle_send_message(
     content: String,
     actor_owner: Option<ActorOwnerRef>,
     audience: Audience,
-) -> Result<Command, SendMessageError> {
+) -> Result<(Command, Vec<PendingEnrichment>), SendMessageError> {
     let MessageRequestCtx {
         room,
         repo,
@@ -899,6 +913,7 @@ pub async fn handle_send_message(
                         WriteOrigin::Client,
                     )
                     .await
+                    .map(|cmd| (cmd, Vec::new()))
                     .map_err(SendMessageError::Data);
             }
         }
@@ -920,6 +935,7 @@ pub async fn handle_send_message(
                         WriteOrigin::Client,
                     )
                     .await
+                    .map(|cmd| (cmd, Vec::new()))
                     .map_err(SendMessageError::Data);
             }
         };
@@ -988,11 +1004,13 @@ pub async fn handle_send_message(
                         WriteOrigin::Client,
                     )
                     .await
+                    .map(|cmd| (cmd, Vec::new()))
                     .map_err(SendMessageError::Data);
             }
             segments
         }
     };
+    let mut pending: Vec<PendingEnrichment> = Vec::new();
     // Link-preview enrich stage: only for hyperlink-carrying, non-Roll bodies.
     // The `kind != Roll` guard is EXPLICIT, not incidental: a
     // successful roll falls through here with `content_segments == [RollEmbed]`
@@ -1003,7 +1021,7 @@ pub async fn handle_send_message(
     // roll message if that ever changes. Synchronous, before publish — no
     // spawned task, no post-publish revision, no message-deleted-mid-fetch race.
     if parsed.kind != MessageKind::Roll && policy.previews_enabled() {
-        link_preview::enrich(
+        pending = link_preview::enrich(
             &mut content_segments,
             link_preview::EnrichDeps {
                 repo,
@@ -1044,6 +1062,7 @@ pub async fn handle_send_message(
         WriteOrigin::Client,
     )
     .await
+    .map(|cmd| (cmd, pending))
     .map_err(SendMessageError::Data)
 }
 
@@ -1076,7 +1095,7 @@ pub async fn handle_edit_message(
     req: MessageRequestCtx<'_>,
     message_id: Uuid,
     content: String,
-) -> Result<Command, SendMessageError> {
+) -> Result<(Command, Vec<PendingEnrichment>), SendMessageError> {
     let MessageRequestCtx {
         room,
         repo,
@@ -1188,8 +1207,9 @@ pub async fn handle_edit_message(
     // card always reflects the CURRENT edited content (never a stale link
     // preview from before the edit). The roll-immutability checks above
     // already guarantee `kind != Roll` here.
+    let mut pending: Vec<PendingEnrichment> = Vec::new();
     if policy.previews_enabled() {
-        link_preview::enrich(
+        pending = link_preview::enrich(
             &mut segments,
             link_preview::EnrichDeps {
                 repo,
@@ -1226,7 +1246,19 @@ pub async fn handle_edit_message(
     };
     room.publish(repo, ctx, vec![op], now, WriteOrigin::ServerMessageRevision)
         .await
+        .map(|cmd| (cmd, pending))
         .map_err(SendMessageError::Data)
+}
+
+/// Extracts the message doc id a `Command` from `handle_send_message` (a
+/// `Create`) or `handle_edit_message` (an `Update`) targeted — the id the
+/// post-publish background pipeline republishes against.
+pub fn command_message_id(cmd: &Command) -> Option<Uuid> {
+    match cmd.ops.first()? {
+        Operation::Create { doc } => Some(doc.id),
+        Operation::Update { doc_id, .. } => Some(*doc_id),
+        Operation::Delete { .. } => None,
+    }
 }
 
 /// Server-authoritative message soft-delete: owner-or-GM only, a pure
@@ -1471,6 +1503,46 @@ mod tests {
         );
         let back: Segment = serde_json::from_value(j).unwrap();
         assert_eq!(back, seg);
+    }
+
+    #[test]
+    fn command_message_id_extracts_create_and_update_doc_ids() {
+        let world_id = Uuid::new_v4();
+        let doc = seed_actor_doc(Uuid::new_v4(), world_id, None);
+        let create = Command {
+            seq: 1,
+            world_id,
+            author: Uuid::new_v4(),
+            ts: 0,
+            ops: vec![Operation::Create { doc: doc.clone() }],
+        };
+        assert_eq!(command_message_id(&create), Some(doc.id));
+
+        let update_target = Uuid::new_v4();
+        let update = Command {
+            seq: 2,
+            world_id,
+            author: Uuid::new_v4(),
+            ts: 0,
+            ops: vec![Operation::Update {
+                doc_id: update_target,
+                changes: vec![],
+            }],
+        };
+        assert_eq!(command_message_id(&update), Some(update_target));
+
+        let delete = Command {
+            seq: 3,
+            world_id,
+            author: Uuid::new_v4(),
+            ts: 0,
+            ops: vec![Operation::Delete { doc: doc.clone() }],
+        };
+        assert_eq!(
+            command_message_id(&delete),
+            None,
+            "a Delete carries no id the post-publish pipeline would republish against"
+        );
     }
 
     #[test]
@@ -2047,7 +2119,7 @@ mod tests {
         let (mut rx, _current) = room.subscribe();
         let rate = PingRateLimiter::new();
 
-        let cmd = handle_send_message(
+        let (cmd, _pending) = handle_send_message(
             MessageRequestCtx {
                 room: &room,
                 repo: &repo,
@@ -2251,7 +2323,7 @@ mod tests {
         let room = reg.get_or_create(&repo, w.id).await.unwrap().unwrap();
         let rate = PingRateLimiter::new();
 
-        let cmd = handle_send_message(
+        let (cmd, _pending) = handle_send_message(
             MessageRequestCtx {
                 room: &room,
                 repo: &repo,
@@ -2389,7 +2461,7 @@ mod tests {
         let room = reg.get_or_create(&repo, w.id).await.unwrap().unwrap();
         let rate = PingRateLimiter::new();
 
-        let cmd = handle_send_message(
+        let (cmd, _pending) = handle_send_message(
             MessageRequestCtx {
                 room: &room,
                 repo: &repo,
@@ -2509,7 +2581,7 @@ mod tests {
         // no-op member_role lookup that always succeeds) — this test proves
         // the boundary is accepted, not just that over-the-limit is rejected.
         let recipients: Vec<Uuid> = std::iter::repeat_n(player, MAX_WHISPER_RECIPIENTS).collect();
-        let cmd = handle_send_message(
+        let (cmd, _pending) = handle_send_message(
             MessageRequestCtx {
                 room: &room,
                 repo: &repo,
@@ -2575,7 +2647,7 @@ mod tests {
         let rate = PingRateLimiter::new();
 
         // Plain message: source == the full content.
-        let cmd = handle_send_message(
+        let (cmd, _pending) = handle_send_message(
             MessageRequestCtx {
                 room: &room,
                 repo: &repo,
@@ -2604,7 +2676,7 @@ mod tests {
         assert_eq!(sys.source, Some("hello".into()));
 
         // Command message: source keeps the command prefix (re-parses identically).
-        let cmd = handle_send_message(
+        let (cmd, _pending) = handle_send_message(
             MessageRequestCtx {
                 room: &room,
                 repo: &repo,
@@ -2633,7 +2705,7 @@ mod tests {
         assert_eq!(sys.source, Some("/me waves".into()));
 
         // Whisper via content /w: source has the /w prefix STRIPPED.
-        let cmd = handle_send_message(
+        let (cmd, _pending) = handle_send_message(
             MessageRequestCtx {
                 room: &room,
                 repo: &repo,
@@ -2690,7 +2762,7 @@ mod tests {
         let room = reg.get_or_create(&repo, w.id).await.unwrap().unwrap();
         let rate = PingRateLimiter::new();
 
-        let cmd = handle_send_message(
+        let (cmd, _pending) = handle_send_message(
             MessageRequestCtx {
                 room: &room,
                 repo: &repo,
@@ -2789,7 +2861,7 @@ mod tests {
         // Send "/w @alice /me waves": a nested command inside a whisper body is
         // NOT parsed — stored kind is Normal, content/source are the literal
         // post-/w-strip body "/me waves".
-        let cmd = handle_send_message(
+        let (cmd, _pending) = handle_send_message(
             MessageRequestCtx {
                 room: &room,
                 repo: &repo,
@@ -2859,7 +2931,7 @@ mod tests {
         // whisper edit — and a resubmit of a literal "/w ..." body must also
         // survive without AudienceLocked (only a non-whisper message rejects a
         // literal /w-shaped edit body).
-        let cmd2 = handle_send_message(
+        let (cmd2, _pending2) = handle_send_message(
             MessageRequestCtx {
                 room: &room,
                 repo: &repo,
@@ -2924,7 +2996,7 @@ mod tests {
         // Editing a PUBLIC (non-whisper) message with /w-shaped content still
         // rejects AudienceLocked — the fast path applies ONLY to whisper
         // messages, not to every message.
-        let cmd3 = handle_send_message(
+        let (cmd3, _pending3) = handle_send_message(
             MessageRequestCtx {
                 room: &room,
                 repo: &repo,
@@ -3034,7 +3106,7 @@ mod tests {
         let room = reg.get_or_create(&repo, w.id).await.unwrap().unwrap();
         let rate = PingRateLimiter::new();
 
-        let cmd = handle_send_message(
+        let (cmd, _pending) = handle_send_message(
             MessageRequestCtx {
                 room: &room,
                 repo: &repo,
@@ -3091,7 +3163,7 @@ mod tests {
         assert!(matches!(err, SendMessageError::RollImmutable));
 
         // A plain Normal message (no roll segment) still edits fine.
-        let cmd2 = handle_send_message(
+        let (cmd2, _pending2) = handle_send_message(
             MessageRequestCtx {
                 room: &room,
                 repo: &repo,
@@ -3177,7 +3249,7 @@ mod tests {
         let room = reg.get_or_create(&repo, w.id).await.unwrap().unwrap();
         let rate = PingRateLimiter::new();
 
-        let cmd = handle_send_message(
+        let (cmd, _pending) = handle_send_message(
             MessageRequestCtx {
                 room: &room,
                 repo: &repo,
@@ -3384,7 +3456,7 @@ mod tests {
         let room = reg.get_or_create(&repo, w.id).await.unwrap().unwrap();
         let rate = PingRateLimiter::new();
 
-        let cmd = handle_send_message(
+        let (cmd, _pending) = handle_send_message(
             MessageRequestCtx {
                 room: &room,
                 repo: &repo,
@@ -3660,7 +3732,7 @@ mod tests {
         let room = reg.get_or_create(&repo, w.id).await.unwrap().unwrap();
         let rate = PingRateLimiter::new();
 
-        let cmd = handle_send_message(
+        let (cmd, _pending) = handle_send_message(
             MessageRequestCtx {
                 room: &room,
                 repo: &repo,
@@ -3862,7 +3934,7 @@ mod tests {
             user_id: gm,
             world_role: WorldRole::Gm,
         };
-        let cmd = handle_send_message(
+        let (cmd, _pending) = handle_send_message(
             MessageRequestCtx {
                 room: &room,
                 repo: &repo,
@@ -3923,7 +3995,7 @@ mod tests {
             user_id: gm,
             world_role: WorldRole::Gm,
         };
-        let cmd = handle_send_message(
+        let (cmd, _pending) = handle_send_message(
             MessageRequestCtx {
                 room: &room,
                 repo: &repo,
@@ -4067,7 +4139,7 @@ mod tests {
                 user_id: gm,
                 world_role: WorldRole::Gm,
             };
-            let cmd = handle_send_message(
+            let (cmd, _pending) = handle_send_message(
                 MessageRequestCtx {
                     room: &room,
                     repo: &repo,
@@ -4126,7 +4198,7 @@ mod tests {
             user_id: gm,
             world_role: WorldRole::Gm,
         };
-        let cmd = handle_send_message(
+        let (cmd, _pending) = handle_send_message(
             MessageRequestCtx {
                 room: &room,
                 repo: &repo,
@@ -4378,6 +4450,20 @@ mod link_preview_ingest_tests {
         }
 
         async fn send(&self, content: &str, now: i64) -> Result<Command, SendMessageError> {
+            self.send_full(content, now)
+                .await
+                .map(|(cmd, _pending)| cmd)
+        }
+
+        /// Same as `send`, but returns the full `(Command, Vec<PendingEnrichment>)`
+        /// tuple — `send` discards the pending half, which hides whether
+        /// `enrich`'s image-candidate queue actually reaches this call's
+        /// caller.
+        async fn send_full(
+            &self,
+            content: &str,
+            now: i64,
+        ) -> Result<(Command, Vec<PendingEnrichment>), SendMessageError> {
             handle_send_message(
                 MessageRequestCtx {
                     room: &self.room,
@@ -4424,6 +4510,7 @@ mod link_preview_ingest_tests {
                 content.into(),
             )
             .await
+            .map(|(cmd, _pending)| cmd)
         }
 
         async fn stored_engine(&self, cmd: &Command) -> MessageEngine {
@@ -4473,6 +4560,58 @@ mod link_preview_ingest_tests {
         }
         // The preview is APPENDED — the original Html run is still first.
         assert!(matches!(sys.content.first(), Some(Segment::Html { .. })));
+    }
+
+    #[tokio::test]
+    async fn page_with_og_image_yields_a_pending_image_job_and_no_asset_id_yet() {
+        let addr = spawn_stub(Router::new().route(
+            "/",
+            get(|| async {
+                axum::response::Html(
+                    r#"<title>Hello</title><meta property="og:image" content="https://og.example/pic.png">"#,
+                )
+            }),
+        ))
+        .await;
+        let f = Fixture::new(hyperlinks_on()).await;
+        let (cmd, pending) = f
+            .send_full(&format!("check out [link](http://stub.test:{addr}/)"), 1)
+            .await
+            .unwrap();
+        assert_eq!(
+            pending.len(),
+            1,
+            "an og:image candidate must queue exactly one PendingEnrichment"
+        );
+        assert!(matches!(pending[0], PendingEnrichment::PreviewImage { .. }));
+        let sys = f.stored_engine(&cmd).await;
+        match sys.content.last() {
+            Some(Segment::LinkPreview { image_asset_id, .. }) => {
+                assert_eq!(
+                    *image_asset_id, None,
+                    "the synchronous scrape never asset-ifies the image itself"
+                );
+            }
+            other => panic!("expected a trailing LinkPreview segment, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn page_without_og_image_yields_no_pending_jobs() {
+        let addr = spawn_stub(Router::new().route(
+            "/",
+            get(|| async { axum::response::Html("<title>Hello</title>") }),
+        ))
+        .await;
+        let f = Fixture::new(hyperlinks_on()).await;
+        let (_cmd, pending) = f
+            .send_full(&format!("check out [link](http://stub.test:{addr}/)"), 1)
+            .await
+            .unwrap();
+        assert!(
+            pending.is_empty(),
+            "a page with no og:image/link[rel=image_src] must queue no pending jobs"
+        );
     }
 
     #[tokio::test]

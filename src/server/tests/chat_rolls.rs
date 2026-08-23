@@ -103,6 +103,7 @@ impl Fixture {
             Audience::Public,
         )
         .await
+        .map(|(cmd, _pending)| cmd)
     }
 
     async fn stored_message_doc(&self, cmd: &Command) -> Document {
@@ -284,7 +285,8 @@ async fn edit_of_roll_message_is_immutable() {
         id,
         "/roll 1d20".into(),
     )
-    .await;
+    .await
+    .map(|(cmd, _pending)| cmd);
     assert!(matches!(r, Err(SendMessageError::RollImmutable)), "{r:?}");
 }
 
@@ -312,7 +314,8 @@ async fn edit_into_roll_is_rejected() {
         id,
         "/roll 1d6".into(),
     )
-    .await;
+    .await
+    .map(|(cmd, _pending)| cmd);
     assert!(matches!(r, Err(SendMessageError::RollImmutable)), "{r:?}");
     // The stored message must be untouched by the rejected edit attempt.
     let doc = f.repo.get_document(id).await.unwrap().unwrap();
@@ -352,6 +355,7 @@ async fn edit_content_with_inline_span_stays_literal_text() {
         "[[1d6]]".into(),
     )
     .await
+    .map(|(cmd, _pending)| cmd)
     .unwrap();
     let sys = f.stored_message_system(&edited).await;
     assert_eq!(sys.kind, MessageKind::Normal);

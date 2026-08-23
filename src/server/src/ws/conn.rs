@@ -488,8 +488,10 @@ async fn handle_socket(
                                     // echo of the authored Event (like Intent). On rejection, a
                                     // `ChatError` correlated by `request_id` is sent to the sender ONLY
                                     // (never broadcast) so the failure is surfaced instead of vanishing;
-                                    // `message` is the classified, no-leak `Display` text.
-                                    if let Err(e) = crate::chat::handle_send_message(
+                                    // `message` is the classified, no-leak `Display` text. A non-empty
+                                    // pending-enrichment list is run AFTER publish returns, off the
+                                    // request path (`chat::post_publish::run_pending_enrichments`).
+                                    match crate::chat::handle_send_message(
             crate::chat::MessageRequestCtx {
                 room: &room,
                 repo: repo.as_ref(),
@@ -506,19 +508,41 @@ async fn handle_socket(
         )
                                     .await
                                     {
-                                        tracing::debug!(world = %world_id, user = %user_id, ?e, "message rejected");
-                                        if etx.send(Egress::Frame(Arc::new(ServerMsg::ChatError {
-                                            request_id,
-                                            message: e.to_string(),
-                                        }))).await.is_err() {
-                                            break;
+                                        Ok((cmd, pending)) => {
+                                            if !pending.is_empty() {
+                                                if let Some(message_id) = crate::chat::command_message_id(&cmd) {
+                                                    tokio::spawn(crate::chat::run_pending_enrichments(
+                                                        crate::chat::PostPublishDeps {
+                                                            room: room.clone(),
+                                                            repo: repo.clone(),
+                                                            client: preview_client.clone(),
+                                                            assets_root: state.config.assets_path(),
+                                                            write_barrier: state.write_barrier.clone(),
+                                                        },
+                                                        message_id,
+                                                        world_id,
+                                                        pending,
+                                                    ));
+                                                }
+                                            }
+                                        }
+                                        Err(e) => {
+                                            tracing::debug!(world = %world_id, user = %user_id, ?e, "message rejected");
+                                            if etx.send(Egress::Frame(Arc::new(ServerMsg::ChatError {
+                                                request_id,
+                                                message: e.to_string(),
+                                            }))).await.is_err() {
+                                                break;
+                                            }
                                         }
                                     }
                                 }
-                                Ok(ClientMsg::EditMessage { request_id, message_id, content }) => {
+                                Ok(ClientMsg::EditMessage { request_id, message_id: edit_message_id, content }) => {
                                     // Same confirm-by-broadcast-echo shape as SendMessage; a rejection is
                                     // surfaced to the sender only via a `request_id`-correlated `ChatError`.
-                                    if let Err(e) = crate::chat::handle_edit_message(
+                                    // A non-empty pending-enrichment list is run AFTER publish returns,
+                                    // off the request path, same as SendMessage.
+                                    match crate::chat::handle_edit_message(
             crate::chat::MessageRequestCtx {
                 room: &room,
                 repo: repo.as_ref(),
@@ -528,17 +552,37 @@ async fn handle_socket(
                 now: now_millis(),
                 budget_per_min: MESSAGE_RATE_PER_MIN,
             },
-            message_id,
+            edit_message_id,
             content,
         )
                                     .await
                                     {
-                                        tracing::debug!(world = %world_id, user = %user_id, ?e, "edit rejected");
-                                        if etx.send(Egress::Frame(Arc::new(ServerMsg::ChatError {
-                                            request_id,
-                                            message: e.to_string(),
-                                        }))).await.is_err() {
-                                            break;
+                                        Ok((cmd, pending)) => {
+                                            if !pending.is_empty() {
+                                                if let Some(message_id) = crate::chat::command_message_id(&cmd) {
+                                                    tokio::spawn(crate::chat::run_pending_enrichments(
+                                                        crate::chat::PostPublishDeps {
+                                                            room: room.clone(),
+                                                            repo: repo.clone(),
+                                                            client: preview_client.clone(),
+                                                            assets_root: state.config.assets_path(),
+                                                            write_barrier: state.write_barrier.clone(),
+                                                        },
+                                                        message_id,
+                                                        world_id,
+                                                        pending,
+                                                    ));
+                                                }
+                                            }
+                                        }
+                                        Err(e) => {
+                                            tracing::debug!(world = %world_id, user = %user_id, ?e, "edit rejected");
+                                            if etx.send(Egress::Frame(Arc::new(ServerMsg::ChatError {
+                                                request_id,
+                                                message: e.to_string(),
+                                            }))).await.is_err() {
+                                                break;
+                                            }
                                         }
                                     }
                                 }

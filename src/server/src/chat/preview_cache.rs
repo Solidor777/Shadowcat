@@ -122,6 +122,8 @@ mod tests {
             url: url.to_string(),
             title: "t".to_string(),
             description: "d".to_string(),
+            image_url: None,
+            image_asset_id: None,
         }
     }
 
