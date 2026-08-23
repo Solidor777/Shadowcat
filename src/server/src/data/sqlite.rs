@@ -377,6 +377,71 @@ impl SqliteRepository {
         rows.iter().map(Self::asset_from_row).collect()
     }
 
+    /// See `Repository::get_link_preview_cache`.
+    pub async fn get_link_preview_cache(
+        &self,
+        url: &str,
+    ) -> Result<Option<crate::data::repository::LinkPreviewCacheRow>, DataError> {
+        let row = sqlx::query(
+            "SELECT title, description, image_asset_id, fetched_at FROM link_preview_cache WHERE url = ?",
+        )
+        .bind(url)
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some(row) = row else { return Ok(None) };
+        let fetched_at_raw: String = row.get("fetched_at");
+        let fetched_at_ms = fetched_at_raw
+            .parse::<i64>()
+            .map_err(|e| DataError::OpFailed(e.to_string()))?;
+        let image_asset_id = row
+            .get::<Option<String>, _>("image_asset_id")
+            .map(|s| Uuid::parse_str(&s).map_err(|e| DataError::OpFailed(e.to_string())))
+            .transpose()?;
+        Ok(Some(crate::data::repository::LinkPreviewCacheRow {
+            title: row.get("title"),
+            description: row.get("description"),
+            image_asset_id,
+            fetched_at_ms,
+        }))
+    }
+
+    /// See `Repository::upsert_link_preview_cache`.
+    pub async fn upsert_link_preview_cache(
+        &self,
+        url: &str,
+        title: Option<&str>,
+        description: Option<&str>,
+        fetched_at_ms: i64,
+    ) -> Result<(), DataError> {
+        sqlx::query(
+            "INSERT INTO link_preview_cache (url, title, description, fetched_at) \
+             VALUES (?, ?, ?, ?) \
+             ON CONFLICT(url) DO UPDATE SET \
+               title = excluded.title, description = excluded.description, fetched_at = excluded.fetched_at",
+        )
+        .bind(url)
+        .bind(title)
+        .bind(description)
+        .bind(fetched_at_ms.to_string())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// See `Repository::set_link_preview_cache_image`.
+    pub async fn set_link_preview_cache_image(
+        &self,
+        url: &str,
+        image_asset_id: Uuid,
+    ) -> Result<(), DataError> {
+        sqlx::query("UPDATE link_preview_cache SET image_asset_id = ? WHERE url = ?")
+            .bind(image_asset_id.to_string())
+            .bind(url)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     /// Insert a new world row with `seq = 0` and return it.
     ///
     /// # Examples
@@ -3750,6 +3815,32 @@ impl Repository for SqliteRepository {
         // Delegate to the concrete method on SqliteRepository (same query, exposed
         // on the trait so Room::publish can call it through &dyn Repository).
         SqliteRepository::get_explored(self, scene, user).await
+    }
+
+    async fn get_link_preview_cache(
+        &self,
+        url: &str,
+    ) -> Result<Option<crate::data::repository::LinkPreviewCacheRow>, DataError> {
+        SqliteRepository::get_link_preview_cache(self, url).await
+    }
+
+    async fn upsert_link_preview_cache(
+        &self,
+        url: &str,
+        title: Option<&str>,
+        description: Option<&str>,
+        fetched_at_ms: i64,
+    ) -> Result<(), DataError> {
+        SqliteRepository::upsert_link_preview_cache(self, url, title, description, fetched_at_ms)
+            .await
+    }
+
+    async fn set_link_preview_cache_image(
+        &self,
+        url: &str,
+        image_asset_id: Uuid,
+    ) -> Result<(), DataError> {
+        SqliteRepository::set_link_preview_cache_image(self, url, image_asset_id).await
     }
 }
 

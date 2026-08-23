@@ -1005,9 +1005,10 @@ pub async fn handle_send_message(
     if parsed.kind != MessageKind::Roll && policy.previews_enabled() {
         link_preview::enrich(
             &mut content_segments,
-            preview.client,
-            preview.cache,
-            preview.rate,
+            link_preview::EnrichDeps {
+                repo,
+                fetch: preview,
+            },
             ctx.user_id,
             now,
             std::time::Instant::now(),
@@ -1190,9 +1191,10 @@ pub async fn handle_edit_message(
     if policy.previews_enabled() {
         link_preview::enrich(
             &mut segments,
-            preview.client,
-            preview.cache,
-            preview.rate,
+            link_preview::EnrichDeps {
+                repo,
+                fetch: preview,
+            },
             ctx.user_id,
             now,
             std::time::Instant::now(),

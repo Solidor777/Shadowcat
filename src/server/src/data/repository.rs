@@ -13,6 +13,22 @@ use crate::data::document::{
 };
 use crate::data::DataError;
 
+/// One row from the persisted `link_preview_cache` table
+/// (`Repository::get_link_preview_cache`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinkPreviewCacheRow {
+    /// Server-extracted title, or `None` for a cached negative-outcome row
+    /// (both `title` and `description` `None` together).
+    pub title: Option<String>,
+    /// Server-extracted description, or `None` for a cached negative-outcome row.
+    pub description: Option<String>,
+    /// The asset-ified `og:image`/oEmbed-thumbnail, once the post-publish
+    /// background pipeline resolves one for this URL.
+    pub image_asset_id: Option<Uuid>,
+    /// When this row was last (re-)fetched, Unix epoch milliseconds.
+    pub fetched_at_ms: i64,
+}
+
 /// Storage contract. The only implementation today is `SqliteRepository`;
 /// the trait exists so Postgres can be added later behind the same surface.
 #[async_trait]
@@ -242,4 +258,36 @@ pub trait Repository: Send + Sync {
     /// Per-(scene, user) secret memory — never broadcast; used by the movement gate's
     /// `Revealed` mode to union the explored set with the live visibility mask.
     async fn get_explored(&self, scene: Uuid, user: Uuid) -> Result<Option<Vec<u8>>, DataError>;
+
+    /// A persisted `link_preview_cache` row for `url`, or `None` if absent.
+    /// The DB-backed tier BEHIND `chat::LinkPreviewCache`'s in-memory fast
+    /// path — consulted on an in-memory miss so a cold-started process can
+    /// reuse a still-fresh row rather than re-fetching every URL seen since
+    /// the process last started (see `chat::link_preview::cached_or_fetch`).
+    async fn get_link_preview_cache(
+        &self,
+        url: &str,
+    ) -> Result<Option<LinkPreviewCacheRow>, DataError>;
+
+    /// Upserts `title`/`description`/`fetched_at` for `url`. Leaves any
+    /// existing `image_asset_id` untouched on conflict — an already
+    /// asset-ified image (set by `set_link_preview_cache_image`) must survive
+    /// a later title/description refresh of the same URL.
+    async fn upsert_link_preview_cache(
+        &self,
+        url: &str,
+        title: Option<&str>,
+        description: Option<&str>,
+        fetched_at_ms: i64,
+    ) -> Result<(), DataError>;
+
+    /// Sets `image_asset_id` on an EXISTING `url` row (a no-op if the row is
+    /// absent — an image is only ever attached to a URL whose
+    /// title/description scrape, or the oEmbed thumbnail pipeline's own
+    /// placeholder upsert, already created the row).
+    async fn set_link_preview_cache_image(
+        &self,
+        url: &str,
+        image_asset_id: Uuid,
+    ) -> Result<(), DataError>;
 }

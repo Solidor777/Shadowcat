@@ -25,7 +25,9 @@ use reqwest::redirect::Policy;
 use url::{Host, Url};
 use uuid::Uuid;
 
-use super::preview_cache::{LinkPreviewCache, PreviewRateLimiter, PREVIEW_FETCH_PER_MIN};
+use super::preview_cache::{
+    LinkPreviewCache, PreviewRateLimiter, NEGATIVE_TTL, POSITIVE_TTL, PREVIEW_FETCH_PER_MIN,
+};
 use super::Segment;
 
 /// A server-fetched preview. Stored verbatim by the ingest stage (a later
@@ -114,6 +116,70 @@ pub struct LinkPreviewDeps<'a> {
     pub rate: &'a PreviewRateLimiter,
 }
 
+/// Borrow-bundle of everything `enrich` needs beyond `segments`/`user`/the
+/// two timestamps: the document repository (the persisted `link_preview_cache`
+/// tier) alongside the existing fetch-dependency bundle. Keeps `enrich`'s own
+/// parameter count from crossing the too-many-arguments threshold now that a
+/// persisted-cache lookup needs a repository handle in addition to the
+/// in-memory cache. Not stored — constructed inline at each call site.
+pub struct EnrichDeps<'a> {
+    /// The document repository, for the persisted `link_preview_cache` tier.
+    pub repo: &'a dyn crate::data::repository::Repository,
+    /// The shared preview-fetch HTTP client, in-memory cache, and rate limiter.
+    pub fetch: LinkPreviewDeps<'a>,
+}
+
+/// Two-tier cache lookup for `url`: the in-memory `cache` (fast path, no
+/// await beyond a mutex) first, then the persisted `link_preview_cache`
+/// table (survives a restart) on a miss — checked BEFORE any network fetch
+/// is attempted, so a cold-started process can reuse a still-fresh row
+/// rather than re-fetching every URL seen since the process last started.
+/// `None` return means BOTH tiers missed (or a persisted row expired past
+/// its TTL) and the caller must actually fetch. A persisted hit backfills
+/// the in-memory tier so a repeat within the same process's uptime skips
+/// the DB entirely.
+async fn cached_or_fetch(
+    repo: &dyn crate::data::repository::Repository,
+    cache: &LinkPreviewCache,
+    url: &str,
+    now: Instant,
+    now_ms: i64,
+) -> Option<Option<LinkPreview>> {
+    if let Some(hit) = cache.get(url, now) {
+        return Some(hit);
+    }
+    let row = repo.get_link_preview_cache(url).await.ok().flatten()?;
+    let is_negative = row.title.is_none() && row.description.is_none();
+    let ttl_ms = if is_negative {
+        NEGATIVE_TTL.as_millis() as i64
+    } else {
+        POSITIVE_TTL.as_millis() as i64
+    };
+    let age_ms = now_ms.saturating_sub(row.fetched_at_ms);
+    if age_ms >= ttl_ms {
+        return None;
+    }
+    let outcome = if is_negative {
+        None
+    } else {
+        Some(LinkPreview {
+            url: url.to_string(),
+            title: row.title.unwrap_or_default(),
+            description: row.description.unwrap_or_default(),
+        })
+    };
+    // Backfilled at the row's TRUE age (not a fresh `now` stamp), so the
+    // in-memory tier's own TTL clock starts from the same origin the
+    // persisted row's `fetched_at` already measured from — otherwise a
+    // near-expiry persisted hit would silently re-arm a full fresh TTL
+    // window in memory, up to doubling the effective staleness bound.
+    let backfill_at = now
+        .checked_sub(Duration::from_millis(age_ms.max(0) as u64))
+        .unwrap_or(now);
+    cache.insert(url.to_string(), outcome.clone(), backfill_at);
+    Some(outcome)
+}
+
 /// Extracts candidate preview URLs from `segments`' `Html` runs — specifically
 /// the `href` of an actual `<a>` tag in the sanitized output (see
 /// `extract_href_urls`'s doc for why this must be scoped to a real anchor
@@ -121,7 +187,7 @@ pub struct LinkPreviewDeps<'a> {
 /// enabled" set, since a URL the sanitizer stripped never reaches here, and
 /// non-anchor body text can never yield a candidate. De-duplicated in
 /// first-seen order and capped at `MAX_PREVIEWS_PER_MESSAGE`, then resolves
-/// each through `cache` (a hit reuses the cached outcome; a miss is
+/// each through `cached_or_fetch` (a hit reuses the cached outcome; a miss is
 /// rate-limit-gated then fetched). Misses are fetched CONCURRENTLY via a
 /// `JoinSet` so the total added latency is one fetch's worth, not N serial
 /// fetches. Each successful fetch APPENDS one `Segment::LinkPreview` to the
@@ -135,13 +201,19 @@ pub struct LinkPreviewDeps<'a> {
 /// clock source.
 pub async fn enrich(
     segments: &mut Vec<Segment>,
-    client: &reqwest::Client,
-    cache: &LinkPreviewCache,
-    rate: &PreviewRateLimiter,
+    deps: EnrichDeps<'_>,
     user: Uuid,
     now_ms: i64,
     now: Instant,
 ) {
+    let EnrichDeps {
+        repo,
+        fetch: LinkPreviewDeps {
+            client,
+            cache,
+            rate,
+        },
+    } = deps;
     let mut urls: Vec<String> = Vec::new();
     'outer: for seg in segments.iter() {
         if let Segment::Html { sanitized_html } = seg {
@@ -159,7 +231,7 @@ pub async fn enrich(
     let mut previews: Vec<LinkPreview> = Vec::with_capacity(urls.len());
     let mut misses: Vec<String> = Vec::new();
     for url in urls {
-        match cache.get(&url, now) {
+        match cached_or_fetch(repo, cache, &url, now, now_ms).await {
             Some(Some(preview)) => previews.push(preview),
             Some(None) => {} // live cached negative: skip silently, no re-fetch
             None => misses.push(url),
@@ -187,11 +259,32 @@ pub async fn enrich(
             };
             match result {
                 Ok(preview) => {
-                    cache.insert(url, Some(preview.clone()), now);
+                    cache.insert(url.clone(), Some(preview.clone()), now);
+                    if let Err(e) = repo
+                        .upsert_link_preview_cache(
+                            &url,
+                            Some(&preview.title),
+                            Some(&preview.description),
+                            now_ms,
+                        )
+                        .await
+                    {
+                        // In-memory tier is already populated above, so the
+                        // fetch this request needed still succeeds — only
+                        // the persisted tier's restart-survival guarantee is
+                        // at risk, which is worth an operator-visible signal.
+                        tracing::warn!(?e, %url, "link-preview cache persist failed");
+                    }
                     previews.push(preview);
                 }
                 Err(_) => {
-                    cache.insert(url, None, now);
+                    cache.insert(url.clone(), None, now);
+                    if let Err(e) = repo
+                        .upsert_link_preview_cache(&url, None, None, now_ms)
+                        .await
+                    {
+                        tracing::warn!(?e, %url, "link-preview negative-cache persist failed");
+                    }
                 }
             }
         }
@@ -1586,5 +1679,216 @@ mod tests {
         assert!(a.is_ok());
         assert!(b.is_ok());
         assert_eq!(HITS.load(Ordering::SeqCst), 2);
+    }
+
+    // -- cached_or_fetch: two-tier cache lookup ------------------------------
+
+    #[tokio::test]
+    async fn cached_or_fetch_hits_in_memory_tier_without_touching_repo() {
+        let repo = crate::data::sqlite::SqliteRepository::connect("sqlite::memory:")
+            .await
+            .unwrap();
+        let cache = LinkPreviewCache::new();
+        let now = Instant::now();
+        // Never upserted into the DB table; the in-memory tier must still
+        // resolve it, proving in-memory precedence over the persisted tier.
+        let url = "https://mem-hit.example/";
+        let preview = LinkPreview {
+            url: url.to_string(),
+            title: "t".to_string(),
+            description: "d".to_string(),
+        };
+        cache.insert(url.to_string(), Some(preview.clone()), now);
+
+        let result = cached_or_fetch(&repo, &cache, url, now, 1_000).await;
+        assert_eq!(result, Some(Some(preview)));
+    }
+
+    #[tokio::test]
+    async fn cached_or_fetch_cold_start_falls_through_to_persisted_row() {
+        let repo = crate::data::sqlite::SqliteRepository::connect("sqlite::memory:")
+            .await
+            .unwrap();
+        let cache = LinkPreviewCache::new();
+        let now = Instant::now();
+        let url = "https://cold.example/";
+        repo.upsert_link_preview_cache(url, Some("T"), Some("D"), 1_000)
+            .await
+            .unwrap();
+
+        let first = cached_or_fetch(&repo, &cache, url, now, 1_000).await;
+        assert_eq!(
+            first,
+            Some(Some(LinkPreview {
+                url: url.to_string(),
+                title: "T".to_string(),
+                description: "D".to_string(),
+            }))
+        );
+
+        // Mutate the underlying row directly; a second call must still
+        // return the FIRST value, proving it now comes from the in-memory
+        // tier the first call backfilled rather than re-reading the DB.
+        repo.upsert_link_preview_cache(url, Some("CHANGED"), Some("CHANGED"), 1_000)
+            .await
+            .unwrap();
+        let second = cached_or_fetch(&repo, &cache, url, now, 1_000).await;
+        assert_eq!(second, first);
+    }
+
+    #[tokio::test]
+    async fn cached_or_fetch_ttl_expired_persisted_row_falls_through_to_miss() {
+        let repo = crate::data::sqlite::SqliteRepository::connect("sqlite::memory:")
+            .await
+            .unwrap();
+        let cache = LinkPreviewCache::new();
+        let now = Instant::now();
+        let url = "https://stale.example/";
+        let fetched_at_ms = 1_000;
+        repo.upsert_link_preview_cache(url, Some("T"), Some("D"), fetched_at_ms)
+            .await
+            .unwrap();
+
+        let expired_now_ms = fetched_at_ms + POSITIVE_TTL.as_millis() as i64;
+        let result = cached_or_fetch(&repo, &cache, url, now, expired_now_ms).await;
+        assert_eq!(
+            result, None,
+            "caller must fetch on an expired persisted row"
+        );
+    }
+
+    #[tokio::test]
+    async fn cached_or_fetch_negative_row_honors_negative_ttl() {
+        let repo = crate::data::sqlite::SqliteRepository::connect("sqlite::memory:")
+            .await
+            .unwrap();
+        let now = Instant::now();
+        let url = "https://negative.example/";
+        let fetched_at_ms = 1_000;
+        repo.upsert_link_preview_cache(url, None, None, fetched_at_ms)
+            .await
+            .unwrap();
+
+        let live = cached_or_fetch(&repo, &LinkPreviewCache::new(), url, now, fetched_at_ms).await;
+        assert_eq!(live, Some(None));
+
+        let expired_now_ms = fetched_at_ms + NEGATIVE_TTL.as_millis() as i64;
+        let expired =
+            cached_or_fetch(&repo, &LinkPreviewCache::new(), url, now, expired_now_ms).await;
+        assert_eq!(expired, None);
+    }
+
+    // -- enrich: fresh fetch writes through both cache tiers -----------------
+
+    #[tokio::test]
+    async fn enrich_fresh_fetch_writes_through_both_tiers() {
+        let router = Router::new().route(
+            "/",
+            get(|| async {
+                axum::response::Html(
+                    r#"<html><head>
+                        <title>Fallback</title>
+                        <meta property="og:title" content="Fresh Title">
+                        <meta property="og:description" content="Fresh Description">
+                    </head></html>"#,
+                )
+            }),
+        );
+        let (addr, _handle) = spawn_stub(router).await;
+        let port: u16 = addr.rsplit(':').next().unwrap().parse().unwrap();
+        let client = stub_client("stub.test");
+        let repo = crate::data::sqlite::SqliteRepository::connect("sqlite::memory:")
+            .await
+            .unwrap();
+        let cache = LinkPreviewCache::new();
+        let rate = PreviewRateLimiter::new();
+        let url = format!("http://stub.test:{port}/");
+        let mut segments = vec![Segment::Html {
+            sanitized_html: format!(r#"<a href="{url}">link</a>"#),
+        }];
+        let now = Instant::now();
+
+        enrich(
+            &mut segments,
+            EnrichDeps {
+                repo: &repo,
+                fetch: LinkPreviewDeps {
+                    client: &client,
+                    cache: &cache,
+                    rate: &rate,
+                },
+            },
+            Uuid::new_v4(),
+            1_000,
+            now,
+        )
+        .await;
+
+        assert!(cache.get(&url, now).is_some(), "in-memory tier not written");
+        let row = repo
+            .get_link_preview_cache(&url)
+            .await
+            .unwrap()
+            .expect("persisted tier not written");
+        assert_eq!(row.title.as_deref(), Some("Fresh Title"));
+        assert_eq!(row.description.as_deref(), Some("Fresh Description"));
+    }
+
+    // -- link_preview_cache repository methods -------------------------------
+
+    #[tokio::test]
+    async fn upsert_link_preview_cache_preserves_existing_image_asset_id_on_conflict() {
+        use crate::auth::role::ServerRole;
+        use crate::data::asset::Asset;
+
+        let repo = crate::data::sqlite::SqliteRepository::connect("sqlite::memory:")
+            .await
+            .unwrap();
+        let owner = repo
+            .create_user("u", None, ServerRole::User, 0)
+            .await
+            .unwrap();
+        let world = repo.create_world_owned("w", owner, 0).await.unwrap();
+        let asset_id = Uuid::new_v4();
+        let asset = Asset {
+            id: asset_id,
+            world_id: world.id,
+            storage_key: format!("{}/{asset_id}", world.id),
+            original_name: "og.png".to_string(),
+            content_type: "image/png".to_string(),
+            byte_size: 10,
+            created_by: Some(owner),
+            created_at: 0,
+            version: 1,
+        };
+        repo.insert_asset(&asset).await.unwrap();
+
+        let url = "https://image.example/";
+        repo.upsert_link_preview_cache(url, Some("Title One"), Some("Desc One"), 1_000)
+            .await
+            .unwrap();
+        repo.set_link_preview_cache_image(url, asset_id)
+            .await
+            .unwrap();
+        repo.upsert_link_preview_cache(url, Some("Title Two"), Some("Desc Two"), 2_000)
+            .await
+            .unwrap();
+
+        let row = repo.get_link_preview_cache(url).await.unwrap().unwrap();
+        assert_eq!(row.image_asset_id, Some(asset_id));
+        assert_eq!(row.title.as_deref(), Some("Title Two"));
+        assert_eq!(row.description.as_deref(), Some("Desc Two"));
+    }
+
+    #[tokio::test]
+    async fn set_link_preview_cache_image_is_a_noop_on_absent_row() {
+        let repo = crate::data::sqlite::SqliteRepository::connect("sqlite::memory:")
+            .await
+            .unwrap();
+        let url = "https://never-upserted.example/";
+        repo.set_link_preview_cache_image(url, Uuid::new_v4())
+            .await
+            .unwrap();
+        assert_eq!(repo.get_link_preview_cache(url).await.unwrap(), None);
     }
 }

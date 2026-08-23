@@ -103,6 +103,19 @@ CREATE TABLE assets (
 
 CREATE INDEX idx_assets_world ON assets(world_id);
 
+-- Persisted link-preview cache: the DB-backed tier behind chat::LinkPreviewCache's
+-- in-memory fast path. No world_id — same process-global, URL-keyed scope the
+-- in-memory cache already has, now durable across restarts. title/description
+-- both NULL together = a cached negative outcome (the fetch failed or found no
+-- content), mirroring LinkPreview's own None-outcome convention.
+CREATE TABLE link_preview_cache (
+    url TEXT PRIMARY KEY,
+    title TEXT,
+    description TEXT,
+    image_asset_id TEXT REFERENCES assets(id) ON DELETE SET NULL,
+    fetched_at TEXT NOT NULL
+);
+
 -- Per-(scene, user) explored-fog memory. world_id denormalized for the
 -- world-scoped sweep query.
 CREATE TABLE explored_fog (
