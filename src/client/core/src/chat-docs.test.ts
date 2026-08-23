@@ -377,6 +377,65 @@ describe("oembed segments", () => {
   });
 });
 
+describe("doc_link segments", () => {
+  test("parses a doc_link segment pointing at a top-level document", () => {
+    const eng = parseMessageEngine(msgDoc({
+      ...base,
+      content: [{ kind: "doc_link", target: { kind: "doc", doc_id: "d1" }, label: "My Doc" }],
+    }));
+    expect(eng).not.toBeNull();
+    expect(eng!.content).toEqual([
+      { kind: "doc_link", target: { kind: "doc", doc_id: "d1" }, label: "My Doc" },
+    ]);
+  });
+  test("parses a doc_link segment with an embedded_path", () => {
+    const eng = parseMessageEngine(msgDoc({
+      ...base,
+      content: [{ kind: "doc_link", target: { kind: "doc", doc_id: "d1", embedded_path: "/embedded/actor/0" }, label: "Item" }],
+    }));
+    expect(eng).not.toBeNull();
+    expect(eng!.content).toEqual([
+      { kind: "doc_link", target: { kind: "doc", doc_id: "d1", embedded_path: "/embedded/actor/0" }, label: "Item" },
+    ]);
+  });
+  test("parses a doc_link segment pointing at a token", () => {
+    const eng = parseMessageEngine(msgDoc({
+      ...base,
+      content: [{ kind: "doc_link", target: { kind: "token", token_id: "t1" }, label: "Goblin" }],
+    }));
+    expect(eng).not.toBeNull();
+    expect(eng!.content).toEqual([
+      { kind: "doc_link", target: { kind: "token", token_id: "t1" }, label: "Goblin" },
+    ]);
+  });
+  test("fail-closed: doc_link missing label fails the whole message parse", () => {
+    expect(parseMessageEngine(msgDoc({
+      ...base,
+      content: [{ kind: "doc_link", target: { kind: "doc", doc_id: "d1" } }],
+    }))).toBeNull();
+  });
+  test("fail-closed: doc_link with an unrecognized target kind fails the whole message parse", () => {
+    expect(parseMessageEngine(msgDoc({
+      ...base,
+      content: [{ kind: "doc_link", target: { kind: "scene", scene_id: "s1" }, label: "x" }],
+    }))).toBeNull();
+  });
+  test("unknown segment kinds are still opaque alongside known doc_link kinds", () => {
+    const eng = parseMessageEngine(msgDoc({
+      ...base,
+      content: [
+        { kind: "doc_link", target: { kind: "doc", doc_id: "d1" }, label: "My Doc" },
+        { kind: "preview_card", url: "https://example.com/b" },
+      ],
+    }));
+    expect(eng).not.toBeNull();
+    expect(eng!.content).toHaveLength(2);
+    expect(eng!.content.filter(isKnownSegment)).toEqual([
+      { kind: "doc_link", target: { kind: "doc", doc_id: "d1" }, label: "My Doc" },
+    ]);
+  });
+});
+
 test("buildChannelRegistryDoc builds a world-scoped parentless singleton map doc", () => {
   const d = buildChannelRegistryDoc("w1", { general: { name: "General" } });
   expect(d.doc_type).toBe("channel-registry");
