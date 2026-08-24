@@ -47,16 +47,36 @@ Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one de
 
 ## Registered and exercised — plugin distribution properties
 Registration is per-machine state no committed file can carry. The supported non-interactive path
-is the `claude plugin` CLI, not only the TUI command:
-`claude plugin marketplace add <your Shadowcat checkout>`, then
-`claude plugin install shadowcat-codebase@shadowcat --scope project` run from the consumer repo.
-Scope matters — `user` scope would enable it in Shadowcat too and double-register every skill and
-agent name.
+is the `claude plugin` CLI, not only the TUI command. Recommended flow, verified end-to-end:
+
+1. `claude plugin marketplace add <your Shadowcat checkout>` (once per machine; the marketplace
+   registration is inherently global, not project-scoped).
+2. `claude plugin install shadowcat-codebase@shadowcat --scope user` (once per machine — a single
+   cached snapshot, not one per consumer), then `claude plugin disable shadowcat-codebase@shadowcat
+   --scope user` so it is **disabled by default** everywhere, including inside Shadowcat itself.
+3. Per consuming repo, `claude plugin enable shadowcat-codebase@shadowcat --scope local` run from
+   that repo — CONFIRMED to activate the existing user-scope cached snapshot directly; it does
+   **not** need its own separate `--scope project`/`--scope local` install. `--scope local` writes
+   to that repo's gitignored `.claude/settings.local.json`, so nothing is committed there.
+
+The earlier version of this guidance warned broadly against `user` scope, reasoning it would
+"enable it in Shadowcat too and double-register every skill and agent name." That reasoning
+conflated scope with default enablement: CONFIRMED the actual hazard is being left *enabled* by
+default, not the scope itself. A user-scope install that stays disabled by default is exactly what
+makes step 3 possible, and Shadowcat's own session was verified (via a fresh headless session) to
+still see only the bare, unprefixed native skills from its own `.claude/skills/` — no
+plugin-prefixed duplicate — with the plugin reported disabled.
 
 Per-machine setup actions inside a CONSUMING repo's workspace belong to that repo, not here: a
 consumer workspace's trust dialog is tracked in that repo's own backlog.
 
 Settled by direct observation, kept because each is a property to re-check after a refresh:
+- A consumer's `--scope local` (or `--scope project`) *enable* of an already-user-scope-installed
+  plugin resolves to the SAME cached snapshot path — CONFIRMED via `installed_plugins.json`
+  showing one `installPath` shared by both the `user` and `local` scope entries. This means a
+  version bump only needs ONE refresh — `claude plugin marketplace update shadowcat` then `claude
+  plugin update shadowcat-codebase@shadowcat` at user scope — to reach every consumer that has it
+  enabled, rather than a separate update run inside each consuming repo.
 - A directory-sourced plugin serves a cached SNAPSHOT, not the live repo — CONFIRMED. The payload
   lands at `~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/` as real copied files, and
   the install record pins a `gitCommitSha`. Editing a skill in Shadowcat therefore does NOT reach

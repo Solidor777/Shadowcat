@@ -653,10 +653,14 @@ Two propagation obligations ride on the same gate:
   repository's own tree reaches other people. Neither the mirror nor the divergence is detectable
   by git here, which makes it a review obligation rather than something a clean status proves.
 - **Plugin refresh.** `.claude/` is a plugin source, and a directory-sourced plugin is COPIED into
-  a consumer's plugin cache rather than read live — so a skill/agent/hook edit reaches a consuming
-  repo only after the plugin is refreshed. Bump `version` in `.claude/.claude-plugin/plugin.json`
-  and re-run the marketplace update in each consuming repo; an unbumped version caches as the same
-  value, making a stale copy indistinguishable from a current one.
+  a plugin cache rather than read live — so a skill/agent/hook edit reaches consumers only after
+  the plugin is refreshed. The plugin is installed **once, at user scope, disabled by default**;
+  each consuming repo opts in with `claude plugin enable shadowcat-codebase@shadowcat --scope
+  local`, which activates that same shared cached snapshot rather than installing its own copy.
+  Bump `version` in `.claude/.claude-plugin/plugin.json`, then run `claude plugin marketplace
+  update shadowcat` and `claude plugin update shadowcat-codebase@shadowcat` **once, at user
+  scope** — every consumer with it enabled picks up the refreshed snapshot; an unbumped version
+  caches as the same value, making a stale copy indistinguishable from a current one.
 
 #### ❌ Bad (Silent drift)
 ```text
@@ -666,7 +670,7 @@ Two propagation obligations ride on the same gate:
 ```text
 "Plan done. Updated shadowcat-codebase-actors-tokens (new faction-border seam + invariant).
 Dispatched shadowcat-spec-reviewer on the skill diff: PASS. Bumped plugin.json to 1.1.0 and
-refreshed the marketplace in the consuming repo. Merging."
+refreshed the marketplace + plugin at user scope. Merging."
 ```
 
 ### 2. Agent Dispatch in Superpowers Workflows
