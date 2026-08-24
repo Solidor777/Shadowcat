@@ -17,7 +17,14 @@ import {
   BANNED,
   SKILL_BANNED,
 } from "./check-comment-refs.mjs";
-import { GENERATED_ROOT, MD_EXTS, MD_ROOTS } from "./lib/gate-corpus.mjs";
+import { GENERATED_ROOT, MD_EXTS, defaultSkillsRoot, norm } from "./lib/gate-corpus.mjs";
+import { existsSync } from "node:fs";
+
+// The skill corpus is a standalone plugin checkout since the shadowcat-codebase migration, not
+// part of this repo — CI never has it, so every test below that depends on the REAL skill corpus
+// (as opposed to a fixture it seeds itself) is skipped when no checkout is present locally.
+const SKILLS_ROOT = defaultSkillsRoot();
+const HAS_SKILLS_CHECKOUT = existsSync(SKILLS_ROOT);
 
 // Every fixture string below is a SPECIMEN whose exact wording is the thing under test — an id, a
 // date, a filename these fixtures must reproduce verbatim to prove the pattern matches it. Each such
@@ -609,7 +616,7 @@ test("a SCOPED run makes no zero-hit claim about an acknowledgement entry", () =
 // must examine exactly the file set the gate itself scans — both corpora, not a filtered subset
 // of one. A control whose reach is narrower than the gate's reports clean over what it never read,
 // and nothing in its output distinguishes that from a corpus it actually checked.
-test("residue control's file set is identical to the gate's file set", () => {
+test.skipIf(!HAS_SKILLS_CHECKOUT)("residue control's file set is identical to the gate's file set", () => {
   const gate = gateFileSet([]);
   const residue = residueReport([]);
   expect(residue.filesScanned).toBe(gate.scanned.length);
@@ -840,7 +847,7 @@ test("a class-spelled marker pattern matches all three of its separator spelling
 // Every acknowledged match must be real (present in ACKNOWLEDGED with a reason) and
 // every remaining candidate must be empty — a red run here means a real corpus token nobody has
 // looked at, not a flaky test.
-test("coverage control: the governed skill corpus has no unrecognised candidate tokens", () => {
+test.skipIf(!HAS_SKILLS_CHECKOUT)("coverage control: the governed skill corpus has no unrecognised candidate tokens", () => {
   // Read from `collectFiles`, not a second walk of the skill root: an independent walk would
   // include the untracked vendored directories the gate excludes, and the control would then be
   // measuring a corpus the gate never scans.
@@ -1029,7 +1036,6 @@ test("the instrument fingerprint hashes exactly the components that decide a cou
     "WHITESPACE_ESCAPES",
     "ROOTS",
     "EXTS",
-    "MD_ROOTS",
     "MD_EXTS",
     "SKIP_DIRS",
     "GENERATED_ROOT",
@@ -1230,10 +1236,10 @@ test("a bare code marker is not a tracker pointer", () => {
 // An untracked skill directory is vendored third-party prose: this repo neither wrote it nor may
 // edit it, so it is out of the corpus by that durable property. The skill-symbol-citation gate
 // scopes the same directories the same way, and the two must not disagree about what the corpus is.
-test("the skill corpus is scoped to the tracked skill directories", () => {
+test.skipIf(!HAS_SKILLS_CHECKOUT)("the skill corpus is scoped to the tracked skill directories", () => {
   const { mdFiles, untrackedSkillFiles } = collectFiles();
   expect(mdFiles.length).toBeGreaterThan(0);
   for (const p of mdFiles) expect(untrackedSkillFiles).not.toContain(p);
   // Every scanned skill file sits under the skill root; nothing else sneaks in through the walk.
-  for (const p of mdFiles) expect(p.startsWith(`${MD_ROOTS[0]}/`)).toBe(true);
+  for (const p of mdFiles) expect(p.startsWith(`${norm(SKILLS_ROOT)}/`)).toBe(true);
 });

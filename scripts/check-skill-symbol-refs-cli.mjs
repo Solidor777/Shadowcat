@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import process from "node:process";
 import { isDirectEntry } from "./lib/is-main.mjs";
 import { checkSkillSymbolRefs } from "./check-skill-symbol-refs.mjs";
+import { defaultSkillsRoot } from "./lib/gate-corpus.mjs";
 
 /**
  * Every bucket a code span can end up in, as the label the banner prints for it, paired with the
@@ -252,7 +253,11 @@ function main() {
     process.argv[2] === undefined
       ? resolve(dirname(fileURLToPath(import.meta.url)), "..")
       : resolve(process.argv[2]);
-  process.exitCode = report(checkSkillSymbolRefs(repoRoot), console);
+  // The skill corpus is an independent checkout since the shadowcat-codebase migration — defaults
+  // to the shared skills-dir location Claude Code itself reads live; an explicit second argument
+  // is the seam the spawned-CLI test uses to point at a fixture's own seeded corpus.
+  const skillsRoot = process.argv[3] === undefined ? defaultSkillsRoot() : resolve(process.argv[3]);
+  process.exitCode = report(checkSkillSymbolRefs(repoRoot, skillsRoot), console);
 }
 
 if (isDirectEntry(import.meta.url)) main();

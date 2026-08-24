@@ -26,6 +26,7 @@ import {
   statSync,
   writeFileSync,
   mkdirSync,
+  existsSync,
 } from "node:fs";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
@@ -36,9 +37,9 @@ import { isDirectEntry } from "./lib/is-main.mjs";
 import {
   EXAMPLE_EXEMPT,
   GENERATED_ROOT,
+  defaultSkillsRoot,
   listSkillDirs,
   MD_EXTS,
-  MD_ROOTS,
   norm,
   SKIP_DIRS,
   sources,
@@ -76,15 +77,22 @@ export const inScope = (scopes, p) =>
 // path list, so a future change to what the gate scans cannot silently leave the control scanning
 // a narrower set: there is no second derivation left to drift.
 //
-// The skill corpus is scoped to the TRACKED skill directories, read from the same `listSkillDirs`
-// the skill-symbol-citation gate reads. An untracked skill directory is vendored third-party prose:
-// this repo neither wrote it nor may edit it, so holding it to a rule about how THIS repo writes
-// prose leaves only two outcomes, editing a vendored file or carving out an exemption, and both are
-// wrong. Tracked-ness is the durable property that says whose prose it is — never a name pattern,
-// which would have to be updated for every vendored tool and reads as clean when it is not. Sharing
-// the derivation is what keeps the two skill gates from disagreeing about the size of the corpus;
-// the excluded count prints on every run, because an uncounted exclusion is a backdoor.
-export function collectFiles() {
+// The skill corpus is a standalone plugin checkout since the shadowcat-codebase migration, not
+// part of this repo — CI never has it, so an absent `skillsRoot` degrades to an empty skill corpus
+// (mdFiles/untrackedSkillFiles both []) rather than failing the whole gate: the CODE corpus is
+// this repo's own and must always be checked, independent of whether a skills checkout exists on
+// this machine.
+//
+// Present, the skill corpus is scoped to the TRACKED skill directories, read from the same
+// `listSkillDirs` the skill-symbol-citation gate reads (now scoped to the skills checkout's own
+// git repo). An untracked skill directory is vendored third-party prose: this repo neither wrote
+// it nor may edit it, so holding it to a rule about how THIS repo writes prose leaves only two
+// outcomes, editing a vendored file or carving out an exemption, and both are wrong. Tracked-ness
+// is the durable property that says whose prose it is — never a name pattern, which would have to
+// be updated for every vendored tool and reads as clean when it is not. Sharing the derivation is
+// what keeps the two skill gates from disagreeing about the size of the corpus; the excluded count
+// prints on every run, because an uncounted exclusion is a backdoor.
+export function collectFiles(skillsRoot = defaultSkillsRoot()) {
   const codeFiles = [
     ...ROOTS.flatMap((d) => sources(d, EXTS)),
     ...rootFiles(),
@@ -92,18 +100,19 @@ export function collectFiles() {
     .map(norm)
     .filter((p) => !under(p, GENERATED_ROOT));
   const generatedFiles = sources(GENERATED_ROOT, EXTS).map(norm);
-  const dirs = listSkillDirs(".");
+  if (!existsSync(skillsRoot)) return { codeFiles, mdFiles: [], generatedFiles, untrackedSkillFiles: [] };
+  const dirs = listSkillDirs(skillsRoot);
   if (dirs === null)
     throw new Error(
       "git could not list the skill corpus: this gate scopes skill prose by tracked-ness and " +
-        "cannot report a trustworthy count without it.",
+        `cannot report a trustworthy count without it (looked in ${skillsRoot}).`,
     );
-  const mdFiles = MD_ROOTS.flatMap((d) =>
-    [...dirs.tracked].flatMap((name) => sources(join(d, name), MD_EXTS)),
-  ).map(norm);
-  const untrackedSkillFiles = MD_ROOTS.flatMap((d) =>
-    dirs.untracked.flatMap((name) => sources(join(d, name), MD_EXTS)),
-  ).map(norm);
+  const mdFiles = [...dirs.tracked]
+    .flatMap((name) => sources(join(skillsRoot, name), MD_EXTS))
+    .map(norm);
+  const untrackedSkillFiles = dirs.untracked
+    .flatMap((name) => sources(join(skillsRoot, name), MD_EXTS))
+    .map(norm);
   return { codeFiles, mdFiles, generatedFiles, untrackedSkillFiles };
 }
 
@@ -1227,7 +1236,6 @@ const INSTRUMENT_COMPONENTS = [
   valueOf("WHITESPACE_ESCAPES", () => [...WHITESPACE_ESCAPES].sort()),
   valueOf("ROOTS", () => ROOTS),
   valueOf("EXTS", () => EXTS),
-  valueOf("MD_ROOTS", () => MD_ROOTS),
   valueOf("MD_EXTS", () => MD_EXTS),
   valueOf("SKIP_DIRS", () => [...SKIP_DIRS].sort()),
   valueOf("GENERATED_ROOT", () => GENERATED_ROOT),

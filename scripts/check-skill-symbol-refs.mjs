@@ -27,7 +27,7 @@
 // entry point.
 //
 // Cross-platform: node:path/node:fs only, plus one `git ls-files` invocation for corpus scoping.
-import { readFileSync, readdirSync } from "node:fs";
+import { readFileSync, readdirSync, existsSync } from "node:fs";
 import { join, basename } from "node:path";
 import ts from "typescript";
 import { splitLine } from "./lib/comment-span.mjs";
@@ -39,7 +39,6 @@ import {
   GENERATED_ROOT,
   listSkillDirs,
   MD_EXTS,
-  MD_ROOTS,
   norm,
   SKIP_DIRS,
   sources,
@@ -964,9 +963,12 @@ export function moduleNameOf(filePath) {
  * entries.
  *
  * @param {string} repoRoot - absolute path to the repository root.
+ * @param {string} [skillsRoot] - absolute path to the skill corpus root (see `defaultSkillsRoot`)
+ *   whose immediate subdirectory names are indexed as sibling-skill citations; omitted (or
+ *   nonexistent on disk) simply skips that indexing, since it is additive to the code index.
  * @returns {{ symbols: Set<string>, filesIndexed: number, declared: Set<string> }}
  */
-export function buildSymbolIndex(repoRoot) {
+export function buildSymbolIndex(repoRoot, skillsRoot) {
   const declared = new Set();
   const referenced = new Set();
   let filesIndexed = 0;
@@ -1075,9 +1077,11 @@ export function buildSymbolIndex(repoRoot) {
   }
 
   // The skill family names its own members (`formula`, `client-shell`) when it points a reader at
-  // a sibling skill. Those directories are as real a declaration as a source module.
-  for (const root of MD_ROOTS) {
-    for (const entry of readdirSync(join(repoRoot, ...root.split("/")), { withFileTypes: true })) {
+  // a sibling skill. Those directories are as real a declaration as a source module. Additive to
+  // the code index: a caller that does not have a skills checkout (or omits `skillsRoot`) simply
+  // does not get sibling-skill names indexed, rather than failing to build an index at all.
+  if (skillsRoot !== undefined && existsSync(skillsRoot)) {
+    for (const entry of readdirSync(skillsRoot, { withFileTypes: true })) {
       if (!entry.isDirectory()) continue;
       declared.add(entry.name);
       declared.add(entry.name.replace(/^shadowcat-codebase-/, ""));
@@ -1098,18 +1102,15 @@ export function buildSymbolIndex(repoRoot) {
 /**
  * Finds every markdown file under the tracked skill directories. No file is excluded: resolution
  * decides per citation, never membership in a file.
- * @param {string} repoRoot - absolute path to the repository root.
+ * @param {string} skillsRoot - absolute path to the skill corpus root (see `defaultSkillsRoot`).
  * @param {Set<string>} trackedDirs - tracked directory names, from `listSkillDirs`.
  * @returns {string[]} absolute paths, sorted.
  */
-export function findMarkdownFiles(repoRoot, trackedDirs) {
+export function findMarkdownFiles(skillsRoot, trackedDirs) {
   const out = [];
-  for (const root of MD_ROOTS) {
-    const abs = join(repoRoot, ...root.split("/"));
-    for (const entry of readdirSync(abs, { withFileTypes: true })) {
-      if (!entry.isDirectory() || !trackedDirs.has(entry.name)) continue;
-      out.push(...sources(join(abs, entry.name), MD_EXTS));
-    }
+  for (const entry of readdirSync(skillsRoot, { withFileTypes: true })) {
+    if (!entry.isDirectory() || !trackedDirs.has(entry.name)) continue;
+    out.push(...sources(join(skillsRoot, entry.name), MD_EXTS));
   }
   return out.sort();
 }
@@ -1714,7 +1715,9 @@ export function checkFileCitations(text, symbols, hits = new Map()) {
  * Runs the full gate: builds the symbol index, scopes the corpus to the tracked skill
  * directories, then checks every markdown file in it.
  *
- * @param {string} repoRoot - absolute path to the repository root.
+ * @param {string} repoRoot - absolute path to the repository root (builds the CODE symbol index).
+ * @param {string} skillsRoot - absolute path to the skill corpus root (see `defaultSkillsRoot`) —
+ *   an independent checkout from `repoRoot` since the shadowcat-codebase migration.
  * @param {{trackedDirs?: Set<string>, untrackedDirs?: string[]}} [opts] - corpus scoping override,
  *   for a fixture tree that is not itself a git checkout; production passes nothing and asks git.
  * @returns {{ filesScanned: number, filesIndexed: number, symbolCount: number,
@@ -1732,20 +1735,20 @@ export function checkFileCitations(text, symbols, hits = new Map()) {
  *   conservationDelta: number,
  *   conservationFailures: {file: string, delta: number, accounting: object}[] }}
  */
-export function checkSkillSymbolRefs(repoRoot, opts = {}) {
+export function checkSkillSymbolRefs(repoRoot, skillsRoot, opts = {}) {
   let { trackedDirs, untrackedDirs } = opts;
   if (trackedDirs === undefined) {
-    const dirs = listSkillDirs(repoRoot);
+    const dirs = listSkillDirs(skillsRoot);
     if (dirs === null)
       throw new Error(
         "git could not list the skill corpus: this gate scopes by tracked-ness and cannot " +
-          "guess it. Run it inside a git checkout with git on PATH.",
+          `guess it. Run it inside a git checkout with git on PATH (looked in ${skillsRoot}).`,
       );
     trackedDirs = dirs.tracked;
     untrackedDirs = dirs.untracked;
   }
-  const { symbols, filesIndexed, declared } = buildSymbolIndex(repoRoot);
-  const files = findMarkdownFiles(repoRoot, trackedDirs);
+  const { symbols, filesIndexed, declared } = buildSymbolIndex(repoRoot, skillsRoot);
+  const files = findMarkdownFiles(skillsRoot, trackedDirs);
   const acknowledgedHits = new Map();
   let verified = 0;
   let acknowledged = 0;

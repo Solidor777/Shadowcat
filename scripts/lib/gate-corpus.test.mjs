@@ -1,7 +1,7 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, normalize } from "node:path";
 import { test, expect } from "vitest";
-import { EXAMPLE_EXEMPT, listSkillDirs, MD_ROOTS, norm, sources, under } from "./gate-corpus.mjs";
+import { EXAMPLE_EXEMPT, defaultSkillsRoot, listSkillDirs, norm, sources, under } from "./gate-corpus.mjs";
 
 const COMMENT_GATE = "scripts/check-comment-refs.mjs";
 const SYMBOL_GATE = "scripts/check-skill-symbol-refs.mjs";
@@ -52,12 +52,20 @@ test("the comment gate pulls in no TypeScript compiler", () => {
   expect([...importClosure(COMMENT_GATE)]).not.toContain("PACKAGE:typescript");
 });
 
-test("the corpus lister answers about real tracked skill directories", () => {
-  const dirs = listSkillDirs(".");
-  expect(dirs).not.toBeNull();
-  expect(dirs.tracked.size).toBeGreaterThan(0);
-  expect([...dirs.tracked].every((d) => !d.includes("/"))).toBe(true);
-});
+// The skill corpus is a standalone plugin checkout since the shadowcat-codebase migration, not
+// part of this repo — CI never has it, so this real-corpus check runs only when a checkout is
+// present locally rather than failing on a directory that cannot exist in CI.
+const SKILLS_ROOT = defaultSkillsRoot();
+
+test.skipIf(!existsSync(SKILLS_ROOT))(
+  "the corpus lister answers about real tracked skill directories",
+  () => {
+    const dirs = listSkillDirs(SKILLS_ROOT);
+    expect(dirs).not.toBeNull();
+    expect(dirs.tracked.size).toBeGreaterThan(0);
+    expect([...dirs.tracked].every((d) => !d.includes("/"))).toBe(true);
+  },
+);
 
 test("the path primitives are boundary-aware and platform-neutral", () => {
   expect(norm(["a", "b", "c"].join(String.fromCharCode(92)))).toBe("a/b/c");
@@ -65,5 +73,11 @@ test("the path primitives are boundary-aware and platform-neutral", () => {
   expect(under("src/modules/chat-card/x.ts", "src/modules/chat")).toBe(false);
   expect(EXAMPLE_EXEMPT.test("// EXAMPLE: a specimen")).toBe(true);
   expect(EXAMPLE_EXEMPT.test("// EXAMPLE without a colon")).toBe(false);
-  expect(sources(MD_ROOTS[0], [".md"]).length).toBeGreaterThan(0);
 });
+
+test.skipIf(!existsSync(SKILLS_ROOT))(
+  "sources() finds real markdown files under the skill corpus root",
+  () => {
+    expect(sources(SKILLS_ROOT, [".md"]).length).toBeGreaterThan(0);
+  },
+);

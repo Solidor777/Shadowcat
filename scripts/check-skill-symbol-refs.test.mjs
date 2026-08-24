@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
-import { mkdirSync, writeFileSync, readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { execFileSync } from "node:child_process";
 import { join, dirname, resolve, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -28,7 +29,7 @@ import {
   checkSkillSymbolRefs,
   buildSymbolIndex,
 } from "./check-skill-symbol-refs.mjs";
-import { listSkillDirs } from "./lib/gate-corpus.mjs";
+import { listSkillDirs, defaultSkillsRoot } from "./lib/gate-corpus.mjs";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -983,10 +984,15 @@ describe("span conservation", () => {
     expect(spanAccountingDelta(result.accounting)).toBe(0);
   });
 
-  it(
-    "balances every tracked skill file in this repo, and every file individually",
+  // The skill corpus is a standalone plugin checkout since the shadowcat-codebase migration, not
+  // part of this repo — CI never has it, so this full-corpus integration check runs only when a
+  // real checkout is present locally (the common case for anyone editing skills) and is silently
+  // absent from CI rather than failing on a directory that cannot exist there.
+  const skillsRoot = defaultSkillsRoot();
+  it.skipIf(!existsSync(skillsRoot))(
+    "balances every tracked skill file in the shadowcat-codebase checkout, and every file individually",
     () => {
-      const result = checkSkillSymbolRefs(REPO_ROOT);
+      const result = checkSkillSymbolRefs(REPO_ROOT, skillsRoot);
       expect(result.conservationDelta).toBe(0);
       expect(result.conservationFailures).toEqual([]);
     },
@@ -998,18 +1004,24 @@ describe("span conservation", () => {
 
 describe("listSkillDirs", () => {
   it("includes a committed skill directory and excludes an untracked one", () => {
-    // A fixed, reused-in-place directory under .claude/skills (this repo permits no
-    // permanent-deletion call, so a per-run temp directory would accumulate forever) — gitignored
-    // by name, so it is real, untracked filesystem state `listSkillDirs` must classify correctly,
-    // without depending on the graphify tool actually having been run locally (a fresh CI checkout
-    // never has that directory).
-    mkdirSync(join(REPO_ROOT, ".claude", "skills", "__listskilldirs_test_fixture__"), {
-      recursive: true,
-    });
-    const dirs = listSkillDirs(REPO_ROOT);
-    expect(dirs).not.toBeNull();
-    expect(dirs.tracked.has("shadowcat-codebase-core")).toBe(true);
-    expect(dirs.untracked).toContain("__listskilldirs_test_fixture__");
+    // Hermetic: `listSkillDirs` now scopes to the SKILLS root's own git checkout (the standalone
+    // shadowcat-codebase plugin, not this repo since the migration), so the fixture is a throwaway
+    // git-init'd tree rather than anything under this repo's own `.claude/skills`.
+    const skillsRoot = mkdtempSync(join(tmpdir(), "listskilldirs-"));
+    try {
+      mkdirSync(join(skillsRoot, "tracked-skill"), { recursive: true });
+      writeFileSync(join(skillsRoot, "tracked-skill", "SKILL.md"), "");
+      mkdirSync(join(skillsRoot, "untracked-skill"), { recursive: true });
+      writeFileSync(join(skillsRoot, "untracked-skill", "SKILL.md"), "");
+      execFileSync("git", ["init", "-q"], { cwd: skillsRoot });
+      execFileSync("git", ["add", "tracked-skill"], { cwd: skillsRoot });
+      const dirs = listSkillDirs(skillsRoot);
+      expect(dirs).not.toBeNull();
+      expect(dirs.tracked.has("tracked-skill")).toBe(true);
+      expect(dirs.untracked).toContain("untracked-skill");
+    } finally {
+      rmSync(skillsRoot, { recursive: true, force: true });
+    }
   });
 });
 
@@ -1042,7 +1054,7 @@ describe("checkSkillSymbolRefs", () => {
 
   const run = (prose) => {
     writeFileSync(skillFile, prose);
-    return checkSkillSymbolRefs(repoRoot, { trackedDirs, untrackedDirs: ["graphify"] });
+    return checkSkillSymbolRefs(repoRoot, skillsRoot, { trackedDirs, untrackedDirs: ["graphify"] });
   };
 
   it("reports zero broken when every citation resolves — the positive-control CLEAN direction", () => {

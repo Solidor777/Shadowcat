@@ -46,58 +46,56 @@ Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one de
    in cost to the alternative it was meant to avoid.
 
 ## Registered and exercised — plugin distribution properties
-Registration is per-machine state no committed file can carry. The supported non-interactive path
-is the `claude plugin` CLI, not only the TUI command. Recommended flow, verified end-to-end:
+**SUPERSEDED 2026-08-24: the skill/agent/hook source moved out of this repo entirely**, into the
+standalone public repo `github.com/Solidor777/shadowcat-codebase`. The directory-sourced,
+cached-snapshot marketplace model this section originally described (source: `<Shadowcat
+checkout>/.claude`, one shared cached copy needing a version-bump-triggered refresh) is retired.
+The current, verified-end-to-end model uses Claude Code's `skills-dir` convention instead, which
+reads the checkout LIVE — no cache, no version field, no refresh step:
 
-1. `claude plugin marketplace add <your Shadowcat checkout>` (once per machine; the marketplace
-   registration is inherently global, not project-scoped).
-2. `claude plugin install shadowcat-codebase@shadowcat --scope user` (once per machine — a single
-   cached snapshot, not one per consumer), then `claude plugin disable shadowcat-codebase@shadowcat
-   --scope user` so it is **disabled by default** everywhere, including inside Shadowcat itself.
-3. Per consuming repo, `claude plugin enable shadowcat-codebase@shadowcat --scope local` run from
-   that repo — CONFIRMED to activate the existing user-scope cached snapshot directly; it does
-   **not** need its own separate `--scope project`/`--scope local` install. `--scope local` writes
-   to that repo's gitignored `.claude/settings.local.json`, so nothing is committed there.
+1. `git clone https://github.com/Solidor777/shadowcat-codebase.git
+   ~/.claude/skills/shadowcat-codebase` (once per machine). Auto-loads next session, addressed as
+   `shadowcat-codebase@skills-dir`.
+2. `claude plugin disable shadowcat-codebase@skills-dir --scope user` so it is **disabled by
+   default** everywhere, including inside Shadowcat itself — CONFIRMED via a fresh headless
+   session that this repo then sees no `shadowcat-codebase`-prefixed skill at all.
+3. Per consuming repo (Shadowcat included), `claude plugin enable shadowcat-codebase@skills-dir
+   --scope local`, run from that repo. `--scope local` writes to that repo's gitignored
+   `.claude/settings.local.json`, so nothing is committed there. CONFIRMED via fresh headless
+   sessions in both Shadowcat and a real consumer (Nightfox) that this activates the skill,
+   prefixed `shadowcat-codebase:shadowcat-codebase-core`.
+4. To pick up an edit to the checkout: nothing — CONFIRMED via a live edit-then-fresh-session
+   probe that a `skills-dir` plugin re-reads its description/content from disk every session, with
+   no install/update/refresh step at all. `git pull` inside the checkout is the entire update
+   flow, and only matters for actually FETCHING someone else's commits.
 
-The earlier version of this guidance warned broadly against `user` scope, reasoning it would
-"enable it in Shadowcat too and double-register every skill and agent name." That reasoning
-conflated scope with default enablement: CONFIRMED the actual hazard is being left *enabled* by
-default, not the scope itself. A user-scope install that stays disabled by default is exactly what
-makes step 3 possible, and Shadowcat's own session was verified (via a fresh headless session) to
-still see only the bare, unprefixed native skills from its own `.claude/skills/` — no
-plugin-prefixed duplicate — with the plugin reported disabled.
+The earlier guidance's "avoid user scope, it double-registers every skill and agent name in
+Shadowcat" reasoning conflated scope with default enablement (the actual hazard was being left
+*enabled* by default, not the scope) — moot now that Shadowcat carries no native
+`.claude/skills/`/`.claude/agents/` copies to collide with at all.
 
-Per-machine setup actions inside a CONSUMING repo's workspace belong to that repo, not here: a
-consumer workspace's trust dialog is tracked in that repo's own backlog.
-
-Settled by direct observation, kept because each is a property to re-check after a refresh:
-- A consumer's `--scope local` (or `--scope project`) *enable* of an already-user-scope-installed
-  plugin resolves to the SAME cached snapshot path — CONFIRMED via `installed_plugins.json`
-  showing one `installPath` shared by both the `user` and `local` scope entries. This means a
-  version bump only needs ONE refresh — `claude plugin marketplace update shadowcat` then `claude
-  plugin update shadowcat-codebase@shadowcat` at user scope — to reach every consumer that has it
-  enabled, rather than a separate update run inside each consuming repo.
-- A directory-sourced plugin serves a cached SNAPSHOT, not the live repo — CONFIRMED. The payload
-  lands at `~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/` as real copied files, and
-  the install record pins a `gitCommitSha`. Editing a skill in Shadowcat therefore does NOT reach
-  a consumer until `version` in `.claude/.claude-plugin/plugin.json` is bumped and the marketplace
-  updated; the "stored exactly once, drift-free" property holds on disk but not at runtime.
-- The copy is the whole directory, ignore rules notwithstanding: `settings.json`,
-  `settings.local.json`, `kimi.plugin.json` and `graphify/` all ship. The loader consumes only
-  `skills/`, `agents/`, `hooks/`, `commands/`, so the rest is inert — but a machine-local
-  `settings.json` sitting in a distributed payload is worth re-checking if the loader ever widens.
-- Plugin skills ARE addressed under a `<plugin>:<skill>` prefix — the listing offers only
-  `shadowcat-codebase:shadowcat-codebase-core`, never the bare id. The agent bodies already name
-  this case, and invocation was verified end-to-end from a consumer session.
-- The routing hook fires exactly once per session: a consumer that declares no `hooks` key of its
-  own gets only the plugin's, while Shadowcat keeps its own wiring and shows the plugin disabled.
+Settled by direct observation, kept because each is a property to re-check if the mechanism ever
+changes:
+- A directory-sourced marketplace/plugin install (the old model) serves a cached SNAPSHOT, not the
+  live repo, landing at `~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/` — CONFIRMED by
+  editing the live source and observing the cache did NOT pick it up without an explicit `claude
+  plugin update`. This is exactly the property `skills-dir` avoids, and is the reason the model
+  changed.
+- Plugin skills AND agents are addressed under a `<plugin>:<name>` prefix — CONFIRMED for
+  `skills-dir` too (`shadowcat-codebase:shadowcat-codebase-core`,
+  `shadowcat-codebase:shadowcat-coder`, never a bare id).
+- The routing hook (`hooks/hooks.json`, shipped in the plugin) fires exactly once per session and
+  auto-wires when the plugin is enabled — no per-machine `settings.json` edit needed.
 - `claude plugin validate` warns that a `CLAUDE.md` at the plugin root is NOT loaded as project
   context. A consumer therefore needs its own adapted `.claude/CLAUDE.md` rather than inheriting
-  one — do not "simplify" by deleting it in favour of the shipped copy.
-- Both manifests validate with one cosmetic warning each: no `author` field.
+  one.
 
 ## Actionable now — Kimi Code parity is written but never installed
-- TODO: In the Kimi TUI run `/plugins install <your Shadowcat checkout>/.claude` then `/reload` (the
+- TODO: The skill/agent source moved to the standalone `shadowcat-codebase` plugin repo
+  (`github.com/Solidor777/shadowcat-codebase`); this item now targets
+  `~/.claude/skills/shadowcat-codebase` (or a fresh clone of that repo), not `<Shadowcat
+  checkout>/.claude`. In the Kimi TUI run `/plugins install ~/.claude/skills/shadowcat-codebase`
+  then `/reload` (the
   third-party trust prompt defaults to cancel — approve it). CLI/prompt-mode install does not
   exist. Then confirm all six agents register: the twelve ported copies carry Claude-native
   `tools:` names including `Skill`, and whether Kimi recognizes them is unverified — if

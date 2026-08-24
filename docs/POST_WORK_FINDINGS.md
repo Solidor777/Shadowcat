@@ -265,7 +265,8 @@ are observations awaiting triage, not committed work.
   (`cell_enterable` and `execute_move` alike — footprint-gating arrest would make the gate stricter
   than the router and break **I4**), so a narrower version of the same asymmetry persists by design
   for those two axes only. See `docs/superpowers/specs/2026-07-25-phase-d-alpha-movement-authority-secrecy-design.md`
-  (D4) and `.claude/skills/shadowcat-codebase-scene-rendering/SKILL.md`'s footprint-predicate bullet.
+  (D4) and the `shadowcat-codebase-scene-rendering` skill's footprint-predicate bullet (skill
+  source: the standalone `shadowcat-codebase` plugin, not this repo).
 
 - Title: Multi-leg alternating parity is per-leg-greedy (cost-display only). Summary: `find` threads
   each leg's min-cost end-parity into the next leg's start; for the `alternating` (5-10-5) rule this

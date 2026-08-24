@@ -1,8 +1,8 @@
 import { describe, it, expect } from "vitest";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, writeFileSync, readFileSync } from "node:fs";
+import { mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, dirname, resolve, basename } from "node:path";
+import { join, dirname, resolve, basename, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import process from "node:process";
 import {
@@ -11,9 +11,14 @@ import {
   SPAN_BUCKETS,
   RUN_EXCLUSIONS,
 } from "./check-skill-symbol-refs-cli.mjs";
+import { defaultSkillsRoot } from "./lib/gate-corpus.mjs";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const CLI = join(REPO_ROOT, "scripts", "check-skill-symbol-refs-cli.mjs");
+// The orientation skill is a standalone plugin checkout since the shadowcat-codebase migration —
+// CI never has it, so the prose-sync tests against it are skipped when no checkout is present.
+const SKILLS_ROOT = defaultSkillsRoot();
+const HAS_SKILLS_CHECKOUT = existsSync(SKILLS_ROOT);
 
 // The fixture directory name is DERIVED from this file's own basename rather than written out, so
 // the one-fixed-path-per-suite rule is structural: two suites cannot name the same directory
@@ -232,7 +237,9 @@ describe("the CLI process itself", () => {
     execFileSync("git", ["init", "-q"], { cwd: repoRoot });
     execFileSync("git", ["add", "-A"], { cwd: repoRoot });
 
-    const run = spawnSync(process.execPath, [CLI, repoRoot], { encoding: "utf8" });
+    const run = spawnSync(process.execPath, [CLI, repoRoot, join(repoRoot, ".claude", "skills")], {
+      encoding: "utf8",
+    });
     expect(run.status).toBe(1);
     expect(run.stderr).toContain("region_arrests");
     expect(run.stdout, "the reused fixture holds a file this test did not write").toContain(
@@ -249,7 +256,8 @@ describe("the bucket enumeration prose", () => {
   // hard line wrap. A key containing a newline matches only while its paragraph wraps at exactly
   // that word, so ordinary prose reflow - not a defect - reds the gate.
   const enumerationIn = (path, opening) => {
-    const text = readFileSync(join(REPO_ROOT, ...path.split("/")), "utf8").replace(/\s+/g, " ");
+    const abs = isAbsolute(path) ? path : join(REPO_ROOT, ...path.split("/"));
+    const text = readFileSync(abs, "utf8").replace(/\s+/g, " ");
     const start = text.indexOf(opening);
     expect(start, `enumeration opening not found in ${path}`).toBeGreaterThan(-1);
     const from = start + opening.length;
@@ -271,9 +279,12 @@ describe("the bucket enumeration prose", () => {
     ).toEqual(labels);
   });
 
-  it("matches the CLI's own bucket list in the orientation skill", () => {
+  it.skipIf(!HAS_SKILLS_CHECKOUT)("matches the CLI's own bucket list in the orientation skill", () => {
     expect(
-      enumerationIn(".claude/skills/shadowcat-codebase-core/SKILL.md", "one printed bucket — "),
+      enumerationIn(
+        join(SKILLS_ROOT, "shadowcat-codebase-core", "SKILL.md"),
+        "one printed bucket — ",
+      ),
     ).toEqual(labels);
   });
 
@@ -291,9 +302,12 @@ describe("the bucket enumeration prose", () => {
     ).toEqual(exclusionLabels);
   });
 
-  it("matches the CLI's own run-exclusion list in the orientation skill", () => {
+  it.skipIf(!HAS_SKILLS_CHECKOUT)("matches the CLI's own run-exclusion list in the orientation skill", () => {
     expect(
-      enumerationIn(".claude/skills/shadowcat-codebase-core/SKILL.md", "printed beside the buckets: "),
+      enumerationIn(
+        join(SKILLS_ROOT, "shadowcat-codebase-core", "SKILL.md"),
+        "printed beside the buckets: ",
+      ),
     ).toEqual(exclusionLabels);
   });
 });

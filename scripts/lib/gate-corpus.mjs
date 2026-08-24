@@ -10,6 +10,7 @@
 
 import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { homedir } from "node:os";
 import { execFileSync } from "node:child_process";
 
 // Shared: both gates walk the same tree and must skip the same directories. Two copies of a skip
@@ -30,10 +31,18 @@ export const SKIP_DIRS = new Set([
 // banner comment too, and this rule must not exempt that.
 export const GENERATED_ROOT = "src/types/generated";
 
-// The codebase-skill briefs are prose about the code, not code. A separate root from the code roots
-// because these files carry a different extension and a different notion of "comment" — the whole
-// line is prose, there is no surrounding code to split it from.
-export const MD_ROOTS = [".claude/skills"];
+// The codebase-skill briefs are prose about the code, not code — and since the shadowcat-codebase
+// migration they are not part of this repo at all: they live in a standalone plugin, canonically
+// at Claude Code's skills-dir auto-load location (~/.claude/skills/shadowcat-codebase/skills),
+// the same directory Claude Code itself reads live. SHADOWCAT_CODEBASE_SKILLS_DIR overrides the
+// default, for a different local checkout or a test fixture. Generic across users/machines: never
+// hardcode a specific home directory.
+export function defaultSkillsRoot() {
+  return (
+    process.env.SHADOWCAT_CODEBASE_SKILLS_DIR ??
+    join(homedir(), ".claude", "skills", "shadowcat-codebase", "skills")
+  );
+}
 export const MD_EXTS = [".md"];
 
 /** Repo-relative path with forward slashes, so a scope reads the same on every platform. */
@@ -81,37 +90,32 @@ export const EXAMPLE_EXEMPT = /\bEXAMPLE:/;
  * reason and silently drop a future first-party skill named anything else.
  *
  * Shared so the two gates cannot disagree about the size of the corpus; each prints the excluded
- * count on every run.
+ * count on every run. Scoped to `skillsRoot`'s OWN git repository (the shadowcat-codebase plugin
+ * checkout, not this repo) via `git -C`, since that is what actually tracks the skill corpus now.
  *
- * @param {string} repoRoot - absolute path to the repository root.
+ * @param {string} skillsRoot - absolute path to the skill corpus root (see `defaultSkillsRoot`).
  * @returns {{ tracked: Set<string>, untracked: string[] }|null} tracked and untracked directory
- *   names under the skill roots, or null when git cannot answer (no checkout, or no git).
+ *   names directly under `skillsRoot`, or null when git cannot answer (no checkout, or no git).
  */
-export function listSkillDirs(repoRoot) {
+export function listSkillDirs(skillsRoot) {
+  let listed;
+  try {
+    listed = execFileSync("git", ["-C", skillsRoot, "ls-files", "-z"], {
+      encoding: "utf8",
+      maxBuffer: 64 * 1024 * 1024,
+    });
+  } catch {
+    return null;
+  }
   const tracked = new Set();
-  for (const root of MD_ROOTS) {
-    let listed;
-    try {
-      listed = execFileSync("git", ["ls-files", "-z", "--", root], {
-        cwd: repoRoot,
-        encoding: "utf8",
-        maxBuffer: 64 * 1024 * 1024,
-      });
-    } catch {
-      return null;
-    }
-    for (const entry of listed.split("\0")) {
-      if (entry === "") continue;
-      const rel = norm(entry).slice(norm(root).length + 1);
-      if (rel.includes("/")) tracked.add(rel.split("/")[0]);
-    }
+  for (const entry of listed.split("\0")) {
+    if (entry === "") continue;
+    const rel = norm(entry);
+    if (rel.includes("/")) tracked.add(rel.split("/")[0]);
   }
   const untracked = [];
-  for (const root of MD_ROOTS) {
-    const abs = join(repoRoot, ...root.split("/"));
-    for (const entry of readdirSync(abs, { withFileTypes: true })) {
-      if (entry.isDirectory() && !tracked.has(entry.name)) untracked.push(entry.name);
-    }
+  for (const entry of readdirSync(skillsRoot, { withFileTypes: true })) {
+    if (entry.isDirectory() && !tracked.has(entry.name)) untracked.push(entry.name);
   }
   return { tracked, untracked };
 }

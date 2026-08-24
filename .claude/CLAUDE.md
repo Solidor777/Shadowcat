@@ -623,44 +623,57 @@ Rules:
      and stack specifics are ADAPTED per repo and deliberately differ — never mirror those. -->
 ## Codebase Skills & Agents
 
-Project-scoped codebase knowledge lives in `shadowcat-codebase-*` skills (`.claude/skills/`):
-orientation+index briefs (Purpose / Key files / Hard invariants / Gotchas / Pointers) that route
-INTO graphify, `docs/design/`, and memory rather than duplicating them. `shadowcat-codebase-core`
-is the always-relevant base, and one `shadowcat-codebase-<subsystem>` skill exists per subsystem
-alongside it. Read the current set from core's **Subsystem skills** list or from the skill
-listing itself — never from an enumeration kept elsewhere, which goes stale the moment a skill is
-added. A scoped `Edit|Write` hook reminds the main-thread agent which skill applies; subagents
-must invoke skills explicitly (below).
+Codebase knowledge lives in `shadowcat-codebase-*` skills — orientation+index briefs (Purpose /
+Key files / Hard invariants / Gotchas / Pointers) that route INTO graphify, `docs/design/`, and
+memory rather than duplicating them — plus the `shadowcat-coder`/`shadowcat-code-reviewer`/
+`shadowcat-spec-reviewer` agent set and the codebase-skill routing hook. None of it lives in this
+repo: it is the standalone `shadowcat-codebase` plugin (`github.com/Solidor777/shadowcat-codebase`),
+canonically checked out at `~/.claude/skills/shadowcat-codebase/` (Claude Code's `skills-dir`
+convention — auto-loaded live every session, addressed as `shadowcat-codebase@skills-dir`, no
+version bump or refresh step: an edit to the checkout is visible next session, full stop).
+Installed once at user scope, **disabled by default everywhere**; this repo and each consuming
+repo opts in with `claude plugin enable shadowcat-codebase@skills-dir --scope local` (gitignored,
+per-machine, nothing committed). Because it is a plugin, every skill and agent is addressed under
+the `shadowcat-codebase:` prefix — `shadowcat-codebase:shadowcat-codebase-core`,
+`shadowcat-codebase:shadowcat-coder`, never the bare name.
+
+`shadowcat-codebase-core` is the always-relevant base skill, and one
+`shadowcat-codebase-<subsystem>` skill exists per subsystem alongside it. Read the current set
+from core's **Subsystem skills** list or from the skill listing itself — never from an
+enumeration kept elsewhere, which goes stale the moment a skill is added. The plugin's own
+`hooks/hooks.json` auto-wires the `Edit|Write|MultiEdit` activation hook when the plugin is
+enabled — no per-machine `settings.json` edit needed; subagents do not get it and must invoke
+skills explicitly (below).
+
+Two scripts in THIS repo still verify the skill corpus — `scripts/check-skill-symbol-refs-cli.mjs`
+(code-symbol citations) and `scripts/check-skill-api-refs-cli.mjs` (generated-doc pointers) — but
+only locally: CI has no access to `~/.claude/`, so both are **local-only**, run by hand (or via
+`scripts/lib/gate-corpus.mjs`'s `defaultSkillsRoot()`, overridable with
+`SHADOWCAT_CODEBASE_SKILLS_DIR`) rather than wired into `.github/workflows/ci.yml`. `pnpm run
+test:scripts` stays CI-enforced, but every test that needs a real skills checkout skips itself
+when `defaultSkillsRoot()` doesn't exist (a fresh CI runner) rather than failing.
 
 ### 1. Reviewed Skill-Update Gate (mandatory, doc-sync tier)
 Whenever a plan finishes execution — and whenever an inline change alters a subsystem's seam,
-invariant, or gotcha — update the affected `shadowcat-codebase-*` skill(s) BEFORE merge/clear. If
-work opens a subsystem no existing skill covers, **create a new `shadowcat-codebase-<subsystem>`
-skill** (fixed shape; add its globs to the activation hook). The update/creation is itself
-reviewed: dispatch `shadowcat-spec-reviewer` to confirm each skill diff accurately captures the
-change (no omission, drift, or broken pointer). This gate blocks completion at the same tier as
-the documentation-sync gate. Trivial changes that touch no subsystem knowledge need no edit, but
-you must state so explicitly.
+invariant, or gotcha — update the affected `shadowcat-codebase-*` skill(s), IN THE PLUGIN CHECKOUT
+(`~/.claude/skills/shadowcat-codebase/skills/...`), BEFORE merge/clear. If work opens a subsystem
+no existing skill covers, **create a new `shadowcat-codebase-<subsystem>` skill** there (fixed
+shape; add its globs to `hooks/codebase-skill-reminder.py`'s `SUBSYSTEMS` map). The update/creation
+is itself reviewed: dispatch `shadowcat-codebase:shadowcat-spec-reviewer` to confirm each skill
+diff accurately captures the change (no omission, drift, or broken pointer). This gate blocks
+completion at the same tier as the documentation-sync gate. Trivial changes that touch no
+subsystem knowledge need no edit, but you must state so explicitly. Run
+`node scripts/check-skill-symbol-refs-cli.mjs` locally after any skill edit — it verifies every
+code-symbol citation in the corpus, not just the one skill touched.
 
-Two propagation obligations ride on the same gate:
+Commit and push the skill-checkout edit from inside `~/.claude/skills/shadowcat-codebase/` itself
+(its own git remote, `Solidor777/shadowcat-codebase`) — it is a separate repository with its own
+history, not part of any commit made in this repo.
 
-- **Agent-body mirrors.** A change to `shadowcat-coder`, `shadowcat-code-reviewer`, or
-  `shadowcat-spec-reviewer`'s body must be mirrored to that agent's `-opus` twin **and** to both
-  `.kimi-code/agents/` trees — this repo's, and each consuming repository's — every one of which
-  keeps its own `model`/`effort` frontmatter and an otherwise byte-identical body.
-  This repo's `.kimi-code/` is git-ignored, so its copies serve THIS checkout's Kimi Code sessions
-  and propagate to nobody: mirroring into it keeps a local tool honest, while only a consuming
-  repository's own tree reaches other people. Neither the mirror nor the divergence is detectable
-  by git here, which makes it a review obligation rather than something a clean status proves.
-- **Plugin refresh.** `.claude/` is a plugin source, and a directory-sourced plugin is COPIED into
-  a plugin cache rather than read live — so a skill/agent/hook edit reaches consumers only after
-  the plugin is refreshed. The plugin is installed **once, at user scope, disabled by default**;
-  each consuming repo opts in with `claude plugin enable shadowcat-codebase@shadowcat --scope
-  local`, which activates that same shared cached snapshot rather than installing its own copy.
-  Bump `version` in `.claude/.claude-plugin/plugin.json`, then run `claude plugin marketplace
-  update shadowcat` and `claude plugin update shadowcat-codebase@shadowcat` **once, at user
-  scope** — every consumer with it enabled picks up the refreshed snapshot; an unbumped version
-  caches as the same value, making a stale copy indistinguishable from a current one.
+A change to `shadowcat-coder`, `shadowcat-code-reviewer`, or `shadowcat-spec-reviewer`'s body must
+be mirrored to that agent's `-opus` twin, both in the plugin checkout's own `agents/` directory —
+and to Kimi Code parity, which is the plugin repo's own concern now (its own `.kimi-code/agents/`
+mirroring convention), not this repo's.
 
 #### ❌ Bad (Silent drift)
 ```text
@@ -668,34 +681,36 @@ Two propagation obligations ride on the same gate:
 ```
 #### ✅ Good (Reviewed update)
 ```text
-"Plan done. Updated shadowcat-codebase-actors-tokens (new faction-border seam + invariant).
-Dispatched shadowcat-spec-reviewer on the skill diff: PASS. Bumped plugin.json to 1.1.0 and
-refreshed the marketplace + plugin at user scope. Merging."
+"Plan done. Updated shadowcat-codebase-actors-tokens in the plugin checkout (new faction-border
+seam + invariant). Dispatched shadowcat-codebase:shadowcat-spec-reviewer on the skill diff: PASS.
+Ran check-skill-symbol-refs-cli.mjs locally: 0 broken. Committed + pushed in the plugin repo.
+Merging here."
 ```
 
 ### 2. Agent Dispatch in Superpowers Workflows
-Subagents do not auto-activate skills, so use the project agents (each invokes the relevant
-`shadowcat-codebase-*` skill first):
-- Delegating implementation to a subagent → `shadowcat-coder`.
+Subagents do not auto-activate skills, so use the plugin's own agents (each invokes the relevant
+`shadowcat-codebase-*` skill first) — always under the `shadowcat-codebase:` prefix:
+- Delegating implementation to a subagent → `shadowcat-codebase:shadowcat-coder`.
 - Any review checkpoint (buddy-check, `requesting-code-review`, mainline-plan-execution final
-  review) → dispatch `shadowcat-spec-reviewer` + `shadowcat-code-reviewer` as the two-reviewer pair.
+  review) → dispatch `shadowcat-codebase:shadowcat-spec-reviewer` +
+  `shadowcat-codebase:shadowcat-code-reviewer` as the two-reviewer pair.
 
 #### ❌ Bad (Generic subagent, no codebase context)
 ```text
 Task(general-purpose, "implement the faction border")  // skips invariants, no skill loaded
 ```
-#### ✅ Good (Project agent)
+#### ✅ Good (Plugin agent, prefixed)
 ```text
-Task(shadowcat-coder, "implement the faction border")  // invokes codebase skill, follows TDD
+Task(shadowcat-codebase:shadowcat-coder, "implement the faction border")  // codebase skill, TDD
 ```
 
 ### 3. Model/Effort Tiering & Escalation
 Every subagent dispatch specifies `effort`, not just `model` — an
 unspecified effort silently inherits the session's, defeating cost
-discipline. `shadowcat-coder` runs `effort: medium` (bounded execution
-against a spec/plan); `shadowcat-code-reviewer` and `shadowcat-spec-reviewer`
-run `effort: high` (review is reasoning-heavy). Each has an `-opus` twin
-(`model: opus`, `effort: high`, identical body) — when the base agent
+discipline. `shadowcat-codebase:shadowcat-coder` runs `effort: medium` (bounded execution
+against a spec/plan); `shadowcat-codebase:shadowcat-code-reviewer` and
+`shadowcat-codebase:shadowcat-spec-reviewer` run `effort: high` (review is reasoning-heavy). Each
+has an `-opus` twin (`model: opus`, `effort: high`, identical body) — when the base agent
 reports BLOCKED, or a reviewer's findings read as shallow/uncertain,
 re-dispatch to the twin before escalating to the human. For work outside
 these three agents' scope, fall back to the global `sdd-*` agents at
@@ -703,11 +718,12 @@ these three agents' scope, fall back to the global `sdd-*` agents at
 
 #### ❌ Bad (Unspecified Effort / No Escalation Path)
 ```text
-Task(shadowcat-coder, "implement the faction border")  // no effort — inherits session
+Task(shadowcat-codebase:shadowcat-coder, "implement the faction border")  // no effort
 // shadowcat-coder reports BLOCKED → escalated straight to the user
 ```
 #### ✅ Good (Effort-Explicit Dispatch / Twin Before Human)
 ```text
-Task(shadowcat-coder, "implement the faction border")  // sonnet, effort: medium
-// BLOCKED on ambiguous ownership model → Task(shadowcat-coder-opus, ...) before asking the user
+Task(shadowcat-codebase:shadowcat-coder, "implement the faction border")  // sonnet, effort: medium
+// BLOCKED on ambiguous ownership model → Task(shadowcat-codebase:shadowcat-coder-opus, ...)
+// before asking the user
 ```

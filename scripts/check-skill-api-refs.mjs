@@ -7,34 +7,29 @@
 // Cross-platform: node:path/node:fs only.
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { listSkillDirs, MD_ROOTS } from "./lib/gate-corpus.mjs";
+import { listSkillDirs } from "./lib/gate-corpus.mjs";
 
 /**
  * Recursively finds every `SKILL.md` file under the TRACKED skill directories. Tracked-ness is
  * decided once, by `listSkillDirs`, and both skill gates read that one answer: an untracked
  * directory is vendored third-party prose this repo neither wrote nor maintains, and a `/api/...`
- * pointer inside one is no more this repo's to gate than a code-symbol citation is. Scanning
- * every directory unconditionally is what made the two gates disagree on the size of the same
- * corpus, and would fail this repo's CI on prose nobody here committed.
+ * pointer inside one is no more this repo's to gate than a code-symbol citation is.
  *
- * The ROOT SET is read from `MD_ROOTS` for the same reason, and from nowhere else: a second entry
- * added there must reach both gates, and a hardcoded skills path here would silently under-scan
- * this one while `listSkillDirs` kept reporting the larger corpus as tracked.
- *
- * @param {string} repoRoot - Absolute path to the repository root.
+ * @param {string} skillsRoot - absolute path to the skill corpus root (see `defaultSkillsRoot`) —
+ *   an independent checkout from this repo since the shadowcat-codebase migration.
  * @param {{trackedDirs?: Set<string>, untrackedDirs?: string[]}} [opts] - corpus scoping override,
  *   for a fixture tree that is not itself a git checkout; production passes nothing and asks git.
  * @returns {{ files: string[], untrackedDirs: string[] }} Absolute paths, sorted, plus the
  *   directory names the tracked-ness rule excluded — never silently dropped.
  */
-export function findSkillFiles(repoRoot, opts = {}) {
+export function findSkillFiles(skillsRoot, opts = {}) {
   let { trackedDirs, untrackedDirs } = opts;
   if (trackedDirs === undefined) {
-    const dirs = listSkillDirs(repoRoot);
+    const dirs = listSkillDirs(skillsRoot);
     if (dirs === null)
       throw new Error(
         "git could not list the skill corpus: this gate scopes by tracked-ness and cannot " +
-          "guess it. Run it inside a git checkout with git on PATH.",
+          `guess it. Run it inside a git checkout with git on PATH (looked in ${skillsRoot}).`,
       );
     trackedDirs = dirs.tracked;
     untrackedDirs = dirs.untracked;
@@ -47,11 +42,8 @@ export function findSkillFiles(repoRoot, opts = {}) {
       else if (entry.isFile() && entry.name === "SKILL.md") out.push(p);
     }
   };
-  for (const root of MD_ROOTS) {
-    const skillsRoot = join(repoRoot, ...root.split("/"));
-    for (const entry of readdirSync(skillsRoot, { withFileTypes: true }))
-      if (entry.isDirectory() && trackedDirs.has(entry.name)) walk(join(skillsRoot, entry.name));
-  }
+  for (const entry of readdirSync(skillsRoot, { withFileTypes: true }))
+    if (entry.isDirectory() && trackedDirs.has(entry.name)) walk(join(skillsRoot, entry.name));
   return { files: out.sort(), untrackedDirs: untrackedDirs ?? [] };
 }
 
@@ -91,7 +83,7 @@ export function apiRefResolves(distDocsRoot, apiPath) {
 /**
  * Checks every `/api/...` doc pointer across every TRACKED skill against the assembled site at
  * `distDocsRoot`.
- * @param {string} repoRoot - Absolute path to the repository root.
+ * @param {string} skillsRoot - absolute path to the skill corpus root (see `defaultSkillsRoot`).
  * @param {string} distDocsRoot - The assembled `dist-docs/` root to resolve pointers against.
  * @param {{trackedDirs?: Set<string>, untrackedDirs?: string[]}} [opts] - corpus scoping override,
  *   forwarded to `findSkillFiles`.
@@ -101,8 +93,8 @@ export function apiRefResolves(distDocsRoot, apiPath) {
  *   catch, not a clean pass — `broken` lists every citation whose target does not exist on disk,
  *   and `untrackedDirs` names what the corpus rule excluded, so the exclusion is counted.
  */
-export function checkSkillApiRefs(repoRoot, distDocsRoot, opts = {}) {
-  const { files, untrackedDirs } = findSkillFiles(repoRoot, opts);
+export function checkSkillApiRefs(skillsRoot, distDocsRoot, opts = {}) {
+  const { files, untrackedDirs } = findSkillFiles(skillsRoot, opts);
   const broken = [];
   let refsChecked = 0;
   for (const file of files) {

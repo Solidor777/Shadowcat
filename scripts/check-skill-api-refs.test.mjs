@@ -24,7 +24,7 @@ describe("findSkillFiles", () => {
     writeFileSync(join(skills(root), "b", "SKILL.md"), "");
     writeFileSync(join(skills(root), "b", "skill.md"), ""); // wrong case — must not match
     writeFileSync(join(skills(root), "b", "SKILL.mdx"), ""); // wrong extension — must not match
-    const { files } = findSkillFiles(root, { trackedDirs: new Set(["a", "b"]) });
+    const { files } = findSkillFiles(skills(root), { trackedDirs: new Set(["a", "b"]) });
     expect(files).toEqual([
       join(skills(root), "a", "SKILL.md"),
       join(skills(root), "b", "SKILL.md"),
@@ -39,7 +39,7 @@ describe("findSkillFiles", () => {
     mkdirSync(join(skills(root), "vendored"), { recursive: true });
     writeFileSync(join(skills(root), "tracked", "SKILL.md"), "");
     writeFileSync(join(skills(root), "vendored", "SKILL.md"), "See `/api/ts/nope.html`.");
-    const found = findSkillFiles(root, {
+    const found = findSkillFiles(skills(root), {
       trackedDirs: new Set(["tracked"]),
       untrackedDirs: ["vendored"],
     });
@@ -50,7 +50,7 @@ describe("findSkillFiles", () => {
   it("returns an empty array for a scope with no SKILL.md files", () => {
     root = mkdtempSync(join(tmpdir(), "skills-find-"));
     mkdirSync(join(skills(root), "empty"), { recursive: true });
-    expect(findSkillFiles(root, { trackedDirs: new Set(["empty"]) }).files).toEqual([]);
+    expect(findSkillFiles(skills(root), { trackedDirs: new Set(["empty"]) }).files).toEqual([]);
   });
 });
 
@@ -127,7 +127,7 @@ describe("checkSkillApiRefs", () => {
       join(skillsRoot, "shadowcat-codebase-example", "SKILL.md"),
       "See `/api/ts/modules/_shadowcat_core.html`.",
     );
-    const result = checkSkillApiRefs(repoRoot, distDocsRoot, scoped);
+    const result = checkSkillApiRefs(skillsRoot, distDocsRoot, scoped);
     expect(result.filesScanned).toBe(1);
     expect(result.refsChecked).toBe(1);
     expect(result.broken).toEqual([]);
@@ -139,7 +139,7 @@ describe("checkSkillApiRefs", () => {
     mkdirSync(join(skillsRoot, "shadowcat-codebase-example"), { recursive: true });
     const skillFile = join(skillsRoot, "shadowcat-codebase-example", "SKILL.md");
     writeFileSync(skillFile, "See `/api/ts/modules/_shadowcat_totally_made_up.html`.");
-    const result = checkSkillApiRefs(repoRoot, distDocsRoot, scoped);
+    const result = checkSkillApiRefs(skillsRoot, distDocsRoot, scoped);
     expect(result.broken).toEqual([
       { file: skillFile, ref: "/api/ts/modules/_shadowcat_totally_made_up.html" },
     ]);
@@ -154,7 +154,7 @@ describe("checkSkillApiRefs", () => {
       join(skillsRoot, "shadowcat-codebase-example", "SKILL.md"),
       "No generated-doc pointers in this skill at all.",
     );
-    const result = checkSkillApiRefs(repoRoot, distDocsRoot, scoped);
+    const result = checkSkillApiRefs(skillsRoot, distDocsRoot, scoped);
     expect(result.filesScanned).toBe(1);
     expect(result.refsChecked).toBe(0);
     expect(result.broken).toEqual([]);

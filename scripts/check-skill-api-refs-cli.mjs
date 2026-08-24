@@ -7,9 +7,14 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import process from "node:process";
 import { findSkillFiles, checkSkillApiRefs } from "./check-skill-api-refs.mjs";
+import { defaultSkillsRoot } from "./lib/gate-corpus.mjs";
 
 const repo = resolve(fileURLToPath(import.meta.url), "..", "..");
 const distDocsRoot = resolve(repo, "dist-docs");
+// The skill corpus is an independent checkout since the shadowcat-codebase migration — defaults
+// to the shared skills-dir location Claude Code itself reads live; an explicit argument is the
+// seam a spawned-CLI test uses to point at a fixture's own seeded corpus.
+const skillsRoot = process.argv[2] === undefined ? defaultSkillsRoot() : resolve(process.argv[2]);
 
 if (!existsSync(distDocsRoot)) {
   console.error(`check-skill-api-refs: missing ${distDocsRoot} — run the full pnpm docs:build chain first`);
@@ -18,13 +23,13 @@ if (!existsSync(distDocsRoot)) {
 
 // A scope matching zero files is a broken SCOPE, not a clean pass — the skill family is never
 // legitimately empty, so this only fires if the scan is pointed at the wrong directory.
-const { files: scannedFiles } = findSkillFiles(repo);
+const { files: scannedFiles } = findSkillFiles(skillsRoot);
 if (scannedFiles.length === 0) {
-  console.error(`check-skill-api-refs: 0 tracked SKILL.md files found under ${repo}`);
+  console.error(`check-skill-api-refs: 0 tracked SKILL.md files found under ${skillsRoot}`);
   process.exit(2);
 }
 
-const { filesScanned, refsChecked, broken, untrackedDirs } = checkSkillApiRefs(repo, distDocsRoot);
+const { filesScanned, refsChecked, broken, untrackedDirs } = checkSkillApiRefs(skillsRoot, distDocsRoot);
 
 // A zero-of-zero is indistinguishable from success unless it fails loudly: if the citation
 // FORMAT in the skills changes (e.g. skills stop wrapping paths in backticks, or start citing
