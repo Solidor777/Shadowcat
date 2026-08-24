@@ -45,51 +45,6 @@ Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one de
    design.md`; the buddy-checked design shows the natural fix needs new infrastructure comparable
    in cost to the alternative it was meant to avoid.
 
-## Registered and exercised — plugin distribution properties
-**SUPERSEDED 2026-08-24: the skill/agent/hook source moved out of this repo entirely**, into the
-standalone public repo `github.com/Solidor777/shadowcat-codebase`. The directory-sourced,
-cached-snapshot marketplace model this section originally described (source: `<Shadowcat
-checkout>/.claude`, one shared cached copy needing a version-bump-triggered refresh) is retired.
-The current, verified-end-to-end model uses Claude Code's `skills-dir` convention instead, which
-reads the checkout LIVE — no cache, no version field, no refresh step:
-
-1. `git clone https://github.com/Solidor777/shadowcat-codebase.git
-   ~/.claude/skills/shadowcat-codebase` (once per machine). Auto-loads next session, addressed as
-   `shadowcat-codebase@skills-dir`.
-2. `claude plugin disable shadowcat-codebase@skills-dir --scope user` so it is **disabled by
-   default** everywhere, including inside Shadowcat itself — CONFIRMED via a fresh headless
-   session that this repo then sees no `shadowcat-codebase`-prefixed skill at all.
-3. Per consuming repo (Shadowcat included), `claude plugin enable shadowcat-codebase@skills-dir
-   --scope local`, run from that repo. `--scope local` writes to that repo's gitignored
-   `.claude/settings.local.json`, so nothing is committed there. CONFIRMED via fresh headless
-   sessions in both Shadowcat and a real consumer (Nightfox) that this activates the skill,
-   prefixed `shadowcat-codebase:shadowcat-codebase-core`.
-4. To pick up an edit to the checkout: nothing — CONFIRMED via a live edit-then-fresh-session
-   probe that a `skills-dir` plugin re-reads its description/content from disk every session, with
-   no install/update/refresh step at all. `git pull` inside the checkout is the entire update
-   flow, and only matters for actually FETCHING someone else's commits.
-
-The earlier guidance's "avoid user scope, it double-registers every skill and agent name in
-Shadowcat" reasoning conflated scope with default enablement (the actual hazard was being left
-*enabled* by default, not the scope) — moot now that Shadowcat carries no native
-`.claude/skills/`/`.claude/agents/` copies to collide with at all.
-
-Settled by direct observation, kept because each is a property to re-check if the mechanism ever
-changes:
-- A directory-sourced marketplace/plugin install (the old model) serves a cached SNAPSHOT, not the
-  live repo, landing at `~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/` — CONFIRMED by
-  editing the live source and observing the cache did NOT pick it up without an explicit `claude
-  plugin update`. This is exactly the property `skills-dir` avoids, and is the reason the model
-  changed.
-- Plugin skills AND agents are addressed under a `<plugin>:<name>` prefix — CONFIRMED for
-  `skills-dir` too (`shadowcat-codebase:shadowcat-codebase-core`,
-  `shadowcat-codebase:shadowcat-coder`, never a bare id).
-- The routing hook (`hooks/hooks.json`, shipped in the plugin) fires exactly once per session and
-  auto-wires when the plugin is enabled — no per-machine `settings.json` edit needed.
-- `claude plugin validate` warns that a `CLAUDE.md` at the plugin root is NOT loaded as project
-  context. A consumer therefore needs its own adapted `.claude/CLAUDE.md` rather than inheriting
-  one.
-
 ## Actionable now — Kimi Code parity is written but never installed
 - TODO: The skill/agent source moved to the standalone `shadowcat-codebase` plugin repo
   (`github.com/Solidor777/shadowcat-codebase`); this item now targets
