@@ -23,6 +23,7 @@
     "check:svelte-runtime": "node scripts/check-svelte-runtime-entries.mjs",
     "lint:comments": "node scripts/check-comment-refs.mjs",
     "lint:allowances": "node scripts/check-lint-allowances.mjs",
+    "lint:file-size": "node scripts/check-file-lines.mjs",
     "test:scripts": "vitest run scripts/"
   },
   "devDependencies": {

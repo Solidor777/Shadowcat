@@ -1,0 +1,13 @@
+# Approved soft-limit exceptions for `pnpm lint:file-size` (scripts/check-file-lines.mjs).
+# One entry per file, each signed off by the repository owner in conversation. No agent adds,
+# edits, or retains an entry on its own authority. An entry is a standing claim that the file
+# cannot be split without losing something the code needs — not a note that splitting is
+# inconvenient. The hard limit (10,000 lines) has no override, allowlisted or not.
+#
+# A stale entry (file at or under 5,000 lines, or no longer tracked) fails the gate in its own
+# right, so permission cannot silently accumulate. `lines_at_approval` is informational only.
+#
+# [[file]]
+# path = "src/server/src/example.rs"
+# lines_at_approval = "5321"
+# reason = "..."
