@@ -24,6 +24,7 @@
     "lint:comments": "node scripts/check-comment-refs.mjs",
     "lint:allowances": "node scripts/check-lint-allowances.mjs",
     "lint:file-size": "node scripts/check-file-lines.mjs",
+    "lint:inline-tests": "node scripts/check-inline-tests.mjs",
     "test:scripts": "vitest run scripts/"
   },
   "devDependencies": {
