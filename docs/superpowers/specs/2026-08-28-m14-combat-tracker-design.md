@@ -39,6 +39,7 @@ movement-type exemptions (M17).
 | D14 | **The tracker is a module** (`src/modules/combat`) that talks only to `AppContext.combat` (`shadowcat.service:combat`) + `ctx.documents`; any system or third-party module may replace or extend it. |
 | D15 | **Execution cost and preview cost become one quantity** (closes both blocked `TODO.md` entries): `execute_move` threads the diagonal rule + per-step parity through the SAME step-cost function the router uses; `los_smooth` recomputes exact per-span cost for straightened chords. Pinned by a parity test. |
 | D16 | Effect expiry sets `active: false`; it never deletes. Rewind never un-expires. |
+| D17 | **Machinery lives engine-side; the module layer holds only what would limit flexibility if fixed in the engine** (user, 2026-08-28). Documents, transitions, gates, redaction, the resource model, formula resolution, hooks and the `AppContext.combat` service are all engine (server + `@shadowcat/core`/ui-kit), so a third-party tracker builds on the same machinery as the default one rather than on the default module. The default module owns ONLY presentation and interaction choices (layout, row rendering, editors, which controls appear where). Any behaviour a substitute tracker would have to re-implement is misplaced and moves down into the engine. |
 
 ## 3. Documents
 
