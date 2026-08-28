@@ -11,6 +11,7 @@
 
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import process from "node:process";
 import trash from "trash";
 import { isDirectEntry } from "./lib/is-main.mjs";
@@ -62,7 +63,10 @@ export async function clean({ root, patterns, remove = removeRecoverably }) {
 }
 
 async function main() {
-  const root = resolve(process.cwd());
+  // Derives root from this script's own file location, not process.cwd(): a caller
+  // invoking this script from a directory other than the repo root (as scripts/package.sh
+  // does) must still resolve targets against the real repo root.
+  const root = resolve(fileURLToPath(import.meta.url), "..", "..");
   const onlyIdx = process.argv.indexOf("--only");
   const patterns = onlyIdx >= 0 ? [process.argv[onlyIdx + 1]] : TARGETS;
   const removed = await clean({ root, patterns });
