@@ -1002,7 +1002,8 @@ impl Room {
     }
 
     /// Unexpired in-flight frames moved by `mover` in `scene` — the mover's vision timelines
-    /// the egress clip evaluates a concurrent move against.
+    /// the egress clip evaluates a concurrent move against. Mutates `moving`: opportunistically
+    /// prunes entries expired as of `now` before reading (see the pruning comment in the body).
     pub(crate) async fn mover_streams(
         &self,
         mover: Uuid,
@@ -1010,9 +1011,12 @@ impl Room {
         now: i64,
     ) -> Vec<Arc<ServerMsg>> {
         let mut moving = self.moving.lock().await;
-        // Prune expired entries on read, not just on the next commit's insert — otherwise a
-        // room with no further moves keeps every token's last (largest-payload) frame resident
-        // for the room's lifetime.
+        // Opportunistic prune alongside the read: reclaims an expired entry as soon as any
+        // further move triggers a read here, rather than waiting for that entry's OWN next
+        // move to hit `execute_move`'s post-commit `retain`. Does not bound registry size on
+        // its own — a room with no further moves at all is never read here and its last
+        // frames stay resident regardless (mutable only because this call mutates `moving`,
+        // not because callers here need a snapshot).
         moving.retain(|_, st| now < st.end_ms);
         moving
             .values()
@@ -1023,7 +1027,9 @@ impl Room {
 
     /// Unexpired in-flight frames in `scene` moved by anyone other than `exclude_mover` —
     /// re-clipped and re-emitted to a recipient whose own move just started. Excludes by
-    /// MOVER so a recipient's other in-flight token is never re-sent to them.
+    /// MOVER so a recipient's other in-flight token is never re-sent to them. Mutates `moving`:
+    /// opportunistically prunes entries expired as of `now` before reading (see the pruning
+    /// comment in the body).
     pub(crate) async fn concurrent_streams(
         &self,
         scene: Uuid,
@@ -1031,9 +1037,12 @@ impl Room {
         now: i64,
     ) -> Vec<Arc<ServerMsg>> {
         let mut moving = self.moving.lock().await;
-        // Prune expired entries on read, not just on the next commit's insert — otherwise a
-        // room with no further moves keeps every token's last (largest-payload) frame resident
-        // for the room's lifetime.
+        // Opportunistic prune alongside the read: reclaims an expired entry as soon as any
+        // further move triggers a read here, rather than waiting for that entry's OWN next
+        // move to hit `execute_move`'s post-commit `retain`. Does not bound registry size on
+        // its own — a room with no further moves at all is never read here and its last
+        // frames stay resident regardless (mutable only because this call mutates `moving`,
+        // not because callers here need a snapshot).
         moving.retain(|_, st| now < st.end_ms);
         moving
             .values()
