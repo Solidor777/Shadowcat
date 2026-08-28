@@ -55,6 +55,9 @@ playwright-report/
 # Brainstorming visual-companion scratch
 .superpowers/
 
+# Manual git worktrees (SDD isolated workspaces)
+/.worktrees/
+
 # Docs pipeline output (assembled site, generator scratch, VitePress cache/dist)
 dist-docs/
 .docs-tmp/
