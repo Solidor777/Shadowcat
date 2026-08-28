@@ -2201,6 +2201,48 @@ async fn egress_reemits_concurrent_streams_when_the_recipients_own_move_starts()
         },
     )
     .await;
+
+    // A second connection — A's own (the mover of the stream that gets re-emitted) — subscribed
+    // to the room BEFORE the broadcast below, so it observes the exact same room-wide event R's
+    // connection does. A has no token in the scene, so A's own clip of r_frame is fully
+    // suppressed (None). Asserting A's channel yields NOTHING at all after the broadcast
+    // structurally rules out a future refactor that accidentally delivers the re-emit via
+    // `room.broadcast_aux`/`broadcast_aux_shared` instead of this connection's own `sink.send`
+    // — such a regression would land on every subscriber, including this one.
+    let a_ctx = PermissionContext {
+        user_id: Uuid::from_u128(0xAABB),
+        world_role: crate::data::document::WorldRole::Player,
+    };
+    let (a_rx, a_current_seq) = room.subscribe();
+    let a_credits = Arc::new(Semaphore::new(64));
+    let (a_out_tx, mut a_out_rx) = mpsc::unbounded_channel::<Message>();
+    let (_a_etx, a_erx) = mpsc::channel::<Egress>(8);
+    let a_egress = tokio::spawn(egress_loop(
+        GatedSink {
+            out: a_out_tx,
+            credits: a_credits,
+            acquiring: None,
+        },
+        a_rx,
+        a_erx,
+        EgressConnState {
+            room: room.clone(),
+            repo: repo.clone(),
+            ctx: a_ctx,
+            current_seq: a_current_seq,
+            modules_dir: std::path::PathBuf::from("nonexistent-modules-dir"),
+            module_scan_cache: Arc::new(crate::modules::ModuleScanCache::new()),
+        },
+    ));
+    let a_welcome = tokio::time::timeout(std::time::Duration::from_secs(5), a_out_rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(msg_text(&a_welcome)).unwrap()["type"],
+        "welcome"
+    );
+
     room.broadcast_aux_shared(r_arc);
 
     let first = tokio::time::timeout(std::time::Duration::from_secs(5), out_rx.recv())
@@ -2237,7 +2279,17 @@ async fn egress_reemits_concurrent_streams_when_the_recipients_own_move_starts()
             && second["truncated"].is_null()
     );
 
+    // Cross-connection delivery scope: A's own connection receives nothing at all beyond its
+    // welcome — the re-emit of a_req reached only R's connection.
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(300), a_out_rx.recv())
+            .await
+            .is_err(),
+        "A's own connection must receive nothing beyond the welcome frame"
+    );
+
     egress.abort();
+    a_egress.abort();
 }
 
 /// The mover (ctx.user_id == frame.mover) receives their own full frame
