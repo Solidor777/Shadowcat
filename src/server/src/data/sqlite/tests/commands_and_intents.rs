@@ -2878,3 +2878,56 @@ async fn combatant_parent_must_be_a_combat_in_this_world() {
     .unwrap();
     assert!(r.get_document(Uuid::from_u128(12)).await.unwrap().is_none());
 }
+
+#[tokio::test]
+async fn update_snapshot_records_pre_image_permissions() {
+    use crate::data::membership::PermissionContext;
+    let r = repo().await;
+    let gm = r
+        .create_user("gm", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let w = r.create_world_owned("W", gm, 0).await.unwrap();
+    let ctx = PermissionContext {
+        user_id: gm,
+        world_role: WorldRole::Gm,
+    };
+    let mut d = world_doc(1, w.id, serde_json::json!({}));
+    d.permissions.default = crate::data::document::DocRole::None;
+    r.apply_intent(
+        &ctx,
+        w.id,
+        vec![Operation::Create { doc: d }],
+        1,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+    let stored = r
+        .apply_intent(
+            &ctx,
+            w.id,
+            vec![Operation::Update {
+                doc_id: Uuid::from_u128(1),
+                changes: vec![FieldChange {
+                    remove: false,
+                    path: "/permissions/default".into(),
+                    old: serde_json::json!("none"),
+                    new: serde_json::json!("observer"),
+                }],
+            }],
+            2,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+    let snap = stored.snapshot.per_op[0].as_ref().unwrap();
+    assert_eq!(
+        snap.permissions_before_commit.as_ref().unwrap().default,
+        crate::data::document::DocRole::None
+    );
+    assert_eq!(
+        snap.permissions_at_commit.as_ref().unwrap().default,
+        crate::data::document::DocRole::Observer
+    );
+}

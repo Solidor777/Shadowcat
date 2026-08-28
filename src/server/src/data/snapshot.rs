@@ -65,6 +65,14 @@ pub struct OpSnapshot {
     /// Feeds the whole-document commit-time `cap::READ` gate via `permission::resolve_access`,
     /// reused unmodified rather than re-derived.
     pub permissions_at_commit: Option<PermissionSet>,
+    /// `Update` only: the document's permissions BEFORE this op applied, with
+    /// `property_overrides` cleared like `permissions_at_commit`. Feeds
+    /// `filter_command`'s READ-transition rule (a recipient who gains READ in
+    /// this op receives a synthesized `Create`, one who loses it a `Delete`).
+    /// `None` on `Create`/`Delete` and on rows persisted before the field
+    /// existed, where the rule stays inert.
+    #[serde(default)]
+    pub permissions_before_commit: Option<PermissionSet>,
 }
 
 /// Commit-time redaction inputs for a whole `Command`, index-aligned with `Command.ops`. Built

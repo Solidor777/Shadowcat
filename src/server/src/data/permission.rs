@@ -228,6 +228,10 @@ pub fn mirror_current_snapshot<'a>(
                 property_overrides: Default::default(),
                 ..d.permissions.clone()
             }),
+            // Commit time and now are the SAME instant here (see this function's own doc
+            // comment), so there is no distinct pre-image to report: the READ-transition
+            // rule needs a snapshot from BEFORE this op, which this mirror never had.
+            permissions_before_commit: None,
         }));
     }
     CommandSnapshot {
@@ -1106,6 +1110,53 @@ pub fn filter_command<'a>(
                     &world_defaults.grants_for(&cur.doc.doc_type),
                     owner_current,
                 );
+                // READ-transition synthesis: a permission change that grants or revokes
+                // this recipient's whole-document READ cannot travel as a field delta —
+                // a recipient who never received the Create drops an Update for an
+                // unknown id, and one who loses READ would otherwise keep a stale copy.
+                // Scoped to THIS op's own before→commit transition; the current-time
+                // half still gates delivery of a synthesized Create, and a synthesized
+                // Delete carries a stub so nothing hidden rides it.
+                //
+                // `owner_at_commit` stands in for the before-state owner too: `OpSnapshot`
+                // stores only the post-image owner, so an op that changes BOTH `/owner`
+                // and `/permissions/default` in the same Update resolves `access_before`
+                // against the NEW owner. That is the safe direction — the post-image
+                // owner is the one who must now see the document, so this can only widen
+                // a Create synthesis toward the recipient who is correct after the op,
+                // never toward one who should have been excluded.
+                if let Some(before_perms) = &op_snapshot.permissions_before_commit {
+                    let before_doc = Document {
+                        permissions: before_perms.clone(),
+                        ..commit_doc.clone()
+                    };
+                    let access_before = resolve_access_world(
+                        ctx.user_id,
+                        world_role_commit,
+                        &before_doc,
+                        &world_defaults.grants_for(&before_doc.doc_type),
+                        op_snapshot.owner_at_commit,
+                    );
+                    let read_before = access_before.has(cap::READ);
+                    let read_commit = access_commit.has(cap::READ);
+                    if !read_before && read_commit {
+                        if access_current.has(cap::READ) {
+                            match filter_properties(&cur.doc, &access_current) {
+                                Ok(filtered) => out_ops.push(Operation::Create { doc: filtered }),
+                                Err(e) => {
+                                    tracing::warn!(doc_id = %doc_id, error = %e, "redaction failed; dropping synthesized Create for recipient");
+                                }
+                            }
+                        }
+                        continue;
+                    }
+                    if read_before && !read_commit {
+                        out_ops.push(Operation::Delete {
+                            doc: delete_stub(&cur.doc),
+                        });
+                        continue;
+                    }
+                }
                 if !access_commit.has(cap::READ) || !access_current.has(cap::READ) {
                     continue;
                 }
@@ -1162,6 +1213,24 @@ pub fn filter_command<'a>(
         author: cmd.author,
         ts: cmd.ts,
         ops: out_ops,
+    }
+}
+
+/// The envelope-only shape a recipient losing READ receives as a `Delete`: identity and
+/// placement (`id`, `doc_type`, `scope`, `parent_id`, `schema_version`, timestamps) with
+/// every content band emptied and fail-closed default permissions, so the retraction
+/// itself discloses nothing the recipient may no longer see.
+fn delete_stub(doc: &Document) -> Document {
+    Document {
+        name: None,
+        source: None,
+        base: None,
+        owner: None,
+        permissions: PermissionSet::default(),
+        embedded: Default::default(),
+        engine: None,
+        system: serde_json::Value::Object(Default::default()),
+        ..doc.clone()
     }
 }
 

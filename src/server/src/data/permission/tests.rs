@@ -1,5 +1,5 @@
 use super::*;
-use crate::data::document::{PermissionSet, Scope};
+use crate::data::document::{world_of, PermissionSet, Scope};
 use crate::data::snapshot::{CommandSnapshot, OpSnapshot};
 
 fn doc(perms: PermissionSet, system: serde_json::Value) -> Document {
@@ -101,6 +101,9 @@ fn immediate_snapshot<'a>(
                 property_overrides: Default::default(),
                 ..d.permissions.clone()
             }),
+            // No before-image in this single-instant helper; `snapshot_with_before`
+            // overrides this for tests exercising the READ-transition rule.
+            permissions_before_commit: None,
         }));
     }
     CommandSnapshot {
@@ -2875,6 +2878,7 @@ fn op_snapshot_update(
         retraction_hidden_at_commit: None,
         created_seq_at_commit: None,
         permissions_at_commit: Some(permissions_at_commit),
+        permissions_before_commit: None,
     }
 }
 
@@ -3664,4 +3668,428 @@ fn world_cap_default_grant_rescues_read_at_both_halves_of_the_commit_current_con
         out_no_grant.ops.is_empty(),
         "with neither document access nor a world grant, the op must still be dropped"
     );
+}
+
+// -------------------------------------------------------------------
+// READ-transition synthesis: a permission change that grants or revokes a recipient's
+// whole-document READ cannot travel as a field delta — see `filter_command`'s own comment.
+// -------------------------------------------------------------------
+
+/// `immediate_snapshot` with every Update op's pre-image permissions set to `before`.
+fn snapshot_with_before<'a>(
+    cmd: &Command,
+    current: &HashMap<Uuid, CurrentDoc>,
+    gm_at_commit: &[Uuid],
+    actor_lookup: &impl Fn(&Uuid) -> Option<&'a Document>,
+    before: PermissionSet,
+) -> CommandSnapshot {
+    let mut s = immediate_snapshot(cmd, current, gm_at_commit, actor_lookup);
+    for op in s.per_op.iter_mut().flatten() {
+        op.permissions_before_commit = Some(before.clone());
+    }
+    s
+}
+
+#[tokio::test]
+async fn reveal_by_permissions_synthesizes_a_create_for_the_newly_readable_recipient() {
+    let player = Uuid::from_u128(1);
+    let mut d = doc(
+        PermissionSet {
+            default: DocRole::Observer,
+            ..Default::default()
+        },
+        serde_json::json!({ "hp": 3 }),
+    );
+    d.doc_type = "combatant".into();
+    d.engine = crate::data::document::tests::default_test_engine("combatant");
+    let cmd = Command {
+        seq: 9,
+        world_id: world_of(&d).unwrap(),
+        author: Uuid::from_u128(99),
+        ts: 0,
+        ops: vec![Operation::Update {
+            doc_id: d.id,
+            changes: vec![FieldChange {
+                remove: false,
+                path: "/permissions/default".into(),
+                old: serde_json::json!("none"),
+                new: serde_json::json!("observer"),
+            }],
+        }],
+    };
+    let current = HashMap::from([(
+        d.id,
+        CurrentDoc {
+            doc: d.clone(),
+            created_seq: 1,
+        },
+    )]);
+    let lookup = |_: &Uuid| None;
+    let snap = snapshot_with_before(
+        &cmd,
+        &current,
+        &[],
+        &lookup,
+        PermissionSet {
+            default: DocRole::None,
+            ..Default::default()
+        },
+    );
+    let ctx = PermissionContext {
+        user_id: player,
+        world_role: WorldRole::Player,
+    };
+    let out = filter_command(
+        &cmd,
+        &snap,
+        &ctx,
+        &WorldCapDefaults::default(),
+        &current,
+        lookup,
+    );
+    assert_eq!(out.seq, 9);
+    assert_eq!(out.ops.len(), 1);
+    match &out.ops[0] {
+        Operation::Create { doc } => {
+            assert_eq!(doc.id, d.id);
+            assert_eq!(doc.doc_type, "combatant");
+            assert_eq!(doc.system["hp"], 3);
+        }
+        other => panic!("expected a synthesized Create, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn hide_by_permissions_synthesizes_a_stub_delete_for_the_recipient_losing_read() {
+    let player = Uuid::from_u128(1);
+    let mut d = doc(
+        PermissionSet {
+            default: DocRole::None,
+            ..Default::default()
+        },
+        serde_json::json!({ "hp": 3 }),
+    );
+    d.doc_type = "combatant".into();
+    d.engine = crate::data::document::tests::default_test_engine("combatant");
+    d.name = Some("MOCK_NAME_A".into());
+    let cmd = Command {
+        seq: 10,
+        world_id: world_of(&d).unwrap(),
+        author: Uuid::from_u128(99),
+        ts: 0,
+        ops: vec![Operation::Update {
+            doc_id: d.id,
+            changes: vec![FieldChange {
+                remove: false,
+                path: "/permissions/default".into(),
+                old: serde_json::json!("observer"),
+                new: serde_json::json!("none"),
+            }],
+        }],
+    };
+    let current = HashMap::from([(
+        d.id,
+        CurrentDoc {
+            doc: d.clone(),
+            created_seq: 1,
+        },
+    )]);
+    let lookup = |_: &Uuid| None;
+    let snap = snapshot_with_before(
+        &cmd,
+        &current,
+        &[],
+        &lookup,
+        PermissionSet {
+            default: DocRole::Observer,
+            ..Default::default()
+        },
+    );
+    let ctx = PermissionContext {
+        user_id: player,
+        world_role: WorldRole::Player,
+    };
+    let out = filter_command(
+        &cmd,
+        &snap,
+        &ctx,
+        &WorldCapDefaults::default(),
+        &current,
+        lookup,
+    );
+    assert_eq!(out.ops.len(), 1);
+    match &out.ops[0] {
+        Operation::Delete { doc } => {
+            assert_eq!(doc.id, d.id);
+            assert_eq!(doc.doc_type, "combatant");
+            // Stub: nothing the recipient may no longer see rides the Delete.
+            assert!(doc.name.is_none());
+            assert!(doc.engine.is_none());
+            assert_eq!(doc.system, serde_json::json!({}));
+            assert!(doc.embedded.is_empty());
+            assert_eq!(doc.permissions, PermissionSet::default());
+        }
+        other => panic!("expected a synthesized Delete, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn a_gm_recipient_sees_the_plain_update_on_hide_and_reveal() {
+    let gm = Uuid::from_u128(2);
+    let mut d = doc(
+        PermissionSet {
+            default: DocRole::None,
+            ..Default::default()
+        },
+        serde_json::json!({}),
+    );
+    d.doc_type = "combatant".into();
+    d.engine = crate::data::document::tests::default_test_engine("combatant");
+    let cmd = Command {
+        seq: 11,
+        world_id: world_of(&d).unwrap(),
+        author: gm,
+        ts: 0,
+        ops: vec![Operation::Update {
+            doc_id: d.id,
+            changes: vec![FieldChange {
+                remove: false,
+                path: "/permissions/default".into(),
+                old: serde_json::json!("observer"),
+                new: serde_json::json!("none"),
+            }],
+        }],
+    };
+    let current = HashMap::from([(
+        d.id,
+        CurrentDoc {
+            doc: d.clone(),
+            created_seq: 1,
+        },
+    )]);
+    let lookup = |_: &Uuid| None;
+    let snap = snapshot_with_before(
+        &cmd,
+        &current,
+        &[gm],
+        &lookup,
+        PermissionSet {
+            default: DocRole::Observer,
+            ..Default::default()
+        },
+    );
+    let ctx = PermissionContext {
+        user_id: gm,
+        world_role: WorldRole::Gm,
+    };
+    let out = filter_command(
+        &cmd,
+        &snap,
+        &ctx,
+        &WorldCapDefaults::default(),
+        &current,
+        lookup,
+    );
+    assert!(matches!(&out.ops[0], Operation::Update { .. }));
+}
+
+#[tokio::test]
+async fn a_reveal_is_not_synthesized_when_current_access_denies_read() {
+    // Revealed at commit, hidden again later: the replayed earlier command must not
+    // hand the recipient a document they may not currently see.
+    let player = Uuid::from_u128(1);
+    let mut d = doc(
+        PermissionSet {
+            default: DocRole::None,
+            ..Default::default()
+        },
+        serde_json::json!({}),
+    );
+    d.doc_type = "combatant".into();
+    d.engine = crate::data::document::tests::default_test_engine("combatant");
+    let cmd = Command {
+        seq: 12,
+        world_id: world_of(&d).unwrap(),
+        author: Uuid::from_u128(99),
+        ts: 0,
+        ops: vec![Operation::Update {
+            doc_id: d.id,
+            changes: vec![FieldChange {
+                remove: false,
+                path: "/permissions/default".into(),
+                old: serde_json::json!("none"),
+                new: serde_json::json!("observer"),
+            }],
+        }],
+    };
+    let current = HashMap::from([(
+        d.id,
+        CurrentDoc {
+            doc: d.clone(),
+            created_seq: 1,
+        },
+    )]);
+    let lookup = |_: &Uuid| None;
+    let mut snap = snapshot_with_before(
+        &cmd,
+        &current,
+        &[],
+        &lookup,
+        PermissionSet {
+            default: DocRole::None,
+            ..Default::default()
+        },
+    );
+    // Commit-time permissions were the revealing post-image (observer), current is none.
+    for op in snap.per_op.iter_mut().flatten() {
+        op.permissions_at_commit = Some(PermissionSet {
+            default: DocRole::Observer,
+            ..Default::default()
+        });
+    }
+    let ctx = PermissionContext {
+        user_id: player,
+        world_role: WorldRole::Player,
+    };
+    let out = filter_command(
+        &cmd,
+        &snap,
+        &ctx,
+        &WorldCapDefaults::default(),
+        &current,
+        lookup,
+    );
+    assert!(out.ops.is_empty());
+}
+
+#[tokio::test]
+async fn a_legacy_snapshot_without_before_permissions_keeps_the_old_behaviour() {
+    let player = Uuid::from_u128(1);
+    let mut d = doc(
+        PermissionSet {
+            default: DocRole::Observer,
+            ..Default::default()
+        },
+        serde_json::json!({}),
+    );
+    d.doc_type = "combatant".into();
+    d.engine = crate::data::document::tests::default_test_engine("combatant");
+    let cmd = Command {
+        seq: 13,
+        world_id: world_of(&d).unwrap(),
+        author: Uuid::from_u128(99),
+        ts: 0,
+        ops: vec![Operation::Update {
+            doc_id: d.id,
+            changes: vec![FieldChange {
+                remove: false,
+                path: "/permissions/default".into(),
+                old: serde_json::json!("none"),
+                new: serde_json::json!("observer"),
+            }],
+        }],
+    };
+    let current = HashMap::from([(
+        d.id,
+        CurrentDoc {
+            doc: d.clone(),
+            created_seq: 1,
+        },
+    )]);
+    let lookup = |_: &Uuid| None;
+    let snap = immediate_snapshot(&cmd, &current, &[], &lookup); // permissions_before_commit: None
+    let ctx = PermissionContext {
+        user_id: player,
+        world_role: WorldRole::Player,
+    };
+    let out = filter_command(
+        &cmd,
+        &snap,
+        &ctx,
+        &WorldCapDefaults::default(),
+        &current,
+        lookup,
+    );
+    assert!(matches!(&out.ops[0], Operation::Update { .. }));
+}
+
+#[tokio::test]
+async fn a_same_op_owner_and_permissions_change_still_reveals_to_the_new_owner() {
+    // `OpSnapshot::owner_at_commit` carries only the POST-image owner; an Update that
+    // changes `/owner` and `/permissions/default` in the same op resolves `access_before`
+    // against the new owner rather than the true pre-image owner. That is the safe
+    // direction: the post-image owner is who must now see the document, so a Create still
+    // synthesizes correctly for them.
+    let new_owner = Uuid::from_u128(1);
+    // `d` carries the POST-image permissions (matching this Update's `new` values), the
+    // same convention `reveal_by_permissions_synthesizes_a_create_for_the_newly_readable_recipient`
+    // uses: `immediate_snapshot` derives `permissions_at_commit` from `d` itself.
+    let mut d = doc(
+        PermissionSet {
+            default: DocRole::Observer,
+            ..Default::default()
+        },
+        serde_json::json!({ "hp": 3 }),
+    );
+    d.doc_type = "combatant".into();
+    d.engine = crate::data::document::tests::default_test_engine("combatant");
+    d.owner = Some(new_owner);
+    let cmd = Command {
+        seq: 14,
+        world_id: world_of(&d).unwrap(),
+        author: Uuid::from_u128(99),
+        ts: 0,
+        ops: vec![Operation::Update {
+            doc_id: d.id,
+            changes: vec![
+                FieldChange {
+                    remove: false,
+                    path: "/owner".into(),
+                    old: serde_json::Value::Null,
+                    new: serde_json::json!(new_owner),
+                },
+                FieldChange {
+                    remove: false,
+                    path: "/permissions/default".into(),
+                    old: serde_json::json!("none"),
+                    new: serde_json::json!("observer"),
+                },
+            ],
+        }],
+    };
+    let current = HashMap::from([(
+        d.id,
+        CurrentDoc {
+            doc: d.clone(),
+            created_seq: 1,
+        },
+    )]);
+    let lookup = |_: &Uuid| None;
+    let mut snap = snapshot_with_before(
+        &cmd,
+        &current,
+        &[],
+        &lookup,
+        PermissionSet {
+            default: DocRole::None,
+            ..Default::default()
+        },
+    );
+    for op in snap.per_op.iter_mut().flatten() {
+        op.owner_at_commit = Some(new_owner);
+    }
+    let ctx = PermissionContext {
+        user_id: new_owner,
+        world_role: WorldRole::Player,
+    };
+    let out = filter_command(
+        &cmd,
+        &snap,
+        &ctx,
+        &WorldCapDefaults::default(),
+        &current,
+        lookup,
+    );
+    assert_eq!(out.ops.len(), 1);
+    assert!(matches!(&out.ops[0], Operation::Create { .. }));
 }

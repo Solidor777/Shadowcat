@@ -2245,6 +2245,7 @@ impl SqliteRepository {
         op: &Operation,
         post_images: &std::collections::HashMap<Uuid, Document>,
         deleted_created_seqs: &std::collections::HashMap<Uuid, i64>,
+        pre_permissions: &std::collections::HashMap<Uuid, crate::data::document::PermissionSet>,
     ) -> Result<crate::data::snapshot::OpSnapshot, DataError> {
         use crate::data::snapshot::OpSnapshot;
         match op {
@@ -2273,6 +2274,7 @@ impl SqliteRepository {
                     retraction_hidden_at_commit: None,
                     created_seq_at_commit: None,
                     permissions_at_commit: None,
+                    permissions_before_commit: None,
                 })
             }
             // Reads the op's OWN carried `doc`, not `post_images` — unlike Create/Update,
@@ -2292,6 +2294,7 @@ impl SqliteRepository {
                     retraction_hidden_at_commit: None,
                     created_seq_at_commit: deleted_created_seqs.get(&doc.id).copied(),
                     permissions_at_commit: None,
+                    permissions_before_commit: None,
                 })
             }
             Operation::Update { doc_id, changes } => {
@@ -2331,6 +2334,12 @@ impl SqliteRepository {
                     permissions_at_commit: Some(crate::data::document::PermissionSet {
                         property_overrides: Default::default(),
                         ..doc.permissions.clone()
+                    }),
+                    permissions_before_commit: pre_permissions.get(doc_id).map(|p| {
+                        crate::data::document::PermissionSet {
+                            property_overrides: Default::default(),
+                            ..p.clone()
+                        }
                     }),
                 })
             }
@@ -2775,6 +2784,14 @@ impl Repository for SqliteRepository {
             std::collections::HashMap::new();
         let mut deleted_created_seqs: std::collections::HashMap<Uuid, i64> =
             std::collections::HashMap::new();
+        // Batch-start permissions for each Update target, captured the FIRST time its
+        // pre-image is loaded — before any op applies — so a second same-batch Update to
+        // the same doc still snapshots the true batch-start permissions, not an
+        // intermediate value from an earlier op in this same command.
+        let mut pre_permissions: std::collections::HashMap<
+            Uuid,
+            crate::data::document::PermissionSet,
+        > = std::collections::HashMap::new();
         let mut normalized_ops = Vec::with_capacity(sequenced.ops.len());
         for op in &sequenced.ops {
             match op {
@@ -2807,6 +2824,15 @@ impl Repository for SqliteRepository {
                         .ok_or(DataError::NotFound)?;
                     let mut value: serde_json::Value =
                         serde_json::from_str(row.get::<String, _>("json").as_str())?;
+                    // Captured BEFORE this op applies, and only for the FIRST Update of
+                    // this id in the batch — see `pre_permissions`'s own comment.
+                    pre_permissions.entry(*doc_id).or_insert_with(|| {
+                        value
+                            .get("permissions")
+                            .cloned()
+                            .and_then(|p| serde_json::from_value(p).ok())
+                            .unwrap_or_default()
+                    });
                     for ch in changes {
                         // THE `apply_field_change` mutation rule. Never
                         // re-derive the remove/set branch here: the derived scene ECS
@@ -2879,7 +2905,14 @@ impl Repository for SqliteRepository {
         let mut per_op = Vec::with_capacity(sequenced.ops.len());
         for op in &sequenced.ops {
             per_op.push(Some(
-                Self::build_op_snapshot(&mut tx, op, &post_images, &deleted_created_seqs).await?,
+                Self::build_op_snapshot(
+                    &mut tx,
+                    op,
+                    &post_images,
+                    &deleted_created_seqs,
+                    &pre_permissions,
+                )
+                .await?,
             ));
         }
         let stored = StoredCommand {
@@ -2977,6 +3010,14 @@ impl Repository for SqliteRepository {
         // scratch.
         let mut released_active_scenes: std::collections::HashSet<Uuid> =
             std::collections::HashSet::new();
+        // Batch-start permissions for each Update target, captured the FIRST time its
+        // pre-image is loaded in Phase 1 — before any op applies — so a second same-batch
+        // Update to the same doc still snapshots the true batch-start permissions, not an
+        // intermediate value written by an earlier op in this same command.
+        let mut pre_permissions: std::collections::HashMap<
+            Uuid,
+            crate::data::document::PermissionSet,
+        > = std::collections::HashMap::new();
         for op in &mut ops {
             match op {
                 Operation::Create { doc } => {
@@ -3163,6 +3204,11 @@ impl Repository for SqliteRepository {
                     let cur = Self::load_document(&mut *tx, *doc_id)
                         .await?
                         .ok_or_else(|| DataError::Conflict(format!("document {doc_id} missing")))?;
+                    // Captured BEFORE this op applies, and only for the FIRST Update of
+                    // this id in the batch — see `pre_permissions`'s own comment.
+                    pre_permissions
+                        .entry(*doc_id)
+                        .or_insert_with(|| cur.permissions.clone());
                     check_command_scope(&cur, world_id)?;
                     // Message docs are server-authored and immutable to clients
                     // in this checkpoint: `Update` carries no `doc_type` for
@@ -3563,7 +3609,14 @@ impl Repository for SqliteRepository {
         let mut per_op = Vec::with_capacity(sequenced.ops.len());
         for op in &sequenced.ops {
             per_op.push(Some(
-                Self::build_op_snapshot(&mut tx, op, &post_images, &deleted_created_seqs).await?,
+                Self::build_op_snapshot(
+                    &mut tx,
+                    op,
+                    &post_images,
+                    &deleted_created_seqs,
+                    &pre_permissions,
+                )
+                .await?,
             ));
         }
         let stored = StoredCommand {
