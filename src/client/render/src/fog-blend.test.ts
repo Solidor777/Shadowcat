@@ -1,5 +1,7 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, test } from "vitest";
-import { computeFogBlendFactor, fogBlendRtStale } from "./fog-blend";
+import { computeFogBlendFactor, fogBlendRtStale, chooseVisionSample } from "./fog-blend";
+import type { MoveVisionSample } from "./types";
 
 describe("computeFogBlendFactor", () => {
   test("is 0 at tCur and 1 at tNext", () => {
@@ -47,4 +49,17 @@ describe("fogBlendRtStale", () => {
   test("stales on a resolution change", () => {
     expect(fogBlendRtStale({ width: 800, height: 600, resolution: 1 }, 800, 600, 2)).toBe(true);
   });
+});
+
+test("chooseVisionSample matches the server's chosen_vision_sample on the shared fixture", () => {
+  const raw = JSON.parse(
+    readFileSync(new URL("./__fixtures__/chosen-vision-sample.json", import.meta.url), "utf8"),
+  ) as { samples: number[]; probes: { elapsed: number; expectIndex: number }[] };
+  const samples: MoveVisionSample[] = raw.samples.map((tMs, i) => ({
+    tMs,
+    polygons: [[[i, 0], [i, 1], [i + 1, 1]]],
+  }));
+  for (const { elapsed, expectIndex } of raw.probes) {
+    expect(chooseVisionSample(samples, elapsed).polygons[0][0][0]).toBe(expectIndex);
+  }
 });

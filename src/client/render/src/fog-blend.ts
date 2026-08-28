@@ -4,6 +4,8 @@
 // A `//` header, not a `/** */` block: a doc block preceding another doc block rather
 // than a declaration binds to nothing, since every consumer takes the NEAREST one.
 
+import type { MoveVisionSample } from "./types";
+
 /**
  * Blend factor for cross-fading between two consecutive vision samples' rasterized fog
  * textures: 0 at `tCur` (fully the outgoing/"from" texture), 1 at `tNext` (fully the
@@ -50,6 +52,27 @@ export function computeFogBlendFactor(clock: number, tCur: number, tNext: number
  * fogBlendRtStale({ width: 800, height: 600, resolution: 1 }, 1024, 768, 1); // true — resized
  * ```
  */
+/** The sweep sample that should be showing at `elapsed` ms: the one with the greatest
+ * `tMs <= elapsed`, or the first sample when `elapsed` precedes every sample.
+ * INVARIANT (server parity): mirrors the server's `chosen_vision_sample` — the egress clip admits
+ * a moving token's sample only where this sample's polygons will show it. Fixture-tested on both
+ * sides (`__fixtures__/chosen-vision-sample.json`).
+ * @param samples The sweep's ordered vision samples (non-empty).
+ * @param elapsed Milliseconds elapsed since the sweep started.
+ * @returns The sample to show at `elapsed`.
+ * @example
+ * ```ts
+ * chooseVisionSample([{ tMs: 0, polygons: [] }, { tMs: 500, polygons: [] }], 250).tMs; // 0
+ * ```
+ */
+export function chooseVisionSample(samples: MoveVisionSample[], elapsed: number): MoveVisionSample {
+  let chosen = samples[0];
+  for (const s of samples) {
+    if (s.tMs <= elapsed) chosen = s;
+  }
+  return chosen;
+}
+
 export function fogBlendRtStale(existing: {
   /** The currently-captured texture's width, in CSS pixels. */
   width: number;

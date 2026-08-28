@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
 pub mod conn;
+pub(crate) mod move_clip;
 pub mod protocol;
 pub mod room;
 #[cfg(test)]

@@ -3,7 +3,7 @@ import type { ReadableDocuments, AssetResolver, FootprintLookup } from "@shadowc
 import type { DisplayBackend } from "./backend";
 import type { VisibilityInput, LightingInput, LitCell, SceneTool, SceneToolHost, Point, ShapeNodeSpec, Polygon, MoveVisionSample } from "./types";
 import type { TokenTweenConfig } from "./easing";
-import { computeFogBlendFactor } from "./fog-blend";
+import { computeFogBlendFactor, chooseVisionSample } from "./fog-blend";
 import { Camera } from "./camera";
 import { Compositor } from "./compositor";
 import { Grid, type GridSpec } from "./grid";
@@ -1044,7 +1044,8 @@ export class RenderEngine implements SceneToolHost {
   }
 
   /** The sample with the greatest `tMs <= sweep.elapsed` (falls back to the first sample when
-   * elapsed precedes it).
+   * elapsed precedes it). Delegates to `chooseVisionSample` (`fog-blend.ts`), which is also
+   * asserted against the server's `chosen_vision_sample` on the shared parity fixture.
    * @param sweep The in-flight sweep state.
    * @param sweep.samples The sweep's ordered vision samples.
    * @param sweep.elapsed Milliseconds elapsed since the sweep started.
@@ -1061,11 +1062,7 @@ export class RenderEngine implements SceneToolHost {
     /** Milliseconds elapsed since the sweep started. */
     elapsed: number;
   }): MoveVisionSample {
-    let chosen = sweep.samples[0];
-    for (const s of sweep.samples) {
-      if (s.tMs <= sweep.elapsed) chosen = s;
-    }
-    return chosen;
+    return chooseVisionSample(sweep.samples, sweep.elapsed);
   }
 
   /** Converts one `MoveVisionSample`'s raw polygon point-groups into `Polygon`s, dropping any

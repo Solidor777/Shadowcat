@@ -1,0 +1,12 @@
+{
+  "samples": [0, 250, 500, 900],
+  "probes": [
+    { "elapsed": -10, "expectIndex": 0 },
+    { "elapsed": 0, "expectIndex": 0 },
+    { "elapsed": 249.999, "expectIndex": 0 },
+    { "elapsed": 250, "expectIndex": 1 },
+    { "elapsed": 600, "expectIndex": 2 },
+    { "elapsed": 900, "expectIndex": 3 },
+    { "elapsed": 5000, "expectIndex": 3 }
+  ]
+}
