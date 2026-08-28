@@ -35,14 +35,11 @@ capability already exists — but are deferred as out-of-scope-for-now work.
 Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one design pass each
 (user: build ALL of bucket C):
 
-1. **Real-time per-recipient move-streaming** — a concurrently moving token snaps into an
-   observer's view at its stop instead of appearing mid-stride. **APPROVED DESIGN:**
-   `docs/superpowers/specs/2026-08-27-move-stream-live-clip-design.md` (clip against the
-   recipient's own `mover_vision` timeline + re-emit in-flight streams when the recipient's move
-   starts) closes the case where the observer's own token is moving. Residual, parked: an
-   observer's sightline opened mid-walk by a THIRD PARTY's moving light source still reveals at
-   that mover's stop — needs the observer's vision recomputed per sample of the light-carrying
-   move; cost it only on request.
+1. **Real-time per-recipient move-streaming** — DONE (2026-08-27, spec
+   `docs/superpowers/specs/2026-08-27-move-stream-live-clip-design.md`): observer's own-move
+   timeline clip + re-emit. Residual, parked: third-party moving light source opening a sightline
+   mid-walk still reveals at that mover's stop — needs the observer's vision recomputed per sample
+   of the light-carrying move; cost only on request.
 
 ## Actionable now — Kimi Code parity is written but never installed
 - TODO: The skill/agent source moved to the standalone `shadowcat-codebase` plugin repo

@@ -374,6 +374,11 @@ framework-neutral `ui.surfaces` service (preserves whole-UI replacement).
 > cross-animation concurrency deferred (`docs/TODO.md`) — a move's per-recipient clip is computed
 > once at its execute time, so two simultaneous moves don't reveal each other mid-walk if a
 > watcher's vision opens after the clip; reconciles at the stop + next `vision` rebroadcast.
+> Follow-on (2026-08-27, spec `docs/superpowers/specs/2026-08-27-move-stream-live-clip-design.md`,
+> governed by `ARCHITECTURE.md` §2 invariant 11 — user experience outranks data secrecy): closes
+> the observer's-own-move half of that limitation by clipping each concurrent `MoveStream` sample
+> against the recipient's own in-flight `mover_vision` timeline and re-emitting in-flight streams
+> when the recipient's own move starts.
 > Plan: `docs/superpowers/plans/2026-06-25-m2-streamed-continuous-vision.md`.
 > Spec: `docs/superpowers/specs/2026-06-25-m2-streamed-continuous-vision-design.md`.
 >

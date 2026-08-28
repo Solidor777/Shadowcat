@@ -441,4 +441,39 @@ describe("TokenAnimator.animateSamples", () => {
     a.tick(50);
     expect(a.get("t1")!.x).toBeGreaterThan(100); // tween toward the new target is running
   });
+
+  it("a second animateSamples for the same token replaces playback in place at the server-aligned elapsed", () => {
+    // Reproduces the re-emit case: the server re-broadcasts a wider MoveStream for an in-flight
+    // move (e.g. the observer's own move opened their vision mid-walk). The second frame must
+    // overwrite playback in place, resuming at the current server-aligned elapsed time rather than
+    // restarting from t=0 or blending with the first frame's trajectory.
+    const a = fresh();
+    a.setTarget("t1", { x: 0, y: 0, rotation: 0 });
+    a.animateSamples(
+      "t1",
+      [
+        { tMs: 0, pos: [0, 0] },
+        { tMs: 1000, pos: [100, 0] },
+      ],
+      1000,
+      0,
+      () => 0,
+    );
+    a.tick(400); // 40% along the first set
+    // Re-emitted (wider) frame, same start clock; the client is now 400ms in.
+    a.animateSamples(
+      "t1",
+      [
+        { tMs: 0, pos: [0, 0] },
+        { tMs: 500, pos: [50, 0] },
+        { tMs: 1000, pos: [100, 0] },
+      ],
+      1000,
+      0,
+      () => 400,
+    );
+    a.tick(0);
+    expect(a.isHidden("t1")).toBe(false);
+    expect(a.get("t1")!.x).toBeCloseTo(40, 5);
+  });
 });
