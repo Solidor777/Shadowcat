@@ -63,7 +63,7 @@ All `cargo` commands run from `src/server/` (or with `--manifest-path src/server
 - Produces (exported, pure): `countLines(text: string): number`; `isCovered(path: string): boolean`; `parseAllowlist(text: string, sourceName: string): Array<{path: string, lines_at_approval: string, reason: string}>`; `evaluate({files, allow}): Array<{kind: "HARD LIMIT"|"SOFT LIMIT"|"STALE ALLOWLIST ENTRY", path: string, lines: number, message: string}>` where `files` is `Array<{path, lines}>` and `allow` is the parsed allowlist; constants `SOFT_LIMIT = 5000`, `HARD_LIMIT = 10000`, `COVERED_EXTS`, `ROOTS`, `ALLOWLIST`.
 - Consumes: `isDirectEntry` from `scripts/lib/is-main.mjs`; `norm`, `under`, `GENERATED_ROOT` from `scripts/lib/gate-corpus.mjs`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 `scripts/check-file-lines.test.mjs`:
 
@@ -140,12 +140,12 @@ test("evaluate: every error names the path and the measured count", () => {
 });
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+- [x] **Step 2: Run to verify it fails**
 
 Run: `npx vitest run scripts/check-file-lines.test.mjs`
 Expected: FAIL — cannot resolve `./check-file-lines.mjs`.
 
-- [ ] **Step 3: Write the script**
+- [x] **Step 3: Write the script**
 
 `scripts/check-file-lines.mjs`:
 
@@ -267,7 +267,7 @@ function main() {
 if (isDirectEntry(import.meta.url)) main();
 ```
 
-- [ ] **Step 4: Create the empty allowlist**
+- [x] **Step 4: Create the empty allowlist**
 
 `.claude/file-size-allowlist.toml`:
 
@@ -287,7 +287,7 @@ if (isDirectEntry(import.meta.url)) main();
 # reason = "..."
 ```
 
-- [ ] **Step 5: Add the pnpm script**
+- [x] **Step 5: Add the pnpm script**
 
 In `package.json` scripts, after `"lint:allowances"`:
 
@@ -295,7 +295,7 @@ In `package.json` scripts, after `"lint:allowances"`:
     "lint:file-size": "node scripts/check-file-lines.mjs",
 ```
 
-- [ ] **Step 6: Run the suite and the gate**
+- [x] **Step 6: Run the suite and the gate**
 
 Run: `npx vitest run scripts/check-file-lines.test.mjs`
 Expected: 7 tests PASS.
@@ -303,7 +303,7 @@ Expected: 7 tests PASS.
 Run: `pnpm lint:file-size > "$SCRATCH/file-size.txt"; echo $?` (bash) — read the file.
 Expected: exit 1 with exactly these errors (the current tree): `HARD LIMIT` for `src/server/src/data/sqlite.rs` (11320), `SOFT LIMIT` for `src/server/src/scene/mod.rs` (9703), `src/server/src/chat/mod.rs` (5892), `src/server/src/data/permission.rs` (5042). Any other error is a scope error in the script — fix before committing. This is the expected state until Task 7; CI wiring waits for Task 8.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git commit -m "feat(ci): add file-size gate script with owner-approved allowlist" -- scripts/check-file-lines.mjs scripts/check-file-lines.test.mjs .claude/file-size-allowlist.toml package.json
@@ -322,7 +322,7 @@ git commit -m "feat(ci): add file-size gate script with owner-approved allowlist
 - Produces (exported, pure): `scanInlineTests(text: string): Array<{line: number, module: string}>` (1-based line of the `mod` line); `isRustSource(path): boolean`.
 - Consumes: `splitLine(line, state)` from `scripts/lib/comment-span.mjs` — returns `{ code, comment, state }`-shaped output; read its header before use and keep the block-comment state across lines exactly as `check-lint-allowances.mjs` does (copy that loop's usage).
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 `scripts/check-inline-tests.test.mjs`:
 
@@ -374,12 +374,12 @@ test("isRustSource covers tracked .rs under src only", () => {
 });
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+- [x] **Step 2: Run to verify it fails**
 
 Run: `npx vitest run scripts/check-inline-tests.test.mjs`
 Expected: FAIL — cannot resolve module.
 
-- [ ] **Step 3: Write the script**
+- [x] **Step 3: Write the script**
 
 `scripts/check-inline-tests.mjs`:
 
@@ -457,7 +457,7 @@ if (isDirectEntry(import.meta.url)) main();
 
 If `splitLine`'s return shape differs from `{ code, comment, state }`, adapt the loop to its actual contract (read `scripts/lib/comment-span.mjs` and `check-lint-allowances.mjs`'s call site) — do not reimplement comment detection.
 
-- [ ] **Step 4: Add the pnpm script**
+- [x] **Step 4: Add the pnpm script**
 
 In `package.json` scripts, after `"lint:file-size"`:
 
@@ -465,14 +465,14 @@ In `package.json` scripts, after `"lint:file-size"`:
     "lint:inline-tests": "node scripts/check-inline-tests.mjs",
 ```
 
-- [ ] **Step 5: Run the suite and the gate**
+- [x] **Step 5: Run the suite and the gate**
 
 Run: `npx vitest run scripts/check-inline-tests.test.mjs` — Expected: 8 tests PASS.
 
 Run: `pnpm lint:inline-tests > "$SCRATCH/inline-tests.txt"; echo $?` — read the file.
 Expected: exit 1 with **exactly 76** `INLINE TEST MODULE` errors across 71 files (the inventory in Task 3). A different count means the scanner over- or under-matches; diff the reported list against Task 3's table and fix the scanner before committing.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git commit -m "feat(ci): add inline-test-module gate script" -- scripts/check-inline-tests.mjs scripts/check-inline-tests.test.mjs package.json
@@ -571,7 +571,7 @@ The two `pub(crate)` modules (#25, #52) are consumed cross-module (`crate::data:
 
 **Batching:** Task 3 = rows 1–11. Task 4 = rows 12–35 except #33. Task 5 = rows 36–76 except #60. Task 6 = #33. Task 7 = #60.
 
-- [ ] **Step 1: Write the extraction tool in the scratchpad**
+- [x] **Step 1: Write the extraction tool in the scratchpad**
 
 `$SCRATCH/extract-test-mod.mjs` (throwaway; do not add to the repo):
 
@@ -604,7 +604,7 @@ writeFileSync(file, lines.join(eol));
 console.log(`${file}: mod ${name} -> ${target} (${body.length} lines)`);
 ```
 
-- [ ] **Step 2: Run it on rows 1–11**
+- [x] **Step 2: Run it on rows 1–11**
 
 From `src/server/`:
 
@@ -614,7 +614,7 @@ for f in src/auth/invite.rs src/auth/password.rs src/auth/role.rs src/auth/sessi
 
 Expected: 11 lines of `… -> … (N lines)`. Then `cargo fmt --all`.
 
-- [ ] **Step 3: Verify**
+- [x] **Step 3: Verify**
 
 Run (from `src/server/`, each redirected to a file, exit status checked):
 - `cargo test --all` — sum of `passed` across `test result:` lines **equals the Task 0 baseline**; 0 failed.
@@ -625,7 +625,7 @@ Run (from `src/server/`, each redirected to a file, exit status checked):
 
 If the doc-coverage clippy pass reports a missing doc on a moved item, the item was undocumented before as well and the lint did not fire because of module position; add the present-tense doc comment the item's siblings carry. Do not suppress.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add src/server/src/auth src/server/src/backup.rs src/server/src/backup src/server/src/config.rs src/server/src/config src/server/src/db.rs src/server/src/db src/server/src/health.rs src/server/src/health src/server/src/modules.rs src/server/src/modules src/server/src/world_bundle.rs src/server/src/world_bundle
@@ -638,7 +638,7 @@ git commit -m "refactor(server): move auth/backup/config/db/health/modules/world
 
 **Files:** parents and targets from the Task 3 inventory rows 12–32, 34–35.
 
-- [ ] **Step 1: Extract**
+- [x] **Step 1: Extract**
 
 From `src/server/`:
 
@@ -652,9 +652,9 @@ cargo fmt --all
 
 Expected: 23 extraction lines. Confirm `src/data/document.rs` now reads `#[cfg(test)]\npub(crate) mod tests;` (the tool preserves the visibility prefix).
 
-- [ ] **Step 2: Verify** — same five gates as Task 3 Step 3. `cargo test` passed-sum equals baseline. `pnpm lint:inline-tests` error count is now **42** (65 − 23). `pnpm lint:file-size` now reports only `HARD LIMIT src/server/src/data/sqlite.rs` and `SOFT LIMIT src/server/src/scene/mod.rs` (chat/mod.rs and permission.rs have dropped under 5,000; confirm with the gate output, not by arithmetic).
+- [x] **Step 2: Verify** — same five gates as Task 3 Step 3. `cargo test` passed-sum equals baseline. `pnpm lint:inline-tests` error count is now **42** (65 − 23). `pnpm lint:file-size` now reports only `HARD LIMIT src/server/src/data/sqlite.rs` and `SOFT LIMIT src/server/src/scene/mod.rs` (chat/mod.rs and permission.rs have dropped under 5,000; confirm with the gate output, not by arithmetic).
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git commit -m "refactor(server): move chat and data test modules to sibling files" -- src/server/src/chat src/server/src/data
@@ -668,7 +668,7 @@ git commit -m "refactor(server): move chat and data test modules to sibling file
 
 **Files:** parents and targets from the Task 3 inventory rows 36–59, 61–76.
 
-- [ ] **Step 1: Extract**
+- [x] **Step 1: Extract**
 
 From `src/server/`:
 
@@ -688,9 +688,9 @@ Expected: 40 extraction lines. `src/http/mod.rs` keeps `pub(crate) mod tests;`.
 
 Note `src/scene/navmesh.rs`'s `mod smoke` sits at line 13, before the production items — the tool handles position-independently; the declaration stays where the body was.
 
-- [ ] **Step 2: Verify** — same five gates. `cargo test` passed-sum equals baseline. `pnpm lint:inline-tests` error count is now **2** (`src/server/src/data/sqlite.rs`, `src/server/src/scene/mod.rs`).
+- [x] **Step 2: Verify** — same five gates. `cargo test` passed-sum equals baseline. `pnpm lint:inline-tests` error count is now **2** (`src/server/src/data/sqlite.rs`, `src/server/src/scene/mod.rs`).
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add src/server/src/dice src/server/src/http src/server/src/scene src/server/src/ws
@@ -707,7 +707,7 @@ git commit -m "refactor(server): move dice/http/scene/ws test modules to sibling
 
 **Interfaces:** `tests/mod.rs` declares `mod rows_and_validation; mod search_and_worlds; mod commands_and_intents; mod invites_and_ownership;`, carries the module's `use` lines, and holds every helper used by two or more subject files as `pub(super) fn …`. Subject files start with `use super::*;` (which brings in the parent `sqlite` items via `tests/mod.rs`'s own `use super::*;` re-exported as `pub(super) use super::*;` — see Step 3).
 
-- [ ] **Step 1: Extract the whole module into `tests/mod.rs`**
+- [x] **Step 1: Extract the whole module into `tests/mod.rs`**
 
 From `src/server/`:
 
@@ -724,7 +724,7 @@ git add src/server/src/data/sqlite.rs src/server/src/data/sqlite
 git commit -m "refactor(server): move sqlite test module to data/sqlite/tests/mod.rs" -- src/server/src/data/sqlite.rs src/server/src/data/sqlite
 ```
 
-- [ ] **Step 2: Cut `tests/mod.rs` into four subject files by test-function name**
+- [x] **Step 2: Cut `tests/mod.rs` into four subject files by test-function name**
 
 Each subject file receives the **contiguous** span of `tests/mod.rs` from the first listed test (including any helper items and comments immediately preceding it that no earlier test uses) through the end of the last listed test. The `use` lines at the top of `tests/mod.rs` stay in `tests/mod.rs`. Every one of the 149 tests appears in exactly one file:
 
@@ -736,7 +736,7 @@ Each subject file receives the **contiguous** span of `tests/mod.rs` from the fi
 
 **`invites_and_ownership.rs` (19 tests):** `consume_invite_seats_exactly_one_redeemer`, `consume_invite_refuses_expired_and_revoked_rows`, `revoke_invite_is_scoped_to_its_world`, `consume_invite_never_changes_a_role_already_held`, `list_invites_never_returns_the_stored_hash`, `create_invite_caps_live_invites_and_a_spent_one_frees_a_slot`, `linked_token_inherits_actor_owner_for_writes`, `per_token_owner_override_beats_the_linked_actors_owner`, `reassigning_the_actors_owner_moves_token_authority_with_no_restamp`, `ownership_fails_closed_on_every_degenerate_link`, `an_effective_owner_cannot_reassign_or_widen_ownership`, `effective_owner_of_joins_the_linked_actor_on_the_pool`, `the_owner_capability_floor_is_scoped_to_tokens`, `a_removal_carrying_a_new_value_is_rejected_at_ingress`, `the_actor_join_does_not_cross_world_scope`, `created_seq_is_set_once_and_survives_updates`, `created_seq_is_absent_for_a_missing_document`, `world_member_roles_reflects_every_current_member`, `get_document_with_created_seq_matches_a_separate_created_seq_read`.
 
-- [ ] **Step 3: Shape `tests/mod.rs` and hoist shared helpers**
+- [x] **Step 3: Shape `tests/mod.rs` and hoist shared helpers**
 
 `tests/mod.rs` becomes:
 
@@ -757,14 +757,14 @@ Each subject file begins with `use super::*;`. Run `cargo test --no-run` and rea
 
 Then `cargo fmt --all`.
 
-- [ ] **Step 4: Verify**
+- [x] **Step 4: Verify**
 
 - `cargo test --all` passed-sum equals the baseline; 0 failed. Additionally `cargo test --all -- --list 2>/dev/null | grep -c 'data::sqlite::tests::'` (from `src/server/`, output to a file) equals **149**.
 - `cargo clippy --all-targets -- -D warnings`, the `-D missing-docs …` clippy pass, `cargo fmt --all -- --check`: clean. Every new file and every `pub(super)` helper carries a doc comment (the private-items lint requires it for helpers that were already documented; add present-tense docs where the lint asks).
 - `pnpm lint:file-size` — no error for `sqlite`; each file under `src/server/src/data/sqlite/tests/` is under 5,000 (the gate proves it).
 - `pnpm lint:inline-tests` — error count **1** (`scene/mod.rs`).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/server/src/data/sqlite
@@ -781,7 +781,7 @@ git commit -m "refactor(server): split sqlite tests into subject files under dat
 
 **Interfaces:** identical shape to Task 6: `tests/mod.rs` declares the three submodules, `pub(super) use super::*;`, re-exports the original `use` lines, holds shared helpers and constants as `pub(super)`, and keeps the test-only `impl SceneEcs { set_world_settings_for_test, insert_scene_for_test }` block (used across subjects).
 
-- [ ] **Step 1: Extract into `tests/mod.rs`**
+- [x] **Step 1: Extract into `tests/mod.rs`**
 
 From `src/server/`:
 
@@ -798,7 +798,7 @@ git add src/server/src/scene/mod.rs src/server/src/scene/tests
 git commit -m "refactor(server): move scene test module to scene/tests/mod.rs" -- src/server/src/scene/mod.rs src/server/src/scene/tests
 ```
 
-- [ ] **Step 2: Cut into three subject files (contiguous spans, every one of the 150 tests in exactly one file)**
+- [x] **Step 2: Cut into three subject files (contiguous spans, every one of the 150 tests in exactly one file)**
 
 **`ecs_and_footprints.rs` (52 tests):** `hydrate_counts_scene_entities_only`, `resolve_grid_shape_selects_hex_grid_for_hex_kind_scenes`, `resolve_grid_shape_falls_back_to_square_grid_for_unrecognized_kind`, `engine_as_cache_invalidates_on_engine_mutation`, `apply_op_create_update_delete`, `segments_cross_truth_table`, `blocks_move_geometry_scene_scoping_and_filters`, `blocks_move_agrees_with_the_production_move_walls_segments_cross_path`, `token_move_uses_post_image_resisting_forged_bypasses`, `vision_channel_is_per_recipient`, `vision_payload_carries_lit_mask_for_players_not_gm`, `vision_payload_resolves_render_hint_index`, `resolvers_layer_world_then_scene_and_fail_closed`, `vision_modes_doc_is_respected_not_reseeded`, `pathfind_refuses_a_scene_with_no_document`, `user_owns_token_in_scene_follows_the_actor_join_and_is_scene_scoped`, `ecs_and_db_agree_on_ownership_after_a_remove_change_carrying_a_non_null_new`, `ecs_and_db_agree_when_a_set_change_relinks_a_token`, `ecs_actor_index_honors_a_remove_change_on_owner`, `a_malformed_proposed_path_fails_closed_without_an_error_level_log`, `a_failed_committed_mirror_change_logs_at_error_level`, `config_singleton_mirror_honors_a_remove_change`, `token_move_projection_honors_a_remove_change`, `token_ownership_resolves_through_the_actor_join_for_vision`, `token_vision_floors_resolve_through_actor_join`, `footprint_radius_on_square_is_the_conservative_enclosure_of_the_authored_block`, `footprint_radius_on_hex_is_the_circumscribing_radius_shape_is_inert`, `footprint_radius_falls_back_to_the_default_for_an_actorless_token`, `footprint_radius_honors_a_per_token_size_override`, `footprint_radius_refuses_an_oversized_token_rather_than_clamping`, `footprint_radius_admits_a_token_exactly_at_the_bound`, `footprints_payload_carries_a_square_token_extent_of_the_authored_block_in_scene_units`, `footprints_payload_carries_a_hex_token_extent_of_the_hexs_own_bounding_box`, `footprints_payload_states_a_refusal_as_a_null_extent_rather_than_a_size`, `the_footprints_channel_serves_the_resolved_payload_and_an_unknown_channel_errors`, `footprints_payload_omits_a_token_no_actor_sizes`, `footprints_payload_withholds_a_token_the_recipient_cannot_read`, `footprints_payload_withholds_a_scene_entry_the_recipient_cannot_read`, `footprints_payload_withholds_a_scene_whose_engine_band_the_recipient_may_not_see`, `footprints_payload_withholds_a_token_whose_engine_band_the_recipient_may_not_see`, `footprints_payload_withholds_a_token_whose_actors_engine_band_the_recipient_may_not_see`, `footprints_payload_withholds_a_token_whose_actor_document_the_recipient_may_not_read`, `footprints_payload_withholds_a_token_whose_embedded_actors_band_the_recipient_may_not_see`, `light_and_blockslight_wall_accessors_filter_by_scene`, `parse_hex_color_handles_6_and_3_digit`, `lit_mask_gates_los_by_illumination_and_darkvision`, `lit_mask_tags_darkvision_only_cells_with_hint`, `committed_seq_tracks_last_applied_command`, `config_and_actor_side_tables_track_ops`, `vision_modes_carry_render_hint`, `token_vision_floors_include_render_hint`, `token_vision_floors_falls_back_to_mode_default_range_when_assignment_omits_range`.
 
@@ -806,18 +806,18 @@ git commit -m "refactor(server): move scene test module to scene/tests/mod.rs" -
 
 **`pathfind_and_vision.rs` (47 tests):** `pathfind_gm_unconstrained_routes_without_a_mask`, `pathfind_dispatches_to_the_navmesh_router_for_a_continuous_scene`, `pathfind_grid_and_continuous_report_the_same_cell_cost_for_a_straight_route`, `pathfind_continuous_start_equals_goal_is_a_single_point_zero_cost`, `pathfind_continuous_terrain_bends_the_route_and_costs_cells`, `pathfind_hex_continuous_arrest_truncates_at_the_axial_hex_not_the_square_cell`, `pathfind_continuous_no_region_is_a_straight_polyanya_route`, `pathfind_continuous_impassable_routes_around`, `pathfind_continuous_secret_terrain_absent_from_player_route_present_for_gm`, `pathfind_continuous_nongm_route_clips_to_the_visible_mask`, `pathfind_continuous_weighted_nongm_route_clips_to_the_visible_mask`, `pathfind_continuous_secret_arrest_absent_from_player_preview_but_springs_at_execution`, `non_gm_route_crosses_a_gm_only_wall_that_springs_at_execution`, `gm_route_does_not_cross_a_gm_only_wall`, `pathfind_grid_stepped_scene_is_byte_for_byte_unchanged`, `pathfind_nongm_visible_is_bounded_by_the_mask`, `pathfind_revealed_unions_explored_memory`, `vision_at_grows_as_token_advances`, `vision_at_uses_full_wall_set`, `wall_less_scene_gives_full_intrascene_vision_not_a_degenerate_box`, `each_scenes_vision_bound_uses_its_own_extent_not_a_neighbours`, `wall_less_scene_vision_does_not_leak_beyond_its_own_bounds`, `player_vision_polygons_and_player_vision_inputs_agree_on_wall_less_bound`, `vision_at_empty_when_user_owns_no_token`, `player_lit_mask_wall_less_scene_covers_full_bounds_not_a_degenerate_box`, `visible_cells_wall_less_scene_covers_full_bounds_not_a_degenerate_box`, `visible_cells_agrees_with_player_vision_polygons_bound_on_wall_less_scene`, `accumulate_visible_cells_routes_through_grid_shape_cell_center_not_hardcoded`, `player_lit_mask_routes_through_grid_shape_cell_center_not_hardcoded`, `visible_cells_hex_excludes_cell_whose_center_is_outside_the_mask`, `visible_cells_hex_lenient_includes_cell_whose_vertex_clips_the_mask`, `hex_lenient_mask_lets_the_executor_enter_a_cell_the_strict_mask_stops_at`, `a_hex_vision_range_is_measured_in_grid_steps`, `a_hex_vision_range_bounds_the_lit_egress_the_same_way`, `a_hex_light_radius_is_measured_in_grid_steps`, `an_over_cap_visibility_scan_yields_a_bounded_mask_not_an_empty_one`, `an_over_cap_lit_mask_scan_yields_a_bounded_cell_set_not_an_empty_one`, `lenient_visibility_scan_stays_a_superset_of_strict_at_the_clamp_boundary`, `parity_holds_inside_the_clamp_band`, `scene_world_extent_agrees_with_the_shapes_own_conversion`, `hex_continuous_routes_along_axial_row_zero_strictly_inside_the_mesh`, `hex_continuous_routes_below_the_origin_row_inside_its_own_hexes`, `hex_continuous_navmesh_spans_the_authored_play_area`, `hex_continuous_weighted_cost_is_reported_in_cells`, `a_degenerate_authored_grid_size_never_reaches_the_extent_conversion`, `navmesh_for_refuses_a_radius_over_the_footprint_cap`, `navmesh_for_refuses_a_scene_whose_converted_extent_is_over_magnitude`.
 
-- [ ] **Step 3: Shape `tests/mod.rs` and hoist shared items**
+- [x] **Step 3: Shape `tests/mod.rs` and hoist shared items**
 
 Same procedure as Task 6 Step 3. Items that stay in `tests/mod.rs` regardless: the `use` lines (as `pub(super) use`), the `impl SceneEcs { … }` test-only block, and every constant/struct/helper the compiler reports as used from two or more subject files. Constants (`HEX_FIXTURE_SIZE`, `FOOTPRINT_TEST_SCENE`, `HEX_SEALED_CELL`, `HEX_VISION_RANGE_CELLS`, `HEX_LIGHT_BRIGHT_CELLS`, `HEX_LIGHT_DIM_CELLS`, `HEX_LIGHT_BLOCK`) and structs (`LevelCapture`, `RegionRect`) become `pub(super)` when hoisted. Expected cross-file helpers (verify with the compiler): `doc`, `entity_doc_eng`, `entity_doc_top_eng`, `actor_body`, `fc`, `scene_with_grid`, `wall_doc_eng`, `scene_with_lit_player_token`. Then `cargo fmt --all`.
 
-- [ ] **Step 4: Verify**
+- [x] **Step 4: Verify**
 
 - `cargo test --all` passed-sum equals baseline; 0 failed; `cargo test --all -- --list | grep -c 'scene::tests::'` equals **150**.
 - Both clippy passes, `cargo fmt --all -- --check`: clean.
 - `pnpm lint:file-size` — **exit 0**, zero errors (first clean run; record the output line in `progress.md`).
 - `pnpm lint:inline-tests` — **exit 0**, `76 → 0`.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/server/src/scene/tests
@@ -835,7 +835,7 @@ git commit -m "refactor(server): split scene tests into subject files under scen
 - Create: `~/.claude/projects/C--Dev-Shadowcat/memory/file-size-limits-need-explicit-signoff.md`; Modify: `~/.claude/projects/C--Dev-Shadowcat/memory/MEMORY.md`
 - Modify (plugin checkout, separate repo): `~/.claude/skills/shadowcat-codebase/skills/shadowcat-codebase-core/SKILL.md`
 
-- [ ] **Step 1: CI steps**
+- [x] **Step 1: CI steps**
 
 In `.github/workflows/ci.yml`, immediately after:
 
@@ -853,7 +853,7 @@ add:
         run: pnpm lint:inline-tests
 ```
 
-- [ ] **Step 2: CLAUDE.md rule**
+- [x] **Step 2: CLAUDE.md rule**
 
 Insert after the "Lint Suppressions Require Explicit User Approval" section (after its `#### ✅ Good` block, before the "Agent-Optimized Security & IP Standards" heading):
 
@@ -900,7 +900,7 @@ mod tests;   // body in data/sqlite/tests/mod.rs + tests/<subject>.rs
 ```
 ```
 
-- [ ] **Step 3: TODO entry**
+- [x] **Step 3: TODO entry**
 
 Append to `docs/TODO.md` under a new heading at the end:
 
@@ -909,7 +909,7 @@ Append to `docs/TODO.md` under a new heading at the end:
 - TODO: `src/server/src/data/sqlite.rs` production code is ~3,900 lines after its test module moved out — the largest remaining production file and the next to cross the 5,000-line soft limit at its growth rate. Split `SqliteRepository` by concern (documents/commands, membership/invites, search, world export/import) into `data/sqlite/<concern>.rs` `impl` blocks before it reaches the limit; the gate (`pnpm lint:file-size`) fails the build at that point and no allowlist entry is to be added.
 ```
 
-- [ ] **Step 4: Memory file**
+- [x] **Step 4: Memory file**
 
 Create `~/.claude/projects/C--Dev-Shadowcat/memory/file-size-limits-need-explicit-signoff.md`:
 
@@ -947,7 +947,7 @@ Add to `MEMORY.md` under "## User-set design directives", after the `no-justifie
 - [**IRON-CLAD: 5k soft / 10k hard file-size limits; allowlist entries need the user's explicit sign-off; Rust tests in sibling files**](file-size-limits-need-explicit-signoff.md) — split, never exempt.
 ```
 
-- [ ] **Step 5: Core skill update (plugin checkout)**
+- [x] **Step 5: Core skill update (plugin checkout)**
 
 In `~/.claude/skills/shadowcat-codebase/skills/shadowcat-codebase-core/SKILL.md`, under `## Hard invariants`, add an entry in the section's existing style:
 
@@ -970,7 +970,7 @@ Run from the repo root: `node scripts/check-skill-symbol-refs-cli.mjs`, `node sc
 cd ~/.claude/skills/shadowcat-codebase && git add skills/shadowcat-codebase-core/SKILL.md && git commit -m "docs(core): file-size limits, inline-test gate, sqlite/scene test-file layout" -- skills/shadowcat-codebase-core/SKILL.md && git push
 ```
 
-- [ ] **Step 6: Run the full gate battery (Task 0 list) and commit**
+- [x] **Step 6: Run the full gate battery (Task 0 list) and commit**
 
 Every gate in the Task 0 list, each to a file, each exit 0. Then:
 
@@ -996,7 +996,7 @@ git commit -m "ci: enforce file-size limits and inline-test extraction; document
 
 **Dependency consent:** `trash` (npm, MIT, cross-platform recycle-bin) is a new devDependency. This is the one dependency the plan adds; the user has been asked for consent at plan handoff. If consent is withheld, stop this task and ask — do not substitute `rmSync`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 `scripts/clean-build-outputs.test.mjs`:
 
@@ -1056,9 +1056,9 @@ test("clean with an unlisted pattern refuses before removing anything", async ()
 });
 ```
 
-- [ ] **Step 2: Run to verify it fails** — `npx vitest run scripts/clean-build-outputs.test.mjs` → cannot resolve module.
+- [x] **Step 2: Run to verify it fails** — `npx vitest run scripts/clean-build-outputs.test.mjs` → cannot resolve module.
 
-- [ ] **Step 3: Add the dependency and write the script**
+- [x] **Step 3: Add the dependency and write the script**
 
 `pnpm add -D -w trash@^9` (updates `package.json` and `pnpm-lock.yaml`).
 
@@ -1139,7 +1139,7 @@ async function main() {
 if (isDirectEntry(import.meta.url)) main().catch((e) => { console.error(e.message); process.exit(1); });
 ```
 
-- [ ] **Step 4: Wire the scripts**
+- [x] **Step 4: Wire the scripts**
 
 `package.json` scripts:
 
@@ -1151,7 +1151,7 @@ if (isDirectEntry(import.meta.url)) main().catch((e) => { console.error(e.messag
 
 (`build:all` already begins with `pnpm build`, so it inherits the clean; do not add a second call.)
 
-- [ ] **Step 5: `assemble-docs.mjs` and `package.sh`**
+- [x] **Step 5: `assemble-docs.mjs` and `package.sh`**
 
 In `scripts/assemble-docs.mjs`: replace the `rmSync` import with `import { removeRecoverably } from "./clean-build-outputs.mjs";` and `import { existsSync } …` (already imported); change `assemble` to:
 
@@ -1175,7 +1175,7 @@ node "$root/scripts/clean-build-outputs.mjs" --only target/package
 
 (`target/package` is in `TARGETS`; `--only` rejects anything else. CI runs `pnpm install` before this step on the packaging runners, so `trash` is present.)
 
-- [ ] **Step 6: Verify**
+- [x] **Step 6: Verify**
 
 - `npx vitest run scripts/clean-build-outputs.test.mjs scripts/assemble-docs.test.mjs` — PASS.
 - `pnpm run test:scripts` — PASS (whole suite).
@@ -1184,7 +1184,7 @@ node "$root/scripts/clean-build-outputs.mjs" --only target/package
 - `git status` — nothing under `src/` touched; `pnpm-lock.yaml` and `package.json` modified.
 - Full Task 0 gate battery — every gate exit 0.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git commit -m "build: recoverable enumerated clean of build outputs ahead of every build" -- scripts/clean-build-outputs.mjs scripts/clean-build-outputs.test.mjs scripts/assemble-docs.mjs scripts/assemble-docs.test.mjs scripts/package.sh package.json pnpm-lock.yaml
@@ -1199,8 +1199,8 @@ git commit -m "build: recoverable enumerated clean of build outputs ahead of eve
 - Modify: `docs/PLAN.md` if it carries a Phase-1/hardening list that names CI gates (read it; add the two gates where `lint:allowances` is listed, else no change — state which)
 - Run: `graphify update .`
 
-- [ ] **Step 1:** Check every task box in this plan; confirm `docs/TODO.md` carries the Task 8 entry; confirm `docs/OPEN_BUGS.md` needs no change (no bug was opened or closed — state so).
-- [ ] **Step 2:** `graphify update .` — commit `graphify-out/` changes if the repo tracks them (check `git status`).
-- [ ] **Step 3:** Full Task 0 gate battery one final time, each to a file, each exit 0. Baseline test count re-confirmed.
-- [ ] **Step 4:** Commit docs: `git commit -m "docs: file-size-limits plan complete" -- docs/superpowers/plans/2026-08-27-file-size-limits.md docs/PLAN.md graphify-out` (drop paths that did not change).
-- [ ] **Step 5:** This is a full milestone: `git push origin main`, then `gh run watch` until every job is green on all three OS runners. If red, fix forward from the topmost error.
+- [x] **Step 1:** Check every task box in this plan; confirm `docs/TODO.md` carries the Task 8 entry; confirm `docs/OPEN_BUGS.md` needs no change (no bug was opened or closed — state so).
+- [x] **Step 2:** `graphify update .` — commit `graphify-out/` changes if the repo tracks them (check `git status`).
+- [x] **Step 3:** Full Task 0 gate battery one final time, each to a file, each exit 0. Baseline test count re-confirmed.
+- [x] **Step 4:** Commit docs: `git commit -m "docs: file-size-limits plan complete" -- docs/superpowers/plans/2026-08-27-file-size-limits.md docs/PLAN.md graphify-out` (drop paths that did not change).
+- [x] **Step 5:** This is a full milestone: `git push origin main`, then `gh run watch` until every job is green on all three OS runners. If red, fix forward from the topmost error.
