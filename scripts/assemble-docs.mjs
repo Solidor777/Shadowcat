@@ -3,11 +3,12 @@
 // references guarantee their own internal integrity; portal links INTO them are
 // validated because the copied files are on disk by check time).
 // Cross-platform invariant: node:path/node:fs only — no shell, no separators.
-import { cpSync, existsSync, readdirSync, readFileSync, statSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, readdirSync, readFileSync, statSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import process from "node:process";
 import { isDirectEntry } from "./lib/is-main.mjs";
+import { removeRecoverably } from "./clean-build-outputs.mjs";
 
 // Skips scheme-prefixed URLs, fragments, and protocol-relative (//host) URLs.
 const SKIP_SCHEMES = /^(?:[a-z][a-z0-9+.-]*:|#|\/\/)/i;
@@ -153,11 +154,12 @@ export function survivingAbsoluteRefs(files) {
 }
 
 /** Copy portal/ts/rust trees into out (portal at root, refs under api/).
- * `out` is regenerated wholesale from these three inputs on every call, so it is cleared first:
- * `cpSync` overwrites a destination file whose source still produces it, but never removes one
- * whose source no longer does, which would otherwise accumulate stale files across rebuilds. */
-export function assemble({ portal, ts, rust, out }) {
-  rmSync(out, { recursive: true, force: true });
+ * `out` is regenerated wholesale from these three inputs on every call, so it is sent to the
+ * trash first: `cpSync` overwrites a destination file whose source still produces it, but never
+ * removes one whose source no longer does, which would otherwise accumulate stale files across
+ * rebuilds. */
+export async function assemble({ portal, ts, rust, out }) {
+  if (existsSync(out)) await removeRecoverably(out);
   mkdirSync(out, { recursive: true });
   cpSync(portal, out, { recursive: true });
   cpSync(ts, join(out, "api", "ts"), { recursive: true });
@@ -178,7 +180,7 @@ if (isDirectEntry(import.meta.url)) {
       process.exit(1);
     }
   }
-  assemble(paths);
+  await assemble(paths);
   // Portal only; api/ subtrees are already relative (TypeDoc/rustdoc output) and untouched.
   const apiSubtrees = [join("api", "ts"), join("api", "rust")];
   const portalPages = htmlFilesUnder(paths.out, apiSubtrees);

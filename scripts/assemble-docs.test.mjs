@@ -306,20 +306,20 @@ describe("survivingAbsoluteRefs", () => {
 });
 
 describe("assemble", () => {
-  it("copies portal, ts, and rust trees into the output root", () => {
+  it("copies portal, ts, and rust trees into the output root", async () => {
     const src = mkdtempSync(join(tmpdir(), "docs-src-"));
     const out = join(mkdtempSync(join(tmpdir(), "docs-out-")), "dist-docs");
     for (const [dir, file] of [["portal", "index.html"], ["ts", "index.html"], ["rust", "shadowcat.html"]]) {
       mkdirSync(join(src, dir), { recursive: true });
       writeFileSync(join(src, dir, file), "<html></html>");
     }
-    assemble({ portal: join(src, "portal"), ts: join(src, "ts"), rust: join(src, "rust"), out });
+    await assemble({ portal: join(src, "portal"), ts: join(src, "ts"), rust: join(src, "rust"), out });
     for (const p of ["index.html", join("api", "ts", "index.html"), join("api", "rust", "shadowcat.html")]) {
       expect(existsSync(join(out, p))).toBe(true);
     }
   });
 
-  it("removes a file from a prior build whose current inputs no longer produce it", () => {
+  it("removes a file from a prior build whose current inputs no longer produce it", async () => {
     const src = mkdtempSync(join(tmpdir(), "docs-src-"));
     const out = join(mkdtempSync(join(tmpdir(), "docs-out-")), "dist-docs");
     const portal = join(src, "portal");
@@ -330,12 +330,12 @@ describe("assemble", () => {
     writeFileSync(join(portal, "stale-page.html"), "<html>gone next build</html>");
     writeFileSync(join(ts, "index.html"), "<html></html>");
     writeFileSync(join(rust, "shadowcat.html"), "<html></html>");
-    assemble({ portal, ts, rust, out });
+    await assemble({ portal, ts, rust, out });
     expect(existsSync(join(out, "stale-page.html"))).toBe(true);
 
-    // Second build's inputs no longer produce stale-page.html.
+    // A second build's inputs no longer produce stale-page.html.
     unlinkSync(join(portal, "stale-page.html"));
-    assemble({ portal, ts, rust, out });
+    await assemble({ portal, ts, rust, out });
     expect(existsSync(join(out, "stale-page.html"))).toBe(false);
     expect(existsSync(join(out, "index.html"))).toBe(true);
   });

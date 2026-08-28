@@ -14,7 +14,7 @@ bin="$root/target/release/shadowcat"
 out="$root/target/package"
 
 [ -x "$bin" ] || { echo "missing release binary: $bin (run cargo build --release)" >&2; exit 1; }
-rm -rf "$out"
+node "$root/scripts/clean-build-outputs.mjs" --only target/package
 mkdir -p "$out"
 
 case "$os" in
