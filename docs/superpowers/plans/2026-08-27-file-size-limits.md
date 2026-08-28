@@ -1203,4 +1203,4 @@ git commit -m "build: recoverable enumerated clean of build outputs ahead of eve
 - [x] **Step 2:** `graphify update .` — commit `graphify-out/` changes if the repo tracks them (check `git status`).
 - [x] **Step 3:** Full Task 0 gate battery one final time, each to a file, each exit 0. Baseline test count re-confirmed.
 - [x] **Step 4:** Commit docs: `git commit -m "docs: file-size-limits plan complete" -- docs/superpowers/plans/2026-08-27-file-size-limits.md docs/PLAN.md graphify-out` (drop paths that did not change).
-- [x] **Step 5:** This is a full milestone: `git push origin main`, then `gh run watch` until every job is green on all three OS runners. If red, fix forward from the topmost error.
+- [ ] **Step 5:** This is a full milestone: `git push origin main`, then `gh run watch` until every job is green on all three OS runners. If red, fix forward from the topmost error.
