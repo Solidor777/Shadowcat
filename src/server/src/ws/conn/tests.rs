@@ -2965,6 +2965,90 @@ async fn clip_gm_see_as_uses_the_targets_timeline() {
     );
 }
 
+/// A see-as target who is themselves a GM, has no committed vision source in the scene, and is
+/// currently mid their own non-zero-progress move (registered with `mover_vision: None`, exactly
+/// what `Room::execute_move` stores for a GM mover) must NOT be treated as "has an applicable
+/// timeline". `timeline_frames` (the raw registered-stream count) is non-empty here, but the
+/// `mover_vision`-filtered `timelines` set is empty — the applicability check must test the
+/// filtered set, or this GM's own preview is wrongly suppressed instead of falling back to
+/// `full_gm_stream()`.
+#[tokio::test]
+async fn clip_gm_see_as_target_registered_gm_move_with_no_vision_falls_back_to_full_stream() {
+    use crate::data::document::WorldRole;
+    use crate::ws::protocol::PosSample;
+    use crate::ws::room::ActiveStream;
+
+    let (room, gm_ctx, _, scene_id) = setup_clip_room(None, None, false).await;
+
+    // The see-as target: a GM with no token/vision source in this scene at all.
+    let target_ctx = PermissionContext {
+        user_id: Uuid::from_u128(0xFEED),
+        world_role: WorldRole::Gm,
+    };
+
+    // The target's own currently-registered move: non-zero progress, `mover_vision: None`
+    // (the GM-mover shape `Room::execute_move` always stores).
+    let target_frame = ServerMsg::MoveStream {
+        request_id: Uuid::from_u128(0x8888),
+        token_id: Uuid::from_u128(0x9999),
+        mover: target_ctx.user_id,
+        scene: scene_id,
+        start_server_ms: 0.0,
+        duration_ms: 3_600_000.0,
+        stop: [10.0, 10.0],
+        samples: vec![PosSample {
+            t_ms: 0.0,
+            pos: [10.0, 10.0],
+        }],
+        mover_vision: None,
+        cost: Some(0.0),
+        truncated: Some(false),
+    };
+    let now = crate::ws::time::now_millis();
+    room.register_stream_for_test(
+        Uuid::from_u128(0x9999),
+        ActiveStream {
+            mover: target_ctx.user_id,
+            scene: scene_id,
+            start_ms: now,
+            end_ms: now + 3_600_000,
+            frame: Arc::new(target_frame),
+        },
+    )
+    .await;
+
+    let frame = ServerMsg::MoveStream {
+        request_id: Uuid::from_u128(1),
+        token_id: Uuid::from_u128(2),
+        mover: Uuid::from_u128(0xAABB),
+        scene: scene_id,
+        start_server_ms: now as f64,
+        duration_ms: 400.0,
+        stop: [250.0, 50.0],
+        samples: vec![
+            PosSample {
+                t_ms: 0.0,
+                pos: [150.0, 50.0],
+            },
+            PosSample {
+                t_ms: 200.0,
+                pos: [250.0, 50.0],
+            },
+        ],
+        mover_vision: None,
+        cost: Some(2.0),
+        truncated: Some(false),
+    };
+    let out = clip_move_stream(&frame, &gm_ctx, Some(target_ctx), &room)
+        .await
+        .expect("no applicable timeline → full GM stream, not suppression");
+    let ServerMsg::MoveStream { samples, cost, .. } = out else {
+        panic!()
+    };
+    assert_eq!(samples.len(), 2, "full stream: both samples pass through");
+    assert_eq!(cost, Some(2.0), "full GM stream discloses the true cost");
+}
+
 /// A `Sink<Message>` that collects every sent frame into a `Vec`, for tests that inspect
 /// serialized output directly rather than driving a real socket.
 struct CollectingSink(Vec<Message>);

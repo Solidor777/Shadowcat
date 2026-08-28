@@ -1173,13 +1173,11 @@ async fn clip_move_stream(
     // Both reads drop their locks before this function's caller awaits `sink.send`.
     let static_polys = observer_vision_polys_for_scene(target_user, *scene, room).await;
     let timeline_frames = room.mover_streams(target_user, *scene, now).await;
-    if ctx.world_role == crate::data::document::WorldRole::Gm
-        && static_polys.is_empty()
-        && timeline_frames.is_empty()
-    {
-        // See-as target has no vision source in this scene → not applicable → full GM stream.
-        return Some(full_gm_stream());
-    }
+    // A registered stream carries a usable timeline only when its own frame has
+    // `mover_vision: Some(_)` — a GM mover's own executed move always registers with
+    // `mover_vision: None` (`Room::execute_move`), so `timeline_frames` can be non-empty while
+    // containing nothing this clip can use. The applicability check below MUST test this
+    // filtered set, not the raw registered-stream count.
     let timelines: Vec<crate::ws::move_clip::TimelineStream<'_>> = timeline_frames
         .iter()
         .filter_map(|f| match f.as_ref() {
@@ -1194,6 +1192,13 @@ async fn clip_move_stream(
             _ => None,
         })
         .collect();
+    if ctx.world_role == crate::data::document::WorldRole::Gm
+        && static_polys.is_empty()
+        && timelines.is_empty()
+    {
+        // See-as target has no vision source in this scene → not applicable → full GM stream.
+        return Some(full_gm_stream());
+    }
     let visible =
         crate::ws::move_clip::clip_samples(samples, *start_server_ms, &static_polys, &timelines);
     if visible.is_empty() {
