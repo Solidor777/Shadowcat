@@ -2730,6 +2730,241 @@ async fn clip_gm_see_as_fully_occluded_suppressed() {
     );
 }
 
+/// Register an in-flight stream for `mover` in `scene` whose vision timeline is `vision`.
+/// `start_ms` is the stream's `start_server_ms`; it stays unexpired for an hour.
+async fn register_timeline(
+    room: &crate::ws::room::Room,
+    token: Uuid,
+    mover: Uuid,
+    scene: Uuid,
+    start_ms: i64,
+    vision: Vec<crate::ws::protocol::VisionSample>,
+) {
+    use crate::ws::room::ActiveStream;
+    let frame = ServerMsg::MoveStream {
+        request_id: Uuid::from_u128(0x7777),
+        token_id: token,
+        mover,
+        scene,
+        start_server_ms: start_ms as f64,
+        duration_ms: 3_600_000.0,
+        stop: [0.0, 0.0],
+        samples: vec![crate::ws::protocol::PosSample {
+            t_ms: 0.0,
+            pos: [0.0, 0.0],
+        }],
+        mover_vision: Some(vision),
+        cost: Some(0.0),
+        truncated: Some(false),
+    };
+    room.register_stream_for_test(
+        token,
+        ActiveStream {
+            mover,
+            scene,
+            start_ms,
+            end_ms: start_ms + 3_600_000,
+            frame: Arc::new(frame),
+        },
+    )
+    .await;
+}
+
+/// A big square covering x∈[x0,x1], y∈[0,100].
+fn band(x0: f64, x1: f64) -> Vec<Vec<[f64; 2]>> {
+    vec![vec![[x0, 0.0], [x1, 0.0], [x1, 100.0], [x0, 100.0]]]
+}
+
+/// Observer at (50,50) behind a wall at x=100 — committed vision never sees x>100. The
+/// observer's OWN in-flight sweep (started before A) sees x∈[100,300] from its second sample
+/// (t=200 after its start). A's samples at (150,50)/(250,50) at A-times 0/200 fall at absolute
+/// instants where the sweep shows sample 0 (band 0..100 → occluded) then sample 1 (band → visible).
+#[tokio::test]
+async fn clip_observer_mid_move_admits_samples_its_own_sweep_will_reveal() {
+    use crate::ws::protocol::{PosSample, VisionSample};
+    let wall_sys =
+        json!({ "seg": { "x1": 100, "y1": -500, "x2": 100, "y2": 500 }, "blocksSight": true });
+    let (room, _, obs_ctx, scene_id) =
+        setup_clip_room(Some((50.0, 50.0)), Some(wall_sys), false).await;
+    let now = crate::ws::time::now_millis();
+    register_timeline(
+        &room,
+        Uuid::from_u128(0xE002),
+        obs_ctx.user_id,
+        scene_id,
+        now,
+        vec![
+            VisionSample {
+                t_ms: 0.0,
+                polygons: band(0.0, 100.0),
+            },
+            VisionSample {
+                t_ms: 200.0,
+                polygons: band(100.0, 300.0),
+            },
+        ],
+    )
+    .await;
+    let frame = ServerMsg::MoveStream {
+        request_id: Uuid::from_u128(1),
+        token_id: Uuid::from_u128(2),
+        mover: Uuid::from_u128(0xAABB),
+        scene: scene_id,
+        start_server_ms: (now + 100) as f64,
+        duration_ms: 400.0,
+        stop: [250.0, 50.0],
+        samples: vec![
+            PosSample {
+                t_ms: 0.0,
+                pos: [150.0, 50.0],
+            }, // abs now+100 → sweep sample 0 → hidden
+            PosSample {
+                t_ms: 200.0,
+                pos: [250.0, 50.0],
+            }, // abs now+300 → sweep sample 1 → visible
+        ],
+        mover_vision: None,
+        cost: Some(2.0),
+        truncated: Some(false),
+    };
+    let out = clip_move_stream(&frame, &obs_ctx, None, &room)
+        .await
+        .expect("one sample visible");
+    let ServerMsg::MoveStream {
+        samples,
+        stop,
+        duration_ms,
+        mover_vision,
+        cost,
+        truncated,
+        ..
+    } = out
+    else {
+        panic!()
+    };
+    assert_eq!(
+        samples,
+        vec![PosSample {
+            t_ms: 200.0,
+            pos: [250.0, 50.0]
+        }]
+    );
+    assert_eq!(stop, [250.0, 50.0]);
+    assert!((duration_ms - 200.0).abs() < 1e-9);
+    assert_eq!(
+        (mover_vision, cost, truncated),
+        (None, None, None),
+        "observer secrecy nulls unchanged"
+    );
+}
+
+/// Same geometry, but the observer's sweep starts AFTER every sample of the move: the
+/// timeline never applies and committed vision (blocked by the wall) suppresses the frame —
+/// closing this ordering needs the observer's own move to re-emit the concurrent stream, not
+/// this clip.
+#[tokio::test]
+async fn clip_ignores_a_timeline_that_starts_after_the_move() {
+    use crate::ws::protocol::{PosSample, VisionSample};
+    let wall_sys =
+        json!({ "seg": { "x1": 100, "y1": -500, "x2": 100, "y2": 500 }, "blocksSight": true });
+    let (room, _, obs_ctx, scene_id) =
+        setup_clip_room(Some((50.0, 50.0)), Some(wall_sys), false).await;
+    let now = crate::ws::time::now_millis();
+    register_timeline(
+        &room,
+        Uuid::from_u128(0xE002),
+        obs_ctx.user_id,
+        scene_id,
+        now + 10_000,
+        vec![VisionSample {
+            t_ms: 0.0,
+            polygons: band(100.0, 300.0),
+        }],
+    )
+    .await;
+    let frame = ServerMsg::MoveStream {
+        request_id: Uuid::from_u128(1),
+        token_id: Uuid::from_u128(2),
+        mover: Uuid::from_u128(0xAABB),
+        scene: scene_id,
+        start_server_ms: now as f64,
+        duration_ms: 400.0,
+        stop: [250.0, 50.0],
+        samples: vec![
+            PosSample {
+                t_ms: 0.0,
+                pos: [150.0, 50.0],
+            },
+            PosSample {
+                t_ms: 200.0,
+                pos: [250.0, 50.0],
+            },
+        ],
+        mover_vision: None,
+        cost: Some(2.0),
+        truncated: Some(false),
+    };
+    assert!(clip_move_stream(&frame, &obs_ctx, None, &room)
+        .await
+        .is_none());
+}
+
+/// GM see-as: the target's timeline, not the GM's own, drives the clip.
+#[tokio::test]
+async fn clip_gm_see_as_uses_the_targets_timeline() {
+    use crate::ws::protocol::{PosSample, VisionSample};
+    let wall_sys =
+        json!({ "seg": { "x1": 100, "y1": -500, "x2": 100, "y2": 500 }, "blocksSight": true });
+    let (room, gm_ctx, obs_ctx, scene_id) =
+        setup_clip_room(Some((50.0, 50.0)), Some(wall_sys), false).await;
+    let now = crate::ws::time::now_millis();
+    register_timeline(
+        &room,
+        Uuid::from_u128(0xE002),
+        obs_ctx.user_id,
+        scene_id,
+        now,
+        vec![VisionSample {
+            t_ms: 0.0,
+            polygons: band(100.0, 300.0),
+        }],
+    )
+    .await;
+    let frame = ServerMsg::MoveStream {
+        request_id: Uuid::from_u128(1),
+        token_id: Uuid::from_u128(2),
+        mover: Uuid::from_u128(0xAABB),
+        scene: scene_id,
+        start_server_ms: (now + 50) as f64,
+        duration_ms: 400.0,
+        stop: [250.0, 50.0],
+        samples: vec![
+            PosSample {
+                t_ms: 0.0,
+                pos: [150.0, 50.0],
+            },
+            PosSample {
+                t_ms: 200.0,
+                pos: [250.0, 50.0],
+            },
+        ],
+        mover_vision: None,
+        cost: Some(2.0),
+        truncated: Some(false),
+    };
+    let out = clip_move_stream(&frame, &gm_ctx, Some(obs_ctx), &room)
+        .await
+        .expect("target sees both");
+    let ServerMsg::MoveStream { samples, cost, .. } = out else {
+        panic!()
+    };
+    assert_eq!(samples.len(), 2);
+    assert_eq!(
+        cost, None,
+        "a see-as clip narrows the GM to observer secrecy"
+    );
+}
+
 /// A `Sink<Message>` that collects every sent frame into a `Vec`, for tests that inspect
 /// serialized output directly rather than driving a real socket.
 struct CollectingSink(Vec<Message>);

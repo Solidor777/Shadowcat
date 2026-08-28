@@ -1087,6 +1087,12 @@ async fn observer_vision_polys_for_scene(
 ///   now-hidden sample).
 /// INVARIANT (no-lock-across-await): the ECS read lock (if taken) is dropped inside
 ///   `observer_vision_polys_for_scene` before this function returns.
+/// INVARIANT (timeline-clip): each sample is judged against the clip target's vision AT THAT
+///   SAMPLE'S INSTANT — the target's own in-flight `mover_vision` sweep (`Room::mover_streams`,
+///   `ws::move_clip`) while one is active, the committed-position vision otherwise. The timeline
+///   is the target's OWN vision (already sent to them), so this never admits a sample their fog
+///   will not show. A target whose move starts AFTER this frame was clipped is served by the
+///   egress re-emit (`egress_loop`'s own-move arm), not by this function.
 async fn clip_move_stream(
     msg: &ServerMsg,
     ctx: &PermissionContext,
@@ -1147,44 +1153,49 @@ async fn clip_move_stream(
     //   `SceneSubscribe` handler, which gates `as_user` to a GM and resolves the target role
     //   via `member_role`). It is never client-trusted geometry.
     // INVARIANT (see-as-scene-exact): the target's vision is computed for the move's EXACT
-    //   `scene` via `observer_vision_polys_for_scene`, which filters `player_vision_polygons`
-    //   by that scene id. A see-as whose target has NO vision source in the move's scene
-    //   (e.g. their token is in a different scene) yields zero polygons → the see-as does not
-    //   apply → the GM keeps the full stream. A target WITH a source in the scene but no
+    //   `scene` via `observer_vision_polys_for_scene` (committed position) and
+    //   `Room::mover_streams` (in-flight timelines), both filtered/queried by that scene id. A
+    //   see-as whose target has NO vision source in the move's scene (e.g. their token is in a
+    //   different scene) yields zero committed polygons AND no in-flight timeline → the see-as
+    //   does not apply → the GM keeps the full stream. A target WITH a source in the scene but no
     //   visible sample is suppressed, exactly like a real observer.
-    let clip_polys: Vec<Vec<crate::scene::vision::P>> =
-        if ctx.world_role == crate::data::document::WorldRole::Gm {
-            match see_as {
-                Some(target) => {
-                    let polys = observer_vision_polys_for_scene(target.user_id, *scene, room).await;
-                    if polys.is_empty() {
-                        // See-as target has no vision source in this scene → not applicable.
-                        return Some(full_gm_stream());
-                    }
-                    polys
-                }
-                None => return Some(full_gm_stream()),
-            }
-        } else {
-            // Observer: clip to samples within their OWN authoritative vision.
-            observer_vision_polys_for_scene(ctx.user_id, *scene, room).await
-        };
-
-    // Shared clip tail (a real observer, or a GM whose active see-as applies to this scene):
-    // keep only samples inside `clip_polys`. The ECS read is dropped inside
-    // `observer_vision_polys_for_scene` before this point, so no lock crosses the `sink.send`
-    // await in the caller.
-    let polys = clip_polys;
-    use crate::scene::vision::point_in_poly;
-    use crate::ws::protocol::PosSample;
-    let visible: Vec<PosSample> = samples
+    // Whose vision this recipient is clipped against: their own, or (a GM see-as) the target's.
+    let target_user = if ctx.world_role == crate::data::document::WorldRole::Gm {
+        match see_as {
+            Some(target) => target.user_id,
+            None => return Some(full_gm_stream()),
+        }
+    } else {
+        ctx.user_id
+    };
+    let now = crate::ws::time::now_millis();
+    // Committed-position vision (the at-rest gate) and the target's in-flight sweep timelines.
+    // Both reads drop their locks before this function's caller awaits `sink.send`.
+    let static_polys = observer_vision_polys_for_scene(target_user, *scene, room).await;
+    let timeline_frames = room.mover_streams(target_user, *scene, now).await;
+    if ctx.world_role == crate::data::document::WorldRole::Gm
+        && static_polys.is_empty()
+        && timeline_frames.is_empty()
+    {
+        // See-as target has no vision source in this scene → not applicable → full GM stream.
+        return Some(full_gm_stream());
+    }
+    let timelines: Vec<crate::ws::move_clip::TimelineStream<'_>> = timeline_frames
         .iter()
-        .filter(|s| {
-            let p = (s.pos[0], s.pos[1]);
-            polys.iter().any(|poly| point_in_poly(poly, p))
+        .filter_map(|f| match f.as_ref() {
+            ServerMsg::MoveStream {
+                start_server_ms,
+                mover_vision: Some(v),
+                ..
+            } => Some(crate::ws::move_clip::TimelineStream {
+                start_server_ms: *start_server_ms,
+                vision: v,
+            }),
+            _ => None,
         })
-        .copied()
         .collect();
+    let visible =
+        crate::ws::move_clip::clip_samples(samples, *start_server_ms, &static_polys, &timelines);
     if visible.is_empty() {
         return None; // SUPPRESS: fully occluded or no vision available (fail-closed)
     }
