@@ -447,6 +447,13 @@ describe("TokenAnimator.animateSamples", () => {
     // move (e.g. the observer's own move opened their vision mid-walk). The second frame must
     // overwrite playback in place, resuming at the current server-aligned elapsed time rather than
     // restarting from t=0 or blending with the first frame's trajectory.
+    //
+    // The first curve is linear over its whole span (slope 0.1 px/ms): x(t) = 0.1*t, so
+    // x(400) = 40 under the FIRST call alone. The second call's interior waypoint is deliberately
+    // NOT collinear with that line (70, not 50, at tMs=500 — slope 0.14 px/ms on the first leg),
+    // so the two curves genuinely diverge at elapsed=400: x(400) = 0.14*400 = 56 under the SECOND
+    // call. A stale first-call entry still ticking forward, or a second call that was silently a
+    // no-op, would both read 40 here — only a genuine overwrite reads 56.
     const a = fresh();
     a.setTarget("t1", { x: 0, y: 0, rotation: 0 });
     a.animateSamples(
@@ -459,13 +466,14 @@ describe("TokenAnimator.animateSamples", () => {
       0,
       () => 0,
     );
-    a.tick(400); // 40% along the first set
-    // Re-emitted (wider) frame, same start clock; the client is now 400ms in.
+    a.tick(400); // 40% along the first set → x=40 (would read the same under the stale-entry bug)
+    // Re-emitted (wider) frame, same start clock; the client is now 400ms in. Interior waypoint
+    // (500, 70) is off the first call's line, so this is a genuinely different trajectory.
     a.animateSamples(
       "t1",
       [
         { tMs: 0, pos: [0, 0] },
-        { tMs: 500, pos: [50, 0] },
+        { tMs: 500, pos: [70, 0] },
         { tMs: 1000, pos: [100, 0] },
       ],
       1000,
@@ -474,6 +482,7 @@ describe("TokenAnimator.animateSamples", () => {
     );
     a.tick(0);
     expect(a.isHidden("t1")).toBe(false);
-    expect(a.get("t1")!.x).toBeCloseTo(40, 5);
+    // 400/500 = 80% along the second call's first leg (0 → 70): 0.8*70 = 56, not the stale 40.
+    expect(a.get("t1")!.x).toBeCloseTo(56, 5);
   });
 });
