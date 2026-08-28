@@ -52,6 +52,18 @@ export function computeFogBlendFactor(clock: number, tCur: number, tNext: number
  * fogBlendRtStale({ width: 800, height: 600, resolution: 1 }, 1024, 768, 1); // true — resized
  * ```
  */
+export function fogBlendRtStale(existing: {
+  /** The currently-captured texture's width, in CSS pixels. */
+  width: number;
+  /** The currently-captured texture's height, in CSS pixels. */
+  height: number;
+  /** The currently-captured texture's device-pixel-ratio resolution. */
+  resolution: number;
+} | null, width: number, height: number, resolution: number): boolean {
+  if (!existing) return true;
+  return existing.width !== width || existing.height !== height || existing.resolution !== resolution;
+}
+
 /** The sweep sample that should be showing at `elapsed` ms: the one with the greatest
  * `tMs <= elapsed`, or the first sample when `elapsed` precedes every sample.
  * INVARIANT (server parity): mirrors the server's `chosen_vision_sample` — the egress clip admits
@@ -71,16 +83,4 @@ export function chooseVisionSample(samples: MoveVisionSample[], elapsed: number)
     if (s.tMs <= elapsed) chosen = s;
   }
   return chosen;
-}
-
-export function fogBlendRtStale(existing: {
-  /** The currently-captured texture's width, in CSS pixels. */
-  width: number;
-  /** The currently-captured texture's height, in CSS pixels. */
-  height: number;
-  /** The currently-captured texture's device-pixel-ratio resolution. */
-  resolution: number;
-} | null, width: number, height: number, resolution: number): boolean {
-  if (!existing) return true;
-  return existing.width !== width || existing.height !== height || existing.resolution !== resolution;
 }
