@@ -2955,10 +2955,16 @@ impl Repository for SqliteRepository {
         // `claimed_active_scenes` tracks scene ids with an active combat
         // claimed earlier in this batch, mirroring `claimed_singletons`'s
         // intra-batch-race closure for the one-active-combat-per-scene rule.
-        // An Update that DEACTIVATES a combat removes its scene here too, so
-        // a later same-batch Update activating a DIFFERENT combat on that
-        // scene still passes (`activating_a_combat_by_update_is_gated_like_create`
-        // pins the deactivate-then-activate ordering).
+        // Populated during Phase 1's pass over every `combat` Create
+        // (regardless of its position in the batch) and again by Phase 2's
+        // Update handling below; entries are never removed from THIS set. A
+        // same-batch Update that deactivates a combat instead records its
+        // scene in the separate `released_active_scenes` set below, and the
+        // two are consulted by DIFFERENCE (`claimed_active_scenes.contains(..)
+        // && !released_active_scenes.contains(..)`), so a later same-batch
+        // Update activating a DIFFERENT combat on that scene still passes
+        // (`activating_a_combat_by_update_is_gated_like_create` pins the
+        // deactivate-then-activate ordering).
         let mut claimed_active_scenes: std::collections::HashSet<Uuid> =
             std::collections::HashSet::new();
         // `released_active_scenes` pairs with `claimed_active_scenes` for
@@ -2999,14 +3005,17 @@ impl Repository for SqliteRepository {
                         batch_combats.insert(doc.id);
                         // `validate_engine_tree` above already validated and
                         // normalized this body against `CombatEngine`, so the
-                        // re-deserialize here cannot fail.
-                        let combat_engine: CombatEngine = doc
-                            .engine
-                            .clone()
-                            .and_then(|v| serde_json::from_value(v).ok())
-                            .expect(
-                                "validate_engine_tree already validated the combat engine body",
-                            );
+                        // re-deserialize here cannot fail; `.expect` on the
+                        // parse itself (rather than discarding the error via
+                        // `.ok()`) surfaces the real `serde_json::Error` text
+                        // if that invariant is ever broken by a future schema
+                        // change.
+                        let combat_engine: CombatEngine = serde_json::from_value(
+                            doc.engine
+                                .clone()
+                                .expect("a combat doc_type always carries an engine body"),
+                        )
+                        .expect("validate_engine_tree already validated the combat engine body");
                         if combat_engine.active {
                             if claimed_active_scenes.contains(&combat_engine.scene_id)
                                 || Self::active_combat_exists(
@@ -3462,14 +3471,17 @@ impl Repository for SqliteRepository {
                     if doc.doc_type == COMBAT_DOC_TYPE {
                         // `validate_engine_tree` above already validated and
                         // normalized this body against `CombatEngine`, so the
-                        // re-deserialize here cannot fail.
-                        let combat_engine: CombatEngine = doc
-                            .engine
-                            .clone()
-                            .and_then(|v| serde_json::from_value(v).ok())
-                            .expect(
-                                "validate_engine_tree already validated the combat engine body",
-                            );
+                        // re-deserialize here cannot fail; `.expect` on the
+                        // parse itself (rather than discarding the error via
+                        // `.ok()`) surfaces the real `serde_json::Error` text
+                        // if that invariant is ever broken by a future schema
+                        // change.
+                        let combat_engine: CombatEngine = serde_json::from_value(
+                            doc.engine
+                                .clone()
+                                .expect("a combat doc_type always carries an engine body"),
+                        )
+                        .expect("validate_engine_tree already validated the combat engine body");
                         if combat_engine.active {
                             let claimed_and_not_released = claimed_active_scenes
                                 .contains(&combat_engine.scene_id)
