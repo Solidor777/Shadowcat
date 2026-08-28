@@ -211,6 +211,11 @@ pub struct SceneEngine {
     /// Per-scene lighting overrides; absent fields fall back to world defaults.
     #[serde(default)]
     pub lighting: Option<SceneLightingOverrides>,
+    /// Combat-rule overrides (movement resource / interpretation / enforcement /
+    /// turn control); absent fields fall through the chain
+    /// (`combat::resolve_combat_rules`).
+    #[serde(default)]
+    pub combat: Option<super::combat::CombatDefaults>,
 }
 
 /// The full set of world-level scene defaults that individual scenes may
@@ -278,6 +283,11 @@ pub struct WorldSettingsEngine {
     /// settings.
     #[serde(default)]
     pub active_scene: Option<Uuid>,
+    /// Combat-rule overrides (movement resource / interpretation / enforcement /
+    /// turn control); absent fields fall through the chain
+    /// (`combat::resolve_combat_rules`).
+    #[serde(default)]
+    pub combat: Option<super::combat::CombatDefaults>,
 }
 
 /// MUST equal the client's `DEFAULT_WORLD_SETTINGS` —
@@ -307,6 +317,7 @@ impl Default for WorldSettingsEngine {
                 easing: EasingMode::EaseInOut,
             },
             active_scene: None,
+            combat: None,
         }
     }
 }

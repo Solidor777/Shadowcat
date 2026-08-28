@@ -93,10 +93,13 @@ pub struct CombatDefaults {
     #[ts(optional, type = "string | null")]
     pub movement_resource: Option<Option<String>>,
     /// Override of `MovementRules.interpretation`.
+    #[ts(optional = nullable)]
     pub interpretation: Option<Interpretation>,
     /// Override of `MovementRules.enforcement`.
+    #[ts(optional = nullable)]
     pub enforcement: Option<Enforcement>,
     /// Override of `CombatEngine.turn_control`.
+    #[ts(optional = nullable)]
     pub turn_control: Option<TurnControl>,
 }
 

@@ -188,6 +188,7 @@ test("buildSceneDoc makes a top-level world scene with a default square grid", (
     snapToGrid: null,
     vision: null,
     lighting: null,
+    combat: null,
   });
   expect(typeof doc.id).toBe("string");
   expect(doc.id.length).toBeGreaterThan(0);
@@ -204,6 +205,14 @@ test("buildSceneDoc honors a partial engine override and an explicit id", () => 
 test("buildSceneDoc persists an explicit snapToGrid:false (not omitted as falsy)", () => {
   const doc = buildSceneDoc("w1", { snapToGrid: false });
   expect((doc.engine as SceneEngine).snapToGrid).toBe(false);
+});
+
+it("DEFAULT_WORLD_SETTINGS carries an unset combat chain and buildSceneDoc mirrors it", () => {
+  expect(DEFAULT_WORLD_SETTINGS.combat).toBeNull();
+  const scene = buildSceneDoc("world-1");
+  expect((scene.engine as SceneEngine).combat).toBeNull();
+  const ship = buildSceneDoc("world-1", { combat: { movementResource: "ship", enforcement: "hard" } });
+  expect((ship.engine as SceneEngine).combat).toEqual({ movementResource: "ship", enforcement: "hard" });
 });
 
 test("buildTokenDoc parents to the scene and preserves the token engine body", () => {

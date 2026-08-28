@@ -103,3 +103,4 @@ export type { DiceSettingsEngine } from "./generated/engine/DiceSettingsEngine";
 export type { DiceModeSetting } from "./generated/engine/DiceModeSetting";
 export type { DiceDirectionSetting } from "./generated/engine/DiceDirectionSetting";
 export type { ChannelDiceOverride } from "./generated/engine/ChannelDiceOverride";
+export type { CombatDefaults } from "./generated/engine/CombatDefaults";

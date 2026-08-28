@@ -50,6 +50,7 @@ import type {
   Fill,
   WallEngine,
   Seg,
+  CombatDefaults,
 } from "@shadowcat/types";
 
 // --- Re-exported generated engine types (ts-rs output, `@shadowcat/types`) ---
@@ -100,6 +101,7 @@ export type {
   Fill,
   WallEngine,
   Seg,
+  CombatDefaults,
 };
 
 /** A face's own visual. Deliberately never itself `{kind:"faces"}` — no nesting — so an
@@ -163,6 +165,7 @@ export const DEFAULT_WORLD_SETTINGS: WorldSettingsEngine = deepFreeze({
   pathfinding: { diagonalRule: "chebyshev" },
   animation: { speedCellsPerSec: 6, easing: "easeInOut" },
   activeScene: null,
+  combat: null,
 });
 
 // --- Resolved settings ---
@@ -377,6 +380,7 @@ export function buildSceneDoc(worldId: string, engine: Partial<SceneEngine> = {}
     snapToGrid: engine.snapToGrid ?? null,
     vision: engine.vision ?? null,
     lighting: engine.lighting ?? null,
+    combat: engine.combat ?? null,
   };
   return envelope(worldId, "scene", null, {}, id, full, null);
 }

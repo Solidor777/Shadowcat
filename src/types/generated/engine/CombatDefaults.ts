@@ -19,12 +19,12 @@ movementResource?: string | null,
 /**
  * Override of `MovementRules.interpretation`.
  */
-interpretation: Interpretation | null, 
+interpretation?: Interpretation | null, 
 /**
  * Override of `MovementRules.enforcement`.
  */
-enforcement: Enforcement | null, 
+enforcement?: Enforcement | null, 
 /**
  * Override of `CombatEngine.turn_control`.
  */
-turnControl: TurnControl | null, };
+turnControl?: TurnControl | null, };

@@ -563,8 +563,58 @@ fn world_settings_default_matches_client_default() {
             "pathfinding": { "diagonalRule": "chebyshev" },
             "animation": { "speedCellsPerSec": 6.0, "easing": "easeInOut" },
             "activeScene": null,
+            "combat": null,
         })
     );
+}
+
+#[test]
+fn scene_and_world_settings_accept_combat_overrides() {
+    let scene = json!({
+        "grid": { "kind": "square", "size": 100.0 }, "background": null,
+        "combat": { "movementResource": "ship", "enforcement": "hard" }
+    });
+    let n = normalize_engine_opt("scene", Some(&scene))
+        .unwrap()
+        .unwrap();
+    assert_eq!(n["combat"]["movementResource"], json!("ship"));
+    assert_eq!(n["combat"]["enforcement"], json!("hard"));
+    assert!(n["combat"]
+        .get("interpretation")
+        .is_some_and(|v| v.is_null()));
+
+    let mut ws = serde_json::to_value(WorldSettingsEngine::default()).unwrap();
+    ws["combat"] = json!({ "turnControl": "gm_only" });
+    let n = normalize_engine_opt("world-settings", Some(&ws))
+        .unwrap()
+        .unwrap();
+    assert_eq!(n["combat"]["turnControl"], json!("gm_only"));
+}
+
+#[test]
+fn scene_combat_override_can_clear_the_movement_resource() {
+    let scene = json!({
+        "grid": { "kind": "square", "size": 100.0 }, "background": null,
+        "combat": { "movementResource": null }
+    });
+    let n = normalize_engine_opt("scene", Some(&scene))
+        .unwrap()
+        .unwrap();
+    // An explicit null survives re-serialization (it means CLEAR, not unset).
+    assert!(n["combat"]
+        .as_object()
+        .unwrap()
+        .contains_key("movementResource"));
+    assert!(n["combat"]["movementResource"].is_null());
+    let typed: SceneEngine = serde_json::from_value(n).unwrap();
+    assert_eq!(typed.combat.unwrap().movement_resource, Some(None));
+}
+
+#[test]
+fn scene_without_combat_key_reads_as_unset() {
+    let scene = json!({ "grid": { "kind": "square", "size": 100.0 }, "background": null });
+    let typed: SceneEngine = serde_json::from_value(scene).unwrap();
+    assert_eq!(typed.combat, None);
 }
 
 #[test]
