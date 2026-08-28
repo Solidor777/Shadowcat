@@ -1643,8 +1643,8 @@ async fn egress_loop<S>(
                                 };
                                 // Own-move re-emit: the clip target's vision timeline just changed, so every
                                 // OTHER in-flight stream in this scene is re-clipped against it and re-sent
-                                // under its original request_id (the client overwrites keyed playback in
-                                // place). Serves the ordering where the recipient's move starts AFTER the
+                                // under its original token_id (the client overwrites playback keyed by token
+                                // in place). Serves the ordering where the recipient's move starts AFTER the
                                 // other stream was clipped — the clip itself cannot widen a frame already
                                 // sent. Delivered only to this connection; other recipients' timelines are
                                 // unchanged.

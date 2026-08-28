@@ -669,10 +669,11 @@ impl Room {
     ///
     /// # Moving lock
     ///
-    /// `moving` maps token → move-end epoch-ms. An absent or expired entry (now >= end) allows
-    /// the move. After a successful commit the entry is updated to `now + duration_ms`. Lazy
-    /// expiry — no cleanup timer; a fresh server reload has no in-memory lock, consistent with
-    /// the atomic-state invariant (the lock is a liveness hint, not durable state).
+    /// `moving` maps token → `ActiveStream` (mover, scene, move-end epoch-ms, and the full
+    /// in-flight `MoveStream` frame). An absent or expired entry (now >= end) allows the move.
+    /// After a successful commit the entry is updated. Lazy expiry — no cleanup timer; a fresh
+    /// server reload has no in-memory lock, consistent with the atomic-state invariant (the lock
+    /// is a liveness hint, not durable state).
     pub(crate) async fn execute_move(
         &self,
         repo: &dyn Repository,
