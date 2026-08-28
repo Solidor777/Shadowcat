@@ -612,6 +612,18 @@ test("a SCOPED run makes no zero-hit claim about an acknowledgement entry", () =
   expect(scoped.unused).toEqual([]);
 });
 
+// The same soundness condition applies when the skill checkout supplying every markdown file in
+// the corpus is simply absent — CI, or a machine that never cloned the plugin repo. mdFiles is
+// then always empty regardless of which entries a WITH-checkout run would have reached, so a zero
+// there says the checkout is missing, not that an entry's sites are gone. Injecting a nonexistent
+// path proves the skip fires on absence alone, independent of whether this machine happens to have
+// the real checkout. Revert direction: make `unused` ignore `skillsRoot` and this starts asserting
+// something false on any environment without the plugin checked out.
+test("a run with NO skill checkout makes no zero-hit claim about an acknowledgement entry", () => {
+  const report = residueReport([], { skillsRoot: "/nonexistent/no-skills-checkout-here" });
+  expect(report.unused).toEqual([]);
+});
+
 // Reach equality: the coverage control (`--residue`, backed by `residueReport`/`gateFileSet`)
 // must examine exactly the file set the gate itself scans — both corpora, not a filtered subset
 // of one. A control whose reach is narrower than the gate's reports clean over what it never read,

@@ -1140,7 +1140,7 @@ export function scanContent(content, { isMd }) {
  * test) can compare that count against the gate's own `scanned.length` for the identical scopes
  * and prove the two can never silently diverge.
  */
-export function residueReport(scopes = []) {
+export function residueReport(scopes = [], { skillsRoot = defaultSkillsRoot() } = {}) {
   const { scanned, isMdFile } = gateFileSet(scopes);
   let ackTotal = 0;
   const ackByReason = new Map();
@@ -1154,8 +1154,14 @@ export function residueReport(scopes = []) {
     for (const r of result.residue) residue.push({ path, ...r });
   }
   // Scoped runs get an empty list rather than a wrong one: see `unusedAcknowledgements` for why a
-  // zero on a subset cannot falsify an entry.
-  const unused = scopes.length > 0 ? [] : unusedAcknowledgements(ackByReason);
+  // zero on a subset cannot falsify an entry. The same reasoning applies when the skill checkout
+  // that supplies every markdown file in the corpus is simply absent (CI, or a machine that never
+  // cloned the plugin repo): mdFiles is then always empty regardless of which entries are truly
+  // reached, so a zero there says the checkout is missing, not that an entry's sites are gone. An
+  // environment WITH the checkout still holds every entry — skill or code — accountable in full.
+  const hasSkillsCorpus = existsSync(skillsRoot);
+  const unused =
+    scopes.length > 0 || !hasSkillsCorpus ? [] : unusedAcknowledgements(ackByReason);
   return { ackTotal, ackByReason, unused, residue, filesScanned: scanned.length };
 }
 
@@ -1372,9 +1378,14 @@ function main() {
         ackByReason.set(a.reason, (ackByReason.get(a.reason) ?? 0) + 1);
   }
   // Empty on a scoped run, where a zero hit says the scope missed the token rather than that the
-  // entry is dead — see `unusedAcknowledgements`.
+  // entry is dead — see `unusedAcknowledgements`. Empty too when the skill checkout supplying
+  // every markdown file in the corpus is simply absent (CI, or a machine that never cloned the
+  // plugin repo): mdFiles is then always empty regardless of which entries a WITH-checkout run
+  // would have reached, so a zero there says the checkout is missing, not that an entry's sites
+  // are gone — see `residueReport`'s identical reasoning for its own `unused` field.
+  const hasSkillsCorpus = existsSync(defaultSkillsRoot());
   const deadAcknowledgements =
-    scopes.length > 0 ? [] : unusedAcknowledgements(ackByReason);
+    scopes.length > 0 || !hasSkillsCorpus ? [] : unusedAcknowledgements(ackByReason);
 
   // A scope that matches no files and a scope that is genuinely clean both produce zero hits, and
   // telling them apart by eye is impossible — a mistyped prefix reads as success. Refuse to report
