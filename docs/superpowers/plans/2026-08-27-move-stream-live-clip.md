@@ -24,7 +24,8 @@
 Rust job: `cargo fmt --all -- --check` · `cargo clippy --all-targets -- -D warnings` · `cargo test --all` · `git diff --exit-code src/types/generated` (all with `--manifest-path src/server/Cargo.toml` where applicable).
 TS job: `pnpm -r typecheck` · `pnpm -r test` · `pnpm run test:scripts` · `pnpm docs:check-examples` · `pnpm lint` · `pnpm --filter @shadowcat/shell build` · `pnpm --filter "shadowcat-example-*" build` · `pnpm run check:svelte-runtime`.
 server-e2e: `pnpm --filter @shadowcat/core test:e2e`. UI-e2e: `pnpm --filter @shadowcat/shell e2e`.
-docs job: `node scripts/check-skill-api-refs-cli.mjs` · `node scripts/check-skill-symbol-refs-cli.mjs` · `pnpm lint:docs` · `pnpm lint:props` · `pnpm lint:comments` · `pnpm lint:allowances` · `pnpm lint:file-size` · `pnpm lint:inline-tests` · `cargo clippy --manifest-path src/server/Cargo.toml --all-targets -- -D missing-docs -D clippy::missing-docs-in-private-items` · `cargo +nightly doc --document-private-items`.
+docs job: `pnpm lint:docs` · `pnpm lint:props` · `pnpm lint:comments` · `pnpm lint:allowances` · `pnpm lint:file-size` · `pnpm lint:inline-tests` · `cargo clippy --manifest-path src/server/Cargo.toml --all-targets -- -D missing-docs -D clippy::missing-docs-in-private-items` · nightly doc-examples gate, run EXACTLY as CI does: `RUSTDOCFLAGS="-D rustdoc::missing_doc_code_examples" cargo +nightly doc --manifest-path src/server/Cargo.toml --document-private-items --no-deps --target-dir target/nightly-doc` (the env var is what arms the lint; every new `pub`/`pub(crate)` item in `move_clip.rs` and `room.rs` needs a `# Examples` section).
+Local-only (NOT in `ci.yml` — CI has no `~/.claude/`; required by `.claude/CLAUDE.md` after any skill edit): `node scripts/check-skill-api-refs-cli.mjs` · `node scripts/check-skill-symbol-refs-cli.mjs`.
 Never pipe a gate into `tail`/`echo` before checking its exit code — redirect to a file and read the file.
 
 ## Model/Effort directives
@@ -35,7 +36,9 @@ Plan written mainline (user choice, 2026-08-27). Execution: `shadowcat-codebase:
 
 User elected a buddy-check of THIS PLAN before Task 1 is dispatched (secrecy boundary + `publish_guard` concurrency). Record the outcome here before execution:
 
-- [ ] Buddy-check run; findings folded in; outcome: _(fill in)_
+- Plan buddy check: done 2026-08-27 (two blind `shadowcat-spec-reviewer`s, 3 rounds, CONVERGED). Agreed + folded in: zero-progress `execute_move` branch had no `frame` (Task 2 step 10 added); `include_str!` fixture path had one `../` too many (fixed); `chooseVisionSample(sweep, …)` type slip (fixed); `concurrent_streams` excluded by token where spec §2.3 excludes by mover (fixed in Tasks 2 and 4); gate battery mislabelled the two skill-ref checkers as `ci.yml` steps and compressed the nightly-doc command (both fixed); call-site counts stated (20 `execute_move`, 9 `setup_clip_room`). No unresolved disagreements. Broker note: the plan was edited while round 3 ran, which made the last severity question moot rather than debated — the fixes were identical under either severity.
+- Flagged tasks: 3, 4 — buddy check replaces both review stages (egress secrecy boundary + `publish_guard`/registry concurrency).
+- Unflagged tasks showing risk signals: ask.
 
 ---
 
@@ -107,7 +110,7 @@ fn tagged(idx: usize) -> Vec<Vec<[f64; 2]>> {
 
 fn fixture_samples() -> (Vec<VisionSample>, Vec<(f64, usize)>) {
     let raw: serde_json::Value = serde_json::from_str(include_str!(
-        "../../../../../client/render/src/__fixtures__/chosen-vision-sample.json"
+        "../../../../client/render/src/__fixtures__/chosen-vision-sample.json"
     ))
     .unwrap();
     let samples = raw["samples"]
@@ -352,7 +355,7 @@ export function chooseVisionSample(samples: MoveVisionSample[], elapsed: number)
   return chosen;
 }
 ```
-In `engine.ts`, replace the body of the private `chosenSample` with `return chooseVisionSample(sweep, sweep.elapsed)` — keep its signature and doc, adjusting the doc to say it delegates to `chooseVisionSample` (import it from `./fog-blend`). Check `src/client/render/src/index.ts`: if `fog-blend` exports are re-exported there, add `chooseVisionSample` to the list; otherwise leave it package-internal.
+In `engine.ts`, replace the body of the private `chosenSample` with `return chooseVisionSample(sweep.samples, sweep.elapsed);` — keep its signature and doc, adjusting the doc to say it delegates to `chooseVisionSample` (import it from `./fog-blend`). Check `src/client/render/src/index.ts`: if `fog-blend` exports are re-exported there, add `chooseVisionSample` to the list; otherwise leave it package-internal.
 
 - [ ] **Step 9: Run client tests + typecheck**
 
@@ -384,7 +387,7 @@ git commit -m "feat(ws): pure move-stream timeline clip arithmetic + chosen-samp
   - `Room::execute_move(&self, repo, ctx, scene_id, token, path, ts, request_id: Uuid) -> Result<MoveExecution, DataError>` — NEW trailing `request_id` param; builds the wire frame, registers it, and returns it as `MoveExecution.frame: Arc<ServerMsg>`.
   - `Room::broadcast_aux_shared(&self, msg: Arc<ServerMsg>)`; `broadcast_aux` delegates to it.
   - `Room::mover_streams(&self, mover: Uuid, scene: Uuid, now: i64) -> Vec<Arc<ServerMsg>>` — unexpired frames whose `mover`/`scene` match.
-  - `Room::concurrent_streams(&self, scene: Uuid, exclude_token: Uuid, now: i64) -> Vec<Arc<ServerMsg>>` — unexpired frames in `scene` other than `exclude_token`.
+  - `Room::concurrent_streams(&self, scene: Uuid, exclude_mover: Uuid, now: i64) -> Vec<Arc<ServerMsg>>` — unexpired frames in `scene` whose `mover != exclude_mover` (spec §2.3 excludes by MOVER: a recipient's own other in-flight token must not be re-sent to them).
   - `#[cfg(test)] pub(crate) async fn register_stream_for_test(&self, token: Uuid, stream: ActiveStream)` — test-only insertion, used by Tasks 3–4.
 
 - [ ] **Step 1: Write the failing registry tests**
@@ -420,9 +423,9 @@ async fn execute_move_registers_the_full_frame_and_accessors_filter_by_mover_sce
     assert!(Arc::ptr_eq(&mine[0], &exec.frame));
     assert!(h.room.mover_streams(h.gm.user_id, h.scene_id, now).await.is_empty());
     assert!(h.room.mover_streams(h.player.user_id, Uuid::from_u128(0xBAD), now).await.is_empty());
-    // concurrent_streams excludes the named token.
-    assert!(h.room.concurrent_streams(h.scene_id, h.token_id, now).await.is_empty());
-    assert_eq!(h.room.concurrent_streams(h.scene_id, Uuid::from_u128(0xBAD), now).await.len(), 1);
+    // concurrent_streams excludes every stream of the named MOVER, not just one token.
+    assert!(h.room.concurrent_streams(h.scene_id, h.player.user_id, now).await.is_empty());
+    assert_eq!(h.room.concurrent_streams(h.scene_id, h.gm.user_id, now).await.len(), 1);
     // Expiry: a `now` past end_ms hides it.
     assert!(h.room.mover_streams(h.player.user_id, h.scene_id, now + 3_600_000).await.is_empty());
 }
@@ -507,11 +510,12 @@ pub(crate) async fn mover_streams(&self, mover: Uuid, scene: Uuid, now: i64) -> 
     moving.values().filter(|st| st.mover == mover && st.scene == scene && now < st.end_ms).map(|st| st.frame.clone()).collect()
 }
 
-/// Unexpired in-flight frames in `scene` other than `exclude_token`'s — re-clipped and
-/// re-emitted to a recipient whose own move just started.
-pub(crate) async fn concurrent_streams(&self, scene: Uuid, exclude_token: Uuid, now: i64) -> Vec<std::sync::Arc<ServerMsg>> {
+/// Unexpired in-flight frames in `scene` moved by anyone other than `exclude_mover` —
+/// re-clipped and re-emitted to a recipient whose own move just started. Excludes by
+/// MOVER so a recipient's other in-flight token is never re-sent to them.
+pub(crate) async fn concurrent_streams(&self, scene: Uuid, exclude_mover: Uuid, now: i64) -> Vec<std::sync::Arc<ServerMsg>> {
     let moving = self.moving.lock().await;
-    moving.iter().filter(|(tok, st)| **tok != exclude_token && st.scene == scene && now < st.end_ms).map(|(_, st)| st.frame.clone()).collect()
+    moving.values().filter(|st| st.mover != exclude_mover && st.scene == scene && now < st.end_ms).map(|st| st.frame.clone()).collect()
 }
 
 /// Test-only direct registration (bypasses `execute_move`'s gate) for clip/egress tests.
@@ -527,7 +531,8 @@ pub(crate) fn broadcast_aux_shared(&self, msg: std::sync::Arc<ServerMsg>) {
 ```
 and make `broadcast_aux` call `self.broadcast_aux_shared(Arc::new(msg))`.
 8. In `conn.rs` `handle_move_request`: pass `request_id` to `execute_move`; delete the local frame construction and the `VisionSample` mapping; replace with `room.broadcast_aux_shared(exec.frame);`. Update the fn doc's `INVARIANT (mover_vision)` sentence to say the mapping/cap lives in `Room::execute_move`'s frame construction.
-9. Fix every other `execute_move(` call site (room_tests) by appending a `request_id` argument (`Uuid::from_u128(0xF00D)` is fine where the test does not care).
+9. Fix every other `execute_move(` call site by appending a `request_id` argument (`Uuid::from_u128(0xF00D)` is fine where the test does not care). Expect 20 sites in `room_tests.rs` (verified by grep at plan time) plus `handle_move_request`.
+10. **Zero-progress branch** (`room.rs` ~`:771-793`, `stop == start`, returns before the commit): it must ALSO build its frame through the same `wire_move_stream` helper (`duration_ms: 0.0`, one sample at `start`, `mover_vision: None`, `cost: 0.0`, `truncated: outcome.truncated`, `start_server_ms: ts`) and return it in `MoveExecution.frame`, so `handle_move_request` keeps broadcasting the zero-progress `MoveStream` exactly as today. It is NOT registered in `moving` (unchanged from today: a zero-duration move never held the lock, and there is no in-flight animation to re-clip against). Add a test in `room_tests.rs`: a first-step-blocked move returns `Ok` whose `frame` is a `MoveStream` with `duration_ms == 0.0`, and `mover_streams(player, scene, now)` stays empty. Reuse the existing fixture that produces a blocked first step (`execute_move_gate_inputs_come_from_the_tokens_own_scene` exercises this branch — copy its setup).
 
 - [ ] **Step 4: Run tests**
 
@@ -738,7 +743,7 @@ git commit -m "feat(ws): clip MoveStream samples against the recipient's own vis
 
 **Interfaces:**
 - Consumes: Task 2 `Room::concurrent_streams`, `register_stream_for_test`; Task 3 `clip_move_stream`.
-- Produces: no new API. Behaviour: after forwarding a `MoveStream` whose `mover` is the connection's user (or its active see-as target), the loop forwards `clip_move_stream(other, …)` for each `other` in `room.concurrent_streams(scene, token_id, now)`, skipping `None`.
+- Produces: no new API. Behaviour: after forwarding a `MoveStream` whose `mover` is the connection's user (or its active see-as target), the loop forwards `clip_move_stream(other, …)` for each `other` in `room.concurrent_streams(scene, clip_target, now)` (every in-flight stream in the scene by a DIFFERENT mover), skipping `None`.
 
 - [ ] **Step 1: Write the failing egress test**
 
@@ -816,7 +821,7 @@ async fn egress_reemits_concurrent_streams_when_the_recipients_own_move_starts()
     egress.abort();
 }
 ```
-`setup_clip_room` currently drops its `repo` binding; extend it to return `Arc<SqliteRepository>` as a fifth tuple element and update its existing callers (`let (room, _, obs_ctx, scene_id, _) = …`).
+`setup_clip_room` currently drops its `repo` binding; extend it to return `Arc<SqliteRepository>` as a fifth tuple element and update its 9 existing call sites (`let (room, _, obs_ctx, scene_id, _) = …`; the `async fn setup_clip_room(` definition at `:1978` is not a call site). `GatedSink` and `msg_text` are currently local to `egress_lag_triggers_resync_and_converges` — hoist them to file scope in `conn/tests.rs`.
 
 - [ ] **Step 2: Run to verify it fails**
 
@@ -837,11 +842,11 @@ let mut failed = match clip_move_stream(inner.as_ref(), &ctx, see_as, &room).awa
 // move starts AFTER the other stream was clipped — the clip itself cannot widen a frame
 // already sent. Delivered only to this connection; other recipients' timelines are unchanged.
 if !failed {
-    if let ServerMsg::MoveStream { mover, scene, token_id, .. } = inner.as_ref() {
+    if let ServerMsg::MoveStream { mover, scene, .. } = inner.as_ref() {
         let clip_target = see_as.map(|t| t.user_id).unwrap_or(ctx.user_id);
         if *mover == clip_target {
             let now = crate::ws::time::now_millis();
-            for other in room.concurrent_streams(*scene, *token_id, now).await {
+            for other in room.concurrent_streams(*scene, clip_target, now).await {
                 if let Some(out) = clip_move_stream(other.as_ref(), &ctx, see_as, &room).await {
                     if sink.send(text(&out)).await.is_err() { failed = true; break; }
                 }
@@ -917,5 +922,5 @@ git commit -m "docs: move-stream live clip shipped; residual light-source case p
 ## Self-review
 
 - Spec §2.1 → Task 2. §2.2 (per-sample timeline, chosen-sample rule, parity test) → Tasks 1, 3. §2.3 (re-emit, own-move and see-as) → Task 4. §2.4 (sub-sample timing) → accepted, no task. §4 tests: red-first mid-move test (Task 3 step 2), both orderings (Task 3 + Task 4), see-as (Task 3), two owned tokens (Task 1 `timeline_polys_at` union test — a Room-level two-token test is not added; the union is exercised at the pure layer and `mover_streams` returns all of a user's streams), expiry (Task 2), parity (Task 1), re-emit delivery scope (Task 4), secrecy regression (Task 3 step 4, Task 4 asserts nulls).
-- Types: `TimelineStream { start_server_ms: f64, vision: &[VisionSample] }`, `ActiveStream { mover, scene, start_ms: i64, end_ms: i64, frame: Arc<ServerMsg> }`, `mover_streams(mover, scene, now) -> Vec<Arc<ServerMsg>>`, `concurrent_streams(scene, exclude_token, now)` — used consistently in Tasks 2–4.
+- Types: `TimelineStream { start_server_ms: f64, vision: &[VisionSample] }`, `ActiveStream { mover, scene, start_ms: i64, end_ms: i64, frame: Arc<ServerMsg> }`, `mover_streams(mover, scene, now) -> Vec<Arc<ServerMsg>>`, `concurrent_streams(scene, exclude_mover, now)` — used consistently in Tasks 2–4.
 - Open implementer decisions flagged in-task (not placeholders): whether `MoveExecution` keeps `samples`/`mover_vision` (Task 2 step 3.6, decided by grep), `GatedSink` hoisting and `setup_clip_room` repo return (Task 4), accessor names in the client test (Task 5).
