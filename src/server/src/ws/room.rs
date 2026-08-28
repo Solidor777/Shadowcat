@@ -24,36 +24,30 @@ use crate::data::DataError;
 use crate::scene::SceneEcs;
 use crate::ws::protocol::{ResyncSource, ServerMsg};
 
-/// The room-facing result of a server-authoritative token move: the stop cell, the legal
-/// prefix of the path that was walked (render animation input), the animation duration,
-/// the time-tagged position samples, and the per-sample vision trajectory for the mover.
+/// The room-facing result of a server-authoritative token move. Production code reads only
+/// `frame` (the wire `MoveStream`, already registered in the room's in-flight registry); the
+/// other fields restate a subset of `frame`'s content for direct test assertion against the
+/// executor's internal outcome and are compiled only for test builds.
 pub(crate) struct MoveExecution {
     /// The scene the moved token actually lives in, derived from the ECS — NOT the scene the
-    /// request named. The `MoveStream` frame is stamped with this so its `scene` (which the
-    /// per-recipient egress clip and the client's viewed-scene filter both key on) can never
-    /// describe a scene other than the one the position was committed to.
+    /// request named. Read only by test assertions against the executor's internal outcome
+    /// (`frame.scene` carries the same value onto the wire); production code reads `frame` only.
+    #[cfg(test)]
     pub scene: Uuid,
     /// The last successfully reached path coordinate (the committed position after the move).
+    /// Read only by test assertions (`frame.stop` carries the same value onto the wire).
+    #[cfg(test)]
     pub stop: (f64, f64),
     /// Animation duration in milliseconds: the travelled distance converted to grid steps through
     /// the scene shape's `GridShape::world_units_per_cell`, divided by the authored cells-per-second
-    /// speed. Zero when `stop == start`.
+    /// speed. Zero when `stop == start`. Read only by test assertions.
+    #[cfg(test)]
     pub duration_ms: f64,
-    /// Time-tagged position samples for `MoveStream` broadcast playback.
-    /// Non-empty; the first sample has `t_ms == 0.0` at the starting position.
-    pub samples: Vec<crate::scene::move_stream::PosSamplePt>,
     /// Per-sample vision polygons for the mover (fog-sweep trajectory). `None` for GM movers
     /// (`Unrestricted` — no fog to sweep) and for a zero-progress move (`stop == start`, no
-    /// animation regardless of role). Index-aligned with `samples` when `Some`.
+    /// animation regardless of role). Read only by test assertions.
+    #[cfg(test)]
     pub mover_vision: Option<Vec<crate::scene::move_stream::VisionSamplePt>>,
-    /// Total terrain-weighted cost accumulated over the walked prefix, from
-    /// `move_exec::MoveOutcome::cost`. Threaded onto the `MoveStream` wire frame downstream.
-    pub cost: f64,
-    /// `true` when the move stopped before the requested goal, from
-    /// `move_exec::MoveOutcome::truncated`. Threaded onto the `MoveStream` wire frame
-    /// downstream, where it is trusted-only (`None` for a clipped observer) for the same
-    /// reason as `cost`.
-    pub truncated: bool,
     /// The full unclipped wire frame, already registered in the room's in-flight registry;
     /// the caller broadcasts it via `broadcast_aux_shared`.
     pub frame: Arc<ServerMsg>,
@@ -69,8 +63,6 @@ pub(crate) struct ActiveStream {
     pub mover: Uuid,
     /// The scene the token lives in (`MoveStream.scene`).
     pub scene: Uuid,
-    /// Server epoch-ms the animation started (`MoveStream.start_server_ms`).
-    pub start_ms: i64,
     /// Server epoch-ms the animation ends; the entry is expired when `now >= end_ms`.
     pub end_ms: i64,
     /// The full unclipped frame.
@@ -922,16 +914,17 @@ impl Room {
             // NOT registered in `moving`: a zero-duration move never held the lock, and
             // there is no in-flight animation to re-clip against.
             return Ok(MoveExecution {
+                #[cfg(test)]
                 scene: token_scene,
+                #[cfg(test)]
                 stop: start,
+                #[cfg(test)]
                 duration_ms: 0.0,
-                samples: zero_samples,
                 // None regardless of world role: zero-progress has no animation or fog sweep.
                 // Deliberate exception to the convention that None signals a GM (Unrestricted)
                 // mover — here None signals stop == start, not an Unrestricted restriction.
+                #[cfg(test)]
                 mover_vision: None,
-                cost: 0.0,
-                truncated: outcome.truncated,
                 frame,
             });
         }
@@ -1002,7 +995,6 @@ impl Room {
                 ActiveStream {
                     mover: ctx.user_id,
                     scene: token_scene,
-                    start_ms: ts,
                     end_ms: now + (duration_ms.ceil() as i64).max(1),
                     frame: frame.clone(),
                 },
@@ -1010,13 +1002,14 @@ impl Room {
         }
 
         Ok(MoveExecution {
+            #[cfg(test)]
             scene: token_scene,
+            #[cfg(test)]
             stop: outcome.stop,
+            #[cfg(test)]
             duration_ms,
-            samples,
+            #[cfg(test)]
             mover_vision,
-            cost: outcome.cost,
-            truncated: outcome.truncated,
             frame,
         })
     }

@@ -1,9 +1,64 @@
 use super::*;
 use serde_json::json;
+use std::future::Future;
+use std::pin::Pin;
+use std::task::{Context, Poll};
+use tokio::sync::Semaphore;
 
 // Dual-write fixture helpers (`ws_engine`/`token_engine`) live in `ws::test_support`,
 // shared with `ws::room`'s test module.
 use crate::ws::test_support::{token_engine, ws_engine};
+
+/// A `Sink<Message>` whose readiness is gated by a semaphore credit; accepted frames are
+/// forwarded to an unbounded channel the test drains. Each send consumes one credit (the
+/// permit is `forget`-ten), so the test controls exactly how many frames the egress may
+/// emit, and thus when it stalls.
+struct GatedSink {
+    /// Forwards each accepted frame to the test's draining channel.
+    out: mpsc::UnboundedSender<Message>,
+    /// One permit is required per accepted frame.
+    credits: Arc<Semaphore>,
+    /// The in-flight `acquire` future `poll_ready` is currently driving, if any.
+    acquiring: Option<Pin<Box<dyn Future<Output = ()> + Send>>>,
+}
+impl Sink<Message> for GatedSink {
+    type Error = ();
+    fn poll_ready(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), ()>> {
+        let this = self.as_mut().get_mut();
+        if this.acquiring.is_none() {
+            let sem = this.credits.clone();
+            // The semaphore never closes in-test, so the acquire cannot fail.
+            this.acquiring = Some(Box::pin(async move {
+                sem.acquire_owned().await.unwrap().forget()
+            }));
+        }
+        match this.acquiring.as_mut().unwrap().as_mut().poll(cx) {
+            Poll::Ready(()) => {
+                this.acquiring = None;
+                Poll::Ready(Ok(()))
+            }
+            Poll::Pending => Poll::Pending,
+        }
+    }
+    fn start_send(self: Pin<&mut Self>, item: Message) -> Result<(), ()> {
+        let _ = self.get_mut().out.send(item);
+        Ok(())
+    }
+    fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), ()>> {
+        Poll::Ready(Ok(()))
+    }
+    fn poll_close(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), ()>> {
+        Poll::Ready(Ok(()))
+    }
+}
+
+/// Extracts the text payload of a `Message::Text`, or `""` for any other variant.
+fn msg_text(m: &Message) -> &str {
+    match m {
+        Message::Text(t) => t.as_str(),
+        _ => "",
+    }
+}
 
 /// Deterministic broadcast-`Lagged` → resync guard, driven directly against the
 /// generic `egress_loop` with a credit-gated in-process sink — no real socket, so
@@ -19,57 +74,6 @@ use crate::ws::test_support::{token_engine, ws_engine};
 async fn egress_lag_triggers_resync_and_converges() {
     use crate::data::command::Operation;
     use crate::data::document::WorldRole;
-    use std::future::Future;
-    use std::pin::Pin;
-    use std::task::{Context, Poll};
-    use tokio::sync::Semaphore;
-
-    // A `Sink<Message>` whose readiness is gated by a semaphore credit; accepted
-    // frames are forwarded to an unbounded channel the test drains. Each send
-    // consumes one credit (the permit is `forget`-ten), so the test controls
-    // exactly how many frames the egress may emit, and thus when it stalls.
-    struct GatedSink {
-        out: mpsc::UnboundedSender<Message>,
-        credits: Arc<Semaphore>,
-        acquiring: Option<Pin<Box<dyn Future<Output = ()> + Send>>>,
-    }
-    impl Sink<Message> for GatedSink {
-        type Error = ();
-        fn poll_ready(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), ()>> {
-            let this = self.as_mut().get_mut();
-            if this.acquiring.is_none() {
-                let sem = this.credits.clone();
-                // The semaphore never closes in-test, so the acquire cannot fail.
-                this.acquiring = Some(Box::pin(async move {
-                    sem.acquire_owned().await.unwrap().forget()
-                }));
-            }
-            match this.acquiring.as_mut().unwrap().as_mut().poll(cx) {
-                Poll::Ready(()) => {
-                    this.acquiring = None;
-                    Poll::Ready(Ok(()))
-                }
-                Poll::Pending => Poll::Pending,
-            }
-        }
-        fn start_send(self: Pin<&mut Self>, item: Message) -> Result<(), ()> {
-            let _ = self.get_mut().out.send(item);
-            Ok(())
-        }
-        fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), ()>> {
-            Poll::Ready(Ok(()))
-        }
-        fn poll_close(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), ()>> {
-            Poll::Ready(Ok(()))
-        }
-    }
-
-    fn msg_text(m: &Message) -> &str {
-        match m {
-            Message::Text(t) => t.as_str(),
-            _ => "",
-        }
-    }
 
     let repo = Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
     let author = repo
@@ -1972,7 +1976,7 @@ async fn enrich_token_less_player_emits_no_explored() {
 
 /// Shared setup for `clip_move_stream` integration tests: creates an in-memory world, a GM
 /// user, an observer player user, one scene, and optionally an observer token + a wall doc.
-/// Returns `(room, gm_ctx, observer_ctx, scene_id)`.
+/// Returns `(room, gm_ctx, observer_ctx, scene_id, repo)`.
 ///
 /// world-settings are omitted — `player_vision_polygons` only needs tokens + walls.
 async fn setup_clip_room(
@@ -1984,6 +1988,7 @@ async fn setup_clip_room(
     PermissionContext,
     PermissionContext,
     Uuid,
+    Arc<SqliteRepository>,
 ) {
     use crate::auth::role::ServerRole;
     use crate::data::command::Operation;
@@ -2075,7 +2080,164 @@ async fn setup_clip_room(
         .unwrap();
     }
 
-    (room, gm_ctx, obs_ctx, scene_id)
+    (room, gm_ctx, obs_ctx, scene_id, repo)
+}
+
+/// When the observer's OWN move starts, every other in-flight stream in the scene is re-clipped
+/// against the new timeline and re-emitted to that connection only — with the other stream's
+/// original request_id so the client overwrites its keyed playback in place.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn egress_reemits_concurrent_streams_when_the_recipients_own_move_starts() {
+    use crate::ws::protocol::{PosSample, VisionSample};
+    use tokio::sync::Semaphore;
+
+    let wall_sys =
+        json!({ "seg": { "x1": 100, "y1": -500, "x2": 100, "y2": 500 }, "blocksSight": true });
+    let (room, _, obs_ctx, scene_id, repo) =
+        setup_clip_room(Some((50.0, 50.0)), Some(wall_sys), false).await;
+    let now = crate::ws::time::now_millis();
+
+    // A: a stranger's move entirely behind the wall, in flight since `now`.
+    let a_req = Uuid::from_u128(0xA11);
+    let a_frame = ServerMsg::MoveStream {
+        request_id: a_req,
+        token_id: Uuid::from_u128(0xA),
+        mover: Uuid::from_u128(0xAABB),
+        scene: scene_id,
+        start_server_ms: now as f64,
+        duration_ms: 3_000.0,
+        stop: [250.0, 50.0],
+        samples: vec![
+            PosSample {
+                t_ms: 0.0,
+                pos: [150.0, 50.0],
+            },
+            PosSample {
+                t_ms: 1_000.0,
+                pos: [250.0, 50.0],
+            },
+        ],
+        mover_vision: None,
+        cost: Some(2.0),
+        truncated: Some(false),
+    };
+    room.register_stream_for_test(
+        Uuid::from_u128(0xA),
+        crate::ws::room::ActiveStream {
+            mover: Uuid::from_u128(0xAABB),
+            scene: scene_id,
+            end_ms: now + 3_000,
+            frame: Arc::new(a_frame),
+        },
+    )
+    .await;
+
+    // Spawn the observer's egress with plenty of credits.
+    let (rx, current_seq) = room.subscribe();
+    let credits = Arc::new(Semaphore::new(64));
+    let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Message>();
+    let (_etx, erx) = mpsc::channel::<Egress>(8);
+    let egress = tokio::spawn(egress_loop(
+        GatedSink {
+            out: out_tx,
+            credits,
+            acquiring: None,
+        },
+        rx,
+        erx,
+        EgressConnState {
+            room: room.clone(),
+            repo: repo.clone(),
+            ctx: obs_ctx,
+            current_seq,
+            modules_dir: std::path::PathBuf::from("nonexistent-modules-dir"),
+            module_scan_cache: Arc::new(crate::modules::ModuleScanCache::new()),
+        },
+    ));
+    let welcome = tokio::time::timeout(std::time::Duration::from_secs(5), out_rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(msg_text(&welcome)).unwrap()["type"],
+        "welcome"
+    );
+
+    // R (the observer) starts a move at now+100 whose sweep sees behind the wall from t=0.
+    let r_start = now + 100;
+    let r_frame = ServerMsg::MoveStream {
+        request_id: Uuid::from_u128(0xB11),
+        token_id: Uuid::from_u128(0xE002),
+        mover: obs_ctx.user_id,
+        scene: scene_id,
+        start_server_ms: r_start as f64,
+        duration_ms: 2_000.0,
+        stop: [60.0, 50.0],
+        samples: vec![
+            PosSample {
+                t_ms: 0.0,
+                pos: [50.0, 50.0],
+            },
+            PosSample {
+                t_ms: 2_000.0,
+                pos: [60.0, 50.0],
+            },
+        ],
+        mover_vision: Some(vec![VisionSample {
+            t_ms: 0.0,
+            polygons: band(0.0, 300.0),
+        }]),
+        cost: Some(0.1),
+        truncated: Some(false),
+    };
+    let r_arc = Arc::new(r_frame);
+    room.register_stream_for_test(
+        Uuid::from_u128(0xE002),
+        crate::ws::room::ActiveStream {
+            mover: obs_ctx.user_id,
+            scene: scene_id,
+            end_ms: r_start + 2_000,
+            frame: r_arc.clone(),
+        },
+    )
+    .await;
+    room.broadcast_aux_shared(r_arc);
+
+    let first = tokio::time::timeout(std::time::Duration::from_secs(5), out_rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let first: serde_json::Value = serde_json::from_str(msg_text(&first)).unwrap();
+    assert_eq!(first["type"], "move_stream");
+    assert_eq!(
+        first["request_id"],
+        json!(Uuid::from_u128(0xB11)),
+        "own move forwarded first, unchanged"
+    );
+    assert!(first["mover_vision"].is_array());
+
+    let second = tokio::time::timeout(std::time::Duration::from_secs(5), out_rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let second: serde_json::Value = serde_json::from_str(msg_text(&second)).unwrap();
+    assert_eq!(second["type"], "move_stream");
+    assert_eq!(
+        second["request_id"],
+        json!(a_req),
+        "A re-emitted under its original request_id"
+    );
+    // A's sample at t=1000 (abs now+1000) is inside R's sweep band → admitted; t=0 (abs now)
+    // precedes R's sweep start → committed vision (walled) → dropped.
+    assert_eq!(second["samples"].as_array().unwrap().len(), 1);
+    assert_eq!(second["samples"][0]["t_ms"], json!(1000.0));
+    assert!(
+        second["mover_vision"].is_null()
+            && second["cost"].is_null()
+            && second["truncated"].is_null()
+    );
+
+    egress.abort();
 }
 
 /// The mover (ctx.user_id == frame.mover) receives their own full frame
@@ -2085,7 +2247,7 @@ async fn clip_mover_receives_full_frame() {
     use crate::data::document::WorldRole;
     use crate::ws::protocol::{PosSample, VisionSample};
 
-    let (room, _, _, scene_id) = setup_clip_room(None, None, false).await;
+    let (room, _, _, scene_id, _) = setup_clip_room(None, None, false).await;
 
     let mover_id = Uuid::from_u128(0xAABB);
     // ctx.user_id == mover → mover branch fires before GM / observer branches.
@@ -2147,7 +2309,7 @@ async fn clip_observer_no_token_suppressed() {
     use crate::ws::protocol::PosSample;
 
     // No observer token in the scene — player_vision_polygons returns empty.
-    let (room, _, obs_ctx, scene_id) = setup_clip_room(None, None, false).await;
+    let (room, _, obs_ctx, scene_id, _) = setup_clip_room(None, None, false).await;
 
     let mover_id = Uuid::from_u128(0xAABB);
     let frame = ServerMsg::MoveStream {
@@ -2198,7 +2360,7 @@ async fn clip_observer_sees_near_side_prefix() {
         "seg": { "x1": 100, "y1": -500, "x2": 100, "y2": 500 },
         "blocksSight": true
     });
-    let (room, _, obs_ctx, scene_id) =
+    let (room, _, obs_ctx, scene_id, _) =
         setup_clip_room(Some((50.0, 50.0)), Some(wall_sys), false).await;
 
     let mover_id = Uuid::from_u128(0xAABB);
@@ -2293,7 +2455,7 @@ async fn clip_observer_sees_near_side_prefix_any_angle_diagonal_path() {
         "seg": { "x1": 100, "y1": -500, "x2": 100, "y2": 500 },
         "blocksSight": true
     });
-    let (room, _, obs_ctx, scene_id) =
+    let (room, _, obs_ctx, scene_id, _) =
         setup_clip_room(Some((50.0, 50.0)), Some(wall_sys), false).await;
 
     let mover_id = Uuid::from_u128(0xAABB);
@@ -2385,7 +2547,7 @@ async fn clip_gm_only_wall_suppresses_observer() {
         "seg": { "x1": 100, "y1": -500, "x2": 100, "y2": 500 },
         "blocksSight": true
     });
-    let (room, _, obs_ctx, scene_id) =
+    let (room, _, obs_ctx, scene_id, _) =
         setup_clip_room(Some((50.0, 50.0)), Some(wall_sys), true /* gm_only */).await;
 
     let mover_id = Uuid::from_u128(0xAABB);
@@ -2441,7 +2603,7 @@ async fn clip_gm_receives_all_samples_mover_vision_nulled() {
         "seg": { "x1": 100, "y1": -500, "x2": 100, "y2": 500 },
         "blocksSight": true
     });
-    let (room, gm_ctx, _, scene_id) = setup_clip_room(None, Some(wall_sys), false).await;
+    let (room, gm_ctx, _, scene_id, _) = setup_clip_room(None, Some(wall_sys), false).await;
 
     // GM is NOT the mover.
     let mover_id = Uuid::from_u128(0xAABB);
@@ -2531,7 +2693,7 @@ async fn clip_gm_see_as_clips_to_target_vision() {
         "blocksSight": true
     });
     // `obs` is the see-as target: a player with a token at (50,50).
-    let (room, gm_ctx, target_ctx, scene_id) =
+    let (room, gm_ctx, target_ctx, scene_id, _) =
         setup_clip_room(Some((50.0, 50.0)), Some(wall_sys), false).await;
 
     let mover_id = Uuid::from_u128(0xAABB);
@@ -2625,7 +2787,7 @@ async fn clip_gm_see_as_different_scene_not_clipped() {
         "seg": { "x1": 100, "y1": -500, "x2": 100, "y2": 500 },
         "blocksSight": true
     });
-    let (room, gm_ctx, target_ctx, _scene_id) =
+    let (room, gm_ctx, target_ctx, _scene_id, _) =
         setup_clip_room(Some((50.0, 50.0)), Some(wall_sys), false).await;
 
     // The move happens in a DIFFERENT scene where the target has no token.
@@ -2695,7 +2857,7 @@ async fn clip_gm_see_as_fully_occluded_suppressed() {
         "seg": { "x1": 100, "y1": -500, "x2": 100, "y2": 500 },
         "blocksSight": true
     });
-    let (room, gm_ctx, target_ctx, scene_id) =
+    let (room, gm_ctx, target_ctx, scene_id, _) =
         setup_clip_room(Some((50.0, 50.0)), Some(wall_sys), true /* gm_only */).await;
 
     let mover_id = Uuid::from_u128(0xAABB);
@@ -2762,7 +2924,6 @@ async fn register_timeline(
         ActiveStream {
             mover,
             scene,
-            start_ms,
             end_ms: start_ms + 3_600_000,
             frame: Arc::new(frame),
         },
@@ -2784,7 +2945,7 @@ async fn clip_observer_mid_move_admits_samples_its_own_sweep_will_reveal() {
     use crate::ws::protocol::{PosSample, VisionSample};
     let wall_sys =
         json!({ "seg": { "x1": 100, "y1": -500, "x2": 100, "y2": 500 }, "blocksSight": true });
-    let (room, _, obs_ctx, scene_id) =
+    let (room, _, obs_ctx, scene_id, _) =
         setup_clip_room(Some((50.0, 50.0)), Some(wall_sys), false).await;
     let now = crate::ws::time::now_millis();
     register_timeline(
@@ -2867,7 +3028,7 @@ async fn clip_ignores_a_timeline_that_starts_after_the_move() {
     use crate::ws::protocol::{PosSample, VisionSample};
     let wall_sys =
         json!({ "seg": { "x1": 100, "y1": -500, "x2": 100, "y2": 500 }, "blocksSight": true });
-    let (room, _, obs_ctx, scene_id) =
+    let (room, _, obs_ctx, scene_id, _) =
         setup_clip_room(Some((50.0, 50.0)), Some(wall_sys), false).await;
     let now = crate::ws::time::now_millis();
     register_timeline(
@@ -2915,7 +3076,7 @@ async fn clip_gm_see_as_uses_the_targets_timeline() {
     use crate::ws::protocol::{PosSample, VisionSample};
     let wall_sys =
         json!({ "seg": { "x1": 100, "y1": -500, "x2": 100, "y2": 500 }, "blocksSight": true });
-    let (room, gm_ctx, obs_ctx, scene_id) =
+    let (room, gm_ctx, obs_ctx, scene_id, _) =
         setup_clip_room(Some((50.0, 50.0)), Some(wall_sys), false).await;
     let now = crate::ws::time::now_millis();
     register_timeline(
@@ -2978,7 +3139,7 @@ async fn clip_gm_see_as_target_registered_gm_move_with_no_vision_falls_back_to_f
     use crate::ws::protocol::PosSample;
     use crate::ws::room::ActiveStream;
 
-    let (room, gm_ctx, _, scene_id) = setup_clip_room(None, None, false).await;
+    let (room, gm_ctx, _, scene_id, _) = setup_clip_room(None, None, false).await;
 
     // The see-as target: a GM with no token/vision source in this scene at all.
     let target_ctx = PermissionContext {
@@ -3010,7 +3171,6 @@ async fn clip_gm_see_as_target_registered_gm_move_with_no_vision_falls_back_to_f
         ActiveStream {
             mover: target_ctx.user_id,
             scene: scene_id,
-            start_ms: now,
             end_ms: now + 3_600_000,
             frame: Arc::new(target_frame),
         },

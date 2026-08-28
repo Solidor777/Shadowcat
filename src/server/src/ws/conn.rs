@@ -1637,10 +1637,36 @@ async fn egress_loop<S>(
                                 } else {
                                     None
                                 };
-                                match clip_move_stream(inner.as_ref(), &ctx, see_as, &room).await {
+                                let mut failed = match clip_move_stream(inner.as_ref(), &ctx, see_as, &room).await {
                                     Some(out) => sink.send(text(&out)).await.is_err(),
                                     None => false, // suppressed: do not send
+                                };
+                                // Own-move re-emit: the clip target's vision timeline just changed, so every
+                                // OTHER in-flight stream in this scene is re-clipped against it and re-sent
+                                // under its original request_id (the client overwrites keyed playback in
+                                // place). Serves the ordering where the recipient's move starts AFTER the
+                                // other stream was clipped — the clip itself cannot widen a frame already
+                                // sent. Delivered only to this connection; other recipients' timelines are
+                                // unchanged.
+                                if !failed {
+                                    if let ServerMsg::MoveStream { mover, scene, .. } = inner.as_ref() {
+                                        let clip_target = see_as.map(|t| t.user_id).unwrap_or(ctx.user_id);
+                                        if *mover == clip_target {
+                                            let now = crate::ws::time::now_millis();
+                                            for other in room.concurrent_streams(*scene, clip_target, now).await {
+                                                if let Some(out) =
+                                                    clip_move_stream(other.as_ref(), &ctx, see_as, &room).await
+                                                {
+                                                    if sink.send(text(&out)).await.is_err() {
+                                                        failed = true;
+                                                        break;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
+                                failed
                             }
                             ServerMsg::Evicted { user } => {
                                 // Targeted eviction. Delivery of the frame is
