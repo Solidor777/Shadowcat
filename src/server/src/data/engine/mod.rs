@@ -8,11 +8,18 @@
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
+pub mod combat;
 pub mod geometry;
 pub mod registries;
 pub mod scene;
 pub mod token;
 
+pub use combat::{
+    resolve_combat_rules, ClockStamp, CombatDefaults, CombatEngine, CombatantEngine, CombatantKind,
+    CombatantResource, Duration, DurationUnit, EffectEngine, Enforcement, ExpiryPoint, Formula,
+    Interpretation, MovementRules, Recovery, ResolvedCombatRules, Resource, ResourceBinding,
+    ResourceRegistryEngine, TurnControl, MAX_FORMULA_CHARS,
+};
 pub use geometry::{
     DrawingEngine, DrawingShape, Fill, RegionEngine, RegionShape, Seg, Stroke, TemplateEngine,
     TemplateShape, WallEngine,
@@ -41,6 +48,14 @@ pub const WORLD_SETTINGS_DOC_TYPE: &str = "world-settings";
 pub const FACTION_REGISTRY_DOC_TYPE: &str = "faction-registry";
 /// Doc_type for the world's singleton condition registry config document.
 pub const CONDITION_REGISTRY_DOC_TYPE: &str = "condition-registry";
+/// Doc_type for a combat: a world document bound to one scene.
+pub const COMBAT_DOC_TYPE: &str = "combat";
+/// Doc_type for a combatant: always a child (`parent_id`) of a combat.
+pub const COMBATANT_DOC_TYPE: &str = "combatant";
+/// Doc_type for the world's singleton turn-resource registry.
+pub const RESOURCE_REGISTRY_DOC_TYPE: &str = "resource-registry";
+/// Doc_type for an effect (embedded under actors/items, or standalone).
+pub const EFFECT_DOC_TYPE: &str = "effect";
 
 /// Whether `doc_type` carries a typed `engine` band. The registry is a
 /// hardcoded match — there is no dynamic registration (the server runs no
@@ -52,6 +67,7 @@ pub const CONDITION_REGISTRY_DOC_TYPE: &str = "condition-registry";
 /// use shadowcat::data::engine::is_engine_doc_type;
 ///
 /// assert!(is_engine_doc_type("token"));
+/// assert!(is_engine_doc_type("combat"));
 /// assert!(!is_engine_doc_type("item")); // client-only doc_type: opaque system band only
 /// ```
 pub fn is_engine_doc_type(doc_type: &str) -> bool {
@@ -74,6 +90,10 @@ pub fn is_engine_doc_type(doc_type: &str) -> bool {
             | "channel-registry"
             | "faction-registry"
             | "condition-registry"
+            | "combat"
+            | "combatant"
+            | "resource-registry"
+            | "effect"
     )
 }
 
@@ -183,6 +203,38 @@ fn normalize_engine(doc_type: &str, v: &serde_json::Value) -> Result<serde_json:
         "channel-registry" => round_trip::<ChannelRegistryEngine>(v, "channel-registry"),
         "faction-registry" => round_trip::<FactionRegistryEngine>(v, "faction-registry"),
         "condition-registry" => round_trip::<ConditionRegistryEngine>(v, "condition-registry"),
+        "combat" => {
+            let typed: CombatEngine = serde_json::from_value(v.clone())
+                .map_err(|e| DataError::BadEngine(format!("combat: {e}")))?;
+            typed
+                .validate()
+                .map_err(|m| DataError::BadEngine(format!("combat: {m}")))?;
+            Ok(serde_json::to_value(typed)?)
+        }
+        "combatant" => {
+            let typed: CombatantEngine = serde_json::from_value(v.clone())
+                .map_err(|e| DataError::BadEngine(format!("combatant: {e}")))?;
+            typed
+                .validate()
+                .map_err(|m| DataError::BadEngine(format!("combatant: {m}")))?;
+            Ok(serde_json::to_value(typed)?)
+        }
+        "resource-registry" => {
+            let typed: ResourceRegistryEngine = serde_json::from_value(v.clone())
+                .map_err(|e| DataError::BadEngine(format!("resource-registry: {e}")))?;
+            typed
+                .validate()
+                .map_err(|m| DataError::BadEngine(format!("resource-registry: {m}")))?;
+            Ok(serde_json::to_value(typed)?)
+        }
+        "effect" => {
+            let typed: EffectEngine = serde_json::from_value(v.clone())
+                .map_err(|e| DataError::BadEngine(format!("effect: {e}")))?;
+            typed
+                .validate()
+                .map_err(|m| DataError::BadEngine(format!("effect: {m}")))?;
+            Ok(serde_json::to_value(typed)?)
+        }
         _ => unreachable!("is_engine_doc_type and this match must stay in sync"),
     }
 }

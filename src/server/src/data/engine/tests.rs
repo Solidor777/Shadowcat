@@ -577,3 +577,147 @@ fn engine_of_defaults_on_absent_or_malformed() {
     let ws: WorldSettingsEngine = engine_of(&doc);
     assert_eq!(ws, WorldSettingsEngine::default());
 }
+
+// --- combat / combatant / resource-registry / effect ---
+
+#[test]
+fn combat_minimal_body_is_valid() {
+    let v = json!({
+        "scene_id": "00000000-0000-0000-0000-000000000001",
+        "active": false, "round": 0, "turn": null,
+        "turn_control": "owner_may_end", "order": [],
+        "movement": { "resource": null, "interpretation": "per_cell", "enforcement": "none" }
+    });
+    assert!(validate_engine("combat", Some(&v)).is_ok());
+}
+
+#[test]
+fn combatant_actor_minimal_body_is_valid() {
+    let v = json!({
+        "kind": { "type": "actor", "token_id": "00000000-0000-0000-0000-000000000002", "actor_id": null },
+        "initiative": null, "tiebreak": 0.0, "resources": {}
+    });
+    assert!(validate_engine("combatant", Some(&v)).is_ok());
+}
+
+#[test]
+fn combatant_event_minimal_body_is_valid() {
+    let v = json!({
+        "kind": { "type": "event", "lifespan": null, "message": "The lair action triggers" },
+        "initiative": 20.0, "tiebreak": 0.0, "resources": {}
+    });
+    assert!(validate_engine("combatant", Some(&v)).is_ok());
+}
+
+#[test]
+fn resource_registry_minimal_body_is_valid() {
+    assert!(validate_engine("resource-registry", Some(&json!({ "resources": {} }))).is_ok());
+}
+
+#[test]
+fn resource_registry_tracked_and_mirror_bindings_are_valid() {
+    let v = json!({ "resources": {
+        "movement": { "name": "Movement", "order": 0, "binding": { "kind": "tracked",
+            "max": "speed", "recover": { "turn_start": "speed", "turn_end": 0, "round_start": 0, "round_end": 0 } } },
+        "hp": { "name": "HP", "order": 1, "binding": { "kind": "mirror", "value": "hp" } }
+    }});
+    assert!(validate_engine("resource-registry", Some(&v)).is_ok());
+}
+
+#[test]
+fn effect_minimal_body_is_valid() {
+    assert!(validate_engine(
+        "effect",
+        Some(&json!({ "active": true, "transfer": false, "duration": null }))
+    )
+    .is_ok());
+}
+
+#[test]
+fn effect_with_duration_is_valid() {
+    let v = json!({ "active": true, "transfer": false, "duration": {
+        "amount": 3, "unit": "rounds", "anchor": null, "expires": "turn_end",
+        "started": { "round": 1, "turn_index": 0 } } });
+    assert!(validate_engine("effect", Some(&v)).is_ok());
+}
+
+#[test]
+fn combat_unknown_field_is_rejected() {
+    let v = json!({
+        "scene_id": "00000000-0000-0000-0000-000000000001",
+        "active": false, "round": 0, "turn": null, "turn_control": "owner_may_end", "order": [],
+        "movement": { "resource": null, "interpretation": "per_cell", "enforcement": "none" },
+        "bogus": 1
+    });
+    assert!(validate_engine("combat", Some(&v)).is_err());
+}
+
+#[test]
+fn combatant_unknown_field_is_rejected() {
+    let v = json!({
+        "kind": { "type": "event", "lifespan": null, "message": null },
+        "initiative": null, "tiebreak": 0.0, "resources": {}, "bogus": 1
+    });
+    assert!(validate_engine("combatant", Some(&v)).is_err());
+}
+
+#[test]
+fn resource_registry_unknown_field_is_rejected() {
+    assert!(validate_engine(
+        "resource-registry",
+        Some(&json!({ "resources": {}, "bogus": 1 }))
+    )
+    .is_err());
+}
+
+#[test]
+fn effect_unknown_field_is_rejected() {
+    assert!(validate_engine(
+        "effect",
+        Some(&json!({ "active": true, "transfer": false, "bogus": 1 }))
+    )
+    .is_err());
+}
+
+#[test]
+fn combat_wrong_typed_round_is_rejected() {
+    let v = json!({
+        "scene_id": "00000000-0000-0000-0000-000000000001",
+        "active": false, "round": "1", "turn": null, "turn_control": "owner_may_end", "order": [],
+        "movement": { "resource": null, "interpretation": "per_cell", "enforcement": "none" }
+    });
+    assert!(validate_engine("combat", Some(&v)).is_err());
+}
+
+#[test]
+fn combatant_wrong_typed_tiebreak_is_rejected() {
+    let v = json!({
+        "kind": { "type": "event", "lifespan": null, "message": null },
+        "initiative": null, "tiebreak": "0", "resources": {}
+    });
+    assert!(validate_engine("combatant", Some(&v)).is_err());
+}
+
+#[test]
+fn resource_registry_wrong_typed_order_is_rejected() {
+    let v = json!({ "resources": { "x": { "name": "X", "order": "0", "binding": { "kind": "mirror", "value": 1 } } } });
+    assert!(validate_engine("resource-registry", Some(&v)).is_err());
+}
+
+#[test]
+fn effect_wrong_typed_active_is_rejected() {
+    assert!(validate_engine(
+        "effect",
+        Some(&json!({ "active": "yes", "transfer": false }))
+    )
+    .is_err());
+}
+
+#[test]
+fn effect_absent_transfer_defaults_false_and_reserializes_explicitly() {
+    let n = normalize_engine_opt("effect", Some(&json!({ "active": true })))
+        .unwrap()
+        .unwrap();
+    assert_eq!(n["transfer"], json!(false));
+    assert!(n.get("duration").is_some_and(|d| d.is_null()));
+}

@@ -249,6 +249,19 @@ pub(crate) fn default_test_engine(doc_type: &str) -> Option<serde_json::Value> {
         "channel-registry" => Some(serde_json::json!({ "channels": {} })),
         "faction-registry" => Some(serde_json::json!({ "factions": {} })),
         "condition-registry" => Some(serde_json::json!({ "conditions": {} })),
+        "combat" => Some(serde_json::json!({
+            "scene_id": "00000000-0000-0000-0000-000000000001",
+            "active": false, "round": 0, "turn": null, "turn_control": "owner_may_end", "order": [],
+            "movement": { "resource": null, "interpretation": "per_cell", "enforcement": "none" }
+        })),
+        "combatant" => Some(serde_json::json!({
+            "kind": { "type": "event", "lifespan": null, "message": null },
+            "initiative": null, "tiebreak": 0.0, "resources": {}
+        })),
+        "resource-registry" => Some(serde_json::json!({ "resources": {} })),
+        "effect" => {
+            Some(serde_json::json!({ "active": true, "transfer": false, "duration": null }))
+        }
         _ => None,
     }
 }
