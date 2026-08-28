@@ -67,3 +67,6 @@ Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one de
     status, so the agent-registration and skill-invocation questions above remain unverified for
     a reason outside this session's control. Re-attempt once quota refreshes or extra usage is
     purchased.
+
+## Actionable now — next file-size split candidate
+- TODO: `src/server/src/data/sqlite.rs` production code is ~3,900 lines after its test module moved out — the largest remaining production file and the next to cross the 5,000-line soft limit at its growth rate. Split `SqliteRepository` by concern (documents/commands, membership/invites, search, world export/import) into `data/sqlite/<concern>.rs` `impl` blocks before it reaches the limit; the gate (`pnpm lint:file-size`) fails the build at that point and no allowlist entry is to be added.

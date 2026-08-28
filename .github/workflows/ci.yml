@@ -186,6 +186,10 @@ jobs:
         run: pnpm lint:comments
       - name: No dead-code or unused-item suppressions
         run: pnpm lint:allowances
+      - name: File-size limits (soft 5000 / hard 10000 lines)
+        run: pnpm lint:file-size
+      - name: No inline Rust test-module bodies
+        run: pnpm lint:inline-tests
       - name: Doc examples typecheck (TS)
         run: pnpm docs:check-examples
       - name: Doc coverage (Rust)

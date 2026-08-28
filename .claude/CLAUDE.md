@@ -250,6 +250,49 @@ fn execute(ctx: &MoveCtx, route: &Route) {}
 
 ---
 
+## File-Size Limits Require Explicit User Approval
+**Core Directive:** A source file over 5,000 lines is a defect; over 10,000 is a build failure.
+Enforced by `pnpm lint:file-size` (`scripts/check-file-lines.mjs`) over every tracked
+`rs ts js mjs svelte scss css` file under `src/`, `scripts/`, `examples/` (generated types
+excluded) — a **gate, never a ratchet**: nothing is grandfathered. Test lines count.
+
+### 1. The Soft Limit Needs the Owner's Signature
+Crossing 5,000 lines fails unless the file has an entry in `.claude/file-size-allowlist.toml`.
+**Every entry requires the user's explicit, per-file authorization in the conversation. No agent
+adds, edits, or retains an entry on its own authority**, and an oversize file found in the tree is
+a defect to split, not a precedent to follow. A stale entry (file back under the limit) fails the
+gate in its own right.
+
+### 2. The Hard Limit Has No Override
+Over 10,000 lines fails with or without an allowlist entry. Split the file.
+
+### 3. Rust Test Modules Live in Sibling Files
+`pnpm lint:inline-tests` (`scripts/check-inline-tests.mjs`) fails on any inline
+`#[cfg(test)] mod x { … }` body in `src/**/*.rs`. Declare `#[cfg(test)] mod x;` and put the body
+in `<stem>/x.rs` (or `x.rs` beside a `mod.rs`); `use super::*` resolves to the same parent, so
+nothing widens. `#[cfg(test)]` on a non-module item (a test-only helper, field or `impl`) stays in
+the production file. A test file that itself outgrows the limit is split by subject under
+`<stem>/tests/<subject>.rs` with shared fixtures in `<stem>/tests/mod.rs`.
+
+#### ❌ Bad (Inline Body / Self-Granted Exception)
+```rust
+#[cfg(test)]
+mod tests { /* 7,000 lines */ }
+```
+```toml
+# added by an agent "because the split is large"
+[[file]]
+path = "src/server/src/data/sqlite.rs"
+```
+
+#### ✅ Good (Declaration + Sibling File; Split Instead of Exempt)
+```rust
+#[cfg(test)]
+mod tests;   // body in data/sqlite/tests/mod.rs + tests/<subject>.rs
+```
+
+---
+
 Here is the optimized guidelines set for data privacy, security, and intellectual property, formatted to match the agent-optimized structure.
 
 ---
