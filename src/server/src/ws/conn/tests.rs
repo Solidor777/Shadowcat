@@ -2085,7 +2085,8 @@ async fn setup_clip_room(
 
 /// When the observer's OWN move starts, every other in-flight stream in the scene is re-clipped
 /// against the new timeline and re-emitted to that connection only — with the other stream's
-/// original request_id so the client overwrites its keyed playback in place.
+/// original request_id preserved (proving it's a genuine re-emit of A's original frame, not a
+/// synthesized one) while the client overwrites its keyed playback in place, keyed on token_id.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn egress_reemits_concurrent_streams_when_the_recipients_own_move_starts() {
     use crate::ws::protocol::{PosSample, VisionSample};

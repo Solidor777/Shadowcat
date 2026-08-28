@@ -892,15 +892,17 @@ async fn handle_pathfind(
 /// Resolve and execute a server-authoritative one-shot move request.
 ///
 /// INVARIANT (broadcast-not-requester): on success, broadcasts `MoveStream` out-of-band to the
-/// room via `broadcast_aux` (no seq, mirrors `ScenePing`). No success frame is returned to
-/// the requester's `etx` — the broadcast IS the notification. The atomic position `Event`
-/// from `commit_ops_locked` carries the authoritative position update for document-store sync.
+/// room via `Room::broadcast_aux_shared` (no seq, mirrors `ScenePing`). No success frame is
+/// returned to the requester's `etx` — the broadcast IS the notification. The atomic position
+/// `Event` from `commit_ops_locked` carries the authoritative position update for
+/// document-store sync.
 /// INVARIANT (no-geometry-leak): on any `execute_move` failure the reply is a generic
 /// `MoveError { message: "move rejected" }` to `etx` only — no path geometry or vision state
 /// is disclosed.
-/// INVARIANT (mover_vision): `exec.mover_vision` is `None` for GM movers (no fog to sweep)
-/// and `Some` for player movers; the mapping to wire `VisionSample` (per-polygon vertex
-/// capping, fail-closed under-reveal) lives in `Room::execute_move`'s frame construction.
+/// INVARIANT (mover_vision): `exec.frame`'s `ServerMsg::MoveStream.mover_vision` is `None` for
+/// GM movers (no fog to sweep) and `Some` for player movers; the mapping to wire `VisionSample`
+/// (per-polygon vertex capping, fail-closed under-reveal) lives in `Room::execute_move`'s frame
+/// construction.
 async fn handle_move_request(
     room: &crate::ws::room::Room,
     repo: &dyn crate::data::repository::Repository,
@@ -1643,13 +1645,25 @@ async fn egress_loop<S>(
                                 };
                                 // Own-move re-emit: the clip target's vision timeline just changed, so every
                                 // OTHER in-flight stream in this scene is re-clipped against it and re-sent
-                                // under its original token_id (the client overwrites playback keyed by token
-                                // in place). Serves the ordering where the recipient's move starts AFTER the
-                                // other stream was clipped — the clip itself cannot widen a frame already
-                                // sent. Delivered only to this connection; other recipients' timelines are
-                                // unchanged.
+                                // under its original token_id (the client overwrites playback keyed by
+                                // token_id in place). Serves the ordering where the recipient's move starts
+                                // AFTER the other stream was clipped — the clip itself cannot widen a frame
+                                // already sent. Delivered only to this connection; other recipients'
+                                // timelines are unchanged. Requires `mover_vision: Some(_)` on the
+                                // triggering frame: a zero-progress move (never registered in `moving`, so
+                                // never a source of concurrent re-clips) and a GM mover's own move
+                                // (`mover_vision: None`, so it's always filtered out of a target's usable
+                                // timeline regardless) cannot have produced a timeline anything could
+                                // meaningfully re-clip against — skipping them avoids driving the re-emit
+                                // loop at request rate off a move that could never populate one.
                                 if !failed {
-                                    if let ServerMsg::MoveStream { mover, scene, .. } = inner.as_ref() {
+                                    if let ServerMsg::MoveStream {
+                                        mover,
+                                        scene,
+                                        mover_vision: Some(_),
+                                        ..
+                                    } = inner.as_ref()
+                                    {
                                         let clip_target = see_as.map(|t| t.user_id).unwrap_or(ctx.user_id);
                                         if *mover == clip_target {
                                             let now = crate::ws::time::now_millis();

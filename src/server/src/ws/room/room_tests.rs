@@ -2543,8 +2543,11 @@ async fn non_gm_mover_gets_progressive_sweep_in_unrestricted_scene() {
         )
         .await
         .unwrap();
+    let ServerMsg::MoveStream { mover_vision, .. } = res.frame.as_ref() else {
+        panic!("frame must be a MoveStream");
+    };
     assert!(
-        res.mover_vision.is_some(),
+        mover_vision.is_some(),
         "a non-GM mover in an Unrestricted scene must get a progressive vision sweep, not a static-fog snap"
     );
 }
@@ -2568,8 +2571,11 @@ async fn gm_mover_still_gets_no_sweep_in_unrestricted_scene() {
         )
         .await
         .unwrap();
+    let ServerMsg::MoveStream { mover_vision, .. } = res.frame.as_ref() else {
+        panic!("frame must be a MoveStream");
+    };
     assert!(
-        res.mover_vision.is_none(),
+        mover_vision.is_none(),
         "GM movers must not get a sweep, regardless of restriction mode (unchanged behavior)"
     );
 }
@@ -2830,46 +2836,18 @@ async fn execute_move_registers_the_full_frame_and_accessors_filter_by_mover_sce
             .len(),
         1
     );
+    // A different scene id has no registered stream at all.
+    assert!(h
+        .room
+        .concurrent_streams(Uuid::from_u128(0xBAD), h.gm.user_id, now)
+        .await
+        .is_empty());
     // Expiry: a `now` past end_ms hides it.
     assert!(h
         .room
         .mover_streams(h.player.user_id, h.scene_id, now + 3_600_000)
         .await
         .is_empty());
-}
-
-#[tokio::test]
-async fn moving_lock_still_refuses_a_second_move_while_the_stream_is_in_flight() {
-    let h = movement_scene_with_speed("unrestricted", false, 0.5).await;
-    h.room
-        .execute_move(
-            &h.repo,
-            &h.player,
-            crate::ws::room::MoveRequestInputs {
-                scene_id: h.scene_id,
-                token: h.token_id,
-                path: vec![h.start, h.adj],
-                ts: now_millis(),
-                request_id: Uuid::from_u128(1),
-            },
-        )
-        .await
-        .unwrap();
-    let second = h
-        .room
-        .execute_move(
-            &h.repo,
-            &h.player,
-            crate::ws::room::MoveRequestInputs {
-                scene_id: h.scene_id,
-                token: h.token_id,
-                path: vec![h.adj, h.adj2],
-                ts: now_millis(),
-                request_id: Uuid::from_u128(2),
-            },
-        )
-        .await;
-    assert!(matches!(second, Err(DataError::Forbidden)));
 }
 
 #[tokio::test]

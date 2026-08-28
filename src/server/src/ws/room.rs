@@ -43,11 +43,6 @@ pub(crate) struct MoveExecution {
     /// speed. Zero when `stop == start`. Read only by test assertions.
     #[cfg(test)]
     pub duration_ms: f64,
-    /// Per-sample vision polygons for the mover (fog-sweep trajectory). `None` for GM movers
-    /// (`Unrestricted` — no fog to sweep) and for a zero-progress move (`stop == start`, no
-    /// animation regardless of role). Read only by test assertions.
-    #[cfg(test)]
-    pub mover_vision: Option<Vec<crate::scene::move_stream::VisionSamplePt>>,
     /// The full unclipped wire frame, already registered in the room's in-flight registry;
     /// the caller broadcasts it via `broadcast_aux_shared`.
     pub frame: Arc<ServerMsg>,
@@ -921,11 +916,6 @@ impl Room {
                 stop: start,
                 #[cfg(test)]
                 duration_ms: 0.0,
-                // None regardless of world role: zero-progress has no animation or fog sweep.
-                // Deliberate exception to the convention that None signals a GM (Unrestricted)
-                // mover — here None signals stop == start, not an Unrestricted restriction.
-                #[cfg(test)]
-                mover_vision: None,
                 frame,
             });
         }
@@ -960,9 +950,7 @@ impl Room {
         self.commit_ops_locked(repo, ctx, pos_ops, ts, WriteOrigin::Client)
             .await?;
 
-        // Build the wire frame before registering it — `mover_vision` is cloned here so
-        // `MoveExecution.mover_vision` (read by callers/tests) stays populated after the
-        // frame construction below consumes its own copy.
+        // Build the wire frame before registering it.
         let frame = Arc::new(wire_move_stream(
             request_id,
             token,
@@ -973,7 +961,7 @@ impl Room {
                 stop: outcome.stop,
                 duration_ms,
                 samples: &samples,
-                mover_vision: mover_vision.clone(),
+                mover_vision,
                 cost: outcome.cost,
                 truncated: outcome.truncated,
             },
@@ -1009,8 +997,6 @@ impl Room {
             stop: outcome.stop,
             #[cfg(test)]
             duration_ms,
-            #[cfg(test)]
-            mover_vision,
             frame,
         })
     }
@@ -1023,10 +1009,14 @@ impl Room {
         scene: Uuid,
         now: i64,
     ) -> Vec<Arc<ServerMsg>> {
-        let moving = self.moving.lock().await;
+        let mut moving = self.moving.lock().await;
+        // Prune expired entries on read, not just on the next commit's insert — otherwise a
+        // room with no further moves keeps every token's last (largest-payload) frame resident
+        // for the room's lifetime.
+        moving.retain(|_, st| now < st.end_ms);
         moving
             .values()
-            .filter(|st| st.mover == mover && st.scene == scene && now < st.end_ms)
+            .filter(|st| st.mover == mover && st.scene == scene)
             .map(|st| st.frame.clone())
             .collect()
     }
@@ -1040,10 +1030,14 @@ impl Room {
         exclude_mover: Uuid,
         now: i64,
     ) -> Vec<Arc<ServerMsg>> {
-        let moving = self.moving.lock().await;
+        let mut moving = self.moving.lock().await;
+        // Prune expired entries on read, not just on the next commit's insert — otherwise a
+        // room with no further moves keeps every token's last (largest-payload) frame resident
+        // for the room's lifetime.
+        moving.retain(|_, st| now < st.end_ms);
         moving
             .values()
-            .filter(|st| st.mover != exclude_mover && st.scene == scene && now < st.end_ms)
+            .filter(|st| st.mover != exclude_mover && st.scene == scene)
             .map(|st| st.frame.clone())
             .collect()
     }

@@ -1044,7 +1044,7 @@ export class RenderEngine implements SceneToolHost {
   }
 
   /** The sample with the greatest `tMs <= sweep.elapsed` (falls back to the first sample when
-   * elapsed precedes it). Delegates to `chooseVisionSample` (`fog-blend.ts`), which is also
+   * elapsed precedes it). Delegates to `chooseVisionSample`, which is also
    * asserted against the server's `chosen_vision_sample` on the shared parity fixture.
    * @param sweep The in-flight sweep state.
    * @param sweep.samples The sweep's ordered vision samples.

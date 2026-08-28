@@ -4,7 +4,7 @@
 //! vision and in-flight move timelines, then delegates the per-sample decision here.
 //!
 //! INVARIANT (client parity): `chosen_vision_sample` implements the same rule as the client's
-//! `chooseVisionSample` (`fog-blend.ts`) — greatest `t_ms <= elapsed`, first sample before
+//! `chooseVisionSample` — greatest `t_ms <= elapsed`, first sample before
 //! that — so a sample admitted here is exactly one the recipient's sweeping fog will show.
 //! The shared fixture `src/client/render/src/__fixtures__/chosen-vision-sample.json` is
 //! asserted by both sides.
