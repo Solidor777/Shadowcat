@@ -191,6 +191,16 @@ pub async fn load_current_docs(repo: &dyn Repository, cmd: &Command) -> HashMap<
 /// (`ws::conn::send_filtered_event` reads `StoredCommand.snapshot` directly) and never call this
 /// function. `world_gm_at_commit` carries exactly the one entry `filter_command` ever looks up
 /// for a given `ctx`: `ctx.user_id -> (ctx.world_role == WorldRole::Gm)`.
+///
+/// ASSUMPTION, not a guarantee: `permissions_before_commit`/`owner_before_commit` are left
+/// `None`, so `filter_command`'s READ-transition rule never fires for this recipient's own
+/// read-back. This relies on the author's write already having current READ on the document by
+/// the time it succeeded — true for the ordinary case (the write itself required at least
+/// `cap::WRITE_FIELDS`, which every built-in `DocRole` floor pairs with `cap::READ`), but NOT
+/// airtight against a deployment granting `cap::EDIT_PERMISSIONS` via `capabilities.by_user`/
+/// `by_role` without `cap::READ` alongside it — an author whose own write flips their OWN READ
+/// from denied to granted would see their read-back silently no-op client-side once, since no
+/// transition is synthesized here. No shipped grant creates this configuration today.
 pub fn mirror_current_snapshot<'a>(
     cmd: &Command,
     ctx: &PermissionContext,
@@ -232,6 +242,7 @@ pub fn mirror_current_snapshot<'a>(
             // comment), so there is no distinct pre-image to report: the READ-transition
             // rule needs a snapshot from BEFORE this op, which this mirror never had.
             permissions_before_commit: None,
+            owner_before_commit: None,
         }));
     }
     CommandSnapshot {
@@ -988,6 +999,19 @@ pub fn filter_command<'a>(
     current: &HashMap<Uuid, CurrentDoc>,
     actor_lookup: impl Fn(&Uuid) -> Option<&'a Document>,
 ) -> Command {
+    // The LAST `Update` op index per `doc_id`. `permissions_before_commit`/
+    // `permissions_at_commit`/`owner_before_commit`/`owner_at_commit` are batch-start/
+    // batch-end aggregates (captured once per `doc_id`, not per op — see
+    // `SqliteRepository::build_op_snapshot`'s callers), so every same-`doc_id` `Update` op in
+    // `cmd` resolves an IDENTICAL READ transition. Only the last such op may synthesize the
+    // transition's `Create`/`Delete`, or a command with N same-`doc_id` Updates would deliver
+    // N duplicate synthesized entries for one doc id.
+    let mut last_update_idx_for_doc: HashMap<Uuid, usize> = HashMap::new();
+    for (idx, op) in cmd.ops.iter().enumerate() {
+        if let Operation::Update { doc_id, .. } = op {
+            last_update_idx_for_doc.insert(*doc_id, idx);
+        }
+    }
     let mut out_ops = Vec::with_capacity(cmd.ops.len());
     for (idx, op) in cmd.ops.iter().enumerate() {
         // A `None` per-op snapshot entry (a legacy `world_events` row carrying no recorded
@@ -1118,13 +1142,16 @@ pub fn filter_command<'a>(
                 // half still gates delivery of a synthesized Create, and a synthesized
                 // Delete carries a stub so nothing hidden rides it.
                 //
-                // `owner_at_commit` stands in for the before-state owner too: `OpSnapshot`
-                // stores only the post-image owner, so an op that changes BOTH `/owner`
-                // and `/permissions/default` in the same Update resolves `access_before`
-                // against the NEW owner. That is the safe direction — the post-image
-                // owner is the one who must now see the document, so this can only widen
-                // a Create synthesis toward the recipient who is correct after the op,
-                // never toward one who should have been excluded.
+                // `access_before` uses `owner_before_commit` (the PRE-image effective owner),
+                // never `owner_at_commit`: for `TOKEN_DOC_TYPE`, `effective_role`'s ownership
+                // floor grants whole-document READ purely from `effective_owner`, independent
+                // of `permissions.default`, so an `/owner` reassignment is itself a READ
+                // transition. Resolving `access_before` against the POST-image owner (as
+                // both sides would then share) makes that transition structurally invisible —
+                // `read_before`/`read_commit` always agree, so an old owner losing a token
+                // never gets a synthesized `Delete` and a new owner gaining one purely by
+                // ownership never gets a synthesized `Create`. `owner_before_commit`'s own
+                // doc comment states this precisely.
                 if let Some(before_perms) = &op_snapshot.permissions_before_commit {
                     let before_doc = Document {
                         permissions: before_perms.clone(),
@@ -1135,25 +1162,46 @@ pub fn filter_command<'a>(
                         world_role_commit,
                         &before_doc,
                         &world_defaults.grants_for(&before_doc.doc_type),
-                        op_snapshot.owner_at_commit,
+                        op_snapshot.owner_before_commit,
                     );
                     let read_before = access_before.has(cap::READ);
                     let read_commit = access_commit.has(cap::READ);
-                    if !read_before && read_commit {
-                        if access_current.has(cap::READ) {
-                            match filter_properties(&cur.doc, &access_current) {
-                                Ok(filtered) => out_ops.push(Operation::Create { doc: filtered }),
-                                Err(e) => {
-                                    tracing::warn!(doc_id = %doc_id, error = %e, "redaction failed; dropping synthesized Create for recipient");
+                    if read_before != read_commit {
+                        // `permissions_before_commit`/`permissions_at_commit`/
+                        // `owner_before_commit`/`owner_at_commit` are batch-start/batch-end
+                        // aggregates shared by every same-`doc_id` `Update` op in `cmd` (see
+                        // `last_update_idx_for_doc`'s own comment), so every one of them
+                        // resolves this SAME transition. Only the last one may synthesize —
+                        // an earlier one is dropped outright (never falls through to the
+                        // ordinary field-delta path below): that path assumes the recipient
+                        // already has whatever access this SAME aggregate snapshot implies,
+                        // which is exactly the assumption a genuine transition violates for
+                        // every op before the one that actually delivers it.
+                        if last_update_idx_for_doc.get(doc_id) == Some(&idx) {
+                            if !read_before && read_commit {
+                                if access_current.has(cap::READ) {
+                                    match filter_properties(&cur.doc, &access_current) {
+                                        Ok(filtered) => {
+                                            out_ops.push(Operation::Create { doc: filtered })
+                                        }
+                                        Err(e) => {
+                                            tracing::warn!(doc_id = %doc_id, error = %e, "redaction failed; dropping synthesized Create for recipient");
+                                        }
+                                    }
                                 }
+                            } else {
+                                // No `access_current` gate here, unlike the Create branch above
+                                // — intentional, not an oversight. A resync always replays a
+                                // full contiguous range: if a LATER command in that same range
+                                // re-grants READ, its own commit-time snapshot produces a
+                                // compensating synthesized `Create`, so the recipient's final
+                                // state still converges correctly even though this Delete fires
+                                // unconditionally on the transition alone.
+                                out_ops.push(Operation::Delete {
+                                    doc: delete_stub(&cur.doc),
+                                });
                             }
                         }
-                        continue;
-                    }
-                    if read_before && !read_commit {
-                        out_ops.push(Operation::Delete {
-                            doc: delete_stub(&cur.doc),
-                        });
                         continue;
                     }
                 }

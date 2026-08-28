@@ -104,6 +104,7 @@ fn immediate_snapshot<'a>(
             // No before-image in this single-instant helper; `snapshot_with_before`
             // overrides this for tests exercising the READ-transition rule.
             permissions_before_commit: None,
+            owner_before_commit: None,
         }));
     }
     CommandSnapshot {
@@ -2879,6 +2880,7 @@ fn op_snapshot_update(
         created_seq_at_commit: None,
         permissions_at_commit: Some(permissions_at_commit),
         permissions_before_commit: None,
+        owner_before_commit: None,
     }
 }
 
@@ -3690,6 +3692,15 @@ fn snapshot_with_before<'a>(
     s
 }
 
+/// Sets every Update op's `owner_before_commit` in `snap` to `owner`, in place — for tests
+/// exercising a same-op or standalone `/owner` reassignment's own READ transition (the
+/// `TOKEN_DOC_TYPE` ownership floor case `owner_at_commit` cannot stand in for).
+fn set_owner_before(snap: &mut CommandSnapshot, owner: Option<Uuid>) {
+    for op in snap.per_op.iter_mut().flatten() {
+        op.owner_before_commit = owner;
+    }
+}
+
 #[tokio::test]
 async fn reveal_by_permissions_synthesizes_a_create_for_the_newly_readable_recipient() {
     let player = Uuid::from_u128(1);
@@ -4015,11 +4026,12 @@ async fn a_legacy_snapshot_without_before_permissions_keeps_the_old_behaviour() 
 
 #[tokio::test]
 async fn a_same_op_owner_and_permissions_change_still_reveals_to_the_new_owner() {
-    // `OpSnapshot::owner_at_commit` carries only the POST-image owner; an Update that
-    // changes `/owner` and `/permissions/default` in the same op resolves `access_before`
-    // against the new owner rather than the true pre-image owner. That is the safe
-    // direction: the post-image owner is who must now see the document, so a Create still
-    // synthesizes correctly for them.
+    // `doc_type: "combatant"` — NOT `TOKEN_DOC_TYPE`, so `effective_role`'s ownership floor
+    // never engages and this transition is driven entirely by the `permissions.default`
+    // change. Confirms the same-op `/owner` write is harmless for a doc_type where ownership
+    // carries no capability weight; it does NOT exercise the ownership-floor transition
+    // itself — see `a_token_reassigned_away_synthesizes_a_delete_for_the_old_owner`/
+    // `a_token_reassigned_to_a_new_owner_synthesizes_a_create_from_ownership_alone` for that.
     let new_owner = Uuid::from_u128(1);
     // `d` carries the POST-image permissions (matching this Update's `new` values), the
     // same convention `reveal_by_permissions_synthesizes_a_create_for_the_newly_readable_recipient`
@@ -4091,5 +4103,232 @@ async fn a_same_op_owner_and_permissions_change_still_reveals_to_the_new_owner()
         lookup,
     );
     assert_eq!(out.ops.len(), 1);
+    assert!(matches!(&out.ops[0], Operation::Create { .. }));
+}
+
+#[tokio::test]
+async fn a_token_reassigned_away_synthesizes_a_delete_for_the_old_owner() {
+    // `TOKEN_DOC_TYPE`'s ownership floor grants whole-document READ purely from
+    // `effective_owner`, independent of `permissions.default` — which never changes here.
+    // The old owner must receive a synthesized `Delete`, driven by ownership ALONE.
+    let old_owner = Uuid::from_u128(1);
+    let new_owner = Uuid::from_u128(2);
+    let mut d = doc(
+        PermissionSet {
+            default: DocRole::None,
+            ..Default::default()
+        },
+        serde_json::json!({}),
+    );
+    d.doc_type = TOKEN_DOC_TYPE.into();
+    d.engine = crate::data::document::tests::default_test_engine(TOKEN_DOC_TYPE);
+    // `d` (and `current`) carry the POST-image: the token now belongs to `new_owner`.
+    d.owner = Some(new_owner);
+    let cmd = Command {
+        seq: 15,
+        world_id: world_of(&d).unwrap(),
+        author: Uuid::from_u128(99),
+        ts: 0,
+        ops: vec![Operation::Update {
+            doc_id: d.id,
+            changes: vec![FieldChange {
+                remove: false,
+                path: "/owner".into(),
+                old: serde_json::json!(old_owner),
+                new: serde_json::json!(new_owner),
+            }],
+        }],
+    };
+    let current = HashMap::from([(
+        d.id,
+        CurrentDoc {
+            doc: d.clone(),
+            created_seq: 1,
+        },
+    )]);
+    let lookup = |_: &Uuid| None;
+    // `permissions.default` is identical before and after (`None` throughout) — the
+    // transition below comes from ownership alone.
+    let mut snap = snapshot_with_before(
+        &cmd,
+        &current,
+        &[],
+        &lookup,
+        PermissionSet {
+            default: DocRole::None,
+            ..Default::default()
+        },
+    );
+    set_owner_before(&mut snap, Some(old_owner));
+    let ctx = PermissionContext {
+        user_id: old_owner,
+        world_role: WorldRole::Player,
+    };
+    let out = filter_command(
+        &cmd,
+        &snap,
+        &ctx,
+        &WorldCapDefaults::default(),
+        &current,
+        lookup,
+    );
+    assert_eq!(out.ops.len(), 1);
+    match &out.ops[0] {
+        Operation::Delete { doc } => assert_eq!(doc.id, d.id),
+        other => panic!("expected a synthesized Delete for the old owner, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn a_token_reassigned_to_a_new_owner_synthesizes_a_create_from_ownership_alone() {
+    // Mirror of the Delete case above: `permissions.default` never changes, so the READ
+    // transition is driven entirely by ownership, and the NEW owner must receive a
+    // synthesized `Create`.
+    let old_owner = Uuid::from_u128(1);
+    let new_owner = Uuid::from_u128(2);
+    let mut d = doc(
+        PermissionSet {
+            default: DocRole::None,
+            ..Default::default()
+        },
+        serde_json::json!({ "hp": 4 }),
+    );
+    d.doc_type = TOKEN_DOC_TYPE.into();
+    d.engine = crate::data::document::tests::default_test_engine(TOKEN_DOC_TYPE);
+    d.owner = Some(new_owner);
+    let cmd = Command {
+        seq: 16,
+        world_id: world_of(&d).unwrap(),
+        author: Uuid::from_u128(99),
+        ts: 0,
+        ops: vec![Operation::Update {
+            doc_id: d.id,
+            changes: vec![FieldChange {
+                remove: false,
+                path: "/owner".into(),
+                old: serde_json::json!(old_owner),
+                new: serde_json::json!(new_owner),
+            }],
+        }],
+    };
+    let current = HashMap::from([(
+        d.id,
+        CurrentDoc {
+            doc: d.clone(),
+            created_seq: 1,
+        },
+    )]);
+    let lookup = |_: &Uuid| None;
+    let mut snap = snapshot_with_before(
+        &cmd,
+        &current,
+        &[],
+        &lookup,
+        PermissionSet {
+            default: DocRole::None,
+            ..Default::default()
+        },
+    );
+    set_owner_before(&mut snap, Some(old_owner));
+    let ctx = PermissionContext {
+        user_id: new_owner,
+        world_role: WorldRole::Player,
+    };
+    let out = filter_command(
+        &cmd,
+        &snap,
+        &ctx,
+        &WorldCapDefaults::default(),
+        &current,
+        lookup,
+    );
+    assert_eq!(out.ops.len(), 1);
+    match &out.ops[0] {
+        Operation::Create { doc } => {
+            assert_eq!(doc.id, d.id);
+            assert_eq!(doc.system["hp"], 4);
+        }
+        other => panic!("expected a synthesized Create for the new owner, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn two_updates_to_the_same_doc_in_one_command_synthesize_exactly_one_transition() {
+    // Two `Operation::Update`s targeting the SAME `doc_id` in one `Command`. Both share the
+    // identical aggregate `permissions_before_commit`/`permissions_at_commit` (batch-start/
+    // batch-end, captured once per doc_id — see `last_update_idx_for_doc`'s own comment), so
+    // both resolve the SAME READ transition; only the LAST op may synthesize.
+    let player = Uuid::from_u128(1);
+    let mut d = doc(
+        PermissionSet {
+            default: DocRole::Observer,
+            ..Default::default()
+        },
+        serde_json::json!({ "hp": 5 }),
+    );
+    d.doc_type = "combatant".into();
+    d.engine = crate::data::document::tests::default_test_engine("combatant");
+    let cmd = Command {
+        seq: 17,
+        world_id: world_of(&d).unwrap(),
+        author: Uuid::from_u128(99),
+        ts: 0,
+        ops: vec![
+            Operation::Update {
+                doc_id: d.id,
+                changes: vec![FieldChange {
+                    remove: false,
+                    path: "/system/hp".into(),
+                    old: serde_json::json!(3),
+                    new: serde_json::json!(5),
+                }],
+            },
+            Operation::Update {
+                doc_id: d.id,
+                changes: vec![FieldChange {
+                    remove: false,
+                    path: "/permissions/default".into(),
+                    old: serde_json::json!("none"),
+                    new: serde_json::json!("observer"),
+                }],
+            },
+        ],
+    };
+    let current = HashMap::from([(
+        d.id,
+        CurrentDoc {
+            doc: d.clone(),
+            created_seq: 1,
+        },
+    )]);
+    let lookup = |_: &Uuid| None;
+    let snap = snapshot_with_before(
+        &cmd,
+        &current,
+        &[],
+        &lookup,
+        PermissionSet {
+            default: DocRole::None,
+            ..Default::default()
+        },
+    );
+    let ctx = PermissionContext {
+        user_id: player,
+        world_role: WorldRole::Player,
+    };
+    let out = filter_command(
+        &cmd,
+        &snap,
+        &ctx,
+        &WorldCapDefaults::default(),
+        &current,
+        lookup,
+    );
+    assert_eq!(
+        out.ops.len(),
+        1,
+        "exactly one synthesized entry, not one per same-doc_id Update op: {:?}",
+        out.ops
+    );
     assert!(matches!(&out.ops[0], Operation::Create { .. }));
 }

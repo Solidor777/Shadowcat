@@ -2246,6 +2246,7 @@ impl SqliteRepository {
         post_images: &std::collections::HashMap<Uuid, Document>,
         deleted_created_seqs: &std::collections::HashMap<Uuid, i64>,
         pre_permissions: &std::collections::HashMap<Uuid, crate::data::document::PermissionSet>,
+        pre_owners: &std::collections::HashMap<Uuid, Option<Uuid>>,
     ) -> Result<crate::data::snapshot::OpSnapshot, DataError> {
         use crate::data::snapshot::OpSnapshot;
         match op {
@@ -2275,6 +2276,7 @@ impl SqliteRepository {
                     created_seq_at_commit: None,
                     permissions_at_commit: None,
                     permissions_before_commit: None,
+                    owner_before_commit: None,
                 })
             }
             // Reads the op's OWN carried `doc`, not `post_images` — unlike Create/Update,
@@ -2295,6 +2297,7 @@ impl SqliteRepository {
                     created_seq_at_commit: deleted_created_seqs.get(&doc.id).copied(),
                     permissions_at_commit: None,
                     permissions_before_commit: None,
+                    owner_before_commit: None,
                 })
             }
             Operation::Update { doc_id, changes } => {
@@ -2341,6 +2344,7 @@ impl SqliteRepository {
                             ..p.clone()
                         }
                     }),
+                    owner_before_commit: pre_owners.get(doc_id).copied().flatten(),
                 })
             }
         }
@@ -2792,6 +2796,12 @@ impl Repository for SqliteRepository {
             Uuid,
             crate::data::document::PermissionSet,
         > = std::collections::HashMap::new();
+        // Batch-start EFFECTIVE OWNER for each Update target, captured in lockstep with
+        // `pre_permissions` at the same pre-image load point (first Update of a batch id
+        // wins). `Option<Uuid>` inside the map value: an entry's ABSENCE means "not yet
+        // captured", its `None` value means "captured, no owner".
+        let mut pre_owners: std::collections::HashMap<Uuid, Option<Uuid>> =
+            std::collections::HashMap::new();
         let mut normalized_ops = Vec::with_capacity(sequenced.ops.len());
         for op in &sequenced.ops {
             match op {
@@ -2825,14 +2835,14 @@ impl Repository for SqliteRepository {
                     let mut value: serde_json::Value =
                         serde_json::from_str(row.get::<String, _>("json").as_str())?;
                     // Captured BEFORE this op applies, and only for the FIRST Update of
-                    // this id in the batch — see `pre_permissions`'s own comment.
-                    pre_permissions.entry(*doc_id).or_insert_with(|| {
-                        value
-                            .get("permissions")
-                            .cloned()
-                            .and_then(|p| serde_json::from_value(p).ok())
-                            .unwrap_or_default()
-                    });
+                    // this id in the batch — see `pre_permissions`'s own comment. Owner
+                    // capture rides the same guard so the two maps stay in lockstep.
+                    if !pre_permissions.contains_key(doc_id) {
+                        let pre_doc: Document = serde_json::from_value(value.clone())?;
+                        pre_permissions.insert(*doc_id, pre_doc.permissions.clone());
+                        let pre_owner = Self::load_effective_owner(&mut *tx, &pre_doc).await?;
+                        pre_owners.insert(*doc_id, pre_owner);
+                    }
                     for ch in changes {
                         // THE `apply_field_change` mutation rule. Never
                         // re-derive the remove/set branch here: the derived scene ECS
@@ -2911,6 +2921,7 @@ impl Repository for SqliteRepository {
                     &post_images,
                     &deleted_created_seqs,
                     &pre_permissions,
+                    &pre_owners,
                 )
                 .await?,
             ));
@@ -3018,6 +3029,12 @@ impl Repository for SqliteRepository {
             Uuid,
             crate::data::document::PermissionSet,
         > = std::collections::HashMap::new();
+        // Batch-start EFFECTIVE OWNER for each Update target, captured in lockstep with
+        // `pre_permissions` at the same pre-image load point (first Update of a batch id
+        // wins). `Option<Uuid>` inside the map value: an entry's ABSENCE means "not yet
+        // captured", its `None` value means "captured, no owner".
+        let mut pre_owners: std::collections::HashMap<Uuid, Option<Uuid>> =
+            std::collections::HashMap::new();
         for op in &mut ops {
             match op {
                 Operation::Create { doc } => {
@@ -3205,10 +3222,13 @@ impl Repository for SqliteRepository {
                         .await?
                         .ok_or_else(|| DataError::Conflict(format!("document {doc_id} missing")))?;
                     // Captured BEFORE this op applies, and only for the FIRST Update of
-                    // this id in the batch — see `pre_permissions`'s own comment.
-                    pre_permissions
-                        .entry(*doc_id)
-                        .or_insert_with(|| cur.permissions.clone());
+                    // this id in the batch — see `pre_permissions`'s own comment. Owner
+                    // capture rides the same guard so the two maps stay in lockstep.
+                    if !pre_permissions.contains_key(doc_id) {
+                        pre_permissions.insert(*doc_id, cur.permissions.clone());
+                        let pre_owner = Self::load_effective_owner(&mut *tx, &cur).await?;
+                        pre_owners.insert(*doc_id, pre_owner);
+                    }
                     check_command_scope(&cur, world_id)?;
                     // Message docs are server-authored and immutable to clients
                     // in this checkpoint: `Update` carries no `doc_type` for
@@ -3615,6 +3635,7 @@ impl Repository for SqliteRepository {
                     &post_images,
                     &deleted_created_seqs,
                     &pre_permissions,
+                    &pre_owners,
                 )
                 .await?,
             ));

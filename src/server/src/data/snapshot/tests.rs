@@ -27,6 +27,7 @@ fn stored_command_round_trips_through_json() {
                 created_seq_at_commit: Some(5),
                 permissions_at_commit: Some(PermissionSet::default()),
                 permissions_before_commit: Some(PermissionSet::default()),
+                owner_before_commit: Some(Uuid::from_u128(6)),
             })],
             world_gm_at_commit: HashMap::from([(Uuid::from_u128(4), true)]),
         },

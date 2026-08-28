@@ -73,6 +73,16 @@ pub struct OpSnapshot {
     /// existed, where the rule stays inert.
     #[serde(default)]
     pub permissions_before_commit: Option<PermissionSet>,
+    /// `Update` only: the document's EFFECTIVE owner (`permission::effective_owner`) BEFORE
+    /// this op applied — captured the same way as `permissions_before_commit`, at the same
+    /// pre-image load point. `owner_at_commit` is the post-image owner and MUST NOT stand in
+    /// for this: a `TOKEN_DOC_TYPE` document's whole-document READ can be granted purely by
+    /// `effective_role`'s ownership floor, independent of `permissions.default`, so an
+    /// `/owner` reassignment is itself a READ transition `filter_command`'s rule must resolve
+    /// against the PRE-image owner, not the post-image one both sides would otherwise share.
+    /// `None` on `Create`/`Delete` and on rows persisted before the field existed.
+    #[serde(default)]
+    pub owner_before_commit: Option<Uuid>,
 }
 
 /// Commit-time redaction inputs for a whole `Command`, index-aligned with `Command.ops`. Built
