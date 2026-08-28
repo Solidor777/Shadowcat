@@ -8,6 +8,7 @@ pub(super) use crate::data::document::WorldCapDefaults;
 pub(super) use grid_shape::GridShape as _;
 pub(super) use serde_json::json;
 
+/// Builds a world-scoped fixture document of type `ty`, parented to `parent` when given.
 pub(super) fn doc(id: u128, parent: Option<u128>, ty: &str) -> Document {
     let mut d =
         crate::data::document::tests::world_scoped_doc(Uuid::from_u128(9), Uuid::from_u128(id), ty);
@@ -69,6 +70,7 @@ pub(super) fn actor_body(vision: serde_json::Value) -> serde_json::Value {
     })
 }
 
+/// Builds a non-removing `FieldChange` setting `path` to `new` (`old` is an unused placeholder).
 pub(super) fn fc(path: &str, new: serde_json::Value) -> crate::data::command::FieldChange {
     crate::data::command::FieldChange {
         remove: false,

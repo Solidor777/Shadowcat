@@ -2,6 +2,15 @@
 use super::*;
 
 #[test]
+fn diagonal_rule_defaults_to_chebyshev_without_world_settings() {
+    let ecs = SceneEcs::new();
+    assert_eq!(
+        ecs.resolved_diagonal_rule(),
+        crate::scene::pathfinding::DiagonalRule::Chebyshev
+    );
+}
+
+#[test]
 fn diagonal_rule_falls_back_when_structural_keys_absent() {
     // A world-settings doc with `pathfinding.diagonalRule:"alternating"` but missing `scene`
     // or `animation` must resolve to `Chebyshev` — the structural guard (same as resolve_scene)

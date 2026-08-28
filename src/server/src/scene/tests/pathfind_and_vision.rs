@@ -1,15 +1,6 @@
 //! The grid and continuous (navmesh) pathfinders, streamed per-move vision sampling, and hex-grid vision/lighting range parity.
 use super::*;
 
-#[test]
-fn diagonal_rule_defaults_to_chebyshev_without_world_settings() {
-    let ecs = SceneEcs::new();
-    assert_eq!(
-        ecs.resolved_diagonal_rule(),
-        crate::scene::pathfinding::DiagonalRule::Chebyshev
-    );
-}
-
 /// Builds a SceneEcs with one scene (id 10), one player-owned token at (50, 50), and
 /// world-settings that set `movementRestriction = "revealed"` with no placed lights (env
 /// intensity = 0). The visible mask is therefore empty; only explored memory can admit cells.
