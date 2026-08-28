@@ -202,7 +202,7 @@ export const BANNED = [
   { name: "local letter+digit marker", re: /\b[ACFHRV]-?\d(?:-\d+)?\b/ },
   {
     name: "repo document pointer",
-    re: /docs\/[\w./-]+\.md|\b(?:TODO|OPEN_BUGS|CLOSED_BUGS|POST_WORK_FINDINGS|ARCHITECTURE|PLAN)\.md/i,
+    re: /docs\/[\w./-]+\.md|\b(?:TODO|OPEN_BUGS|CLOSED_BUGS|POST_WORK_FINDINGS|ARCHITECTURE|PLAN|HISTORY)\.md/i,
   },
   // The same five churn trackers named WITHOUT the extension. The extension is a spelling, not the
   // referent, so requiring it lets the identical pointer through by dropping four characters.
@@ -215,7 +215,7 @@ export const BANNED = [
   // tracked file's verdict.
   {
     name: "extensionless tracker pointer",
-    re: /\b(?:see|in|per|from|under|logged[\s]+in|recorded[\s]+in|tracked[\s]+in|filed[\s]+in|listed[\s]+in|cites?|names?|references?)[\s]+(?:the[\s]+)?(?:TODO|OPEN_BUGS|CLOSED_BUGS|POST_WORK_FINDINGS|PLAN)\b(?!\.md)/,
+    re: /\b(?:see|in|per|from|under|logged[\s]+in|recorded[\s]+in|tracked[\s]+in|filed[\s]+in|listed[\s]+in|cites?|names?|references?)[\s]+(?:the[\s]+)?(?:TODO|OPEN_BUGS|CLOSED_BUGS|POST_WORK_FINDINGS|PLAN|HISTORY)\b(?!\.md)/,
   },
   // A comment naming a codebase skill BY NAME points at a knowledge artifact outside the code whose
   // identity a process assigns: skills are created, renamed, split and retired, and when one goes
@@ -498,7 +498,7 @@ export const SKILL_BANNED = [
   // EXAMPLE: none of the durable design docs are named after one of them.
   {
     name: "ephemeral doc pointer",
-    re: /\b(?:TODO|PLAN|OPEN_BUGS|CLOSED_BUGS|POST_WORK_FINDINGS)\.md\b/,
+    re: /\b(?:TODO|PLAN|HISTORY|OPEN_BUGS|CLOSED_BUGS|POST_WORK_FINDINGS)\.md\b/,
   },
   skillBannedByName("local letter+digit marker"),
   skillBannedByName("numbered constraint"),

@@ -11,7 +11,8 @@ Open source virtual tabletop. Hostable locally via a single executable, supports
 | Doc | Role |
 |---|---|
 | `docs/design/ARCHITECTURE.md` | Source of truth: engine invariants, technology choices, code style, testing rules |
-| `docs/PLAN.md` | Milestone roadmap |
+| `docs/PLAN.md` | Forward roadmap: only unbuilt work |
+| `docs/HISTORY.md` | Completed milestones + work log (historical artifact; append-on-completion only) |
 | `docs/OPEN_BUGS.md` | Lists of currently open bugs. |
 | `docs/TODO.md` | Deferred-work backlog |
 | `docs/POST_WORK_FINDINGS.md` | Living record of post-work review issues. NOT a to-do list |

@@ -173,6 +173,7 @@ test("skill mode flags every named churn tracker", () => {
   for (const file of [
     "TODO.md",
     "PLAN.md",
+    "HISTORY.md",
     "OPEN_BUGS.md",
     "CLOSED_BUGS.md",
     "POST_WORK_FINDINGS.md",
