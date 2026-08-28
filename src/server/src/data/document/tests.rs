@@ -158,7 +158,9 @@ fn role_has_checks_all_and_by_type() {
     assert!(!d.role_has(WorldRole::Spectator, "token", "core:create"));
 }
 
-fn sample_doc() -> Document {
+/// A minimal valid `actor` document; shared by data/validation/scene unit
+/// tests that just need a well-formed baseline to mutate.
+pub(crate) fn sample_doc() -> Document {
     Document {
         id: Uuid::from_u128(1),
         scope: Scope::World {

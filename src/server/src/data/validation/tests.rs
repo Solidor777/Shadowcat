@@ -610,6 +610,47 @@ fn tree_validator_recurses_embedded_by_child_doc_type() {
     assert!(matches!(err, DataError::SchemaViolation { .. }));
 }
 
+// --- validate_containment: combat family placement rules ---
+
+#[test]
+fn validate_containment_rejects_a_parented_combat_and_an_unparented_combatant() {
+    let mut combat = crate::data::document::tests::sample_doc();
+    combat.doc_type = "combat".into();
+    combat.engine = crate::data::document::tests::default_test_engine("combat");
+    combat.parent_id = Some(uuid::Uuid::from_u128(5));
+    assert!(validate_containment(&combat).is_err());
+    combat.parent_id = None;
+    assert!(validate_containment(&combat).is_ok());
+
+    let mut combatant = crate::data::document::tests::sample_doc();
+    combatant.doc_type = "combatant".into();
+    combatant.engine = crate::data::document::tests::default_test_engine("combatant");
+    combatant.parent_id = None;
+    assert!(validate_containment(&combatant).is_err());
+    combatant.parent_id = Some(uuid::Uuid::from_u128(5));
+    assert!(validate_containment(&combatant).is_ok());
+}
+
+#[test]
+fn validate_containment_rejects_combat_and_combatant_as_embedded_children() {
+    for child_type in ["combat", "combatant"] {
+        let mut child = crate::data::document::tests::sample_doc();
+        child.doc_type = child_type.into();
+        child.engine = crate::data::document::tests::default_test_engine(child_type);
+        child.parent_id = if child_type == "combatant" {
+            Some(uuid::Uuid::from_u128(5))
+        } else {
+            None
+        };
+        let mut parent = crate::data::document::tests::sample_doc();
+        parent.embedded.insert(child_type.into(), vec![child]);
+        assert!(
+            validate_containment(&parent).is_err(),
+            "{child_type} must not embed"
+        );
+    }
+}
+
 #[test]
 fn tree_validator_grandchild_violation_rejects() {
     let mut parent = doc_with_system(serde_json::json!({}));

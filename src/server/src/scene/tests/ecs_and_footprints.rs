@@ -16,6 +16,23 @@ fn hydrate_counts_scene_entities_only() {
 }
 
 #[test]
+fn a_combatant_hydrates_as_an_inert_scene_entity() {
+    let scene_id = Uuid::from_u128(1);
+    let combat_id = Uuid::from_u128(2);
+    let mut combatant = crate::data::document::tests::sample_doc();
+    combatant.id = Uuid::from_u128(3);
+    combatant.doc_type = "combatant".into();
+    combatant.parent_id = Some(combat_id);
+    combatant.engine = crate::data::document::tests::default_test_engine("combatant");
+    let mut scene = crate::data::document::tests::sample_doc();
+    scene.id = scene_id;
+    scene.doc_type = "scene".into();
+    scene.engine = crate::data::document::tests::default_test_engine("scene");
+    let ecs = SceneEcs::from_documents(vec![scene, combatant], 0);
+    assert_eq!(ecs.entity_count(), 2);
+}
+
+#[test]
 fn resolve_grid_shape_selects_hex_grid_for_hex_kind_scenes() {
     let scene_id = Uuid::from_u128(10);
     let scene = entity_doc_top_eng(

@@ -16,7 +16,8 @@ use crate::data::document::{
     WorldCapDefaults, WorldRole,
 };
 use crate::data::engine::{
-    CONDITION_REGISTRY_DOC_TYPE, FACTION_REGISTRY_DOC_TYPE, WORLD_SETTINGS_DOC_TYPE,
+    CombatEngine, COMBATANT_DOC_TYPE, COMBAT_DOC_TYPE, CONDITION_REGISTRY_DOC_TYPE,
+    FACTION_REGISTRY_DOC_TYPE, RESOURCE_REGISTRY_DOC_TYPE, WORLD_SETTINGS_DOC_TYPE,
 };
 use crate::data::permission::{
     cap, declared_caps_for_document, declared_caps_for_path, required_cap_for_path,
@@ -42,6 +43,7 @@ const SINGLETON_DOC_TYPES: &[&str] = &[
     WORLD_SETTINGS_DOC_TYPE,
     FACTION_REGISTRY_DOC_TYPE,
     CONDITION_REGISTRY_DOC_TYPE,
+    RESOURCE_REGISTRY_DOC_TYPE,
     crate::chat::CHAT_SETTINGS_DOC_TYPE,
     crate::chat::DICE_SETTINGS_DOC_TYPE,
 ];
@@ -2358,6 +2360,32 @@ impl SqliteRepository {
         Ok(row.is_some())
     }
 
+    /// Whether an ACTIVE combat other than `excluding` already runs on `scene_id`
+    /// in `world_id`. Runs on the caller's transaction for the same
+    /// single-writer reason as `singleton_doc_exists`.
+    async fn active_combat_exists<'e, E>(
+        executor: E,
+        world_id: Uuid,
+        scene_id: Uuid,
+        excluding: Uuid,
+    ) -> Result<bool, DataError>
+    where
+        E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+    {
+        let row = sqlx::query(
+            "SELECT 1 FROM documents WHERE world_id = ? AND doc_type = ? AND id != ? \
+             AND json_extract(json, '$.engine.active') = 1 \
+             AND json_extract(json, '$.engine.scene_id') = ? LIMIT 1",
+        )
+        .bind(world_id.to_string())
+        .bind(COMBAT_DOC_TYPE)
+        .bind(excluding.to_string())
+        .bind(scene_id.to_string())
+        .fetch_optional(executor)
+        .await?;
+        Ok(row.is_some())
+    }
+
     /// Depth-first descendant ids of `root` within one transaction (children
     /// before parents), via the `parent_id` index. Excludes `root`. Used to
     /// expand a parent delete into per-descendant reversible Delete ops.
@@ -2758,6 +2786,7 @@ impl Repository for SqliteRepository {
                     // authz — see the /engine gate below for the same rationale).
                     crate::data::validation::validate_property_overrides(&doc)?;
                     crate::data::validation::validate_engine_tree(&mut doc)?;
+                    crate::data::validation::validate_containment(&doc)?;
                     Self::upsert_document(&mut tx, &doc, seq).await?;
                     post_images.insert(doc.id, doc.clone());
                     normalized_ops.push(Operation::Create { doc });
@@ -2917,6 +2946,31 @@ impl Repository for SqliteRepository {
         // closes that intra-batch gap the DB check cannot see.
         let mut claimed_singletons: std::collections::HashSet<String> =
             std::collections::HashSet::new();
+        // `batch_combats` tracks the ids of `combat` documents Created earlier
+        // in this same batch, so a same-batch `combat` + `combatant` pair
+        // (a scene+combat+combatants import/setup in one Intent) can satisfy
+        // the combatant-parentage check without a DB round trip that would
+        // see nothing yet inserted.
+        let mut batch_combats: std::collections::HashSet<Uuid> = std::collections::HashSet::new();
+        // `claimed_active_scenes` tracks scene ids with an active combat
+        // claimed earlier in this batch, mirroring `claimed_singletons`'s
+        // intra-batch-race closure for the one-active-combat-per-scene rule.
+        // An Update that DEACTIVATES a combat removes its scene here too, so
+        // a later same-batch Update activating a DIFFERENT combat on that
+        // scene still passes (`activating_a_combat_by_update_is_gated_like_create`
+        // pins the deactivate-then-activate ordering).
+        let mut claimed_active_scenes: std::collections::HashSet<Uuid> =
+            std::collections::HashSet::new();
+        // `released_active_scenes` pairs with `claimed_active_scenes` for
+        // Phase 2's Update handling below: an Update that DEACTIVATES a
+        // combat inserts its scene here, and a later same-batch Update
+        // activating a DIFFERENT combat on that scene consults
+        // `claimed_active_scenes` minus this set rather than the raw claim
+        // alone, so the deactivation is honoured even though Phase 2 has not
+        // yet reached the point of re-reading `claimed_active_scenes` from
+        // scratch.
+        let mut released_active_scenes: std::collections::HashSet<Uuid> =
+            std::collections::HashSet::new();
         for op in &mut ops {
             match op {
                 Operation::Create { doc } => {
@@ -2924,6 +2978,52 @@ impl Repository for SqliteRepository {
                     validation::validate_system_size(doc)?;
                     validation::validate_property_overrides(doc)?;
                     validation::validate_engine_tree(doc)?;
+                    validation::validate_containment(doc)?;
+                    if doc.doc_type == COMBATANT_DOC_TYPE {
+                        // `validate_containment` already guarantees `parent_id` is
+                        // `Some` for a combatant.
+                        let pid = doc.parent_id.expect(
+                            "validate_containment requires a combatant to carry a parent_id",
+                        );
+                        let parent_is_combat = batch_combats.contains(&pid)
+                            || Self::load_document(&mut *tx, pid)
+                                .await?
+                                .is_some_and(|p| p.doc_type == COMBAT_DOC_TYPE);
+                        if !parent_is_combat {
+                            return Err(DataError::OpFailed(
+                                "combatant parent must be a combat document".into(),
+                            ));
+                        }
+                    }
+                    if doc.doc_type == COMBAT_DOC_TYPE {
+                        batch_combats.insert(doc.id);
+                        // `validate_engine_tree` above already validated and
+                        // normalized this body against `CombatEngine`, so the
+                        // re-deserialize here cannot fail.
+                        let combat_engine: CombatEngine = doc
+                            .engine
+                            .clone()
+                            .and_then(|v| serde_json::from_value(v).ok())
+                            .expect(
+                                "validate_engine_tree already validated the combat engine body",
+                            );
+                        if combat_engine.active {
+                            if claimed_active_scenes.contains(&combat_engine.scene_id)
+                                || Self::active_combat_exists(
+                                    &mut *tx,
+                                    world_id,
+                                    combat_engine.scene_id,
+                                    doc.id,
+                                )
+                                .await?
+                            {
+                                return Err(DataError::Conflict(
+                                    "an active combat already exists on this scene".into(),
+                                ));
+                            }
+                            claimed_active_scenes.insert(combat_engine.scene_id);
+                        }
+                    }
                     validation::validate_system_schema_tree(doc, &world_schemas)?;
                     // A self-referential parent_id satisfies the self-FK and
                     // commits, then poisons the doc's deletion (the descendant
@@ -3358,6 +3458,41 @@ impl Repository for SqliteRepository {
                     // `doc.engine` in place to the re-serialized validated
                     // struct — see `validate_engine_tree`'s doc comment).
                     validation::validate_engine_tree(&mut doc)?;
+                    validation::validate_containment(&doc)?;
+                    if doc.doc_type == COMBAT_DOC_TYPE {
+                        // `validate_engine_tree` above already validated and
+                        // normalized this body against `CombatEngine`, so the
+                        // re-deserialize here cannot fail.
+                        let combat_engine: CombatEngine = doc
+                            .engine
+                            .clone()
+                            .and_then(|v| serde_json::from_value(v).ok())
+                            .expect(
+                                "validate_engine_tree already validated the combat engine body",
+                            );
+                        if combat_engine.active {
+                            let claimed_and_not_released = claimed_active_scenes
+                                .contains(&combat_engine.scene_id)
+                                && !released_active_scenes.contains(&combat_engine.scene_id);
+                            if claimed_and_not_released
+                                || Self::active_combat_exists(
+                                    &mut *tx,
+                                    world_id,
+                                    combat_engine.scene_id,
+                                    *doc_id,
+                                )
+                                .await?
+                            {
+                                return Err(DataError::Conflict(
+                                    "an active combat already exists on this scene".into(),
+                                ));
+                            }
+                            claimed_active_scenes.insert(combat_engine.scene_id);
+                            released_active_scenes.remove(&combat_engine.scene_id);
+                        } else {
+                            released_active_scenes.insert(combat_engine.scene_id);
+                        }
+                    }
                     // Tier-2 structural schema gate on the MERGED post-image
                     // (existing row + applied `FieldChange`s), matching
                     // `validate_engine_tree` above: never the pre-image.

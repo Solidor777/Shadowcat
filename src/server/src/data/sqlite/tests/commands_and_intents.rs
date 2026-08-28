@@ -2561,3 +2561,320 @@ async fn apply_intent_update_violating_system_schema_is_rejected_and_seq_untouch
     let seq_after = r.get_world(w.id).await.unwrap().unwrap().seq;
     assert_eq!(seq_before, seq_after);
 }
+
+// --- combat family ingress: singleton registry, one active combat per
+// scene, combatant parentage ---
+
+#[tokio::test]
+async fn resource_registry_is_a_singleton() {
+    use crate::data::membership::PermissionContext;
+    let r = repo().await;
+    let gm = r
+        .create_user("gm", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let w = r.create_world_owned("W", gm, 0).await.unwrap();
+    let ctx = PermissionContext {
+        user_id: gm,
+        world_role: WorldRole::Gm,
+    };
+    r.apply_intent(
+        &ctx,
+        w.id,
+        vec![Operation::Create {
+            doc: singleton_test_doc(1, w.id, "resource-registry"),
+        }],
+        1,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+    let err = r
+        .apply_intent(
+            &ctx,
+            w.id,
+            vec![Operation::Create {
+                doc: singleton_test_doc(2, w.id, "resource-registry"),
+            }],
+            2,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, DataError::Conflict(_)));
+}
+
+/// A `combat` document bound to `scene`, `active` as given.
+fn combat_doc(id: u128, world: Uuid, scene: Uuid, active: bool) -> Document {
+    let mut d = world_doc(id, world, serde_json::json!({}));
+    d.doc_type = "combat".into();
+    d.engine = Some(serde_json::json!({
+        "scene_id": scene.to_string(), "active": active, "round": 0, "turn": null,
+        "turn_control": "owner_may_end", "order": [],
+        "movement": { "resource": null, "interpretation": "per_cell", "enforcement": "none" }
+    }));
+    d
+}
+
+/// A `combatant` document parented as given.
+fn combatant_doc(id: u128, world: Uuid, parent: Option<Uuid>) -> Document {
+    let mut d = world_doc(id, world, serde_json::json!({}));
+    d.doc_type = "combatant".into();
+    d.parent_id = parent;
+    d.engine = crate::data::document::tests::default_test_engine("combatant");
+    d
+}
+
+#[tokio::test]
+async fn a_second_active_combat_on_the_same_scene_is_rejected_but_another_scene_is_fine() {
+    use crate::data::membership::PermissionContext;
+    let r = repo().await;
+    let gm = r
+        .create_user("gm", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let w = r.create_world_owned("W", gm, 0).await.unwrap();
+    let ctx = PermissionContext {
+        user_id: gm,
+        world_role: WorldRole::Gm,
+    };
+    let scene_a = Uuid::from_u128(0xa);
+    let scene_b = Uuid::from_u128(0xb);
+    r.apply_intent(
+        &ctx,
+        w.id,
+        vec![Operation::Create {
+            doc: combat_doc(1, w.id, scene_a, true),
+        }],
+        1,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+    let err = r
+        .apply_intent(
+            &ctx,
+            w.id,
+            vec![Operation::Create {
+                doc: combat_doc(2, w.id, scene_a, true),
+            }],
+            2,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, DataError::Conflict(_)),
+        "second active combat on scene A must conflict"
+    );
+    // Inactive on the same scene is allowed; active on another scene is allowed.
+    r.apply_intent(
+        &ctx,
+        w.id,
+        vec![Operation::Create {
+            doc: combat_doc(3, w.id, scene_a, false),
+        }],
+        3,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+    r.apply_intent(
+        &ctx,
+        w.id,
+        vec![Operation::Create {
+            doc: combat_doc(4, w.id, scene_b, true),
+        }],
+        4,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn activating_a_combat_by_update_is_gated_like_create() {
+    use crate::data::membership::PermissionContext;
+    let r = repo().await;
+    let gm = r
+        .create_user("gm", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let w = r.create_world_owned("W", gm, 0).await.unwrap();
+    let ctx = PermissionContext {
+        user_id: gm,
+        world_role: WorldRole::Gm,
+    };
+    let scene = Uuid::from_u128(0xa);
+    r.apply_intent(
+        &ctx,
+        w.id,
+        vec![
+            Operation::Create {
+                doc: combat_doc(1, w.id, scene, true),
+            },
+            Operation::Create {
+                doc: combat_doc(2, w.id, scene, false),
+            },
+        ],
+        1,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+    let activate = Operation::Update {
+        doc_id: Uuid::from_u128(2),
+        changes: vec![FieldChange {
+            remove: false,
+            path: "/engine/active".into(),
+            old: serde_json::json!(false),
+            new: serde_json::json!(true),
+        }],
+    };
+    let err = r
+        .apply_intent(&ctx, w.id, vec![activate.clone()], 2, WriteOrigin::Client)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, DataError::Conflict(_)));
+    // Deactivate the first, then the same Update succeeds.
+    let deactivate = Operation::Update {
+        doc_id: Uuid::from_u128(1),
+        changes: vec![FieldChange {
+            remove: false,
+            path: "/engine/active".into(),
+            old: serde_json::json!(true),
+            new: serde_json::json!(false),
+        }],
+    };
+    r.apply_intent(
+        &ctx,
+        w.id,
+        vec![deactivate, activate],
+        3,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn two_active_combats_for_one_scene_in_one_batch_are_rejected() {
+    use crate::data::membership::PermissionContext;
+    let r = repo().await;
+    let gm = r
+        .create_user("gm", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let w = r.create_world_owned("W", gm, 0).await.unwrap();
+    let ctx = PermissionContext {
+        user_id: gm,
+        world_role: WorldRole::Gm,
+    };
+    let scene = Uuid::from_u128(0xa);
+    let err = r
+        .apply_intent(
+            &ctx,
+            w.id,
+            vec![
+                Operation::Create {
+                    doc: combat_doc(1, w.id, scene, true),
+                },
+                Operation::Create {
+                    doc: combat_doc(2, w.id, scene, true),
+                },
+            ],
+            1,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, DataError::Conflict(_)));
+    assert!(
+        r.query_documents(w.id, "combat").await.unwrap().is_empty(),
+        "rejected batch must not partially commit"
+    );
+}
+
+#[tokio::test]
+async fn combatant_parent_must_be_a_combat_in_this_world() {
+    use crate::data::membership::PermissionContext;
+    let r = repo().await;
+    let gm = r
+        .create_user("gm", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let w = r.create_world_owned("W", gm, 0).await.unwrap();
+    let ctx = PermissionContext {
+        user_id: gm,
+        world_role: WorldRole::Gm,
+    };
+    let scene = Uuid::from_u128(0xa);
+    // Parent is an actor, not a combat.
+    r.apply_intent(
+        &ctx,
+        w.id,
+        vec![Operation::Create {
+            doc: world_doc(9, w.id, serde_json::json!({})),
+        }],
+        1,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+    let err = r
+        .apply_intent(
+            &ctx,
+            w.id,
+            vec![Operation::Create {
+                doc: combatant_doc(10, w.id, Some(Uuid::from_u128(9))),
+            }],
+            2,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, DataError::OpFailed(_)));
+    // Parent missing entirely.
+    let err = r
+        .apply_intent(
+            &ctx,
+            w.id,
+            vec![Operation::Create {
+                doc: combatant_doc(11, w.id, Some(Uuid::from_u128(99))),
+            }],
+            3,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, DataError::OpFailed(_)));
+    // Parent is a combat: ok, including a same-batch parent.
+    r.apply_intent(
+        &ctx,
+        w.id,
+        vec![
+            Operation::Create {
+                doc: combat_doc(1, w.id, scene, false),
+            },
+            Operation::Create {
+                doc: combatant_doc(12, w.id, Some(Uuid::from_u128(1))),
+            },
+        ],
+        4,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+    // Deleting the combat cascades to its combatants.
+    let combat = r.get_document(Uuid::from_u128(1)).await.unwrap().unwrap();
+    r.apply_intent(
+        &ctx,
+        w.id,
+        vec![Operation::Delete { doc: combat }],
+        5,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+    assert!(r.get_document(Uuid::from_u128(12)).await.unwrap().is_none());
+}
