@@ -44,7 +44,10 @@ export default defineConfig({
   plugins: [svelte()],
   build: {
     outDir: "../../../dist",
-    emptyOutDir: true,
+    // The root `build` script runs `pnpm clean` before this build, sending `dist/` to the OS
+    // recycle bin via `removeRecoverably`; Vite's own `emptyOutDir` is off so it never performs
+    // a raw delete of its own on the same directory.
+    emptyOutDir: false,
     rollupOptions: {
       // Preserves each RUNTIME_ENTRIES chunk's full real export binding
       // surface — see the comment above. Required for external-module

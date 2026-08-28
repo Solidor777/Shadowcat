@@ -24,7 +24,7 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: Build client bundle (embedded by the server)
-        run: pnpm --filter @shadowcat/shell build
+        run: pnpm build
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -84,7 +84,7 @@ jobs:
       - run: pnpm run test:scripts
       - run: pnpm docs:check-examples
       - run: pnpm lint
-      - run: pnpm --filter @shadowcat/shell build
+      - run: pnpm build
       - name: Build worked examples (guide code must stay buildable)
         run: pnpm --filter "shadowcat-example-*" build
       # Guards the single-instance-runtime import map: fails the build if any
@@ -109,7 +109,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       # The shadowcat lib embeds dist/ (rust-embed requires the folder at compile
       # time), so the client must be built before any cargo build of the server.
-      - run: pnpm --filter @shadowcat/shell build
+      - run: pnpm build
       # Pre-build the server so the in-test spawn does not pay the compile cost.
       - run: cargo build -p shadowcat --bin test_server
       - run: pnpm --filter @shadowcat/core test:e2e

@@ -2,7 +2,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { test, expect } from "vitest";
-import { TARGETS, resolveTargets, assertAllowed, clean } from "./clean-build-outputs.mjs";
+import { TARGETS, resolveTargets, assertAllowed, clean, removeRecoverably } from "./clean-build-outputs.mjs";
 
 function repo() {
   const root = mkdtempSync(join(tmpdir(), "clean-"));
@@ -50,4 +50,13 @@ test("clean with an unlisted pattern refuses before removing anything", async ()
   const removed = [];
   await expect(clean({ root, patterns: ["src"], remove: async (p) => { removed.push(p); } })).rejects.toThrow(/refus/i);
   expect(removed).toEqual([]);
+});
+
+test("removeRecoverably sends a real path through trash and it no longer exists", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "clean-recoverable-"));
+  const file = join(dir, "x.txt");
+  writeFileSync(file, "x");
+  expect(existsSync(file)).toBe(true);
+  await removeRecoverably(file);
+  expect(existsSync(file)).toBe(false);
 });

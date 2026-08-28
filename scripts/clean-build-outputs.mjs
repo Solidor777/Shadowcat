@@ -5,9 +5,10 @@
 // argument cannot reach `src/`, `docs/`, or the repository root. Removal goes to the OS recycle
 // bin / trash rather than an unlink, so a wrong target is recoverable at the moment it happens.
 //
-// This is the single place a build-output directory is registered; a caller that needs its own
-// output cleared (Vite's `emptyOutDir`, the docs assembler) reuses `removeRecoverably` instead of
-// clearing its own tree directly.
+// This is the single place a build-output directory is registered. The docs assembler calls
+// `removeRecoverably` directly for its own output; Vite's build instead relies on this script
+// running first (via the `build` script's `pnpm clean &&` wiring) and never clears its own tree —
+// its `emptyOutDir` is off so it performs no raw delete of its own.
 
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
@@ -64,8 +65,8 @@ export async function clean({ root, patterns, remove = removeRecoverably }) {
 
 async function main() {
   // Derives root from this script's own file location, not process.cwd(): a caller
-  // invoking this script from a directory other than the repo root (as scripts/package.sh
-  // does) must still resolve targets against the real repo root.
+  // invoking this script from a directory other than the repo root must still resolve
+  // targets against the real repo root.
   const root = resolve(fileURLToPath(import.meta.url), "..", "..");
   const onlyIdx = process.argv.indexOf("--only");
   const patterns = onlyIdx >= 0 ? [process.argv[onlyIdx + 1]] : TARGETS;
