@@ -2,9 +2,10 @@
 import type { Resource } from "./Resource";
 
 /**
- * The world's turn-resource registry: a singleton config document, EMPTY by
- * default (the engine hooks up no resource, not even movement). Keyed by
- * resource id — a MAP for the single-key-Update reason every registry uses.
+ * The world's turn-resource registry: intended to be one config document per
+ * world, EMPTY by default (the engine hooks up no resource, not even
+ * movement). Keyed by resource id — a MAP for the single-key-Update reason
+ * every registry uses.
  */
 export type ResourceRegistryEngine = { 
 /**

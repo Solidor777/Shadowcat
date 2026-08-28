@@ -4,8 +4,8 @@ import type { TurnControl } from "./TurnControl";
 
 /**
  * The engine body of a `combat` document (mirrors the client's
- * `CombatEngine`). World-level, bound to one scene; at most one ACTIVE
- * combat per scene is enforced at the `apply_intent` chokepoint.
+ * `CombatEngine`). World-level, bound to one scene; at most one combat per
+ * scene is intended to be `active` at a time.
  */
 export type CombatEngine = { 
 /**
