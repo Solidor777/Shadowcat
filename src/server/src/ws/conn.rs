@@ -899,8 +899,8 @@ async fn handle_pathfind(
 /// `MoveError { message: "move rejected" }` to `etx` only — no path geometry or vision state
 /// is disclosed.
 /// INVARIANT (mover_vision): `exec.mover_vision` is `None` for GM movers (no fog to sweep)
-/// and `Some` for player movers. It is mapped to wire `VisionSample` with per-polygon vertex
-/// capping (fail-closed under-reveal: truncation never over-reveals hidden area).
+/// and `Some` for player movers; the mapping to wire `VisionSample` (per-polygon vertex
+/// capping, fail-closed under-reveal) lives in `Room::execute_move`'s frame construction.
 async fn handle_move_request(
     room: &crate::ws::room::Room,
     repo: &dyn crate::data::repository::Repository,
@@ -920,61 +920,21 @@ async fn handle_move_request(
     // `start_server_ms` forward from the actual commit timestamp.
     let now = now_millis();
     match room
-        .execute_move(repo, ctx, scene_id, token_id, path_tuples, now)
+        .execute_move(
+            repo,
+            ctx,
+            crate::ws::room::MoveRequestInputs {
+                scene_id,
+                token: token_id,
+                path: path_tuples,
+                ts: now,
+                request_id,
+            },
+        )
         .await
     {
         Ok(exec) => {
-            use crate::scene::move_stream::MAX_VISION_POLYGON_VERTS;
-            use crate::ws::protocol::{PosSample, VisionSample};
-            // Map internal VisionSamplePt → wire VisionSample, capping polygon vertex count.
-            // Fail-closed: truncation under-reveals (the mover sees less of the fog sweep) but
-            // never over-reveals hidden geometry to the client.
-            let mover_vision = exec.mover_vision.map(|mvs| {
-                mvs.into_iter()
-                    .map(|vs| VisionSample {
-                        t_ms: vs.t_ms,
-                        polygons: vs
-                            .polygons
-                            .into_iter()
-                            .map(|poly| {
-                                poly.into_iter()
-                                    .take(MAX_VISION_POLYGON_VERTS)
-                                    .map(|(x, y)| [x, y])
-                                    .collect()
-                            })
-                            .collect(),
-                    })
-                    .collect()
-            });
-            let frame = ServerMsg::MoveStream {
-                request_id,
-                token_id,
-                mover: ctx.user_id,
-                // The scene the token actually lives in (`execute_move` derives it from the
-                // token, never from the request), so the per-recipient egress clip and the
-                // client's viewed-scene filter both key on the committed scene.
-                scene: exec.scene,
-                start_server_ms: now as f64,
-                duration_ms: exec.duration_ms,
-                stop: [exec.stop.0, exec.stop.1],
-                samples: exec
-                    .samples
-                    .iter()
-                    .map(|s| PosSample {
-                        t_ms: s.t_ms,
-                        pos: [s.pos.0, s.pos.1],
-                    })
-                    .collect(),
-                mover_vision,
-                // Broadcast in-process carries the full authoritative cost; `clip_move_stream`
-                // nulls it per recipient at egress for a clipped observer (secrecy: see
-                // `ServerMsg::MoveStream.cost` doc).
-                cost: Some(exec.cost),
-                // Same trusted-only treatment as `cost`: full value in-process, nulled per
-                // recipient at egress for a clipped observer.
-                truncated: Some(exec.truncated),
-            };
-            room.broadcast_aux(frame);
+            room.broadcast_aux_shared(exec.frame);
             // No success frame to the requester: the broadcast is the notification.
             None
         }

@@ -54,6 +54,120 @@ pub(crate) struct MoveExecution {
     /// downstream, where it is trusted-only (`None` for a clipped observer) for the same
     /// reason as `cost`.
     pub truncated: bool,
+    /// The full unclipped wire frame, already registered in the room's in-flight registry;
+    /// the caller broadcasts it via `broadcast_aux_shared`.
+    pub frame: Arc<ServerMsg>,
+}
+
+/// An in-flight token move retained for the duration of its client-side animation.
+/// Serves two consumers: the per-token moving lock (`end_ms`) and the egress clip, which
+/// reads `frame.mover_vision` as the mover's vision TIMELINE so concurrent moves can be
+/// clipped against the recipient's vision at each sample's instant (`ws::move_clip`).
+/// INVARIANT: `frame` is the full in-process `ServerMsg::MoveStream` — never a clipped copy.
+pub(crate) struct ActiveStream {
+    /// The user whose move this is (`MoveStream.mover`).
+    pub mover: Uuid,
+    /// The scene the token lives in (`MoveStream.scene`).
+    pub scene: Uuid,
+    /// Server epoch-ms the animation started (`MoveStream.start_server_ms`).
+    pub start_ms: i64,
+    /// Server epoch-ms the animation ends; the entry is expired when `now >= end_ms`.
+    pub end_ms: i64,
+    /// The full unclipped frame.
+    pub frame: Arc<ServerMsg>,
+}
+
+/// Grouped inputs to `Room::execute_move`, avoiding a >7-argument signature (`&self`, `repo`,
+/// and `ctx` plus these five would otherwise total 8).
+pub(crate) struct MoveRequestInputs {
+    /// The scene the request names — checked for agreement against the token's own scene
+    /// (`Room::execute_move`'s scene-derivation invariant) but never used to select gate inputs.
+    pub scene_id: Uuid,
+    /// The token being moved.
+    pub token: Uuid,
+    /// Ordered scene-coordinate waypoints, start through goal.
+    pub path: Vec<(f64, f64)>,
+    /// Server-authoritative commit timestamp (also `MoveStream.start_server_ms`).
+    pub ts: i64,
+    /// Correlates the resulting `MoveStream`/`MoveError` with the originating `MoveRequest`.
+    pub request_id: Uuid,
+}
+
+/// Grouped trailing inputs to `wire_move_stream`, avoiding a >7-argument signature.
+struct WireMoveInputs<'a> {
+    /// Final resting position (scene coords).
+    stop: (f64, f64),
+    /// Total wall-clock animation budget in milliseconds.
+    duration_ms: f64,
+    /// Ordered position samples along the route.
+    samples: &'a [crate::scene::move_stream::PosSamplePt],
+    /// Per-sample vision polygons for the mover; `None` for GM movers or a zero-progress move.
+    mover_vision: Option<Vec<crate::scene::move_stream::VisionSamplePt>>,
+    /// Total terrain-weighted movement cost accumulated over the executed move.
+    cost: f64,
+    /// `true` when the move stopped before the requested goal.
+    truncated: bool,
+}
+
+/// Map an executed move to its wire frame. Polygon vertex counts are capped at
+/// `MAX_VISION_POLYGON_VERTS` (fail-closed under-reveal: truncation never over-reveals).
+fn wire_move_stream(
+    request_id: Uuid,
+    token_id: Uuid,
+    mover: Uuid,
+    start_ms: i64,
+    scene: Uuid,
+    inputs: WireMoveInputs<'_>,
+) -> ServerMsg {
+    use crate::scene::move_stream::MAX_VISION_POLYGON_VERTS;
+    use crate::ws::protocol::VisionSample;
+
+    // Map internal VisionSamplePt → wire VisionSample, capping polygon vertex count.
+    // Fail-closed: truncation under-reveals (the mover sees less of the fog sweep) but
+    // never over-reveals hidden geometry to the client.
+    let mover_vision = inputs.mover_vision.map(|mvs| {
+        mvs.into_iter()
+            .map(|vs| VisionSample {
+                t_ms: vs.t_ms,
+                polygons: vs
+                    .polygons
+                    .into_iter()
+                    .map(|poly| {
+                        poly.into_iter()
+                            .take(MAX_VISION_POLYGON_VERTS)
+                            .map(|(x, y)| [x, y])
+                            .collect()
+                    })
+                    .collect(),
+            })
+            .collect()
+    });
+
+    ServerMsg::MoveStream {
+        request_id,
+        token_id,
+        mover,
+        scene,
+        start_server_ms: start_ms as f64,
+        duration_ms: inputs.duration_ms,
+        stop: [inputs.stop.0, inputs.stop.1],
+        samples: inputs
+            .samples
+            .iter()
+            .map(|s| crate::ws::protocol::PosSample {
+                t_ms: s.t_ms,
+                pos: [s.pos.0, s.pos.1],
+            })
+            .collect(),
+        mover_vision,
+        // Broadcast in-process carries the full authoritative cost; `clip_move_stream`
+        // nulls it per recipient at egress for a clipped observer (secrecy: see
+        // `ServerMsg::MoveStream.cost` doc).
+        cost: Some(inputs.cost),
+        // Same trusted-only treatment as `cost`: full value in-process, nulled per
+        // recipient at egress for a clipped observer.
+        truncated: Some(inputs.truncated),
+    }
 }
 
 /// Ring-buffer event cap (hot-resync depth).
@@ -217,10 +331,12 @@ pub struct Room {
     scene: RwLock<SceneEcs>,
     /// Telemetry counters.
     pub stats: RoomStats,
-    /// Per-token moving lock: token → move-end epoch-ms. An entry is expired when
-    /// `now_millis() >= end`; expired/absent entries are treated as available (lazy expiry,
-    /// no timer). Updated by `execute_move` after a successful commit.
-    moving: Mutex<HashMap<Uuid, i64>>,
+    /// Per-token in-flight registry doubling as the moving lock: token → `ActiveStream`.
+    /// Expired when `now_millis() >= end_ms` (lazy expiry, no timer); expired/absent entries
+    /// are treated as available. Updated by `execute_move` after a successful commit. Also
+    /// serves `mover_streams`/`concurrent_streams`, which read `ActiveStream.frame` as the
+    /// mover's vision timeline for the egress clip.
+    moving: Mutex<HashMap<Uuid, ActiveStream>>,
     /// Per-user resync floor: user_id → this room's `current_seq` at their most recent
     /// cold-start `ClientMsg::Hello { last_seq: None }`. When `resync_floor_enforced`,
     /// an explicit `ResyncRequest.from_seq` is clamped to never go below `floor + 1` for
@@ -308,7 +424,12 @@ impl Room {
     /// re-syncs any uuid still stale the next time a listing (e.g. `Assets`'s
     /// own `reload`) fetches the true value.
     pub fn broadcast_aux(&self, msg: ServerMsg) {
-        let _ = self.tx.send(RoomEvent::Other(std::sync::Arc::new(msg)));
+        self.broadcast_aux_shared(std::sync::Arc::new(msg));
+    }
+
+    /// Broadcast an already-shared out-of-band frame (see `broadcast_aux`).
+    pub(crate) fn broadcast_aux_shared(&self, msg: Arc<ServerMsg>) {
+        let _ = self.tx.send(RoomEvent::Other(msg));
     }
 
     /// The one authoritative write path: authorize/validate/sequence `ops`
@@ -564,12 +685,16 @@ impl Room {
         &self,
         repo: &dyn Repository,
         ctx: &PermissionContext,
-        scene_id: Uuid,
-        token: Uuid,
-        path: Vec<(f64, f64)>,
-        ts: i64,
+        req: MoveRequestInputs,
     ) -> Result<MoveExecution, DataError> {
         use crate::scene::{move_exec, MovementRestriction};
+        let MoveRequestInputs {
+            scene_id,
+            token,
+            path,
+            ts,
+            request_id,
+        } = req;
 
         // Trusted server clock captured before the guard so the moving-lock end epoch is
         // consistent for both the check and the post-commit insert.
@@ -588,8 +713,8 @@ impl Room {
         // The lock prevents a client from queuing multiple moves before the first animation completes.
         {
             let moving = self.moving.lock().await;
-            if let Some(&end) = moving.get(&token) {
-                if now < end {
+            if let Some(st) = moving.get(&token) {
+                if now < st.end_ms {
                     return Err(DataError::Forbidden);
                 }
             }
@@ -772,23 +897,42 @@ impl Room {
         // Invariant: render_path always contains at least `start` (path.len() >= 2 was
         // validated by execute_move), so this only fires when the very first step was blocked.
         if (outcome.stop.0 - start.0).abs() < 1e-9 && (outcome.stop.1 - start.1).abs() < 1e-9 {
+            let zero_samples = vec![crate::scene::move_stream::PosSamplePt {
+                t_ms: 0.0,
+                pos: start,
+            }];
+            let frame = Arc::new(wire_move_stream(
+                request_id,
+                token,
+                ctx.user_id,
+                ts,
+                token_scene,
+                WireMoveInputs {
+                    stop: start,
+                    duration_ms: 0.0,
+                    samples: &zero_samples,
+                    mover_vision: None,
+                    cost: 0.0,
+                    // Not hardcoded false: this branch is reached only when the very first
+                    // step was blocked, so the outcome is truncated. Reading it keeps the wire
+                    // signal derived from the executor rather than restated here.
+                    truncated: outcome.truncated,
+                },
+            ));
+            // NOT registered in `moving`: a zero-duration move never held the lock, and
+            // there is no in-flight animation to re-clip against.
             return Ok(MoveExecution {
                 scene: token_scene,
                 stop: start,
                 duration_ms: 0.0,
-                samples: vec![crate::scene::move_stream::PosSamplePt {
-                    t_ms: 0.0,
-                    pos: start,
-                }],
+                samples: zero_samples,
                 // None regardless of world role: zero-progress has no animation or fog sweep.
                 // Deliberate exception to the convention that None signals a GM (Unrestricted)
                 // mover — here None signals stop == start, not an Unrestricted restriction.
                 mover_vision: None,
                 cost: 0.0,
-                // Not hardcoded false: this branch is reached only when the very first step
-                // was blocked, so the outcome is truncated. Reading it keeps the wire signal
-                // derived from the executor rather than restated here.
                 truncated: outcome.truncated,
+                frame,
             });
         }
 
@@ -822,6 +966,25 @@ impl Room {
         self.commit_ops_locked(repo, ctx, pos_ops, ts, WriteOrigin::Client)
             .await?;
 
+        // Build the wire frame before registering it — `mover_vision` is cloned here so
+        // `MoveExecution.mover_vision` (read by callers/tests) stays populated after the
+        // frame construction below consumes its own copy.
+        let frame = Arc::new(wire_move_stream(
+            request_id,
+            token,
+            ctx.user_id,
+            ts,
+            token_scene,
+            WireMoveInputs {
+                stop: outcome.stop,
+                duration_ms,
+                samples: &samples,
+                mover_vision: mover_vision.clone(),
+                cost: outcome.cost,
+                truncated: outcome.truncated,
+            },
+        ));
+
         // --- Update the moving lock after a successful commit (still inside publish_guard) ---
         // Serialized by publish_guard: the check above and this insert form one atomic
         // check-and-set with no window for a concurrent execute_move to slip through.
@@ -833,8 +996,17 @@ impl Room {
         // next request pass immediately; ceil().max(1) guarantees end > now for any real move.
         {
             let mut moving = self.moving.lock().await;
-            moving.retain(|_, &mut end| now < end);
-            moving.insert(token, now + (duration_ms.ceil() as i64).max(1));
+            moving.retain(|_, st| now < st.end_ms);
+            moving.insert(
+                token,
+                ActiveStream {
+                    mover: ctx.user_id,
+                    scene: token_scene,
+                    start_ms: ts,
+                    end_ms: now + (duration_ms.ceil() as i64).max(1),
+                    frame: frame.clone(),
+                },
+            );
         }
 
         Ok(MoveExecution {
@@ -845,7 +1017,47 @@ impl Room {
             mover_vision,
             cost: outcome.cost,
             truncated: outcome.truncated,
+            frame,
         })
+    }
+
+    /// Unexpired in-flight frames moved by `mover` in `scene` — the mover's vision timelines
+    /// the egress clip evaluates a concurrent move against.
+    pub(crate) async fn mover_streams(
+        &self,
+        mover: Uuid,
+        scene: Uuid,
+        now: i64,
+    ) -> Vec<Arc<ServerMsg>> {
+        let moving = self.moving.lock().await;
+        moving
+            .values()
+            .filter(|st| st.mover == mover && st.scene == scene && now < st.end_ms)
+            .map(|st| st.frame.clone())
+            .collect()
+    }
+
+    /// Unexpired in-flight frames in `scene` moved by anyone other than `exclude_mover` —
+    /// re-clipped and re-emitted to a recipient whose own move just started. Excludes by
+    /// MOVER so a recipient's other in-flight token is never re-sent to them.
+    pub(crate) async fn concurrent_streams(
+        &self,
+        scene: Uuid,
+        exclude_mover: Uuid,
+        now: i64,
+    ) -> Vec<Arc<ServerMsg>> {
+        let moving = self.moving.lock().await;
+        moving
+            .values()
+            .filter(|st| st.mover != exclude_mover && st.scene == scene && now < st.end_ms)
+            .map(|st| st.frame.clone())
+            .collect()
+    }
+
+    /// Test-only direct registration (bypasses `execute_move`'s gate) for clip/egress tests.
+    #[cfg(test)]
+    pub(crate) async fn register_stream_for_test(&self, token: Uuid, stream: ActiveStream) {
+        self.moving.lock().await.insert(token, stream);
     }
 
     /// Resolve a resync range: hot ring tier when fully resident, else the cold

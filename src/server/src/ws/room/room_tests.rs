@@ -1956,10 +1956,13 @@ async fn execute_move_commits_the_stop_it_returns() {
         .execute_move(
             &h.repo,
             &h.player,
-            h.scene_id,
-            h.token_id,
-            vec![h.start, h.lit_goal],
-            now_millis(),
+            crate::ws::room::MoveRequestInputs {
+                scene_id: h.scene_id,
+                token: h.token_id,
+                path: vec![h.start, h.lit_goal],
+                ts: now_millis(),
+                request_id: Uuid::from_u128(0xF00D_0001),
+            },
         )
         .await
         .unwrap();
@@ -2071,10 +2074,13 @@ async fn execute_move_refuses_a_scene_id_the_token_does_not_live_in_unrestricted
         .execute_move(
             &h.repo,
             &h.player,
-            scene_b,
-            h.token_id,
-            vec![h.start, far_dark],
-            now_millis(),
+            crate::ws::room::MoveRequestInputs {
+                scene_id: scene_b,
+                token: h.token_id,
+                path: vec![h.start, far_dark],
+                ts: now_millis(),
+                request_id: Uuid::from_u128(0xF00D_0002),
+            },
         )
         .await;
     assert!(
@@ -2101,10 +2107,13 @@ async fn execute_move_refuses_a_scene_id_the_token_does_not_live_in_visible() {
         .execute_move(
             &h.repo,
             &h.player,
-            scene_b,
-            h.token_id,
-            vec![h.start, dark_in_a],
-            now_millis(),
+            crate::ws::room::MoveRequestInputs {
+                scene_id: scene_b,
+                token: h.token_id,
+                path: vec![h.start, dark_in_a],
+                ts: now_millis(),
+                request_id: Uuid::from_u128(0xF00D_0003),
+            },
         )
         .await;
     assert!(
@@ -2125,10 +2134,13 @@ async fn execute_move_refuses_a_scene_id_the_token_does_not_live_in_visible() {
         .execute_move(
             &h.repo,
             &h.player,
-            h.scene_id,
-            h.token_id,
-            vec![h.start, dark_in_a],
-            now_millis(),
+            crate::ws::room::MoveRequestInputs {
+                scene_id: h.scene_id,
+                token: h.token_id,
+                path: vec![h.start, dark_in_a],
+                ts: now_millis(),
+                request_id: Uuid::from_u128(0xF00D_0004),
+            },
         )
         .await
         .expect("same-scene request is executed, then gated per cell");
@@ -2178,10 +2190,13 @@ async fn both_movement_gates_refuse_a_token_whose_parent_scene_has_no_document()
         .execute_move(
             &h.repo,
             &h.player,
-            ghost_scene,
-            dangling_id,
-            vec![(50.0, 50.0), (150.0, 50.0)],
-            now_millis(),
+            crate::ws::room::MoveRequestInputs {
+                scene_id: ghost_scene,
+                token: dangling_id,
+                path: vec![(50.0, 50.0), (150.0, 50.0)],
+                ts: now_millis(),
+                request_id: Uuid::from_u128(0xF00D_0005),
+            },
         )
         .await;
     assert!(
@@ -2238,10 +2253,13 @@ async fn execute_move_gate_inputs_come_from_the_tokens_own_scene() {
         .execute_move(
             &h.repo,
             &h.player,
-            scene_b,
-            h.token_id,
-            vec![h.start, far_dark],
-            now_millis(),
+            crate::ws::room::MoveRequestInputs {
+                scene_id: scene_b,
+                token: h.token_id,
+                path: vec![h.start, far_dark],
+                ts: now_millis(),
+                request_id: Uuid::from_u128(0xF00D_0006),
+            },
         )
         .await;
     if let Ok(exec) = &res {
@@ -2277,10 +2295,13 @@ async fn execute_move_still_executes_a_request_naming_the_tokens_own_scene() {
         .execute_move(
             &h.repo,
             &h.player,
-            h.scene_id,
-            h.token_id,
-            vec![h.start, h.lit_goal],
-            now_millis(),
+            crate::ws::room::MoveRequestInputs {
+                scene_id: h.scene_id,
+                token: h.token_id,
+                path: vec![h.start, h.lit_goal],
+                ts: now_millis(),
+                request_id: Uuid::from_u128(0xF00D_0007),
+            },
         )
         .await
         .expect("same-scene move must still succeed");
@@ -2324,10 +2345,13 @@ async fn execute_move_refuses_a_token_with_no_parent_scene() {
         .execute_move(
             &h.repo,
             &h.player,
-            h.scene_id,
-            orphan_id,
-            vec![(50.0, 50.0), (50.0, 150.0)],
-            now_millis(),
+            crate::ws::room::MoveRequestInputs {
+                scene_id: h.scene_id,
+                token: orphan_id,
+                path: vec![(50.0, 50.0), (50.0, 150.0)],
+                ts: now_millis(),
+                request_id: Uuid::from_u128(0xF00D_0008),
+            },
         )
         .await;
     assert!(
@@ -2371,10 +2395,13 @@ async fn execute_move_refuses_a_token_whose_parent_scene_does_not_exist() {
         .execute_move(
             &h.repo,
             &h.player,
-            ghost_scene,
-            dangling_id,
-            vec![(50.0, 50.0), (50.0, 150.0)],
-            now_millis(),
+            crate::ws::room::MoveRequestInputs {
+                scene_id: ghost_scene,
+                token: dangling_id,
+                path: vec![(50.0, 50.0), (50.0, 150.0)],
+                ts: now_millis(),
+                request_id: Uuid::from_u128(0xF00D_0009),
+            },
         )
         .await;
     assert!(
@@ -2400,10 +2427,13 @@ async fn client_update_with_posint_pre_image_after_execute_move_is_accepted() {
         .execute_move(
             &h.repo,
             &h.player,
-            h.scene_id,
-            h.token_id,
-            vec![h.start, h.adj],
-            now_millis(),
+            crate::ws::room::MoveRequestInputs {
+                scene_id: h.scene_id,
+                token: h.token_id,
+                path: vec![h.start, h.adj],
+                ts: now_millis(),
+                request_id: Uuid::from_u128(0xF00D_0010),
+            },
         )
         .await
         .unwrap();
@@ -2462,10 +2492,13 @@ async fn execute_move_rejects_a_moving_token() {
         .execute_move(
             &h.repo,
             &h.player,
-            h.scene_id,
-            h.token_id,
-            vec![h.start, h.adj],
-            now_millis(),
+            crate::ws::room::MoveRequestInputs {
+                scene_id: h.scene_id,
+                token: h.token_id,
+                path: vec![h.start, h.adj],
+                ts: now_millis(),
+                request_id: Uuid::from_u128(0xF00D_0011),
+            },
         )
         .await
         .unwrap();
@@ -2475,10 +2508,13 @@ async fn execute_move_rejects_a_moving_token() {
         .execute_move(
             &h.repo,
             &h.player,
-            h.scene_id,
-            h.token_id,
-            vec![h.adj, h.adj2],
-            now_millis(),
+            crate::ws::room::MoveRequestInputs {
+                scene_id: h.scene_id,
+                token: h.token_id,
+                path: vec![h.adj, h.adj2],
+                ts: now_millis(),
+                request_id: Uuid::from_u128(0xF00D_0012),
+            },
         )
         .await;
     assert!(
@@ -2497,10 +2533,13 @@ async fn non_gm_mover_gets_progressive_sweep_in_unrestricted_scene() {
         .execute_move(
             &h.repo,
             &h.player,
-            h.scene_id,
-            h.token_id,
-            vec![h.start, h.adj],
-            now_millis(),
+            crate::ws::room::MoveRequestInputs {
+                scene_id: h.scene_id,
+                token: h.token_id,
+                path: vec![h.start, h.adj],
+                ts: now_millis(),
+                request_id: Uuid::from_u128(0xF00D_0013),
+            },
         )
         .await
         .unwrap();
@@ -2519,10 +2558,13 @@ async fn gm_mover_still_gets_no_sweep_in_unrestricted_scene() {
         .execute_move(
             &h.repo,
             &h.gm,
-            h.scene_id,
-            h.token_id,
-            vec![h.start, h.adj],
-            now_millis(),
+            crate::ws::room::MoveRequestInputs {
+                scene_id: h.scene_id,
+                token: h.token_id,
+                path: vec![h.start, h.adj],
+                ts: now_millis(),
+                request_id: Uuid::from_u128(0xF00D_0014),
+            },
         )
         .await
         .unwrap();
@@ -2544,10 +2586,13 @@ async fn execute_move_truncates_at_a_wall_atomically() {
         .execute_move(
             &h.repo,
             &h.player,
-            h.scene_id,
-            h.token_id,
-            vec![h.start, corner, beyond_wall],
-            now_millis(),
+            crate::ws::room::MoveRequestInputs {
+                scene_id: h.scene_id,
+                token: h.token_id,
+                path: vec![h.start, corner, beyond_wall],
+                ts: now_millis(),
+                request_id: Uuid::from_u128(0xF00D_0015),
+            },
         )
         .await
         .unwrap();
@@ -2560,6 +2605,271 @@ async fn execute_move_truncates_at_a_wall_atomically() {
         corner,
         "committed position must equal the truncation stop"
     );
+}
+
+/// `movement_scene_with_wall`'s geometry, but the wall crosses the FIRST step
+/// (`start` → `adj`) instead of the second, so the very first dense sample of the walk is
+/// blocked and `execute_move` reaches its zero-progress branch (`outcome.stop == start`).
+/// Mirrors `move_exec::tests::scene_with_wall_across_the_path`'s wall placement at the
+/// `SceneEcs` level, one layer up through `Room::execute_move`.
+async fn movement_scene_with_wall_across_the_first_step() -> MovementHandle {
+    use crate::data::document::DocRole;
+    use serde_json::json;
+
+    let (repo, world_id, gm) = repo_with_world().await;
+    let p = repo
+        .create_user("player_wall0", None, crate::auth::role::ServerRole::User, 0)
+        .await
+        .unwrap();
+    repo.add_member(world_id, p, WorldRole::Player)
+        .await
+        .unwrap();
+    let player = PermissionContext {
+        user_id: p,
+        world_role: WorldRole::Player,
+    };
+
+    let reg = RoomRegistry::new();
+    let room = reg.get_or_create(&repo, world_id).await.unwrap().unwrap();
+    let wdoc = crate::data::document::tests::world_scoped_doc;
+    let (scene_id, token_id, ws_id, wall_id) = (
+        Uuid::from_u128(0xFA10_0001),
+        Uuid::from_u128(0xFA10_0002),
+        Uuid::from_u128(0xFA10_0003),
+        Uuid::from_u128(0xFA10_0004),
+    );
+
+    // Unrestricted: only the wall gate applies.
+    let mut ws = wdoc(world_id, ws_id, "world-settings");
+    ws.owner = Some(gm.user_id);
+    ws.system = json!({
+        "scene": {
+            "losRestriction": false, "fog": false,
+            "lightingEnabled": false, "lightMode": "environmentLight",
+            "environment": { "color": "#ffffff", "intensity": 1.0 },
+            "observerVision": false,
+            "movementRestriction": "unrestricted",
+            "partialCellLeniency": true
+        },
+        "pathfinding": { "diagonalRule": "chebyshev" },
+        "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
+    });
+    ws.engine = Some(ws_engine(ws.system.clone()));
+    room.publish(
+        &repo,
+        &gm,
+        vec![Operation::Create { doc: ws }],
+        0,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+
+    let mut scene = wdoc(world_id, scene_id, "scene");
+    scene.owner = Some(gm.user_id);
+    scene.system = json!({ "grid": { "kind": "square", "size": 100 } });
+    room.publish(
+        &repo,
+        &gm,
+        vec![Operation::Create { doc: scene }],
+        0,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+
+    let mut token = wdoc(world_id, token_id, "token");
+    token.parent_id = Some(scene_id);
+    token.owner = Some(p);
+    token.permissions.users.insert(p, DocRole::Owner);
+    token.engine = Some(token_engine(50.0, 50.0));
+    room.publish(
+        &repo,
+        &gm,
+        vec![Operation::Create { doc: token }],
+        0,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+
+    // Vertical wall at x=100, y ∈ [0,100]: crosses the FIRST step (50,50)->(150,50).
+    let mut wall = wdoc(world_id, wall_id, "wall");
+    wall.parent_id = Some(scene_id);
+    wall.owner = Some(gm.user_id);
+    wall.engine =
+        Some(json!({ "seg": { "x1": 100, "y1": 0, "x2": 100, "y2": 100 }, "blocksMove": true }));
+    room.publish(
+        &repo,
+        &gm,
+        vec![Operation::Create { doc: wall }],
+        0,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+
+    MovementHandle {
+        room,
+        repo,
+        gm,
+        player,
+        world_id,
+        scene_id,
+        token_id,
+        start: (50.0, 50.0),
+        lit_goal: (150.0, 50.0),
+        adj: (150.0, 50.0),
+        adj2: (150.0, 150.0),
+    }
+}
+
+#[tokio::test]
+async fn execute_move_returns_a_zero_progress_frame_when_the_first_step_is_blocked() {
+    let h = movement_scene_with_wall_across_the_first_step().await;
+    let now = now_millis();
+    let exec = h
+        .room
+        .execute_move(
+            &h.repo,
+            &h.player,
+            crate::ws::room::MoveRequestInputs {
+                scene_id: h.scene_id,
+                token: h.token_id,
+                path: vec![h.start, h.adj],
+                ts: now,
+                request_id: Uuid::from_u128(0xF00D_0021),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(exec.stop, h.start, "the very first step was blocked");
+    let ServerMsg::MoveStream { duration_ms, .. } = exec.frame.as_ref() else {
+        panic!("frame must be a MoveStream");
+    };
+    assert_eq!(*duration_ms, 0.0);
+    assert!(
+        h.room
+            .mover_streams(h.player.user_id, h.scene_id, now)
+            .await
+            .is_empty(),
+        "a zero-progress move is never registered in the in-flight registry"
+    );
+}
+
+#[tokio::test]
+async fn execute_move_registers_the_full_frame_and_accessors_filter_by_mover_scene_and_expiry() {
+    // Slow speed so the stream stays unexpired for the duration of the assertions.
+    let h = movement_scene_with_speed("unrestricted", false, 0.5).await;
+    let req = Uuid::from_u128(0x5EED);
+    let exec = h
+        .room
+        .execute_move(
+            &h.repo,
+            &h.player,
+            crate::ws::room::MoveRequestInputs {
+                scene_id: h.scene_id,
+                token: h.token_id,
+                path: vec![h.start, h.adj],
+                ts: now_millis(),
+                request_id: req,
+            },
+        )
+        .await
+        .unwrap();
+    let ServerMsg::MoveStream {
+        request_id,
+        token_id,
+        mover,
+        scene,
+        mover_vision,
+        cost,
+        ..
+    } = exec.frame.as_ref()
+    else {
+        panic!("frame must be a MoveStream");
+    };
+    assert_eq!(*request_id, req);
+    assert_eq!(*token_id, h.token_id);
+    assert_eq!(*mover, h.player.user_id);
+    assert_eq!(*scene, h.scene_id);
+    assert!(
+        cost.is_some(),
+        "the registered frame is the full in-process frame"
+    );
+    // A player mover on a non-GM path carries a vision timeline (None only for GM movers).
+    assert!(mover_vision.is_some());
+
+    let now = now_millis();
+    let mine = h
+        .room
+        .mover_streams(h.player.user_id, h.scene_id, now)
+        .await;
+    assert_eq!(mine.len(), 1);
+    assert!(Arc::ptr_eq(&mine[0], &exec.frame));
+    assert!(h
+        .room
+        .mover_streams(h.gm.user_id, h.scene_id, now)
+        .await
+        .is_empty());
+    assert!(h
+        .room
+        .mover_streams(h.player.user_id, Uuid::from_u128(0xBAD), now)
+        .await
+        .is_empty());
+    // concurrent_streams excludes every stream of the named MOVER, not just one token.
+    assert!(h
+        .room
+        .concurrent_streams(h.scene_id, h.player.user_id, now)
+        .await
+        .is_empty());
+    assert_eq!(
+        h.room
+            .concurrent_streams(h.scene_id, h.gm.user_id, now)
+            .await
+            .len(),
+        1
+    );
+    // Expiry: a `now` past end_ms hides it.
+    assert!(h
+        .room
+        .mover_streams(h.player.user_id, h.scene_id, now + 3_600_000)
+        .await
+        .is_empty());
+}
+
+#[tokio::test]
+async fn moving_lock_still_refuses_a_second_move_while_the_stream_is_in_flight() {
+    let h = movement_scene_with_speed("unrestricted", false, 0.5).await;
+    h.room
+        .execute_move(
+            &h.repo,
+            &h.player,
+            crate::ws::room::MoveRequestInputs {
+                scene_id: h.scene_id,
+                token: h.token_id,
+                path: vec![h.start, h.adj],
+                ts: now_millis(),
+                request_id: Uuid::from_u128(1),
+            },
+        )
+        .await
+        .unwrap();
+    let second = h
+        .room
+        .execute_move(
+            &h.repo,
+            &h.player,
+            crate::ws::room::MoveRequestInputs {
+                scene_id: h.scene_id,
+                token: h.token_id,
+                path: vec![h.adj, h.adj2],
+                ts: now_millis(),
+                request_id: Uuid::from_u128(2),
+            },
+        )
+        .await;
+    assert!(matches!(second, Err(DataError::Forbidden)));
 }
 
 #[tokio::test]
@@ -2668,10 +2978,13 @@ async fn execute_move_authoritative_field_arrests_a_region_the_players_route_nev
         .execute_move(
             &repo,
             &player,
-            scene_id,
-            token_id,
-            vec![(0.0, 0.0), (100.0, 0.0)],
-            100,
+            crate::ws::room::MoveRequestInputs {
+                scene_id,
+                token: token_id,
+                path: vec![(0.0, 0.0), (100.0, 0.0)],
+                ts: 100,
+                request_id: Uuid::from_u128(0xF00D_0016),
+            },
         )
         .await
         .unwrap();
@@ -2732,10 +3045,13 @@ async fn execute_move_revealed_union_allows_explored_cell() {
         .execute_move(
             &h.repo,
             &h.player,
-            h.scene_id,
-            h.token_id,
-            path.clone(),
-            now_millis(),
+            crate::ws::room::MoveRequestInputs {
+                scene_id: h.scene_id,
+                token: h.token_id,
+                path: path.clone(),
+                ts: now_millis(),
+                request_id: Uuid::from_u128(0xF00D_0017),
+            },
         )
         .await
         .unwrap();
@@ -2902,10 +3218,13 @@ async fn execute_move_continuous_any_angle_route_commits_atomically() {
         .execute_move(
             &h.repo,
             &h.player,
-            h.scene_id,
-            h.token_id,
-            vec![h.start, goal],
-            now_millis(),
+            crate::ws::room::MoveRequestInputs {
+                scene_id: h.scene_id,
+                token: h.token_id,
+                path: vec![h.start, goal],
+                ts: now_millis(),
+                request_id: Uuid::from_u128(0xF00D_0018),
+            },
         )
         .await
         .unwrap();
@@ -2943,10 +3262,13 @@ async fn execute_move_continuous_truncates_before_entering_unseen_space() {
         .execute_move(
             &h.repo,
             &h.player,
-            h.scene_id,
-            h.token_id,
-            vec![h.start, goal],
-            now_millis(),
+            crate::ws::room::MoveRequestInputs {
+                scene_id: h.scene_id,
+                token: h.token_id,
+                path: vec![h.start, goal],
+                ts: now_millis(),
+                request_id: Uuid::from_u128(0xF00D_0019),
+            },
         )
         .await
         .unwrap();
@@ -3100,10 +3422,13 @@ async fn a_hex_move_animates_at_the_grid_step_rate() {
         .execute_move(
             &h.repo,
             &h.player,
-            h.scene_id,
-            h.token_id,
-            vec![h.start, dest],
-            now_millis(),
+            crate::ws::room::MoveRequestInputs {
+                scene_id: h.scene_id,
+                token: h.token_id,
+                path: vec![h.start, dest],
+                ts: now_millis(),
+                request_id: Uuid::from_u128(0xF00D_0020),
+            },
         )
         .await
         .unwrap();
