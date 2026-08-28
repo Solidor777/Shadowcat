@@ -30,8 +30,8 @@ movement-type exemptions (M17).
 | D5 | **Server-owned clock.** Turn/round transitions, recovery of numeric amounts, effect expiry, hidden auto-skip, event firing and the movement budget gate all execute server-side, atomically, inside ONE command per intent. Client hooks are derived from applied command deltas so every client observes identical events. |
 | D6 | **Movement interpretation modes**: `PerCell` (budget ÷ scene `grid.distance.perCell` ⇒ cells: 30 ft / 5 ft = 6 cells) and `Spaces` (budget IS cells). **Enforcement modes**: `None` (engine default), `Warn` (route preview shows the overage during drag), `Hard` (the walk truncates at the last affordable step). **GMs are never truncated** (as they are never wall-gated); their moves still decrement. |
 | D7 | **Override chain system → world → scene** for movement resource, interpretation, enforcement and turn control: the system module seeds the world default alongside the registry; `WorldSettingsEngine.combat` and `SceneEngine.combat` override field-by-field; the combat doc SNAPSHOTS the resolved chain at start (a mid-fight settings edit never silently rewrites the rules of a running combat). |
-| D8 | **Combat = world doc bound to a scene; many per world, at most one ACTIVE per scene** (ship map + ground map run independently). **Combatants = embedded documents** in the combat doc (`embedded.combatant[]`), linked to a token and/or actor, carrying all per-combat state. |
-| D9 | **Hidden combatants are stripped at egress** for non-GM recipients (redaction, not send-then-hide — stripping costs no UX here). Nothing observable betrays a hidden entry: no placeholder row, no count, no counter tick, no distinguishable error. |
+| D8 | **Combat = world doc bound to a scene; many per world, at most one ACTIVE per scene** (ship map + ground map run independently). **Combatants = child documents of the combat** (`parent_id = combat.id`, the same containment tokens have under a scene), linked to a token and/or actor, carrying all per-combat state. NOT `embedded`: embedded children are index-addressed in every field path and redaction can only null an array slot in place (removal would renumber), so a hidden embedded entry would either reveal a count or skew indices per recipient. A child document is dropped whole by the existing per-document READ gate at every egress. |
+| D9 | **Hidden combatants are unreadable documents** for non-GM recipients: `hidden` = `permissions.default: none` (+ the combatant's owner never listed in `users` while hidden), so the READ gate drops the whole doc from Welcome/snapshot, broadcast and resync — redaction, not send-then-hide (stripping costs no UX here). Nothing observable betrays a hidden entry: no placeholder row, no count, no counter tick, no distinguishable error. Hide/reveal must propagate LIVE, which requires a READ-transition rule at egress (§5). |
 | D10 | **Turn control** `OwnerMayEnd` (default): the GM may do anything; the owner of the current combatant may `CombatAdvance` (end own turn) only. `GmOnly`: only the GM advances. |
 | D11 | **Hidden turns auto-resolve under `OwnerMayEnd`**: when the order reaches a hidden combatant its turn STARTS and immediately ENDS inside the same command — turn effects, recoveries and event actions still resolve — so no dead time reveals it. Under `GmOnly` hidden turns are held normally. |
 | D12 | **Events are a combatant kind**, not a second list: a named entry in the initiative order with an optional lifespan in turns (default infinite) and a default chat-message action; may be hidden. Its turn always starts-and-ends in one command (no owner to act). System-defined event behaviour rides the `combat:turn-start` hook + the combatant's opaque `system` band. |
@@ -44,8 +44,15 @@ movement-type exemptions (M17).
 ## 3. Documents
 
 All new engine types join `is_engine_doc_type` / `normalize_engine` in `data/engine/`, are
-`#[serde(deny_unknown_fields)]`, ts-rs exported, Zod-mirrored, and validated at the existing
-`validate_engine_tree` chokepoint (which already recurses into `embedded`).
+`#[serde(deny_unknown_fields)]`, ts-rs exported, re-exported through `@shadowcat/types` →
+`@shadowcat/core`, and validated at the existing `validate_engine_tree` chokepoint (which
+already recurses into `embedded`). The engine registry grows from 17 to 21 doc types.
+
+**Nightfox coordination (out of scope here, blocking for Nightfox):** once `effect` is
+engine-defined, an `effect` document without an `engine` body is rejected at ingress. Nightfox
+must move `active`/`transfer` from `system.mechanics` to the engine band and send the band on
+every effect Create before it runs against a server carrying M14a. Pre-customers: no migration,
+no compatibility shim.
 
 ### 3.1 `combat` (world-level; `scene_id` bound)
 
@@ -69,7 +76,7 @@ Ordering: `order` is rebuilt by `CombatRoll` and by `CombatSort` (GM) as
 Update on `order`. Adding a combatant appends. `order` is the single authority on sequence —
 nothing re-derives it from `initiative` at read time (no forked decision).
 
-### 3.2 `combatant` (embedded only: `combat.embedded.combatant[]`)
+### 3.2 `combatant` (child document: `parent_id = combat.id`, never top-level, never embedded)
 
 ```
 CombatantEngine {
@@ -77,11 +84,20 @@ CombatantEngine {
       | Event { lifespan: Option<u32>, message: Option<String> },  // lifespan in turns; None = infinite
   initiative: Option<f64>,
   tiebreak: f64,                                    // system/GM-supplied secondary key (default 0)
-  hidden: bool,
   resources: BTreeMap<String, CombatantResource>,   // keyed by resource-registry id
 }
 CombatantResource { current: f64, max: f64 }        // numbers only (D4)
 ```
+
+`hidden` is NOT an engine field: it is the document's own `permissions.default` (`none` =
+hidden, `observer` = visible), toggled by the GM through the ordinary `/permissions/default`
+Update (EDIT_PERMISSIONS). The engine band therefore carries nothing a non-GM must not see; the
+whole document is either delivered or not. The combatant's `owner` is the owning user of its
+token/actor (stamped by the client at add time, D10's turn-owner check reads it in M14b).
+`parent_id` MUST reference a `combat` document in the same world (ingress-checked); the delete
+cascade (`descendants_first`) removes a combat's combatants with it. A combatant hydrates into
+the scene ECS like any parented document (`is_scene_entity`) and is inert there — no scene
+query selects `doc_type = "combatant"`.
 
 `system` band on a combatant is the system's (event parameters, per-combat system state).
 Token → actor resolution reuses `resolveTokenActor` (token's `engine.actor_id` first, embedded
@@ -195,11 +211,23 @@ combatant `c`:
 - Every executed move (GM included) decrements `current` by the cost walked, floored at 0, in the
   same command as the position write.
 
-**Redaction (D9)**: hidden combatants are removed from the embedded list per recipient at every
-egress (Welcome/snapshot, broadcast, resync — the same per-recipient filter documents already
-pass through). While a hidden combatant holds `turn` (only possible under `GmOnly`), non-GM
-recipients receive `turn: null`. `CombatAdvance` from a non-GM during a hidden turn returns the
-same error as "not your turn".
+**Redaction (D9)**: a hidden combatant is an unreadable document, dropped whole by the existing
+per-document READ gate at every egress (Welcome/snapshot, broadcast, resync). **READ-transition
+synthesis** (new, engine-generic, in `filter_command`'s Update arm): when an Update changes a
+recipient's whole-document READ from denied to granted, that recipient receives a `Create` of
+the filtered current document instead of the field delta (they never received the original
+Create); when it changes from granted to denied, they receive a `Delete` (a stub envelope: id,
+doc_type, parent_id, empty bands) so no stale copy survives on the client. Needs the PRE-image
+permissions on the op snapshot (`permissions_before_commit`), captured by both persistence loops
+before mutation. This closes a pre-existing gap for every document type (a GM changing a token's
+`permissions.default` today neither reveals nor retracts it live).
+
+While a hidden combatant holds `turn` (only possible under `GmOnly`), `combat.turn` is NOT
+projected: it is a UUID the non-GM cannot resolve, and the default tracker renders "no active
+row" for an unresolvable `turn`. A cross-document projection at egress would be a new mechanism
+for no secrecy gain — under `GmOnly` the held clock already tells every player a turn they cannot
+see is in progress. `CombatAdvance` from a non-GM during a hidden turn returns the same error as
+"not your turn".
 
 ## 6. Client seams (`@shadowcat/core` / ui-kit)
 
@@ -250,8 +278,9 @@ path, execute it, assert equal cost; mutate one side and confirm the test fails.
 ## 10. Security & permissions
 
 - All combat intents authz-checked server-side (GM / combatant owner / turn owner); UI advisory.
-- Hidden entries: stripped at egress, `turn` projected, roll posts whispered, indistinguishable
-  rejection — no observable difference between "hidden combatant exists" and "none". Hidden
+- Hidden entries: unreadable documents dropped whole at egress, hide/reveal delivered live by
+  READ-transition synthesis, roll posts whispered, indistinguishable rejection — no observable
+  difference between "hidden combatant exists" and "none" except a held `GmOnly` turn. Hidden
   budgets never leave the GM tier (the whole-move-scalar rule).
 - `Formula::Text` is opaque server-side and bounded client-side by the formula library's caps.
 - Movement rejection carries no budget value to a non-owner (`NotYourTurn` only).
@@ -264,8 +293,8 @@ path, execute it, assert equal cost; mutate one side and confirm the test fails.
   loop guard); authz matrix per intent; movement gate (`Hard` truncation at exact affordable
   prefix, `Warn`/`None` decrement-only, GM exempt-from-truncation-not-decrement, `NotYourTurn`,
   `BudgetUnresolvable` on missing `perCell`); redaction (hidden absent from Welcome/broadcast/
-  resync for players, present for GM; `turn` projected; indistinguishable error); one-active-per-
-  scene; D15 parity per rule + navmesh.
+  resync for players, present for GM; hide ⇒ synthesized Delete, reveal ⇒ synthesized Create;
+  indistinguishable error); one-active-per-scene; D15 parity per rule + navmesh.
 - Client: hook emission from deltas (player and GM see identical visible events); `resolveResources`
   mirror/tracked semantics with a fixture system (movement + actions registry); Zod/ts-rs drift;
   tracker component tests; route-preview clamp/overage.
@@ -277,7 +306,7 @@ path, execute it, assert equal cost; mutate one side and confirm the test fails.
 
 | Checkpoint | Contents |
 |---|---|
-| **M14a** | Documents: `combat`, `combatant`, `resource-registry`, `effect` engine band, `CombatDefaults` on world/scene; ts-rs + Zod; registry seed helper; one-active-per-scene enforcement; hidden-entry egress redaction |
+| **M14a** | Documents: `combat`, `combatant` (child doc), `resource-registry`, `effect` engine band, `CombatDefaults` on world/scene + server-side chain resolver; ts-rs + client re-exports/builders; registry seed helper; one-active-per-scene + combatant-parent ingress rules; READ-transition synthesis at egress (hide/reveal live) |
 | **M14b** | Intents + transitions (§5), `chat::rolls` shared entry, movement gate, D15 cost unification, `TODO.md` closures |
 | **M14c** | `AppContext.combat`, `CoreHooks` first entries + delta-derived emission, `resolveResources`, route-preview budget UX |
 | **M14d** | `src/modules/combat` tracker + settings editors, e2e, docs-site module page, skill-update gate (new `shadowcat-codebase-combat` skill) |
