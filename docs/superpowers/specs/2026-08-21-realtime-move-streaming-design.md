@@ -1,6 +1,8 @@
 # Real-Time Per-Recipient Move-Streaming — Design
 
-**Status:** BLOCKED ON USER INPUT — buddy-checked (two independent reviewers, full debate to
+**Status:** SUPERSEDED by `2026-08-27-move-stream-live-clip-design.md` (user chose direction
+2026-08-27 under the new ARCHITECTURE.md invariant 11). Retained as background. Original
+status: BLOCKED ON USER INPUT — buddy-checked (two independent reviewers, full debate to
 convergence) and the §3 mechanism this document proposed **does not work**. Both reviewers
 independently confirmed, then jointly re-confirmed under debate: `Room::execute_move` holds
 `publish_guard` across its entire validate→commit body (`ws/room.rs`), fully serializing move
