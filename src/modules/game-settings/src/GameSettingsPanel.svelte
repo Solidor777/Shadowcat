@@ -5,9 +5,11 @@
     buildWorldSettingsDoc, buildLightGradationDoc, buildVisionModesDoc, buildDiceSettingsDoc,
     buildChatSettingsDoc,
     DEFAULT_WORLD_SETTINGS,
+    SYSTEM_DEFAULTS_DOC_TYPE, resolveSettingProvenance,
     type WorldSettingsEngine, type LightGradationEngine, type VisionModesEngine,
     type SceneEngine, type WireDocument, DEFAULT_SCENE_BOUNDS, type DiceSettingsEngine,
     type ChatSettingsEngine, type ChannelRegistryEngine,
+    type SystemDefaultsEngine, type SettingPath,
   } from "@shadowcat/core";
 
   const ctx = getAppContext();
@@ -52,6 +54,89 @@
     return ctx.documents.query("world-settings")[0];
   });
   const wsys = $derived.by((): WorldSettingsEngine | undefined => ws?.engine as WorldSettingsEngine | undefined);
+
+  // system-defaults singleton: read-only here (the sheet-fallback tree editor is the only
+  // writer of this doc, seeded by the active system module's own declaration) — needed to
+  // compute the RESET-TO-SYSTEM target value for each world-defaults control below.
+  const sdDoc = $derived.by((): WireDocument | undefined => {
+    subscribe();
+    return ctx.documents.query(SYSTEM_DEFAULTS_DOC_TYPE)[0];
+  });
+  const sdsys = $derived.by((): SystemDefaultsEngine | undefined => sdDoc?.engine as SystemDefaultsEngine | undefined);
+
+  /**
+   * Resolve a world-defaults setting's provenance (which layer supplies its effective value).
+   * `scene` is always `undefined` here: this panel's world-defaults section shows the
+   * WORLD-scoped resolution (engine < system < world), never a per-scene override.
+   * @param path The setting to resolve; see `SettingPath`.
+   * @returns The resolved value and the layer that supplied it.
+   * @example
+   * ```
+   * // private helper; not part of the public API
+   * prov("pathfinding.diagonalRule").source; // "world" | "system" | "engine"
+   * ```
+   */
+  function prov(path: SettingPath): {
+    /** The resolved value. */
+    value: unknown;
+    /** The layer that supplied it. */
+    source: "engine" | "system" | "world" | "scene";
+  } {
+    return resolveSettingProvenance(ctx.documents, undefined, path);
+  }
+
+  /** Exact `WorldSceneDefaults`/`Pathfinding`/`AnimationSettings` leaves this panel's
+   * world-defaults section renders a reset control for — every leaf here is REQUIRED on the
+   * wire, so reset always WRITES the system-resolved (or engine-literal) value rather than
+   * removing the key (unlike `combat.*` leaves, which are optional and use `remove: true`). */
+  type WorldDefaultsPath = Exclude<SettingPath, `combat.${string}`>;
+
+  /**
+   * The value reset-to-system writes for a required world-defaults leaf: the system-defaults
+   * overlay's value if declared, else the built-in engine default — skipping the currently
+   * stored WORLD value entirely (that's the value being reset away from).
+   * @param path The world-defaults setting to compute a reset target for.
+   * @returns The system-or-engine value to write.
+   * @example
+   * ```
+   * // private helper; not part of the public API
+   * systemOrEngine("scene.fog"); // sdsys?.scene?.fog ?? DEFAULT_WORLD_SETTINGS.scene.fog
+   * ```
+   */
+  function systemOrEngine(path: WorldDefaultsPath): unknown {
+    switch (path) {
+      case "scene.movementRestriction": return sdsys?.scene?.movementRestriction ?? DEFAULT_WORLD_SETTINGS.scene.movementRestriction;
+      case "scene.movementModel": return sdsys?.scene?.movementModel ?? DEFAULT_WORLD_SETTINGS.scene.movementModel;
+      case "scene.lightingEnabled": return sdsys?.scene?.lightingEnabled ?? DEFAULT_WORLD_SETTINGS.scene.lightingEnabled;
+      case "scene.lightMode": return sdsys?.scene?.lightMode ?? DEFAULT_WORLD_SETTINGS.scene.lightMode;
+      case "scene.fog": return sdsys?.scene?.fog ?? DEFAULT_WORLD_SETTINGS.scene.fog;
+      case "scene.losRestriction": return sdsys?.scene?.losRestriction ?? DEFAULT_WORLD_SETTINGS.scene.losRestriction;
+      case "scene.observerVision": return sdsys?.scene?.observerVision ?? DEFAULT_WORLD_SETTINGS.scene.observerVision;
+      case "scene.environment": return sdsys?.scene?.environment ?? DEFAULT_WORLD_SETTINGS.scene.environment;
+      case "scene.partialCellLeniency": return sdsys?.scene?.partialCellLeniency ?? DEFAULT_WORLD_SETTINGS.scene.partialCellLeniency;
+      case "pathfinding.diagonalRule": return sdsys?.pathfinding?.diagonalRule ?? DEFAULT_WORLD_SETTINGS.pathfinding.diagonalRule;
+      case "animation.speedCellsPerSec": return sdsys?.animation?.speedCellsPerSec ?? DEFAULT_WORLD_SETTINGS.animation.speedCellsPerSec;
+      case "animation.easing": return sdsys?.animation?.easing ?? DEFAULT_WORLD_SETTINGS.animation.easing;
+      default: return path satisfies never;
+    }
+  }
+
+  /**
+   * Reset a required world-defaults leaf back to its system-resolved (or engine-literal) value.
+   * `old` is the field's real current stored value on the world-settings doc (the OCC
+   * pre-image) — required leaves are never removed (see `WorldDefaultsPath`'s doc comment).
+   * @param path The world-defaults setting to reset.
+   * @param old The field's real current value on the world-settings doc.
+   * @example
+   * ```
+   * // private function; not part of the public API — wired to each reset button's onclick
+   * if (ws) resetToSystem("scene.fog", wsys!.scene.fog);
+   * ```
+   */
+  function resetToSystem(path: WorldDefaultsPath, old: unknown): void {
+    if (!ws) return;
+    set(ws.id, "/engine/" + path.replace(".", "/"), old, systemOrEngine(path));
+  }
 
   const lgDoc = $derived.by((): WireDocument | undefined => {
     subscribe();
@@ -191,8 +276,20 @@
 <section aria-label={ctx.t("gameSettings.title")}>
   <h2>{ctx.t("gameSettings.title")}</h2>
 
+  <!-- Per-control provenance hint + reset-to-system-default button, shared by every world-defaults
+       control below. Reset renders only when the WORLD layer currently supplies the value — a
+       structurally-complete world-settings doc's own leaf is never absent, so this is the normal
+       case whenever a GM has touched (or the panel seeded) that leaf. -->
+  {#snippet provControl(path: WorldDefaultsPath, old: unknown)}
+    <p class="hint" data-testid={"provenance:" + path}>{ctx.t("gameSettings.source." + prov(path).source)}</p>
+    {#if prov(path).source === "world"}
+      <button type="button" class="reset-to-system" aria-label={"gameSettings.resetToSystem:" + path}
+        onclick={() => resetToSystem(path, old)}>{ctx.t("gameSettings.resetToSystem")}</button>
+    {/if}
+  {/snippet}
+
   {#if ctx.role === "gm" && wsys && ws}
-    <!-- World-defaults: movement, lighting, light mode, pathfinding, animation -->
+    <!-- World-defaults: movement, lighting, light mode, fog, pathfinding, animation -->
     <label>
       {ctx.t("gameSettings.movementRestriction")}
       <select aria-label="gameSettings.movementRestriction" value={wsys.scene.movementRestriction}
@@ -200,6 +297,7 @@
         {#each MOVEMENT as m}<option value={m}>{m}</option>{/each}
       </select>
     </label>
+    {@render provControl("scene.movementRestriction", wsys.scene.movementRestriction)}
 
     <label>
       {ctx.t("gameSettings.movementModel")}
@@ -208,12 +306,14 @@
         {#each MOVEMENT_MODEL as m}<option value={m}>{m}</option>{/each}
       </select>
     </label>
+    {@render provControl("scene.movementModel", wsys.scene.movementModel)}
 
     <label>
       {ctx.t("gameSettings.lightingEnabled")}
       <input type="checkbox" aria-label="gameSettings.lightingEnabled" checked={wsys.scene.lightingEnabled}
         onchange={(e) => set(ws.id, "/engine/scene/lightingEnabled", wsys.scene.lightingEnabled, (e.currentTarget as HTMLInputElement).checked)} />
     </label>
+    {@render provControl("scene.lightingEnabled", wsys.scene.lightingEnabled)}
 
     <label>
       {ctx.t("gameSettings.lightMode")}
@@ -222,6 +322,14 @@
         {#each LIGHTMODE as m}<option value={m}>{m}</option>{/each}
       </select>
     </label>
+    {@render provControl("scene.lightMode", wsys.scene.lightMode)}
+
+    <label>
+      {ctx.t("gameSettings.fog")}
+      <input type="checkbox" aria-label="gameSettings.fog" checked={wsys.scene.fog}
+        onchange={(e) => set(ws.id, "/engine/scene/fog", wsys.scene.fog, (e.currentTarget as HTMLInputElement).checked)} />
+    </label>
+    {@render provControl("scene.fog", wsys.scene.fog)}
 
     <label>
       {ctx.t("gameSettings.diagonalRule")}
@@ -230,12 +338,14 @@
         {#each DIAGONAL as d}<option value={d}>{d}</option>{/each}
       </select>
     </label>
+    {@render provControl("pathfinding.diagonalRule", wsys.pathfinding.diagonalRule)}
 
     <label>
       {ctx.t("gameSettings.animSpeed")}
       <input type="number" min="1" step="1" aria-label="gameSettings.animSpeed" value={wsys.animation.speedCellsPerSec}
         onchange={(e) => set(ws.id, "/engine/animation/speedCellsPerSec", wsys.animation.speedCellsPerSec, Number((e.currentTarget as HTMLInputElement).value))} />
     </label>
+    {@render provControl("animation.speedCellsPerSec", wsys.animation.speedCellsPerSec)}
 
     <label>
       {ctx.t("gameSettings.animEasing")}
@@ -244,6 +354,7 @@
         {#each EASING as ea}<option value={ea}>{ea}</option>{/each}
       </select>
     </label>
+    {@render provControl("animation.easing", wsys.animation.easing)}
   {/if}
 
   {#if ctx.role === "gm" && lgsys && lgDoc}
@@ -658,7 +769,8 @@
 </section>
 
 <style lang="scss">
-  input {
+  input,
+  .reset-to-system {
     @media (pointer: coarse) {
       min-height: var(--input-height-coarse);
     }
