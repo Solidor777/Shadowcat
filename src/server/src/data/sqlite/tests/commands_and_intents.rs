@@ -2671,7 +2671,9 @@ fn combat_doc(id: u128, world: Uuid, scene: Uuid, active: bool) -> Document {
     d.engine = Some(serde_json::json!({
         "scene_id": scene.to_string(), "active": active, "round": 0, "turn": null,
         "turn_control": "owner_may_end", "order": [],
-        "movement": { "resource": null, "interpretation": "per_cell", "enforcement": "none" }
+        "movement": { "resource": null, "interpretation": "per_cell", "enforcement": "none" },
+        "effect_cleanup": true, "rewind_restore": true, "forward_restore": false,
+        "effect_lifecycle": { "onCombatEnd": null, "onTurnEnd": null, "onAdvance": null }
     }));
     d
 }

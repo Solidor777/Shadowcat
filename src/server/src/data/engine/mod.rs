@@ -16,10 +16,11 @@ pub mod system_defaults;
 pub mod token;
 
 pub use combat::{
-    resolve_combat_rules, ClockStamp, CombatDefaults, CombatEngine, CombatantEngine, CombatantKind,
-    CombatantResource, Duration, DurationUnit, EffectEngine, Enforcement, ExpiryPoint, Formula,
-    Interpretation, MovementRules, Recovery, ResolvedCombatRules, Resource, ResourceBinding,
-    ResourceRegistryEngine, TurnControl, MAX_FORMULA_CHARS,
+    resolve_combat_rules, CombatDefaults, CombatEngine, CombatHistoryEngine, CombatantEngine,
+    CombatantKind, CombatantResource, Duration, DurationUnit, EffectEngine, EffectLifecycle,
+    EffectLifecycleDefaults, EffectSnapshot, Enforcement, ExpiryPoint, Formula, Interpretation,
+    MovementRules, Recovery, ResolvedCombatRules, ResolvedLifecycle, Resource, ResourceBinding,
+    ResourceRegistryEngine, TurnControl, TurnRecord, MAX_FORMULA_CHARS, MAX_TURN_HISTORY,
 };
 pub use geometry::{
     DrawingEngine, DrawingShape, Fill, RegionEngine, RegionShape, Seg, Stroke, TemplateEngine,
@@ -62,6 +63,8 @@ pub const RESOURCE_REGISTRY_DOC_TYPE: &str = "resource-registry";
 pub const EFFECT_DOC_TYPE: &str = "effect";
 /// Doc_type for the world's singleton system-declared settings defaults.
 pub const SYSTEM_DEFAULTS_DOC_TYPE: &str = "system-defaults";
+/// Doc_type for a combat's turn-history log: always a child (`parent_id`) of the combat.
+pub const COMBAT_HISTORY_DOC_TYPE: &str = "combat-history";
 
 /// Whether `doc_type` carries a typed `engine` band. The registry is a
 /// hardcoded match — there is no dynamic registration (the server runs no
@@ -102,6 +105,7 @@ pub fn is_engine_doc_type(doc_type: &str) -> bool {
             | "resource-registry"
             | "effect"
             | "system-defaults"
+            | "combat-history"
     )
 }
 
@@ -249,6 +253,14 @@ fn normalize_engine(doc_type: &str, v: &serde_json::Value) -> Result<serde_json:
             typed
                 .validate()
                 .map_err(|m| DataError::BadEngine(format!("system-defaults: {m}")))?;
+            Ok(serde_json::to_value(typed)?)
+        }
+        "combat-history" => {
+            let typed: CombatHistoryEngine = serde_json::from_value(v.clone())
+                .map_err(|e| DataError::BadEngine(format!("combat-history: {e}")))?;
+            typed
+                .validate()
+                .map_err(|m| DataError::BadEngine(format!("combat-history: {m}")))?;
             Ok(serde_json::to_value(typed)?)
         }
         _ => unreachable!("is_engine_doc_type and this match must stay in sync"),

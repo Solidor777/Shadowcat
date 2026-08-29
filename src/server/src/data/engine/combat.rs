@@ -1,9 +1,10 @@
 //! Engine bands for the combat clock: `combat` (a world document bound to a
 //! scene), `combatant` (a child document of a combat), `resource-registry`
-//! (the singleton turn-resource definitions) and `effect` (clock-bound
-//! expiry). The server stores every `Formula::Text` verbatim and never
-//! evaluates it: formulas are resolved to numbers on the client, and the
-//! numbers land in `CombatantResource`.
+//! (the singleton turn-resource definitions), `effect` (clock-bound
+//! expiry) and `combat-history` (the per-turn snapshot log of one combat).
+//! The server stores every `Formula::Text` verbatim and never evaluates it:
+//! formulas are resolved to numbers on the client, and the numbers land in
+//! `CombatantResource`.
 
 // Ratchet: every item in this module must carry a doc comment, enforced by
 // the two crate-level deny attributes this module declares.
@@ -79,7 +80,7 @@ pub struct MovementRules {
 /// `null`/absent both mean "unset — fall through". `movement_resource` is
 /// doubly optional: `Some(None)` explicitly CLEARS an inherited resource,
 /// `None` inherits.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields, rename_all = "camelCase", default)]
 pub struct CombatDefaults {
@@ -101,6 +102,18 @@ pub struct CombatDefaults {
     /// Override of `CombatEngine.turn_control`.
     #[ts(optional = nullable)]
     pub turn_control: Option<TurnControl>,
+    /// Override of `CombatEngine.effect_cleanup`.
+    #[ts(optional = nullable)]
+    pub effect_cleanup: Option<bool>,
+    /// Override of `CombatEngine.effect_lifecycle`.
+    #[ts(optional = nullable)]
+    pub effect_lifecycle: Option<EffectLifecycleDefaults>,
+    /// Override of `CombatEngine.rewind_restore`.
+    #[ts(optional = nullable)]
+    pub rewind_restore: Option<bool>,
+    /// Override of `CombatEngine.forward_restore`.
+    #[ts(optional = nullable)]
+    pub forward_restore: Option<bool>,
 }
 
 /// serde reads a missing key as `None` and an explicit `null` as `Some(None)`
@@ -115,12 +128,20 @@ where
 
 /// The rules a `combat` document snapshots at start: the resolved
 /// engine literal < system-defaults < world < scene chain.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ResolvedCombatRules {
     /// Resolved movement rules.
     pub movement: MovementRules,
     /// Resolved turn control.
     pub turn_control: TurnControl,
+    /// Resolved `CombatEngine.effect_cleanup`.
+    pub effect_cleanup: bool,
+    /// Resolved `CombatEngine.rewind_restore`.
+    pub rewind_restore: bool,
+    /// Resolved `CombatEngine.forward_restore`.
+    pub forward_restore: bool,
+    /// Resolved `CombatEngine.effect_lifecycle`.
+    pub effect_lifecycle: EffectLifecycleDefaults,
 }
 
 /// Resolve the combat rules for a scene: scene overrides beat world overrides
@@ -166,6 +187,33 @@ pub fn resolve_combat_rules(
         .or_else(|| world.and_then(|d| d.turn_control))
         .or_else(|| system.and_then(|d| d.turn_control))
         .unwrap_or_default();
+    let effect_cleanup = scene
+        .and_then(|d| d.effect_cleanup)
+        .or_else(|| world.and_then(|d| d.effect_cleanup))
+        .or_else(|| system.and_then(|d| d.effect_cleanup))
+        .unwrap_or(true);
+    let rewind_restore = scene
+        .and_then(|d| d.rewind_restore)
+        .or_else(|| world.and_then(|d| d.rewind_restore))
+        .or_else(|| system.and_then(|d| d.rewind_restore))
+        .unwrap_or(true);
+    let forward_restore = scene
+        .and_then(|d| d.forward_restore)
+        .or_else(|| world.and_then(|d| d.forward_restore))
+        .or_else(|| system.and_then(|d| d.forward_restore))
+        .unwrap_or(false);
+    let lifecycle_field = |f: fn(&EffectLifecycleDefaults) -> Option<Formula>| {
+        scene
+            .and_then(|d| d.effect_lifecycle.as_ref())
+            .and_then(f)
+            .or_else(|| world.and_then(|d| d.effect_lifecycle.as_ref()).and_then(f))
+            .or_else(|| system.and_then(|d| d.effect_lifecycle.as_ref()).and_then(f))
+    };
+    let effect_lifecycle = EffectLifecycleDefaults {
+        on_combat_end: lifecycle_field(|l| l.on_combat_end.clone()),
+        on_turn_end: lifecycle_field(|l| l.on_turn_end.clone()),
+        on_advance: lifecycle_field(|l| l.on_advance.clone()),
+    };
     ResolvedCombatRules {
         movement: MovementRules {
             resource,
@@ -173,6 +221,10 @@ pub fn resolve_combat_rules(
             enforcement,
         },
         turn_control,
+        effect_cleanup,
+        rewind_restore,
+        forward_restore,
+        effect_lifecycle,
     }
 }
 
@@ -199,6 +251,18 @@ pub struct CombatEngine {
     pub order: Vec<Uuid>,
     /// Movement rules (snapshot of the resolved chain at start).
     pub movement: MovementRules,
+    /// Whether an effect's `EffectLifecycle.resolved.on_combat_end`/`on_turn_end` flags
+    /// actually expire it (snapshot of the resolved chain at start).
+    pub effect_cleanup: bool,
+    /// Whether ending combat/rewinding restores documents an anchored `TurnRecord` snapshot
+    /// (snapshot of the resolved chain at start).
+    pub rewind_restore: bool,
+    /// Whether advancing PAST the current cursor (redo) restores documents from history
+    /// instead of re-deriving them (snapshot of the resolved chain at start).
+    pub forward_restore: bool,
+    /// Default lifecycle formulas new effects inherit when authored ones are absent
+    /// (snapshot of the resolved chain at start).
+    pub effect_lifecycle: EffectLifecycleDefaults,
 }
 
 impl CombatEngine {
@@ -457,24 +521,18 @@ pub enum ExpiryPoint {
     RoundEnd,
 }
 
-/// A position on the combat clock.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../types/generated/engine/")]
-#[serde(deny_unknown_fields)]
-pub struct ClockStamp {
-    /// Round number.
-    pub round: u32,
-    /// Index into `CombatEngine.order` of the turn in progress.
-    pub turn_index: u32,
-}
-
 /// A clock-bound lifetime for an effect.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
 pub struct Duration {
-    /// How many `unit`s the effect lasts; `>= 1`.
-    pub amount: u32,
+    /// How many `unit`s the effect lasts; a `Formula::Number` must be `>= 1`.
+    pub amount: Formula,
+    /// Remaining `unit`s until expiry; `None` until the client resolves `amount` for the
+    /// first time. Decremented by `EffectLifecycle.resolved.on_advance`.
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub remaining: Option<u32>,
     /// Rounds or turns.
     pub unit: DurationUnit,
     /// The combatant whose turns are counted; `None` = the combatant whose
@@ -482,8 +540,55 @@ pub struct Duration {
     pub anchor: Option<Uuid>,
     /// The boundary the effect expires on.
     pub expires: ExpiryPoint,
-    /// Where on the clock the effect began.
-    pub started: ClockStamp,
+}
+
+/// Client-resolved lifecycle flags the server acts on (mirrors the client's `ResolvedLifecycle`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/engine/")]
+#[serde(deny_unknown_fields)]
+pub struct ResolvedLifecycle {
+    /// Expire when the combat ends (when `CombatEngine.effect_cleanup`).
+    pub on_combat_end: bool,
+    /// Expire when the host combatant's turn ends (when `CombatEngine.effect_cleanup`).
+    pub on_turn_end: bool,
+    /// Decrement `Duration.remaining` at each matching boundary.
+    pub on_advance: bool,
+}
+
+/// Authored lifecycle policy: formulas the client resolves into `resolved`.
+/// Every formula is optional and falls through the combat-defaults chain.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/engine/")]
+#[serde(deny_unknown_fields, default)]
+pub struct EffectLifecycle {
+    /// Truthy ⇒ expire at `CombatEnd`.
+    #[ts(optional = nullable)]
+    pub on_combat_end: Option<Formula>,
+    /// Truthy ⇒ expire at the host's turn end.
+    #[ts(optional = nullable)]
+    pub on_turn_end: Option<Formula>,
+    /// Truthy ⇒ boundaries decrement `remaining`.
+    #[ts(optional = nullable)]
+    pub on_advance: Option<Formula>,
+    /// The client-written resolution of the three formulas; `None` = not on a clock yet.
+    #[ts(optional = nullable)]
+    pub resolved: Option<ResolvedLifecycle>,
+}
+
+/// The three lifecycle formulas as chain-level defaults (no `resolved`).
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/engine/")]
+#[serde(deny_unknown_fields, rename_all = "camelCase", default)]
+pub struct EffectLifecycleDefaults {
+    /// Default for `EffectLifecycle.on_combat_end`.
+    #[ts(optional = nullable)]
+    pub on_combat_end: Option<Formula>,
+    /// Default for `EffectLifecycle.on_turn_end`.
+    #[ts(optional = nullable)]
+    pub on_turn_end: Option<Formula>,
+    /// Default for `EffectLifecycle.on_advance`.
+    #[ts(optional = nullable)]
+    pub on_advance: Option<Formula>,
 }
 
 /// The engine body of an `effect` document (mirrors the client's
@@ -502,15 +607,94 @@ pub struct EffectEngine {
     /// Clock-bound lifetime; `None` = on while active.
     #[serde(default)]
     pub duration: Option<Duration>,
+    /// Authored expiry/decrement policy; `None` = not on a clock (transient/permanent effect).
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub lifecycle: Option<EffectLifecycle>,
 }
 
 impl EffectEngine {
-    /// A duration's `amount` is at least 1.
+    /// A duration's `amount` formula is well-formed, and — when a literal number — `>= 1`;
+    /// every present lifecycle formula is well-formed.
     pub(crate) fn validate(&self) -> Result<(), String> {
         if let Some(d) = &self.duration {
-            if d.amount == 0 {
-                return Err("duration amount must be >= 1".into());
+            d.amount.validate("duration.amount")?;
+            if let Formula::Number(n) = &d.amount {
+                if *n < 1.0 {
+                    return Err("duration amount must be >= 1".into());
+                }
             }
+        }
+        if let Some(l) = &self.lifecycle {
+            if let Some(f) = &l.on_combat_end {
+                f.validate("lifecycle.on_combat_end")?;
+            }
+            if let Some(f) = &l.on_turn_end {
+                f.validate("lifecycle.on_turn_end")?;
+            }
+            if let Some(f) = &l.on_advance {
+                f.validate("lifecycle.on_advance")?;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Upper bound on retained turn records; the oldest drops first.
+pub const MAX_TURN_HISTORY: usize = 200;
+
+/// One anchored effect as it stood at a turn boundary.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/engine/")]
+#[serde(deny_unknown_fields)]
+pub struct EffectSnapshot {
+    /// The document that embeds the effect (token or actor).
+    pub host: Uuid,
+    /// JSON pointer of the effect document inside `host` (e.g. `/embedded/effect/0`).
+    pub path: String,
+    /// The effect's engine band at the boundary.
+    pub engine: EffectEngine,
+}
+
+/// Every combatant and anchored effect as they stood when `turn` began.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/engine/")]
+#[serde(deny_unknown_fields)]
+pub struct TurnRecord {
+    /// Round the turn belongs to.
+    pub round: u32,
+    /// The combatant whose turn it is.
+    pub turn: Uuid,
+    /// Whole combatant documents (restore re-creates a deleted one).
+    pub combatants: Vec<crate::data::document::Document>,
+    /// Anchored effects.
+    pub effects: Vec<EffectSnapshot>,
+}
+
+/// The engine body of a `combat-history` document: the per-turn snapshots of
+/// one combat and the cursor of the current turn. GM-only by
+/// `permissions.default: none`; bounded to `MAX_TURN_HISTORY` records.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/engine/")]
+#[serde(deny_unknown_fields)]
+pub struct CombatHistoryEngine {
+    /// Oldest first.
+    pub records: Vec<TurnRecord>,
+    /// Index of the record describing the current turn (`0` when empty).
+    pub cursor: u32,
+}
+
+impl CombatHistoryEngine {
+    /// At most `MAX_TURN_HISTORY` records; `cursor < len` unless empty.
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        if self.records.len() > MAX_TURN_HISTORY {
+            return Err(format!("history exceeds {MAX_TURN_HISTORY} records"));
+        }
+        if !self.records.is_empty() && (self.cursor as usize) >= self.records.len() {
+            return Err("cursor out of range".into());
+        }
+        if self.records.is_empty() && self.cursor != 0 {
+            return Err("cursor must be 0 for an empty history".into());
         }
         Ok(())
     }

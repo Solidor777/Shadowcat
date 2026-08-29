@@ -7,8 +7,8 @@ import {
 import { buildLightGradationDoc, resolveGradation, DEFAULT_GRADATION, buildVisionModesDoc, resolveVisionModes, SEED_VISION_MODES, buildLightDoc } from "./scene-docs";
 import { buildRegionDoc, setRegionVisibility, type RegionEngine } from "./scene-docs";
 import {
-  buildCombatDoc, buildCombatantDoc, buildResourceRegistryDoc, buildEffectDoc, seedResourceRegistryIfAbsent,
-  COMBAT_DOC_TYPE, COMBATANT_DOC_TYPE, RESOURCE_REGISTRY_DOC_TYPE, EFFECT_DOC_TYPE,
+  buildCombatDoc, buildCombatantDoc, buildResourceRegistryDoc, buildEffectDoc, buildCombatHistoryDoc, seedResourceRegistryIfAbsent,
+  COMBAT_DOC_TYPE, COMBATANT_DOC_TYPE, RESOURCE_REGISTRY_DOC_TYPE, EFFECT_DOC_TYPE, COMBAT_HISTORY_DOC_TYPE,
   type CombatEngine, type CombatantEngine, type ResourceRegistryEngine, type Resource, type EffectEngine,
 } from "./scene-docs";
 import {
@@ -517,6 +517,8 @@ describe("combat document builders", () => {
   const combatEngine: CombatEngine = {
     scene_id: "scene-1", active: false, round: 0, turn: null, turn_control: "owner_may_end", order: [],
     movement: { resource: null, interpretation: "per_cell", enforcement: "none" },
+    effect_cleanup: true, rewind_restore: true, forward_restore: false,
+    effect_lifecycle: { onCombatEnd: null, onTurnEnd: null, onAdvance: null },
   };
 
   it("buildCombatDoc is a parentless engine doc", () => {
@@ -572,6 +574,14 @@ describe("combat document builders", () => {
     expect(d.engine).toEqual(eng);
     expect(d.name).toBe("Bless");
     expect(d.system).toEqual({ mechanics: { modifiers: {} } });
+  });
+
+  it("buildCombatHistoryDoc parents to the combat and is GM-only", () => {
+    const d = buildCombatHistoryDoc("world-1", "combat-1");
+    expect(d.doc_type).toBe(COMBAT_HISTORY_DOC_TYPE);
+    expect(d.parent_id).toBe("combat-1");
+    expect(d.permissions.default).toBe("none");
+    expect(d.engine).toEqual({ records: [], cursor: 0 });
   });
 });
 

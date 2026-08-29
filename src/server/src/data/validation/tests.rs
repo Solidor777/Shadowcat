@@ -632,6 +632,25 @@ fn validate_containment_rejects_a_parented_combat_and_an_unparented_combatant() 
 }
 
 #[test]
+fn validate_containment_requires_a_parent_for_combat_history_and_forbids_embedding_it() {
+    let mut history = crate::data::document::tests::sample_doc();
+    history.doc_type = "combat-history".into();
+    history.engine = crate::data::document::tests::default_test_engine("combat-history");
+    history.parent_id = None;
+    assert!(validate_containment(&history).is_err());
+    history.parent_id = Some(uuid::Uuid::from_u128(5));
+    assert!(validate_containment(&history).is_ok());
+
+    let mut child = crate::data::document::tests::sample_doc();
+    child.doc_type = "combat-history".into();
+    child.engine = crate::data::document::tests::default_test_engine("combat-history");
+    child.parent_id = Some(uuid::Uuid::from_u128(5));
+    let mut parent = crate::data::document::tests::sample_doc();
+    parent.embedded.insert("combat-history".into(), vec![child]);
+    assert!(validate_containment(&parent).is_err());
+}
+
+#[test]
 fn validate_containment_rejects_combat_and_combatant_as_embedded_children() {
     for child_type in ["combat", "combatant"] {
         let mut child = crate::data::document::tests::sample_doc();

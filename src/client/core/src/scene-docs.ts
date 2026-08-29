@@ -70,7 +70,12 @@ import type {
   Duration,
   DurationUnit,
   ExpiryPoint,
-  ClockStamp,
+  ResolvedLifecycle,
+  EffectLifecycle,
+  EffectLifecycleDefaults,
+  EffectSnapshot,
+  TurnRecord,
+  CombatHistoryEngine,
   SystemDefaultsEngine,
   SceneDefaultsOverlay,
   PathfindingOverlay,
@@ -143,7 +148,12 @@ export type {
   Duration,
   DurationUnit,
   ExpiryPoint,
-  ClockStamp,
+  ResolvedLifecycle,
+  EffectLifecycle,
+  EffectLifecycleDefaults,
+  EffectSnapshot,
+  TurnRecord,
+  CombatHistoryEngine,
   SystemDefaultsEngine,
   SceneDefaultsOverlay,
   PathfindingOverlay,
@@ -625,7 +635,7 @@ export function buildActorDoc(worldId: string, name: string | null, engine: Acto
  * (both run unconditionally on every doc_type). `validate_engine_tree` also runs on an item,
  * but only to REJECT one carrying an `engine` body (`normalize_engine_opt`'s
  * `(false, Some(_))` arm: "not engine-defined; `engine` must be absent") — an item never
- * receives the semantic/typed validation the 21 engine-defined doc types' `engine` bodies
+ * receives the semantic/typed validation the 23 engine-defined doc types' `engine` bodies
  * get, because it has no typed struct and no `engine` body to deserialize.
  * An item lives standalone (top-level, parentless) or embedded in an actor's inventory.
  * Display name lives in the envelope; every other field is opaque, edited via the tree
@@ -1044,6 +1054,8 @@ export const COMBATANT_DOC_TYPE = "combatant";
 export const RESOURCE_REGISTRY_DOC_TYPE = "resource-registry";
 /** Engine-defined doc_type of an effect. */
 export const EFFECT_DOC_TYPE = "effect";
+/** Engine-defined doc_type of a combat's turn-history log, always a child of a combat. */
+export const COMBAT_HISTORY_DOC_TYPE = "combat-history";
 
 /** A top-level (world-scoped, parentless) combat document bound to `engine.scene_id`.
  * @param worldId The owning world's id.
@@ -1057,6 +1069,8 @@ export const EFFECT_DOC_TYPE = "effect";
  * const engine: CombatEngine = {
  *   scene_id: "scene-1", active: false, round: 0, turn: null, turn_control: "owner_may_end",
  *   order: [], movement: { resource: null, interpretation: "per_cell", enforcement: "none" },
+ *   effect_cleanup: true, rewind_restore: true, forward_restore: false,
+ *   effect_lifecycle: { onCombatEnd: null, onTurnEnd: null, onAdvance: null },
  * };
  * buildCombatDoc("world-1", engine).doc_type; // "combat"
  * ```
@@ -1178,6 +1192,28 @@ export function buildEffectDoc(worldId: string, engine: EffectEngine, system: un
   return envelope(worldId, EFFECT_DOC_TYPE, null, system, id, engine, name);
 }
 
+/** A `combat-history` document parented to `combatId`, holding the empty turn-snapshot log.
+ * GM-only (`permissions.default: "none"`): the log is server-side bookkeeping for restore, never
+ * a player-readable view.
+ * @param worldId The owning world's id.
+ * @param combatId The parent combat document's id.
+ * @param id An explicit id, or `undefined` to generate one.
+ * @returns A `WireDocument` with `doc_type: "combat-history"` and `parent_id: combatId`.
+ * @example
+ * ```ts
+ * import { buildCombatHistoryDoc } from "@shadowcat/core";
+ *
+ * const doc = buildCombatHistoryDoc("world-1", "combat-1");
+ * doc.doc_type; // "combat-history"
+ * doc.permissions.default; // "none"
+ * ```
+ */
+export function buildCombatHistoryDoc(worldId: string, combatId: string, id?: string): WireDocument {
+  const doc = envelope(worldId, COMBAT_HISTORY_DOC_TYPE, combatId, {}, id, { records: [], cursor: 0 } satisfies CombatHistoryEngine, null);
+  doc.permissions = { ...doc.permissions, default: "none" };
+  return doc;
+}
+
 // --- System-defaults document ---
 
 /**
@@ -1257,6 +1293,10 @@ const ENGINE_COMBAT_DEFAULTS: Required<CombatDefaults> = {
   interpretation: "per_cell",
   enforcement: "none",
   turnControl: "owner_may_end",
+  effectCleanup: true,
+  effectLifecycle: { onCombatEnd: null, onTurnEnd: null, onAdvance: null },
+  rewindRestore: true,
+  forwardRestore: false,
 };
 
 /** The value/source `resolveSettingProvenance` would report with the scene and world layers

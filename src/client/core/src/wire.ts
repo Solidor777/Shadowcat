@@ -322,7 +322,7 @@ export type WireDocument = {
    * `data::document::world_of` for the world-scope extraction authz keys off of. */
   scope: z.infer<typeof ScopeSchema>;
   /** Unconstrained wire string naming the document's kind (e.g. `actor`, `scene`, `message`).
-   * Real server-side structural authority applies only to the 21 engine-defined types
+   * Real server-side structural authority applies only to the 23 engine-defined types
    * (`data::engine::is_engine_doc_type`); any other value is a legitimate
    * client-only doc_type (e.g. `item`, see `ITEM_DOC_TYPE`). */
   doc_type: string;

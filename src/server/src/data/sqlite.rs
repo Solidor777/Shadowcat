@@ -16,9 +16,9 @@ use crate::data::document::{
     WorldCapDefaults, WorldRole,
 };
 use crate::data::engine::{
-    CombatEngine, COMBATANT_DOC_TYPE, COMBAT_DOC_TYPE, CONDITION_REGISTRY_DOC_TYPE,
-    FACTION_REGISTRY_DOC_TYPE, RESOURCE_REGISTRY_DOC_TYPE, SYSTEM_DEFAULTS_DOC_TYPE,
-    WORLD_SETTINGS_DOC_TYPE,
+    CombatEngine, COMBATANT_DOC_TYPE, COMBAT_DOC_TYPE, COMBAT_HISTORY_DOC_TYPE,
+    CONDITION_REGISTRY_DOC_TYPE, FACTION_REGISTRY_DOC_TYPE, RESOURCE_REGISTRY_DOC_TYPE,
+    SYSTEM_DEFAULTS_DOC_TYPE, WORLD_SETTINGS_DOC_TYPE,
 };
 use crate::data::permission::{
     cap, declared_caps_for_document, declared_caps_for_path, required_cap_for_path,
@@ -3045,20 +3045,22 @@ impl Repository for SqliteRepository {
                     validation::validate_property_overrides(doc)?;
                     validation::validate_engine_tree(doc)?;
                     validation::validate_containment(doc)?;
-                    if doc.doc_type == COMBATANT_DOC_TYPE {
+                    if doc.doc_type == COMBATANT_DOC_TYPE || doc.doc_type == COMBAT_HISTORY_DOC_TYPE
+                    {
                         // `validate_containment` already guarantees `parent_id` is
-                        // `Some` for a combatant.
+                        // `Some` for a combatant/combat-history document.
                         let pid = doc.parent_id.expect(
-                            "validate_containment requires a combatant to carry a parent_id",
+                            "validate_containment requires a combatant/combat-history doc to carry a parent_id",
                         );
                         let parent_is_combat = batch_combats.contains(&pid)
                             || Self::load_document(&mut *tx, pid)
                                 .await?
                                 .is_some_and(|p| p.doc_type == COMBAT_DOC_TYPE);
                         if !parent_is_combat {
-                            return Err(DataError::OpFailed(
-                                "combatant parent must be a combat document".into(),
-                            ));
+                            return Err(DataError::OpFailed(format!(
+                                "{} parent must be a combat document",
+                                doc.doc_type
+                            )));
                         }
                     }
                     if doc.doc_type == COMBAT_DOC_TYPE {

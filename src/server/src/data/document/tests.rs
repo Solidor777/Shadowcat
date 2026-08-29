@@ -254,7 +254,9 @@ pub(crate) fn default_test_engine(doc_type: &str) -> Option<serde_json::Value> {
         "combat" => Some(serde_json::json!({
             "scene_id": "00000000-0000-0000-0000-000000000001",
             "active": false, "round": 0, "turn": null, "turn_control": "owner_may_end", "order": [],
-            "movement": { "resource": null, "interpretation": "per_cell", "enforcement": "none" }
+            "movement": { "resource": null, "interpretation": "per_cell", "enforcement": "none" },
+            "effect_cleanup": true, "rewind_restore": true, "forward_restore": false,
+            "effect_lifecycle": { "onCombatEnd": null, "onTurnEnd": null, "onAdvance": null }
         })),
         "combatant" => Some(serde_json::json!({
             "kind": { "type": "event", "lifespan": null, "message": null },
@@ -265,6 +267,7 @@ pub(crate) fn default_test_engine(doc_type: &str) -> Option<serde_json::Value> {
             Some(serde_json::json!({ "active": true, "transfer": false, "duration": null }))
         }
         "system-defaults" => Some(serde_json::json!({})),
+        "combat-history" => Some(serde_json::json!({ "records": [], "cursor": 0 })),
         _ => None,
     }
 }

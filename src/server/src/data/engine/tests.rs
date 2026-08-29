@@ -636,7 +636,9 @@ fn combat_minimal_body_is_valid() {
         "scene_id": "00000000-0000-0000-0000-000000000001",
         "active": false, "round": 0, "turn": null,
         "turn_control": "owner_may_end", "order": [],
-        "movement": { "resource": null, "interpretation": "per_cell", "enforcement": "none" }
+        "movement": { "resource": null, "interpretation": "per_cell", "enforcement": "none" },
+        "effect_cleanup": true, "rewind_restore": true, "forward_restore": false,
+        "effect_lifecycle": { "onCombatEnd": null, "onTurnEnd": null, "onAdvance": null }
     });
     assert!(validate_engine("combat", Some(&v)).is_ok());
 }
@@ -684,11 +686,64 @@ fn effect_minimal_body_is_valid() {
 }
 
 #[test]
-fn effect_with_duration_is_valid() {
-    let v = json!({ "active": true, "transfer": false, "duration": {
-        "amount": 3, "unit": "rounds", "anchor": null, "expires": "turn_end",
-        "started": { "round": 1, "turn_index": 0 } } });
+fn effect_with_formula_duration_and_lifecycle_is_valid() {
+    let v = json!({ "active": true, "transfer": false,
+        "duration": { "amount": "rounds + 1", "remaining": 3, "unit": "rounds", "anchor": null, "expires": "turn_end" },
+        "lifecycle": { "on_combat_end": 1, "on_turn_end": null, "on_advance": "not persistent",
+                       "resolved": { "on_combat_end": true, "on_turn_end": false, "on_advance": true } } });
     assert!(validate_engine("effect", Some(&v)).is_ok());
+}
+
+#[test]
+fn effect_duration_amount_formula_is_bounded_and_remaining_optional() {
+    let long = "x".repeat(MAX_FORMULA_CHARS + 1);
+    let v = json!({ "active": true, "duration": { "amount": long, "unit": "rounds", "anchor": null, "expires": "turn_end" } });
+    assert!(validate_engine("effect", Some(&v)).is_err());
+    let v = json!({ "active": true, "duration": { "amount": 2, "unit": "turns", "anchor": null, "expires": "turn_start" } });
+    let n = normalize_engine_opt("effect", Some(&v)).unwrap().unwrap();
+    assert_eq!(n["duration"]["remaining"], json!(null));
+    assert_eq!(n["lifecycle"], json!(null));
+}
+
+#[test]
+fn combat_snapshot_carries_cleanup_and_restore_flags() {
+    let v = json!({
+        "scene_id": "00000000-0000-0000-0000-000000000001",
+        "active": false, "round": 0, "turn": null, "turn_control": "owner_may_end", "order": [],
+        "movement": { "resource": null, "interpretation": "per_cell", "enforcement": "none" },
+        "effect_cleanup": true, "rewind_restore": true, "forward_restore": false,
+        "effect_lifecycle": { "onCombatEnd": null, "onTurnEnd": null, "onAdvance": null }
+    });
+    assert!(validate_engine("combat", Some(&v)).is_ok());
+    let missing = json!({ "scene_id": "00000000-0000-0000-0000-000000000001", "active": false, "round": 0, "turn": null,
+        "turn_control": "owner_may_end", "order": [], "movement": { "resource": null, "interpretation": "per_cell", "enforcement": "none" } });
+    assert!(
+        validate_engine("combat", Some(&missing)).is_err(),
+        "snapshot flags are required"
+    );
+}
+
+#[test]
+fn combat_history_minimal_body_is_valid_and_cursor_is_bounded() {
+    assert!(validate_engine(
+        "combat-history",
+        Some(&json!({ "records": [], "cursor": 0 }))
+    )
+    .is_ok());
+    assert!(validate_engine(
+        "combat-history",
+        Some(&json!({ "records": [], "cursor": 1 }))
+    )
+    .is_err());
+}
+
+#[test]
+fn combat_defaults_accept_cleanup_and_restore_overrides() {
+    let v = json!({ "effectCleanup": false, "rewindRestore": false, "forwardRestore": true,
+        "effectLifecycle": { "onCombatEnd": 0, "onTurnEnd": "hasTag('fleeting')", "onAdvance": null } });
+    let d: CombatDefaults = serde_json::from_value(v).unwrap();
+    assert_eq!(d.effect_cleanup, Some(false));
+    assert_eq!(d.forward_restore, Some(true));
 }
 
 #[test]
@@ -697,6 +752,8 @@ fn combat_unknown_field_is_rejected() {
         "scene_id": "00000000-0000-0000-0000-000000000001",
         "active": false, "round": 0, "turn": null, "turn_control": "owner_may_end", "order": [],
         "movement": { "resource": null, "interpretation": "per_cell", "enforcement": "none" },
+        "effect_cleanup": true, "rewind_restore": true, "forward_restore": false,
+        "effect_lifecycle": { "onCombatEnd": null, "onTurnEnd": null, "onAdvance": null },
         "bogus": 1
     });
     assert!(validate_engine("combat", Some(&v)).is_err());
@@ -734,7 +791,9 @@ fn combat_wrong_typed_round_is_rejected() {
     let v = json!({
         "scene_id": "00000000-0000-0000-0000-000000000001",
         "active": false, "round": "1", "turn": null, "turn_control": "owner_may_end", "order": [],
-        "movement": { "resource": null, "interpretation": "per_cell", "enforcement": "none" }
+        "movement": { "resource": null, "interpretation": "per_cell", "enforcement": "none" },
+        "effect_cleanup": true, "rewind_restore": true, "forward_restore": false,
+        "effect_lifecycle": { "onCombatEnd": null, "onTurnEnd": null, "onAdvance": null }
     });
     assert!(validate_engine("combat", Some(&v)).is_err());
 }

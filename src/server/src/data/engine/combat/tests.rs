@@ -15,6 +15,10 @@ fn combat(order: Vec<Uuid>) -> CombatEngine {
             interpretation: Interpretation::PerCell,
             enforcement: Enforcement::None,
         },
+        effect_cleanup: true,
+        rewind_restore: true,
+        forward_restore: false,
+        effect_lifecycle: EffectLifecycleDefaults::default(),
     }
 }
 
@@ -181,15 +185,13 @@ fn effect_duration_amount_must_be_positive() {
         active: true,
         transfer: false,
         duration: Some(Duration {
-            amount: 0,
+            amount: Formula::Number(0.0),
+            remaining: None,
             unit: DurationUnit::Rounds,
             anchor: None,
             expires: ExpiryPoint::TurnEnd,
-            started: ClockStamp {
-                round: 1,
-                turn_index: 0,
-            },
         }),
+        lifecycle: None,
     };
     assert!(e.validate().is_err());
 }
@@ -206,6 +208,10 @@ fn resolve_combat_rules_scene_overrides_world_overrides_engine() {
                 enforcement: Enforcement::None
             },
             turn_control: TurnControl::OwnerMayEnd,
+            effect_cleanup: true,
+            rewind_restore: true,
+            forward_restore: false,
+            effect_lifecycle: EffectLifecycleDefaults::default(),
         }
     );
     let world = CombatDefaults {
@@ -213,12 +219,14 @@ fn resolve_combat_rules_scene_overrides_world_overrides_engine() {
         interpretation: Some(Interpretation::Spaces),
         enforcement: Some(Enforcement::Hard),
         turn_control: Some(TurnControl::GmOnly),
+        ..Default::default()
     };
     let scene = CombatDefaults {
         movement_resource: Some(Some("ship".into())),
         interpretation: None,
         enforcement: Some(Enforcement::Warn),
         turn_control: None,
+        ..Default::default()
     };
     let r = resolve_combat_rules(None, Some(&world), Some(&scene));
     assert_eq!(r.movement.resource.as_deref(), Some("ship"));
@@ -271,4 +279,42 @@ fn resolve_combat_rules_system_layer_sits_under_world_and_scene() {
 fn combat_defaults_absent_and_null_fields_both_read_as_unset() {
     let d: CombatDefaults = serde_json::from_value(json!({ "interpretation": null })).unwrap();
     assert_eq!(d, CombatDefaults::default());
+}
+
+#[test]
+fn resolve_combat_rules_folds_cleanup_and_restore_flags() {
+    let r = resolve_combat_rules(None, None, None);
+    assert!(r.effect_cleanup && r.rewind_restore && !r.forward_restore);
+    let world = CombatDefaults {
+        effect_cleanup: Some(false),
+        forward_restore: Some(true),
+        ..Default::default()
+    };
+    let r = resolve_combat_rules(None, Some(&world), None);
+    assert!(!r.effect_cleanup && r.forward_restore);
+}
+
+#[test]
+fn combat_history_records_are_capped_and_cursor_in_range() {
+    let rec = |round| TurnRecord {
+        round,
+        turn: Uuid::from_u128(1),
+        combatants: vec![],
+        effects: vec![],
+    };
+    let h = CombatHistoryEngine {
+        records: (0..MAX_TURN_HISTORY as u32 + 1).map(rec).collect(),
+        cursor: 0,
+    };
+    assert!(h.validate().is_err());
+    let h = CombatHistoryEngine {
+        records: vec![rec(1), rec(1)],
+        cursor: 2,
+    };
+    assert!(h.validate().is_err());
+    let h = CombatHistoryEngine {
+        records: vec![rec(1)],
+        cursor: 0,
+    };
+    assert!(h.validate().is_ok());
 }
