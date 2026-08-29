@@ -22,13 +22,21 @@ Milestones in build order; each gets its own brainstorm → spec → plan cycle 
 further at design time. Numbering continues from Phase 1.
 
 ### M14 · Combat tracker
-- Initiative (ordering, ties, per-system hooks), hidden combatants, round/turn state as a
-  world document; turn-event triggers (start/end of turn/round) as hooks modules subscribe to.
-- **Per-turn movement budget**: the turn owner's remaining movement, consumed by the
-  server-authoritative move executor — the prerequisite the `docs/TODO.md` movement-budget
-  entries are blocked on.
-- **Effect durations/triggers** (M13 exclusion): effects expire or fire on the combat clock.
-- Depends on: M11 dice, the M10 movement executor, the M13 effect document.
+- **M14a (document/permission substrate) is DONE** — the `combat`/`combatant`/
+  `resource-registry`/`effect` engine documents, the world→scene movement/turn-control override
+  chain and its resolver, containment and one-active-per-scene enforcement, and the client
+  document builders. No intents, gates, or UI yet. Full delivery note in
+  [`HISTORY.md`](HISTORY.md)'s M14a entry.
+- **Remaining (M14b–d):**
+  - Combat-clock intents and transitions: initiative rolling, turn/round advance, hidden-turn
+    auto-resolve, turn-event triggers (start/end of turn/round) as hooks modules subscribe to.
+  - **Per-turn movement budget gate**: the turn owner's remaining movement, consumed by the
+    server-authoritative move executor — the prerequisite the `docs/TODO.md` movement-budget
+    entries are blocked on.
+  - **Effect durations/triggers**: effects expire or fire on the combat clock (the document
+    shape already ships in M14a; the clock-side expiry/trigger logic does not yet).
+  - Client seams/hooks (`AppContext.combat`) and the default tracker module + UI.
+- Depends on: M11 dice, the M10 movement executor, the M14a combat documents (done).
 - Excludes: automation of attacks/damage resolution (system-owned); audio/VFX cues (Phase 3).
 
 ### M15 · Asset pipeline + browser

@@ -1624,11 +1624,12 @@ caught and fixed an unsound `owner_at_commit`-vs-`owner_before_commit` approxima
 token-ownership-floor case) and a duplicate-synthesis bug on multiple same-`doc_id` Updates in one
 command; both are closed and test-pinned.
 
-**Nightfox coordination (blocking, out of this milestone):** once `effect` is engine-defined, an
-`effect` document without an `engine` body is rejected at ingress. Nightfox must move `active`/
-`transfer` from `system.mechanics` to the engine band and send that band on every effect `Create`
-before running against a server carrying M14a — pre-customers, so there is no migration path or
-compatibility shim.
+**Effect ingress rule (external consumers):** now that `effect` is engine-defined, an `effect`
+document without an `engine` body is rejected at ingress — a breaking change for any out-of-tree
+system module that embeds effects. A consumer must move `active`/`transfer` from
+`system.mechanics` to the engine band and send that band on every effect `Create` before running
+against a server carrying M14a — pre-customers, so there is no migration path or compatibility
+shim.
 
 ## Documentation campaign — completed sweeps
 
