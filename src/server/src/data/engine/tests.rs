@@ -286,7 +286,7 @@ fn message_unknown_field_is_rejected() {
     .is_err());
 }
 
-// --- (c) wrong-typed field rejected (all 17 registered doc_types) ---
+// --- (c) wrong-typed field rejected (all 21 registered doc_types) ---
 
 #[test]
 fn token_wrong_typed_field_is_rejected() {

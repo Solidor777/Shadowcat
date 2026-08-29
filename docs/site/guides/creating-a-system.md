@@ -31,7 +31,7 @@ bands:
 | Band | Owner | Validation |
 |---|---|---|
 | `name` (envelope) | Engine | Real — universal display name, redactable |
-| `engine` | Engine | **Real server-side ingress validation**, typed structs, unknown fields rejected — present only for the 17 engine-defined doc types (tokens, actors, scenes, walls, regions, lights, drawings, templates, messages, and the config-docs) |
+| `engine` | Engine | **Real server-side ingress validation**, typed structs, unknown fields rejected — present only for the 21 engine-defined doc types (tokens, actors, scenes, walls, regions, lights, drawings, templates, messages, the config-docs, and the combat family: `combat`, `combatant`, `resource-registry`, `effect`) |
 | `system` | **You** (the game system) | **Structural only** — size, field-path shape. The server never semantically validates `system` content, ever, because the server runs no third-party code |
 
 Your system owns the `system` band outright: attributes, resources, class

@@ -1584,6 +1584,52 @@ tooling/gates/test infrastructure · closeout). Executed as:
   45 entries to the blocked-only remainder; `docs/OPEN_BUGS.md` to empty. Phase 1b (replay
   redaction, above) ran last, as the campaign ordered.
 
+## Phase 2 — Full table
+
+### M14 · Combat tracker
+
+#### M14a — Combat document layer ✅
+**COMPLETE.** Design:
+[`superpowers/specs/2026-08-28-m14-combat-tracker-design.md`](superpowers/specs/2026-08-28-m14-combat-tracker-design.md).
+Delivers the document/permission substrate the combat clock builds on, with no intents, gates or
+UI yet (those land in M14b–d). Grows the engine-defined doc-type registry from 17 to 21: `combat`
+(world-level, scene-bound, holding the resolved turn order and the snapshotted movement-resource
+chain), `combatant` (a child document of `combat`, `parent_id`-linked rather than `embedded` — an
+embedded child cannot be redacted to true absence without renumbering its siblings, and a hidden
+combatant needs exactly that), `resource-registry` (a singleton config doc, engine-shipped empty —
+named resources like movement are data, not built-in), and `effect` gaining a typed `engine` band
+(`active`, `transfer`, an optional clock-bound `duration`) so effect state is no longer
+system-only. Adds the `CombatDefaults` override chain (system → world → scene) for the movement
+resource/interpretation/enforcement/turn-control defaults a combat snapshots at start, plus the
+server-side resolver that folds the chain. Ingress: all four types join
+`is_engine_doc_type`/`normalize_engine`, are `deny_unknown_fields`, ts-rs exported and re-exported
+through `@shadowcat/types` → `@shadowcat/core`, and run through the existing
+`validate_engine_tree` chokepoint. Client builders (`buildCombatDoc`, `buildCombatantDoc`,
+`buildResourceRegistryDoc`, `buildEffectDoc`, `seedResourceRegistryIfAbsent`) land in
+`@shadowcat/core`, matching the document shape without wiring any UI to them.
+
+Closes a pre-existing whole-document hide/reveal gap that predates this milestone and applies to
+every doc type, not just combat: a permission change (an `/owner` or `/permissions/default` write)
+never propagated live before this — a recipient who newly gained or lost whole-document READ on an
+`Update` got neither a synthesized appearance nor disappearance, only silently stale or missing
+state, because `filter_command`'s redaction conjunction previously only ever narrowed or widened
+field-level visibility within an already-visible document. `OpSnapshot` gained
+`permissions_before_commit`/`owner_before_commit` (captured by both `apply_command` and
+`apply_intent`'s snapshot-building loops), and `filter_command`'s `Update` arm now synthesizes a
+`Create` (of the filtered current document) when a recipient's whole-document READ transitions
+denied→granted within that op, and a stub `Delete` (identity/placement only, every content band
+and `permissions` emptied) when it transitions granted→denied — this is what makes hidden-combatant
+reveal/hide (D9 in the design) live rather than requiring a resync. A buddy-check on this change
+caught and fixed an unsound `owner_at_commit`-vs-`owner_before_commit` approximation (the
+token-ownership-floor case) and a duplicate-synthesis bug on multiple same-`doc_id` Updates in one
+command; both are closed and test-pinned.
+
+**Nightfox coordination (blocking, out of this milestone):** once `effect` is engine-defined, an
+`effect` document without an `engine` body is rejected at ingress. Nightfox must move `active`/
+`transfer` from `system.mechanics` to the engine band and send that band on every effect `Create`
+before running against a server carrying M14a — pre-customers, so there is no migration path or
+compatibility shim.
+
 ## Documentation campaign — completed sweeps
 
 The campaign's open tail (buddy-check convergence, final ratchet, skills documentation-reference

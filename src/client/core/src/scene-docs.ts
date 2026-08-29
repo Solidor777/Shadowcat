@@ -585,7 +585,7 @@ export function buildActorDoc(worldId: string, name: string | null, engine: Acto
  * (both run unconditionally on every doc_type). `validate_engine_tree` also runs on an item,
  * but only to REJECT one carrying an `engine` body (`normalize_engine_opt`'s
  * `(false, Some(_))` arm: "not engine-defined; `engine` must be absent") — an item never
- * receives the semantic/typed validation the 17 engine-defined doc types' `engine` bodies
+ * receives the semantic/typed validation the 21 engine-defined doc types' `engine` bodies
  * get, because it has no typed struct and no `engine` body to deserialize.
  * An item lives standalone (top-level, parentless) or embedded in an actor's inventory.
  * Display name lives in the envelope; every other field is opaque, edited via the tree
