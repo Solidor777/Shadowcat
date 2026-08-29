@@ -607,6 +607,18 @@ describe("system defaults", () => {
     expect(systemDefaultsUpsertOps(storeWith(existing), "w1", { combat: { enforcement: "hard" } })).toEqual([]);
   });
 
+  it("upsert is a no-op when a stored section round-tripped through key-order normalization (server BTreeMap) still matches the declaration", () => {
+    // The author's declared order is non-alphabetical; the stored doc simulates what the
+    // server's serde_json (no `preserve_order`) actually returns: alphabetically-keyed.
+    const declared: SystemDefaultsEngine = { combat: { enforcement: "hard", movementResource: "gold" } };
+    const existing = buildSystemDefaultsDoc(
+      "w1",
+      { combat: { movementResource: "gold", enforcement: "hard" } },
+      deterministicId("w1", SYSTEM_DEFAULTS_DOC_TYPE),
+    );
+    expect(systemDefaultsUpsertOps(storeWith(existing), "w1", declared)).toEqual([]);
+  });
+
   it("resolveSceneSettings folds engine < system < world < scene per field", () => {
     const sd = buildSystemDefaultsDoc("w1", { scene: { fog: false, observerVision: true }, animation: { speedCellsPerSec: 3 } });
     const ws = buildWorldSettingsDoc("w1", { ...structuredClone(DEFAULT_WORLD_SETTINGS), scene: { ...DEFAULT_WORLD_SETTINGS.scene, fog: true } }, "ws1");
@@ -629,5 +641,21 @@ describe("system defaults", () => {
     // No world doc: the system layer is what supplies scene.fog.
     const storeNoWorld = storeWith(sdDoc, scene);
     expect(resolveSettingProvenance(storeNoWorld, undefined, "scene.fog")).toEqual({ value: false, source: "system" });
+  });
+
+  it("resolveSettingProvenance treats a scene's explicit combat.movementResource null as a terminal clear, not a fall-through", () => {
+    const sdDoc = buildSystemDefaultsDoc("w1", { combat: { movementResource: "gold" } });
+    const scene = buildSceneDoc("w1", { combat: { movementResource: null } }, "s1");
+    const store = storeWith(sdDoc, scene);
+    // The scene's explicit clear wins over the system's supplied "gold" — mirrors
+    // resolve_combat_rules's outer-Option-first pick, not a nullish coalesce.
+    expect(resolveSettingProvenance(store, scene, "combat.movementResource")).toEqual({ value: null, source: "scene" });
+  });
+
+  it("resolveSettingProvenance falls through to the system layer when the scene has no combat.movementResource key at all", () => {
+    const sdDoc = buildSystemDefaultsDoc("w1", { combat: { movementResource: "gold" } });
+    const scene = buildSceneDoc("w1", {}, "s1");
+    const store = storeWith(sdDoc, scene);
+    expect(resolveSettingProvenance(store, scene, "combat.movementResource")).toEqual({ value: "gold", source: "system" });
   });
 });

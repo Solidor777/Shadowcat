@@ -8,6 +8,7 @@ import type { WireDocument } from "./wire";
 import type { ReadableDocuments } from "./store";
 import type { WireOperation, WireFieldChange } from "./wire";
 import type { FootprintExtent } from "./footprints";
+import { deepEqual } from "./merge";
 import type {
   MovementRestriction,
   MovementModel,
@@ -1224,7 +1225,11 @@ export function systemDefaultsUpsertOps(store: ReadableDocuments, worldId: strin
   for (const key of ["scene", "pathfinding", "animation", "combat"] as const) {
     const want = (declared as Record<string, unknown>)[key] ?? null;
     const have = stored[key] ?? null;
-    if (JSON.stringify(want) !== JSON.stringify(have)) changes.push({ path: `/engine/${key}`, old: have, new: want });
+    // Key-order-independent: the server's serde_json has no `preserve_order` feature, so a
+    // section read back from the store is always alphabetically-keyed regardless of the
+    // author's declared order — a string comparison would false-positive on every multi-field
+    // section.
+    if (!deepEqual(want, have)) changes.push({ path: `/engine/${key}`, old: have, new: want });
   }
   return changes.length ? [{ op: "update", doc_id: existing.id, changes }] : [];
 }
@@ -1341,8 +1346,24 @@ export function resolveSettingProvenance(
       return resolvePick(undefined, world?.animation.speedCellsPerSec, system?.animation?.speedCellsPerSec, DEFAULT_WORLD_SETTINGS.animation.speedCellsPerSec);
     case "animation.easing":
       return resolvePick(undefined, world?.animation.easing, system?.animation?.easing, DEFAULT_WORLD_SETTINGS.animation.easing);
-    case "combat.movementResource":
-      return resolvePick(combat?.movementResource, world?.combat?.movementResource, system?.combat?.movementResource, ENGINE_COMBAT_DEFAULTS.movementResource);
+    case "combat.movementResource": {
+      // `movementResource` is doubly-optional on the wire (`CombatDefaults.movement_resource`:
+      // `Option<Option<String>>` server-side) — a present key with value `null` is an EXPLICIT
+      // CLEAR that terminates the walk at that layer, distinct from an absent key (which falls
+      // through). `resolvePick`'s plain nullish-coalesce cannot express this: it would let a
+      // scene's explicit clear fall through to a lower layer's supplied value, diverging from
+      // `resolve_combat_rules`'s `pick` closure, which stops at the first layer whose OUTER
+      // option is `Some(_)` (including `Some(None)`).
+      const layerOrder: [SettingSource, CombatDefaults | null | undefined][] = [
+        ["scene", combat],
+        ["world", world?.combat],
+        ["system", system?.combat],
+      ];
+      for (const [source, layer] of layerOrder) {
+        if (layer && "movementResource" in layer) return { value: layer.movementResource ?? null, source };
+      }
+      return { value: ENGINE_COMBAT_DEFAULTS.movementResource, source: "engine" };
+    }
     case "combat.interpretation":
       return resolvePick(combat?.interpretation, world?.combat?.interpretation, system?.combat?.interpretation, ENGINE_COMBAT_DEFAULTS.interpretation);
     case "combat.enforcement":
