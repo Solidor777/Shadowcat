@@ -23,7 +23,7 @@ pub use transition::{
 
 /// Why a combat intent was refused. `Display` yields ONE wording for every
 /// variant that could disclose a hidden combatant (`NotFound`, `Forbidden`,
-/// `NotRunning`): "combat rejected".
+/// `NotRunning`, `Data`): "combat rejected".
 #[derive(Debug, thiserror::Error)]
 pub enum CombatError {
     /// Combat, combatant, resource or host not found (or not readable).

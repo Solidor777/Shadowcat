@@ -1,4 +1,5 @@
 use super::*;
+use crate::data::command::Operation;
 
 #[test]
 fn collect_effects_finds_anchored_effects_on_actor_token_copy_and_transferring_items() {
@@ -138,4 +139,43 @@ fn rounds_unit_ticks_only_on_round_boundaries_and_turn_end_policy_expires_at_hos
     )
     .unwrap();
     assert!(!eb.active, "on_turn_end policy expired it at b's turn end");
+}
+
+#[test]
+fn an_effect_with_no_lifecycle_at_all_is_never_touched_by_a_boundary_it_would_otherwise_match() {
+    // Every other fixture sets `lifecycle: Some(EffectLifecycle { resolved:
+    // Some(..), .. })`. An effect that has NOT resolved its lifecycle yet —
+    // `lifecycle: None` entirely, or `Some(EffectLifecycle { resolved: None,
+    // .. })` — must be left completely inert by both `tick` and
+    // `expire_by_policy`, even when its `duration.expires`/`unit` exactly
+    // match the boundary being processed.
+    let combat = Uuid::from_u128(1);
+    // 0x9A, not 0xA — a host id must never numerically collide with a
+    // combatant doc id (`actor_combatant(10, ..)` == `0xA` == 10 decimal is
+    // the known real-UUID-can-never-produce-this fixture gotcha).
+    let a = actor_combatant(10, combat, 0x9A, None, false, (0.0, 30.0));
+    let mut host = actor_with_effect(0x9A, None, 1, ExpiryPoint::TurnEnd, DurationUnit::Turns);
+    let mut e: EffectEngine =
+        serde_json::from_value(host.embedded["effect"][0].engine.clone().unwrap()).unwrap();
+    e.lifecycle = None;
+    let unresolved_before = serde_json::to_value(&e).unwrap();
+    host.embedded.get_mut("effect").unwrap()[0].engine = Some(unresolved_before.clone());
+    let snap = snapshot(
+        combat_engine(vec![a.doc.id], Some(a.doc.id), 1, true),
+        vec![a],
+        vec![host],
+    );
+    let ops = advance(&snap, WORLD, Uuid::nil(), 0).unwrap();
+    assert!(
+        !ops.iter().any(
+            |o| matches!(o, Operation::Update { doc_id, .. } if *doc_id == Uuid::from_u128(0x9A))
+        ),
+        "no host write at all — the effect's engine band is byte-identical before and after"
+    );
+    let docs = apply(&snap, &ops);
+    assert_eq!(
+        docs[&Uuid::from_u128(0x9A)].embedded["effect"][0].engine,
+        Some(unresolved_before),
+        "unchanged"
+    );
 }

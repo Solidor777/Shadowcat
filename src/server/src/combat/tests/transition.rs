@@ -385,3 +385,121 @@ fn pause_only_clears_active() {
         matches!(&ops[0], Operation::Update { changes, .. } if changes.len() == 1 && changes[0].path == "/engine/active")
     );
 }
+
+#[test]
+fn round_wrap_ticks_a_shared_unanchored_effect_at_most_once() {
+    // a and b share the SAME host (both link to actor 0x10). Its unanchored
+    // effect is collected once per combatant, but a round-wrap sweep must
+    // still tick it exactly once, not once per combatant that shares it.
+    let combat = Uuid::from_u128(1);
+    let a = actor_combatant(10, combat, 0x10, None, false, (0.0, 30.0));
+    let b = actor_combatant(11, combat, 0x10, None, false, (0.0, 30.0));
+    let host = actor_with_effect(0x10, None, 2, ExpiryPoint::RoundStart, DurationUnit::Rounds);
+    // b is the current turn; ending it wraps the round straight into round_wrap.
+    let snap = snapshot(
+        combat_engine(vec![a.doc.id, b.doc.id], Some(b.doc.id), 1, true),
+        vec![a, b],
+        vec![host],
+    );
+    let docs = apply(&snap, &advance(&snap, WORLD, Uuid::nil(), 0).unwrap());
+    let c: CombatEngine = engine_of(&docs, combat);
+    assert_eq!(c.round, 2, "the round wrapped exactly once");
+    let effect: EffectEngine = serde_json::from_value(
+        docs[&Uuid::from_u128(0x10)].embedded["effect"][0]
+            .engine
+            .clone()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        effect.duration.unwrap().remaining,
+        Some(1),
+        "decremented by exactly one round boundary, not once per sharing combatant"
+    );
+}
+
+#[test]
+fn guard_exhaustion_still_fully_resolves_the_final_auto_resolving_entry() {
+    // order = [a, b], both hidden actors under OwnerMayEnd. Starting
+    // advance() from a: the walk visits b (fully resolves it, wraps the
+    // round) then lands back on a at the guard's last iteration — a must
+    // ALSO be fully resolved (its own turn_start AND turn_end both run),
+    // never just parked mid-turn.
+    let combat = Uuid::from_u128(1);
+    let a = actor_combatant(10, combat, 0xA, None, true, (0.0, 30.0));
+    let b = actor_combatant(11, combat, 0xB, None, true, (0.0, 30.0));
+    let mut registry = registry_with_movement(Formula::Number(30.0));
+    if let ResourceBinding::Tracked { recover, .. } =
+        &mut registry.resources.get_mut("movement").unwrap().binding
+    {
+        recover.turn_end = Formula::Number(-10.0);
+    }
+    let mut snap = snapshot(
+        combat_engine(vec![a.doc.id, b.doc.id], Some(a.doc.id), 1, true),
+        vec![a, b],
+        vec![],
+    );
+    snap.registry = Some(registry);
+    let docs = apply(&snap, &advance(&snap, WORLD, Uuid::nil(), 0).unwrap());
+    let e: CombatEngine = engine_of(&docs, combat);
+    assert_eq!(e.round, 2, "the walk wrapped exactly once");
+    assert_eq!(
+        e.turn,
+        Some(Uuid::from_u128(10)),
+        "parked on the last-visited entry, per the all-auto-resolving termination case"
+    );
+    // Both entries must show turn_start's +30 THEN turn_end's -10: 20, not
+    // 30 (turn_end skipped) and not 0 (turn_start skipped).
+    let a: CombatantEngine = engine_of(&docs, Uuid::from_u128(10));
+    assert_eq!(
+        a.resources["movement"].current, 20.0,
+        "a is the guard-exhaustion entry — its own turn_end must still have run"
+    );
+    let b: CombatantEngine = engine_of(&docs, Uuid::from_u128(11));
+    assert_eq!(
+        b.resources["movement"].current, 20.0,
+        "b was fully resolved mid-walk"
+    );
+}
+
+#[test]
+fn compressed_hidden_turn_coalesces_host_updates_into_one_operation() {
+    // a is the current (visible) turn; h is a hidden OwnerMayEnd actor
+    // encountered next, bound to a host with two effects — one ticking at
+    // TurnStart, one at TurnEnd — so h's compressed turn (run_turn_start +
+    // run_turn_end back to back) writes the SAME host document twice.
+    let combat = Uuid::from_u128(1);
+    let a = actor_combatant(10, combat, 0xA, None, false, (0.0, 30.0));
+    let h = actor_combatant(11, combat, 0x50, None, true, (0.0, 30.0));
+    let mut host = actor_with_effect(0x50, None, 1, ExpiryPoint::TurnStart, DurationUnit::Turns);
+    let turn_end_effect =
+        actor_with_effect(0x51, None, 1, ExpiryPoint::TurnEnd, DurationUnit::Turns);
+    host.embedded
+        .get_mut("effect")
+        .unwrap()
+        .push(turn_end_effect.embedded["effect"][0].clone());
+    let snap = snapshot(
+        combat_engine(vec![a.doc.id, h.doc.id], Some(a.doc.id), 1, true),
+        vec![a, h],
+        vec![host],
+    );
+    let ops = advance(&snap, WORLD, Uuid::nil(), 0).unwrap();
+    let host_updates: Vec<&Operation> = ops
+        .iter()
+        .filter(
+            |o| matches!(o, Operation::Update { doc_id, .. } if *doc_id == Uuid::from_u128(0x50)),
+        )
+        .collect();
+    assert_eq!(
+        host_updates.len(),
+        1,
+        "both boundary passes' writes to the SAME host must coalesce into one Operation::Update"
+    );
+    let Operation::Update { changes, .. } = host_updates[0] else {
+        unreachable!()
+    };
+    assert!(
+        changes.len() >= 2,
+        "both effects' field changes are present in the single coalesced Update"
+    );
+}

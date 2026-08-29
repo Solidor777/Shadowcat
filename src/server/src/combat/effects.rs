@@ -154,6 +154,13 @@ pub fn collect_all_effects(snap: &CombatSnapshot) -> Vec<(Uuid, EffectRef)> {
         .collect()
 }
 
+/// Filters to only the refs that are still `active` — shared by `tick` and
+/// `expire_by_policy`, since an already-inactive effect never counts toward
+/// either a boundary tick or a lifecycle-policy expiry.
+fn active_refs(refs: &[EffectRef]) -> impl Iterator<Item = &EffectRef> {
+    refs.iter().filter(|r| r.engine.active)
+}
+
 /// Builds a `FieldChange` writing `new` at `{effect_path}{field}` on `host`
 /// (e.g. `effect_path = "/embedded/effect/0"`, `field = "/engine/active"`).
 /// The OCC pre-image is read from `host`'s own current value at that
@@ -184,10 +191,7 @@ pub fn tick(
     unit: DurationUnit,
 ) -> Result<Vec<Operation>, CombatError> {
     let mut ops = Vec::new();
-    for r in refs {
-        if !r.engine.active {
-            continue;
-        }
+    for r in active_refs(refs) {
         let Some(duration) = &r.engine.duration else {
             continue;
         };
@@ -239,10 +243,7 @@ pub fn expire_by_policy(
     pick: fn(&ResolvedLifecycle) -> bool,
 ) -> Result<Vec<Operation>, CombatError> {
     let mut ops = Vec::new();
-    for r in refs {
-        if !r.engine.active {
-            continue;
-        }
+    for r in active_refs(refs) {
         let matches = r
             .engine
             .lifecycle

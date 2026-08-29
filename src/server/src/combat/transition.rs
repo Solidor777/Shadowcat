@@ -19,7 +19,7 @@
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use serde_json::json;
 use uuid::Uuid;
@@ -151,6 +151,14 @@ fn recover(
         if *n == 0.0 {
             continue;
         }
+        // INVARIANT: `res.max` is non-negative — `CombatantEngine::validate`'s
+        // ingress gate rejects any Create/Update whose merged post-image has a
+        // resource `max < 0.0` before it ever reaches a transition, so this
+        // clamp's upper bound can never be below its lower bound.
+        debug_assert!(
+            res.max >= 0.0,
+            "CombatantEngine::validate guarantees a non-negative resource max"
+        );
         let new = (res.current + n).clamp(0.0, res.max);
         if new == res.current {
             continue;
@@ -335,15 +343,76 @@ impl Working {
         let change = set_engine(&self.combat, "/engine/turn", json!(id))?;
         self.commit_combat(vec![change])
     }
+
+    /// Runs `id`'s compressed turn: its own `run_turn_start` immediately
+    /// followed by its own `run_turn_end` — the atomic start-and-end pair a
+    /// hidden `OwnerMayEnd` actor gets, so no dead time between the two
+    /// boundaries reveals it. Every `Operation::Update` either boundary call
+    /// recorded against the SAME host document is coalesced into ONE
+    /// `Operation::Update` per host before this returns (see
+    /// `coalesce_host_updates`) — a normal (non-auto-resolving) combatant's
+    /// turn_start/turn_end are always split across separate `advance()`
+    /// commands and never reach this path, so a compressed turn's host-write
+    /// footprint (operation COUNT, not field count) never distinguishes it
+    /// from an ordinary single boundary pass.
+    fn run_compressed_turn(&mut self, id: Uuid) -> Result<(), CombatError> {
+        let checkpoint = self.ops.len();
+        run_turn_start(self, id)?;
+        run_turn_end(self, id)?;
+        self.coalesce_host_updates(checkpoint);
+        Ok(())
+    }
+
+    /// Merges every `Operation::Update` recorded since index `from` that
+    /// targets a HOST document (never a combat/combatant doc — those ids are
+    /// structurally disjoint from `hosts`, see `commit_combat`'s own
+    /// INVARIANT note) into ONE `Operation::Update` per host id, at that
+    /// host's first-appearance position. A host's merged `changes` keep their
+    /// original relative order — the second boundary's changes were already
+    /// computed against the FIRST boundary's applied values (`Working`
+    /// mutates `hosts` live via `apply_to_host`), so merging only changes how
+    /// many `Operation`s wrap them, never their correctness.
+    fn coalesce_host_updates(&mut self, from: usize) {
+        let mut merged: Vec<Operation> = Vec::new();
+        let mut index_by_host: HashMap<Uuid, usize> = HashMap::new();
+        for op in self.ops.drain(from..) {
+            match op {
+                Operation::Update { doc_id, changes } if self.hosts.contains_key(&doc_id) => {
+                    if let Some(&i) = index_by_host.get(&doc_id) {
+                        if let Operation::Update {
+                            changes: existing, ..
+                        } = &mut merged[i]
+                        {
+                            existing.extend(changes);
+                        }
+                    } else {
+                        index_by_host.insert(doc_id, merged.len());
+                        merged.push(Operation::Update { doc_id, changes });
+                    }
+                }
+                other => merged.push(other),
+            }
+        }
+        self.ops.extend(merged);
+    }
 }
 
-/// Runs `recover(phase)` + `tick(boundary, unit)` for combatant `id`.
+/// Runs `recover(phase)` + `tick(boundary, unit)` for combatant `id`. `seen`
+/// dedupes an UNANCHORED effect (`duration.anchor: None`, attributed to
+/// EVERY combatant sharing its host) across a multi-combatant sweep of this
+/// same boundary (`round_wrap`, `start`'s `RoundStart` pass): the effect is
+/// ticked against the FIRST combatant in the sweep that reaches its
+/// `(host, path)`, and every later visitor within the SAME sweep skips it —
+/// without this, each visitor would re-collect the effect from `w.hosts`
+/// (already mutated by the prior visitor's tick) and decrement it again. A
+/// single-combatant call passes a fresh, empty set (nothing to dedupe against).
 fn run_boundary(
     w: &mut Working,
     id: Uuid,
     phase: Phase,
     boundary: ExpiryPoint,
     unit: DurationUnit,
+    seen: &mut HashSet<(Uuid, String)>,
 ) -> Result<(), CombatError> {
     let mut changes = Vec::new();
     {
@@ -365,6 +434,10 @@ fn run_boundary(
             .ok_or(CombatError::NotFound)?;
         collect_effects(&view, c)
     };
+    let refs: Vec<EffectRef> = refs
+        .into_iter()
+        .filter(|r| seen.insert((r.host, r.path.clone())))
+        .collect();
     let tick_ops = tick(&w.hosts, &refs, boundary, unit)?;
     w.commit_host_ops(tick_ops)?;
     Ok(())
@@ -379,6 +452,7 @@ fn run_turn_end(w: &mut Working, id: Uuid) -> Result<(), CombatError> {
         Phase::TurnEnd,
         ExpiryPoint::TurnEnd,
         DurationUnit::Turns,
+        &mut HashSet::new(),
     )?;
     if w.engine.effect_cleanup {
         let refs: Vec<EffectRef> = {
@@ -404,15 +478,21 @@ fn run_turn_start(w: &mut Working, id: Uuid) -> Result<(), CombatError> {
         Phase::TurnStart,
         ExpiryPoint::TurnStart,
         DurationUnit::Turns,
+        &mut HashSet::new(),
     )
 }
 
 /// A round boundary: `round += 1`, then `RoundEnd` then `RoundStart`
-/// recovery/tick for every combatant in the CURRENT order.
+/// recovery/tick for every combatant in the CURRENT order. Each boundary
+/// category (`RoundEnd`, `RoundStart`) gets its OWN dedup set spanning the
+/// whole sweep, so a shared unanchored effect is ticked once per boundary
+/// category, never once per combatant that happens to share its host.
 fn round_wrap(w: &mut Working) -> Result<(), CombatError> {
     let new_round = w.engine.round + 1;
     let change = set_engine(&w.combat, "/engine/round", json!(new_round))?;
     w.commit_combat(vec![change])?;
+    let mut end_seen = HashSet::new();
+    let mut start_seen = HashSet::new();
     for id in w.engine.order.clone() {
         run_boundary(
             w,
@@ -420,6 +500,7 @@ fn round_wrap(w: &mut Working) -> Result<(), CombatError> {
             Phase::RoundEnd,
             ExpiryPoint::RoundEnd,
             DurationUnit::Rounds,
+            &mut end_seen,
         )?;
         run_boundary(
             w,
@@ -427,6 +508,7 @@ fn round_wrap(w: &mut Working) -> Result<(), CombatError> {
             Phase::RoundStart,
             ExpiryPoint::RoundStart,
             DurationUnit::Rounds,
+            &mut start_seen,
         )?;
     }
     Ok(())
@@ -524,13 +606,23 @@ fn resolve_event(
     }
 }
 
-/// Walks `order` starting at `idx`, entering each combatant's turn
-/// (`run_turn_start`) and, when it is an `Event` or a hidden combatant under
-/// `TurnControl::OwnerMayEnd`, auto-resolving it and continuing to the next
-/// entry. Bounded to `order.len()` iterations: the LAST iteration always
-/// stops and settles `turn` on whatever entry it reached, so an order that
-/// never contains a stopping entry (every entry an infinite `Event`, or
-/// every entry hidden under `OwnerMayEnd`) cannot loop forever.
+/// Walks `order` starting at `idx`, entering each combatant's turn and, when
+/// it is an `Event` or a hidden combatant under `TurnControl::OwnerMayEnd`,
+/// auto-resolving it in full and continuing to the next entry — a hidden
+/// actor's auto-resolve runs its `run_turn_start`+`run_turn_end` pair
+/// together via `Working::run_compressed_turn` (never split, never skipped),
+/// and an `Event` always gets its own `resolve_event`. Bounded to
+/// `order.len()` steps between two entries that are BOTH still present in
+/// `order`; a step that deletes an exhausted `Event` (shrinking `order`)
+/// resets the bound to the new, smaller length, so the walk always
+/// terminates (each such reset can only happen `order.len()` times in total,
+/// since `order` strictly shrinks). INVARIANT: whichever entry ends up
+/// holding `turn` — whether it stopped genuinely or the bound ran out with
+/// every entry still auto-resolving — has ALWAYS already completed its own
+/// resolution (an auto-resolving entry is never left mid-turn holding
+/// `turn`); the guard-exhaustion case parks `turn` on the last entry visited,
+/// per the "an all-hidden/all-event order terminates with `turn` on the last
+/// visited entry and a round advanced" case.
 fn settle_turn(
     w: &mut Working,
     mut idx: usize,
@@ -541,14 +633,14 @@ fn settle_turn(
     if w.engine.order.is_empty() {
         return Err(CombatError::Empty);
     }
-    let guard = w.engine.order.len();
-    for i in 0..guard {
+    let mut guard = w.engine.order.len();
+    let mut i = 0usize;
+    loop {
         if w.engine.order.is_empty() {
             return Err(CombatError::Empty);
         }
         idx %= w.engine.order.len();
         let entry_id = w.engine.order[idx];
-        run_turn_start(w, entry_id)?;
         let (is_event, hidden) = {
             let c = w
                 .combatants
@@ -562,19 +654,41 @@ fn settle_turn(
         };
         let auto_resolves =
             is_event || (hidden && w.engine.turn_control == TurnControl::OwnerMayEnd);
-        if !auto_resolves || i + 1 == guard {
+
+        if !auto_resolves {
+            run_turn_start(w, entry_id)?;
             w.set_turn(entry_id)?;
             return Ok(());
         }
+
         let removed = if is_event {
+            run_turn_start(w, entry_id)?;
             resolve_event(w, entry_id, world, author, now)?
         } else {
-            run_turn_end(w, entry_id)?;
+            w.run_compressed_turn(entry_id)?;
             false
         };
+
+        if i + 1 >= guard {
+            if !removed {
+                // entry_id fully resolved (turn_start + turn_end/event
+                // resolution both ran) but nothing genuinely stopping was
+                // found within the bound — park `turn` on it anyway.
+                w.set_turn(entry_id)?;
+                return Ok(());
+            }
+            // entry_id no longer exists (an exhausted Event was deleted from
+            // `order`); grant one more bound worth of steps against the now-
+            // strictly-smaller `order` rather than settling on a deleted
+            // combatant.
+            guard = w.engine.order.len();
+            i = 0;
+            idx = advance_from(w, idx, removed)?;
+            continue;
+        }
         idx = advance_from(w, idx, removed)?;
+        i += 1;
     }
-    unreachable!("the guard's final iteration always returns via the stop branch above")
 }
 
 /// Builds the first `combat-history` record document for `start`.
@@ -678,6 +792,10 @@ pub fn start(
         ];
         w.commit_combat(changes)?;
 
+        // One dedup set spans the whole sweep — see `round_wrap`'s identical
+        // note: an unanchored effect shared by two combatants on the same
+        // host is ticked once for the sweep, not once per combatant.
+        let mut seen = HashSet::new();
         for id in w.engine.order.clone() {
             run_boundary(
                 &mut w,
@@ -685,6 +803,7 @@ pub fn start(
                 Phase::RoundStart,
                 ExpiryPoint::RoundStart,
                 DurationUnit::Rounds,
+                &mut seen,
             )?;
         }
         settle_turn(&mut w, 0, world, author, now)?;
@@ -751,9 +870,17 @@ pub fn pause(snap: &CombatSnapshot) -> Result<Vec<Operation>, CombatError> {
 pub fn end(snap: &CombatSnapshot) -> Result<Vec<Operation>, CombatError> {
     let mut ops = Vec::new();
     if snap.engine.effect_cleanup {
+        // `collect_all_effects` unions every combatant's refs; an unanchored
+        // effect on a host shared by two combatants would otherwise appear
+        // TWICE, producing two `Operation::Update`s against the same
+        // (host, path) with the SAME stale pre-image (`end` never mutates a
+        // working copy between combatants) — the second would fail its OCC
+        // check against the real repository once the first has applied.
+        let mut seen = HashSet::new();
         let refs: Vec<EffectRef> = collect_all_effects(snap)
             .into_iter()
             .map(|(_, r)| r)
+            .filter(|r| seen.insert((r.host, r.path.clone())))
             .collect();
         ops.extend(expire_by_policy(&snap.hosts, &refs, |r| r.on_combat_end)?);
     }
@@ -776,6 +903,12 @@ pub fn roll(
     channel: &str,
     now: i64,
 ) -> Result<Vec<Operation>, CombatError> {
+    // INVARIANT: `results` must carry at most one entry per `combatant_id` —
+    // a duplicate would build two `FieldChange`s against the same combatant
+    // from the SAME unmutated `snap` pre-image, so the second write's OCC
+    // `old` would already be stale by the time the first is applied. The
+    // caller (the wire-dispatch layer) is responsible for this; nothing here
+    // re-derives or dedupes it.
     let mut ops = Vec::new();
     for (id, post) in results {
         let c = snap
@@ -874,6 +1007,12 @@ pub fn resource(
         .find(|c| c.doc.id == combatant_id)
         .ok_or(CombatError::NotFound)?;
     let res = c.engine.resources.get(key).ok_or(CombatError::NotFound)?;
+    // INVARIANT: `res.max` is non-negative — see `recover`'s identical note;
+    // `CombatantEngine::validate` is the sole ingress gate for this field.
+    debug_assert!(
+        res.max >= 0.0,
+        "CombatantEngine::validate guarantees a non-negative resource max"
+    );
     let new = match op {
         ResourceOp::Delta { amount } => {
             if !amount.is_finite() {
