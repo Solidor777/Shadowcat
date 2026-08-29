@@ -172,7 +172,8 @@ pub fn resolve_combat_rules(
 
 /// The engine body of a `combat` document (mirrors the client's
 /// `CombatEngine`). World-level, bound to one scene; at most one combat per
-/// scene is intended to be `active` at a time.
+/// scene is `active` at a time, enforced at the `apply_intent` Create/Update
+/// chokepoints via `SqliteRepository::active_combat_exists`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
@@ -384,10 +385,10 @@ pub struct Resource {
     pub binding: ResourceBinding,
 }
 
-/// The world's turn-resource registry: intended to be one config document per
-/// world, EMPTY by default (the engine hooks up no resource, not even
-/// movement). Keyed by resource id — a MAP for the single-key-Update reason
-/// every registry uses.
+/// The world's turn-resource registry: a singleton config document
+/// (`RESOURCE_REGISTRY_DOC_TYPE` is in `SINGLETON_DOC_TYPES`), EMPTY by
+/// default (the engine hooks up no resource, not even movement). Keyed by
+/// resource id — a MAP for the single-key-Update reason every registry uses.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
