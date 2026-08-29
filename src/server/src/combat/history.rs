@@ -28,6 +28,7 @@ use crate::data::DataError;
 
 use super::effects::{collect_all_effects, set_effect_field};
 use super::ops::{set_engine, whole_engine_replace};
+use super::transition::rebuild_order;
 use super::{CombatError, CombatSnapshot, Combatant};
 
 /// Applies `changes` to `doc` in place — the same field-path mutation
@@ -138,8 +139,11 @@ fn capture(post: &CombatSnapshot) -> TurnRecord {
 /// `restore`, whose combatant/host targets a same-transition write CAN
 /// collide with). Redo history beyond the current cursor is discarded
 /// before the new record is pushed (`records.truncate(cursor + 1)`); the
-/// oldest record drops once the log exceeds `MAX_TURN_HISTORY`.
-pub(crate) fn append_record(snap: &CombatSnapshot, ops: &mut Vec<Operation>) {
+/// oldest record drops once the log exceeds `MAX_TURN_HISTORY`. `now` stamps
+/// a freshly created history document's `created_at`/`updated_at` — both
+/// call sites (`transition::start`, `transition::advance_impl`) already
+/// carry `now` in scope for their own transition.
+pub(crate) fn append_record(snap: &CombatSnapshot, ops: &mut Vec<Operation>, now: i64) {
     let post = post_transition_snapshot(snap, ops);
     let record = capture(&post);
     match &snap.history {
@@ -148,10 +152,6 @@ pub(crate) fn append_record(snap: &CombatSnapshot, ops: &mut Vec<Operation>) {
                 records: vec![record],
                 cursor: 0,
             };
-            // The only timestamp visible to this function's fixed signature
-            // (no `now` is threaded through `append_record`'s call sites):
-            // mirrors the combat document's own `updated_at`.
-            let stamp = snap.combat.updated_at;
             let doc = Document {
                 id: Uuid::new_v4(),
                 scope: post.combat.scope.clone(),
@@ -172,8 +172,8 @@ pub(crate) fn append_record(snap: &CombatSnapshot, ops: &mut Vec<Operation>) {
                         .expect("CombatHistoryEngine always serializes"),
                 ),
                 system: json!({}),
-                created_at: stamp,
-                updated_at: stamp,
+                created_at: now,
+                updated_at: now,
             };
             ops.push(Operation::Create { doc });
         }
@@ -237,15 +237,18 @@ fn coalesce_by_doc(ops: Vec<Operation>) -> Vec<Operation> {
 /// its captured state: per combatant, an `Update` replacing `/engine` and
 /// `/system` (pre-imaged against the LIVE document) when either differs, or
 /// a `Create` of the captured document when the live combatant is gone
-/// (an exhausted `Event`, deleted by `transition::resolve_event`); per
-/// effect, an `Update` replacing `<path>/engine` (pre-imaged against the
-/// live host) when it differs — skipped outright when the host document or
-/// the effect's own slot no longer exists live, since there is nothing to
-/// write back to. A live document already matching its capture emits no op
-/// for it at all.
+/// (an exhausted `Event`, deleted by `transition::resolve_event`) — stamped
+/// with `now` rather than the stale `created_at`/`updated_at` `capture`
+/// recorded, since a re-`Create`d document is genuinely new to the store at
+/// this instant; per effect, an `Update` replacing `<path>/engine`
+/// (pre-imaged against the live host) when it differs — skipped outright
+/// when the host document or the effect's own slot no longer exists live,
+/// since there is nothing to write back to. A live document already
+/// matching its capture emits no op for it at all.
 pub(crate) fn restore(
     snap: &CombatSnapshot,
     record: &TurnRecord,
+    now: i64,
 ) -> Result<Vec<Operation>, CombatError> {
     let mut ops = Vec::new();
     for captured in &record.combatants {
@@ -269,9 +272,12 @@ pub(crate) fn restore(
                     });
                 }
             }
-            None => ops.push(Operation::Create {
-                doc: captured.clone(),
-            }),
+            None => {
+                let mut doc = captured.clone();
+                doc.created_at = now;
+                doc.updated_at = now;
+                ops.push(Operation::Create { doc });
+            }
         }
     }
     for effect in &record.effects {
@@ -333,6 +339,38 @@ pub(crate) fn live_equals(snap: &CombatSnapshot, record: &TurnRecord) -> bool {
     true
 }
 
+/// Reconstructs the combatant list implied once `restore`'s own ops for
+/// `record` have applied: every combatant `record` captured (its own,
+/// post-restore engine), plus any LIVE combatant `snap` carries that
+/// `record` never captured — untouched by `restore`, since there is nothing
+/// to write back for a combatant that did not exist at the record's own
+/// turn boundary. Feeds `transition::rebuild_order`, so a combatant
+/// `restore` re-`Create`s (an `Event` deleted since the record was
+/// captured) does not stay absent from `/engine/order`.
+pub(crate) fn resulting_combatants(snap: &CombatSnapshot, record: &TurnRecord) -> Vec<Combatant> {
+    let mut out: Vec<Combatant> = record
+        .combatants
+        .iter()
+        .filter_map(|doc| {
+            let raw = doc.engine.clone()?;
+            let engine: CombatantEngine = serde_json::from_value(raw).ok()?;
+            Some(Combatant {
+                doc: doc.clone(),
+                engine,
+            })
+        })
+        .collect();
+    for c in &snap.combatants {
+        if !out.iter().any(|o| o.doc.id == c.doc.id) {
+            out.push(Combatant {
+                doc: c.doc.clone(),
+                engine: c.engine.clone(),
+            });
+        }
+    }
+    out
+}
+
 /// Fast-forwards a redo when history already carries the exact next-turn
 /// state: only when `forward_restore` is set, the combat is `active`, a
 /// history record exists at BOTH the current cursor and one past it, and
@@ -340,10 +378,14 @@ pub(crate) fn live_equals(snap: &CombatSnapshot, record: &TurnRecord) -> bool {
 /// current cursor since it was captured — in that case replaying the
 /// ordinary transition walk would provably reproduce the cached next
 /// record, so this restores straight from it (`restore`, then the combat's
-/// `/engine/round`+`/engine/turn`, then the history cursor) instead.
-/// `None` under any other condition, letting `transition::advance_impl` run
-/// its ordinary walk.
-pub(crate) fn fast_forward(snap: &CombatSnapshot) -> Result<Option<Vec<Operation>>, CombatError> {
+/// `/engine/round`+`/engine/turn`+`/engine/order`, then the history cursor)
+/// instead. `now` stamps any combatant `restore` re-`Create`s. `None` under
+/// any other condition, letting `transition::advance_impl` run its ordinary
+/// walk.
+pub(crate) fn fast_forward(
+    snap: &CombatSnapshot,
+    now: i64,
+) -> Result<Option<Vec<Operation>>, CombatError> {
     if !snap.engine.forward_restore || !snap.engine.active {
         return Ok(None);
     }
@@ -361,12 +403,19 @@ pub(crate) fn fast_forward(snap: &CombatSnapshot) -> Result<Option<Vec<Operation
         return Ok(None);
     }
 
-    let mut ops = restore(snap, next)?;
-    let round_change = set_engine(&snap.combat, "/engine/round", json!(next.round))?;
-    let turn_change = set_engine(&snap.combat, "/engine/turn", json!(next.turn))?;
+    let mut ops = restore(snap, next, now)?;
+    let mut combat_changes = vec![
+        set_engine(&snap.combat, "/engine/round", json!(next.round))?,
+        set_engine(&snap.combat, "/engine/turn", json!(next.turn))?,
+    ];
+    let resulting = resulting_combatants(snap, next);
+    let new_order = rebuild_order(&resulting, &snap.engine.order);
+    if new_order != snap.engine.order {
+        combat_changes.push(set_engine(&snap.combat, "/engine/order", json!(new_order))?);
+    }
     ops.push(Operation::Update {
         doc_id: snap.combat.id,
-        changes: vec![round_change, turn_change],
+        changes: combat_changes,
     });
 
     let mut updated = history_engine.clone();

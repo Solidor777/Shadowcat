@@ -828,7 +828,7 @@ pub fn start(
         }
         settle_turn(&mut w, 0, world, author, now)?;
 
-        history::append_record(snap, &mut w.ops);
+        history::append_record(snap, &mut w.ops, now);
     }
     let active_change = set_engine(&w.combat, "/engine/active", json!(true))?;
     w.commit_combat(vec![active_change])?;
@@ -848,7 +848,7 @@ fn advance_impl(
     author: Uuid,
     now: i64,
 ) -> Result<(Vec<Operation>, usize), CombatError> {
-    if let Some(ops) = history::fast_forward(snap)? {
+    if let Some(ops) = history::fast_forward(snap, now)? {
         return Ok((ops, 0));
     }
     if !snap.engine.active {
@@ -868,7 +868,7 @@ fn advance_impl(
     run_turn_end(&mut w, current_id)?;
     let next_idx = advance_from(&mut w, start_idx, false)?;
     settle_turn(&mut w, next_idx, world, author, now)?;
-    history::append_record(snap, &mut w.ops);
+    history::append_record(snap, &mut w.ops, now);
     w.coalesce_updates(0);
     #[cfg(test)]
     let steps = w.settle_turn_steps;
@@ -923,10 +923,16 @@ pub fn pause(snap: &CombatSnapshot) -> Result<Vec<Operation>, CombatError> {
 /// document `history::restore` can reach from the target record when
 /// `rewind_restore` is set (skipped entirely, moving only the clock,
 /// when it is not); always writes the combat's `/engine/round` and
-/// `/engine/turn` back to the target record's own. Every later record is
-/// dropped from history unless `forward_restore` is set, in which case the
-/// redo history survives for `history::fast_forward` to later replay.
-pub fn rewind(snap: &CombatSnapshot) -> Result<Vec<Operation>, CombatError> {
+/// `/engine/turn` back to the target record's own. When `rewind_restore` is
+/// set, `/engine/order` is also rebuilt (via `rebuild_order`) from the
+/// post-restore combatant set (`history::resulting_combatants`) — a
+/// combatant `restore` re-`Create`s (an exhausted `Event`, deleted since the
+/// target record was captured) would otherwise stay live but absent from
+/// `order`, unreachable by any future turn walk. `now` stamps any combatant
+/// `restore` re-`Create`s. Every later record is dropped from history unless
+/// `forward_restore` is set, in which case the redo history survives for
+/// `history::fast_forward` to later replay.
+pub fn rewind(snap: &CombatSnapshot, now: i64) -> Result<Vec<Operation>, CombatError> {
     let Some((history_doc, history_engine)) = &snap.history else {
         return Err(CombatError::Unrewindable);
     };
@@ -940,16 +946,25 @@ pub fn rewind(snap: &CombatSnapshot) -> Result<Vec<Operation>, CombatError> {
         .ok_or(CombatError::NotFound)?;
 
     let mut ops = if snap.engine.rewind_restore {
-        history::restore(snap, target)?
+        history::restore(snap, target, now)?
     } else {
         Vec::new()
     };
 
-    let round_change = set_engine(&snap.combat, "/engine/round", json!(target.round))?;
-    let turn_change = set_engine(&snap.combat, "/engine/turn", json!(target.turn))?;
+    let mut combat_changes = vec![
+        set_engine(&snap.combat, "/engine/round", json!(target.round))?,
+        set_engine(&snap.combat, "/engine/turn", json!(target.turn))?,
+    ];
+    if snap.engine.rewind_restore {
+        let resulting = history::resulting_combatants(snap, target);
+        let new_order = rebuild_order(&resulting, &snap.engine.order);
+        if new_order != snap.engine.order {
+            combat_changes.push(set_engine(&snap.combat, "/engine/order", json!(new_order))?);
+        }
+    }
     ops.push(Operation::Update {
         doc_id: snap.combat.id,
-        changes: vec![round_change, turn_change],
+        changes: combat_changes,
     });
 
     let mut updated = history_engine.clone();

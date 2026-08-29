@@ -73,7 +73,7 @@ fn rebuild(prev: &CombatSnapshot, docs: HashMap<Uuid, Document>) -> CombatSnapsh
 fn running_with_history() -> (CombatSnapshot, Uuid) {
     let combat = Uuid::from_u128(1);
     let a = actor_combatant(10, combat, 0x1A, None, false, (0.0, 30.0));
-    let b = actor_combatant(11, combat, 0xB, None, false, (0.0, 30.0));
+    let b = actor_combatant(11, combat, 0x1B, None, false, (0.0, 30.0));
     let host = actor_with_effect(0x1A, None, 2, ExpiryPoint::TurnEnd, DurationUnit::Turns);
     let snap = snapshot(
         combat_engine(vec![a.doc.id, b.doc.id], None, 0, false),
@@ -138,7 +138,7 @@ fn rewind_restores_spent_resources_expired_effects_and_deleted_events() {
             .all(|c| c.doc.id != Uuid::from_u128(11)),
         "event deleted"
     );
-    let ops = rewind(&s2).unwrap();
+    let ops = rewind(&s2, 0).unwrap();
     let docs = apply(&s2, &ops);
     let a: CombatantEngine = engine_of(&docs, Uuid::from_u128(10));
     assert_eq!(
@@ -156,6 +156,10 @@ fn rewind_restores_spent_resources_expired_effects_and_deleted_events() {
     assert!(e.active && e.duration.unwrap().remaining == Some(1));
     let c: CombatEngine = engine_of(&docs, combat);
     assert_eq!((c.round, c.turn), (1, Some(Uuid::from_u128(10))));
+    assert!(
+        c.order.contains(&Uuid::from_u128(11)),
+        "the re-created event is reachable from order again"
+    );
     let h: CombatHistoryEngine = engine_of(&docs, s2.history.as_ref().unwrap().0.id);
     assert_eq!(
         (h.records.len(), h.cursor),
@@ -167,7 +171,7 @@ fn rewind_restores_spent_resources_expired_effects_and_deleted_events() {
 #[test]
 fn rewind_at_the_first_record_is_refused() {
     let (snap, _) = running_with_history();
-    assert!(matches!(rewind(&snap), Err(CombatError::Unrewindable)));
+    assert!(matches!(rewind(&snap, 0), Err(CombatError::Unrewindable)));
 }
 
 #[test]
@@ -192,7 +196,7 @@ fn rewind_restore_off_moves_only_the_clock() {
             .unwrap(),
         ),
     );
-    let docs = apply(&s2, &rewind(&s2).unwrap());
+    let docs = apply(&s2, &rewind(&s2, 0).unwrap());
     assert_eq!(
         engine_of::<CombatEngine>(&docs, combat).turn,
         Some(Uuid::from_u128(10))
@@ -213,7 +217,7 @@ fn forward_restore_keeps_the_future_and_fast_forwards_when_nothing_changed() {
         &snap,
         apply(&snap, &advance(&snap, WORLD, Uuid::nil(), 0).unwrap()),
     );
-    let s1 = rebuild(&s2, apply(&s2, &rewind(&s2).unwrap()));
+    let s1 = rebuild(&s2, apply(&s2, &rewind(&s2, 0).unwrap()));
     let h: &CombatHistoryEngine = &s1.history.as_ref().unwrap().1;
     assert_eq!((h.records.len(), h.cursor), (2, 0), "future retained");
     let ops = advance(&s1, WORLD, Uuid::nil(), 0).unwrap();
@@ -242,7 +246,7 @@ fn forward_restore_discards_the_future_when_a_combatant_changed() {
         &snap,
         apply(&snap, &advance(&snap, WORLD, Uuid::nil(), 0).unwrap()),
     );
-    let s1 = rebuild(&s2, apply(&s2, &rewind(&s2).unwrap()));
+    let s1 = rebuild(&s2, apply(&s2, &rewind(&s2, 0).unwrap()));
     let s1 = rebuild(
         &s1,
         apply(
