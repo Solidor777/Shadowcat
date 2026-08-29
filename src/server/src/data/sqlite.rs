@@ -17,7 +17,8 @@ use crate::data::document::{
 };
 use crate::data::engine::{
     CombatEngine, COMBATANT_DOC_TYPE, COMBAT_DOC_TYPE, CONDITION_REGISTRY_DOC_TYPE,
-    FACTION_REGISTRY_DOC_TYPE, RESOURCE_REGISTRY_DOC_TYPE, WORLD_SETTINGS_DOC_TYPE,
+    FACTION_REGISTRY_DOC_TYPE, RESOURCE_REGISTRY_DOC_TYPE, SYSTEM_DEFAULTS_DOC_TYPE,
+    WORLD_SETTINGS_DOC_TYPE,
 };
 use crate::data::permission::{
     cap, declared_caps_for_document, declared_caps_for_path, required_cap_for_path,
@@ -44,6 +45,7 @@ const SINGLETON_DOC_TYPES: &[&str] = &[
     FACTION_REGISTRY_DOC_TYPE,
     CONDITION_REGISTRY_DOC_TYPE,
     RESOURCE_REGISTRY_DOC_TYPE,
+    SYSTEM_DEFAULTS_DOC_TYPE,
     crate::chat::CHAT_SETTINGS_DOC_TYPE,
     crate::chat::DICE_SETTINGS_DOC_TYPE,
 ];

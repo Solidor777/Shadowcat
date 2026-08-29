@@ -2562,6 +2562,66 @@ async fn apply_intent_update_violating_system_schema_is_rejected_and_seq_untouch
     assert_eq!(seq_before, seq_after);
 }
 
+#[tokio::test]
+async fn system_defaults_is_a_singleton_and_gm_write_only() {
+    use crate::data::document::DocRole;
+    use crate::data::membership::PermissionContext;
+    let r = repo().await;
+    let gm = r
+        .create_user("gm", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let player = r.create_user("p", None, ServerRole::User, 0).await.unwrap();
+    let w = r.create_world_owned("W", gm, 0).await.unwrap();
+    r.add_member(w.id, player, WorldRole::Player).await.unwrap();
+    let gm_ctx = PermissionContext {
+        user_id: gm,
+        world_role: WorldRole::Gm,
+    };
+    r.apply_intent(
+        &gm_ctx,
+        w.id,
+        vec![Operation::Create {
+            doc: singleton_test_doc(1, w.id, "system-defaults"),
+        }],
+        1,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+    let err = r
+        .apply_intent(
+            &gm_ctx,
+            w.id,
+            vec![Operation::Create {
+                doc: singleton_test_doc(2, w.id, "system-defaults"),
+            }],
+            2,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, DataError::Conflict(_)));
+
+    let p_ctx = PermissionContext {
+        user_id: player,
+        world_role: WorldRole::Player,
+    };
+    let mut doc = singleton_test_doc(3, w.id, "system-defaults");
+    doc.permissions.users.insert(player, DocRole::Owner);
+    let err = r
+        .apply_intent(
+            &p_ctx,
+            w.id,
+            vec![Operation::Create { doc }],
+            3,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, DataError::Forbidden));
+}
+
 // --- combat family ingress: singleton registry, one active combat per
 // scene, combatant parentage ---
 

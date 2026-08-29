@@ -286,7 +286,7 @@ fn message_unknown_field_is_rejected() {
     .is_err());
 }
 
-// --- (c) wrong-typed field rejected (all 21 registered doc_types) ---
+// --- (c) wrong-typed field rejected (all 23 registered doc_types) ---
 
 #[test]
 fn token_wrong_typed_field_is_rejected() {
@@ -770,4 +770,47 @@ fn effect_absent_transfer_defaults_false_and_reserializes_explicitly() {
         .unwrap();
     assert_eq!(n["transfer"], json!(false));
     assert!(n.get("duration").is_some_and(|d| d.is_null()));
+}
+
+// --- system-defaults ---
+
+#[test]
+fn system_defaults_empty_body_is_valid() {
+    assert!(validate_engine("system-defaults", Some(&json!({}))).is_ok());
+}
+
+#[test]
+fn system_defaults_partial_overlay_is_valid_and_reserializes_absent_as_null() {
+    let v = json!({
+        "scene": { "fog": false },
+        "pathfinding": { "diagonalRule": "euclidean" },
+        "combat": { "enforcement": "hard" }
+    });
+    let n = normalize_engine_opt("system-defaults", Some(&v))
+        .unwrap()
+        .unwrap();
+    assert_eq!(n["scene"]["fog"], json!(false));
+    assert_eq!(n["scene"]["losRestriction"], json!(null));
+    assert_eq!(n["animation"], json!(null));
+    assert_eq!(n["combat"]["enforcement"], json!("hard"));
+}
+
+#[test]
+fn system_defaults_unknown_field_is_rejected() {
+    assert!(validate_engine("system-defaults", Some(&json!({ "activeScene": null }))).is_err());
+    assert!(validate_engine("system-defaults", Some(&json!({ "scene": { "bogus": 1 } }))).is_err());
+}
+
+#[test]
+fn system_defaults_wrong_type_is_rejected() {
+    assert!(validate_engine(
+        "system-defaults",
+        Some(&json!({ "scene": { "fog": "yes" } }))
+    )
+    .is_err());
+    assert!(validate_engine(
+        "system-defaults",
+        Some(&json!({ "animation": { "speedCellsPerSec": -1.0 } }))
+    )
+    .is_err());
 }

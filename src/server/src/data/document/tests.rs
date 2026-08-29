@@ -264,6 +264,7 @@ pub(crate) fn default_test_engine(doc_type: &str) -> Option<serde_json::Value> {
         "effect" => {
             Some(serde_json::json!({ "active": true, "transfer": false, "duration": null }))
         }
+        "system-defaults" => Some(serde_json::json!({})),
         _ => None,
     }
 }

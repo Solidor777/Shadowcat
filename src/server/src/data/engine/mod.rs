@@ -12,6 +12,7 @@ pub mod combat;
 pub mod geometry;
 pub mod registries;
 pub mod scene;
+pub mod system_defaults;
 pub mod token;
 
 pub use combat::{
@@ -35,6 +36,9 @@ pub use scene::{
     SceneDimensions, SceneEngine, SceneLightingOverrides, SceneVisionOverrides, VisionMode,
     VisionModesEngine, WorldSceneDefaults, WorldSettingsEngine,
 };
+pub use system_defaults::{
+    AnimationOverlay, PathfindingOverlay, SceneDefaultsOverlay, SystemDefaultsEngine,
+};
 pub use token::{
     ActorEngine, AnimatedSource, RenderVisual, Size, TokenEngine, TokenOverrides, TokenVisual,
     VisionAssignment,
@@ -56,6 +60,8 @@ pub const COMBATANT_DOC_TYPE: &str = "combatant";
 pub const RESOURCE_REGISTRY_DOC_TYPE: &str = "resource-registry";
 /// Doc_type for an effect (embedded under actors/items, or standalone).
 pub const EFFECT_DOC_TYPE: &str = "effect";
+/// Doc_type for the world's singleton system-declared settings defaults.
+pub const SYSTEM_DEFAULTS_DOC_TYPE: &str = "system-defaults";
 
 /// Whether `doc_type` carries a typed `engine` band. The registry is a
 /// hardcoded match — there is no dynamic registration (the server runs no
@@ -68,6 +74,7 @@ pub const EFFECT_DOC_TYPE: &str = "effect";
 ///
 /// assert!(is_engine_doc_type("token"));
 /// assert!(is_engine_doc_type("combat"));
+/// assert!(is_engine_doc_type("system-defaults"));
 /// assert!(!is_engine_doc_type("item")); // client-only doc_type: opaque system band only
 /// ```
 pub fn is_engine_doc_type(doc_type: &str) -> bool {
@@ -94,6 +101,7 @@ pub fn is_engine_doc_type(doc_type: &str) -> bool {
             | "combatant"
             | "resource-registry"
             | "effect"
+            | "system-defaults"
     )
 }
 
@@ -233,6 +241,14 @@ fn normalize_engine(doc_type: &str, v: &serde_json::Value) -> Result<serde_json:
             typed
                 .validate()
                 .map_err(|m| DataError::BadEngine(format!("effect: {m}")))?;
+            Ok(serde_json::to_value(typed)?)
+        }
+        "system-defaults" => {
+            let typed: SystemDefaultsEngine = serde_json::from_value(v.clone())
+                .map_err(|e| DataError::BadEngine(format!("system-defaults: {e}")))?;
+            typed
+                .validate()
+                .map_err(|m| DataError::BadEngine(format!("system-defaults: {m}")))?;
             Ok(serde_json::to_value(typed)?)
         }
         _ => unreachable!("is_engine_doc_type and this match must stay in sync"),
