@@ -231,7 +231,7 @@ pub fn resolve_combat_rules(
 /// The engine body of a `combat` document (mirrors the client's
 /// `CombatEngine`). World-level, bound to one scene; at most one combat per
 /// scene is `active` at a time, enforced at the `apply_intent` Create/Update
-/// chokepoints via `SqliteRepository::active_combat_exists`.
+/// chokepoints via `SqliteRepository::active_combat_owner`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]

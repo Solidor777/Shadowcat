@@ -668,3 +668,214 @@ async fn combat_transition_update_of_an_immutable_envelope_field_is_forbidden() 
         .await;
     assert!(matches!(res, Err(DataError::Forbidden)));
 }
+
+/// Deleting an active combat and Creating a different active combat on its
+/// scene, in the SAME batch, must succeed -- the pre-scan that seeds
+/// `apply_intent`'s `deactivations_this_batch` set must also recognize a
+/// `Delete` of an `active: true` combat as freeing its scene, not only an
+/// `Update` transitioning `active` from `true` to `false`. Runs under
+/// `Client` origin (not `CombatTransition`) to confirm the fix is unrelated
+/// to `cap::DELETE`'s own origin-gated skip.
+#[tokio::test]
+async fn deleting_an_active_combat_frees_its_scene_for_a_same_batch_create() {
+    let r = repo().await;
+    let gm = r
+        .create_user("gm", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let w = r.create_world_owned("W", gm, 0).await.unwrap();
+    let ctx = PermissionContext {
+        user_id: gm,
+        world_role: WorldRole::Gm,
+    };
+    let scene = Uuid::from_u128(0x5CE);
+    let a = combat_doc(1, w.id, scene, true);
+    r.apply_intent(
+        &ctx,
+        w.id,
+        vec![Operation::Create { doc: a.clone() }],
+        1,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+    let b = combat_doc(2, w.id, scene, true);
+    r.apply_intent(
+        &ctx,
+        w.id,
+        vec![
+            Operation::Delete { doc: a.clone() },
+            Operation::Create { doc: b.clone() },
+        ],
+        2,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+    assert!(r.get_document(a.id).await.unwrap().is_none());
+    let stored_b = r.get_document(b.id).await.unwrap().unwrap();
+    assert_eq!(stored_b.engine.unwrap()["active"], serde_json::json!(true));
+}
+
+/// An `Update` that changes a combat's `scene_id` while `active` stays `true`
+/// throughout must free the OLD scene for a same-batch `Create` claiming it --
+/// the pre-scan's freeing condition must not require `active` to transition
+/// to `false`; moving away from a scene while remaining active vacates that
+/// scene just as genuinely as deactivating does. Both op orderings.
+#[tokio::test]
+async fn a_scene_rebind_that_stays_active_frees_the_old_scene_for_a_same_batch_create() {
+    let r = repo().await;
+    let gm = r
+        .create_user("gm", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let w = r.create_world_owned("W", gm, 0).await.unwrap();
+    let ctx = PermissionContext {
+        user_id: gm,
+        world_role: WorldRole::Gm,
+    };
+    let s1 = Uuid::from_u128(0x51);
+    let s2 = Uuid::from_u128(0x52);
+    let a = combat_doc(1, w.id, s1, true);
+    r.apply_intent(
+        &ctx,
+        w.id,
+        vec![Operation::Create { doc: a.clone() }],
+        1,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+    let move_a_stay_active = Operation::Update {
+        doc_id: a.id,
+        changes: vec![FieldChange {
+            remove: false,
+            path: "/engine/scene_id".into(),
+            old: serde_json::json!(s1.to_string()),
+            new: serde_json::json!(s2.to_string()),
+        }],
+    };
+    let c = combat_doc(2, w.id, s1, true);
+    r.apply_intent(
+        &ctx,
+        w.id,
+        vec![
+            move_a_stay_active.clone(),
+            Operation::Create { doc: c.clone() },
+        ],
+        2,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+    let stored_a = r.get_document(a.id).await.unwrap().unwrap();
+    assert_eq!(
+        stored_a.engine.as_ref().unwrap()["scene_id"],
+        serde_json::json!(s2.to_string())
+    );
+    assert_eq!(stored_a.engine.unwrap()["active"], serde_json::json!(true));
+    let stored_c = r.get_document(c.id).await.unwrap().unwrap();
+    assert_eq!(stored_c.engine.unwrap()["active"], serde_json::json!(true));
+
+    // Reverse ordering: Create the new claimant on `s1b` FIRST, then move `x`
+    // away from `s1b` -- reuse fresh scenes/docs so this half is independent
+    // of the state left by the first half above.
+    let s1b = Uuid::from_u128(0x53);
+    let s2b = Uuid::from_u128(0x54);
+    let x = combat_doc(3, w.id, s1b, true);
+    r.apply_intent(
+        &ctx,
+        w.id,
+        vec![Operation::Create { doc: x.clone() }],
+        3,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+    let move_x_stay_active = Operation::Update {
+        doc_id: x.id,
+        changes: vec![FieldChange {
+            remove: false,
+            path: "/engine/scene_id".into(),
+            old: serde_json::json!(s1b.to_string()),
+            new: serde_json::json!(s2b.to_string()),
+        }],
+    };
+    let y = combat_doc(4, w.id, s1b, true);
+    r.apply_intent(
+        &ctx,
+        w.id,
+        vec![Operation::Create { doc: y.clone() }, move_x_stay_active],
+        4,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+    let stored_x = r.get_document(x.id).await.unwrap().unwrap();
+    assert_eq!(
+        stored_x.engine.as_ref().unwrap()["scene_id"],
+        serde_json::json!(s2b.to_string())
+    );
+    let stored_y = r.get_document(y.id).await.unwrap().unwrap();
+    assert_eq!(stored_y.engine.unwrap()["active"], serde_json::json!(true));
+}
+
+/// A scene-rebind Update that stays active must not accidentally free the
+/// DESTINATION scene -- only the scene the combat is LEAVING. A same-batch
+/// move onto an already-occupied scene must still conflict against that
+/// scene's real, batch-untouched occupant. Mirrors
+/// `a_scene_rebind_combined_with_deactivate_frees_the_old_scene_not_the_new_one`,
+/// which pins the same non-double-free property for the merged-`active:
+/// false` branch; this pins it for the new merged-`active: true` branch.
+#[tokio::test]
+async fn scene_rebind_stays_active_does_not_free_the_destination_scenes_real_occupant() {
+    let r = repo().await;
+    let gm = r
+        .create_user("gm", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let w = r.create_world_owned("W", gm, 0).await.unwrap();
+    let ctx = PermissionContext {
+        user_id: gm,
+        world_role: WorldRole::Gm,
+    };
+    let s1 = Uuid::from_u128(0x51);
+    let s2 = Uuid::from_u128(0x52);
+    // `z` is genuinely active on `s2` and is never touched by the batch.
+    let z = combat_doc(1, w.id, s2, true);
+    let a = combat_doc(2, w.id, s1, true);
+    r.apply_intent(
+        &ctx,
+        w.id,
+        vec![
+            Operation::Create { doc: z.clone() },
+            Operation::Create { doc: a.clone() },
+        ],
+        1,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+    // `a` moves onto `z`'s scene while staying active -- must conflict
+    // against `z`'s real, batch-untouched claim on `s2`.
+    let move_a_onto_s2 = Operation::Update {
+        doc_id: a.id,
+        changes: vec![FieldChange {
+            remove: false,
+            path: "/engine/scene_id".into(),
+            old: serde_json::json!(s1.to_string()),
+            new: serde_json::json!(s2.to_string()),
+        }],
+    };
+    let res = r
+        .apply_intent(&ctx, w.id, vec![move_a_onto_s2], 2, WriteOrigin::Client)
+        .await;
+    assert!(matches!(res, Err(DataError::Conflict(_))));
+    // `a` is untouched: still on `s1`, still active.
+    let stored_a = r.get_document(a.id).await.unwrap().unwrap();
+    assert_eq!(
+        stored_a.engine.as_ref().unwrap()["scene_id"],
+        serde_json::json!(s1.to_string())
+    );
+    assert_eq!(stored_a.engine.unwrap()["active"], serde_json::json!(true));
+}

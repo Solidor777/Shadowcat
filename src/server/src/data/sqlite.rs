@@ -3112,35 +3112,61 @@ impl Repository for SqliteRepository {
         // batch will actually leave, not a DB row a later op is about to
         // invalidate.
         //
-        // Only an Update whose PRE-image was already `active: true`
-        // qualifies: an update to a combat that was ALREADY inactive must
-        // never mark its scene as freed this batch, or an unrelated
-        // activation elsewhere in the batch would wrongly skip its DB
-        // conflict check. For a qualifying op this computes its own
-        // post-merge `active` value (`merged_combat_engine`, applying that
-        // op's `FieldChange`s to a copy of the stored value); an op this
-        // cannot merge or parse is left alone here -- Phase 1's real
-        // validation below surfaces the failure through the ordinary path.
+        // Only an op whose PRE-image was already `active: true` qualifies: an
+        // op touching a combat that was ALREADY inactive must never mark its
+        // scene as freed this batch, or an unrelated activation elsewhere in
+        // the batch would wrongly skip its DB conflict check. Two op shapes
+        // free a scene:
+        // - `Delete` of an `active: true` combat -- the combat, and its claim,
+        //   cease to exist outright.
+        // - `Update` whose post-merge `active` is `false` (a genuine
+        //   true->false transition, via `merged_combat_engine`), OR whose
+        //   post-merge `active` STAYS `true` but `scene_id` changed -- moving
+        //   away from a scene while remaining active vacates that scene just
+        //   as genuinely as deactivating does. These two `Update` cases are
+        //   mutually exclusive (`merged_engine.active` cannot be both `true`
+        //   and `false` for the same op) and file under different scenes (the
+        //   PRE-merge scene in both cases -- the scene the combat is LEAVING,
+        //   never the one it is moving to), so neither double-frees nor
+        //   conflicts with the other.
+        // An op this cannot merge or parse is left alone here -- Phase 1's
+        // real validation below surfaces the failure through the ordinary
+        // path.
         let mut deactivations_this_batch: std::collections::HashSet<Uuid> =
             std::collections::HashSet::new();
         for op in &ops {
-            if let Operation::Update { doc_id, changes } = op {
-                if let Some(cur) = Self::load_document(&mut *tx, *doc_id).await? {
-                    // Scoped the same way every other load site in this
-                    // function is: a foreign-world document must never
-                    // influence this batch's validation, even indirectly
-                    // through the pre-scan's bookkeeping.
-                    check_command_scope(&cur, world_id)?;
-                    if let Some(pre_engine) = combat_engine_of(&cur) {
-                        if pre_engine.active {
-                            if let Some(merged_engine) = merged_combat_engine(&cur, changes) {
-                                if !merged_engine.active {
-                                    deactivations_this_batch.insert(pre_engine.scene_id);
+            match op {
+                Operation::Update { doc_id, changes } => {
+                    if let Some(cur) = Self::load_document(&mut *tx, *doc_id).await? {
+                        // Scoped the same way every other load site in this
+                        // function is: a foreign-world document must never
+                        // influence this batch's validation, even indirectly
+                        // through the pre-scan's bookkeeping.
+                        check_command_scope(&cur, world_id)?;
+                        if let Some(pre_engine) = combat_engine_of(&cur) {
+                            if pre_engine.active {
+                                if let Some(merged_engine) = merged_combat_engine(&cur, changes) {
+                                    if !merged_engine.active
+                                        || merged_engine.scene_id != pre_engine.scene_id
+                                    {
+                                        deactivations_this_batch.insert(pre_engine.scene_id);
+                                    }
                                 }
                             }
                         }
                     }
                 }
+                Operation::Delete { doc } => {
+                    if let Some(cur) = Self::load_document(&mut *tx, doc.id).await? {
+                        check_command_scope(&cur, world_id)?;
+                        if let Some(pre_engine) = combat_engine_of(&cur) {
+                            if pre_engine.active {
+                                deactivations_this_batch.insert(pre_engine.scene_id);
+                            }
+                        }
+                    }
+                }
+                Operation::Create { .. } => {}
             }
         }
         // Batch-start permissions for each Update target, captured the FIRST time its
