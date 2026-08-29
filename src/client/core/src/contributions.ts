@@ -73,6 +73,12 @@ export interface PanelMeta {
 /** Contract id panel modules contribute under for the panel-manager host. */
 export const PANEL_CONTRACT = "shadowcat.panel";
 
+/** Singleton contract id the active game system's module provides. The registry elects one
+ * winner (`ModuleRegistry`'s existing singleton-contract election, `ContractProvide.cardinality:
+ * "singleton"`) the same way it does for `PANEL_CONTRACT`; `ModuleRegistry.systemModule()`
+ * returns that winner. */
+export const SYSTEM_CONTRACT = "shadowcat.system";
+
 /** Provider metadata for the `shadowcat.sheet:<doc_type>` contract family.
  * `priority` selects among competing providers (higher wins; the always-registered
  * generic fallback registers at `-Infinity`). `match` is an optional per-document

@@ -11,6 +11,10 @@ import {
   COMBAT_DOC_TYPE, COMBATANT_DOC_TYPE, RESOURCE_REGISTRY_DOC_TYPE, EFFECT_DOC_TYPE,
   type CombatEngine, type CombatantEngine, type ResourceRegistryEngine, type Resource, type EffectEngine,
 } from "./scene-docs";
+import {
+  buildSystemDefaultsDoc, systemDefaultsUpsertOps, resolveSettingProvenance, SYSTEM_DEFAULTS_DOC_TYPE,
+  type SystemDefaultsEngine,
+} from "./scene-docs";
 import { DocumentStore } from "./store";
 import type { WireOperation } from "./wire";
 import { resolveTokenActor, resolveTokenBox } from "./actor";
@@ -568,5 +572,62 @@ describe("combat document builders", () => {
     expect(d.engine).toEqual(eng);
     expect(d.name).toBe("Bless");
     expect(d.system).toEqual({ mechanics: { modifiers: {} } });
+  });
+});
+
+describe("system defaults", () => {
+  it("upsert creates the singleton at the deterministic id when absent", () => {
+    const ops = systemDefaultsUpsertOps(storeWith(), "w1", { scene: { fog: false } });
+    expect(ops).toHaveLength(1);
+    expect(ops[0]).toMatchObject({
+      op: "create",
+      doc: { id: deterministicId("w1", SYSTEM_DEFAULTS_DOC_TYPE), doc_type: SYSTEM_DEFAULTS_DOC_TYPE, engine: { scene: { fog: false } } },
+    });
+  });
+
+  it("upsert writes one field change per differing section with the stored value as pre-image", () => {
+    const existing = buildSystemDefaultsDoc(
+      "w1",
+      { scene: { fog: false, losRestriction: true }, pathfinding: { diagonalRule: "euclidean" } },
+      deterministicId("w1", SYSTEM_DEFAULTS_DOC_TYPE),
+    );
+    const ops = systemDefaultsUpsertOps(storeWith(existing), "w1", { scene: { fog: true, losRestriction: true } });
+    expect(ops).toEqual([{
+      op: "update",
+      doc_id: existing.id,
+      changes: [
+        { path: "/engine/scene", old: { fog: false, losRestriction: true }, new: { fog: true, losRestriction: true } },
+        { path: "/engine/pathfinding", old: { diagonalRule: "euclidean" }, new: null },
+      ],
+    }]);
+  });
+
+  it("upsert is a no-op when the stored doc equals the declaration", () => {
+    const existing = buildSystemDefaultsDoc("w1", { combat: { enforcement: "hard" } }, deterministicId("w1", SYSTEM_DEFAULTS_DOC_TYPE));
+    expect(systemDefaultsUpsertOps(storeWith(existing), "w1", { combat: { enforcement: "hard" } })).toEqual([]);
+  });
+
+  it("resolveSceneSettings folds engine < system < world < scene per field", () => {
+    const sd = buildSystemDefaultsDoc("w1", { scene: { fog: false, observerVision: true }, animation: { speedCellsPerSec: 3 } });
+    const ws = buildWorldSettingsDoc("w1", { ...structuredClone(DEFAULT_WORLD_SETTINGS), scene: { ...DEFAULT_WORLD_SETTINGS.scene, fog: true } }, "ws1");
+    const scene = buildSceneDoc("w1", { vision: { losRestriction: null, fog: null, observerVision: false, movementRestriction: null, movementModel: null } }, "s1");
+    const r = resolveSceneSettings(scene, storeWith(sd, ws, scene));
+    expect(r.fog).toBe(true);
+    expect(r.observerVision).toBe(false);
+    expect(r.animation.speedCellsPerSec).toBe(6);
+  });
+
+  it("resolveSettingProvenance names the layer that supplied the value", () => {
+    const sd: SystemDefaultsEngine = { scene: { fog: false }, pathfinding: { diagonalRule: "manhattan" } };
+    const sdDoc = buildSystemDefaultsDoc("w1", sd);
+    const ws = buildWorldSettingsDoc("w1", undefined, "ws1");
+    const scene = buildSceneDoc("w1", { vision: { losRestriction: null, fog: true, observerVision: null, movementRestriction: null, movementModel: null } }, "s1");
+    const storeWithWorld = storeWith(sdDoc, ws, scene);
+    expect(resolveSettingProvenance(storeWithWorld, scene, "scene.fog")).toEqual({ value: true, source: "scene" });
+    expect(resolveSettingProvenance(storeWithWorld, undefined, "scene.losRestriction")).toEqual({ value: true, source: "world" });
+    expect(resolveSettingProvenance(storeWithWorld, undefined, "pathfinding.diagonalRule")).toEqual({ value: "chebyshev", source: "world" });
+    // No world doc: the system layer is what supplies scene.fog.
+    const storeNoWorld = storeWith(sdDoc, scene);
+    expect(resolveSettingProvenance(storeNoWorld, undefined, "scene.fog")).toEqual({ value: false, source: "system" });
   });
 });

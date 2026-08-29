@@ -122,3 +122,7 @@ export type { Duration } from "./generated/engine/Duration";
 export type { DurationUnit } from "./generated/engine/DurationUnit";
 export type { ExpiryPoint } from "./generated/engine/ExpiryPoint";
 export type { ClockStamp } from "./generated/engine/ClockStamp";
+export type { SystemDefaultsEngine } from "./generated/engine/SystemDefaultsEngine";
+export type { SceneDefaultsOverlay } from "./generated/engine/SceneDefaultsOverlay";
+export type { PathfindingOverlay } from "./generated/engine/PathfindingOverlay";
+export type { AnimationOverlay } from "./generated/engine/AnimationOverlay";

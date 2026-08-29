@@ -18,9 +18,10 @@ import {
   type CapRequirement,
   type ContractDeclaration,
 } from "./manifest";
-import { ContributionRegistry, type Contribution } from "./contributions";
+import { ContributionRegistry, type Contribution, SYSTEM_CONTRACT } from "./contributions";
 import { satisfies } from "./semver";
 import type { I18n, Messages } from "./i18n";
+import type { SystemDefaultsEngine } from "@shadowcat/types";
 
 /** Options for `ModuleContext.services.provide` — narrower than `ServiceProvideOptions`
  * (no `module` field: the wrapper stamps the calling module's id automatically). */
@@ -145,6 +146,12 @@ export interface Module {
    * teardown logic beyond its registrations, which `unload` strips automatically, may omit it).
    * @returns Resolves (or returns) once teardown is complete. */
   unregister?(): void | Promise<void>;
+  /** Declared defaults for every world setting; upserted into the `system-defaults` singleton
+   * by the GM's client on join when this module is the `SYSTEM_CONTRACT` winner. Lives on
+   * `Module` rather than `manifest` — `ModuleManifest` is Zod-validated (`ManifestSchema`),
+   * which silently strips unknown keys, so adding it there would need a schema change; `Module`
+   * itself is not schema-validated. */
+  systemDefaults?: SystemDefaultsEngine;
 }
 
 /** A registered module's identity and activation state, as returned by `ModuleRegistry.list`. */
@@ -561,6 +568,24 @@ export class ModuleRegistry {
         addMessages: (locale, messages) => i18n.addMessages(locale, messages, { module: moduleId }),
       },
     };
+  }
+
+  /** The active module currently holding the `SYSTEM_CONTRACT` singleton (the active game
+   * system), or `undefined` if no active module provides it. Reads the same active/demoted
+   * bookkeeping `isSingletonProvider`/`activeProvidersOf` use, so a losing claimant is excluded
+   * exactly as it is everywhere else.
+   * @returns The winning module, or `undefined`.
+   * @example
+   * ```ts
+   * import { ModuleRegistry } from "@shadowcat/core";
+   *
+   * declare const registry: ModuleRegistry;
+   * const system = registry.systemModule();
+   * ```
+   */
+  systemModule(): Module | undefined {
+    const id = this.activeProvidersOf(SYSTEM_CONTRACT)[0];
+    return id ? this.records.get(id)?.module : undefined;
   }
 
   /** Active modules that provide `contract`. Not exported — folded into

@@ -11,6 +11,7 @@ import {
   MiddlewareChain,
   reconcileTopology,
   buildSceneDoc,
+  systemDefaultsUpsertOps,
   resolveViewedScene,
   consoleLogger,
   resolveCaps,
@@ -880,14 +881,15 @@ export class WorldSession {
   /** Handle a `welcome` frame (first connect or a reconnect): sets `role`/`#worldGrants`/
    * `#requirements`, activates modules exactly once per session (see `#modulesAdded`/
    * `#activated`), loads external modules, fetches member usernames, reconciles contract
-   * topology, re-establishes scene subscriptions, and (GM only) seeds the world's first
-   * scene. The member fetch has its own inner try/catch: a failure there is logged as a
+   * topology, re-establishes scene subscriptions, (GM only) seeds the world's first scene, and
+   * (GM only) upserts the `system-defaults` singleton from `ModuleRegistry.systemModule()`'s
+   * declaration. The member fetch has its own inner try/catch: a failure there is logged as a
    * warning and does not block the remaining steps. Module activation's inner catch instead
    * reverts `#activated` (so the next Welcome retries it) and logs at the point of failure —
    * it does not rethrow, so every later step in this call (member fetch, `reconcileTopology`,
-   * scene resubscription, the GM first-scene seed) still runs even when activation fails; the
-   * whole method is also wrapped in one outer try/catch that logs and swallows any other
-   * failure, so this promise never rejects.
+   * scene resubscription, the GM first-scene seed, the system-defaults upsert) still runs even
+   * when activation fails; the whole method is also wrapped in one outer try/catch that logs
+   * and swallows any other failure, so this promise never rejects.
    * @param w The Welcome frame.
    * @example
    * ```
@@ -979,6 +981,14 @@ export class WorldSession {
       // multi-GM simultaneous-first-entry double-create is accepted.
       if (this.role === "gm" && this.world && this.#optimistic.query("scene").length === 0) {
         this.dispatchIntent([{ op: "create", doc: buildSceneDoc(this.world) }]);
+      }
+      // Keep the world's system-defaults singleton current with the active system module's
+      // declaration. GM-only (players never write it); a no-op when the module declares no
+      // defaults or the stored doc already matches.
+      const sys = this.#modules.systemModule();
+      if (this.role === "gm" && this.world && sys?.systemDefaults) {
+        const ops = systemDefaultsUpsertOps(this.#optimistic, this.world, sys.systemDefaults);
+        if (ops.length) this.dispatchIntent(ops);
       }
     } catch (e) {
       this.#logger.error("world session welcome handling failed", e);

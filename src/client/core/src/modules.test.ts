@@ -5,7 +5,7 @@ import { ServiceRegistry } from "./services";
 import { MiddlewareChain } from "./middleware";
 import { DocumentStore } from "./store";
 import { OptimisticClient } from "./optimistic";
-import { ContributionRegistry } from "./contributions";
+import { ContributionRegistry, SYSTEM_CONTRACT } from "./contributions";
 import { silentLogger } from "./logger";
 import { I18n } from "./i18n";
 
@@ -475,4 +475,22 @@ test("unload removes the module's registrations and refuses depended-upon unless
   expect(d.services.has("a:svc")).toBe(false);
   expect(r.list().find((m) => m.id === "a")!.active).toBe(false);
   expect(r.list().find((m) => m.id === "b")!.active).toBe(false);
+});
+
+test("systemModule() returns the singleton provider of the system contract", async () => {
+  const r = new ModuleRegistry(deps());
+  const sys: Module = {
+    manifest: { id: "sys", version: "1.0.0", dependencies: {}, provides: [{ contract: SYSTEM_CONTRACT, cardinality: "singleton" }] },
+    register() {},
+    systemDefaults: { scene: { fog: false } },
+  };
+  r.add(sys);
+  await r.activate();
+  expect(r.systemModule()).toBe(sys);
+});
+
+test("systemModule() is undefined when nothing provides the system contract", async () => {
+  const r = new ModuleRegistry(deps());
+  await r.activate();
+  expect(r.systemModule()).toBeUndefined();
 });

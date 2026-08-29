@@ -7,8 +7,11 @@ import {
   buildWorldSettingsDoc,
   buildSceneDoc,
   DEFAULT_WORLD_SETTINGS,
+  SYSTEM_CONTRACT,
+  SYSTEM_DEFAULTS_DOC_TYPE,
   type Connect,
   type WireDocument,
+  type Module,
 } from "@shadowcat/core";
 import { WorldSession } from "./worldSession.svelte";
 import { listWorldMembers } from "@shadowcat/core";
@@ -310,6 +313,54 @@ test("does not auto-create a scene for a non-GM actor", async () => {
   await vi.waitFor(() => expect(session.role).toBe("player"));
   await new Promise((r) => setTimeout(r, 20));
   expect(sceneCreates(sent)).toHaveLength(0);
+});
+
+function systemDefaultsCreates(sent: Array<Record<string, unknown>>): unknown[] {
+  return sent.filter(
+    (m) =>
+      m.type === "intent" &&
+      Array.isArray(m.ops) &&
+      (m.ops as Array<{ op: string; doc?: { doc_type?: string } }>).some(
+        (o) => o.op === "create" && o.doc?.doc_type === SYSTEM_DEFAULTS_DOC_TYPE,
+      ),
+  );
+}
+
+const systemModuleStub: Module = {
+  manifest: {
+    id: "system-stub", version: "1.0.0", dependencies: {},
+    provides: [{ contract: SYSTEM_CONTRACT, cardinality: "singleton" as const }],
+  },
+  register: vi.fn(),
+  systemDefaults: { scene: { fog: false } },
+};
+
+test("a GM's welcome dispatches the system-defaults upsert when the system module declares defaults", async () => {
+  const sent: Array<Record<string, unknown>> = [];
+  const { connect, push } = pushConnect(sent);
+  const gmFrame = { ...welcomeFrame, user_role: "gm" };
+  const session = new WorldSession({
+    selfId: "u1", connect, modules: [coreUiStub, systemModuleStub], logger: silentLogger,
+  });
+  await session.enter("w1");
+  push(gmFrame);
+  await vi.waitFor(() => expect(systemDefaultsCreates(sent).length).toBe(1));
+  const create = systemDefaultsCreates(sent)[0] as { ops: Array<{ op: string; doc: { doc_type: string; engine: unknown } }> };
+  expect(create.ops).toHaveLength(1);
+  expect(create.ops[0]).toMatchObject({ op: "create", doc: { doc_type: SYSTEM_DEFAULTS_DOC_TYPE, engine: { scene: { fog: false } } } });
+});
+
+test("a player's welcome dispatches nothing for system-defaults", async () => {
+  const sent: Array<Record<string, unknown>> = [];
+  const { connect, push } = pushConnect(sent);
+  const session = new WorldSession({
+    selfId: "u1", connect, modules: [coreUiStub, systemModuleStub], logger: silentLogger,
+  });
+  await session.enter("w1");
+  push(welcomeFrame); // user_role: "player"
+  await vi.waitFor(() => expect(session.role).toBe("player"));
+  await new Promise((r) => setTimeout(r, 20));
+  expect(systemDefaultsCreates(sent)).toHaveLength(0);
 });
 
 test("dispatchIntent predicts via ctx.client and sends one correlated intent frame", async () => {
