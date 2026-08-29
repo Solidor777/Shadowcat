@@ -3013,16 +3013,69 @@ impl Repository for SqliteRepository {
         // deactivate-then-activate ordering).
         let mut claimed_active_scenes: std::collections::HashSet<Uuid> =
             std::collections::HashSet::new();
-        // `released_active_scenes` pairs with `claimed_active_scenes` for
-        // Phase 2's Update handling below: an Update that DEACTIVATES a
-        // combat inserts its scene here, and a later same-batch Update
-        // activating a DIFFERENT combat on that scene consults
-        // `claimed_active_scenes` minus this set rather than the raw claim
-        // alone, so the deactivation is honoured even though Phase 2 has not
-        // yet reached the point of re-reading `claimed_active_scenes` from
-        // scratch.
+        // `released_active_scenes` pairs with `claimed_active_scenes` for the
+        // Create arm below and Phase 2's Update handling further down: an
+        // Update that DEACTIVATES a combat inserts its scene here, and a
+        // later same-batch Create/Update activating a DIFFERENT combat on
+        // that scene consults `claimed_active_scenes` minus this set rather
+        // than the raw claim alone.
+        //
+        // SEEDED by a pre-scan over the WHOLE batch, below, before Phase 1's
+        // per-op loop runs — not built incrementally in op order. A single
+        // forward pass over `ops` cannot see a LATER op's release when
+        // validating an EARLIER op that activates the same scene (e.g.
+        // `[activate combat A, deactivate combat B]` on one scene: A's
+        // activation is checked before B's deactivation has run), so the
+        // deactivation must be known up front regardless of where in the
+        // batch it sits. This pre-scan considers only an Update whose PRE-image
+        // was already `active: true`: an update to a combat that was ALREADY
+        // inactive must never mark this scene "released this batch" — doing so
+        // would wrongly suppress the DB conflict check (below) for an
+        // unrelated activation elsewhere in the same batch, letting two
+        // genuinely-active combats coexist on one scene. For a qualifying op,
+        // this computes its OWN post-merge `active` value the same way Phase 2
+        // does (apply that op's `FieldChange`s to a copy of the stored value);
+        // an op this pre-scan cannot merge or parse is left alone here —
+        // Phase 1/Phase 2's real validation below surfaces the failure through
+        // the ordinary path. Phase 2 still mutates this set incrementally
+        // afterward (`.insert`/`.remove`) so a scene reactivated partway
+        // through the batch is no longer treated as released for anything
+        // that follows.
         let mut released_active_scenes: std::collections::HashSet<Uuid> =
             std::collections::HashSet::new();
+        for op in &ops {
+            if let Operation::Update { doc_id, changes } = op {
+                if let Some(cur) = Self::load_document(&mut *tx, *doc_id).await? {
+                    let pre_active = cur.doc_type == COMBAT_DOC_TYPE
+                        && cur
+                            .engine
+                            .as_ref()
+                            .and_then(|e| e.get("active"))
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false);
+                    if pre_active {
+                        let mut value = serde_json::to_value(&cur)?;
+                        let merged = changes
+                            .iter()
+                            .try_for_each(|ch| apply_field_change(&mut value, ch))
+                            .is_ok();
+                        if merged {
+                            if let Ok(doc) = serde_json::from_value::<Document>(value) {
+                                if let Some(engine) = doc.engine {
+                                    if let Ok(combat_engine) =
+                                        serde_json::from_value::<CombatEngine>(engine)
+                                    {
+                                        if !combat_engine.active {
+                                            released_active_scenes.insert(combat_engine.scene_id);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
         // Batch-start permissions for each Update target, captured the FIRST time its
         // pre-image is loaded in Phase 1 — before any op applies — so a second same-batch
         // Update to the same doc still snapshots the true batch-start permissions, not an
@@ -3079,20 +3132,31 @@ impl Repository for SqliteRepository {
                         )
                         .expect("validate_engine_tree already validated the combat engine body");
                         if combat_engine.active {
-                            if claimed_active_scenes.contains(&combat_engine.scene_id)
-                                || Self::active_combat_exists(
+                            let scene_released =
+                                released_active_scenes.contains(&combat_engine.scene_id);
+                            let claimed_and_not_released = claimed_active_scenes
+                                .contains(&combat_engine.scene_id)
+                                && !scene_released;
+                            // When this batch has already released the DB's active
+                            // combat on this scene (a same-batch Update elsewhere
+                            // deactivates it), the DB row is stale for the
+                            // purposes of THIS check — skip the read rather than
+                            // reject on state this batch is itself about to undo.
+                            let db_conflict = !scene_released
+                                && Self::active_combat_exists(
                                     &mut *tx,
                                     world_id,
                                     combat_engine.scene_id,
                                     doc.id,
                                 )
-                                .await?
-                            {
+                                .await?;
+                            if claimed_and_not_released || db_conflict {
                                 return Err(DataError::Conflict(
                                     "an active combat already exists on this scene".into(),
                                 ));
                             }
                             claimed_active_scenes.insert(combat_engine.scene_id);
+                            released_active_scenes.remove(&combat_engine.scene_id);
                         }
                     }
                     validation::validate_system_schema_tree(doc, &world_schemas)?;
@@ -3120,7 +3184,14 @@ impl Repository for SqliteRepository {
                         &world_defaults.grants_for(&doc.doc_type),
                         create_owner,
                     );
-                    if !access.has(cap::WRITE_FIELDS) {
+                    // `CombatTransition` is a server-authored write: the combat
+                    // clock's own handler has already decided this batch is
+                    // legitimate, so the ordinary per-op capability floor and
+                    // the world-level create gate below are skipped for this
+                    // origin ONLY — every other check in this arm (scope,
+                    // size, engine, containment, singleton, one-active-per-
+                    // scene, schema) still runs unconditionally.
+                    if origin != WriteOrigin::CombatTransition && !access.has(cap::WRITE_FIELDS) {
                         return Err(DataError::Forbidden);
                     }
                     // World-level create authorization: GM/admin hold every
@@ -3144,7 +3215,8 @@ impl Repository for SqliteRepository {
                     let is_baseline_message = doc.doc_type == crate::chat::MESSAGE_DOC_TYPE
                         && ctx.world_role == WorldRole::Player
                         && doc.owner == Some(ctx.user_id);
-                    if ctx.world_role != WorldRole::Gm
+                    if origin != WriteOrigin::CombatTransition
+                        && ctx.world_role != WorldRole::Gm
                         && !is_baseline_message
                         && !world_defaults.role_has(ctx.world_role, &doc.doc_type, cap::CREATE)
                     {
@@ -3209,14 +3281,17 @@ impl Repository for SqliteRepository {
                     // a GM of one world cannot delete another world's document.
                     check_command_scope(&cur, world_id)?;
                     let del_owner = Self::load_effective_owner(&mut *tx, &cur).await?;
-                    if !resolve_access_world(
-                        ctx.user_id,
-                        ctx.world_role,
-                        &cur,
-                        &world_defaults.grants_for(&cur.doc_type),
-                        del_owner,
-                    )
-                    .has(cap::DELETE)
+                    // `CombatTransition` skips this capability gate — see the
+                    // Create arm's matching comment above.
+                    if origin != WriteOrigin::CombatTransition
+                        && !resolve_access_world(
+                            ctx.user_id,
+                            ctx.world_role,
+                            &cur,
+                            &world_defaults.grants_for(&cur.doc_type),
+                            del_owner,
+                        )
+                        .has(cap::DELETE)
                     {
                         return Err(DataError::Forbidden);
                     }
@@ -3247,7 +3322,12 @@ impl Repository for SqliteRepository {
                     // enrichment republish, never derivable from any
                     // wire frame — re-opens this path for their sanitized
                     // authoritative revision; the ordinary WRITE_FIELDS/OCC
-                    // checks below still apply on top of it.
+                    // checks below still apply on top of it. `CombatTransition`
+                    // is NOT exempted here: the condition below rejects any
+                    // origin other than `ServerMessageRevision`, so a combat
+                    // clock batch may `Create` a `message` doc (roll results,
+                    // event messages) but can never reach this arm to `Update`
+                    // one — the same blanket rejection `Client` gets.
                     if cur.doc_type == crate::chat::MESSAGE_DOC_TYPE
                         && origin != WriteOrigin::ServerMessageRevision
                     {
@@ -3347,7 +3427,11 @@ impl Repository for SqliteRepository {
                         // explicit edit_permissions grant) but never by an owner,
                         // since the DocRole::Owner floor excludes that cap.
                         let need = required_cap_for_path(&ch.path).ok_or(DataError::Forbidden)?;
-                        if !access.has(need) {
+                        // `CombatTransition` skips only the actor-holds-`need`
+                        // test below, never `required_cap_for_path`'s mapping
+                        // above: an immutable envelope path (`None`) is still
+                        // rejected for every origin, this origin included.
+                        if origin != WriteOrigin::CombatTransition && !access.has(need) {
                             // A `ServerMessageRevision` write to a message doc may
                             // ALSO write exactly `/permissions/property_overrides`
                             // (never any other `/permissions` subpath) without
@@ -3389,7 +3473,7 @@ impl Repository for SqliteRepository {
                                 ch.path.as_str(),
                                 "/engine" | "/permissions/property_overrides"
                             );
-                        if !is_scoped_smr_write {
+                        if origin != WriteOrigin::CombatTransition && !is_scoped_smr_write {
                             for extra in declared_caps_for_path(&ch.path, &world_reqs) {
                                 if !access.has(extra) {
                                     tracing::debug!(
@@ -3441,14 +3525,17 @@ impl Repository for SqliteRepository {
                         })?;
                         check_command_scope(&cur, world_id)?;
                         let desc_owner = Self::load_effective_owner(&mut *tx, &cur).await?;
-                        if !resolve_access_world(
-                            ctx.user_id,
-                            ctx.world_role,
-                            &cur,
-                            &world_defaults.grants_for(&cur.doc_type),
-                            desc_owner,
-                        )
-                        .has(cap::DELETE)
+                        // `CombatTransition` skips this capability gate — see the
+                        // Create arm's matching comment above.
+                        if origin != WriteOrigin::CombatTransition
+                            && !resolve_access_world(
+                                ctx.user_id,
+                                ctx.world_role,
+                                &cur,
+                                &world_defaults.grants_for(&cur.doc_type),
+                                desc_owner,
+                            )
+                            .has(cap::DELETE)
                         {
                             return Err(DataError::Forbidden);
                         }
@@ -3516,6 +3603,19 @@ impl Repository for SqliteRepository {
                         .ok_or(DataError::NotFound)?;
                     let mut value: serde_json::Value =
                         serde_json::from_str(row.get::<String, _>("json").as_str())?;
+                    // Pre-image `active`, read BEFORE this op's changes apply — only
+                    // a genuine active-true -> active-false TRANSITION counts as a
+                    // release below (see `released_active_scenes`'s doc comment
+                    // above); an update to an already-inactive combat must not mark
+                    // this scene "released this batch", which would wrongly
+                    // suppress the DB conflict check for an unrelated activation
+                    // elsewhere in the same batch.
+                    let pre_active = value.pointer("/doc_type").and_then(|v| v.as_str())
+                        == Some(COMBAT_DOC_TYPE)
+                        && value
+                            .pointer("/engine/active")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false);
                     for ch in changes {
                         // THE `apply_field_change` mutation rule. Never
                         // re-derive the remove/set branch here: the derived scene ECS
@@ -3553,25 +3653,32 @@ impl Repository for SqliteRepository {
                         )
                         .expect("validate_engine_tree already validated the combat engine body");
                         if combat_engine.active {
+                            let scene_released =
+                                released_active_scenes.contains(&combat_engine.scene_id);
                             let claimed_and_not_released = claimed_active_scenes
                                 .contains(&combat_engine.scene_id)
-                                && !released_active_scenes.contains(&combat_engine.scene_id);
-                            if claimed_and_not_released
-                                || Self::active_combat_exists(
+                                && !scene_released;
+                            // Same guard as the Create arm: when this batch has
+                            // already released the DB's active combat on this
+                            // scene (recorded by the pre-scan above, or by an
+                            // earlier op in this Phase-2 pass), the DB row is
+                            // stale for this check — skip the read.
+                            let db_conflict = !scene_released
+                                && Self::active_combat_exists(
                                     &mut *tx,
                                     world_id,
                                     combat_engine.scene_id,
                                     *doc_id,
                                 )
-                                .await?
-                            {
+                                .await?;
+                            if claimed_and_not_released || db_conflict {
                                 return Err(DataError::Conflict(
                                     "an active combat already exists on this scene".into(),
                                 ));
                             }
                             claimed_active_scenes.insert(combat_engine.scene_id);
                             released_active_scenes.remove(&combat_engine.scene_id);
-                        } else {
+                        } else if pre_active {
                             released_active_scenes.insert(combat_engine.scene_id);
                         }
                     }

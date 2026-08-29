@@ -1,5 +1,6 @@
 //! Repository tests, split by subject; shared fixtures live here.
 
+mod combat_batches;
 mod commands_and_intents;
 mod invites_and_ownership;
 mod rows_and_validation;
@@ -131,5 +132,28 @@ pub(super) fn actor_doc_owned_by(world: Uuid, owner: Option<Uuid>) -> Document {
     );
     d.scope = Scope::World { world_id: world };
     d.owner = owner;
+    d
+}
+
+/// A `combat` document bound to `scene`, `active` as given.
+pub(super) fn combat_doc(id: u128, world: Uuid, scene: Uuid, active: bool) -> Document {
+    let mut d = world_doc(id, world, serde_json::json!({}));
+    d.doc_type = "combat".into();
+    d.engine = Some(serde_json::json!({
+        "scene_id": scene.to_string(), "active": active, "round": 0, "turn": null,
+        "turn_control": "owner_may_end", "order": [],
+        "movement": { "resource": null, "interpretation": "per_cell", "enforcement": "none" },
+        "effect_cleanup": true, "rewind_restore": true, "forward_restore": false,
+        "effect_lifecycle": { "onCombatEnd": null, "onTurnEnd": null, "onAdvance": null }
+    }));
+    d
+}
+
+/// A `combatant` document parented to `parent`.
+pub(super) fn combatant_doc(id: u128, world: Uuid, parent: Uuid) -> Document {
+    let mut d = world_doc(id, world, serde_json::json!({}));
+    d.doc_type = "combatant".into();
+    d.parent_id = Some(parent);
+    d.engine = crate::data::document::tests::default_test_engine("combatant");
     d
 }

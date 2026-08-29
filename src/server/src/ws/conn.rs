@@ -333,6 +333,12 @@ async fn handle_socket(
                         match frame {
                             Message::Text(t) => match serde_json::from_str::<ClientMsg>(t.as_str()) {
                                 Ok(ClientMsg::Intent { intent_id, ops }) => {
+                                    // Every WS-originated write always publishes as
+                                    // `WriteOrigin::Client` below — `ClientMsg::Intent`
+                                    // carries no field a client could set to select
+                                    // `WriteOrigin::ServerMessageRevision` or
+                                    // `WriteOrigin::CombatTransition`; both are
+                                    // constructed only by trusted internal callers.
                                     // Messages are server-authored via SendMessage only;
                                     // a client-authored message op is always rejected here,
                                     // never reaching apply_intent.

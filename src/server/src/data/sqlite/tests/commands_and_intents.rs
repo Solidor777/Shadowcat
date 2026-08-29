@@ -2664,29 +2664,6 @@ async fn resource_registry_is_a_singleton() {
     assert!(matches!(err, DataError::Conflict(_)));
 }
 
-/// A `combat` document bound to `scene`, `active` as given.
-fn combat_doc(id: u128, world: Uuid, scene: Uuid, active: bool) -> Document {
-    let mut d = world_doc(id, world, serde_json::json!({}));
-    d.doc_type = "combat".into();
-    d.engine = Some(serde_json::json!({
-        "scene_id": scene.to_string(), "active": active, "round": 0, "turn": null,
-        "turn_control": "owner_may_end", "order": [],
-        "movement": { "resource": null, "interpretation": "per_cell", "enforcement": "none" },
-        "effect_cleanup": true, "rewind_restore": true, "forward_restore": false,
-        "effect_lifecycle": { "onCombatEnd": null, "onTurnEnd": null, "onAdvance": null }
-    }));
-    d
-}
-
-/// A `combatant` document parented as given.
-fn combatant_doc(id: u128, world: Uuid, parent: Option<Uuid>) -> Document {
-    let mut d = world_doc(id, world, serde_json::json!({}));
-    d.doc_type = "combatant".into();
-    d.parent_id = parent;
-    d.engine = crate::data::document::tests::default_test_engine("combatant");
-    d
-}
-
 #[tokio::test]
 async fn a_second_active_combat_on_the_same_scene_is_rejected_but_another_scene_is_fine() {
     use crate::data::membership::PermissionContext;
@@ -2888,7 +2865,7 @@ async fn combatant_parent_must_be_a_combat_in_this_world() {
             &ctx,
             w.id,
             vec![Operation::Create {
-                doc: combatant_doc(10, w.id, Some(Uuid::from_u128(9))),
+                doc: combatant_doc(10, w.id, Uuid::from_u128(9)),
             }],
             2,
             WriteOrigin::Client,
@@ -2902,7 +2879,7 @@ async fn combatant_parent_must_be_a_combat_in_this_world() {
             &ctx,
             w.id,
             vec![Operation::Create {
-                doc: combatant_doc(11, w.id, Some(Uuid::from_u128(99))),
+                doc: combatant_doc(11, w.id, Uuid::from_u128(99)),
             }],
             3,
             WriteOrigin::Client,
@@ -2919,7 +2896,7 @@ async fn combatant_parent_must_be_a_combat_in_this_world() {
                 doc: combat_doc(1, w.id, scene, false),
             },
             Operation::Create {
-                doc: combatant_doc(12, w.id, Some(Uuid::from_u128(1))),
+                doc: combatant_doc(12, w.id, Uuid::from_u128(1)),
             },
         ],
         4,

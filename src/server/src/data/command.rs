@@ -229,6 +229,11 @@ impl Command {
 /// `Update` is blanket-rejected for `Client`; `ServerMessageRevision`
 /// — set ONLY by the server edit/delete handlers, never derivable from any wire
 /// frame — re-opens that path for the sanitized authoritative revision.
+/// `CombatTransition` — set ONLY by the combat clock's own write path, never
+/// derivable from any wire frame — skips the ordinary per-op capability gates
+/// on a batch while every structural/OCC check still runs; it may `Create` a
+/// `message` doc (roll results, event messages) but is blanket-rejected from
+/// `Update`-ing one, same as `Client`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WriteOrigin {
     /// Any wire-derived write (WS intent or HTTP).
@@ -237,6 +242,31 @@ pub enum WriteOrigin {
     /// image-enrichment republish (`chat::post_publish::run_pending_enrichments`)
     /// — never derivable from a wire frame.
     ServerMessageRevision,
+    /// Server-authored combat clock write: per-op capability gates are
+    /// skipped; scope, size, engine, containment, singleton,
+    /// one-active-per-scene, schema and OCC checks all run; never derivable
+    /// from a wire frame.
+    CombatTransition,
+}
+
+impl WriteOrigin {
+    /// Whether this origin is server-authored — set only by a trusted
+    /// internal caller, never derivable from any wire frame.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::data::command::WriteOrigin;
+    ///
+    /// assert!(!WriteOrigin::Client.is_server_authored());
+    /// assert!(WriteOrigin::CombatTransition.is_server_authored());
+    /// ```
+    pub fn is_server_authored(&self) -> bool {
+        matches!(
+            self,
+            WriteOrigin::ServerMessageRevision | WriteOrigin::CombatTransition
+        )
+    }
 }
 
 /// Tokenize a non-empty RFC 6901 JSON pointer into its unescaped path segments.
