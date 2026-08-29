@@ -654,26 +654,32 @@ async fn handle_socket(
                                     }
                                 }
                                 Ok(
-                                    ClientMsg::CombatStart { request_id, .. }
-                                    | ClientMsg::CombatPause { request_id, .. }
-                                    | ClientMsg::CombatEnd { request_id, .. }
-                                    | ClientMsg::CombatAdvance { request_id, .. }
-                                    | ClientMsg::CombatRewind { request_id, .. }
-                                    | ClientMsg::CombatSort { request_id, .. }
-                                    | ClientMsg::CombatRoll { request_id, .. }
-                                    | ClientMsg::CombatResource { request_id, .. },
+                                    m @ ClientMsg::CombatStart { .. }
+                                    | m @ ClientMsg::CombatPause { .. }
+                                    | m @ ClientMsg::CombatEnd { .. }
+                                    | m @ ClientMsg::CombatAdvance { .. }
+                                    | m @ ClientMsg::CombatRewind { .. }
+                                    | m @ ClientMsg::CombatSort { .. }
+                                    | m @ ClientMsg::CombatRoll { .. }
+                                    | m @ ClientMsg::CombatResource { .. },
                                 ) => {
-                                    // No dispatcher exists yet for any combat intent: every one of
-                                    // the eight variants replies uniformly with CombatError, mirroring
-                                    // that frame's own "one wording for every refusal" contract rather
-                                    // than a distinct error per variant.
-                                    // TODO: replace this uniform reply with real per-intent dispatch
-                                    // (validate, mutate, broadcast) once the combat engine exists.
-                                    if etx.send(Egress::Frame(Arc::new(ServerMsg::CombatError {
-                                        request_id,
-                                        message: "combat is not yet available".into(),
-                                    }))).await.is_err() {
-                                        break;
+                                    // Dispatch, authz, dice-context resolution and the one-command
+                                    // commit all live in `combat::handle_combat_intent`. `None` on
+                                    // success (the broadcast `Event` is the notification, the same
+                                    // asymmetric reply protocol as SendMessage); a rejection is
+                                    // surfaced to the sender only via a correlated `CombatError`.
+                                    if let Some(f) = crate::combat::handle_combat_intent(
+                                        &room,
+                                        repo.as_ref(),
+                                        &ctx,
+                                        m,
+                                        now_millis(),
+                                    )
+                                    .await
+                                    {
+                                        if etx.send(Egress::Frame(Arc::new(f))).await.is_err() {
+                                            break;
+                                        }
                                     }
                                 }
                                 Ok(ClientMsg::Pathfind { request_id, scene, start, waypoints, footprint_radius, token }) => {

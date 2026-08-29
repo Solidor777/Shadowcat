@@ -1,0 +1,632 @@
+//! `combat::handle_combat_intent`'s wire-dispatch layer: authz per variant, dice-context
+//! resolution for `CombatRoll`, and the one-server-authored-command commit via
+//! `Room::commit_combat`. Fixture pattern mirrors
+//! `handle_move_request_broadcasts_move_stream_no_etx_on_success`'s harness construction.
+
+use super::*;
+use crate::auth::role::ServerRole;
+use crate::combat::handle_combat_intent;
+use crate::data::document::{DocRole, WorldRole};
+use crate::data::engine::combat::{
+    CombatEngine, CombatantEngine, CombatantKind, CombatantResource, EffectLifecycleDefaults,
+    Enforcement, Formula, Interpretation, MovementRules, Recovery, Resource, ResourceBinding,
+    ResourceRegistryEngine, TurnControl,
+};
+use crate::data::membership::PermissionContext;
+use crate::ws::protocol::{CombatRollEntry, ResourceOp};
+use crate::ws::room::{Room, RoomRegistry};
+
+/// A GM + player, a scene, a player-owned actor-linked token, a `resource-registry` defining
+/// `movement`, and a combat with two combatants in order `[player_combatant, hidden_npc]`: the
+/// player's own (visible) and the GM's NPC (`permissions.default: none`). Neither combatant is
+/// started/active — tests that need a running combat call `CombatStart` themselves.
+struct Harness {
+    /// The backing repository.
+    repo: Arc<SqliteRepository>,
+    /// The combat's room.
+    room: Arc<Room>,
+    /// GM permission context.
+    gm: PermissionContext,
+    /// Player permission context.
+    player: PermissionContext,
+    /// The world the fixture lives in.
+    world_id: Uuid,
+    /// The combat document.
+    combat: Uuid,
+    /// The player's own combatant.
+    player_combatant: Uuid,
+    /// The GM's hidden NPC combatant.
+    hidden_npc: Uuid,
+    /// Cached `WorldCapDefaults`, for `filter_command`.
+    world_defaults: crate::data::document::WorldCapDefaults,
+}
+
+impl Harness {
+    /// Reads the combat document's current parsed engine.
+    async fn combat_engine(&self) -> CombatEngine {
+        let doc = self.repo.get_document(self.combat).await.unwrap().unwrap();
+        serde_json::from_value(doc.engine.unwrap()).unwrap()
+    }
+
+    /// Overwrites the combat document's whole `/engine` band with `engine`, via an ordinary
+    /// GM-authored `Operation::Update` (`combat::ops::whole_engine_replace` — the same helper
+    /// every real transition uses — so this reads the SAME OCC pre-image convention as
+    /// production writes).
+    async fn set_combat_engine(&self, engine: CombatEngine) {
+        let doc = self.repo.get_document(self.combat).await.unwrap().unwrap();
+        let change =
+            crate::combat::ops::whole_engine_replace(&doc, serde_json::to_value(&engine).unwrap());
+        self.room
+            .publish(
+                self.repo.as_ref(),
+                &self.gm,
+                vec![crate::data::command::Operation::Update {
+                    doc_id: self.combat,
+                    changes: vec![change],
+                }],
+                0,
+                WriteOrigin::Client,
+            )
+            .await
+            .unwrap();
+    }
+}
+
+/// Builds a `Harness` with an inactive combat (`round == 0`, `turn == None`).
+async fn combat_harness() -> Harness {
+    let repo = Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+    let gm_id = repo
+        .create_user("gm", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let world = repo.create_world_owned("W", gm_id, 0).await.unwrap();
+    let gm = PermissionContext {
+        user_id: gm_id,
+        world_role: WorldRole::Gm,
+    };
+
+    let player_id = repo
+        .create_user("player", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    repo.add_member(world.id, player_id, WorldRole::Player)
+        .await
+        .unwrap();
+    let player = PermissionContext {
+        user_id: player_id,
+        world_role: WorldRole::Player,
+    };
+
+    let reg = RoomRegistry::new();
+    let room = reg
+        .get_or_create(repo.as_ref(), world.id)
+        .await
+        .unwrap()
+        .unwrap();
+    let wdoc = crate::data::document::tests::world_scoped_doc;
+
+    let (scene_id, actor_id, token_id, registry_id, combat_id, pc_id, npc_id, npc_actor_id) = (
+        Uuid::from_u128(0xCA01),
+        Uuid::from_u128(0xCA02),
+        Uuid::from_u128(0xCA03),
+        Uuid::from_u128(0xCA04),
+        Uuid::from_u128(0xCA05),
+        Uuid::from_u128(0xCA06),
+        Uuid::from_u128(0xCA07),
+        Uuid::from_u128(0xCA08),
+    );
+
+    // Scene the combat runs on.
+    let mut scene = wdoc(world.id, scene_id, "scene");
+    scene.owner = Some(gm_id);
+    scene.system = json!({ "grid": { "kind": "square", "size": 100 } });
+    room.publish(
+        repo.as_ref(),
+        &gm,
+        vec![crate::data::command::Operation::Create { doc: scene }],
+        0,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+
+    // Player-owned actor + token.
+    let mut actor = wdoc(world.id, actor_id, "actor");
+    actor.owner = Some(player_id);
+    actor.engine = Some(json!({
+        "displayName": "Player Fixture",
+        "visual": { "kind": "image", "asset": "a.png" },
+        "size": { "w": 100.0, "h": 100.0 },
+        "shape": "square",
+        "conditions": [],
+        "prototype": false,
+    }));
+    room.publish(
+        repo.as_ref(),
+        &gm,
+        vec![crate::data::command::Operation::Create { doc: actor }],
+        0,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+
+    let mut token = wdoc(world.id, token_id, "token");
+    token.parent_id = Some(scene_id);
+    token.owner = Some(player_id);
+    token.permissions.users.insert(player_id, DocRole::Owner);
+    token.engine = Some(token_engine(50.0, 50.0));
+    room.publish(
+        repo.as_ref(),
+        &gm,
+        vec![crate::data::command::Operation::Create { doc: token }],
+        0,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+
+    // Resource registry: both combatants track a `movement` resource.
+    let mut registry = wdoc(world.id, registry_id, "resource-registry");
+    registry.owner = Some(gm_id);
+    let registry_engine = ResourceRegistryEngine {
+        resources: [(
+            "movement".to_string(),
+            Resource {
+                name: "Movement".into(),
+                order: 0,
+                binding: ResourceBinding::Tracked {
+                    max: Formula::Number(10.0),
+                    recover: Recovery::default(),
+                },
+            },
+        )]
+        .into_iter()
+        .collect(),
+    };
+    registry.engine = Some(serde_json::to_value(&registry_engine).unwrap());
+    room.publish(
+        repo.as_ref(),
+        &gm,
+        vec![crate::data::command::Operation::Create { doc: registry }],
+        0,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+
+    // The combat itself: inactive, order = [player_combatant, hidden_npc].
+    let mut combat = wdoc(world.id, combat_id, "combat");
+    combat.owner = Some(gm_id);
+    let combat_engine = CombatEngine {
+        scene_id,
+        active: false,
+        round: 0,
+        turn: None,
+        turn_control: TurnControl::OwnerMayEnd,
+        order: vec![pc_id, npc_id],
+        movement: MovementRules {
+            resource: None,
+            interpretation: Interpretation::PerCell,
+            enforcement: Enforcement::None,
+        },
+        effect_cleanup: true,
+        rewind_restore: true,
+        forward_restore: false,
+        effect_lifecycle: EffectLifecycleDefaults::default(),
+    };
+    combat.engine = Some(serde_json::to_value(&combat_engine).unwrap());
+    room.publish(
+        repo.as_ref(),
+        &gm,
+        vec![crate::data::command::Operation::Create { doc: combat }],
+        0,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+
+    // Player's own (visible) combatant.
+    let mut pc = wdoc(world.id, pc_id, "combatant");
+    pc.parent_id = Some(combat_id);
+    pc.owner = Some(player_id);
+    // Visible (not `is_hidden`) — `default: none` is what marks a combatant hidden; the
+    // player's own combatant is readable by everyone, writable via `owner`.
+    pc.permissions.default = DocRole::Observer;
+    pc.permissions.users.insert(player_id, DocRole::Owner);
+    let pc_engine = CombatantEngine {
+        kind: CombatantKind::Actor {
+            token_id: Some(token_id),
+            actor_id: Some(actor_id),
+        },
+        initiative: None,
+        tiebreak: 0.0,
+        resources: [(
+            "movement".to_string(),
+            CombatantResource {
+                current: 5.0,
+                max: 10.0,
+            },
+        )]
+        .into_iter()
+        .collect(),
+    };
+    pc.engine = Some(serde_json::to_value(&pc_engine).unwrap());
+    room.publish(
+        repo.as_ref(),
+        &gm,
+        vec![crate::data::command::Operation::Create { doc: pc }],
+        0,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+
+    // GM's hidden NPC combatant — `permissions.default: none`; no `users` entry for the player.
+    let mut npc = wdoc(world.id, npc_id, "combatant");
+    npc.parent_id = Some(combat_id);
+    npc.owner = Some(gm_id);
+    npc.permissions.default = DocRole::None;
+    let npc_engine = CombatantEngine {
+        kind: CombatantKind::Actor {
+            token_id: None,
+            actor_id: Some(npc_actor_id),
+        },
+        initiative: None,
+        tiebreak: 0.0,
+        resources: [(
+            "movement".to_string(),
+            CombatantResource {
+                current: 5.0,
+                max: 10.0,
+            },
+        )]
+        .into_iter()
+        .collect(),
+    };
+    npc.engine = Some(serde_json::to_value(&npc_engine).unwrap());
+    room.publish(
+        repo.as_ref(),
+        &gm,
+        vec![crate::data::command::Operation::Create { doc: npc }],
+        0,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+
+    let world_defaults = repo.world_cap_defaults(world.id).await.unwrap();
+
+    Harness {
+        repo,
+        room,
+        gm,
+        player,
+        world_id: world.id,
+        combat: combat_id,
+        player_combatant: pc_id,
+        hidden_npc: npc_id,
+        world_defaults,
+    }
+}
+
+/// Drains `rx` until the next `RoomEvent::Event`, returning its `StoredCommand`. Skips any
+/// `RoomEvent::Other` (out-of-band aux frames) in between.
+async fn next_event(
+    rx: &mut tokio::sync::broadcast::Receiver<crate::ws::room::RoomEvent>,
+) -> crate::data::snapshot::StoredCommand {
+    loop {
+        match rx.recv().await.unwrap() {
+            crate::ws::room::RoomEvent::Event(ev) => return (*ev).clone(),
+            crate::ws::room::RoomEvent::Other(_) => continue,
+        }
+    }
+}
+
+/// `load_current_docs` against `h`'s repository, for a `filter_command` call under test.
+async fn current_docs(
+    h: &Harness,
+    cmd: &crate::data::command::Command,
+) -> std::collections::HashMap<Uuid, crate::data::permission::CurrentDoc> {
+    crate::data::permission::load_current_docs(h.repo.as_ref(), cmd).await
+}
+
+/// Full GM round trip (`CombatStart` → `CombatAdvance` → `CombatPause` → `CombatEnd`), each call
+/// confirmed by `None` (the broadcast `Event` is the notification). `CombatStart` creates a
+/// GM-only `combat-history` record; a player's filtered view of that same broadcast carries no
+/// `combat-history` op, the first WS-layer exercise of the document-level secrecy the combat
+/// history engine enforces. `CombatEnd` deletes the combat; its children cascade.
+#[tokio::test]
+async fn gm_start_advance_pause_end_round_trip_and_players_get_no_history() {
+    let h = combat_harness().await;
+    let (mut gm_rx, _) = h.room.subscribe();
+
+    assert!(handle_combat_intent(
+        &h.room,
+        h.repo.as_ref(),
+        &h.gm,
+        ClientMsg::CombatStart {
+            request_id: Uuid::from_u128(1),
+            combat_id: h.combat,
+        },
+        0,
+    )
+    .await
+    .is_none());
+
+    let combat = h.repo.get_document(h.combat).await.unwrap().unwrap();
+    let e: CombatEngine = serde_json::from_value(combat.engine.unwrap()).unwrap();
+    assert!(e.active && e.round == 1);
+
+    let history = h
+        .repo
+        .query_children(h.combat)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|d| d.doc_type == "combat-history")
+        .unwrap();
+    assert_eq!(history.permissions.default, DocRole::None);
+
+    // The player's filtered view of the CombatStart broadcast carries no combat-history op.
+    let ev = next_event(&mut gm_rx).await;
+    let current = current_docs(&h, &ev.command).await;
+    let filtered = crate::data::permission::filter_command(
+        &ev.command,
+        &ev.snapshot,
+        &h.player,
+        &h.world_defaults,
+        &current,
+        |_| None,
+    );
+    assert!(!filtered.ops.iter().any(|o| matches!(
+        o,
+        crate::data::command::Operation::Create { doc } if doc.doc_type == "combat-history"
+    )));
+
+    assert!(handle_combat_intent(
+        &h.room,
+        h.repo.as_ref(),
+        &h.gm,
+        ClientMsg::CombatAdvance {
+            request_id: Uuid::from_u128(2),
+            combat_id: h.combat,
+        },
+        0,
+    )
+    .await
+    .is_none());
+    assert!(handle_combat_intent(
+        &h.room,
+        h.repo.as_ref(),
+        &h.gm,
+        ClientMsg::CombatPause {
+            request_id: Uuid::from_u128(3),
+            combat_id: h.combat,
+        },
+        0,
+    )
+    .await
+    .is_none());
+    assert!(handle_combat_intent(
+        &h.room,
+        h.repo.as_ref(),
+        &h.gm,
+        ClientMsg::CombatEnd {
+            request_id: Uuid::from_u128(4),
+            combat_id: h.combat,
+        },
+        0,
+    )
+    .await
+    .is_none());
+    assert!(h.repo.get_document(h.combat).await.unwrap().is_none());
+    assert!(
+        h.repo.query_children(h.combat).await.unwrap().is_empty(),
+        "cascade"
+    );
+}
+
+/// A non-GM may `CombatAdvance` only their own current turn under
+/// `TurnControl::OwnerMayEnd`; once `GmOnly` holds a hidden turn, the same player is refused with
+/// the SAME wording an unknown `combat_id` produces — the information-leak-prevention property
+/// `CombatError`'s `Display` exists for.
+#[tokio::test]
+async fn owner_may_end_only_their_own_turn_and_errors_share_one_wording() {
+    let h = combat_harness().await; // order: [player's combatant, hidden NPC]
+    handle_combat_intent(
+        &h.room,
+        h.repo.as_ref(),
+        &h.gm,
+        ClientMsg::CombatStart {
+            request_id: Uuid::nil(),
+            combat_id: h.combat,
+        },
+        0,
+    )
+    .await;
+
+    let ok = handle_combat_intent(
+        &h.room,
+        h.repo.as_ref(),
+        &h.player,
+        ClientMsg::CombatAdvance {
+            request_id: Uuid::from_u128(7),
+            combat_id: h.combat,
+        },
+        0,
+    )
+    .await;
+    assert!(ok.is_none(), "own turn");
+
+    // The hidden NPC auto-resolved (OwnerMayEnd) and it's the player's turn again; switch to
+    // GmOnly and let the GM park the turn on the hidden NPC to hold it.
+    let mut gm_only = h.combat_engine().await;
+    gm_only.turn_control = TurnControl::GmOnly;
+    h.set_combat_engine(gm_only).await;
+    handle_combat_intent(
+        &h.room,
+        h.repo.as_ref(),
+        &h.gm,
+        ClientMsg::CombatAdvance {
+            request_id: Uuid::nil(),
+            combat_id: h.combat,
+        },
+        0,
+    )
+    .await;
+
+    let denied = handle_combat_intent(
+        &h.room,
+        h.repo.as_ref(),
+        &h.player,
+        ClientMsg::CombatAdvance {
+            request_id: Uuid::from_u128(8),
+            combat_id: h.combat,
+        },
+        0,
+    )
+    .await;
+    let unknown = handle_combat_intent(
+        &h.room,
+        h.repo.as_ref(),
+        &h.player,
+        ClientMsg::CombatAdvance {
+            request_id: Uuid::from_u128(9),
+            combat_id: Uuid::from_u128(0xDEAD),
+        },
+        0,
+    )
+    .await;
+    let (
+        Some(ServerMsg::CombatError { message: m1, .. }),
+        Some(ServerMsg::CombatError { message: m2, .. }),
+    ) = (denied, unknown)
+    else {
+        panic!("expected two CombatError replies");
+    };
+    assert_eq!(
+        m1, m2,
+        "hidden-turn refusal and unknown-combat refusal are indistinguishable"
+    );
+}
+
+/// `CombatRoll` resolves the channel's dice context, posts a `GmOnly` message for a hidden
+/// combatant, propagates a roll-cap failure as a `CombatError`, and refuses a non-owner rolling
+/// for a combatant they don't own.
+#[tokio::test]
+async fn roll_uses_the_channel_dice_context_and_posts_a_gm_only_message_for_hidden() {
+    let h = combat_harness().await;
+
+    let ok = handle_combat_intent(
+        &h.room,
+        h.repo.as_ref(),
+        &h.gm,
+        ClientMsg::CombatRoll {
+            request_id: Uuid::nil(),
+            combat_id: h.combat,
+            channel: "table".into(),
+            rolls: vec![CombatRollEntry {
+                combatant_id: h.hidden_npc,
+                notation: "1d20".into(),
+            }],
+        },
+        0,
+    )
+    .await;
+    assert!(ok.is_none());
+
+    let msgs = h.repo.query_documents(h.world_id, "message").await.unwrap();
+    assert_eq!(msgs.len(), 1);
+    assert_eq!(msgs[0].permissions.default, DocRole::None);
+
+    let bad = handle_combat_intent(
+        &h.room,
+        h.repo.as_ref(),
+        &h.gm,
+        ClientMsg::CombatRoll {
+            request_id: Uuid::nil(),
+            combat_id: h.combat,
+            channel: "table".into(),
+            rolls: vec![CombatRollEntry {
+                combatant_id: h.hidden_npc,
+                notation: "101d6".into(),
+            }],
+        },
+        0,
+    )
+    .await;
+    assert!(
+        matches!(bad, Some(ServerMsg::CombatError { .. })),
+        "caps apply"
+    );
+
+    let player_on_npc = handle_combat_intent(
+        &h.room,
+        h.repo.as_ref(),
+        &h.player,
+        ClientMsg::CombatRoll {
+            request_id: Uuid::nil(),
+            combat_id: h.combat,
+            channel: "table".into(),
+            rolls: vec![CombatRollEntry {
+                combatant_id: h.hidden_npc,
+                notation: "1d20".into(),
+            }],
+        },
+        0,
+    )
+    .await;
+    assert!(matches!(player_on_npc, Some(ServerMsg::CombatError { .. })));
+}
+
+/// `CombatResource` admits the GM or the combatant's own owner; a player naming a combatant they
+/// don't own (the hidden NPC) is refused.
+#[tokio::test]
+async fn resource_authz_is_gm_or_owner() {
+    let h = combat_harness().await;
+
+    let own = ClientMsg::CombatResource {
+        request_id: Uuid::nil(),
+        combat_id: h.combat,
+        combatant_id: h.player_combatant,
+        resource: "movement".into(),
+        op: ResourceOp::Set { value: 3.0 },
+    };
+    assert!(
+        handle_combat_intent(&h.room, h.repo.as_ref(), &h.player, own, 0)
+            .await
+            .is_none()
+    );
+
+    let other = ClientMsg::CombatResource {
+        request_id: Uuid::nil(),
+        combat_id: h.combat,
+        combatant_id: h.hidden_npc,
+        resource: "movement".into(),
+        op: ResourceOp::Set { value: 3.0 },
+    };
+    assert!(matches!(
+        handle_combat_intent(&h.room, h.repo.as_ref(), &h.player, other, 0).await,
+        Some(ServerMsg::CombatError { .. })
+    ));
+}
+
+/// Every one of the eight `Combat*` `ClientMsg` variants parses from its wire tag — a
+/// compile-time-exhaustiveness proxy for `conn.rs`'s combined dispatch arm: if a variant were
+/// missing from that arm, the match would fail to compile, not silently drop the frame.
+#[test]
+fn the_dispatch_match_routes_every_combat_frame() {
+    let frames = [
+        "combat_start",
+        "combat_pause",
+        "combat_end",
+        "combat_advance",
+        "combat_rewind",
+        "combat_sort",
+    ];
+    for f in frames {
+        let v = json!({ "type": f, "request_id": Uuid::nil(), "combat_id": Uuid::nil() });
+        assert!(serde_json::from_value::<ClientMsg>(v).is_ok(), "{f}");
+    }
+}

@@ -9,6 +9,9 @@ use tokio::sync::Semaphore;
 // shared with `ws::room`'s test module.
 use crate::ws::test_support::{token_engine, ws_engine};
 
+/// `handle_combat_intent` dispatch/authz/dice-context/one-command-commit tests.
+mod combat_intents;
+
 /// A `Sink<Message>` whose readiness is gated by a semaphore credit; accepted frames are
 /// forwarded to an unbounded channel the test drains. Each send consumes one credit (the
 /// permit is `forget`-ten), so the test controls exactly how many frames the egress may

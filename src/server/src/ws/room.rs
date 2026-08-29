@@ -621,6 +621,25 @@ impl Room {
         Ok(stored.command.clone())
     }
 
+    /// Commits a server-authored combat-clock command: acquires `publish_guard` FRESH here (the
+    /// `CombatSnapshot` backing `ops` was loaded by the caller OUTSIDE any guard — combat intents
+    /// are the first production caller of this path), then delegates to `commit_ops_locked` under
+    /// `WriteOrigin::CombatTransition`. Because every op the pure `combat::transition` functions
+    /// produce carries an OCC pre-image (`FieldChange.old`), a write racing a concurrent change to
+    /// the same document surfaces as a clean `DataError::Conflict` here rather than a lost or
+    /// corrupted update — the snapshot-outside/guard-only-at-commit split is what makes that hold.
+    pub(crate) async fn commit_combat(
+        &self,
+        repo: &dyn Repository,
+        ctx: &PermissionContext,
+        ops: Vec<Operation>,
+        ts: i64,
+    ) -> Result<Command, DataError> {
+        let _guard = self.publish_guard.lock().await;
+        self.commit_ops_locked(repo, ctx, ops, ts, WriteOrigin::CombatTransition)
+            .await
+    }
+
     /// Server-authoritative token move: resolves gate inputs off the ECS read lock, calls the
     /// pure path executor, atomically commits the token to its stop location, and enforces a
     /// per-token `moving` lock so a client cannot re-dispatch while the animation is in flight.

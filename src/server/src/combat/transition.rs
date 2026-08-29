@@ -102,8 +102,10 @@ impl RollPost {
 /// Whether `c`'s document is hidden from every non-owner/non-GM reader
 /// (`permissions.default: none`) — the SAME test a real read-transition
 /// gate applies; this module never re-derives visibility from any other
-/// field.
-fn is_hidden(c: &Combatant) -> bool {
+/// field. `pub(crate)` so the wire-dispatch layer's own authz
+/// (`combat::handle_combat_intent`) reads the SAME decision rather than
+/// re-deriving it — never fork a hidden/visible decision across two paths.
+pub(crate) fn is_hidden(c: &Combatant) -> bool {
     c.doc.permissions.default == DocRole::None
 }
 
