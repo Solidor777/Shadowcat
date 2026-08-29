@@ -365,3 +365,250 @@ async fn combat_transition_may_create_but_never_update_a_message_document() {
         .await;
     assert!(matches!(res, Err(DataError::Forbidden)));
 }
+
+/// A batch that deactivates `a`, lets a same-batch `Create` of `b` claim the
+/// now-freed scene, and then re-declares `a`'s ORIGINAL pre-batch `active:
+/// true` as a second Update's OCC pre-image (Phase 1 performs no writes, so
+/// both Updates to `a` independently pass OCC against the same unwritten
+/// pristine row) must reject the whole batch -- `b`'s claim already consumed
+/// the one release credit this scene can grant, and `a`'s own reassertion is
+/// a SECOND activation on an already-claimed scene, not a legitimate revert.
+#[tokio::test]
+async fn a_same_doc_double_update_cannot_reclaim_a_release_already_spent_by_another_combat() {
+    let r = repo().await;
+    let gm = r
+        .create_user("gm", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let w = r.create_world_owned("W", gm, 0).await.unwrap();
+    let ctx = PermissionContext {
+        user_id: gm,
+        world_role: WorldRole::Gm,
+    };
+    let scene = Uuid::from_u128(0x5CE);
+    let a = combat_doc(1, w.id, scene, true);
+    r.apply_intent(
+        &ctx,
+        w.id,
+        vec![Operation::Create { doc: a.clone() }],
+        1,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+    let b = combat_doc(2, w.id, scene, true);
+    let deactivate_a = activate(a.id, false);
+    let create_b = Operation::Create { doc: b.clone() };
+    // Re-declares the PRISTINE pre-batch value (`true`) as this op's own OCC
+    // pre-image, rather than the value `deactivate_a` would have left behind
+    // had it committed first — the exploit this pins.
+    let reassert_a_active = Operation::Update {
+        doc_id: a.id,
+        changes: vec![FieldChange {
+            remove: false,
+            path: "/engine/active".into(),
+            old: serde_json::json!(true),
+            new: serde_json::json!(true),
+        }],
+    };
+    let res = r
+        .apply_intent(
+            &ctx,
+            w.id,
+            vec![deactivate_a, create_b, reassert_a_active],
+            2,
+            WriteOrigin::Client,
+        )
+        .await;
+    assert!(matches!(res, Err(DataError::Conflict(_))));
+    // Nothing in the rejected batch landed: `b` never got created, and `a`
+    // stayed exactly as it was created.
+    assert!(r.get_document(b.id).await.unwrap().is_none());
+    let stored_a = r.get_document(a.id).await.unwrap().unwrap();
+    assert_eq!(stored_a.engine.unwrap()["active"], serde_json::json!(true));
+}
+
+/// A single Update that both moves a combat to a DIFFERENT scene and
+/// deactivates it must free the scene it was actually active on (the
+/// PRE-merge scene), never the scene it is moving to. A same-batch `Create`
+/// activating a different combat on the DESTINATION scene must still reject
+/// against that scene's own genuinely-active, batch-untouched combat.
+#[tokio::test]
+async fn a_scene_rebind_combined_with_deactivate_frees_the_old_scene_not_the_new_one() {
+    let r = repo().await;
+    let gm = r
+        .create_user("gm", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let w = r.create_world_owned("W", gm, 0).await.unwrap();
+    let ctx = PermissionContext {
+        user_id: gm,
+        world_role: WorldRole::Gm,
+    };
+    let s1 = Uuid::from_u128(0x51);
+    let s2 = Uuid::from_u128(0x52);
+    // `z` is genuinely active on `s2` and is never touched by the batch
+    // under test.
+    let z = combat_doc(1, w.id, s2, true);
+    // `x` starts active on `s1` and will be moved to `s2` while deactivating.
+    let x = combat_doc(2, w.id, s1, true);
+    r.apply_intent(
+        &ctx,
+        w.id,
+        vec![
+            Operation::Create { doc: z.clone() },
+            Operation::Create { doc: x.clone() },
+        ],
+        1,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+    let move_and_deactivate_x = Operation::Update {
+        doc_id: x.id,
+        changes: vec![
+            FieldChange {
+                remove: false,
+                path: "/engine/scene_id".into(),
+                old: serde_json::json!(s1.to_string()),
+                new: serde_json::json!(s2.to_string()),
+            },
+            FieldChange {
+                remove: false,
+                path: "/engine/active".into(),
+                old: serde_json::json!(true),
+                new: serde_json::json!(false),
+            },
+        ],
+    };
+    let w_combat = combat_doc(3, w.id, s2, true);
+    let res = r
+        .apply_intent(
+            &ctx,
+            w.id,
+            vec![
+                move_and_deactivate_x,
+                Operation::Create {
+                    doc: w_combat.clone(),
+                },
+            ],
+            2,
+            WriteOrigin::Client,
+        )
+        .await;
+    assert!(matches!(res, Err(DataError::Conflict(_))));
+    assert!(r.get_document(w_combat.id).await.unwrap().is_none());
+}
+
+/// A `CombatTransition` batch may `Delete` a document (and its cascade-
+/// deleted descendants) without holding `cap::DELETE`; the identical Delete
+/// under `Client` origin by the same low-privilege actor is still refused.
+#[tokio::test]
+async fn combat_transition_may_delete_a_cascading_combat_without_delete_capability() {
+    let r = repo().await;
+    let gm = r
+        .create_user("gm", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let player = r.create_user("p", None, ServerRole::User, 0).await.unwrap();
+    let w = r.create_world_owned("W", gm, 0).await.unwrap();
+    r.add_member(w.id, player, WorldRole::Player).await.unwrap();
+    let gm_ctx = PermissionContext {
+        user_id: gm,
+        world_role: WorldRole::Gm,
+    };
+    let p_ctx = PermissionContext {
+        user_id: player,
+        world_role: WorldRole::Player,
+    };
+    let combat = combat_doc(1, w.id, Uuid::from_u128(0x5CE), false);
+    let c = combatant_doc(2, w.id, combat.id);
+    r.apply_intent(
+        &gm_ctx,
+        w.id,
+        vec![
+            Operation::Create {
+                doc: combat.clone(),
+            },
+            Operation::Create { doc: c.clone() },
+        ],
+        1,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+    // The player holds no `cap::DELETE` grant on either document (both carry
+    // the shipping default `permissions: PermissionSet { default:
+    // DocRole::None, .. }`), so an ordinary `Client`-origin Delete refuses.
+    let denied = r
+        .apply_intent(
+            &p_ctx,
+            w.id,
+            vec![Operation::Delete {
+                doc: combat.clone(),
+            }],
+            2,
+            WriteOrigin::Client,
+        )
+        .await;
+    assert!(matches!(denied, Err(DataError::Forbidden)));
+    r.apply_intent(
+        &p_ctx,
+        w.id,
+        vec![Operation::Delete {
+            doc: combat.clone(),
+        }],
+        3,
+        WriteOrigin::CombatTransition,
+    )
+    .await
+    .unwrap();
+    assert!(r.get_document(combat.id).await.unwrap().is_none());
+    assert!(
+        r.get_document(c.id).await.unwrap().is_none(),
+        "cascade-deleted combatant child"
+    );
+}
+
+/// A `CombatTransition` batch attempting to `Update` an immutable envelope
+/// field is rejected with `DataError::Forbidden` -- `required_cap_for_path`'s
+/// `None`-branch rejection stays unconditional for every origin, this one
+/// included.
+#[tokio::test]
+async fn combat_transition_update_of_an_immutable_envelope_field_is_forbidden() {
+    let r = repo().await;
+    let gm = r
+        .create_user("gm", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let w = r.create_world_owned("W", gm, 0).await.unwrap();
+    let ctx = PermissionContext {
+        user_id: gm,
+        world_role: WorldRole::Gm,
+    };
+    let combat = combat_doc(1, w.id, Uuid::from_u128(0x5CE), false);
+    r.apply_intent(
+        &ctx,
+        w.id,
+        vec![Operation::Create {
+            doc: combat.clone(),
+        }],
+        1,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+    let update = Operation::Update {
+        doc_id: combat.id,
+        changes: vec![FieldChange {
+            remove: false,
+            path: "/id".into(),
+            old: serde_json::json!(combat.id),
+            new: serde_json::json!(Uuid::from_u128(0xBAD)),
+        }],
+    };
+    let res = r
+        .apply_intent(&ctx, w.id, vec![update], 2, WriteOrigin::CombatTransition)
+        .await;
+    assert!(matches!(res, Err(DataError::Forbidden)));
+}
