@@ -6,7 +6,13 @@ import {
 } from "./scene-docs";
 import { buildLightGradationDoc, resolveGradation, DEFAULT_GRADATION, buildVisionModesDoc, resolveVisionModes, SEED_VISION_MODES, buildLightDoc } from "./scene-docs";
 import { buildRegionDoc, setRegionVisibility, type RegionEngine } from "./scene-docs";
+import {
+  buildCombatDoc, buildCombatantDoc, buildResourceRegistryDoc, buildEffectDoc, seedResourceRegistryIfAbsent,
+  COMBAT_DOC_TYPE, COMBATANT_DOC_TYPE, RESOURCE_REGISTRY_DOC_TYPE, EFFECT_DOC_TYPE,
+  type CombatEngine, type CombatantEngine, type ResourceRegistryEngine, type Resource, type EffectEngine,
+} from "./scene-docs";
 import { DocumentStore } from "./store";
+import type { WireOperation } from "./wire";
 import { resolveTokenActor, resolveTokenBox } from "./actor";
 import { EMPTY_FOOTPRINTS, type FootprintLookup } from "./footprints";
 
@@ -500,5 +506,67 @@ describe("resolveViewedScene", () => {
     const s = store([s0, s1, ws("s1")]);
     expect(resolveViewedScene(s, { gmViewedScene: "gone" })).toBe("s1");
     expect(resolveViewedScene(s, { gmViewedScene: null })).toBe("s1");
+  });
+});
+
+describe("combat document builders", () => {
+  const combatEngine: CombatEngine = {
+    scene_id: "scene-1", active: false, round: 0, turn: null, turn_control: "owner_may_end", order: [],
+    movement: { resource: null, interpretation: "per_cell", enforcement: "none" },
+  };
+
+  it("buildCombatDoc is a parentless engine doc", () => {
+    const d = buildCombatDoc("world-1", combatEngine);
+    expect(d.doc_type).toBe(COMBAT_DOC_TYPE);
+    expect(d.parent_id).toBeNull();
+    expect(d.engine).toEqual(combatEngine);
+    expect(d.system).toEqual({});
+  });
+
+  it("buildCombatantDoc parents to the combat and encodes hidden as an unreadable default role", () => {
+    const eng: CombatantEngine = {
+      kind: { type: "actor", token_id: "tok-1", actor_id: null }, initiative: null, tiebreak: 0, resources: {},
+    };
+    const visible = buildCombatantDoc("world-1", "combat-1", eng, { owner: "user-1" });
+    expect(visible.doc_type).toBe(COMBATANT_DOC_TYPE);
+    expect(visible.parent_id).toBe("combat-1");
+    expect(visible.owner).toBe("user-1");
+    expect(visible.permissions.default).toBe("observer");
+    expect(visible.permissions.users).toEqual({ "user-1": "owner" });
+    const hidden = buildCombatantDoc("world-1", "combat-1", eng, { owner: "user-1", hidden: true });
+    expect(hidden.permissions.default).toBe("none");
+    // While hidden the owner is not listed either: hidden means unreadable to every non-GM.
+    expect(hidden.permissions.users).toEqual({});
+    expect(hidden.owner).toBe("user-1");
+  });
+
+  it("buildResourceRegistryDoc and the seed helper are idempotent and deterministic", () => {
+    const seed: Record<string, Resource> = {
+      movement: { name: "Movement", order: 0, binding: { kind: "tracked", max: "speed",
+        recover: { turn_start: "speed", turn_end: 0, round_start: 0, round_end: 0 } } },
+    };
+    const id = deterministicId("world-1", RESOURCE_REGISTRY_DOC_TYPE);
+    const doc = buildResourceRegistryDoc("world-1", seed, id);
+    expect(doc.doc_type).toBe(RESOURCE_REGISTRY_DOC_TYPE);
+    expect(doc.id).toBe(id);
+    expect((doc.engine as ResourceRegistryEngine).resources.movement.binding.kind).toBe("tracked");
+
+    const store = new DocumentStore();
+    const dispatched: WireOperation[][] = [];
+    seedResourceRegistryIfAbsent(store, "world-1", seed, (ops) => dispatched.push(ops));
+    expect(dispatched).toHaveLength(1);
+    expect(dispatched[0][0]).toMatchObject({ op: "create", doc: { id, doc_type: RESOURCE_REGISTRY_DOC_TYPE } });
+    store.applyCommand({ seq: 1, world_id: "world-1", author: "u", ts: 0, ops: dispatched[0] });
+    seedResourceRegistryIfAbsent(store, "world-1", seed, (ops) => dispatched.push(ops));
+    expect(dispatched).toHaveLength(1);
+  });
+
+  it("buildEffectDoc carries the engine band and the system body", () => {
+    const eng: EffectEngine = { active: true, transfer: true, duration: null };
+    const d = buildEffectDoc("world-1", eng, { mechanics: { modifiers: {} } }, undefined, "Bless");
+    expect(d.doc_type).toBe(EFFECT_DOC_TYPE);
+    expect(d.engine).toEqual(eng);
+    expect(d.name).toBe("Bless");
+    expect(d.system).toEqual({ mechanics: { modifiers: {} } });
   });
 });

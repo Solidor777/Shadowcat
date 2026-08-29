@@ -6,6 +6,7 @@
 export type { WireDocument } from "./wire";
 import type { WireDocument } from "./wire";
 import type { ReadableDocuments } from "./store";
+import type { WireOperation } from "./wire";
 import type { FootprintExtent } from "./footprints";
 import type {
   MovementRestriction,
@@ -51,6 +52,24 @@ import type {
   WallEngine,
   Seg,
   CombatDefaults,
+  CombatEngine,
+  CombatantEngine,
+  CombatantKind,
+  CombatantResource,
+  MovementRules,
+  Interpretation,
+  Enforcement,
+  TurnControl,
+  ResourceRegistryEngine,
+  Resource,
+  ResourceBinding,
+  Recovery,
+  Formula,
+  EffectEngine,
+  Duration,
+  DurationUnit,
+  ExpiryPoint,
+  ClockStamp,
 } from "@shadowcat/types";
 
 // --- Re-exported generated engine types (ts-rs output, `@shadowcat/types`) ---
@@ -102,6 +121,24 @@ export type {
   WallEngine,
   Seg,
   CombatDefaults,
+  CombatEngine,
+  CombatantEngine,
+  CombatantKind,
+  CombatantResource,
+  MovementRules,
+  Interpretation,
+  Enforcement,
+  TurnControl,
+  ResourceRegistryEngine,
+  Resource,
+  ResourceBinding,
+  Recovery,
+  Formula,
+  EffectEngine,
+  Duration,
+  DurationUnit,
+  ExpiryPoint,
+  ClockStamp,
 };
 
 /** A face's own visual. Deliberately never itself `{kind:"faces"}` — no nesting — so an
@@ -955,4 +992,148 @@ export function setRegionVisibility(doc: WireDocument, hidden: boolean): WireDoc
     property_overrides: overrides,
   };
   return doc;
+}
+
+// --- Combat documents ---
+
+/** Engine-defined doc_type of a combat (`data::engine::COMBAT_DOC_TYPE`). */
+export const COMBAT_DOC_TYPE = "combat";
+/** Engine-defined doc_type of a combatant, always a child of a combat. */
+export const COMBATANT_DOC_TYPE = "combatant";
+/** Engine-defined doc_type of the singleton turn-resource registry. */
+export const RESOURCE_REGISTRY_DOC_TYPE = "resource-registry";
+/** Engine-defined doc_type of an effect. */
+export const EFFECT_DOC_TYPE = "effect";
+
+/** A top-level (world-scoped, parentless) combat document bound to `engine.scene_id`.
+ * @param worldId The owning world's id.
+ * @param engine The full `CombatEngine` body.
+ * @param id An explicit id, or `undefined` to generate one.
+ * @returns A `WireDocument` with `doc_type: "combat"`.
+ * @example
+ * ```ts
+ * import { buildCombatDoc, type CombatEngine } from "@shadowcat/core";
+ *
+ * const engine: CombatEngine = {
+ *   scene_id: "scene-1", active: false, round: 0, turn: null, turn_control: "owner_may_end",
+ *   order: [], movement: { resource: null, interpretation: "per_cell", enforcement: "none" },
+ * };
+ * buildCombatDoc("world-1", engine).doc_type; // "combat"
+ * ```
+ */
+export function buildCombatDoc(worldId: string, engine: CombatEngine, id?: string): WireDocument {
+  return envelope(worldId, COMBAT_DOC_TYPE, null, {}, id, engine, null);
+}
+
+/** Options for `buildCombatantDoc`. */
+export interface CombatantDocOptions {
+  /** Explicit id, or `undefined` to generate one. */
+  id?: string;
+  /** The owning user (the token's/actor's owner), stamped on `owner` and — while visible — as an
+   * `owner`-role `users` entry so the owner may write their own resources. */
+  owner?: string | null;
+  /** Hidden = unreadable to every non-GM: `permissions.default: "none"` and no `users` entry. */
+  hidden?: boolean;
+  /** Opaque system body (event parameters, per-combat system state). */
+  system?: unknown;
+  /** Envelope display name (events use it as their row label). */
+  name?: string | null;
+}
+
+/** A combatant document parented to `combatId`. Visibility is the document's own read
+ * permission, never an engine field: a hidden combatant is dropped whole at egress.
+ * @param worldId The owning world's id.
+ * @param combatId The parent combat document's id.
+ * @param engine The full `CombatantEngine` body.
+ * @param opts Owner / hidden / system / name / id.
+ * @returns A `WireDocument` with `doc_type: "combatant"` and `parent_id: combatId`.
+ * @example
+ * ```ts
+ * import { buildCombatantDoc, type CombatantEngine } from "@shadowcat/core";
+ *
+ * const engine: CombatantEngine = {
+ *   kind: { type: "event", lifespan: 3, message: "The floor shakes" },
+ *   initiative: 20, tiebreak: 0, resources: {},
+ * };
+ * buildCombatantDoc("world-1", "combat-1", engine, { hidden: true }).permissions.default; // "none"
+ * ```
+ */
+export function buildCombatantDoc(worldId: string, combatId: string, engine: CombatantEngine, opts: CombatantDocOptions = {}): WireDocument {
+  const doc = envelope(worldId, COMBATANT_DOC_TYPE, combatId, opts.system ?? {}, opts.id, engine, opts.name ?? null);
+  doc.owner = opts.owner ?? null;
+  if (opts.hidden) {
+    doc.permissions.default = "none";
+  } else if (opts.owner) {
+    doc.permissions.users = { [opts.owner]: "owner" };
+  }
+  return doc;
+}
+
+/** A top-level (world-scoped, parentless) resource-registry document.
+ * @param worldId The owning world's id.
+ * @param resources The id-keyed resource map.
+ * @param id An explicit id, or `undefined` to generate one; use `deterministicId` for a
+ * singleton seed so racing GMs converge on one id.
+ * @returns A `WireDocument` with `doc_type: "resource-registry"`.
+ * @example
+ * ```ts
+ * import { buildResourceRegistryDoc } from "@shadowcat/core";
+ *
+ * const doc = buildResourceRegistryDoc("world-1", {
+ *   actions: { name: "Actions", order: 1, binding: { kind: "tracked", max: 1,
+ *     recover: { turn_start: 1, turn_end: 0, round_start: 0, round_end: 0 } } },
+ * });
+ * doc.doc_type; // "resource-registry"
+ * ```
+ */
+export function buildResourceRegistryDoc(worldId: string, resources: Record<string, Resource>, id?: string): WireDocument {
+  return envelope(worldId, RESOURCE_REGISTRY_DOC_TYPE, null, {}, id, { resources } satisfies ResourceRegistryEngine, null);
+}
+
+/** Idempotent GM seed for the world's `resource-registry` singleton under a deterministic id;
+ * a no-op when the registry already exists (including after a lost create race, which the
+ * optimistic layer rolls back on its own). The engine ships no resources: `seed` is the active
+ * system's definition set.
+ * @param store Read access, to check whether the registry already exists.
+ * @param worldId The owning world's id — the deterministic id's namespace input.
+ * @param seed The resources to seed.
+ * @param dispatchIntent The fire-and-forget intent dispatcher to send the Create through.
+ * @example
+ * ```ts
+ * import { seedResourceRegistryIfAbsent, type ReadableDocuments, type WireOperation } from "@shadowcat/core";
+ *
+ * declare const store: ReadableDocuments;
+ * declare const dispatchIntent: (ops: WireOperation[]) => void;
+ * seedResourceRegistryIfAbsent(store, "world-1", {}, dispatchIntent);
+ * ```
+ */
+export function seedResourceRegistryIfAbsent(
+  store: ReadableDocuments,
+  worldId: string,
+  seed: Record<string, Resource>,
+  dispatchIntent: (ops: WireOperation[]) => void,
+): void {
+  const id = deterministicId(worldId, RESOURCE_REGISTRY_DOC_TYPE);
+  if (store.get(id) || store.query(RESOURCE_REGISTRY_DOC_TYPE).length > 0) return;
+  dispatchIntent([{ op: "create", doc: buildResourceRegistryDoc(worldId, seed, id) }]);
+}
+
+/** An effect document: engine band (activation, transfer, clock-bound duration) plus the
+ * system's opaque body (modifiers). Parentless; embed it under an actor or item via the
+ * `embedded.effect` collection when it should apply to a host.
+ * @param worldId The owning world's id.
+ * @param engine The full `EffectEngine` body.
+ * @param system The system body.
+ * @param id An explicit id, or `undefined` to generate one.
+ * @param name Envelope display name.
+ * @returns A `WireDocument` with `doc_type: "effect"`.
+ * @example
+ * ```ts
+ * import { buildEffectDoc } from "@shadowcat/core";
+ *
+ * buildEffectDoc("world-1", { active: true, transfer: false, duration: null }, {}).doc_type; // "effect"
+ * ```
+ */
+export function buildEffectDoc(worldId: string, engine: EffectEngine, system: unknown, id?: string, name: string | null = null): WireDocument {
+  return envelope(worldId, EFFECT_DOC_TYPE, null, system, id, engine, name);
 }
