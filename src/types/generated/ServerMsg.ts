@@ -237,6 +237,14 @@ request_id: string,
 /**
  * `SendMessageError`'s player-presentable `Display` text.
  */
+message: string, } | { "type": "combat_error", 
+/**
+ * The refused combat intent's correlation token.
+ */
+request_id: string, 
+/**
+ * Player-presentable failure text.
+ */
 message: string, } | { "type": "move_stream", 
 /**
  * Correlates with the originating `MoveRequest`.

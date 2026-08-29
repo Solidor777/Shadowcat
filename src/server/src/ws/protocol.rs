@@ -205,6 +205,108 @@ pub enum ClientMsg {
         /// The targeted mutation(s) to apply.
         ops: Vec<WireRecalcOp>,
     },
+    /// Activate a combat: pauses any other active combat on its scene in the same command;
+    /// a combat with `turn == None` initializes (round 1, first turn), one with a turn resumes.
+    /// A rejection replies `CombatError`, correlated by `request_id`; success is confirmed by
+    /// the broadcast `Event` echo.
+    CombatStart {
+        /// Correlation token for `CombatError`.
+        request_id: Uuid,
+        /// The combat.
+        combat_id: Uuid,
+    },
+    /// Deactivate a combat; nothing else runs. Same reply protocol as `CombatStart`.
+    CombatPause {
+        /// Correlation token for `CombatError`.
+        request_id: Uuid,
+        /// The combat.
+        combat_id: Uuid,
+    },
+    /// Run end-of-combat effect cleanup, then delete the combat (children cascade). Same reply
+    /// protocol as `CombatStart`.
+    CombatEnd {
+        /// Correlation token for `CombatError`.
+        request_id: Uuid,
+        /// The combat.
+        combat_id: Uuid,
+    },
+    /// End the current turn (GM, or its owner under `OwnerMayEnd`). Same reply protocol as
+    /// `CombatStart`.
+    CombatAdvance {
+        /// Correlation token for `CombatError`.
+        request_id: Uuid,
+        /// The combat.
+        combat_id: Uuid,
+    },
+    /// Step back one turn record (GM). Same reply protocol as `CombatStart`.
+    CombatRewind {
+        /// Correlation token for `CombatError`.
+        request_id: Uuid,
+        /// The combat.
+        combat_id: Uuid,
+    },
+    /// Roll initiative for the named combatants on `channel`; posts one message per roll. Same
+    /// reply protocol as `CombatStart`.
+    CombatRoll {
+        /// Correlation token for `CombatError`.
+        request_id: Uuid,
+        /// The combat.
+        combat_id: Uuid,
+        /// Chat channel the results post to (dice settings resolve per channel).
+        channel: String,
+        /// The rolls.
+        rolls: Vec<CombatRollEntry>,
+    },
+    /// Adjust one tracked resource; the server clamps to `[0, max]`. Same reply protocol as
+    /// `CombatStart`.
+    CombatResource {
+        /// Correlation token for `CombatError`.
+        request_id: Uuid,
+        /// The combat.
+        combat_id: Uuid,
+        /// Target combatant.
+        combatant_id: Uuid,
+        /// Registry key.
+        resource: String,
+        /// Delta or set.
+        op: ResourceOp,
+    },
+    /// Rebuild `order` from initiative without rolling (GM). Same reply protocol as
+    /// `CombatStart`.
+    CombatSort {
+        /// Correlation token for `CombatError`.
+        request_id: Uuid,
+        /// The combat.
+        combat_id: Uuid,
+    },
+}
+
+/// One initiative roll within a `ClientMsg::CombatRoll` request.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/")]
+pub struct CombatRollEntry {
+    /// The combatant to roll initiative for.
+    pub combatant_id: Uuid,
+    /// Dice notation for the roll (e.g. `1d20+3`).
+    pub notation: String,
+}
+
+/// How `ClientMsg::CombatResource` adjusts a tracked resource. The server clamps the
+/// resulting value to `[0, max]` in both cases.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/")]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ResourceOp {
+    /// Add `amount` to the current value (negative to subtract).
+    Delta {
+        /// The signed adjustment.
+        amount: f64,
+    },
+    /// Overwrite the current value outright.
+    Set {
+        /// The value to set.
+        value: f64,
+    },
 }
 
 /// Which tier served a resync.
@@ -494,6 +596,16 @@ pub enum ServerMsg {
         /// The refused chat op's correlation token.
         request_id: Uuid,
         /// `SendMessageError`'s player-presentable `Display` text.
+        message: String,
+    },
+    /// A combat intent (`CombatStart`/`CombatPause`/`CombatEnd`/`CombatAdvance`/`CombatRewind`/
+    /// `CombatRoll`/`CombatResource`/`CombatSort`) was rejected. One wording for every refusal —
+    /// never distinguishes hidden from absent from not-yours. Addressed to the originating
+    /// connection only; never broadcast. Success is confirmed by the broadcast `Event` echo.
+    CombatError {
+        /// The refused combat intent's correlation token.
+        request_id: Uuid,
+        /// Player-presentable failure text.
         message: String,
     },
     /// Broadcast to the scene, then clipped per recipient at egress: the mover receives the full

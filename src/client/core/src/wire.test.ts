@@ -109,6 +109,18 @@ describe("wire drift guard — message discriminants", () => {
     type T = Extract<Ts.ServerMsg, { type: "welcome" }>;
     expectTypeOf<W["schema_declarations"]>().toEqualTypeOf<T["schema_declarations"]>();
   });
+  it("combat_error is a ServerMsg discriminant", () => {
+    type Found = Extract<ServerMsg["type"], "combat_error">;
+    expectTypeOf<Found>().toEqualTypeOf<"combat_error">();
+  });
+  it("combat_advance is assignable as a ClientMsg", () => {
+    const frame: ClientMsg = {
+      type: "combat_advance",
+      request_id: "00000000-0000-0000-0000-000000000001",
+      combat_id: "00000000-0000-0000-0000-000000000002",
+    };
+    expectTypeOf(frame).toMatchTypeOf<ClientMsg>();
+  });
 });
 
 // Non-vacuous schema/type guard: asserts each unannotated `xImpl` const's OWN inferred type
@@ -457,6 +469,7 @@ describe("parseServerMsg — exhaustive per-tag coverage", () => {
     path_error: { type: "path_error", request_id: "r", message: "x" },
     move_error: { type: "move_error", request_id: "r", message: "x" },
     chat_error: { type: "chat_error", request_id: "r", message: "x" },
+    combat_error: { type: "combat_error", request_id: "r", message: "x" },
     move_stream: {
       type: "move_stream",
       request_id: "r",

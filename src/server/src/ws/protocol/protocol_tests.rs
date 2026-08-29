@@ -464,6 +464,104 @@ fn send_message_frame_parses_gm_only_audience() {
 }
 
 #[test]
+fn combat_intents_round_trip_snake_case_tags() {
+    let v = serde_json::json!({ "type": "combat_roll", "request_id": Uuid::nil(), "combat_id": Uuid::nil(), "channel": "table",
+        "rolls": [{ "combatant_id": Uuid::nil(), "notation": "1d20+3" }] });
+    let m: ClientMsg = serde_json::from_value(v).unwrap();
+    assert!(matches!(m, ClientMsg::CombatRoll { ref rolls, .. } if rolls.len() == 1));
+    let v = serde_json::json!({ "type": "combat_resource", "request_id": Uuid::nil(), "combat_id": Uuid::nil(), "combatant_id": Uuid::nil(),
+        "resource": "movement", "op": { "kind": "delta", "amount": -5.0 } });
+    assert!(
+        matches!(serde_json::from_value::<ClientMsg>(v).unwrap(), ClientMsg::CombatResource { op: ResourceOp::Delta { amount }, .. } if amount == -5.0)
+    );
+    let e = ServerMsg::CombatError {
+        request_id: Uuid::nil(),
+        message: "combat rejected".into(),
+    };
+    assert_eq!(serde_json::to_value(&e).unwrap()["type"], "combat_error");
+}
+
+#[test]
+fn combat_start_pause_end_advance_rewind_sort_round_trip() {
+    for (variant, tag) in [
+        (
+            ClientMsg::CombatStart {
+                request_id: Uuid::from_u128(1),
+                combat_id: Uuid::from_u128(2),
+            },
+            "combat_start",
+        ),
+        (
+            ClientMsg::CombatPause {
+                request_id: Uuid::from_u128(1),
+                combat_id: Uuid::from_u128(2),
+            },
+            "combat_pause",
+        ),
+        (
+            ClientMsg::CombatEnd {
+                request_id: Uuid::from_u128(1),
+                combat_id: Uuid::from_u128(2),
+            },
+            "combat_end",
+        ),
+        (
+            ClientMsg::CombatAdvance {
+                request_id: Uuid::from_u128(1),
+                combat_id: Uuid::from_u128(2),
+            },
+            "combat_advance",
+        ),
+        (
+            ClientMsg::CombatRewind {
+                request_id: Uuid::from_u128(1),
+                combat_id: Uuid::from_u128(2),
+            },
+            "combat_rewind",
+        ),
+        (
+            ClientMsg::CombatSort {
+                request_id: Uuid::from_u128(1),
+                combat_id: Uuid::from_u128(2),
+            },
+            "combat_sort",
+        ),
+    ] {
+        let s = serde_json::to_string(&variant).unwrap();
+        assert!(
+            s.contains(&format!("\"type\":\"{tag}\"")),
+            "got {s}, wanted tag {tag}"
+        );
+        let back: ClientMsg = serde_json::from_str(&s).unwrap();
+        assert_eq!(
+            serde_json::to_value(&back).unwrap()["type"],
+            serde_json::to_value(&variant).unwrap()["type"]
+        );
+    }
+}
+
+#[test]
+fn combat_resource_set_op_round_trips() {
+    let m = ClientMsg::CombatResource {
+        request_id: Uuid::from_u128(1),
+        combat_id: Uuid::from_u128(2),
+        combatant_id: Uuid::from_u128(3),
+        resource: "movement".into(),
+        op: ResourceOp::Set { value: 10.0 },
+    };
+    let s = serde_json::to_string(&m).unwrap();
+    assert!(s.contains("\"kind\":\"set\""), "got {s}");
+    let back: ClientMsg = serde_json::from_str(&s).unwrap();
+    assert!(matches!(
+        back,
+        ClientMsg::CombatResource {
+            op: ResourceOp::Set { value },
+            ..
+        } if value == 10.0
+    ));
+}
+
+#[test]
 fn welcome_carries_caps_role_and_requirements() {
     use crate::data::document::{CapabilityGrants, WorldRole};
     let w = ServerMsg::Welcome {

@@ -330,6 +330,28 @@ export class WsClient {
       timer: ReturnType<typeof setTimeout>;
     }
   >();
+  /** In-flight combat intents (`CombatStart`/`CombatPause`/etc.), keyed by request_id. Unlike
+   * `pending` (search/pathfind/moveRequest), a combat intent's success is confirmed by the
+   * broadcast `event` echo rather than a correlated reply frame — `event` carries no
+   * combat-specific correlation token, so resolution is FIFO: the oldest still-pending entry
+   * (Map iteration order = insertion order) is resolved by the next `event` this connection
+   * receives, mirroring `OptimisticClient.applyCommand`'s own blind-FIFO self-confirm and
+   * relying on the same `Room::publish` per-intent serialization guarantee for soundness. A
+   * `combat_error` instead rejects the correlated entry directly by `request_id` (mirrors
+   * `move_error`'s handling). */
+  private combatPending = new Map<
+    string,
+    {
+      /** Resolves (void) once the next `event` frame arrives while this entry is oldest. */
+      resolve: () => void;
+      /** Rejects with the server's reason on a correlated `combat_error`, on timeout, or on
+       * disconnect. */
+      reject: (e: Error) => void;
+      /** Timeout handle that rejects if neither an `event` nor a `combat_error` arrives in
+       * time. */
+      timer: ReturnType<typeof setTimeout>;
+    }
+  >();
   /** In-flight chat ops (send/edit/delete), keyed by request_id. Chat is
    * asymmetric: ONLY a rejection replies (a `chat_error` frame). A successful op
    * gets no reply at all — the broadcast Event echo carries no `request_id`, so
@@ -529,6 +551,13 @@ export class WsClient {
       p.reject(new Error(reason));
     }
     this.chatPending.clear();
+    // Combat intents were sent on a socket that will not answer; whether the intent landed is
+    // unknown, so reject rather than silently resolve (mirrors the chat-op cleanup above).
+    for (const p of this.combatPending.values()) {
+      clearTimeout(p.timer);
+      p.reject(new Error(reason));
+    }
+    this.combatPending.clear();
   }
 
   /** Run a consumer callback in isolation: a throw is routed to `onError` and
@@ -767,6 +796,19 @@ export class WsClient {
         break;
       case "event":
         this.applyEvent(msg.command);
+        // FIFO combat-intent confirm: the oldest still-pending combat entry (if any) is
+        // resolved by this event, per `combatPending`'s own field doc.
+        {
+          const oldest = this.combatPending.keys().next();
+          if (!oldest.done) {
+            const p = this.combatPending.get(oldest.value);
+            if (p) {
+              clearTimeout(p.timer);
+              this.combatPending.delete(oldest.value);
+              p.resolve();
+            }
+          }
+        }
         break;
       case "reject":
         this.safeEmit(() => this.opts.handlers.onReject?.(msg.intent_id, msg.reason));
@@ -879,6 +921,17 @@ export class WsClient {
         if (p) {
           clearTimeout(p.timer);
           this.chatPending.delete(msg.request_id);
+          p.reject(new Error(msg.message));
+        }
+        break;
+      }
+      case "combat_error": {
+        // A rejected combat intent: reject the correlated entry directly by request_id
+        // (mirrors move_error's handling above, not the FIFO resolve path).
+        const p = this.combatPending.get(msg.request_id);
+        if (p) {
+          clearTimeout(p.timer);
+          this.combatPending.delete(msg.request_id);
           p.reject(new Error(msg.message));
         }
         break;
@@ -1362,6 +1415,54 @@ export class WsClient {
     const p = this.trackChatOp(request_id);
     this.send({ type: "recalc_roll", request_id, message_id: messageId, roll_id: rollId, ops });
     return p;
+  }
+
+  /**
+   * Send any one of the eight combat intent frames (`combat_start`/`combat_pause`/
+   * `combat_end`/`combat_advance`/`combat_rewind`/`combat_roll`/`combat_resource`/
+   * `combat_sort`). Resolves once the next `event` frame arrives while this is the oldest
+   * pending combat entry (see `combatPending`'s field doc for why resolution is FIFO rather
+   * than correlated); rejects on a matching `combat_error` or after `timeoutMs`.
+   * @param msg The combat frame to send, already carrying its own `request_id`.
+   * @param opts Request options; `timeoutMs` (how long to wait for confirmation/`combat_error`
+   * before rejecting) defaults to 10000.
+   * @returns Resolves (void) once the intent is confirmed; rejects with the server's
+   * player-presentable reason otherwise.
+   * @example
+   * ```ts
+   * import { WsClient, webSocketConnect } from "@shadowcat/core";
+   *
+   * const client = new WsClient({
+   *   connect: webSocketConnect("wss://example.test/ws"),
+   *   world: "world-1",
+   *   handlers: { onCommand: () => {} },
+   * });
+   * await client.combat({ type: "combat_advance", request_id: crypto.randomUUID(), combat_id: "c1" });
+   * ```
+   */
+  combat(
+    msg: Extract<
+      ClientMsg,
+      {
+        /** Combat frame discriminant literal (matches every `combat_*` tag). */
+        type: `combat_${string}`;
+      }
+    >,
+    opts: WsTimeoutOptions = {},
+  ): Promise<void> {
+    const timeoutMs = opts.timeoutMs ?? 10_000;
+    return new Promise<void>((resolve, reject) => {
+      if (!this.transport) {
+        reject(new Error("not connected"));
+        return;
+      }
+      const timer = setTimeout(() => {
+        this.combatPending.delete(msg.request_id);
+        reject(new Error("combat request timeout"));
+      }, timeoutMs);
+      this.combatPending.set(msg.request_id, { resolve, reject, timer });
+      this.send(msg);
+    });
   }
 
   /** Apply one authoritative `event` frame's `WireCommand` against the ordering watermark:

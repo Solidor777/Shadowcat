@@ -775,6 +775,18 @@ export type ServerMsg =
       message: string;
     }
   | {
+      /** A combat intent (`combat_start`/`combat_pause`/`combat_end`/`combat_advance`/
+       * `combat_rewind`/`combat_roll`/`combat_resource`/`combat_sort`) was rejected. One
+       * wording for every refusal — never distinguishes hidden from absent from not-yours.
+       * Addressed to the originating connection only; never broadcast. Success is confirmed
+       * by the broadcast `event` echo. */
+      type: "combat_error";
+      /** The refused combat intent's correlation token. */
+      request_id: string;
+      /** Player-presentable failure text. */
+      message: string;
+    }
+  | {
       /** Broadcast to the scene, then clipped per recipient at egress: the mover receives
        * the full trajectory and `mover_vision`; observers receive only the position samples
        * their own vision admits, with `mover_vision` nulled; a fully-occluded recipient
@@ -944,6 +956,11 @@ export const serverMsgSchemaImpl = z.discriminatedUnion("type", [
     message: z.string(),
   }),
   z.object({
+    type: z.literal("combat_error"),
+    request_id: z.string(),
+    message: z.string(),
+  }),
+  z.object({
     type: z.literal("move_stream"),
     request_id: z.string(),
     token_id: z.string(),
@@ -1003,6 +1020,30 @@ export type WireRecalcOp =
       kind: "remove_dice";
       /** Targeted die ids. */
       ids: number[];
+    };
+
+/** One initiative roll within a `combat_roll` request. Mirrors `ws::protocol::CombatRollEntry`. */
+export type WireCombatRollEntry = {
+  /** The combatant to roll initiative for. */
+  combatant_id: string;
+  /** Dice notation for the roll (e.g. `1d20+3`). */
+  notation: string;
+};
+
+/** How a `combat_resource` request adjusts a tracked resource. The server clamps the
+ * resulting value to `[0, max]` in both cases. Mirrors `ws::protocol::ResourceOp`. */
+export type WireResourceOp =
+  | {
+      /** Add `amount` to the current value (negative to subtract). */
+      kind: "delta";
+      /** The signed adjustment. */
+      amount: number;
+    }
+  | {
+      /** Overwrite the current value outright. */
+      kind: "set";
+      /** The value to set. */
+      value: number;
     };
 
 /** Client -> server frames. Plain objects (numbers, JSON.stringify-friendly). Mirrors
@@ -1194,6 +1235,88 @@ export type ClientMsg =
       roll_id: string;
       /** The targeted mutation(s) to apply. */
       ops: WireRecalcOp[];
+    }
+  | {
+      /** Activate a combat: pauses any other active combat on its scene in the same command;
+       * a combat with no current turn initializes (round 1, first turn), one with a turn
+       * resumes. A rejection replies `combat_error`, correlated by `request_id`; success is
+       * confirmed by the broadcast `event` echo. */
+      type: "combat_start";
+      /** Correlation token for `combat_error`. */
+      request_id: string;
+      /** The combat. */
+      combat_id: string;
+    }
+  | {
+      /** Deactivate a combat; nothing else runs. Same reply protocol as `combat_start`. */
+      type: "combat_pause";
+      /** Correlation token for `combat_error`. */
+      request_id: string;
+      /** The combat. */
+      combat_id: string;
+    }
+  | {
+      /** Run end-of-combat effect cleanup, then delete the combat (children cascade). Same
+       * reply protocol as `combat_start`. */
+      type: "combat_end";
+      /** Correlation token for `combat_error`. */
+      request_id: string;
+      /** The combat. */
+      combat_id: string;
+    }
+  | {
+      /** End the current turn (GM, or its owner under an owner-may-end policy). Same reply
+       * protocol as `combat_start`. */
+      type: "combat_advance";
+      /** Correlation token for `combat_error`. */
+      request_id: string;
+      /** The combat. */
+      combat_id: string;
+    }
+  | {
+      /** Step back one turn record (GM). Same reply protocol as `combat_start`. */
+      type: "combat_rewind";
+      /** Correlation token for `combat_error`. */
+      request_id: string;
+      /** The combat. */
+      combat_id: string;
+    }
+  | {
+      /** Roll initiative for the named combatants on `channel`; posts one message per roll.
+       * Same reply protocol as `combat_start`. */
+      type: "combat_roll";
+      /** Correlation token for `combat_error`. */
+      request_id: string;
+      /** The combat. */
+      combat_id: string;
+      /** Chat channel the results post to (dice settings resolve per channel). */
+      channel: string;
+      /** The rolls. */
+      rolls: WireCombatRollEntry[];
+    }
+  | {
+      /** Adjust one tracked resource; the server clamps to `[0, max]`. Same reply protocol
+       * as `combat_start`. */
+      type: "combat_resource";
+      /** Correlation token for `combat_error`. */
+      request_id: string;
+      /** The combat. */
+      combat_id: string;
+      /** Target combatant. */
+      combatant_id: string;
+      /** Registry key. */
+      resource: string;
+      /** Delta or set. */
+      op: WireResourceOp;
+    }
+  | {
+      /** Rebuild the turn order from initiative without rolling (GM). Same reply protocol as
+       * `combat_start`. */
+      type: "combat_sort";
+      /** Correlation token for `combat_error`. */
+      request_id: string;
+      /** The combat. */
+      combat_id: string;
     };
 
 /**
