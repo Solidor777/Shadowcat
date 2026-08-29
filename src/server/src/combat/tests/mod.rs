@@ -205,6 +205,16 @@ pub(super) fn snapshot(
 /// Apply `ops` to the snapshot's documents (Create/Update/Delete over an id map) and return the
 /// new map — lets a test chain transitions. Mirrors the real repository's own per-doc field
 /// apply (`data::command::apply_field_change`), never re-deriving the mutation semantics.
+///
+/// Also performs a real OCC check, mirroring `SqliteRepository::apply_intent`'s Phase 1: every
+/// `FieldChange.old` is compared against the document's value at that path as it stood at the
+/// START of this whole `ops` batch — never a sibling op's already-applied intermediate value,
+/// since the real repository loads each `Operation::Update`'s target fresh from the DB before
+/// any op in the batch has written anything. A mismatch panics loudly (the shape the real
+/// repository would instead reject the whole batch for with `DataError::Conflict`) rather than
+/// silently writing `new` over a stale pre-image the way `data::command::apply_field_change`
+/// does on its own — that unconditional write is exactly what let a same-batch, same-path
+/// double-write pass this harness undetected before this check existed.
 pub(super) fn apply(snap: &CombatSnapshot, ops: &[Operation]) -> HashMap<Uuid, Document> {
     let mut docs: HashMap<Uuid, Document> = HashMap::new();
     docs.insert(snap.combat.id, snap.combat.clone());
@@ -214,6 +224,7 @@ pub(super) fn apply(snap: &CombatSnapshot, ops: &[Operation]) -> HashMap<Uuid, D
     for (id, d) in &snap.hosts {
         docs.insert(*id, d.clone());
     }
+    let batch_start = docs.clone();
     for op in ops {
         match op {
             Operation::Create { doc } => {
@@ -224,8 +235,23 @@ pub(super) fn apply(snap: &CombatSnapshot, ops: &[Operation]) -> HashMap<Uuid, D
             }
             Operation::Update { doc_id, changes } => {
                 if let Some(d) = docs.get_mut(doc_id) {
+                    let pre = batch_start.get(doc_id).expect(
+                        "an Update target existed pre-batch since it was loaded into docs above",
+                    );
+                    let pre_value = serde_json::to_value(pre).expect("Document serializes");
                     let mut v = serde_json::to_value(&*d).expect("Document serializes");
                     for ch in changes {
+                        let current = pre_value
+                            .pointer(&ch.path)
+                            .cloned()
+                            .unwrap_or(serde_json::Value::Null);
+                        assert_eq!(
+                            current, ch.old,
+                            "OCC violation: FieldChange at {} on {doc_id} carries a pre-image \
+                             that does not match the batch-start document value — the real \
+                             repository would reject this whole batch with DataError::Conflict",
+                            ch.path
+                        );
                         crate::data::command::apply_field_change(&mut v, ch)
                             .expect("field change applies to a fixture doc");
                     }

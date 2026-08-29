@@ -17,6 +17,10 @@ mod tests;
 
 pub use effects::collect_effects;
 pub use snapshot::{load_snapshot, CombatSnapshot, Combatant};
+/// Test-only seam onto `transition::advance_with_step_count` — see its own
+/// doc comment.
+#[cfg(test)]
+pub(crate) use transition::advance_with_step_count;
 pub use transition::{
     advance, end, pause, rebuild_order, resource, roll, sort, start, ResourceOp, RollPost,
 };

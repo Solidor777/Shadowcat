@@ -503,3 +503,98 @@ fn compressed_hidden_turn_coalesces_host_updates_into_one_operation() {
         "both effects' field changes are present in the single coalesced Update"
     );
 }
+
+#[test]
+fn compressed_hidden_turn_coalesces_combatant_updates_into_one_operation() {
+    // h is a hidden OwnerMayEnd actor encountered right after a (visible,
+    // current turn) ends. h's OWN resource recovers at BOTH boundaries of
+    // its compressed turn (turn_start +30, turn_end -10, the exact same
+    // configuration `guard_exhaustion_still_fully_resolves_...` uses) --
+    // two separate `run_boundary` calls write the SAME path on h's own
+    // combatant document. `Working::coalesce_updates` covers combatant
+    // documents identically to host documents, not just hosts.
+    let combat = Uuid::from_u128(1);
+    let a = actor_combatant(10, combat, 0xA, None, false, (0.0, 30.0));
+    let h = actor_combatant(11, combat, 0xB, None, true, (0.0, 30.0));
+    let mut registry = registry_with_movement(Formula::Number(30.0));
+    if let ResourceBinding::Tracked { recover, .. } =
+        &mut registry.resources.get_mut("movement").unwrap().binding
+    {
+        recover.turn_end = Formula::Number(-10.0);
+    }
+    let mut snap = snapshot(
+        combat_engine(vec![a.doc.id, h.doc.id], Some(a.doc.id), 1, true),
+        vec![a, h],
+        vec![],
+    );
+    snap.registry = Some(registry);
+    let ops = advance(&snap, WORLD, Uuid::nil(), 0).unwrap();
+    let combatant_updates: Vec<&Operation> = ops
+        .iter()
+        .filter(|o| matches!(o, Operation::Update { doc_id, .. } if *doc_id == Uuid::from_u128(11)))
+        .collect();
+    assert_eq!(
+        combatant_updates.len(),
+        1,
+        "both boundary passes' writes to h's own document must coalesce into one Operation::Update"
+    );
+    let Operation::Update { changes, .. } = combatant_updates[0] else {
+        unreachable!()
+    };
+    let movement_change = changes
+        .iter()
+        .find(|c| c.path == "/engine/resources/movement/current")
+        .expect("the merged FieldChange for h's movement resource is present");
+    assert_eq!(
+        movement_change.old,
+        serde_json::json!(0.0),
+        "old is the TRUE pre-transition value, not turn_start's intermediate 30.0"
+    );
+    assert_eq!(
+        movement_change.new,
+        serde_json::json!(20.0),
+        "new is the cumulative result of turn_start(+30) then turn_end(-10)"
+    );
+    // `apply`'s own strict OCC check is itself proof this batch is
+    // well-formed relative to the batch-start document.
+    let docs = apply(&snap, &ops);
+    let h_engine: CombatantEngine = engine_of(&docs, Uuid::from_u128(11));
+    assert_eq!(h_engine.resources["movement"].current, 20.0);
+}
+
+#[test]
+fn settle_turn_step_budget_stays_linear_even_with_many_sequential_event_removals() {
+    // N Event combatants with descending lifespans (E_i's lifespan is
+    // `N - i`, zero-indexed): every full lap over the CURRENT order
+    // decrements every remaining entry's lifespan by exactly one, so the
+    // entry currently LAST in the order is always the one that reaches
+    // zero, right on that lap's own final step -- the shape a full-length
+    // budget reset on every removal drives to O(N^2) total steps: N +
+    // (N-1) + ... + 1. `settle_turn`'s budget instead grows by only ONE
+    // step per removal, bounding the whole walk to a small multiple of N.
+    const N: u32 = 30;
+    let combat = Uuid::from_u128(1);
+    let mut combatants = Vec::new();
+    let mut order = Vec::new();
+    for i in 0..N {
+        let ev = event_combatant(100 + i as u128, combat, Some(N - i), None);
+        order.push(ev.doc.id);
+        combatants.push(ev);
+    }
+    let first = order[0];
+    let snap = snapshot(
+        combat_engine(order.clone(), Some(first), 1, true),
+        combatants,
+        vec![],
+    );
+    let (ops, steps) = advance_with_step_count(&snap, WORLD, Uuid::nil(), 0).unwrap();
+    assert!(
+        steps <= 3 * N as usize,
+        "settle_turn took {steps} steps for N={N} entries -- expected a LINEAR bound (<= 3N), \
+         not the O(N^2) the pre-fix full-budget reset produced"
+    );
+    assert!(
+        !ops.is_empty(),
+        "the walk did real work (removed at least one exhausted Event), not an early no-op"
+    );
+}

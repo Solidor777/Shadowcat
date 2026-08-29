@@ -6,15 +6,24 @@
 //! `advance`/`start` share one core mechanism (`settle_turn`): entering a
 //! combatant runs its `turn_start` boundary; an `Event` combatant, or a
 //! hidden combatant under `TurnControl::OwnerMayEnd`, immediately resolves
-//! and the walk continues to the next entry, bounded by `order.len()`
-//! iterations so an all-auto-resolving order (e.g. every entry an infinite
-//! `Event`) cannot loop forever — the guard's LAST iteration always stops
-//! and settles the turn wherever it lands, rather than erroring.
+//! and the walk continues to the next entry. The step budget starts at
+//! `order.len()` and grows by exactly one for every entry the walk
+//! deletes (an exhausted `Event`), rather than resetting to a fresh
+//! full-length guard on each deletion — so an all-auto-resolving order
+//! (e.g. every entry an infinite `Event`) still terminates, in a number of
+//! steps linear in `order`'s initial length, and the walk's last allowed
+//! step always settles the turn wherever it lands, rather than erroring.
 //! INVARIANT: nothing this module does for a hidden combatant is
 //! observable from outside its own document (no message, no distinguishing
 //! op shape) — the SAME `recover`/`tick`/`expire_by_policy` calls run for a
 //! hidden entry as for a visible one, writing only to that combatant's own
-//! (permission-gated) document and its own hosts' effect documents.
+//! (permission-gated) document and its own hosts' effect documents. Every
+//! `Operation::Update` a transition accumulates is folded, by document id,
+//! through `Working::coalesce_updates` once at the end — so a document
+//! written from more than one boundary/phase within the same command
+//! (compressed hidden turn, or more than one `resolve_event` deletion in
+//! one `settle_turn` walk) always reaches the caller as ONE `Update` per
+//! document, with a correct cumulative OCC pre-image.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
@@ -176,11 +185,15 @@ fn recover(
 /// document/engine, every combatant's document/engine, every host document,
 /// and the ops accumulated so far. `registry` is read-only for the whole
 /// transition (recoveries only ever READ it). Every mutation goes through
-/// `commit`, which applies the change to the LOCAL copy before recording the
-/// op — so a later `set_engine`/`set_effect_field` call in the same
-/// transition reads a pre-image that reflects every prior write in this
-/// same command, exactly as the real repository will see it when the ops
-/// are applied in order.
+/// `commit_combat`/`commit_combatant`/`apply_to_host`, which apply the
+/// change to the LOCAL copy before recording (or, for a host, before
+/// `commit_host_ops` records) the op — so a later `set_engine`/
+/// `set_effect_field` call in the same transition reads a pre-image that
+/// reflects every prior write in this same command. This progressive local
+/// application is NOT, by itself, what the real repository's own
+/// `Operation::Update` OCC contract expects (see `coalesce_updates`'s own
+/// doc comment) — `advance`/`start` reconcile the two by running
+/// `coalesce_updates` once, at the very end of the transition.
 struct Working {
     /// The combat document (kept live).
     combat: Document,
@@ -194,6 +207,12 @@ struct Working {
     registry: Option<ResourceRegistryEngine>,
     /// Ops accumulated so far, in commit order.
     ops: Vec<Operation>,
+    /// Total `settle_turn` loop iterations taken. Test-only instrumentation
+    /// for asserting the step budget stays linear in `order`'s initial
+    /// length (see `settle_turn`'s own doc comment) — never read outside a
+    /// test build.
+    #[cfg(test)]
+    settle_turn_steps: usize,
 }
 
 impl Working {
@@ -213,6 +232,8 @@ impl Working {
             hosts: snap.hosts.clone(),
             registry: snap.registry.clone(),
             ops: Vec::new(),
+            #[cfg(test)]
+            settle_turn_steps: 0,
         }
     }
 
@@ -347,53 +368,80 @@ impl Working {
     /// Runs `id`'s compressed turn: its own `run_turn_start` immediately
     /// followed by its own `run_turn_end` — the atomic start-and-end pair a
     /// hidden `OwnerMayEnd` actor gets, so no dead time between the two
-    /// boundaries reveals it. Every `Operation::Update` either boundary call
-    /// recorded against the SAME host document is coalesced into ONE
-    /// `Operation::Update` per host before this returns (see
-    /// `coalesce_host_updates`) — a normal (non-auto-resolving) combatant's
-    /// turn_start/turn_end are always split across separate `advance()`
-    /// commands and never reach this path, so a compressed turn's host-write
-    /// footprint (operation COUNT, not field count) never distinguishes it
-    /// from an ordinary single boundary pass.
+    /// boundaries reveals it. Any `Operation::Update` either boundary call
+    /// records against the SAME document (this combatant's own document, or
+    /// a shared host) is folded together with every other write to that same
+    /// document in this transition by the single `coalesce_updates` pass
+    /// `advance`/`start` run over the WHOLE transition just before
+    /// returning — so a compressed turn's write footprint (operation COUNT,
+    /// not field count) never distinguishes it from an ordinary single
+    /// boundary pass, the same guarantee whether the second write came from
+    /// this pair or from anywhere else in the same command.
     fn run_compressed_turn(&mut self, id: Uuid) -> Result<(), CombatError> {
-        let checkpoint = self.ops.len();
         run_turn_start(self, id)?;
-        run_turn_end(self, id)?;
-        self.coalesce_host_updates(checkpoint);
-        Ok(())
+        run_turn_end(self, id)
     }
 
     /// Merges every `Operation::Update` recorded since index `from` that
-    /// targets a HOST document (never a combat/combatant doc — those ids are
-    /// structurally disjoint from `hosts`, see `commit_combat`'s own
-    /// INVARIANT note) into ONE `Operation::Update` per host id, at that
-    /// host's first-appearance position. A host's merged `changes` keep their
-    /// original relative order — the second boundary's changes were already
-    /// computed against the FIRST boundary's applied values (`Working`
-    /// mutates `hosts` live via `apply_to_host`), so merging only changes how
-    /// many `Operation`s wrap them, never their correctness.
-    fn coalesce_host_updates(&mut self, from: usize) {
+    /// targets the SAME document id into ONE `Operation::Update` per id, at
+    /// that id's first-appearance position. `FieldChange`s at DIFFERENT
+    /// paths on the same document are kept side by side, in their original
+    /// relative order. `FieldChange`s at the SAME path — a resource
+    /// recovered at more than one boundary in this transition (e.g. both
+    /// `recover.turn_start` and `recover.turn_end` on one key within a
+    /// `run_compressed_turn`), or `/engine/order` rewritten by more than one
+    /// `resolve_event` deletion in the same `settle_turn` walk — are folded
+    /// into ONE `FieldChange` via `merge_field_changes`, never left as two
+    /// separate entries. INVARIANT this exists to satisfy:
+    /// `SqliteRepository::apply_intent`'s Phase 1 snapshots ONE whole-document
+    /// `Value` per `Operation::Update` and checks every `FieldChange` in its
+    /// `changes` list against that SAME fixed snapshot — so two separate
+    /// entries at one path would have the second checked against the
+    /// untouched original value rather than the first entry's `new`, even
+    /// though `Working`'s own progressive local application (see `Working`'s
+    /// own doc comment) made the second `FieldChange.old` correct RELATIVE
+    /// to the first. Concatenating instead of merging would silently
+    /// reproduce that exact conflict.
+    fn coalesce_updates(&mut self, from: usize) {
         let mut merged: Vec<Operation> = Vec::new();
-        let mut index_by_host: HashMap<Uuid, usize> = HashMap::new();
+        let mut index_by_id: HashMap<Uuid, usize> = HashMap::new();
         for op in self.ops.drain(from..) {
-            match op {
-                Operation::Update { doc_id, changes } if self.hosts.contains_key(&doc_id) => {
-                    if let Some(&i) = index_by_host.get(&doc_id) {
-                        if let Operation::Update {
-                            changes: existing, ..
-                        } = &mut merged[i]
-                        {
-                            existing.extend(changes);
-                        }
-                    } else {
-                        index_by_host.insert(doc_id, merged.len());
-                        merged.push(Operation::Update { doc_id, changes });
-                    }
-                }
-                other => merged.push(other),
+            let Operation::Update { doc_id, changes } = op else {
+                merged.push(op);
+                continue;
+            };
+            if let Some(&i) = index_by_id.get(&doc_id) {
+                let Operation::Update {
+                    changes: existing, ..
+                } = &mut merged[i]
+                else {
+                    unreachable!("index_by_id only ever indexes an Update slot");
+                };
+                merge_field_changes(existing, changes);
+            } else {
+                index_by_id.insert(doc_id, merged.len());
+                merged.push(Operation::Update { doc_id, changes });
             }
         }
         self.ops.extend(merged);
+    }
+}
+
+/// Folds `incoming` into `existing` in place, in favor of `existing`
+/// (called only from `Working::coalesce_updates`, whose own doc comment
+/// carries the full invariant this satisfies): a `FieldChange` at a path
+/// already present keeps `existing`'s `old` — the earlier, batch-start-
+/// accurate pre-image — but takes `incoming`'s `new`/`remove` — the later,
+/// cumulative post-image; a `FieldChange` at a new path is appended,
+/// preserving arrival order.
+fn merge_field_changes(existing: &mut Vec<FieldChange>, incoming: Vec<FieldChange>) {
+    for ch in incoming {
+        if let Some(prior) = existing.iter_mut().find(|e| e.path == ch.path) {
+            prior.new = ch.new;
+            prior.remove = ch.remove;
+        } else {
+            existing.push(ch);
+        }
     }
 }
 
@@ -611,18 +659,24 @@ fn resolve_event(
 /// auto-resolving it in full and continuing to the next entry — a hidden
 /// actor's auto-resolve runs its `run_turn_start`+`run_turn_end` pair
 /// together via `Working::run_compressed_turn` (never split, never skipped),
-/// and an `Event` always gets its own `resolve_event`. Bounded to
-/// `order.len()` steps between two entries that are BOTH still present in
-/// `order`; a step that deletes an exhausted `Event` (shrinking `order`)
-/// resets the bound to the new, smaller length, so the walk always
-/// terminates (each such reset can only happen `order.len()` times in total,
-/// since `order` strictly shrinks). INVARIANT: whichever entry ends up
-/// holding `turn` — whether it stopped genuinely or the bound ran out with
-/// every entry still auto-resolving — has ALWAYS already completed its own
-/// resolution (an auto-resolving entry is never left mid-turn holding
-/// `turn`); the guard-exhaustion case parks `turn` on the last entry visited,
-/// per the "an all-hidden/all-event order terminates with `turn` on the last
-/// visited entry and a round advanced" case.
+/// and an `Event` always gets its own `resolve_event`. The step budget
+/// starts at `order.len()` (a single full pass over every entry present at
+/// the walk's start) and grows by exactly ONE for every step that deletes
+/// an exhausted `Event`, rather than resetting to a fresh full-length guard
+/// on each deletion — a deletion can happen at most `order.len()` times in
+/// total, since `order` strictly shrinks and never regrows within one walk,
+/// so the total budget across the whole walk is bounded by `2 *
+/// order.len()`: LINEAR in the walk's starting size, never quadratic (the
+/// prior guard reset to a fresh full-length budget on every deletion, which
+/// a descending-lifespan `Event` order — each cycle expiring exactly one
+/// entry right as its own cycle's budget runs out — drives to `O(order.len()
+/// ^2)` total steps). INVARIANT: whichever entry ends up holding `turn` —
+/// whether it stopped genuinely or the budget ran out with every entry still
+/// auto-resolving — has ALWAYS already completed its own resolution (an
+/// auto-resolving entry is never left mid-turn holding `turn`); the
+/// budget-exhaustion case parks `turn` on the last entry visited, per the
+/// "an all-hidden/all-event order terminates with `turn` on the last visited
+/// entry and a round advanced" case.
 fn settle_turn(
     w: &mut Working,
     mut idx: usize,
@@ -633,8 +687,8 @@ fn settle_turn(
     if w.engine.order.is_empty() {
         return Err(CombatError::Empty);
     }
-    let mut guard = w.engine.order.len();
-    let mut i = 0usize;
+    let mut budget = w.engine.order.len();
+    let mut steps = 0usize;
     loop {
         if w.engine.order.is_empty() {
             return Err(CombatError::Empty);
@@ -669,25 +723,26 @@ fn settle_turn(
             false
         };
 
-        if i + 1 >= guard {
-            if !removed {
-                // entry_id fully resolved (turn_start + turn_end/event
-                // resolution both ran) but nothing genuinely stopping was
-                // found within the bound — park `turn` on it anyway.
-                w.set_turn(entry_id)?;
-                return Ok(());
-            }
-            // entry_id no longer exists (an exhausted Event was deleted from
-            // `order`); grant one more bound worth of steps against the now-
-            // strictly-smaller `order` rather than settling on a deleted
-            // combatant.
-            guard = w.engine.order.len();
-            i = 0;
-            idx = advance_from(w, idx, removed)?;
-            continue;
+        steps += 1;
+        #[cfg(test)]
+        {
+            w.settle_turn_steps = steps;
+        }
+
+        if removed {
+            // `order` just shrank by one; grant exactly one more step of
+            // budget for the shrink, rather than resetting to a fresh
+            // full-length guard — the source of the quadratic blowup this
+            // budget replaces.
+            budget += 1;
+        } else if steps >= budget {
+            // entry_id fully resolved (turn_start + turn_end/event
+            // resolution both ran) but nothing genuinely stopping was found
+            // within the budget — park `turn` on it anyway.
+            w.set_turn(entry_id)?;
+            return Ok(());
         }
         idx = advance_from(w, idx, removed)?;
-        i += 1;
     }
 }
 
@@ -814,20 +869,24 @@ pub fn start(
     }
     let active_change = set_engine(&w.combat, "/engine/active", json!(true))?;
     w.commit_combat(vec![active_change])?;
+    w.coalesce_updates(0);
     Ok(w.ops)
 }
 
-/// Ends the current turn, advances to the next combatant (wrapping the
-/// round when the order is exhausted), and settles the new turn — see the
-/// module doc for the auto-resolve/termination guarantee.
-pub fn advance(
+/// Shared implementation for `advance`: builds the ops for ending the
+/// current turn, advancing to the next combatant (wrapping the round when
+/// the order is exhausted), and settling the new turn. Returns the
+/// `settle_turn` step count alongside the ops so `advance_with_step_count`
+/// (test-only) can assert its linear bound without re-deriving `advance`'s
+/// own wiring separately.
+fn advance_impl(
     snap: &CombatSnapshot,
     world: Uuid,
     author: Uuid,
     now: i64,
-) -> Result<Vec<Operation>, CombatError> {
+) -> Result<(Vec<Operation>, usize), CombatError> {
     if let Some(ops) = history::fast_forward(snap)? {
-        return Ok(ops);
+        return Ok((ops, 0));
     }
     if !snap.engine.active {
         return Err(CombatError::NotRunning);
@@ -847,7 +906,39 @@ pub fn advance(
     let next_idx = advance_from(&mut w, start_idx, false)?;
     settle_turn(&mut w, next_idx, world, author, now)?;
     history::append_record(snap, &mut w.ops);
-    Ok(w.ops)
+    w.coalesce_updates(0);
+    #[cfg(test)]
+    let steps = w.settle_turn_steps;
+    #[cfg(not(test))]
+    let steps = 0usize;
+    Ok((w.ops, steps))
+}
+
+/// Ends the current turn, advances to the next combatant (wrapping the
+/// round when the order is exhausted), and settles the new turn — see the
+/// module doc for the auto-resolve/termination guarantee.
+pub fn advance(
+    snap: &CombatSnapshot,
+    world: Uuid,
+    author: Uuid,
+    now: i64,
+) -> Result<Vec<Operation>, CombatError> {
+    advance_impl(snap, world, author, now).map(|(ops, _)| ops)
+}
+
+/// Test-only seam: identical to `advance`, but also returns the number of
+/// `settle_turn` loop iterations taken — lets a test assert the walk's
+/// removal-adjusted step budget stays linear in `order`'s starting length
+/// rather than inferring iteration counts from an external proxy (wall
+/// clock, op count) that a `coalesce_updates` pass would otherwise obscure.
+#[cfg(test)]
+pub(crate) fn advance_with_step_count(
+    snap: &CombatSnapshot,
+    world: Uuid,
+    author: Uuid,
+    now: i64,
+) -> Result<(Vec<Operation>, usize), CombatError> {
+    advance_impl(snap, world, author, now)
 }
 
 /// Pauses a running combat: clears `active` only. `NotRunning` if it is not

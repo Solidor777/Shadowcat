@@ -61,10 +61,17 @@ fn collect_effects_finds_anchored_effects_on_actor_token_copy_and_transferring_i
 #[test]
 fn boundary_tick_decrements_and_expires_at_zero_and_skips_unresolved() {
     let combat = Uuid::from_u128(1);
-    let a = actor_combatant(10, combat, 0xA, None, false, (0.0, 30.0));
-    let b = actor_combatant(11, combat, 0xB, None, false, (0.0, 30.0));
-    let host_a = actor_with_effect(0xA, None, 1, ExpiryPoint::TurnEnd, DurationUnit::Turns);
-    let mut host_b = actor_with_effect(0xB, None, 1, ExpiryPoint::TurnEnd, DurationUnit::Turns);
+    // Host ids (0x1A/0x1B) deliberately distinct from the combatants' own
+    // doc ids (10/11) — a host id must never numerically collide with a
+    // combatant doc id (see `an_effect_with_no_lifecycle_at_all...`'s own
+    // note); a real, randomly-generated UUID pair never collides this way,
+    // but `apply`'s strict OCC check catches it immediately if a fixture
+    // does, since a collision merges the combatant's and the host's
+    // documents onto one map entry.
+    let a = actor_combatant(10, combat, 0x1A, None, false, (0.0, 30.0));
+    let b = actor_combatant(11, combat, 0x1B, None, false, (0.0, 30.0));
+    let host_a = actor_with_effect(0x1A, None, 1, ExpiryPoint::TurnEnd, DurationUnit::Turns);
+    let mut host_b = actor_with_effect(0x1B, None, 1, ExpiryPoint::TurnEnd, DurationUnit::Turns);
     let mut e: EffectEngine =
         serde_json::from_value(host_b.embedded["effect"][0].engine.clone().unwrap()).unwrap();
     e.duration.as_mut().unwrap().remaining = None;
@@ -77,7 +84,7 @@ fn boundary_tick_decrements_and_expires_at_zero_and_skips_unresolved() {
     let ops = advance(&snap, WORLD, Uuid::nil(), 0).unwrap();
     let docs = apply(&snap, &ops);
     let ea: EffectEngine = serde_json::from_value(
-        docs[&Uuid::from_u128(0xA)].embedded["effect"][0]
+        docs[&Uuid::from_u128(0x1A)].embedded["effect"][0]
             .engine
             .clone()
             .unwrap(),
@@ -86,7 +93,7 @@ fn boundary_tick_decrements_and_expires_at_zero_and_skips_unresolved() {
     assert_eq!(ea.duration.unwrap().remaining, Some(0));
     assert!(!ea.active);
     let eb: EffectEngine = serde_json::from_value(
-        docs[&Uuid::from_u128(0xB)].embedded["effect"][0]
+        docs[&Uuid::from_u128(0x1B)].embedded["effect"][0]
             .engine
             .clone()
             .unwrap(),
@@ -101,10 +108,13 @@ fn boundary_tick_decrements_and_expires_at_zero_and_skips_unresolved() {
 #[test]
 fn rounds_unit_ticks_only_on_round_boundaries_and_turn_end_policy_expires_at_host_turn_end() {
     let combat = Uuid::from_u128(1);
-    let a = actor_combatant(10, combat, 0xA, None, false, (0.0, 30.0));
-    let b = actor_combatant(11, combat, 0xB, None, false, (0.0, 30.0));
-    let host_a = actor_with_effect(0xA, None, 2, ExpiryPoint::RoundEnd, DurationUnit::Rounds);
-    let mut host_b = actor_with_effect(0xB, None, 5, ExpiryPoint::RoundEnd, DurationUnit::Rounds);
+    // Host ids (0x1A/0x1B) deliberately distinct from the combatants' own
+    // doc ids (10/11) — see the identical note in
+    // `boundary_tick_decrements_and_expires_at_zero_and_skips_unresolved`.
+    let a = actor_combatant(10, combat, 0x1A, None, false, (0.0, 30.0));
+    let b = actor_combatant(11, combat, 0x1B, None, false, (0.0, 30.0));
+    let host_a = actor_with_effect(0x1A, None, 2, ExpiryPoint::RoundEnd, DurationUnit::Rounds);
+    let mut host_b = actor_with_effect(0x1B, None, 5, ExpiryPoint::RoundEnd, DurationUnit::Rounds);
     let mut e: EffectEngine =
         serde_json::from_value(host_b.embedded["effect"][0].engine.clone().unwrap()).unwrap();
     e.lifecycle.as_mut().unwrap().resolved = Some(ResolvedLifecycle {
@@ -120,7 +130,7 @@ fn rounds_unit_ticks_only_on_round_boundaries_and_turn_end_policy_expires_at_hos
     );
     let docs = apply(&snap, &advance(&snap, WORLD, Uuid::nil(), 0).unwrap()); // b's turn ends, round wraps
     let ea: EffectEngine = serde_json::from_value(
-        docs[&Uuid::from_u128(0xA)].embedded["effect"][0]
+        docs[&Uuid::from_u128(0x1A)].embedded["effect"][0]
             .engine
             .clone()
             .unwrap(),
@@ -132,7 +142,7 @@ fn rounds_unit_ticks_only_on_round_boundaries_and_turn_end_policy_expires_at_hos
         "one round boundary passed"
     );
     let eb: EffectEngine = serde_json::from_value(
-        docs[&Uuid::from_u128(0xB)].embedded["effect"][0]
+        docs[&Uuid::from_u128(0x1B)].embedded["effect"][0]
             .engine
             .clone()
             .unwrap(),
