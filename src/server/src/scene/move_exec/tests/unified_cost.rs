@@ -111,6 +111,56 @@ fn budget_exactly_equal_to_the_cost_is_affordable() {
 }
 
 #[test]
+fn gm_move_ignores_budget_but_still_accrues_cost() {
+    // Cost is information, not a gate — a GM's move never truncates on budget, mirroring
+    // `gm_move_accrues_terrain_cost`'s precedent that terrain accrual is independent of the
+    // gameplay exemption.
+    let (ecs, scene, token) = scene_with_terrain_multiplier_3();
+    let out = execute_move(
+        &ecs,
+        MoveGateInputs {
+            scene,
+            restriction: MovementRestriction::Unrestricted,
+            visible: &empty_mask(),
+            cell: FIXTURE_GRID_SIZE,
+            budget: Some(0.0),
+        },
+        token,
+        &[(50.0, 50.0), (150.0, 50.0)],
+        true,
+        0.4,
+    )
+    .expect("admissible");
+    assert!(!out.truncated, "a GM move is not truncated by budget");
+    assert!(
+        out.cost >= 3.0,
+        "terrain still accrues for a GM, got {}",
+        out.cost
+    );
+}
+
+#[test]
+fn non_finite_budget_is_rejected_as_degenerate() {
+    let (ecs, scene, token) = clear_scene();
+    let err = execute_move(
+        &ecs,
+        MoveGateInputs {
+            scene,
+            restriction: MovementRestriction::Unrestricted,
+            visible: &empty_mask(),
+            cell: FIXTURE_GRID_SIZE,
+            budget: Some(f64::NAN),
+        },
+        token,
+        &[(0.0, 0.0), (100.0, 100.0)],
+        false,
+        0.4,
+    )
+    .expect_err("a NaN budget must fail closed, not behave as unlimited");
+    assert!(matches!(err, MoveReject::Degenerate), "got {err:?}");
+}
+
+#[test]
 fn hex_steps_cost_one_regardless_of_the_square_rule() {
     let (mut ecs, scene, token) = hex_clear_scene();
     ecs.set_world_settings_for_test(super::super::super::tests::ws_body(&[(

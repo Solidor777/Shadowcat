@@ -46,6 +46,7 @@ use std::collections::BTreeSet;
 
 use uuid::Uuid;
 
+use crate::scene::grid_shape::euclidean_span_cells;
 use crate::scene::{MovementModel, MovementRestriction, SceneEcs};
 
 /// Epsilon for `path[0]`-vs-committed-position comparison (scene units).
@@ -198,10 +199,11 @@ pub(crate) struct MoveOutcome {
     /// fully traversed, plus the exact stop point when the stop lands mid-subdivision (a
     /// continuous-path truncation that is not itself an authored vertex).
     pub render_path: Vec<(f64, f64)>,
-    /// `true` when the move stopped before `path.last()` — wall, mask, region-impassable, OR
-    /// region-arrest, including a region-arrest on the FINAL step (where `stop_index ==
-    /// path.len()-1` would make the index comparison alone report false; a `stopped_early`
-    /// bool ensures that case is reported correctly). Threaded onto the `MoveStream` wire
+    /// `true` when the move stopped before `path.last()` — wall, mask, region-impassable,
+    /// region-arrest, OR an exhausted movement `MoveGateInputs::budget`, including a
+    /// region-arrest on the FINAL step (where `stop_index == path.len()-1` would make the
+    /// index comparison alone report false; a `stopped_early` bool ensures that case is
+    /// reported correctly). Threaded onto the `MoveStream` wire
     /// frame via `MoveExecution::truncated`, and trusted-only there: a clipped observer
     /// receives `None`.
     pub truncated: bool,
@@ -255,9 +257,13 @@ pub(crate) struct MoveGateInputs<'a> {
     /// which binds a GM exactly as it binds a player.
     pub cell: f64,
     /// Remaining movement in cells; the walk stops before the first transition whose cumulative
-    /// cost would exceed it. `None` = unlimited. The caller passes `None` for a GM (never
-    /// truncated) — like `visible`, an input the gameplay exemption covers, so it lives here
-    /// rather than as a standalone parameter.
+    /// cost would exceed it. `None` = unlimited. Like `visible`, a GM is structurally exempt
+    /// from this gate (`execute_move`'s own `check_budget = !is_gm`, matching `check_walls`/
+    /// `check_regions`/`check_mask`) regardless of what the caller passes here — the caller
+    /// convention is still to pass `None` for a GM, but a future caller that forgets cannot
+    /// truncate a GM's move. A non-finite `Some` value is `MoveReject::Degenerate`, matching
+    /// every other `f64` input this function accepts. Cost still accrues for a GM regardless of
+    /// this exemption; only the STOP is gated.
     pub budget: Option<f64>,
 }
 
@@ -304,12 +310,11 @@ pub(crate) struct MoveGateInputs<'a> {
 /// - `token` — Token doc id.
 /// - `path` — Proposed path (cell centers for grid, any-angle vertices for continuous);
 ///   `path[0]` must equal the token's committed position within `EPS`.
-/// - `is_gm` — When true, every gameplay gate (walls, mask, impassable, arrest) is bypassed,
-///   matching `publish`'s own GM position write. Resource
+/// - `is_gm` — When true, every gameplay gate (walls, mask, impassable, arrest, budget
+///   truncation) is bypassed, matching `publish`'s own GM position write. Resource
 ///   guards (`gate_walk`'s `MAX_GATE_WALK_COORD`/`MAX_GATE_WALK_SAMPLES`, the non-finite and
 ///   scene-existence refusals, and the `footprint_radius_cells` range guard) are never
-///   exempted. Budget truncation binds only when the caller passes `gate.budget`, which it
-///   never does for a GM — terrain cost still accrues regardless.
+///   exempted. Terrain cost still accrues regardless of the exemption; only the STOP is gated.
 /// - `footprint_radius_cells` — The mover's bounding-disc radius in grid cells (see
 ///   `SceneEcs::resolve_token_footprint`). Must be in `[0, pathfinding::MAX_FOOTPRINT_CELLS]`;
 ///   out-of-range (including NaN) is `MoveReject::Degenerate`, unconditionally — a GM's wider
@@ -351,6 +356,19 @@ pub(crate) fn execute_move(
     if !(0.0..=crate::scene::pathfinding::MAX_FOOTPRINT_CELLS).contains(&footprint_radius_cells) {
         return Err(MoveReject::Degenerate);
     }
+    // `budget` is validated exactly like every other `f64` input this function accepts
+    // (`cell`, path coordinates, `footprint_radius_cells`): a non-finite value is rejected
+    // BEFORE it reaches the per-transition `cost + step_cost > b + 1e-9` comparison, where a
+    // NaN `b` would otherwise make every such comparison evaluate `false` (IEEE-754 NaN
+    // comparisons never return `true`) and silently behave as `None` (unlimited). A finite
+    // negative budget is NOT rejected here — it degrades gracefully at the first transition
+    // instead (every non-negative `step_cost` immediately exceeds it), so only non-finite
+    // values are a structural admissibility failure.
+    if let Some(b) = budget {
+        if !b.is_finite() {
+            return Err(MoveReject::Degenerate);
+        }
+    }
 
     // path[0] must equal the token's committed position. The ECS is authoritative; the
     // client must request from the real position, not a claimed one.
@@ -373,6 +391,11 @@ pub(crate) fn execute_move(
     let check_walls = !is_gm;
     let check_regions = !is_gm;
     let check_mask = !is_gm && !matches!(restriction, MovementRestriction::Unrestricted);
+    // Structural GM exemption, matching `check_walls`/`check_regions`/`check_mask` above: this
+    // function itself guarantees a GM is never truncated by budget, rather than relying on
+    // every future caller to remember to pass `budget: None` for a GM. Cost still accrues
+    // regardless (see the `budget` field's own doc comment) — only the STOP is gated.
+    let check_budget = !is_gm;
 
     // Authoritative region field: always the full field, never filtered — this
     // executor springs secret regions regardless of what the mover's pathfind preview
@@ -522,14 +545,18 @@ pub(crate) fn execute_move(
                         parity = p;
                         sc
                     })
-                    .unwrap_or_else(|| span_cells(prev, next, world_per_cell)),
-                MovementModel::Continuous => span_cells(last_transition_pos, next, world_per_cell),
+                    .unwrap_or_else(|| euclidean_span_cells(prev, next, world_per_cell)),
+                MovementModel::Continuous => {
+                    euclidean_span_cells(last_transition_pos, next, world_per_cell)
+                }
             };
             let step_cost = step * regions.terrain_multiplier(next_cell);
-            if let Some(b) = budget {
-                if cost + step_cost > b + 1e-9 {
-                    stopped_early = true;
-                    break;
+            if check_budget {
+                if let Some(b) = budget {
+                    if cost + step_cost > b + 1e-9 {
+                        stopped_early = true;
+                        break;
+                    }
                 }
             }
             cost += step_cost;
@@ -560,7 +587,7 @@ pub(crate) fn execute_move(
     if matches!(movement_model, MovementModel::Continuous) {
         let stop_pos = walk[stop_idx].pos;
         let stop_cell = to_cell(stop_pos);
-        cost += span_cells(last_transition_pos, stop_pos, world_per_cell)
+        cost += euclidean_span_cells(last_transition_pos, stop_pos, world_per_cell)
             * regions.terrain_multiplier(stop_cell);
     }
 
@@ -594,16 +621,6 @@ pub(crate) fn execute_move(
         truncated,
         cost,
     })
-}
-
-/// Euclidean distance from `a` to `b`, in CELLS — divided by `world_per_cell` (the
-/// authored-distance conversion; never `cell`, the indexing scale — see
-/// `GridShape::world_units_per_cell`'s own note on the distinction). Prices a `Continuous`
-/// transition/tail span the same way the polyanya/Euclidean route integrates it, and backstops a
-/// `GridStepped` transition this scene's own `GridShape::neighbors_with_cost` does not recognize
-/// as adjacent.
-fn span_cells(a: (f64, f64), b: (f64, f64), world_per_cell: f64) -> f64 {
-    (b.0 - a.0).hypot(b.1 - a.1) / world_per_cell
 }
 
 #[cfg(test)]

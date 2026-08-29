@@ -112,7 +112,7 @@ fn continuous_smoothed_preview_cost_equals_executor_cost() {
     )
     .expect("admissible");
     assert!(
-        (route.cost - out.cost).abs() < 1e-6,
+        (route.cost - out.cost).abs() < 1e-9,
         "preview {} vs execution {}",
         route.cost,
         out.cost

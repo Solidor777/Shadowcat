@@ -261,6 +261,21 @@ pub(crate) fn exceeds_cell_cap(bounds: (i32, i32, i32, i32), max_cells: i64) -> 
     candidate_span(bounds) > max_cells
 }
 
+/// Euclidean distance from `a` to `b`, in CELLS — divided by `world_units_per_cell` (the
+/// authored-distance conversion; never the shape's INDEXING scale — see that method's own note
+/// on the distinction). The single shared formula for "Euclidean span between two scene points,
+/// converted to cells": `move_exec::execute_move`'s `Continuous` transition/tail pricing and its
+/// `GridStepped` fallback for a transition the shape's own `neighbors_with_cost` does not
+/// recognize as adjacent, and `navmesh::los_smooth`'s exact per-window cost, both price a span
+/// this way and MUST agree bit-for-bit — a route preview and its later execution report the same
+/// number for the same route (pinned by `cost_parity`'s parity tests). Uses `f64::hypot`, which is
+/// more numerically robust against overflow/underflow at extreme magnitudes than the equivalent
+/// `(dx*dx + dy*dy).sqrt()` — the two are not always bit-identical, so a caller computing the same
+/// quantity by hand rather than through this function silently reintroduces that mismatch.
+pub(crate) fn euclidean_span_cells(a: (f64, f64), b: (f64, f64), world_units_per_cell: f64) -> f64 {
+    (b.0 - a.0).hypot(b.1 - a.1) / world_units_per_cell
+}
+
 /// The ordinary square-grid formulas: `cell_center` is `((i+0.5)*cell, (j+0.5)*cell)`;
 /// `footprint_cells` is disc-vs-cell overlap; `line_traversal` delegates to
 /// `movement::supercover_cells`; `neighbors_with_cost` is the 8-directional `dirs` array +

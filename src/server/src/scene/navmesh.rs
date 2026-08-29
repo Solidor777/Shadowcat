@@ -506,18 +506,21 @@ pub(crate) fn los_smooth(
         i = best;
     }
 
-    // Exact per-span cost: `world_per_cell` (the authored-distance conversion — never `cell`, the
-    // indexing scale) converts each window's Euclidean length to cells; the window is priced at
-    // ITS OWN destination cell's terrain multiplier. See this function's doc comment for why a
-    // closed form over the (unsampled) window endpoints is exact for both a straightened chord
-    // (every entered cell, destination included, carries multiplier `<= 1.0` by construction) and
-    // a kept single grid step (the one king-move edge `find` already priced this way).
+    // Exact per-span cost: `euclidean_span_cells` (the SAME formula `move_exec::execute_move`
+    // prices a Continuous transition/tail span with — see that function's own doc comment on why
+    // the two must agree bit-for-bit) converts each window's Euclidean length to cells via
+    // `world_units_per_cell` (the authored-distance conversion — never `cell`, the indexing
+    // scale); the window is priced at ITS OWN destination cell's terrain multiplier. See this
+    // function's doc comment for why a closed form over the (unsampled) window endpoints is exact
+    // for both a straightened chord (every entered cell, destination included, carries multiplier
+    // `<= 1.0` by construction) and a kept single grid step (the one king-move edge `find`
+    // already priced this way).
     let world_per_cell = grid.world_units_per_cell();
     let cost: f64 = smoothed
         .windows(2)
         .map(|w| {
-            let dist = ((w[1].0 - w[0].0).powi(2) + (w[1].1 - w[0].1).powi(2)).sqrt();
-            (dist / world_per_cell) * field.terrain_multiplier(grid.cell_of(w[1]))
+            crate::scene::grid_shape::euclidean_span_cells(w[0], w[1], world_per_cell)
+                * field.terrain_multiplier(grid.cell_of(w[1]))
         })
         .sum();
 
