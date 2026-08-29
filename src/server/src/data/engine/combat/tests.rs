@@ -196,7 +196,7 @@ fn effect_duration_amount_must_be_positive() {
 
 #[test]
 fn resolve_combat_rules_scene_overrides_world_overrides_engine() {
-    let engine_only = resolve_combat_rules(None, None);
+    let engine_only = resolve_combat_rules(None, None, None);
     assert_eq!(
         engine_only,
         ResolvedCombatRules {
@@ -220,7 +220,7 @@ fn resolve_combat_rules_scene_overrides_world_overrides_engine() {
         enforcement: Some(Enforcement::Warn),
         turn_control: None,
     };
-    let r = resolve_combat_rules(Some(&world), Some(&scene));
+    let r = resolve_combat_rules(None, Some(&world), Some(&scene));
     assert_eq!(r.movement.resource.as_deref(), Some("ship"));
     assert_eq!(r.movement.interpretation, Interpretation::Spaces);
     assert_eq!(r.movement.enforcement, Enforcement::Warn);
@@ -231,10 +231,39 @@ fn resolve_combat_rules_scene_overrides_world_overrides_engine() {
         ..Default::default()
     };
     assert_eq!(
-        resolve_combat_rules(Some(&world), Some(&clear))
+        resolve_combat_rules(None, Some(&world), Some(&clear))
             .movement
             .resource,
         None
+    );
+}
+
+#[test]
+fn resolve_combat_rules_system_layer_sits_under_world_and_scene() {
+    let system = CombatDefaults {
+        enforcement: Some(Enforcement::Hard),
+        turn_control: Some(TurnControl::GmOnly),
+        ..Default::default()
+    };
+    let world = CombatDefaults {
+        enforcement: Some(Enforcement::Warn),
+        ..Default::default()
+    };
+    let r = resolve_combat_rules(Some(&system), Some(&world), None);
+    assert_eq!(r.movement.enforcement, Enforcement::Warn);
+    assert_eq!(r.turn_control, TurnControl::GmOnly);
+    let scene = CombatDefaults {
+        movement_resource: Some(None),
+        ..Default::default()
+    };
+    let system = CombatDefaults {
+        movement_resource: Some(Some("movement".into())),
+        ..Default::default()
+    };
+    let r = resolve_combat_rules(Some(&system), None, Some(&scene));
+    assert_eq!(
+        r.movement.resource, None,
+        "a scene clear beats a system-supplied resource"
     );
 }
 

@@ -124,20 +124,22 @@ pub struct ResolvedCombatRules {
 }
 
 /// Resolve the combat rules for a scene: scene overrides beat world overrides
-/// beat the engine fallback (no resource, `PerCell`, `None`, `OwnerMayEnd`).
-/// Pure; the SOLE resolver of this chain — the combat-start transition reads
-/// it and nothing re-derives the precedence elsewhere.
+/// beat system-defaults overrides beat the engine fallback (no resource,
+/// `PerCell`, `None`, `OwnerMayEnd`). Pure; the SOLE resolver of this chain —
+/// the combat-start transition reads it and nothing re-derives the
+/// precedence elsewhere.
 ///
 /// # Examples
 ///
 /// ```
 /// use shadowcat::data::engine::combat::{resolve_combat_rules, Enforcement};
 ///
-/// let r = resolve_combat_rules(None, None);
+/// let r = resolve_combat_rules(None, None, None);
 /// assert_eq!(r.movement.enforcement, Enforcement::None);
 /// assert!(r.movement.resource.is_none());
 /// ```
 pub fn resolve_combat_rules(
+    system: Option<&CombatDefaults>,
     world: Option<&CombatDefaults>,
     scene: Option<&CombatDefaults>,
 ) -> ResolvedCombatRules {
@@ -145,20 +147,24 @@ pub fn resolve_combat_rules(
         scene
             .and_then(f)
             .or_else(|| world.and_then(f))
+            .or_else(|| system.and_then(f))
             .unwrap_or(None)
     };
     let resource = pick(|d| d.movement_resource.clone());
     let interpretation = scene
         .and_then(|d| d.interpretation)
         .or_else(|| world.and_then(|d| d.interpretation))
+        .or_else(|| system.and_then(|d| d.interpretation))
         .unwrap_or_default();
     let enforcement = scene
         .and_then(|d| d.enforcement)
         .or_else(|| world.and_then(|d| d.enforcement))
+        .or_else(|| system.and_then(|d| d.enforcement))
         .unwrap_or_default();
     let turn_control = scene
         .and_then(|d| d.turn_control)
         .or_else(|| world.and_then(|d| d.turn_control))
+        .or_else(|| system.and_then(|d| d.turn_control))
         .unwrap_or_default();
     ResolvedCombatRules {
         movement: MovementRules {

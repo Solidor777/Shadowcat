@@ -97,6 +97,18 @@ impl SceneEcs {
         self.world_settings = Some(d);
     }
 
+    /// Set `system_defaults` to a doc whose `engine` is `json_engine` (test-only). Mirrors
+    /// `set_world_settings_for_test`'s shape for the `system-defaults` singleton side-table.
+    pub(crate) fn set_system_defaults_for_test(&mut self, json_engine: serde_json::Value) {
+        let mut d = crate::data::document::tests::world_scoped_doc(
+            Uuid::from_u128(9),
+            Uuid::from_u128(101),
+            "system-defaults",
+        );
+        d.engine = Some(json_engine);
+        self.system_defaults = Some(d);
+    }
+
     pub(crate) fn insert_scene_for_test(&mut self, scene_id: Uuid, json_engine: serde_json::Value) {
         let mut d =
             crate::data::document::tests::world_scoped_doc(Uuid::from_u128(9), scene_id, "scene");
@@ -203,3 +215,4 @@ pub(super) fn wall_doc_eng(scene: Uuid, a: (f64, f64), b: (f64, f64)) -> Documen
 mod ecs_and_footprints;
 mod pathfind_and_vision;
 mod resolution_and_lighting;
+mod system_defaults_layer;

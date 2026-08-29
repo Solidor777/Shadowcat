@@ -1219,7 +1219,13 @@ impl RoomRegistry {
         let docs = repo
             .query_documents_by_types(
                 world_id,
-                &["world-settings", "light-gradation", "vision-modes", "actor"],
+                &[
+                    "world-settings",
+                    "light-gradation",
+                    "vision-modes",
+                    "actor",
+                    "system-defaults",
+                ],
             )
             .await?;
         let world_settings = docs
@@ -1231,8 +1237,12 @@ impl RoomRegistry {
             .find(|d| d.doc_type == "light-gradation")
             .cloned();
         let vision_modes = docs.iter().find(|d| d.doc_type == "vision-modes").cloned();
+        let system_defaults = docs
+            .iter()
+            .find(|d| d.doc_type == "system-defaults")
+            .cloned();
         let actors: Vec<Document> = docs.into_iter().filter(|d| d.doc_type == "actor").collect();
-        scene_ecs.set_world_config(world_settings, gradation, vision_modes);
+        scene_ecs.set_world_config(world_settings, gradation, vision_modes, system_defaults);
         scene_ecs.set_actors(actors);
         let room = self
             .rooms

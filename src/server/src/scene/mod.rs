@@ -357,6 +357,9 @@ pub struct SceneEcs {
     /// Held outside the hecs `world` because they are NOT scene entities
     /// (`is_scene_entity` excludes them); they are maintained by `apply_op` and the room setters.
     world_settings: Option<Document>,
+    /// The `system-defaults` singleton, hydrated for the settings chain (engine literal <
+    /// system-defaults < world-settings < scene); not a scene entity.
+    system_defaults: Option<Document>,
     /// The `light-gradation` singleton config-doc, or `None` (built-in bands).
     gradation: Option<Document>,
     /// The `vision-modes` singleton config-doc, or `None` (seed modes).
@@ -600,6 +603,7 @@ impl SceneEcs {
             index: HashMap::new(),
             committed_seq: 0,
             world_settings: None,
+            system_defaults: None,
             gradation: None,
             vision_modes: None,
             actors: HashMap::new(),
@@ -675,10 +679,12 @@ impl SceneEcs {
         world_settings: Option<Document>,
         gradation: Option<Document>,
         vision_modes: Option<Document>,
+        system_defaults: Option<Document>,
     ) {
         self.world_settings = world_settings;
         self.gradation = gradation;
         self.vision_modes = vision_modes;
+        self.system_defaults = system_defaults;
     }
 
     /// Seed the actor table (room-hydration path). Keyed by actor doc id.
@@ -706,6 +712,10 @@ impl SceneEcs {
     /// The `world-settings` singleton, or `None` (resolvers use defaults).
     pub fn world_settings_doc(&self) -> Option<&Document> {
         self.world_settings.as_ref()
+    }
+    /// The `system-defaults` singleton, or `None` (resolvers fall through to the engine literal).
+    pub fn system_defaults_doc(&self) -> Option<&Document> {
+        self.system_defaults.as_ref()
     }
     /// The `vision-modes` singleton, or `None` (seed modes apply).
     pub fn vision_modes_doc(&self) -> Option<&Document> {
@@ -786,6 +796,7 @@ impl SceneEcs {
                 }
                 // Config singletons + actors (not in the hecs index).
                 Self::apply_config_update(&mut self.world_settings, *doc_id, changes);
+                Self::apply_config_update(&mut self.system_defaults, *doc_id, changes);
                 Self::apply_config_update(&mut self.gradation, *doc_id, changes);
                 Self::apply_config_update(&mut self.vision_modes, *doc_id, changes);
                 if let Some(a) = self.actors.get_mut(doc_id) {
@@ -805,6 +816,11 @@ impl SceneEcs {
                     {
                         self.world_settings = None;
                     }
+                    "system-defaults"
+                        if self.system_defaults.as_ref().map(|d| d.id) == Some(doc.id) =>
+                    {
+                        self.system_defaults = None;
+                    }
                     "light-gradation" if self.gradation.as_ref().map(|d| d.id) == Some(doc.id) => {
                         self.gradation = None;
                     }
@@ -820,6 +836,7 @@ impl SceneEcs {
             Operation::Create { doc } => {
                 match doc.doc_type.as_str() {
                     "world-settings" => self.world_settings = Some(doc.clone()),
+                    "system-defaults" => self.system_defaults = Some(doc.clone()),
                     "light-gradation" => self.gradation = Some(doc.clone()),
                     "vision-modes" => self.vision_modes = Some(doc.clone()),
                     "actor" => {
@@ -854,33 +871,70 @@ impl SceneEcs {
         self.engine_as_cached::<eng::WorldSettingsEngine>(doc.id, doc)
     }
 
-    /// Resolve a scene's effective lighting/vision settings: built-in defaults < world-settings doc
-    /// < per-scene override. Fail-closed and `null ⇒ inherit` (mirrors `resolveSceneSettings`).
+    /// The validated `system-defaults` engine body, or `None` when the doc is absent or its
+    /// stored `engine` fails to deserialize into `SystemDefaultsEngine`. Every leaf of
+    /// `SystemDefaultsEngine` is optional (`Option`-lifted overlay), so a partial doc still
+    /// decodes; `None` here means "no doc at all", not "malformed". Mirrors
+    /// `validated_world_settings_engine`'s caching/fail-closed shape.
+    fn validated_system_defaults_engine(&self) -> Option<eng::SystemDefaultsEngine> {
+        let doc = self.system_defaults.as_ref()?;
+        self.engine_as_cached::<eng::SystemDefaultsEngine>(doc.id, doc)
+    }
+
+    /// Resolve a scene's effective lighting/vision settings: engine literal < system-defaults <
+    /// world < scene. Fail-closed and `null ⇒ inherit` (mirrors `resolveSceneSettings`).
     pub fn resolve_scene(&self, scene: Uuid) -> ResolvedScene {
         // World layer: `validated_world_settings_engine` already enforces the
         // scene+pathfinding+animation-all-present structural guard at write time (ingress),
         // so a `None` here means the same "fall back to built-ins" case this guard covers.
         let ws = self.validated_world_settings_engine();
         let ws_scene = ws.as_ref().map(|w| &w.scene);
-        // Built-in defaults (mirror DEFAULT_WORLD_SETTINGS.scene / WorldSettingsEngine::default).
-        let d_los = ws_scene.map(|s| s.los_restriction).unwrap_or(true);
-        let d_fog = ws_scene.map(|s| s.fog).unwrap_or(true);
-        let d_obs = ws_scene.map(|s| s.observer_vision).unwrap_or(false);
-        let d_lit = ws_scene.map(|s| s.lighting_enabled).unwrap_or(true);
+        // System-defaults layer: every leaf is optional (Option-lifted overlay), so a partial
+        // doc contributes only the leaves it declares.
+        let sd = self.validated_system_defaults_engine();
+        let sd_scene = sd.as_ref().and_then(|s| s.scene.as_ref());
+        // Engine literal < system-defaults < world (mirror DEFAULT_WORLD_SETTINGS.scene /
+        // WorldSettingsEngine::default for the innermost fallback).
+        let d_los = ws_scene
+            .map(|s| s.los_restriction)
+            .or(sd_scene.and_then(|s| s.los_restriction))
+            .unwrap_or(true);
+        let d_fog = ws_scene
+            .map(|s| s.fog)
+            .or(sd_scene.and_then(|s| s.fog))
+            .unwrap_or(true);
+        let d_obs = ws_scene
+            .map(|s| s.observer_vision)
+            .or(sd_scene.and_then(|s| s.observer_vision))
+            .unwrap_or(false);
+        let d_lit = ws_scene
+            .map(|s| s.lighting_enabled)
+            .or(sd_scene.and_then(|s| s.lighting_enabled))
+            .unwrap_or(true);
         let d_mode = ws_scene
             .map(|s| s.light_mode)
+            .or(sd_scene.and_then(|s| s.light_mode))
             .unwrap_or(eng::LightMode::EnvironmentLight);
         let d_env_color = ws_scene
             .map(|s| s.environment.color.clone())
+            .or_else(|| sd_scene.and_then(|s| s.environment.as_ref().map(|e| e.color.clone())))
             .unwrap_or_else(|| "#0a0e1a".to_string());
-        let d_env_int = ws_scene.map(|s| s.environment.intensity).unwrap_or(0.0);
+        let d_env_int = ws_scene
+            .map(|s| s.environment.intensity)
+            .or_else(|| sd_scene.and_then(|s| s.environment.as_ref().map(|e| e.intensity)))
+            .unwrap_or(0.0);
         let d_move = ws_scene
             .map(|s| s.movement_restriction)
+            .or(sd_scene.and_then(|s| s.movement_restriction))
             .unwrap_or(eng::MovementRestriction::Visible);
         let d_model = ws_scene
             .map(|s| s.movement_model)
+            .or(sd_scene.and_then(|s| s.movement_model))
             .unwrap_or(eng::MovementModel::GridStepped);
-        let d_lenient = ws_scene.map(|s| s.partial_cell_leniency).unwrap_or(true);
+        let d_lenient = ws_scene
+            .map(|s| s.partial_cell_leniency)
+            .or(sd_scene.and_then(|s| s.partial_cell_leniency))
+            .unwrap_or(true);
 
         // Scene override layer (per-scene `vision`/`lighting`; absent/`null` ⇒ inherit — an
         // `Option<T>` field with `#[serde(default)]` deserializes a missing OR explicit-`null`
@@ -959,6 +1013,11 @@ impl SceneEcs {
     pub(crate) fn resolved_diagonal_rule(&self) -> pathfinding::DiagonalRule {
         self.validated_world_settings_engine()
             .map(|w| conv_diagonal_rule(w.pathfinding.diagonal_rule))
+            .or_else(|| {
+                self.validated_system_defaults_engine()
+                    .and_then(|s| s.pathfinding.and_then(|p| p.diagonal_rule))
+                    .map(conv_diagonal_rule)
+            })
             .unwrap_or(pathfinding::DiagonalRule::Chebyshev)
     }
 
@@ -1102,6 +1161,10 @@ impl SceneEcs {
     pub(crate) fn resolved_animation_speed(&self) -> f64 {
         self.validated_world_settings_engine()
             .map(|w| w.animation.speed_cells_per_sec)
+            .or_else(|| {
+                self.validated_system_defaults_engine()
+                    .and_then(|s| s.animation.and_then(|a| a.speed_cells_per_sec))
+            })
             .unwrap_or(6.0)
             .max(0.001)
     }
