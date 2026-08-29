@@ -114,7 +114,7 @@ where
 }
 
 /// The rules a `combat` document snapshots at start: the resolved
-/// engine → world → scene chain.
+/// engine literal < system-defaults < world < scene chain.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedCombatRules {
     /// Resolved movement rules.

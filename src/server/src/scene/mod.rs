@@ -1007,9 +1007,10 @@ impl SceneEcs {
     }
 
     /// The world's pathfinding diagonal-cost rule. World-scoped (no per-scene override; the scene doc
-    /// overrides only vision/lighting/grid). Reads `world-settings.pathfinding.diagonalRule`.
-    /// Uses `validated_world_settings_engine` so a structurally incomplete/absent doc falls back to
-    /// `Chebyshev`, consistent with `resolve_scene`'s handling of the same partial-doc case.
+    /// overrides only vision/lighting/grid). Reads `world-settings.pathfinding.diagonalRule`;
+    /// when absent or structurally incomplete, falls through to `system-defaults.pathfinding
+    /// .diagonalRule`, and from there to `Chebyshev` — consistent with `resolve_scene`'s
+    /// engine literal < system-defaults < world < scene handling of the same partial-doc case.
     pub(crate) fn resolved_diagonal_rule(&self) -> pathfinding::DiagonalRule {
         self.validated_world_settings_engine()
             .map(|w| conv_diagonal_rule(w.pathfinding.diagonal_rule))
@@ -1155,9 +1156,10 @@ impl SceneEcs {
 
     /// Resolved animation token speed in cells/second. World-scoped (no per-scene override;
     /// mirrors `resolved_diagonal_rule`'s structural guard). Reads
-    /// `world-settings.animation.speedCellsPerSec`; falls back to 6 when the doc is absent or
-    /// structurally incomplete. The floor of 0.001 prevents a zero/negative config from causing
-    /// a division-by-zero in the duration formula.
+    /// `world-settings.animation.speedCellsPerSec`; when absent or structurally incomplete,
+    /// falls through to `system-defaults.animation.speedCellsPerSec`, and from there to 6.
+    /// The floor of 0.001 prevents a zero/negative config from causing a division-by-zero in
+    /// the duration formula.
     pub(crate) fn resolved_animation_speed(&self) -> f64 {
         self.validated_world_settings_engine()
             .map(|w| w.animation.speed_cells_per_sec)
