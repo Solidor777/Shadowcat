@@ -235,6 +235,7 @@ pub(super) fn region_doc(
     )
 }
 
+mod combat_index;
 mod cost_parity;
 mod ecs_and_footprints;
 mod pathfind_and_vision;

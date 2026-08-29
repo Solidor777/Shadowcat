@@ -234,6 +234,16 @@ pub(crate) enum MoveReject {
     Degenerate,
     /// The token's scene has no document — refuse rather than synthesize a grid.
     SceneUnknown,
+    /// The mover's token belongs to a combatant that does not hold the current turn under
+    /// `Enforcement::Hard`. Never constructed by this module — `Room::execute_move` resolves the
+    /// combat's turn state above the scene read guard and returns `DataError::Forbidden`
+    /// directly; this variant exists so that refusal has one named reason, recorded in a
+    /// `tracing::debug!` alongside it.
+    NotYourTurn,
+    /// The combat names a movement resource the budget cannot be derived from: no
+    /// `grid.distance` under `Interpretation::PerCell`, or no such resource entry on the
+    /// combatant. Never constructed by this module, for the same reason as `NotYourTurn`.
+    BudgetUnresolvable,
 }
 
 /// The scene state `execute_move`'s per-cell gate runs against, all of it resolved by the caller

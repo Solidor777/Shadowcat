@@ -367,6 +367,14 @@ pub struct SceneEcs {
     /// Point-lookup table keyed by actor doc id. Used only for `actors.get(id)` joins; must
     /// not be iterated for ordered or wire output (HashMap iteration order is non-deterministic).
     actors: HashMap<Uuid, Document>,
+    /// World-level `combat` documents, keyed by doc id. NOT scene entities
+    /// (`is_scene_entity` excludes them — a combat is never parented, per
+    /// `data::validation`'s containment rule), so held here alongside `actors` rather than in the
+    /// hecs `world`. Maintained by `apply_op`; hydrated via `set_combats`. At most one entry per
+    /// scene has `active: true` (enforced at write time, not here), so
+    /// `active_combat_for_scene`'s "first match" is well-defined regardless of `HashMap`
+    /// iteration order.
+    combats: HashMap<Uuid, Document>,
     /// Footprint-inflated navmesh cache, keyed by `(scene, quantized footprint-radius
     /// millicells, wall-set key)`. `std::sync::Mutex` (not `RefCell`) + `Arc` (not `Rc`):
     /// `SceneEcs` sits behind a `tokio::sync::RwLock` shared across connection tasks, so
@@ -607,6 +615,7 @@ impl SceneEcs {
             gradation: None,
             vision_modes: None,
             actors: HashMap::new(),
+            combats: HashMap::new(),
             navmesh_cache: std::sync::Mutex::new(HashMap::new()),
             engine_cache: std::sync::Mutex::new(HashMap::new()),
             visible_cells_cache: std::sync::Mutex::new(HashMap::new()),
@@ -697,6 +706,12 @@ impl SceneEcs {
              hydrate as a scene entity via is_scene_entity and be double-represented"
         );
         self.actors = actors.into_iter().map(|d| (d.id, d)).collect();
+    }
+
+    /// Seed the world's `combat` documents (room-hydration path). World-level, not scene
+    /// entities (see the `combats` field doc comment). Kept live thereafter by `apply_op`.
+    pub fn set_combats(&mut self, docs: Vec<Document>) {
+        self.combats = docs.into_iter().map(|d| (d.id, d)).collect();
     }
 
     /// Point-lookup into the hydrated actor table (effective-owner joins).
@@ -805,6 +820,9 @@ impl SceneEcs {
                     // re-owns tokens the store considers unowned.
                     reapply_changes(a, changes);
                 }
+                if let Some(d) = self.combats.get_mut(doc_id) {
+                    reapply_changes(d, changes);
+                }
             }
             Operation::Delete { doc } => {
                 if let Some(e) = self.index.remove(&doc.id) {
@@ -830,6 +848,9 @@ impl SceneEcs {
                     "actor" => {
                         self.actors.remove(&doc.id);
                     }
+                    "combat" => {
+                        self.combats.remove(&doc.id);
+                    }
                     _ => {}
                 }
             }
@@ -841,6 +862,9 @@ impl SceneEcs {
                     "vision-modes" => self.vision_modes = Some(doc.clone()),
                     "actor" => {
                         self.actors.insert(doc.id, doc.clone());
+                    }
+                    "combat" => {
+                        self.combats.insert(doc.id, doc.clone());
                     }
                     _ => {} // other non-scene document: ignored
                 }
@@ -2089,6 +2113,83 @@ impl SceneEcs {
                 None
             }
         }
+    }
+
+    /// The scene's running combat, if any: the first `combats` entry (see that field's doc
+    /// comment for why "first" is well-defined) whose decoded `CombatEngine` is `active` and
+    /// bound to `scene`. `None` means no gate applies at all — the caller (`Room::execute_move`)
+    /// must treat that as unlimited movement, not a refusal.
+    pub fn active_combat_for_scene(&self, scene: Uuid) -> Option<(Uuid, eng::CombatEngine)> {
+        self.combats.iter().find_map(|(id, doc)| {
+            let ce = self.engine_as_cached::<eng::CombatEngine>(*id, doc)?;
+            (ce.active && ce.scene_id == scene).then_some((*id, ce))
+        })
+    }
+
+    /// The `combatant` document parented to `combat` that represents `token`: matches
+    /// `CombatantKind::Actor.token_id == Some(token)` first, else `actor_id` against the
+    /// token's own resolved actor id (`TokenEngine.actor_id` for a LINKED token, else the id of
+    /// its embedded actor copy for an INSTANCED token — the same join `token_geometry_source`
+    /// performs). Returns `(combatant_id, engine, hidden, owner)`: `hidden` is
+    /// `permissions.default == DocRole::None` (a combatant's hidden state is whole-document
+    /// unreadability, never an engine field); `owner` is `Document.owner`. `None` means the
+    /// token names no combatant in this combat — the caller must treat that as "moves freely",
+    /// not a refusal (a token need not be in the fight to move on a scene where a fight is
+    /// happening).
+    pub fn combatant_for_token(
+        &self,
+        combat: Uuid,
+        token: Uuid,
+    ) -> Option<(Uuid, eng::CombatantEngine, bool, Option<Uuid>)> {
+        let resolved_actor = self
+            .index
+            .get(&token)
+            .and_then(|&e| self.world.get::<&SceneEntity>(e).ok())
+            .and_then(|c| {
+                let token_eng = self.engine_as_cached::<eng::TokenEngine>(token, &c.doc);
+                token_eng.and_then(|t| t.actor_id).or_else(|| {
+                    c.doc
+                        .embedded
+                        .get("actor")
+                        .and_then(|v| v.first())
+                        .map(|a| a.id)
+                })
+            });
+
+        // `token_id` matches take precedence over `actor_id` matches (a combatant explicitly
+        // bound to this token wins over one merely sharing its resolved actor).
+        let mut by_actor: Option<(Uuid, eng::CombatantEngine, bool, Option<Uuid>)> = None;
+        for e in self.world.query::<&SceneEntity>().iter() {
+            if e.doc.doc_type != "combatant" || e.doc.parent_id != Some(combat) {
+                continue;
+            }
+            let Some(ce) = self.engine_as_cached::<eng::CombatantEngine>(e.doc.id, &e.doc) else {
+                continue;
+            };
+            let eng::CombatantKind::Actor { token_id, actor_id } = &ce.kind else {
+                continue;
+            };
+            let hidden = e.doc.permissions.default == crate::data::document::DocRole::None;
+            if *token_id == Some(token) {
+                return Some((e.doc.id, ce, hidden, e.doc.owner));
+            }
+            if by_actor.is_none() && resolved_actor.is_some() && *actor_id == resolved_actor {
+                by_actor = Some((e.doc.id, ce, hidden, e.doc.owner));
+            }
+        }
+        by_actor
+    }
+
+    /// The scene's real-world distance-per-cell scale (`SceneEngine.grid.distance.per_cell`), or
+    /// `None` when the scene is absent or authors no distance scale — the caller (the movement-
+    /// budget gate's `Interpretation::PerCell` conversion) must treat `None` as "cannot resolve
+    /// the budget", never substitute a default: a fabricated scale would convert a resource
+    /// budget into the wrong number of cells.
+    pub(crate) fn scene_per_cell(&self, scene: Uuid) -> Option<f64> {
+        let &e = self.index.get(&scene)?;
+        let comp = self.world.get::<&SceneEntity>(e).ok()?;
+        let scene_eng = self.engine_as_cached::<eng::SceneEngine>(scene, &comp.doc)?;
+        scene_eng.grid.distance.map(|d| d.per_cell)
     }
 
     /// The access `ctx` holds on `doc`, resolved through the SAME `effective_owner_via` +

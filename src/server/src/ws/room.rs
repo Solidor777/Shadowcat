@@ -17,6 +17,7 @@ use uuid::Uuid;
 
 use crate::data::command::{Command, FieldChange, Operation, WriteOrigin};
 use crate::data::document::Document;
+use crate::data::engine as eng;
 use crate::data::membership::PermissionContext;
 use crate::data::repository::Repository;
 use crate::data::snapshot::StoredCommand;
@@ -78,6 +79,49 @@ pub(crate) struct MoveRequestInputs {
     pub ts: i64,
     /// Correlates the resulting `MoveStream`/`MoveError` with the originating `MoveRequest`.
     pub request_id: Uuid,
+}
+
+/// The mover's turn-budget state in the token's scene's active combat, resolved by
+/// `Room::execute_move` off the scene read guard (`SceneEcs::active_combat_for_scene` +
+/// `SceneEcs::combatant_for_token`). Absent (`None` at the call site) means no gate applies at
+/// all — no active combat on the scene, or the token names no combatant in it.
+struct BudgetGate {
+    /// The combatant document to decrement on a successful move.
+    combatant_id: Uuid,
+    /// The `resource-registry` key `CombatEngine.movement.resource` names.
+    resource: String,
+    /// The combatant's current entry for `resource`, or `None` when it carries no such entry —
+    /// `MoveReject::BudgetUnresolvable` (the combat names a resource the combatant never
+    /// tracks).
+    entry: Option<eng::CombatantResource>,
+    /// The scene's `grid.distance.per_cell`, or `None` when absent — `MoveReject::
+    /// BudgetUnresolvable` under `Interpretation::PerCell` (there is no distance scale to
+    /// convert the resource budget into cells).
+    per_cell: Option<f64>,
+    /// Whether this combatant holds `CombatEngine.turn`.
+    is_turn_owner: bool,
+    /// `CombatEngine.movement.interpretation`.
+    interpretation: eng::Interpretation,
+    /// `CombatEngine.movement.enforcement`.
+    enforcement: eng::Enforcement,
+}
+
+/// `BudgetGate`, once validated: the resource entry (and, under `Interpretation::PerCell`, the
+/// per-cell distance) are guaranteed present — both refusal paths (`MoveReject::
+/// BudgetUnresolvable`) have already returned before this is constructed. `cost_to_resource`
+/// folds the interpretation into one multiplier so both the ceiling (`current /
+/// cost_to_resource`) and the post-move decrement (`MoveOutcome.cost * cost_to_resource`) share
+/// one conversion: the scene's `per_cell` distance under `PerCell`, or `1.0` under `Spaces`
+/// (`MoveOutcome.cost` is already in the same units as the budget).
+struct ResolvedBudget {
+    /// The combatant document to decrement on a successful move.
+    combatant_id: Uuid,
+    /// The `resource-registry` key to decrement.
+    resource: String,
+    /// The combatant's current value for `resource`, before this move's decrement.
+    current: f64,
+    /// `MoveOutcome.cost` (cells) → resource units.
+    cost_to_resource: f64,
 }
 
 /// Grouped trailing inputs to `wire_move_stream`, avoiding a >7-argument signature.
@@ -667,7 +711,9 @@ impl Room {
     /// # Lock ordering (load-bearing — do NOT reorder)
     ///
     /// 1. Acquire `self.publish_guard` (held for the full body below).
-    /// 2. Take `self.scene.read()` inside the guard to resolve restriction/cell/visible_cells/start.
+    /// 2. Take `self.scene.read()` inside the guard to resolve restriction/cell/visible_cells/
+    ///    start AND the combat movement-budget gate (`SceneEcs::active_combat_for_scene` +
+    ///    `SceneEcs::combatant_for_token`), all under the same read.
     /// 3. DROP the read guard before any await (no lock across await — mirrors `publish`).
     /// 4. Await `repo.get_explored(...)` for Revealed union (only after the read guard is dropped).
     /// 5. Call the pure `move_exec::execute_move` (lock-free).
@@ -739,6 +785,11 @@ impl Room {
         let is_gm;
         let footprint;
         let grid_kind;
+        // The per-turn movement-budget gate, resolved off this same read guard (combat lookup is
+        // step 2 below, under the same lock as restriction/cell/visible_cells/start). `None` means
+        // no active combat on the token's scene, or the token names no combatant in it — either
+        // way the caller treats that as "moves freely", never a refusal.
+        let budget_gate: Option<BudgetGate>;
         {
             let scene = self.scene.read().await;
 
@@ -791,6 +842,28 @@ impl Room {
                 settings.movement_restriction
             };
 
+            // Combat lookup (step 2 under this same read guard): the scene's active combat, if
+            // any, and this token's combatant in it, if any. Either miss means no gate applies —
+            // there is no active combat on the token's own scene, or the token is not fighting in
+            // it. `MoveGateInputs.budget` and the turn/resource checks below are resolved from
+            // this once the guard is dropped.
+            budget_gate = scene
+                .active_combat_for_scene(token_scene)
+                .and_then(|(combat_id, ce)| {
+                    let resource = ce.movement.resource.clone()?;
+                    let (combatant_id, c, _hidden, _owner) =
+                        scene.combatant_for_token(combat_id, token)?;
+                    Some(BudgetGate {
+                        combatant_id,
+                        entry: c.resources.get(&resource).copied(),
+                        resource,
+                        per_cell: scene.scene_per_cell(token_scene),
+                        is_turn_owner: ce.turn == Some(combatant_id),
+                        interpretation: ce.movement.interpretation,
+                        enforcement: ce.movement.enforcement,
+                    })
+                });
+
             let lenient = settings.partial_cell_leniency;
             is_revealed = matches!(restriction, MovementRestriction::Revealed);
 
@@ -804,6 +877,61 @@ impl Room {
                 scene.visible_cells_cached(ctx.user_id, token_scene, lenient)
             };
         } // scene read guard dropped here — safe to await (publish_guard still held)
+
+        // --- Combat movement-budget gate: turn ownership + resource resolution ---
+        // Resolved from `budget_gate` (computed above, off the scene read guard already
+        // dropped). `None` at this point means no gate applies at all — no active combat on the
+        // token's scene, or the token names no combatant in it — and both `move_budget_cells`
+        // and `resolved_budget` stay `None`.
+        let mut move_budget_cells: Option<f64> = None;
+        let mut resolved_budget: Option<ResolvedBudget> = None;
+        if let Some(bg) = &budget_gate {
+            // Turn-owner enforcement is Hard-only: under Warn/None a non-turn-owner's move is
+            // never rejected on this basis. GMs are exempt unconditionally, matching
+            // `execute_move`'s own GM gameplay exemption.
+            if !is_gm && !bg.is_turn_owner && matches!(bg.enforcement, eng::Enforcement::Hard) {
+                tracing::debug!(
+                    combatant = %bg.combatant_id, token = %token, user = %ctx.user_id,
+                    reject = ?move_exec::MoveReject::NotYourTurn,
+                    "move rejected: not the current turn owner under Hard enforcement"
+                );
+                return Err(DataError::Forbidden);
+            }
+            // The resource entry and, under PerCell, the per-cell distance scale are required
+            // regardless of enforcement mode — the decrement below needs them even when the
+            // gate itself never truncates (Warn/None).
+            let Some(entry) = bg.entry else {
+                tracing::debug!(
+                    combatant = %bg.combatant_id, token = %token, resource = %bg.resource,
+                    reject = ?move_exec::MoveReject::BudgetUnresolvable,
+                    "move rejected: combatant carries no entry for the combat's movement resource"
+                );
+                return Err(DataError::Forbidden);
+            };
+            let cost_to_resource = match bg.interpretation {
+                eng::Interpretation::PerCell => match bg.per_cell {
+                    Some(pc) => pc,
+                    None => {
+                        tracing::debug!(
+                            combatant = %bg.combatant_id, token = %token,
+                            reject = ?move_exec::MoveReject::BudgetUnresolvable,
+                            "move rejected: scene has no grid.distance to convert the per-cell budget"
+                        );
+                        return Err(DataError::Forbidden);
+                    }
+                },
+                eng::Interpretation::Spaces => 1.0,
+            };
+            if !is_gm && matches!(bg.enforcement, eng::Enforcement::Hard) {
+                move_budget_cells = Some(entry.current / cost_to_resource);
+            }
+            resolved_budget = Some(ResolvedBudget {
+                combatant_id: bg.combatant_id,
+                resource: bg.resource.clone(),
+                current: entry.current,
+                cost_to_resource,
+            });
+        }
 
         // --- Revealed union: fetch explored AFTER dropping the scene read guard ---
         // INVARIANT: for Revealed the `visible` set passed to execute_move MUST be
@@ -844,9 +972,9 @@ impl Room {
                     restriction,
                     visible: &visible,
                     cell,
-                    // No per-turn movement-budget consumer wired yet: unlimited, matching a GM's
-                    // own convention (see `MoveGateInputs::budget`'s doc comment).
-                    budget: None,
+                    // The combat's per-turn budget ceiling, or unlimited — resolved above from
+                    // `budget_gate` (never `Some` for a GM; see that resolution's own GM guard).
+                    budget: move_budget_cells,
                 },
                 token,
                 &path,
@@ -951,7 +1079,7 @@ impl Room {
         // never touched by movement. `old` is keyed on the authoritative ECS-read `start`
         // (`SceneEcs::token_position`, itself `/engine/x,y`) so the optimistic-concurrency check
         // in `apply_intent` passes as defense-in-depth.
-        let pos_ops = vec![Operation::Update {
+        let mut ops = vec![Operation::Update {
             doc_id: token,
             changes: vec![
                 FieldChange {
@@ -969,8 +1097,36 @@ impl Room {
             ],
         }];
 
-        self.commit_ops_locked(repo, ctx, pos_ops, ts, WriteOrigin::Client)
-            .await?;
+        // Combat resource decrement: a DIFFERENT document from the token (the combatant), so it
+        // never coalesces with the position Update above — each document gets at most one
+        // Update in this command. Floored at zero (`max(0.0)`); skipped entirely when the walked
+        // distance spent nothing (a zero-progress/zero-cost move, or a combatant this gate never
+        // applied to).
+        let mut decremented = false;
+        if let Some(rb) = &resolved_budget {
+            let spent = outcome.cost * rb.cost_to_resource;
+            if spent != 0.0 {
+                let new_current = (rb.current - spent).max(0.0);
+                ops.push(Operation::Update {
+                    doc_id: rb.combatant_id,
+                    changes: vec![FieldChange {
+                        remove: false,
+                        path: format!("/engine/resources/{}/current", rb.resource),
+                        old: serde_json::json!(rb.current),
+                        new: serde_json::json!(new_current),
+                    }],
+                });
+                decremented = true;
+            }
+        }
+        // A resource decrement is server-computed consumption, not a raw client write.
+        let origin = if decremented {
+            WriteOrigin::CombatTransition
+        } else {
+            WriteOrigin::Client
+        };
+
+        self.commit_ops_locked(repo, ctx, ops, ts, origin).await?;
 
         // Build the wire frame before registering it.
         let frame = Arc::new(wire_move_stream(
@@ -1247,6 +1403,7 @@ impl RoomRegistry {
                     "vision-modes",
                     "actor",
                     "system-defaults",
+                    "combat",
                 ],
             )
             .await?;
@@ -1263,9 +1420,18 @@ impl RoomRegistry {
             .iter()
             .find(|d| d.doc_type == "system-defaults")
             .cloned();
-        let actors: Vec<Document> = docs.into_iter().filter(|d| d.doc_type == "actor").collect();
+        let actors: Vec<Document> = docs
+            .iter()
+            .filter(|d| d.doc_type == "actor")
+            .cloned()
+            .collect();
+        let combats: Vec<Document> = docs
+            .into_iter()
+            .filter(|d| d.doc_type == "combat")
+            .collect();
         scene_ecs.set_world_config(world_settings, gradation, vision_modes, system_defaults);
         scene_ecs.set_actors(actors);
+        scene_ecs.set_combats(combats);
         let room = self
             .rooms
             .entry(world_id)
@@ -1356,4 +1522,4 @@ impl Default for RoomRegistry {
 mod ring_tests;
 
 #[cfg(test)]
-mod room_tests;
+mod tests;
