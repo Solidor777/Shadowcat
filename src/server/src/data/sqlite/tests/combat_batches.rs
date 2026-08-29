@@ -20,6 +20,61 @@ fn activate(doc_id: Uuid, active: bool) -> Operation {
     }
 }
 
+/// An unrelated combat's same-batch deactivation must never let a THIRD
+/// combat's Create claim a scene that a different combat already legitimately
+/// activated earlier in the same batch. `a` activates `s`, `b` (an unrelated
+/// combat already active on `s`) deactivates, then `c` tries to Create active
+/// on `s` -- `a`'s earlier claim must still hold, so the whole batch rejects.
+#[tokio::test]
+async fn an_unrelated_deactivation_cannot_let_a_third_combat_steal_an_already_claimed_scene() {
+    let r = repo().await;
+    let gm = r
+        .create_user("gm", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let w = r.create_world_owned("W", gm, 0).await.unwrap();
+    let ctx = PermissionContext {
+        user_id: gm,
+        world_role: WorldRole::Gm,
+    };
+    let scene = Uuid::from_u128(0x5CE);
+    // `a` starts inactive; `b` starts active on the same scene.
+    let a = combat_doc(1, w.id, scene, false);
+    let b = combat_doc(2, w.id, scene, true);
+    r.apply_intent(
+        &ctx,
+        w.id,
+        vec![
+            Operation::Create { doc: a.clone() },
+            Operation::Create { doc: b.clone() },
+        ],
+        1,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+    let c = combat_doc(3, w.id, scene, true);
+    let res = r
+        .apply_intent(
+            &ctx,
+            w.id,
+            vec![
+                activate(a.id, true),
+                activate(b.id, false),
+                Operation::Create { doc: c.clone() },
+            ],
+            2,
+            WriteOrigin::Client,
+        )
+        .await;
+    assert!(matches!(res, Err(DataError::Conflict(_))));
+    // Nothing in the rejected batch landed: `c` never got created, and `a`
+    // stayed exactly as it was created (inactive).
+    assert!(r.get_document(c.id).await.unwrap().is_none());
+    let stored_a = r.get_document(a.id).await.unwrap().unwrap();
+    assert_eq!(stored_a.engine.unwrap()["active"], serde_json::json!(false));
+}
+
 #[tokio::test]
 async fn a_swap_batch_deactivating_then_activating_on_one_scene_passes_in_either_order() {
     let r = repo().await;
@@ -153,9 +208,10 @@ async fn activating_two_different_combats_on_one_scene_in_one_batch_still_reject
 /// A batch Creating a second active combat on a scene that already has one
 /// active, alongside an UNRELATED update to a THIRD, already-inactive combat
 /// on the SAME scene, must still reject — the pre-scan that seeds
-/// `released_active_scenes` must key off a genuine active-true -> false
-/// TRANSITION, never merely "ends up inactive", or an unrelated no-op update
-/// would wrongly suppress the DB conflict check for the real double-activation.
+/// `apply_intent`'s `deactivations_this_batch` set must key off a genuine
+/// active-true -> false TRANSITION, never merely "ends up inactive", or an
+/// unrelated no-op update would wrongly suppress the DB conflict check for
+/// the real double-activation.
 #[tokio::test]
 async fn an_unrelated_update_to_an_already_inactive_combat_does_not_mask_a_real_conflict() {
     let r = repo().await;

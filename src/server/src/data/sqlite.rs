@@ -2375,30 +2375,69 @@ impl SqliteRepository {
         Ok(row.is_some())
     }
 
-    /// Whether an ACTIVE combat other than `excluding` already runs on `scene_id`
-    /// in `world_id`. Runs on the caller's transaction for the same
-    /// single-writer reason as `singleton_doc_exists`.
-    async fn active_combat_exists<'e, E>(
+    /// The id of the `combat` document currently `active: true` on `scene_id`
+    /// in `world_id`, or `None` if the scene has no active combat. Runs on
+    /// the caller's transaction for the same single-writer reason as
+    /// `singleton_doc_exists`. At most one row can ever match, since this is
+    /// the same one-active-combat-per-scene invariant `apply_intent`'s
+    /// `scene_owner` map enforces.
+    async fn active_combat_owner<'e, E>(
         executor: E,
         world_id: Uuid,
         scene_id: Uuid,
-        excluding: Uuid,
-    ) -> Result<bool, DataError>
+    ) -> Result<Option<Uuid>, DataError>
     where
         E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
     {
         let row = sqlx::query(
-            "SELECT 1 FROM documents WHERE world_id = ? AND doc_type = ? AND id != ? \
+            "SELECT id FROM documents WHERE world_id = ? AND doc_type = ? \
              AND json_extract(json, '$.engine.active') = 1 \
              AND json_extract(json, '$.engine.scene_id') = ? LIMIT 1",
         )
         .bind(world_id.to_string())
         .bind(COMBAT_DOC_TYPE)
-        .bind(excluding.to_string())
         .bind(scene_id.to_string())
         .fetch_optional(executor)
         .await?;
-        Ok(row.is_some())
+        row.map(|r| {
+            Uuid::parse_str(r.get::<String, _>("id").as_str())
+                .map_err(|e| DataError::OpFailed(e.to_string()))
+        })
+        .transpose()
+    }
+
+    /// Lazily seeds `scene_owner[scene]` with the DB's current active-combat
+    /// owner the first time this batch's simulation touches `scene`'s
+    /// active-combat state (a no-op on every later touch, tracked by
+    /// `seeded_scenes`). When `deactivations_this_batch` already names
+    /// `scene` -- a genuine same-batch active-true-to-false transition found
+    /// by `apply_intent`'s pre-scan -- `scene` is deliberately left
+    /// unseeded (absent from `scene_owner`) rather than seeded from the
+    /// stale DB row: the batch is itself about to free this scene, so an
+    /// EARLIER same-batch claim on it must be validated against the state
+    /// the batch will actually leave, not a DB read a LATER op in the same
+    /// batch is about to invalidate.
+    async fn ensure_scene_owner_seeded<'e, E>(
+        executor: E,
+        world_id: Uuid,
+        scene: Uuid,
+        scene_owner: &mut std::collections::HashMap<Uuid, Uuid>,
+        seeded_scenes: &mut std::collections::HashSet<Uuid>,
+        deactivations_this_batch: &std::collections::HashSet<Uuid>,
+    ) -> Result<(), DataError>
+    where
+        E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+    {
+        if !seeded_scenes.insert(scene) {
+            return Ok(());
+        }
+        if deactivations_this_batch.contains(&scene) {
+            return Ok(());
+        }
+        if let Some(owner) = Self::active_combat_owner(executor, world_id, scene).await? {
+            scene_owner.insert(scene, owner);
+        }
+        Ok(())
     }
 
     /// Depth-first descendant ids of `root` within one transaction (children
@@ -3033,93 +3072,70 @@ impl Repository for SqliteRepository {
         // the combatant-parentage check without a DB round trip that would
         // see nothing yet inserted.
         let mut batch_combats: std::collections::HashSet<Uuid> = std::collections::HashSet::new();
-        // `claimed_active_scenes` tracks scene ids with an active-combat claim
-        // already granted earlier in THIS batch, mirroring
-        // `claimed_singletons`'s intra-batch-race closure for the
-        // one-active-combat-per-scene rule. The ENTIRE one-active decision --
-        // both the Create arm's and the Update arm's -- is validated exactly
-        // ONCE, inside Phase 1 (never re-derived by Phase 2, which only
-        // writes): the two arms below and the pre-scan just under this
-        // comment are the only three places that ever touch this pair of
-        // maps, all running before any row in this transaction is mutated.
-        // A same-batch Update that DEACTIVATES a combat instead records its
-        // PRE-merge scene in the separate `released_active_scenes` map below,
-        // and the two are consulted by DIFFERENCE
-        // (`claimed_active_scenes.contains(scene) &&
-        // !released_active_scenes.contains_key(scene)`), so a later
-        // same-batch Update/Create activating a DIFFERENT combat on that
-        // scene still passes.
-        let mut claimed_active_scenes: std::collections::HashSet<Uuid> =
-            std::collections::HashSet::new();
-        // `released_active_scenes` pairs with `claimed_active_scenes`: an
-        // Update that DEACTIVATES a combat inserts its scene here (mapped to
-        // the id of the combat that earned the release), and a later
-        // same-batch Create/Update activating a DIFFERENT combat on that
-        // scene consults `claimed_active_scenes` minus this map's keys rather
-        // than the raw claim alone. The scene a release is filed under is
-        // ALWAYS the combat's PRE-merge scene (`Document` as loaded from the
-        // DB before this op's `FieldChange`s apply) -- an Update that
-        // simultaneously moves a combat to a different scene AND deactivates
-        // it must free the scene it was actually active on, never the scene
-        // it is moving to, which may already hold an unrelated genuinely-
-        // active combat this batch never touches.
-        //
-        // A release credit is consumed EXACTLY ONCE: claiming it removes the
-        // map entry (see the Create/Update arms below), and nothing in this
-        // function re-inserts a credit for an event that has already been
-        // spent by a same-batch claim -- there is exactly one pass over `ops`
-        // (this pre-scan, then the Phase-1 per-op loop, both strictly before
-        // Phase 2 writes anything) that ever derives this fact, so a claim
-        // made against one op's release can never be silently re-opened by a
-        // LATER, independent re-observation of that same deactivation. This
-        // is what closes a same-doc double-Update: a first Update that
-        // deactivates a combat, whose freed scene a same-batch Create/Update
-        // then claims for a DIFFERENT combat, followed by a second same-batch
-        // Update reasserting the FIRST combat's original `active: true`
-        // (declaring the pristine pre-batch value as its own OCC pre-image,
-        // which Phase 1 -- performing no writes -- cannot distinguish from a
-        // genuinely stale claim) -- that second Update is validated by this
-        // SAME running state, sees the scene already claimed by the other
-        // combat with no outstanding release, and is rejected as a second
-        // activation on an already-claimed scene, exactly like any other
-        // same-batch double-activation.
-        //
-        // SEEDED by a pre-scan over the WHOLE batch, immediately below,
-        // before Phase 1's per-op loop runs -- not built incrementally in op
-        // order. A single forward pass over `ops` cannot see a LATER op's
-        // release when validating an EARLIER op that activates the same
-        // scene (e.g. `[activate combat A, deactivate combat B]` on one
-        // scene: A's activation is checked before B's deactivation has run),
-        // so the deactivation must be known up front regardless of where in
-        // the batch it sits. This pre-scan considers only an Update whose
-        // PRE-image was already `active: true`: an update to a combat that
-        // was ALREADY inactive must never mark this scene "released this
-        // batch" -- doing so would wrongly suppress the DB conflict check
-        // (below) for an unrelated activation elsewhere in the same batch,
-        // letting two genuinely-active combats coexist on one scene. For a
-        // qualifying op, this computes its OWN post-merge `active` value
-        // (`merged_combat_engine`, applying that op's `FieldChange`s to a
-        // copy of the stored value); an op this cannot merge or parse is left
-        // alone here -- Phase 1's real validation below surfaces the failure
-        // through the ordinary path. Phase 1's per-op loop still mutates this
-        // map incrementally afterward (`.insert`/`.remove`) so a scene
-        // reactivated partway through the batch is no longer treated as
-        // released for anything that follows.
-        let mut released_active_scenes: std::collections::HashMap<Uuid, Uuid> =
+        // `scene_owner` maps a scene id to the id of the `combat` document
+        // that holds its active slot, AS OF THIS POINT in a single simulated
+        // walk of `ops` in their actual batch order. The one-active-combat-
+        // per-scene decision -- for both the Create arm and the Update
+        // arm -- is made exactly ONCE, entirely inside Phase 1 (Phase 2
+        // performs no independent recomputation of it), consulting and
+        // mutating this ONE map: a claim (a Create or Update that would make
+        // some combat `active: true` on scene `S`) succeeds when
+        // `scene_owner.get(S)` is absent or already equals that combat's own
+        // id, and inserts `S -> that combat's id`; a release (an Update that
+        // would make its own combat `active: false`) removes `S` only when
+        // `scene_owner.get(S)` equals that SAME combat's id, and otherwise
+        // does nothing -- an unrelated combat's deactivation can never touch
+        // a DIFFERENT combat's claim on the same scene. Seeded lazily by
+        // `Self::ensure_scene_owner_seeded`, and consulted only through
+        // this map, so the whole batch shares one running fact rather than
+        // re-deriving it at each op.
+        let mut scene_owner: std::collections::HashMap<Uuid, Uuid> =
             std::collections::HashMap::new();
+        // Scenes `Self::ensure_scene_owner_seeded` has already resolved
+        // (seeded from the DB, or deliberately left unseeded) for this
+        // batch -- a scene is seeded at most once regardless of how many
+        // ops in the batch touch it.
+        let mut seeded_scenes: std::collections::HashSet<Uuid> = std::collections::HashSet::new();
+        // The set of scenes a genuine same-batch active-true-to-false
+        // transition will free, computed by a pre-scan over the WHOLE batch
+        // before the Phase-1 per-op loop runs (and before `scene_owner` is
+        // seeded at all) -- not derived incrementally in op order. A single
+        // forward walk of `ops` cannot see a LATER op's deactivation when
+        // validating an EARLIER op that claims the same scene (e.g.
+        // `[activate combat A, deactivate combat B]` on one scene: A's claim
+        // is checked before B's deactivation has run), so which scenes this
+        // batch will free must be known before the walk begins.
+        // `Self::ensure_scene_owner_seeded` consults this set to decide
+        // whether to seed a scene's owner from the DB at all: a scene this
+        // batch will free is left unseeded (no owner) from the start, so an
+        // earlier same-batch claim on it is validated against the state the
+        // batch will actually leave, not a DB row a later op is about to
+        // invalidate.
+        //
+        // Only an Update whose PRE-image was already `active: true`
+        // qualifies: an update to a combat that was ALREADY inactive must
+        // never mark its scene as freed this batch, or an unrelated
+        // activation elsewhere in the batch would wrongly skip its DB
+        // conflict check. For a qualifying op this computes its own
+        // post-merge `active` value (`merged_combat_engine`, applying that
+        // op's `FieldChange`s to a copy of the stored value); an op this
+        // cannot merge or parse is left alone here -- Phase 1's real
+        // validation below surfaces the failure through the ordinary path.
+        let mut deactivations_this_batch: std::collections::HashSet<Uuid> =
+            std::collections::HashSet::new();
         for op in &ops {
             if let Operation::Update { doc_id, changes } = op {
                 if let Some(cur) = Self::load_document(&mut *tx, *doc_id).await? {
                     // Scoped the same way every other load site in this
                     // function is: a foreign-world document must never
                     // influence this batch's validation, even indirectly
-                    // through the pre-scan's release bookkeeping.
+                    // through the pre-scan's bookkeeping.
                     check_command_scope(&cur, world_id)?;
                     if let Some(pre_engine) = combat_engine_of(&cur) {
                         if pre_engine.active {
                             if let Some(merged_engine) = merged_combat_engine(&cur, changes) {
                                 if !merged_engine.active {
-                                    released_active_scenes.insert(pre_engine.scene_id, cur.id);
+                                    deactivations_this_batch.insert(pre_engine.scene_id);
                                 }
                             }
                         }
@@ -3183,31 +3199,25 @@ impl Repository for SqliteRepository {
                         )
                         .expect("validate_engine_tree already validated the combat engine body");
                         if combat_engine.active {
-                            let scene_released =
-                                released_active_scenes.contains_key(&combat_engine.scene_id);
-                            let claimed_and_not_released = claimed_active_scenes
-                                .contains(&combat_engine.scene_id)
-                                && !scene_released;
-                            // When this batch has already released the DB's active
-                            // combat on this scene (a same-batch Update elsewhere
-                            // deactivates it), the DB row is stale for the
-                            // purposes of THIS check — skip the read rather than
-                            // reject on state this batch is itself about to undo.
-                            let db_conflict = !scene_released
-                                && Self::active_combat_exists(
-                                    &mut *tx,
-                                    world_id,
-                                    combat_engine.scene_id,
-                                    doc.id,
-                                )
-                                .await?;
-                            if claimed_and_not_released || db_conflict {
-                                return Err(DataError::Conflict(
-                                    "an active combat already exists on this scene".into(),
-                                ));
+                            Self::ensure_scene_owner_seeded(
+                                &mut *tx,
+                                world_id,
+                                combat_engine.scene_id,
+                                &mut scene_owner,
+                                &mut seeded_scenes,
+                                &deactivations_this_batch,
+                            )
+                            .await?;
+                            match scene_owner.get(&combat_engine.scene_id) {
+                                Some(&owner) if owner != doc.id => {
+                                    return Err(DataError::Conflict(
+                                        "an active combat already exists on this scene".into(),
+                                    ));
+                                }
+                                _ => {
+                                    scene_owner.insert(combat_engine.scene_id, doc.id);
+                                }
                             }
-                            claimed_active_scenes.insert(combat_engine.scene_id);
-                            released_active_scenes.remove(&combat_engine.scene_id);
                         }
                     }
                     validation::validate_system_schema_tree(doc, &world_schemas)?;
@@ -3553,42 +3563,63 @@ impl Repository for SqliteRepository {
                     // One-active-combat-per-scene enforcement for an Update,
                     // run entirely HERE in Phase 1 -- never re-derived by
                     // Phase 2, which performs no independent recomputation of
-                    // this invariant (see `released_active_scenes`'s doc
-                    // comment above for why two independently-derived passes
-                    // over the same event is itself the defect). Uses the
-                    // same tolerant merge-simulation the pre-scan above uses;
-                    // a merge/parse failure here is left to the authoritative
-                    // `validate_engine_tree` pass in Phase 2 to surface.
+                    // this invariant (see `scene_owner`'s doc comment above).
+                    // Uses the same tolerant merge-simulation the pre-scan
+                    // above uses; a merge/parse failure here is left to the
+                    // authoritative `validate_engine_tree` pass in Phase 2 to
+                    // surface.
                     if let Some(pre_engine) = combat_engine_of(&cur) {
                         if let Some(merged_engine) = merged_combat_engine(&cur, changes) {
                             if merged_engine.active {
                                 let scene = merged_engine.scene_id;
-                                let scene_released = released_active_scenes.contains_key(&scene);
-                                let claimed_and_not_released =
-                                    claimed_active_scenes.contains(&scene) && !scene_released;
-                                // Same guard as the Create arm: when this
-                                // batch has already released the DB's active
-                                // combat on this scene, the DB row is stale
-                                // for this check -- skip the read.
-                                let db_conflict = !scene_released
-                                    && Self::active_combat_exists(
-                                        &mut *tx, world_id, scene, *doc_id,
-                                    )
-                                    .await?;
-                                if claimed_and_not_released || db_conflict {
-                                    return Err(DataError::Conflict(
-                                        "an active combat already exists on this scene".into(),
-                                    ));
+                                Self::ensure_scene_owner_seeded(
+                                    &mut *tx,
+                                    world_id,
+                                    scene,
+                                    &mut scene_owner,
+                                    &mut seeded_scenes,
+                                    &deactivations_this_batch,
+                                )
+                                .await?;
+                                match scene_owner.get(&scene) {
+                                    Some(&owner) if owner != *doc_id => {
+                                        return Err(DataError::Conflict(
+                                            "an active combat already exists on this scene".into(),
+                                        ));
+                                    }
+                                    _ => {
+                                        scene_owner.insert(scene, *doc_id);
+                                    }
                                 }
-                                claimed_active_scenes.insert(scene);
-                                released_active_scenes.remove(&scene);
                             } else if pre_engine.active {
                                 // A genuine active-true -> false transition:
                                 // free the PRE-merge scene (never the
-                                // post-merge one -- see the map's doc comment
-                                // on why a same-batch scene rebind must not
-                                // free the scene this combat is MOVING to).
-                                released_active_scenes.insert(pre_engine.scene_id, cur.id);
+                                // post-merge one) -- an Update that
+                                // simultaneously moves a combat to a
+                                // different scene AND deactivates it must
+                                // free the scene it was actually active on,
+                                // never the scene it is moving to, which may
+                                // already hold an unrelated genuinely-active
+                                // combat this batch never touches.
+                                let scene = pre_engine.scene_id;
+                                Self::ensure_scene_owner_seeded(
+                                    &mut *tx,
+                                    world_id,
+                                    scene,
+                                    &mut scene_owner,
+                                    &mut seeded_scenes,
+                                    &deactivations_this_batch,
+                                )
+                                .await?;
+                                // Release only when THIS combat is the
+                                // current owner in the simulation -- an
+                                // unrelated combat's deactivation must never
+                                // remove a DIFFERENT combat's claim on this
+                                // scene, even if that different combat is the
+                                // scene's real, currently-active occupant.
+                                if scene_owner.get(&scene) == Some(&*doc_id) {
+                                    scene_owner.remove(&scene);
+                                }
                             }
                         }
                     }
@@ -3720,10 +3751,10 @@ impl Repository for SqliteRepository {
                     validation::validate_containment(&doc)?;
                     // One-active-combat-per-scene is validated ONLY in Phase
                     // 1 (see `apply_intent`'s Update arm there, and the
-                    // `released_active_scenes` doc comment) -- this phase
-                    // trusts that decision and performs no recomputation of
-                    // it, the same way it trusts Phase 1's OCC/capability/
-                    // containment/singleton decisions for every other check.
+                    // `scene_owner` doc comment) -- this phase trusts that
+                    // decision and performs no recomputation of it, the same
+                    // way it trusts Phase 1's OCC/capability/containment/
+                    // singleton decisions for every other check.
                     // Tier-2 structural schema gate on the MERGED post-image
                     // (existing row + applied `FieldChange`s), matching
                     // `validate_engine_tree` above: never the pre-image.
