@@ -249,6 +249,13 @@ export interface WsClientOptions {
   welcomeTimeoutMs?: number;
   /** The world id sent as `Hello.world` on every socket open. */
   world: string;
+  /** This connection's own user id, needed only to confirm a request whose success is signaled
+   * by the shared broadcast `event` echo rather than a correlated reply frame (`combat()`):
+   * `case "event":` resolves a pending combat entry only when this is set AND matches
+   * `WireCommand.author` on the received event, so a broadcast authored by another user can
+   * never be mistaken for this connection's own confirm. Omitted by default; `combat()` then
+   * settles only via `combat_error` or timeout. */
+  selfUserId?: string;
 }
 
 /** Default `WsClientOptions.sleep`: a bare `setTimeout` wrapped as a promise.
@@ -333,16 +340,18 @@ export class WsClient {
   /** In-flight combat intents (`CombatStart`/`CombatPause`/etc.), keyed by request_id. Unlike
    * `pending` (search/pathfind/moveRequest), a combat intent's success is confirmed by the
    * broadcast `event` echo rather than a correlated reply frame — `event` carries no
-   * combat-specific correlation token, so resolution is FIFO: the oldest still-pending entry
-   * (Map iteration order = insertion order) is resolved by the next `event` this connection
-   * receives, mirroring `OptimisticClient.applyCommand`'s own blind-FIFO self-confirm and
-   * relying on the same `Room::publish` per-intent serialization guarantee for soundness. A
-   * `combat_error` instead rejects the correlated entry directly by `request_id` (mirrors
-   * `move_error`'s handling). */
+   * combat-specific correlation token. `case "event":` resolves an entry only when
+   * `WsClientOptions.selfUserId` is configured and matches the received `WireCommand.author`,
+   * genuinely mirroring `OptimisticClient.applyCommand`'s own author-filtered self-confirm
+   * (never a blind FIFO resolve, which would incorrectly settle on any OTHER connected user's
+   * unrelated broadcast). When `selfUserId` is omitted, no `event` ever resolves an entry here —
+   * only a correlated `combat_error` or the timeout settles it. A `combat_error` rejects the
+   * correlated entry directly by `request_id` (mirrors `move_error`'s handling). */
   private combatPending = new Map<
     string,
     {
-      /** Resolves (void) once the next `event` frame arrives while this entry is oldest. */
+      /** Resolves (void) once a matching-author `event` frame arrives (see this field's own
+       * doc for the `selfUserId` correlation this requires). */
       resolve: () => void;
       /** Rejects with the server's reason on a correlated `combat_error`, on timeout, or on
        * disconnect. */
@@ -796,9 +805,12 @@ export class WsClient {
         break;
       case "event":
         this.applyEvent(msg.command);
-        // FIFO combat-intent confirm: the oldest still-pending combat entry (if any) is
-        // resolved by this event, per `combatPending`'s own field doc.
-        {
+        // Combat-intent confirm: this connection's own broadcast echo (never another user's)
+        // resolves the oldest still-pending combat entry, per `combatPending`'s own field doc.
+        // `selfUserId` unset means this connection cannot tell its own echo apart from any
+        // other user's, so no `event` resolves anything here — `combat()` settles only via
+        // `combat_error` or timeout.
+        if (this.opts.selfUserId !== undefined && msg.command.author === this.opts.selfUserId) {
           const oldest = this.combatPending.keys().next();
           if (!oldest.done) {
             const p = this.combatPending.get(oldest.value);
@@ -1420,9 +1432,10 @@ export class WsClient {
   /**
    * Send any one of the eight combat intent frames (`combat_start`/`combat_pause`/
    * `combat_end`/`combat_advance`/`combat_rewind`/`combat_roll`/`combat_resource`/
-   * `combat_sort`). Resolves once the next `event` frame arrives while this is the oldest
-   * pending combat entry (see `combatPending`'s field doc for why resolution is FIFO rather
-   * than correlated); rejects on a matching `combat_error` or after `timeoutMs`.
+   * `combat_sort`). Resolves once this connection's own broadcast `event` echo arrives while
+   * this is the oldest pending combat entry — requires `WsClientOptions.selfUserId` to be
+   * configured (see `combatPending`'s field doc); without it, this only settles via a matching
+   * `combat_error` or the timeout. Rejects on a matching `combat_error` or after `timeoutMs`.
    * @param msg The combat frame to send, already carrying its own `request_id`.
    * @param opts Request options; `timeoutMs` (how long to wait for confirmation/`combat_error`
    * before rejecting) defaults to 10000.

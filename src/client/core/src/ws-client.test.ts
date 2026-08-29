@@ -1005,6 +1005,83 @@ describe("WsClient", () => {
     ).rejects.toThrow(/not connected/i);
   });
 
+  it("combat() with selfUserId configured does not resolve on an unrelated event, and resolves on the matching one", async () => {
+    let onMessage: (d: string) => void = () => {};
+    const client = new WsClient({
+      world: "w1",
+      selfUserId: "userA",
+      connect: (h) => {
+        onMessage = h.onMessage;
+        return Promise.resolve({ send: () => {}, close: () => {} });
+      },
+      handlers: noop,
+    });
+    await client.start();
+
+    const p = client.combat({ type: "combat_advance", request_id: "r1", combat_id: "c1" });
+    let resolved = false;
+    void p.then(() => (resolved = true));
+
+    // Unrelated event (different author) must NOT resolve the pending combat entry.
+    onMessage(
+      JSON.stringify({
+        type: "event",
+        command: { seq: 1, world_id: "w1", author: "userB", ts: 0, ops: [] },
+        intent_id: null,
+      }),
+    );
+    await flush();
+    expect(resolved).toBe(false);
+
+    // Matching-author event resolves it.
+    onMessage(
+      JSON.stringify({
+        type: "event",
+        command: { seq: 2, world_id: "w1", author: "userA", ts: 0, ops: [] },
+        intent_id: null,
+      }),
+    );
+    await expect(p).resolves.toBeUndefined();
+  });
+
+  it("combat() without selfUserId configured never resolves from an event frame", async () => {
+    let onMessage: (d: string) => void = () => {};
+    const client = new WsClient({
+      world: "w1",
+      connect: (h) => {
+        onMessage = h.onMessage;
+        return Promise.resolve({ send: () => {}, close: () => {} });
+      },
+      handlers: noop,
+    });
+    await client.start();
+
+    const p = client.combat(
+      { type: "combat_advance", request_id: "r1", combat_id: "c1" },
+      { timeoutMs: 20 },
+    );
+    let resolved = false;
+    let rejected = false;
+    void p.then(
+      () => (resolved = true),
+      () => (rejected = true),
+    );
+
+    onMessage(
+      JSON.stringify({
+        type: "event",
+        command: { seq: 1, world_id: "w1", author: "userA", ts: 0, ops: [] },
+        intent_id: null,
+      }),
+    );
+    await flush();
+    expect(resolved).toBe(false);
+    expect(rejected).toBe(false);
+
+    // Only settles via combat_error or timeout — confirm the timeout path still fires.
+    await expect(p).rejects.toThrow(/timeout/i);
+  });
+
   it("sendChatMessage sends a send_message frame with defaulted audience and actor_owner", async () => {
     const sent: string[] = [];
     const client = new WsClient({
