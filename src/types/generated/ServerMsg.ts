@@ -279,8 +279,9 @@ samples: Array<PosSample>,
  */
 mover_vision: Array<VisionSample> | null, 
 /**
- * Total terrain-weighted movement cost accumulated over the executed move.
- * Informational — no per-turn budget cap consumes it in v1.
+ * Total terrain-weighted movement cost accumulated over the executed move. The
+ * movement-budget gate (`move_exec::MoveGateInputs::budget`) consumes this quantity; it
+ * equals the route preview's cost (`PathResult.cost`) for the same route.
  * `Some(cost)` for the mover and a GM (trusted, full information); `None` for a
  * clipped observer, mirroring `mover_vision`'s null-for-observers treatment — the
  * authoritative cost may reflect secret-region (`gm_only`) terrain the observer's

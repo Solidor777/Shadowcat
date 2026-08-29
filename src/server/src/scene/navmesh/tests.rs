@@ -133,8 +133,39 @@ fn los_smooth_straightens_an_open_l_route() {
         2,
         "open route straightens to a single chord"
     );
-    assert_eq!(out.cost, 7.0, "cost carried through unchanged");
+    // Exact chord length: (50,50)->(250,150) is one straightened span of length
+    // sqrt(200^2 + 100^2) = 100*sqrt(5) world units = sqrt(5) cells at cell=100, no terrain.
+    assert!((out.cost - 5f64.sqrt()).abs() < 1e-9, "got {}", out.cost);
     assert!(!out.arrested);
+}
+
+#[test]
+fn los_smooth_kept_grid_steps_keep_their_weighted_cost() {
+    // A straight 3-step route whose MIDDLE step (cell (1,0)->(2,0)) enters a terrain cell
+    // (mult 2.0): every straightening attempt's chord also enters that same terrain cell, so
+    // no span straightens and every original grid step is kept, priced at its own destination
+    // cell's multiplier — 1 + 2.0 + 1, not the flat per-transition count the pre-unification
+    // cost model reported.
+    let route = vec![(50.0, 50.0), (150.0, 50.0), (250.0, 50.0), (350.0, 50.0)];
+    let field = terrain_on(200.0, 0.0, 300.0, 100.0, 2.0);
+    let out = los_smooth(
+        oc(route.clone()),
+        &[],
+        None,
+        &field,
+        100.0,
+        0.1,
+        &test_grid(),
+    );
+    assert_eq!(
+        out.path, route,
+        "terrain on every candidate chord blocks straightening"
+    );
+    assert!(
+        (out.cost - 4.0).abs() < 1e-9,
+        "1 + 2.0 + 1, got {}",
+        out.cost
+    );
 }
 
 #[test]

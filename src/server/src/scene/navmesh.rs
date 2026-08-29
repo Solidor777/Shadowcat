@@ -395,9 +395,20 @@ pub(crate) fn clip_to_visible_mask(
 /// route's gate/secrecy/cost properties are therefore <= the grid route's. The single grid step
 /// `path[i] -> path[i+1]` is ALWAYS kept unconditionally (it already passed `find`'s per-cell
 /// gate), so progress to the goal is guaranteed and cells adjacent to special terrain stay
-/// grid-stepped. `cost` and `arrested` are carried through unchanged (the grid weighted cost is a
-/// valid, slightly-conservative budget for the straighter geometry — the same preview-vs-execution
-/// divergence already present on the grid engine's own route cost). "Entered cells" = the
+/// grid-stepped.
+///
+/// `cost` is recomputed EXACTLY, not carried through unchanged: for every smoothed span (kept
+/// grid step or straightened chord), `world_per_cell` (the authored-distance conversion — never
+/// `cell`, the indexing scale) converts the span's Euclidean length to cells, and the span is
+/// priced at ITS OWN destination cell's terrain multiplier. This is exact rather than
+/// approximate for both span kinds: a straightened chord's every entered cell (destination
+/// included) carries multiplier `<= 1.0` by construction (condition (e) above), so a per-window
+/// closed form and a per-transition telescoped sum over any denser sampling agree exactly; a kept
+/// grid step is exactly the ONE king-move edge `find`/`astar_leg` already priced at its
+/// destination cell's multiplier, and `gate_walk`'s identity property means `move_exec::
+/// execute_move` re-walking this same span produces no intermediate transition to disagree with
+/// — so this is the same number `execute_move` reports for the identical route (see
+/// `cost_parity`'s `continuous_smoothed_preview_cost_equals_executor_cost`). "Entered cells" = the
 /// destination footprint disc ∪ the step line traversal, the SAME union
 /// `pathfinding::cell_enterable` and `clip_to_visible_mask` apply, indexed through `grid` — which
 /// MUST be the shape both `mask` and `field` were built with (`resolve_grid_shape`), since the
@@ -495,9 +506,24 @@ pub(crate) fn los_smooth(
         i = best;
     }
 
+    // Exact per-span cost: `world_per_cell` (the authored-distance conversion — never `cell`, the
+    // indexing scale) converts each window's Euclidean length to cells; the window is priced at
+    // ITS OWN destination cell's terrain multiplier. See this function's doc comment for why a
+    // closed form over the (unsampled) window endpoints is exact for both a straightened chord
+    // (every entered cell, destination included, carries multiplier `<= 1.0` by construction) and
+    // a kept single grid step (the one king-move edge `find` already priced this way).
+    let world_per_cell = grid.world_units_per_cell();
+    let cost: f64 = smoothed
+        .windows(2)
+        .map(|w| {
+            let dist = ((w[1].0 - w[0].0).powi(2) + (w[1].1 - w[0].1).powi(2)).sqrt();
+            (dist / world_per_cell) * field.terrain_multiplier(grid.cell_of(w[1]))
+        })
+        .sum();
+
     crate::scene::pathfinding::PathOutcome {
         path: smoothed,
-        cost: outcome.cost,
+        cost,
         arrested: outcome.arrested,
     }
 }

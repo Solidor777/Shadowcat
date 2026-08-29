@@ -20,8 +20,9 @@
 //!   preview could see.
 //!
 //! Returns the stop cell + the legal prefix render-path + accumulated cost. `truncated` is true
-//! when the move stops before `path.last()` for any reason (wall, mask, region-impassable, or
-//! region-arrest), including a region-arrest on the final path step.
+//! when the move stops before `path.last()` for any reason (wall, mask, region-impassable,
+//! region-arrest, or an exhausted movement `MoveGateInputs::budget`), including a region-arrest
+//! on the final path step.
 //!
 //! INVARIANT (route-gate parity): step 2 calls `GridShape::line_traversal(prev,
 //! next, cell)` (via `ecs.resolve_grid_shape`) and checks `all ∈ visible` over
@@ -45,7 +46,7 @@ use std::collections::BTreeSet;
 
 use uuid::Uuid;
 
-use crate::scene::{MovementRestriction, SceneEcs};
+use crate::scene::{MovementModel, MovementRestriction, SceneEcs};
 
 /// Epsilon for `path[0]`-vs-committed-position comparison (scene units).
 /// A client rounding the center-of-cell to the nearest float can drift by at most
@@ -204,8 +205,9 @@ pub(crate) struct MoveOutcome {
     /// frame via `MoveExecution::truncated`, and trusted-only there: a clipped observer
     /// receives `None`.
     pub truncated: bool,
-    /// Total terrain-weighted cost accumulated over the walked prefix. Not consumed by any
-    /// per-turn movement-budget cap (none exists yet); exposed for the wire and future use.
+    /// Total terrain-weighted cost accumulated over the walked prefix — the router's number for
+    /// the same route (see the unified step-price note on `MoveGateInputs::budget`); consumed by
+    /// the movement-budget gate (`MoveGateInputs::budget`) and exposed on the wire.
     pub cost: f64,
 }
 
@@ -252,6 +254,11 @@ pub(crate) struct MoveGateInputs<'a> {
     /// Grid cell size in scene units. Non-finite or non-positive is `MoveReject::Degenerate`,
     /// which binds a GM exactly as it binds a player.
     pub cell: f64,
+    /// Remaining movement in cells; the walk stops before the first transition whose cumulative
+    /// cost would exceed it. `None` = unlimited. The caller passes `None` for a GM (never
+    /// truncated) — like `visible`, an input the gameplay exemption covers, so it lives here
+    /// rather than as a standalone parameter.
+    pub budget: Option<f64>,
 }
 
 /// Walk `path` step by step, validating each step against the wall gate (step 1), the
@@ -266,7 +273,7 @@ pub(crate) struct MoveGateInputs<'a> {
 /// gate runs over this DENSE walk; the coarse `render_path` returned to the caller is
 /// reconstructed from the authored vertices actually traversed plus the exact stop point.
 ///
-/// # Parity with `pathfinding::cell_enterable` — per-cell decision only
+/// # Parity with `pathfinding::cell_enterable` — per-cell decision and per-step cost
 ///
 /// The per-cell decision (step 1 + step 2) uses the SAME primitives as the router's
 /// `cell_enterable`: wall-segment crossing (`segments_cross`, the primitive `blocks_move`
@@ -301,7 +308,8 @@ pub(crate) struct MoveGateInputs<'a> {
 ///   matching `publish`'s own GM position write. Resource
 ///   guards (`gate_walk`'s `MAX_GATE_WALK_COORD`/`MAX_GATE_WALK_SAMPLES`, the non-finite and
 ///   scene-existence refusals, and the `footprint_radius_cells` range guard) are never
-///   exempted. Terrain cost still accrues regardless.
+///   exempted. Budget truncation binds only when the caller passes `gate.budget`, which it
+///   never does for a GM — terrain cost still accrues regardless.
 /// - `footprint_radius_cells` — The mover's bounding-disc radius in grid cells (see
 ///   `SceneEcs::resolve_token_footprint`). Must be in `[0, pathfinding::MAX_FOOTPRINT_CELLS]`;
 ///   out-of-range (including NaN) is `MoveReject::Degenerate`, unconditionally — a GM's wider
@@ -326,6 +334,7 @@ pub(crate) fn execute_move(
         restriction,
         visible,
         cell,
+        budget,
     } = gate;
     // --- Input validation (fail closed on every degenerate input) ---
     if path.len() < 2 {
@@ -397,6 +406,18 @@ pub(crate) fn execute_move(
     // axial cells — two incompatible coordinate systems on a hex scene.
     let to_cell = |p: (f64, f64)| -> (i32, i32) { grid.cell_of(p) };
 
+    // Movement model + step-price bookkeeping, shared with the router's own cost so a route
+    // preview and its execution report the same number (see this function's module doc, "Parity
+    // with `pathfinding::cell_enterable`"). `parity` threads the `Alternating` diagonal-rule bit
+    // across GridStepped transitions, exactly as `pathfinding::find`'s arrest replay threads it —
+    // never reset per transition. `world_per_cell` is the authored-distance conversion (never
+    // `cell`, the indexing scale — see `GridShape::world_units_per_cell`'s own note), used to
+    // price a Continuous transition/tail span as the Euclidean length the polyanya/`los_smooth`
+    // route reports for the same geometry.
+    let movement_model = ecs.resolve_scene(scene).movement_model;
+    let mut parity: u8 = 0;
+    let world_per_cell = grid.world_units_per_cell();
+
     // --- Per-step walk over the DENSE gate walk ---
     let mut stop_idx = 0usize; // index into `walk`
     let mut stopped_early = false;
@@ -404,6 +425,12 @@ pub(crate) fn execute_move(
     // The cell already accounted for by region/cost logic. The START cell is never itself
     // "entered": cost accrual begins at the first cell transition (`i = 1` / `to_cell(next)`).
     let mut last_region_cell = to_cell(walk[0].pos);
+    // The position of the last CELL-ENTRY transition (distinct from `last_region_cell`, its
+    // cell): on `Continuous`, several dense samples can sit inside one cell without a
+    // transition, so the span charged at the NEXT transition must cover the whole distance since
+    // this point, not just the one dense sub-step — matching the whole-polyline integration the
+    // polyanya/`los_smooth` route reports for the same geometry.
+    let mut last_transition_pos = walk[0].pos;
 
     for i in 1..walk.len() {
         let prev = walk[i - 1].pos;
@@ -477,8 +504,36 @@ pub(crate) fn execute_move(
                     break;
                 }
             }
-            // Cost accrues regardless of the exemption: it is information, not a gate.
-            cost += regions.terrain_multiplier(next_cell);
+            // Step price: the router's own number for the same transition. GridStepped ⇒ the
+            // `GridShape::neighbors_with_cost` cost for this adjacent pair (parity threaded
+            // exactly as `pathfinding::find`'s arrest replay threads it); a transition this
+            // shape's own neighbor enumeration does not recognize (a >1-cell jump gated through a
+            // `GridStepped` scene) falls back to the Euclidean span, mirroring the Continuous
+            // rule. Continuous ⇒ the Euclidean span in cells since the last transition, which is
+            // what `navmesh::los_smooth` and the polyanya router report for the same geometry.
+            // Terrain multiplies the entered cell in both models. Cost accrues regardless of the
+            // gameplay exemption; only `budget` can stop the walk on cost.
+            let step = match movement_model {
+                MovementModel::GridStepped => grid
+                    .neighbors_with_cost(last_region_cell, parity)
+                    .into_iter()
+                    .find(|(c, _, _)| *c == next_cell)
+                    .map(|(_, sc, p)| {
+                        parity = p;
+                        sc
+                    })
+                    .unwrap_or_else(|| span_cells(prev, next, world_per_cell)),
+                MovementModel::Continuous => span_cells(last_transition_pos, next, world_per_cell),
+            };
+            let step_cost = step * regions.terrain_multiplier(next_cell);
+            if let Some(b) = budget {
+                if cost + step_cost > b + 1e-9 {
+                    stopped_early = true;
+                    break;
+                }
+            }
+            cost += step_cost;
+            last_transition_pos = next;
             // Arrest and terrain stay CENTER-CELL only, mirroring `cell_enterable`'s documented
             // asymmetry: they act on the mover's own position rather
             // than solid geometry it must clear. Footprint-gating arrest here would make the gate
@@ -493,6 +548,20 @@ pub(crate) fn execute_move(
 
         // All checks passed: advance to next.
         stop_idx = i;
+    }
+
+    // Continuous tail: the loop above prices only full cell-entry transitions, so a Continuous
+    // move that halts partway through its final cell (wall/mask/region/budget stop, or simply
+    // reaching a goal mid-cell) has not yet been charged for the distance since its last
+    // transition. Priced at the stop cell's own terrain multiplier, mirroring the whole-polyline
+    // integration `navmesh::los_smooth`/the polyanya router apply to the same geometry.
+    // GridStepped needs no such tail: its dense samples land exactly on cell transitions, so the
+    // per-transition step price above already reflects the router's own exact quantity.
+    if matches!(movement_model, MovementModel::Continuous) {
+        let stop_pos = walk[stop_idx].pos;
+        let stop_cell = to_cell(stop_pos);
+        cost += span_cells(last_transition_pos, stop_pos, world_per_cell)
+            * regions.terrain_multiplier(stop_cell);
     }
 
     // --- Coarse render_path: authored vertices fully traversed + the exact stop point ---
@@ -525,6 +594,16 @@ pub(crate) fn execute_move(
         truncated,
         cost,
     })
+}
+
+/// Euclidean distance from `a` to `b`, in CELLS — divided by `world_per_cell` (the
+/// authored-distance conversion; never `cell`, the indexing scale — see
+/// `GridShape::world_units_per_cell`'s own note on the distinction). Prices a `Continuous`
+/// transition/tail span the same way the polyanya/Euclidean route integrates it, and backstops a
+/// `GridStepped` transition this scene's own `GridShape::neighbors_with_cost` does not recognize
+/// as adjacent.
+fn span_cells(a: (f64, f64), b: (f64, f64), world_per_cell: f64) -> f64 {
+    (b.0 - a.0).hypot(b.1 - a.1) / world_per_cell
 }
 
 #[cfg(test)]

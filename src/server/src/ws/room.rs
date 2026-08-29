@@ -825,6 +825,9 @@ impl Room {
                     restriction,
                     visible: &visible,
                     cell,
+                    // No per-turn movement-budget consumer wired yet: unlimited, matching a GM's
+                    // own convention (see `MoveGateInputs::budget`'s doc comment).
+                    budget: None,
                 },
                 token,
                 &path,

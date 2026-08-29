@@ -7,9 +7,12 @@
 //! `explored::mark_polygons`, and `regions::rasterize`;
 //! `neighbors_with_cost`/`footprint_cells`/`line_traversal` are wired into
 //! `pathfinding::astar_leg`/`cell_enterable`; `line_traversal` is also wired into
-//! `move_exec::execute_move`; `cell_of` is wired into `move_exec::execute_move`'s region-cell
-//! lookup (and `HexGrid::cells_in_bounds`'s corner mapping); `cell_vertices` is wired into
-//! `accumulate_visible_cells`'s lenient corner-sampling branch.
+//! `move_exec::execute_move`; `neighbors_with_cost` is ALSO wired into `move_exec::execute_move`,
+//! which prices its own transitions through it too, so the router's preview cost and the
+//! executor's execution cost are the same number; `cell_of` is wired into
+//! `move_exec::execute_move`'s region-cell lookup (and `HexGrid::cells_in_bounds`'s corner
+//! mapping); `cell_vertices` is wired into `accumulate_visible_cells`'s lenient corner-sampling
+//! branch.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
@@ -850,10 +853,10 @@ fn normalize_bounds_cells(bounds_cells: (f64, f64)) -> Option<(f64, f64)> {
 /// only `Alternating` consumes parity, charging 1.0/2.0 on alternate diagonals and flipping
 /// the bit so the caller must thread the returned parity through consecutive steps.
 ///
-/// The sole definition of this rule — `pathfinding::astar_leg` reaches it through the `GridShape`
-/// trait's neighbor enumeration rather than duplicating it, so the A* cost and any other
-/// consumer cannot drift apart. The client mirrors the same four rules in
-/// the client's `Grid.distance`.
+/// The sole definition of this rule — `pathfinding::astar_leg` AND `move_exec::execute_move` both
+/// reach it through the `GridShape` trait's neighbor enumeration rather than duplicating it, so
+/// the A* cost, the executor's cost, and any other consumer cannot drift apart. The client
+/// mirrors the same four rules in the client's `Grid.distance`.
 fn step_cost(rule: DiagonalRule, di: i32, dj: i32, parity: u8) -> (f64, u8) {
     let diagonal = di != 0 && dj != 0;
     if !diagonal {

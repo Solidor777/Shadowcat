@@ -843,6 +843,7 @@ fn pathfind_continuous_secret_arrest_absent_from_player_preview_but_springs_at_e
                 .scene_grid_sizes()
                 .get(&scene)
                 .expect("the fixture's scene declares a grid size"),
+            budget: None,
         },
         token,
         &p.path,
@@ -932,6 +933,7 @@ fn non_gm_route_crosses_a_gm_only_wall_that_springs_at_execution() {
                 .scene_grid_sizes()
                 .get(&scene)
                 .expect("the fixture's scene declares a grid size"),
+            budget: None,
         },
         token,
         &out.path,
@@ -1653,6 +1655,7 @@ fn hex_lenient_mask_lets_the_executor_enter_a_cell_the_strict_mask_stops_at() {
             restriction: MovementRestriction::Visible,
             visible: &lenient_mask,
             cell,
+            budget: None,
         },
         token,
         &[(0.0, 0.0), dest],
@@ -1674,6 +1677,7 @@ fn hex_lenient_mask_lets_the_executor_enter_a_cell_the_strict_mask_stops_at() {
             restriction: MovementRestriction::Visible,
             visible: &strict_mask,
             cell,
+            budget: None,
         },
         token,
         &[(0.0, 0.0), dest],

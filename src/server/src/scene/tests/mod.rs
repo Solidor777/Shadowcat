@@ -212,6 +212,30 @@ pub(super) fn wall_doc_eng(scene: Uuid, a: (f64, f64), b: (f64, f64)) -> Documen
     d
 }
 
+/// A `region` doc fixture. Mirrors `move_exec::tests::region_doc` — duplicated here rather than
+/// made `pub(crate)` there, to keep the two test modules independent.
+pub(super) fn region_doc(
+    id: u128,
+    parent: u128,
+    behavior: &str,
+    cost: f64,
+    rect: (f64, f64, f64, f64),
+) -> Document {
+    let (x0, y0, x1, y1) = rect;
+    entity_doc_eng(
+        id,
+        parent,
+        "region",
+        json!({
+            "shape": { "kind": "rect", "points": [x0, y0, x1, y1] },
+            "behavior": behavior,
+            "cost": cost,
+            "enabled": true,
+        }),
+    )
+}
+
+mod cost_parity;
 mod ecs_and_footprints;
 mod pathfind_and_vision;
 mod resolution_and_lighting;

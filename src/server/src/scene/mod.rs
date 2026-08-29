@@ -1700,9 +1700,11 @@ impl SceneEcs {
                     )?;
                     // `find` already reports cost in CELLS — the wire contract `PathResult`'s
                     // own doc comment promises (`ws::protocol`) and the grid-stepped branch
-                    // above already honors — so this sub-path needs no conversion. The pure-
-                    // polyanya sub-path below is the one that computes Euclidean scene-unit
-                    // lengths and converts once, at its own boundary.
+                    // above already honors — but `los_smooth` recomputes its own exact per-span
+                    // cost rather than carrying `weighted.cost` through (see `los_smooth`'s doc
+                    // comment), also already in cells. The pure-polyanya sub-path below is the
+                    // one that computes Euclidean scene-unit lengths and converts once, at its
+                    // own boundary.
                     // `grid_shape`, not `euclid_shape`: the smoother's cell indexing must match the
                     // shape `mask` (`visible_cells`) and `regions` (`region_field`) were built with,
                     // both of which resolve through `resolve_grid_shape`. The two shapes are
