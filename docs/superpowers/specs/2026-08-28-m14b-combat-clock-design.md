@@ -71,16 +71,23 @@ same layer from the store; `DEFAULT_WORLD_SETTINGS` remains the engine literal.
 
 ### 3.3 Ownership
 
-- A module declares `Module.systemDefaults?: SystemDefaultsEngine` in its manifest. On world join
-  the GM's client (cooperative-trust write, as for registries) compares the declaration to the
-  stored doc and dispatches one field Update per differing leaf (real OCC pre-images), or a
-  Create when absent. Switching systems therefore re-applies. No system ⇒ no doc ⇒ empty layer.
+- "The active system" gets an identity: the module providing the singleton contract
+  `SYSTEM_CONTRACT = "shadowcat.system"` (the registry already elects one winner per singleton
+  contract; `ModuleRegistry.systemModule()` returns it). A module declares
+  `Module.systemDefaults?: SystemDefaultsEngine` on the module object (beside `manifest`, so no
+  manifest-schema change). On world join the GM's client (cooperative-trust write, as for
+  registries) compares the declaration to the stored doc and dispatches one field Update per
+  differing top-level section (real OCC pre-images), or a Create when absent. Switching systems
+  therefore re-applies. No system ⇒ no doc ⇒ empty layer.
 - Ingress: GM-only write (`core:create`/edit capability at the GM tier); a non-GM write is
   refused at `apply_intent` like any other unauthorized write.
 - The GM never edits the doc directly. The game-settings panel shows, per setting, the effective
   value and its provenance (`engine | system | world | scene`) and offers **reset to system
-  default**, which removes the world leaf (`remove: true` FieldChange) so resolution falls
-  through.
+  default**. A world leaf that is required on the wire (`WorldSceneDefaults`, `Pathfinding`,
+  `AnimationSettings` fields) cannot be removed without failing ingress, so reset writes the
+  system-resolved value into it; provenance reports `world` for such a leaf only when its stored
+  value differs from the layer beneath. Optional leaves (`combat.*`) are removed
+  (`remove: true`) so resolution falls through.
 
 ### 3.4 Tests
 
@@ -114,7 +121,8 @@ CombatDefaults += effect_cleanup: Option<bool>,                       // fallbac
                   effect_lifecycle: Option<EffectLifecycleDefaults>,  // the three Formulas
                   rewind_restore: Option<bool>,                       // fallback true
                   forward_restore: Option<bool>                       // fallback false
-CombatEngine   += effect_cleanup: bool, rewind_restore: bool, forward_restore: bool   // snapshot
+CombatEngine   += effect_cleanup: bool, rewind_restore: bool, forward_restore: bool,
+                  effect_lifecycle: EffectLifecycleDefaults                          // snapshot (D7)
 ```
 
 `ClockStamp`/`started` is removed: the history (§6) records where every effect stood at every
@@ -152,8 +160,12 @@ New `ClientMsg` variants, dispatched in `conn.rs` beside `MoveRequest`. Each `ha
 combat, its `combatant` children, the `combat-history` child and every host document, runs a
 **pure** transition (`src/server/src/combat/transition.rs`: `CombatSnapshot → Result<Vec<Operation>,
 CombatError>`; no DB, no ECS) and commits the ops through `Room::commit_ops_locked` under
-`publish_guard` as ONE command. A failure returns `ServerMsg::CombatError { request_id, message }`
-to the originator only; the message never distinguishes "hidden" from "absent" or "not yours".
+`publish_guard` as ONE command with `WriteOrigin::CombatTransition`: a server-authored origin
+that skips `apply_intent`'s per-op capability gates (an owner's `CombatAdvance` writes other
+combatants' recoveries and host-embedded effects) while every validation — scope, size, engine,
+containment, singleton, one-active-per-scene, schema, OCC — still runs. No wire frame can select
+an origin. A failure returns `ServerMsg::CombatError { request_id, message }` to the originator
+only; the message never distinguishes "hidden" from "absent" or "not yours".
 
 | Intent | Authz | Effect |
 |---|---|---|
@@ -162,7 +174,7 @@ to the originator only; the message never distinguishes "hidden" from "absent" o
 | `CombatEnd { combat_id }` | GM | §4.3 `on_combat_end`; then `Delete` of the combat (cascade: combatants, history). |
 | `CombatAdvance { combat_id }` | GM; the current combatant's owner under `OwnerMayEnd` | §5.1 |
 | `CombatRewind { combat_id }` | GM | §6.2 |
-| `CombatRoll { combat_id, rolls: [{ combatant_id, notation }] }` | GM; owner for own combatant | each through `chat::rolls::execute_roll` (the sole untrusted-notation path; its caps and entropy apply unchanged); write `initiative`; rebuild `order`; one chat-message `Create` per roll in the same command carrying a `RollEmbed` (hidden combatant ⇒ GM-only audience). |
+| `CombatRoll { combat_id, channel, rolls: [{ combatant_id, notation }] }` | GM; owner for own combatant | each through `chat::rolls::execute_roll` (the sole untrusted-notation path; its caps and entropy apply unchanged) with the dice context resolved for `channel`; write `initiative`; rebuild `order`; one chat-message `Create` per roll on `channel` in the same command carrying a `RollEmbed` (hidden combatant ⇒ GM-only audience). |
 | `CombatResource { combat_id, combatant_id, resource, op: Delta(f64) \| Set(f64) }` | GM; owner | clamp to `[0, max]`; non-finite refused. |
 | `CombatSort { combat_id }` | GM | `order` ← `initiative desc, tiebreak desc, existing index`. |
 
@@ -258,10 +270,13 @@ shifts `cursor`; history absent from a player's Welcome/broadcast/resync and pre
 
 ### 7.1 Cost unification (first — the gate consumes it)
 
-- `grid_shape::step_cost` becomes `pub(crate)`; `move_exec::execute_move` threads the scene's
-  `DiagonalRule` and the carried parity through it per cell transition:
-  `cost += step_cost(rule, di, dj, parity) × terrain_multiplier(next_cell)`. `MoveOutcome.cost`
-  is then the router's number for the same route.
+- `move_exec::execute_move` prices each cell transition through
+  `GridShape::neighbors_with_cost(prev_cell, parity)` — the same call `pathfinding::find`'s
+  arrest replay uses — threading the returned parity: `cost += step × terrain_multiplier(next_cell)`.
+  (Not `step_cost` directly: an axial hex step has two non-zero components and would price as a
+  diagonal; the trait keeps hex at 1.0.) On a `Continuous` scene a span is priced as its
+  Euclidean length in cells × the entered cell's multiplier, which is what the continuous router
+  reports. `MoveOutcome.cost` is then the router's number for the same route.
 - `navmesh::los_smooth` recomputes each straightened chord's cost exactly: per-cell span
   integration (terrain-weighted Euclidean length within each crossed cell), replacing the
   pre-smoothing conservative value.
