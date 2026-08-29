@@ -37,16 +37,15 @@ use crate::chat::{build_message_doc, ActorOwnerRef, Audience, MessageDraft, Mess
 use crate::data::command::{FieldChange, Operation};
 use crate::data::document::{DocRole, Document};
 use crate::data::engine::combat::{
-    resolve_combat_rules, CombatEngine, CombatHistoryEngine, CombatantKind, DurationUnit,
-    ExpiryPoint, Formula, Recovery, ResourceBinding, ResourceRegistryEngine, TurnControl,
-    TurnRecord,
+    resolve_combat_rules, CombatEngine, CombatantKind, DurationUnit, ExpiryPoint, Formula,
+    Recovery, ResourceBinding, ResourceRegistryEngine, TurnControl,
 };
 use crate::data::DataError;
 use crate::dice::{RawRoll, RollOutcome, RollSpec};
 
 use super::effects::{collect_all_effects, collect_effects, expire_by_policy, tick, EffectRef};
 use super::history;
-use super::ops::set_engine;
+use super::ops::{set_engine, whole_engine_replace};
 use super::{CombatError, CombatSnapshot, Combatant};
 
 /// A resource mutation intent for `resource`.
@@ -746,40 +745,6 @@ fn settle_turn(
     }
 }
 
-/// Builds the first `combat-history` record document for `start`.
-fn build_history_doc(w: &Working, first: Uuid, now: i64) -> Result<Document, CombatError> {
-    let record = TurnRecord {
-        round: w.engine.round,
-        turn: first,
-        combatants: w.combatants.iter().map(|c| c.doc.clone()).collect(),
-        effects: Vec::new(),
-    };
-    let engine = CombatHistoryEngine {
-        records: vec![record],
-        cursor: 0,
-    };
-    Ok(Document {
-        id: Uuid::new_v4(),
-        scope: w.combat.scope.clone(),
-        doc_type: crate::data::engine::COMBAT_HISTORY_DOC_TYPE.to_string(),
-        schema_version: 1,
-        name: None,
-        source: None,
-        base: None,
-        owner: None,
-        permissions: crate::data::document::PermissionSet {
-            default: DocRole::None,
-            ..Default::default()
-        },
-        embedded: std::collections::BTreeMap::new(),
-        parent_id: Some(w.combat.id),
-        engine: Some(serde_json::to_value(&engine).map_err(DataError::from)?),
-        system: json!({}),
-        created_at: now,
-        updated_at: now,
-    })
-}
-
 /// Starts (or resumes) a combat. Preempts any other active combat on the
 /// same scene FIRST (release before claim, so a batch-level singleton gate
 /// sees the release ahead of this combat's own claim). When the combat has
@@ -863,8 +828,6 @@ pub fn start(
         }
         settle_turn(&mut w, 0, world, author, now)?;
 
-        let record = build_history_doc(&w, first, now)?;
-        w.commit_create(record);
         history::append_record(snap, &mut w.ops);
     }
     let active_change = set_engine(&w.combat, "/engine/active", json!(true))?;
@@ -952,6 +915,58 @@ pub fn pause(snap: &CombatSnapshot) -> Result<Vec<Operation>, CombatError> {
         doc_id: snap.combat.id,
         changes: vec![change],
     }])
+}
+
+/// Moves the combat clock back to the turn boundary recorded immediately
+/// before the current one: `Unrewindable` when there is no history yet, or
+/// the cursor already sits at the oldest retained record. Restores every
+/// document `history::restore` can reach from the target record when
+/// `rewind_restore` is set (skipped entirely, moving only the clock,
+/// when it is not); always writes the combat's `/engine/round` and
+/// `/engine/turn` back to the target record's own. Every later record is
+/// dropped from history unless `forward_restore` is set, in which case the
+/// redo history survives for `history::fast_forward` to later replay.
+pub fn rewind(snap: &CombatSnapshot) -> Result<Vec<Operation>, CombatError> {
+    let Some((history_doc, history_engine)) = &snap.history else {
+        return Err(CombatError::Unrewindable);
+    };
+    if history_engine.cursor == 0 {
+        return Err(CombatError::Unrewindable);
+    }
+    let new_cursor = history_engine.cursor - 1;
+    let target = history_engine
+        .records
+        .get(new_cursor as usize)
+        .ok_or(CombatError::NotFound)?;
+
+    let mut ops = if snap.engine.rewind_restore {
+        history::restore(snap, target)?
+    } else {
+        Vec::new()
+    };
+
+    let round_change = set_engine(&snap.combat, "/engine/round", json!(target.round))?;
+    let turn_change = set_engine(&snap.combat, "/engine/turn", json!(target.turn))?;
+    ops.push(Operation::Update {
+        doc_id: snap.combat.id,
+        changes: vec![round_change, turn_change],
+    });
+
+    let mut updated = history_engine.clone();
+    updated.cursor = new_cursor;
+    if !snap.engine.forward_restore {
+        updated.records.truncate(new_cursor as usize + 1);
+    }
+    let history_change = whole_engine_replace(
+        history_doc,
+        serde_json::to_value(&updated).map_err(DataError::from)?,
+    );
+    ops.push(Operation::Update {
+        doc_id: history_doc.id,
+        changes: vec![history_change],
+    });
+
+    Ok(ops)
 }
 
 /// Ends a combat outright: expires every `on_combat_end`-policy effect

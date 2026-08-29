@@ -224,6 +224,9 @@ pub(super) fn apply(snap: &CombatSnapshot, ops: &[Operation]) -> HashMap<Uuid, D
     for (id, d) in &snap.hosts {
         docs.insert(*id, d.clone());
     }
+    if let Some((history_doc, _)) = &snap.history {
+        docs.insert(history_doc.id, history_doc.clone());
+    }
     let batch_start = docs.clone();
     for op in ops {
         match op {
@@ -271,4 +274,5 @@ pub(super) fn engine_of<T: serde::de::DeserializeOwned>(
 }
 
 mod effects;
+mod history;
 mod transition;

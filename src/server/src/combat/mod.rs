@@ -22,7 +22,7 @@ pub use snapshot::{load_snapshot, CombatSnapshot, Combatant};
 #[cfg(test)]
 pub(crate) use transition::advance_with_step_count;
 pub use transition::{
-    advance, end, pause, rebuild_order, resource, roll, sort, start, ResourceOp, RollPost,
+    advance, end, pause, rebuild_order, resource, rewind, roll, sort, start, ResourceOp, RollPost,
 };
 
 /// Why a combat intent was refused. `Display` yields ONE wording for every
