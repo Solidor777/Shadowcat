@@ -709,9 +709,12 @@ async fn combat_dispatch_is_rate_limited() {
 }
 
 /// Every one of the eight `Combat*` `ClientMsg` variants parses from its wire tag, round-tripping
-/// through `serde_json`. This proves the WIRE TAG round-trip only — `conn.rs`'s outer dispatch
-/// match has a wildcard `_ => {}` fallback arm, so a `Combat*` variant dropped from its combined
-/// dispatch arm would silently no-op rather than fail to compile; this test cannot detect that.
+/// through `serde_json`. This proves the WIRE TAG round-trip only — it says nothing about
+/// `conn.rs`'s actual dispatch routing. Dispatch-arm coverage is guaranteed independently, by the
+/// compiler: the inner `match serde_json::from_str::<ClientMsg>(...)` in `conn.rs` enumerates
+/// `Ok(...)` per `ClientMsg` variant with no catch-all over the enum, so removing a `Combat*`
+/// variant from the combined dispatch arm makes that match non-exhaustive and fails the build,
+/// rather than silently dropping the frame.
 #[test]
 fn all_eight_combat_frames_round_trip_their_wire_tag() {
     for v in [
