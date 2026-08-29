@@ -407,7 +407,9 @@ pub(crate) fn validate_formula(formula: &str, ctx: ParseContext) -> Result<(), R
 /// Test seam: identical to `execute_roll` but takes an explicit seed instead
 /// of drawing fresh OS entropy, so a test can assert on a deterministic
 /// outcome. `execute_roll` is a thin entropy-supplying wrapper over this.
-fn execute_roll_with_seed(
+/// `pub(crate)`: also used by `combat::transition`'s own test fixtures
+/// (`RollPost::test_with_total`) to build a deterministic outcome.
+pub(crate) fn execute_roll_with_seed(
     formula: &str,
     ctx: ParseContext,
     seed: u64,

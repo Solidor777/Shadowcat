@@ -9,6 +9,9 @@
 pub mod auth;
 pub mod backup;
 pub mod chat;
+/// The server-owned combat clock: snapshot loading, pure transitions, and
+/// effect-lifecycle helpers.
+pub mod combat;
 /// CLI/env/TOML config layering (`Cli` > `SHADOWCAT_*` > TOML > default).
 pub mod config;
 /// Documents, permissions, engine-band validation, search, and SQLite persistence.

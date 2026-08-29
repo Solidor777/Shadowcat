@@ -40,7 +40,7 @@ mod link_preview;
 mod oembed;
 mod post_publish;
 mod preview_cache;
-mod rolls;
+pub(crate) mod rolls;
 mod sanitize;
 mod settings;
 mod shortcodes;
