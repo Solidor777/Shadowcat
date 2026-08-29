@@ -564,20 +564,39 @@ fn compressed_hidden_turn_coalesces_combatant_updates_into_one_operation() {
 
 #[test]
 fn settle_turn_step_budget_stays_linear_even_with_many_sequential_event_removals() {
-    // N Event combatants with descending lifespans (E_i's lifespan is
-    // `N - i`, zero-indexed): every full lap over the CURRENT order
-    // decrements every remaining entry's lifespan by exactly one, so the
-    // entry currently LAST in the order is always the one that reaches
-    // zero, right on that lap's own final step -- the shape a full-length
-    // budget reset on every removal drives to O(N^2) total steps: N +
-    // (N-1) + ... + 1. `settle_turn`'s budget instead grows by only ONE
-    // step per removal, bounding the whole walk to a small multiple of N.
+    // `advance()`'s own real entry point never starts `settle_turn` at
+    // idx = 0: `advance_impl` runs the CURRENT turn's own `run_turn_end`
+    // OUTSIDE `settle_turn` first, so the walk always begins at idx = 1
+    // (one past `order[0]`, the entry already holding `turn`) -- only
+    // `start()` enters at idx = 0. Lifespans are the descending-lifespan
+    // construction ROTATED to start at position 1: E_0's lifespan is `1`
+    // (it is visited LAST in the walk's first lap, once it wraps back
+    // around to position 0), each of E_2..E_{N-1} descends by one further
+    // position, and E_1 -- which would otherwise need `N` decrements and
+    // be the very last entry removed -- carries an unbounded (`None`)
+    // lifespan instead, so the whole order never fully empties (which
+    // would surface as `CombatError::Empty` rather than a step count).
+    // Every full lap over the CURRENT order decrements every remaining
+    // finite-lifespan entry by exactly one, so the entry visited LAST in
+    // that lap is always the one (other than E_1) that reaches zero,
+    // right on the lap's own final step -- the shape a full-length budget
+    // reset on every removal drives to O(N^2) total steps: N + (N-1) +
+    // ... + 2, plus one final step once E_1 alone remains and stops the
+    // walk. `settle_turn`'s budget instead grows by only ONE step per
+    // removal, bounding the whole walk to a small multiple of N.
     const N: u32 = 30;
     let combat = Uuid::from_u128(1);
     let mut combatants = Vec::new();
     let mut order = Vec::new();
     for i in 0..N {
-        let ev = event_combatant(100 + i as u128, combat, Some(N - i), None);
+        let lifespan = if i == 0 {
+            Some(1)
+        } else if i == 1 {
+            None
+        } else {
+            Some(N - i + 1)
+        };
+        let ev = event_combatant(100 + i as u128, combat, lifespan, None);
         order.push(ev.doc.id);
         combatants.push(ev);
     }
@@ -591,7 +610,7 @@ fn settle_turn_step_budget_stays_linear_even_with_many_sequential_event_removals
     assert!(
         steps <= 3 * N as usize,
         "settle_turn took {steps} steps for N={N} entries -- expected a LINEAR bound (<= 3N), \
-         not the O(N^2) the pre-fix full-budget reset produced"
+         not the O(N^2) a full-budget reset on every removal would produce"
     );
     assert!(
         !ops.is_empty(),

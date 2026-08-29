@@ -666,12 +666,12 @@ fn resolve_event(
 /// on each deletion — a deletion can happen at most `order.len()` times in
 /// total, since `order` strictly shrinks and never regrows within one walk,
 /// so the total budget across the whole walk is bounded by `2 *
-/// order.len()`: LINEAR in the walk's starting size, never quadratic (the
-/// prior guard reset to a fresh full-length budget on every deletion, which
-/// a descending-lifespan `Event` order — each cycle expiring exactly one
-/// entry right as its own cycle's budget runs out — drives to `O(order.len()
-/// ^2)` total steps). INVARIANT: whichever entry ends up holding `turn` —
-/// whether it stopped genuinely or the budget ran out with every entry still
+/// order.len()`: LINEAR in the walk's starting size, never quadratic — a
+/// budget that instead reset to a fresh full length on every removal would
+/// produce `O(order.len()^2)` total steps for a descending-lifespan `Event`
+/// order, where each cycle expires exactly one entry right as its own
+/// cycle's budget runs out. INVARIANT: whichever entry ends up holding
+/// `turn` — whether it stopped genuinely or the budget ran out with every entry still
 /// auto-resolving — has ALWAYS already completed its own resolution (an
 /// auto-resolving entry is never left mid-turn holding `turn`); the
 /// budget-exhaustion case parks `turn` on the last entry visited, per the
