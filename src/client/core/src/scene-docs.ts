@@ -1259,16 +1259,32 @@ const ENGINE_COMBAT_DEFAULTS: Required<CombatDefaults> = {
   turnControl: "owner_may_end",
 };
 
+/** The value/source `resolveSettingProvenance` would report with the scene and world layers
+ * excluded entirely (system overlay, else the built-in engine default). Doubles as the
+ * "reset to system default" write target and as the equality baseline that decides whether a
+ * `"world"` pick is a genuine override or merely coincides with the layer beneath it — see
+ * `resolvePick`'s equality-collapse step. */
+interface SystemOrEngine<T> {
+  /** The resolved value. */
+  value: T;
+  /** The layer that supplied it. */
+  source: "system" | "engine";
+}
+
 /** Picks the first non-nullish value across scene → world → system → engine, tagging which
- * layer supplied it. Internal helper — not exported from the package.
+ * layer supplied it, then collapses a `"world"` pick down to the `systemOrEngine` layer when the
+ * stored world value is deep-equal to it — a required wire field's world-settings leaf is never
+ * absent once the doc exists, so presence alone cannot distinguish a genuine override from a
+ * value that merely restates the default beneath it. Internal helper — not exported from the
+ * package.
  * @param sceneVal The scene-level override, or `null`/`undefined` if unset.
  * @param worldVal The world-settings value, or `null`/`undefined` if unset/absent.
  * @param systemVal The system-defaults value, or `null`/`undefined` if unset/absent.
  * @param engineVal The built-in engine default (always present; the final fallback).
- * @returns The resolved value and the layer that supplied it.
+ * @returns The resolved value, the layer that supplied it, and the system-or-engine baseline.
  * @example
  * ```
- * resolvePick(undefined, undefined, "manhattan", "chebyshev"); // { value: "manhattan", source: "system" }
+ * resolvePick(undefined, undefined, "manhattan", "chebyshev"); // { value: "manhattan", source: "system", systemOrEngine: { value: "manhattan", source: "system" } }
  * ```
  */
 function resolvePick<T>(
@@ -1281,11 +1297,19 @@ function resolvePick<T>(
   value: T;
   /** The layer that supplied it. */
   source: SettingSource;
+  /** The system-or-engine baseline (see `SystemOrEngine`). */
+  systemOrEngine: SystemOrEngine<T>;
 } {
-  if (sceneVal !== null && sceneVal !== undefined) return { value: sceneVal, source: "scene" };
-  if (worldVal !== null && worldVal !== undefined) return { value: worldVal, source: "world" };
-  if (systemVal !== null && systemVal !== undefined) return { value: systemVal, source: "system" };
-  return { value: engineVal, source: "engine" };
+  const systemOrEngine: SystemOrEngine<T> =
+    systemVal !== null && systemVal !== undefined
+      ? { value: systemVal, source: "system" }
+      : { value: engineVal, source: "engine" };
+  if (sceneVal !== null && sceneVal !== undefined) return { value: sceneVal, source: "scene", systemOrEngine };
+  if (worldVal !== null && worldVal !== undefined) {
+    if (deepEqual(worldVal, systemOrEngine.value)) return { value: systemOrEngine.value, source: systemOrEngine.source, systemOrEngine };
+    return { value: worldVal, source: "world", systemOrEngine };
+  }
+  return { value: systemOrEngine.value, source: systemOrEngine.source, systemOrEngine };
 }
 
 /** Resolve one setting's effective value AND which resolution layer supplied it — the same
@@ -1295,8 +1319,9 @@ function resolvePick<T>(
  * @param scene The scene document to read a scene-level override from, or `undefined` for a
  * world/system-scoped setting with no scene context.
  * @param path The setting to resolve; see {@link SettingPath}.
- * @returns The resolved value and the layer (`"engine" | "system" | "world" | "scene"`) that
- * supplied it.
+ * @returns The resolved value, the layer (`"engine" | "system" | "world" | "scene"`) that
+ * supplied it, and the `systemOrEngine` reset-to-system baseline (the value/layer this same
+ * setting resolves to with the scene and world layers excluded).
  * @example
  * ```ts
  * import { resolveSettingProvenance, type ReadableDocuments } from "@shadowcat/core";
@@ -1314,6 +1339,8 @@ export function resolveSettingProvenance(
   value: unknown;
   /** The layer that supplied it. */
   source: SettingSource;
+  /** The system-or-engine baseline (see `SystemOrEngine`) — the reset-to-system write target. */
+  systemOrEngine: SystemOrEngine<unknown>;
 } {
   const { system, world } = layers(store);
   const eng = scene?.engine as SceneEngine | undefined;
@@ -1359,10 +1386,14 @@ export function resolveSettingProvenance(
         ["world", world?.combat],
         ["system", system?.combat],
       ];
+      const systemOrEngine: SystemOrEngine<unknown> =
+        system?.combat && "movementResource" in system.combat
+          ? { value: system.combat.movementResource ?? null, source: "system" }
+          : { value: ENGINE_COMBAT_DEFAULTS.movementResource, source: "engine" };
       for (const [source, layer] of layerOrder) {
-        if (layer && "movementResource" in layer) return { value: layer.movementResource ?? null, source };
+        if (layer && "movementResource" in layer) return { value: layer.movementResource ?? null, source, systemOrEngine };
       }
-      return { value: ENGINE_COMBAT_DEFAULTS.movementResource, source: "engine" };
+      return { value: systemOrEngine.value, source: systemOrEngine.source, systemOrEngine };
     }
     case "combat.interpretation":
       return resolvePick(combat?.interpretation, world?.combat?.interpretation, system?.combat?.interpretation, ENGINE_COMBAT_DEFAULTS.interpretation);

@@ -166,7 +166,6 @@ export const en: Messages = {
   "gameSettings.movementModel": "Movement model",
   "gameSettings.lightingEnabled": "Lighting enabled",
   "gameSettings.lightMode": "Light mode",
-  "gameSettings.fog": "Fog of war",
   "gameSettings.diagonalRule": "Diagonal rule",
   "gameSettings.animSpeed": "Animation speed (cells/sec)",
   "gameSettings.animEasing": "Animation easing",

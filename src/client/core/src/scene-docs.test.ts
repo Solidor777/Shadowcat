@@ -632,15 +632,61 @@ describe("system defaults", () => {
   it("resolveSettingProvenance names the layer that supplied the value", () => {
     const sd: SystemDefaultsEngine = { scene: { fog: false }, pathfinding: { diagonalRule: "manhattan" } };
     const sdDoc = buildSystemDefaultsDoc("w1", sd);
-    const ws = buildWorldSettingsDoc("w1", undefined, "ws1");
+    // World-settings values below are deliberately chosen to DIFFER from the system/engine
+    // default beneath them, so the "world" source is a genuine override, not a coincidental match.
+    const ws = buildWorldSettingsDoc(
+      "w1",
+      {
+        ...structuredClone(DEFAULT_WORLD_SETTINGS),
+        scene: { ...DEFAULT_WORLD_SETTINGS.scene, losRestriction: false },
+        pathfinding: { diagonalRule: "chebyshev" },
+      },
+      "ws1",
+    );
     const scene = buildSceneDoc("w1", { vision: { losRestriction: null, fog: true, observerVision: null, movementRestriction: null, movementModel: null } }, "s1");
     const storeWithWorld = storeWith(sdDoc, ws, scene);
-    expect(resolveSettingProvenance(storeWithWorld, scene, "scene.fog")).toEqual({ value: true, source: "scene" });
-    expect(resolveSettingProvenance(storeWithWorld, undefined, "scene.losRestriction")).toEqual({ value: true, source: "world" });
-    expect(resolveSettingProvenance(storeWithWorld, undefined, "pathfinding.diagonalRule")).toEqual({ value: "chebyshev", source: "world" });
+    expect(resolveSettingProvenance(storeWithWorld, scene, "scene.fog")).toEqual({
+      value: true, source: "scene", systemOrEngine: { value: false, source: "system" },
+    });
+    expect(resolveSettingProvenance(storeWithWorld, undefined, "scene.losRestriction")).toEqual({
+      value: false, source: "world",
+      systemOrEngine: { value: DEFAULT_WORLD_SETTINGS.scene.losRestriction, source: "engine" },
+    });
+    expect(resolveSettingProvenance(storeWithWorld, undefined, "pathfinding.diagonalRule")).toEqual({
+      value: "chebyshev", source: "world", systemOrEngine: { value: "manhattan", source: "system" },
+    });
     // No world doc: the system layer is what supplies scene.fog.
     const storeNoWorld = storeWith(sdDoc, scene);
-    expect(resolveSettingProvenance(storeNoWorld, undefined, "scene.fog")).toEqual({ value: false, source: "system" });
+    expect(resolveSettingProvenance(storeNoWorld, undefined, "scene.fog")).toEqual({
+      value: false, source: "system", systemOrEngine: { value: false, source: "system" },
+    });
+  });
+
+  it("resolveSettingProvenance reports the system/engine source, not \"world\", when a stored world value merely COINCIDES with the layer beneath it", () => {
+    // A world-settings doc is required-field-complete on the wire — every WorldSceneDefaults
+    // leaf is always present once the doc exists, even when nobody has genuinely overridden it.
+    // resolvePick's presence-only check would report "world" here unconditionally; the
+    // equality collapse must instead report the deeper layer that actually matches.
+    const sdDoc = buildSystemDefaultsDoc("w1", { scene: { fog: false } });
+    // Explicitly stores fog: false — coincidentally the same value the system doc supplies.
+    const wsMatchesSystem = buildWorldSettingsDoc(
+      "w1",
+      { ...structuredClone(DEFAULT_WORLD_SETTINGS), scene: { ...DEFAULT_WORLD_SETTINGS.scene, fog: false } },
+      "ws1",
+    );
+    const scene = buildSceneDoc("w1", {}, "s1");
+    const store = storeWith(sdDoc, wsMatchesSystem, scene);
+    expect(resolveSettingProvenance(store, undefined, "scene.fog")).toEqual({
+      value: false, source: "system", systemOrEngine: { value: false, source: "system" },
+    });
+    // No system doc: world's stored fog (the default's own true) coincides with the built-in
+    // engine default instead.
+    const wsMatchesEngine = buildWorldSettingsDoc("w1", undefined, "ws2");
+    const storeNoSystem = storeWith(wsMatchesEngine, scene);
+    expect(resolveSettingProvenance(storeNoSystem, undefined, "scene.fog")).toEqual({
+      value: DEFAULT_WORLD_SETTINGS.scene.fog, source: "engine",
+      systemOrEngine: { value: DEFAULT_WORLD_SETTINGS.scene.fog, source: "engine" },
+    });
   });
 
   it("resolveSettingProvenance treats a scene's explicit combat.movementResource null as a terminal clear, not a fall-through", () => {
@@ -649,13 +695,17 @@ describe("system defaults", () => {
     const store = storeWith(sdDoc, scene);
     // The scene's explicit clear wins over the system's supplied "gold" — mirrors
     // resolve_combat_rules's outer-Option-first pick, not a nullish coalesce.
-    expect(resolveSettingProvenance(store, scene, "combat.movementResource")).toEqual({ value: null, source: "scene" });
+    expect(resolveSettingProvenance(store, scene, "combat.movementResource")).toEqual({
+      value: null, source: "scene", systemOrEngine: { value: "gold", source: "system" },
+    });
   });
 
   it("resolveSettingProvenance falls through to the system layer when the scene has no combat.movementResource key at all", () => {
     const sdDoc = buildSystemDefaultsDoc("w1", { combat: { movementResource: "gold" } });
     const scene = buildSceneDoc("w1", {}, "s1");
     const store = storeWith(sdDoc, scene);
-    expect(resolveSettingProvenance(store, scene, "combat.movementResource")).toEqual({ value: "gold", source: "system" });
+    expect(resolveSettingProvenance(store, scene, "combat.movementResource")).toEqual({
+      value: "gold", source: "system", systemOrEngine: { value: "gold", source: "system" },
+    });
   });
 });

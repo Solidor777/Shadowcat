@@ -5,11 +5,11 @@
     buildWorldSettingsDoc, buildLightGradationDoc, buildVisionModesDoc, buildDiceSettingsDoc,
     buildChatSettingsDoc,
     DEFAULT_WORLD_SETTINGS,
-    SYSTEM_DEFAULTS_DOC_TYPE, resolveSettingProvenance,
+    resolveSettingProvenance,
     type WorldSettingsEngine, type LightGradationEngine, type VisionModesEngine,
     type SceneEngine, type WireDocument, DEFAULT_SCENE_BOUNDS, type DiceSettingsEngine,
     type ChatSettingsEngine, type ChannelRegistryEngine,
-    type SystemDefaultsEngine, type SettingPath,
+    type SettingPath,
   } from "@shadowcat/core";
 
   const ctx = getAppContext();
@@ -55,21 +55,18 @@
   });
   const wsys = $derived.by((): WorldSettingsEngine | undefined => ws?.engine as WorldSettingsEngine | undefined);
 
-  // system-defaults singleton: read-only here (the sheet-fallback tree editor is the only
-  // writer of this doc, seeded by the active system module's own declaration) — needed to
-  // compute the RESET-TO-SYSTEM target value for each world-defaults control below.
-  const sdDoc = $derived.by((): WireDocument | undefined => {
-    subscribe();
-    return ctx.documents.query(SYSTEM_DEFAULTS_DOC_TYPE)[0];
-  });
-  const sdsys = $derived.by((): SystemDefaultsEngine | undefined => sdDoc?.engine as SystemDefaultsEngine | undefined);
-
   /**
    * Resolve a world-defaults setting's provenance (which layer supplies its effective value).
    * `scene` is always `undefined` here: this panel's world-defaults section shows the
    * WORLD-scoped resolution (engine < system < world), never a per-scene override.
+   * Calls `subscribe()` before reading the document store: `resolveSettingProvenance` reads
+   * `ctx.documents` directly, and a plain method call establishes no reactive dependency in
+   * Svelte 5's runes system — every other document-store read in this component goes through
+   * this same bridge (see `ws` above), and this is the one call site that read the store
+   * without it.
    * @param path The setting to resolve; see `SettingPath`.
-   * @returns The resolved value and the layer that supplied it.
+   * @returns The resolved value, the layer that supplied it, and the `systemOrEngine`
+   * reset-to-system baseline.
    * @example
    * ```
    * // private helper; not part of the public API
@@ -81,7 +78,15 @@
     value: unknown;
     /** The layer that supplied it. */
     source: "engine" | "system" | "world" | "scene";
+    /** The reset-to-system write target (system overlay, else the built-in engine default). */
+    systemOrEngine: {
+      /** The resolved value. */
+      value: unknown;
+      /** The layer that supplied it. */
+      source: "engine" | "system";
+    };
   } {
+    subscribe();
     return resolveSettingProvenance(ctx.documents, undefined, path);
   }
 
@@ -92,50 +97,25 @@
   type WorldDefaultsPath = Exclude<SettingPath, `combat.${string}`>;
 
   /**
-   * The value reset-to-system writes for a required world-defaults leaf: the system-defaults
-   * overlay's value if declared, else the built-in engine default — skipping the currently
-   * stored WORLD value entirely (that's the value being reset away from).
-   * @param path The world-defaults setting to compute a reset target for.
-   * @returns The system-or-engine value to write.
-   * @example
-   * ```
-   * // private helper; not part of the public API
-   * systemOrEngine("scene.fog"); // sdsys?.scene?.fog ?? DEFAULT_WORLD_SETTINGS.scene.fog
-   * ```
-   */
-  function systemOrEngine(path: WorldDefaultsPath): unknown {
-    switch (path) {
-      case "scene.movementRestriction": return sdsys?.scene?.movementRestriction ?? DEFAULT_WORLD_SETTINGS.scene.movementRestriction;
-      case "scene.movementModel": return sdsys?.scene?.movementModel ?? DEFAULT_WORLD_SETTINGS.scene.movementModel;
-      case "scene.lightingEnabled": return sdsys?.scene?.lightingEnabled ?? DEFAULT_WORLD_SETTINGS.scene.lightingEnabled;
-      case "scene.lightMode": return sdsys?.scene?.lightMode ?? DEFAULT_WORLD_SETTINGS.scene.lightMode;
-      case "scene.fog": return sdsys?.scene?.fog ?? DEFAULT_WORLD_SETTINGS.scene.fog;
-      case "scene.losRestriction": return sdsys?.scene?.losRestriction ?? DEFAULT_WORLD_SETTINGS.scene.losRestriction;
-      case "scene.observerVision": return sdsys?.scene?.observerVision ?? DEFAULT_WORLD_SETTINGS.scene.observerVision;
-      case "scene.environment": return sdsys?.scene?.environment ?? DEFAULT_WORLD_SETTINGS.scene.environment;
-      case "scene.partialCellLeniency": return sdsys?.scene?.partialCellLeniency ?? DEFAULT_WORLD_SETTINGS.scene.partialCellLeniency;
-      case "pathfinding.diagonalRule": return sdsys?.pathfinding?.diagonalRule ?? DEFAULT_WORLD_SETTINGS.pathfinding.diagonalRule;
-      case "animation.speedCellsPerSec": return sdsys?.animation?.speedCellsPerSec ?? DEFAULT_WORLD_SETTINGS.animation.speedCellsPerSec;
-      case "animation.easing": return sdsys?.animation?.easing ?? DEFAULT_WORLD_SETTINGS.animation.easing;
-      default: return path satisfies never;
-    }
-  }
-
-  /**
    * Reset a required world-defaults leaf back to its system-resolved (or engine-literal) value.
    * `old` is the field's real current stored value on the world-settings doc (the OCC
-   * pre-image) — required leaves are never removed (see `WorldDefaultsPath`'s doc comment).
+   * pre-image); `target` is `prov(path).systemOrEngine.value`, computed by the caller — reusing
+   * `resolveSettingProvenance`'s own system-or-engine baseline rather than re-deriving the
+   * system/engine-default table a second time in this component (that table is defined exactly
+   * once, in `resolveSettingProvenance`'s switch). Required leaves are never removed (see
+   * `WorldDefaultsPath`'s doc comment).
    * @param path The world-defaults setting to reset.
    * @param old The field's real current value on the world-settings doc.
+   * @param target The system-or-engine value to write.
    * @example
    * ```
    * // private function; not part of the public API — wired to each reset button's onclick
-   * if (ws) resetToSystem("scene.fog", wsys!.scene.fog);
+   * if (ws) resetToSystem("scene.fog", wsys!.scene.fog, prov("scene.fog").systemOrEngine.value);
    * ```
    */
-  function resetToSystem(path: WorldDefaultsPath, old: unknown): void {
+  function resetToSystem(path: WorldDefaultsPath, old: unknown, target: unknown): void {
     if (!ws) return;
-    set(ws.id, "/engine/" + path.replace(".", "/"), old, systemOrEngine(path));
+    set(ws.id, "/engine/" + path.replace(".", "/"), old, target);
   }
 
   const lgDoc = $derived.by((): WireDocument | undefined => {
@@ -277,14 +257,16 @@
   <h2>{ctx.t("gameSettings.title")}</h2>
 
   <!-- Per-control provenance hint + reset-to-system-default button, shared by every world-defaults
-       control below. Reset renders only when the WORLD layer currently supplies the value — a
-       structurally-complete world-settings doc's own leaf is never absent, so this is the normal
-       case whenever a GM has touched (or the panel seeded) that leaf. -->
+       control below. `resolveSettingProvenance` reports "world" only when the stored world value
+       genuinely differs from the system/engine value beneath it (see its equality collapse) —
+       a structurally-complete world-settings doc's own leaf is always present but is not always
+       a real override, so the reset button renders exactly when there is something to reset. -->
   {#snippet provControl(path: WorldDefaultsPath, old: unknown)}
-    <p class="hint" data-testid={"provenance:" + path}>{ctx.t("gameSettings.source." + prov(path).source)}</p>
-    {#if prov(path).source === "world"}
+    {@const p = prov(path)}
+    <p class="hint" data-testid={"provenance:" + path}>{ctx.t("gameSettings.source." + p.source)}</p>
+    {#if p.source === "world"}
       <button type="button" class="reset-to-system" aria-label={"gameSettings.resetToSystem:" + path}
-        onclick={() => resetToSystem(path, old)}>{ctx.t("gameSettings.resetToSystem")}</button>
+        onclick={() => resetToSystem(path, old, p.systemOrEngine.value)}>{ctx.t("gameSettings.resetToSystem")}</button>
     {/if}
   {/snippet}
 
@@ -324,11 +306,9 @@
     </label>
     {@render provControl("scene.lightMode", wsys.scene.lightMode)}
 
-    <label>
-      {ctx.t("gameSettings.fog")}
-      <input type="checkbox" aria-label="gameSettings.fog" checked={wsys.scene.fog}
-        onchange={(e) => set(ws.id, "/engine/scene/fog", wsys.scene.fog, (e.currentTarget as HTMLInputElement).checked)} />
-    </label>
+    <!-- No editable world-level fog control exists: only the per-scene override below has an
+         input. This section renders the provenance hint + reset-to-system button standalone,
+         reading the current stored value from wsys for the reset's OCC pre-image. -->
     {@render provControl("scene.fog", wsys.scene.fog)}
 
     <label>
