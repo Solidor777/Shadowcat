@@ -668,12 +668,16 @@ async fn handle_socket(
                                     // success (the broadcast `Event` is the notification, the same
                                     // asymmetric reply protocol as SendMessage); a rejection is
                                     // surfaced to the sender only via a correlated `CombatError`.
+                                    // Reuses `message_rate` (the same per-user flood budget every
+                                    // other server-authored write handler shares) — checked inside
+                                    // `handle_combat_intent` itself, before its snapshot doc read.
                                     if let Some(f) = crate::combat::handle_combat_intent(
                                         &room,
                                         repo.as_ref(),
                                         &ctx,
                                         m,
                                         now_millis(),
+                                        &message_rate,
                                     )
                                     .await
                                     {

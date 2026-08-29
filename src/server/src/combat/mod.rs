@@ -63,21 +63,43 @@ pub enum CombatError {
     /// Repository failure.
     #[error("combat rejected")]
     Data(#[from] crate::data::DataError),
+    /// `CombatRoll` named the same `combatant_id` more than once. Distinct
+    /// wording is safe: every named id was already authorized as the
+    /// caller's own (or the GM's) by `authorize`, so this discloses nothing
+    /// the caller doesn't already know.
+    #[error("duplicate combatant in rolls")]
+    DuplicateRoll,
+    /// The caller's per-minute combat-intent flood budget is exhausted.
+    /// Distinct wording (never leaks combat/hidden state, same class as
+    /// `SendMessageError::RateLimited`).
+    #[error("You are performing combat actions too quickly. Please wait a moment.")]
+    RateLimited,
 }
 
-/// Dispatches one combat intent frame: loads the snapshot, authorizes,
-/// resolves the transition's ops, and commits them as ONE server-authored
-/// command via `Room::commit_combat`. `None` on success — the broadcast
-/// `Event` is the notification, mirroring `SendMessage`'s asymmetric reply
-/// protocol; `Some(ServerMsg::CombatError)` on refusal, `message` set to
-/// `CombatError`'s own `Display` text so every refusal path (including an
-/// unrecognized/foreign `combat_id`) renders identically to the sender.
+/// Per-user combat-intent flood budget. Reuses the SAME per-minute figure as
+/// `WsState::message_rate`'s callers (`SendMessage`/`EditMessage`/
+/// `DeleteMessage`/`RecalcRoll`) — a combat intent costs one snapshot doc
+/// read plus a commit, the same order of cost as those handlers, so a
+/// dedicated budget would just duplicate their number under a new name.
+const COMBAT_RATE_PER_MIN: usize = 30;
+
+/// Dispatches one combat intent frame: checks the caller's flood budget,
+/// loads the snapshot, authorizes, resolves the transition's ops, and
+/// commits them as ONE server-authored command via `Room::commit_combat`.
+/// `None` on success — the broadcast `Event` is the notification, mirroring
+/// `SendMessage`'s asymmetric reply protocol; `Some(ServerMsg::CombatError)`
+/// on refusal, `message` set to `CombatError`'s own `Display` text so every
+/// refusal path (including an unrecognized/foreign `combat_id`) renders
+/// identically to the sender. `rate` is checked BEFORE the snapshot's
+/// multi-query doc read — cheap check first, mirroring `ScenePing`'s guard
+/// order in `conn.rs`.
 pub async fn handle_combat_intent(
     room: &Room,
     repo: &dyn Repository,
     ctx: &PermissionContext,
     msg: ClientMsg,
     now: i64,
+    rate: &crate::ws::PingRateLimiter,
 ) -> Option<ServerMsg> {
     let (request_id, combat_id) = match &msg {
         ClientMsg::CombatStart {
@@ -118,6 +140,10 @@ pub async fn handle_combat_intent(
         // routes only the eight combat variants here.
         _ => return None,
     };
+
+    if !rate.check(ctx.user_id, now, COMBAT_RATE_PER_MIN) {
+        return Some(to_server_msg(request_id, CombatError::RateLimited));
+    }
 
     match run_intent(room, repo, ctx, msg, combat_id, now).await {
         Ok(()) => None,
@@ -174,6 +200,14 @@ fn authorize(
             }
         }
         ClientMsg::CombatRoll { rolls, .. } => {
+            // An empty `rolls` list has no entry to check ownership
+            // against, so the loop below would vacuously succeed for ANY
+            // non-GM world member regardless of any relationship to this
+            // combat — reject it outright rather than let authorization
+            // for "no rolls" fall out of an empty loop.
+            if rolls.is_empty() {
+                return Err(CombatError::Forbidden);
+            }
             for entry in rolls {
                 let c = snap
                     .combatants
@@ -232,7 +266,7 @@ async fn build_ops(
             let mut seen = HashSet::new();
             for entry in &rolls {
                 if !seen.insert(entry.combatant_id) {
-                    return Err(CombatError::Forbidden);
+                    return Err(CombatError::DuplicateRoll);
                 }
             }
             let dice_ctx = crate::chat::resolve_dice_context(repo, room.world_id, &channel).await;

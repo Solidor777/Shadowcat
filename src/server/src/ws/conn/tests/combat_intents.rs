@@ -39,6 +39,10 @@ struct Harness {
     hidden_npc: Uuid,
     /// Cached `WorldCapDefaults`, for `filter_command`.
     world_defaults: crate::data::document::WorldCapDefaults,
+    /// A fresh per-test combat-intent flood budget — every `handle_combat_intent`
+    /// call in a test shares this one instance, same as a real connection's
+    /// `message_rate`.
+    rate: crate::ws::PingRateLimiter,
 }
 
 impl Harness {
@@ -307,6 +311,7 @@ async fn combat_harness() -> Harness {
         player_combatant: pc_id,
         hidden_npc: npc_id,
         world_defaults,
+        rate: crate::ws::PingRateLimiter::new(),
     }
 }
 
@@ -350,6 +355,7 @@ async fn gm_start_advance_pause_end_round_trip_and_players_get_no_history() {
             combat_id: h.combat,
         },
         0,
+        &h.rate,
     )
     .await
     .is_none());
@@ -393,6 +399,7 @@ async fn gm_start_advance_pause_end_round_trip_and_players_get_no_history() {
             combat_id: h.combat,
         },
         0,
+        &h.rate,
     )
     .await
     .is_none());
@@ -405,6 +412,7 @@ async fn gm_start_advance_pause_end_round_trip_and_players_get_no_history() {
             combat_id: h.combat,
         },
         0,
+        &h.rate,
     )
     .await
     .is_none());
@@ -417,6 +425,7 @@ async fn gm_start_advance_pause_end_round_trip_and_players_get_no_history() {
             combat_id: h.combat,
         },
         0,
+        &h.rate,
     )
     .await
     .is_none());
@@ -443,6 +452,7 @@ async fn owner_may_end_only_their_own_turn_and_errors_share_one_wording() {
             combat_id: h.combat,
         },
         0,
+        &h.rate,
     )
     .await;
 
@@ -455,6 +465,7 @@ async fn owner_may_end_only_their_own_turn_and_errors_share_one_wording() {
             combat_id: h.combat,
         },
         0,
+        &h.rate,
     )
     .await;
     assert!(ok.is_none(), "own turn");
@@ -473,6 +484,7 @@ async fn owner_may_end_only_their_own_turn_and_errors_share_one_wording() {
             combat_id: h.combat,
         },
         0,
+        &h.rate,
     )
     .await;
 
@@ -485,6 +497,7 @@ async fn owner_may_end_only_their_own_turn_and_errors_share_one_wording() {
             combat_id: h.combat,
         },
         0,
+        &h.rate,
     )
     .await;
     let unknown = handle_combat_intent(
@@ -496,6 +509,7 @@ async fn owner_may_end_only_their_own_turn_and_errors_share_one_wording() {
             combat_id: Uuid::from_u128(0xDEAD),
         },
         0,
+        &h.rate,
     )
     .await;
     let (
@@ -532,6 +546,7 @@ async fn roll_uses_the_channel_dice_context_and_posts_a_gm_only_message_for_hidd
             }],
         },
         0,
+        &h.rate,
     )
     .await;
     assert!(ok.is_none());
@@ -554,6 +569,7 @@ async fn roll_uses_the_channel_dice_context_and_posts_a_gm_only_message_for_hidd
             }],
         },
         0,
+        &h.rate,
     )
     .await;
     assert!(
@@ -575,9 +591,42 @@ async fn roll_uses_the_channel_dice_context_and_posts_a_gm_only_message_for_hidd
             }],
         },
         0,
+        &h.rate,
     )
     .await;
     assert!(matches!(player_on_npc, Some(ServerMsg::CombatError { .. })));
+}
+
+/// A non-GM sending `CombatRoll` with an EMPTY `rolls` list gets refused, not a committed write —
+/// an empty list has no entry for `authorize` to check ownership against, so the loop over
+/// `rolls` would otherwise vacuously succeed for ANY non-GM world member regardless of any
+/// relationship to this combat, and `transition::roll` unconditionally rewrites `/engine/order`
+/// even when nothing changed (unlike `sort`, which no-ops a genuine non-change).
+#[tokio::test]
+async fn combat_roll_with_empty_rolls_is_refused_not_a_vacuous_success() {
+    let h = combat_harness().await;
+    let order_before = h.combat_engine().await.order;
+
+    let refused = handle_combat_intent(
+        &h.room,
+        h.repo.as_ref(),
+        &h.player,
+        ClientMsg::CombatRoll {
+            request_id: Uuid::nil(),
+            combat_id: h.combat,
+            channel: "table".into(),
+            rolls: vec![],
+        },
+        0,
+        &h.rate,
+    )
+    .await;
+    assert!(matches!(refused, Some(ServerMsg::CombatError { .. })));
+    assert_eq!(
+        h.combat_engine().await.order,
+        order_before,
+        "no write committed for an empty-rolls request"
+    );
 }
 
 /// `CombatResource` admits the GM or the combatant's own owner; a player naming a combatant they
@@ -594,7 +643,7 @@ async fn resource_authz_is_gm_or_owner() {
         op: ResourceOp::Set { value: 3.0 },
     };
     assert!(
-        handle_combat_intent(&h.room, h.repo.as_ref(), &h.player, own, 0)
+        handle_combat_intent(&h.room, h.repo.as_ref(), &h.player, own, 0, &h.rate)
             .await
             .is_none()
     );
@@ -607,26 +656,141 @@ async fn resource_authz_is_gm_or_owner() {
         op: ResourceOp::Set { value: 3.0 },
     };
     assert!(matches!(
-        handle_combat_intent(&h.room, h.repo.as_ref(), &h.player, other, 0).await,
+        handle_combat_intent(&h.room, h.repo.as_ref(), &h.player, other, 0, &h.rate).await,
         Some(ServerMsg::CombatError { .. })
     ));
 }
 
-/// Every one of the eight `Combat*` `ClientMsg` variants parses from its wire tag — a
-/// compile-time-exhaustiveness proxy for `conn.rs`'s combined dispatch arm: if a variant were
-/// missing from that arm, the match would fail to compile, not silently drop the frame.
-#[test]
-fn the_dispatch_match_routes_every_combat_frame() {
-    let frames = [
-        "combat_start",
-        "combat_pause",
-        "combat_end",
-        "combat_advance",
-        "combat_rewind",
-        "combat_sort",
-    ];
-    for f in frames {
-        let v = json!({ "type": f, "request_id": Uuid::nil(), "combat_id": Uuid::nil() });
-        assert!(serde_json::from_value::<ClientMsg>(v).is_ok(), "{f}");
+/// A caller over the per-minute combat-intent flood budget is refused before any doc access —
+/// exhausting the budget with cheap GM `CombatSort` calls, the NEXT call is refused with a
+/// `CombatError` and never reaches the repository (the combat's `order` is untouched).
+#[tokio::test]
+async fn combat_dispatch_is_rate_limited() {
+    let h = combat_harness().await;
+    let rate = crate::ws::PingRateLimiter::new();
+    // Exhausts the budget (mirrors `combat::handle_combat_intent`'s 30/min figure) with
+    // pre-authorized GM calls so the LAST call below is the one under test.
+    for i in 0u128..30 {
+        let _ = handle_combat_intent(
+            &h.room,
+            h.repo.as_ref(),
+            &h.gm,
+            ClientMsg::CombatSort {
+                request_id: Uuid::from_u128(i),
+                combat_id: h.combat,
+            },
+            0,
+            &rate,
+        )
+        .await;
     }
+    let order_before = h.combat_engine().await.order;
+    let refused = handle_combat_intent(
+        &h.room,
+        h.repo.as_ref(),
+        &h.gm,
+        ClientMsg::CombatSort {
+            request_id: Uuid::nil(),
+            combat_id: h.combat,
+        },
+        0,
+        &rate,
+    )
+    .await;
+    assert!(
+        matches!(refused, Some(ServerMsg::CombatError { .. })),
+        "over budget"
+    );
+    assert_eq!(
+        h.combat_engine().await.order,
+        order_before,
+        "no doc access after budget refusal"
+    );
+}
+
+/// Every one of the eight `Combat*` `ClientMsg` variants parses from its wire tag, round-tripping
+/// through `serde_json`. This proves the WIRE TAG round-trip only — `conn.rs`'s outer dispatch
+/// match has a wildcard `_ => {}` fallback arm, so a `Combat*` variant dropped from its combined
+/// dispatch arm would silently no-op rather than fail to compile; this test cannot detect that.
+#[test]
+fn all_eight_combat_frames_round_trip_their_wire_tag() {
+    for v in [
+        json!({ "type": "combat_start", "request_id": Uuid::nil(), "combat_id": Uuid::nil() }),
+        json!({ "type": "combat_pause", "request_id": Uuid::nil(), "combat_id": Uuid::nil() }),
+        json!({ "type": "combat_end", "request_id": Uuid::nil(), "combat_id": Uuid::nil() }),
+        json!({ "type": "combat_advance", "request_id": Uuid::nil(), "combat_id": Uuid::nil() }),
+        json!({ "type": "combat_rewind", "request_id": Uuid::nil(), "combat_id": Uuid::nil() }),
+        json!({ "type": "combat_sort", "request_id": Uuid::nil(), "combat_id": Uuid::nil() }),
+        json!({
+            "type": "combat_roll",
+            "request_id": Uuid::nil(),
+            "combat_id": Uuid::nil(),
+            "channel": "table",
+            "rolls": [{ "combatant_id": Uuid::nil(), "notation": "1d20" }],
+        }),
+        json!({
+            "type": "combat_resource",
+            "request_id": Uuid::nil(),
+            "combat_id": Uuid::nil(),
+            "combatant_id": Uuid::nil(),
+            "resource": "movement",
+            "op": { "kind": "set", "value": 3.0 },
+        }),
+    ] {
+        let ty = v["type"].as_str().unwrap().to_string();
+        assert!(serde_json::from_value::<ClientMsg>(v).is_ok(), "{ty}");
+    }
+}
+
+/// A concurrent write to a combat racing `Room::commit_combat` surfaces as a clean
+/// `DataError::Conflict`, never a lost update: two `CombatResource` ops are built from the SAME
+/// snapshot (simulating two clients racing off one stale read); the first commit succeeds, and the
+/// second — still carrying the pre-race OCC pre-image — is refused rather than silently
+/// overwriting the first commit's write.
+#[tokio::test]
+async fn concurrent_combat_resource_writes_produce_a_clean_conflict_not_a_lost_update() {
+    let h = combat_harness().await;
+
+    let snap = crate::combat::load_snapshot(h.repo.as_ref(), h.world_id, h.combat)
+        .await
+        .unwrap();
+    let ops_a = crate::combat::resource(
+        &snap,
+        h.player_combatant,
+        "movement",
+        crate::combat::ResourceOp::Set { value: 1.0 },
+    )
+    .unwrap();
+    let ops_b = crate::combat::resource(
+        &snap,
+        h.player_combatant,
+        "movement",
+        crate::combat::ResourceOp::Set { value: 2.0 },
+    )
+    .unwrap();
+
+    h.room
+        .commit_combat(h.repo.as_ref(), &h.player, ops_a, 0)
+        .await
+        .expect("first commit off the shared snapshot succeeds");
+
+    let second = h
+        .room
+        .commit_combat(h.repo.as_ref(), &h.player, ops_b, 0)
+        .await;
+    assert!(
+        matches!(second, Err(crate::data::DataError::Conflict(_))),
+        "a second write off the SAME stale snapshot must conflict cleanly, not silently overwrite \
+         the first: got {second:?}"
+    );
+
+    // The first write's value survived; the second never applied.
+    let combatant = h
+        .repo
+        .get_document(h.player_combatant)
+        .await
+        .unwrap()
+        .unwrap();
+    let engine: CombatantEngine = serde_json::from_value(combatant.engine.unwrap()).unwrap();
+    assert_eq!(engine.resources["movement"].current, 1.0);
 }
