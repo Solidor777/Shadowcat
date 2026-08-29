@@ -1,7 +1,9 @@
 # M14 · Combat Tracker — Design
 
 **Status:** Approved (brainstorm 2026-08-28). Cross-cutting spec; four checkpoints (M14a–d),
-each with its own plan cycle.
+each with its own plan cycle. **Amended by the
+[M14b checkpoint spec](2026-08-28-m14b-combat-clock-design.md)** (2026-08-28): where the two
+disagree, M14b wins; each amended decision below carries a pointer.
 
 ## 1. Goals & placement
 
@@ -29,7 +31,7 @@ movement-type exemptions (M17).
 | D4 | **Formulas are opaque to the server** (ARCHITECTURE invariant 6 kept). Resource definitions store formulas as strings; the CLIENT (active system's resolver via `@shadowcat/formula`) evaluates them and writes NUMBERS into the combatant. The server only ever reads and arithmetically updates numbers. |
 | D5 | **Server-owned clock.** Turn/round transitions, recovery of numeric amounts, effect expiry, hidden auto-skip, event firing and the movement budget gate all execute server-side, atomically, inside ONE command per intent. Client hooks are derived from applied command deltas so every client observes identical events. |
 | D6 | **Movement interpretation modes**: `PerCell` (budget ÷ scene `grid.distance.perCell` ⇒ cells: 30 ft / 5 ft = 6 cells) and `Spaces` (budget IS cells). **Enforcement modes**: `None` (engine default), `Warn` (route preview shows the overage during drag), `Hard` (the walk truncates at the last affordable step). **GMs are never truncated** (as they are never wall-gated); their moves still decrement. |
-| D7 | **Override chain system → world → scene** for movement resource, interpretation, enforcement and turn control: the system module seeds the world default alongside the registry; `WorldSettingsEngine.combat` and `SceneEngine.combat` override field-by-field; the combat doc SNAPSHOTS the resolved chain at start (a mid-fight settings edit never silently rewrites the rules of a running combat). |
+| D7 | **Override chain system → world → scene** for movement resource, interpretation, enforcement and turn control; `WorldSettingsEngine.combat` and `SceneEngine.combat` override field-by-field; the combat doc SNAPSHOTS the resolved chain at start (a mid-fight settings edit never silently rewrites the rules of a running combat). *Amended (M14b B1/§3):* the system layer is a `system-defaults` document resolved as a layer for EVERY world setting, not a seed-once write; the chain gains `effect_cleanup`, `effect_lifecycle`, `rewind_restore`, `forward_restore`. |
 | D8 | **Combat = world doc bound to a scene; many per world, at most one ACTIVE per scene** (ship map + ground map run independently). **Combatants = child documents of the combat** (`parent_id = combat.id`, the same containment tokens have under a scene), linked to a token and/or actor, carrying all per-combat state. NOT `embedded`: embedded children are index-addressed in every field path and redaction can only null an array slot in place (removal would renumber), so a hidden embedded entry would either reveal a count or skew indices per recipient. A child document is dropped whole by the existing per-document READ gate at every egress. |
 | D9 | **Hidden combatants are unreadable documents** for non-GM recipients: `hidden` = `permissions.default: none` (+ the combatant's owner never listed in `users` while hidden), so the READ gate drops the whole doc from Welcome/snapshot, broadcast and resync — redaction, not send-then-hide (stripping costs no UX here). Nothing observable betrays a hidden entry: no placeholder row, no count, no counter tick, no distinguishable error. Hide/reveal must propagate LIVE, which requires a READ-transition rule at egress (§5). |
 | D10 | **Turn control** `OwnerMayEnd` (default): the GM may do anything; the owner of the current combatant may `CombatAdvance` (end own turn) only. `GmOnly`: only the GM advances. |
@@ -38,7 +40,7 @@ movement-type exemptions (M17).
 | D13 | **Initiative is server-rolled** via a `CombatRoll` intent using the existing `chat::rolls` cap/entropy layer, written atomically into the combat doc and posted to chat with a `RollEmbed` (hidden ⇒ GM-only whisper). Client composes notation exactly as the M13d roll wire does. |
 | D14 | **The tracker is a module** (`src/modules/combat`) that talks only to `AppContext.combat` (`shadowcat.service:combat`) + `ctx.documents`; any system or third-party module may replace or extend it. |
 | D15 | **Execution cost and preview cost become one quantity** (closes both blocked `TODO.md` entries): `execute_move` threads the diagonal rule + per-step parity through the SAME step-cost function the router uses; `los_smooth` recomputes exact per-span cost for straightened chords. Pinned by a parity test. |
-| D16 | Effect expiry sets `active: false`; it never deletes. Rewind never un-expires. |
+| D16 | Effect expiry sets `active: false`; it never deletes. *Amended (M14b B6/§6):* rewind restores the captured turn record exactly, so an effect expired after that boundary is active again — "never un-expires" is superseded by snapshot restore; cleanup at combat/turn end is policy (M14b B4/§4). |
 | D17 | **Machinery lives engine-side; the module layer holds only what would limit flexibility if fixed in the engine** (user, 2026-08-28). Documents, transitions, gates, redaction, the resource model, formula resolution, hooks and the `AppContext.combat` service are all engine (server + `@shadowcat/core`/ui-kit), so a third-party tracker builds on the same machinery as the default one rather than on the default module. The default module owns ONLY presentation and interaction choices (layout, row rendering, editors, which controls appear where). Any behaviour a substitute tracker would have to re-implement is misplaced and moves down into the engine. |
 
 ## 3. Documents
@@ -124,6 +126,10 @@ shape (`max: "speed"`, `turn_start: "speed"`).
 
 ### 3.4 `effect` (engine band added; embedded under actors/items as today)
 
+*Amended (M14b §4.1):* `Duration.amount` is a `Formula` with a client-resolved `remaining`
+counter; `started` is removed; `EffectEngine.lifecycle` carries the cleanup policy. The M14a shape
+below is what shipped and what M14b phase 2 changes.
+
 ```
 EffectEngine {
   active: bool,                 // default true
@@ -167,6 +173,11 @@ Engine fallback when nothing is set: no movement resource, `PerCell`, `None`, `O
 - Static numbers need no resolver: the tracker exposes editable `current`/`max` fields.
 
 ## 5. Server intents & transitions (D5)
+
+*Amended (M14b §5–§7):* the intent table and the `CombatAdvance`/`CombatRewind` algorithms are
+superseded by M14b — `CombatStart` swaps (pausing the other active combat), `CombatPause` is new,
+`CombatEnd` deletes the combat, rewind restores the turn record. The movement gate and redaction
+paragraphs below stand.
 
 New `ClientMsg` variants, dispatched in `conn.rs` beside `MoveRequest` (private `handle_*`
 returning `Option<ServerMsg>` — `Some` = error frame to the originator only), each applied via
@@ -261,6 +272,9 @@ advisory (`canEdit`); the server decides.
 
 ## 8. Effects lifecycle (D1, D16)
 
+*Amended (M14b §4):* the lifecycle is the M14b policy model; `started` stamping below no longer
+applies.
+
 Expiry per §5; `combat:effect-expired` lets the system react (remove, notify). `effect-tick`
 fires at each boundary an effect with a duration passes. An effect created while its host is a
 combatant in an active combat gets `started` stamped by the server on Create; otherwise the
@@ -307,7 +321,7 @@ path, execute it, assert equal cost; mutate one side and confirm the test fails.
 | Checkpoint | Contents |
 |---|---|
 | **M14a** | Documents: `combat`, `combatant` (child doc), `resource-registry`, `effect` engine band, `CombatDefaults` on world/scene + server-side chain resolver; ts-rs + client re-exports/builders; registry seed helper; one-active-per-scene + combatant-parent ingress rules; READ-transition synthesis at egress (hide/reveal live) |
-| **M14b** | Intents + transitions (§5), `chat::rolls` shared entry, movement gate, D15 cost unification, `TODO.md` closures |
+| **M14b** | [Checkpoint spec](2026-08-28-m14b-combat-clock-design.md): system-defaults layer, effect lifecycle, turn history/rewind, intents + transitions, `chat::rolls` shared entry, movement gate, D15 cost unification, `TODO.md` closures |
 | **M14c** | `AppContext.combat`, `CoreHooks` first entries + delta-derived emission, `resolveResources`, route-preview budget UX |
 | **M14d** | `src/modules/combat` tracker + settings editors, e2e, docs-site module page, skill-update gate (new `shadowcat-codebase-combat` skill) |
 
