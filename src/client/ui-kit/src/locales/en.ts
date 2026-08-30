@@ -64,6 +64,10 @@ export const en: Messages = {
   "settings.users.deleteConfirm":
     "Delete account {username}? This cannot be undone.",
   "settings.users.deleteError": "Could not delete account: {message}",
+  "assetBrowser.tab": "Assets",
+  "assetBrowser.title": "Asset Browser",
+  "assetBrowser.empty": "No assets match.",
+  "assetBrowser.error": "Asset operation failed: {message}",
   "assets.tab": "Assets",
   "assets.title": "Assets",
   "assets.upload": "Upload image",
