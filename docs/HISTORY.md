@@ -1631,6 +1631,76 @@ system module that embeds effects. A consumer must move `active`/`transfer` from
 against a server carrying M14a — pre-customers, so there is no migration path or compatibility
 shim.
 
+#### M14b — Combat clock ✅
+**COMPLETE.** Design:
+[`superpowers/specs/2026-08-28-m14-combat-tracker-design.md`](superpowers/specs/2026-08-28-m14-combat-tracker-design.md).
+Builds the combat clock's server-owned transition layer and per-turn movement-budget gate on top
+of M14a's document substrate. Excludes client seams/hooks and any tracker UI (`M14c`).
+
+Adds a fourth settings tier ahead of the existing world→scene chain: `system-defaults` (a
+world-scoped singleton the active `SYSTEM_CONTRACT`-winning module's `Module.systemDefaults`
+upserts on GM join, via `systemDefaultsUpsertOps`) sits between the engine-shipped fallback and
+`world-settings`, so the full precedence for every world setting — scene defaults, pathfinding,
+animation, and the new combat defaults — is engine → system-defaults → world → scene.
+`resolve_combat_rules(system, world, scene)` is the sole server-side resolver of this chain for
+combat; `resolveSettingProvenance` is its client-side, per-setting-path mirror.
+
+Effect lifecycle policy and formula durations: `EffectEngine` gains `lifecycle`/`resolved`
+lifecycle flags (`on_advance`/`on_combat_end`/`on_turn_end`) and `Duration` gains a client-resolved
+`remaining` count read back from the formula the client's own library evaluated — the server never
+evaluates `Formula::Text` and skips any effect whose lifecycle or remaining count is still
+unresolved, on both the per-boundary tick (`combat::effects::tick`) and lifecycle-policy expiry
+(`combat::effects::expire_by_policy`).
+
+Turn history: `combat-history` (`permissions.default: none`, GM-only egress) records/rewinds/
+fast-forwards a combat's turn boundaries — `combat::history::append_record`/`restore`/
+`fast_forward`, capped at `MAX_TURN_HISTORY` (200) records with oldest-first eviction and
+redo-branch truncation on a new record past the current cursor. A history push always replaces the
+document's whole `/engine` band (`whole_engine_replace`) rather than writing into `records` by
+index — `data::command::set_pointer` can only replace an in-bounds array element, never grow one, so
+an append is structurally a whole-array replace, not a per-index write.
+
+Eight combat intents (`CombatStart`/`CombatPause`/`CombatEnd`/`CombatAdvance`/`CombatRewind`/
+`CombatSort`/`CombatRoll`/`CombatResource`) dispatch through `combat::handle_combat_intent`: loads
+a `CombatSnapshot` (one combat, its combatants, hosts, history, registry, sibling active combats,
+and the resolved chain, gathered in one read), authorizes (GM-unconditional; a non-GM only for
+`CombatAdvance` under `TurnControl::OwnerMayEnd` as the current turn's non-hidden owner, or for
+`CombatRoll`/`CombatResource` as the owner of every named non-hidden combatant), resolves the
+matching pure `transition` function into one command's ops, and commits them as a single
+server-authored write via `Room::commit_combat` (`WriteOrigin::CombatTransition` — never
+constructible from the wire; every combat-document write not carrying this origin is rejected).
+Every refusal renders through `CombatError`'s own `Display`, collapsing every case that could
+disclose a hidden combatant (`NotFound`/`Forbidden`/`NotRunning`/`Data`) to one identical wording.
+
+Unified movement cost and the per-turn movement-budget gate: `scene::grid_shape`'s private
+`step_cost` stays the sole diagonal-rule pricing function — both `pathfinding::astar_leg` and
+`move_exec::execute_move` reach it only through `GridShape::neighbors_with_cost`, never a
+duplicated cost table, so a router preview and the executor can never price a diagonal step
+differently. `Room::execute_move` resolves the scene's active combat and the moving token's
+combatant (`SceneEcs::active_combat_for_scene`/`SceneEcs::combatant_for_token`) under the same ECS
+read guard as every other gate input, enforces `TurnControl`/`Enforcement` (Hard truncates a
+non-turn-owner's budget to zero and a GM is exempt from every gameplay check on this gate exactly
+as on every other), and commits the move in TWO separate commands rather than one: the token's
+`/engine/x,y` position write lands unconditionally under `WriteOrigin::Client`, and the combatant's
+resource decrement lands as a SEPARATE `WriteOrigin::CombatTransition` commit only after the
+position commit succeeds. This split is itself a fix: an earlier single-commit design that bundled
+the position write and the decrement under one `CombatTransition`-tagged batch let the decrement's
+origin waive `apply_intent`'s ownership check for every op in that same batch, including the
+position write — any authenticated non-GM could move any other player's token during combat by
+naming their `token_id`. Splitting the commit closes that bypass; a decrement-commit failure
+(e.g. a genuine concurrent write) is logged and never rolled back into the already-committed
+position move.
+
+Closes the three `docs/TODO.md` deferrals this milestone unblocked: the two grid-parity tests
+(`router_preview_cost_equals_executor_cost_per_diagonal_rule`,
+`continuous_smoothed_preview_cost_equals_executor_cost`) pin the unified-cost invariant, and
+`a_swap_batch_deactivating_then_activating_on_one_scene_passes_in_either_order` closes the
+one-active-combat-per-scene batch-ordering gap the M14a delivery note left open.
+
+**Not built here:** `AppContext.combat`/client hooks, the tracker module/UI, and the client-side
+resolved-number writes an effect's formula library performs against `Duration.remaining` and
+`CombatantResource.current`/`.max` — all land in M14c–d.
+
 ## Documentation campaign — completed sweeps
 
 The campaign's open tail (buddy-check convergence, final ratchet, skills documentation-reference

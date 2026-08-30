@@ -22,21 +22,16 @@ Milestones in build order; each gets its own brainstorm → spec → plan cycle 
 further at design time. Numbering continues from Phase 1.
 
 ### M14 · Combat tracker
-- **M14a (document/permission substrate) is DONE** — the `combat`/`combatant`/
-  `resource-registry`/`effect` engine documents, the world→scene movement/turn-control override
-  chain and its resolver, containment and one-active-per-scene enforcement, and the client
-  document builders. No intents, gates, or UI yet. Full delivery note in
-  [`HISTORY.md`](HISTORY.md)'s M14a entry.
-- **Remaining (M14b–d):**
-  - Combat-clock intents and transitions: initiative rolling, turn/round advance, hidden-turn
-    auto-resolve, turn-event triggers (start/end of turn/round) as hooks modules subscribe to.
-  - **Per-turn movement budget gate**: the turn owner's remaining movement, consumed by the
-    server-authoritative move executor — the prerequisite the `docs/TODO.md` movement-budget
-    entries are blocked on.
-  - **Effect durations/triggers**: effects expire or fire on the combat clock (the document
-    shape already ships in M14a; the clock-side expiry/trigger logic does not yet).
-  - Client seams/hooks (`AppContext.combat`) and the default tracker module + UI.
-- Depends on: M11 dice, the M10 movement executor, the M14a combat documents (done).
+- **M14a (document/permission substrate) and M14b (combat clock) are DONE** — full delivery
+  notes in [`HISTORY.md`](HISTORY.md)'s M14a and M14b entries.
+- **Remaining (M14c–d):**
+  - **M14c — client seams/hooks**: `AppContext.combat`, the client-side `resolveResources` pass
+    that writes an effect's formula-resolved `Duration.remaining`/`CombatantResource.current`/`.max`
+    back to the document, and route-preview movement-budget UX over the M14b gate.
+  - **M14d — tracker module + settings editors**: the default tracker UI, the world/scene combat
+    settings editors (including the combat chain editor over `resolve_combat_rules`'s
+    engine→system-defaults→world→scene precedence), and end-to-end coverage.
+- Depends on: M11 dice, the M10 movement executor, M14a+M14b (done).
 - Excludes: automation of attacks/damage resolution (system-owned); audio/VFX cues (Phase 3).
 
 ### M15 · Asset pipeline + browser

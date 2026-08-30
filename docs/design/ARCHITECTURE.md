@@ -100,6 +100,26 @@ Each item is *designed for* now (the seam exists) and *built* only when its trig
 - **Stable asset identity.** Assets are referenced by stable UUID from first upload, so moving or renaming an asset never breaks links — independent of when the browsing/conversion pipeline lands.
 - **Schema migration: mechanism now, migrations later.** Documents carry `schema_version` and the data-model layer exposes a synchronous, client-side `migrateData` seam (coerce a document from its stored version to current on load/update — pure transform, no sandbox). Because nothing ships before v1, there are **no documents in existence to migrate**: v1 builds the migration *machinery* and the seam runs as a no-op pass-through, but **no actual migrations are authored** until a post-ship schema change creates the first real use case. Arbitrary bulk fix-up *scripts* are a separate, far-future concern.
 - **Validation at boundaries.** The client validates the `system` body against the system's Zod schema before writes; the server enforces structural limits (size caps, field-path validity, `deny_unknown_fields`) and permissions on `system`, but never its semantic correctness (invariant 6). The `engine` body gets a stricter boundary: server-side shape/type ingress validation (`validate_engine`/`validate_engine_tree`, `deny_unknown_fields` on every engine struct) rejects a malformed body outright rather than merely capping its size — engine-owned geometry (movement-collision, vision) reads this typed, pre-validated band directly (invariant 6), no separate exception needed. Derived values are computed, never stored.
+- **Settings resolve through a four-tier chain: engine → system-defaults → world → scene.** The
+  engine ships a hardcoded fallback for every world-configurable setting (scene defaults,
+  pathfinding, animation, combat); a `system-defaults` singleton document lets the world's active
+  game-system module (the `SYSTEM_CONTRACT` winner, via its declared `Module.systemDefaults`,
+  upserted idempotently by the GM's client on join) override those fallbacks per world; a
+  `world-settings` document lets the GM override the same keys further; and a per-scene override
+  is the narrowest and wins last. Every resolver in this chain (`resolve_combat_rules` server-side,
+  `resolveSettingProvenance` client-side) walks the same four tiers in the same order — a resolver
+  that stopped at three tiers, or reordered them, would silently disagree with the other about
+  which layer supplied a given value.
+- **The combat clock is a server-owned state transition, never a client-authored write.** A
+  combat's turn order, round/turn counters, and turn-history log are mutated only by the server's
+  own pure `transition` functions, dispatched from a fixed set of typed intents
+  (`combat::handle_combat_intent`) and committed as a single command tagged
+  `WriteOrigin::CombatTransition` — a tag the wire protocol has no way to construct, so a client
+  can never forge a combat-clock write by hand-authoring a document `Update`. The per-turn
+  movement-budget gate this gives the move executor is committed as a *separate* command from the
+  token's position write, under a *different* origin (`WriteOrigin::Client`), specifically so that
+  `CombatTransition`'s relaxed ownership check on the budget decrement can never be reused to
+  authorize a move against a token the caller does not own.
 
 ## 7. Rendering provenance
 

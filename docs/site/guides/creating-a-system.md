@@ -61,6 +61,39 @@ an embedded actor copy whose band lives at `/embedded/actor/0/system`. Your shee
 must build every read and write path from `systemPrefix` — never hardcode
 `/system` — and the same sheet then works for both cases for free.
 
+## Declaring world-setting defaults
+
+Every world-configurable setting (scene defaults, pathfinding, animation, and the combat clock)
+resolves through a fixed chain: an engine-shipped fallback, then a world's `system-defaults`
+singleton, then `world-settings`, then a per-scene override — narrowest wins. Your system supplies
+the second tier by claiming the `SYSTEM_CONTRACT` singleton and declaring `Module.systemDefaults`:
+
+```ts
+import { SYSTEM_CONTRACT, type Module } from "@shadowcat/core";
+
+export const module: Module = {
+  manifest: {
+    id: "your-system",
+    version: "0.1.0",
+    dependencies: {},
+    provides: [{ contract: SYSTEM_CONTRACT, cardinality: "singleton" }],
+  },
+  systemDefaults: {
+    combat: { movementResource: "movement", interpretation: "spaces" },
+  },
+  register(ctx) {
+    // ... sheet claims, etc.
+  },
+};
+```
+
+Only the module currently WINNING the `SYSTEM_CONTRACT` singleton has its `systemDefaults`
+applied — a losing claimant's declared defaults are never upserted. When your module wins, the
+GM's own client idempotently upserts your declared values into the world's `system-defaults`
+document on join, and every server-side resolver (e.g. the combat clock's
+`resolve_combat_rules`) reads them ahead of `world-settings` and behind any per-scene override.
+You never write `system-defaults` directly — declare the shape, and the upsert seam does the rest.
+
 ## Reading and writing the system band
 
 <<< @/../../examples/system-minimal/src/CharacterSheet.svelte#sheet-read
