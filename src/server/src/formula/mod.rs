@@ -14,9 +14,12 @@
 
 /// Source text → tokens.
 pub mod lexer;
+/// Tokens → `Expr`.
+pub mod parser;
 /// Failure values, the value type and the DoS caps.
 pub mod types;
 
+pub use parser::{parse, BinOp, Expr, FnName};
 pub use types::{
     FormulaError, FormulaErrorKind, FormulaValue, MAX_AST_NODES, MAX_FORMULA_LENGTH,
     MAX_GRAPH_VISITS, MAX_PARSE_DEPTH,
