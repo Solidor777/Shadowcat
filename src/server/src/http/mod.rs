@@ -202,6 +202,11 @@ pub async fn router(state: AppState) -> Router {
             "/api/assets/{uuid}/replace",
             post(assets::replace).layer(DefaultBodyLimit::disable()),
         )
+        .route("/api/assets/{uuid}/original", get(assets::mutate::original))
+        .route(
+            "/api/assets/{uuid}/reconvert",
+            post(assets::mutate::reconvert),
+        )
         .route(
             "/api/worlds/{world}/assets/uploads",
             post(assets::uploads::create_session),

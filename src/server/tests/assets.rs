@@ -644,3 +644,199 @@ async fn serve_304_when_etag_in_comma_list() {
         .unwrap();
     assert_eq!(res.status(), 304);
 }
+
+// --- Derivatives, retained originals, reconvert, full-file delete ---
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn serve_variant_thumb_is_webp_and_regenerates_when_missing() {
+    let h = spawn().await;
+    let asset: serde_json::Value = h
+        .upload("m.png", "image/png", PNG_1X1.to_vec())
+        .await
+        .json()
+        .await
+        .unwrap();
+    let id = asset["id"].as_str().unwrap();
+    let dir = h.assets_dir.join(h.world.to_string());
+    let thumb = dir.join(format!("{id}.thumb.webp"));
+    assert!(thumb.exists());
+    std::fs::remove_file(&thumb).unwrap();
+
+    let res = h
+        .client
+        .get(format!("http://{}/api/assets/{id}?variant=thumb", h.addr))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    assert_eq!(res.headers()["content-type"], "image/webp");
+    // Same ETag as the canonical: the version keys derivatives too.
+    assert_eq!(
+        res.headers()["etag"].to_str().unwrap(),
+        format!("\"{id}-1\"")
+    );
+    let served = res.bytes().await.unwrap();
+    assert!(thumb.exists(), "regenerated on demand");
+    assert_eq!(served.as_ref(), std::fs::read(&thumb).unwrap());
+
+    let res = h
+        .client
+        .get(format!("http://{}/api/assets/{id}?variant=huge", h.addr))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 400);
+
+    // A pass-through non-image has no derivative: the canonical stands in.
+    let pdf: serde_json::Value = h
+        .upload("n.pdf", "application/pdf", b"%PDF-1.7 x".to_vec())
+        .await
+        .json()
+        .await
+        .unwrap();
+    let pid = pdf["id"].as_str().unwrap();
+    let res = h
+        .client
+        .get(format!(
+            "http://{}/api/assets/{pid}?variant=preview",
+            h.addr
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    assert_eq!(res.headers()["content-type"], "application/pdf");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn original_route_is_gm_only_and_404_when_not_retained() {
+    let h = spawn().await;
+    let asset: serde_json::Value = h
+        .upload("battle map.png", "image/png", PNG_1X1.to_vec())
+        .await
+        .json()
+        .await
+        .unwrap();
+    let id = asset["id"].as_str().unwrap();
+    let url = format!("http://{}/api/assets/{id}/original", h.addr);
+
+    let res = h.client.get(&url).send().await.unwrap();
+    assert_eq!(res.status(), 200);
+    assert_eq!(res.headers()["content-type"], "image/png");
+    assert_eq!(
+        res.headers()["content-disposition"],
+        "attachment; filename=\"battle map.png\""
+    );
+    assert_eq!(res.bytes().await.unwrap().as_ref(), PNG_1X1);
+
+    // A player (member, not GM) is refused.
+    let (_pid, cookie) = h.add_player("viewer").await;
+    let res = reqwest::Client::new()
+        .get(&url)
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 403);
+
+    // A pass-through upload retained nothing.
+    let pdf: serde_json::Value = h
+        .upload("n.pdf", "application/pdf", b"%PDF-1.7 x".to_vec())
+        .await
+        .json()
+        .await
+        .unwrap();
+    let res = h
+        .client
+        .get(format!(
+            "http://{}/api/assets/{}/original",
+            h.addr,
+            pdf["id"].as_str().unwrap()
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 404);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn reconvert_bumps_version_and_broadcasts_replaced() {
+    use common::drain_until_type;
+    let h = spawn().await;
+    let asset: serde_json::Value = h
+        .upload("m.png", "image/png", PNG_1X1.to_vec())
+        .await
+        .json()
+        .await
+        .unwrap();
+    let id = asset["id"].as_str().unwrap().to_string();
+    let mut ws = h.connect().await;
+    let _ = ws.next().await; // Welcome
+
+    let res = h
+        .client
+        .post(format!("http://{}/api/assets/{id}/reconvert", h.addr))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200, "{:?}", res.text().await);
+    let updated: serde_json::Value = res.json().await.unwrap();
+    assert_eq!(updated["version"], 2);
+    assert_eq!(updated["content_type"], "image/webp");
+    assert_eq!(updated["original_retained"], true);
+    let dir = h.assets_dir.join(h.world.to_string());
+    assert_eq!(
+        std::fs::read(dir.join(format!("{id}.orig"))).unwrap(),
+        PNG_1X1
+    );
+
+    let frame = drain_until_type(&mut ws, "asset_changed").await;
+    assert_eq!(frame["uuid"], id);
+    assert_eq!(frame["op"], "replaced");
+    assert_eq!(frame["version"], 2);
+
+    // Not retained → nothing to reconvert from.
+    let pdf: serde_json::Value = h
+        .upload("n.pdf", "application/pdf", b"%PDF-1.7 x".to_vec())
+        .await
+        .json()
+        .await
+        .unwrap();
+    let res = h
+        .client
+        .post(format!(
+            "http://{}/api/assets/{}/reconvert",
+            h.addr,
+            pdf["id"].as_str().unwrap()
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 404);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn delete_removes_canonical_and_siblings() {
+    let h = spawn().await;
+    let asset: serde_json::Value = h
+        .upload("m.png", "image/png", PNG_1X1.to_vec())
+        .await
+        .json()
+        .await
+        .unwrap();
+    let id = asset["id"].as_str().unwrap();
+    let dir = h.assets_dir.join(h.world.to_string());
+    for suffix in ["", ".orig", ".thumb.webp", ".preview.webp"] {
+        assert!(dir.join(format!("{id}{suffix}")).exists(), "{suffix}");
+    }
+    let res = h
+        .client
+        .delete(format!("http://{}/api/assets/{id}", h.addr))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 204);
+    for suffix in ["", ".orig", ".thumb.webp", ".preview.webp"] {
+        assert!(!dir.join(format!("{id}{suffix}")).exists(), "{suffix}");
+    }
+}

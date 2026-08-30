@@ -1,6 +1,7 @@
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
+pub mod mutate;
 pub mod uploads;
 
 use std::collections::HashMap;
@@ -83,6 +84,7 @@ impl Default for UploadRateLimiter {
 }
 
 use crate::auth::session::AuthUser;
+use crate::data::asset::process::{derivative_path, sibling_paths, write_derivatives, Variant};
 use crate::data::asset::tags::{derive, DeriveInput};
 use crate::data::asset::{
     commit_staged_asset, move_asset_files, process_staged_blocking, remove_asset_files, Asset,
@@ -92,7 +94,7 @@ use crate::http::error::AppError;
 use crate::http::{routes::require_gm, AppState};
 use crate::ws::protocol::{AssetOp, ServerMsg};
 use axum::body::Body;
-use axum::extract::{Multipart, Path, State};
+use axum::extract::{Multipart, Path, Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
@@ -271,13 +273,34 @@ pub async fn upload(
     }
 }
 
-/// `GET /api/assets/{uuid}` — read-gated by world membership; ETag-revalidated.
+/// `?variant=` on `GET /api/assets/{uuid}`.
+#[derive(Debug, serde::Deserialize)]
+pub struct ServeQuery {
+    /// `thumb` | `preview`; absent = the canonical file.
+    pub variant: Option<String>,
+}
+
+/// `GET /api/assets/{uuid}[?variant=thumb|preview]` — read-gated by world
+/// membership; ETag-revalidated. A derivative shares the canonical's ETag
+/// (`"{id}-{version}"`): it is regenerated whenever the canonical's version
+/// changes, so the version keys it. A missing derivative is regenerated on
+/// demand; if the canonical does not decode, the canonical itself is served
+/// in its place rather than a 404.
 pub async fn serve(
     State(state): State<AppState>,
     user: AuthUser,
     Path(id): Path<uuid::Uuid>,
+    Query(q): Query<ServeQuery>,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
+    let variant = match q.variant.as_deref() {
+        None => None,
+        Some("thumb") => Some(Variant::Thumb),
+        Some("preview") => Some(Variant::Preview),
+        Some(other) => {
+            return Err(AppError::BadRequest(format!("unknown variant '{other}'")));
+        }
+    };
     let asset = state.repo.get_asset(id).await?.ok_or(AppError::NotFound)?;
     // Read-gate: any member of the asset's world may read. permission_context
     // returns Forbidden for non-members.
@@ -297,20 +320,52 @@ pub async fn serve(
         return Ok((StatusCode::NOT_MODIFIED).into_response());
     }
 
-    let path = state.config.assets_path().join(&asset.storage_key);
+    let canonical = state.config.assets_path().join(&asset.storage_key);
+    let (path, content_type) = match variant {
+        None => (canonical, asset.content_type),
+        Some(v) => match ensure_derivative(&canonical, v).await {
+            Ok(p) => (
+                p,
+                crate::data::asset::process::WEBP_CONTENT_TYPE.to_string(),
+            ),
+            Err(e) => {
+                // Not decodable (pass-through non-image, corrupt file): the
+                // canonical stands in for its own preview.
+                tracing::debug!(?e, %id, "derivative unavailable; serving canonical");
+                (canonical, asset.content_type)
+            }
+        },
+    };
     let bytes = tokio::fs::read(&path).await.map_err(|e| {
         tracing::error!(?e, %id, "asset file missing for existing record");
         AppError::Internal
     })?;
     Ok((
         [
-            (header::CONTENT_TYPE, asset.content_type),
+            (header::CONTENT_TYPE, content_type),
             (header::CONTENT_DISPOSITION, "inline".to_string()),
             (header::ETAG, etag),
         ],
         Body::from(bytes),
     )
         .into_response())
+}
+
+/// Path of the `variant` derivative of `canonical`, regenerating both
+/// derivatives (blocking pool) when it is missing.
+async fn ensure_derivative(
+    canonical: &std::path::Path,
+    variant: Variant,
+) -> std::io::Result<std::path::PathBuf> {
+    let path = derivative_path(canonical, variant);
+    if tokio::fs::try_exists(&path).await? {
+        return Ok(path);
+    }
+    let src = canonical.to_path_buf();
+    tokio::task::spawn_blocking(move || write_derivatives(&src))
+        .await
+        .map_err(std::io::Error::other)??;
+    Ok(path)
 }
 
 /// `POST /api/assets/{uuid}/replace` — GM-gated byte-swap behind a stable id
@@ -356,62 +411,7 @@ pub async fn replace(
                     tracing::error!(?e, %id, "asset processing failed");
                     AppError::Internal
                 })?;
-
-        // Read-side of the backup quiesce barrier, acquired only around the
-        // DB-commit + rename pair below — the one critical section the
-        // quiesce exists to keep non-interleaving with an in-server backup's
-        // VACUUM + assets copy. Not held across the network-bound stream
-        // above: these routes disable `DefaultBodyLimit`, so a slow uploader
-        // would otherwise hold a write-preferring `tokio::sync::RwLock`'s
-        // read side open, queuing an admin `write()` behind it indefinitely.
-        let _read_permit = state.write_barrier.read().await;
-
-        // Commit to the DB BEFORE swapping the live file. If the DB write fails the
-        // live bytes are untouched and the record stays consistent (tmp is removed).
-        // If the rename later fails, the DB is one version ahead of unchanged bytes
-        // — clients re-fetch (ETag changed) and the next replace lands correctly;
-        // the inverse order would strand new bytes under a stale ETag (broken 304).
-        let version = match state
-            .repo
-            .replace_asset_bytes(
-                id,
-                &existing.storage_key,
-                &processed.content_type,
-                processed.byte_size,
-                &processed.meta,
-            )
-            .await
-        {
-            Ok(v) => v,
-            Err(e) => {
-                remove_asset_files(&tmp_path).await;
-                return Err(e.into());
-            }
-        };
-        // Canonical + every sibling (a stale `.orig`/derivative of the old
-        // bytes is removed when the new upload has none).
-        if let Err(e) = move_asset_files(&tmp_path, &final_path).await {
-            remove_asset_files(&tmp_path).await;
-            tracing::error!(?e, %id, "asset replace rename failed after DB commit");
-            return Err(AppError::Internal);
-        }
-        // Kind/dimension/alpha tags follow the new bytes.
-        state.repo.refresh_derived_tags(id).await?;
-
-        if let Some(room) = state.ws.rooms.get(existing.world_id) {
-            room.broadcast_aux(ServerMsg::AssetChanged {
-                uuid: id,
-                op: AssetOp::Replaced,
-                version,
-            });
-        }
-
-        state
-            .repo
-            .get_asset(id)
-            .await?
-            .ok_or(AppError::NotFound)
-            .map(|a| Asset { version, ..a })
+        commit_replacement(&state, &existing, &tmp_path, &final_path, processed).await
     }
     .await;
 
@@ -422,6 +422,76 @@ pub async fn replace(
             Err(e)
         }
     }
+}
+
+/// The shared tail of every byte-swap behind a stable id (`replace`,
+/// `mutate::reconvert`): row-first commit, then canonical + sibling swap,
+/// then derived-tag refresh and the `Replaced` broadcast. `processed` is the
+/// pipeline's verdict on the bytes staged at `tmp_path`.
+///
+/// Read-side of the backup quiesce barrier is acquired only around the
+/// DB-commit + rename pair — the one critical section the quiesce exists to
+/// keep non-interleaving with an in-server backup's VACUUM + assets copy —
+/// never across the caller's network-bound stream or CPU-bound conversion:
+/// a slow uploader holding a write-preferring `tokio::sync::RwLock`'s read
+/// side open would queue an admin `write()` behind it indefinitely.
+///
+/// Commits to the DB BEFORE swapping the live file. If the DB write fails the
+/// live bytes are untouched and the record stays consistent (tmp is removed).
+/// If the rename later fails, the DB is one version ahead of unchanged bytes
+/// — clients re-fetch (ETag changed) and the next replace lands correctly;
+/// the inverse order would strand new bytes under a stale ETag (broken 304)
+/// [[commit-db-row-before-swapping-file]].
+pub(super) async fn commit_replacement(
+    state: &AppState,
+    existing: &Asset,
+    tmp_path: &std::path::Path,
+    final_path: &std::path::Path,
+    processed: crate::data::asset::process::Processed,
+) -> Result<Asset, AppError> {
+    let id = existing.id;
+    let _read_permit = state.write_barrier.read().await;
+    let version = match state
+        .repo
+        .replace_asset_bytes(
+            id,
+            &existing.storage_key,
+            &processed.content_type,
+            processed.byte_size,
+            &processed.meta,
+        )
+        .await
+    {
+        Ok(v) => v,
+        Err(e) => {
+            remove_asset_files(tmp_path).await;
+            return Err(e.into());
+        }
+    };
+    // Canonical + every sibling (a stale `.orig`/derivative of the old
+    // bytes is removed when the new upload has none).
+    if let Err(e) = move_asset_files(tmp_path, final_path).await {
+        remove_asset_files(tmp_path).await;
+        tracing::error!(?e, %id, "asset replace rename failed after DB commit");
+        return Err(AppError::Internal);
+    }
+    // Kind/dimension/alpha tags follow the new bytes.
+    state.repo.refresh_derived_tags(id).await?;
+
+    if let Some(room) = state.ws.rooms.get(existing.world_id) {
+        room.broadcast_aux(ServerMsg::AssetChanged {
+            uuid: id,
+            op: AssetOp::Replaced,
+            version,
+        });
+    }
+
+    state
+        .repo
+        .get_asset(id)
+        .await?
+        .ok_or(AppError::NotFound)
+        .map(|a| Asset { version, ..a })
 }
 
 /// `DELETE /api/assets/{uuid}` — GM-gated (`require_gm`; no owner exception).
@@ -457,6 +527,15 @@ pub async fn delete(
     if let Err(e) = tokio::fs::remove_file(&path).await {
         // Record is gone; a missing file is not fatal (it becomes a no-op).
         tracing::warn!(?e, %id, "asset file remove failed after record delete");
+    }
+    // Siblings (`.orig`, derivatives) exist only for some assets; absence is
+    // the ordinary case and not worth a warning.
+    for sibling in sibling_paths(&path) {
+        match tokio::fs::remove_file(&sibling).await {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => tracing::warn!(?e, %id, "asset sibling remove failed after record delete"),
+        }
     }
     if let Some(room) = state.ws.rooms.get(deleted.world_id) {
         room.broadcast_aux(ServerMsg::AssetChanged {
