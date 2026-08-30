@@ -109,6 +109,7 @@ export {
   reconvertAsset,
   originalUrl,
   restErrorText,
+  deleteAssetFolder,
 } from "./asset-rest";
 export type { AssetQuery } from "./asset-rest";
 export { startChunkedUpload, ChunkedUploadError, CHUNK_THRESHOLD_BYTES } from "./asset-upload";

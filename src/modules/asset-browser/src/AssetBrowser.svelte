@@ -1,10 +1,11 @@
 <script lang="ts">
   import type { Asset } from "@shadowcat/types";
-  import { getAppContext, type PickAssetOptions } from "@shadowcat/ui-kit";
-  import { queryAssets, type AssetQuery } from "@shadowcat/core";
+  import { getAppContext, sizeClass, type PickAssetOptions } from "@shadowcat/ui-kit";
+  import { queryAssets, patchAsset, bulkPatchAssets, type AssetQuery } from "@shadowcat/core";
   import FilterBar from "./FilterBar.svelte";
   import type { FilterState } from "./filterState";
   import AssetGrid from "./AssetGrid.svelte";
+  import FolderTree from "./FolderTree.svelte";
 
   let {
     mode,
@@ -39,6 +40,13 @@
   let nextCursor = $state<string | null>(null);
   let selected = $state<string[]>([]);
   let error = $state<string | null>(null);
+  /** The folder filtering the grid (`null` = all assets, recursive off). */
+  let selectedFolder = $state<string | null>(null);
+  /** Compact-mode drawer visibility for the folder tree. */
+  let treeOpen = $state(false);
+  const compact = $derived(sizeClass() === "compact");
+  /** Mutation affordances render only in the managing panel, never pick mode. */
+  const mutable = $derived(mode === "manage");
   // Monotonic reload marker: a stale page resolving after a newer reload
   // started must not clobber the newer listing.
   let generation = 0;
@@ -54,6 +62,8 @@
    */
   function currentQuery(): AssetQuery {
     return {
+      folder: selectedFolder ?? undefined,
+      recursive: selectedFolder ? true : undefined,
       name: filter.nameIsRegex ? undefined : filter.name || undefined,
       nameRegex: filter.nameIsRegex ? filter.name || undefined : undefined,
       tags: filter.tags.length > 0 ? filter.tags : undefined,
@@ -61,6 +71,26 @@
       sort: filter.sort,
       limit: 200,
     };
+  }
+
+  /** Files dropped assets into `folderId` (single patch or one bulk call),
+   * then refreshes the listing.
+   * @param ids - The dragged asset ids.
+   * @param folderId - The drop-target folder.
+   * @example
+   * ```
+   * // private function; wired to FolderTree's onDropAssets below
+   * void fileAssets(["a1"], "folder-1");
+   * ```
+   */
+  async function fileAssets(ids: string[], folderId: string): Promise<void> {
+    try {
+      if (ids.length === 1) await patchAsset(ids[0], { folder_id: folderId });
+      else await bulkPatchAssets(world, { ids, folder_id: folderId, add_tags: [], remove_tags: [] });
+      await reload();
+    } catch (e) {
+      error = t("assetBrowser.error", { message: String(e) });
+    }
   }
 
   /** Refetches the first page; the source of truth for the grid (assets are
@@ -154,9 +184,31 @@
 
 </script>
 
-<div class="asset-browser" data-testid="asset-browser">
-  <aside class="tree" data-testid="asset-browser-tree"></aside>
+<div class="asset-browser" class:compact data-testid="asset-browser">
+  {#if !compact || treeOpen}
+    <aside class="tree" data-testid="asset-browser-tree">
+      <FolderTree
+        {selectedFolder}
+        {mutable}
+        onSelectFolder={(id) => {
+          selectedFolder = id;
+          treeOpen = false;
+          void reload();
+        }}
+        onDropAssets={(ids, folderId) => void fileAssets(ids, folderId)}
+      />
+    </aside>
+  {/if}
   <div class="content">
+    {#if compact}
+      <button
+        type="button"
+        class="tree-toggle"
+        data-testid="tree-toggle"
+        aria-expanded={treeOpen}
+        onclick={() => (treeOpen = !treeOpen)}
+      >📁</button>
+    {/if}
     <FilterBar {filter} onChange={onFilterChange} />
     {#if error}
       <p class="error">{error}</p>
@@ -197,6 +249,29 @@
     gap: 0.5rem;
     height: 100%;
     min-height: 0;
+    // Compact (<48rem): single column; the tree becomes a toggleable drawer
+    // overlaying the content column, the preview stacks below.
+    &.compact {
+      grid-template-columns: 1fr;
+      .tree {
+        position: absolute;
+        inset: 0 30% 0 0;
+        z-index: 10;
+        background: var(--surface-raised);
+        border-right: 1px solid var(--border);
+      }
+      .preview {
+        border-left: none;
+        border-top: 1px solid var(--border);
+      }
+    }
+    position: relative;
+  }
+  .tree-toggle {
+    align-self: flex-start;
+    min-width: 44px;
+    min-height: 2rem;
+    margin: 0.25rem;
   }
   .tree {
     overflow-y: auto;

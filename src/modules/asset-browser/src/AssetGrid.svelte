@@ -142,6 +142,12 @@
           data-testid="asset-tile"
           aria-pressed={selected.includes(a.id)}
           title={a.original_name}
+          draggable="true"
+          ondragstart={(e) =>
+            e.dataTransfer?.setData(
+              "application/x-shadowcat-assets",
+              JSON.stringify(selected.includes(a.id) ? selected : [a.id]),
+            )}
           onclick={(e) => select(windowed.start + i, e)}
           ondblclick={() => onOpen?.(a.id)}
         >
