@@ -2,6 +2,7 @@ import { test, expect, afterEach } from "vitest";
 import { render, cleanup } from "@testing-library/svelte";
 import { setAppContextForTest } from "@shadowcat/ui-kit/test";
 import Layout from "./Layout.svelte";
+import OverlayProbe from "./__fixtures__/OverlayProbe.svelte";
 
 afterEach(() => cleanup());
 
@@ -32,4 +33,23 @@ test("the main region precedes the toolrail region in DOM order", () => {
   expect(main).toBeTruthy();
   expect(toolrail).toBeTruthy();
   expect(main?.compareDocumentPosition(toolrail!)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+});
+
+// The overlay layer hosts app-level modal chrome; a contribution into it must
+// render OUTSIDE the grid so it is never clipped by a region's overflow.
+test("renders overlay-surface contributions outside the layout grid", async () => {
+  const { ContributionRegistry } = await import("@shadowcat/core");
+  const contributions = new ContributionRegistry();
+  contributions.contribute({
+    id: "test:overlay-probe",
+    contract: "shadowcat.surface:overlay",
+    order: 0,
+    component: OverlayProbe,
+  });
+  const { container } = render(Layout, {
+    context: setAppContextForTest({ contributions }),
+  });
+  const probe = container.querySelector("[data-testid='overlay-probe']");
+  expect(probe).toBeTruthy();
+  expect(probe?.closest(".layout")).toBeNull();
 });

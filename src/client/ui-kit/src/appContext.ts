@@ -7,6 +7,7 @@ import type { TokenSelection } from "./tokenSelection.svelte";
 import type { PanelsApi, PanelsChipsView } from "./panelsBridge.svelte";
 import type { SceneSelection } from "./sceneSelection.svelte";
 import type { SpeakAsToken } from "./speakAsToken.svelte";
+import type { AssetPickController, PickAssetOptions, PickAssetMultiple } from "./assetPickController.svelte";
 
 /** Translate function shape (framework-neutral; the Svelte adapter supplies a
  * reactive implementation). */
@@ -143,6 +144,18 @@ export interface AppContext {
   t: TFunc;
   /** Resolves asset UUIDs to serve URLs, cache-busting on replace. */
   assets: AssetResolver;
+  /** Pick-mode orchestration (stable ref). The asset-browser overlay renders
+   * `assetPick.pending` and settles it; every other consumer calls `pickAsset`
+   * below instead of touching this directly. */
+  assetPick: AssetPickController;
+  /** Open the asset browser in pick mode for an ordered multi-pick.
+   * @param opts - Filter presets plus the `multiple: true` arity marker.
+   * @returns The picked ids in pick order, or `null` on cancel. */
+  pickAsset(opts: PickAssetMultiple): Promise<string[] | null>;
+  /** Open the asset browser in pick mode for a single pick.
+   * @param opts - Filter presets for the browser.
+   * @returns The picked id, or `null` on cancel. */
+  pickAsset(opts?: PickAssetOptions): Promise<string | null>;
   /** Subscribe to out-of-band asset notices (`created` / `replaced` / `moved` / `deleted`);
    * returns an unsubscribe. `replaced` and `deleted` change what a URL serves (the resolver
    * already reflects them); `created` and `moved` mean a listing is stale.
