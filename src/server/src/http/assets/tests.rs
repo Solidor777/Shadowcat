@@ -17,7 +17,15 @@ fn detects_supported_image_signatures_and_rejects_others() {
         Some("image/webp")
     );
     assert_eq!(detect_image_type(b"%PDF-1.7"), None);
-    assert_eq!(detect_image_type(b"<svg"), None); // XML text, matches no magic number
+    assert_eq!(detect_image_type(b"<svg xmlns="), Some("image/svg+xml"));
+    assert_eq!(
+        detect_image_type(b"\xEF\xBB\xBF  <?xml versio"),
+        Some("image/svg+xml")
+    );
+    assert_eq!(detect_image_type(b"<html><body>"), None);
+    assert_eq!(detect_image_type(b"BM\x36\x00\x00\x00"), Some("image/bmp"));
+    assert_eq!(detect_image_type(b"II*\x00\x08\x00"), Some("image/tiff"));
+    assert_eq!(detect_image_type(b"MM\x00*\x00\x00"), Some("image/tiff"));
     assert_eq!(detect_image_type(&[0x89]), None); // too short to decide
 }
 

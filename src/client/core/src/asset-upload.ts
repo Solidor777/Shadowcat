@@ -34,13 +34,19 @@ export interface ChunkedUploadOptions {
   retries?: number;
 }
 
-/** Thrown when a chunked upload cannot continue. */
+/** Thrown when an upload cannot complete. */
 export class ChunkedUploadError extends Error {
   /** HTTP status of the refusing response, if there was one. */
   readonly status: number | undefined;
+  /** The asset that WAS created when only the follow-up placement step failed
+   * (single-shot path): it exists server-side, unfiled/untagged. A caller
+   * repairs it with `patchAsset` or deletes it — retrying the whole upload
+   * would create a duplicate. `undefined` when nothing was created. */
+  readonly partial: Asset | undefined;
   /** Build the error.
    * @param message What failed.
    * @param status The refusing response's status, when there was a response.
+   * @param partial The asset created before the failure, if any.
    * @example
    * ```ts
    * import { ChunkedUploadError } from "@shadowcat/core";
@@ -48,10 +54,11 @@ export class ChunkedUploadError extends Error {
    * throw new ChunkedUploadError("upload session refused: HTTP 413", 413);
    * ```
    */
-  constructor(message: string, status?: number) {
+  constructor(message: string, status?: number, partial?: Asset) {
     super(message);
     this.name = "ChunkedUploadError";
     this.status = status;
+    this.partial = partial;
   }
 }
 
@@ -112,10 +119,20 @@ export async function startChunkedUpload(
     const created = await uploadAsset(world, file);
     opts.onProgress?.(total, total);
     if (!hasPlacement) return created;
-    return patchAsset(created.id, {
-      folder_id: opts.folderId ?? null,
-      tags: opts.tags ?? [],
-    });
+    try {
+      return await patchAsset(created.id, {
+        folder_id: opts.folderId ?? null,
+        tags: opts.tags ?? [],
+      });
+    } catch (e) {
+      // The upload itself succeeded; hand the caller the asset so it can be
+      // repaired or removed rather than re-uploaded.
+      throw new ChunkedUploadError(
+        `placement failed after upload: ${e instanceof Error ? e.message : String(e)}`,
+        undefined,
+        created,
+      );
+    }
   }
 
   opts.signal?.throwIfAborted();

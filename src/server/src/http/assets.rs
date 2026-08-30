@@ -12,8 +12,29 @@ use uuid::Uuid;
 /// Detect a supported image content-type from leading bytes, else `None`.
 /// The bytes are the validation boundary — the client-declared content-type is
 /// never trusted. Needs ≥12 bytes to rule on WebP. Source: file-format magic
-/// numbers (PNG/JFIF/GIF/RIFF specs).
+/// numbers (PNG/JFIF/GIF/RIFF/BMP/TIFF specs); SVG is text, recognized by an
+/// XML prolog or `<svg` root after an optional BOM/whitespace — every type
+/// `data::asset::process` has a branch for is sniffable here, so an honest
+/// declaration of one of them never collapses to octet-stream.
 pub fn detect_image_type(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(b"BM") && bytes.len() >= 6 {
+        return Some("image/bmp");
+    }
+    if bytes.starts_with(&[0x49, 0x49, 0x2A, 0x00]) || bytes.starts_with(&[0x4D, 0x4D, 0x00, 0x2A])
+    {
+        return Some("image/tiff");
+    }
+    let text_start = bytes
+        .strip_prefix(&[0xEF, 0xBB, 0xBF])
+        .unwrap_or(bytes)
+        .iter()
+        .position(|b| !b.is_ascii_whitespace())
+        .map(|i| &bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(bytes)[i..]);
+    if let Some(t) = text_start {
+        if t.starts_with(b"<?xml") || t.starts_with(b"<svg") {
+            return Some("image/svg+xml");
+        }
+    }
     if bytes.starts_with(&[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]) {
         return Some("image/png");
     }
@@ -350,16 +371,39 @@ pub async fn serve(
         tracing::error!(?e, %id, "asset file missing for existing record");
         AppError::Internal
     })?;
+    // Pass-through stores a GM-declared type verbatim, and `serve` is
+    // membership-gated, so the response never lets a browser render an
+    // asset as a document: `nosniff` always, and `inline` only for the raster
+    // types a browser cannot execute — everything else (SVG included, which
+    // can carry script when navigated to directly) downloads. `<img>`
+    // embedding is unaffected by the disposition.
+    let disposition = if INLINE_CONTENT_TYPES.contains(&content_type.as_str()) {
+        "inline"
+    } else {
+        "attachment"
+    };
     Ok((
         [
             (header::CONTENT_TYPE, content_type),
-            (header::CONTENT_DISPOSITION, "inline".to_string()),
+            (header::CONTENT_DISPOSITION, disposition.to_string()),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
             (header::ETAG, etag),
         ],
         Body::from(bytes),
     )
         .into_response())
 }
+
+/// Content types `serve` presents `inline`: raster images a browser can only
+/// paint. Every other stored type is served as an attachment.
+const INLINE_CONTENT_TYPES: [&str; 6] = [
+    "image/png",
+    "image/jpeg",
+    "image/gif",
+    "image/webp",
+    "image/bmp",
+    "image/tiff",
+];
 
 /// Path of the `variant` derivative of `canonical`, regenerating both
 /// derivatives (blocking pool) when it is missing.

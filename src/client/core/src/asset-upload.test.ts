@@ -45,6 +45,17 @@ test("a small file goes single-shot and applies placement via patchAsset", async
   expect(progress).toEqual([[3, 3]]);
 });
 
+test("a placement failure after a single-shot upload surfaces the created asset", async () => {
+  vi.spyOn(rest, "uploadAsset").mockResolvedValue(ASSET as never);
+  vi.spyOn(rest, "patchAsset").mockRejectedValue(new Error("patch failed: 503 HTTP 503"));
+  const file = new File([new Uint8Array([1, 2, 3])], "x.png", { type: "image/png" });
+  await expect(startChunkedUpload("w1", file, { tags: ["map"] })).rejects.toMatchObject({
+    name: "ChunkedUploadError",
+    partial: ASSET,
+    message: expect.stringContaining("placement failed after upload"),
+  });
+});
+
 test("a small file with no placement skips the patch", async () => {
   vi.spyOn(rest, "uploadAsset").mockResolvedValue(ASSET as never);
   const patch = vi.spyOn(rest, "patchAsset");

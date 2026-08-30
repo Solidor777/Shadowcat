@@ -1336,8 +1336,12 @@ impl SqliteRepository {
             .bind(&meta.conversion_note)
             .execute(&mut *tx)
             .await?;
-            for (tag, derived) in row
-                .tags
+            // A bundle is untrusted input: its explicit tags pass the same rule
+            // every live writer applies (`tags::normalize_tags`); derived tags
+            // are pipeline output and are re-derived on the next refresh.
+            let explicit = crate::data::asset::tags::normalize_tags(row.tags.clone())
+                .map_err(|m| DataError::OpFailed(format!("asset {} tags: {m}", row.id)))?;
+            for (tag, derived) in explicit
                 .iter()
                 .map(|t| (t, 0_i64))
                 .chain(row.derived_tags.iter().map(|t| (t, 1_i64)))

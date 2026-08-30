@@ -844,3 +844,124 @@ async fn delete_removes_canonical_and_siblings() {
         assert!(!dir.join(format!("{id}{suffix}")).exists(), "{suffix}");
     }
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn svg_bmp_and_tiff_uploads_keep_their_declared_types() {
+    let h = spawn().await;
+    let svg = b"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"4\" height=\"4\"/>".to_vec();
+    let asset: serde_json::Value = h
+        .upload("icon.svg", "image/svg+xml", svg.clone())
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(asset["content_type"], "image/svg+xml");
+    assert_eq!(asset["conversion_note"], "svg");
+    let derived = asset["derived_tags"].as_array().unwrap();
+    assert!(derived.iter().any(|t| t == "svg") && derived.iter().any(|t| t == "image"));
+    // A 2×2 24-bit BMP (header + 2 rows of 2 pixels padded to 4 bytes).
+    let mut bmp = Vec::new();
+    bmp.extend_from_slice(b"BM");
+    bmp.extend_from_slice(&70u32.to_le_bytes());
+    bmp.extend_from_slice(&[0, 0, 0, 0]);
+    bmp.extend_from_slice(&54u32.to_le_bytes());
+    bmp.extend_from_slice(&40u32.to_le_bytes());
+    bmp.extend_from_slice(&2i32.to_le_bytes());
+    bmp.extend_from_slice(&2i32.to_le_bytes());
+    bmp.extend_from_slice(&1u16.to_le_bytes());
+    bmp.extend_from_slice(&24u16.to_le_bytes());
+    bmp.extend_from_slice(&[0u8; 24]);
+    bmp.extend_from_slice(&[255, 0, 0, 0, 255, 0, 0, 0, 0, 0, 255, 0, 255, 255, 255, 0]);
+    let asset: serde_json::Value = h
+        .upload("tiny.bmp", "image/bmp", bmp)
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(asset["original_content_type"], "image/bmp");
+    assert_eq!(
+        asset["content_type"], "image/webp",
+        "BMP is lossless-converted"
+    );
+    assert_eq!(asset["width"], 2);
+    // A declared TIFF whose bytes are not a TIFF is still not trusted.
+    let asset: serde_json::Value = h
+        .upload("fake.tiff", "image/tiff", b"not a tiff at all".to_vec())
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(asset["content_type"], "application/octet-stream");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn serve_never_lets_a_browser_render_a_stored_type_as_a_document() {
+    let h = spawn().await;
+    let png: serde_json::Value = h
+        .upload("m.png", "image/png", PNG_1X1.to_vec())
+        .await
+        .json()
+        .await
+        .unwrap();
+    let res = h
+        .client
+        .get(format!(
+            "http://{}/api/assets/{}",
+            h.addr,
+            png["id"].as_str().unwrap()
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.headers()["content-disposition"], "inline");
+    assert_eq!(res.headers()["x-content-type-options"], "nosniff");
+
+    // A GM-declared `text/html` pass-through is stored verbatim but served
+    // as a download, never inline.
+    let html: serde_json::Value = h
+        .upload(
+            "page.html",
+            "text/html",
+            b"<script>alert(1)</script>".to_vec(),
+        )
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(html["content_type"], "text/html");
+    let res = h
+        .client
+        .get(format!(
+            "http://{}/api/assets/{}",
+            h.addr,
+            html["id"].as_str().unwrap()
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.headers()["content-type"], "text/html");
+    assert_eq!(res.headers()["content-disposition"], "attachment");
+    assert_eq!(res.headers()["x-content-type-options"], "nosniff");
+    // SVG can carry script when navigated to: attachment as well.
+    let svg: serde_json::Value = h
+        .upload(
+            "i.svg",
+            "image/svg+xml",
+            b"<svg xmlns=\"http://www.w3.org/2000/svg\"/>".to_vec(),
+        )
+        .await
+        .json()
+        .await
+        .unwrap();
+    let res = h
+        .client
+        .get(format!(
+            "http://{}/api/assets/{}",
+            h.addr,
+            svg["id"].as_str().unwrap()
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.headers()["content-disposition"], "attachment");
+}

@@ -268,3 +268,96 @@ async fn abort_removes_the_staging_file_and_refunds_the_rate_slot() {
     let res = h.upload("ok.png", "image/png", PNG_1X1.to_vec()).await;
     assert_eq!(res.status(), 200);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_folder_deleted_mid_session_lands_the_asset_at_root() {
+    let h = spawn_with(|c| c.upload_max_bytes_gm = Some(64 * 1024 * 1024)).await;
+    let folder = create_folder(&h, "Doomed").await;
+    let res = create_session(
+        &h,
+        "x.bin",
+        "application/octet-stream",
+        4,
+        Some(folder),
+        &[],
+    )
+    .await;
+    assert_eq!(res.status(), 201);
+    let body: serde_json::Value = res.json().await.unwrap();
+    let id = body["upload_id"].as_str().unwrap().to_string();
+    assert_eq!(put_chunk(&h, &id, 0, vec![9u8; 4]).await, 204);
+    let res = h
+        .client
+        .delete(format!("http://{}/api/asset-folders/{folder}", h.addr))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+
+    let res = complete(&h, &id).await;
+    assert_eq!(res.status(), 200, "{:?}", res.text().await);
+    let asset: serde_json::Value = res.json().await.unwrap();
+    assert_eq!(asset["folder_id"], serde_json::Value::Null);
+    assert_eq!(asset["byte_size"], 4);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_gm_demoted_mid_session_cannot_continue_it() {
+    use shadowcat::data::document::WorldRole;
+    let h = spawn_with(|c| c.upload_max_bytes_gm = Some(64 * 1024 * 1024)).await;
+    // A second GM opens the session, then loses the role.
+    let (uid, cookie) = h.add_player("second-gm").await;
+    h.repo.remove_member(h.world, uid).await.unwrap();
+    h.repo
+        .add_member(h.world, uid, WorldRole::Gm)
+        .await
+        .unwrap();
+    let client = reqwest::Client::new();
+    let res = client
+        .post(format!(
+            "http://{}/api/worlds/{}/assets/uploads",
+            h.addr, h.world
+        ))
+        .header("cookie", &cookie)
+        .json(&serde_json::json!({
+            "name": "x.bin", "content_type": "application/octet-stream", "byte_size": 8
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 201, "{:?}", res.text().await);
+    let body: serde_json::Value = res.json().await.unwrap();
+    let id = body["upload_id"].as_str().unwrap().to_string();
+    let res = client
+        .put(format!("http://{}/api/assets/uploads/{id}/0", h.addr))
+        .header("cookie", &cookie)
+        .body(vec![1u8; 4])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 204);
+
+    h.repo.remove_member(h.world, uid).await.unwrap();
+    h.repo
+        .add_member(h.world, uid, WorldRole::Player)
+        .await
+        .unwrap();
+    let res = client
+        .put(format!("http://{}/api/assets/uploads/{id}/4", h.addr))
+        .header("cookie", &cookie)
+        .body(vec![1u8; 4])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 403, "role is re-checked live on every chunk");
+    let res = client
+        .post(format!(
+            "http://{}/api/assets/uploads/{id}/complete",
+            h.addr
+        ))
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 403);
+}

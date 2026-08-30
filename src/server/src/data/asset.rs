@@ -11,6 +11,7 @@ use uuid::Uuid;
 /// rewritten on replace/reconvert. Flattened into `Asset` on the wire.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, PartialEq)]
 #[ts(export, export_to = "../../types/generated/")]
+#[serde(default)]
 pub struct AssetMeta {
     /// Canonical pixel width; `None` for a non-image or undecodable file.
     pub width: Option<u32>,

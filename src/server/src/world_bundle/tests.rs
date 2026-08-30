@@ -318,6 +318,41 @@ fn read_bundle_rejects_duplicate_asset_entry_and_cleans_up_staged_files() {
 }
 
 #[test]
+fn a_pre_pipeline_asset_row_deserializes_with_defaults() {
+    // The row shape a bundle written before the pipeline carries: no folder,
+    // tags, or metadata keys at all.
+    let legacy = serde_json::json!({
+        "id": Uuid::from_u128(100),
+        "original_name": "token.png",
+        "content_type": "image/png",
+        "byte_size": 7,
+        "created_by_username": null,
+        "created_at": 0,
+        "version": 1
+    });
+    let row: crate::data::world_bundle::ExportedAssetRow =
+        serde_json::from_value(legacy).expect("legacy row must still import");
+    assert_eq!(row.folder_id, None);
+    assert!(row.tags.is_empty() && row.derived_tags.is_empty());
+    assert_eq!(row.meta, crate::data::asset::AssetMeta::default());
+    assert!(!row.meta.original_retained);
+    // A row with only SOME metadata keys also fills the rest from defaults.
+    let partial = serde_json::json!({
+        "id": Uuid::from_u128(101),
+        "original_name": "x.png",
+        "content_type": "image/webp",
+        "byte_size": 7,
+        "created_by_username": null,
+        "created_at": 0,
+        "version": 1,
+        "width": 4
+    });
+    let row: crate::data::world_bundle::ExportedAssetRow = serde_json::from_value(partial).unwrap();
+    assert_eq!(row.meta.width, Some(4));
+    assert_eq!(row.meta.original_content_type, "");
+}
+
+#[test]
 fn bundle_round_trips_asset_siblings_and_rejects_an_unknown_suffix() {
     let tmp = tempfile::tempdir().unwrap();
     let world = Uuid::from_u128(7);

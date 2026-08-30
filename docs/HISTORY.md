@@ -1815,6 +1815,18 @@ commit is `&&`-chained on, and the whole branch re-verified through them (fmt, c
 server tests, every `pnpm` gate, both e2e suites). Environment: the shell Playwright suite failed
 6/17 while another session's `test_server` held the fixed port 31999 (`reuseExistingServer`),
 17/17 alone; a fixed-port throttle test (`8004`) flaked the same way under contention.
+Buddy check (two blind reviewers + brokered debate, converged with nothing unresolved) found nine
+issues, all fixed: the animation probe's raw `GifDecoder` ran with no limits (a header-declared
+65535×65535 canvas allocates before any decode) and the `ImageReader` sites relied on the crate's
+un-tuned default — every decode now runs under explicit `Limits`; `label_content_type` collapsed
+honestly-declared SVG/BMP/TIFF to octet-stream because `detect_image_type` could not sniff them;
+`serve` echoed a GM-declared type `inline` with no `nosniff` — now `nosniff` always and `inline`
+only for raster types; `AssetMeta`'s flatten-level `default` did not default a legacy bundle's
+missing keys (struct-level `#[serde(default)]`); a folder deleted during a chunked session made
+`complete` fail after the whole file streamed (re-validated, falls back to root); the session
+routes never re-ran `require_gm`; bundle import skipped the tag rule (`normalize_tags`, now the one
+rule for every writer); the client's single-shot placement failure hid the created asset
+(`ChunkedUploadError.partial`).
 Coverage added: 8 `process` unit tests on generated fixtures, tag/query/upload/mutate unit tests,
 and five new integration files (`assets_chunked`, `assets_query`, `assets_mutate`, plus the
 extended `assets` and bundle round-trips).

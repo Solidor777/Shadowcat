@@ -76,6 +76,7 @@ fn validate_tags_trims_dedupes_and_bounds() {
         vec!["hero".to_string(), "map".to_string()]
     );
     assert!(validate_tags(vec!["".into()]).is_err());
+    use crate::data::asset::tags::{MAX_TAGS, MAX_TAG_CHARS};
     assert!(validate_tags(vec!["x".repeat(MAX_TAG_CHARS + 1)]).is_err());
     assert!(validate_tags(vec!["t".into(); MAX_TAGS + 1]).is_err());
     assert!(validate_tags(vec![]).unwrap().is_empty());

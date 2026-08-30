@@ -6,7 +6,7 @@
 #![deny(clippy::missing_docs_in_private_items)]
 
 use super::AssetMeta;
-use image::{AnimationDecoder, DynamicImage, ImageReader};
+use image::{AnimationDecoder, DynamicImage, ImageDecoder, ImageReader};
 use std::io::{self, BufReader};
 use std::path::{Path, PathBuf};
 
@@ -21,6 +21,24 @@ pub const LOSSY_QUALITY: f32 = 85.0;
 const DERIVATIVE_QUALITY: f32 = 80.0;
 /// MIME type of every converted canonical and every derivative.
 pub const WEBP_CONTENT_TYPE: &str = "image/webp";
+/// Largest axis any decode admits; a header declaring more is refused before
+/// a pixel buffer exists (pass-through, `conversion_note`).
+pub const MAX_DECODE_AXIS_PX: u32 = 16_384;
+/// Largest pixel-buffer allocation any decode admits (256 MiB) — well under
+/// the `image` crate's 512 MiB default, pinned here rather than inherited
+/// because the crate documents its default as subject to change, and the
+/// chat link-preview path reaches this decoder without elevated privilege.
+pub const MAX_DECODE_ALLOC_BYTES: u64 = 256 * 1024 * 1024;
+
+/// The bound every decoder and animation probe in this module runs under.
+fn decode_limits() -> image::Limits {
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(MAX_DECODE_AXIS_PX);
+    limits.max_image_height = Some(MAX_DECODE_AXIS_PX);
+    limits.max_alloc = Some(MAX_DECODE_ALLOC_BYTES);
+    limits
+}
+
 /// File-name suffix of the retained original beside the canonical.
 const ORIGINAL_SUFFIX: &str = ".orig";
 /// Every suffix a sibling artifact may carry, in `sibling_paths` order. The
@@ -169,10 +187,9 @@ fn write_derivatives_of(img: &DynamicImage, canonical: &Path, transparent: bool)
 /// Regenerate both derivatives from the canonical file (the on-demand path
 /// for a missing derivative). Fails when the canonical does not decode.
 pub fn write_derivatives(canonical: &Path) -> io::Result<()> {
-    let img = ImageReader::open(canonical)?
-        .with_guessed_format()?
-        .decode()
-        .map_err(io::Error::other)?;
+    let mut reader = ImageReader::open(canonical)?.with_guessed_format()?;
+    reader.limits(decode_limits());
+    let img = reader.decode().map_err(io::Error::other)?;
     let transparent = has_transparent_pixels(&img);
     write_derivatives_of(&img, canonical, transparent)
 }
@@ -186,7 +203,13 @@ fn is_animated(path: &Path, content_type: &str) -> bool {
     };
     let reader = BufReader::new(file);
     match content_type {
+        // A raw codec starts with NO limits (`Limits::no_limits()`); the frame
+        // iterator allocates a header-sized canvas before reading a pixel, so
+        // the bound must be set here, on the probe, not only on `decode`. A
+        // canvas over the bound reads as "not animated" and the later decode
+        // refuses it for the same reason.
         "image/gif" => image::codecs::gif::GifDecoder::new(reader)
+            .and_then(|mut d| d.set_limits(decode_limits()).map(|()| d))
             .map(|d| d.into_frames().take(2).count() > 1)
             .unwrap_or(false),
         "image/webp" => image::codecs::webp::WebPDecoder::new(reader)
@@ -270,7 +293,9 @@ pub fn process_staged(
     let animated = is_animated(staged, original_content_type);
     // `decode` yields the first frame of an animation — enough for dimensions
     // and derivatives.
-    let img = match ImageReader::open(staged)?.with_guessed_format()?.decode() {
+    let mut reader = ImageReader::open(staged)?.with_guessed_format()?;
+    reader.limits(decode_limits());
+    let img = match reader.decode() {
         Ok(img) => img,
         Err(e) => {
             return Ok(pass_through(

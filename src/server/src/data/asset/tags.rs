@@ -15,6 +15,35 @@ pub const LINK_PREVIEW_TAG: &str = "link-preview";
 /// Derived tag for a GM upload.
 pub const UPLOADED_TAG: &str = "uploaded";
 
+/// Longest accepted explicit tag, in chars.
+pub const MAX_TAG_CHARS: usize = 64;
+/// Most explicit tags one asset carries.
+pub const MAX_TAGS: usize = 64;
+
+/// The one rule for GM-set tags, applied by every writer (routes and bundle
+/// import alike): trimmed, non-empty, at most `MAX_TAG_CHARS` each and
+/// `MAX_TAGS` total; duplicates collapse, order kept. `Err` names the
+/// violation.
+pub fn normalize_tags(tags: Vec<String>) -> Result<Vec<String>, String> {
+    if tags.len() > MAX_TAGS {
+        return Err(format!("at most {MAX_TAGS} tags"));
+    }
+    let mut out: Vec<String> = Vec::with_capacity(tags.len());
+    for raw in tags {
+        let tag = raw.trim();
+        if tag.is_empty() {
+            return Err("empty tag".into());
+        }
+        if tag.chars().count() > MAX_TAG_CHARS {
+            return Err(format!("tag longer than {MAX_TAG_CHARS} chars"));
+        }
+        if !out.iter().any(|t| t == tag) {
+            out.push(tag.to_string());
+        }
+    }
+    Ok(out)
+}
+
 /// Everything `derive` reads.
 pub struct DeriveInput<'a> {
     /// The served canonical's MIME type (`Asset.content_type`).

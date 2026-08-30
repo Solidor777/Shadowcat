@@ -37,10 +37,6 @@ pub const SESSION_IDLE_MS: i64 = 30 * 60 * 1000;
 const SWEEP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
 /// Longest accepted display name for an upload.
 const MAX_NAME_CHARS: usize = 255;
-/// Longest accepted tag, in chars.
-pub(crate) const MAX_TAG_CHARS: usize = 64;
-/// Most tags one asset carries.
-pub(crate) const MAX_TAGS: usize = 64;
 
 /// Why `UploadSession::accept_chunk` refused a chunk.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -211,29 +207,9 @@ pub fn spawn_sweeper(uploads: Arc<UploadSessions>, rate: Arc<UploadRateLimiter>)
     });
 }
 
-/// Validate explicit tags: trimmed, non-empty, at most `MAX_TAG_CHARS` each
-/// and `MAX_TAGS` total; duplicates collapse. Shared by every route that
-/// accepts GM tags.
+/// `tags::normalize_tags` as a 422 — shared by every route that accepts GM tags.
 pub(crate) fn validate_tags(tags: Vec<String>) -> Result<Vec<String>, AppError> {
-    if tags.len() > MAX_TAGS {
-        return Err(AppError::Unprocessable(format!("at most {MAX_TAGS} tags")));
-    }
-    let mut out: Vec<String> = Vec::with_capacity(tags.len());
-    for raw in tags {
-        let tag = raw.trim();
-        if tag.is_empty() {
-            return Err(AppError::Unprocessable("empty tag".into()));
-        }
-        if tag.chars().count() > MAX_TAG_CHARS {
-            return Err(AppError::Unprocessable(format!(
-                "tag longer than {MAX_TAG_CHARS} chars"
-            )));
-        }
-        if !out.iter().any(|t| t == tag) {
-            out.push(tag.to_string());
-        }
-    }
-    Ok(out)
+    crate::data::asset::tags::normalize_tags(tags).map_err(AppError::Unprocessable)
 }
 
 /// `folder_id` must name an `asset_folder` document of `world`, else 422.
@@ -360,14 +336,23 @@ pub async fn create_session(
 }
 
 /// Look up session `id` for `user`: 404 when absent, 403 when someone else's.
-fn owned_session(state: &AppState, id: Uuid, user: Uuid) -> Result<UploadSession, AppError> {
+/// Look up session `id` for `user`: 404 when absent, 403 when someone else's
+/// — and 403 when the caller is no longer GM of the session's world
+/// (`require_gm` re-run live, exactly as every other mutation route does on
+/// every call; a role change mid-session takes effect at the next chunk).
+async fn owned_session(
+    state: &AppState,
+    id: Uuid,
+    user: &AuthUser,
+) -> Result<UploadSession, AppError> {
     let session = state
         .uploads
         .with(id, |s| s.clone())
         .ok_or(AppError::NotFound)?;
-    if session.user != user {
+    if session.user != user.id {
         return Err(AppError::Forbidden);
     }
+    require_gm(state, user, session.world).await?;
     Ok(session)
 }
 
@@ -382,7 +367,7 @@ pub async fn put_chunk(
     Path((id, offset)): Path<(Uuid, u64)>,
     body: axum::body::Bytes,
 ) -> Result<StatusCode, AppError> {
-    owned_session(&state, id, user.id)?;
+    owned_session(&state, id, &user).await?;
     let len = body.len() as u64;
     let admitted = state
         .uploads
@@ -450,7 +435,7 @@ pub async fn complete_session(
     user: AuthUser,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Asset>, AppError> {
-    let session = owned_session(&state, id, user.id)?;
+    let session = owned_session(&state, id, &user).await?;
     if session.busy {
         return Err(AppError::Conflict("a chunk is still being written".into()));
     }
@@ -464,6 +449,13 @@ pub async fn complete_session(
         return Err(AppError::NotFound);
     };
 
+    // The destination folder was validated at create; a session lives up to
+    // `SESSION_IDLE_MS`, so it may be gone by now. Re-resolve it: a deleted
+    // folder means the world root (the same place a folder delete reparents
+    // to), never a failed upload after the whole file streamed.
+    let folder_id = validate_folder(&state, session.world, session.folder_id)
+        .await
+        .unwrap_or(None);
     let outcome: Result<Asset, AppError> = async {
         let head = read_head(&session.staged)
             .await
@@ -481,10 +473,7 @@ pub async fn complete_session(
             tracing::error!(?e, %id, "chunked upload processing failed");
             AppError::Internal
         })?;
-        let folder_names = state
-            .repo
-            .folder_ancestor_names_of(session.folder_id)
-            .await?;
+        let folder_names = state.repo.folder_ancestor_names_of(folder_id).await?;
         let derived = derive(DeriveInput {
             content_type: &processed.content_type,
             meta: &processed.meta,
@@ -507,7 +496,7 @@ pub async fn complete_session(
             created_by: Some(user.id),
             created_at: crate::ws::time::now_millis(),
             version: 1,
-            folder_id: session.folder_id,
+            folder_id,
             tags: session.tags.clone(),
             derived_tags: vec![],
             meta: processed.meta,
@@ -566,7 +555,7 @@ pub async fn abort_session(
     user: AuthUser,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, AppError> {
-    owned_session(&state, id, user.id)?;
+    owned_session(&state, id, &user).await?;
     if let Some(session) = state.uploads.remove(id) {
         discard(&session, &state.upload_rate).await;
     }

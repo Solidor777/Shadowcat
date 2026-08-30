@@ -220,6 +220,59 @@ fn svg_and_undecodable_and_non_image_are_passthrough() {
     assert!(!p.meta.original_retained);
 }
 
+/// A GIF whose header declares a 65535×65535 canvas, followed by nothing
+/// worth decoding: a few dozen bytes on disk, ~17 GiB if the canvas were
+/// allocated.
+fn gif_with_huge_canvas() -> Vec<u8> {
+    let mut v = b"GIF89a".to_vec();
+    v.extend_from_slice(&[0xFF, 0xFF, 0xFF, 0xFF]); // width, height (u16 LE)
+    v.extend_from_slice(&[0x00, 0x00, 0x00]); // flags, bg index, aspect
+    v.extend_from_slice(&[0x2C, 0, 0, 0, 0, 0xFF, 0xFF, 0xFF, 0xFF, 0x00]); // image descriptor
+    v.extend_from_slice(&[0x02, 0x02, 0x44, 0x01, 0x00, 0x3B]); // minimal LZW + trailer
+    v
+}
+
+#[test]
+fn gif_with_huge_declared_canvas_is_refused_before_any_canvas_allocates() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = gif_with_huge_canvas();
+    let staged = stage(dir.path(), &input);
+    // If either the animation probe or the decode allocated the declared
+    // canvas this test would exhaust memory instead of returning.
+    let p = process_staged(&staged, "image/gif", input.len() as i64, true).unwrap();
+    assert!(!p.converted);
+    assert_eq!(p.content_type, "image/gif");
+    assert!(!p.meta.animated);
+    assert_eq!(p.meta.width, None);
+    assert!(p
+        .meta
+        .conversion_note
+        .as_deref()
+        .is_some_and(|n| n.starts_with("decode failed")));
+    assert!(!derivative_path(&staged, Variant::Thumb).exists());
+    assert_eq!(std::fs::read(&staged).unwrap(), input);
+}
+
+#[test]
+fn png_over_the_axis_bound_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    // A 1×(MAX+1) PNG is cheap to encode (one column) but declares an axis
+    // over the bound.
+    let img = RgbaImage::from_pixel(1, MAX_DECODE_AXIS_PX + 1, image::Rgba([1, 2, 3, 255]));
+    let mut out = Cursor::new(Vec::new());
+    img.write_to(&mut out, ImageFormat::Png).unwrap();
+    let input = out.into_inner();
+    let staged = stage(dir.path(), &input);
+    let p = process_staged(&staged, "image/png", input.len() as i64, true).unwrap();
+    assert!(!p.converted);
+    assert_eq!(p.meta.width, None);
+    assert!(p
+        .meta
+        .conversion_note
+        .as_deref()
+        .is_some_and(|n| n.starts_with("decode failed")));
+}
+
 #[test]
 fn write_derivatives_regenerates_from_canonical() {
     let dir = tempfile::tempdir().unwrap();
