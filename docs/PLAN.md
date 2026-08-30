@@ -26,8 +26,7 @@ further at design time. Numbering continues from Phase 1.
   notes in [`HISTORY.md`](HISTORY.md)'s M14a and M14b entries.
 - **M14c — server authority + combat client seams**, six sub-projects in build order (design:
   [`superpowers/specs/2026-08-30-m14c-1-server-formula-engine-design.md`](superpowers/specs/2026-08-30-m14c-1-server-formula-engine-design.md) §1):
-  - **M14c-1 — server formula engine + invariant 6**: the Rust twin of `@shadowcat/formula`, the
-    shared conformance corpus, `Formula::Text` parsed at ingress, the invariant-6 rewrite.
+  - **M14c-1 — server formula engine + invariant 6** — DONE (see [`HISTORY.md`](HISTORY.md)).
   - **M14c-2 — combat resolution server-side**: `Mirror` implemented, `Tracked` seeded to `max`,
     text recoveries evaluated, `Duration.remaining`/lifecycle flags server-derived, egress rule for
     resolved scalars, `Hard` route-preview clamp inside `Pathfind`.
