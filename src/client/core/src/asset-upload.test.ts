@@ -63,17 +63,20 @@ test("a small file with no placement skips the patch", async () => {
   expect(patch).not.toHaveBeenCalled();
 });
 
-test("a large file opens a session, PUTs chunks at 0/8/16, then completes", async () => {
+test("a large file opens a session, PUTs chunks at successive chunk-size offsets, then completes", async () => {
+  // The server dictates the chunk size; 3 MiB against a just-over-threshold
+  // file yields exactly 3 chunks, keeping the loop count (and test wall time)
+  // bounded while still exercising a multi-chunk sequence.
+  const CHUNK = 3 * 1024 * 1024;
   const { impl, calls } = scriptedFetch((method, url) => {
     if (method === "POST" && url.endsWith("/assets/uploads"))
-      return json(201, { upload_id: "s1", chunk_size: 8 });
+      return json(201, { upload_id: "s1", chunk_size: CHUNK });
     if (method === "PUT") return new Response(null, { status: 204 });
     if (method === "POST" && url.endsWith("/complete")) return json(200, ASSET);
     return new Response(null, { status: 500 });
   });
   const progress: number[] = [];
   const file = bigFile(CHUNK_THRESHOLD_BYTES + 1);
-  // The server dictates the chunk size; a tiny one keeps the test cheap.
   const out = await startChunkedUpload("w1", file, {
     fetchImpl: impl,
     folderId: "f1",
@@ -92,12 +95,12 @@ test("a large file opens a session, PUTs chunks at 0/8/16, then completes", asyn
     tags: ["big"],
   });
   const puts = calls.filter((c) => c.method === "PUT").map((c) => c.url);
-  expect(puts.slice(0, 3)).toEqual([
+  expect(puts).toEqual([
     "/api/assets/uploads/s1/0",
-    "/api/assets/uploads/s1/8",
-    "/api/assets/uploads/s1/16",
+    `/api/assets/uploads/s1/${CHUNK}`,
+    `/api/assets/uploads/s1/${2 * CHUNK}`,
   ]);
-  expect(puts).toHaveLength(Math.ceil(file.size / 8));
+  expect(puts).toHaveLength(Math.ceil(file.size / CHUNK));
   expect(calls.at(-1)?.url).toBe("/api/assets/uploads/s1/complete");
   expect(progress.at(-1)).toBe(file.size);
   expect(progress).toEqual([...progress].sort((a, b) => a - b));
