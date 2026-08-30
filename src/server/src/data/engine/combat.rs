@@ -112,6 +112,17 @@ pub struct CombatDefaults {
     pub forward_restore: Option<bool>,
 }
 
+impl CombatDefaults {
+    /// Every lifecycle formula present parses. `at` names the field this
+    /// override sits under in the enclosing document, for the error message.
+    pub(crate) fn validate(&self, at: &str) -> Result<(), String> {
+        match &self.effect_lifecycle {
+            Some(l) => l.validate(&format!("{at}.effect_lifecycle")),
+            None => Ok(()),
+        }
+    }
+}
+
 /// serde reads a missing key as `None` and an explicit `null` as `Some(None)`
 /// for a doubly-optional field only with this helper; without it both
 /// collapse to `None` and a scene could never CLEAR an inherited resource.
@@ -262,7 +273,8 @@ pub struct CombatEngine {
 }
 
 impl CombatEngine {
-    /// `order` has no duplicate ids and `turn`, when set, is one of them.
+    /// `order` has no duplicate ids, `turn`, when set, is one of them, and
+    /// every snapshotted lifecycle formula parses.
     pub(crate) fn validate(&self) -> Result<(), String> {
         let mut seen = BTreeSet::new();
         for id in &self.order {
@@ -275,7 +287,7 @@ impl CombatEngine {
                 return Err(format!("turn {t} is not in order"));
             }
         }
-        Ok(())
+        self.effect_lifecycle.validate("effect_lifecycle")
     }
 }
 
@@ -586,6 +598,24 @@ pub struct EffectLifecycleDefaults {
     pub on_advance: Option<Formula>,
 }
 
+impl EffectLifecycleDefaults {
+    /// Every present formula parses. `at` names the enclosing field for the
+    /// error message.
+    pub(crate) fn validate(&self, at: &str) -> Result<(), String> {
+        let fields = [
+            ("on_combat_end", &self.on_combat_end),
+            ("on_turn_end", &self.on_turn_end),
+            ("on_advance", &self.on_advance),
+        ];
+        for (name, formula) in fields {
+            if let Some(f) = formula {
+                f.validate(&format!("{at}.{name}"))?;
+            }
+        }
+        Ok(())
+    }
+}
+
 /// The engine body of an `effect` document (mirrors the client's
 /// `EffectEngine`). Modifiers stay in the system band; the engine owns only
 /// activation, transfer and the clock-bound lifetime. Absent `transfer` and
@@ -718,7 +748,9 @@ pub struct CombatHistoryEngine {
 }
 
 impl CombatHistoryEngine {
-    /// At most `MAX_TURN_HISTORY` records; `cursor < len` unless empty.
+    /// At most `MAX_TURN_HISTORY` records; `cursor < len` unless empty; every
+    /// captured band is itself valid, so a record can never hold a combatant
+    /// or effect that `restore` would then fail to write back.
     pub(crate) fn validate(&self) -> Result<(), String> {
         if self.records.len() > MAX_TURN_HISTORY {
             return Err(format!("history exceeds {MAX_TURN_HISTORY} records"));
@@ -728,6 +760,18 @@ impl CombatHistoryEngine {
         }
         if self.records.is_empty() && self.cursor != 0 {
             return Err("cursor must be 0 for an empty history".into());
+        }
+        for (i, record) in self.records.iter().enumerate() {
+            for (j, c) in record.combatants.iter().enumerate() {
+                c.engine
+                    .validate()
+                    .map_err(|m| format!("records[{i}].combatants[{j}]: {m}"))?;
+            }
+            for (j, e) in record.effects.iter().enumerate() {
+                e.engine
+                    .validate()
+                    .map_err(|m| format!("records[{i}].effects[{j}]: {m}"))?;
+            }
         }
         Ok(())
     }

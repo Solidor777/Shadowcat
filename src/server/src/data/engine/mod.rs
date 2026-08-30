@@ -199,7 +199,14 @@ fn normalize_engine(doc_type: &str, v: &serde_json::Value) -> Result<serde_json:
                 .map_err(|m| DataError::BadEngine(format!("token: {m}")))?;
             Ok(serde_json::to_value(typed)?)
         }
-        "scene" => round_trip::<SceneEngine>(v, "scene"),
+        "scene" => {
+            let typed: SceneEngine = serde_json::from_value(v.clone())
+                .map_err(|e| DataError::BadEngine(format!("scene: {e}")))?;
+            typed
+                .validate()
+                .map_err(|m| DataError::BadEngine(format!("scene: {m}")))?;
+            Ok(serde_json::to_value(typed)?)
+        }
         "wall" => round_trip::<WallEngine>(v, "wall"),
         "region" => round_trip::<RegionEngine>(v, "region"),
         "light" => round_trip::<LightEngine>(v, "light"),
@@ -207,7 +214,14 @@ fn normalize_engine(doc_type: &str, v: &serde_json::Value) -> Result<serde_json:
         "template" => round_trip::<TemplateEngine>(v, "template"),
         "actor" => round_trip::<ActorEngine>(v, "actor"),
         "message" => round_trip::<crate::chat::MessageEngine>(v, "message"),
-        "world-settings" => round_trip::<WorldSettingsEngine>(v, "world-settings"),
+        "world-settings" => {
+            let typed: WorldSettingsEngine = serde_json::from_value(v.clone())
+                .map_err(|e| DataError::BadEngine(format!("world-settings: {e}")))?;
+            typed
+                .validate()
+                .map_err(|m| DataError::BadEngine(format!("world-settings: {m}")))?;
+            Ok(serde_json::to_value(typed)?)
+        }
         "vision-modes" => round_trip::<VisionModesEngine>(v, "vision-modes"),
         "light-gradation" => round_trip::<LightGradationEngine>(v, "light-gradation"),
         "chat-settings" => round_trip::<ChatSettingsEngine>(v, "chat-settings"),

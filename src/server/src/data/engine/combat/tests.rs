@@ -210,6 +210,67 @@ fn effect_duration_amount_text_must_parse() {
 }
 
 #[test]
+fn combat_history_validates_every_captured_band() {
+    let effect = |amount: Formula| EffectEngine {
+        active: true,
+        transfer: false,
+        duration: Some(Duration {
+            amount,
+            remaining: Some(2),
+            unit: DurationUnit::Rounds,
+            anchor: None,
+            expires: ExpiryPoint::TurnEnd,
+        }),
+        lifecycle: None,
+    };
+    let history = |engine: EffectEngine, combatant: CombatantEngine| CombatHistoryEngine {
+        records: vec![TurnRecord {
+            round: 1,
+            turn: Uuid::from_u128(7),
+            combatants: vec![CapturedCombatant {
+                id: Uuid::from_u128(7),
+                name: None,
+                permissions: Default::default(),
+                owner: None,
+                engine: combatant,
+                system: json!({}),
+            }],
+            effects: vec![EffectSnapshot {
+                host: Uuid::from_u128(9),
+                path: "/embedded/effect/0".into(),
+                engine,
+            }],
+        }],
+        cursor: 0,
+    };
+    let combatant = |initiative: Option<f64>| CombatantEngine {
+        kind: CombatantKind::Event {
+            lifespan: None,
+            message: None,
+        },
+        initiative,
+        tiebreak: 0.0,
+        resources: Default::default(),
+    };
+    assert!(
+        history(effect(Formula::Text("rounds".into())), combatant(Some(1.0)))
+            .validate()
+            .is_ok()
+    );
+    let bad_effect = history(effect(Formula::Text("1 +".into())), combatant(Some(1.0)))
+        .validate()
+        .unwrap_err();
+    assert!(bad_effect.contains("records[0].effects[0]"), "{bad_effect}");
+    let bad_combatant = history(effect(Formula::Number(2.0)), combatant(Some(f64::NAN)))
+        .validate()
+        .unwrap_err();
+    assert!(
+        bad_combatant.contains("records[0].combatants[0]"),
+        "{bad_combatant}"
+    );
+}
+
+#[test]
 fn resolve_combat_rules_scene_overrides_world_overrides_engine() {
     let engine_only = resolve_combat_rules(None, None, None);
     assert_eq!(

@@ -264,6 +264,16 @@ pub struct AnimationSettings {
     pub easing: EasingMode,
 }
 
+impl SceneEngine {
+    /// Every combat lifecycle formula present parses.
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        match &self.combat {
+            Some(c) => c.validate("combat"),
+            None => Ok(()),
+        }
+    }
+}
+
 /// The engine body of a "world-settings" config document
 /// (mirrors the client's `WorldSettingsEngine`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
@@ -288,6 +298,16 @@ pub struct WorldSettingsEngine {
     /// (`combat::resolve_combat_rules`).
     #[serde(default)]
     pub combat: Option<super::combat::CombatDefaults>,
+}
+
+impl WorldSettingsEngine {
+    /// Every combat lifecycle formula present parses.
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        match &self.combat {
+            Some(c) => c.validate("combat"),
+            None => Ok(()),
+        }
+    }
 }
 
 /// MUST equal the client's `DEFAULT_WORLD_SETTINGS` —
