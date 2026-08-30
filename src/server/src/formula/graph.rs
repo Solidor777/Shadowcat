@@ -69,6 +69,7 @@ where
                 let visiting_ref = &visiting;
                 let stack_ref = &stack;
                 let needed_ref = &mut needed;
+                let key_ref = &key;
                 let mut get = |dep: &str| -> FormulaValue {
                     if let Some(v) = memo_ref.get(dep) {
                         return v.clone();
@@ -90,17 +91,23 @@ where
                             }
                             // Every visiting key is on the stack (add/push and
                             // remove/pop are paired); a miss means that pairing
-                            // broke. Surface it as a value, never a panic.
+                            // broke. Surface it as a value, never a panic — with
+                            // the wording the client's outer catch produces for
+                            // the node under evaluation.
                             None => Err(FormulaError::new(
                                 FormulaErrorKind::ResolverError,
-                                format!("evalNode threw for '{dep}'"),
+                                format!("evalNode threw for '{key_ref}'"),
                             )),
                         };
                     }
                     if needed_ref.is_none() {
                         *needed_ref = Some(dep.to_string());
                     }
-                    // Placeholder: discarded by the driver once `needed` is set.
+                    // Restart placeholder, never observable: the driver discards
+                    // the whole `eval_node` result once `needed` is set. Tagged
+                    // `RefError` because that kind has no producer of its own on
+                    // either side (see its doc); nothing downstream can mistake
+                    // a leaked one for a real failure because none can leak.
                     Err(FormulaError::new(
                         FormulaErrorKind::RefError,
                         format!("unresolved dependency '{dep}'"),

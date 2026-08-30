@@ -140,6 +140,24 @@ fn a_shared_dependency_is_evaluated_exactly_once_across_two_roots() {
 }
 
 #[test]
+fn the_restart_placeholder_never_reaches_a_caller_even_when_a_node_returns_it_verbatim() {
+    // A node that hands back whatever `get` returned — including the internal
+    // placeholder for a not-yet-resolved dependency — still resolves to the
+    // dependency's real value, and no `RefError` appears anywhere in the result.
+    let passthrough = |k: &str, get: &mut dyn FnMut(&str) -> FormulaValue| match k {
+        "leaf" => Ok(7.0),
+        "a" => get("leaf"),
+        "b" => get("a"),
+        other => unknown(other),
+    };
+    let r = resolve_all(&keys(&["b"]), passthrough);
+    assert_eq!(r["b"], Ok(7.0));
+    assert!(r
+        .values()
+        .all(|v| !matches!(v, Err(e) if e.error == FormulaErrorKind::RefError)));
+}
+
+#[test]
 fn a_node_returning_a_non_finite_number_is_gated_to_non_finite() {
     let r = resolve_all(&keys(&["x"]), |_, _| Ok(f64::NAN));
     assert_eq!(

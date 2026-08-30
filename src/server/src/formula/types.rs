@@ -40,7 +40,10 @@ pub enum FormulaErrorKind {
     /// A DoS bound tripped.
     Cap,
     /// A referenced value was itself an error (propagation wrapper; kept for
-    /// tag parity with the client, which reserves it the same way).
+    /// tag parity with the client, which reserves it the same way). Neither
+    /// implementation's evaluator produces it; `graph::resolve_all` uses it
+    /// for its internal restart placeholder, which never reaches a caller
+    /// (`graph/tests.rs` pins that).
     RefError,
     /// A resolver returned a malformed value.
     ResolverError,
