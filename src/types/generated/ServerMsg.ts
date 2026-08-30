@@ -214,7 +214,12 @@ cost: number,
 /**
  * True when an arrest region truncated the route short of the goal.
  */
-arrested: boolean, } | { "type": "path_error", 
+arrested: boolean, 
+/**
+ * True when the mover's movement budget truncated the route short of
+ * the goal (Hard enforcement; reaches only the requester's own preview).
+ */
+truncated: boolean, } | { "type": "path_error", 
 /**
  * The failed pathfind's correlation token.
  */
