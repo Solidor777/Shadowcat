@@ -3029,7 +3029,11 @@ async fn combatant_create_stamps_resources_owner_or_gm_unless_explicit() {
     )
     .await
     .unwrap();
-    let got = r.get_document(Uuid::from_u128(0xC1)).await.unwrap().unwrap();
+    let got = r
+        .get_document(Uuid::from_u128(0xC1))
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(
         got.permissions.property_overrides.get("/engine/resources"),
         Some(&Visibility::OwnerOrGm),
@@ -3072,7 +3076,11 @@ async fn combatant_create_stamps_resources_owner_or_gm_unless_explicit() {
     )
     .await
     .unwrap();
-    let got = r.get_document(Uuid::from_u128(0xC2)).await.unwrap().unwrap();
+    let got = r
+        .get_document(Uuid::from_u128(0xC2))
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(
         got.permissions.property_overrides.get("/engine/resources"),
         Some(&Visibility::All),
