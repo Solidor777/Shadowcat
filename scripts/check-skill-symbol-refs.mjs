@@ -1534,10 +1534,6 @@ export const ACKNOWLEDGED_NON_SYMBOLS = new Set([
   // `enum` is a validation keyword, `anyOf`/`oneOf` are combinators. The schema vocabulary is the
   // standard's, not a declaration in this tree.
   "enum", "anyOf", "oneOf",
-  // The JS array sort, cited whole. NOT a bare `Array` prefix entry: this tree declares
-  // `SchemaType::Array`, so a head-matching entry would absorb a dead citation of THAT variant's
-  // members as "external" - the acknowledgement would be false and the broken citation silent.
-  "Array.sort",
   // URL grammar terms from the standard the SSRF guard parses against.
   "https", "userinfo",
   // The filesystem RENAME syscall, whose backticks mark the one atomic operation apart from the

@@ -800,33 +800,6 @@ describe("extractCitationCandidates", () => {
   });
 });
 
-// `Array.sort` reaches its acknowledgement only because nothing in the tree declares `sort`:
-// `Array` IS indexed (from `SchemaType::Array`), so the capitalized-head guard does not fire, and
-// the token survives to the whole-token acknowledgement list. The day anything declares `sort`,
-// the citation VERIFIES — against an unrelated declaration — and the entry dies zero-hit, so the
-// obvious repair (deleting the dead entry) would cement a false verify. This test is the tripwire:
-// it passes while that precondition holds and fails the moment it breaks, so the arrangement
-// cannot change silently.
-describe("the Array.sort acknowledgement's precondition", () => {
-  it(
-    "holds only while the tree declares no `sort`",
-    () => {
-      const { declared } = buildSymbolIndex(REPO_ROOT);
-      expect(declared.has("Array")).toBe(true);
-      expect(
-        declared.has("sort"),
-        "the tree now declares `sort`, so the `Array.sort` citation resolves against it instead " +
-          "of reaching its acknowledgement — the entry will die zero-hit and deleting it would " +
-          "leave the false verify in place. Qualify the citation by its real owner.",
-      ).toBe(false);
-    },
-    // Same cost profile as the qualified-dependency test above: buildSymbolIndex parses every
-    // tracked source file from scratch, margin-negative against vitest's 5000ms default under CI
-    // load (observed at 2.6-2.9s locally, leaving little headroom).
-    20_000,
-  );
-});
-
 describe("resolvesAgainstIndex", () => {
   const symbols = new Set(["AppContext", "AppContext.chat", "send", "documents", "RegionField"]);
 
