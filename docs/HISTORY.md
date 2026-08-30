@@ -1666,7 +1666,9 @@ auto-resolved intermediate steps (an `Event`'s turn, a hidden combatant's turn u
 `TurnControl::OwnerMayEnd`), so a rewind can land on one of those and replay it; every such capture
 within one transition folds into the single history write that transition emits, never a second
 `Update` against the same document. Each record narrows its combatants to a `CapturedCombatant`
-(identity, placement, permissions, owner, engine, system) rather than a whole `Document`, and
+(id, name, permissions, owner, engine, system) rather than a whole `Document` — `scope`, `doc_type`
+and `parent_id` are all DERIVED from the combat by `combat::history::rebuild_document` rather than
+stored per entry, since a combatant is always a `combatant`-typed child of its own combat — and
 retention holds TWO independent bounds: `MAX_TURN_HISTORY` (200) records, and a serialized-byte
 ceiling at 90% of `MAX_SYSTEM_BYTES` — a count cap does not bound serialized size, which is the only
 thing `validate_system_size` refuses on, and that refusal would roll the whole transition back and
@@ -1674,7 +1676,13 @@ wedge the clock. Both evict oldest-first, with redo-branch truncation on a new r
 current cursor. A history push always replaces the
 document's whole `/engine` band (`whole_engine_replace`) rather than writing into `records` by
 index — `data::command::set_pointer` can only replace an in-bounds array element, never grow one, so
-an append is structurally a whole-array replace, not a per-index write.
+an append is structurally a whole-array replace, not a per-index write. A rewind refuses up front
+with `CombatError::RewindUnreachable` when the clock state the target boundary describes would not
+be a valid `CombatEngine` — checked by running the prospective post-image through
+`CombatEngine::validate` itself, so the two never restate the same rule. The reachable case is
+`rewind_restore` off with a boundary whose `turn` names a combatant since deleted and dropped from
+`/engine/order` (an exhausted `Event`): nothing restores it, so the write would leave `turn` naming
+an id absent from `order`. Distinct wording is safe there — `CombatRewind` is GM-only.
 
 Eight combat intents (`CombatStart`/`CombatPause`/`CombatEnd`/`CombatAdvance`/`CombatRewind`/
 `CombatSort`/`CombatRoll`/`CombatResource`) dispatch through `combat::handle_combat_intent`: loads
@@ -1710,8 +1718,14 @@ scene `grid.distance.per_cell`) refuses independently of enforcement mode
 (`MoveReject::BudgetUnresolvable`), since even `Warn`/`None` still need the number to decrement.
 Under `Hard` an affordable-prefix truncation applies to the turn owner's own move. A GM is exempt
 from all three (refusals and truncation) exactly as on every other gameplay gate, and so is a mover
-the resolved combatant is HIDDEN from — a refusal or truncation there would disclose both the
-combatant's existence and its exact budget. The gate commits the move in TWO separate commands
+who lacks whole-document `cap::READ` on the resolved combatant — a refusal or truncation there
+would disclose both the combatant's existence and its exact budget. That readability is the SAME
+decision document egress makes (`SceneEcs::combatant_for_token` returns the `Access`
+`SceneEcs::ctx_access` resolves through `effective_owner_via` + `resolve_access_world`), never a
+predicate re-derived from `permissions.default` alone: a per-user `permissions.users` grant on an
+otherwise-hidden combatant makes the gate apply, and a per-user override on an otherwise-readable
+one makes it stand down, each exactly as it moves what that mover receives on the wire. The gate
+commits the move in TWO separate commands
 rather than one: the token's
 `/engine/x,y` position write lands unconditionally under `WriteOrigin::Client`, and the combatant's
 resource decrement lands as a SEPARATE `WriteOrigin::CombatTransition` commit only after the
