@@ -1122,6 +1122,11 @@ export function buildCombatantDoc(worldId: string, combatId: string, engine: Com
   } else if (opts.owner) {
     doc.permissions.users = { [opts.owner]: "owner" };
   }
+  // Stored resource numbers default to owner-or-GM disclosure — the same
+  // entry ingress stamps server-side when a Create carries none, mirrored
+  // here so the optimistic view matches what egress will show. A caller
+  // widening deliberately overwrites this entry after building.
+  doc.permissions.property_overrides["/engine/resources"] = "owner_or_gm";
   return doc;
 }
 

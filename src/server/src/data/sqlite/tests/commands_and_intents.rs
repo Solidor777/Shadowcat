@@ -2970,3 +2970,112 @@ async fn update_snapshot_records_pre_image_permissions() {
         crate::data::document::DocRole::Observer
     );
 }
+
+#[tokio::test]
+async fn combatant_create_stamps_resources_owner_or_gm_unless_explicit() {
+    use crate::data::document::{PermissionSet, Visibility};
+    use crate::data::membership::PermissionContext;
+    use crate::data::permission::{effective_owner, filter_properties, resolve_access_world};
+
+    let r = repo().await;
+    let gm = r
+        .create_user("gm", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let player = r.create_user("p", None, ServerRole::User, 0).await.unwrap();
+    let w = r.create_world_owned("W", gm, 0).await.unwrap();
+    r.add_member(w.id, player, WorldRole::Player).await.unwrap();
+    let ctx = PermissionContext {
+        user_id: gm,
+        world_role: WorldRole::Gm,
+    };
+
+    let mut combat = world_doc(0xC0, w.id, serde_json::json!({}));
+    combat.doc_type = "combat".into();
+    combat.engine = Some(serde_json::json!({
+        "scene_id": Uuid::from_u128(0x5CE),
+        "active": false, "round": 0, "turn": null,
+        "turn_control": "owner_may_end",
+        "order": [],
+        "movement": { "resource": null, "interpretation": "spaces", "enforcement": "none" },
+        "effect_cleanup": true, "rewind_restore": true, "forward_restore": false,
+        "effect_lifecycle": {}
+    }));
+    r.apply_intent(
+        &ctx,
+        w.id,
+        vec![Operation::Create { doc: combat }],
+        1,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+
+    let mut stamped = world_doc(0xC1, w.id, serde_json::json!({}));
+    stamped.doc_type = "combatant".into();
+    stamped.parent_id = Some(Uuid::from_u128(0xC0));
+    stamped.engine = Some(serde_json::json!({
+        "kind": { "type": "actor", "token_id": Uuid::from_u128(0x70), "actor_id": null },
+        "initiative": null, "tiebreak": 0.0,
+        "resources": { "movement": { "current": 3.0 } }
+    }));
+    stamped.permissions = PermissionSet::default();
+    r.apply_intent(
+        &ctx,
+        w.id,
+        vec![Operation::Create { doc: stamped }],
+        2,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+    let got = r.get_document(Uuid::from_u128(0xC1)).await.unwrap().unwrap();
+    assert_eq!(
+        got.permissions.property_overrides.get("/engine/resources"),
+        Some(&Visibility::OwnerOrGm),
+        "an absent entry is stamped to trusted-only at ingress"
+    );
+
+    // Egress: a plain member sees no stored resource numbers; the machinery is
+    // the ordinary per-property redaction the stamp feeds.
+    let wd = r.world_cap_defaults(w.id).await.unwrap();
+    let player_access = resolve_access_world(
+        player,
+        WorldRole::Player,
+        &got,
+        &wd.grants_for(&got.doc_type),
+        effective_owner(&got, None),
+    );
+    let filtered = filter_properties(&got, &player_access).unwrap();
+    assert!(
+        filtered.engine.as_ref().unwrap().get("resources").is_none(),
+        "a non-owner recipient's copy carries no resource numbers"
+    );
+
+    let mut explicit = world_doc(0xC2, w.id, serde_json::json!({}));
+    explicit.doc_type = "combatant".into();
+    explicit.parent_id = Some(Uuid::from_u128(0xC0));
+    explicit.engine = Some(serde_json::json!({
+        "kind": { "type": "actor", "token_id": Uuid::from_u128(0x71), "actor_id": null },
+        "initiative": null, "tiebreak": 0.0, "resources": {}
+    }));
+    explicit
+        .permissions
+        .property_overrides
+        .insert("/engine/resources".into(), Visibility::All);
+    r.apply_intent(
+        &ctx,
+        w.id,
+        vec![Operation::Create { doc: explicit }],
+        3,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+    let got = r.get_document(Uuid::from_u128(0xC2)).await.unwrap().unwrap();
+    assert_eq!(
+        got.permissions.property_overrides.get("/engine/resources"),
+        Some(&Visibility::All),
+        "an explicit entry is respected untouched"
+    );
+}

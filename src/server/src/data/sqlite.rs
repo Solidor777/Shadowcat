@@ -3125,6 +3125,20 @@ impl Repository for SqliteRepository {
             match op {
                 Operation::Create { doc } => {
                     check_command_scope(doc, world_id)?;
+                    // A combatant's stored resource numbers derive from actor
+                    // formulas that may read hidden leaves, so their egress
+                    // defaults to the trusted tier: stamp the override when
+                    // the Create carries none. An explicit entry — any tier,
+                    // `Visibility::All` included — is the author's deliberate
+                    // widening and is left untouched, as are Updates. Stamped
+                    // BEFORE `validate_property_overrides` so the inserted
+                    // entry is validated like an authored one.
+                    if doc.doc_type == COMBATANT_DOC_TYPE {
+                        doc.permissions
+                            .property_overrides
+                            .entry("/engine/resources".to_string())
+                            .or_insert(crate::data::document::Visibility::OwnerOrGm);
+                    }
                     validation::validate_system_size(doc)?;
                     validation::validate_property_overrides(doc)?;
                     validation::validate_engine_tree(doc)?;

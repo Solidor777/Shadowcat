@@ -539,7 +539,11 @@ describe("combat document builders", () => {
     expect(visible.owner).toBe("user-1");
     expect(visible.permissions.default).toBe("observer");
     expect(visible.permissions.users).toEqual({ "user-1": "owner" });
+    // Stored resource numbers default to owner-or-GM disclosure; a GM widens
+    // deliberately by overwriting the entry after building.
+    expect(visible.permissions.property_overrides["/engine/resources"]).toBe("owner_or_gm");
     const hidden = buildCombatantDoc("world-1", "combat-1", eng, { owner: "user-1", hidden: true });
+    expect(hidden.permissions.property_overrides["/engine/resources"]).toBe("owner_or_gm");
     expect(hidden.permissions.default).toBe("none");
     // While hidden the owner is not listed either: hidden means unreadable to every non-GM.
     expect(hidden.permissions.users).toEqual({});
