@@ -217,10 +217,10 @@ pub enum FnName {
     Floor,
     /// Round toward positive infinity.
     Ceil,
-    /// Round to nearest, ties AWAY FROM ZERO (Rust's `f64::round` semantics) — differs from
-    /// `@shadowcat/formula`'s own `Round`, which is JS-native and ties toward positive infinity.
-    /// This crate never calls into `@shadowcat/formula`; the two `Round` implementations are
-    /// maintained independently and are not required to agree.
+    /// Round to nearest. The notation grammar's value domain is `i64`, so
+    /// `floor`/`ceil`/`round` are identity here; the fractional-domain tie rule
+    /// (`crate::formula` rounds ties toward +∞, matching JavaScript) does not
+    /// apply and the two implementations share no code.
     Round,
     /// Absolute value.
     Abs,

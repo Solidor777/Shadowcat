@@ -95,8 +95,12 @@ pub struct SystemDefaultsEngine {
 }
 
 impl SystemDefaultsEngine {
-    /// Numeric overlays are finite and positive where the world struct requires it.
+    /// Numeric overlays are finite and positive where the world struct requires
+    /// it, and every combat lifecycle formula parses.
     pub(crate) fn validate(&self) -> Result<(), String> {
+        if let Some(c) = &self.combat {
+            c.validate("combat")?;
+        }
         if let Some(a) = &self.animation {
             if let Some(s) = a.speed_cells_per_sec {
                 if !s.is_finite() || s <= 0.0 {

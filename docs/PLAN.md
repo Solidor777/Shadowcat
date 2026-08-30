@@ -24,13 +24,25 @@ further at design time. Numbering continues from Phase 1.
 ### M14 · Combat tracker
 - **M14a (document/permission substrate) and M14b (combat clock) are DONE** — full delivery
   notes in [`HISTORY.md`](HISTORY.md)'s M14a and M14b entries.
-- **Remaining (M14c–d):**
-  - **M14c — client seams/hooks**: `AppContext.combat`, the client-side `resolveResources` pass
-    that writes an effect's formula-resolved `Duration.remaining`/`CombatantResource.current`/`.max`
-    back to the document, and route-preview movement-budget UX over the M14b gate.
-  - **M14d — tracker module + settings editors**: the default tracker UI, the world/scene combat
-    settings editors (including the combat chain editor over `resolve_combat_rules`'s
-    engine→system-defaults→world→scene precedence), and end-to-end coverage.
+- **M14c — server authority + combat client seams**, six sub-projects in build order (design:
+  [`superpowers/specs/2026-08-30-m14c-1-server-formula-engine-design.md`](superpowers/specs/2026-08-30-m14c-1-server-formula-engine-design.md) §1):
+  - **M14c-1 — server formula engine + invariant 6** — DONE (see [`HISTORY.md`](HISTORY.md)).
+  - **M14c-2 — combat resolution server-side**: `Mirror` implemented, `Tracked` seeded to `max`,
+    text recoveries evaluated, `Duration.remaining`/lifecycle flags server-derived, egress rule for
+    resolved scalars, `Hard` route-preview clamp inside `Pathfind`.
+  - **M14c-3 — world-config authority**: `create_world` seeds every config singleton;
+    `system-defaults` read server-side from the installed system package; engine defaults are
+    the definition (client constants mirror them); client seed/upsert helpers deleted.
+  - **M14c-4 — dice references + chat channel**: reference production in the notation grammar;
+    roll frames carry an actor binding; `resolveNotationTemplate` preview-only;
+    `MessageEngine.channel` validated at ingest.
+  - **M14c-5 — templates merge server-side**: `MergePull`/`MergePush`/`MergeRevert` intents;
+    conflict set returned for human review; `Document.base` under engine-tree validation.
+  - **M14c-6 — combat client seams**: `AppContext.combat`, `CoreHooks` first entries +
+    delta-derived emission, `Warn` overage label.
+- **M14d — tracker module + settings editors**: the default tracker UI, the world/scene combat
+  settings editors (including the combat chain editor over `resolve_combat_rules`'s
+  engine→system-defaults→world→scene precedence), and end-to-end coverage.
 - Depends on: M11 dice, the M10 movement executor, M14a+M14b (done).
 - Excludes: automation of attacks/damage resolution (system-owned); audio/VFX cues (Phase 3).
 
@@ -107,8 +119,8 @@ further at design time. Numbering continues from Phase 1.
 Audio (mixer, channels, playlists, world-clock sync; then spatial + wall occlusion; transcode via `symphonia` + `opus`/`vorbis_rs`) → VFX (sprite effects, concurrent SFX) → multi-level maps + portals → 3D dice (decide the rendering context up front: reuse the PixiJS WebGL context vs a separate three.js/WebGL + physics layer) → Discord audio-ducking module (OS audio-session monitoring — PipeWire / WASAPI / CoreAudio — never the proprietary Discord Game SDK; requires a dependency / licensing review before integration).
 
 Also parked for Phase 3 from Phase 1: capability Phase 3 — opt-in **sandboxed** server-side
-validators for computed game-rule enforcement / server-side formula evaluation (its own threat
-model; never the default path).
+validators running third-party *code* (its own threat model; never the default path). Server-side
+evaluation of the engine's own grammars is not this item — it shipped in M14c-1.
 
 ## Phase 4 — Platform & scale
 **Audit-grade point-in-time replay** — a state-as-of-sequence facility: what a document, its
