@@ -51,3 +51,38 @@ fn caps_match_the_client_constants() {
     assert_eq!(MAX_PARSE_DEPTH, 32);
     assert_eq!(MAX_GRAPH_VISITS, 2048);
 }
+
+#[test]
+fn finite_passes_finite_values_and_rejects_the_rest_with_js_rendering() {
+    assert_eq!(finite(1.5), Ok(1.5));
+    assert_eq!(
+        finite(f64::INFINITY),
+        Err(FormulaError::new(
+            FormulaErrorKind::NonFinite,
+            "arithmetic result is not finite (Infinity)"
+        ))
+    );
+    assert_eq!(
+        finite(f64::NEG_INFINITY),
+        Err(FormulaError::new(
+            FormulaErrorKind::NonFinite,
+            "arithmetic result is not finite (-Infinity)"
+        ))
+    );
+    assert_eq!(
+        finite(f64::NAN),
+        Err(FormulaError::new(
+            FormulaErrorKind::NonFinite,
+            "arithmetic result is not finite (NaN)"
+        ))
+    );
+}
+
+#[test]
+fn js_number_renders_the_three_non_finite_spellings() {
+    assert_eq!(js_number(f64::INFINITY), "Infinity");
+    assert_eq!(js_number(f64::NEG_INFINITY), "-Infinity");
+    assert_eq!(js_number(f64::NAN), "NaN");
+    assert_eq!(js_number(3.0), "3");
+    assert_eq!(js_number(0.5), "0.5");
+}

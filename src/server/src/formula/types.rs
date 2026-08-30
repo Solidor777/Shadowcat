@@ -69,5 +69,35 @@ impl FormulaError {
 /// A finite number, or a `FormulaError`. INVARIANT: an `Ok` is always finite.
 pub type FormulaValue = Result<f64, FormulaError>;
 
+/// Renders a number the way JavaScript's template interpolation does for the
+/// spellings this library ever emits: `Infinity`, `-Infinity`, `NaN`; a
+/// finite value uses Rust's shortest round-trip form, which agrees with JS for
+/// every value the library interpolates (only non-finite results reach a
+/// `detail`).
+pub(crate) fn js_number(n: f64) -> String {
+    if n.is_nan() {
+        "NaN".to_string()
+    } else if n == f64::INFINITY {
+        "Infinity".to_string()
+    } else if n == f64::NEG_INFINITY {
+        "-Infinity".to_string()
+    } else {
+        format!("{n}")
+    }
+}
+
+/// Gates an arithmetic result: a finite value passes through; anything else
+/// becomes a `NonFinite` error, so no infinity or NaN leaves the library.
+pub(crate) fn finite(n: f64) -> FormulaValue {
+    if n.is_finite() {
+        Ok(n)
+    } else {
+        Err(FormulaError::new(
+            FormulaErrorKind::NonFinite,
+            format!("arithmetic result is not finite ({})", js_number(n)),
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests;

@@ -12,6 +12,8 @@
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
+/// Structural recursion over a parsed expression.
+pub mod evaluate;
 /// Source text → tokens.
 pub mod lexer;
 /// Tokens → `Expr`.
@@ -19,6 +21,7 @@ pub mod parser;
 /// Failure values, the value type and the DoS caps.
 pub mod types;
 
+pub use evaluate::{evaluate, Resolve};
 pub use parser::{parse, BinOp, Expr, FnName};
 pub use types::{
     FormulaError, FormulaErrorKind, FormulaValue, MAX_AST_NODES, MAX_FORMULA_LENGTH,
