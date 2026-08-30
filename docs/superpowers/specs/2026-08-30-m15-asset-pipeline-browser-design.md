@@ -33,7 +33,7 @@ upload sessions; per-user asset areas; per-world retain policy.
 - `derived_tags: Vec<String>` — never client-writable; recomputed on every commit, rename, move,
   and reconvert. Sources: kind/format (`image`, `webp`, `svg`, `gif-animated`, later `audio`)
   from `content_type`; folder segments (every ancestor folder name); dimension classes
-  (`square`, `large` above a fixed pixel threshold, `transparent` when the source has alpha);
+  (`square` when width == height, `large` when either axis ≥ 2048px, `transparent` when the source has alpha);
   provenance (`uploaded`, `link-preview`, later `module:<id>`).
 - `width`, `height: Option<u32>`, `has_alpha: bool`, `animated: bool`.
 - `original_content_type: String`, `original_byte_size: i64` (what arrived) vs
@@ -70,7 +70,7 @@ served bytes. `Config.retain_originals: bool`, default `true`.
   it unchanged.
 - Chunked:
   - `POST /api/assets/uploads` `{name, content_type, byte_size, folder_id?, tags?}` →
-    `{upload_id, chunk_size}`.
+    `{upload_id, chunk_size}` (chunk size fixed at 8 MiB; the single-shot route covers files ≤ 8 MiB).
   - `PUT /api/assets/uploads/{id}/{offset}` appends one chunk; out-of-order or overlapping
     offsets are rejected so a retried lost chunk is idempotent.
   - `POST /api/assets/uploads/{id}/complete` finalizes; `DELETE /api/assets/uploads/{id}` aborts.
@@ -168,7 +168,7 @@ the chosen uuid via `AppContext.assets`.
 
 ## Re-review after M14c / M14d
 
-M14c and M14d are in flight while this is designed. Before each M15 plan is written, re-read:
+M14c and M14d are in flight while this is designed. Items 1–3 gate **M15b only** (M15a touches neither `AppContext` nor any panel module); re-read before the M15b plan is written:
 
 1. **`AppContext`** — M14c adds `AppContext.combat`; M15b adds `AppContext.assets`. Whichever
    lands second re-reads the other's shape before wiring.
