@@ -266,7 +266,16 @@ pub async fn upload(
     .await;
 
     match outcome {
-        Ok(asset) => Ok(Json(asset)),
+        Ok(asset) => {
+            if let Some(room) = state.ws.rooms.get(world) {
+                room.broadcast_aux(ServerMsg::AssetChanged {
+                    uuid: asset.id,
+                    op: AssetOp::Created,
+                    version: asset.version,
+                });
+            }
+            Ok(Json(asset))
+        }
         Err(e) => {
             state.upload_rate.refund(user.id, now);
             Err(e)
@@ -495,34 +504,22 @@ pub(super) async fn commit_replacement(
         .map(|a| Asset { version, ..a })
 }
 
-/// `DELETE /api/assets/{uuid}` — GM-gated (`require_gm`; no owner exception).
-/// Undo-exempt.
-///
-/// `existing` (the pre-delete read) backs only `require_gm`'s authorization and the initial
-/// `NotFound` check: `write_barrier`'s read side excludes a backup's write side, not a racing
-/// `replace` on the same id, so `existing.version` can be stale by the time the row is actually
-/// removed below. Every post-delete use (file path, broadcast) instead reads `deleted` — the row
-/// `delete_asset`'s `DELETE ... RETURNING *` actually removed — so the broadcast always carries
-/// the version of the row that was truly deleted, never an earlier snapshot.
-pub async fn delete(
-    State(state): State<AppState>,
-    user: AuthUser,
-    Path(id): Path<uuid::Uuid>,
-) -> Result<StatusCode, AppError> {
-    let existing = state.repo.get_asset(id).await?.ok_or(AppError::NotFound)?;
-    require_gm(&state, &user, existing.world_id).await?;
-
-    // Read-side of the backup quiesce barrier, held across the row-removal +
-    // unlink pair below — without it a backup could capture the row gone but
-    // the file still present (or vice versa), and in the row-gone/file-still-
-    // present ordering the backup's manifest would reference a file the DB no
-    // longer knows about, worse than replace's stale-bytes race.
+/// Remove asset `id`'s row, its canonical + sibling files, and broadcast
+/// `Deleted` — the single delete tail shared by the `DELETE /api/assets/{uuid}`
+/// route and the folder purge. Holds the read side of the backup quiesce
+/// barrier across the row-removal + unlink pair: without it a backup could
+/// capture the row gone but the file still present (or vice versa), and in
+/// the row-gone/file-still-present ordering the backup's manifest would
+/// reference a file the DB no longer knows about. Returns `false` when a
+/// racing delete already removed the row (nothing left to unlink or
+/// broadcast — that delete already did both). Authorization is the caller's.
+pub(super) async fn delete_asset_files_and_row(
+    state: &AppState,
+    id: uuid::Uuid,
+) -> Result<bool, AppError> {
     let _read_permit = state.write_barrier.read().await;
     let Some(deleted) = state.repo.delete_asset(id).await? else {
-        // A racing delete on the same id already removed the row (and already
-        // broadcast the correct notice) between the existence check above and
-        // this DELETE — nothing left here to unlink or broadcast.
-        return Ok(StatusCode::NO_CONTENT);
+        return Ok(false);
     };
     let path = state.config.assets_path().join(&deleted.storage_key);
     if let Err(e) = tokio::fs::remove_file(&path).await {
@@ -545,6 +542,25 @@ pub async fn delete(
             version: deleted.version,
         });
     }
+    Ok(true)
+}
+
+/// `DELETE /api/assets/{uuid}` — GM-gated (`require_gm`; no owner exception).
+/// Undo-exempt.
+///
+/// `existing` (the pre-delete read) backs only `require_gm`'s authorization and the initial
+/// `NotFound` check: `write_barrier`'s read side excludes a backup's write side, not a racing
+/// `replace` on the same id, so `existing.version` can be stale by the time the row is actually
+/// removed — `delete_asset_files_and_row` reads the row `DELETE ... RETURNING *` actually removed
+/// for every post-delete use, so the broadcast always carries the truly deleted version.
+pub async fn delete(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<uuid::Uuid>,
+) -> Result<StatusCode, AppError> {
+    let existing = state.repo.get_asset(id).await?.ok_or(AppError::NotFound)?;
+    require_gm(&state, &user, existing.world_id).await?;
+    delete_asset_files_and_row(&state, id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

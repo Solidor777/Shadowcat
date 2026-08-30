@@ -2821,6 +2821,12 @@ impl Repository for SqliteRepository {
                     doc.updated_at = sequenced.ts;
                     Self::upsert_document(&mut tx, &doc, seq).await?;
                     post_images.insert(*doc_id, doc.clone());
+                    // A folder's name is a derived tag on every asset beneath
+                    // it; any Update to an `asset_folder` (rename being the
+                    // one that matters) recomputes that subtree in this tx.
+                    if doc.doc_type == crate::data::engine::ASSET_FOLDER_DOC_TYPE {
+                        Self::refresh_derived_tags_for_folder_subtree(&mut tx, doc.id).await?;
+                    }
 
                     // Re-derive each `/engine`(/*) `FieldChange.new` from
                     // the SAME validated post-image so the returned
@@ -3668,6 +3674,12 @@ impl Repository for SqliteRepository {
                     doc.updated_at = ts;
                     Self::upsert_document(&mut tx, &doc, seq).await?;
                     post_images.insert(*doc_id, doc.clone());
+                    // A folder's name is a derived tag on every asset beneath
+                    // it; any Update to an `asset_folder` (rename being the
+                    // one that matters) recomputes that subtree in this tx.
+                    if doc.doc_type == crate::data::engine::ASSET_FOLDER_DOC_TYPE {
+                        Self::refresh_derived_tags_for_folder_subtree(&mut tx, doc.id).await?;
+                    }
 
                     // `validate_engine_tree` above normalizes `doc.engine` (a
                     // JSON-number literal coerced to its typed f64

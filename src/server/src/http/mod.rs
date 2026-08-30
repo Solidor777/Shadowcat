@@ -196,11 +196,21 @@ pub async fn router(state: AppState) -> Router {
         )
         .route(
             "/api/assets/{uuid}",
-            get(assets::serve).delete(assets::delete),
+            get(assets::serve)
+                .delete(assets::delete)
+                .patch(assets::mutate::patch),
         )
         .route(
             "/api/assets/{uuid}/replace",
             post(assets::replace).layer(DefaultBodyLimit::disable()),
+        )
+        .route(
+            "/api/worlds/{world}/assets/bulk",
+            post(assets::mutate::bulk),
+        )
+        .route(
+            "/api/asset-folders/{id}",
+            delete(assets::mutate::delete_folder),
         )
         .route("/api/assets/{uuid}/original", get(assets::mutate::original))
         .route(

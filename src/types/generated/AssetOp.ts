@@ -3,4 +3,4 @@
 /**
  * The kind of asset mutation an `AssetChanged` frame reports.
  */
-export type AssetOp = "replaced" | "deleted";
+export type AssetOp = "created" | "replaced" | "moved" | "deleted";

@@ -71,7 +71,7 @@ Every `ServerMsg` variant:
 | `search_error` | Search request failed |
 | `scene_derived` | One update on a subscribed scene channel (`channel`, `computed_at_seq`, opaque payload) |
 | `scene_error` | Scene subscription failed |
-| `asset_changed` | Out-of-band notice: an asset was `replaced` or `deleted` (cache-bust signal) |
+| `asset_changed` | Out-of-band notice: an asset was `created`, `replaced` (cache-bust signal), `moved` (name/folder/tags; version unchanged) or `deleted` |
 | `scene_ping` | A user's transient location ping on a scene (includes your own echo) |
 | `path_result` | Pathfinder answer: waypointed `path`, `cost`, `arrested` flag ([`PathResult`](/api/ts/interfaces/_shadowcat_core.PathResult.html)) |
 | `path_error` | Pathfind request failed |

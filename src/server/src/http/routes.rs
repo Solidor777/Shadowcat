@@ -467,7 +467,7 @@ pub async fn delete_user(
 
 /// Run `ops` through the one authoritative write path for `world`, broadcasting
 /// to live WS subscribers, and return the author's filtered view of the command.
-async fn write_ops(
+pub(crate) async fn write_ops(
     state: &AppState,
     user: &AuthUser,
     world: Uuid,

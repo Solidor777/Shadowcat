@@ -137,6 +137,170 @@ impl SqliteRepository {
         Ok(names)
     }
 
+    /// Ids of every asset filed in `folder` or any folder beneath it.
+    pub(crate) async fn assets_in_folder_subtree(
+        tx: &mut sqlx::SqliteConnection,
+        folder: Uuid,
+    ) -> Result<Vec<Uuid>, DataError> {
+        let rows = sqlx::query(
+            "WITH RECURSIVE sub(id) AS (SELECT ? UNION ALL SELECT d.id FROM documents d \
+             JOIN sub ON d.parent_id = sub.id WHERE d.doc_type = 'asset_folder') \
+             SELECT a.id AS id FROM assets a WHERE a.folder_id IN (SELECT id FROM sub) \
+             ORDER BY a.created_at, a.id",
+        )
+        .bind(folder.to_string())
+        .fetch_all(&mut *tx)
+        .await?;
+        rows.iter()
+            .map(|r| {
+                Uuid::parse_str(r.get::<String, _>("id").as_str())
+                    .map_err(|e| DataError::OpFailed(e.to_string()))
+            })
+            .collect()
+    }
+
+    /// `assets_in_folder_subtree` on a fresh connection.
+    pub async fn assets_in_folder_subtree_of(&self, folder: Uuid) -> Result<Vec<Uuid>, DataError> {
+        let mut conn = self.pool.acquire().await?;
+        Self::assets_in_folder_subtree(&mut conn, folder).await
+    }
+
+    /// Recompute the derived tags of every asset under `folder` (the folder
+    /// itself included) inside `tx` — the folder-segment tags name every
+    /// ancestor, so a rename anywhere above an asset changes its set.
+    pub(crate) async fn refresh_derived_tags_for_folder_subtree(
+        tx: &mut sqlx::SqliteConnection,
+        folder: Uuid,
+    ) -> Result<(), DataError> {
+        for id in Self::assets_in_folder_subtree(&mut *tx, folder).await? {
+            Self::refresh_derived_tags_tx(&mut *tx, id).await?;
+        }
+        Ok(())
+    }
+
+    /// GM placement edit of one asset, in one transaction: `name` and
+    /// `folder` (`Some(None)` = move to root) when given, the explicit tag
+    /// set replaced by `tags` when given, then the derived set refreshed.
+    /// `None` when the asset does not exist.
+    pub async fn update_asset_placement(
+        &self,
+        id: Uuid,
+        name: Option<&str>,
+        folder: Option<Option<Uuid>>,
+        tags: Option<&[String]>,
+    ) -> Result<Option<Asset>, DataError> {
+        let mut tx = self.pool.begin().await?;
+        let exists = sqlx::query("SELECT 1 FROM assets WHERE id = ?")
+            .bind(id.to_string())
+            .fetch_optional(&mut *tx)
+            .await?
+            .is_some();
+        if !exists {
+            return Ok(None);
+        }
+        if let Some(name) = name {
+            sqlx::query("UPDATE assets SET original_name = ? WHERE id = ?")
+                .bind(name)
+                .bind(id.to_string())
+                .execute(&mut *tx)
+                .await?;
+        }
+        if let Some(folder) = folder {
+            sqlx::query("UPDATE assets SET folder_id = ? WHERE id = ?")
+                .bind(folder.map(|f| f.to_string()))
+                .bind(id.to_string())
+                .execute(&mut *tx)
+                .await?;
+        }
+        if let Some(tags) = tags {
+            sqlx::query("DELETE FROM asset_tags WHERE asset_id = ? AND derived = 0")
+                .bind(id.to_string())
+                .execute(&mut *tx)
+                .await?;
+            for tag in tags {
+                Self::set_explicit_tag(&mut tx, id, tag).await?;
+            }
+        }
+        Self::refresh_derived_tags_tx(&mut tx, id).await?;
+        tx.commit().await?;
+        self.get_asset(id).await
+    }
+
+    /// Record `tag` as explicit on `id`; a derived row of the same text is
+    /// promoted (the GM's intent outranks the derivation).
+    async fn set_explicit_tag(
+        tx: &mut sqlx::SqliteConnection,
+        id: Uuid,
+        tag: &str,
+    ) -> Result<(), DataError> {
+        sqlx::query(
+            "INSERT INTO asset_tags (asset_id, tag, derived) VALUES (?, ?, 0) \
+             ON CONFLICT(asset_id, tag) DO UPDATE SET derived = 0",
+        )
+        .bind(id.to_string())
+        .bind(tag)
+        .execute(&mut *tx)
+        .await?;
+        Ok(())
+    }
+
+    /// GM bulk placement edit, one transaction: every id must belong to
+    /// `world` (else `NotFound`, nothing applied); `folder` (`Some(None)` =
+    /// root) moves them all; `add_tags` are recorded as explicit;
+    /// `remove_tags` drops explicit tags only (a derived tag cannot be
+    /// removed — it would come straight back on the next refresh). Returns
+    /// the updated assets in `ids` order.
+    pub async fn bulk_update_assets(
+        &self,
+        world: Uuid,
+        ids: &[Uuid],
+        folder: Option<Option<Uuid>>,
+        add_tags: &[String],
+        remove_tags: &[String],
+    ) -> Result<Vec<Asset>, DataError> {
+        let mut tx = self.pool.begin().await?;
+        for id in ids {
+            let owner: Option<String> = sqlx::query("SELECT world_id FROM assets WHERE id = ?")
+                .bind(id.to_string())
+                .fetch_optional(&mut *tx)
+                .await?
+                .map(|r| r.get("world_id"));
+            if owner.as_deref() != Some(world.to_string().as_str()) {
+                return Err(DataError::NotFound);
+            }
+        }
+        for id in ids {
+            if let Some(folder) = folder {
+                sqlx::query("UPDATE assets SET folder_id = ? WHERE id = ?")
+                    .bind(folder.map(|f| f.to_string()))
+                    .bind(id.to_string())
+                    .execute(&mut *tx)
+                    .await?;
+            }
+            for tag in add_tags {
+                Self::set_explicit_tag(&mut tx, *id, tag).await?;
+            }
+            for tag in remove_tags {
+                sqlx::query(
+                    "DELETE FROM asset_tags WHERE asset_id = ? AND tag = ? AND derived = 0",
+                )
+                .bind(id.to_string())
+                .bind(tag)
+                .execute(&mut *tx)
+                .await?;
+            }
+            Self::refresh_derived_tags_tx(&mut tx, *id).await?;
+        }
+        tx.commit().await?;
+        let mut out = Vec::with_capacity(ids.len());
+        for id in ids {
+            if let Some(a) = self.get_asset(*id).await? {
+                out.push(a);
+            }
+        }
+        Ok(out)
+    }
+
     /// `refresh_derived_tags_tx` in its own transaction.
     pub async fn refresh_derived_tags(&self, id: Uuid) -> Result<(), DataError> {
         let mut tx = self.pool.begin().await?;

@@ -176,10 +176,11 @@ op: AssetOp,
 /**
  * The asset's authoritative version at the time of the mutation: the
  * bumped version for `Replaced` (the value a receiver's cache-bust
- * key must converge to), or the version the row held immediately
- * before removal for `Deleted` — a real ordering token in both
- * cases, letting a receiver compare it against any listing snapshot
- * straddling the mutation.
+ * key must converge to), the version the row held immediately
+ * before removal for `Deleted`, `1` for `Created`, and the
+ * unchanged current version for `Moved` — a real ordering token in
+ * every case, letting a receiver compare it against any listing
+ * snapshot straddling the mutation.
  */
 version: bigint, } | { "type": "scene_ping", 
 /**

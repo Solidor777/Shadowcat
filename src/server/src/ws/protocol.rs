@@ -357,8 +357,13 @@ pub enum RejectReason {
 #[ts(export, export_to = "../../types/generated/")]
 #[serde(rename_all = "snake_case")]
 pub enum AssetOp {
+    /// A new asset row exists (version 1); listings are stale, no URL changes.
+    Created,
     /// The asset's bytes were replaced (version bumped; re-fetch).
     Replaced,
+    /// Name, folder or tags changed (version unchanged); listings are stale,
+    /// no URL changes.
+    Moved,
     /// The asset row was removed.
     Deleted,
 }
@@ -538,10 +543,11 @@ pub enum ServerMsg {
         op: AssetOp,
         /// The asset's authoritative version at the time of the mutation: the
         /// bumped version for `Replaced` (the value a receiver's cache-bust
-        /// key must converge to), or the version the row held immediately
-        /// before removal for `Deleted` — a real ordering token in both
-        /// cases, letting a receiver compare it against any listing snapshot
-        /// straddling the mutation.
+        /// key must converge to), the version the row held immediately
+        /// before removal for `Deleted`, `1` for `Created`, and the
+        /// unchanged current version for `Moved` — a real ordering token in
+        /// every case, letting a receiver compare it against any listing
+        /// snapshot straddling the mutation.
         version: i64,
     },
     /// A relayed location ping: the sender's transient marker at scene coords.

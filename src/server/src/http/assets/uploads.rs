@@ -522,7 +522,16 @@ pub async fn complete_session(
     .await;
 
     match outcome {
-        Ok(asset) => Ok(Json(asset)),
+        Ok(asset) => {
+            if let Some(room) = state.ws.rooms.get(asset.world_id) {
+                room.broadcast_aux(crate::ws::protocol::ServerMsg::AssetChanged {
+                    uuid: asset.id,
+                    op: crate::ws::protocol::AssetOp::Created,
+                    version: asset.version,
+                });
+            }
+            Ok(Json(asset))
+        }
         Err(e) => {
             // The session is gone either way; the slot goes back because no
             // asset was produced. Files are already cleaned by the failing step.
