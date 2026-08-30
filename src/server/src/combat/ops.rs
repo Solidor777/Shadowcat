@@ -7,9 +7,8 @@
 #![deny(clippy::missing_docs_in_private_items)]
 
 use serde_json::Value;
-use uuid::Uuid;
 
-use crate::data::command::{FieldChange, Operation};
+use crate::data::command::FieldChange;
 use crate::data::document::Document;
 use crate::data::DataError;
 
@@ -33,15 +32,14 @@ pub fn set_engine(doc: &Document, pointer: &str, new: Value) -> Result<FieldChan
     })
 }
 
-/// Wraps `changes` into one `Update` operation against `doc_id`.
-pub fn update(doc_id: Uuid, changes: Vec<FieldChange>) -> Operation {
-    Operation::Update { doc_id, changes }
-}
-
 /// A `FieldChange` replacing a document's WHOLE `/engine` band, pre-imaged
-/// against the document's current engine — used by history restore (a later
-/// task) to snap an entire engine body back to a `TurnRecord`'s stored copy
-/// in one write instead of per-field diffing.
+/// against the document's current engine — one write instead of per-field
+/// diffing. Callers: `history::append_record`, `history::fast_forward` and
+/// `transition::rewind`, each rewriting a `combat-history` document's
+/// `records`/`cursor` wholesale. `history::restore` does NOT use it: it
+/// writes a combatant's `/engine` through `set_engine` against the LIVE
+/// document, since the value it writes comes from a record rather than from
+/// the document's own current state.
 pub fn whole_engine_replace(doc: &Document, new_engine: Value) -> FieldChange {
     FieldChange {
         path: "/engine".to_string(),
