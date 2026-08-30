@@ -105,8 +105,9 @@ Each item is *designed for* now (the seam exists) and *built* only when its trig
   engine ships a hardcoded fallback for every world-configurable setting (scene defaults,
   pathfinding, animation, combat); a `system-defaults` singleton document lets the world's active
   game-system module (the `SYSTEM_CONTRACT` winner, via its declared `Module.systemDefaults`,
-  reconciled into the world by the server — the world-config authority sub-project of M14c)
-  override those fallbacks per world; a
+  upserted by the GM's client on join via `systemDefaultsUpsertOps` — a client-authority
+  mechanism the world-config authority sub-project of M14c moves to the server) override those
+  fallbacks per world; a
   `world-settings` document lets the GM override the same keys further; and a per-scene override
   is the narrowest and wins last. `resolve_combat_rules` (server) is the definition of this
   precedence; `resolveSettingProvenance` (client) is a display mirror for the settings UI and is

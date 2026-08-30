@@ -95,7 +95,7 @@ This is the resolver M14c-2 hands the combat transition for a combatant's actor 
 - `Number(n)`: finite (unchanged).
 - `Text(t)`: `formula::parse(&t)` must succeed. A `parse` error rejects with
   `"{at}: {detail}"`; a `cap` error likewise. The empty-string check is subsumed (the parser
-  reports "expected expression at position 0"). `MAX_FORMULA_CHARS` is deleted; the length cap is
+  reports "unexpected end of formula"). `MAX_FORMULA_CHARS` is deleted; the length cap is
   the parser's own `MAX_FORMULA_LENGTH`.
 
 `ResourceRegistryEngine::validate` and `EffectEngine::validate` already route every `Formula`
