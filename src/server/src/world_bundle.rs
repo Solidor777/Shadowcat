@@ -148,6 +148,17 @@ pub fn write_bundle<W: std::io::Write>(
             .join(asset.id.to_string());
         let mut file = std::fs::File::open(&src)?;
         builder.append_file(format!("assets/{}", asset.id), &mut file)?;
+        // Siblings are optional per asset (a pass-through upload has no
+        // `.orig`; an undecodable one has no derivatives): only those present
+        // travel, under `assets/<id><suffix>`.
+        for (suffix, path) in crate::data::asset::process::SIBLING_SUFFIXES
+            .iter()
+            .zip(crate::data::asset::process::sibling_paths(&src))
+        {
+            if let Ok(mut sibling) = std::fs::File::open(&path) {
+                builder.append_file(format!("assets/{}{suffix}", asset.id), &mut sibling)?;
+            }
+        }
     }
 
     builder.into_inner().map_err(WorldBundleError::Io)
@@ -212,6 +223,9 @@ pub fn read_bundle(
     // file (never referenced by any `staged_assets` entry, so never cleaned
     // up on the success path either).
     let mut staged_ids: std::collections::HashSet<uuid::Uuid> = std::collections::HashSet::new();
+    let mut staged_siblings: Vec<crate::data::world_bundle::StagedSibling> = Vec::new();
+    let mut staged_sibling_keys: std::collections::HashSet<(uuid::Uuid, String)> =
+        std::collections::HashSet::new();
 
     // Runs the per-entry loop behind ONE fallible closure so every early
     // return inside it — not just the duplicate-asset-id rejection, but also
@@ -224,10 +238,39 @@ pub fn read_bundle(
         for entry in entries {
             let mut entry = entry?;
             let path = entry.path()?.to_string_lossy().replace('\\', "/");
-            if let Some(id_str) = path.strip_prefix("assets/") {
+            if let Some(name) = path.strip_prefix("assets/") {
+                // `<uuid>` is the canonical; `<uuid><suffix>` (suffix from
+                // `SIBLING_SUFFIXES`) is a sibling. A uuid contains no `.`,
+                // so the first dot splits the two.
+                let (id_str, suffix) = match name.split_once('.') {
+                    Some((id_str, rest)) => (id_str, Some(format!(".{rest}"))),
+                    None => (name, None),
+                };
                 let id = uuid::Uuid::parse_str(id_str).map_err(|_| {
-                    WorldBundleError::Malformed(format!("non-UUID asset entry name: {id_str}"))
+                    WorldBundleError::Malformed(format!("non-UUID asset entry name: {name}"))
                 })?;
+                if let Some(suffix) = suffix {
+                    if !crate::data::asset::process::SIBLING_SUFFIXES.contains(&suffix.as_str()) {
+                        return Err(WorldBundleError::Malformed(format!(
+                            "unknown asset sibling suffix: {name}"
+                        )));
+                    }
+                    if !staged_sibling_keys.insert((id, suffix.clone())) {
+                        return Err(WorldBundleError::Malformed(format!(
+                            "duplicate asset sibling entry in bundle: {name}"
+                        )));
+                    }
+                    let staged = world_asset_dir
+                        .join(format!("{id}{suffix}.{}.import-tmp", uuid::Uuid::new_v4()));
+                    let mut out = std::fs::File::create(&staged)?;
+                    std::io::copy(&mut entry, &mut out)?;
+                    staged_siblings.push(crate::data::world_bundle::StagedSibling {
+                        asset_id: id,
+                        suffix,
+                        staged,
+                    });
+                    continue;
+                }
                 if !staged_ids.insert(id) {
                     return Err(WorldBundleError::Malformed(format!(
                         "duplicate asset entry in bundle: {id}"
@@ -263,6 +306,9 @@ pub fn read_bundle(
     if let Err(e) = loop_result {
         for (_, staged) in &staged_assets {
             let _ = std::fs::remove_file(staged);
+        }
+        for sibling in &staged_siblings {
+            let _ = std::fs::remove_file(&sibling.staged);
         }
         return Err(e);
     }
@@ -325,6 +371,7 @@ pub fn read_bundle(
         fog,
         settings,
         staged_assets,
+        staged_siblings,
     })
 }
 

@@ -561,7 +561,7 @@ impl SqliteRepository {
 
     /// Fill `tags`/`derived_tags` on every asset in `assets` with one query
     /// per 500 ids.
-    async fn fill_tags(&self, assets: &mut [Asset]) -> Result<(), DataError> {
+    pub(super) async fn fill_tags(&self, assets: &mut [Asset]) -> Result<(), DataError> {
         for chunk in assets.chunks_mut(500) {
             let mut qb = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
                 "SELECT asset_id, tag, derived FROM asset_tags WHERE asset_id IN (",

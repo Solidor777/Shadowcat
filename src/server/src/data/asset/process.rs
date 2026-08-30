@@ -23,6 +23,9 @@ const DERIVATIVE_QUALITY: f32 = 80.0;
 pub const WEBP_CONTENT_TYPE: &str = "image/webp";
 /// File-name suffix of the retained original beside the canonical.
 const ORIGINAL_SUFFIX: &str = ".orig";
+/// Every suffix a sibling artifact may carry, in `sibling_paths` order. The
+/// world bundle accepts exactly this set under `assets/<id><suffix>`.
+pub const SIBLING_SUFFIXES: [&str; 3] = [ORIGINAL_SUFFIX, ".thumb.webp", ".preview.webp"];
 
 /// A derivative size class.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,11 +77,7 @@ pub fn original_path(canonical: &Path) -> PathBuf {
 /// the two derivatives. The single statement of the sibling set — commit,
 /// replace, delete and export all iterate this rather than re-spelling it.
 pub fn sibling_paths(canonical: &Path) -> [PathBuf; 3] {
-    [
-        original_path(canonical),
-        derivative_path(canonical, Variant::Thumb),
-        derivative_path(canonical, Variant::Preview),
-    ]
+    SIBLING_SUFFIXES.map(|suffix| with_suffix(canonical, suffix))
 }
 
 /// What `process_staged` decided about one upload.

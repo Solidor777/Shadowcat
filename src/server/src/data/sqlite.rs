@@ -946,27 +946,32 @@ impl SqliteRepository {
         }
 
         let asset_rows = sqlx::query(
-            "SELECT assets.id AS id, assets.original_name AS original_name, \
-             assets.content_type AS content_type, assets.byte_size AS byte_size, \
-             assets.created_at AS created_at, assets.version AS version, \
-             users.username AS created_by_username \
+            "SELECT assets.*, users.username AS created_by_username \
              FROM assets LEFT JOIN users ON users.id = assets.created_by \
              WHERE assets.world_id = ? ORDER BY assets.id",
         )
         .bind(world.to_string())
         .fetch_all(&self.pool)
         .await?;
+        let mut full: Vec<crate::data::asset::Asset> = asset_rows
+            .iter()
+            .map(Self::asset_from_row)
+            .collect::<Result<_, _>>()?;
+        self.fill_tags(&mut full).await?;
         let mut assets = Vec::with_capacity(asset_rows.len());
-        for r in asset_rows {
+        for (r, a) in asset_rows.iter().zip(full) {
             assets.push(ExportedAssetRow {
-                id: Uuid::parse_str(r.get::<String, _>("id").as_str())
-                    .map_err(|e| DataError::OpFailed(e.to_string()))?,
-                original_name: r.get("original_name"),
-                content_type: r.get("content_type"),
-                byte_size: r.get("byte_size"),
+                id: a.id,
+                original_name: a.original_name,
+                content_type: a.content_type,
+                byte_size: a.byte_size,
                 created_by_username: r.get::<Option<String>, _>("created_by_username"),
-                created_at: r.get("created_at"),
-                version: r.get("version"),
+                created_at: a.created_at,
+                version: a.version,
+                folder_id: a.folder_id,
+                tags: a.tags,
+                derived_tags: a.derived_tags,
+                meta: a.meta,
             });
         }
 
@@ -1294,11 +1299,22 @@ impl SqliteRepository {
             let created_by =
                 Self::resolve_username_tx(&mut tx, row.created_by_username.as_deref()).await?;
             let storage_key = format!("{world}/{}", row.id);
+            // `original_retained` is only true if the bundle actually carried
+            // the `.orig` sibling for this asset.
+            let has_orig = data
+                .staged_siblings
+                .iter()
+                .any(|s| s.asset_id == row.id && s.suffix == ".orig");
+            let meta = crate::data::asset::AssetMeta {
+                original_retained: row.meta.original_retained && has_orig,
+                ..row.meta.clone()
+            };
             sqlx::query(
                 "INSERT INTO assets \
                  (id, world_id, storage_key, original_name, content_type, byte_size, created_by, \
-                  created_at, version) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                  created_at, version, folder_id, width, height, has_alpha, animated, \
+                  original_content_type, original_byte_size, original_retained, conversion_note) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )
             .bind(row.id.to_string())
             .bind(world.to_string())
@@ -1309,8 +1325,32 @@ impl SqliteRepository {
             .bind(created_by.map(|u| u.to_string()))
             .bind(row.created_at)
             .bind(row.version)
+            .bind(row.folder_id.map(|f| f.to_string()))
+            .bind(meta.width.map(i64::from))
+            .bind(meta.height.map(i64::from))
+            .bind(i64::from(meta.has_alpha))
+            .bind(i64::from(meta.animated))
+            .bind(&meta.original_content_type)
+            .bind(meta.original_byte_size)
+            .bind(i64::from(meta.original_retained))
+            .bind(&meta.conversion_note)
             .execute(&mut *tx)
             .await?;
+            for (tag, derived) in row
+                .tags
+                .iter()
+                .map(|t| (t, 0_i64))
+                .chain(row.derived_tags.iter().map(|t| (t, 1_i64)))
+            {
+                sqlx::query(
+                    "INSERT OR IGNORE INTO asset_tags (asset_id, tag, derived) VALUES (?, ?, ?)",
+                )
+                .bind(row.id.to_string())
+                .bind(tag)
+                .bind(derived)
+                .execute(&mut *tx)
+                .await?;
+            }
         }
 
         let mut skipped_fog = 0usize;
@@ -1348,21 +1388,33 @@ impl SqliteRepository {
         // (the early `?` return drops `tx` unrolled-back), and best-effort
         // removes every staged/finalized file so a rolled-back import leaves
         // no orphan bytes behind.
-        let mut finalized: Vec<std::path::PathBuf> = Vec::with_capacity(data.staged_assets.len());
-        for (id, staged) in &data.staged_assets {
+        // Canonicals and siblings finalize through one list: each staged
+        // file renames to `<id><suffix>` ("" for the canonical) in place.
+        let moves: Vec<(String, &std::path::PathBuf)> = data
+            .staged_assets
+            .iter()
+            .map(|(id, staged)| (id.to_string(), staged))
+            .chain(
+                data.staged_siblings
+                    .iter()
+                    .map(|s| (format!("{}{}", s.asset_id, s.suffix), &s.staged)),
+            )
+            .collect();
+        let mut finalized: Vec<std::path::PathBuf> = Vec::with_capacity(moves.len());
+        for (name, staged) in &moves {
             let dest = staged
                 .parent()
                 .expect("staged asset path always has a parent directory")
-                .join(id.to_string());
+                .join(name);
             if let Err(e) = tokio::fs::rename(staged, &dest).await {
                 for done in &finalized {
                     let _ = tokio::fs::remove_file(done).await;
                 }
-                for (_, remaining) in &data.staged_assets {
+                for (_, remaining) in &moves {
                     let _ = tokio::fs::remove_file(remaining).await;
                 }
                 return Err(DataError::OpFailed(format!(
-                    "failed to finalize imported asset {id}: {e}"
+                    "failed to finalize imported asset file {name}: {e}"
                 )));
             }
             finalized.push(dest);

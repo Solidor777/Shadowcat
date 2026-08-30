@@ -98,6 +98,10 @@ fn write_bundle_streams_asset_bytes_from_disk() {
             created_by_username: None,
             created_at: 0,
             version: 1,
+            folder_id: None,
+            tags: vec![],
+            derived_tags: vec![],
+            meta: crate::data::asset::AssetMeta::unprocessed("image/png", 7),
         });
     data.manifest.row_counts.insert("assets".to_string(), 1);
 
@@ -125,6 +129,10 @@ fn write_bundle_missing_asset_file_errors() {
             created_by_username: None,
             created_at: 0,
             version: 1,
+            folder_id: None,
+            tags: vec![],
+            derived_tags: vec![],
+            meta: crate::data::asset::AssetMeta::unprocessed("image/png", 7),
         });
     let err = write_bundle(&data, tmp.path(), Vec::new()).unwrap_err();
     assert!(matches!(err, WorldBundleError::Io(_)));
@@ -149,6 +157,10 @@ fn read_bundle_round_trips_write_bundle_output() {
             created_by_username: None,
             created_at: 0,
             version: 1,
+            folder_id: None,
+            tags: vec![],
+            derived_tags: vec![],
+            meta: crate::data::asset::AssetMeta::unprocessed("image/png", 7),
         });
     data.manifest.row_counts.insert("assets".to_string(), 1);
 
@@ -303,4 +315,112 @@ fn read_bundle_rejects_duplicate_asset_entry_and_cleans_up_staged_files() {
         leftover.is_empty(),
         "duplicate-id rejection must remove any already-staged file"
     );
+}
+
+#[test]
+fn bundle_round_trips_asset_siblings_and_rejects_an_unknown_suffix() {
+    let tmp = tempfile::tempdir().unwrap();
+    let world = Uuid::from_u128(7);
+    let asset_id = Uuid::from_u128(100);
+    let asset_dir = tmp.path().join(world.to_string());
+    std::fs::create_dir_all(&asset_dir).unwrap();
+    std::fs::write(asset_dir.join(asset_id.to_string()), b"WEBP").unwrap();
+    std::fs::write(asset_dir.join(format!("{asset_id}.orig")), b"PNGORIG").unwrap();
+    std::fs::write(asset_dir.join(format!("{asset_id}.thumb.webp")), b"THUMB").unwrap();
+    // No preview on disk: only the siblings that exist travel.
+
+    let mut data = sample_data(world);
+    data.assets
+        .push(crate::data::world_bundle::ExportedAssetRow {
+            id: asset_id,
+            original_name: "token.png".to_string(),
+            content_type: "image/webp".to_string(),
+            byte_size: 4,
+            created_by_username: None,
+            created_at: 0,
+            version: 1,
+            folder_id: None,
+            tags: vec!["hero".into()],
+            derived_tags: vec!["image".into(), "webp".into()],
+            meta: crate::data::asset::AssetMeta {
+                original_retained: true,
+                original_content_type: "image/png".into(),
+                original_byte_size: 7,
+                ..crate::data::asset::AssetMeta::default()
+            },
+        });
+    data.manifest.row_counts.insert("assets".to_string(), 1);
+    let bytes = write_bundle(&data, tmp.path(), Vec::new()).unwrap();
+
+    let mut archive = tar::Archive::new(bytes.as_slice());
+    let names: Vec<String> = archive
+        .entries()
+        .unwrap()
+        .map(|e| e.unwrap().path().unwrap().to_string_lossy().to_string())
+        .filter(|n| n.starts_with("assets/"))
+        .collect();
+    assert_eq!(
+        names,
+        vec![
+            format!("assets/{asset_id}"),
+            format!("assets/{asset_id}.orig"),
+            format!("assets/{asset_id}.thumb.webp"),
+        ]
+    );
+
+    let tar_path = tmp.path().join("bundle.tar");
+    std::fs::write(&tar_path, &bytes).unwrap();
+    let import_root = tempfile::tempdir().unwrap();
+    let imported = read_bundle(&tar_path, import_root.path()).unwrap();
+    assert_eq!(imported.staged_assets.len(), 1);
+    assert_eq!(imported.assets[0].tags, vec!["hero".to_string()]);
+    assert!(imported.assets[0].meta.original_retained);
+    let mut siblings: Vec<(String, Vec<u8>)> = imported
+        .staged_siblings
+        .iter()
+        .map(|s| (s.suffix.clone(), std::fs::read(&s.staged).unwrap()))
+        .collect();
+    siblings.sort();
+    assert_eq!(
+        siblings,
+        vec![
+            (".orig".to_string(), b"PNGORIG".to_vec()),
+            (".thumb.webp".to_string(), b"THUMB".to_vec()),
+        ]
+    );
+    assert!(imported
+        .staged_siblings
+        .iter()
+        .all(|s| s.asset_id == asset_id));
+
+    // An `assets/<id>.<anything else>` entry is malformed, and every staged
+    // file is cleaned up on the way out.
+    let mut builder = tar::Builder::new(Vec::new());
+    let manifest = serde_json::to_vec(&data.manifest).unwrap();
+    let mut header = tar::Header::new_gnu();
+    header.set_size(manifest.len() as u64);
+    header.set_mode(0o644);
+    header.set_cksum();
+    builder
+        .append_data(&mut header, "manifest.json", manifest.as_slice())
+        .unwrap();
+    let mut header = tar::Header::new_gnu();
+    header.set_size(3);
+    header.set_mode(0o644);
+    header.set_cksum();
+    builder
+        .append_data(&mut header, format!("assets/{asset_id}.exe"), &b"bad"[..])
+        .unwrap();
+    let bad = builder.into_inner().unwrap();
+    let bad_path = tmp.path().join("bad.tar");
+    std::fs::write(&bad_path, &bad).unwrap();
+    let bad_root = tempfile::tempdir().unwrap();
+    let err = read_bundle(&bad_path, bad_root.path()).unwrap_err();
+    assert!(
+        matches!(err, WorldBundleError::Malformed(m) if m.contains("unknown asset sibling suffix"))
+    );
+    let leftovers = std::fs::read_dir(bad_root.path().join(world.to_string()))
+        .map(|d| d.count())
+        .unwrap_or(0);
+    assert_eq!(leftovers, 0);
 }

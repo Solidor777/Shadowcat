@@ -9,7 +9,7 @@ use uuid::Uuid;
 
 /// Pipeline-derived metadata recorded at commit (`data::asset::process`) and
 /// rewritten on replace/reconvert. Flattened into `Asset` on the wire.
-#[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS, PartialEq)]
 #[ts(export, export_to = "../../types/generated/")]
 pub struct AssetMeta {
     /// Canonical pixel width; `None` for a non-image or undecodable file.

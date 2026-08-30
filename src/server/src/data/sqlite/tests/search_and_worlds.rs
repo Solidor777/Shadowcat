@@ -951,6 +951,7 @@ async fn import_world_nulls_owner_when_username_unresolvable() {
         fog: export_data.fog.clone(),
         settings: export_data.settings.clone(),
         staged_assets: Vec::new(),
+        staged_siblings: vec![],
     };
     let summary = target.import_world(import_data).await.unwrap();
     // `gm4` (the sole world_members row) also doesn't exist on target.
@@ -993,6 +994,7 @@ async fn import_world_rejects_world_id_collision_before_writing_any_row() {
         fog: export_data.fog.clone(),
         settings: export_data.settings.clone(),
         staged_assets: Vec::new(),
+        staged_siblings: vec![],
     };
 
     let err = r.import_world(import_data).await.unwrap_err();
@@ -1058,6 +1060,7 @@ async fn import_world_rejects_duplicate_singleton_document_before_writing_any_ro
         fog: export_data.fog.clone(),
         settings: export_data.settings.clone(),
         staged_assets: Vec::new(),
+        staged_siblings: vec![],
     };
 
     let err = target.import_world(import_data).await.unwrap_err();
@@ -1111,6 +1114,7 @@ async fn import_world_drops_fog_row_when_username_unresolvable() {
         fog: export_data.fog.clone(),
         settings: export_data.settings.clone(),
         staged_assets: Vec::new(),
+        staged_siblings: vec![],
     };
     let summary = target.import_world(import_data).await.unwrap();
     assert_eq!(summary.skipped_fog, 1);
@@ -1171,6 +1175,7 @@ async fn import_world_inserts_world_invites_row() {
         fog: export_data.fog.clone(),
         settings: export_data.settings.clone(),
         staged_assets: Vec::new(),
+        staged_siblings: vec![],
     };
     target.import_world(import_data).await.unwrap();
 
@@ -1241,6 +1246,7 @@ async fn import_world_rejects_document_with_unclassifiable_property_override() {
         fog: export_data.fog.clone(),
         settings: export_data.settings.clone(),
         staged_assets: Vec::new(),
+        staged_siblings: vec![],
     };
 
     let err = target.import_world(import_data).await.unwrap_err();
@@ -1259,4 +1265,154 @@ async fn import_world_rejects_document_with_unclassifiable_property_override() {
         .await
         .unwrap();
     assert_eq!(doc_count, 0);
+}
+
+#[tokio::test]
+async fn import_keeps_folder_tags_and_meta_but_clears_original_retained_without_orig() {
+    let src = repo().await;
+    let gm = src
+        .create_user("gm9", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let w = src.create_world_owned("W", gm, 0).await.unwrap();
+    let ctx = crate::data::membership::PermissionContext {
+        user_id: gm,
+        world_role: WorldRole::Gm,
+    };
+    let mut folder = world_doc(41, w.id, serde_json::json!({}));
+    folder.doc_type = "asset_folder".into();
+    folder.name = Some("Maps".into());
+    folder.engine = Some(serde_json::json!({ "sort": 0 }));
+    src.apply_intent(
+        &ctx,
+        w.id,
+        vec![Operation::Create {
+            doc: folder.clone(),
+        }],
+        1,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+
+    let export_tmp = tempfile::tempdir().unwrap();
+    let asset_id = Uuid::new_v4();
+    let asset_dir = export_tmp.path().join(w.id.to_string());
+    tokio::fs::create_dir_all(&asset_dir).await.unwrap();
+    // Canonical + thumb on disk, but NO `.orig` — the row still claims one.
+    tokio::fs::write(asset_dir.join(asset_id.to_string()), b"WEBPBYTES")
+        .await
+        .unwrap();
+    tokio::fs::write(asset_dir.join(format!("{asset_id}.thumb.webp")), b"THUMB")
+        .await
+        .unwrap();
+    src.insert_asset(&crate::data::asset::Asset {
+        id: asset_id,
+        world_id: w.id,
+        storage_key: format!("{}/{asset_id}", w.id),
+        original_name: "crypt.png".to_string(),
+        content_type: "image/webp".to_string(),
+        byte_size: 9,
+        created_by: Some(gm),
+        created_at: 0,
+        version: 3,
+        folder_id: Some(folder.id),
+        tags: vec![],
+        derived_tags: vec![],
+        meta: crate::data::asset::AssetMeta {
+            width: Some(64),
+            height: Some(32),
+            has_alpha: true,
+            animated: false,
+            original_content_type: "image/png".into(),
+            original_byte_size: 20,
+            original_retained: true,
+            conversion_note: None,
+        },
+    })
+    .await
+    .unwrap();
+    src.set_asset_tags(
+        asset_id,
+        &["hero".into()],
+        &[
+            "Maps".into(),
+            "image".into(),
+            "transparent".into(),
+            "webp".into(),
+        ],
+    )
+    .await
+    .unwrap();
+
+    let export_data = src.export_world_rows(w.id).await.unwrap();
+    assert_eq!(export_data.assets[0].tags, vec!["hero".to_string()]);
+    assert_eq!(export_data.assets[0].folder_id, Some(folder.id));
+    assert!(export_data.assets[0].meta.original_retained);
+    let bytes =
+        crate::world_bundle::write_bundle(&export_data, export_tmp.path(), Vec::new()).unwrap();
+    let tar_path = export_tmp.path().join("bundle.tar");
+    tokio::fs::write(&tar_path, &bytes).await.unwrap();
+
+    let target = repo().await;
+    target
+        .create_user("gm9", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let import_tmp = tempfile::tempdir().unwrap();
+    let import_data = crate::world_bundle::read_bundle(&tar_path, import_tmp.path()).unwrap();
+    assert_eq!(
+        import_data.staged_siblings.len(),
+        1,
+        "only the thumb travelled"
+    );
+    target.import_world(import_data).await.unwrap();
+
+    let got = target.get_asset(asset_id).await.unwrap().unwrap();
+    assert_eq!(got.folder_id, Some(folder.id));
+    assert_eq!(got.tags, vec!["hero".to_string()]);
+    assert_eq!(
+        got.derived_tags,
+        vec![
+            "Maps".to_string(),
+            "image".to_string(),
+            "transparent".to_string(),
+            "webp".to_string()
+        ]
+    );
+    assert_eq!(got.version, 3);
+    assert_eq!((got.meta.width, got.meta.height), (Some(64), Some(32)));
+    assert!(got.meta.has_alpha);
+    assert_eq!(got.meta.original_content_type, "image/png");
+    assert!(
+        !got.meta.original_retained,
+        "no .orig in the bundle ⇒ the flag is cleared"
+    );
+    let dir = import_tmp.path().join(w.id.to_string());
+    assert_eq!(
+        tokio::fs::read(dir.join(asset_id.to_string()))
+            .await
+            .unwrap(),
+        b"WEBPBYTES"
+    );
+    assert_eq!(
+        tokio::fs::read(dir.join(format!("{asset_id}.thumb.webp")))
+            .await
+            .unwrap(),
+        b"THUMB"
+    );
+    assert!(!dir.join(format!("{asset_id}.orig")).exists());
+    assert!(!dir.join(format!("{asset_id}.preview.webp")).exists());
+    // No staging residue.
+    let residue = std::fs::read_dir(&dir)
+        .unwrap()
+        .filter(|e| {
+            e.as_ref()
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .contains("import-tmp")
+        })
+        .count();
+    assert_eq!(residue, 0);
 }

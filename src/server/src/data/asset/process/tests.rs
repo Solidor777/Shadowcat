@@ -241,6 +241,20 @@ fn write_derivatives_regenerates_from_canonical() {
 }
 
 #[test]
+fn sibling_suffixes_are_the_variant_suffixes_plus_orig() {
+    let c = Path::new("c");
+    assert_eq!(
+        sibling_paths(c).to_vec(),
+        vec![
+            original_path(c),
+            derivative_path(c, Variant::Thumb),
+            derivative_path(c, Variant::Preview)
+        ]
+    );
+    assert_eq!(SIBLING_SUFFIXES, [".orig", ".thumb.webp", ".preview.webp"]);
+}
+
+#[test]
 fn suffix_paths_keep_the_directory_and_append_to_the_file_name() {
     let canonical = Path::new("worlds").join("abc");
     assert_eq!(

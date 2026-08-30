@@ -157,6 +157,33 @@ pub struct ExportedAssetRow {
     /// Replace-count watermark; preserved verbatim into the new row's ETag
     /// basis.
     pub version: i64,
+    /// Containing `asset_folder` document (exported as an ordinary document);
+    /// `None` = world root. Defaults for a bundle written before folders existed.
+    #[serde(default)]
+    pub folder_id: Option<Uuid>,
+    /// GM-set tags.
+    #[serde(default)]
+    pub tags: Vec<String>,
+    /// Pipeline-derived tags, carried verbatim (the target recomputes nothing
+    /// at import; a later commit/move refreshes them).
+    #[serde(default)]
+    pub derived_tags: Vec<String>,
+    /// Pipeline metadata, flattened; a bundle written before the pipeline
+    /// carries none and gets `AssetMeta::default()`.
+    #[serde(default, flatten)]
+    pub meta: crate::data::asset::AssetMeta,
+}
+
+/// One staged sibling artifact (`assets/<id><suffix>` in the bundle): the
+/// retained original or a derivative, extracted beside its canonical.
+#[derive(Debug, Clone)]
+pub struct StagedSibling {
+    /// The canonical asset this file belongs to.
+    pub asset_id: Uuid,
+    /// One of `data::asset::process::SIBLING_SUFFIXES`.
+    pub suffix: String,
+    /// The staged temp path (same directory as the final file).
+    pub staged: PathBuf,
 }
 
 /// One exported `explored_fog` row. `user_id` has no FK but is `NOT NULL`; an
@@ -246,6 +273,11 @@ pub struct WorldImportData {
     /// rename failure at that point still aborts and rolls back the whole
     /// transaction.
     pub staged_assets: Vec<(Uuid, PathBuf)>,
+    /// Sibling artifacts (`assets/<id>.orig|.thumb.webp|.preview.webp`),
+    /// staged the same way and finalized to `<id><suffix>` beside their
+    /// canonical. A missing `.orig` for a row that claims
+    /// `original_retained` clears that flag at import.
+    pub staged_siblings: Vec<StagedSibling>,
 }
 
 /// The outcome of a successful `SqliteRepository::import_world` call. Rows
