@@ -1727,10 +1727,19 @@ otherwise-hidden combatant makes the gate apply, and a per-user override on an o
 one makes it stand down, each moving in lockstep with what that mover receives on the wire. That
 lockstep is scoped to PER-DOCUMENT permissions; the world-capability-default half is deliberately
 not, since `Room::execute_move` reads `world_cap_defaults` fresh per move while WS egress reads it
-once per connection (a defaults change takes effect on the next reconnect). World defaults being
-additive only, the resulting window has one shape: a mover whose new world-level READ grant is
-already authoritative is bound by the gate before their in-flight connection refreshes to deliver
-the document. The gate
+once per connection (a defaults change takes effect on the next reconnect). That window has TWO
+shapes, in opposite directions. A world-level READ GRANT reaches the gate before it reaches
+egress: the mover is bound by a grant already authoritative, and delivery follows on reconnect —
+narrow, admitting nothing egress would not eventually deliver. A world-level READ REVOCATION is
+the inverse and fails OPEN, because `set_world_capability_defaults` REPLACES the whole
+`WorldCapDefaults` rather than extending it: a mover whose `cap::READ` on the combatant came only
+from a world grant loses it from `Room::execute_move`'s fresh read at once, the gate stands down
+entirely, and they move UNBUDGETED while their still-connected session's cached defaults keep
+delivering the document. `resolve_access_world` being additive does not bound this — the defaults
+value it reads is what shrank. Accepted as a documented residual (a gameplay-budget laxity with no
+disclosure component, closing on the mover's next reconnect), and specific to this gate:
+`combat::authorize` reads the same world defaults fresh per intent and fails CLOSED on the same
+revocation, briefly refusing a legitimate owner instead. The gate
 commits the move in TWO separate commands
 rather than one: the token's
 `/engine/x,y` position write lands unconditionally under `WriteOrigin::Client`, and the combatant's

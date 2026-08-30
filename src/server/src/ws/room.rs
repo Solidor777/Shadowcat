@@ -110,12 +110,28 @@ struct BudgetGate {
     /// The WORLD-level half of that resolution is NOT lockstep, so the parity claim above is
     /// scoped to per-document permissions and does not extend to world capability defaults:
     /// `Room::execute_move` reads `world_cap_defaults` fresh per move, while WS egress reads it
-    /// once per connection under a documented takes-effect-on-next-reconnect policy. A world
-    /// grant therefore reaches this flag before it reaches that connection's egress. World
-    /// defaults are additive only (`resolve_access_world` extends `caps`, never removes), so the
-    /// divergence is bounded to one shape: a caller whose new world-level READ grant is genuine
-    /// and already authoritative, but whose in-flight connection has not yet refreshed to deliver
-    /// the document. The gate binds them from the grant; delivery follows on reconnect.
+    /// once per connection under a documented takes-effect-on-next-reconnect policy. TWO shapes
+    /// are reachable, in opposite directions.
+    ///
+    /// A world-level READ GRANT reaches this flag before it reaches that connection's egress: the
+    /// gate binds a caller whose grant is genuine and already authoritative, and delivery follows
+    /// on reconnect. Narrow — it admits nothing egress would not eventually deliver anyway.
+    ///
+    /// A world-level READ REVOCATION is the inverse, and fails OPEN.
+    /// `http::routes::set_world_capability_defaults` REPLACES the whole `WorldCapDefaults` rather
+    /// than extending it, so a caller whose `cap::READ` on the combatant came only from a world
+    /// grant loses it from this fresh read immediately: `enforced` goes false, the gate stands
+    /// down entirely, and that mover moves UNBUDGETED for as long as their still-connected
+    /// session's cached defaults keep delivering the document. `resolve_access_world` being
+    /// additive (it extends `caps`, never removes) does not bound this — the defaults VALUE it
+    /// reads is what shrank. Accepted as a documented residual, not a fixed one: the window is a
+    /// gameplay-budget laxity with no disclosure component (the mover reads that combatant
+    /// throughout), and it closes on their next reconnect like every other world-defaults change.
+    ///
+    /// This second shape is specific to THIS gate. `combat::authorize` resolves the same world
+    /// defaults fresh per intent and fails CLOSED on the same revocation — it briefly refuses a
+    /// legitimate owner rather than admitting anything — so the two must not be reasoned about
+    /// as one residual.
     ///
     /// `false` means the caller cannot read that document, so a `MoveReject::NotYourTurn`
     /// refusal or a budget truncation would disclose both the combatant's existence and its
