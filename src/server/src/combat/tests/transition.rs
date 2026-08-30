@@ -207,7 +207,7 @@ fn an_absent_tracked_entry_reads_full_and_materializes_on_first_change() {
     let e: CombatantEngine = engine_of(&docs, Uuid::from_u128(10));
     assert_eq!(
         e.resources["movement"].current, 20.0,
-        "full (the evaluated max, 30) minus the turn_end recovery, written into a previously-absent entry"
+        "full (the evaluated max, 30) minus the turn_end recovery, materializing the absent entry"
     );
 }
 
