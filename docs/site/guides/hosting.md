@@ -92,6 +92,7 @@ Full key reference (flag = `--<key>` with dashes, env = `SHADOWCAT_<KEY>`):
 | `upload_max_bytes` | 25 MiB | Upload size cap (players) |
 | `upload_rate_per_min` | 20 | Uploads per minute (players) |
 | `upload_max_bytes_gm` / `upload_rate_per_min_gm` | 2× player values | GM upload caps |
+| `retain_originals` | `true` | Keep each converted upload's original bytes (`<uuid>.orig`) for reconvert/download; `false` saves disk |
 | `login_per_min_per_identity` / `login_per_min_per_ip` | built-in | `/api/login` throttle budgets |
 | `invite_per_min_per_account` / `invite_per_min_per_ip` | built-in | Invite-accept throttle budgets |
 | `trusted_proxies` | *(empty)* | Reverse-proxy IPs trusted to set `X-Forwarded-For` |

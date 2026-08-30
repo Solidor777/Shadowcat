@@ -57,6 +57,10 @@ pub struct Cli {
     /// or `--restore-from` overwrite an existing destination db/assets dir.
     #[arg(long)]
     pub force: bool,
+    /// Keep the uploaded original beside the converted canonical file
+    /// (`Config.retain_originals`); `--retain-originals false` discards it.
+    #[arg(long)]
+    pub retain_originals: Option<bool>,
 }
 
 /// Effective server configuration after layering. Precedence (high→low):
@@ -96,6 +100,11 @@ pub struct Config {
     pub upload_max_bytes_gm: Option<u64>,
     /// GM/owner uploads per minute; `None` → 2× `upload_rate_per_min`.
     pub upload_rate_per_min_gm: Option<u32>,
+    /// Whether a converted upload keeps its original bytes on disk as
+    /// `<uuid>.orig` (reconvert + "download original" need it). Default
+    /// `true`; `false` trades those for disk. Host-level: the host pays for
+    /// the disk, so this is not a per-world setting.
+    pub retain_originals: bool,
     /// Per-identity `/api/login` budget (trailing 60s); `None` →
     /// `throttle::LOGIN_PER_MIN_PER_IDENTITY`. Self-hosting operators behind a
     /// NAT/shared-proxy IP, or an automated test harness that logs in as one
@@ -138,6 +147,7 @@ impl Default for Config {
             upload_rate_per_min: 20,
             upload_max_bytes_gm: None,
             upload_rate_per_min_gm: None,
+            retain_originals: true,
             login_per_min_per_identity: None,
             login_per_min_per_ip: None,
             invite_per_min_per_account: None,
@@ -199,6 +209,9 @@ impl Config {
         }
         if let Some(v) = cli.session_key {
             cfg.session_key = Some(v);
+        }
+        if let Some(v) = cli.retain_originals {
+            cfg.retain_originals = v;
         }
         if let Some(v) = cli.assets_dir {
             cfg.assets_dir = Some(v);

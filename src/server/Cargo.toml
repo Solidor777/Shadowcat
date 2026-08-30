@@ -48,6 +48,15 @@ pulldown-cmark = { version = "0.13.4", default-features = false, features = ["ht
 # does not carry the cookie-jar/multipart/json machinery the integration tests use.
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
 url = "2"
+# Asset pipeline (`data::asset::process`): decode/resize via `image` (pure Rust
+# codecs; PNG/JPEG/GIF/BMP/TIFF/WebP decode), lossy + lossless WebP encode via
+# libwebp (`webp`, built by `cc` on every CI runner — no system package). No
+# FFmpeg; both crates are BSD-licensed.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp", "tiff", "webp"] }
+webp = "0.3"
+# `GET /api/worlds/{world}/assets?name_regex=` — linear-time matcher with
+# compile-size caps, so an untrusted pattern cannot stall the server.
+regex = "1"
 
 # Embeds the application icon into the Windows executable (see build.rs); a
 # no-op on other targets, so it never affects the Linux/macOS binaries.

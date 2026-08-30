@@ -131,6 +131,7 @@ fn cli_overrides_take_precedence_over_defaults() {
         backup_to: None,
         restore_from: None,
         force: false,
+        retain_originals: None,
     };
     let cfg = Config::load(cli).expect("load");
     assert_eq!(cfg.bind, "0.0.0.0:8080");
@@ -235,4 +236,17 @@ fn trusted_proxies_env_var_needs_bracket_syntax_for_a_list() {
         std::env::remove_var("SHADOWCAT_TRUSTED_PROXIES");
     }
     assert_eq!(cfg.trusted_proxies, vec!["127.0.0.1".to_string()]);
+}
+
+#[test]
+fn retain_originals_defaults_true_and_cli_overrides() {
+    let _guard = config_env_test_lock();
+    let cfg = Config::load(Cli::default()).unwrap();
+    assert!(cfg.retain_originals);
+    let cli = Cli {
+        retain_originals: Some(false),
+        ..Cli::default()
+    };
+    let cfg = Config::load(cli).unwrap();
+    assert!(!cfg.retain_originals);
 }
