@@ -19,6 +19,8 @@ pub mod data;
 /// SQLite pool bootstrap (deliberately single-connection).
 pub mod db;
 pub mod dice;
+/// The engine's formula language (server twin of `@shadowcat/formula`).
+pub mod formula;
 /// Liveness probe endpoint plumbing.
 pub mod health;
 /// Axum router: REST surface, asset serving, module serving, embedded client.
