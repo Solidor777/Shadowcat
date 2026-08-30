@@ -78,10 +78,11 @@ errors) and random graphs, asserting no panic and no non-finite success value.
 - `path` → JSON pointer `/system/<seg0>/<seg1>/…` (segments are already lowercase identifiers,
   so no escaping is needed; a segment cannot contain `/` or `~`).
 - Number leaf → `Ok(n)` (finite by JSON construction).
-- Missing at any depth → `unknown-ref` with detail `"<a.b.c>"` (the dotted path, as the TS
-  example resolver reports).
+- Missing at any depth (including traversing through a non-object) → `unknown-ref` with detail
+  `unknown reference 'a.b.c'` (the wording the TS package's own test resolver uses, and the
+  wording the conformance corpus asserts for a missing ref).
 - Present but not a number (string, bool, object, array, null) → `type` with detail
-  `"'<a.b.c>' is not a number"`.
+  `'a.b.c' is not a number`.
 
 This is the resolver M14c-2 hands the combat transition for a combatant's actor document
 (token-embedded copy or linked actor — that choice is -2's). Nothing else in -1 calls it;
