@@ -70,6 +70,17 @@ pub fn original_path(canonical: &Path) -> PathBuf {
     with_suffix(canonical, ORIGINAL_SUFFIX)
 }
 
+/// Every artifact that can sit beside a canonical: the retained original and
+/// the two derivatives. The single statement of the sibling set — commit,
+/// replace, delete and export all iterate this rather than re-spelling it.
+pub fn sibling_paths(canonical: &Path) -> [PathBuf; 3] {
+    [
+        original_path(canonical),
+        derivative_path(canonical, Variant::Thumb),
+        derivative_path(canonical, Variant::Preview),
+    ]
+}
+
 /// What `process_staged` decided about one upload.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Processed {
@@ -206,23 +217,18 @@ fn pass_through(
     animated: bool,
     note: Option<String>,
 ) -> Processed {
-    let (width, height, has_alpha) = match decoded {
-        Some((img, transparent)) => (Some(img.width()), Some(img.height()), transparent),
-        None => (None, None, false),
-    };
+    let mut meta = AssetMeta::unprocessed(original_content_type, original_byte_size);
+    if let Some((img, transparent)) = decoded {
+        meta.width = Some(img.width());
+        meta.height = Some(img.height());
+        meta.has_alpha = transparent;
+    }
+    meta.animated = animated;
+    meta.conversion_note = note;
     Processed {
         content_type: original_content_type.to_string(),
         byte_size: original_byte_size,
-        meta: AssetMeta {
-            width,
-            height,
-            has_alpha,
-            animated,
-            original_content_type: original_content_type.to_string(),
-            original_byte_size,
-            original_retained: false,
-            conversion_note: note,
-        },
+        meta,
         converted: false,
     }
 }

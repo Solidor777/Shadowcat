@@ -81,7 +81,11 @@ impl Default for UploadRateLimiter {
 }
 
 use crate::auth::session::AuthUser;
-use crate::data::asset::{Asset, AssetMeta};
+use crate::data::asset::tags::{derive, DeriveInput};
+use crate::data::asset::{
+    commit_staged_asset, move_asset_files, process_staged_blocking, remove_asset_files, Asset,
+    Provenance,
+};
 use crate::http::error::AppError;
 use crate::http::{routes::require_gm, AppState};
 use crate::ws::protocol::{AssetOp, ServerMsg};
@@ -93,20 +97,26 @@ use axum::Json;
 use tokio::io::AsyncWriteExt;
 
 /// Stream a multipart "file" field to `dest`, enforcing `max_bytes` as bytes
-/// arrive (never buffering the whole body), and validating the leading bytes are
-/// a supported image. Returns (detected_content_type, byte_size, original_name).
-/// On any failure the partial file is removed.
+/// arrive (never buffering the whole body). Returns
+/// `(content_type, byte_size, original_name)`, where `content_type` is the
+/// type SNIFFED from the leading bytes when they are a supported image; when
+/// they are not, the client's declared type is used as a plain label —
+/// unless it CLAIMS `image/*`, which the bytes just disproved, in which case
+/// the label is `application/octet-stream`. The bytes are the validation
+/// boundary; a client's image claim is never trusted. On any failure the
+/// partial file is removed.
 async fn store_streamed(
     mut multipart: Multipart,
     dest: &std::path::Path,
     max_bytes: u64,
-) -> Result<(&'static str, i64, String), AppError> {
+) -> Result<(String, i64, String), AppError> {
     let field = multipart
         .next_field()
         .await
         .map_err(|e| AppError::BadRequest(format!("multipart error: {e}")))?
         .ok_or_else(|| AppError::BadRequest("missing file field".into()))?;
     let original_name = field.file_name().unwrap_or("upload").to_string();
+    let declared = field.content_type().map(str::to_string);
 
     if let Some(parent) = dest.parent() {
         tokio::fs::create_dir_all(parent)
@@ -116,9 +126,9 @@ async fn store_streamed(
     let mut file = tokio::fs::File::create(dest)
         .await
         .map_err(|_| AppError::Internal)?;
+    // Leading bytes for the sniff; `detect_image_type` needs at most 12.
     let mut head: Vec<u8> = Vec::with_capacity(16);
     let mut total: u64 = 0;
-    let mut detected: Option<&'static str> = None;
 
     let mut field = field;
     loop {
@@ -137,17 +147,9 @@ async fn store_streamed(
                 "file exceeds {max_bytes} bytes"
             )));
         }
-        if detected.is_none() {
-            head.extend_from_slice(&chunk);
-            if head.len() >= 12 {
-                match detect_image_type(&head) {
-                    Some(ct) => detected = Some(ct),
-                    None => {
-                        let _ = tokio::fs::remove_file(dest).await;
-                        return Err(AppError::BadRequest("unsupported or non-image file".into()));
-                    }
-                }
-            }
+        if head.len() < 12 {
+            let want = 12 - head.len();
+            head.extend_from_slice(&chunk[..chunk.len().min(want)]);
         }
         if file.write_all(&chunk).await.is_err() {
             let _ = tokio::fs::remove_file(dest).await;
@@ -156,19 +158,28 @@ async fn store_streamed(
     }
     file.flush().await.map_err(|_| AppError::Internal)?;
 
-    // Files shorter than 12 bytes never reached the detector; decide on the head.
-    let ct = match detected.or_else(|| detect_image_type(&head)) {
-        Some(ct) => ct,
-        None => {
-            let _ = tokio::fs::remove_file(dest).await;
-            return Err(AppError::BadRequest("unsupported or non-image file".into()));
-        }
-    };
-    Ok((ct, total as i64, original_name))
+    let content_type = label_content_type(detect_image_type(&head), declared.as_deref());
+    Ok((content_type, total as i64, original_name))
 }
 
-/// `POST /api/worlds/{world}/assets` — GM-gated multipart image upload
+/// The content type recorded for an upload: the sniffed image type when the
+/// bytes are a supported image; otherwise the declared type as a label,
+/// except that a declared `image/*` the bytes disproved becomes
+/// `application/octet-stream`.
+fn label_content_type(sniffed: Option<&'static str>, declared: Option<&str>) -> String {
+    if let Some(ct) = sniffed {
+        return ct.to_string();
+    }
+    match declared {
+        Some(d) if !d.starts_with("image/") && !d.is_empty() => d.to_string(),
+        _ => "application/octet-stream".to_string(),
+    }
+}
+
+/// `POST /api/worlds/{world}/assets` — GM-gated single-shot multipart upload
 /// (`require_gm`; server admins resolve to GM). There is no owner exception.
+/// Images are converted through `data::asset::process`; anything else is
+/// stored pass-through under its declared type. Lands in the world root.
 pub async fn upload(
     State(state): State<AppState>,
     user: AuthUser,
@@ -203,23 +214,39 @@ pub async fn upload(
 
     // Do the fallible work in one block so a failure at any step refunds the
     // rate-limit hit `check` recorded — a rejected upload must not burn quota.
+    let retain = state.config.retain_originals;
     let outcome: Result<Asset, AppError> = async {
-        let (content_type, byte_size, original_name) =
+        let (arrived_type, arrived_size, original_name) =
             store_streamed(multipart, &tmp_path, max).await?;
+        // CPU-bound conversion, off the async runtime and BEFORE the barrier.
+        let processed =
+            process_staged_blocking(tmp_path.clone(), arrived_type, arrived_size, retain)
+                .await
+                .map_err(|e| {
+                    tracing::error!(?e, %id, "asset processing failed");
+                    AppError::Internal
+                })?;
+        // Single-shot uploads land in the world root: no folder segments.
+        let derived = derive(DeriveInput {
+            content_type: &processed.content_type,
+            meta: &processed.meta,
+            folder_names: &[],
+            provenance: Provenance::Uploaded,
+        });
         let asset = Asset {
             id,
             world_id: world,
             storage_key,
             original_name,
-            content_type: content_type.to_string(),
-            byte_size,
+            content_type: processed.content_type,
+            byte_size: processed.byte_size,
             created_by: Some(user.id),
             created_at: now,
             version: 1,
             folder_id: None,
             tags: vec![],
             derived_tags: vec![],
-            meta: AssetMeta::unprocessed(content_type, byte_size),
+            meta: processed.meta,
         };
         // Read-side of the backup quiesce barrier, acquired only around the
         // rename+DB-commit pair below — the one critical section the quiesce
@@ -227,7 +254,7 @@ pub async fn upload(
         // assets copy. Concurrent asset writes share the read side freely;
         // this serializes nothing between uploads.
         let _read_permit = state.write_barrier.read().await;
-        crate::data::asset::commit_staged_asset(&state.repo, &tmp_path, &final_path, asset)
+        commit_staged_asset(&state.repo, &tmp_path, &final_path, asset, &derived)
             .await
             .map_err(AppError::from)
     }
@@ -317,8 +344,16 @@ pub async fn replace(
 
     // Fallible work in one block so any failure refunds the rate-limit hit `check`
     // recorded — a rejected replace must not burn quota.
+    let retain = state.config.retain_originals;
     let outcome: Result<Asset, AppError> = async {
-        let (content_type, byte_size, _name) = store_streamed(multipart, &tmp_path, max).await?;
+        let (arrived_type, arrived_size, _name) = store_streamed(multipart, &tmp_path, max).await?;
+        let processed =
+            process_staged_blocking(tmp_path.clone(), arrived_type, arrived_size, retain)
+                .await
+                .map_err(|e| {
+                    tracing::error!(?e, %id, "asset processing failed");
+                    AppError::Internal
+                })?;
 
         // Read-side of the backup quiesce barrier, acquired only around the
         // DB-commit + rename pair below — the one critical section the
@@ -334,23 +369,32 @@ pub async fn replace(
         // If the rename later fails, the DB is one version ahead of unchanged bytes
         // — clients re-fetch (ETag changed) and the next replace lands correctly;
         // the inverse order would strand new bytes under a stale ETag (broken 304).
-        let meta = AssetMeta::unprocessed(content_type, byte_size);
         let version = match state
             .repo
-            .replace_asset_bytes(id, &existing.storage_key, content_type, byte_size, &meta)
+            .replace_asset_bytes(
+                id,
+                &existing.storage_key,
+                &processed.content_type,
+                processed.byte_size,
+                &processed.meta,
+            )
             .await
         {
             Ok(v) => v,
             Err(e) => {
-                let _ = tokio::fs::remove_file(&tmp_path).await;
+                remove_asset_files(&tmp_path).await;
                 return Err(e.into());
             }
         };
-        if let Err(e) = tokio::fs::rename(&tmp_path, &final_path).await {
-            let _ = tokio::fs::remove_file(&tmp_path).await;
+        // Canonical + every sibling (a stale `.orig`/derivative of the old
+        // bytes is removed when the new upload has none).
+        if let Err(e) = move_asset_files(&tmp_path, &final_path).await {
+            remove_asset_files(&tmp_path).await;
             tracing::error!(?e, %id, "asset replace rename failed after DB commit");
             return Err(AppError::Internal);
         }
+        // Kind/dimension/alpha tags follow the new bytes.
+        state.repo.refresh_derived_tags(id).await?;
 
         if let Some(room) = state.ws.rooms.get(existing.world_id) {
             room.broadcast_aux(ServerMsg::AssetChanged {
@@ -360,13 +404,12 @@ pub async fn replace(
             });
         }
 
-        Ok(Asset {
-            content_type: content_type.to_string(),
-            byte_size,
-            version,
-            meta,
-            ..existing
-        })
+        state
+            .repo
+            .get_asset(id)
+            .await?
+            .ok_or(AppError::NotFound)
+            .map(|a| Asset { version, ..a })
     }
     .await;
 

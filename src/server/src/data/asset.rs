@@ -108,31 +108,106 @@ pub enum AssetError {
     Data(#[from] crate::data::DataError),
 }
 
-/// Renames an already-staged temp file into its final asset location, then
-/// inserts `asset`'s metadata row — file-BEFORE-row (see
+/// Moves a processed upload from its staged stem to its final stem: the
+/// canonical file, then every sibling artifact (`process::sibling_paths`) —
+/// a sibling present at the staged stem replaces the one at the final stem,
+/// and a sibling ABSENT at the staged stem removes any stale one at the
+/// final stem (a pass-through replace has no `.orig`; an undecodable one has
+/// no derivatives). A missing final sibling is not an error.
+pub async fn move_asset_files(
+    staged: &std::path::Path,
+    final_path: &std::path::Path,
+) -> std::io::Result<()> {
+    tokio::fs::rename(staged, final_path).await?;
+    for (from, to) in process::sibling_paths(staged)
+        .iter()
+        .zip(process::sibling_paths(final_path).iter())
+    {
+        if tokio::fs::try_exists(from).await? {
+            tokio::fs::rename(from, to).await?;
+        } else {
+            match tokio::fs::remove_file(to).await {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e),
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Best-effort removal of a canonical and every sibling artifact; a file
+/// that is already gone is not an error. Used on every rollback path and by
+/// asset delete.
+pub async fn remove_asset_files(canonical: &std::path::Path) {
+    let _ = tokio::fs::remove_file(canonical).await;
+    for p in process::sibling_paths(canonical) {
+        let _ = tokio::fs::remove_file(p).await;
+    }
+}
+
+/// Runs `process::process_staged` on the blocking pool (it is CPU-bound).
+/// On any failure the staged file and its siblings are removed, so a caller
+/// never has to reason about a half-processed stem.
+pub async fn process_staged_blocking(
+    staged: std::path::PathBuf,
+    original_content_type: String,
+    original_byte_size: i64,
+    retain_originals: bool,
+) -> std::io::Result<process::Processed> {
+    let path = staged.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        process::process_staged(
+            &path,
+            &original_content_type,
+            original_byte_size,
+            retain_originals,
+        )
+    })
+    .await
+    .map_err(std::io::Error::other)
+    .and_then(|r| r);
+    if result.is_err() {
+        remove_asset_files(&staged).await;
+    }
+    result
+}
+
+/// Moves an already-processed staged stem into its final location, then
+/// inserts `asset`'s metadata row and its derived tags — file-BEFORE-row (see
 /// `create_asset_from_bytes`'s doc for why: a create has no prior bytes and
 /// no existing ETag to strand, so the failure that matters is an orphan DB
 /// row, not an orphan file) [[commit-db-row-before-swapping-file]]. Shared
 /// commit step: `http::assets::upload` streams its OWN tmp file via
 /// `store_streamed` (avoiding a second in-memory buffer for an arbitrarily
-/// large GM upload) and calls this directly; `create_asset_from_bytes` stages
-/// `bytes` itself first and then calls this — so both callers' resulting
-/// `Asset` rows are committed through byte-for-byte the same ordering logic.
+/// large GM upload), processes it in place, and calls this directly;
+/// `create_asset_from_bytes` stages + processes `bytes` itself first and then
+/// calls this — so both callers' resulting `Asset` rows are committed through
+/// byte-for-byte the same ordering logic. A row-insert failure removes every
+/// file just moved; a tag-write failure after the row is in leaves the asset
+/// untagged (`refresh_derived_tags` repairs it) rather than orphaning files.
 pub async fn commit_staged_asset(
     repo: &crate::data::sqlite::SqliteRepository,
     tmp_path: &std::path::Path,
     final_path: &std::path::Path,
     asset: Asset,
+    derived_tags: &[String],
 ) -> Result<Asset, AssetError> {
-    if let Err(e) = tokio::fs::rename(tmp_path, final_path).await {
-        let _ = tokio::fs::remove_file(tmp_path).await;
+    if let Err(e) = move_asset_files(tmp_path, final_path).await {
+        remove_asset_files(tmp_path).await;
+        remove_asset_files(final_path).await;
         return Err(AssetError::Io(e));
     }
     if let Err(e) = repo.insert_asset(&asset).await {
-        let _ = tokio::fs::remove_file(final_path).await;
+        remove_asset_files(final_path).await;
         return Err(AssetError::Data(e));
     }
-    Ok(asset)
+    repo.set_asset_tags(asset.id, &asset.tags, derived_tags)
+        .await?;
+    Ok(Asset {
+        derived_tags: derived_tags.to_vec(),
+        ..asset
+    })
 }
 
 /// Grouped byte-buffer/metadata parameters for `create_asset_from_bytes` —
@@ -153,16 +228,19 @@ pub struct NewAssetBytes<'a> {
     pub created_by: Option<uuid::Uuid>,
     /// Who authored the asset (drives the provenance derived tag).
     pub provenance: Provenance,
+    /// `Config.retain_originals`: keep the arrived bytes as `.orig` when converted.
+    pub retain_originals: bool,
 }
 
-/// Creates an asset row from an already-in-memory byte buffer: allocates a
-/// fresh `Uuid`/`storage_key`, writes `bytes` to a unique temp sibling of the
-/// final path, then commits via `commit_staged_asset` (file-first-then-row,
-/// unchanged ordering). For a SMALL buffer only (the link-preview/oEmbed
-/// background image pipeline, capped at `chat::link_preview::MAX_IMAGE_BYTES`)
-/// — `http::assets::upload`'s own arbitrarily-large GM uploads stream
-/// straight to disk via `store_streamed` and call `commit_staged_asset`
-/// directly instead, never buffering the whole body here.
+/// Creates an asset from an already-in-memory byte buffer: allocates a fresh
+/// `Uuid`/`storage_key`, writes `bytes` to a unique temp sibling of the final
+/// path, runs the conversion pipeline on it, derives tags, then commits via
+/// `commit_staged_asset` (file-first-then-row, unchanged ordering). For a
+/// SMALL buffer only (the link-preview/oEmbed background image pipeline,
+/// capped at `chat::link_preview::MAX_IMAGE_BYTES`) — `http::assets::upload`'s
+/// own arbitrarily-large GM uploads stream straight to disk via
+/// `store_streamed` and call `commit_staged_asset` directly instead, never
+/// buffering the whole body here. The asset lands in the world root.
 pub async fn create_asset_from_bytes(
     repo: &crate::data::sqlite::SqliteRepository,
     assets_root: &std::path::Path,
@@ -176,10 +254,8 @@ pub async fn create_asset_from_bytes(
         original_name,
         created_by,
         provenance,
+        retain_originals,
     } = new;
-    // Provenance reaches the derived-tag pass once the conversion step runs
-    // on this path; until then the value is carried, not consumed.
-    let _ = provenance;
     let id = uuid::Uuid::new_v4();
     let storage_key = format!("{world_id}/{id}");
     let final_path = assets_root.join(world_id.to_string()).join(id.to_string());
@@ -188,22 +264,35 @@ pub async fn create_asset_from_bytes(
         tokio::fs::create_dir_all(parent).await?;
     }
     tokio::fs::write(&tmp_path, bytes).await?;
+    let processed = process_staged_blocking(
+        tmp_path.clone(),
+        content_type.to_string(),
+        bytes.len() as i64,
+        retain_originals,
+    )
+    .await?;
+    let derived = tags::derive(tags::DeriveInput {
+        content_type: &processed.content_type,
+        meta: &processed.meta,
+        folder_names: &[],
+        provenance,
+    });
     let asset = Asset {
         id,
         world_id,
         storage_key,
         original_name: original_name.to_string(),
-        content_type: content_type.to_string(),
-        byte_size: bytes.len() as i64,
+        content_type: processed.content_type,
+        byte_size: processed.byte_size,
         created_by,
         created_at: now,
         version: 1,
         folder_id: None,
         tags: vec![],
         derived_tags: vec![],
-        meta: AssetMeta::unprocessed(content_type, bytes.len() as i64),
+        meta: processed.meta,
     };
-    commit_staged_asset(repo, &tmp_path, &final_path, asset).await
+    commit_staged_asset(repo, &tmp_path, &final_path, asset, &derived).await
 }
 
 pub mod process;

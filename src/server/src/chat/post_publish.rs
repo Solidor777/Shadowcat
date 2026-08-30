@@ -155,6 +155,8 @@ pub struct PostPublishDeps {
     pub client: Arc<reqwest::Client>,
     /// The asset-storage root a resolved image is committed under.
     pub assets_root: std::path::PathBuf,
+    /// `Config.retain_originals`, forwarded to every asset commit.
+    pub retain_originals: bool,
     /// The backup write-quiesce barrier -- held read-side around every asset
     /// commit this pipeline performs, same as `http::assets::upload`/
     /// `replace`/`delete`.
@@ -188,6 +190,7 @@ pub async fn run_pending_enrichments(
         repo,
         client,
         assets_root,
+        retain_originals,
         write_barrier,
         preview_fetch_locks,
     } = deps;
@@ -197,6 +200,7 @@ pub async fn run_pending_enrichments(
             repo: repo.clone(),
             client: client.clone(),
             assets_root: assets_root.clone(),
+            retain_originals,
             write_barrier: write_barrier.clone(),
             preview_fetch_locks: preview_fetch_locks.clone(),
         };
@@ -328,6 +332,8 @@ struct FetchDeps {
     client: Arc<reqwest::Client>,
     /// The asset-storage root a resolved image is committed under.
     assets_root: std::path::PathBuf,
+    /// `Config.retain_originals`, forwarded to every asset commit.
+    retain_originals: bool,
     /// The backup write-quiesce barrier -- held read-side around every asset
     /// commit, same as `PostPublishDeps.write_barrier`.
     write_barrier: Arc<tokio::sync::RwLock<()>>,
@@ -384,6 +390,7 @@ async fn resolve_preview_image(
         repo,
         client,
         assets_root,
+        retain_originals,
         write_barrier,
         preview_fetch_locks,
     } = deps;
@@ -419,6 +426,7 @@ async fn resolve_preview_image(
                     original_name: "link-preview-image",
                     created_by: None,
                     provenance: crate::data::asset::Provenance::LinkPreview,
+                    retain_originals,
                 },
                 now,
             )
@@ -500,6 +508,7 @@ async fn resolve_thumbnail_asset(
         repo,
         client,
         assets_root,
+        retain_originals,
         write_barrier,
         preview_fetch_locks,
     } = deps;
@@ -532,6 +541,7 @@ async fn resolve_thumbnail_asset(
                     original_name: "oembed-thumbnail",
                     created_by: None,
                     provenance: crate::data::asset::Provenance::LinkPreview,
+                    retain_originals,
                 },
                 now,
             )

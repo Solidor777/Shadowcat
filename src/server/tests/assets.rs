@@ -1,7 +1,9 @@
 //! End-to-end asset lifecycle against a live server: upload, retrieval, replacement, deletion and
 //! listing, each asserted on BOTH the database record and the file on disk, plus the gates around
-//! them — content-type and size-cap rejection, world-membership authorization, `304` revalidation,
-//! per-user rate limiting, and the broadcasts that replacement and deletion emit.
+//! them — size-cap rejection, the sniffed-vs-declared content-type labeling (a false image claim
+//! is stored as octet-stream, never rejected), the WebP conversion with retained originals and
+//! derivatives, world-membership authorization, `304` revalidation, per-user rate limiting, and
+//! the broadcasts that replacement and deletion emit.
 //!
 //! Exercises the HTTP surface rather than `data::repository` directly, so a change that leaves the
 //! repository correct while breaking the route still fails here. A rejected upload is asserted not
@@ -22,7 +24,9 @@ async fn upload_persists_record_and_file() {
         .await;
     assert_eq!(res.status(), 200, "body: {:?}", res.text().await);
     let asset: serde_json::Value = res.json().await.unwrap();
-    assert_eq!(asset["content_type"], "image/png");
+    // The pipeline converts the PNG; the served canonical is WebP.
+    assert_eq!(asset["content_type"], "image/webp");
+    assert_eq!(asset["original_content_type"], "image/png");
     assert_eq!(asset["version"], 1);
     // The record is queryable and the file exists on disk.
     let id = uuid::Uuid::parse_str(asset["id"].as_str().unwrap()).unwrap();
@@ -30,13 +34,107 @@ async fn upload_persists_record_and_file() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn upload_rejects_non_image_bytes() {
+async fn upload_with_a_false_image_claim_is_stored_as_octet_stream() {
     let h = spawn().await;
-    // Declared image/png, but the bytes are a PDF → magic-byte mismatch.
+    // Declared image/png, but the bytes are a PDF → the claim is disproved by
+    // the magic bytes, so the label falls to octet-stream; the upload is
+    // still accepted (pass-through), never rejected for conversion reasons.
     let res = h
         .upload("evil.png", "image/png", b"%PDF-1.7 not an image".to_vec())
         .await;
-    assert_eq!(res.status(), 400);
+    assert_eq!(res.status(), 200);
+    let asset: serde_json::Value = res.json().await.unwrap();
+    assert_eq!(asset["content_type"], "application/octet-stream");
+    assert_eq!(asset["conversion_note"], "not an image");
+    assert!(asset["derived_tags"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|t| t == "other"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn upload_converts_png_to_webp_and_keeps_original() {
+    let h = spawn().await;
+    let asset: serde_json::Value = h
+        .upload("m.png", "image/png", PNG_1X1.to_vec())
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(asset["content_type"], "image/webp");
+    assert_eq!(asset["original_content_type"], "image/png");
+    assert_eq!(asset["original_byte_size"], PNG_1X1.len() as i64);
+    assert_eq!(asset["original_retained"], true);
+    assert_eq!(asset["width"], 1);
+    assert_eq!(asset["height"], 1);
+    let derived = asset["derived_tags"].as_array().unwrap();
+    for expected in ["image", "webp", "square", "uploaded"] {
+        assert!(
+            derived.iter().any(|t| t == expected),
+            "missing {expected} in {derived:?}"
+        );
+    }
+    let id = asset["id"].as_str().unwrap();
+    let dir = h.assets_dir.join(h.world.to_string());
+    assert_eq!(
+        std::fs::read(dir.join(format!("{id}.orig"))).unwrap(),
+        PNG_1X1
+    );
+    assert!(dir.join(format!("{id}.thumb.webp")).exists());
+    assert!(dir.join(format!("{id}.preview.webp")).exists());
+    // `serve` returns the canonical WebP.
+    let res = h
+        .client
+        .get(format!("http://{}/api/assets/{id}", h.addr))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.headers()["content-type"], "image/webp");
+    assert_eq!(
+        res.bytes().await.unwrap().as_ref(),
+        std::fs::read(dir.join(id)).unwrap()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn upload_with_retain_false_has_no_orig() {
+    use common::spawn_with;
+    let h = spawn_with(|c| c.retain_originals = false).await;
+    let asset: serde_json::Value = h
+        .upload("m.png", "image/png", PNG_1X1.to_vec())
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(asset["content_type"], "image/webp");
+    assert_eq!(asset["original_retained"], false);
+    let id = asset["id"].as_str().unwrap();
+    let dir = h.assets_dir.join(h.world.to_string());
+    assert!(!dir.join(format!("{id}.orig")).exists());
+    assert!(dir.join(format!("{id}.thumb.webp")).exists());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn upload_non_image_is_passthrough_other() {
+    let h = spawn().await;
+    let res = h
+        .upload("notes.pdf", "application/pdf", b"%PDF-1.7 hello".to_vec())
+        .await;
+    assert_eq!(res.status(), 200, "body: {:?}", res.text().await);
+    let asset: serde_json::Value = res.json().await.unwrap();
+    assert_eq!(asset["content_type"], "application/pdf");
+    assert_eq!(asset["conversion_note"], "not an image");
+    assert_eq!(asset["width"], serde_json::Value::Null);
+    assert!(asset["derived_tags"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|t| t == "other"));
+    let id = asset["id"].as_str().unwrap();
+    let dir = h.assets_dir.join(h.world.to_string());
+    assert_eq!(std::fs::read(dir.join(id)).unwrap(), b"%PDF-1.7 hello");
+    assert!(!dir.join(format!("{id}.thumb.webp")).exists());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -63,9 +161,10 @@ async fn serve_returns_bytes_then_304_on_revalidation() {
 
     let res = h.client.get(&url).send().await.unwrap();
     assert_eq!(res.status(), 200);
-    assert_eq!(res.headers()["content-type"], "image/png");
+    assert_eq!(res.headers()["content-type"], "image/webp");
     let etag = res.headers()["etag"].to_str().unwrap().to_string();
-    assert_eq!(res.bytes().await.unwrap().as_ref(), PNG_1X1);
+    let on_disk = std::fs::read(h.assets_dir.join(h.world.to_string()).join(id)).unwrap();
+    assert_eq!(res.bytes().await.unwrap().as_ref(), on_disk);
 
     // Conditional GET with the matching ETag → 304.
     let res2 = h
@@ -356,13 +455,15 @@ async fn rejected_upload_does_not_consume_rate_quota() {
     let h = spawn_with(|c| {
         c.upload_rate_per_min = 1;
         c.upload_rate_per_min_gm = Some(1);
+        // GM cap 1 KiB: the 67-byte PNG fits, the 4 KiB body does not.
+        c.upload_max_bytes_gm = Some(1024);
     })
     .await;
-    // Rejected (non-image) — should refund its slot.
+    // Rejected (over-cap) — should refund its slot.
     let bad = h
-        .upload("bad.png", "image/png", b"%PDF-1.7 nope".to_vec())
+        .upload("bad.bin", "application/octet-stream", vec![0u8; 4096])
         .await;
-    assert_eq!(bad.status(), 400);
+    assert_eq!(bad.status(), 413);
     // The single real upload still succeeds (quota was refunded, not burned).
     let good = h.upload("ok.png", "image/png", PNG_1X1.to_vec()).await;
     assert_eq!(
@@ -410,6 +511,8 @@ async fn rejected_replace_does_not_consume_rate_quota() {
     let h = spawn_with(|c| {
         c.upload_rate_per_min = 2;
         c.upload_rate_per_min_gm = Some(2);
+        // GM cap 1 KiB: the 67-byte PNG fits, the 4 KiB replace body does not.
+        c.upload_max_bytes_gm = Some(1024);
     })
     .await;
     let asset: serde_json::Value = h
@@ -419,12 +522,13 @@ async fn rejected_replace_does_not_consume_rate_quota() {
         .await
         .unwrap();
     let id = asset["id"].as_str().unwrap().to_string();
-    // Rejected (non-image) replace → 400; its rate slot is refunded.
+    // Rejected (over-cap) replace → 413; its rate slot is refunded.
+    let too_big = vec![0u8; 4096];
     assert_eq!(
-        h.replace(&id, "x.png", "image/png", b"%PDF-1.7 nope".to_vec())
+        h.replace(&id, "x.bin", "application/octet-stream", too_big)
             .await
             .status(),
-        400
+        413
     );
     // The good replace still fits (upload=1, bad refunded, good=2).
     assert_eq!(
@@ -437,7 +541,9 @@ async fn rejected_replace_does_not_consume_rate_quota() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn failed_replace_leaves_original_intact() {
-    let h = spawn().await;
+    use common::spawn_with;
+    // GM cap 1 KiB: the 67-byte PNG fits, the 4 KiB replace body does not.
+    let h = spawn_with(|c| c.upload_max_bytes_gm = Some(1024)).await;
     let asset: serde_json::Value = h
         .upload("m.png", "image/png", PNG_1X1.to_vec())
         .await
@@ -446,25 +552,35 @@ async fn failed_replace_leaves_original_intact() {
         .unwrap();
     let id = asset["id"].as_str().unwrap().to_string();
 
-    // Replace with non-image bytes → 400; the DB write and rename never run.
+    let before = h
+        .client
+        .get(format!("http://{}/api/assets/{}", h.addr, id))
+        .send()
+        .await
+        .unwrap()
+        .bytes()
+        .await
+        .unwrap();
+
+    // Replace with an over-cap body → 413; the DB write and rename never run.
     let res = h
         .client
         .post(format!("http://{}/api/assets/{}/replace", h.addr, id))
         .multipart(
             reqwest::multipart::Form::new().part(
                 "file",
-                reqwest::multipart::Part::bytes(b"%PDF-1.7 nope".to_vec())
-                    .file_name("x.png")
-                    .mime_str("image/png")
+                reqwest::multipart::Part::bytes(vec![0u8; 4096])
+                    .file_name("x.bin")
+                    .mime_str("application/octet-stream")
                     .unwrap(),
             ),
         )
         .send()
         .await
         .unwrap();
-    assert_eq!(res.status(), 400);
+    assert_eq!(res.status(), 413);
 
-    // Original is untouched: version still 1, original bytes served.
+    // Original is untouched: version still 1, the same bytes served.
     let got = h
         .client
         .get(format!("http://{}/api/assets/{}", h.addr, id))
@@ -472,7 +588,7 @@ async fn failed_replace_leaves_original_intact() {
         .await
         .unwrap();
     assert_eq!(got.status(), 200);
-    assert_eq!(got.bytes().await.unwrap().as_ref(), PNG_1X1);
+    assert_eq!(got.bytes().await.unwrap(), before);
     assert_eq!(
         h.repo
             .get_asset(uuid::Uuid::parse_str(&id).unwrap())

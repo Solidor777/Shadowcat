@@ -127,6 +127,14 @@ impl SqliteRepository {
         Ok(names)
     }
 
+    /// `refresh_derived_tags_tx` in its own transaction.
+    pub async fn refresh_derived_tags(&self, id: Uuid) -> Result<(), DataError> {
+        let mut tx = self.pool.begin().await?;
+        Self::refresh_derived_tags_tx(&mut tx, id).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
     /// Recomputes and rewrites ONLY the derived (`derived = 1`) tag rows of
     /// asset `id` inside `tx`, from the stored row, its folder chain and the
     /// provenance its current derived set encodes. Explicit tags are untouched.
