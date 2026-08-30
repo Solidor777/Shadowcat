@@ -254,6 +254,7 @@ pub(crate) fn navmesh_find(
         path: full_path,
         cost,
         arrested: false,
+        truncated: false,
     })
 }
 
@@ -321,6 +322,7 @@ pub(crate) fn clip_to_visible_mask(
             path: vec![outcome.path[0]],
             cost: 0.0,
             arrested: outcome.arrested,
+            truncated: outcome.truncated,
         };
     }
     if mask.is_none() && walls.is_empty() {
@@ -381,6 +383,7 @@ pub(crate) fn clip_to_visible_mask(
         path: truncated,
         cost: new_cost,
         arrested: outcome.arrested,
+        truncated: outcome.truncated,
     }
 }
 
@@ -528,6 +531,7 @@ pub(crate) fn los_smooth(
         path: smoothed,
         cost,
         arrested: outcome.arrested,
+        truncated: outcome.truncated,
     }
 }
 
@@ -581,7 +585,50 @@ pub(crate) fn truncate_at_arrest(
         path: kept,
         cost,
         arrested: true,
+        truncated: outcome.truncated,
     }
+}
+
+/// Truncate a continuous (walls-only) route where its cumulative Euclidean
+/// length exceeds `budget_scene_units`, cutting the final span at the exact
+/// budget boundary — the preview half of the executor's own budget stop.
+/// Valid ONLY on the unweighted continuous path (this engine runs only when
+/// the region field has no terrain weights), where Euclidean length IS the
+/// weighted cost — the same assumption `truncate_at_arrest`'s recompute makes.
+/// A route within budget is returned unchanged; a cut clears `arrested` (the
+/// preview no longer reaches an arrest point beyond the cut).
+pub(crate) fn truncate_at_budget(
+    outcome: crate::scene::pathfinding::PathOutcome,
+    budget_scene_units: f64,
+) -> crate::scene::pathfinding::PathOutcome {
+    if outcome.path.len() < 2 || outcome.cost <= budget_scene_units {
+        return outcome;
+    }
+    let mut kept: Vec<(f64, f64)> = vec![outcome.path[0]];
+    let mut cum = 0.0;
+    for w in outcome.path.windows(2) {
+        let len = ((w[1].0 - w[0].0).powi(2) + (w[1].1 - w[0].1).powi(2)).sqrt();
+        if cum + len > budget_scene_units {
+            let remain = (budget_scene_units - cum).max(0.0);
+            if len > 0.0 && remain > 0.0 {
+                let t = remain / len;
+                kept.push((
+                    w[0].0 + (w[1].0 - w[0].0) * t,
+                    w[0].1 + (w[1].1 - w[0].1) * t,
+                ));
+                cum += remain;
+            }
+            return crate::scene::pathfinding::PathOutcome {
+                path: kept,
+                cost: cum,
+                arrested: false,
+                truncated: true,
+            };
+        }
+        cum += len;
+        kept.push(w[1]);
+    }
+    outcome
 }
 
 #[cfg(test)]

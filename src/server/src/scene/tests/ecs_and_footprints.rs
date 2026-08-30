@@ -576,6 +576,7 @@ fn pathfind_refuses_a_scene_with_no_document() {
         (50.0, 50.0),
         &[(450.0, 50.0)],
         0.1,
+        None,
     );
     assert!(
         matches!(out, Err(pathfinding::PathFail::Invalid)),

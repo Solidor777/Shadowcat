@@ -1623,6 +1623,10 @@ impl SceneEcs {
     /// no mask; `visible` ⇒ `visible_cells`; `revealed` ⇒ `visible_cells ∪ requester.explored`.
     /// An empty non-GM mask ⇒ `find` returns Unreachable (fail-closed —
     /// the dark-scene freeze that mirrors the movement gate, by design).
+    /// `budget_cells` is the movement-budget preview clamp: `Some` cuts the
+    /// route at the last step whose cumulative weighted cost fits, setting
+    /// `PathOutcome.truncated` (both engines; the caller resolves it through
+    /// the same gate the executor enforces).
     ///
     /// Coupling: `visible_cells` is the ONE canonical mask shared between this
     /// method, the movement gate (`move_exec::execute_move`, reached via
@@ -1635,6 +1639,7 @@ impl SceneEcs {
         start: (f64, f64),
         waypoints: &[(f64, f64)],
         footprint_radius: f64,
+        budget_cells: Option<f64>,
     ) -> Result<pathfinding::PathOutcome, pathfinding::PathFail> {
         let RouteRequester {
             user,
@@ -1704,6 +1709,7 @@ impl SceneEcs {
                         mask: mask.as_ref(),
                         regions: Some(&regions),
                         shape: &*grid_shape,
+                        budget_cells,
                     },
                 )
             }
@@ -1739,6 +1745,10 @@ impl SceneEcs {
                             mask: mask.as_ref(),
                             regions: Some(&regions),
                             shape: &*euclid_shape,
+                            // The budget cuts the PRE-smooth route: `los_smooth` only ever
+                            // shortens a chord, so the smoothed result stays within budget —
+                            // an occasional under-reach, never an over-show.
+                            budget_cells,
                         },
                     )?;
                     // `find` already reports cost in CELLS — the wire contract `PathResult`'s
@@ -1794,6 +1804,17 @@ impl SceneEcs {
                     }
                     let outcome =
                         navmesh::truncate_at_arrest(clipped, &regions, cell, &*grid_shape);
+                    // Budget cut in scene units (the budget is authored in cells; `wu`
+                    // converts below): valid on this walls-only path because the field has
+                    // no terrain weights here, so Euclidean length IS the weighted cost —
+                    // the same assumption `truncate_at_arrest`'s own recompute makes.
+                    let wu_for_budget = grid_shape.world_units_per_cell();
+                    let outcome = match budget_cells {
+                        Some(b) if wu_for_budget.is_finite() && wu_for_budget > 0.0 => {
+                            navmesh::truncate_at_budget(outcome, b * wu_for_budget)
+                        }
+                        _ => outcome,
+                    };
                     // Convert once, at the boundary: `navmesh_find`/`clip_to_visible_mask`/
                     // `truncate_at_arrest` all compute Euclidean lengths in SCENE units, but
                     // `PathResult`'s wire contract (`ws::protocol`) promises cells, matching the

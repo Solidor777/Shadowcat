@@ -18,6 +18,7 @@ fn oc(path: Vec<(f64, f64)>) -> PathOutcome {
         path,
         cost: 7.0,
         arrested: false,
+        truncated: false,
     }
 }
 fn empty_field() -> RegionField {
@@ -60,6 +61,7 @@ fn truncate_at_arrest_cuts_at_first_visible_arrest_cell() {
         path: vec![(50.0, 50.0), (450.0, 50.0)],
         cost: 400.0,
         arrested: false,
+        truncated: false,
     };
     let out = truncate_at_arrest(
         route,
@@ -84,6 +86,7 @@ fn truncate_at_arrest_no_arrest_is_unchanged() {
         path: vec![(50.0, 50.0), (450.0, 50.0)],
         cost: 400.0,
         arrested: false,
+        truncated: false,
     };
     let out = truncate_at_arrest(route.clone(), &empty_field(), 100.0, &test_grid());
     assert_eq!(out.path, route.path, "no arrest region: route unchanged");
@@ -97,6 +100,7 @@ fn truncate_at_arrest_start_cell_is_not_a_trigger() {
         path: vec![(50.0, 50.0), (450.0, 50.0)],
         cost: 400.0,
         arrested: false,
+        truncated: false,
     };
     let out = truncate_at_arrest(
         route,
@@ -637,6 +641,7 @@ fn clip_returns_unchanged_when_mask_is_none_and_no_walls() {
         path: vec![(50.0, 50.0), (950.0, 50.0)],
         cost: 900.0,
         arrested: false,
+        truncated: false,
     };
     let clipped = clip_to_visible_mask(outcome.clone(), None, 100.0, 0.1, &[], &test_grid());
     assert_eq!(clipped.path, outcome.path);
@@ -654,6 +659,7 @@ fn clip_truncates_at_the_mask_boundary() {
         path: vec![(50.0, 50.0), (950.0, 50.0)],
         cost: 900.0,
         arrested: false,
+        truncated: false,
     };
     let clipped = clip_to_visible_mask(outcome, Some(&mask), 100.0, 0.1, &[], &test_grid());
     let last = *clipped.path.last().unwrap();
@@ -678,6 +684,7 @@ fn clip_leaves_a_fully_visible_route_untouched() {
         path: vec![(50.0, 50.0), (950.0, 50.0)],
         cost: 900.0,
         arrested: false,
+        truncated: false,
     };
     let clipped = clip_to_visible_mask(outcome.clone(), Some(&mask), 100.0, 0.1, &[], &test_grid());
     let last_orig = *outcome.path.last().unwrap();
@@ -705,6 +712,7 @@ fn clip_with_a_mask_excluding_the_whole_corridor_confines_the_route_to_that_cell
         path: vec![(50.0, 50.0), (950.0, 50.0)],
         cost: 900.0,
         arrested: false,
+        truncated: false,
     };
     let clipped = clip_to_visible_mask(outcome, Some(&mask), 100.0, 0.1, &[], &test_grid());
     let last = *clipped.path.last().unwrap();
@@ -739,6 +747,7 @@ fn clip_truncates_a_chord_that_crosses_a_wall() {
         path: vec![(50.0, 50.0), (950.0, 50.0)],
         cost: 900.0,
         arrested: false,
+        truncated: false,
     };
     let clipped = clip_to_visible_mask(outcome, None, 100.0, 0.1, &walls, &test_grid());
     let last = *clipped.path.last().unwrap();
@@ -761,6 +770,7 @@ fn clip_with_over_cap_footprint_radius_fails_closed_without_hanging_or_panicking
         path: vec![(50.0, 50.0), (950.0, 50.0)],
         cost: 900.0,
         arrested: false,
+        truncated: false,
     };
     let over_cap = crate::scene::pathfinding::MAX_FOOTPRINT_CELLS + 1.0;
     let clipped = clip_to_visible_mask(
@@ -796,6 +806,7 @@ fn clip_with_a_degenerate_cell_fails_closed() {
         path: vec![(50.0, 50.0), (950.0, 50.0)],
         cost: 900.0,
         arrested: false,
+        truncated: false,
     };
     for bad_cell in [0.0, -1.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
         let clipped = clip_to_visible_mask(
@@ -834,6 +845,7 @@ fn clip_skips_a_non_finite_wall_without_hiding_a_crossing_against_other_walls() 
         path: vec![(50.0, 50.0), (950.0, 50.0)],
         cost: 900.0,
         arrested: false,
+        truncated: false,
     };
     let clipped = clip_to_visible_mask(outcome, None, 100.0, 0.1, &walls, &test_grid());
     let last = *clipped.path.last().unwrap();
@@ -902,6 +914,7 @@ fn clip_on_hex_truncates_before_an_occluded_hex_that_square_indexing_admits() {
         path: vec![start, goal],
         cost: 173.2,
         arrested: false,
+        truncated: false,
     };
 
     let hexed = clip_to_visible_mask(outcome.clone(), Some(&mask), HEX_SIZE, 0.1, &[], &g);
@@ -1024,6 +1037,7 @@ fn truncate_at_arrest_on_hex_cuts_at_the_axial_arrest_cell_not_the_square_one() 
         path: vec![g.cell_center((0, 0)), g.cell_center((4, 0))],
         cost: 346.4,
         arrested: false,
+        truncated: false,
     };
 
     let hexed = truncate_at_arrest(route.clone(), &field, HEX_SIZE, &g);

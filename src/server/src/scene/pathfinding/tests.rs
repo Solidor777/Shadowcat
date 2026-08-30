@@ -16,6 +16,7 @@ fn grid<'a>(walls: &'a [Seg], mask: Option<&'a BTreeSet<Cell>>, footprint: f64) 
             mask,
             regions: None,
             shape,
+            budget_cells: None,
         },
         window: (-100, -100, 100, 100),
     }

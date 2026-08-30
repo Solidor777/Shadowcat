@@ -171,6 +171,7 @@ fn pathfind_frames_round_trip() {
         path: vec![(50.0, 50.0)],
         cost: 2.0,
         arrested: true,
+        truncated: false,
     };
     let json = serde_json::to_string(&ok).unwrap();
     assert!(json.contains("\"type\":\"path_result\""));

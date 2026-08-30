@@ -60,6 +60,11 @@ pub struct PathInputs<'a> {
     /// Cell geometry for this scene (`SquareGrid` or `HexGrid`), resolved by the caller from the
     /// scene's `grid.kind` and passed into `find()`.
     pub shape: &'a dyn crate::scene::grid_shape::GridShape,
+    /// Movement-budget ceiling in cells; `Some` ⇒ the found route is cut at
+    /// the last cell whose cumulative weighted cost fits, with
+    /// `PathOutcome.truncated` set — the preview half of the executor's own
+    /// budget stop, priced through the same per-step symbols.
+    pub budget_cells: Option<f64>,
 }
 
 /// Assembled, borrow-only inputs for one A* search: the caller-supplied `PathInputs` plus the
@@ -388,6 +393,8 @@ pub struct PathOutcome {
     pub cost: f64,
     /// An arrest region truncated the route (honest-preview rule).
     pub arrested: bool,
+    /// The mover's movement budget truncated the route (the preview clamp).
+    pub truncated: bool,
 }
 
 /// Plan a footprint-clear, mask-bounded route `start -> waypoints[0] -> ... -> waypoints[last]`.
@@ -537,6 +544,44 @@ pub fn find(
         }
     }
 
+    // Budget truncation, applied AFTER the arrest cut (running second over the survivor means
+    // the nearer cut wins): replay the per-step cost across `cells` through the SAME
+    // `neighbors_with_cost` + `terrain_multiplier` pricing the accumulation and the arrest
+    // replay use, and cut at the last cell whose cumulative cost fits. A cut strictly before
+    // the arrest cell means the preview no longer reaches the arrest, so `arrested` clears.
+    let mut truncated = false;
+    if let Some(budget) = grid.inputs.budget_cells {
+        let mut p = 0u8;
+        let mut cum = 0.0;
+        let mut keep = cells.len();
+        for (i, w) in cells.windows(2).enumerate() {
+            let (_, sc, next_p) = grid
+                .inputs
+                .shape
+                .neighbors_with_cost(w[0], p)
+                .into_iter()
+                .find(|(next, _, _)| *next == w[1])
+                .expect("cells adjacent along an already-found route are a valid grid_shape neighbor pair");
+            let step = sc
+                * grid
+                    .inputs
+                    .regions
+                    .map_or(1.0, |rf| rf.terrain_multiplier(w[1]));
+            if cum + step > budget {
+                keep = i + 1;
+                truncated = true;
+                break;
+            }
+            cum += step;
+            p = next_p;
+        }
+        if truncated {
+            cells.truncate(keep);
+            total = cum;
+            arrested = false;
+        }
+    }
+
     // The FIRST point is the mover's literal current position, not `cell_center(cells[0])`: a
     // token need not sit exactly on a cell center (snap-off authoring, a GM's freeform nudge,
     // any off-grid placement), and `execute_move` requires a `MoveRequest`'s `path[0]` to equal
@@ -557,6 +602,7 @@ pub fn find(
         path,
         cost: total,
         arrested,
+        truncated,
     })
 }
 
