@@ -4,8 +4,13 @@
 #![deny(clippy::missing_docs_in_private_items)]
 
 use super::*;
+use crate::data::asset::tags::{derive, provenance_of, DeriveInput};
 use crate::data::asset::{Asset, AssetMeta};
 use crate::data::engine::ASSET_FOLDER_DOC_TYPE;
+
+/// Deepest folder nesting `folder_ancestor_names` walks before giving up on
+/// a chain (defensive bound; the write gate keeps the tree acyclic).
+const MAX_FOLDER_DEPTH: usize = 64;
 
 /// One `asset_tags` row, in memory.
 struct TagRow {
@@ -81,11 +86,92 @@ impl SqliteRepository {
             return Ok(());
         }
         let parent: Option<String> = row.get("parent_id");
-        sqlx::query("UPDATE assets SET folder_id = ? WHERE folder_id = ?")
+        let moved = sqlx::query("UPDATE assets SET folder_id = ? WHERE folder_id = ? RETURNING id")
             .bind(parent)
+            .bind(id.to_string())
+            .fetch_all(&mut *tx)
+            .await?;
+        for r in moved {
+            let asset_id = Uuid::parse_str(r.get::<String, _>("id").as_str())
+                .map_err(|e| DataError::OpFailed(e.to_string()))?;
+            // The folder-segment tags name ancestors that just changed.
+            Self::refresh_derived_tags_tx(&mut *tx, asset_id).await?;
+        }
+        Ok(())
+    }
+
+    /// Root-first names of `folder_id` and its ancestors (empty for `None`,
+    /// the world root). Feeds the folder-segment derived tags. A nameless
+    /// folder contributes nothing; the walk stops at `MAX_FOLDER_DEPTH`.
+    pub(crate) async fn folder_ancestor_names(
+        tx: &mut sqlx::SqliteConnection,
+        folder_id: Option<Uuid>,
+    ) -> Result<Vec<String>, DataError> {
+        let mut names = Vec::new();
+        let mut cur = folder_id;
+        let mut hops = 0;
+        while let Some(id) = cur {
+            let Some(doc) = Self::load_document(&mut *tx, id).await? else {
+                break;
+            };
+            if let Some(name) = doc.name {
+                names.push(name);
+            }
+            hops += 1;
+            if hops > MAX_FOLDER_DEPTH {
+                break;
+            }
+            cur = doc.parent_id;
+        }
+        names.reverse();
+        Ok(names)
+    }
+
+    /// Recomputes and rewrites ONLY the derived (`derived = 1`) tag rows of
+    /// asset `id` inside `tx`, from the stored row, its folder chain and the
+    /// provenance its current derived set encodes. Explicit tags are untouched.
+    pub(crate) async fn refresh_derived_tags_tx(
+        tx: &mut sqlx::SqliteConnection,
+        id: Uuid,
+    ) -> Result<(), DataError> {
+        let Some(row) = sqlx::query("SELECT * FROM assets WHERE id = ?")
+            .bind(id.to_string())
+            .fetch_optional(&mut *tx)
+            .await?
+        else {
+            return Ok(());
+        };
+        let asset = Self::asset_from_row(&row)?;
+        let old_derived: Vec<String> =
+            sqlx::query("SELECT tag FROM asset_tags WHERE asset_id = ? AND derived = 1")
+                .bind(id.to_string())
+                .fetch_all(&mut *tx)
+                .await?
+                .iter()
+                .map(|r| r.get::<String, _>("tag"))
+                .collect();
+        let folder_names = Self::folder_ancestor_names(&mut *tx, asset.folder_id).await?;
+        let derived = derive(DeriveInput {
+            content_type: &asset.content_type,
+            meta: &asset.meta,
+            folder_names: &folder_names,
+            provenance: provenance_of(&old_derived),
+        });
+        sqlx::query("DELETE FROM asset_tags WHERE asset_id = ? AND derived = 1")
             .bind(id.to_string())
             .execute(&mut *tx)
             .await?;
+        for tag in derived {
+            // An explicit tag of the same text already occupies the primary
+            // key; the GM's copy wins, so the derived duplicate is skipped.
+            sqlx::query(
+                "INSERT OR IGNORE INTO asset_tags (asset_id, tag, derived) VALUES (?, ?, 1)",
+            )
+            .bind(id.to_string())
+            .bind(tag)
+            .execute(&mut *tx)
+            .await?;
+        }
         Ok(())
     }
 

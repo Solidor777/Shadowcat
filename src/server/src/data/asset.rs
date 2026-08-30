@@ -206,5 +206,7 @@ pub async fn create_asset_from_bytes(
     commit_staged_asset(repo, &tmp_path, &final_path, asset).await
 }
 
+pub mod tags;
+
 #[cfg(test)]
 mod tests;

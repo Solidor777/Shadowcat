@@ -198,3 +198,77 @@ async fn folder_parent_must_be_folder_and_acyclic() {
         .unwrap_err();
     assert!(matches!(err, DataError::Forbidden), "{err:?}");
 }
+
+#[tokio::test]
+async fn folder_delete_refreshes_moved_assets_folder_tags() {
+    let repo = repo().await;
+    let (world, ctx) = gm_world(&repo).await;
+    let a = folder_doc(1, world, "A", None);
+    let b = folder_doc(2, world, "B", Some(a.id));
+    repo.apply_intent(
+        &ctx,
+        world,
+        vec![
+            Operation::Create { doc: a.clone() },
+            Operation::Create { doc: b.clone() },
+        ],
+        1,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+    let mut x = sample(world);
+    x.folder_id = Some(b.id);
+    repo.insert_asset(&x).await.unwrap();
+    repo.set_asset_tags(
+        x.id,
+        &["hero".into()],
+        &[
+            "A".into(),
+            "B".into(),
+            "image".into(),
+            "link-preview".into(),
+        ],
+    )
+    .await
+    .unwrap();
+
+    // Ancestor walk is root-first.
+    let mut tx = repo.pool.begin().await.unwrap();
+    let names = SqliteRepository::folder_ancestor_names(&mut tx, Some(b.id))
+        .await
+        .unwrap();
+    assert_eq!(names, vec!["A".to_string(), "B".to_string()]);
+    assert!(SqliteRepository::folder_ancestor_names(&mut tx, None)
+        .await
+        .unwrap()
+        .is_empty());
+    drop(tx);
+
+    let stored_b = repo.get_document(b.id).await.unwrap().unwrap();
+    repo.apply_intent(
+        &ctx,
+        world,
+        vec![Operation::Delete { doc: stored_b }],
+        2,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+    let x = repo.get_asset(x.id).await.unwrap().unwrap();
+    assert_eq!(x.folder_id, Some(a.id));
+    assert_eq!(x.tags, vec!["hero".to_string()], "explicit tags untouched");
+    // "B" gone, "A" kept, provenance recovered from the old derived set,
+    // dimension tags recomputed from the row.
+    assert_eq!(
+        x.derived_tags,
+        vec![
+            "A".to_string(),
+            "image".to_string(),
+            "link-preview".to_string(),
+            "square".to_string(),
+            "transparent".to_string(),
+            "webp".to_string(),
+        ]
+    );
+}
