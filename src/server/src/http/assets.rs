@@ -81,7 +81,7 @@ impl Default for UploadRateLimiter {
 }
 
 use crate::auth::session::AuthUser;
-use crate::data::asset::Asset;
+use crate::data::asset::{Asset, AssetMeta};
 use crate::http::error::AppError;
 use crate::http::{routes::require_gm, AppState};
 use crate::ws::protocol::{AssetOp, ServerMsg};
@@ -216,6 +216,10 @@ pub async fn upload(
             created_by: Some(user.id),
             created_at: now,
             version: 1,
+            folder_id: None,
+            tags: vec![],
+            derived_tags: vec![],
+            meta: AssetMeta::unprocessed(content_type, byte_size),
         };
         // Read-side of the backup quiesce barrier, acquired only around the
         // rename+DB-commit pair below — the one critical section the quiesce
@@ -330,9 +334,10 @@ pub async fn replace(
         // If the rename later fails, the DB is one version ahead of unchanged bytes
         // — clients re-fetch (ETag changed) and the next replace lands correctly;
         // the inverse order would strand new bytes under a stale ETag (broken 304).
+        let meta = AssetMeta::unprocessed(content_type, byte_size);
         let version = match state
             .repo
-            .replace_asset_bytes(id, &existing.storage_key, content_type, byte_size)
+            .replace_asset_bytes(id, &existing.storage_key, content_type, byte_size, &meta)
             .await
         {
             Ok(v) => v,
@@ -359,6 +364,7 @@ pub async fn replace(
             content_type: content_type.to_string(),
             byte_size,
             version,
+            meta,
             ..existing
         })
     }

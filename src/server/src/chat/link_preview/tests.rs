@@ -886,6 +886,10 @@ async fn upsert_link_preview_cache_preserves_existing_image_asset_id_on_conflict
         created_by: Some(owner),
         created_at: 0,
         version: 1,
+        folder_id: None,
+        tags: vec![],
+        derived_tags: vec![],
+        meta: crate::data::asset::AssetMeta::unprocessed("image/png", 1),
     };
     repo.insert_asset(&asset).await.unwrap();
 

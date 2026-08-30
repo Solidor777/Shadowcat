@@ -1,5 +1,6 @@
 //! Repository tests, split by subject; shared fixtures live here.
 
+mod assets;
 mod combat_batches;
 mod commands_and_intents;
 mod invites_and_ownership;

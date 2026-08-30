@@ -297,6 +297,10 @@ async fn seed_world_rows(repo: &SqliteRepository, world: Uuid, owner: Uuid) -> U
         created_by: Some(owner),
         created_at: 0,
         version: 1,
+        folder_id: None,
+        tags: vec![],
+        derived_tags: vec![],
+        meta: crate::data::asset::AssetMeta::unprocessed("image/png", 1),
     })
     .await
     .unwrap();
@@ -481,6 +485,10 @@ async fn delete_user_scrubs_everything() {
         created_by: Some(u),
         created_at: 0,
         version: 1,
+        folder_id: None,
+        tags: vec![],
+        derived_tags: vec![],
+        meta: crate::data::asset::AssetMeta::unprocessed("image/png", 1),
     })
     .await
     .unwrap();
@@ -618,6 +626,10 @@ async fn user_delete_nulls_asset_created_by() {
         created_by: Some(u),
         created_at: 0,
         version: 1,
+        folder_id: None,
+        tags: vec![],
+        derived_tags: vec![],
+        meta: crate::data::asset::AssetMeta::unprocessed("image/png", 1),
     })
     .await
     .unwrap();
@@ -1067,13 +1079,23 @@ async fn asset_insert_get_replace_delete_list_round_trip() {
         created_by: Some(owner),
         created_at: 0,
         version: 1,
+        folder_id: None,
+        tags: vec![],
+        derived_tags: vec![],
+        meta: crate::data::asset::AssetMeta::unprocessed("image/png", 1),
     };
     r.insert_asset(&a).await.unwrap();
     assert_eq!(r.get_asset(id).await.unwrap().unwrap(), a);
 
     // Replace bumps version and updates byte metadata.
     let v = r
-        .replace_asset_bytes(id, &a.storage_key, "image/jpeg", 4321)
+        .replace_asset_bytes(
+            id,
+            &a.storage_key,
+            "image/jpeg",
+            4321,
+            &crate::data::asset::AssetMeta::unprocessed("image/jpeg", 4321),
+        )
         .await
         .unwrap();
     assert_eq!(v, 2);

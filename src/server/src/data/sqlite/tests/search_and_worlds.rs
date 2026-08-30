@@ -806,6 +806,10 @@ async fn import_world_round_trips_every_table_through_a_real_tar_bundle() {
         created_by: Some(owner),
         created_at: 0,
         version: 1,
+        folder_id: None,
+        tags: vec![],
+        derived_tags: vec![],
+        meta: crate::data::asset::AssetMeta::unprocessed("image/png", 1),
     })
     .await
     .unwrap();

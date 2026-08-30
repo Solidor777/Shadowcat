@@ -96,6 +96,10 @@ async fn serve_denies_non_member() {
             created_by: Some(h.user),
             created_at: 0,
             version: 1,
+            folder_id: None,
+            tags: vec![],
+            derived_tags: vec![],
+            meta: shadowcat::data::asset::AssetMeta::unprocessed("image/png", 1),
         })
         .await
         .unwrap();
@@ -230,9 +234,11 @@ async fn delete_broadcast_reflects_the_truly_removed_version_despite_a_racing_re
         let storage_key = asset["storage_key"].as_str().unwrap().to_string();
 
         let url = format!("http://{}/api/assets/{}", h.addr, id_str);
+        let meta = shadowcat::data::asset::AssetMeta::unprocessed("image/gif", 7);
         let (delete_res, replace_res) = tokio::join!(
             h.client.delete(&url).send(),
-            h.repo.replace_asset_bytes(id, &storage_key, "image/gif", 7)
+            h.repo
+                .replace_asset_bytes(id, &storage_key, "image/gif", 7, &meta)
         );
         assert_eq!(delete_res.unwrap().status(), 204);
 

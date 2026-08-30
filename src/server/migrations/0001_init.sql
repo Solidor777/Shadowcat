@@ -90,18 +90,40 @@ CREATE TABLE world_invites (
 CREATE INDEX idx_world_invites_world ON world_invites(world_id);
 
 CREATE TABLE assets (
-  id            TEXT PRIMARY KEY,
-  world_id      TEXT NOT NULL REFERENCES worlds(id) ON DELETE CASCADE,
-  storage_key   TEXT NOT NULL,
-  original_name TEXT NOT NULL,
-  content_type  TEXT NOT NULL,
-  byte_size     INTEGER NOT NULL,
-  created_by    TEXT REFERENCES users(id) ON DELETE SET NULL,
-  created_at    INTEGER NOT NULL,
-  version       INTEGER NOT NULL
+  id                    TEXT PRIMARY KEY,
+  world_id              TEXT NOT NULL REFERENCES worlds(id) ON DELETE CASCADE,
+  storage_key           TEXT NOT NULL,
+  original_name         TEXT NOT NULL,
+  content_type          TEXT NOT NULL,
+  byte_size             INTEGER NOT NULL,
+  created_by            TEXT REFERENCES users(id) ON DELETE SET NULL,
+  created_at            INTEGER NOT NULL,
+  version               INTEGER NOT NULL,
+  -- Pipeline metadata. folder_id names an `asset_folder` document; the
+  -- FK SET NULL is a safety net only — `delete_document_tx` reparents first.
+  folder_id             TEXT REFERENCES documents(id) ON DELETE SET NULL,
+  width                 INTEGER,
+  height                INTEGER,
+  has_alpha             INTEGER NOT NULL DEFAULT 0,
+  animated              INTEGER NOT NULL DEFAULT 0,
+  original_content_type TEXT NOT NULL DEFAULT '',
+  original_byte_size    INTEGER NOT NULL DEFAULT 0,
+  original_retained     INTEGER NOT NULL DEFAULT 0,
+  conversion_note       TEXT
 );
 
 CREATE INDEX idx_assets_world ON assets(world_id);
+CREATE INDEX idx_assets_folder ON assets(folder_id);
+
+-- Explicit (derived = 0) and derived (derived = 1) tags; derived rows are
+-- rewritten on every commit/rename/move/reconvert and never client-writable.
+CREATE TABLE asset_tags (
+  asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+  tag      TEXT NOT NULL,
+  derived  INTEGER NOT NULL,
+  PRIMARY KEY (asset_id, tag)
+);
+CREATE INDEX idx_asset_tags_tag ON asset_tags(tag, asset_id);
 
 -- Persisted link-preview cache: the DB-backed tier behind chat::LinkPreviewCache's
 -- in-memory fast path. No world_id — same process-global, URL-keyed scope the

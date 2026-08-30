@@ -67,7 +67,7 @@ describe("ActorsPanel — shape + size", () => {
     const { listAssets } = await import("@shadowcat/core");
     // Provide a fake asset so the picker has something to select
     vi.mocked(listAssets).mockResolvedValue([
-      { id: "asset-1", world_id: "w1", original_name: "hero.png", content_type: "image/png", byte_size: 100n, created_by: "u-self", created_at: 0n, storage_key: "k1", version: 1n },
+      { id: "asset-1", world_id: "w1", original_name: "hero.png", content_type: "image/png", byte_size: 100n, created_by: "u-self", created_at: 0n, storage_key: "k1", version: 1n, folder_id: null, tags: [], derived_tags: [], width: null, height: null, has_alpha: false, animated: false, original_content_type: "image/png", original_byte_size: 100n, original_retained: false, conversion_note: null },
     ]);
 
     render(ActorsPanel, {

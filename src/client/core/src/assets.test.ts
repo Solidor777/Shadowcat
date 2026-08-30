@@ -16,6 +16,17 @@ function asset(id: string, version: number): Asset {
     created_by: null,
     created_at: 0n,
     version: BigInt(version),
+    folder_id: null,
+    tags: [],
+    derived_tags: [],
+    width: null,
+    height: null,
+    has_alpha: false,
+    animated: false,
+    original_content_type: "image/png",
+    original_byte_size: 1n,
+    original_retained: false,
+    conversion_note: null,
   };
 }
 

@@ -40,4 +40,48 @@ created_at: bigint,
 /**
  * Bumped on every replace; backs the ETag and the resync source of truth.
  */
-version: bigint, };
+version: bigint, 
+/**
+ * Containing `asset_folder` document; `None` = world root.
+ */
+folder_id: string | null, 
+/**
+ * GM-set tags (client-writable via PATCH).
+ */
+tags: Array<string>, 
+/**
+ * Recomputed by `data::asset::tags::derive` on every commit/rename/move/reconvert; never client-writable.
+ */
+derived_tags: Array<string>, 
+/**
+ * Canonical pixel width; `None` for a non-image or undecodable file.
+ */
+width: number | null, 
+/**
+ * Canonical pixel height; `None` for a non-image or undecodable file.
+ */
+height: number | null, 
+/**
+ * Whether the source carried an alpha channel (drives lossless encoding + the `transparent` tag).
+ */
+has_alpha: boolean, 
+/**
+ * Whether the source is an animation (served pass-through; never re-encoded).
+ */
+animated: boolean, 
+/**
+ * MIME type of the bytes that ARRIVED (vs `Asset.content_type`, the served canonical).
+ */
+original_content_type: string, 
+/**
+ * Size of the bytes that arrived (vs `Asset.byte_size`, the served canonical).
+ */
+original_byte_size: bigint, 
+/**
+ * Whether `<uuid>.orig` exists on disk (`Config.retain_originals` AND the upload was converted).
+ */
+original_retained: boolean, 
+/**
+ * Why the upload was stored pass-through instead of converted, if it was.
+ */
+conversion_note: string | null, };

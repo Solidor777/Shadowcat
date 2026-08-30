@@ -101,6 +101,10 @@ async fn resolve_preview_image_cache_hit_skips_network_fetch() {
         created_by: None,
         created_at: 0,
         version: 1,
+        folder_id: None,
+        tags: vec![],
+        derived_tags: vec![],
+        meta: crate::data::asset::AssetMeta::unprocessed("image/png", 1),
     };
     repo.insert_asset(&asset).await.unwrap();
     let preview_url = "https://cached.example/";
@@ -274,6 +278,10 @@ async fn run_pending_enrichments_patches_matching_preview_by_url() {
         created_by: None,
         created_at: 0,
         version: 1,
+        folder_id: None,
+        tags: vec![],
+        derived_tags: vec![],
+        meta: crate::data::asset::AssetMeta::unprocessed("image/png", 1),
     };
     repo.insert_asset(&asset).await.unwrap();
     repo.set_link_preview_cache_image("https://match.example/", asset_id)
@@ -359,6 +367,10 @@ async fn run_pending_enrichments_is_a_noop_on_tombstoned_message() {
         created_by: None,
         created_at: 0,
         version: 1,
+        folder_id: None,
+        tags: vec![],
+        derived_tags: vec![],
+        meta: crate::data::asset::AssetMeta::unprocessed("image/png", 1),
     };
     repo.insert_asset(&asset).await.unwrap();
     repo.set_link_preview_cache_image("https://match.example/", asset.id)
@@ -482,6 +494,10 @@ async fn run_pending_enrichments_reads_fresh_content_for_occ() {
         created_by: None,
         created_at: 0,
         version: 1,
+        folder_id: None,
+        tags: vec![],
+        derived_tags: vec![],
+        meta: crate::data::asset::AssetMeta::unprocessed("image/png", 1),
     };
     repo.insert_asset(&asset).await.unwrap();
     repo.set_link_preview_cache_image("https://match.example/", asset_id)

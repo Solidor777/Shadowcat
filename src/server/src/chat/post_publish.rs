@@ -418,6 +418,7 @@ async fn resolve_preview_image(
                     content_type: &content_type,
                     original_name: "link-preview-image",
                     created_by: None,
+                    provenance: crate::data::asset::Provenance::LinkPreview,
                 },
                 now,
             )
@@ -530,6 +531,7 @@ async fn resolve_thumbnail_asset(
                     content_type: &content_type,
                     original_name: "oembed-thumbnail",
                     created_by: None,
+                    provenance: crate::data::asset::Provenance::LinkPreview,
                 },
                 now,
             )

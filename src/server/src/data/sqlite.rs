@@ -246,141 +246,6 @@ impl SqliteRepository {
         crate::db::open_read_only_pool(self.connect_options.clone()).await
     }
 
-    /// Insert a new asset record. `version` starts at 1.
-    pub async fn insert_asset(&self, a: &crate::data::asset::Asset) -> Result<(), DataError> {
-        sqlx::query(
-            "INSERT INTO assets \
-             (id, world_id, storage_key, original_name, content_type, byte_size, created_by, created_at, version) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(a.id.to_string())
-        .bind(a.world_id.to_string())
-        .bind(&a.storage_key)
-        .bind(&a.original_name)
-        .bind(&a.content_type)
-        .bind(a.byte_size)
-        .bind(a.created_by.map(|u| u.to_string()))
-        .bind(a.created_at)
-        .bind(a.version)
-        .execute(&self.pool)
-        .await?;
-        Ok(())
-    }
-
-    /// Map an `assets` row to the `Asset` struct (uuid columns parse from TEXT).
-    ///
-    /// # Examples
-    ///
-    /// ```text
-    /// let asset = Self::asset_from_row(&row)?;
-    /// ```
-    fn asset_from_row(
-        row: &sqlx::sqlite::SqliteRow,
-    ) -> Result<crate::data::asset::Asset, DataError> {
-        let parse = |s: String| Uuid::parse_str(&s).map_err(|e| DataError::OpFailed(e.to_string()));
-        Ok(crate::data::asset::Asset {
-            id: parse(row.get::<String, _>("id"))?,
-            world_id: parse(row.get::<String, _>("world_id"))?,
-            storage_key: row.get("storage_key"),
-            original_name: row.get("original_name"),
-            content_type: row.get("content_type"),
-            byte_size: row.get("byte_size"),
-            created_by: row
-                .get::<Option<String>, _>("created_by")
-                .map(parse)
-                .transpose()?,
-            created_at: row.get("created_at"),
-            version: row.get("version"),
-        })
-    }
-
-    /// Fetch one asset row by id, or `None` if absent.
-    ///
-    /// # Examples
-    ///
-    /// ```no_run
-    /// # #[tokio::main]
-    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
-    /// use shadowcat::data::sqlite::SqliteRepository;
-    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
-    /// assert!(repo.get_asset(uuid::Uuid::nil()).await?.is_none());
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub async fn get_asset(
-        &self,
-        id: Uuid,
-    ) -> Result<Option<crate::data::asset::Asset>, DataError> {
-        let row = sqlx::query("SELECT * FROM assets WHERE id = ?")
-            .bind(id.to_string())
-            .fetch_optional(&self.pool)
-            .await?;
-        row.map(|r| Self::asset_from_row(&r)).transpose()
-    }
-
-    /// Swap the bytes behind a stable id; bump and return the new version.
-    pub async fn replace_asset_bytes(
-        &self,
-        id: Uuid,
-        storage_key: &str,
-        content_type: &str,
-        byte_size: i64,
-    ) -> Result<i64, DataError> {
-        let v: i64 = sqlx::query(
-            "UPDATE assets SET storage_key = ?, content_type = ?, byte_size = ?, version = version + 1 \
-             WHERE id = ? RETURNING version",
-        )
-        .bind(storage_key)
-        .bind(content_type)
-        .bind(byte_size)
-        .bind(id.to_string())
-        .fetch_optional(&self.pool)
-        .await?
-        .ok_or(DataError::NotFound)?
-        .get("version");
-        Ok(v)
-    }
-
-    /// Remove the record, returning it (so the caller can delete the file).
-    /// Single atomic `DELETE ... RETURNING` so two concurrent deletes can't both
-    /// observe the row and double-fire side effects (file remove + broadcast) —
-    /// only the call that actually removes the row gets `Some`.
-    pub async fn delete_asset(
-        &self,
-        id: Uuid,
-    ) -> Result<Option<crate::data::asset::Asset>, DataError> {
-        let row = sqlx::query("DELETE FROM assets WHERE id = ? RETURNING *")
-            .bind(id.to_string())
-            .fetch_optional(&self.pool)
-            .await?;
-        row.map(|r| Self::asset_from_row(&r)).transpose()
-    }
-
-    /// All asset rows for `world`, newest first.
-    ///
-    /// # Examples
-    ///
-    /// ```no_run
-    /// # #[tokio::main]
-    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
-    /// use shadowcat::data::sqlite::SqliteRepository;
-    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
-    /// let none = repo.list_assets_by_world(uuid::Uuid::nil()).await?;
-    /// assert!(none.is_empty());
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub async fn list_assets_by_world(
-        &self,
-        world: Uuid,
-    ) -> Result<Vec<crate::data::asset::Asset>, DataError> {
-        let rows = sqlx::query("SELECT * FROM assets WHERE world_id = ? ORDER BY created_at, id")
-            .bind(world.to_string())
-            .fetch_all(&self.pool)
-            .await?;
-        rows.iter().map(Self::asset_from_row).collect()
-    }
-
     /// See `Repository::get_link_preview_cache`.
     pub async fn get_link_preview_cache(
         &self,
@@ -4315,6 +4180,8 @@ fn world_settings_keys(world: Uuid) -> [String; 5] {
         world_modules_key(world),
     ]
 }
+
+mod assets;
 
 #[cfg(test)]
 mod tests;

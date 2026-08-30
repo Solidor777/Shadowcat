@@ -21,6 +21,7 @@ async fn create_asset_from_bytes_and_upload_produce_identical_asset_shape() {
             content_type: "image/png",
             original_name: "preview.png",
             created_by,
+            provenance: crate::data::asset::Provenance::Uploaded,
         },
         1_234,
     )
@@ -61,6 +62,7 @@ async fn commit_staged_asset_insert_failure_removes_the_renamed_file() {
             content_type: "image/png",
             original_name: "orphan.png",
             created_by: None,
+            provenance: crate::data::asset::Provenance::Uploaded,
         },
         1_234,
     )
@@ -103,6 +105,7 @@ async fn create_asset_from_bytes_created_by_none_is_accepted() {
             content_type: "image/jpeg",
             original_name: "og-image.jpg",
             created_by: None,
+            provenance: crate::data::asset::Provenance::Uploaded,
         },
         5_678,
     )

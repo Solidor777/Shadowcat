@@ -149,6 +149,17 @@ export class AssetResolver {
    *     created_by: null,
    *     created_at: 0n,
    *     version: 4n,
+   *     folder_id: null,
+   *     tags: [],
+   *     derived_tags: [],
+   *     width: null,
+   *     height: null,
+   *     has_alpha: false,
+   *     animated: false,
+   *     original_content_type: "image/png",
+   *     original_byte_size: 1n,
+   *     original_retained: false,
+   *     conversion_note: null,
    *   },
    * ]);
    * ```
