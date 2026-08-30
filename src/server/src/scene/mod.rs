@@ -767,7 +767,7 @@ impl SceneEcs {
         // removal is deliberately narrow: it only ever drops the ONE id this op targets.
         let touched_id = match op {
             Operation::Create { doc } | Operation::Delete { doc } => doc.id,
-            Operation::Update { doc_id, .. } => *doc_id,
+            Operation::Update { doc_id, .. } | Operation::Move { doc_id, .. } => *doc_id,
         };
         self.engine_cache.lock().unwrap().remove(&touched_id);
 
@@ -779,7 +779,7 @@ impl SceneEcs {
             Operation::Create { doc } | Operation::Delete { doc } => {
                 matches!(doc.doc_type.as_str(), "wall" | "scene")
             }
-            Operation::Update { doc_id, .. } => self
+            Operation::Update { doc_id, .. } | Operation::Move { doc_id, .. } => self
                 .index
                 .get(doc_id)
                 .and_then(|&e| self.world.get::<&SceneEntity>(e).ok())
@@ -823,6 +823,11 @@ impl SceneEcs {
                 if let Some(d) = self.combats.get_mut(doc_id) {
                     reapply_changes(d, changes);
                 }
+            }
+            Operation::Move { .. } => {
+                // Not yet mirrored: the authoritative loops refuse a Move, so
+                // none reaches the committed broadcast/replay path this mirror
+                // consumes.
             }
             Operation::Delete { doc } => {
                 if let Some(e) = self.index.remove(&doc.id) {

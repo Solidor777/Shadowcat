@@ -171,6 +171,7 @@ pub async fn load_current_docs(repo: &dyn Repository, cmd: &Command) -> HashMap<
             Operation::Update { doc_id, .. } => *doc_id,
             Operation::Create { doc } => doc.id,
             Operation::Delete { doc } => doc.id,
+            Operation::Move { doc_id, .. } => *doc_id,
         };
         if let std::collections::hash_map::Entry::Vacant(e) = out.entry(doc_id) {
             if let Ok(Some((doc, created_seq))) = repo.get_document_with_created_seq(doc_id).await {
@@ -213,6 +214,7 @@ pub fn mirror_current_snapshot<'a>(
             Operation::Update { doc_id, .. } => current.get(doc_id).map(|c| &c.doc),
             Operation::Create { doc } => Some(doc),
             Operation::Delete { doc } => Some(doc),
+            Operation::Move { doc_id, .. } => current.get(doc_id).map(|c| &c.doc),
         };
         let Some(d) = target_doc else {
             per_op.push(None);
@@ -1058,6 +1060,9 @@ pub fn filter_command<'a>(
                         tracing::warn!(doc_id = %doc.id, error = %e, "redaction failed; dropping Create op for recipient");
                     }
                 }
+            }
+            Operation::Move { .. } => {
+                // Fail-closed: a Move is not delivered to any recipient.
             }
             Operation::Delete { doc } => {
                 // Existence check is INVERTED vs Update: a Delete's current doc is EXPECTED to

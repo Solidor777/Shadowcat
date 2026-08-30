@@ -74,6 +74,7 @@ fn immediate_snapshot<'a>(
             Operation::Update { doc_id, .. } => current.get(doc_id).map(|c| &c.doc),
             Operation::Create { doc } => Some(doc),
             Operation::Delete { doc } => Some(doc),
+            Operation::Move { doc_id, .. } => current.get(doc_id).map(|c| &c.doc),
         };
         let Some(d) = target_doc else {
             per_op.push(None);

@@ -2270,6 +2270,35 @@ impl SqliteRepository {
                     owner_before_commit: pre_owners.get(doc_id).copied().flatten(),
                 })
             }
+            // Mirrors the Update arm's post-image sourcing without its
+            // change-delta pieces: a Move carries no `FieldChange`s, so the
+            // path-overlap pruning yields an empty override set and no
+            // retraction capture (a Move never touches `permissions`).
+            Operation::Move { doc_id, .. } => {
+                let doc = post_images.get(doc_id).ok_or_else(|| {
+                    DataError::OpFailed(format!("post-image missing for moved document {doc_id}"))
+                })?;
+                let owner_at_commit = Self::load_effective_owner(&mut *tx, doc).await?;
+                let created_seq_at_commit = Self::document_created_seq(&mut *tx, *doc_id).await?;
+                Ok(OpSnapshot {
+                    owner_at_commit,
+                    doc_type: doc.doc_type.clone(),
+                    overrides_at_commit: Vec::new(),
+                    retraction_hidden_at_commit: None,
+                    created_seq_at_commit,
+                    permissions_at_commit: Some(crate::data::document::PermissionSet {
+                        property_overrides: Default::default(),
+                        ..doc.permissions.clone()
+                    }),
+                    permissions_before_commit: pre_permissions.get(doc_id).map(|p| {
+                        crate::data::document::PermissionSet {
+                            property_overrides: Default::default(),
+                            ..p.clone()
+                        }
+                    }),
+                    owner_before_commit: pre_owners.get(doc_id).copied().flatten(),
+                })
+            }
         }
     }
 
@@ -2829,6 +2858,9 @@ impl Repository for SqliteRepository {
                     Self::delete_document_tx(&mut tx, doc.id).await?;
                     normalized_ops.push(op.clone());
                 }
+                Operation::Move { .. } => {
+                    return Err(DataError::OpFailed("unsupported operation: move".into()));
+                }
                 Operation::Update { doc_id, changes } => {
                     let row = sqlx::query("SELECT json FROM documents WHERE id = ?")
                         .bind(doc_id.to_string())
@@ -3105,6 +3137,9 @@ impl Repository for SqliteRepository {
                     }
                 }
                 Operation::Create { .. } => {}
+                // A combat document refuses any parent at `validate_containment`,
+                // so a Move can never alter a combat engine's active/scene state.
+                Operation::Move { .. } => {}
             }
         }
         // Batch-start permissions for each Update target, captured the FIRST time its
@@ -3123,6 +3158,9 @@ impl Repository for SqliteRepository {
             std::collections::HashMap::new();
         for op in &mut ops {
             match op {
+                Operation::Move { .. } => {
+                    return Err(DataError::OpFailed("unsupported operation: move".into()));
+                }
                 Operation::Create { doc } => {
                     check_command_scope(doc, world_id)?;
                     validation::validate_system_size(doc)?;
@@ -3686,6 +3724,9 @@ impl Repository for SqliteRepository {
                     }
                     Self::delete_document_tx(&mut tx, doc.id).await?;
                     normalized_ops.push(op.clone());
+                }
+                Operation::Move { .. } => {
+                    return Err(DataError::OpFailed("unsupported operation: move".into()));
                 }
                 Operation::Update { doc_id, changes } => {
                     let row = sqlx::query("SELECT json FROM documents WHERE id = ?")
