@@ -215,6 +215,15 @@ pub(super) fn snapshot(
 /// silently writing `new` over a stale pre-image the way `data::command::apply_field_change`
 /// does on its own — that unconditional write is exactly what let a same-batch, same-path
 /// double-write pass this harness undetected before this check existed.
+///
+/// Also runs `validation::validate_system_size` on every document this batch would persist —
+/// each `Operation::Create`'s document and each `Operation::Update`'s POST-image — mirroring
+/// the per-op size gate `SqliteRepository::apply_intent` applies before storing. A breach
+/// panics loudly here (the real repository rejects the whole batch with `DataError::TooLarge`,
+/// which `CombatError::Data` then renders as the same generic "combat rejected" every other
+/// refusal uses, disclosing nothing about WHY the clock stopped). Without this check a
+/// transition that grows a document past the cap passes every test in this module and fails
+/// only against a real repository.
 pub(super) fn apply(snap: &CombatSnapshot, ops: &[Operation]) -> HashMap<Uuid, Document> {
     let mut docs: HashMap<Uuid, Document> = HashMap::new();
     docs.insert(snap.combat.id, snap.combat.clone());
@@ -231,6 +240,13 @@ pub(super) fn apply(snap: &CombatSnapshot, ops: &[Operation]) -> HashMap<Uuid, D
     for op in ops {
         match op {
             Operation::Create { doc } => {
+                crate::data::validation::validate_system_size(doc).unwrap_or_else(|e| {
+                    panic!(
+                        "size violation: Create of {} ({}) exceeds the per-band cap ({e}) — the \
+                         real repository would reject this whole batch",
+                        doc.id, doc.doc_type
+                    )
+                });
                 docs.insert(doc.id, doc.clone());
             }
             Operation::Delete { doc } => {
@@ -259,6 +275,14 @@ pub(super) fn apply(snap: &CombatSnapshot, ops: &[Operation]) -> HashMap<Uuid, D
                             .expect("field change applies to a fixture doc");
                     }
                     *d = serde_json::from_value(v).expect("Document round-trips");
+                    crate::data::validation::validate_system_size(d).unwrap_or_else(|e| {
+                        panic!(
+                            "size violation: the post-image of {doc_id} ({}) exceeds the \
+                             per-band cap ({e}) — the real repository would reject this whole \
+                             batch",
+                            d.doc_type
+                        )
+                    });
                 }
             }
         }

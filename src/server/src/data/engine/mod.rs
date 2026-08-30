@@ -16,11 +16,12 @@ pub mod system_defaults;
 pub mod token;
 
 pub use combat::{
-    resolve_combat_rules, CombatDefaults, CombatEngine, CombatHistoryEngine, CombatantEngine,
-    CombatantKind, CombatantResource, Duration, DurationUnit, EffectEngine, EffectLifecycle,
-    EffectLifecycleDefaults, EffectSnapshot, Enforcement, ExpiryPoint, Formula, Interpretation,
-    MovementRules, Recovery, ResolvedCombatRules, ResolvedLifecycle, Resource, ResourceBinding,
-    ResourceRegistryEngine, TurnControl, TurnRecord, MAX_FORMULA_CHARS, MAX_TURN_HISTORY,
+    resolve_combat_rules, CapturedCombatant, CombatDefaults, CombatEngine, CombatHistoryEngine,
+    CombatantEngine, CombatantKind, CombatantResource, Duration, DurationUnit, EffectEngine,
+    EffectLifecycle, EffectLifecycleDefaults, EffectSnapshot, Enforcement, ExpiryPoint, Formula,
+    Interpretation, MovementRules, Recovery, ResolvedCombatRules, ResolvedLifecycle, Resource,
+    ResourceBinding, ResourceRegistryEngine, TurnControl, TurnRecord, MAX_FORMULA_CHARS,
+    MAX_TURN_HISTORY,
 };
 pub use geometry::{
     DrawingEngine, DrawingShape, Fill, RegionEngine, RegionShape, Seg, Stroke, TemplateEngine,

@@ -14,16 +14,18 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use serde_json::{json, Value};
+use serde_json::json;
 use uuid::Uuid;
 
 use crate::data::command::{apply_field_change, FieldChange, Operation};
 use crate::data::document::{DocRole, Document, PermissionSet};
 use crate::data::engine::combat::{
-    CombatEngine, CombatHistoryEngine, CombatantEngine, EffectSnapshot, TurnRecord,
-    MAX_TURN_HISTORY,
+    CapturedCombatant, CombatEngine, CombatHistoryEngine, CombatantEngine, EffectSnapshot,
+    TurnRecord, MAX_TURN_HISTORY,
 };
-use crate::data::engine::COMBAT_HISTORY_DOC_TYPE;
+use crate::data::engine::{COMBATANT_DOC_TYPE, COMBAT_HISTORY_DOC_TYPE};
+use crate::data::migrate::CURRENT_SCHEMA_VERSION;
+use crate::data::validation::MAX_SYSTEM_BYTES;
 use crate::data::DataError;
 
 use super::effects::{collect_all_effects, set_effect_field};
@@ -102,11 +104,59 @@ fn post_transition_snapshot(snap: &CombatSnapshot, ops: &[Operation]) -> CombatS
     }
 }
 
+/// Narrows one live combatant to the bands a record keeps — see
+/// `CapturedCombatant`'s own INVARIANT for why a whole `Document` is not
+/// captured.
+fn capture_combatant(c: &Combatant) -> CapturedCombatant {
+    CapturedCombatant {
+        id: c.doc.id,
+        parent_id: c.doc.parent_id,
+        name: c.doc.name.clone(),
+        permissions: c.doc.permissions.clone(),
+        owner: c.doc.owner,
+        engine: c.engine.clone(),
+        system: c.doc.system.clone(),
+    }
+}
+
+/// Rebuilds the combatant document a `CapturedCombatant` describes, for the
+/// one path that needs a whole document back (`restore` re-`Create`ing a
+/// combatant deleted since the boundary). `scope`/`doc_type` are DERIVED
+/// from `combat` rather than stored a second time in the record — a
+/// combatant is always a `combatant`-typed child of its combat, so a second
+/// stored copy would be a forked decision with nothing keeping the two in
+/// agreement. `created_at`/`updated_at` are stamped `now`: the document is
+/// genuinely new to the store at this instant. `.expect`s rather than
+/// propagating: `engine` was parsed FROM stored JSON, so it re-serializes.
+fn rebuild_document(combat: &Document, captured: &CapturedCombatant, now: i64) -> Document {
+    Document {
+        id: captured.id,
+        scope: combat.scope.clone(),
+        doc_type: COMBATANT_DOC_TYPE.to_string(),
+        schema_version: CURRENT_SCHEMA_VERSION,
+        name: captured.name.clone(),
+        source: None,
+        base: None,
+        owner: captured.owner,
+        permissions: captured.permissions.clone(),
+        embedded: BTreeMap::new(),
+        parent_id: captured.parent_id,
+        engine: Some(
+            serde_json::to_value(&captured.engine)
+                .expect("a CombatantEngine parsed from stored JSON always re-serializes"),
+        ),
+        system: captured.system.clone(),
+        created_at: now,
+        updated_at: now,
+    }
+}
+
 /// Builds the `TurnRecord` for `post` (a reconstructed post-transition
-/// view): every combatant document, and every anchored effect reachable
-/// from any combatant's host, deduplicated by `(host, path)` so an
-/// unanchored effect shared by two combatants on the same host is captured
-/// once — the same dedup `transition::end` applies to its own cleanup pass.
+/// view): every combatant narrowed by `capture_combatant`, and every
+/// anchored effect reachable from any combatant's host, deduplicated by
+/// `(host, path)` so an unanchored effect shared by two combatants on the
+/// same host is captured once — the same dedup `transition::end` applies to
+/// its own cleanup pass.
 fn capture(post: &CombatSnapshot) -> TurnRecord {
     let mut seen = HashSet::new();
     let effects: Vec<EffectSnapshot> = collect_all_effects(post)
@@ -124,39 +174,162 @@ fn capture(post: &CombatSnapshot) -> TurnRecord {
         turn: post
             .engine
             .turn
-            .expect("append_record only runs once a transition has settled a turn"),
-        combatants: post.combatants.iter().map(|c| c.doc.clone()).collect(),
+            .expect("append_record only runs once a transition has set the entering turn"),
+        combatants: post.combatants.iter().map(capture_combatant).collect(),
         effects,
     }
+}
+
+/// Serialized-byte ceiling the retained records are evicted down to.
+/// `validate_system_size` refuses an `/engine` band over `MAX_SYSTEM_BYTES`
+/// and the refusal rolls back the WHOLE combat transition, so eviction
+/// targets 90% of the cap rather than the cap itself: the headroom is what
+/// the NEXT append writes into before eviction runs again, and a bound with
+/// no headroom would leave the log sitting exactly at the refusal threshold.
+const HISTORY_BYTE_BUDGET: usize = MAX_SYSTEM_BYTES / 10 * 9;
+
+/// Bytes a `CombatHistoryEngine` serialization adds around its records:
+/// `{"records":[` (12) + `],"cursor":` (11) + at most ten digits of a `u32`
+/// cursor + `}` (1) = 34, plus one comma per record after the first.
+/// Deliberately an OVER-estimate of the cursor's width, since undercounting
+/// the envelope is what lets the evicted result still breach the cap.
+const HISTORY_ENVELOPE_BYTES: usize = 34;
+
+/// Drops oldest records until the serialized `CombatHistoryEngine` fits
+/// `HISTORY_BYTE_BUDGET`, keeping at least the newest record (evicting the
+/// record a transition just captured would leave the clock with no boundary
+/// to rewind to). Sizes each record ONCE and subtracts as it walks, rather
+/// than re-serializing the whole log per eviction. RESIDUAL: a single record
+/// larger than the budget on its own cannot be evicted away — an
+/// individual boundary that big means a combat with thousands of combatants,
+/// and dropping the only record would trade a refused write for a silently
+/// empty history.
+fn evict_to_fit(records: &mut Vec<TurnRecord>) {
+    let sizes: Vec<usize> = records
+        .iter()
+        .map(|r| {
+            serde_json::to_vec(r)
+                .expect("a TurnRecord built from stored JSON always serializes")
+                .len()
+        })
+        .collect();
+    let mut total: usize =
+        HISTORY_ENVELOPE_BYTES + sizes.iter().sum::<usize>() + sizes.len().saturating_sub(1);
+    let mut drop_count = 0usize;
+    while total > HISTORY_BYTE_BUDGET && drop_count + 1 < records.len() {
+        // Removing the oldest of two-or-more records removes its own bytes
+        // and exactly one separating comma.
+        total -= sizes[drop_count] + 1;
+        drop_count += 1;
+    }
+    records.drain(..drop_count);
+}
+
+/// Pushes `record` onto `records` and applies BOTH retention bounds — the
+/// `MAX_TURN_HISTORY` count cap and `evict_to_fit`'s serialized-byte cap —
+/// returning the resulting cursor (always the newest record). Neither bound
+/// implies the other: a count cap does not bound serialized size (which is
+/// what `validate_system_size` refuses on), and the byte cap alone would let
+/// a combat with tiny records retain an unbounded number of them.
+fn bounded_push(records: &mut Vec<TurnRecord>, record: TurnRecord) -> u32 {
+    records.push(record);
+    if records.len() > MAX_TURN_HISTORY {
+        records.drain(..records.len() - MAX_TURN_HISTORY);
+    }
+    evict_to_fit(records);
+    (records.len() - 1) as u32
+}
+
+/// The history write THIS transition has already staged, if any: its index
+/// in `ops` and the `CombatHistoryEngine` it carries. `settle_turn` calls
+/// `append_record` once per turn boundary it crosses, so a single transition
+/// can reach this function several times — every call after the first must
+/// fold into the op the first one wrote, never add a second write to the
+/// same document (`SqliteRepository::apply_intent` permits at most one
+/// `Operation::Update` per document per batch, and a second `Create` of a
+/// document already created in the batch has no valid pre-image at all).
+fn staged_history(
+    ops: &[Operation],
+    snap: &CombatSnapshot,
+) -> Option<(usize, CombatHistoryEngine)> {
+    ops.iter().enumerate().find_map(|(i, op)| match op {
+        Operation::Create { doc } if doc.doc_type == COMBAT_HISTORY_DOC_TYPE => {
+            let engine = serde_json::from_value(doc.engine.clone()?).ok()?;
+            Some((i, engine))
+        }
+        Operation::Update { doc_id, changes } => {
+            let (history_doc, _) = snap.history.as_ref()?;
+            if *doc_id != history_doc.id {
+                return None;
+            }
+            let change = changes.iter().find(|c| c.path == "/engine")?;
+            serde_json::from_value(change.new.clone())
+                .ok()
+                .map(|engine| (i, engine))
+        }
+        _ => None,
+    })
 }
 
 /// Appends a turn-boundary record to the combat's history log: creates the
 /// `combat-history` document (`permissions.default: none`) when `snap`
 /// carries none yet, otherwise replaces its `/engine` body with the new
 /// `records`/`cursor` in one `Update` pre-imaged against the stored history
-/// document — nothing else in a transition writes that document, so no
-/// coalescing against `ops`'s own prior entries is needed here (contrast
-/// `restore`, whose combatant/host targets a same-transition write CAN
-/// collide with). Redo history beyond the current cursor is discarded
-/// before the new record is pushed (`records.truncate(cursor + 1)`); the
-/// oldest record drops once the log exceeds `MAX_TURN_HISTORY`. `now` stamps
-/// a freshly created history document's `created_at`/`updated_at` — both
-/// call sites (`transition::start`, `transition::advance_impl`) already
-/// carry `now` in scope for their own transition.
+/// document. Redo history beyond the current cursor is discarded before the
+/// FIRST record of a transition is pushed (`records.truncate(cursor + 1)`);
+/// both retention bounds then apply via `bounded_push`. `now` stamps a
+/// freshly created history document's `created_at`/`updated_at` — the call
+/// site (`transition::settle_turn`) already carries `now` for its own
+/// transition.
+///
+/// Called once per turn boundary a transition crosses, including every
+/// auto-resolved intermediate entry, so a rewind can land on an `Event`'s or
+/// a hidden combatant's turn. Later calls in the same transition FOLD into
+/// the op the first one staged (`staged_history`) rather than emitting a
+/// second write to the same document — the OCC/one-Update-per-document
+/// contract `restore`'s `coalesce_by_doc` satisfies for its own targets.
 pub(crate) fn append_record(snap: &CombatSnapshot, ops: &mut Vec<Operation>, now: i64) {
     let post = post_transition_snapshot(snap, ops);
     let record = capture(&post);
+
+    let staged = staged_history(ops, snap);
+    let mut engine = match (&staged, &snap.history) {
+        (Some((_, already)), _) => already.clone(),
+        (None, Some((_, stored))) => {
+            let mut e = stored.clone();
+            e.records.truncate(stored.cursor as usize + 1);
+            e
+        }
+        (None, None) => CombatHistoryEngine::default(),
+    };
+    engine.cursor = bounded_push(&mut engine.records, record);
+    let value = serde_json::to_value(&engine).expect("CombatHistoryEngine always serializes");
+
+    if let Some((i, _)) = staged {
+        match &mut ops[i] {
+            Operation::Create { doc } => doc.engine = Some(value),
+            Operation::Update { changes, .. } => {
+                for change in changes.iter_mut().filter(|c| c.path == "/engine") {
+                    // Keeps the batch-start pre-image `whole_engine_replace`
+                    // recorded and takes the later post-image, the same fold
+                    // `transition::merge_field_changes` performs.
+                    change.new = value.clone();
+                }
+            }
+            Operation::Delete { .. } => {
+                unreachable!("staged_history only ever indexes a Create or an Update slot")
+            }
+        }
+        return;
+    }
+
     match &snap.history {
         None => {
-            let history_engine = CombatHistoryEngine {
-                records: vec![record],
-                cursor: 0,
-            };
             let doc = Document {
                 id: Uuid::new_v4(),
                 scope: post.combat.scope.clone(),
                 doc_type: COMBAT_HISTORY_DOC_TYPE.to_string(),
-                schema_version: 1,
+                schema_version: CURRENT_SCHEMA_VERSION,
                 name: None,
                 source: None,
                 base: None,
@@ -167,32 +340,15 @@ pub(crate) fn append_record(snap: &CombatSnapshot, ops: &mut Vec<Operation>, now
                 },
                 embedded: BTreeMap::new(),
                 parent_id: Some(post.combat.id),
-                engine: Some(
-                    serde_json::to_value(&history_engine)
-                        .expect("CombatHistoryEngine always serializes"),
-                ),
+                engine: Some(value),
                 system: json!({}),
                 created_at: now,
                 updated_at: now,
             };
             ops.push(Operation::Create { doc });
         }
-        Some((history_doc, history_engine)) => {
-            let mut records = history_engine.records.clone();
-            records.truncate(history_engine.cursor as usize + 1);
-            records.push(record);
-            if records.len() > MAX_TURN_HISTORY {
-                records.remove(0);
-            }
-            let new_cursor = (records.len() - 1) as u32;
-            let updated = CombatHistoryEngine {
-                records,
-                cursor: new_cursor,
-            };
-            let change = whole_engine_replace(
-                history_doc,
-                serde_json::to_value(&updated).expect("CombatHistoryEngine always serializes"),
-            );
+        Some((history_doc, _)) => {
+            let change = whole_engine_replace(history_doc, value);
             ops.push(Operation::Update {
                 doc_id: history_doc.id,
                 changes: vec![change],
@@ -255,11 +411,11 @@ pub(crate) fn restore(
         match snap.combatants.iter().find(|c| c.doc.id == captured.id) {
             Some(live) => {
                 let mut changes = Vec::new();
-                if live.doc.engine != captured.engine {
+                if live.engine != captured.engine {
                     changes.push(set_engine(
                         &live.doc,
                         "/engine",
-                        captured.engine.clone().unwrap_or(Value::Null),
+                        serde_json::to_value(&captured.engine).map_err(DataError::from)?,
                     )?);
                 }
                 if live.doc.system != captured.system {
@@ -272,12 +428,9 @@ pub(crate) fn restore(
                     });
                 }
             }
-            None => {
-                let mut doc = captured.clone();
-                doc.created_at = now;
-                doc.updated_at = now;
-                ops.push(Operation::Create { doc });
-            }
+            None => ops.push(Operation::Create {
+                doc: rebuild_document(&snap.combat, captured, now),
+            }),
         }
     }
     for effect in &record.effects {
@@ -315,7 +468,7 @@ pub(crate) fn live_equals(snap: &CombatSnapshot, record: &TurnRecord) -> bool {
         let Some(live) = snap.combatants.iter().find(|c| c.doc.id == captured.id) else {
             return false;
         };
-        if live.doc.engine != captured.engine || live.doc.system != captured.system {
+        if live.engine != captured.engine || live.doc.system != captured.system {
             return false;
         }
     }
@@ -351,13 +504,13 @@ pub(crate) fn resulting_combatants(snap: &CombatSnapshot, record: &TurnRecord) -
     let mut out: Vec<Combatant> = record
         .combatants
         .iter()
-        .filter_map(|doc| {
-            let raw = doc.engine.clone()?;
-            let engine: CombatantEngine = serde_json::from_value(raw).ok()?;
-            Some(Combatant {
-                doc: doc.clone(),
-                engine,
-            })
+        .map(|captured| Combatant {
+            // `rebuild_order` reads only `doc.id` plus the engine's
+            // `initiative`/`tiebreak`; `now` never reaches a stored row from
+            // here, since a document `restore` genuinely re-`Create`s is
+            // built by `restore`'s own call with its own `now`.
+            doc: rebuild_document(&snap.combat, captured, snap.combat.updated_at),
+            engine: captured.engine.clone(),
         })
         .collect();
     for c in &snap.combatants {

@@ -125,6 +125,7 @@ export type { ResolvedLifecycle } from "./generated/engine/ResolvedLifecycle";
 export type { EffectLifecycle } from "./generated/engine/EffectLifecycle";
 export type { EffectLifecycleDefaults } from "./generated/engine/EffectLifecycleDefaults";
 export type { EffectSnapshot } from "./generated/engine/EffectSnapshot";
+export type { CapturedCombatant } from "./generated/engine/CapturedCombatant";
 export type { TurnRecord } from "./generated/engine/TurnRecord";
 export type { CombatHistoryEngine } from "./generated/engine/CombatHistoryEngine";
 export type { SystemDefaultsEngine } from "./generated/engine/SystemDefaultsEngine";

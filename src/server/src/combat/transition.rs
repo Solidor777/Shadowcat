@@ -21,7 +21,7 @@
 //! `Operation::Update` a transition accumulates is folded, by document id,
 //! through `Working::coalesce_updates` once at the end — so a document
 //! written from more than one boundary/phase within the same command
-//! (compressed hidden turn, or more than one `resolve_event` deletion in
+//! (an auto-resolved entry's start+end pair, or more than one `resolve_event` deletion in
 //! one `settle_turn` walk) always reaches the caller as ONE `Update` per
 //! document, with a correct cumulative OCC pre-image.
 
@@ -366,32 +366,16 @@ impl Working {
         self.commit_combat(vec![change])
     }
 
-    /// Runs `id`'s compressed turn: its own `run_turn_start` immediately
-    /// followed by its own `run_turn_end` — the atomic start-and-end pair a
-    /// hidden `OwnerMayEnd` actor gets, so no dead time between the two
-    /// boundaries reveals it. Any `Operation::Update` either boundary call
-    /// records against the SAME document (this combatant's own document, or
-    /// a shared host) is folded together with every other write to that same
-    /// document in this transition by the single `coalesce_updates` pass
-    /// `advance`/`start` run over the WHOLE transition just before
-    /// returning — so a compressed turn's write footprint (operation COUNT,
-    /// not field count) never distinguishes it from an ordinary single
-    /// boundary pass, the same guarantee whether the second write came from
-    /// this pair or from anywhere else in the same command.
-    fn run_compressed_turn(&mut self, id: Uuid) -> Result<(), CombatError> {
-        run_turn_start(self, id)?;
-        run_turn_end(self, id)
-    }
-
     /// Merges every `Operation::Update` recorded since index `from` that
     /// targets the SAME document id into ONE `Operation::Update` per id, at
     /// that id's first-appearance position. `FieldChange`s at DIFFERENT
     /// paths on the same document are kept side by side, in their original
     /// relative order. `FieldChange`s at the SAME path — a resource
     /// recovered at more than one boundary in this transition (e.g. both
-    /// `recover.turn_start` and `recover.turn_end` on one key within a
-    /// `run_compressed_turn`), or `/engine/order` rewritten by more than one
-    /// `resolve_event` deletion in the same `settle_turn` walk — are folded
+    /// `recover.turn_start` and `recover.turn_end` on one key across an
+    /// auto-resolved entry's `enter_turn`+`run_turn_end` pair), `/engine/turn`
+    /// written once per entry the walk enters, or `/engine/order` rewritten by
+    /// more than one `resolve_event` deletion in one walk — are folded
     /// into ONE `FieldChange` via `merge_field_changes`, never left as two
     /// separate entries. INVARIANT this exists to satisfy:
     /// `SqliteRepository::apply_intent`'s Phase 1 snapshots ONE whole-document
@@ -531,6 +515,37 @@ fn run_turn_start(w: &mut Working, id: Uuid) -> Result<(), CombatError> {
     )
 }
 
+/// `id` ENTERING its turn: its own `turn_start` boundary, `/engine/turn` set
+/// to it, and the turn-boundary history record captured at that point.
+/// IDENTICAL for an entry that settles here and one that auto-resolves and
+/// is walked past — which is what lets a rewind land on an `Event`'s or a
+/// hidden combatant's turn and see the state as that turn began, rather than
+/// only on the turn the walk finally stopped at. Capturing BEFORE the
+/// auto-resolution that may follow is load-bearing, not incidental: an
+/// exhausted `Event` is deleted by its own resolution, and a record captured
+/// after that deletion would carry `turn` pointing at a combatant the record
+/// no longer holds — `rewind` would then write a `/engine/turn` absent from
+/// the rebuilt `/engine/order` and be refused by `CombatEngine::validate`.
+///
+/// INVARIANT (hidden-combatant secrecy): every `/engine/turn` write this
+/// makes for an auto-resolving entry is folded, by `coalesce_updates`, into
+/// the ONE combat-document `Update` the transition emits, carrying the
+/// batch-start pre-image and the FINAL settled turn — no intermediate value,
+/// and no extra operation, reaches any recipient. The history document it
+/// writes is `permissions.default: none` (GM-only) and is written exactly
+/// once per transition regardless of how many boundaries were crossed.
+fn enter_turn(
+    w: &mut Working,
+    snap: &CombatSnapshot,
+    id: Uuid,
+    now: i64,
+) -> Result<(), CombatError> {
+    run_turn_start(w, id)?;
+    w.set_turn(id)?;
+    history::append_record(snap, &mut w.ops, now);
+    Ok(())
+}
+
 /// A round boundary: `round += 1`, then `RoundEnd` then `RoundStart`
 /// recovery/tick for every combatant in the CURRENT order. Each boundary
 /// category (`RoundEnd`, `RoundStart`) gets its OWN dedup set spanning the
@@ -655,12 +670,14 @@ fn resolve_event(
     }
 }
 
-/// Walks `order` starting at `idx`, entering each combatant's turn and, when
-/// it is an `Event` or a hidden combatant under `TurnControl::OwnerMayEnd`,
-/// auto-resolving it in full and continuing to the next entry — a hidden
-/// actor's auto-resolve runs its `run_turn_start`+`run_turn_end` pair
-/// together via `Working::run_compressed_turn` (never split, never skipped),
-/// and an `Event` always gets its own `resolve_event`. The step budget
+/// Walks `order` starting at `idx`, entering each combatant's turn
+/// (`enter_turn`: `turn_start`, `/engine/turn`, history record) and, when it
+/// is an `Event` or a hidden combatant under `TurnControl::OwnerMayEnd`,
+/// auto-resolving it in full and continuing to the next entry — every
+/// auto-resolving entry gets its own `run_turn_end` (a hidden actor
+/// unconditionally, an `Event` unless its own `resolve_event` deleted it,
+/// leaving no document to write), so the start/end boundary pair is
+/// symmetric for every entry the walk touches. The step budget
 /// starts at `order.len()` (a single full pass over every entry present at
 /// the walk's start) and grows by exactly ONE for every step that deletes
 /// an exhausted `Event`, rather than resetting to a fresh full-length guard
@@ -680,6 +697,7 @@ fn resolve_event(
 /// entry and a round advanced" case.
 fn settle_turn(
     w: &mut Working,
+    snap: &CombatSnapshot,
     mut idx: usize,
     world: Uuid,
     author: Uuid,
@@ -710,17 +728,19 @@ fn settle_turn(
         let auto_resolves =
             is_event || (hidden && w.engine.turn_control == TurnControl::OwnerMayEnd);
 
+        enter_turn(w, snap, entry_id, now)?;
         if !auto_resolves {
-            run_turn_start(w, entry_id)?;
-            w.set_turn(entry_id)?;
             return Ok(());
         }
 
         let removed = if is_event {
-            run_turn_start(w, entry_id)?;
-            resolve_event(w, entry_id, world, author, now)?
+            let removed = resolve_event(w, entry_id, world, author, now)?;
+            if !removed {
+                run_turn_end(w, entry_id)?;
+            }
+            removed
         } else {
-            w.run_compressed_turn(entry_id)?;
+            run_turn_end(w, entry_id)?;
             false
         };
 
@@ -739,8 +759,8 @@ fn settle_turn(
         } else if steps >= budget {
             // entry_id fully resolved (turn_start + turn_end/event
             // resolution both ran) but nothing genuinely stopping was found
-            // within the budget — park `turn` on it anyway.
-            w.set_turn(entry_id)?;
+            // within the budget — `turn` already parks on it, set by this
+            // step's own `enter_turn`.
             return Ok(());
         }
         idx = advance_from(w, idx, removed)?;
@@ -828,9 +848,7 @@ pub fn start(
                 &mut seen,
             )?;
         }
-        settle_turn(&mut w, 0, world, author, now)?;
-
-        history::append_record(snap, &mut w.ops, now);
+        settle_turn(&mut w, snap, 0, world, author, now)?;
     }
     let active_change = set_engine(&w.combat, "/engine/active", json!(true))?;
     w.commit_combat(vec![active_change])?;
@@ -869,8 +887,7 @@ fn advance_impl(
         .ok_or(CombatError::NotFound)?;
     run_turn_end(&mut w, current_id)?;
     let next_idx = advance_from(&mut w, start_idx, false)?;
-    settle_turn(&mut w, next_idx, world, author, now)?;
-    history::append_record(snap, &mut w.ops, now);
+    settle_turn(&mut w, snap, next_idx, world, author, now)?;
     w.coalesce_updates(0);
     #[cfg(test)]
     let steps = w.settle_turn_steps;

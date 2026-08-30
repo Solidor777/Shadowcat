@@ -4,7 +4,10 @@ import type { TurnRecord } from "./TurnRecord";
 /**
  * The engine body of a `combat-history` document: the per-turn snapshots of
  * one combat and the cursor of the current turn. GM-only by
- * `permissions.default: none`; bounded to `MAX_TURN_HISTORY` records.
+ * `permissions.default: none`; bounded to `MAX_TURN_HISTORY` records AND,
+ * independently, to a serialized-byte ceiling `combat::history::append_record`
+ * enforces by evicting oldest-first (record COUNT alone does not bound
+ * serialized SIZE, and only size is what `validate_system_size` refuses on).
  */
 export type CombatHistoryEngine = { 
 /**

@@ -418,6 +418,84 @@ fn round_wrap_ticks_a_shared_unanchored_effect_at_most_once() {
     );
 }
 
+/// An `Event` gets the SAME start-and-end boundary pair every other entry
+/// the walk touches gets — symmetric with the hidden-actor branch, and what
+/// lets an `Event` carry a tracked resource that recovers at either edge of
+/// its own turn.
+#[test]
+fn a_surviving_event_runs_its_own_turn_end_boundary_not_just_turn_start() {
+    let combat = Uuid::from_u128(1);
+    let a = actor_combatant(10, combat, 0xA, None, false, (0.0, 30.0));
+    // lifespan None: the event survives its own resolution, so there IS a
+    // document left for the turn_end boundary to write.
+    let mut ev = event_combatant(11, combat, None, None);
+    ev.engine.resources.insert(
+        "movement".to_string(),
+        CombatantResource {
+            current: 20.0,
+            max: 30.0,
+        },
+    );
+    ev.doc.engine = Some(serde_json::to_value(&ev.engine).unwrap());
+    let mut registry = registry_with_movement(Formula::Number(30.0));
+    if let ResourceBinding::Tracked { recover, .. } =
+        &mut registry.resources.get_mut("movement").unwrap().binding
+    {
+        recover.turn_end = Formula::Number(-10.0);
+    }
+    let mut snap = snapshot(
+        combat_engine(vec![a.doc.id, ev.doc.id], Some(a.doc.id), 1, true),
+        vec![a, ev],
+        vec![],
+    );
+    snap.registry = Some(registry);
+    let docs = apply(&snap, &advance(&snap, WORLD, Uuid::nil(), 0).unwrap());
+    let e: CombatantEngine = engine_of(&docs, Uuid::from_u128(11));
+    assert_eq!(
+        e.resources["movement"].current, 20.0,
+        "turn_start's +30 (clamped to max 30) THEN turn_end's -10 — 30 would mean turn_end never ran"
+    );
+}
+
+/// Every turn boundary the walk crosses is recorded, not just the one it
+/// settles on: an auto-resolving hidden entry gets its own record, so a
+/// rewind can land on it.
+#[test]
+fn an_auto_resolved_hidden_entry_gets_its_own_history_record() {
+    let combat = Uuid::from_u128(1);
+    let a = actor_combatant(10, combat, 0xA, None, false, (0.0, 30.0));
+    let h = actor_combatant(11, combat, 0xB, None, true, (0.0, 30.0));
+    let c = actor_combatant(12, combat, 0xC, None, false, (0.0, 30.0));
+    let snap = snapshot(
+        combat_engine(vec![a.doc.id, h.doc.id, c.doc.id], Some(a.doc.id), 1, true),
+        vec![a, h, c],
+        vec![],
+    );
+    let docs = apply(&snap, &advance(&snap, WORLD, Uuid::nil(), 0).unwrap());
+    let history = docs
+        .values()
+        .find(|d| d.doc_type == "combat-history")
+        .expect("the advance created the history document");
+    let engine: CombatHistoryEngine =
+        serde_json::from_value(history.engine.clone().unwrap()).unwrap();
+    assert_eq!(
+        engine.records.iter().map(|r| r.turn).collect::<Vec<Uuid>>(),
+        vec![Uuid::from_u128(11), Uuid::from_u128(12)],
+        "the hidden entry the walk auto-resolved past has its own record before the settled one"
+    );
+    assert_eq!(engine.cursor as usize, engine.records.len() - 1);
+    // One write to the history document for the whole transition, however
+    // many boundaries it crossed — the OCC contract, not an accident.
+    let ops = advance(&snap, WORLD, Uuid::nil(), 0).unwrap();
+    assert_eq!(
+        ops.iter()
+            .filter(|o| matches!(o, Operation::Create { doc } if doc.doc_type == "combat-history"))
+            .count(),
+        1,
+        "exactly one history write per transition"
+    );
+}
+
 #[test]
 fn guard_exhaustion_still_fully_resolves_the_final_auto_resolving_entry() {
     // order = [a, b], both hidden actors under OwnerMayEnd. Starting
@@ -463,11 +541,11 @@ fn guard_exhaustion_still_fully_resolves_the_final_auto_resolving_entry() {
 }
 
 #[test]
-fn compressed_hidden_turn_coalesces_host_updates_into_one_operation() {
+fn auto_resolved_hidden_turn_coalesces_host_updates_into_one_operation() {
     // a is the current (visible) turn; h is a hidden OwnerMayEnd actor
     // encountered next, bound to a host with two effects — one ticking at
-    // TurnStart, one at TurnEnd — so h's compressed turn (run_turn_start +
-    // run_turn_end back to back) writes the SAME host document twice.
+    // TurnStart, one at TurnEnd — so h's auto-resolved turn (its `enter_turn`
+    // and `run_turn_end` back to back) writes the SAME host document twice.
     let combat = Uuid::from_u128(1);
     let a = actor_combatant(10, combat, 0xA, None, false, (0.0, 30.0));
     let h = actor_combatant(11, combat, 0x50, None, true, (0.0, 30.0));
@@ -505,10 +583,10 @@ fn compressed_hidden_turn_coalesces_host_updates_into_one_operation() {
 }
 
 #[test]
-fn compressed_hidden_turn_coalesces_combatant_updates_into_one_operation() {
+fn auto_resolved_hidden_turn_coalesces_combatant_updates_into_one_operation() {
     // h is a hidden OwnerMayEnd actor encountered right after a (visible,
     // current turn) ends. h's OWN resource recovers at BOTH boundaries of
-    // its compressed turn (turn_start +30, turn_end -10, the exact same
+    // its auto-resolved turn (turn_start +30, turn_end -10, the exact same
     // configuration `guard_exhaustion_still_fully_resolves_...` uses) --
     // two separate `run_boundary` calls write the SAME path on h's own
     // combatant document. `Working::coalesce_updates` covers combatant

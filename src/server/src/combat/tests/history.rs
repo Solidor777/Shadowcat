@@ -99,6 +99,10 @@ fn start_and_each_advance_append_a_record_and_move_the_cursor() {
     assert_eq!(h.records[1].effects.len(), 1);
 }
 
+/// A rewind steps back ONE turn boundary at a time, and an auto-resolved
+/// `Event`'s own boundary is one of them: the first rewind lands on the
+/// event's turn (restoring the event document the advance deleted), and only
+/// the second reaches the actor's turn that preceded it.
 #[test]
 fn rewind_restores_spent_resources_expired_effects_and_deleted_events() {
     let combat = Uuid::from_u128(1);
@@ -138,14 +142,42 @@ fn rewind_restores_spent_resources_expired_effects_and_deleted_events() {
             .all(|c| c.doc.id != Uuid::from_u128(11)),
         "event deleted"
     );
-    let ops = rewind(&s2, 0).unwrap();
-    let docs = apply(&s2, &ops);
+    // First rewind: back to the EVENT's own auto-resolved boundary.
+    let s3 = rebuild(&s2, apply(&s2, &rewind(&s2, 0).unwrap()));
+    assert_eq!(
+        (s3.engine.round, s3.engine.turn),
+        (1, Some(Uuid::from_u128(11))),
+        "the intermediate record captured at the event's own turn boundary"
+    );
+    assert!(
+        s3.combatants
+            .iter()
+            .any(|x| x.doc.id == Uuid::from_u128(11)),
+        "event re-created"
+    );
+    assert!(
+        s3.engine.order.contains(&Uuid::from_u128(11)),
+        "the re-created event is reachable from order again"
+    );
+    assert_eq!(
+        s3.combatants
+            .iter()
+            .find(|x| x.doc.id == Uuid::from_u128(10))
+            .unwrap()
+            .engine
+            .resources["movement"]
+            .current,
+        10.0,
+        "the spend stood at the event's boundary, so it is restored as it stood"
+    );
+
+    // Second rewind: back to the actor's own turn, before the advance ran.
+    let docs = apply(&s3, &rewind(&s3, 0).unwrap());
     let a: CombatantEngine = engine_of(&docs, Uuid::from_u128(10));
     assert_eq!(
         a.resources["movement"].current, 30.0,
         "boundary value restored, not the spent one"
     );
-    assert!(docs.contains_key(&Uuid::from_u128(11)), "event re-created");
     let e: EffectEngine = serde_json::from_value(
         docs[&Uuid::from_u128(0x1A)].embedded["effect"][0]
             .engine
@@ -156,11 +188,7 @@ fn rewind_restores_spent_resources_expired_effects_and_deleted_events() {
     assert!(e.active && e.duration.unwrap().remaining == Some(1));
     let c: CombatEngine = engine_of(&docs, combat);
     assert_eq!((c.round, c.turn), (1, Some(Uuid::from_u128(10))));
-    assert!(
-        c.order.contains(&Uuid::from_u128(11)),
-        "the re-created event is reachable from order again"
-    );
-    let h: CombatHistoryEngine = engine_of(&docs, s2.history.as_ref().unwrap().0.id);
+    let h: CombatHistoryEngine = engine_of(&docs, s3.history.as_ref().unwrap().0.id);
     assert_eq!(
         (h.records.len(), h.cursor),
         (1, 0),
@@ -269,11 +297,19 @@ fn forward_restore_discards_the_future_when_a_combatant_changed() {
     );
 }
 
+/// The COUNT bound, exercised on its own: pre-filled with content-free
+/// records so the independent serialized-byte bound (see the test below)
+/// never binds first and the assertion is about `MAX_TURN_HISTORY` alone.
 #[test]
 fn history_is_capped_and_the_cursor_shifts_with_the_drop() {
     let (mut snap, _) = running_with_history();
     let (doc, h) = snap.history.as_mut().unwrap();
-    let rec = h.records[0].clone();
+    let rec = TurnRecord {
+        round: h.records[0].round,
+        turn: h.records[0].turn,
+        combatants: Vec::new(),
+        effects: Vec::new(),
+    };
     h.records = (0..MAX_TURN_HISTORY).map(|_| rec.clone()).collect();
     h.cursor = (MAX_TURN_HISTORY - 1) as u32;
     doc.engine = Some(serde_json::to_value(&*h).unwrap());
@@ -283,4 +319,75 @@ fn history_is_capped_and_the_cursor_shifts_with_the_drop() {
         (h.records.len(), h.cursor as usize),
         (MAX_TURN_HISTORY, MAX_TURN_HISTORY - 1)
     );
+}
+
+/// The BYTE bound, which the count bound does not imply: a log pre-filled to
+/// `MAX_TURN_HISTORY` records of REAL captured content serializes past
+/// `MAX_SYSTEM_BYTES`, so an advance that only enforced the count bound
+/// would emit an `/engine` band the repository refuses — rolling the whole
+/// transition back and wedging the clock permanently. `apply`'s own
+/// `validate_system_size` check is what makes the failure visible here.
+#[test]
+fn history_is_capped_by_serialized_bytes_before_the_engine_band_overflows() {
+    let (mut snap, _) = running_with_history();
+    let (doc, h) = snap.history.as_mut().unwrap();
+    let rec = h.records[0].clone();
+    h.records = (0..MAX_TURN_HISTORY).map(|_| rec.clone()).collect();
+    h.cursor = (MAX_TURN_HISTORY - 1) as u32;
+    doc.engine = Some(serde_json::to_value(&*h).unwrap());
+    // Precondition: without the byte bound, retaining all 200 records plus a
+    // fresh one is what breaches the cap — the state this test drives from.
+    let unbounded = CombatHistoryEngine {
+        records: (0..MAX_TURN_HISTORY + 1).map(|_| rec.clone()).collect(),
+        cursor: MAX_TURN_HISTORY as u32,
+    };
+    assert!(
+        serde_json::to_vec(&unbounded).unwrap().len() > crate::data::validation::MAX_SYSTEM_BYTES,
+        "fixture must actually be able to breach the cap, or this test proves nothing"
+    );
+
+    let history_id = snap.history.as_ref().unwrap().0.id;
+    let docs = apply(&snap, &advance(&snap, WORLD, Uuid::nil(), 0).unwrap());
+    let h: CombatHistoryEngine = engine_of(&docs, history_id);
+    assert!(
+        h.records.len() < MAX_TURN_HISTORY,
+        "the byte bound evicted beyond what the count bound alone would have dropped"
+    );
+    assert_eq!(
+        h.cursor as usize,
+        h.records.len() - 1,
+        "the cursor follows the newest record after eviction"
+    );
+    let band = serde_json::to_vec(docs[&history_id].engine.as_ref().unwrap()).unwrap();
+    assert!(
+        band.len() <= crate::data::validation::MAX_SYSTEM_BYTES,
+        "the committed engine band stays within the ingress cap"
+    );
+}
+
+/// The envelope constant `evict_to_fit` charges for a serialized
+/// `CombatHistoryEngine` must never UNDER-count, or the eviction it drives
+/// leaves a band that still breaches the cap.
+#[test]
+fn the_history_envelope_estimate_is_never_an_undercount() {
+    let (snap, _) = running_with_history();
+    let rec = snap.history.as_ref().unwrap().1.records[0].clone();
+    for count in [1usize, 2, 7, 64] {
+        let records: Vec<TurnRecord> = (0..count).map(|_| rec.clone()).collect();
+        let engine = CombatHistoryEngine {
+            records: records.clone(),
+            cursor: (count - 1) as u32,
+        };
+        let actual = serde_json::to_vec(&engine).unwrap().len();
+        let estimated: usize = 34
+            + records
+                .iter()
+                .map(|r| serde_json::to_vec(r).unwrap().len())
+                .sum::<usize>()
+            + (count - 1);
+        assert!(
+            estimated >= actual,
+            "envelope estimate {estimated} under-counts the real {actual} at {count} records"
+        );
+    }
 }

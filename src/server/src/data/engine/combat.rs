@@ -656,6 +656,43 @@ pub struct EffectSnapshot {
     pub engine: EffectEngine,
 }
 
+/// One combatant as a turn boundary captured it: identity, placement,
+/// access control, ownership and the two state bands — exactly what
+/// `combat::history`'s `restore`/`live_equals` pass reads back, and nothing
+/// else. INVARIANT: this is deliberately NOT a whole `Document`. A record
+/// holds one entry per combatant and a combat retains `MAX_TURN_HISTORY`
+/// records, so every captured byte is multiplied by both; capturing bands no
+/// restore reads (`source`, `base`, `embedded`, timestamps) pushes the
+/// history document's `/engine` band past `MAX_SYSTEM_BYTES` — a hard
+/// ingress refusal that rolls back the whole combat transition — inside an
+/// ordinary combat. HIDDEN COUPLING: a combatant `restore` re-`Create`s
+/// (an exhausted `Event` deleted since the boundary) is rebuilt from these
+/// fields alone, with its `scope`/`doc_type` derived from the combat it
+/// belongs to and an empty `embedded` map — the record restores the CLOCK's
+/// state, never a general document backup.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/engine/")]
+#[serde(deny_unknown_fields)]
+pub struct CapturedCombatant {
+    /// The combatant document's id.
+    pub id: Uuid,
+    /// The combat it is parented to.
+    pub parent_id: Option<Uuid>,
+    /// Envelope display name (an `Event`'s row label).
+    pub name: Option<String>,
+    /// Its permission set at the boundary. Captured because a combatant's
+    /// hidden state IS `permissions.default: none` — restoring the set
+    /// restores the visibility a re-`Create`d combatant had.
+    pub permissions: crate::data::document::PermissionSet,
+    /// Its owner at the boundary.
+    pub owner: Option<Uuid>,
+    /// Its engine band at the boundary.
+    pub engine: CombatantEngine,
+    /// Its opaque system band at the boundary.
+    #[ts(type = "unknown")]
+    pub system: serde_json::Value,
+}
+
 /// Every combatant and anchored effect as they stood when `turn` began.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
@@ -665,15 +702,18 @@ pub struct TurnRecord {
     pub round: u32,
     /// The combatant whose turn it is.
     pub turn: Uuid,
-    /// Whole combatant documents (restore re-creates a deleted one).
-    pub combatants: Vec<crate::data::document::Document>,
+    /// The narrowed per-combatant capture (restore re-creates a deleted one).
+    pub combatants: Vec<CapturedCombatant>,
     /// Anchored effects.
     pub effects: Vec<EffectSnapshot>,
 }
 
 /// The engine body of a `combat-history` document: the per-turn snapshots of
 /// one combat and the cursor of the current turn. GM-only by
-/// `permissions.default: none`; bounded to `MAX_TURN_HISTORY` records.
+/// `permissions.default: none`; bounded to `MAX_TURN_HISTORY` records AND,
+/// independently, to a serialized-byte ceiling `combat::history::append_record`
+/// enforces by evicting oldest-first (record COUNT alone does not bound
+/// serialized SIZE, and only size is what `validate_system_size` refuses on).
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
