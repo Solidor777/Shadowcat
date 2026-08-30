@@ -37,38 +37,39 @@ async fn create_folder(h: &Harness, name: &str, parent: Option<Uuid>) -> Uuid {
     id
 }
 
-/// Seeds one asset row directly (no bytes on disk — the query never reads them).
-async fn seed(
-    h: &Harness,
-    name: &str,
-    content_type: &str,
+/// One seeded asset row (no bytes on disk — the query never reads them).
+struct Seed<'a> {
+    name: &'a str,
+    content_type: &'a str,
     size: i64,
     created_at: i64,
     folder: Option<Uuid>,
-    explicit: &[&str],
-    derived: &[&str],
-) -> Uuid {
+    explicit: &'a [&'a str],
+    derived: &'a [&'a str],
+}
+
+async fn seed(h: &Harness, s: Seed<'_>) -> Uuid {
     let id = Uuid::new_v4();
     h.repo
         .insert_asset(&Asset {
             id,
             world_id: h.world,
             storage_key: format!("{}/{}", h.world, id),
-            original_name: name.into(),
-            content_type: content_type.into(),
-            byte_size: size,
+            original_name: s.name.into(),
+            content_type: s.content_type.into(),
+            byte_size: s.size,
             created_by: Some(h.user),
-            created_at,
+            created_at: s.created_at,
             version: 1,
-            folder_id: folder,
+            folder_id: s.folder,
             tags: vec![],
             derived_tags: vec![],
-            meta: AssetMeta::unprocessed(content_type, size),
+            meta: AssetMeta::unprocessed(s.content_type, s.size),
         })
         .await
         .unwrap();
-    let explicit: Vec<String> = explicit.iter().map(|s| s.to_string()).collect();
-    let derived: Vec<String> = derived.iter().map(|s| s.to_string()).collect();
+    let explicit: Vec<String> = s.explicit.iter().map(|t| t.to_string()).collect();
+    let derived: Vec<String> = s.derived.iter().map(|t| t.to_string()).collect();
     h.repo
         .set_asset_tags(id, &explicit, &derived)
         .await
@@ -110,57 +111,67 @@ async fn seed_world(h: &Harness) -> Seeded {
     let b = create_folder(h, "B", Some(a)).await;
     seed(
         h,
-        "Map of Crypt.png",
-        "image/webp",
-        10,
-        1,
-        None,
-        &["hero"],
-        &["image", "webp"],
+        Seed {
+            name: "Map of Crypt.png",
+            content_type: "image/webp",
+            size: 10,
+            created_at: 1,
+            folder: None,
+            explicit: &["hero"],
+            derived: &["image", "webp"],
+        },
     )
     .await;
     seed(
         h,
-        "notes.pdf",
-        "application/pdf",
-        40,
-        2,
-        None,
-        &["hero"],
-        &["other"],
+        Seed {
+            name: "notes.pdf",
+            content_type: "application/pdf",
+            size: 40,
+            created_at: 2,
+            folder: None,
+            explicit: &["hero"],
+            derived: &["other"],
+        },
     )
     .await;
     seed(
         h,
-        "crypt",
-        "image/webp",
-        30,
-        3,
-        Some(a),
-        &[],
-        &["image", "webp", "A"],
+        Seed {
+            name: "crypt",
+            content_type: "image/webp",
+            size: 30,
+            created_at: 3,
+            folder: Some(a),
+            explicit: &[],
+            derived: &["image", "webp", "A"],
+        },
     )
     .await;
     seed(
         h,
-        "big map.jpg",
-        "image/jpeg",
-        50,
-        4,
-        Some(a),
-        &[],
-        &["image", "jpeg", "A"],
+        Seed {
+            name: "big map.jpg",
+            content_type: "image/jpeg",
+            size: 50,
+            created_at: 4,
+            folder: Some(a),
+            explicit: &[],
+            derived: &["image", "jpeg", "A"],
+        },
     )
     .await;
     seed(
         h,
-        "goblin.png",
-        "image/png",
-        20,
-        5,
-        Some(b),
-        &["hero"],
-        &["image", "png", "A", "B"],
+        Seed {
+            name: "goblin.png",
+            content_type: "image/png",
+            size: 20,
+            created_at: 5,
+            folder: Some(b),
+            explicit: &["hero"],
+            derived: &["image", "png", "A", "B"],
+        },
     )
     .await;
     Seeded { a, b }
