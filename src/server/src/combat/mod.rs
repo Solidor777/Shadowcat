@@ -22,6 +22,7 @@ use crate::ws::protocol::{ClientMsg, ResourceOp as WireResourceOp, ServerMsg};
 use crate::ws::room::Room;
 
 pub mod effects;
+pub(crate) mod eval;
 pub mod history;
 pub mod ops;
 pub mod snapshot;
