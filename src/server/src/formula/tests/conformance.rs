@@ -37,14 +37,14 @@ fn collect_refs(expr: &Expr, out: &mut Vec<String>) {
 #[serde(untagged)]
 enum Expected {
     Num(f64),
-    Err(FormulaError),
+    Failure(FormulaError),
 }
 
 impl From<Expected> for FormulaValue {
     fn from(e: Expected) -> Self {
         match e {
             Expected::Num(n) => Ok(n),
-            Expected::Err(err) => Err(err),
+            Expected::Failure(err) => Err(err),
         }
     }
 }
