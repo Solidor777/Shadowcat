@@ -1462,7 +1462,8 @@ Decomposed **M11a–d**:
 - M13a/b are headless and startable before M12 completes; only M13c gates on M12c.
 - Excludes: comparison/conditional grammar, `override` bucket, effect durations/triggers
   (Phase-2 combat), server-side formula evaluation (Phase-3 sandboxed validators), live
-  template inheritance.
+  template inheritance. *(Superseded 2026-08-30: engine-grammar evaluation is server-side as of
+  M14c-1; the sandbox item now covers third-party code only.)*
 
 **▶ Dogfood alpha gate** — backups (M12.5) must exist before real worlds accrue.
 
@@ -1650,7 +1651,9 @@ lifecycle flags (`on_advance`/`on_combat_end`/`on_turn_end`) and `Duration` gain
 `remaining` count read back from the formula the client's own library evaluated — the server never
 evaluates `Formula::Text` and skips any effect whose lifecycle or remaining count is still
 unresolved, on both the per-boundary tick (`combat::effects::tick`) and lifecycle-policy expiry
-(`combat::effects::expire_by_policy`).
+(`combat::effects::expire_by_policy`). *(Superseded by M14c-1: the server evaluates
+`Formula::Text`; the client-resolution model described here is retired and M14c-2 rewires these
+transitions.)*
 
 An effect's HOST (the document embedding it) and its `Duration.anchor` (the combatant whose clock
 moves it) are independent axes: `combat::effects::collect_effects` walks the collecting combatant's
@@ -1765,7 +1768,8 @@ one-active-combat-per-scene batch-ordering gap the M14a delivery note left open.
 
 **Not built here:** `AppContext.combat`/client hooks, the tracker module/UI, and the client-side
 resolved-number writes an effect's formula library performs against `Duration.remaining` and
-`CombatantResource.current`/`.max` — all land in M14c–d.
+`CombatantResource.current`/`.max` — all land in M14c–d. *(Superseded by M14c-1: those writes are
+never built; the server evaluates the formulas itself — see the M14c-1 entry.)*
 
 ## Documentation campaign — completed sweeps
 
