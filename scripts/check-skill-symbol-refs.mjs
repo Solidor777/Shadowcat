@@ -1498,7 +1498,7 @@ export const ACKNOWLEDGED_NON_SYMBOLS = new Set([
   // Rust std method/associated-fn names cited standalone (`checked_add`, `as_ref`) - this repo
   // declares no method of these names on its own types at the point cited.
   "checked_add", "checked_mul", "saturating_mul", "is_ascii_graphic",
-  "max_by_key", "min_by_key", "binary_search_by_key", "filter_map",
+  "max_by_key", "min_by_key", "binary_search_by_key", "remove_dir_all", "filter_map",
   // Literal/keyword values, not declarations.
   "true", "false", "NaN", "Infinity",
   // Non-Rust/TS/Svelte source this checker's symbol index does not cover (Python hook internals,
