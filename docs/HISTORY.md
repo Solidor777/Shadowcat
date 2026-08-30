@@ -1826,6 +1826,52 @@ documents-permissions, formula, combat) through the reviewed skill-update gate.
 (M14c-2); world-config authority (M14c-3); notation references and the chat channel (M14c-4);
 the templates merge (M14c-5); the combat client seams (M14c-6).
 
+#### M14c-2 — Combat resolution server-side ✅
+**COMPLETE.** Branch `m14c-2-combat-resolution`, executed mainline (Fable) from
+[`superpowers/specs/2026-08-30-m14c-2-combat-resolution-server-side-design.md`](superpowers/specs/2026-08-30-m14c-2-combat-resolution-server-side-design.md)
+and its plan; two buddy-check checkpoints (both converged) plus the final two-reviewer branch
+review. Second of six.
+
+The combat clock now evaluates every formula it acts on. `combat::eval` owns the contracts:
+`formula_host` (the token-embedded actor copy, else the linked actor — the ONE host-precedence
+rule), `eval_formula`, `resolved_resource` (Mirror = pure derivation; a Tracked `max` is
+evaluated, a negative result clamps to 0), `lifecycle_flags` (authored formula →
+`CombatEngine.effect_lifecycle` → engine fallbacks), `duration_amount` (floor; below 1 refused).
+One stored home per value: `CombatantResource.max`, `EffectLifecycle.resolved` and
+`ResolvedLifecycle` are gone; an absent `Tracked` entry or an untouched countdown reads as FULL
+and materializes on first change (lazy-full — no join-time seeding, uniform across combatant
+kinds). An evaluation failure skips its one write and surfaces as ONE GM-only
+`MessageKind::System` notice per transition (`eval_notice`, deduped, each detail prefixed with
+the combatant's name or id); the clock never stops on a bad formula. `CombatResource` refuses
+Mirror-bound keys and clamps against the evaluated max.
+
+Egress: a combatant `Create` carrying no explicit `/engine/resources` property override is
+stamped `Visibility::OwnerOrGm` at `apply_intent` ingress (an explicit entry, `all` included, is
+respected; `buildCombatantDoc` mirrors the stamp) — stored resource scalars default to the
+trusted tier, closing the whole-move-scalar class for combat numbers.
+
+Movement: the ECS caches the `resource-registry` singleton beside the other config docs;
+`budget_gate_for_token` + `resolve_budget` — ONE resolution shared by `Room::execute_move` and
+`handle_pathfind` — derive the budget through `combat::eval::resolved_resource` over
+`SceneEcs::combatant_formula_host`'s document. Absent entries read as a full budget (the
+decrement materializes them with a Null OCC pre-image); a Mirror binding or evaluation failure
+is unresolvable (refusal for enforced callers, free-move-no-decrement for exempt ones).
+`SceneEcs::pathfind` gains `budget_cells`: the grid engine cuts by per-step replay, the
+walls-only continuous engine by `navmesh::truncate_at_budget`'s span cut, and EVERY
+budget-boundary comparison — both cuts and the executor's own stop — runs through the one
+predicate `pathfinding::budget_admits_step`. `PathOutcome`/`PathResult` gain `truncated`;
+refusals reuse the generic wording and the clamp binds only enforced `Hard` callers, so a hidden
+combatant discloses nothing through previews. Parity pinned by
+`budget_clamped_preview_last_point_equals_executor_stop` (sabotage-verified with a whole-cell
+perturbation; a half-cell one is absorbed by integer step costs — recorded, not kept).
+
+Review fold-ins beyond the above: combatant/host identity in failure details (the notice dedup
+cannot collapse distinct combatants), the Event exemption removed from `recover` (spec-true
+uniform recovery), stale `effect_cleanup`/skill prose corrected. Client: `ResolvedLifecycle`
+removed end to end; scene-tools test doubles carry `truncated`. Accepted residual: documents can
+change between a preview and the move, so a preview is advisory — the executor re-resolves at
+move time.
+
 ### M15a · Asset pipeline ✅
 Branch `m15a-asset-pipeline`, executed mainline (Fable) from the approved design
 `docs/superpowers/specs/2026-08-30-m15-asset-pipeline-browser-design.md` and plan
