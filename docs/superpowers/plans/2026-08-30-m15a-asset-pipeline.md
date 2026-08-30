@@ -24,10 +24,10 @@
 - Rust tests live in sibling files (`#[cfg(test)] mod tests;`), every item documented (`#![deny(missing_docs)]`), no lint suppressions, no file over 5,000 lines.
 - After every task: `cargo fmt --all`, `cargo clippy --all-targets -- -D warnings`, `cargo test --all` (from `src/server`); `pnpm -r typecheck && pnpm -r test` once TS changes begin.
 
-## Spec deviations flagged for the user (decided at handoff, recorded here)
+## Spec deviations (decided by the user at handoff; spec §1 updated to match)
 
-1. **Folder delete and child folders.** Spec §1 says child folders reparent. The document layer's invariant (`apply_command` expands a `Delete` into explicit children-first ops; `descendants_first`) cascades every descendant document. This plan keeps the invariant: deleting a folder deletes its sub-folders (as logged ops) and reparents every *asset* in the deleted subtree to the deleted folder's parent — which the per-op hook in `delete_document_tx` produces naturally in children-first order (child's assets → parent; then parent's assets → grandparent).
-2. **Backfill.** Spec §1's one-time backfill has no substrate — the repo runs a single pre-ship baseline migration edited in place. New columns get defaults in the DDL; no backfill task.
+1. **Folder delete.** The document cascade invariant stands: deleting a folder deletes its sub-folders (logged ops) and the `delete_document_tx` hook reparents every asset in the subtree to the deleted folder's parent, children-first. **Plus a purge option** (user decision): `DELETE /api/asset-folders/{id}?assets=delete` — Task 10.
+2. **Backfill.** None; in-place DDL edit of the pre-ship baseline.
 
 ---
 
@@ -624,8 +624,9 @@ async fn upload_non_image_is_passthrough_other() {
 - `PATCH /api/assets/{uuid}` body `{ name?: String, folder_id?: Option<Uuid> /* explicit null = root */, tags?: Vec<String> }` → `Asset`; 422 when `folder_id` names a non-folder or another world's folder; tags: trimmed, non-empty, ≤ 64 chars, ≤ 64 tags → else 422.
 - `POST /api/worlds/{world}/assets/bulk` body `{ ids: Vec<Uuid>, folder_id?: Option<Uuid>, add_tags?: Vec<String>, remove_tags?: Vec<String> }` → `Vec<Asset>`; every id must belong to `world` (404 otherwise); one transaction; one `Moved` broadcast per id.
 - `AssetOp::Created` (version 1) and `AssetOp::Moved` (current version, unchanged).
+- `DELETE /api/asset-folders/{id}?assets=reparent|delete` (GM; default `reparent`) → `Json<Command>` (the folder-delete command, same shape as `routes::delete_document`). 404 unless `id` is an `asset_folder` in a world the caller is GM of. `assets=delete`: collect every asset whose `folder_id` is in the subtree (recursive CTE, Task 9's helper), delete each through a shared `delete_asset_files_and_row(state, id)` fn extracted from `http::assets::delete` (barrier permit, row `DELETE … RETURNING`, canonical + siblings unlink, `Deleted` broadcast), THEN `write_ops(&state, &user, world, vec![Operation::Delete { doc }])`. A failure mid-purge returns the error with the already-deleted assets gone and the folder intact (the client re-issues).
 
-- [ ] **Step 1: Failing tests** — `patch_renames_moves_and_retags_and_broadcasts_moved` (assert `derived_tags` contains the new folder's name and `Moved` frame arrives with the unchanged version), `patch_is_gm_only`, `patch_rejects_cross_world_folder`, `bulk_moves_and_adds_tags_in_one_tx`, `folder_rename_refreshes_contained_assets_derived_tags` (rename the folder document over WS with the existing intent helper, then `get_asset` shows the new name tag).
+- [ ] **Step 1: Failing tests** — `folder_delete_route_purges_subtree_assets_when_asked` (folders A→B, assets in both; `?assets=delete` ⇒ both assets 404 on serve, files gone, two `Deleted` frames, folder docs gone), `folder_delete_route_default_reparents` (same setup, no param ⇒ assets survive with `folder_id == None`), `patch_renames_moves_and_retags_and_broadcasts_moved` (assert `derived_tags` contains the new folder's name and `Moved` frame arrives with the unchanged version), `patch_is_gm_only`, `patch_rejects_cross_world_folder`, `bulk_moves_and_adds_tags_in_one_tx`, `folder_rename_refreshes_contained_assets_derived_tags` (rename the folder document over WS with the existing intent helper, then `get_asset` shows the new name tag).
 - [ ] **Step 2: Run → fail.**
 - [ ] **Step 3: Implement**; protocol enum gains the two variants with doc comments; `docs/site/protocol.md` `asset_changed` row becomes "an asset was `created`, `replaced`, `moved` (name/folder/tags; version unchanged) or `deleted`".
 - [ ] **Step 4: Tests PASS** (incl. `pnpm -r typecheck` — the ts-rs `AssetOp.ts` widened; the client `wire.ts` Zod enum still rejects the new ops → fixed in Task 11, so run only `cargo` gates here; the client stays red until Task 11 lands **in the same push**).

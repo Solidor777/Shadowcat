@@ -40,9 +40,8 @@ upload sessions; per-user asset areas; per-world retain policy.
   `content_type`/`byte_size` (the canonical served file); `original_retained: bool`.
 
 Tags persist in a child table `asset_tags(asset_id, tag, derived)` for indexed lookup; the
-`Asset` struct flattens them. Migration adds the columns/table with `folder_id NULL` and runs a
-one-time backfill over existing rows (dimensions read from the canonical file; unreadable files
-get the kind tag only).
+`Asset` struct flattens them. Schema change follows the pre-ship convention — the single squashed
+baseline `0001_init.sql` is edited in place with DDL defaults; there is no backfill step.
 
 Storage layout under `<assets_dir>/<world>/`:
 
@@ -55,8 +54,14 @@ Storage layout under `<assets_dir>/<world>/`:
 `asset_folder` engine doc type (`data::engine`): `{ name, parent: Option<Uuid>, sort: i64 }`,
 world-scoped, GM-writable through the ordinary document path; folder tags are the document's
 explicit tags. Validation (`data::validation`) rejects parent cycles and cross-world parents.
-Deleting a folder is a document delete; the server's delete hook reparents its assets and child
-folders to the deleted folder's parent — bytes are never cascaded.
+Deleting a folder is a document delete. The document layer's cascade invariant applies (a parent
+delete expands into explicit children-first ops), so **sub-folders are deleted with it**; every
+asset in the deleted subtree is **reparented** to the deleted folder's parent by the hook in the
+single delete chokepoint (`delete_document_tx`), children-first, so bytes are never cascaded by a
+plain document delete. A GM may instead **purge**: `DELETE /api/asset-folders/{id}?assets=delete`
+first deletes every asset in the subtree through the shared asset-delete path (files + `Deleted`
+broadcasts), then deletes the folder document through the same `write_ops` internals
+`routes::delete_document` uses; `?assets=reparent` (the default) is that document delete alone.
 
 `version` semantics unchanged: bumps on replace **and** on reconvert, since both change the
 served bytes. `Config.retain_originals: bool`, default `true`.
