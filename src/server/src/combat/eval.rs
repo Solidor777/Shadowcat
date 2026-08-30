@@ -38,11 +38,18 @@ pub(crate) fn formula_host<'a>(
         return None;
     };
     if let Some(token) = token_id.as_ref().and_then(|id| hosts.get(id)) {
-        if let Some(actor) = token.embedded.get("actor").and_then(|v| v.first()) {
+        if let Some(actor) = embedded_actor_copy(token) {
             return Some(actor);
         }
     }
     actor_id.as_ref().and_then(|id| hosts.get(id))
+}
+
+/// The actor copy a token document embeds, if any — the ONE extraction
+/// `formula_host` and `effect_host_doc` share, so the token→copy step cannot
+/// fork between the combatant walk and the effect walk.
+fn embedded_actor_copy(token: &Document) -> Option<&Document> {
+    token.embedded.get("actor").and_then(|v| v.first())
 }
 
 /// The document an EFFECT's formulas evaluate over: the host itself for an
@@ -51,7 +58,7 @@ pub(crate) fn formula_host<'a>(
 /// copy (reference-free formulas still evaluate through the no-host path).
 pub(crate) fn effect_host_doc(host: &Document) -> Option<&Document> {
     if host.doc_type == TOKEN_DOC_TYPE {
-        host.embedded.get("actor").and_then(|v| v.first())
+        embedded_actor_copy(host)
     } else {
         Some(host)
     }
@@ -65,10 +72,9 @@ struct NoHostResolver;
 
 impl Resolve for NoHostResolver {
     fn resolve(&self, path: &[String]) -> FormulaValue {
-        Err(FormulaError::new(
-            FormulaErrorKind::UnknownRef,
-            format!("unknown reference '{}'", path.join(".")),
-        ))
+        // The SAME wording `SystemLeafResolver` uses for a missing leaf, read
+        // from its own helper so the two cannot drift apart.
+        crate::formula::resolver::unknown(&path.join("."))
     }
 }
 
