@@ -368,7 +368,7 @@ pub(crate) fn execute_move(
     }
     // `budget` is validated exactly like every other `f64` input this function accepts
     // (`cell`, path coordinates, `footprint_radius_cells`): a non-finite value is rejected
-    // BEFORE it reaches the per-transition `cost + step_cost > b + 1e-9` comparison, where a
+    // BEFORE it reaches the per-transition `budget_admits_step` comparison, where a
     // NaN `b` would otherwise make every such comparison evaluate `false` (IEEE-754 NaN
     // comparisons never return `true`) and silently behave as `None` (unlimited). A finite
     // negative budget is NOT rejected here — it degrades gracefully at the first transition
@@ -563,7 +563,7 @@ pub(crate) fn execute_move(
             let step_cost = step * regions.terrain_multiplier(next_cell);
             if check_budget {
                 if let Some(b) = budget {
-                    if cost + step_cost > b + 1e-9 {
+                    if !crate::scene::pathfinding::budget_admits_step(cost, step_cost, b) {
                         stopped_early = true;
                         break;
                     }

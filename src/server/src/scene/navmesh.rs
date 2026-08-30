@@ -589,43 +589,54 @@ pub(crate) fn truncate_at_arrest(
     }
 }
 
-/// Truncate a continuous (walls-only) route where its cumulative Euclidean
-/// length exceeds `budget_scene_units`, cutting the final span at the exact
-/// budget boundary — the preview half of the executor's own budget stop.
+/// Truncate a continuous (walls-only) route where its cumulative length in
+/// CELLS exceeds `budget_cells`, cutting the final span at the budget
+/// boundary — the preview half of the executor's own budget stop, decided by
+/// the same `pathfinding::budget_admits_step` predicate the executor calls.
 /// Valid ONLY on the unweighted continuous path (this engine runs only when
 /// the region field has no terrain weights), where Euclidean length IS the
 /// weighted cost — the same assumption `truncate_at_arrest`'s recompute makes.
-/// A route within budget is returned unchanged; a cut clears `arrested` (the
-/// preview no longer reaches an arrest point beyond the cut).
+/// `outcome.cost` stays in scene units here (`world_units_per_cell` converts;
+/// the caller's boundary division to cells is unchanged). A route within
+/// budget is returned unchanged; a cut clears `arrested` (the preview no
+/// longer reaches an arrest point beyond the cut).
 pub(crate) fn truncate_at_budget(
     outcome: crate::scene::pathfinding::PathOutcome,
-    budget_scene_units: f64,
+    budget_cells: f64,
+    world_units_per_cell: f64,
 ) -> crate::scene::pathfinding::PathOutcome {
-    if outcome.path.len() < 2 || outcome.cost <= budget_scene_units {
+    if outcome.path.len() < 2
+        || crate::scene::pathfinding::budget_admits_step(
+            outcome.cost / world_units_per_cell,
+            0.0,
+            budget_cells,
+        )
+    {
         return outcome;
     }
     let mut kept: Vec<(f64, f64)> = vec![outcome.path[0]];
-    let mut cum = 0.0;
+    let mut cum_cells = 0.0;
     for w in outcome.path.windows(2) {
-        let len = ((w[1].0 - w[0].0).powi(2) + (w[1].1 - w[0].1).powi(2)).sqrt();
-        if cum + len > budget_scene_units {
-            let remain = (budget_scene_units - cum).max(0.0);
-            if len > 0.0 && remain > 0.0 {
-                let t = remain / len;
+        let len_units = ((w[1].0 - w[0].0).powi(2) + (w[1].1 - w[0].1).powi(2)).sqrt();
+        let len_cells = len_units / world_units_per_cell;
+        if !crate::scene::pathfinding::budget_admits_step(cum_cells, len_cells, budget_cells) {
+            let remain_cells = (budget_cells - cum_cells).max(0.0);
+            if len_cells > 0.0 && remain_cells > 0.0 {
+                let t = remain_cells / len_cells;
                 kept.push((
                     w[0].0 + (w[1].0 - w[0].0) * t,
                     w[0].1 + (w[1].1 - w[0].1) * t,
                 ));
-                cum += remain;
+                cum_cells += remain_cells;
             }
             return crate::scene::pathfinding::PathOutcome {
                 path: kept,
-                cost: cum,
+                cost: cum_cells * world_units_per_cell,
                 arrested: false,
                 truncated: true,
             };
         }
-        cum += len;
+        cum_cells += len_cells;
         kept.push(w[1]);
     }
     outcome

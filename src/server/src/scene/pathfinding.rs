@@ -229,6 +229,16 @@ pub enum PathFail {
 /// a GM search whose window is large.
 pub(crate) const MAX_PATH_NODES: usize = 200_000;
 
+/// The ONE budget-boundary decision every consumer shares: whether spending
+/// `step_cells` more on top of `spent_cells` still fits `budget_cells`,
+/// tolerance included. `move_exec::execute_move`'s budget stop, `find`'s
+/// preview truncation and `navmesh::truncate_at_budget`'s span cut all call
+/// this ONE predicate, so the preview and the executor cannot disagree at
+/// the boundary by an epsilon only one of them applies.
+pub(crate) fn budget_admits_step(spent_cells: f64, step_cells: f64, budget_cells: f64) -> bool {
+    spent_cells + step_cells <= budget_cells + 1e-9
+}
+
 /// f64 ordering wrapper for the min-heap. Orders by `f` ascending (via reversed `total_cmp`),
 /// tie-broken by `(cell, parity)` so identical requests yield identical routes (determinism).
 /// `g` is payload for lazy-deletion stale-pop skip — it is NOT part of the ordering key.
@@ -567,7 +577,7 @@ pub fn find(
                     .inputs
                     .regions
                     .map_or(1.0, |rf| rf.terrain_multiplier(w[1]));
-            if cum + step > budget {
+            if !budget_admits_step(cum, step, budget) {
                 keep = i + 1;
                 truncated = true;
                 break;

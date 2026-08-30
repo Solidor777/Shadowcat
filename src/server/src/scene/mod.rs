@@ -1811,7 +1811,7 @@ impl SceneEcs {
                     let wu_for_budget = grid_shape.world_units_per_cell();
                     let outcome = match budget_cells {
                         Some(b) if wu_for_budget.is_finite() && wu_for_budget > 0.0 => {
-                            navmesh::truncate_at_budget(outcome, b * wu_for_budget)
+                            navmesh::truncate_at_budget(outcome, b, wu_for_budget)
                         }
                         _ => outcome,
                     };
