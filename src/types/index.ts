@@ -48,10 +48,17 @@ export type { InstalledModuleInfo } from "./generated/InstalledModuleInfo";
 
 // Assets
 export type { Asset } from "./generated/Asset";
+export type { AssetMeta } from "./generated/AssetMeta";
+export type { AssetPage } from "./generated/AssetPage";
+export type { PatchAssetRequest } from "./generated/PatchAssetRequest";
+export type { BulkAssetRequest } from "./generated/BulkAssetRequest";
+export type { CreateUploadRequest } from "./generated/CreateUploadRequest";
+export type { CreateUploadResponse } from "./generated/CreateUploadResponse";
 export type { AssetOp } from "./generated/AssetOp";
 
 // Engine band (data/engine/*.rs) — server-validated per-doc-type bodies + shared shapes.
 export type { TokenEngine } from "./generated/engine/TokenEngine";
+export type { AssetFolderEngine } from "./generated/engine/AssetFolderEngine";
 export type { TokenOverrides } from "./generated/engine/TokenOverrides";
 export type { TokenVisual } from "./generated/engine/TokenVisual";
 export type { RenderVisual } from "./generated/engine/RenderVisual";

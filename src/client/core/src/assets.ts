@@ -1,21 +1,30 @@
 import type { Asset } from "@shadowcat/types";
 
-/** Op carried by an out-of-band AssetChanged frame. */
-export type AssetOp = "replaced" | "deleted";
+/** Op carried by an out-of-band AssetChanged frame. `created` and `moved` (name / folder /
+ * tags) change what a LISTING shows, never what a URL serves; `replaced` and `deleted` change
+ * the bytes behind a URL. */
+export type AssetOp = "created" | "replaced" | "moved" | "deleted";
 
-/** An out-of-band asset mutation notice (replace/delete); carries no seq. Shared by
+/** A derivative size class servable via `?variant=`: `thumb` (≤128px) or `preview` (≤512px). */
+export type AssetVariant = "thumb" | "preview";
+
+/** An out-of-band asset mutation notice; carries no seq. Shared by
  * `AssetResolver.onAssetChanged` and `WsClientHandlers.onAssetChanged` — both consume the
  * identical wire shape. */
 export interface AssetChangedNotice {
   /** The changed asset's uuid. */
   uuid: string;
-  /** Whether the asset's bytes were replaced or the asset was deleted. */
+  /** What happened to the asset. */
   op: AssetOp;
   /** The asset's authoritative version at the time of the mutation: the bumped version for
-   * `op: "replaced"`, or the version the row held immediately before removal for
-   * `op: "deleted"` — a real ordering token in both cases. */
+   * `op: "replaced"`, the version the row held immediately before removal for
+   * `op: "deleted"`, `1` for `op: "created"`, and the unchanged current version for
+   * `op: "moved"` — a real ordering token in every case. */
   version: number;
 }
+
+/** Callback for `AssetResolver.onListingInvalidated`. */
+export type ListingInvalidatedHandler = (uuid: string, op: AssetOp) => void;
 
 /**
  * Resolves asset UUIDs to serve URLs and reacts to out-of-band AssetChanged
@@ -33,6 +42,8 @@ export class AssetResolver {
   private revs = new Map<string, number>();
   /** Uuids known-deleted; `url()` resolves any member to `placeholder()`. */
   private deleted = new Set<string>();
+  /** Listeners told when a listing went stale (`created` / `moved` / `deleted`). */
+  private listingListeners = new Set<ListingInvalidatedHandler>();
 
   /** A neutral 1×1 transparent placeholder.
    * @returns A `data:` URI for a 1×1 transparent GIF.
@@ -50,8 +61,11 @@ export class AssetResolver {
 
   /** Resolves an asset uuid to a serve URL, cache-busted by the current `rev`
    * so a replace forces a fresh request (and thus ETag revalidation); a
-   * deleted uuid resolves to `placeholder()`.
+   * deleted uuid resolves to `placeholder()`. With `variant`, the URL names a
+   * derivative (`?variant=thumb|preview`) — same ETag basis as the canonical,
+   * so the same `rev` busts it.
    * @param uuid The asset's stable uuid.
+   * @param variant A derivative size class; absent = the canonical file.
    * @returns The `/api/assets/{uuid}` URL, or the placeholder if deleted.
    * @example
    * ```ts
@@ -61,10 +75,35 @@ export class AssetResolver {
    * resolver.url("00000000-0000-0000-0000-000000000001");
    * ```
    */
-  url(uuid: string): string {
+  url(uuid: string, variant?: AssetVariant): string {
     if (this.deleted.has(uuid)) return this.placeholder();
     const rev = this.revs.get(uuid);
-    return rev === undefined ? `/api/assets/${uuid}` : `/api/assets/${uuid}?v=${rev}`;
+    const params: string[] = [];
+    if (variant !== undefined) params.push(`variant=${variant}`);
+    if (rev !== undefined) params.push(`v=${rev}`);
+    return params.length === 0 ? `/api/assets/${uuid}` : `/api/assets/${uuid}?${params.join("&")}`;
+  }
+
+  /** Subscribe to listing-invalidating notices (`created`, `moved`, `deleted`): the
+   * assets a listing shows, or where it files them, changed — refetch the listing.
+   * `replaced` is not reported here; it changes bytes, not listings, and `url()`
+   * already reflects it.
+   * @param handler Called with the uuid and op of each such notice.
+   * @returns An unsubscribe function.
+   * @example
+   * ```ts
+   * import { AssetResolver } from "@shadowcat/core";
+   *
+   * const resolver = new AssetResolver();
+   * const stop = resolver.onListingInvalidated((uuid, op) => console.info(uuid, op));
+   * stop();
+   * ```
+   */
+  onListingInvalidated(handler: ListingInvalidatedHandler): () => void {
+    this.listingListeners.add(handler);
+    return () => {
+      this.listingListeners.delete(handler);
+    };
   }
 
   /** Adopts an observed `version` for a uuid, gating both state changes a mutation notice can
@@ -122,7 +161,13 @@ export class AssetResolver {
    * ```
    */
   onAssetChanged(msg: AssetChangedNotice): void {
+    // `created` (version 1) and `moved` (unchanged version) never lower the
+    // rev, and `created` clears a stale deleted marker only if the version
+    // is genuinely newer — the same monotonic rule every adoption follows.
     this.adoptVersion(msg.uuid, msg.version, msg.op === "deleted");
+    if (msg.op !== "replaced") {
+      for (const listener of this.listingListeners) listener(msg.uuid, msg.op);
+    }
   }
 
   /** Reconciles `revs`/`deleted` against a listing's authoritative records — the self-healing

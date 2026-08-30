@@ -1,5 +1,5 @@
 import { getContext, setContext } from "svelte";
-import type { ContributionRegistry, DocumentStore, ReadableDocuments, AssetResolver, SceneFrame, SceneSubscription, WireOperation, WireDocument, PathResult, MoveStream, ChatSendOptions, WireRecalcOp, SheetRef, SubscriptionHandle, WireSearchHit, StampOpts, SyncState, FootprintLookup, NotificationLevel } from "@shadowcat/core";
+import type { ContributionRegistry, DocumentStore, ReadableDocuments, AssetResolver, AssetChangedNotice, SceneFrame, SceneSubscription, WireOperation, WireDocument, PathResult, MoveStream, ChatSendOptions, WireRecalcOp, SheetRef, SubscriptionHandle, WireSearchHit, StampOpts, SyncState, FootprintLookup, NotificationLevel } from "@shadowcat/core";
 import type { WorldRole } from "@shadowcat/types";
 import type { SceneInteraction } from "./sceneInteraction";
 import type { ActorSelection } from "./actorSelection.svelte";
@@ -143,15 +143,12 @@ export interface AppContext {
   t: TFunc;
   /** Resolves asset UUIDs to serve URLs, cache-busting on replace. */
   assets: AssetResolver;
-  /** Subscribe to asset replace/delete notices; returns an unsubscribe.
-   * @param cb - Called with the changed asset's uuid and the operation kind.
+  /** Subscribe to out-of-band asset notices (`created` / `replaced` / `moved` / `deleted`);
+   * returns an unsubscribe. `replaced` and `deleted` change what a URL serves (the resolver
+   * already reflects them); `created` and `moved` mean a listing is stale.
+   * @param cb - Called with each notice (the wire shape, see `AssetChangedNotice`).
    * @returns Unsubscribe function. */
-  onAssetChanged(cb: (msg: {
-    /** Id of the asset that changed. */
-    uuid: string;
-    /** Whether the asset was replaced (new content, same id) or deleted. */
-    op: "replaced" | "deleted";
-  }) => void): () => void;
+  onAssetChanged(cb: (msg: AssetChangedNotice) => void): () => void;
   /** Subscribe to a SceneDerived channel; the session re-establishes it across
    * reconnects. Returns a synchronous unsubscribe handle. `opts.asUser` (GM-only see-as-player)
    * views the channel as that user; the server rejects it for non-GMs.

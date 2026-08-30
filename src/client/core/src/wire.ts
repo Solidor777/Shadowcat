@@ -708,10 +708,11 @@ export type ServerMsg =
       /** The mutated asset's id. */
       uuid: string;
       /** What happened to it. */
-      op: "replaced" | "deleted";
+      op: "created" | "replaced" | "moved" | "deleted";
       /** The asset's authoritative version at the time of the mutation: the bumped
-       * version for `"replaced"`, or the version the row held immediately before
-       * removal for `"deleted"` — a real ordering token in both cases. */
+       * version for `"replaced"`, the version the row held immediately before
+       * removal for `"deleted"`, `1` for `"created"`, and the unchanged current
+       * version for `"moved"` — a real ordering token in every case. */
       version: number;
     }
   | {
@@ -923,7 +924,7 @@ export const serverMsgSchemaImpl = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("asset_changed"),
     uuid: z.string(),
-    op: z.enum(["replaced", "deleted"]),
+    op: z.enum(["created", "replaced", "moved", "deleted"]),
     version: int,
   }),
   z.object({

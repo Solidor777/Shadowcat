@@ -121,4 +121,35 @@ describe("AssetResolver", () => {
     r.onAssetChanged({ uuid: "abc", op: "deleted", version: 3 });
     expect(r.url("abc")).toBe("/api/assets/abc?v=5");
   });
+
+  it("url with a variant carries the variant and the rev, in that order", () => {
+    const r = new AssetResolver();
+    expect(r.url("abc", "thumb")).toBe("/api/assets/abc?variant=thumb");
+    r.onAssetChanged({ uuid: "abc", op: "replaced", version: 4 });
+    expect(r.url("abc", "preview")).toBe("/api/assets/abc?variant=preview&v=4");
+    expect(r.url("abc")).toBe("/api/assets/abc?v=4");
+    r.onAssetChanged({ uuid: "abc", op: "deleted", version: 4 });
+    expect(r.url("abc", "thumb")).toBe(r.placeholder());
+  });
+
+  it("created and moved notify listing listeners but never change a URL; replaced does the inverse", () => {
+    const r = new AssetResolver();
+    const seen: [string, string][] = [];
+    const stop = r.onListingInvalidated((uuid, op) => seen.push([uuid, op]));
+    r.onAssetChanged({ uuid: "n", op: "created", version: 1 });
+    const before = r.url("n");
+    r.onAssetChanged({ uuid: "n", op: "moved", version: 1 });
+    expect(r.url("n")).toBe(before);
+    r.onAssetChanged({ uuid: "n", op: "replaced", version: 2 });
+    expect(r.url("n")).not.toBe(before);
+    r.onAssetChanged({ uuid: "n", op: "deleted", version: 2 });
+    expect(seen).toEqual([
+      ["n", "created"],
+      ["n", "moved"],
+      ["n", "deleted"],
+    ]);
+    stop();
+    r.onAssetChanged({ uuid: "n", op: "moved", version: 2 });
+    expect(seen).toHaveLength(3);
+  });
 });

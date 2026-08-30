@@ -2,6 +2,7 @@ import { render, screen, waitFor, fireEvent } from "@testing-library/svelte";
 import { test, expect, vi, beforeEach } from "vitest";
 import Harness from "./__fixtures__/AssetsHarness.svelte";
 import * as api from "@shadowcat/core";
+import type { AssetChangedNotice } from "@shadowcat/core";
 import { AssetResolver } from "@shadowcat/core";
 
 beforeEach(() => vi.restoreAllMocks());
@@ -62,7 +63,7 @@ test("deleting an asset calls deleteAsset and removes the tile", async () => {
 
 test("an asset_changed notice triggers a reload", async () => {
   const list = vi.spyOn(api, "listAssets").mockResolvedValue([] as never);
-  let fire: (m: { uuid: string; op: "replaced" | "deleted" }) => void = () => {};
+  let fire: (m: AssetChangedNotice) => void = () => {};
   render(Harness, {
     props: {
       onAssetChanged: (cb: typeof fire) => {
@@ -72,7 +73,7 @@ test("an asset_changed notice triggers a reload", async () => {
     },
   });
   await waitFor(() => expect(list).toHaveBeenCalledTimes(1));
-  fire({ uuid: "a1", op: "deleted" });
+  fire({ uuid: "a1", op: "deleted", version: 1 });
   await waitFor(() => expect(list).toHaveBeenCalledTimes(2));
 });
 

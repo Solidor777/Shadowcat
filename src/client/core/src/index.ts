@@ -92,8 +92,27 @@ export type {
   WireRecalcOp,
 } from "./wire";
 export { AssetResolver } from "./assets";
-export type { AssetOp, AssetChangedNotice } from "./assets";
-export { listAssets, uploadAsset, replaceAsset, deleteAsset } from "./asset-rest";
+export type {
+  AssetOp,
+  AssetVariant,
+  AssetChangedNotice,
+  ListingInvalidatedHandler,
+} from "./assets";
+export {
+  listAssets,
+  uploadAsset,
+  replaceAsset,
+  deleteAsset,
+  queryAssets,
+  patchAsset,
+  bulkPatchAssets,
+  reconvertAsset,
+  originalUrl,
+  restErrorText,
+} from "./asset-rest";
+export type { AssetQuery } from "./asset-rest";
+export { startChunkedUpload, ChunkedUploadError, CHUNK_THRESHOLD_BYTES } from "./asset-upload";
+export type { ChunkedUploadOptions } from "./asset-upload";
 export { listInstalledModules, getEnabledModules, setEnabledModules } from "./module-rest";
 export type { InstalledModuleInfo } from "@shadowcat/types";
 export { listUsers, createUser, deleteUser, listWorldMembers, createWorldInvite, listWorldInvites, revokeWorldInvite } from "./user-rest";
