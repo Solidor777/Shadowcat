@@ -2302,6 +2302,78 @@ impl SqliteRepository {
         }
     }
 
+    /// Parent-placement checks the Create AND Move arms share — the one
+    /// statement of "may a document of this type sit under this parent",
+    /// covering the checks that need the database or the batch bookkeeping:
+    /// a `combatant`/`combat-history` parent must be a combat (batch-aware),
+    /// and an `asset_folder` parent must be a same-scope folder
+    /// (`check_asset_folder_parent`, batch-aware). `validate_containment`
+    /// (pure placement shape) runs separately at both callers.
+    async fn check_parent_placement(
+        tx: &mut sqlx::SqliteConnection,
+        doc: &Document,
+        batch_folders: &std::collections::HashMap<Uuid, Document>,
+        batch_combats: &std::collections::HashSet<Uuid>,
+    ) -> Result<(), DataError> {
+        if doc.doc_type == COMBATANT_DOC_TYPE || doc.doc_type == COMBAT_HISTORY_DOC_TYPE {
+            // `validate_containment` already guarantees `parent_id` is
+            // `Some` for a combatant/combat-history document.
+            let pid = doc.parent_id.expect(
+                "validate_containment requires a combatant/combat-history doc to carry a parent_id",
+            );
+            let parent_is_combat = batch_combats.contains(&pid)
+                || Self::load_document(&mut *tx, pid)
+                    .await?
+                    .is_some_and(|p| p.doc_type == COMBAT_DOC_TYPE);
+            if !parent_is_combat {
+                return Err(DataError::OpFailed(format!(
+                    "{} parent must be a combat document",
+                    doc.doc_type
+                )));
+            }
+        }
+        Self::check_asset_folder_parent(&mut *tx, doc, batch_folders).await?;
+        Ok(())
+    }
+
+    /// Rejects a Move that would parent `moved` beneath itself: walks the
+    /// ancestor chain upward from `new_parent` — through this batch's
+    /// not-yet-inserted Creates (`batch_folders`) and the stored tree alike —
+    /// refusing if `moved` appears anywhere in it (self-parent included).
+    /// Bounded: a chain deeper than `MAX_MOVE_ANCESTRY` (or a stored cycle,
+    /// which cannot arise but would otherwise loop) is refused, not walked.
+    async fn check_move_acyclic(
+        tx: &mut sqlx::SqliteConnection,
+        moved: Uuid,
+        new_parent: Option<Uuid>,
+        batch_folders: &std::collections::HashMap<Uuid, Document>,
+    ) -> Result<(), DataError> {
+        /// Depth bound for the ancestor walk; no legitimate tree approaches it.
+        const MAX_MOVE_ANCESTRY: u32 = 1_000;
+        let mut cursor = new_parent;
+        let mut hops = 0u32;
+        while let Some(pid) = cursor {
+            if pid == moved {
+                return Err(DataError::OpFailed(
+                    "a document cannot be moved beneath itself".into(),
+                ));
+            }
+            hops += 1;
+            if hops > MAX_MOVE_ANCESTRY {
+                return Err(DataError::OpFailed(
+                    "parent chain too deep to verify".into(),
+                ));
+            }
+            cursor = match batch_folders.get(&pid) {
+                Some(batch_doc) => batch_doc.parent_id,
+                None => Self::load_document(&mut *tx, pid)
+                    .await?
+                    .and_then(|d| d.parent_id),
+            };
+        }
+        Ok(())
+    }
+
     /// Whether a document of `doc_type` already exists in `world_id`, on an
     /// arbitrary executor (so it can run inside the `apply_intent`
     /// transaction — see `SINGLETON_DOC_TYPES`). Mirrors `load_document`'s
@@ -3158,8 +3230,71 @@ impl Repository for SqliteRepository {
             std::collections::HashMap::new();
         for op in &mut ops {
             match op {
-                Operation::Move { .. } => {
-                    return Err(DataError::OpFailed("unsupported operation: move".into()));
+                Operation::Move {
+                    doc_id,
+                    parent_id,
+                    old_parent_id,
+                } => {
+                    let cur = Self::load_document(&mut *tx, *doc_id)
+                        .await?
+                        .ok_or_else(|| DataError::Conflict(format!("document {doc_id} missing")))?;
+                    check_command_scope(&cur, world_id)?;
+                    // GM-only, and only where the GM's unconditional
+                    // short-circuit holds: a `gm_role`-capped GM floor-resolves
+                    // through `resolve_access_world` like any other actor and
+                    // is refused. `CombatTransition` skips this capability
+                    // gate — see the Create arm's matching comment above.
+                    if origin != WriteOrigin::CombatTransition {
+                        let owner = Self::load_effective_owner(&mut *tx, &cur).await?;
+                        let access = resolve_access_world(
+                            ctx.user_id,
+                            ctx.world_role,
+                            &cur,
+                            &world_defaults.grants_for(&cur.doc_type),
+                            owner,
+                        );
+                        if ctx.world_role != WorldRole::Gm || !access.all {
+                            return Err(DataError::Forbidden);
+                        }
+                    }
+                    // Stored `message` docs refuse every ordinary mutation
+                    // path — the same stored-doc_type classification the
+                    // Update arm applies below.
+                    if cur.doc_type == crate::chat::MESSAGE_DOC_TYPE
+                        && origin != WriteOrigin::ServerMessageRevision
+                    {
+                        return Err(DataError::OpFailed(
+                            "message documents cannot be moved".into(),
+                        ));
+                    }
+                    if *old_parent_id != cur.parent_id {
+                        return Err(DataError::Conflict(format!(
+                            "parent pre-image mismatch for {doc_id}"
+                        )));
+                    }
+                    // Batch-start snapshot capture, in lockstep with the
+                    // Update arm's (see `pre_permissions`'s own comment).
+                    if !pre_permissions.contains_key(doc_id) {
+                        pre_permissions.insert(*doc_id, cur.permissions.clone());
+                        let pre_owner = Self::load_effective_owner(&mut *tx, &cur).await?;
+                        pre_owners.insert(*doc_id, pre_owner);
+                    }
+                    if *parent_id != cur.parent_id {
+                        // Create-validity on the post-image: a Move is legal
+                        // exactly where a Create with this parent would be.
+                        let mut post = cur.clone();
+                        post.parent_id = *parent_id;
+                        validation::validate_containment(&post)?;
+                        Self::check_parent_placement(
+                            &mut tx,
+                            &post,
+                            &batch_folders,
+                            &batch_combats,
+                        )
+                        .await?;
+                        Self::check_move_acyclic(&mut tx, *doc_id, *parent_id, &batch_folders)
+                            .await?;
+                    }
                 }
                 Operation::Create { doc } => {
                     check_command_scope(doc, world_id)?;
@@ -3167,25 +3302,8 @@ impl Repository for SqliteRepository {
                     validation::validate_property_overrides(doc)?;
                     validation::validate_engine_tree(doc)?;
                     validation::validate_containment(doc)?;
-                    if doc.doc_type == COMBATANT_DOC_TYPE || doc.doc_type == COMBAT_HISTORY_DOC_TYPE
-                    {
-                        // `validate_containment` already guarantees `parent_id` is
-                        // `Some` for a combatant/combat-history document.
-                        let pid = doc.parent_id.expect(
-                            "validate_containment requires a combatant/combat-history doc to carry a parent_id",
-                        );
-                        let parent_is_combat = batch_combats.contains(&pid)
-                            || Self::load_document(&mut *tx, pid)
-                                .await?
-                                .is_some_and(|p| p.doc_type == COMBAT_DOC_TYPE);
-                        if !parent_is_combat {
-                            return Err(DataError::OpFailed(format!(
-                                "{} parent must be a combat document",
-                                doc.doc_type
-                            )));
-                        }
-                    }
-                    Self::check_asset_folder_parent(&mut tx, doc, &batch_folders).await?;
+                    Self::check_parent_placement(&mut tx, doc, &batch_folders, &batch_combats)
+                        .await?;
                     if doc.doc_type == crate::data::engine::ASSET_FOLDER_DOC_TYPE {
                         batch_folders.insert(doc.id, doc.clone());
                     }
@@ -3725,8 +3843,31 @@ impl Repository for SqliteRepository {
                     Self::delete_document_tx(&mut tx, doc.id).await?;
                     normalized_ops.push(op.clone());
                 }
-                Operation::Move { .. } => {
-                    return Err(DataError::OpFailed("unsupported operation: move".into()));
+                Operation::Move {
+                    doc_id, parent_id, ..
+                } => {
+                    let cur = Self::load_document(&mut *tx, *doc_id)
+                        .await?
+                        .ok_or(DataError::NotFound)?;
+                    if cur.parent_id == *parent_id {
+                        // No-op: carried in the log for invertibility;
+                        // nothing written, nothing bumped, no hooks run.
+                        post_images.insert(*doc_id, cur);
+                        normalized_ops.push(op.clone());
+                    } else {
+                        let mut doc = cur;
+                        doc.parent_id = *parent_id;
+                        doc.updated_at = ts;
+                        Self::upsert_document(&mut tx, &doc, seq).await?;
+                        // A folder's ancestor names are derived tags on every
+                        // asset beneath it; re-parenting recomputes the whole
+                        // subtree in this tx, same as the rename hook below.
+                        if doc.doc_type == crate::data::engine::ASSET_FOLDER_DOC_TYPE {
+                            Self::refresh_derived_tags_for_folder_subtree(&mut tx, doc.id).await?;
+                        }
+                        post_images.insert(*doc_id, doc);
+                        normalized_ops.push(op.clone());
+                    }
                 }
                 Operation::Update { doc_id, changes } => {
                     let row = sqlx::query("SELECT json FROM documents WHERE id = ?")

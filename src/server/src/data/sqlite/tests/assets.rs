@@ -60,32 +60,6 @@ async fn asset_round_trips_meta_and_tags() {
     assert_eq!(listed[0].derived_tags, vec!["image".to_string()]);
 }
 
-/// An `asset_folder` document named `name` under `parent`.
-fn folder_doc(id: u128, world: Uuid, name: &str, parent: Option<Uuid>) -> Document {
-    let mut d = world_doc(id, world, serde_json::json!({}));
-    d.doc_type = "asset_folder".into();
-    d.name = Some(name.into());
-    d.parent_id = parent;
-    d.engine = Some(serde_json::json!({ "sort": 0 }));
-    d
-}
-
-/// A GM-owned world plus its GM `PermissionContext`.
-async fn gm_world(repo: &SqliteRepository) -> (Uuid, crate::data::membership::PermissionContext) {
-    let gm = repo
-        .create_user("gm", None, ServerRole::User, 0)
-        .await
-        .unwrap();
-    let w = repo.create_world_owned("W", gm, 0).await.unwrap();
-    (
-        w.id,
-        crate::data::membership::PermissionContext {
-            user_id: gm,
-            world_role: WorldRole::Gm,
-        },
-    )
-}
-
 #[tokio::test]
 async fn folder_delete_reparents_assets_and_cascades_subfolders() {
     let repo = repo().await;
