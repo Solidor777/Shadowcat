@@ -24,6 +24,8 @@ pub mod parser;
 pub mod types;
 
 #[cfg(test)]
+mod proptests;
+#[cfg(test)]
 mod tests;
 
 pub use evaluate::{evaluate, Resolve};
