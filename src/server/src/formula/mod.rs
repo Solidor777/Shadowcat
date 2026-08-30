@@ -23,6 +23,9 @@ pub mod parser;
 /// Failure values, the value type and the DoS caps.
 pub mod types;
 
+#[cfg(test)]
+mod tests;
+
 pub use evaluate::{evaluate, Resolve};
 pub use graph::resolve_all;
 pub use parser::{parse, BinOp, Expr, FnName};
