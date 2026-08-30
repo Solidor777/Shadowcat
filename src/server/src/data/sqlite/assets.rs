@@ -5,6 +5,7 @@
 
 use super::*;
 use crate::data::asset::{Asset, AssetMeta};
+use crate::data::engine::ASSET_FOLDER_DOC_TYPE;
 
 /// One `asset_tags` row, in memory.
 struct TagRow {
@@ -29,6 +30,65 @@ fn split_tags(rows: impl IntoIterator<Item = TagRow>) -> (Vec<String>, Vec<Strin
 }
 
 impl SqliteRepository {
+    /// Enforces the `asset_folder` placement invariant for a Created `doc`
+    /// (a no-op for every other doc_type): `parent_id`, when set, names an
+    /// `asset_folder` in the same scope. `batch` holds the documents this
+    /// same command already Created, consulted before the database so an
+    /// in-batch parent resolves. No cycle walk is needed: `parent_id` is an
+    /// immutable envelope path (`required_cap_for_path` maps it to `None`),
+    /// so a folder's parent is fixed at Create, and a Create can only name a
+    /// parent that already exists — stored (acyclic by induction) or earlier
+    /// in this batch (strictly ordered) — which keeps the tree acyclic by
+    /// construction.
+    pub(super) async fn check_asset_folder_parent(
+        tx: &mut sqlx::SqliteConnection,
+        doc: &Document,
+        batch: &std::collections::HashMap<Uuid, Document>,
+    ) -> Result<(), DataError> {
+        if doc.doc_type != ASSET_FOLDER_DOC_TYPE {
+            return Ok(());
+        }
+        let Some(pid) = doc.parent_id else {
+            return Ok(());
+        };
+        let parent = match batch.get(&pid) {
+            Some(d) => Some(d.clone()),
+            None => Self::load_document(&mut *tx, pid).await?,
+        };
+        if !parent.is_some_and(|p| p.doc_type == ASSET_FOLDER_DOC_TYPE && p.scope == doc.scope) {
+            return Err(DataError::OpFailed(
+                "asset_folder parent must be an asset_folder in the same world".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// If `id` is an `asset_folder`, moves every asset filed under it to the
+    /// folder's own parent (`NULL` = root). Runs inside the document-delete
+    /// transaction, before the row is removed.
+    pub(super) async fn reparent_assets_of_deleted_folder(
+        tx: &mut sqlx::SqliteConnection,
+        id: Uuid,
+    ) -> Result<(), DataError> {
+        let row = sqlx::query("SELECT doc_type, parent_id FROM documents WHERE id = ?")
+            .bind(id.to_string())
+            .fetch_optional(&mut *tx)
+            .await?;
+        let Some(row) = row else {
+            return Ok(());
+        };
+        if row.get::<String, _>("doc_type") != ASSET_FOLDER_DOC_TYPE {
+            return Ok(());
+        }
+        let parent: Option<String> = row.get("parent_id");
+        sqlx::query("UPDATE assets SET folder_id = ? WHERE folder_id = ?")
+            .bind(parent)
+            .bind(id.to_string())
+            .execute(&mut *tx)
+            .await?;
+        Ok(())
+    }
+
     /// Insert a new asset record. `version` starts at 1. Tags are NOT written
     /// here — `set_asset_tags` owns both tag sets.
     pub async fn insert_asset(&self, a: &Asset) -> Result<(), DataError> {

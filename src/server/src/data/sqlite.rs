@@ -2504,6 +2504,12 @@ impl SqliteRepository {
         tx: &mut sqlx::SqliteConnection,
         id: Uuid,
     ) -> Result<(), DataError> {
+        // Asset-folder hook: every asset filed under a deleted folder moves
+        // to the folder's parent BEFORE the row goes, so the `assets.folder_id`
+        // FK's `SET NULL` never fires (that would flatten to root instead of
+        // the parent). Parent deletes expand children-first, so a sub-folder's
+        // assets hop one level per op and end in the surviving ancestor.
+        Self::reparent_assets_of_deleted_folder(&mut *tx, id).await?;
         sqlx::query("DELETE FROM documents WHERE id = ?")
             .bind(id.to_string())
             .execute(&mut *tx)
@@ -2937,6 +2943,11 @@ impl Repository for SqliteRepository {
         // the combatant-parentage check without a DB round trip that would
         // see nothing yet inserted.
         let mut batch_combats: std::collections::HashSet<Uuid> = std::collections::HashSet::new();
+        // `batch_folders` plays the same role for `asset_folder` documents: a
+        // folder Created earlier in this batch is a valid parent for a later
+        // one, and `check_asset_folder_parent` walks through it for cycles.
+        let mut batch_folders: std::collections::HashMap<Uuid, Document> =
+            std::collections::HashMap::new();
         // `scene_owner` maps a scene id to the id of the `combat` document
         // that holds its active slot, AS OF THIS POINT in a single simulated
         // walk of `ops` in their actual batch order. The one-active-combat-
@@ -3073,6 +3084,10 @@ impl Repository for SqliteRepository {
                                 doc.doc_type
                             )));
                         }
+                    }
+                    Self::check_asset_folder_parent(&mut tx, doc, &batch_folders).await?;
+                    if doc.doc_type == crate::data::engine::ASSET_FOLDER_DOC_TYPE {
+                        batch_folders.insert(doc.id, doc.clone());
                     }
                     if doc.doc_type == COMBAT_DOC_TYPE {
                         batch_combats.insert(doc.id);

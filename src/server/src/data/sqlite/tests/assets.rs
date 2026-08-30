@@ -59,3 +59,142 @@ async fn asset_round_trips_meta_and_tags() {
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].derived_tags, vec!["image".to_string()]);
 }
+
+/// An `asset_folder` document named `name` under `parent`.
+fn folder_doc(id: u128, world: Uuid, name: &str, parent: Option<Uuid>) -> Document {
+    let mut d = world_doc(id, world, serde_json::json!({}));
+    d.doc_type = "asset_folder".into();
+    d.name = Some(name.into());
+    d.parent_id = parent;
+    d.engine = Some(serde_json::json!({ "sort": 0 }));
+    d
+}
+
+/// A GM-owned world plus its GM `PermissionContext`.
+async fn gm_world(repo: &SqliteRepository) -> (Uuid, crate::data::membership::PermissionContext) {
+    let gm = repo
+        .create_user("gm", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let w = repo.create_world_owned("W", gm, 0).await.unwrap();
+    (
+        w.id,
+        crate::data::membership::PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        },
+    )
+}
+
+#[tokio::test]
+async fn folder_delete_reparents_assets_and_cascades_subfolders() {
+    let repo = repo().await;
+    let (world, ctx) = gm_world(&repo).await;
+    let a = folder_doc(1, world, "A", None);
+    let b = folder_doc(2, world, "B", Some(a.id));
+    repo.apply_intent(
+        &ctx,
+        world,
+        vec![
+            Operation::Create { doc: a.clone() },
+            Operation::Create { doc: b.clone() },
+        ],
+        1,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+    let mut x = sample(world);
+    x.folder_id = Some(a.id);
+    let mut y = sample(world);
+    y.folder_id = Some(b.id);
+    repo.insert_asset(&x).await.unwrap();
+    repo.insert_asset(&y).await.unwrap();
+
+    let stored_a = repo.get_document(a.id).await.unwrap().unwrap();
+    repo.apply_intent(
+        &ctx,
+        world,
+        vec![Operation::Delete { doc: stored_a }],
+        2,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+
+    assert!(repo.get_document(a.id).await.unwrap().is_none());
+    assert!(
+        repo.get_document(b.id).await.unwrap().is_none(),
+        "sub-folder cascades"
+    );
+    let x = repo.get_asset(x.id).await.unwrap().unwrap();
+    let y = repo.get_asset(y.id).await.unwrap().unwrap();
+    assert_eq!(
+        x.folder_id, None,
+        "asset in the deleted folder lands in its parent (root)"
+    );
+    assert_eq!(
+        y.folder_id, None,
+        "asset in the cascaded sub-folder lands at root too"
+    );
+}
+
+#[tokio::test]
+async fn folder_parent_must_be_folder_and_acyclic() {
+    let repo = repo().await;
+    let (world, ctx) = gm_world(&repo).await;
+    let actor = world_doc(10, world, serde_json::json!({}));
+    let a = folder_doc(1, world, "A", None);
+    let b = folder_doc(2, world, "B", Some(a.id));
+    repo.apply_intent(
+        &ctx,
+        world,
+        vec![
+            Operation::Create { doc: actor.clone() },
+            Operation::Create { doc: a.clone() },
+            Operation::Create { doc: b.clone() },
+        ],
+        1,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+
+    // Parent that is not a folder.
+    let bad = folder_doc(3, world, "C", Some(actor.id));
+    let err = repo
+        .apply_intent(
+            &ctx,
+            world,
+            vec![Operation::Create { doc: bad }],
+            2,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, DataError::OpFailed(_)), "{err:?}");
+
+    // `parent_id` is an immutable envelope path: no Update can re-parent a
+    // folder, which is what makes the tree acyclic by construction (see
+    // `check_asset_folder_parent`). Pinned here because the invariant above
+    // rests on it.
+    let err = repo
+        .apply_intent(
+            &ctx,
+            world,
+            vec![Operation::Update {
+                doc_id: a.id,
+                changes: vec![FieldChange {
+                    path: "/parent_id".into(),
+                    old: serde_json::Value::Null,
+                    new: serde_json::json!(b.id.to_string()),
+                    remove: false,
+                }],
+            }],
+            3,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, DataError::Forbidden), "{err:?}");
+}

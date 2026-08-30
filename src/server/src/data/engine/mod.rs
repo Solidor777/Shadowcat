@@ -8,6 +8,7 @@
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
+pub mod asset_folder;
 pub mod combat;
 pub mod geometry;
 pub mod registries;
@@ -66,6 +67,8 @@ pub const EFFECT_DOC_TYPE: &str = "effect";
 pub const SYSTEM_DEFAULTS_DOC_TYPE: &str = "system-defaults";
 /// Doc_type for a combat's turn-history log: always a child (`parent_id`) of the combat.
 pub const COMBAT_HISTORY_DOC_TYPE: &str = "combat-history";
+/// Doc_type for an asset folder (`assets.folder_id` names one); parent = `parent_id`.
+pub const ASSET_FOLDER_DOC_TYPE: &str = "asset_folder";
 
 /// Whether `doc_type` carries a typed `engine` band. The registry is a
 /// hardcoded match — there is no dynamic registration (the server runs no
@@ -107,6 +110,7 @@ pub fn is_engine_doc_type(doc_type: &str) -> bool {
             | "effect"
             | "system-defaults"
             | "combat-history"
+            | "asset_folder"
     )
 }
 
@@ -264,6 +268,7 @@ fn normalize_engine(doc_type: &str, v: &serde_json::Value) -> Result<serde_json:
                 .map_err(|m| DataError::BadEngine(format!("combat-history: {m}")))?;
             Ok(serde_json::to_value(typed)?)
         }
+        "asset_folder" => round_trip::<asset_folder::AssetFolderEngine>(v, "asset_folder"),
         _ => unreachable!("is_engine_doc_type and this match must stay in sync"),
     }
 }

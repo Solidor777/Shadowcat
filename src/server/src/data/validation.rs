@@ -356,11 +356,13 @@ pub fn validate_property_overrides(doc: &Document) -> Result<(), DataError> {
     Ok(())
 }
 
-/// Placement rules for the combat family that need no database: a `combat`
-/// is never parented and never embedded; a `combatant`/`combat-history` is
-/// always parented (its parent must be a `combat`, checked at the
-/// persistence chokepoint where the parent can be loaded) and never
-/// embedded. Recurses into every embedded descendant.
+/// Placement rules that need no database: a `combat` is never parented and
+/// never embedded; a `combatant`/`combat-history` is always parented (its
+/// parent must be a `combat`, checked at the persistence chokepoint where
+/// the parent can be loaded) and never embedded; an `asset_folder` is never
+/// embedded (its parent-type and cycle rules also live at the chokepoint,
+/// `SqliteRepository::check_asset_folder_parent`). Recurses into every
+/// embedded descendant.
 pub fn validate_containment(doc: &Document) -> Result<(), DataError> {
     match doc.doc_type.as_str() {
         t if t == engine::COMBAT_DOC_TYPE && doc.parent_id.is_some() => {
@@ -382,6 +384,7 @@ pub fn validate_containment(doc: &Document) -> Result<(), DataError> {
             if child.doc_type == engine::COMBAT_DOC_TYPE
                 || child.doc_type == engine::COMBATANT_DOC_TYPE
                 || child.doc_type == engine::COMBAT_HISTORY_DOC_TYPE
+                || child.doc_type == engine::ASSET_FOLDER_DOC_TYPE
             {
                 return Err(DataError::OpFailed(format!(
                     "a '{}' document cannot be embedded",

@@ -28,6 +28,7 @@
 
 1. **Folder delete.** The document cascade invariant stands: deleting a folder deletes its sub-folders (logged ops) and the `delete_document_tx` hook reparents every asset in the subtree to the deleted folder's parent, children-first. **Plus a purge option** (user decision): `DELETE /api/asset-folders/{id}?assets=delete` — Task 10.
 2. **Backfill.** None; in-place DDL edit of the pre-ship baseline.
+3. **Folder re-parenting (found in Task 3).** `parent_id` is an immutable envelope path (`required_cap_for_path` → `None`, rejected for every `WriteOrigin`), so a folder's parent is fixed at Create and the tree is acyclic by construction — the planned Update-arm cycle walk is unreachable and was not written; the Create-time check (parent exists, is a folder, same scope, batch-aware) is the whole rule. Consequence for **M15b**: "move folder" needs its own server-authored route (a `WriteOrigin` exemption like the chat revision path, or delete+recreate with asset reparenting) — an open design point for the M15b brainstorm, not silently decided here.
 
 ---
 

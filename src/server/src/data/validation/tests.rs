@@ -690,3 +690,13 @@ fn tree_validator_grandchild_violation_rejects() {
         Err(DataError::SchemaViolation { .. })
     ));
 }
+
+#[test]
+fn validate_containment_forbids_embedding_an_asset_folder() {
+    let mut actor = crate::data::document::tests::sample_doc();
+    let mut folder = crate::data::document::tests::sample_doc();
+    folder.doc_type = "asset_folder".into();
+    folder.engine = Some(serde_json::json!({ "sort": 0 }));
+    actor.embedded.insert("stuff".into(), vec![folder]);
+    assert!(validate_containment(&actor).is_err());
+}
