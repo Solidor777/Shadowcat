@@ -16,6 +16,7 @@ use crate::data::document::Document;
 use crate::data::engine::combat::{
     CombatantKind, EffectLifecycle, EffectLifecycleDefaults, Formula, ResourceBinding,
 };
+use crate::data::permission::TOKEN_DOC_TYPE;
 use crate::formula::{
     evaluate, parse, FormulaError, FormulaErrorKind, FormulaValue, Resolve, SystemLeafResolver,
 };
@@ -42,6 +43,18 @@ pub(crate) fn formula_host<'a>(
         }
     }
     actor_id.as_ref().and_then(|id| hosts.get(id))
+}
+
+/// The document an EFFECT's formulas evaluate over: the host itself for an
+/// actor host, the token-embedded actor copy for a token host — the same two
+/// shapes `effects::walk_any_host` walks. `None` for a token embedding no
+/// copy (reference-free formulas still evaluate through the no-host path).
+pub(crate) fn effect_host_doc(host: &Document) -> Option<&Document> {
+    if host.doc_type == TOKEN_DOC_TYPE {
+        host.embedded.get("actor").and_then(|v| v.first())
+    } else {
+        Some(host)
+    }
 }
 
 /// The resolver used when a combatant has no formula host: every reference is

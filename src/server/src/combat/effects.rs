@@ -1,9 +1,10 @@
 //! Effect discovery and clock-driven mutation: which effects belong to a
 //! combatant, and how a boundary tick or a lifecycle-policy expiry writes
-//! them. Every mutation here reads the effect's CURRENT resolved state
-//! (`EffectRef.engine`, taken from the host document at collection time) and
-//! skips outright when the state it needs is unresolved — this module never
-//! guesses a value the client's formula library has not yet written.
+//! them. Lifecycle flags and duration amounts are evaluated server-side at
+//! the moment of use (`eval::lifecycle_flags`/`eval::duration_amount`) over
+//! the document hosting the effect; an evaluation failure skips that one
+//! effect and is reported to the caller — never guessed around, and never a
+//! stopped clock.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
@@ -16,10 +17,11 @@ use uuid::Uuid;
 use crate::data::command::{FieldChange, Operation};
 use crate::data::document::Document;
 use crate::data::engine::combat::{
-    CombatantKind, DurationUnit, EffectEngine, ExpiryPoint, ResolvedLifecycle,
+    CombatantKind, DurationUnit, EffectEngine, EffectLifecycleDefaults, ExpiryPoint,
 };
 use crate::data::permission::TOKEN_DOC_TYPE;
 
+use super::eval::{self, LifecycleFlags};
 use super::ops::set_engine;
 use super::{CombatError, CombatSnapshot, Combatant};
 
@@ -275,23 +277,49 @@ pub fn set_effect_field(
     set_engine(host, &format!("{effect_path}{field}"), new)
 }
 
+/// The evaluated lifecycle flags for one ref, or a recorded failure. Shared
+/// by `tick` and `expire_by_policy` so the two consumers cannot diverge on
+/// which document an effect's formulas read or how a failure is reported.
+fn flags_for(
+    r: &EffectRef,
+    host: &Document,
+    defaults: &EffectLifecycleDefaults,
+    failures: &mut Vec<String>,
+) -> Option<LifecycleFlags> {
+    match eval::lifecycle_flags(
+        r.engine.lifecycle.as_ref(),
+        defaults,
+        eval::effect_host_doc(host),
+    ) {
+        Ok(f) => Some(f),
+        Err(e) => {
+            failures.push(format!("effect at {}: {}", r.path, e.detail));
+            None
+        }
+    }
+}
+
 /// Decrements `Duration.remaining` by one for every ref in `refs` that is
-/// still `active`, whose `resolved.on_advance` is set, whose `remaining` is
-/// resolved (`Some`), and whose `expires`/`unit` match `boundary`/`unit`
-/// exactly. INVARIANT: a ref whose `remaining` is `None` (the client has not
-/// yet resolved `amount`) is left untouched — never defaulted to a guessed
-/// starting value; an already-inactive ref is likewise left untouched (a
-/// dead effect no longer counts down). When a decrement reaches `0`, the
-/// same op also sets `active = false`. `hosts` supplies each ref's CURRENT
-/// host document for the OCC pre-image (a prior tick earlier in the same
-/// transition may already have mutated it).
-pub fn tick(
+/// still `active`, whose evaluated lifecycle `on_advance` is set, and whose
+/// `expires`/`unit` match `boundary`/`unit` exactly. A `remaining` of `None`
+/// means not yet ticked: the first matching boundary evaluates
+/// `Duration.amount` (`eval::duration_amount`) and writes that count minus
+/// this tick. When a decrement reaches `0`, the same op also sets
+/// `active = false`; an already-inactive ref is left untouched (a dead
+/// effect no longer counts down). An evaluation failure (lifecycle or
+/// amount) records a detail line in the returned failure list and skips that
+/// one ref. `hosts` supplies each ref's CURRENT host document for the OCC
+/// pre-image (a prior tick earlier in the same transition may already have
+/// mutated it).
+pub(crate) fn tick(
     hosts: &HashMap<Uuid, Document>,
     refs: &[EffectRef],
     boundary: ExpiryPoint,
     unit: DurationUnit,
-) -> Result<Vec<Operation>, CombatError> {
+    defaults: &EffectLifecycleDefaults,
+) -> Result<(Vec<Operation>, Vec<String>), CombatError> {
     let mut ops = Vec::new();
+    let mut failures = Vec::new();
     for r in active_refs(refs) {
         let Some(duration) = &r.engine.duration else {
             continue;
@@ -299,18 +327,23 @@ pub fn tick(
         if duration.expires != boundary || duration.unit != unit {
             continue;
         }
-        let resolved = r
-            .engine
-            .lifecycle
-            .as_ref()
-            .and_then(|l| l.resolved.as_ref());
-        if !resolved.is_some_and(|l| l.on_advance) {
-            continue;
-        }
-        let Some(remaining) = duration.remaining else {
+        let host = hosts.get(&r.host).ok_or(CombatError::NotFound)?;
+        let Some(flags) = flags_for(r, host, defaults, &mut failures) else {
             continue;
         };
-        let host = hosts.get(&r.host).ok_or(CombatError::NotFound)?;
+        if !flags.on_advance {
+            continue;
+        }
+        let remaining = match duration.remaining {
+            Some(n) => n,
+            None => match eval::duration_amount(&duration.amount, eval::effect_host_doc(host)) {
+                Ok(n) => n,
+                Err(e) => {
+                    failures.push(format!("effect at {}: {}", r.path, e.detail));
+                    continue;
+                }
+            },
+        };
         let new_remaining = remaining.saturating_sub(1);
         let mut changes = vec![set_effect_field(
             host,
@@ -331,35 +364,36 @@ pub fn tick(
             changes,
         });
     }
-    Ok(ops)
+    Ok((ops, failures))
 }
 
 /// Sets `active = false` for every ref in `refs` that is currently `active`
-/// and whose `resolved` lifecycle flags satisfy `pick` — used for
+/// and whose evaluated lifecycle flags satisfy `pick` — used for
 /// `on_combat_end`/`on_turn_end` expiry, independent of `Duration`/`remaining`
-/// entirely (an effect with no duration at all still expires by policy).
-pub fn expire_by_policy(
+/// entirely (an effect with no duration at all still expires by policy). An
+/// evaluation failure records a detail line in the returned failure list and
+/// skips that one ref.
+pub(crate) fn expire_by_policy(
     hosts: &HashMap<Uuid, Document>,
     refs: &[EffectRef],
-    pick: fn(&ResolvedLifecycle) -> bool,
-) -> Result<Vec<Operation>, CombatError> {
+    pick: fn(&LifecycleFlags) -> bool,
+    defaults: &EffectLifecycleDefaults,
+) -> Result<(Vec<Operation>, Vec<String>), CombatError> {
     let mut ops = Vec::new();
+    let mut failures = Vec::new();
     for r in active_refs(refs) {
-        let matches = r
-            .engine
-            .lifecycle
-            .as_ref()
-            .and_then(|l| l.resolved.as_ref())
-            .is_some_and(pick);
-        if !matches {
+        let host = hosts.get(&r.host).ok_or(CombatError::NotFound)?;
+        let Some(flags) = flags_for(r, host, defaults, &mut failures) else {
+            continue;
+        };
+        if !pick(&flags) {
             continue;
         }
-        let host = hosts.get(&r.host).ok_or(CombatError::NotFound)?;
         let change = set_effect_field(host, &r.path, "/engine/active", json!(false))?;
         ops.push(Operation::Update {
             doc_id: r.host,
             changes: vec![change],
         });
     }
-    Ok(ops)
+    Ok((ops, failures))
 }

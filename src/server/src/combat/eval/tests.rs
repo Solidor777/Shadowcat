@@ -11,14 +11,12 @@ use crate::combat::tests::doc;
 use crate::combat::Combatant;
 use crate::data::document::Document;
 use crate::data::engine::combat::{
-    CombatantEngine, CombatantKind, EffectLifecycle, EffectLifecycleDefaults, Formula,
-    ResourceBinding, Recovery,
+    CombatantEngine, CombatantKind, EffectLifecycle, EffectLifecycleDefaults, Formula, Recovery,
+    ResourceBinding,
 };
 use crate::formula::FormulaErrorKind;
 
-use super::{
-    duration_amount, eval_formula, formula_host, lifecycle_flags, resolved_resource,
-};
+use super::{duration_amount, eval_formula, formula_host, lifecycle_flags, resolved_resource};
 
 /// An actor document whose `system` band is `system`.
 fn actor_with_system(id: u128, system: serde_json::Value) -> Document {
@@ -43,7 +41,12 @@ fn combatant(id: u128, token_id: Option<Uuid>, actor_id: Option<Uuid>) -> Combat
         resources: BTreeMap::new(),
     };
     Combatant {
-        doc: doc(id, "combatant", None, serde_json::to_value(&engine).unwrap()),
+        doc: doc(
+            id,
+            "combatant",
+            None,
+            serde_json::to_value(&engine).unwrap(),
+        ),
         engine,
     }
 }
@@ -60,7 +63,12 @@ fn event_combatant(id: u128) -> Combatant {
         resources: BTreeMap::new(),
     };
     Combatant {
-        doc: doc(id, "combatant", None, serde_json::to_value(&engine).unwrap()),
+        doc: doc(
+            id,
+            "combatant",
+            None,
+            serde_json::to_value(&engine).unwrap(),
+        ),
         engine,
     }
 }
@@ -71,8 +79,7 @@ fn host_prefers_token_embedded_actor_copy_over_linked_actor() {
     let embedded = actor_with_system(0xA2, json!({"who": {"is": 2.0}}));
     let token = token_embedding(0x71, embedded);
     let c = combatant(0xC1, Some(token.id), Some(linked.id));
-    let hosts: HashMap<Uuid, Document> =
-        [(linked.id, linked.clone()), (token.id, token)].into();
+    let hosts: HashMap<Uuid, Document> = [(linked.id, linked.clone()), (token.id, token)].into();
     let host = formula_host(&hosts, &c).expect("a host resolves");
     assert_eq!(host.system, json!({"who": {"is": 2.0}}));
 }
@@ -96,7 +103,11 @@ fn host_is_none_for_an_event_combatant() {
 
 #[test]
 fn host_is_none_when_every_named_host_document_is_absent() {
-    let c = combatant(0xC1, Some(Uuid::from_u128(0x71)), Some(Uuid::from_u128(0xA1)));
+    let c = combatant(
+        0xC1,
+        Some(Uuid::from_u128(0x71)),
+        Some(Uuid::from_u128(0xA1)),
+    );
     let hosts: HashMap<Uuid, Document> = HashMap::new();
     assert!(formula_host(&hosts, &c).is_none());
 }
@@ -122,7 +133,11 @@ fn eval_formula_evaluates_reference_free_text_with_no_host() {
 fn eval_formula_reports_unknown_ref_for_referencing_text_with_no_host() {
     let got = eval_formula(&Formula::Text("stats.hp".into()), None).unwrap_err();
     assert_eq!(got.error, FormulaErrorKind::UnknownRef);
-    assert!(got.detail.contains("stats.hp"), "detail names the path: {}", got.detail);
+    assert!(
+        got.detail.contains("stats.hp"),
+        "detail names the path: {}",
+        got.detail
+    );
 }
 
 /// A `Tracked` binding with `max` and zeroed recoveries.
@@ -150,9 +165,11 @@ fn resolved_resource_mirror_derives_current_and_max_from_the_value_formula() {
 #[test]
 fn resolved_resource_tracked_uses_the_stored_current_clamped_to_the_evaluated_max() {
     let host = actor_with_system(0xA1, json!({"mv": 6.0}));
-    let got = resolved_resource(&tracked(Formula::Text("mv".into())), Some(9.0), Some(&host)).unwrap();
+    let got =
+        resolved_resource(&tracked(Formula::Text("mv".into())), Some(9.0), Some(&host)).unwrap();
     assert_eq!((got.current, got.max), (6.0, 6.0));
-    let got = resolved_resource(&tracked(Formula::Text("mv".into())), Some(2.5), Some(&host)).unwrap();
+    let got =
+        resolved_resource(&tracked(Formula::Text("mv".into())), Some(2.5), Some(&host)).unwrap();
     assert_eq!((got.current, got.max), (2.5, 6.0));
 }
 
@@ -216,8 +233,12 @@ fn lifecycle_flags_truthiness_is_nonzero_over_the_host() {
         on_turn_end: Some(Formula::Text("burning".into())),
         ..Default::default()
     };
-    let got = lifecycle_flags(Some(&authored), &EffectLifecycleDefaults::default(), Some(&host))
-        .unwrap();
+    let got = lifecycle_flags(
+        Some(&authored),
+        &EffectLifecycleDefaults::default(),
+        Some(&host),
+    )
+    .unwrap();
     assert!(!got.on_turn_end, "0 evaluates falsy");
 }
 
@@ -235,7 +256,10 @@ fn lifecycle_flags_propagates_the_first_evaluation_error() {
 #[test]
 fn duration_amount_floors_the_evaluated_value() {
     let host = actor_with_system(0xA1, json!({"rounds": 3.9}));
-    assert_eq!(duration_amount(&Formula::Text("rounds".into()), Some(&host)), Ok(3));
+    assert_eq!(
+        duration_amount(&Formula::Text("rounds".into()), Some(&host)),
+        Ok(3)
+    );
 }
 
 #[test]

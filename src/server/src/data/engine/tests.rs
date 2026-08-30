@@ -689,8 +689,7 @@ fn effect_minimal_body_is_valid() {
 fn effect_with_formula_duration_and_lifecycle_is_valid() {
     let v = json!({ "active": true, "transfer": false,
         "duration": { "amount": "rounds + 1", "remaining": 3, "unit": "rounds", "anchor": null, "expires": "turn_end" },
-        "lifecycle": { "on_combat_end": 1, "on_turn_end": null, "on_advance": "1 - persistent",
-                       "resolved": { "on_combat_end": true, "on_turn_end": false, "on_advance": true } } });
+        "lifecycle": { "on_combat_end": 1, "on_turn_end": null, "on_advance": "1 - persistent" } });
     assert!(validate_engine("effect", Some(&v)).is_ok());
 }
 

@@ -170,7 +170,7 @@ impl BudgetHandle {
                     changes: vec![FieldChange {
                         remove: true,
                         path: "/engine/resources/movement".into(),
-                        old: serde_json::json!({ "current": 10.0, "max": 30.0 }),
+                        old: serde_json::json!({ "current": 10.0 }),
                         new: serde_json::Value::Null,
                     }],
                 }],
@@ -193,7 +193,7 @@ impl BudgetHandle {
                     changes: vec![FieldChange {
                         remove: true,
                         path: "/engine/resources/movement".into(),
-                        old: serde_json::json!({ "current": 10.0, "max": 30.0 }),
+                        old: serde_json::json!({ "current": 10.0 }),
                         new: serde_json::Value::Null,
                     }],
                 }],
@@ -293,7 +293,7 @@ async fn budget_scene(
         "kind": { "type": "actor", "token_id": inner.token_id, "actor_id": null },
         "initiative": null,
         "tiebreak": 0.0,
-        "resources": { "movement": { "current": 10.0, "max": 30.0 } }
+        "resources": { "movement": { "current": 10.0 } }
     }));
     inner
         .room
@@ -351,7 +351,7 @@ async fn budget_scene(
         "kind": { "type": "actor", "token_id": gm_token, "actor_id": null },
         "initiative": null,
         "tiebreak": 0.0,
-        "resources": { "movement": { "current": 10.0, "max": 30.0 } }
+        "resources": { "movement": { "current": 10.0 } }
     }));
     inner
         .room
