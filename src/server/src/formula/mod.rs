@@ -12,6 +12,8 @@
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
+/// Source text → tokens.
+pub mod lexer;
 /// Failure values, the value type and the DoS caps.
 pub mod types;
 
