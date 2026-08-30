@@ -689,14 +689,14 @@ fn effect_minimal_body_is_valid() {
 fn effect_with_formula_duration_and_lifecycle_is_valid() {
     let v = json!({ "active": true, "transfer": false,
         "duration": { "amount": "rounds + 1", "remaining": 3, "unit": "rounds", "anchor": null, "expires": "turn_end" },
-        "lifecycle": { "on_combat_end": 1, "on_turn_end": null, "on_advance": "not persistent",
+        "lifecycle": { "on_combat_end": 1, "on_turn_end": null, "on_advance": "1 - persistent",
                        "resolved": { "on_combat_end": true, "on_turn_end": false, "on_advance": true } } });
     assert!(validate_engine("effect", Some(&v)).is_ok());
 }
 
 #[test]
 fn effect_duration_amount_formula_is_bounded_and_remaining_optional() {
-    let long = "x".repeat(MAX_FORMULA_CHARS + 1);
+    let long = "x".repeat(crate::formula::MAX_FORMULA_LENGTH + 1);
     let v = json!({ "active": true, "duration": { "amount": long, "unit": "rounds", "anchor": null, "expires": "turn_end" } });
     assert!(validate_engine("effect", Some(&v)).is_err());
     let v = json!({ "active": true, "duration": { "amount": 2, "unit": "turns", "anchor": null, "expires": "turn_start" } });

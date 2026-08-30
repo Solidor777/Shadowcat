@@ -2,9 +2,10 @@
 //! scene), `combatant` (a child document of a combat), `resource-registry`
 //! (the singleton turn-resource definitions), `effect` (clock-bound
 //! expiry) and `combat-history` (the per-turn snapshot log of one combat).
-//! The server stores every `Formula::Text` verbatim and never evaluates it:
-//! formulas are resolved to numbers on the client, and the numbers land in
-//! `CombatantResource`.
+//! A `Formula::Text` is engine-grammar source the server evaluates through
+//! `crate::formula`; ingress requires it to parse. (The combat transitions
+//! that consume the evaluator are wired by the combat-resolution milestone;
+//! until then they still skip an unresolved value.)
 
 // Ratchet: every item in this module must carry a doc comment, enforced by
 // the two crate-level deny attributes this module declares.
@@ -16,11 +17,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
-
-/// Upper bound on a `Formula::Text` source, in characters. The server never
-/// parses the text; this bounds storage only (the client's formula library
-/// applies its own DoS caps when it evaluates).
-pub const MAX_FORMULA_CHARS: usize = 512;
 
 /// How a movement budget converts into grid cells.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
@@ -369,28 +365,27 @@ impl CombatantEngine {
 }
 
 /// A number or a formula source. Untagged on the wire (`30` or `"speed"`).
-/// The server never evaluates `Text`.
+/// `Text` is `crate::formula` source: parsed at ingress by `validate`, and
+/// evaluated server-side through the same module.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(untagged)]
 pub enum Formula {
     /// A literal.
     Number(f64),
-    /// Formula source for the client's formula library.
+    /// Formula source in the engine's expression grammar.
     Text(String),
 }
 
 impl Formula {
-    /// Finite when a number; non-empty and within `MAX_FORMULA_CHARS` when text.
+    /// Finite when a number; parses (within the formula caps) when text.
     fn validate(&self, at: &str) -> Result<(), String> {
         match self {
             Formula::Number(n) if !n.is_finite() => Err(format!("{at} must be finite")),
             Formula::Number(_) => Ok(()),
-            Formula::Text(t) if t.is_empty() => Err(format!("{at} formula is empty")),
-            Formula::Text(t) if t.chars().count() > MAX_FORMULA_CHARS => Err(format!(
-                "{at} formula exceeds {MAX_FORMULA_CHARS} characters"
-            )),
-            Formula::Text(_) => Ok(()),
+            Formula::Text(t) => crate::formula::parse(t)
+                .map(|_| ())
+                .map_err(|e| format!("{at}: {}", e.detail)),
         }
     }
 }
