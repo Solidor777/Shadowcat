@@ -27,9 +27,7 @@ further at design time. Numbering continues from Phase 1.
 - **M14c — server authority + combat client seams**, six sub-projects in build order (design:
   [`superpowers/specs/2026-08-30-m14c-1-server-formula-engine-design.md`](superpowers/specs/2026-08-30-m14c-1-server-formula-engine-design.md) §1):
   - **M14c-1 — server formula engine + invariant 6** — DONE (see [`HISTORY.md`](HISTORY.md)).
-  - **M14c-2 — combat resolution server-side**: `Mirror` implemented, `Tracked` seeded to `max`,
-    text recoveries evaluated, `Duration.remaining`/lifecycle flags server-derived, egress rule for
-    resolved scalars, `Hard` route-preview clamp inside `Pathfind`.
+  - **M14c-2 — combat resolution server-side** — DONE (see [`HISTORY.md`](HISTORY.md)).
   - **M14c-3 — world-config authority**: `create_world` seeds every config singleton;
     `system-defaults` read server-side from the installed system package; engine defaults are
     the definition (client constants mirror them); client seed/upsert helpers deleted.

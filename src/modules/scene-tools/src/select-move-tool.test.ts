@@ -191,7 +191,7 @@ function harness(opts: {
 
   const pathfind: ToolContext["pathfind"] = async (_scene, start, waypoints) => {
     const goal = waypoints.at(-1)!;
-    return { path: [start, goal], cost: 1, arrested: false };
+    return { path: [start, goal], cost: 1, arrested: false, truncated: false };
   };
   const moveRequest: ToolContext["moveRequest"] = (scene, token, path): Promise<MoveStream> => {
     const goal = path.at(-1)!;

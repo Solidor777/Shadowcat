@@ -60,6 +60,11 @@ pub struct PathInputs<'a> {
     /// Cell geometry for this scene (`SquareGrid` or `HexGrid`), resolved by the caller from the
     /// scene's `grid.kind` and passed into `find()`.
     pub shape: &'a dyn crate::scene::grid_shape::GridShape,
+    /// Movement-budget ceiling in cells; `Some` ⇒ the found route is cut at
+    /// the last cell whose cumulative weighted cost fits, with
+    /// `PathOutcome.truncated` set — the preview half of the executor's own
+    /// budget stop, priced through the same per-step symbols.
+    pub budget_cells: Option<f64>,
 }
 
 /// Assembled, borrow-only inputs for one A* search: the caller-supplied `PathInputs` plus the
@@ -223,6 +228,46 @@ pub enum PathFail {
 /// DoS backstop: total node expansions per leg. For non-GM the mask is the tighter bound; this caps
 /// a GM search whose window is large.
 pub(crate) const MAX_PATH_NODES: usize = 200_000;
+
+/// The ONE budget-boundary decision every consumer shares: whether spending
+/// `step_cells` more on top of `spent_cells` still fits `budget_cells`,
+/// tolerance included. `move_exec::execute_move`'s budget stop, `find`'s
+/// preview truncation and `navmesh::truncate_at_budget`'s span cut all call
+/// this ONE predicate, so the preview and the executor cannot disagree at
+/// the boundary by an epsilon only one of them applies.
+pub(crate) fn budget_admits_step(spent_cells: f64, step_cells: f64, budget_cells: f64) -> bool {
+    spent_cells + step_cells <= budget_cells + 1e-9
+}
+
+/// Per-window step costs over `cells`, re-priced from parity 0 through the
+/// SAME `neighbors_with_cost` + `terrain_multiplier` pair the original
+/// accumulation used — parity threading is purely sequential, so a replay
+/// from 0 reproduces the original cost of any prefix exactly. Shared by the
+/// arrest and budget truncations in `find`, so a pricing fix cannot land in
+/// one replay and not the other.
+fn replay_step_costs(grid: &PathGrid<'_>, cells: &[Cell]) -> Vec<f64> {
+    let mut p = 0u8;
+    let mut out = Vec::with_capacity(cells.len().saturating_sub(1));
+    for w in cells.windows(2) {
+        let (_, sc, next_p) = grid
+            .inputs
+            .shape
+            .neighbors_with_cost(w[0], p)
+            .into_iter()
+            .find(|(next, _, _)| *next == w[1])
+            .expect(
+                "cells adjacent along an already-found route are a valid grid_shape neighbor pair",
+            );
+        out.push(
+            sc * grid
+                .inputs
+                .regions
+                .map_or(1.0, |rf| rf.terrain_multiplier(w[1])),
+        );
+        p = next_p;
+    }
+    out
+}
 
 /// f64 ordering wrapper for the min-heap. Orders by `f` ascending (via reversed `total_cmp`),
 /// tie-broken by `(cell, parity)` so identical requests yield identical routes (determinism).
@@ -388,6 +433,8 @@ pub struct PathOutcome {
     pub cost: f64,
     /// An arrest region truncated the route (honest-preview rule).
     pub arrested: bool,
+    /// The mover's movement budget truncated the route (the preview clamp).
+    pub truncated: bool,
 }
 
 /// Plan a footprint-clear, mask-bounded route `start -> waypoints[0] -> ... -> waypoints[last]`.
@@ -521,19 +568,31 @@ pub fn find(
         {
             cells.truncate(idx + 1);
             arrested = true;
-            let mut p = 0u8;
-            total = 0.0;
-            for w in cells.windows(2) {
-                let (_, sc, next_p) = grid
-                    .inputs
-                    .shape
-                    .neighbors_with_cost(w[0], p)
-                    .into_iter()
-                    .find(|(next, _, _)| *next == w[1])
-                    .expect("cells adjacent along an already-found route are a valid grid_shape neighbor pair");
-                total += sc * rf.terrain_multiplier(w[1]);
-                p = next_p;
+            total = replay_step_costs(&grid, &cells).iter().sum();
+        }
+    }
+
+    // Budget truncation, applied AFTER the arrest cut (running second over the survivor means
+    // the nearer cut wins): replay the per-step cost across `cells` through the SAME
+    // `neighbors_with_cost` + `terrain_multiplier` pricing the accumulation and the arrest
+    // replay use, and cut at the last cell whose cumulative cost fits. A cut strictly before
+    // the arrest cell means the preview no longer reaches the arrest, so `arrested` clears.
+    let mut truncated = false;
+    if let Some(budget) = grid.inputs.budget_cells {
+        let mut cum = 0.0;
+        let mut keep = cells.len();
+        for (i, step) in replay_step_costs(&grid, &cells).into_iter().enumerate() {
+            if !budget_admits_step(cum, step, budget) {
+                keep = i + 1;
+                truncated = true;
+                break;
             }
+            cum += step;
+        }
+        if truncated {
+            cells.truncate(keep);
+            total = cum;
+            arrested = false;
         }
     }
 
@@ -557,6 +616,7 @@ pub fn find(
         path,
         cost: total,
         arrested,
+        truncated,
     })
 }
 

@@ -16,6 +16,7 @@ fn open(rule: DiagonalRule, footprint: f64) -> PathGrid<'static> {
             mask: None,
             regions: None,
             shape,
+            budget_cells: None,
         },
         window: (-50, -50, 50, 50),
     }
@@ -94,6 +95,7 @@ fn walled_off_goal_is_unreachable() {
             mask: None,
             regions: None,
             shape: &shape,
+            budget_cells: None,
         },
         window: (-10, -10, 10, 10),
     };
@@ -137,6 +139,7 @@ fn open_hex(footprint: f64) -> PathGrid<'static> {
             mask: None,
             regions: None,
             shape,
+            budget_cells: None,
         },
         window: (-50, -50, 50, 50),
     }
@@ -224,6 +227,7 @@ fn hex_astar_returns_the_true_shortest_route_via_the_admissible_heuristic() {
             mask: Some(&mask),
             regions: None,
             shape: &hx,
+            budget_cells: None,
         },
         window: (-50, -50, 50, 50),
     };

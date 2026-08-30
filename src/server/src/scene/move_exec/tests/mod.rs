@@ -2407,6 +2407,7 @@ fn route_admissible_implies_gate_admissible_for_a_non_gm_grid() {
                 start,
                 &[goal],
                 fp,
+                None,
             )
             .expect("the fixture is routable for this footprint");
         let out = execute_move(
@@ -2457,6 +2458,7 @@ fn route_admissible_implies_gate_admissible_for_a_non_gm_continuous() {
             start,
             &[goal],
             fp,
+            None,
         )
         .expect("the fixture is routable for this footprint");
     assert!(
@@ -2523,6 +2525,7 @@ fn gate_refused_steps_are_absent_from_every_route_non_gm_grid() {
                 path[0],
                 &[path[1]],
                 fp,
+                None,
             );
             if let Ok(r) = route {
                 assert!(

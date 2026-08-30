@@ -25,6 +25,8 @@ struct BudgetHandle {
     inner: MovementHandle,
     combat_id: Uuid,
     combatant_id: Uuid,
+    /// The world's `resource-registry` singleton (defines the `movement` binding).
+    registry_id: Uuid,
     other_combatant: Uuid,
     /// Three king-steps from `start` — one further than `inner.adj2`.
     adj3: (f64, f64),
@@ -32,7 +34,6 @@ struct BudgetHandle {
     /// enforcement mode that DID truncate would fail the assertion against it.
     long_path: Vec<(f64, f64)>,
     gm_token: Uuid,
-    gm_combatant: Uuid,
     long_path_gm: Vec<(f64, f64)>,
     free_token: Uuid,
     free_start: (f64, f64),
@@ -170,7 +171,7 @@ impl BudgetHandle {
                     changes: vec![FieldChange {
                         remove: true,
                         path: "/engine/resources/movement".into(),
-                        old: serde_json::json!({ "current": 10.0, "max": 30.0 }),
+                        old: serde_json::json!({ "current": 10.0 }),
                         new: serde_json::Value::Null,
                     }],
                 }],
@@ -181,20 +182,28 @@ impl BudgetHandle {
             .unwrap();
     }
 
-    /// Removes the GM's own combatant's `movement` resource entry entirely — the GM-exemption
-    /// counterpart to `remove_resource_entry`.
-    async fn remove_gm_resource_entry(&self) {
+    /// Swaps the registry's `movement` binding wholesale (a Mirror binding, a
+    /// text `max`, …) — the knob for every "how does the gate resolve this
+    /// binding" case.
+    async fn set_registry_binding(&self, binding: serde_json::Value) {
+        let doc = self
+            .repo
+            .get_document(self.registry_id)
+            .await
+            .unwrap()
+            .expect("resource registry");
+        let old = doc.engine.unwrap()["resources"]["movement"]["binding"].clone();
         self.room
             .publish(
                 &self.repo,
                 &self.gm,
                 vec![Operation::Update {
-                    doc_id: self.gm_combatant,
+                    doc_id: self.registry_id,
                     changes: vec![FieldChange {
-                        remove: true,
-                        path: "/engine/resources/movement".into(),
-                        old: serde_json::json!({ "current": 10.0, "max": 30.0 }),
-                        new: serde_json::Value::Null,
+                        remove: false,
+                        path: "/engine/resources/movement/binding".into(),
+                        old,
+                        new: binding,
                     }],
                 }],
                 0,
@@ -293,7 +302,7 @@ async fn budget_scene(
         "kind": { "type": "actor", "token_id": inner.token_id, "actor_id": null },
         "initiative": null,
         "tiebreak": 0.0,
-        "resources": { "movement": { "current": 10.0, "max": 30.0 } }
+        "resources": { "movement": { "current": 10.0 } }
     }));
     inner
         .room
@@ -351,7 +360,7 @@ async fn budget_scene(
         "kind": { "type": "actor", "token_id": gm_token, "actor_id": null },
         "initiative": null,
         "tiebreak": 0.0,
-        "resources": { "movement": { "current": 10.0, "max": 30.0 } }
+        "resources": { "movement": { "current": 10.0 } }
     }));
     inner
         .room
@@ -361,6 +370,28 @@ async fn budget_scene(
             vec![Operation::Create {
                 doc: gm_combatant_doc,
             }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+    // The registry defining the `movement` binding the gate resolves against:
+    // Tracked, max 30, no recoveries.
+    let registry_id = Uuid::from_u128(0x5CEA);
+    let mut registry = wdoc(inner.world_id, registry_id, "resource-registry");
+    registry.owner = Some(inner.gm.user_id);
+    registry.engine = Some(json!({
+        "resources": { "movement": { "name": "Movement", "order": 0,
+            "binding": { "kind": "tracked", "max": 30.0,
+                "recover": { "turn_start": 0, "turn_end": 0, "round_start": 0, "round_end": 0 } } } }
+    }));
+    inner
+        .room
+        .publish(
+            &inner.repo,
+            &inner.gm,
+            vec![Operation::Create { doc: registry }],
             0,
             WriteOrigin::Client,
         )
@@ -396,11 +427,11 @@ async fn budget_scene(
     BudgetHandle {
         combat_id,
         combatant_id,
+        registry_id,
         other_combatant,
         adj3: (350.0, 50.0),
         long_path,
         gm_token,
-        gm_combatant,
         long_path_gm,
         free_token,
         free_start,
@@ -781,11 +812,13 @@ async fn gm_is_never_truncated_but_is_decremented() {
 
 #[tokio::test]
 async fn gm_with_an_unresolvable_budget_moves_freely_with_no_decrement() {
-    // GM's combatant carries no `movement` resource entry at all — the non-GM equivalent of
-    // this is `missing_per_cell_or_resource_entry_is_refused_with_the_generic_error`'s
-    // `Forbidden`. For a GM this must degrade to "move freely, no decrement" instead.
+    // The registry's `movement` binding is Mirror-bound — unresolvable for the
+    // gate (a spend cannot decrement a derived value; the server never writes
+    // the system band). For a GM this must degrade to "move freely, no
+    // decrement".
     let h = budget_scene("hard", "spaces", None).await;
-    h.remove_gm_resource_entry().await;
+    h.set_registry_binding(serde_json::json!({ "kind": "mirror", "value": "hp" }))
+        .await;
     let res = h
         .room
         .execute_move(
@@ -805,6 +838,11 @@ async fn gm_with_an_unresolvable_budget_moves_freely_with_no_decrement() {
         res.stop,
         *h.long_path_gm.last().unwrap(),
         "GM moves the full path — no truncation from an unresolvable budget"
+    );
+    assert_eq!(
+        h.gm_resource_current().await,
+        10.0,
+        "no decrement when the binding cannot resolve to a spendable value"
     );
 
     // GM's combatant carries `PerCell` interpretation with no `grid.distance` configured — the
@@ -839,7 +877,7 @@ async fn gm_with_an_unresolvable_budget_moves_freely_with_no_decrement() {
 }
 
 #[tokio::test]
-async fn missing_per_cell_or_resource_entry_is_refused_with_the_generic_error() {
+async fn missing_per_cell_scale_is_refused_with_the_generic_error() {
     let h = budget_scene("hard", "per_cell", None).await;
     assert!(matches!(
         h.room
@@ -857,25 +895,155 @@ async fn missing_per_cell_or_resource_entry_is_refused_with_the_generic_error() 
             .await,
         Err(DataError::Forbidden)
     ));
+}
 
+#[tokio::test]
+async fn an_absent_resource_entry_reads_as_a_full_budget_and_materializes_on_spend() {
     let h = budget_scene("hard", "spaces", None).await;
     h.remove_resource_entry().await;
-    assert!(matches!(
-        h.room
-            .execute_move(
-                &h.repo,
-                &h.player,
-                crate::ws::room::MoveRequestInputs {
-                    scene_id: h.scene_id,
-                    token: h.token_id,
-                    path: vec![h.start, h.adj],
-                    ts: now_millis(),
-                    request_id: Uuid::nil(),
-                },
-            )
-            .await,
-        Err(DataError::Forbidden)
-    ));
+    let res = h
+        .room
+        .execute_move(
+            &h.repo,
+            &h.player,
+            crate::ws::room::MoveRequestInputs {
+                scene_id: h.scene_id,
+                token: h.token_id,
+                path: h.long_path.clone(),
+                ts: now_millis(),
+                request_id: Uuid::nil(),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        res.stop,
+        *h.long_path.last().unwrap(),
+        "an untouched entry reads as the evaluated max (30), not a refusal — 15 cells fit"
+    );
+    assert_eq!(
+        h.resource_current().await,
+        15.0,
+        "the spend materialized the entry at full-minus-cost"
+    );
+}
+
+#[tokio::test]
+async fn a_text_max_evaluated_over_the_linked_actor_gates_and_clamps_the_budget() {
+    let h = budget_scene("hard", "spaces", None).await;
+    let wdoc = crate::data::document::tests::world_scoped_doc;
+    let actor_id = Uuid::from_u128(0x5CEB);
+    let mut actor = wdoc(h.world_id, actor_id, "actor");
+    actor.owner = Some(h.player.user_id);
+    actor.engine = Some(serde_json::json!({
+        "displayName": "Runner", "visual": { "kind": "image", "asset": "a.png" },
+        "size": { "w": 1.0, "h": 1.0 }, "shape": "square", "conditions": [],
+        "prototype": false, "vision": null,
+    }));
+    actor.system = serde_json::json!({ "spd": 2.0 });
+    h.room
+        .publish(
+            &h.repo,
+            &h.gm,
+            vec![Operation::Create { doc: actor }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+    h.room
+        .publish(
+            &h.repo,
+            &h.gm,
+            vec![Operation::Update {
+                doc_id: h.combatant_id,
+                changes: vec![FieldChange {
+                    remove: false,
+                    path: "/engine/kind/actor_id".into(),
+                    old: serde_json::Value::Null,
+                    new: serde_json::json!(actor_id),
+                }],
+            }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+    h.set_registry_binding(serde_json::json!({ "kind": "tracked", "max": "spd",
+        "recover": { "turn_start": 0, "turn_end": 0, "round_start": 0, "round_end": 0 } }))
+        .await;
+    let res = h
+        .room
+        .execute_move(
+            &h.repo,
+            &h.player,
+            crate::ws::room::MoveRequestInputs {
+                scene_id: h.scene_id,
+                token: h.token_id,
+                path: vec![h.start, h.adj, h.adj2, h.adj3],
+                ts: now_millis(),
+                request_id: Uuid::nil(),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        res.stop, h.adj2,
+        "the stored current (10) clamps to the evaluated text max (2) and gates there"
+    );
+    assert_eq!(h.resource_current().await, 0.0, "spent to the floor");
+}
+
+#[tokio::test]
+async fn a_mirror_binding_refuses_the_enforced_mover_and_an_eval_error_does_too() {
+    let h = budget_scene("hard", "spaces", None).await;
+    h.set_registry_binding(serde_json::json!({ "kind": "mirror", "value": "hp" }))
+        .await;
+    assert!(
+        matches!(
+            h.room
+                .execute_move(
+                    &h.repo,
+                    &h.player,
+                    crate::ws::room::MoveRequestInputs {
+                        scene_id: h.scene_id,
+                        token: h.token_id,
+                        path: vec![h.start, h.adj],
+                        ts: now_millis(),
+                        request_id: Uuid::nil(),
+                    },
+                )
+                .await,
+            Err(DataError::Forbidden)
+        ),
+        "a Mirror-bound movement resource is unresolvable for an enforced mover"
+    );
+
+    let h = budget_scene("hard", "spaces", None).await;
+    // No formula host anywhere (the combatant links no actor and the token
+    // embeds no copy), so a referencing text max cannot resolve.
+    h.set_registry_binding(serde_json::json!({ "kind": "tracked", "max": "spd",
+        "recover": { "turn_start": 0, "turn_end": 0, "round_start": 0, "round_end": 0 } }))
+        .await;
+    assert!(
+        matches!(
+            h.room
+                .execute_move(
+                    &h.repo,
+                    &h.player,
+                    crate::ws::room::MoveRequestInputs {
+                        scene_id: h.scene_id,
+                        token: h.token_id,
+                        path: vec![h.start, h.adj],
+                        ts: now_millis(),
+                        request_id: Uuid::nil(),
+                    },
+                )
+                .await,
+            Err(DataError::Forbidden)
+        ),
+        "an evaluation error is unresolvable for an enforced mover"
+    );
 }
 
 #[tokio::test]

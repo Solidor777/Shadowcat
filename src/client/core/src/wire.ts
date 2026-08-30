@@ -732,8 +732,9 @@ export type ServerMsg =
       /** The route for the `pathfind` with this `request_id`: ordered cell-center scene
        * points (incl. start + goal) and the total cost in cells (client multiplies
        * `grid.distance.perCell`). `arrested` is true when an arrest region truncated the
-       * route before the requested goal — the player-facing route never silently ends
-       * short without telling the client why. */
+       * route before the requested goal, `truncated` when the mover's movement budget did
+       * — the player-facing route never silently ends short without telling the client
+       * why. */
       type: "path_result";
       /** The originating pathfind's correlation token. */
       request_id: string;
@@ -743,6 +744,8 @@ export type ServerMsg =
       cost: number;
       /** True when an arrest region truncated the route short of the goal. */
       arrested: boolean;
+      /** True when the mover's movement budget truncated the route short of the goal. */
+      truncated: boolean;
     }
   | {
       /** The `pathfind` with this `request_id` failed (unreachable / invalid request /
@@ -940,6 +943,7 @@ export const serverMsgSchemaImpl = z.discriminatedUnion("type", [
     path: z.array(z.tuple([z.number(), z.number()])),
     cost: z.number(),
     arrested: z.boolean(),
+    truncated: z.boolean(),
   }),
   z.object({
     type: z.literal("path_error"),

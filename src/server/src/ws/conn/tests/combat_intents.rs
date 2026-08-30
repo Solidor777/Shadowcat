@@ -328,15 +328,9 @@ async fn combat_harness() -> Harness {
         },
         initiative: None,
         tiebreak: 0.0,
-        resources: [(
-            "movement".to_string(),
-            CombatantResource {
-                current: 5.0,
-                max: 10.0,
-            },
-        )]
-        .into_iter()
-        .collect(),
+        resources: [("movement".to_string(), CombatantResource { current: 5.0 })]
+            .into_iter()
+            .collect(),
     };
     pc.engine = Some(serde_json::to_value(&pc_engine).unwrap());
     room.publish(
@@ -361,15 +355,9 @@ async fn combat_harness() -> Harness {
         },
         initiative: None,
         tiebreak: 0.0,
-        resources: [(
-            "movement".to_string(),
-            CombatantResource {
-                current: 5.0,
-                max: 10.0,
-            },
-        )]
-        .into_iter()
-        .collect(),
+        resources: [("movement".to_string(), CombatantResource { current: 5.0 })]
+            .into_iter()
+            .collect(),
     };
     npc.engine = Some(serde_json::to_value(&npc_engine).unwrap());
     room.publish(

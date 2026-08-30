@@ -128,7 +128,6 @@ export type { EffectEngine } from "./generated/engine/EffectEngine";
 export type { Duration } from "./generated/engine/Duration";
 export type { DurationUnit } from "./generated/engine/DurationUnit";
 export type { ExpiryPoint } from "./generated/engine/ExpiryPoint";
-export type { ResolvedLifecycle } from "./generated/engine/ResolvedLifecycle";
 export type { EffectLifecycle } from "./generated/engine/EffectLifecycle";
 export type { EffectLifecycleDefaults } from "./generated/engine/EffectLifecycleDefaults";
 export type { EffectSnapshot } from "./generated/engine/EffectSnapshot";

@@ -35,7 +35,7 @@ fn collect_effects_finds_anchored_effects_on_actor_token_copy_and_transferring_i
     item.embedded.insert("effect".into(), transferring);
     let mut actor = actor;
     actor.embedded.insert("item".into(), vec![item]);
-    let mut c = actor_combatant(10, combat, 0xA, None, false, (0.0, 30.0));
+    let mut c = actor_combatant(10, combat, 0xA, None, false, 0.0);
     c.engine.kind = CombatantKind::Actor {
         token_id: Some(Uuid::from_u128(0x70)),
         actor_id: Some(Uuid::from_u128(0xA)),
@@ -67,8 +67,8 @@ fn collect_effects_finds_anchored_effects_on_actor_token_copy_and_transferring_i
 #[test]
 fn an_effect_anchored_to_another_combatant_is_collected_by_the_anchor_not_the_host() {
     let combat = Uuid::from_u128(1);
-    let a = actor_combatant(10, combat, 0x1A, None, false, (0.0, 30.0));
-    let b = actor_combatant(11, combat, 0x1B, None, false, (0.0, 30.0));
+    let a = actor_combatant(10, combat, 0x1A, None, false, 0.0);
+    let b = actor_combatant(11, combat, 0x1B, None, false, 0.0);
     // Physically on A's actor, anchored to B.
     let host_a = actor_with_effect(
         0x1A,
@@ -109,13 +109,13 @@ fn a_token_hosted_cross_host_anchored_effect_is_collected_once_at_the_pass_one_p
     let combat = Uuid::from_u128(1);
     let token_id = Uuid::from_u128(0x70);
     // A is hosted by a TOKEN (only its embedded actor copy carries effects); B merely anchors.
-    let mut a = actor_combatant(10, combat, 0x1A, None, false, (0.0, 30.0));
+    let mut a = actor_combatant(10, combat, 0x1A, None, false, 0.0);
     a.engine.kind = CombatantKind::Actor {
         token_id: Some(token_id),
         actor_id: None,
     };
     a.doc.engine = Some(serde_json::to_value(&a.engine).unwrap());
-    let b = actor_combatant(11, combat, 0x1B, None, false, (0.0, 30.0));
+    let b = actor_combatant(11, combat, 0x1B, None, false, 0.0);
     let host_b = doc(0x1B, "actor", None, actor_body());
 
     let token_hosting = |anchor: Option<Uuid>| {
@@ -177,8 +177,8 @@ fn a_token_hosted_cross_host_anchored_effect_is_collected_once_at_the_pass_one_p
 #[test]
 fn a_cross_host_anchored_effect_ticks_on_the_anchors_own_turn_boundary() {
     let combat = Uuid::from_u128(1);
-    let a = actor_combatant(10, combat, 0x1A, None, false, (0.0, 30.0));
-    let b = actor_combatant(11, combat, 0x1B, None, false, (0.0, 30.0));
+    let a = actor_combatant(10, combat, 0x1A, None, false, 0.0);
+    let b = actor_combatant(11, combat, 0x1B, None, false, 0.0);
     let host_a = actor_with_effect(
         0x1A,
         Some(b.doc.id),
@@ -222,7 +222,7 @@ fn a_cross_host_anchored_effect_ticks_on_the_anchors_own_turn_boundary() {
 }
 
 #[test]
-fn boundary_tick_decrements_and_expires_at_zero_and_skips_unresolved() {
+fn boundary_tick_decrements_expires_at_zero_and_materializes_an_untouched_countdown() {
     let combat = Uuid::from_u128(1);
     // Host ids (0x1A/0x1B) deliberately distinct from the combatants' own
     // doc ids (10/11) — a host id must never numerically collide with a
@@ -231,10 +231,13 @@ fn boundary_tick_decrements_and_expires_at_zero_and_skips_unresolved() {
     // but `apply`'s strict OCC check catches it immediately if a fixture
     // does, since a collision merges the combatant's and the host's
     // documents onto one map entry.
-    let a = actor_combatant(10, combat, 0x1A, None, false, (0.0, 30.0));
-    let b = actor_combatant(11, combat, 0x1B, None, false, (0.0, 30.0));
+    let a = actor_combatant(10, combat, 0x1A, None, false, 0.0);
+    let b = actor_combatant(11, combat, 0x1B, None, false, 0.0);
     let host_a = actor_with_effect(0x1A, None, 1, ExpiryPoint::TurnEnd, DurationUnit::Turns);
-    let mut host_b = actor_with_effect(0x1B, None, 1, ExpiryPoint::TurnEnd, DurationUnit::Turns);
+    // TurnStart, not TurnEnd: b never has a turn END in this single advance
+    // (the walk only ENTERS b's turn), so a start-boundary countdown is what
+    // exercises materialization here.
+    let mut host_b = actor_with_effect(0x1B, None, 1, ExpiryPoint::TurnStart, DurationUnit::Turns);
     let mut e: EffectEngine =
         serde_json::from_value(host_b.embedded["effect"][0].engine.clone().unwrap()).unwrap();
     e.duration.as_mut().unwrap().remaining = None;
@@ -262,9 +265,15 @@ fn boundary_tick_decrements_and_expires_at_zero_and_skips_unresolved() {
             .unwrap(),
     )
     .unwrap();
+    let ebd = eb.duration.unwrap();
+    assert_eq!(
+        ebd.remaining,
+        Some(0),
+        "an untouched countdown materializes as the evaluated amount minus this tick"
+    );
     assert!(
-        eb.active && eb.duration.unwrap().remaining.is_none(),
-        "unresolved effects are never touched"
+        !eb.active,
+        "an amount of 1 expires on its first matching boundary"
     );
 }
 
@@ -273,17 +282,16 @@ fn rounds_unit_ticks_only_on_round_boundaries_and_turn_end_policy_expires_at_hos
     let combat = Uuid::from_u128(1);
     // Host ids (0x1A/0x1B) deliberately distinct from the combatants' own
     // doc ids (10/11) — see the identical note in
-    // `boundary_tick_decrements_and_expires_at_zero_and_skips_unresolved`.
-    let a = actor_combatant(10, combat, 0x1A, None, false, (0.0, 30.0));
-    let b = actor_combatant(11, combat, 0x1B, None, false, (0.0, 30.0));
+    // `boundary_tick_decrements_expires_at_zero_and_materializes_an_untouched_countdown`.
+    let a = actor_combatant(10, combat, 0x1A, None, false, 0.0);
+    let b = actor_combatant(11, combat, 0x1B, None, false, 0.0);
     let host_a = actor_with_effect(0x1A, None, 2, ExpiryPoint::RoundEnd, DurationUnit::Rounds);
     let mut host_b = actor_with_effect(0x1B, None, 5, ExpiryPoint::RoundEnd, DurationUnit::Rounds);
     let mut e: EffectEngine =
         serde_json::from_value(host_b.embedded["effect"][0].engine.clone().unwrap()).unwrap();
-    e.lifecycle.as_mut().unwrap().resolved = Some(ResolvedLifecycle {
-        on_combat_end: true,
-        on_turn_end: true,
-        on_advance: true,
+    e.lifecycle = Some(EffectLifecycle {
+        on_turn_end: Some(Formula::Number(1.0)),
+        ..Default::default()
     });
     host_b.embedded.get_mut("effect").unwrap()[0].engine = Some(serde_json::to_value(&e).unwrap());
     let snap = snapshot(
@@ -315,40 +323,164 @@ fn rounds_unit_ticks_only_on_round_boundaries_and_turn_end_policy_expires_at_hos
 }
 
 #[test]
-fn an_effect_with_no_lifecycle_at_all_is_never_touched_by_a_boundary_it_would_otherwise_match() {
-    // Every other fixture sets `lifecycle: Some(EffectLifecycle { resolved:
-    // Some(..), .. })`. An effect that has NOT resolved its lifecycle yet —
-    // `lifecycle: None` entirely, or `Some(EffectLifecycle { resolved: None,
-    // .. })` — must be left completely inert by both `tick` and
-    // `expire_by_policy`, even when its `duration.expires`/`unit` exactly
-    // match the boundary being processed.
+fn an_effect_with_no_authored_lifecycle_ticks_under_the_engine_fallbacks() {
+    // Nothing authored on the effect and nothing in the chain defaults means
+    // the engine fallbacks decide: decrement at matching boundaries, keep at
+    // turn end, expire at combat end — a bare countdown effect ticks.
     let combat = Uuid::from_u128(1);
     // 0x9A, not 0xA — a host id must never numerically collide with a
     // combatant doc id (`actor_combatant(10, ..)` == `0xA` == 10 decimal is
     // the known real-UUID-can-never-produce-this fixture gotcha).
-    let a = actor_combatant(10, combat, 0x9A, None, false, (0.0, 30.0));
-    let mut host = actor_with_effect(0x9A, None, 1, ExpiryPoint::TurnEnd, DurationUnit::Turns);
-    let mut e: EffectEngine =
-        serde_json::from_value(host.embedded["effect"][0].engine.clone().unwrap()).unwrap();
-    e.lifecycle = None;
-    let unresolved_before = serde_json::to_value(&e).unwrap();
-    host.embedded.get_mut("effect").unwrap()[0].engine = Some(unresolved_before.clone());
+    let a = actor_combatant(10, combat, 0x9A, None, false, 0.0);
+    let host = actor_with_effect(0x9A, None, 1, ExpiryPoint::TurnEnd, DurationUnit::Turns);
     let snap = snapshot(
         combat_engine(vec![a.doc.id], Some(a.doc.id), 1, true),
         vec![a],
         vec![host],
     );
     let ops = advance(&snap, WORLD, Uuid::nil(), 0).unwrap();
+    let docs = apply(&snap, &ops);
+    let e: EffectEngine = serde_json::from_value(
+        docs[&Uuid::from_u128(0x9A)].embedded["effect"][0]
+            .engine
+            .clone()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(e.duration.unwrap().remaining, Some(0));
     assert!(
-        !ops.iter().any(
-            |o| matches!(o, Operation::Update { doc_id, .. } if *doc_id == Uuid::from_u128(0x9A))
-        ),
-        "no host write at all — the effect's engine band is byte-identical before and after"
+        !e.active,
+        "the fallback on_advance decremented it to expiry"
+    );
+}
+
+/// Reads the one effect on host `0x9A` back out of an applied doc map.
+fn effect_on_9a(docs: &HashMap<Uuid, Document>) -> EffectEngine {
+    serde_json::from_value(
+        docs[&Uuid::from_u128(0x9A)].embedded["effect"][0]
+            .engine
+            .clone()
+            .unwrap(),
+    )
+    .unwrap()
+}
+
+#[test]
+fn a_text_duration_amount_materializes_over_the_hosts_system_band_on_first_tick() {
+    let combat = Uuid::from_u128(1);
+    let a = actor_combatant(10, combat, 0x9A, None, false, 0.0);
+    let mut host = actor_with_effect(0x9A, None, 1, ExpiryPoint::TurnEnd, DurationUnit::Turns);
+    host.system = serde_json::json!({ "stats": { "focus": 3.0 } });
+    let mut e: EffectEngine =
+        serde_json::from_value(host.embedded["effect"][0].engine.clone().unwrap()).unwrap();
+    let d = e.duration.as_mut().unwrap();
+    d.amount = Formula::Text("stats.focus".into());
+    d.remaining = None;
+    host.embedded.get_mut("effect").unwrap()[0].engine = Some(serde_json::to_value(&e).unwrap());
+    let snap = snapshot(
+        combat_engine(vec![a.doc.id], Some(a.doc.id), 1, true),
+        vec![a],
+        vec![host],
+    );
+    let docs = apply(&snap, &advance(&snap, WORLD, Uuid::nil(), 0).unwrap());
+    let e = effect_on_9a(&docs);
+    assert_eq!(
+        e.duration.unwrap().remaining,
+        Some(2),
+        "floor(evaluated amount) minus this first tick"
+    );
+    assert!(e.active);
+}
+
+#[test]
+fn a_chain_default_on_advance_of_zero_freezes_the_countdown() {
+    let combat = Uuid::from_u128(1);
+    let a = actor_combatant(10, combat, 0x9A, None, false, 0.0);
+    let host = actor_with_effect(0x9A, None, 2, ExpiryPoint::TurnEnd, DurationUnit::Turns);
+    let mut engine = combat_engine(vec![a.doc.id], Some(a.doc.id), 1, true);
+    engine.effect_lifecycle = EffectLifecycleDefaults {
+        on_advance: Some(Formula::Number(0.0)),
+        ..Default::default()
+    };
+    let snap = snapshot(engine, vec![a], vec![host]);
+    let docs = apply(&snap, &advance(&snap, WORLD, Uuid::nil(), 0).unwrap());
+    let e = effect_on_9a(&docs);
+    assert_eq!(
+        e.duration.unwrap().remaining,
+        Some(2),
+        "the combat's snapshotted chain default reaches the tick and freezes it"
+    );
+    assert!(e.active);
+}
+
+#[test]
+fn an_authored_lifecycle_formula_beats_a_non_default_chain_default() {
+    let combat = Uuid::from_u128(1);
+    let a = actor_combatant(10, combat, 0x9A, None, false, 0.0);
+    let mut host = actor_with_effect(0x9A, None, 2, ExpiryPoint::TurnEnd, DurationUnit::Turns);
+    let mut e: EffectEngine =
+        serde_json::from_value(host.embedded["effect"][0].engine.clone().unwrap()).unwrap();
+    e.lifecycle = Some(EffectLifecycle {
+        on_advance: Some(Formula::Number(1.0)),
+        ..Default::default()
+    });
+    host.embedded.get_mut("effect").unwrap()[0].engine = Some(serde_json::to_value(&e).unwrap());
+    let mut engine = combat_engine(vec![a.doc.id], Some(a.doc.id), 1, true);
+    engine.effect_lifecycle = EffectLifecycleDefaults {
+        on_advance: Some(Formula::Number(0.0)),
+        ..Default::default()
+    };
+    let snap = snapshot(engine, vec![a], vec![host]);
+    let docs = apply(&snap, &advance(&snap, WORLD, Uuid::nil(), 0).unwrap());
+    let e = effect_on_9a(&docs);
+    assert_eq!(
+        e.duration.unwrap().remaining,
+        Some(1),
+        "the authored formula overrides the chain's freeze"
+    );
+}
+
+#[test]
+fn a_failing_effect_formula_is_skipped_and_posts_one_gm_only_notice() {
+    let combat = Uuid::from_u128(1);
+    let a = actor_combatant(10, combat, 0x9A, None, false, 0.0);
+    let mut host = actor_with_effect(0x9A, None, 2, ExpiryPoint::TurnEnd, DurationUnit::Turns);
+    let mut e: EffectEngine =
+        serde_json::from_value(host.embedded["effect"][0].engine.clone().unwrap()).unwrap();
+    e.lifecycle = Some(EffectLifecycle {
+        on_advance: Some(Formula::Text("missing.leaf".into())),
+        ..Default::default()
+    });
+    host.embedded.get_mut("effect").unwrap()[0].engine = Some(serde_json::to_value(&e).unwrap());
+    let snap = snapshot(
+        combat_engine(vec![a.doc.id], Some(a.doc.id), 1, true),
+        vec![a],
+        vec![host],
+    );
+    let ops = advance(&snap, WORLD, Uuid::nil(), 0).unwrap();
+    let notices: Vec<_> = ops
+        .iter()
+        .filter_map(|o| match o {
+            Operation::Create { doc } if doc.doc_type == "message" => Some(doc),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        notices.len(),
+        1,
+        "one notice for the failing effect formula"
+    );
+    let text = serde_json::to_string(notices[0].engine.as_ref().unwrap()).unwrap();
+    assert!(
+        text.contains("effect at"),
+        "the notice names the effect locus: {text}"
     );
     let docs = apply(&snap, &ops);
+    let e = effect_on_9a(&docs);
     assert_eq!(
-        docs[&Uuid::from_u128(0x9A)].embedded["effect"][0].engine,
-        Some(unresolved_before),
-        "unchanged"
+        e.duration.unwrap().remaining,
+        Some(2),
+        "the failing formula applied nothing"
     );
+    assert!(e.active);
 }

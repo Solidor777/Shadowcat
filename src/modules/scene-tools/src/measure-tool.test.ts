@@ -122,6 +122,7 @@ test("measure tool routes via pathfind for the selected token and previews the p
     path: [[50, 50], [150, 50]] as [number, number][],
     cost: 2,
     arrested: false,
+      truncated: false,
   });
   const { tool, overlays, measures } = setupRoute({ pathfind });
 
@@ -138,7 +139,7 @@ test("measure tool falls back to plain anchor-point measure when no token is sel
   const pathfinderCalled: boolean[] = [];
   const pathfind: ToolContext["pathfind"] = async () => {
     pathfinderCalled.push(true);
-    return { path: [], cost: 0, arrested: false };
+    return { path: [], cost: 0, arrested: false, truncated: false };
   };
   // Build the route context but override tokenIds to empty — no selection.
   const { tool, overlays } = setupRoute({ pathfind, tokenIds: [] });
@@ -156,6 +157,7 @@ test("measure tool clears overlay and measure label on pointer up (mid-gesture-c
     path: [[50, 50], [150, 50]] as [number, number][],
     cost: 2,
     arrested: false,
+      truncated: false,
   });
   const { tool, overlayClears, measureClears } = setupRoute({ pathfind });
 
@@ -208,7 +210,7 @@ test("measure tool onDeactivate clears route overlay on tool swap (mid-gesture-c
   // onDeactivate fires and clears the live overlay + budget label. We test onDeactivate
   // directly because ToolController.toggle calls tool.onDeactivate?.() before swapping.
   const { tool, overlayClears, measureClears } = setupRoute({
-    pathfind: async () => ({ path: [[50, 50], [150, 50]] as [number, number][], cost: 2, arrested: false }),
+    pathfind: async () => ({ path: [[50, 50], [150, 50]] as [number, number][], cost: 2, arrested: false, truncated: false }),
   });
 
   tool.onPointerDown({ x: 50, y: 50 }, ev());
@@ -272,7 +274,7 @@ test("measure tool accumulates multiple waypoints and passes them to pathfind in
   const calls: { start: [number,number]; waypoints: [number,number][] }[] = [];
   const pathfind: ToolContext["pathfind"] = async (_, start, waypoints) => {
     calls.push({ start, waypoints: [...waypoints] });
-    return { path: [[start[0], start[1]], [waypoints.at(-1)![0], waypoints.at(-1)![1]]] as [number,number][], cost: waypoints.length, arrested: false };
+    return { path: [[start[0], start[1]], [waypoints.at(-1)![0], waypoints.at(-1)![1]]] as [number,number][], cost: waypoints.length, arrested: false, truncated: false };
   };
 
   const bridge = new SceneInteractionBridge();
@@ -301,7 +303,7 @@ test("route preview names the single selected token in the pathfind call", async
   const calls: (string | undefined)[] = [];
   const pathfind: ToolContext["pathfind"] = async (_scene, _start, waypoints, _fp, token) => {
     calls.push(token);
-    return { path: [[50, 50], [waypoints.at(-1)![0], waypoints.at(-1)![1]]] as [number, number][], cost: 1, arrested: false };
+    return { path: [[50, 50], [waypoints.at(-1)![0], waypoints.at(-1)![1]]] as [number, number][], cost: 1, arrested: false, truncated: false };
   };
   const { tool } = setupRoute({ pathfind });
 
@@ -316,7 +318,7 @@ test("commit's fallback pathfind also names the single selected token", async ()
   const calls: (string | undefined)[] = [];
   const pathfind: ToolContext["pathfind"] = async (_scene, _start, waypoints, _fp, token) => {
     calls.push(token);
-    return { path: [[0, 0], [waypoints.at(-1)![0], waypoints.at(-1)![1]]] as [number, number][], cost: 1, arrested: false };
+    return { path: [[0, 0], [waypoints.at(-1)![0], waypoints.at(-1)![1]]] as [number, number][], cost: 1, arrested: false, truncated: false };
   };
   const { ctx, now } = seedRouteCtx({
     pathfind,
@@ -339,7 +341,7 @@ test("route mode is never entered with zero or multiple tokens selected, so path
   const pathfinderCalled: unknown[] = [];
   const pathfind: ToolContext["pathfind"] = async (_scene, _start, _waypoints, _fp, token) => {
     pathfinderCalled.push(token);
-    return { path: [], cost: 0, arrested: false };
+    return { path: [], cost: 0, arrested: false, truncated: false };
   };
   const { tool: multiTool, overlays: multiOverlays } = setupRoute({ pathfind, tokenIds: ["tok-1", "tok-2"] });
 
@@ -356,6 +358,7 @@ test("route mode: an arrested PathResult appends an arrest marker to the budget 
     path: [[50, 50], [150, 50]] as [number, number][],
     cost: 2,
     arrested: true,
+      truncated: false,
   });
   const { tool, measures } = setupRoute({ pathfind });
 
@@ -378,6 +381,7 @@ test("route mode on a continuous-movement scene labels the wire cost as cells, n
     path: [[50, 50], [550, 50]] as [number, number][],
     cost: 5, // cells: a 500-scene-unit straight route at cell 100
     arrested: false,
+      truncated: false,
   });
   const { tool, measures } = setupRoute({ pathfind, sceneVision: { movementModel: "continuous" } });
 
@@ -436,7 +440,7 @@ function makeFakeClock(initial = 0): FakeClock {
 test("rapid pointer moves during route preview are debounced to a bounded request rate, leading-edge", () => {
   const calls: number[] = [];
   const pathfind: ToolContext["pathfind"] = () =>
-    new Promise((res) => { calls.push(1); res({ path: [[50, 50], [150, 50]], cost: 2, arrested: false }); });
+    new Promise((res) => { calls.push(1); res({ path: [[50, 50], [150, 50]], cost: 2, arrested: false, truncated: false }); });
   const clock = makeFakeClock();
   const { tool } = setupRoute({ pathfind, now: clock.now, scheduleTimeout: clock.scheduleTimeout, clearScheduledTimeout: clock.clearScheduledTimeout });
 
@@ -454,7 +458,7 @@ test("rapid pointer moves during route preview are debounced to a bounded reques
 test("a stale route-preview pathfind response is ignored via the pendingSeq guard", async () => {
   // The debounce reduces REQUEST volume only: it must not touch or weaken the last-write-wins
   // staleness check on RESPONSES.
-  const resolvers: Array<(r: { path: [number, number][]; cost: number; arrested: boolean }) => void> = [];
+  const resolvers: Array<(r: { path: [number, number][]; cost: number; arrested: boolean; truncated: boolean }) => void> = [];
   const pathfind: ToolContext["pathfind"] = () => new Promise((res) => { resolvers.push(res); });
   const clock = makeFakeClock();
   const { tool, measures } = setupRoute({ pathfind, now: clock.now, scheduleTimeout: clock.scheduleTimeout, clearScheduledTimeout: clock.clearScheduledTimeout });
@@ -466,9 +470,9 @@ test("a stale route-preview pathfind response is ignored via the pendingSeq guar
   expect(resolvers.length).toBe(2);
 
   // Resolve the NEWER request first, then the STALE one — the stale one must be ignored.
-  resolvers[1]({ path: [[50, 50], [200, 50]], cost: 4, arrested: false });
+  resolvers[1]({ path: [[50, 50], [200, 50]], cost: 4, arrested: false, truncated: false });
   await flush();
-  resolvers[0]({ path: [[50, 50], [60, 50]], cost: 1, arrested: false });
+  resolvers[0]({ path: [[50, 50], [60, 50]], cost: 1, arrested: false, truncated: false });
   await flush();
 
   expect(measures.at(-1)!.label).toContain("20 ft"); // request #2's budget: cost(4) × perCell(5)
@@ -477,7 +481,7 @@ test("a stale route-preview pathfind response is ignored via the pendingSeq guar
 test("a move suppressed by the debounce still fires once the cooldown elapses, even with no further move event (hover-only stop)", () => {
   const calls: number[] = [];
   const pathfind: ToolContext["pathfind"] = () =>
-    new Promise((res) => { calls.push(1); res({ path: [[50, 50], [150, 50]], cost: 2, arrested: false }); });
+    new Promise((res) => { calls.push(1); res({ path: [[50, 50], [150, 50]], cost: 2, arrested: false, truncated: false }); });
   const clock = makeFakeClock();
   const { tool } = setupRoute({ pathfind, now: clock.now, scheduleTimeout: clock.scheduleTimeout, clearScheduledTimeout: clock.clearScheduledTimeout });
 
@@ -494,7 +498,7 @@ test("a move suppressed by the debounce still fires once the cooldown elapses, e
 test("clearing the route before the deferred timer elapses cancels it (no leaked-timer stray request)", () => {
   const calls: number[] = [];
   const pathfind: ToolContext["pathfind"] = () =>
-    new Promise((res) => { calls.push(1); res({ path: [[50, 50], [150, 50]], cost: 2, arrested: false }); });
+    new Promise((res) => { calls.push(1); res({ path: [[50, 50], [150, 50]], cost: 2, arrested: false, truncated: false }); });
   const clock = makeFakeClock();
   const { tool } = setupRoute({ pathfind, now: clock.now, scheduleTimeout: clock.scheduleTimeout, clearScheduledTimeout: clock.clearScheduledTimeout });
 
@@ -619,7 +623,7 @@ test("double-click commits via moveRequest (animation is broadcast-driven)", asy
     return { requestId: "r1", tokenId, mover: "u1", scene: "s1", startServerMs: 0, durationMs: 300, stop: path.at(-1)!, samples: [], moverVision: null, cost: 1, truncated: false };
   };
   const { ctx, now } = seedRouteCtx({
-    pathfind: async () => ({ path: [[0,0],[100,0],[100,100]] as [number,number][], cost: 2, arrested: false }),
+    pathfind: async () => ({ path: [[0,0],[100,0],[100,100]] as [number,number][], cost: 2, arrested: false, truncated: false }),
     moveRequest,
     tokenAt: { id: "tok1", x: 0, y: 0 },
   });
@@ -642,7 +646,7 @@ test("commitRoute fires via moveRequest in a continuous-movement-model scene", a
     return { requestId: "r1", tokenId, mover: "u1", scene: "s1", startServerMs: 0, durationMs: 300, stop: path.at(-1)!, samples: [], moverVision: null, cost: 1, truncated: false };
   };
   const { ctx, now } = seedRouteCtx({
-    pathfind: async () => ({ path: [[0, 0], [100, 0], [100, 100]] as [number, number][], cost: 2, arrested: false }),
+    pathfind: async () => ({ path: [[0, 0], [100, 0], [100, 100]] as [number, number][], cost: 2, arrested: false, truncated: false }),
     moveRequest,
     tokenAt: { id: "tok1", x: 0, y: 0 },
     sceneVision: { movementModel: "continuous" },
@@ -658,7 +662,7 @@ test("commitRoute fires via moveRequest in a continuous-movement-model scene", a
 test("a single click in route mode does NOT commit", async () => {
   const moves: Array<unknown> = [];
   const { ctx } = seedRouteCtx({
-    pathfind: async () => ({ path: [[0, 0], [100, 0]] as [number, number][], cost: 1, arrested: false }),
+    pathfind: async () => ({ path: [[0, 0], [100, 0]] as [number, number][], cost: 1, arrested: false, truncated: false }),
     moveRequest: async (_s, tokenId, path) => {
       moves.push({ tokenId, path });
       return { requestId: "r1", tokenId, mover: "u1", scene: "s1", startServerMs: 0, durationMs: 300, stop: path.at(-1)!, samples: [], moverVision: null, cost: 1, truncated: false };
@@ -686,7 +690,7 @@ test("route commit survives its own pointer-up: moveRequest resolves after point
   let clearCount = 0;
 
   const { ctx, now } = seedRouteCtx({
-    pathfind: async () => ({ path: [[0, 0], [200, 0], [200, 200]] as [number, number][], cost: 4, arrested: false }),
+    pathfind: async () => ({ path: [[0, 0], [200, 0], [200, 200]] as [number, number][], cost: 4, arrested: false, truncated: false }),
     moveRequest: deferredMoveRequest,
     onClearOverlay: () => { clearCount++; },
     tokenAt: { id: "tok1", x: 0, y: 0 },
@@ -730,7 +734,7 @@ test("rejected moveRequest calls clearRoute and does NOT animate", async () => {
   const animated: Array<{ id: string; path: [number, number][] }> = [];
 
   const { ctx, now } = seedRouteCtx({
-    pathfind: async () => ({ path: [[0, 0], [100, 0]] as [number, number][], cost: 1, arrested: false }),
+    pathfind: async () => ({ path: [[0, 0], [100, 0]] as [number, number][], cost: 1, arrested: false, truncated: false }),
     moveRequest: async () => Promise.reject(new Error("server denied")),
     animateAlongPath: (id, path) => animated.push({ id, path }),
     onClearOverlay: () => { overlayClears++; },
@@ -768,7 +772,7 @@ test("cache-hit: commitRoute reuses lastPreviewedPath and does not call pathfind
   const { ctx, now } = seedRouteCtx({
     pathfind: async () => {
       pathfindCalls.push(1);
-      return { path: cachedPath, cost: 2, arrested: false };
+      return { path: cachedPath, cost: 2, arrested: false, truncated: false };
     },
     moveRequest,
     tokenAt: { id: "tok1", x: 0, y: 0 },
@@ -820,6 +824,7 @@ test("stale commit resolve does not clear a newer commit's suppression flag", as
       path: [_start, waypoints.at(-1)!] as [number, number][],
       cost: 1,
       arrested: false,
+      truncated: false,
     }),
     moveRequest: deferredMoveRequest,
     onClearOverlay: () => { clearCount++; },

@@ -842,6 +842,20 @@ async fn handle_pathfind(
             };
         }
     }
+    // The world's capability grants — an input to the movement-budget clamp's `cap::READ`
+    // resolution (`budget_gate_for_token`), fetched ahead of any scene read guard exactly as
+    // `Room::execute_move` fetches it (no await under a guard). Unconditional for the same
+    // reason there: whether a combat is running is only knowable under the guard. Fails closed
+    // like the executor — an unresolvable authority input refuses the preview generically.
+    let world_defaults = match repo.world_cap_defaults(room.world_id).await {
+        Ok(wd) => wd,
+        Err(_) => {
+            return ServerMsg::PathError {
+                request_id,
+                message: "unreachable".to_string(),
+            };
+        }
+    };
     // Step 1: check movement_restriction under a short read guard, then drop it. The grid kind is
     // captured in the SAME guard from the `ResolvedScene` already being resolved, so the decode
     // below never re-acquires the lock for it.
@@ -900,6 +914,33 @@ async fn handle_pathfind(
         }
         None => footprint_radius,
     };
+    // The movement-budget preview clamp, resolved through the SAME gate the executor uses
+    // (`budget_gate_for_token` + `resolve_budget`) for a named, authorized token — a
+    // hypothetical-footprint preview names no combatant identity and is never clamped.
+    // `NotYourTurn`/`Unresolvable` mirror the executor's refusals behind the one generic
+    // wording; `Resolved` yields a ceiling only for an enforced Hard caller, so GM/Warn/
+    // None/exempt previews pass no budget and are untouched. The decrement half of a
+    // resolution is ignored: a preview commits nothing.
+    let mut budget_cells: Option<f64> = None;
+    if let Some(t) = token {
+        if let Some(bg) = crate::ws::room::budget_gate_for_token(&s, scene, t, ctx, &world_defaults)
+        {
+            match crate::ws::room::resolve_budget(&bg, is_gm) {
+                crate::ws::room::BudgetResolution::NotYourTurn
+                | crate::ws::room::BudgetResolution::Unresolvable => {
+                    return ServerMsg::PathError {
+                        request_id,
+                        message: "unreachable".to_string(),
+                    };
+                }
+                crate::ws::room::BudgetResolution::Resolved {
+                    budget_cells: b, ..
+                } => {
+                    budget_cells = b;
+                }
+            }
+        }
+    }
     match s.pathfind(
         crate::scene::RouteRequester {
             user: ctx.user_id,
@@ -910,12 +951,14 @@ async fn handle_pathfind(
         start,
         &waypoints,
         footprint_radius,
+        budget_cells,
     ) {
         Ok(outcome) => ServerMsg::PathResult {
             request_id,
             path: outcome.path,
             cost: outcome.cost,
             arrested: outcome.arrested,
+            truncated: outcome.truncated,
         },
         Err(e) => ServerMsg::PathError {
             request_id,

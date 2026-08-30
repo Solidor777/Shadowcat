@@ -20,8 +20,8 @@ pub use combat::{
     resolve_combat_rules, CapturedCombatant, CombatDefaults, CombatEngine, CombatHistoryEngine,
     CombatantEngine, CombatantKind, CombatantResource, Duration, DurationUnit, EffectEngine,
     EffectLifecycle, EffectLifecycleDefaults, EffectSnapshot, Enforcement, ExpiryPoint, Formula,
-    Interpretation, MovementRules, Recovery, ResolvedCombatRules, ResolvedLifecycle, Resource,
-    ResourceBinding, ResourceRegistryEngine, TurnControl, TurnRecord, MAX_TURN_HISTORY,
+    Interpretation, MovementRules, Recovery, ResolvedCombatRules, Resource, ResourceBinding,
+    ResourceRegistryEngine, TurnControl, TurnRecord, MAX_TURN_HISTORY,
 };
 pub use geometry::{
     DrawingEngine, DrawingShape, Fill, RegionEngine, RegionShape, Seg, Stroke, TemplateEngine,

@@ -564,8 +564,9 @@ pub enum ServerMsg {
     },
     /// The route for the `Pathfind` with this `request_id`: ordered cell-center scene points
     /// (incl. start + goal) and the total cost in cells (client multiplies `grid.distance.perCell`).
-    /// `arrested` is true when an arrest region truncated the route before the requested goal —
-    /// the player-facing route never silently ends short without telling the client why.
+    /// `arrested` is true when an arrest region truncated the route before the requested goal,
+    /// `truncated` when the mover's movement budget did — the player-facing route never silently
+    /// ends short without telling the client why.
     PathResult {
         /// The originating pathfind's correlation token.
         request_id: Uuid,
@@ -575,6 +576,9 @@ pub enum ServerMsg {
         cost: f64,
         /// True when an arrest region truncated the route short of the goal.
         arrested: bool,
+        /// True when the mover's movement budget truncated the route short of
+        /// the goal (Hard enforcement; reaches only the requester's own preview).
+        truncated: bool,
     },
     /// The `Pathfind` with this `request_id` failed (unreachable / invalid request / search exceeded).
     PathError {

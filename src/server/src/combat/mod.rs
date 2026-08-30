@@ -1,7 +1,9 @@
 //! The server-owned combat clock: loads a `CombatSnapshot`, runs a pure
 //! transition (`transition`), and hands ONE command's ops to `Room`.
-//! INVARIANT: nothing here evaluates a `Formula::Text`; every transition reads
-//! only resolved numbers/flags and skips what is unresolved.
+//! INVARIANT: every formula a transition acts on is evaluated HERE, through
+//! `crate::formula` over the combatant's formula host (`eval`); an
+//! evaluation failure skips its one write and surfaces as a GM-only chat
+//! notice — the clock never stops on a bad formula.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
@@ -22,6 +24,7 @@ use crate::ws::protocol::{ClientMsg, ResourceOp as WireResourceOp, ServerMsg};
 use crate::ws::room::Room;
 
 pub mod effects;
+pub(crate) mod eval;
 pub mod history;
 pub mod ops;
 pub mod snapshot;
@@ -393,7 +396,7 @@ async fn build_ops(
     match msg {
         ClientMsg::CombatStart { .. } => start(snap, now, room.world_id, ctx.user_id),
         ClientMsg::CombatPause { .. } => pause(snap),
-        ClientMsg::CombatEnd { .. } => end(snap),
+        ClientMsg::CombatEnd { .. } => end(snap, room.world_id, ctx.user_id, now),
         ClientMsg::CombatAdvance { .. } => advance(snap, room.world_id, ctx.user_id, now),
         ClientMsg::CombatRewind { .. } => rewind(snap, now),
         ClientMsg::CombatSort { .. } => sort(snap),

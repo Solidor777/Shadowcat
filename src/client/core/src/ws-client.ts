@@ -29,7 +29,7 @@ export interface SearchPage {
 }
 
 /** A resolved pathfind result (WsClient.pathfind). `arrested` is true when the route was cut
- * short by a visible arrest region. */
+ * short by a visible arrest region; `truncated` when the mover's movement budget cut it. */
 export interface PathResult {
   /** Ordered `[x, y]` scene-coordinate waypoints of the computed route. */
   path: [number, number][];
@@ -40,6 +40,8 @@ export interface PathResult {
   /** True when the route was cut short by a visible arrest region rather than reaching the
    * requested goal. */
   arrested: boolean;
+  /** True when the mover's movement budget truncated the route short of the goal. */
+  truncated: boolean;
 }
 
 /** A single position sample in a MoveStream, with elapsed-ms origin at startServerMs. */
@@ -874,7 +876,7 @@ export class WsClient {
         if (p) {
           clearTimeout(p.timer);
           this.pending.delete(msg.request_id);
-          (p.resolve as (r: PathResult) => void)({ path: msg.path, cost: msg.cost, arrested: msg.arrested });
+          (p.resolve as (r: PathResult) => void)({ path: msg.path, cost: msg.cost, arrested: msg.arrested, truncated: msg.truncated });
         }
         break;
       }

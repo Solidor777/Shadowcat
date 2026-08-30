@@ -50,8 +50,9 @@ impl Resolve for SystemLeafResolver<'_> {
     }
 }
 
-/// An `UnknownRef` for `joined`.
-fn unknown(joined: &str) -> FormulaValue {
+/// An `UnknownRef` for `joined` — the one place this wording lives; the
+/// no-host resolver in `combat::eval` reuses it.
+pub(crate) fn unknown(joined: &str) -> FormulaValue {
     Err(FormulaError::new(
         FormulaErrorKind::UnknownRef,
         format!("unknown reference '{joined}'"),

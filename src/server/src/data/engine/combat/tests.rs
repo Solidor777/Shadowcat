@@ -62,7 +62,7 @@ fn combatant_actor_kind_needs_a_token_or_an_actor() {
 }
 
 #[test]
-fn combatant_numbers_must_be_finite_and_max_non_negative() {
+fn combatant_numbers_must_be_finite() {
     let mut c = CombatantEngine {
         kind: CombatantKind::Event {
             lifespan: None,
@@ -77,18 +77,12 @@ fn combatant_numbers_must_be_finite_and_max_non_negative() {
     c.resources.insert(
         "movement".into(),
         CombatantResource {
-            current: 30.0,
-            max: -1.0,
+            current: f64::INFINITY,
         },
     );
     assert!(c.validate().is_err());
-    c.resources.insert(
-        "movement".into(),
-        CombatantResource {
-            current: 30.0,
-            max: 30.0,
-        },
-    );
+    c.resources
+        .insert("movement".into(), CombatantResource { current: 30.0 });
     assert!(c.validate().is_ok());
 }
 
