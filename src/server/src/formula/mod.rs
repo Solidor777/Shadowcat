@@ -14,6 +14,8 @@
 
 /// Structural recursion over a parsed expression.
 pub mod evaluate;
+/// Memoized, cycle-guarded resolution over a named dependency graph.
+pub mod graph;
 /// Source text → tokens.
 pub mod lexer;
 /// Tokens → `Expr`.
@@ -22,6 +24,7 @@ pub mod parser;
 pub mod types;
 
 pub use evaluate::{evaluate, Resolve};
+pub use graph::resolve_all;
 pub use parser::{parse, BinOp, Expr, FnName};
 pub use types::{
     FormulaError, FormulaErrorKind, FormulaValue, MAX_AST_NODES, MAX_FORMULA_LENGTH,
