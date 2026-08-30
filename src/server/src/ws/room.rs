@@ -100,6 +100,17 @@ struct BudgetGate {
     per_cell: Option<f64>,
     /// Whether this combatant holds `CombatEngine.turn`.
     is_turn_owner: bool,
+    /// Whether the gate's REFUSALS and TRUNCATION apply to this caller at all. `false` when the
+    /// combatant is hidden (`permissions.default: none`) and the caller is neither its owner nor
+    /// a GM: such a caller cannot read that document, so a `MoveReject::NotYourTurn` refusal or a
+    /// budget truncation would disclose both the combatant's existence and its exact numeric
+    /// budget through move behaviour alone — reachable without owning the hidden combatant's own
+    /// token, since `SceneEcs::combatant_for_token`'s `actor_id` fallback matches ANY token
+    /// instanced from the same actor. Such a caller moves exactly as if the token named no
+    /// combatant. The resource decrement still records the spend: it writes only the hidden
+    /// combatant's own document, and `filter_command`'s `Operation::Update` arm drops the whole
+    /// op for any recipient lacking `cap::READ` on it, so no value reaches them.
+    enforced: bool,
     /// `CombatEngine.movement.interpretation`.
     interpretation: eng::Interpretation,
     /// `CombatEngine.movement.enforcement`.
@@ -851,7 +862,7 @@ impl Room {
                 .active_combat_for_scene(token_scene)
                 .and_then(|(combat_id, ce)| {
                     let resource = ce.movement.resource.clone()?;
-                    let (combatant_id, c, _hidden, _owner) =
+                    let (combatant_id, c, hidden, owner) =
                         scene.combatant_for_token(combat_id, token)?;
                     Some(BudgetGate {
                         combatant_id,
@@ -859,6 +870,11 @@ impl Room {
                         resource,
                         per_cell: scene.scene_per_cell(token_scene),
                         is_turn_owner: ce.turn == Some(combatant_id),
+                        // See `BudgetGate::enforced`. Whole-document readability of the
+                        // combatant is the SAME test `combat::transition::is_hidden` applies —
+                        // `permissions.default: none` plus owner/GM — never a second, separately
+                        // derived notion of hidden.
+                        enforced: !hidden || is_gm || owner == Some(ctx.user_id),
                         interpretation: ce.movement.interpretation,
                         enforcement: ce.movement.enforcement,
                     })
@@ -886,10 +902,14 @@ impl Room {
         let mut move_budget_cells: Option<f64> = None;
         let mut resolved_budget: Option<ResolvedBudget> = None;
         if let Some(bg) = &budget_gate {
+            // Exempt from every refusal and from truncation: a GM (matching `execute_move`'s own
+            // GM gameplay exemption), or a caller the gate is not `enforced` against because the
+            // combatant is unreadable to them (see `BudgetGate::enforced`). Both still take the
+            // decrement path below when the budget resolves.
+            let exempt = is_gm || !bg.enforced;
             // Turn-owner enforcement is Hard-only: under Warn/None a non-turn-owner's move is
-            // never rejected on this basis. GMs are exempt unconditionally, matching
-            // `execute_move`'s own GM gameplay exemption.
-            if !is_gm && !bg.is_turn_owner && matches!(bg.enforcement, eng::Enforcement::Hard) {
+            // never rejected on this basis.
+            if !exempt && !bg.is_turn_owner && matches!(bg.enforcement, eng::Enforcement::Hard) {
                 tracing::debug!(
                     combatant = %bg.combatant_id, token = %token, user = %ctx.user_id,
                     reject = ?move_exec::MoveReject::NotYourTurn,
@@ -899,14 +919,15 @@ impl Room {
             }
             // The resource entry and, under PerCell, the per-cell distance scale are required
             // regardless of enforcement mode — the decrement below needs them even when the
-            // gate itself never truncates (Warn/None). For a non-GM, either being unresolvable
-            // refuses the move outright (`BudgetUnresolvable`). For a GM, an unresolvable budget
-            // degrades to "move freely, no decrement" instead — the same outcome as a token that
-            // isn't bound to any combatant at all — rather than refusing a GM move, matching the
-            // GM-bypass exemption already applied to the truncation and turn-owner checks above.
+            // gate itself never truncates (Warn/None). For an enforced non-GM caller, either
+            // being unresolvable refuses the move outright (`BudgetUnresolvable`). For an
+            // `exempt` caller, an unresolvable budget degrades to "move freely, no decrement"
+            // instead — the same outcome as a token that isn't bound to any combatant at all —
+            // rather than refusing the move, matching the exemption already applied to the
+            // truncation and turn-owner checks above.
             let entry = match bg.entry {
                 Some(entry) => Some(entry),
-                None if is_gm => None,
+                None if exempt => None,
                 None => {
                     tracing::debug!(
                         combatant = %bg.combatant_id, token = %token, resource = %bg.resource,
@@ -919,7 +940,7 @@ impl Room {
             let cost_to_resource = match (entry, bg.interpretation) {
                 (Some(_), eng::Interpretation::PerCell) => match bg.per_cell {
                     Some(pc) => Some(pc),
-                    None if is_gm => None,
+                    None if exempt => None,
                     None => {
                         tracing::debug!(
                             combatant = %bg.combatant_id, token = %token,
@@ -930,12 +951,12 @@ impl Room {
                     }
                 },
                 (Some(_), eng::Interpretation::Spaces) => Some(1.0),
-                // GM whose resource entry was already unresolvable above: skip resolution
-                // entirely, same as a token not bound to any combatant.
+                // An exempt caller whose resource entry was already unresolvable above: skip
+                // resolution entirely, same as a token not bound to any combatant.
                 (None, _) => None,
             };
             if let (Some(entry), Some(cost_to_resource)) = (entry, cost_to_resource) {
-                if !is_gm && matches!(bg.enforcement, eng::Enforcement::Hard) {
+                if !exempt && matches!(bg.enforcement, eng::Enforcement::Hard) {
                     move_budget_cells = Some(entry.current / cost_to_resource);
                 }
                 resolved_budget = Some(ResolvedBudget {
@@ -987,7 +1008,8 @@ impl Room {
                     visible: &visible,
                     cell,
                     // The combat's per-turn budget ceiling, or unlimited — resolved above from
-                    // `budget_gate` (never `Some` for a GM; see that resolution's own GM guard).
+                    // `budget_gate` (never `Some` for a caller the gate exempts: a GM, or one
+                    // the combatant is hidden from — see `BudgetGate::enforced`).
                     budget: move_budget_cells,
                 },
                 token,

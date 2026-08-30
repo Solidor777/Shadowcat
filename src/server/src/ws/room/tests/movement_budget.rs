@@ -95,6 +95,49 @@ impl BudgetHandle {
         ce.resources["movement"].current
     }
 
+    /// Turns the player's combatant into one the player has NO relationship to and cannot read:
+    /// `permissions.default: none`, no per-user grant, no `owner`. The player still owns the
+    /// TOKEN, so they can still ask to move it — the exact reachability the hidden-combatant
+    /// secrecy rule covers, and the shape `SceneEcs::combatant_for_token`'s `actor_id` fallback
+    /// also produces for any token instanced from the same actor.
+    async fn hide_player_combatant(&self) {
+        let doc = self
+            .repo
+            .get_document(self.combatant_id)
+            .await
+            .unwrap()
+            .expect("player combatant");
+        let mut hidden = doc.permissions.clone();
+        hidden.default = crate::data::document::DocRole::None;
+        hidden.users.clear();
+        self.room
+            .publish(
+                &self.repo,
+                &self.gm,
+                vec![Operation::Update {
+                    doc_id: self.combatant_id,
+                    changes: vec![
+                        FieldChange {
+                            remove: false,
+                            path: "/permissions".into(),
+                            old: serde_json::to_value(&doc.permissions).unwrap(),
+                            new: serde_json::to_value(&hidden).unwrap(),
+                        },
+                        FieldChange {
+                            remove: false,
+                            path: "/owner".into(),
+                            old: serde_json::json!(doc.owner),
+                            new: serde_json::Value::Null,
+                        },
+                    ],
+                }],
+                0,
+                WriteOrigin::Client,
+            )
+            .await
+            .unwrap();
+    }
+
     /// Removes the player's combatant's `movement` resource entry entirely
     /// (`BudgetUnresolvable`'s "no such resource entry" case).
     async fn remove_resource_entry(&self) {
@@ -524,6 +567,71 @@ async fn not_the_turn_owner_is_rejected_under_hard_only() {
         )
         .await
         .is_ok());
+}
+
+/// A combatant the mover cannot READ must not gate their move at all: neither the turn-owner
+/// refusal (which would disclose the combatant's existence) nor the truncation (which would
+/// disclose its exact numeric budget) may apply. Both halves are asserted against the SAME
+/// configurations their enforced counterparts (`not_the_turn_owner_is_rejected_under_hard_only`,
+/// `hard_enforcement_truncates_the_owner_at_the_budget_...`) use, so the difference under test
+/// is the combatant's readability and nothing else.
+#[tokio::test]
+async fn a_hidden_combatant_neither_refuses_nor_truncates_a_mover_who_cannot_read_it() {
+    // Turn-owner refusal: identical to `not_the_turn_owner_is_rejected_under_hard_only`'s Hard
+    // case, which refuses — hiding the combatant must turn that into an ordinary move.
+    let h = budget_scene("hard", "spaces", None).await;
+    h.hide_player_combatant().await;
+    h.set_turn(h.other_combatant).await;
+    assert!(
+        h.room
+            .execute_move(
+                &h.repo,
+                &h.player,
+                crate::ws::room::MoveRequestInputs {
+                    scene_id: h.scene_id,
+                    token: h.token_id,
+                    path: vec![h.start, h.adj],
+                    ts: now_millis(),
+                    request_id: Uuid::nil(),
+                },
+            )
+            .await
+            .is_ok(),
+        "a refusal here would disclose that the token is bound to a hidden combatant"
+    );
+
+    // Truncation: a 15-cell path against a 10-space budget. An enforced mover stops at 10;
+    // this one must reach the end, disclosing no budget value through the stop position.
+    let h = budget_scene("hard", "spaces", None).await;
+    h.hide_player_combatant().await;
+    let res = h
+        .room
+        .execute_move(
+            &h.repo,
+            &h.player,
+            crate::ws::room::MoveRequestInputs {
+                scene_id: h.scene_id,
+                token: h.token_id,
+                path: h.long_path.clone(),
+                ts: now_millis(),
+                request_id: Uuid::nil(),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        res.stop,
+        *h.long_path.last().unwrap(),
+        "truncation would disclose the hidden combatant's exact budget"
+    );
+    // The spend is still recorded on the hidden combatant's own document — `filter_command`
+    // drops that whole Update for any recipient without READ on it, so recording it leaks
+    // nothing while keeping the budget honest for the GM who can see it.
+    assert_eq!(
+        h.resource_current().await,
+        0.0,
+        "decrement still applied, floored at zero"
+    );
 }
 
 #[tokio::test]
