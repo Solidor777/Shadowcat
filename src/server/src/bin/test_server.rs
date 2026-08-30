@@ -172,10 +172,15 @@ async fn main() -> anyhow::Result<()> {
         initialized: Arc::new(AtomicBool::new(true)),
         ws: shadowcat::ws::WsState::new(),
         upload_rate: Arc::new(shadowcat::http::assets::UploadRateLimiter::new()),
+        uploads: Arc::new(shadowcat::http::assets::uploads::UploadSessions::new()),
         auth_throttle: Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
         write_barrier: Arc::new(tokio::sync::RwLock::new(())),
         preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
     };
+    shadowcat::http::assets::uploads::spawn_sweeper(
+        state.uploads.clone(),
+        state.upload_rate.clone(),
+    );
     let app = http::router(state).await;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let addr = listener.local_addr()?;

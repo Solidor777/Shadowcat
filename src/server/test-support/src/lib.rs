@@ -85,6 +85,7 @@ pub async fn spawn_with(mutate: impl FnOnce(&mut Config)) -> Harness {
         initialized: Arc::new(AtomicBool::new(true)),
         ws: shadowcat::ws::WsState::new(),
         upload_rate: Arc::new(shadowcat::http::assets::UploadRateLimiter::new()),
+        uploads: Arc::new(shadowcat::http::assets::uploads::UploadSessions::new()),
         auth_throttle: Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
         write_barrier: Arc::new(tokio::sync::RwLock::new(())),
         preview_fetch_locks: Arc::new(dashmap::DashMap::new()),

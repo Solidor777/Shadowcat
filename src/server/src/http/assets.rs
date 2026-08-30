@@ -1,6 +1,8 @@
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
+pub mod uploads;
+
 use std::collections::HashMap;
 use std::sync::Mutex;
 use uuid::Uuid;
@@ -166,7 +168,7 @@ async fn store_streamed(
 /// bytes are a supported image; otherwise the declared type as a label,
 /// except that a declared `image/*` the bytes disproved becomes
 /// `application/octet-stream`.
-fn label_content_type(sniffed: Option<&'static str>, declared: Option<&str>) -> String {
+pub(super) fn label_content_type(sniffed: Option<&'static str>, declared: Option<&str>) -> String {
     if let Some(ct) = sniffed {
         return ct.to_string();
     }

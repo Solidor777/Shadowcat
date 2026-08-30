@@ -100,6 +100,15 @@ impl SqliteRepository {
         Ok(())
     }
 
+    /// `folder_ancestor_names` on a fresh connection.
+    pub async fn folder_ancestor_names_of(
+        &self,
+        folder_id: Option<Uuid>,
+    ) -> Result<Vec<String>, DataError> {
+        let mut conn = self.pool.acquire().await?;
+        Self::folder_ancestor_names(&mut conn, folder_id).await
+    }
+
     /// Root-first names of `folder_id` and its ancestors (empty for `None`,
     /// the world root). Feeds the folder-segment derived tags. A nameless
     /// folder contributes nothing; the walk stops at `MAX_FOLDER_DEPTH`.

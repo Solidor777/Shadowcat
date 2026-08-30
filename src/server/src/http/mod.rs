@@ -23,7 +23,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use axum::extract::DefaultBodyLimit;
-use axum::routing::{delete, get, post};
+use axum::routing::{delete, get, post, put};
 use axum::Router;
 
 use crate::config::Config;
@@ -46,6 +46,8 @@ pub struct AppState {
     pub ws: crate::ws::WsState,
     /// Per-user upload budget.
     pub upload_rate: Arc<assets::UploadRateLimiter>,
+    /// In-flight chunked upload sessions (`assets::uploads`).
+    pub uploads: Arc<assets::uploads::UploadSessions>,
     /// Login/invite abuse throttles (per identity + per IP).
     pub auth_throttle: Arc<throttle::AuthThrottle>,
     /// Write-quiesce barrier for the in-server backup route: held in write mode
@@ -199,6 +201,23 @@ pub async fn router(state: AppState) -> Router {
         .route(
             "/api/assets/{uuid}/replace",
             post(assets::replace).layer(DefaultBodyLimit::disable()),
+        )
+        .route(
+            "/api/worlds/{world}/assets/uploads",
+            post(assets::uploads::create_session),
+        )
+        .route(
+            "/api/assets/uploads/{id}/{offset}",
+            put(assets::uploads::put_chunk)
+                .layer(DefaultBodyLimit::max(assets::uploads::CHUNK_SIZE as usize)),
+        )
+        .route(
+            "/api/assets/uploads/{id}/complete",
+            post(assets::uploads::complete_session),
+        )
+        .route(
+            "/api/assets/uploads/{id}",
+            delete(assets::uploads::abort_session),
         )
         .fallback(embed::static_handler)
         .layer(sessions)
