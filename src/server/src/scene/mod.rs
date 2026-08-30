@@ -360,6 +360,9 @@ pub struct SceneEcs {
     /// The `system-defaults` singleton, hydrated for the settings chain (engine literal <
     /// system-defaults < world-settings < scene); not a scene entity.
     system_defaults: Option<Document>,
+    /// The `resource-registry` singleton, or `None` (the world defines no
+    /// turn resources; the movement-budget gate then resolves no binding).
+    resource_registry: Option<Document>,
     /// The `light-gradation` singleton config-doc, or `None` (built-in bands).
     gradation: Option<Document>,
     /// The `vision-modes` singleton config-doc, or `None` (seed modes).
@@ -612,6 +615,7 @@ impl SceneEcs {
             committed_seq: 0,
             world_settings: None,
             system_defaults: None,
+            resource_registry: None,
             gradation: None,
             vision_modes: None,
             actors: HashMap::new(),
@@ -689,11 +693,13 @@ impl SceneEcs {
         gradation: Option<Document>,
         vision_modes: Option<Document>,
         system_defaults: Option<Document>,
+        resource_registry: Option<Document>,
     ) {
         self.world_settings = world_settings;
         self.gradation = gradation;
         self.vision_modes = vision_modes;
         self.system_defaults = system_defaults;
+        self.resource_registry = resource_registry;
     }
 
     /// Seed the actor table (room-hydration path). Keyed by actor doc id.
@@ -731,6 +737,12 @@ impl SceneEcs {
     /// The `system-defaults` singleton, or `None` (resolvers fall through to the engine literal).
     pub fn system_defaults_doc(&self) -> Option<&Document> {
         self.system_defaults.as_ref()
+    }
+    /// The `resource-registry` singleton's parsed engine, or `None` (absent,
+    /// or a malformed body — fail closed to "no binding" rather than guessing).
+    pub fn resource_registry_engine(&self) -> Option<eng::ResourceRegistryEngine> {
+        let doc = self.resource_registry.as_ref()?;
+        self.engine_as_cached::<eng::ResourceRegistryEngine>(doc.id, doc)
     }
     /// The `vision-modes` singleton, or `None` (seed modes apply).
     pub fn vision_modes_doc(&self) -> Option<&Document> {
@@ -814,6 +826,7 @@ impl SceneEcs {
                 Self::apply_config_update(&mut self.system_defaults, *doc_id, changes);
                 Self::apply_config_update(&mut self.gradation, *doc_id, changes);
                 Self::apply_config_update(&mut self.vision_modes, *doc_id, changes);
+                Self::apply_config_update(&mut self.resource_registry, *doc_id, changes);
                 if let Some(a) = self.actors.get_mut(doc_id) {
                     // Same store-equal mutation rule: an actor's `/owner` is an authz
                     // input for every token linked to it, so a forked `remove` here
@@ -845,6 +858,11 @@ impl SceneEcs {
                     "vision-modes" if self.vision_modes.as_ref().map(|d| d.id) == Some(doc.id) => {
                         self.vision_modes = None;
                     }
+                    "resource-registry"
+                        if self.resource_registry.as_ref().map(|d| d.id) == Some(doc.id) =>
+                    {
+                        self.resource_registry = None;
+                    }
                     "actor" => {
                         self.actors.remove(&doc.id);
                     }
@@ -860,6 +878,7 @@ impl SceneEcs {
                     "system-defaults" => self.system_defaults = Some(doc.clone()),
                     "light-gradation" => self.gradation = Some(doc.clone()),
                     "vision-modes" => self.vision_modes = Some(doc.clone()),
+                    "resource-registry" => self.resource_registry = Some(doc.clone()),
                     "actor" => {
                         self.actors.insert(doc.id, doc.clone());
                     }
@@ -2184,6 +2203,32 @@ impl SceneEcs {
             }
         }
         by_actor
+    }
+
+    /// The combatant's formula-host DOCUMENT (cloned): resolved through
+    /// `combat::eval::formula_host` over a two-entry map built from the ECS's
+    /// own cached copies of the token (a scene entity) and its linked actor
+    /// (`actors` table) — so the movement gate and the combat transitions
+    /// share ONE host-precedence rule rather than two documented-to-agree
+    /// copies.
+    pub fn combatant_formula_host(&self, kind: &eng::CombatantKind) -> Option<Document> {
+        let eng::CombatantKind::Actor { token_id, actor_id } = kind else {
+            return None;
+        };
+        let mut hosts: HashMap<Uuid, Document> = HashMap::new();
+        if let Some(tid) = token_id {
+            if let Some(&e) = self.index.get(tid) {
+                if let Ok(c) = self.world.get::<&SceneEntity>(e) {
+                    hosts.insert(*tid, c.doc.clone());
+                }
+            }
+        }
+        if let Some(aid) = actor_id {
+            if let Some(a) = self.actors.get(aid) {
+                hosts.insert(*aid, a.clone());
+            }
+        }
+        crate::combat::eval::formula_host(&hosts, kind).cloned()
     }
 
     /// The scene's real-world distance-per-cell scale (`SceneEngine.grid.distance.per_cell`), or
