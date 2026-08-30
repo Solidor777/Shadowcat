@@ -672,3 +672,27 @@ are observations awaiting triage, not committed work.
   repo has no such boundary to wire. That boundary is the consuming
   system's (the same one the authorized `validateStatKey` →
   `checkNotationKey` swap targets), not a Shadowcat action item.
+
+- Title: shell ui-e2e reuses a foreign server on its fixed port. Summary: during the
+  M15a run (worktree `Shadowcat-m15a`, another session active in the main checkout),
+  `pnpm --filter @shadowcat/shell e2e` failed 6/17 — every first spec per worker — at
+  the `Created account …` toast, with the error-context snapshot already inside a
+  world with an open chat panel: `playwright.config.ts` pins `baseURL` to
+  `127.0.0.1:31999` with `reuseExistingServer: !process.env.CI`, so whichever
+  session's `test_server` holds the port answers both runs. Rerun alone: 17/17 in
+  3.3 min. `http::tests::accept_invite_throttles_by_ip_over_real_transport` (fixed
+  port 8004) showed the same shape (404 where 429 was expected) under the same
+  contention and passed 3/3 alone. Status: Needs Review (a per-run port or
+  `reuseExistingServer: false` locally would remove the class; deliberately not
+  changed in M15a).
+
+- Title: `pnpm docs:api:ts` (typedoc) fails on pre-M15 generated engine types.
+  Summary: `typedoc` exits 4 with `treatWarningsAsErrors` on
+  `CombatantKind.__type.type` and `ResourceBinding.__type.kind` (serde tag
+  properties in `src/types/generated/engine/*`, from commit `e4622687`, before the
+  M15a branch point), so `pnpm build:all` — and the CI docs job — cannot pass on
+  either branch until those tagged unions carry a documented discriminant or an
+  exemption. M15a produced `dist-docs` locally with warnings non-fatal only to run
+  the local-only `check-skill-api-refs` gate. Status: Needs Review (M14 owns the
+  types).
+

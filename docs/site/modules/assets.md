@@ -6,8 +6,8 @@ The asset panel: upload, browse, replace, and delete uploaded files (scene
 backgrounds, token art). Uploads are size- and rate-capped server-side (GM caps
 default to 2× player caps). Images are converted to WebP on upload, with the
 original retained beside the canonical (`retain_originals`) and thumb/preview
-derivatives generated — see the asset pipeline in
-[`docs/design/ARCHITECTURE.md`](../../design/ARCHITECTURE.md) §4. Non-image
+derivatives generated — see the asset pipeline in `docs/design/ARCHITECTURE.md` §4 of the
+repository. Non-image
 files are stored pass-through under their declared type.
 
 ## Contributions
