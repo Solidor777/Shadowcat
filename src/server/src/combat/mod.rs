@@ -76,13 +76,6 @@ pub enum CombatError {
     RateLimited,
 }
 
-/// Per-user combat-intent flood budget. Reuses the SAME per-minute figure as
-/// `WsState::message_rate`'s callers (`SendMessage`/`EditMessage`/
-/// `DeleteMessage`/`RecalcRoll`) — a combat intent costs one snapshot doc
-/// read plus a commit, the same order of cost as those handlers, so a
-/// dedicated budget would just duplicate their number under a new name.
-const COMBAT_RATE_PER_MIN: usize = 30;
-
 /// Dispatches one combat intent frame: checks the caller's flood budget,
 /// loads the snapshot, authorizes, resolves the transition's ops, and
 /// commits them as ONE server-authored command via `Room::commit_combat`.
@@ -92,7 +85,10 @@ const COMBAT_RATE_PER_MIN: usize = 30;
 /// refusal path (including an unrecognized/foreign `combat_id`) renders
 /// identically to the sender. `rate` is checked BEFORE the snapshot's
 /// multi-query doc read — cheap check first, mirroring `ScenePing`'s guard
-/// order in `conn.rs`.
+/// order in `conn.rs` — and spends `MESSAGE_RATE_PER_MIN` against the SAME
+/// `WsState::message_rate` counter the chat handlers use: a combat intent
+/// costs one snapshot doc read plus a commit, the same order of cost, so the
+/// budget is read from its single declaration rather than restated here.
 pub async fn handle_combat_intent(
     room: &Room,
     repo: &dyn Repository,
@@ -141,7 +137,7 @@ pub async fn handle_combat_intent(
         _ => return None,
     };
 
-    if !rate.check(ctx.user_id, now, COMBAT_RATE_PER_MIN) {
+    if !rate.check(ctx.user_id, now, crate::ws::MESSAGE_RATE_PER_MIN) {
         return Some(to_server_msg(request_id, CombatError::RateLimited));
     }
 

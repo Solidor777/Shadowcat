@@ -60,6 +60,15 @@ impl PingRateLimiter {
     }
 }
 
+/// The per-user, per-trailing-60s budget every caller of `WsState::message_rate` spends
+/// against: the chat handlers (`SendMessage`/`EditMessage`/`DeleteMessage`/`RecalcRoll`) and
+/// `combat::handle_combat_intent`. INVARIANT: declared ONCE, beside the limiter it governs.
+/// Those callers share a single `PingRateLimiter` instance and therefore a single per-user hit
+/// list, so a second constant naming the same budget would be a forked decision — raising one
+/// copy silently changes the other's effective behaviour against the very same counter, with
+/// nothing failing to report it.
+pub(crate) const MESSAGE_RATE_PER_MIN: usize = 30;
+
 /// Realtime state shared in `AppState`. A thin handle today; the seam for future
 /// bus internals (actor pool / external broker) without touching callers.
 #[derive(Clone)]
@@ -68,7 +77,8 @@ pub struct WsState {
     pub rooms: Arc<RoomRegistry>,
     /// Per-user ping budget (shared across a user's connections).
     pub ping_rate: Arc<PingRateLimiter>,
-    /// Per-user chat flood budget (shared across a user's connections).
+    /// Per-user flood budget for every handler `MESSAGE_RATE_PER_MIN` governs (shared across a
+    /// user's connections).
     pub message_rate: Arc<PingRateLimiter>,
     /// The link-preview SSRF-guarded fetch client, built ONCE via
     /// `chat::build_link_preview_client()` (the no-flag production

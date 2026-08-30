@@ -35,6 +35,7 @@ use crate::http::AppState;
 use crate::ws::protocol::{ClientMsg, RejectReason, ServerMsg, WsErrorCode};
 use crate::ws::room::Room;
 use crate::ws::time::now_millis;
+use crate::ws::MESSAGE_RATE_PER_MIN;
 
 /// Query parameters of the `/ws` upgrade request.
 #[derive(Debug, Deserialize)]
@@ -94,8 +95,6 @@ const MAX_SUBSCRIPTIONS: usize = 16;
 const MAX_SCENE_SUBSCRIPTIONS: usize = 16;
 /// Coalescing window: a burst of Events triggers at most one re-run per window.
 const SEARCH_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(150);
-/// Per-user chat flood budget: messages allowed per trailing 60s window.
-const MESSAGE_RATE_PER_MIN: usize = 30;
 
 /// A live search subscription's stored state.
 struct Sub {
