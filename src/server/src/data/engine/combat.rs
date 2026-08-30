@@ -258,8 +258,9 @@ pub struct CombatEngine {
     pub order: Vec<Uuid>,
     /// Movement rules (snapshot of the resolved chain at start).
     pub movement: MovementRules,
-    /// Whether an effect's `EffectLifecycle.resolved.on_combat_end`/`on_turn_end` flags
-    /// actually expire it (snapshot of the resolved chain at start).
+    /// Whether an effect's evaluated lifecycle flags (`on_combat_end`/
+    /// `on_turn_end`, resolved per boundary through the combat-defaults
+    /// chain) actually expire it (snapshot of the resolved chain at start).
     pub effect_cleanup: bool,
     /// Whether ending combat/rewinding restores documents an anchored `TurnRecord` snapshot
     /// (snapshot of the resolved chain at start).

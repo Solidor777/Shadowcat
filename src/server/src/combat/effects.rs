@@ -293,7 +293,9 @@ fn flags_for(
     ) {
         Ok(f) => Some(f),
         Err(e) => {
-            failures.push(format!("effect at {}: {}", r.path, e.detail));
+            // The host document id prefixes the relative pointer so identical
+            // failures on DIFFERENT hosts cannot dedup-collapse into one line.
+            failures.push(format!("effect at {}{}: {}", r.host, r.path, e.detail));
             None
         }
     }
@@ -339,7 +341,7 @@ pub(crate) fn tick(
             None => match eval::duration_amount(&duration.amount, eval::effect_host_doc(host)) {
                 Ok(n) => n,
                 Err(e) => {
-                    failures.push(format!("effect at {}: {}", r.path, e.detail));
+                    failures.push(format!("effect at {}{}: {}", r.host, r.path, e.detail));
                     continue;
                 }
             },

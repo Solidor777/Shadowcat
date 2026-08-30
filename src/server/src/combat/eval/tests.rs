@@ -80,7 +80,7 @@ fn host_prefers_token_embedded_actor_copy_over_linked_actor() {
     let token = token_embedding(0x71, embedded);
     let c = combatant(0xC1, Some(token.id), Some(linked.id));
     let hosts: HashMap<Uuid, Document> = [(linked.id, linked.clone()), (token.id, token)].into();
-    let host = formula_host(&hosts, &c).expect("a host resolves");
+    let host = formula_host(&hosts, &c.engine.kind).expect("a host resolves");
     assert_eq!(host.system, json!({"who": {"is": 2.0}}));
 }
 
@@ -91,14 +91,14 @@ fn host_falls_back_to_linked_actor_when_token_embeds_no_copy() {
     let c = combatant(0xC1, Some(bare_token.id), Some(linked.id));
     let hosts: HashMap<Uuid, Document> =
         [(linked.id, linked.clone()), (bare_token.id, bare_token)].into();
-    let host = formula_host(&hosts, &c).expect("a host resolves");
+    let host = formula_host(&hosts, &c.engine.kind).expect("a host resolves");
     assert_eq!(host.system, json!({"who": {"is": 1.0}}));
 }
 
 #[test]
 fn host_is_none_for_an_event_combatant() {
     let hosts: HashMap<Uuid, Document> = HashMap::new();
-    assert!(formula_host(&hosts, &event_combatant(0xC1)).is_none());
+    assert!(formula_host(&hosts, &event_combatant(0xC1).engine.kind).is_none());
 }
 
 #[test]
@@ -109,7 +109,7 @@ fn host_is_none_when_every_named_host_document_is_absent() {
         Some(Uuid::from_u128(0xA1)),
     );
     let hosts: HashMap<Uuid, Document> = HashMap::new();
-    assert!(formula_host(&hosts, &c).is_none());
+    assert!(formula_host(&hosts, &c.engine.kind).is_none());
 }
 
 #[test]

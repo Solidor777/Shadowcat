@@ -21,20 +21,20 @@ use crate::formula::{
     evaluate, parse, FormulaError, FormulaErrorKind, FormulaValue, Resolve, SystemLeafResolver,
 };
 
-use super::Combatant;
-
 /// The document a combatant's formulas read: the token-embedded actor copy
 /// when the combatant names a `token_id` whose document embeds one (the
 /// in-scene instance state), else the linked `actor_id` host. `None` for an
 /// `Event` combatant or when every named host document is absent — the same
 /// join `SceneEcs::combatant_for_token` and `effects::walk_any_host` perform,
 /// so evaluation, effect discovery and the movement gate agree on the host by
-/// construction.
+/// construction. Takes the KIND rather than a whole combatant so callers that
+/// hold only the parsed engine (the movement gate) share this one precedence
+/// rule instead of re-deriving it.
 pub(crate) fn formula_host<'a>(
     hosts: &'a HashMap<Uuid, Document>,
-    c: &Combatant,
+    kind: &CombatantKind,
 ) -> Option<&'a Document> {
-    let CombatantKind::Actor { token_id, actor_id } = &c.engine.kind else {
+    let CombatantKind::Actor { token_id, actor_id } = kind else {
         return None;
     };
     if let Some(token) = token_id.as_ref().and_then(|id| hosts.get(id)) {

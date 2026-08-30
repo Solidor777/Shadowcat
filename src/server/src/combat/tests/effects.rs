@@ -1,5 +1,6 @@
 use super::*;
 use crate::combat::effects::EffectRef;
+use crate::data::command::Operation;
 
 #[test]
 fn collect_effects_finds_anchored_effects_on_actor_token_copy_and_transferring_items() {
@@ -351,4 +352,135 @@ fn an_effect_with_no_authored_lifecycle_ticks_under_the_engine_fallbacks() {
         !e.active,
         "the fallback on_advance decremented it to expiry"
     );
+}
+
+/// Reads the one effect on host `0x9A` back out of an applied doc map.
+fn effect_on_9a(docs: &HashMap<Uuid, Document>) -> EffectEngine {
+    serde_json::from_value(
+        docs[&Uuid::from_u128(0x9A)].embedded["effect"][0]
+            .engine
+            .clone()
+            .unwrap(),
+    )
+    .unwrap()
+}
+
+#[test]
+fn a_text_duration_amount_materializes_over_the_hosts_system_band_on_first_tick() {
+    let combat = Uuid::from_u128(1);
+    let a = actor_combatant(10, combat, 0x9A, None, false, 0.0);
+    let mut host = actor_with_effect(0x9A, None, 1, ExpiryPoint::TurnEnd, DurationUnit::Turns);
+    host.system = serde_json::json!({ "stats": { "focus": 3.0 } });
+    let mut e: EffectEngine =
+        serde_json::from_value(host.embedded["effect"][0].engine.clone().unwrap()).unwrap();
+    let d = e.duration.as_mut().unwrap();
+    d.amount = Formula::Text("stats.focus".into());
+    d.remaining = None;
+    host.embedded.get_mut("effect").unwrap()[0].engine = Some(serde_json::to_value(&e).unwrap());
+    let snap = snapshot(
+        combat_engine(vec![a.doc.id], Some(a.doc.id), 1, true),
+        vec![a],
+        vec![host],
+    );
+    let docs = apply(&snap, &advance(&snap, WORLD, Uuid::nil(), 0).unwrap());
+    let e = effect_on_9a(&docs);
+    assert_eq!(
+        e.duration.unwrap().remaining,
+        Some(2),
+        "floor(evaluated amount) minus this first tick"
+    );
+    assert!(e.active);
+}
+
+#[test]
+fn a_chain_default_on_advance_of_zero_freezes_the_countdown() {
+    let combat = Uuid::from_u128(1);
+    let a = actor_combatant(10, combat, 0x9A, None, false, 0.0);
+    let host = actor_with_effect(0x9A, None, 2, ExpiryPoint::TurnEnd, DurationUnit::Turns);
+    let mut engine = combat_engine(vec![a.doc.id], Some(a.doc.id), 1, true);
+    engine.effect_lifecycle = EffectLifecycleDefaults {
+        on_advance: Some(Formula::Number(0.0)),
+        ..Default::default()
+    };
+    let snap = snapshot(engine, vec![a], vec![host]);
+    let docs = apply(&snap, &advance(&snap, WORLD, Uuid::nil(), 0).unwrap());
+    let e = effect_on_9a(&docs);
+    assert_eq!(
+        e.duration.unwrap().remaining,
+        Some(2),
+        "the combat's snapshotted chain default reaches the tick and freezes it"
+    );
+    assert!(e.active);
+}
+
+#[test]
+fn an_authored_lifecycle_formula_beats_a_non_default_chain_default() {
+    let combat = Uuid::from_u128(1);
+    let a = actor_combatant(10, combat, 0x9A, None, false, 0.0);
+    let mut host = actor_with_effect(0x9A, None, 2, ExpiryPoint::TurnEnd, DurationUnit::Turns);
+    let mut e: EffectEngine =
+        serde_json::from_value(host.embedded["effect"][0].engine.clone().unwrap()).unwrap();
+    e.lifecycle = Some(EffectLifecycle {
+        on_advance: Some(Formula::Number(1.0)),
+        ..Default::default()
+    });
+    host.embedded.get_mut("effect").unwrap()[0].engine = Some(serde_json::to_value(&e).unwrap());
+    let mut engine = combat_engine(vec![a.doc.id], Some(a.doc.id), 1, true);
+    engine.effect_lifecycle = EffectLifecycleDefaults {
+        on_advance: Some(Formula::Number(0.0)),
+        ..Default::default()
+    };
+    let snap = snapshot(engine, vec![a], vec![host]);
+    let docs = apply(&snap, &advance(&snap, WORLD, Uuid::nil(), 0).unwrap());
+    let e = effect_on_9a(&docs);
+    assert_eq!(
+        e.duration.unwrap().remaining,
+        Some(1),
+        "the authored formula overrides the chain's freeze"
+    );
+}
+
+#[test]
+fn a_failing_effect_formula_is_skipped_and_posts_one_gm_only_notice() {
+    let combat = Uuid::from_u128(1);
+    let a = actor_combatant(10, combat, 0x9A, None, false, 0.0);
+    let mut host = actor_with_effect(0x9A, None, 2, ExpiryPoint::TurnEnd, DurationUnit::Turns);
+    let mut e: EffectEngine =
+        serde_json::from_value(host.embedded["effect"][0].engine.clone().unwrap()).unwrap();
+    e.lifecycle = Some(EffectLifecycle {
+        on_advance: Some(Formula::Text("missing.leaf".into())),
+        ..Default::default()
+    });
+    host.embedded.get_mut("effect").unwrap()[0].engine = Some(serde_json::to_value(&e).unwrap());
+    let snap = snapshot(
+        combat_engine(vec![a.doc.id], Some(a.doc.id), 1, true),
+        vec![a],
+        vec![host],
+    );
+    let ops = advance(&snap, WORLD, Uuid::nil(), 0).unwrap();
+    let notices: Vec<_> = ops
+        .iter()
+        .filter_map(|o| match o {
+            Operation::Create { doc } if doc.doc_type == "message" => Some(doc),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        notices.len(),
+        1,
+        "one notice for the failing effect formula"
+    );
+    let text = serde_json::to_string(notices[0].engine.as_ref().unwrap()).unwrap();
+    assert!(
+        text.contains("effect at"),
+        "the notice names the effect locus: {text}"
+    );
+    let docs = apply(&snap, &ops);
+    let e = effect_on_9a(&docs);
+    assert_eq!(
+        e.duration.unwrap().remaining,
+        Some(2),
+        "the failing formula applied nothing"
+    );
+    assert!(e.active);
 }

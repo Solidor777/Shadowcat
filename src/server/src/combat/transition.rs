@@ -164,10 +164,12 @@ fn phase_name(phase: Phase) -> &'static str {
 /// the binding's `max` are evaluated over the combatant's formula host
 /// (`eval::formula_host`), and the result clamps to `[0, max]`. An ABSENT
 /// stored entry reads as full (`eval::resolved_resource`'s lazy-full rule)
-/// and is materialized only when the clamped result differs from full — an
-/// `Event` combatant, having no host, participates only for a resource it
-/// carries an explicit entry for. An evaluation failure records a detail
-/// line in `failures` and applies nothing for that resource; a recovery
+/// and is materialized only when the clamped result differs from full —
+/// uniformly for every combatant kind (an `Event` has no host, so a text
+/// formula for it resolves through the no-host path). An evaluation failure
+/// records a detail line in `failures` — prefixed with the combatant's name
+/// or id, so one broken shared formula cannot dedup-collapse across distinct
+/// combatants — and applies nothing for that resource; a recovery
 /// that would leave `current` unchanged emits no change (there is nothing
 /// to write).
 fn recover(
@@ -180,19 +182,17 @@ fn recover(
     let Some(registry) = &view.registry else {
         return Ok(());
     };
-    let host = eval::formula_host(&view.hosts, c);
+    let host = eval::formula_host(&view.hosts, &c.engine.kind);
+    let who = c.doc.name.clone().unwrap_or_else(|| c.doc.id.to_string());
     for (key, res) in &registry.resources {
         let ResourceBinding::Tracked { recover, .. } = &res.binding else {
             continue;
         };
         let stored = c.engine.resources.get(key).map(|r| r.current);
-        if stored.is_none() && matches!(c.engine.kind, CombatantKind::Event { .. }) {
-            continue;
-        }
         let delta = match eval::eval_formula(phase_formula(recover, phase), host) {
             Ok(v) => v,
             Err(e) => {
-                failures.push(format!("{key} {}: {}", phase_name(phase), e.detail));
+                failures.push(format!("{who}: {key} {}: {}", phase_name(phase), e.detail));
                 continue;
             }
         };
@@ -202,7 +202,7 @@ fn recover(
         let nums = match eval::resolved_resource(&res.binding, stored, host) {
             Ok(n) => n,
             Err(e) => {
-                failures.push(format!("{key} max: {}", e.detail));
+                failures.push(format!("{who}: {key} max: {}", e.detail));
                 continue;
             }
         };
@@ -481,7 +481,7 @@ fn eval_notice(failures: Vec<String>, world: Uuid, author: Uuid, now: i64) -> Op
             channel: "combat".to_string(),
             actor_owner: None,
             audience: Audience::GmOnly,
-            kind: MessageKind::Normal,
+            kind: MessageKind::System,
             content: vec![Segment::Text {
                 text: format!(
                     "Combat formula evaluation failed — affected values were left unchanged: {}",
@@ -1295,7 +1295,7 @@ pub fn resource(
     if matches!(def.binding, ResourceBinding::Mirror { .. }) {
         return Err(CombatError::Forbidden);
     }
-    let host = eval::formula_host(&snap.hosts, c);
+    let host = eval::formula_host(&snap.hosts, &c.engine.kind);
     let stored = c.engine.resources.get(key).map(|r| r.current);
     let nums = eval::resolved_resource(&def.binding, stored, host)
         .map_err(|e| CombatError::Data(DataError::OpFailed(e.detail)))?;

@@ -212,6 +212,32 @@ fn an_absent_tracked_entry_reads_full_and_materializes_on_first_change() {
 }
 
 #[test]
+fn an_event_with_no_stored_entry_recovers_uniformly_like_any_combatant() {
+    let combat = Uuid::from_u128(1);
+    let a = actor_combatant(10, combat, 0x9A, None, false, 0.0);
+    // Survives its own resolution (no lifespan) and carries NO resource entry.
+    let ev = event_combatant(11, combat, None, None);
+    let mut registry = registry_with_movement(Formula::Number(0.0));
+    if let ResourceBinding::Tracked { recover, .. } =
+        &mut registry.resources.get_mut("movement").unwrap().binding
+    {
+        recover.turn_end = Formula::Number(-10.0);
+    }
+    let mut snap = snapshot(
+        combat_engine(vec![a.doc.id, ev.doc.id], Some(a.doc.id), 1, true),
+        vec![a, ev],
+        vec![],
+    );
+    snap.registry = Some(registry);
+    let docs = apply(&snap, &advance(&snap, WORLD, Uuid::nil(), 0).unwrap());
+    let e: CombatantEngine = engine_of(&docs, Uuid::from_u128(11));
+    assert_eq!(
+        e.resources["movement"].current, 20.0,
+        "the drain materialized the event's absent entry from full (30) exactly as it would an actor's"
+    );
+}
+
+#[test]
 fn resource_intent_refuses_a_mirror_binding_and_clamps_against_an_evaluated_text_max() {
     let combat = Uuid::from_u128(1);
     let a = actor_combatant(10, combat, 0x9A, None, false, 5.0);
