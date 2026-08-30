@@ -11,9 +11,10 @@ use std::collections::HashSet;
 use uuid::Uuid;
 
 use crate::data::command::Operation;
-use crate::data::document::WorldRole;
+use crate::data::document::{WorldCapDefaults, WorldRole};
 use crate::data::engine::combat::TurnControl;
 use crate::data::membership::PermissionContext;
+use crate::data::permission::{cap, effective_owner, resolve_access_world, Access};
 use crate::data::repository::Repository;
 use crate::ws::protocol::{ClientMsg, ResourceOp as WireResourceOp, ServerMsg};
 use crate::ws::room::Room;
@@ -169,25 +170,96 @@ async fn run_intent(
     now: i64,
 ) -> Result<(), CombatError> {
     let snap = load_snapshot(repo, room.world_id, combat_id).await?;
-    authorize(&snap, ctx, &msg)?;
+    // The world's default capability grants, read ONCE per intent — an input to
+    // `authorize`'s whole-document `cap::READ` resolution, which may consult
+    // several combatants (`CombatRoll` names a list) and must resolve each
+    // against the same grants rather than re-reading them per combatant.
+    // Propagates with `?` rather than defaulting: an unresolvable authority
+    // input fails closed (`CombatError::Data`, rendered as the same generic
+    // "combat rejected" every other refusal is) instead of being guessed at.
+    // Read AFTER the snapshot so an unknown/foreign `combat_id` still costs
+    // only the snapshot's own existence-hiding refusal.
+    let world_defaults = repo.world_cap_defaults(room.world_id).await?;
+    authorize(&snap, ctx, &msg, &world_defaults)?;
     let ops = build_ops(room, repo, ctx, &snap, msg, now).await?;
     room.commit_combat(repo, ctx, ops, now).await?;
     Ok(())
 }
 
+/// The access `ctx` holds on combatant `c`'s document, resolved through the
+/// SAME `effective_owner` + `resolve_access_world` pair document egress uses
+/// (`filter_command`) and the movement-budget gate reads
+/// (`SceneEcs::ctx_access`) — never a hand-rolled readability or ownership
+/// predicate. A combatant's hidden state IS whole-document unreadability, so
+/// `permissions.users` entries and capability grants decide it here exactly as
+/// they do at egress.
+///
+/// A `combatant` document never carries an actor link (`token_actor_link` is
+/// `token`-only), so the no-join `effective_owner(doc, None)` resolution is
+/// exact — the same reasoning `scene_ping_permitted` states for a scene doc.
+///
+/// Returns the whole `Access` because `authorize` asks TWO questions of it —
+/// whole-document `cap::READ` and effective ownership — and resolving those
+/// from two different rules is how the two answers drift apart.
+fn combatant_access(
+    c: &Combatant,
+    ctx: &PermissionContext,
+    world_defaults: &WorldCapDefaults,
+) -> Access {
+    resolve_access_world(
+        ctx.user_id,
+        ctx.world_role,
+        &c.doc,
+        &world_defaults.grants_for(&c.doc.doc_type),
+        effective_owner(&c.doc, None),
+    )
+}
+
+/// Whether `ctx` may act on combatant `c` as its owner: it holds whole-document
+/// `cap::READ` on that combatant AND is its effective owner, both read off ONE
+/// `combatant_access` resolution.
+///
+/// The `cap::READ` half is the real read authority, not a
+/// `permissions.default` test, so a `permissions.users` entry moves it in BOTH
+/// directions: a per-user grant on a `default: none` combatant makes its owner
+/// able to act (they genuinely receive that document at egress), and a per-user
+/// `None` override on a `default: observer` combatant refuses even its `owner`
+/// (they never receive it, so admitting their writes would be an authorization
+/// hole — these writes commit under `WriteOrigin::CombatTransition`, which
+/// waives `apply_intent`'s own ownership check, making `authorize` the sole
+/// gate).
+fn owns_and_reads(
+    c: &Combatant,
+    ctx: &PermissionContext,
+    world_defaults: &WorldCapDefaults,
+) -> bool {
+    let access = combatant_access(c, ctx, world_defaults);
+    access.is_owner && access.has(cap::READ)
+}
+
 /// Non-GM authorization scope for a combat intent; a GM may always act.
 /// `CombatAdvance` additionally admits the CURRENT turn's owner when
-/// `turn_control == TurnControl::OwnerMayEnd` and that combatant isn't
-/// hidden. `CombatRoll`/`CombatResource` admit the owner of every NAMED
-/// combatant, provided none is hidden. Every other variant
+/// `turn_control == TurnControl::OwnerMayEnd`. `CombatRoll`/`CombatResource`
+/// admit the owner of every NAMED combatant. Every other variant
 /// (`CombatStart`/`CombatPause`/`CombatEnd`/`CombatRewind`/`CombatSort`) is
-/// GM-only. INVARIANT: every refusal here is `CombatError::Forbidden` or
+/// GM-only and consults no combatant at all.
+///
+/// "Owner" here is `owns_and_reads`: effective ownership AND whole-document
+/// `cap::READ`, both resolved through the shared `resolve_access_world`
+/// authority. This is the ONLY authorization these writes get — they commit
+/// under `WriteOrigin::CombatTransition`, which waives `apply_intent`'s own
+/// per-op ownership check — so a readability predicate that diverged from the
+/// real `cap::READ` gate would be an authorization hole in one direction and a
+/// refusal of a legitimate owner in the other.
+///
+/// INVARIANT: every refusal here is `CombatError::Forbidden` or
 /// `CombatError::NotFound`, which render IDENTICALLY via `CombatError`'s
 /// `Display` — this function never leaks which case fired.
 fn authorize(
     snap: &CombatSnapshot,
     ctx: &PermissionContext,
     msg: &ClientMsg,
+    world_defaults: &WorldCapDefaults,
 ) -> Result<(), CombatError> {
     if ctx.world_role == WorldRole::Gm {
         return Ok(());
@@ -202,7 +274,7 @@ fn authorize(
                 .turn
                 .and_then(|id| snap.combatants.iter().find(|c| c.doc.id == id));
             match current {
-                Some(c) if c.doc.owner == Some(ctx.user_id) && !transition::is_hidden(c) => Ok(()),
+                Some(c) if owns_and_reads(c, ctx, world_defaults) => Ok(()),
                 _ => Err(CombatError::Forbidden),
             }
         }
@@ -221,7 +293,7 @@ fn authorize(
                     .iter()
                     .find(|c| c.doc.id == entry.combatant_id)
                     .ok_or(CombatError::NotFound)?;
-                if c.doc.owner != Some(ctx.user_id) || transition::is_hidden(c) {
+                if !owns_and_reads(c, ctx, world_defaults) {
                     return Err(CombatError::Forbidden);
                 }
             }
@@ -233,10 +305,10 @@ fn authorize(
                 .iter()
                 .find(|c| c.doc.id == *combatant_id)
                 .ok_or(CombatError::NotFound)?;
-            if c.doc.owner != Some(ctx.user_id) || transition::is_hidden(c) {
-                Err(CombatError::Forbidden)
-            } else {
+            if owns_and_reads(c, ctx, world_defaults) {
                 Ok(())
+            } else {
+                Err(CombatError::Forbidden)
             }
         }
         // CombatStart/CombatPause/CombatEnd/CombatRewind/CombatSort: GM-only.

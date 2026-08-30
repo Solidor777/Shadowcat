@@ -52,6 +52,55 @@ impl Harness {
         serde_json::from_value(doc.engine.unwrap()).unwrap()
     }
 
+    /// Rewrites the player's own combatant's `permissions` to `default` plus, when `user_entry` is
+    /// `Some`, exactly one `users` entry for the player. `owner` is left as the player throughout —
+    /// these cases exist to separate the OWNERSHIP half of `combat::authorize`'s check from the
+    /// READABILITY half, so the owner must stay constant while readability varies.
+    async fn set_player_combatant_access(&self, default: DocRole, user_entry: Option<DocRole>) {
+        let doc = self
+            .repo
+            .get_document(self.player_combatant)
+            .await
+            .unwrap()
+            .expect("player combatant");
+        let mut perms = doc.permissions.clone();
+        perms.default = default;
+        perms.users.clear();
+        if let Some(role) = user_entry {
+            perms.users.insert(self.player.user_id, role);
+        }
+        self.room
+            .publish(
+                self.repo.as_ref(),
+                &self.gm,
+                vec![crate::data::command::Operation::Update {
+                    doc_id: self.player_combatant,
+                    changes: vec![crate::data::command::FieldChange {
+                        remove: false,
+                        path: "/permissions".into(),
+                        old: serde_json::to_value(&doc.permissions).unwrap(),
+                        new: serde_json::to_value(&perms).unwrap(),
+                    }],
+                }],
+                0,
+                WriteOrigin::Client,
+            )
+            .await
+            .unwrap();
+    }
+
+    /// The player's combatant's current `movement` resource value.
+    async fn player_movement(&self) -> f64 {
+        let doc = self
+            .repo
+            .get_document(self.player_combatant)
+            .await
+            .unwrap()
+            .unwrap();
+        let e: CombatantEngine = serde_json::from_value(doc.engine.unwrap()).unwrap();
+        e.resources["movement"].current
+    }
+
     /// Overwrites the combat document's whole `/engine` band with `engine`, via an ordinary
     /// GM-authored `Operation::Update` (`combat::ops::whole_engine_replace` — the same helper
     /// every real transition uses — so this reads the SAME OCC pre-image convention as
@@ -984,5 +1033,158 @@ async fn gm_sort_rewrites_the_order_from_current_initiatives_and_players_are_ref
         h.combat_engine().await.order,
         vec![h.hidden_npc, h.player_combatant],
         "sorted by initiative descending"
+    );
+}
+
+/// `combat::authorize`'s readability half is whole-document `cap::READ`, not a
+/// `permissions.default` test, so a per-user `permissions.users` entry decides it — direction
+/// one: a `default: observer` combatant carrying `permissions.users[player] = None` is NOT
+/// readable by that player (the per-user entry wins over the default in `effective_role`), even
+/// though they remain its `owner`. Every combatant-gated intent must refuse them.
+///
+/// This is an AUTHORIZATION hole, not merely a disclosure one: these ops commit under
+/// `WriteOrigin::CombatTransition`, which waives `apply_intent`'s own per-op ownership check, so
+/// `authorize` is the only gate standing between the frame and the write.
+#[tokio::test]
+async fn a_per_user_override_refuses_the_owner_of_an_unreadable_combatant() {
+    let h = combat_harness().await;
+    h.set_player_combatant_access(DocRole::Observer, Some(DocRole::None))
+        .await;
+    let before = h.player_movement().await;
+
+    // Park the turn on the player's own combatant under `OwnerMayEnd`, so the ONLY thing standing
+    // between the player and a successful `CombatAdvance` is the readability half.
+    let mut running = h.combat_engine().await;
+    running.active = true;
+    running.round = 1;
+    running.turn = Some(h.player_combatant);
+    running.turn_control = TurnControl::OwnerMayEnd;
+    h.set_combat_engine(running).await;
+
+    for msg in [
+        ClientMsg::CombatResource {
+            request_id: Uuid::from_u128(1),
+            combat_id: h.combat,
+            combatant_id: h.player_combatant,
+            resource: "movement".into(),
+            op: ResourceOp::Set { value: 1.0 },
+        },
+        ClientMsg::CombatRoll {
+            request_id: Uuid::from_u128(2),
+            combat_id: h.combat,
+            channel: "table".into(),
+            rolls: vec![CombatRollEntry {
+                combatant_id: h.player_combatant,
+                notation: "1d20".into(),
+            }],
+        },
+        ClientMsg::CombatAdvance {
+            request_id: Uuid::from_u128(3),
+            combat_id: h.combat,
+        },
+    ] {
+        assert!(
+            matches!(
+                handle_combat_intent(&h.room, h.repo.as_ref(), &h.player, msg, 0, &h.rate).await,
+                Some(ServerMsg::CombatError { .. })
+            ),
+            "a combatant this caller cannot READ must not admit their combat writes, whatever \
+             `permissions.default` says"
+        );
+    }
+    assert_eq!(
+        h.player_movement().await,
+        before,
+        "no refused intent committed a write"
+    );
+    assert_eq!(
+        h.combat_engine().await.turn,
+        Some(h.player_combatant),
+        "the refused advance left the clock where it was"
+    );
+}
+
+/// The other direction of the same rule: a `default: none` combatant carrying
+/// `permissions.users[player] = Owner` IS readable by that player — they genuinely receive that
+/// document at egress — so its owner may act on it. Refusing them here would be a fail-closed
+/// over-refusal, silently substituting `settle_turn`'s auto-resolve for a turn its owner is
+/// entitled to take. Same shape as
+/// `a_per_user_override_refuses_the_owner_of_an_unreadable_combatant`, reached through the
+/// per-user grant instead of the override.
+#[tokio::test]
+async fn a_per_user_grant_admits_the_owner_of_a_default_hidden_combatant() {
+    let h = combat_harness().await;
+    h.set_player_combatant_access(DocRole::None, Some(DocRole::Owner))
+        .await;
+
+    assert!(
+        handle_combat_intent(
+            &h.room,
+            h.repo.as_ref(),
+            &h.player,
+            ClientMsg::CombatResource {
+                request_id: Uuid::from_u128(1),
+                combat_id: h.combat,
+                combatant_id: h.player_combatant,
+                resource: "movement".into(),
+                op: ResourceOp::Set { value: 1.0 },
+            },
+            0,
+            &h.rate,
+        )
+        .await
+        .is_none(),
+        "the owner of a readable combatant may spend its resources"
+    );
+    assert_eq!(
+        h.player_movement().await,
+        1.0,
+        "the admitted intent actually committed its write"
+    );
+
+    assert!(
+        handle_combat_intent(
+            &h.room,
+            h.repo.as_ref(),
+            &h.player,
+            ClientMsg::CombatRoll {
+                request_id: Uuid::from_u128(2),
+                combat_id: h.combat,
+                channel: "table".into(),
+                rolls: vec![CombatRollEntry {
+                    combatant_id: h.player_combatant,
+                    notation: "1d20".into(),
+                }],
+            },
+            0,
+            &h.rate,
+        )
+        .await
+        .is_none(),
+        "the owner of a readable combatant may roll its initiative"
+    );
+
+    // Park the turn on that same combatant under `OwnerMayEnd` and let its owner end it.
+    let mut running = h.combat_engine().await;
+    running.active = true;
+    running.round = 1;
+    running.turn = Some(h.player_combatant);
+    running.turn_control = TurnControl::OwnerMayEnd;
+    h.set_combat_engine(running).await;
+    assert!(
+        handle_combat_intent(
+            &h.room,
+            h.repo.as_ref(),
+            &h.player,
+            ClientMsg::CombatAdvance {
+                request_id: Uuid::from_u128(3),
+                combat_id: h.combat,
+            },
+            0,
+            &h.rate,
+        )
+        .await
+        .is_none(),
+        "the owner of a readable combatant may end its own turn"
     );
 }

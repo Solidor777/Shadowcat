@@ -99,12 +99,28 @@ impl RollPost {
     }
 }
 
-/// Whether `c`'s document is hidden from every non-owner/non-GM reader
-/// (`permissions.default: none`) — the SAME test a real read-transition
-/// gate applies; this module never re-derives visibility from any other
-/// field. `pub(crate)` so the wire-dispatch layer's own authz
-/// (`combat::handle_combat_intent`) reads the SAME decision rather than
-/// re-deriving it — never fork a hidden/visible decision across two paths.
+/// Whether `c`'s document is hidden from the world AT LARGE: its
+/// `permissions.default` grants no role, so any reader carrying no per-user
+/// entry of their own receives nothing.
+///
+/// This is a WORLD-DEFAULT readability test and answers a DIFFERENT question
+/// from the per-caller whole-document `cap::READ` gate `combat::authorize`
+/// resolves (`resolve_access_world`, via `combat::combatant_access`). Neither
+/// implies the other, in either direction: a `default: none` combatant
+/// carrying `permissions.users[player] = Owner` is hidden here yet genuinely
+/// readable by that player, and a `default: observer` combatant carrying
+/// `permissions.users[player] = None` is not hidden here yet genuinely
+/// unreadable by them. Authorizing a caller from this predicate is therefore
+/// an authorization hole in one direction and a refusal of a legitimate owner
+/// in the other; authorization uses `combat::combatant_access` instead.
+///
+/// The world-default scope is what BOTH consumer classes here need, because
+/// neither asks about a particular caller:
+/// - the broadcast `Audience` of a message a transition posts (`resolve_event`,
+///   `roll`) — `Audience` names a whole-world tier, so the question is whether
+///   the entry is public at all, not whether some individual may read it;
+/// - `settle_turn`'s auto-resolve rule under `TurnControl::OwnerMayEnd` — one
+///   decision for the whole order walk, not a per-recipient one.
 pub(crate) fn is_hidden(c: &Combatant) -> bool {
     c.doc.permissions.default == DocRole::None
 }
