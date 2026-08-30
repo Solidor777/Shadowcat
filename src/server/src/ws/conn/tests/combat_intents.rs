@@ -797,3 +797,192 @@ async fn concurrent_combat_resource_writes_produce_a_clean_conflict_not_a_lost_u
     let engine: CombatantEngine = serde_json::from_value(combatant.engine.unwrap()).unwrap();
     assert_eq!(engine.resources["movement"].current, 1.0);
 }
+
+/// `CombatRewind` end to end through the WS handler — the only intent whose ops include an
+/// `Operation::Create` under `WriteOrigin::CombatTransition` (the server re-`Create`ing a
+/// combatant an earlier auto-resolution deleted). Also exercises the per-boundary history
+/// records: the walk crosses the event's own boundary, so a rewind can land on it.
+#[tokio::test]
+async fn gm_rewind_recreates_a_deleted_event_combatant_and_rebuilds_the_order() {
+    let h = combat_harness().await;
+    let wdoc = crate::data::document::tests::world_scoped_doc;
+    let event_id = Uuid::from_u128(0xCA10);
+
+    // A one-shot Event between the player's combatant and the hidden NPC: it resolves and
+    // deletes itself on the advance that reaches it.
+    let mut ev = wdoc(h.world_id, event_id, "combatant");
+    ev.parent_id = Some(h.combat);
+    ev.owner = Some(h.gm.user_id);
+    ev.name = Some("Lair action".to_string());
+    ev.permissions.default = DocRole::Observer;
+    ev.engine = Some(
+        serde_json::to_value(&CombatantEngine {
+            kind: CombatantKind::Event {
+                lifespan: Some(1),
+                message: None,
+            },
+            initiative: None,
+            tiebreak: 0.0,
+            resources: Default::default(),
+        })
+        .unwrap(),
+    );
+    h.room
+        .publish(
+            h.repo.as_ref(),
+            &h.gm,
+            vec![crate::data::command::Operation::Create { doc: ev }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+    let mut engine = h.combat_engine().await;
+    engine.order = vec![h.player_combatant, event_id, h.hidden_npc];
+    h.set_combat_engine(engine).await;
+
+    for (i, msg) in [
+        ClientMsg::CombatStart {
+            request_id: Uuid::from_u128(1),
+            combat_id: h.combat,
+        },
+        ClientMsg::CombatAdvance {
+            request_id: Uuid::from_u128(2),
+            combat_id: h.combat,
+        },
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        assert!(
+            handle_combat_intent(&h.room, h.repo.as_ref(), &h.gm, msg, 0, &h.rate)
+                .await
+                .is_none(),
+            "step {i} refused"
+        );
+    }
+    assert!(
+        h.repo.get_document(event_id).await.unwrap().is_none(),
+        "the advance resolved and deleted the one-shot event"
+    );
+
+    // Two rewinds: the first lands on the hidden NPC's own boundary, the second on the event's
+    // — the one captured while it was still alive, so restoring it re-`Create`s the document.
+    for i in 0..2u32 {
+        assert!(
+            handle_combat_intent(
+                &h.room,
+                h.repo.as_ref(),
+                &h.gm,
+                ClientMsg::CombatRewind {
+                    request_id: Uuid::from_u128(10 + u128::from(i)),
+                    combat_id: h.combat,
+                },
+                0,
+                &h.rate,
+            )
+            .await
+            .is_none(),
+            "rewind {i} refused"
+        );
+    }
+
+    let restored = h
+        .repo
+        .get_document(event_id)
+        .await
+        .unwrap()
+        .expect("the rewind re-Created the deleted event combatant");
+    assert_eq!(restored.doc_type, "combatant");
+    assert_eq!(restored.parent_id, Some(h.combat));
+    assert_eq!(restored.name.as_deref(), Some("Lair action"));
+    let e: CombatantEngine = serde_json::from_value(restored.engine.unwrap()).unwrap();
+    assert!(matches!(
+        e.kind,
+        CombatantKind::Event {
+            lifespan: Some(1),
+            ..
+        }
+    ));
+
+    let engine = h.combat_engine().await;
+    assert!(
+        engine.order.contains(&event_id),
+        "/engine/order was rebuilt so the re-Created event is reachable by a future walk"
+    );
+    assert_eq!(
+        engine.turn,
+        Some(event_id),
+        "the clock sits on the boundary the record described"
+    );
+}
+
+/// `CombatSort` end to end through the WS handler: GM-only, and it rewrites `/engine/order` from
+/// the combatants' current initiatives.
+#[tokio::test]
+async fn gm_sort_rewrites_the_order_from_current_initiatives_and_players_are_refused() {
+    let h = combat_harness().await;
+    // The hidden NPC out-rolls the player's combatant, so a correct sort must swap the pair.
+    for (id, initiative) in [(h.player_combatant, 3.0f64), (h.hidden_npc, 19.0f64)] {
+        let doc = h.repo.get_document(id).await.unwrap().unwrap();
+        h.room
+            .publish(
+                h.repo.as_ref(),
+                &h.gm,
+                vec![crate::data::command::Operation::Update {
+                    doc_id: id,
+                    changes: vec![crate::combat::ops::set_engine(
+                        &doc,
+                        "/engine/initiative",
+                        json!(initiative),
+                    )
+                    .unwrap()],
+                }],
+                0,
+                WriteOrigin::Client,
+            )
+            .await
+            .unwrap();
+    }
+
+    let refusal = handle_combat_intent(
+        &h.room,
+        h.repo.as_ref(),
+        &h.player,
+        ClientMsg::CombatSort {
+            request_id: Uuid::from_u128(1),
+            combat_id: h.combat,
+        },
+        0,
+        &h.rate,
+    )
+    .await;
+    assert!(
+        matches!(refusal, Some(ServerMsg::CombatError { .. })),
+        "CombatSort is GM-only"
+    );
+    assert_eq!(
+        h.combat_engine().await.order,
+        vec![h.player_combatant, h.hidden_npc],
+        "the refused player intent left the order untouched"
+    );
+
+    assert!(handle_combat_intent(
+        &h.room,
+        h.repo.as_ref(),
+        &h.gm,
+        ClientMsg::CombatSort {
+            request_id: Uuid::from_u128(2),
+            combat_id: h.combat,
+        },
+        0,
+        &h.rate,
+    )
+    .await
+    .is_none());
+    assert_eq!(
+        h.combat_engine().await.order,
+        vec![h.hidden_npc, h.player_combatant],
+        "sorted by initiative descending"
+    );
+}
