@@ -100,16 +100,21 @@ struct BudgetGate {
     per_cell: Option<f64>,
     /// Whether this combatant holds `CombatEngine.turn`.
     is_turn_owner: bool,
-    /// Whether the gate's REFUSALS and TRUNCATION apply to this caller at all. `false` when the
-    /// combatant is hidden (`permissions.default: none`) and the caller is neither its owner nor
-    /// a GM: such a caller cannot read that document, so a `MoveReject::NotYourTurn` refusal or a
-    /// budget truncation would disclose both the combatant's existence and its exact numeric
-    /// budget through move behaviour alone — reachable without owning the hidden combatant's own
-    /// token, since `SceneEcs::combatant_for_token`'s `actor_id` fallback matches ANY token
-    /// instanced from the same actor. Such a caller moves exactly as if the token named no
-    /// combatant. The resource decrement still records the spend: it writes only the hidden
-    /// combatant's own document, and `filter_command`'s `Operation::Update` arm drops the whole
-    /// op for any recipient lacking `cap::READ` on it, so no value reaches them.
+    /// Whether the gate's REFUSALS and TRUNCATION apply to this caller at all: exactly whether
+    /// the caller holds whole-document `cap::READ` on the combatant, resolved by
+    /// `SceneEcs::combatant_for_token` through the SAME `effective_owner_via` +
+    /// `resolve_access_world` pair `filter_command` uses at document egress — so a
+    /// `permissions.users` grant or per-user override moves this flag exactly as it moves what
+    /// the caller receives on the wire.
+    ///
+    /// `false` means the caller cannot read that document, so a `MoveReject::NotYourTurn`
+    /// refusal or a budget truncation would disclose both the combatant's existence and its
+    /// exact numeric budget through move behaviour alone — reachable without owning the hidden
+    /// combatant's own token, since `SceneEcs::combatant_for_token`'s `actor_id` fallback
+    /// matches ANY token instanced from the same actor. Such a caller moves exactly as if the
+    /// token named no combatant. The resource decrement still records the spend: it writes only
+    /// that combatant's own document, and `filter_command`'s `Operation::Update` arm drops the
+    /// whole op for any recipient lacking `cap::READ` on it, so no value reaches them.
     enforced: bool,
     /// `CombatEngine.movement.interpretation`.
     interpretation: eng::Interpretation,
@@ -722,13 +727,15 @@ impl Room {
     /// # Lock ordering (load-bearing — do NOT reorder)
     ///
     /// 1. Acquire `self.publish_guard` (held for the full body below).
-    /// 2. Take `self.scene.read()` inside the guard to resolve restriction/cell/visible_cells/
+    /// 2. Await `repo.world_cap_defaults(...)` — an input to the budget gate's `cap::READ`
+    ///    resolution, which runs under the read guard taken next and so cannot await for it.
+    /// 3. Take `self.scene.read()` inside the guard to resolve restriction/cell/visible_cells/
     ///    start AND the combat movement-budget gate (`SceneEcs::active_combat_for_scene` +
     ///    `SceneEcs::combatant_for_token`), all under the same read.
-    /// 3. DROP the read guard before any await (no lock across await — mirrors `publish`).
-    /// 4. Await `repo.get_explored(...)` for Revealed union (only after the read guard is dropped).
-    /// 5. Call the pure `move_exec::execute_move` (lock-free).
-    /// 6. Call `commit_ops_locked` — non-reentrant Mutex, guard already held, MUST NOT re-acquire.
+    /// 4. DROP the read guard before any await (no lock across await — mirrors `publish`).
+    /// 5. Await `repo.get_explored(...)` for Revealed union (only after the read guard is dropped).
+    /// 6. Call the pure `move_exec::execute_move` (lock-free).
+    /// 7. Call `commit_ops_locked` — non-reentrant Mutex, guard already held, MUST NOT re-acquire.
     ///    Single acquisition per logical write ensures broadcast order equals seq order.
     ///
     /// # Revealed-union contract
@@ -783,6 +790,16 @@ impl Room {
                 }
             }
         }
+
+        // --- World capability defaults, resolved before the scene read guard ---
+        // An input to the combat gate's whole-document `cap::READ` resolution
+        // (`SceneEcs::combatant_for_token` → `ctx_access` → `resolve_access_world`), which runs
+        // UNDER that guard — and a scene read guard is never held across an await, so the
+        // settings read has to happen ahead of it. Fetched unconditionally rather than only when
+        // a combat turns out to be running: whether one is is itself only knowable under the
+        // guard. Propagates its error rather than defaulting: an unresolvable authority input
+        // fails closed (the move is refused) instead of being guessed at.
+        let world_defaults = repo.world_cap_defaults(self.world_id).await?;
 
         // --- Resolve gate inputs under the ECS read lock ---
         // restriction, cell, visible, and the derived footprint are all resolved while holding
@@ -862,19 +879,18 @@ impl Room {
                 .active_combat_for_scene(token_scene)
                 .and_then(|(combat_id, ce)| {
                     let resource = ce.movement.resource.clone()?;
-                    let (combatant_id, c, hidden, owner) =
-                        scene.combatant_for_token(combat_id, token)?;
+                    let (combatant_id, c, access) =
+                        scene.combatant_for_token(combat_id, token, ctx, &world_defaults)?;
                     Some(BudgetGate {
                         combatant_id,
                         entry: c.resources.get(&resource).copied(),
                         resource,
                         per_cell: scene.scene_per_cell(token_scene),
                         is_turn_owner: ce.turn == Some(combatant_id),
-                        // See `BudgetGate::enforced`. Whole-document readability of the
-                        // combatant is the SAME test `combat::transition::is_hidden` applies —
-                        // `permissions.default: none` plus owner/GM — never a second, separately
-                        // derived notion of hidden.
-                        enforced: !hidden || is_gm || owner == Some(ctx.user_id),
+                        // See `BudgetGate::enforced`: whole-document `cap::READ` on the
+                        // combatant, resolved by the shared authority rather than re-derived
+                        // from any single permission field.
+                        enforced: access.has(crate::data::permission::cap::READ),
                         interpretation: ce.movement.interpretation,
                         enforcement: ce.movement.enforcement,
                     })

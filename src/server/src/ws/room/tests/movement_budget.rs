@@ -70,46 +70,60 @@ impl BudgetHandle {
             .unwrap();
     }
 
-    /// The player's combatant's current `movement` resource value, read off the live ECS
-    /// through the same `SceneEcs` seam `Room::execute_move`'s gate uses.
-    async fn resource_current(&self) -> f64 {
+    /// `token`'s combatant's current `movement` resource value, read off the live ECS through
+    /// the same `SceneEcs` seam `Room::execute_move`'s gate uses. Read as the GM, whose
+    /// `cap::READ` on every combatant is unconditional — this is a test observation of stored
+    /// state, never a readability assertion.
+    async fn resource_for(&self, token: Uuid) -> f64 {
+        let world_defaults = self
+            .repo
+            .world_cap_defaults(self.world_id)
+            .await
+            .expect("world capability defaults");
         let scene = self.room.scene().read().await;
         let (combat_id, _) = scene
             .active_combat_for_scene(self.scene_id)
             .expect("active combat");
-        let (_, ce, _, _) = scene
-            .combatant_for_token(combat_id, self.token_id)
-            .expect("player combatant");
+        let (_, ce, _) = scene
+            .combatant_for_token(combat_id, token, &self.gm, &world_defaults)
+            .expect("combatant for token");
         ce.resources["movement"].current
+    }
+
+    /// The player's combatant's current `movement` resource value.
+    async fn resource_current(&self) -> f64 {
+        self.resource_for(self.token_id).await
     }
 
     /// The GM combatant's current `movement` resource value.
     async fn gm_resource_current(&self) -> f64 {
-        let scene = self.room.scene().read().await;
-        let (combat_id, _) = scene
-            .active_combat_for_scene(self.scene_id)
-            .expect("active combat");
-        let (_, ce, _, _) = scene
-            .combatant_for_token(combat_id, self.gm_token)
-            .expect("gm combatant");
-        ce.resources["movement"].current
+        self.resource_for(self.gm_token).await
     }
 
-    /// Turns the player's combatant into one the player has NO relationship to and cannot read:
-    /// `permissions.default: none`, no per-user grant, no `owner`. The player still owns the
-    /// TOKEN, so they can still ask to move it — the exact reachability the hidden-combatant
-    /// secrecy rule covers, and the shape `SceneEcs::combatant_for_token`'s `actor_id` fallback
-    /// also produces for any token instanced from the same actor.
-    async fn hide_player_combatant(&self) {
+    /// Severs every relationship the player has to their combatant DOCUMENT except the one
+    /// `default`/`users` pair under test: `owner` is cleared, `permissions.default` is set to
+    /// `default`, and `permissions.users` carries an entry for the player only when
+    /// `user_entry` is `Some`. The player still owns the TOKEN, so they can still ask to move
+    /// it — the exact reachability the hidden-combatant secrecy rule covers, and the shape
+    /// `SceneEcs::combatant_for_token`'s `actor_id` fallback also produces for any token
+    /// instanced from the same actor.
+    async fn set_player_combatant_access(
+        &self,
+        default: crate::data::document::DocRole,
+        user_entry: Option<crate::data::document::DocRole>,
+    ) {
         let doc = self
             .repo
             .get_document(self.combatant_id)
             .await
             .unwrap()
             .expect("player combatant");
-        let mut hidden = doc.permissions.clone();
-        hidden.default = crate::data::document::DocRole::None;
-        hidden.users.clear();
+        let mut perms = doc.permissions.clone();
+        perms.default = default;
+        perms.users.clear();
+        if let Some(role) = user_entry {
+            perms.users.insert(self.player.user_id, role);
+        }
         self.room
             .publish(
                 &self.repo,
@@ -121,7 +135,7 @@ impl BudgetHandle {
                             remove: false,
                             path: "/permissions".into(),
                             old: serde_json::to_value(&doc.permissions).unwrap(),
-                            new: serde_json::to_value(&hidden).unwrap(),
+                            new: serde_json::to_value(&perms).unwrap(),
                         },
                         FieldChange {
                             remove: false,
@@ -136,6 +150,12 @@ impl BudgetHandle {
             )
             .await
             .unwrap();
+    }
+
+    /// The combatant reads as unreadable to the player by `permissions.default` alone.
+    async fn hide_player_combatant(&self) {
+        self.set_player_combatant_access(crate::data::document::DocRole::None, None)
+            .await;
     }
 
     /// Removes the player's combatant's `movement` resource entry entirely
@@ -627,6 +647,109 @@ async fn a_hidden_combatant_neither_refuses_nor_truncates_a_mover_who_cannot_rea
     // The spend is still recorded on the hidden combatant's own document — `filter_command`
     // drops that whole Update for any recipient without READ on it, so recording it leaks
     // nothing while keeping the budget honest for the GM who can see it.
+    assert_eq!(
+        h.resource_current().await,
+        0.0,
+        "decrement still applied, floored at zero"
+    );
+}
+
+/// `BudgetGate::enforced` is whole-document `cap::READ`, not a `permissions.default` test, so a
+/// per-user entry decides it in BOTH directions. A `default: none` combatant the mover holds an
+/// explicit `users` grant on IS readable to them, so every gate protection applies — reading it
+/// as unenforced would be an enforcement hole. Asserted against the same configuration
+/// `not_the_turn_owner_is_rejected_under_hard_only` uses, so the difference under test is the
+/// per-user grant and nothing else.
+#[tokio::test]
+async fn a_per_user_read_grant_on_a_default_hidden_combatant_still_enforces_the_gate() {
+    use crate::data::document::DocRole;
+
+    let h = budget_scene("hard", "spaces", None).await;
+    h.set_player_combatant_access(DocRole::None, Some(DocRole::Observer))
+        .await;
+    h.set_turn(h.other_combatant).await;
+    assert!(
+        matches!(
+            h.room
+                .execute_move(
+                    &h.repo,
+                    &h.player,
+                    crate::ws::room::MoveRequestInputs {
+                        scene_id: h.scene_id,
+                        token: h.token_id,
+                        path: vec![h.start, h.adj],
+                        ts: now_millis(),
+                        request_id: Uuid::nil(),
+                    },
+                )
+                .await,
+            Err(DataError::Forbidden)
+        ),
+        "a mover who can read the combatant is bound by its turn-owner rule, whatever \
+         `permissions.default` says"
+    );
+    assert_eq!(
+        h.committed_pos(h.token_id).await,
+        h.start,
+        "the token must not have moved"
+    );
+}
+
+/// The other direction of the same rule: a `default: observer` combatant carrying a per-user
+/// `none` override for THIS mover is unreadable to them, so neither the turn-owner refusal nor
+/// the truncation may apply — either would disclose the combatant's existence or its exact
+/// numeric budget to someone who never receives that document at egress. Same shape as
+/// `a_hidden_combatant_neither_refuses_nor_truncates_a_mover_who_cannot_read_it`, reached
+/// through the per-user override instead of the default.
+#[tokio::test]
+async fn a_per_user_override_makes_an_otherwise_readable_combatant_unenforced() {
+    use crate::data::document::DocRole;
+
+    let h = budget_scene("hard", "spaces", None).await;
+    h.set_player_combatant_access(DocRole::Observer, Some(DocRole::None))
+        .await;
+    h.set_turn(h.other_combatant).await;
+    assert!(
+        h.room
+            .execute_move(
+                &h.repo,
+                &h.player,
+                crate::ws::room::MoveRequestInputs {
+                    scene_id: h.scene_id,
+                    token: h.token_id,
+                    path: vec![h.start, h.adj],
+                    ts: now_millis(),
+                    request_id: Uuid::nil(),
+                },
+            )
+            .await
+            .is_ok(),
+        "a refusal here would disclose a combatant this mover cannot read"
+    );
+
+    let h = budget_scene("hard", "spaces", None).await;
+    h.set_player_combatant_access(DocRole::Observer, Some(DocRole::None))
+        .await;
+    let res = h
+        .room
+        .execute_move(
+            &h.repo,
+            &h.player,
+            crate::ws::room::MoveRequestInputs {
+                scene_id: h.scene_id,
+                token: h.token_id,
+                path: h.long_path.clone(),
+                ts: now_millis(),
+                request_id: Uuid::nil(),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        res.stop,
+        *h.long_path.last().unwrap(),
+        "truncation would disclose the budget of a combatant this mover cannot read"
+    );
     assert_eq!(
         h.resource_current().await,
         0.0,

@@ -2130,17 +2130,21 @@ impl SceneEcs {
     /// `CombatantKind::Actor.token_id == Some(token)` first, else `actor_id` against the
     /// token's own resolved actor id (`TokenEngine.actor_id` for a LINKED token, else the id of
     /// its embedded actor copy for an INSTANCED token — the same join `token_geometry_source`
-    /// performs). Returns `(combatant_id, engine, hidden, owner)`: `hidden` is
-    /// `permissions.default == DocRole::None` (a combatant's hidden state is whole-document
-    /// unreadability, never an engine field); `owner` is `Document.owner`. `None` means the
-    /// token names no combatant in this combat — the caller must treat that as "moves freely",
-    /// not a refusal (a token need not be in the fight to move on a scene where a fight is
-    /// happening).
+    /// performs). Returns `(combatant_id, engine, access)`, where `access` is `ctx`'s resolved
+    /// `Access` on that combatant document — the SAME `effective_owner_via` +
+    /// `resolve_access_world` pair every other whole-document READ decision uses (`ctx_access`),
+    /// never a hand-rolled readability predicate: a combatant's hidden state is whole-document
+    /// unreadability, so `permissions.users` grants and overrides decide it exactly as they do
+    /// at document egress. `None` means the token names no combatant in this combat — the caller
+    /// must treat that as "moves freely", not a refusal (a token need not be in the fight to
+    /// move on a scene where a fight is happening).
     pub fn combatant_for_token(
         &self,
         combat: Uuid,
         token: Uuid,
-    ) -> Option<(Uuid, eng::CombatantEngine, bool, Option<Uuid>)> {
+        ctx: &PermissionContext,
+        world_defaults: &crate::data::document::WorldCapDefaults,
+    ) -> Option<(Uuid, eng::CombatantEngine, crate::data::permission::Access)> {
         let resolved_actor = self
             .index
             .get(&token)
@@ -2158,7 +2162,8 @@ impl SceneEcs {
 
         // `token_id` matches take precedence over `actor_id` matches (a combatant explicitly
         // bound to this token wins over one merely sharing its resolved actor).
-        let mut by_actor: Option<(Uuid, eng::CombatantEngine, bool, Option<Uuid>)> = None;
+        let mut by_actor: Option<(Uuid, eng::CombatantEngine, crate::data::permission::Access)> =
+            None;
         for e in self.world.query::<&SceneEntity>().iter() {
             if e.doc.doc_type != "combatant" || e.doc.parent_id != Some(combat) {
                 continue;
@@ -2169,12 +2174,13 @@ impl SceneEcs {
             let eng::CombatantKind::Actor { token_id, actor_id } = &ce.kind else {
                 continue;
             };
-            let hidden = e.doc.permissions.default == crate::data::document::DocRole::None;
             if *token_id == Some(token) {
-                return Some((e.doc.id, ce, hidden, e.doc.owner));
+                let access = self.ctx_access(ctx, world_defaults, &e.doc);
+                return Some((e.doc.id, ce, access));
             }
             if by_actor.is_none() && resolved_actor.is_some() && *actor_id == resolved_actor {
-                by_actor = Some((e.doc.id, ce, hidden, e.doc.owner));
+                let access = self.ctx_access(ctx, world_defaults, &e.doc);
+                by_actor = Some((e.doc.id, ce, access));
             }
         }
         by_actor
