@@ -89,16 +89,50 @@ impl Harness {
             .unwrap();
     }
 
-    /// The player's combatant's current `movement` resource value.
-    async fn player_movement(&self) -> f64 {
+    /// Rewrites the player's own combatant's `/owner`, leaving `permissions` untouched — the
+    /// mirror of `set_player_combatant_access`, for the cases that must vary the OWNERSHIP half
+    /// of `combat::authorize`'s check while readability and write capability stay constant.
+    async fn set_player_combatant_owner(&self, owner: Uuid) {
+        let doc = self
+            .repo
+            .get_document(self.player_combatant)
+            .await
+            .unwrap()
+            .expect("player combatant");
+        self.room
+            .publish(
+                self.repo.as_ref(),
+                &self.gm,
+                vec![crate::data::command::Operation::Update {
+                    doc_id: self.player_combatant,
+                    changes: vec![crate::data::command::FieldChange {
+                        remove: false,
+                        path: "/owner".into(),
+                        old: serde_json::to_value(doc.owner).unwrap(),
+                        new: serde_json::to_value(Some(owner)).unwrap(),
+                    }],
+                }],
+                0,
+                WriteOrigin::Client,
+            )
+            .await
+            .unwrap();
+    }
+
+    /// The player's combatant's current parsed engine.
+    async fn player_combatant_engine(&self) -> CombatantEngine {
         let doc = self
             .repo
             .get_document(self.player_combatant)
             .await
             .unwrap()
             .unwrap();
-        let e: CombatantEngine = serde_json::from_value(doc.engine.unwrap()).unwrap();
-        e.resources["movement"].current
+        serde_json::from_value(doc.engine.unwrap()).unwrap()
+    }
+
+    /// The player's combatant's current `movement` resource value.
+    async fn player_movement(&self) -> f64 {
+        self.player_combatant_engine().await.resources["movement"].current
     }
 
     /// Overwrites the combat document's whole `/engine` band with `engine`, via an ordinary
@@ -1186,5 +1220,159 @@ async fn a_per_user_grant_admits_the_owner_of_a_default_hidden_combatant() {
         .await
         .is_none(),
         "the owner of a readable combatant may end its own turn"
+    );
+}
+
+/// Ownership is NOT a proxy for write capability on a combatant: `effective_role`'s ownership
+/// floor is scoped to `TOKEN_DOC_TYPE`, so a combatant's `owner` with no `permissions.users`
+/// entry resolves through `permissions.default` alone. At `DocRole::Observer` that yields
+/// `cap::READ` WITHOUT `cap::WRITE_FIELDS` — readable, not writable — and the two intents that
+/// write the combatant's own `engine` band (`CombatResource` via `transition::resource`,
+/// `CombatRoll` via `transition::roll`) must refuse them, because
+/// `WriteOrigin::CombatTransition` waives `apply_intent`'s own capability check and leaves
+/// `combat::authorize` as the only gate.
+///
+/// `CombatAdvance` is the discriminator in the same permission shape: it authors no content on
+/// the combatant (the writes `transition::advance` produces are server-computed clock
+/// consequences — see `CombatantAct::EndsTurn`), so "owns the current turn" stays a pure
+/// ownership-plus-readability rule and must still be ADMITTED. A fix that demanded write
+/// capability uniformly would refuse it and silently substitute `settle_turn`'s auto-resolve for
+/// a turn its owner may take.
+#[tokio::test]
+async fn a_combatant_owner_without_write_capability_may_end_its_turn_but_not_write_it() {
+    let h = combat_harness().await;
+    // Owner throughout, readable throughout, and no `users` entry — so the ONLY thing varying
+    // from `a_per_user_grant_admits_the_owner_of_a_default_hidden_combatant` is that the
+    // resolved `DocRole` is `Observer` (READ) instead of `Owner` (READ + WRITE_FIELDS).
+    h.set_player_combatant_access(DocRole::Observer, None).await;
+    let before = h.player_movement().await;
+
+    for msg in [
+        ClientMsg::CombatResource {
+            request_id: Uuid::from_u128(1),
+            combat_id: h.combat,
+            combatant_id: h.player_combatant,
+            resource: "movement".into(),
+            op: ResourceOp::Set { value: 1.0 },
+        },
+        ClientMsg::CombatRoll {
+            request_id: Uuid::from_u128(2),
+            combat_id: h.combat,
+            channel: "table".into(),
+            rolls: vec![CombatRollEntry {
+                combatant_id: h.player_combatant,
+                notation: "1d20".into(),
+            }],
+        },
+    ] {
+        assert!(
+            matches!(
+                handle_combat_intent(&h.room, h.repo.as_ref(), &h.player, msg, 0, &h.rate).await,
+                Some(ServerMsg::CombatError { .. })
+            ),
+            "an owner holding READ but not the capability the write requires must be refused"
+        );
+    }
+    assert_eq!(
+        h.player_movement().await,
+        before,
+        "no refused intent committed a write"
+    );
+    assert_eq!(
+        h.player_combatant_engine().await.initiative,
+        None,
+        "the refused roll wrote no initiative"
+    );
+
+    // Same document, same permissions, the one intent that writes nothing on it.
+    let mut running = h.combat_engine().await;
+    running.active = true;
+    running.round = 1;
+    running.turn = Some(h.player_combatant);
+    running.turn_control = TurnControl::OwnerMayEnd;
+    h.set_combat_engine(running).await;
+    assert!(
+        handle_combat_intent(
+            &h.room,
+            h.repo.as_ref(),
+            &h.player,
+            ClientMsg::CombatAdvance {
+                request_id: Uuid::from_u128(3),
+                combat_id: h.combat,
+            },
+            0,
+            &h.rate,
+        )
+        .await
+        .is_none(),
+        "ending your own turn needs ownership and readability, never write capability"
+    );
+    // `hidden_npc` is hidden and `turn_control` is `OwnerMayEnd`, so `settle_turn` auto-resolves
+    // it and walks on, wrapping the order back to the player's own combatant a round later.
+    let after = h.combat_engine().await;
+    assert_eq!(
+        (after.round, after.turn),
+        (2, Some(h.player_combatant)),
+        "the admitted advance actually moved the clock"
+    );
+}
+
+/// The capability is demanded ALONGSIDE ownership, never instead of it: a caller holding
+/// `permissions.users[player] = Owner` (hence `cap::READ` and `cap::WRITE_FIELDS`) on a
+/// combatant whose `/owner` is someone else is still refused every combatant-gated intent. A
+/// combat intent is an act BY a combatant's owner — such a caller may write that document
+/// through an ordinary `Intent`, but may not drive the clock with it.
+#[tokio::test]
+async fn write_capability_without_ownership_does_not_admit_a_combat_intent() {
+    let h = combat_harness().await;
+    h.set_player_combatant_owner(h.gm.user_id).await;
+    let before = h.player_movement().await;
+
+    let mut running = h.combat_engine().await;
+    running.active = true;
+    running.round = 1;
+    running.turn = Some(h.player_combatant);
+    running.turn_control = TurnControl::OwnerMayEnd;
+    h.set_combat_engine(running).await;
+
+    for msg in [
+        ClientMsg::CombatResource {
+            request_id: Uuid::from_u128(1),
+            combat_id: h.combat,
+            combatant_id: h.player_combatant,
+            resource: "movement".into(),
+            op: ResourceOp::Set { value: 1.0 },
+        },
+        ClientMsg::CombatRoll {
+            request_id: Uuid::from_u128(2),
+            combat_id: h.combat,
+            channel: "table".into(),
+            rolls: vec![CombatRollEntry {
+                combatant_id: h.player_combatant,
+                notation: "1d20".into(),
+            }],
+        },
+        ClientMsg::CombatAdvance {
+            request_id: Uuid::from_u128(3),
+            combat_id: h.combat,
+        },
+    ] {
+        assert!(
+            matches!(
+                handle_combat_intent(&h.room, h.repo.as_ref(), &h.player, msg, 0, &h.rate).await,
+                Some(ServerMsg::CombatError { .. })
+            ),
+            "holding the write capability on someone else's combatant admits no combat intent"
+        );
+    }
+    assert_eq!(
+        h.player_movement().await,
+        before,
+        "no refused intent committed a write"
+    );
+    assert_eq!(
+        h.combat_engine().await.turn,
+        Some(h.player_combatant),
+        "the refused advance left the clock where it was"
     );
 }

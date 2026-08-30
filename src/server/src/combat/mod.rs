@@ -14,7 +14,9 @@ use crate::data::command::Operation;
 use crate::data::document::{WorldCapDefaults, WorldRole};
 use crate::data::engine::combat::TurnControl;
 use crate::data::membership::PermissionContext;
-use crate::data::permission::{cap, effective_owner, resolve_access_world, Access};
+use crate::data::permission::{
+    cap, effective_owner, required_cap_for_path, resolve_access_world, Access,
+};
 use crate::data::repository::Repository;
 use crate::ws::protocol::{ClientMsg, ResourceOp as WireResourceOp, ServerMsg};
 use crate::ws::room::Room;
@@ -198,9 +200,11 @@ async fn run_intent(
 /// `token`-only), so the no-join `effective_owner(doc, None)` resolution is
 /// exact — the same reasoning `scene_ping_permitted` states for a scene doc.
 ///
-/// Returns the whole `Access` because `authorize` asks TWO questions of it —
-/// whole-document `cap::READ` and effective ownership — and resolving those
-/// from two different rules is how the two answers drift apart.
+/// Returns the whole `Access` because `authorize` asks THREE questions of it —
+/// whole-document `cap::READ`, effective ownership, and (for the intents that
+/// author content on the combatant — `CombatantAct::WritesEngine`) the write
+/// capability `required_cap_for_path` maps that write to — and resolving those
+/// from different rules is how the answers drift apart.
 fn combatant_access(
     c: &Combatant,
     ctx: &PermissionContext,
@@ -215,9 +219,39 @@ fn combatant_access(
     )
 }
 
-/// Whether `ctx` may act on combatant `c` as its owner: it holds whole-document
-/// `cap::READ` on that combatant AND is its effective owner, both read off ONE
-/// `combatant_access` resolution.
+/// The band root every combat transition's combatant write lands under:
+/// `transition::roll` writes `/engine/initiative` and `transition::resource`
+/// writes `/engine/resources/<key>/current`. `writes_a_content_band` classifies
+/// a write path by its BAND, so every path under this root resolves to the same
+/// capability and the root is an exact stand-in for either of them.
+const COMBATANT_WRITE_BAND: &str = "/engine";
+
+/// What a combat intent does to the combatant document it names, and therefore
+/// which capabilities `owns_combatant` demands on it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CombatantAct {
+    /// The intent authors no content on the named combatant. `CombatAdvance`
+    /// ends the turn its caller holds; the combatant writes `transition::
+    /// advance` does produce — `run_boundary`'s `recover` amounts, effect
+    /// ticks, an `Event`'s `lifespan` decrement — are server-COMPUTED
+    /// consequences of the clock moving, and they land on whichever combatants
+    /// the boundary sweep touches, not on one the caller named or supplied a
+    /// value for. Authorization is therefore the turn-ownership gameplay rule
+    /// (who may end THIS turn) alone: no per-document write capability of the
+    /// caller's could gate those writes coherently, since they reach
+    /// combatants the caller has no relationship with at all.
+    EndsTurn,
+    /// The intent writes the named combatant's `engine` band: `CombatRoll`
+    /// through `transition::roll`, `CombatResource` through
+    /// `transition::resource`.
+    WritesEngine,
+}
+
+/// Whether `ctx` may act on combatant `c` as its owner for `act`: it holds
+/// whole-document `cap::READ` on that combatant, is its effective owner, and —
+/// under `CombatantAct::WritesEngine` — additionally holds the capability
+/// writing `COMBATANT_WRITE_BAND` requires, all read off ONE `combatant_access`
+/// resolution.
 ///
 /// The `cap::READ` half is the real read authority, not a
 /// `permissions.default` test, so a `permissions.users` entry moves it in BOTH
@@ -228,13 +262,35 @@ fn combatant_access(
 /// hole — these writes commit under `WriteOrigin::CombatTransition`, which
 /// waives `apply_intent`'s own ownership check, making `authorize` the sole
 /// gate).
-fn owns_and_reads(
+///
+/// The write half exists because ownership is NOT a proxy for write capability
+/// on a combatant: `effective_role`'s ownership floor is scoped to
+/// `TOKEN_DOC_TYPE`, so a combatant's owner is floored at nothing and can hold
+/// `DocRole::Observer` (`cap::READ` without `cap::WRITE_FIELDS`). The required
+/// capability is READ FROM `required_cap_for_path` — the single statement of
+/// the path-to-capability rule, and the very check
+/// `WriteOrigin::CombatTransition` waives inside `apply_intent` — rather than
+/// restated here, so the two cannot answer differently. An unmappable path
+/// (`None`) refuses, matching `apply_intent`'s own treatment of one.
+///
+/// Ownership stays a hard requirement alongside the capability, never an
+/// alternative to it: a combat intent is an act BY a combatant's owner, so a
+/// non-owner holding `cap::WRITE_FIELDS` may write that document through an
+/// ordinary `Intent` but may not drive the clock with it.
+fn owns_combatant(
     c: &Combatant,
     ctx: &PermissionContext,
     world_defaults: &WorldCapDefaults,
+    act: CombatantAct,
 ) -> bool {
     let access = combatant_access(c, ctx, world_defaults);
-    access.is_owner && access.has(cap::READ)
+    let may_write = match act {
+        CombatantAct::EndsTurn => true,
+        CombatantAct::WritesEngine => {
+            required_cap_for_path(COMBATANT_WRITE_BAND).is_some_and(|need| access.has(need))
+        }
+    };
+    access.is_owner && access.has(cap::READ) && may_write
 }
 
 /// Non-GM authorization scope for a combat intent; a GM may always act.
@@ -244,13 +300,18 @@ fn owns_and_reads(
 /// (`CombatStart`/`CombatPause`/`CombatEnd`/`CombatRewind`/`CombatSort`) is
 /// GM-only and consults no combatant at all.
 ///
-/// "Owner" here is `owns_and_reads`: effective ownership AND whole-document
+/// "Owner" here is `owns_combatant`: effective ownership AND whole-document
 /// `cap::READ`, both resolved through the shared `resolve_access_world`
-/// authority. This is the ONLY authorization these writes get — they commit
-/// under `WriteOrigin::CombatTransition`, which waives `apply_intent`'s own
-/// per-op ownership check — so a readability predicate that diverged from the
-/// real `cap::READ` gate would be an authorization hole in one direction and a
-/// refusal of a legitimate owner in the other.
+/// authority. `CombatRoll`/`CombatResource` pass `CombatantAct::WritesEngine`
+/// and therefore additionally demand the capability writing the combatant's
+/// `engine` band requires; `CombatAdvance` passes `CombatantAct::EndsTurn` and
+/// demands no write capability, because its combatant writes are server-
+/// computed clock consequences rather than caller-authored content (see that
+/// variant's own doc). This is the ONLY authorization these writes get — they
+/// commit under `WriteOrigin::CombatTransition`, which waives `apply_intent`'s
+/// own per-op ownership AND capability checks — so a predicate that diverged
+/// from those shared authorities would be an authorization hole in one
+/// direction and a refusal of a legitimate owner in the other.
 ///
 /// INVARIANT: every refusal here is `CombatError::Forbidden` or
 /// `CombatError::NotFound`, which render IDENTICALLY via `CombatError`'s
@@ -274,7 +335,7 @@ fn authorize(
                 .turn
                 .and_then(|id| snap.combatants.iter().find(|c| c.doc.id == id));
             match current {
-                Some(c) if owns_and_reads(c, ctx, world_defaults) => Ok(()),
+                Some(c) if owns_combatant(c, ctx, world_defaults, CombatantAct::EndsTurn) => Ok(()),
                 _ => Err(CombatError::Forbidden),
             }
         }
@@ -293,7 +354,7 @@ fn authorize(
                     .iter()
                     .find(|c| c.doc.id == entry.combatant_id)
                     .ok_or(CombatError::NotFound)?;
-                if !owns_and_reads(c, ctx, world_defaults) {
+                if !owns_combatant(c, ctx, world_defaults, CombatantAct::WritesEngine) {
                     return Err(CombatError::Forbidden);
                 }
             }
@@ -305,7 +366,7 @@ fn authorize(
                 .iter()
                 .find(|c| c.doc.id == *combatant_id)
                 .ok_or(CombatError::NotFound)?;
-            if owns_and_reads(c, ctx, world_defaults) {
+            if owns_combatant(c, ctx, world_defaults, CombatantAct::WritesEngine) {
                 Ok(())
             } else {
                 Err(CombatError::Forbidden)
