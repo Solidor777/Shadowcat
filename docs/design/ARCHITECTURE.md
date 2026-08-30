@@ -116,10 +116,12 @@ Each item is *designed for* now (the seam exists) and *built* only when its trig
   (`combat::handle_combat_intent`) and committed as a single command tagged
   `WriteOrigin::CombatTransition` — a tag the wire protocol has no way to construct, so a client
   can never forge a combat-clock write by hand-authoring a document `Update`. The per-turn
-  movement-budget gate this gives the move executor is committed as a *separate* command from the
-  token's position write, under a *different* origin (`WriteOrigin::Client`), specifically so that
-  `CombatTransition`'s relaxed ownership check on the budget decrement can never be reused to
-  authorize a move against a token the caller does not own.
+  movement-budget gate this gives the move executor commits in two separate commands: the token's
+  position write always commits under `WriteOrigin::Client` (the ordinary ownership check always
+  runs), and the combatant's resource decrement commits as a separate command under
+  `WriteOrigin::CombatTransition`, specifically so that `CombatTransition`'s relaxed capability
+  check on the budget decrement can never be reused to authorize a move against a token the caller
+  does not own.
 
 ## 7. Rendering provenance
 
