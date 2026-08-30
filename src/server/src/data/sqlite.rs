@@ -2930,8 +2930,52 @@ impl Repository for SqliteRepository {
                     Self::delete_document_tx(&mut tx, doc.id).await?;
                     normalized_ops.push(op.clone());
                 }
-                Operation::Move { .. } => {
-                    return Err(DataError::OpFailed("unsupported operation: move".into()));
+                Operation::Move {
+                    doc_id, parent_id, ..
+                } => {
+                    let cur = Self::load_document(&mut *tx, *doc_id)
+                        .await?
+                        .ok_or_else(|| DataError::Conflict(format!("document {doc_id} missing")))?;
+                    check_command_scope(&cur, sequenced.world_id)?;
+                    // Batch-start snapshot capture, in lockstep with the
+                    // Update arm's below.
+                    if !pre_permissions.contains_key(doc_id) {
+                        pre_permissions.insert(*doc_id, cur.permissions.clone());
+                        let pre_owner = Self::load_effective_owner(&mut *tx, &cur).await?;
+                        pre_owners.insert(*doc_id, pre_owner);
+                    }
+                    if cur.parent_id == *parent_id {
+                        // No-op: carried in the log for invertibility;
+                        // nothing written, nothing bumped, no hooks run.
+                        post_images.insert(*doc_id, cur);
+                        normalized_ops.push(op.clone());
+                    } else {
+                        // Trusted substrate: no capability/OCC gate, but the
+                        // structural placement rules are data integrity and
+                        // trust does not exempt them (same rationale as
+                        // `validate_property_overrides` running here). Earlier
+                        // ops in this command are already applied, so the
+                        // batch bookkeeping maps are empty by construction.
+                        let mut doc = cur;
+                        doc.parent_id = *parent_id;
+                        validation::validate_containment(&doc)?;
+                        Self::check_parent_placement(
+                            &mut tx,
+                            &doc,
+                            &Default::default(),
+                            &Default::default(),
+                        )
+                        .await?;
+                        Self::check_move_acyclic(&mut tx, *doc_id, *parent_id, &Default::default())
+                            .await?;
+                        doc.updated_at = sequenced.ts;
+                        Self::upsert_document(&mut tx, &doc, seq).await?;
+                        if doc.doc_type == crate::data::engine::ASSET_FOLDER_DOC_TYPE {
+                            Self::refresh_derived_tags_for_folder_subtree(&mut tx, doc.id).await?;
+                        }
+                        post_images.insert(*doc_id, doc);
+                        normalized_ops.push(op.clone());
+                    }
                 }
                 Operation::Update { doc_id, changes } => {
                     let row = sqlx::query("SELECT json FROM documents WHERE id = ?")
