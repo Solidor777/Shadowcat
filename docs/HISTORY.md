@@ -1724,7 +1724,13 @@ decision document egress makes (`SceneEcs::combatant_for_token` returns the `Acc
 `SceneEcs::ctx_access` resolves through `effective_owner_via` + `resolve_access_world`), never a
 predicate re-derived from `permissions.default` alone: a per-user `permissions.users` grant on an
 otherwise-hidden combatant makes the gate apply, and a per-user override on an otherwise-readable
-one makes it stand down, each exactly as it moves what that mover receives on the wire. The gate
+one makes it stand down, each moving in lockstep with what that mover receives on the wire. That
+lockstep is scoped to PER-DOCUMENT permissions; the world-capability-default half is deliberately
+not, since `Room::execute_move` reads `world_cap_defaults` fresh per move while WS egress reads it
+once per connection (a defaults change takes effect on the next reconnect). World defaults being
+additive only, the resulting window has one shape: a mover whose new world-level READ grant is
+already authoritative is bound by the gate before their in-flight connection refreshes to deliver
+the document. The gate
 commits the move in TWO separate commands
 rather than one: the token's
 `/engine/x,y` position write lands unconditionally under `WriteOrigin::Client`, and the combatant's

@@ -104,8 +104,18 @@ struct BudgetGate {
     /// the caller holds whole-document `cap::READ` on the combatant, resolved by
     /// `SceneEcs::combatant_for_token` through the SAME `effective_owner_via` +
     /// `resolve_access_world` pair `filter_command` uses at document egress — so a
-    /// `permissions.users` grant or per-user override moves this flag exactly as it moves what
-    /// the caller receives on the wire.
+    /// PER-DOCUMENT `permissions.users` grant or override moves this flag in lockstep with what
+    /// the caller receives on the wire, both being reads of the same live document.
+    ///
+    /// The WORLD-level half of that resolution is NOT lockstep, so the parity claim above is
+    /// scoped to per-document permissions and does not extend to world capability defaults:
+    /// `Room::execute_move` reads `world_cap_defaults` fresh per move, while WS egress reads it
+    /// once per connection under a documented takes-effect-on-next-reconnect policy. A world
+    /// grant therefore reaches this flag before it reaches that connection's egress. World
+    /// defaults are additive only (`resolve_access_world` extends `caps`, never removes), so the
+    /// divergence is bounded to one shape: a caller whose new world-level READ grant is genuine
+    /// and already authoritative, but whose in-flight connection has not yet refreshed to deliver
+    /// the document. The gate binds them from the grant; delivery follows on reconnect.
     ///
     /// `false` means the caller cannot read that document, so a `MoveReject::NotYourTurn`
     /// refusal or a budget truncation would disclose both the combatant's existence and its

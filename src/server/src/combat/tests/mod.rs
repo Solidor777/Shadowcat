@@ -217,12 +217,19 @@ pub(super) fn snapshot(
     }
 }
 
-/// Runs the two per-document ingress gates `SqliteRepository::apply_intent` applies before
-/// storing anything — `validate_system_size` (per-band byte cap) and `validate_engine_tree`
-/// (typed engine-band shape plus each type's own `validate`) — panicking loudly on a breach,
-/// which is what the real repository would instead reject the whole batch for
+/// Runs two of the four per-document ingress gates `SqliteRepository::apply_intent` applies
+/// before storing anything — `validate_system_size` (per-band byte cap) and
+/// `validate_engine_tree` (typed engine-band shape plus each type's own `validate`) — panicking
+/// loudly on a breach, which is what the real repository would instead reject the whole batch for
 /// (`DataError::TooLarge`/`DataError::BadEngine`, both rendered by `CombatError::Data` as the
 /// same generic "combat rejected" that discloses nothing about WHY the clock stopped).
+///
+/// The other two are no-ops against these fixtures and are omitted rather than skipped:
+/// `validate_property_overrides` walks `permissions.property_overrides`, which no fixture and no
+/// transition in this module ever populates; `validate_system_schema_tree` matches the `system`
+/// band against the world's GM-declared `SchemaDeclaration` registry, and this harness declares
+/// none, which makes it accept every `system` body unconditionally. A fixture that starts
+/// carrying either must add the matching gate here rather than rely on this note.
 ///
 /// `validate_engine_tree` takes `&mut Document` and NORMALIZES the band in place, so it runs on
 /// a CLONE: this harness's stored documents must stay exactly what the transition wrote, so a
