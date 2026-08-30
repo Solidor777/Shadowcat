@@ -80,6 +80,7 @@ export const en: Messages = {
   "assetBrowser.allAssets": "All assets",
   "assetBrowser.newFolder": "New folder…",
   "assetBrowser.moveFolder": "Move folder",
+  "assetBrowser.renameFolder": "Rename folder",
   "assetBrowser.moveToRoot": "(top level)",
   "assetBrowser.deleteFolder": "Delete folder",
   "assetBrowser.deleteFolderPrompt":

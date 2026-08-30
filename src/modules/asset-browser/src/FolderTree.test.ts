@@ -88,3 +88,19 @@ test("creating a folder dispatches a Create with the asset_folder envelope", asy
   expect(ops[0].doc.doc_type).toBe("asset_folder");
   expect(ops[0].doc.name).toBe("maps");
 });
+
+test("inline rename dispatches an Update on /name with the stored pre-image", async () => {
+  const dispatchIntent = vi.fn();
+  render(FolderTree, { props: { ...PROPS }, context: treeCtx({ dispatchIntent }) });
+  await fireEvent.click(await screen.findByTestId("folder-rename-fb"));
+  const input = screen.getByTestId("folder-rename-input-fb");
+  await fireEvent.input(input, { target: { value: "bravo" } });
+  await fireEvent.keyDown(input, { key: "Enter" });
+  expect(dispatchIntent).toHaveBeenCalledWith([
+    {
+      op: "update",
+      doc_id: "fb",
+      changes: [{ path: "/name", old: "beta", new: "bravo" }],
+    },
+  ]);
+});

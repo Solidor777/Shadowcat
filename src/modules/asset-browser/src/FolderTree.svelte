@@ -38,6 +38,9 @@
   });
 
   let createDraft = $state("");
+  /** The folder being renamed inline, or null. */
+  let renamingFor = $state<string | null>(null);
+  let renameDraft = $state("");
   /** The folder whose Move-to picker is open, or null. */
   let movePickerFor = $state<string | null>(null);
   /** The folder whose delete dialog is open, or null. */
@@ -57,6 +60,29 @@
     if (!name) return;
     ctx.dispatchIntent([
       { op: "create", doc: buildFolderDoc(ctx.world, name, selectedFolder) },
+    ]);
+  }
+
+  /** Commits the inline rename as a field-path Update on `/name`, carrying
+   * the stored name as the OCC pre-image.
+   * @param folder - The folder document being renamed.
+   * @example
+   * ```
+   * // private function; wired to the rename input's Enter handler below
+   * declare const folder: WireDocument;
+   * commitRename(folder);
+   * ```
+   */
+  function commitRename(folder: WireDocument): void {
+    const next = renameDraft.trim();
+    renamingFor = null;
+    if (!next || next === folder.name) return;
+    ctx.dispatchIntent([
+      {
+        op: "update",
+        doc_id: folder.id,
+        changes: [{ path: "/name", old: folder.name, new: next }],
+      },
     ]);
   }
 
@@ -154,6 +180,16 @@
           <button
             type="button"
             class="mini"
+            data-testid={"folder-rename-" + f.id}
+            title={t("assetBrowser.renameFolder")}
+            onclick={() => {
+              renamingFor = renamingFor === f.id ? null : f.id;
+              renameDraft = f.name ?? "";
+            }}
+          >✎</button>
+          <button
+            type="button"
+            class="mini"
             data-testid={"folder-move-" + f.id}
             title={t("assetBrowser.moveFolder")}
             onclick={() => (movePickerFor = movePickerFor === f.id ? null : f.id)}
@@ -167,6 +203,21 @@
           >🗑</button>
         {/if}
       </div>
+      {#if renamingFor === f.id}
+        <input
+          data-testid={"folder-rename-input-" + f.id}
+          type="text"
+          bind:value={renameDraft}
+          onkeydown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              commitRename(f);
+            } else if (e.key === "Escape") {
+              renamingFor = null;
+            }
+          }}
+        />
+      {/if}
       {#if movePickerFor === f.id}
         <div class="move-picker" role="menu">
           <button type="button" data-testid="folder-move-target-root" onclick={() => moveFolder(f.id, null)}>
