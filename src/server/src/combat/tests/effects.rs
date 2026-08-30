@@ -58,6 +58,94 @@ fn collect_effects_finds_anchored_effects_on_actor_token_copy_and_transferring_i
     assert_eq!(refs.len(), 3);
 }
 
+/// Host and anchor are independent axes: an effect living on A's host but
+/// anchored to B belongs to B's clock and to NEITHER combatant twice. Before
+/// the cross-host lookup existed such an effect was unreachable from either
+/// side — never ticked, never expired, never captured.
+#[test]
+fn an_effect_anchored_to_another_combatant_is_collected_by_the_anchor_not_the_host() {
+    let combat = Uuid::from_u128(1);
+    let a = actor_combatant(10, combat, 0x1A, None, false, (0.0, 30.0));
+    let b = actor_combatant(11, combat, 0x1B, None, false, (0.0, 30.0));
+    // Physically on A's actor, anchored to B.
+    let host_a = actor_with_effect(
+        0x1A,
+        Some(b.doc.id),
+        2,
+        ExpiryPoint::TurnEnd,
+        DurationUnit::Turns,
+    );
+    let host_b = doc(0x1B, "actor", None, serde_json::json!({ "vision": null }));
+    let snap = snapshot(
+        combat_engine(vec![a.doc.id, b.doc.id], Some(a.doc.id), 1, true),
+        vec![a.clone(), b.clone()],
+        vec![host_a, host_b],
+    );
+    assert!(
+        collect_effects(&snap, &a).is_empty(),
+        "the HOST's combatant must not claim an effect anchored elsewhere"
+    );
+    let for_b: Vec<(Uuid, String)> = collect_effects(&snap, &b)
+        .iter()
+        .map(|r| (r.host, r.path.clone()))
+        .collect();
+    assert_eq!(
+        for_b,
+        vec![(Uuid::from_u128(0x1A), "/embedded/effect/0".to_string())],
+        "the ANCHOR's combatant reaches it, exactly once, on the host it lives on"
+    );
+}
+
+/// A cross-host anchored effect is on the ANCHOR's clock end to end, not
+/// merely visible to a collector: B's own turn-end boundary ticks it, and A's
+/// does not.
+#[test]
+fn a_cross_host_anchored_effect_ticks_on_the_anchors_own_turn_boundary() {
+    let combat = Uuid::from_u128(1);
+    let a = actor_combatant(10, combat, 0x1A, None, false, (0.0, 30.0));
+    let b = actor_combatant(11, combat, 0x1B, None, false, (0.0, 30.0));
+    let host_a = actor_with_effect(
+        0x1A,
+        Some(b.doc.id),
+        2,
+        ExpiryPoint::TurnEnd,
+        DurationUnit::Turns,
+    );
+    let host_b = doc(0x1B, "actor", None, serde_json::json!({ "vision": null }));
+    let remaining_of = |docs: &HashMap<Uuid, Document>| -> Option<u32> {
+        let e: EffectEngine = serde_json::from_value(
+            docs[&Uuid::from_u128(0x1A)].embedded["effect"][0]
+                .engine
+                .clone()
+                .unwrap(),
+        )
+        .unwrap();
+        e.duration.unwrap().remaining
+    };
+
+    // A's turn ends: the effect is hosted on A but anchored to B, so nothing ticks.
+    let snap_a = snapshot(
+        combat_engine(vec![a.doc.id, b.doc.id], Some(a.doc.id), 1, true),
+        vec![a.clone(), b.clone()],
+        vec![host_a.clone(), host_b.clone()],
+    );
+    let docs = apply(&snap_a, &advance(&snap_a, WORLD, Uuid::nil(), 0).unwrap());
+    assert_eq!(remaining_of(&docs), Some(2), "not A's effect to tick");
+
+    // B's turn ends: B is the anchor, so the effect decrements.
+    let snap_b = snapshot(
+        combat_engine(vec![a.doc.id, b.doc.id], Some(b.doc.id), 1, true),
+        vec![a, b],
+        vec![host_a, host_b],
+    );
+    let docs = apply(&snap_b, &advance(&snap_b, WORLD, Uuid::nil(), 0).unwrap());
+    assert_eq!(
+        remaining_of(&docs),
+        Some(1),
+        "the anchor's boundary ticks it"
+    );
+}
+
 #[test]
 fn boundary_tick_decrements_and_expires_at_zero_and_skips_unresolved() {
     let combat = Uuid::from_u128(1);

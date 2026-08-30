@@ -8,7 +8,7 @@
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use serde_json::json;
 use uuid::Uuid;
@@ -18,6 +18,7 @@ use crate::data::document::Document;
 use crate::data::engine::combat::{
     CombatantKind, DurationUnit, EffectEngine, ExpiryPoint, ResolvedLifecycle,
 };
+use crate::data::permission::TOKEN_DOC_TYPE;
 
 use super::ops::set_engine;
 use super::{CombatError, CombatSnapshot, Combatant};
@@ -34,15 +35,30 @@ pub struct EffectRef {
     pub engine: EffectEngine,
 }
 
+/// Which anchor values a walk admits. The two axes an effect carries are
+/// independent: its HOST owns where it physically lives, its
+/// `duration.anchor` owns whose clock moves it. `OwnHost` is the walk of a
+/// combatant's own host (an unanchored effect belongs to whoever hosts it,
+/// and an explicitly self-anchored one too); `AnchoredOnly` is the walk of
+/// every OTHER host, where nothing but an explicit anchor naming this
+/// combatant may be claimed.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AnchorScope {
+    /// Admit `anchor == None` as well as `anchor == Some(combatant_id)`.
+    OwnHost,
+    /// Admit only `anchor == Some(combatant_id)`.
+    AnchoredOnly,
+}
+
 /// Walks one embedded `effect` collection at `prefix` (e.g. `/embedded/effect`),
 /// pushing every entry whose `transfer` flag is `include_all || engine.transfer`
-/// and whose anchor matches `combatant_id` (`anchor.is_none()` — lives on this
-/// combatant's own host — or `anchor == Some(combatant_id)`).
+/// and whose anchor `scope` admits for `combatant_id`.
 fn walk_effect_collection(
     parent: &Document,
     host: Uuid,
     prefix: &str,
     combatant_id: Uuid,
+    scope: AnchorScope,
     include_all: bool,
     out: &mut Vec<EffectRef>,
 ) {
@@ -60,7 +76,7 @@ fn walk_effect_collection(
             continue;
         }
         let anchored = match engine.duration.as_ref().and_then(|d| d.anchor) {
-            None => true,
+            None => scope == AnchorScope::OwnHost,
             Some(a) => a == combatant_id,
         };
         if !anchored {
@@ -75,12 +91,16 @@ fn walk_effect_collection(
 }
 
 /// Walks the `effect` and item-embedded `effect` collections directly on
-/// `host` (an actor or a token's embedded actor), anchored to `combatant_id`.
+/// `host` (an actor or a token's embedded actor) under `scope`. An
+/// item-embedded effect still requires its own `transfer` flag under either
+/// scope: `transfer` decides whether the effect leaves the item at all,
+/// which is a separate question from whose clock it is on.
 fn walk_host(
     host_doc: &Document,
     host_id: Uuid,
     prefix: &str,
     combatant_id: Uuid,
+    scope: AnchorScope,
     out: &mut Vec<EffectRef>,
 ) {
     walk_effect_collection(
@@ -88,6 +108,7 @@ fn walk_host(
         host_id,
         &format!("{prefix}/embedded/effect"),
         combatant_id,
+        scope,
         true,
         out,
     );
@@ -98,6 +119,7 @@ fn walk_host(
                 host_id,
                 &format!("{prefix}/embedded/item/{j}/embedded/effect"),
                 combatant_id,
+                scope,
                 false,
                 out,
             );
@@ -105,34 +127,113 @@ fn walk_host(
     }
 }
 
-/// Collects every effect reachable from `combatant`'s own host(s) — its
-/// linked actor and/or its token's embedded actor — anchored to this
-/// combatant: `duration.anchor == Some(combatant.doc.id)`, or `anchor ==
-/// None` and it lives directly on this combatant's host (an item-embedded
-/// effect included only when `transfer` is set). An `Event` combatant hosts
-/// no effects and always returns empty.
-pub fn collect_effects(snap: &CombatSnapshot, combatant: &Combatant) -> Vec<EffectRef> {
-    let CombatantKind::Actor { token_id, actor_id } = &combatant.engine.kind else {
-        return Vec::new();
-    };
-    let mut out = Vec::new();
-    if let Some(actor_id) = actor_id {
-        if let Some(host) = snap.hosts.get(actor_id) {
-            walk_host(host, *actor_id, "", combatant.doc.id, &mut out);
+/// Walks whichever effect collections `host_doc` exposes, under `scope`: an
+/// actor document directly, a token document through its embedded actor
+/// copy (`/embedded/actor/0`) — the same two shapes `collect_effects`
+/// resolves for a combatant's own `actor_id`/`token_id`, applied to a host
+/// reached by anchor rather than by ownership. A token with no embedded
+/// actor exposes nothing.
+fn walk_any_host(
+    host_doc: &Document,
+    host_id: Uuid,
+    combatant_id: Uuid,
+    scope: AnchorScope,
+    out: &mut Vec<EffectRef>,
+) {
+    if host_doc.doc_type == TOKEN_DOC_TYPE {
+        if let Some(actor) = host_doc.embedded.get("actor").and_then(|v| v.first()) {
+            walk_host(
+                actor,
+                host_id,
+                "/embedded/actor/0",
+                combatant_id,
+                scope,
+                out,
+            );
         }
+    } else {
+        walk_host(host_doc, host_id, "", combatant_id, scope, out);
     }
-    if let Some(token_id) = token_id {
-        if let Some(token) = snap.hosts.get(token_id) {
-            if let Some(actors) = token.embedded.get("actor") {
-                if let Some(actor) = actors.first() {
+}
+
+/// Collects every effect this combatant's clock moves, along BOTH axes the
+/// shape defines:
+/// - on its OWN host(s) — its linked actor and/or its token's embedded
+///   actor — every effect that is unanchored (`duration.anchor: None`, i.e.
+///   belonging to whoever hosts it) or explicitly anchored to this
+///   combatant;
+/// - on ANY OTHER host in the combat, every effect explicitly anchored to
+///   this combatant (`duration.anchor == Some(combatant.doc.id)`).
+///
+/// The second pass is what keeps the host and the anchor independent: an
+/// effect physically living on A's actor but anchored to B ticks, expires
+/// and is captured on B's clock, and is claimed by neither combatant twice.
+/// Results are deduplicated by `(host, path)` — the same key
+/// `transition::run_boundary`/`transition::end`/`history::capture` dedup on
+/// — so an effect reachable from both passes is returned once. An
+/// item-embedded effect still requires its own `transfer` flag. An `Event`
+/// combatant hosts no effects, but may still anchor effects hosted
+/// elsewhere, so both passes run for it too.
+pub fn collect_effects(snap: &CombatSnapshot, combatant: &Combatant) -> Vec<EffectRef> {
+    let mut out = Vec::new();
+    let mut own: HashSet<Uuid> = HashSet::new();
+    if let CombatantKind::Actor { token_id, actor_id } = &combatant.engine.kind {
+        if let Some(actor_id) = actor_id {
+            own.insert(*actor_id);
+            if let Some(host) = snap.hosts.get(actor_id) {
+                walk_host(
+                    host,
+                    *actor_id,
+                    "",
+                    combatant.doc.id,
+                    AnchorScope::OwnHost,
+                    &mut out,
+                );
+            }
+        }
+        if let Some(token_id) = token_id {
+            own.insert(*token_id);
+            if let Some(token) = snap.hosts.get(token_id) {
+                if let Some(actor) = token.embedded.get("actor").and_then(|v| v.first()) {
                     walk_host(
                         actor,
                         *token_id,
                         "/embedded/actor/0",
                         combatant.doc.id,
+                        AnchorScope::OwnHost,
                         &mut out,
                     );
                 }
+            }
+        }
+    }
+
+    let mut seen: HashSet<(Uuid, String)> = out.iter().map(|r| (r.host, r.path.clone())).collect();
+    // Deterministic host order: `snap.hosts` is a `HashMap`, whose iteration
+    // order varies run to run, and the collected order decides which
+    // combatant's boundary sweep claims a shared `(host, path)` first.
+    let mut cross: Vec<Uuid> = snap
+        .hosts
+        .keys()
+        .copied()
+        .filter(|h| !own.contains(h))
+        .collect();
+    cross.sort_unstable();
+    for host_id in cross {
+        let Some(host_doc) = snap.hosts.get(&host_id) else {
+            continue;
+        };
+        let mut found = Vec::new();
+        walk_any_host(
+            host_doc,
+            host_id,
+            combatant.doc.id,
+            AnchorScope::AnchoredOnly,
+            &mut found,
+        );
+        for r in found {
+            if seen.insert((r.host, r.path.clone())) {
+                out.push(r);
             }
         }
     }
