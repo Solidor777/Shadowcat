@@ -1767,6 +1767,58 @@ one-active-combat-per-scene batch-ordering gap the M14a delivery note left open.
 resolved-number writes an effect's formula library performs against `Duration.remaining` and
 `CombatantResource.current`/`.max` — all land in M14c–d.
 
+### M15a · Asset pipeline ✅
+Branch `m15a-asset-pipeline`, executed mainline (Fable) from the approved design
+`docs/superpowers/specs/2026-08-30-m15-asset-pipeline-browser-design.md` and plan
+`docs/superpowers/plans/2026-08-30-m15a-asset-pipeline.md`; M15b (the browser module) remains.
+Delivered, server: `Config.retain_originals` (default `true`; CLI/env/TOML); `assets` grows
+`folder_id`, `width/height/has_alpha/animated`, `original_content_type/original_byte_size/
+original_retained/conversion_note`, plus the `asset_tags(asset_id, tag, derived)` table — the
+single pre-ship `0001_init.sql` edited in place, no backfill; the asset half of `SqliteRepository`
+moved to `data/sqlite/assets.rs`. `data::asset::process` converts uploads to WebP (lossless for
+transparent/PNG-class sources, lossy q85 otherwise; static WebP, SVG, animations, non-images and
+undecodable files stored pass-through with a `conversion_note`), keeps the original as
+`<uuid>.orig` when retained, and writes `<uuid>.thumb.webp`/`<uuid>.preview.webp` derivatives
+(regenerated on demand by `serve?variant=`); `SIBLING_SUFFIXES` is the one statement of that set
+and `move_asset_files`/`remove_asset_files` move it whole. `data::asset::tags::derive` computes
+the derived set (kind/subtype, `animated`/`gif-animated`, `square`, `large` ≥ 2048px,
+`transparent`, ancestor folder names, `uploaded`/`link-preview`), refreshed on every commit,
+replace, reconvert, placement change, folder delete and folder Update (both write paths).
+`asset_folder` engine documents (`AssetFolderEngine { sort }`; name/parent from the envelope):
+parent must be a folder in the same scope (batch-aware check at the intent Create chokepoint);
+`delete_document_tx` reparents a deleted folder's assets to its parent, children-first under the
+document cascade. Routes: chunked sessions (`POST /api/worlds/{world}/assets/uploads`,
+`PUT /api/assets/uploads/{id}/{offset}` at a fixed 8 MiB chunk, `…/complete`, `DELETE`; in-memory,
+user-bound, idle-swept with rate-slot refund), `GET /api/worlds/{world}/assets` (bare `Asset[]`
+with no parameters, `AssetPage` with folder/recursive/tags/kind/name/size-capped `name_regex`/
+sort/keyset cursor otherwise), `GET /api/assets/{uuid}?variant=thumb|preview`,
+`GET …/original` (GM), `POST …/reconvert` (GM, shares `commit_replacement` with `replace`),
+`PATCH /api/assets/{uuid}`, `POST /api/worlds/{world}/assets/bulk`,
+`DELETE /api/asset-folders/{id}?assets=reparent|delete` (purge through the shared
+`delete_asset_files_and_row`). `AssetChanged` gained `Created`/`Moved`; the link-preview pipeline
+commits through the same processed path; the world bundle carries the sibling set and the new
+row fields (`#[serde(default)]`, older bundles import; a missing `.orig` clears
+`original_retained`). Client core: `queryAssets`/`patchAsset`/`bulkPatchAssets`/
+`reconvertAsset`/`originalUrl`/`restErrorText`, `startChunkedUpload` (single-shot under 8 MiB;
+per-chunk retry on network/5xx, 409 aborts, `AbortSignal`), `AssetResolver.url(uuid, variant?)`
+and `onListingInvalidated`; `@shadowcat/types` re-exports the new ts-rs types; the existing
+`Assets` panel and `AssetPicker` consume the widened `Asset` unchanged.
+Decisions taken during execution (user-confirmed at handoff): folder delete cascades sub-folders
+and reparents assets, with an explicit purge option; no backfill. Found in flight: `parent_id`
+is an immutable envelope path, so the planned Update-arm cycle walk is unreachable and was not
+written — the tree is acyclic by construction — and **folder move has no route** (open M15b
+design point). A false `image/*` claim the bytes disprove is labeled `application/octet-stream`
+rather than trusted. Two of the tests that had used a non-image replace as their failure case
+now use an over-cap body (413). Process defects: two task commits landed on a red gate because
+the `cargo … | grep …; git commit` chain discarded the exit status — replaced by gate scripts the
+commit is `&&`-chained on, and the whole branch re-verified through them (fmt, clippy, 2059
+server tests, every `pnpm` gate, both e2e suites). Environment: the shell Playwright suite failed
+6/17 while another session's `test_server` held the fixed port 31999 (`reuseExistingServer`),
+17/17 alone; a fixed-port throttle test (`8004`) flaked the same way under contention.
+Coverage added: 8 `process` unit tests on generated fixtures, tag/query/upload/mutate unit tests,
+and five new integration files (`assets_chunked`, `assets_query`, `assets_mutate`, plus the
+extended `assets` and bundle round-trips).
+
 ## Documentation campaign — completed sweeps
 
 The campaign's open tail (buddy-check convergence, final ratchet, skills documentation-reference

@@ -1498,7 +1498,7 @@ export const ACKNOWLEDGED_NON_SYMBOLS = new Set([
   // Rust std method/associated-fn names cited standalone (`checked_add`, `as_ref`) - this repo
   // declares no method of these names on its own types at the point cited.
   "checked_add", "checked_mul", "saturating_mul", "is_ascii_graphic",
-  "max_by_key", "min_by_key", "binary_search_by_key", "remove_dir_all", "filter_map",
+  "max_by_key", "min_by_key", "binary_search_by_key", "filter_map",
   // Literal/keyword values, not declarations.
   "true", "false", "NaN", "Infinity",
   // Non-Rust/TS/Svelte source this checker's symbol index does not cover (Python hook internals,
@@ -1507,8 +1507,7 @@ export const ACKNOWLEDGED_NON_SYMBOLS = new Set([
   "EXEMPT", "TODO",
   // `#[serde(...)]` / rustdoc attribute keywords - serde's and rustdoc's own vocabulary, not a
   // symbol this repo declares.
-  "deny_unknown_fields", "skip_serializing_if", "no_run", "tag",
-  // Durable-tracker filenames RULE 15/16 already govern on their own terms (a "Pointers"-section
+  "deny_unknown_fields", "skip_serializing_if", "no_run", // Durable-tracker filenames RULE 15/16 already govern on their own terms (a "Pointers"-section
   // citation of a durable doc by name), not a code-symbol citation.
   "OPEN_BUGS", "CLOSED_BUGS",
   // The specimen-marker word `EXAMPLE_EXEMPT` triggers on, cited by the orientation skill while
@@ -1597,7 +1596,7 @@ export const ACKNOWLEDGED_EXTERNAL_PREFIX = new Set([
   // Further external crate/Web-API types (`hyper`'s `Host` header enum, `url`'s `Url`, PixiJS's
   // `Link` filter, the `ammonia` HTML-sanitizer's `PassThrough` element-handling mode,
   // `polyanya`'s `Mesh`/`Layer`, `axum`'s `DefaultBodyLimit`).
-  "Host", "Link", "PassThrough", "SqlSafeStr", "Date", "DefaultBodyLimit", "Url", "Mesh", "Layer",
+  "Host", "Link", "PassThrough", "SqlSafeStr", "Date", "Url", "Mesh", "Layer",
 ]);
 
 /**
