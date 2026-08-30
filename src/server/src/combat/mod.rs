@@ -228,18 +228,18 @@ const COMBATANT_WRITE_BAND: &str = "/engine";
 
 /// What a combat intent does to the combatant document it names, and therefore
 /// which capabilities `owns_combatant` demands on it.
-#[derive(Clone, Copy, PartialEq, Eq)]
 enum CombatantAct {
     /// The intent authors no content on the named combatant. `CombatAdvance`
-    /// ends the turn its caller holds; the combatant writes `transition::
-    /// advance` does produce — `run_boundary`'s `recover` amounts, effect
-    /// ticks, an `Event`'s `lifespan` decrement — are server-COMPUTED
-    /// consequences of the clock moving, and they land on whichever combatants
-    /// the boundary sweep touches, not on one the caller named or supplied a
-    /// value for. Authorization is therefore the turn-ownership gameplay rule
-    /// (who may end THIS turn) alone: no per-document write capability of the
-    /// caller's could gate those writes coherently, since they reach
-    /// combatants the caller has no relationship with at all.
+    /// ends the turn its caller holds; the combatant writes
+    /// `transition::advance` does produce — `run_boundary`'s `recover`
+    /// amounts, effect ticks, an `Event`'s `lifespan` decrement — are
+    /// server-COMPUTED consequences of the clock moving, and they land on
+    /// whichever combatants the boundary sweep touches, not on one the caller
+    /// named or supplied a value for. Authorization is therefore the
+    /// turn-ownership gameplay rule (who may end THIS turn) alone: no
+    /// per-document write capability of the caller's could gate those writes
+    /// coherently, since they reach combatants the caller has no relationship
+    /// with at all.
     EndsTurn,
     /// The intent writes the named combatant's `engine` band: `CombatRoll`
     /// through `transition::roll`, `CombatResource` through

@@ -1687,9 +1687,14 @@ an id absent from `order`. Distinct wording is safe there — `CombatRewind` is 
 Eight combat intents (`CombatStart`/`CombatPause`/`CombatEnd`/`CombatAdvance`/`CombatRewind`/
 `CombatSort`/`CombatRoll`/`CombatResource`) dispatch through `combat::handle_combat_intent`: loads
 a `CombatSnapshot` (one combat, its combatants, hosts, history, registry, sibling active combats,
-and the resolved chain, gathered in one read), authorizes (GM-unconditional; a non-GM only for
-`CombatAdvance` under `TurnControl::OwnerMayEnd` as the current turn's non-hidden owner, or for
-`CombatRoll`/`CombatResource` as the owner of every named non-hidden combatant), resolves the
+and the resolved chain, gathered in one read), authorizes (GM-unconditional; a non-GM only as a
+named combatant's effective owner holding whole-document `cap::READ` — resolved through the same
+`effective_owner`/`resolve_access_world` authority document egress uses, never a predicate
+re-derived from `permissions.default` alone — for `CombatAdvance` under `TurnControl::OwnerMayEnd`
+as the current turn's owner, or for `CombatRoll`/`CombatResource` as the owner of every named
+combatant AND additionally holding the write capability `required_cap_for_path` maps `/engine` to;
+`CombatAdvance` demands no such write capability, since its combatant writes are server-computed
+clock consequences rather than caller-authored content), resolves the
 matching pure `transition` function into one command's ops, and commits them as a single
 server-authored write via `Room::commit_combat` under `WriteOrigin::CombatTransition`. That origin
 has no wire representation a client can construct, and its effect is an EXEMPTION rather than a
