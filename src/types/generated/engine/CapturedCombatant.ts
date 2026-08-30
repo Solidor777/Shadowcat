@@ -14,19 +14,15 @@ import type { CombatantEngine } from "./CombatantEngine";
  * ingress refusal that rolls back the whole combat transition — inside an
  * ordinary combat. HIDDEN COUPLING: a combatant `restore` re-`Create`s
  * (an exhausted `Event` deleted since the boundary) is rebuilt from these
- * fields alone, with its `scope`/`doc_type` derived from the combat it
- * belongs to and an empty `embedded` map — the record restores the CLOCK's
- * state, never a general document backup.
+ * fields alone, with its `scope`/`doc_type`/`parent_id` derived from the
+ * combat it belongs to and an empty `embedded` map — the record restores the
+ * CLOCK's state, never a general document backup.
  */
 export type CapturedCombatant = { 
 /**
  * The combatant document's id.
  */
 id: string, 
-/**
- * The combat it is parented to.
- */
-parent_id: string | null, 
 /**
  * Envelope display name (an `Event`'s row label).
  */

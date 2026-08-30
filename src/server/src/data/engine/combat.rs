@@ -667,17 +667,15 @@ pub struct EffectSnapshot {
 /// ingress refusal that rolls back the whole combat transition — inside an
 /// ordinary combat. HIDDEN COUPLING: a combatant `restore` re-`Create`s
 /// (an exhausted `Event` deleted since the boundary) is rebuilt from these
-/// fields alone, with its `scope`/`doc_type` derived from the combat it
-/// belongs to and an empty `embedded` map — the record restores the CLOCK's
-/// state, never a general document backup.
+/// fields alone, with its `scope`/`doc_type`/`parent_id` derived from the
+/// combat it belongs to and an empty `embedded` map — the record restores the
+/// CLOCK's state, never a general document backup.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
 pub struct CapturedCombatant {
     /// The combatant document's id.
     pub id: Uuid,
-    /// The combat it is parented to.
-    pub parent_id: Option<Uuid>,
     /// Envelope display name (an `Event`'s row label).
     pub name: Option<String>,
     /// Its permission set at the boundary. Captured because a combatant's

@@ -110,7 +110,6 @@ fn post_transition_snapshot(snap: &CombatSnapshot, ops: &[Operation]) -> CombatS
 fn capture_combatant(c: &Combatant) -> CapturedCombatant {
     CapturedCombatant {
         id: c.doc.id,
-        parent_id: c.doc.parent_id,
         name: c.doc.name.clone(),
         permissions: c.doc.permissions.clone(),
         owner: c.doc.owner,
@@ -121,11 +120,12 @@ fn capture_combatant(c: &Combatant) -> CapturedCombatant {
 
 /// Rebuilds the combatant document a `CapturedCombatant` describes, for the
 /// one path that needs a whole document back (`restore` re-`Create`ing a
-/// combatant deleted since the boundary). `scope`/`doc_type` are DERIVED
-/// from `combat` rather than stored a second time in the record — a
-/// combatant is always a `combatant`-typed child of its combat, so a second
+/// combatant deleted since the boundary). `scope`/`doc_type`/`parent_id` are
+/// all DERIVED from `combat` rather than stored a second time in the record —
+/// a combatant is always a `combatant`-typed child of its combat, so a second
 /// stored copy would be a forked decision with nothing keeping the two in
-/// agreement. `created_at`/`updated_at` are stamped `now`: the document is
+/// agreement, paid for once per captured combatant per retained record.
+/// `created_at`/`updated_at` are stamped `now`: the document is
 /// genuinely new to the store at this instant. `.expect`s rather than
 /// propagating: `engine` was parsed FROM stored JSON, so it re-serializes.
 fn rebuild_document(combat: &Document, captured: &CapturedCombatant, now: i64) -> Document {
@@ -140,7 +140,7 @@ fn rebuild_document(combat: &Document, captured: &CapturedCombatant, now: i64) -
         owner: captured.owner,
         permissions: captured.permissions.clone(),
         embedded: BTreeMap::new(),
-        parent_id: captured.parent_id,
+        parent_id: Some(combat.id),
         engine: Some(
             serde_json::to_value(&captured.engine)
                 .expect("a CombatantEngine parsed from stored JSON always re-serializes"),
