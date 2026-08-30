@@ -951,6 +951,18 @@ pub fn pause(snap: &CombatSnapshot) -> Result<Vec<Operation>, CombatError> {
 /// `restore` re-`Create`s. Every later record is dropped from history unless
 /// `forward_restore` is set, in which case the redo history survives for
 /// `history::fast_forward` to later replay.
+///
+/// `RewindUnreachable` when the combat engine this rewind would write is not
+/// a valid one — checked BEFORE any op is built, by running the prospective
+/// post-image through `CombatEngine::validate` itself rather than restating
+/// its rules here, so the two can never disagree about what a valid clock
+/// state is. The reachable case is `rewind_restore` off with a target
+/// boundary whose `turn` names a combatant since deleted and dropped from
+/// `order` (an exhausted `Event`): nothing restores it, so `turn` would name
+/// an id absent from `order`. Refusing honestly is the only correct outcome —
+/// rebuilding `order` without restoring the document would leave a phantom
+/// entry naming a document that does not exist, and clamping or skipping the
+/// `/engine/turn` write would move the clock somewhere the GM never asked for.
 pub fn rewind(snap: &CombatSnapshot, now: i64) -> Result<Vec<Operation>, CombatError> {
     let Some((history_doc, history_engine)) = &snap.history else {
         return Err(CombatError::Unrewindable);
@@ -964,6 +976,26 @@ pub fn rewind(snap: &CombatSnapshot, now: i64) -> Result<Vec<Operation>, CombatE
         .get(new_cursor as usize)
         .ok_or(CombatError::NotFound)?;
 
+    // `order` is rebuilt only alongside a restore: the rebuilt order is derived from the
+    // documents `history::restore` will re-`Create`, so without that restore there is nothing
+    // for a re-added entry to name.
+    let new_order = if snap.engine.rewind_restore {
+        rebuild_order(
+            &history::resulting_combatants(snap, target),
+            &snap.engine.order,
+        )
+    } else {
+        snap.engine.order.clone()
+    };
+
+    let mut post = snap.engine.clone();
+    post.round = target.round;
+    post.turn = Some(target.turn);
+    post.order.clone_from(&new_order);
+    if post.validate().is_err() {
+        return Err(CombatError::RewindUnreachable);
+    }
+
     let mut ops = if snap.engine.rewind_restore {
         history::restore(snap, target, now)?
     } else {
@@ -974,12 +1006,8 @@ pub fn rewind(snap: &CombatSnapshot, now: i64) -> Result<Vec<Operation>, CombatE
         set_engine(&snap.combat, "/engine/round", json!(target.round))?,
         set_engine(&snap.combat, "/engine/turn", json!(target.turn))?,
     ];
-    if snap.engine.rewind_restore {
-        let resulting = history::resulting_combatants(snap, target);
-        let new_order = rebuild_order(&resulting, &snap.engine.order);
-        if new_order != snap.engine.order {
-            combat_changes.push(set_engine(&snap.combat, "/engine/order", json!(new_order))?);
-        }
+    if new_order != snap.engine.order {
+        combat_changes.push(set_engine(&snap.combat, "/engine/order", json!(new_order))?);
     }
     ops.push(Operation::Update {
         doc_id: snap.combat.id,

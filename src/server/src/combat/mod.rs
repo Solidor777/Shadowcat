@@ -57,6 +57,17 @@ pub enum CombatError {
     /// Rewind refused: at the first record or past the retained history.
     #[error("cannot rewind further")]
     Unrewindable,
+    /// Rewind refused: the clock state the target boundary describes is not a
+    /// valid `CombatEngine` against the combat as it stands now, so applying it
+    /// would be refused by the engine-ingress gate and roll the whole command
+    /// back. The reachable case is `rewind_restore` off with a target boundary
+    /// whose `turn` names a combatant since removed from `/engine/order` — an
+    /// exhausted `Event`, which `transition::resolve_event` deletes and drops
+    /// from the order, and which only a restore would bring back. Distinct
+    /// wording is safe: `CombatRewind` is GM-only (`authorize`), so this text
+    /// reaches only a caller who may already read every combatant in the combat.
+    #[error("cannot rewind to that boundary")]
+    RewindUnreachable,
     /// A roll failed its caps/parse.
     #[error("{0}")]
     Roll(#[from] crate::chat::rolls::RollError),

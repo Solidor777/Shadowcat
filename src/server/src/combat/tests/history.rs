@@ -196,6 +196,68 @@ fn rewind_restores_spent_resources_expired_effects_and_deleted_events() {
     );
 }
 
+/// With `rewind_restore` off nothing brings back a combatant the clock deleted, so a boundary
+/// whose `turn` names an exhausted `Event` can never be re-entered: writing `/engine/turn` back
+/// to it would leave `turn` naming an id absent from `/engine/order`, which
+/// `CombatEngine::validate` refuses. The refusal must be the specific `RewindUnreachable`, made
+/// before any op is built — not a generic engine rejection of an already-assembled batch, and
+/// never a silent clamp of the clock to some other turn.
+#[test]
+fn rewind_restore_off_refuses_a_boundary_whose_turn_was_deleted() {
+    let combat = Uuid::from_u128(1);
+    let a = actor_combatant(10, combat, 0x1A, None, false, (0.0, 30.0));
+    let ev = event_combatant(11, combat, Some(1), None);
+    let host = actor_with_effect(0x1A, None, 1, ExpiryPoint::TurnEnd, DurationUnit::Turns);
+    let snap = snapshot(
+        combat_engine(vec![a.doc.id, ev.doc.id], None, 0, false),
+        vec![a, ev],
+        vec![host],
+    );
+
+    // `start` snapshots the resolved rules chain onto the combat, so the flag is cleared AFTER
+    // it rather than on the pre-start engine, which `start` would overwrite.
+    let mut s1 = rebuild(
+        &snap,
+        apply(&snap, &start(&snap, 0, WORLD, Uuid::nil()).unwrap()),
+    );
+    s1.engine.rewind_restore = false;
+    s1.combat.engine = Some(serde_json::to_value(&s1.engine).unwrap());
+
+    // The advance walks past the event, which fires and deletes itself; the boundary record
+    // captured at the event's own turn survives in history with `turn` naming the deleted id.
+    let mut s2 = rebuild(
+        &s1,
+        apply(&s1, &advance(&s1, WORLD, Uuid::nil(), 0).unwrap()),
+    );
+    assert!(
+        !s2.engine.order.contains(&Uuid::from_u128(11)),
+        "the exhausted event left the order"
+    );
+    {
+        let (_, h) = s2.history.as_ref().unwrap();
+        assert_eq!(
+            h.records[h.cursor as usize - 1].turn,
+            Uuid::from_u128(11),
+            "the boundary one step back is the deleted event's own turn"
+        );
+    }
+
+    assert!(matches!(
+        rewind(&s2, 0),
+        Err(CombatError::RewindUnreachable)
+    ));
+
+    // Positive control: the SAME boundary rewinds cleanly with `rewind_restore` on, so the
+    // refusal above is specific to "nothing will restore the combatant", not to the boundary.
+    // Safe to mutate `s2` in place — the refused rewind produced no ops and changed nothing.
+    s2.engine.rewind_restore = true;
+    s2.combat.engine = Some(serde_json::to_value(&s2.engine).unwrap());
+    let docs = apply(&s2, &rewind(&s2, 0).unwrap());
+    let c: CombatEngine = engine_of(&docs, combat);
+    assert_eq!(c.turn, Some(Uuid::from_u128(11)));
+    assert!(c.order.contains(&Uuid::from_u128(11)));
+}
+
 #[test]
 fn rewind_at_the_first_record_is_refused() {
     let (snap, _) = running_with_history();
@@ -331,7 +393,14 @@ fn history_is_capped_and_the_cursor_shifts_with_the_drop() {
 fn history_is_capped_by_serialized_bytes_before_the_engine_band_overflows() {
     let (mut snap, _) = running_with_history();
     let (doc, h) = snap.history.as_mut().unwrap();
-    let rec = h.records[0].clone();
+    let mut rec = h.records[0].clone();
+    // Pad one captured combatant's opaque `system` band — content a real combat authors freely
+    // — until `MAX_TURN_HISTORY + 1` such records genuinely breach the cap. Derived from the cap
+    // rather than assumed, so this test keeps measuring the byte bound no matter how many bytes
+    // the capture shape itself happens to cost.
+    let need = crate::data::validation::MAX_SYSTEM_BYTES / (MAX_TURN_HISTORY + 1) + 1;
+    let pad = need.saturating_sub(serde_json::to_vec(&rec).unwrap().len());
+    rec.combatants[0].system = serde_json::json!({ "pad": "x".repeat(pad) });
     h.records = (0..MAX_TURN_HISTORY).map(|_| rec.clone()).collect();
     h.cursor = (MAX_TURN_HISTORY - 1) as u32;
     doc.engine = Some(serde_json::to_value(&*h).unwrap());
