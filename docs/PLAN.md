@@ -35,11 +35,17 @@ further at design time. Numbering continues from Phase 1.
 - Excludes: automation of attacks/damage resolution (system-owned); audio/VFX cues (Phase 3).
 
 ### M15 · Asset pipeline + browser
-- Real upload pipeline replacing the M8b raw path: chunked upload, image conversion/derivatives,
-  tags + derived tags, preserving the stable-UUID asset identity every existing reference relies on.
-- Asset browser: regex / tag / directory search, preview, rename, move, tag — over the same
-  pipeline the link-preview `og:image` asset path already commits through.
-- Excludes: audio transcode (Phase 3 audio).
+- Design approved: [`superpowers/specs/2026-08-30-m15-asset-pipeline-browser-design.md`](superpowers/specs/2026-08-30-m15-asset-pipeline-browser-design.md).
+  Split: **M15a** pipeline (server + client core), **M15b** browser module.
+- Real upload pipeline replacing the M8b raw path: resumable chunked upload, WebP conversion with
+  thumb/preview derivatives (originals retained by default; `Config.retain_originals` discards
+  them), explicit + derived tags, `asset_folder` documents — preserving the stable-UUID asset
+  identity every existing reference relies on.
+- Asset browser (GM-only): regex / tag / folder search via a server-side query endpoint, preview,
+  rename, move, tag — over the same pipeline the link-preview `og:image` asset path already
+  commits through.
+- Excludes: audio transcode + animated-WebP encoding (Phase 3 audio); FTS-backed asset search
+  (M21 — M15 ships SQL substring/tag/folder filters plus a size-limited Rust `regex` filter).
 
 ### M16 · Layout + theming completion
 - Drag-resize of floating panels where the M12 panel engine does not already provide it;
@@ -93,6 +99,9 @@ further at design time. Numbering continues from Phase 1.
 - One search milestone, one backend: extend the M6c FTS5 index + live subscriptions to every
   document type the suite introduces (notes, tables, assets by tag) with the same
   visibility-partitioned index — no three-backend split.
+- Folds M15's asset search into FTS: M15 deliberately ships `GET /api/assets` as SQL
+  substring/tag/folder filters plus a size-limited `regex` name filter (asset names are short;
+  a `LIKE` + tag join suffices) — the FTS integration was deferred here, not forgotten.
 
 ## Phase 3 — Atmosphere
 Audio (mixer, channels, playlists, world-clock sync; then spatial + wall occlusion; transcode via `symphonia` + `opus`/`vorbis_rs`) → VFX (sprite effects, concurrent SFX) → multi-level maps + portals → 3D dice (decide the rendering context up front: reuse the PixiJS WebGL context vs a separate three.js/WebGL + physics layer) → Discord audio-ducking module (OS audio-session monitoring — PipeWire / WASAPI / CoreAudio — never the proprietary Discord Game SDK; requires a dependency / licensing review before integration).
