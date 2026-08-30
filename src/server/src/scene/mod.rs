@@ -799,9 +799,9 @@ impl SceneEcs {
                 // An Update never changes scene-entity membership: `parent_id`
                 // and `doc_type` are envelope fields, immutable via field-path
                 // Update (`required_cap_for_path` maps them to no capability).
-                // INVARIANT: if `parent_id` becomes mutable, this arm must
-                // re-evaluate `is_scene_entity` and spawn/despawn accordingly.
-                // TODO: re-evaluate is_scene_entity here once parent_id is mutable.
+                // Re-parenting travels only as `Operation::Move`, whose arm
+                // below re-evaluates `is_scene_entity` and despawns a doc
+                // leaving the scene runtime.
                 if let Some(&e) = self.index.get(doc_id) {
                     if let Ok(mut comp) = self.world.get::<&mut SceneEntity>(e) {
                         // Mirror the same field-path changes apply_intent applied
@@ -824,10 +824,34 @@ impl SceneEcs {
                     reapply_changes(d, changes);
                 }
             }
-            Operation::Move { .. } => {
-                // Not yet mirrored: the authoritative loops refuse a Move, so
-                // none reaches the committed broadcast/replay path this mirror
-                // consumes.
+            Operation::Move {
+                doc_id, parent_id, ..
+            } => {
+                // Mirrors the DB's envelope rewrite. Scene membership is
+                // DERIVED from the doc's own `parent_id` (`is_scene_entity`,
+                // and every per-scene query filters on it), so rewriting the
+                // mirrored field re-parents the entity for every consumer; an
+                // entity moved to the top level stops being scene runtime and
+                // is despawned. An id held by no structure here is the same
+                // unknown-id posture as the Update arm: nothing to mirror,
+                // the resync path repairs.
+                if let Some(&e) = self.index.get(doc_id) {
+                    let mut leaves_scene_runtime = false;
+                    if let Ok(mut comp) = self.world.get::<&mut SceneEntity>(e) {
+                        comp.doc.parent_id = *parent_id;
+                        leaves_scene_runtime = !is_scene_entity(&comp.doc);
+                    }
+                    if leaves_scene_runtime {
+                        let _ = self.world.despawn(e);
+                        self.index.remove(doc_id);
+                    }
+                }
+                if let Some(a) = self.actors.get_mut(doc_id) {
+                    a.parent_id = *parent_id;
+                }
+                if let Some(d) = self.combats.get_mut(doc_id) {
+                    d.parent_id = *parent_id;
+                }
             }
             Operation::Delete { doc } => {
                 if let Some(e) = self.index.remove(&doc.id) {
