@@ -331,6 +331,10 @@ async fn delete_broadcast_reflects_the_truly_removed_version_despite_a_racing_re
         let id_str = asset["id"].as_str().unwrap().to_string();
         let id = uuid::Uuid::parse_str(&id_str).unwrap();
         let storage_key = asset["storage_key"].as_str().unwrap().to_string();
+        // The upload's own `created` notice precedes the one under test.
+        let created = drain_until_type(&mut ws, "asset_changed").await;
+        assert_eq!(created["op"], "created");
+        assert_eq!(created["uuid"], id_str);
 
         let url = format!("http://{}/api/assets/{}", h.addr, id_str);
         let meta = shadowcat::data::asset::AssetMeta::unprocessed("image/gif", 7);
