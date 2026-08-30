@@ -32,12 +32,14 @@ bands:
 |---|---|---|
 | `name` (envelope) | Engine | Real — universal display name, redactable |
 | `engine` | Engine | **Real server-side ingress validation**, typed structs, unknown fields rejected — present only for the 23 engine-defined doc types (tokens, actors, scenes, walls, regions, lights, drawings, templates, messages, the config-docs, and the combat family: `combat`, `combatant`, `resource-registry`, `effect`, `combat-history`) |
-| `system` | **You** (the game system) | **Structural only** — size, field-path shape. The server never semantically validates `system` content, ever, because the server runs no third-party code |
+| `system` | **You** (the game system) | **Structural only** for meaning — size, field-path shape, declared schemas. The server never decides what a `system` value *means*; it does evaluate the engine's formula grammar over numeric leaves your formulas name, so persist the derived values you want the engine to act on |
 
 Your system owns the `system` band outright: attributes, resources, class
-features — any JSON shape you like. The trade is that *your client code* is the
-only semantic authority over that shape, so validate and fail closed in your own
-sheets and rules (as `evalFormula` below does).
+features — any JSON shape you like. The trade is that *your system* defines what
+that shape means, so validate and fail closed in your own sheets and rules (as
+`evalFormula` below does) — and persist any derived value the engine should act on
+(a speed, a hit-point maximum) as a numeric leaf, because the server reads leaves,
+never your sheet's computed state.
 
 ## Claiming the actor sheet
 

@@ -201,9 +201,9 @@ fn fold(expr: &Expr, raws: &RawRoll, next_group: &mut usize) -> i64 {
 /// producing a fraction), NOT a round-trip through `f64`: an `i64 -> f64` cast itself
 /// loses precision above `f64`'s 53-bit mantissa (~9e15, well under `i64::MAX`), which
 /// would silently corrupt a large already-integer input before any rounding function
-/// ever ran. These three functions exist for functional parity with
-/// `@shadowcat/formula`'s own function set; if a future change gives this grammar a
-/// true fractional value, their implementation must be revisited then.
+/// ever ran. These three functions exist so notation and the engine formula grammar
+/// (`crate::formula`) accept the same function names; if a future change gives this
+/// grammar a true fractional value, their implementation must be revisited then.
 fn apply_fn(name: FnName, args: &[i64]) -> i64 {
     let a = |i: usize| args.get(i).copied().unwrap_or(0);
     match name {

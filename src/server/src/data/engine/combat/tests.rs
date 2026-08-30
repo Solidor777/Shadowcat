@@ -93,43 +93,36 @@ fn combatant_numbers_must_be_finite_and_max_non_negative() {
 }
 
 #[test]
-fn formula_text_is_bounded_and_non_empty() {
-    let mut reg = ResourceRegistryEngine {
-        resources: Default::default(),
-    };
-    reg.resources.insert(
-        "m".into(),
-        Resource {
-            name: "M".into(),
-            order: 0,
-            binding: ResourceBinding::Mirror {
-                value: Formula::Text(String::new()),
+fn formula_text_must_parse_and_fit_the_length_cap() {
+    fn reg_with(value: Formula) -> ResourceRegistryEngine {
+        let mut reg = ResourceRegistryEngine {
+            resources: Default::default(),
+        };
+        reg.resources.insert(
+            "m".into(),
+            Resource {
+                name: "M".into(),
+                order: 0,
+                binding: ResourceBinding::Mirror { value },
             },
-        },
-    );
-    assert!(reg.validate().is_err());
-    reg.resources.insert(
-        "m".into(),
-        Resource {
-            name: "M".into(),
-            order: 0,
-            binding: ResourceBinding::Mirror {
-                value: Formula::Text("x".repeat(MAX_FORMULA_CHARS + 1)),
-            },
-        },
-    );
-    assert!(reg.validate().is_err());
-    reg.resources.insert(
-        "m".into(),
-        Resource {
-            name: "M".into(),
-            order: 0,
-            binding: ResourceBinding::Mirror {
-                value: Formula::Text("hp".into()),
-            },
-        },
-    );
-    assert!(reg.validate().is_ok());
+        );
+        reg
+    }
+    let rejected = |src: &str| reg_with(Formula::Text(src.into())).validate().unwrap_err();
+    assert!(rejected("").contains("unexpected end of formula"));
+    assert!(rejected("1 +").contains("unexpected end of formula"));
+    assert!(rejected("(").contains("unexpected end of formula"));
+    assert!(rejected("dex ? 2").contains("unexpected '?' at position 4"));
+    assert!(rejected(&"x".repeat(513)).contains("formula exceeds 512 characters"));
+    assert!(rejected("dex \u{1F600} 2").contains("unexpected '\u{1F600}'"));
+    assert!(reg_with(Formula::Text("hp".into())).validate().is_ok());
+    assert!(reg_with(Formula::Text("speed * 2".into()))
+        .validate()
+        .is_ok());
+    assert!(reg_with(Formula::Text("max(stats.hp.final, 1)".into()))
+        .validate()
+        .is_ok());
+    assert!(reg_with(Formula::Number(f64::INFINITY)).validate().is_err());
 }
 
 #[test]
@@ -194,6 +187,87 @@ fn effect_duration_amount_must_be_positive() {
         lifecycle: None,
     };
     assert!(e.validate().is_err());
+}
+
+#[test]
+fn effect_duration_amount_text_must_parse() {
+    let with_amount = |amount: Formula| EffectEngine {
+        active: true,
+        transfer: false,
+        duration: Some(Duration {
+            amount,
+            remaining: None,
+            unit: DurationUnit::Rounds,
+            anchor: None,
+            expires: ExpiryPoint::TurnEnd,
+        }),
+        lifecycle: None,
+    };
+    assert!(with_amount(Formula::Text("1 +".into())).validate().is_err());
+    assert!(with_amount(Formula::Text("rounds".into()))
+        .validate()
+        .is_ok());
+}
+
+#[test]
+fn combat_history_validates_every_captured_band() {
+    let effect = |amount: Formula| EffectEngine {
+        active: true,
+        transfer: false,
+        duration: Some(Duration {
+            amount,
+            remaining: Some(2),
+            unit: DurationUnit::Rounds,
+            anchor: None,
+            expires: ExpiryPoint::TurnEnd,
+        }),
+        lifecycle: None,
+    };
+    let history = |engine: EffectEngine, combatant: CombatantEngine| CombatHistoryEngine {
+        records: vec![TurnRecord {
+            round: 1,
+            turn: Uuid::from_u128(7),
+            combatants: vec![CapturedCombatant {
+                id: Uuid::from_u128(7),
+                name: None,
+                permissions: Default::default(),
+                owner: None,
+                engine: combatant,
+                system: json!({}),
+            }],
+            effects: vec![EffectSnapshot {
+                host: Uuid::from_u128(9),
+                path: "/embedded/effect/0".into(),
+                engine,
+            }],
+        }],
+        cursor: 0,
+    };
+    let combatant = |initiative: Option<f64>| CombatantEngine {
+        kind: CombatantKind::Event {
+            lifespan: None,
+            message: None,
+        },
+        initiative,
+        tiebreak: 0.0,
+        resources: Default::default(),
+    };
+    assert!(
+        history(effect(Formula::Text("rounds".into())), combatant(Some(1.0)))
+            .validate()
+            .is_ok()
+    );
+    let bad_effect = history(effect(Formula::Text("1 +".into())), combatant(Some(1.0)))
+        .validate()
+        .unwrap_err();
+    assert!(bad_effect.contains("records[0].effects[0]"), "{bad_effect}");
+    let bad_combatant = history(effect(Formula::Number(2.0)), combatant(Some(f64::NAN)))
+        .validate()
+        .unwrap_err();
+    assert!(
+        bad_combatant.contains("records[0].combatants[0]"),
+        "{bad_combatant}"
+    );
 }
 
 #[test]

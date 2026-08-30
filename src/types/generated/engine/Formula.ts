@@ -2,6 +2,7 @@
 
 /**
  * A number or a formula source. Untagged on the wire (`30` or `"speed"`).
- * The server never evaluates `Text`.
+ * `Text` is `crate::formula` source: parsed at ingress by `validate`, and
+ * evaluated server-side through the same module.
  */
 export type Formula = number | string;

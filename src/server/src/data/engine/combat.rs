@@ -2,9 +2,10 @@
 //! scene), `combatant` (a child document of a combat), `resource-registry`
 //! (the singleton turn-resource definitions), `effect` (clock-bound
 //! expiry) and `combat-history` (the per-turn snapshot log of one combat).
-//! The server stores every `Formula::Text` verbatim and never evaluates it:
-//! formulas are resolved to numbers on the client, and the numbers land in
-//! `CombatantResource`.
+//! A `Formula::Text` is engine-grammar source the server evaluates through
+//! `crate::formula`; ingress requires it to parse. (The combat transitions
+//! that consume the evaluator are wired by the combat-resolution milestone;
+//! until then they still skip an unresolved value.)
 
 // Ratchet: every item in this module must carry a doc comment, enforced by
 // the two crate-level deny attributes this module declares.
@@ -16,11 +17,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
-
-/// Upper bound on a `Formula::Text` source, in characters. The server never
-/// parses the text; this bounds storage only (the client's formula library
-/// applies its own DoS caps when it evaluates).
-pub const MAX_FORMULA_CHARS: usize = 512;
 
 /// How a movement budget converts into grid cells.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
@@ -114,6 +110,17 @@ pub struct CombatDefaults {
     /// Override of `CombatEngine.forward_restore`.
     #[ts(optional = nullable)]
     pub forward_restore: Option<bool>,
+}
+
+impl CombatDefaults {
+    /// Every lifecycle formula present parses. `at` names the field this
+    /// override sits under in the enclosing document, for the error message.
+    pub(crate) fn validate(&self, at: &str) -> Result<(), String> {
+        match &self.effect_lifecycle {
+            Some(l) => l.validate(&format!("{at}.effect_lifecycle")),
+            None => Ok(()),
+        }
+    }
 }
 
 /// serde reads a missing key as `None` and an explicit `null` as `Some(None)`
@@ -266,7 +273,8 @@ pub struct CombatEngine {
 }
 
 impl CombatEngine {
-    /// `order` has no duplicate ids and `turn`, when set, is one of them.
+    /// `order` has no duplicate ids, `turn`, when set, is one of them, and
+    /// every snapshotted lifecycle formula parses.
     pub(crate) fn validate(&self) -> Result<(), String> {
         let mut seen = BTreeSet::new();
         for id in &self.order {
@@ -279,7 +287,7 @@ impl CombatEngine {
                 return Err(format!("turn {t} is not in order"));
             }
         }
-        Ok(())
+        self.effect_lifecycle.validate("effect_lifecycle")
     }
 }
 
@@ -369,28 +377,27 @@ impl CombatantEngine {
 }
 
 /// A number or a formula source. Untagged on the wire (`30` or `"speed"`).
-/// The server never evaluates `Text`.
+/// `Text` is `crate::formula` source: parsed at ingress by `validate`, and
+/// evaluated server-side through the same module.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(untagged)]
 pub enum Formula {
     /// A literal.
     Number(f64),
-    /// Formula source for the client's formula library.
+    /// Formula source in the engine's expression grammar.
     Text(String),
 }
 
 impl Formula {
-    /// Finite when a number; non-empty and within `MAX_FORMULA_CHARS` when text.
+    /// Finite when a number; parses (within the formula caps) when text.
     fn validate(&self, at: &str) -> Result<(), String> {
         match self {
             Formula::Number(n) if !n.is_finite() => Err(format!("{at} must be finite")),
             Formula::Number(_) => Ok(()),
-            Formula::Text(t) if t.is_empty() => Err(format!("{at} formula is empty")),
-            Formula::Text(t) if t.chars().count() > MAX_FORMULA_CHARS => Err(format!(
-                "{at} formula exceeds {MAX_FORMULA_CHARS} characters"
-            )),
-            Formula::Text(_) => Ok(()),
+            Formula::Text(t) => crate::formula::parse(t)
+                .map(|_| ())
+                .map_err(|e| format!("{at}: {}", e.detail)),
         }
     }
 }
@@ -591,6 +598,24 @@ pub struct EffectLifecycleDefaults {
     pub on_advance: Option<Formula>,
 }
 
+impl EffectLifecycleDefaults {
+    /// Every present formula parses. `at` names the enclosing field for the
+    /// error message.
+    pub(crate) fn validate(&self, at: &str) -> Result<(), String> {
+        let fields = [
+            ("on_combat_end", &self.on_combat_end),
+            ("on_turn_end", &self.on_turn_end),
+            ("on_advance", &self.on_advance),
+        ];
+        for (name, formula) in fields {
+            if let Some(f) = formula {
+                f.validate(&format!("{at}.{name}"))?;
+            }
+        }
+        Ok(())
+    }
+}
+
 /// The engine body of an `effect` document (mirrors the client's
 /// `EffectEngine`). Modifiers stay in the system band; the engine owns only
 /// activation, transfer and the clock-bound lifetime. Absent `transfer` and
@@ -723,7 +748,9 @@ pub struct CombatHistoryEngine {
 }
 
 impl CombatHistoryEngine {
-    /// At most `MAX_TURN_HISTORY` records; `cursor < len` unless empty.
+    /// At most `MAX_TURN_HISTORY` records; `cursor < len` unless empty; every
+    /// captured band is itself valid, so a record can never hold a combatant
+    /// or effect that `restore` would then fail to write back.
     pub(crate) fn validate(&self) -> Result<(), String> {
         if self.records.len() > MAX_TURN_HISTORY {
             return Err(format!("history exceeds {MAX_TURN_HISTORY} records"));
@@ -733,6 +760,18 @@ impl CombatHistoryEngine {
         }
         if self.records.is_empty() && self.cursor != 0 {
             return Err("cursor must be 0 for an empty history".into());
+        }
+        for (i, record) in self.records.iter().enumerate() {
+            for (j, c) in record.combatants.iter().enumerate() {
+                c.engine
+                    .validate()
+                    .map_err(|m| format!("records[{i}].combatants[{j}]: {m}"))?;
+            }
+            for (j, e) in record.effects.iter().enumerate() {
+                e.engine
+                    .validate()
+                    .map_err(|m| format!("records[{i}].effects[{j}]: {m}"))?;
+            }
         }
         Ok(())
     }

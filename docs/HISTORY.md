@@ -1462,7 +1462,8 @@ Decomposed **M11a–d**:
 - M13a/b are headless and startable before M12 completes; only M13c gates on M12c.
 - Excludes: comparison/conditional grammar, `override` bucket, effect durations/triggers
   (Phase-2 combat), server-side formula evaluation (Phase-3 sandboxed validators), live
-  template inheritance.
+  template inheritance. *(Superseded 2026-08-30: engine-grammar evaluation is server-side as of
+  M14c-1; the sandbox item now covers third-party code only.)*
 
 **▶ Dogfood alpha gate** — backups (M12.5) must exist before real worlds accrue.
 
@@ -1650,7 +1651,9 @@ lifecycle flags (`on_advance`/`on_combat_end`/`on_turn_end`) and `Duration` gain
 `remaining` count read back from the formula the client's own library evaluated — the server never
 evaluates `Formula::Text` and skips any effect whose lifecycle or remaining count is still
 unresolved, on both the per-boundary tick (`combat::effects::tick`) and lifecycle-policy expiry
-(`combat::effects::expire_by_policy`).
+(`combat::effects::expire_by_policy`). *(Superseded by M14c-1: the server evaluates
+`Formula::Text`; the client-resolution model described here is retired and M14c-2 rewires these
+transitions.)*
 
 An effect's HOST (the document embedding it) and its `Duration.anchor` (the combatant whose clock
 moves it) are independent axes: `combat::effects::collect_effects` walks the collecting combatant's
@@ -1765,7 +1768,63 @@ one-active-combat-per-scene batch-ordering gap the M14a delivery note left open.
 
 **Not built here:** `AppContext.combat`/client hooks, the tracker module/UI, and the client-side
 resolved-number writes an effect's formula library performs against `Duration.remaining` and
-`CombatantResource.current`/`.max` — all land in M14c–d.
+`CombatantResource.current`/`.max` — all land in M14c–d. *(Superseded by M14c-1: those writes are
+never built; the server evaluates the formulas itself — see the M14c-1 entry.)*
+
+#### M14c-1 — Server formula engine + invariant 6 ✅
+**COMPLETE.** Design:
+[`superpowers/specs/2026-08-30-m14c-1-server-formula-engine-design.md`](superpowers/specs/2026-08-30-m14c-1-server-formula-engine-design.md)
+(its §1 is the six-sub-project decomposition of M14c; its Appendix A is the whole-codebase audit
+that found the "client resolves, server skips" misreading in five subsystems). First of six.
+
+The server gains `crate::formula`, an exact behavioural twin of `@shadowcat/formula`: `types`
+(the nine `FormulaErrorKind`s with the client's kebab-case tags, `FormulaValue`, the four caps),
+`lexer::tokenize` (UTF-16 positions and length, so an astral character counts as two on both
+sides), `parser::parse` (the same grammar, arity table, node and depth caps, and `detail`
+wording), `evaluate` (left-to-right first-error-wins, float `/`, truncated `%`, `js_round` ties
+toward +∞ with JavaScript's `-0` sign — never `f64::round`), `graph::resolve_all` (memoized,
+sorted roots, canonical smallest-member cycle detail, visit cap, an explicit heap stack with a
+restart placeholder the driver always discards), and `resolver::SystemLeafResolver` — the
+engine's one reference-semantics decision: a dotted path reads literally from a document's
+`system` band, a number leaf is the value, absent is `unknown-ref`, anything else is `type`. The
+library never panics (`formula::proptests`) and never returns a non-finite `Ok`.
+
+One conformance corpus (`src/client/formula/src/__fixtures__/conformance.json`, 55 expression +
+7 graph cases) is read by `conformance.test.ts` and by `formula::tests::conformance`; every case
+asserts the value or the error kind AND `detail`. Sabotage evidence: flipping "float division"
+to 3.6 failed `expression: float division` (vitest) and `every_expression_case_matches` (cargo);
+restored byte-identical. The corpus pins `round(0.49999999999999994) = 0` because the buddy check
+CONVERGED on the opposite — both reviewers derived `1` from a `floor(x + 0.5)` model of
+`Math.round`; Node returns `0` and the Rust floor-difference form was right — so the runtime, not
+reasoning, now arbitrates that case. A graph node cannot hand `resolveAll`'s `get` straight to
+`evaluate` (its `callResolver` try/catch swallows the restart signal); both harnesses collect refs,
+fetch each, then evaluate.
+
+`Formula::validate` runs the parser at ingress, so a stored `Formula::Text` always parses;
+`MAX_FORMULA_CHARS` is gone (the parser's `MAX_FORMULA_LENGTH` is the cap). The Task 9 buddy
+check found that lifecycle formulas under `CombatEngine.effect_lifecycle` and the three
+`CombatDefaults` containers (`system-defaults`, `world-settings`, `scene`) reached storage
+unvalidated — `EffectLifecycleDefaults::validate`/`CombatDefaults::validate` now run from
+`CombatEngine::validate`, `SystemDefaultsEngine::validate` and the new
+`WorldSettingsEngine::validate`/`SceneEngine::validate` (the `scene` and `world-settings`
+`normalize_engine` arms validate instead of only round-tripping) — and that a GM `Update` on a
+`combat-history` record could store a captured formula `combat::history::restore` would later
+fail to write back; `CombatHistoryEngine::validate` now recurses into every captured combatant
+and effect band.
+
+ARCHITECTURE §2 invariant 6 is rewritten to what it means: the server never decides what a
+`system` value MEANS and runs no third-party code, DOES evaluate the engine's own grammars over
+`system` leaves a formula names, and by default computation runs on the server — the client
+requests. §4's sandbox row, §5's Deno rationale, §6's "derived values are computed, never stored"
+and the four-tier-chain sentence, PLAN's Phase-3 parking line, the M13 exclusions line, the M14b
+paragraphs, the M14/M14b spec rows (D4, B5, §4.2) and `creating-a-system.md` carry the
+correction or a superseding pointer. Skills updated in the plugin checkout (core,
+documents-permissions, formula, combat) through the reviewed skill-update gate.
+
+**Not built here:** consumer wiring of the evaluator — `transition::recover` still applies only
+`Formula::Number` and `combat::effects::tick`/`expire_by_policy` still skip an unresolved effect
+(M14c-2); world-config authority (M14c-3); notation references and the chat channel (M14c-4);
+the templates merge (M14c-5); the combat client seams (M14c-6).
 
 ### M15a · Asset pipeline ✅
 Branch `m15a-asset-pipeline`, executed mainline (Fable) from the approved design

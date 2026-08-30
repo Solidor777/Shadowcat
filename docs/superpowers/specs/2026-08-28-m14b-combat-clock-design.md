@@ -26,7 +26,7 @@ the `@shadowcat/core` builders and document contracts the M14c seams will call; 
 | B2 | **A combat is `active` or not.** No created/paused/ended states. `CombatStart` activates (pausing any other active combat on the scene in the same command; a combat with `turn == None` initializes, one with `turn: Some` continues), `CombatPause` deactivates and nothing else runs, `CombatEnd` runs end-of-combat effect cleanup and DELETES the combat (cascade removes its children). |
 | B3 | **Effects are hosted by the actor and clocked by the combatant.** The server expires an effect wherever it physically lives (token-embedded actor copy, linked actor, item-embedded with `transfer`); the combatant (`Duration.anchor`) owns its clock. Actor-side cleanup is embedding: an actor/token deletion takes its effects with it. |
 | B4 | **Effect cleanup is policy, layered like every setting:** a master switch (`effect_cleanup`, default on) and four per-effect policy formulas with system/world/scene defaults. Duration expiry by counting is the effect's own clock and is NOT gated by the master switch. |
-| B5 | **`Duration.amount` and every lifecycle policy are `Formula`s** resolved by the client (D4 split); the server reads only the resolved numbers/flags it is handed and skips an effect that has none — a server-side fallback would be a second resolver. |
+| B5 | *Amended (M14c-1):* the server evaluates formulas; see the [M14c-1 spec](2026-08-30-m14c-1-server-formula-engine-design.md). Original text: **`Duration.amount` and every lifecycle policy are `Formula`s** resolved by the client (D4 split); the server reads only the resolved numbers/flags it is handed and skips an effect that has none — a server-side fallback would be a second resolver. |
 | B6 | **Turn history is a snapshot per turn; rewind restores.** Every turn boundary captures the engine bands of all combatants and anchored effects; `CombatRewind` writes them back (mid-turn spends, GM tweaks and expiries all return to the boundary state). Deltas are derived, never stored. Replaces D16's "rewind never un-expires" with exactness. |
 | B7 | **Rewind/fast-forward restore are settings** (`rewind_restore` default `true`, `forward_restore` default `false`, chain-resolved). Future records are retained past a rewind only when `forward_restore` is on; fast-forward restores one only when the live state equals the current record, otherwise the future is discarded and the transition runs. |
 | B8 | **History is a GM-only child document** (`combat-history`, `permissions.default: none`), dropped whole at egress by the M14a READ gate, so hidden combatants never leak through it. Bounded to the newest 200 turns. |
@@ -129,6 +129,9 @@ CombatEngine   += effect_cleanup: bool, rewind_restore: bool, forward_restore: b
 boundary, so nothing needs to reconstruct a start point.
 
 ### 4.2 Resolution (client, D4)
+
+*Amended (M14c-1):* the server evaluates formulas; this subsection describes the retired
+client-resolution model. See the [M14c-1 spec](2026-08-30-m14c-1-server-formula-engine-design.md).
 
 When an effect joins a clock (its host becomes a combatant of an active combat, or the effect is
 created on such a host) the client evaluates `amount` → `remaining`, and the three policy

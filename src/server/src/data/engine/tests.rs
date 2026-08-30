@@ -689,14 +689,14 @@ fn effect_minimal_body_is_valid() {
 fn effect_with_formula_duration_and_lifecycle_is_valid() {
     let v = json!({ "active": true, "transfer": false,
         "duration": { "amount": "rounds + 1", "remaining": 3, "unit": "rounds", "anchor": null, "expires": "turn_end" },
-        "lifecycle": { "on_combat_end": 1, "on_turn_end": null, "on_advance": "not persistent",
+        "lifecycle": { "on_combat_end": 1, "on_turn_end": null, "on_advance": "1 - persistent",
                        "resolved": { "on_combat_end": true, "on_turn_end": false, "on_advance": true } } });
     assert!(validate_engine("effect", Some(&v)).is_ok());
 }
 
 #[test]
 fn effect_duration_amount_formula_is_bounded_and_remaining_optional() {
-    let long = "x".repeat(MAX_FORMULA_CHARS + 1);
+    let long = "x".repeat(crate::formula::MAX_FORMULA_LENGTH + 1);
     let v = json!({ "active": true, "duration": { "amount": long, "unit": "rounds", "anchor": null, "expires": "turn_end" } });
     assert!(validate_engine("effect", Some(&v)).is_err());
     let v = json!({ "active": true, "duration": { "amount": 2, "unit": "turns", "anchor": null, "expires": "turn_start" } });
@@ -740,10 +740,58 @@ fn combat_history_minimal_body_is_valid_and_cursor_is_bounded() {
 #[test]
 fn combat_defaults_accept_cleanup_and_restore_overrides() {
     let v = json!({ "effectCleanup": false, "rewindRestore": false, "forwardRestore": true,
-        "effectLifecycle": { "onCombatEnd": 0, "onTurnEnd": "hasTag('fleeting')", "onAdvance": null } });
+        "effectLifecycle": { "onCombatEnd": 0, "onTurnEnd": "fleeting", "onAdvance": null } });
     let d: CombatDefaults = serde_json::from_value(v).unwrap();
     assert_eq!(d.effect_cleanup, Some(false));
     assert_eq!(d.forward_restore, Some(true));
+}
+
+/// A `combat` body whose snapshotted lifecycle carries `formula` in `on_advance`.
+fn combat_with_on_advance(formula: serde_json::Value) -> serde_json::Value {
+    json!({
+        "scene_id": "00000000-0000-0000-0000-000000000001",
+        "active": false, "round": 0, "turn": null, "turn_control": "owner_may_end", "order": [],
+        "movement": { "resource": null, "interpretation": "per_cell", "enforcement": "none" },
+        "effect_cleanup": true, "rewind_restore": true, "forward_restore": false,
+        "effect_lifecycle": { "onCombatEnd": null, "onTurnEnd": null, "onAdvance": formula }
+    })
+}
+
+#[test]
+fn combat_snapshot_lifecycle_formula_must_parse() {
+    assert!(validate_engine(
+        "combat",
+        Some(&combat_with_on_advance(json!("persistent - 1")))
+    )
+    .is_ok());
+    let err = validate_engine("combat", Some(&combat_with_on_advance(json!("1 +")))).unwrap_err();
+    assert!(
+        err.to_string().contains("effect_lifecycle.on_advance"),
+        "{err}"
+    );
+}
+
+#[test]
+fn combat_defaults_lifecycle_formula_must_parse_under_every_container() {
+    let bad =
+        json!({ "effectLifecycle": { "onCombatEnd": null, "onTurnEnd": "(", "onAdvance": null } });
+    let good = json!({ "effectLifecycle": { "onCombatEnd": null, "onTurnEnd": "fleeting", "onAdvance": null } });
+
+    let sd = |c: &serde_json::Value| json!({ "combat": c });
+    assert!(validate_engine("system-defaults", Some(&sd(&good))).is_ok());
+    assert!(validate_engine("system-defaults", Some(&sd(&bad))).is_err());
+
+    let ws = |c: &serde_json::Value| {
+        let mut v = serde_json::to_value(WorldSettingsEngine::default()).unwrap();
+        v["combat"] = c.clone();
+        v
+    };
+    assert!(validate_engine("world-settings", Some(&ws(&good))).is_ok());
+    assert!(validate_engine("world-settings", Some(&ws(&bad))).is_err());
+
+    let sc = |c: &serde_json::Value| json!({ "grid": { "kind": "square", "size": 100.0 }, "background": null, "combat": c });
+    assert!(validate_engine("scene", Some(&sc(&good))).is_ok());
+    assert!(validate_engine("scene", Some(&sc(&bad))).is_err());
 }
 
 #[test]

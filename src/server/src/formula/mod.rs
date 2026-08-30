@@ -1,0 +1,40 @@
+//! The engine's formula language, server side: an exact behavioural twin of
+//! the client's `@shadowcat/formula` package (lexer → parser → evaluator →
+//! dependency graph). The two implementations are pinned together by one
+//! conformance corpus (`src/client/formula/src/__fixtures__/conformance.json`)
+//! that both test suites read, so a divergence fails on whichever side moved.
+//! INVARIANT: nothing here panics on any input and no `Ok` value is ever
+//! non-finite — every failure is a `FormulaError` value. INVARIANT: the
+//! language carries no game-system vocabulary; a reference path means whatever
+//! the `Resolve` implementation says it means (`SystemLeafResolver` is the
+//! engine's one such decision).
+
+#![deny(missing_docs)]
+#![deny(clippy::missing_docs_in_private_items)]
+
+/// Structural recursion over a parsed expression.
+pub mod evaluate;
+/// Memoized, cycle-guarded resolution over a named dependency graph.
+pub mod graph;
+/// Source text → tokens.
+pub mod lexer;
+/// Tokens → `Expr`.
+pub mod parser;
+/// The engine's default reference resolver over a document's `system` band.
+pub mod resolver;
+/// Failure values, the value type and the DoS caps.
+pub mod types;
+
+#[cfg(test)]
+mod proptests;
+#[cfg(test)]
+mod tests;
+
+pub use evaluate::{evaluate, Resolve};
+pub use graph::resolve_all;
+pub use parser::{parse, BinOp, Expr, FnName};
+pub use resolver::SystemLeafResolver;
+pub use types::{
+    FormulaError, FormulaErrorKind, FormulaValue, MAX_AST_NODES, MAX_FORMULA_LENGTH,
+    MAX_GRAPH_VISITS, MAX_PARSE_DEPTH,
+};

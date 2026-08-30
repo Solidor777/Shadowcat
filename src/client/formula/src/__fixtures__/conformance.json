@@ -1,0 +1,530 @@
+{
+  "expressions": [
+    {
+      "name": "arithmetic with refs",
+      "source": "floor(parent.str / 2) + dex",
+      "refs": {
+        "parent.str": 15,
+        "dex": 3
+      },
+      "expect": 10
+    },
+    {
+      "name": "float division",
+      "source": "7 / 2",
+      "expect": 3.5
+    },
+    {
+      "name": "round of float division",
+      "source": "round(7 / 2)",
+      "expect": 4
+    },
+    {
+      "name": "precedence unary over mul over add",
+      "source": "1 + 2 * -3",
+      "expect": -5
+    },
+    {
+      "name": "left assoc mul div",
+      "source": "2 * 3 / 4",
+      "expect": 1.5
+    },
+    {
+      "name": "double negation",
+      "source": "--1",
+      "expect": 1
+    },
+    {
+      "name": "float sum",
+      "source": "0.1 + 0.2",
+      "expect": 0.30000000000000004
+    },
+    {
+      "name": "case-insensitive refs",
+      "source": "Parent.DEX + 1",
+      "refs": {
+        "parent.dex": 4
+      },
+      "expect": 5
+    },
+    {
+      "name": "max n-ary",
+      "source": "max(1, dex, 2)",
+      "refs": {
+        "dex": 9
+      },
+      "expect": 9
+    },
+    {
+      "name": "min unary",
+      "source": "min(3)",
+      "expect": 3
+    },
+    {
+      "name": "floor negative",
+      "source": "floor(-2.5)",
+      "expect": -3
+    },
+    {
+      "name": "ceil negative",
+      "source": "ceil(-2.5)",
+      "expect": -2
+    },
+    {
+      "name": "round tie negative toward +inf",
+      "source": "round(-2.5)",
+      "expect": -2
+    },
+    {
+      "name": "round tie positive",
+      "source": "round(2.5)",
+      "expect": 3
+    },
+    {
+      "name": "round tie -3.5",
+      "source": "round(-3.5)",
+      "expect": -3
+    },
+    {
+      "name": "round of the largest double below one half is zero",
+      "source": "round(0.49999999999999994)",
+      "expect": 0
+    },
+    {
+      "name": "round of a small negative keeps a zero magnitude",
+      "source": "round(-0.4) + 1",
+      "expect": 1
+    },
+    {
+      "name": "remainder negative dividend",
+      "source": "-7 % 2",
+      "expect": -1
+    },
+    {
+      "name": "remainder negative divisor",
+      "source": "7 % -2",
+      "expect": 1
+    },
+    {
+      "name": "remainder plain",
+      "source": "10 % 3",
+      "expect": 1
+    },
+    {
+      "name": "function name as identifier",
+      "source": "floor + 1",
+      "refs": {
+        "floor": 2
+      },
+      "expect": 3
+    },
+    {
+      "name": "32 nested parens",
+      "source": "((((((((((((((((((((((((((((((((1))))))))))))))))))))))))))))))))",
+      "expect": 1
+    },
+    {
+      "name": "32 nested floors",
+      "source": "floor(floor(floor(floor(floor(floor(floor(floor(floor(floor(floor(floor(floor(floor(floor(floor(floor(floor(floor(floor(floor(floor(floor(floor(floor(floor(floor(floor(floor(floor(floor(floor(1))))))))))))))))))))))))))))))))",
+      "expect": 1
+    },
+    {
+      "name": "32 unary minus",
+      "source": "--------------------------------1",
+      "expect": 1
+    },
+    {
+      "name": "div by zero ref",
+      "source": "1 / dex",
+      "refs": {
+        "dex": 0
+      },
+      "expect": {
+        "error": "div-zero",
+        "detail": "division by zero ('/')"
+      }
+    },
+    {
+      "name": "mod by zero",
+      "source": "1 % 0",
+      "expect": {
+        "error": "div-zero",
+        "detail": "division by zero ('%')"
+      }
+    },
+    {
+      "name": "resolver error propagates unchanged",
+      "source": "dex + 1",
+      "refs": {
+        "dex": {
+          "error": "cycle",
+          "detail": "dex -> str -> dex"
+        }
+      },
+      "expect": {
+        "error": "cycle",
+        "detail": "dex -> str -> dex"
+      }
+    },
+    {
+      "name": "unknown ref",
+      "source": "ghost + 1",
+      "expect": {
+        "error": "unknown-ref",
+        "detail": "unknown reference 'ghost'"
+      }
+    },
+    {
+      "name": "left error wins",
+      "source": "dex + str",
+      "expect": {
+        "error": "unknown-ref",
+        "detail": "unknown reference 'dex'"
+      }
+    },
+    {
+      "name": "overflow to infinity",
+      "source": "10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000 * 10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "expect": {
+        "error": "non-finite",
+        "detail": "arithmetic result is not finite (Infinity)"
+      }
+    },
+    {
+      "name": "unknown character",
+      "source": "dex ? 2",
+      "expect": {
+        "error": "parse",
+        "detail": "unexpected '?' at position 4"
+      }
+    },
+    {
+      "name": "astral character detail and utf16 position",
+      "source": "dex 😀 2",
+      "expect": {
+        "error": "parse",
+        "detail": "unexpected '😀' at position 4"
+      }
+    },
+    {
+      "name": "second dot in literal",
+      "source": "1.2.3",
+      "expect": {
+        "error": "parse",
+        "detail": "unexpected '.' at position 3"
+      }
+    },
+    {
+      "name": "trailing dot",
+      "source": "5.",
+      "expect": {
+        "error": "parse",
+        "detail": "unexpected '.' at position 1"
+      }
+    },
+    {
+      "name": "trailing dot before paren",
+      "source": "5.)",
+      "expect": {
+        "error": "parse",
+        "detail": "unexpected '.' at position 1"
+      }
+    },
+    {
+      "name": "unknown function",
+      "source": "dex(1)",
+      "expect": {
+        "error": "parse",
+        "detail": "unknown function 'dex' at position 0"
+      }
+    },
+    {
+      "name": "floor arity",
+      "source": "floor(1, 2)",
+      "expect": {
+        "error": "parse",
+        "detail": "'floor' requires exactly 1 argument at position 0"
+      }
+    },
+    {
+      "name": "min arity",
+      "source": "min()",
+      "expect": {
+        "error": "parse",
+        "detail": "'min' requires at least 1 argument at position 0"
+      }
+    },
+    {
+      "name": "ceil arity",
+      "source": "ceil()",
+      "expect": {
+        "error": "parse",
+        "detail": "'ceil' requires exactly 1 argument at position 0"
+      }
+    },
+    {
+      "name": "round arity",
+      "source": "round(1,2)",
+      "expect": {
+        "error": "parse",
+        "detail": "'round' requires exactly 1 argument at position 0"
+      }
+    },
+    {
+      "name": "trailing garbage",
+      "source": "1 + 2 3",
+      "expect": {
+        "error": "parse",
+        "detail": "unexpected trailing input at position 6"
+      }
+    },
+    {
+      "name": "unterminated paren",
+      "source": "(1+2",
+      "expect": {
+        "error": "parse",
+        "detail": "expected ')' at position 4"
+      }
+    },
+    {
+      "name": "unterminated call",
+      "source": "min(1",
+      "expect": {
+        "error": "parse",
+        "detail": "expected ')' at position 5"
+      }
+    },
+    {
+      "name": "dangling dot",
+      "source": "hp.",
+      "expect": {
+        "error": "parse",
+        "detail": "expected identifier after '.' at position 3"
+      }
+    },
+    {
+      "name": "empty",
+      "source": "",
+      "expect": {
+        "error": "parse",
+        "detail": "unexpected end of formula"
+      }
+    },
+    {
+      "name": "whitespace only",
+      "source": "   ",
+      "expect": {
+        "error": "parse",
+        "detail": "unexpected end of formula"
+      }
+    },
+    {
+      "name": "trailing comma",
+      "source": "floor(1,)",
+      "expect": {
+        "error": "parse",
+        "detail": "unexpected token at position 8"
+      }
+    },
+    {
+      "name": "dotted path not callable",
+      "source": "hp.max(1)",
+      "expect": {
+        "error": "parse",
+        "detail": "unexpected trailing input at position 6"
+      }
+    },
+    {
+      "name": "exponent notation is not a number",
+      "source": "1e999",
+      "expect": {
+        "error": "parse",
+        "detail": "unexpected trailing input at position 1"
+      }
+    },
+    {
+      "name": "leading dot is not a number",
+      "source": ".5",
+      "expect": {
+        "error": "parse",
+        "detail": "unexpected token at position 0"
+      }
+    },
+    {
+      "name": "33 nested parens cap",
+      "source": "(((((((((((((((((((((((((((((((((1)))))))))))))))))))))))))))))))))",
+      "expect": {
+        "error": "cap",
+        "detail": "formula exceeds max nesting depth of 32"
+      }
+    },
+    {
+      "name": "33 unary minus cap",
+      "source": "---------------------------------1",
+      "expect": {
+        "error": "cap",
+        "detail": "formula exceeds max nesting depth of 32"
+      }
+    },
+    {
+      "name": "overflowing literal",
+      "source": "9999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999",
+      "expect": {
+        "error": "cap",
+        "detail": "numeric literal at position 0 is out of range"
+      }
+    },
+    {
+      "name": "512 chars: 255x'1+' then '11' caps on AST nodes",
+      "source": "1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+11",
+      "expect": {
+        "error": "cap",
+        "detail": "formula exceeds 256 AST nodes"
+      }
+    },
+    {
+      "name": "513 chars caps on length",
+      "source": "1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1",
+      "expect": {
+        "error": "cap",
+        "detail": "formula exceeds 512 characters"
+      }
+    }
+  ],
+  "graphs": [
+    {
+      "name": "chain",
+      "nodes": {
+        "base": "2",
+        "a": "base + 1",
+        "b": "a * 2"
+      },
+      "roots": [
+        "b",
+        "a",
+        "base"
+      ],
+      "expect": {
+        "b": 6,
+        "a": 3,
+        "base": 2
+      }
+    },
+    {
+      "name": "chain reversed roots",
+      "nodes": {
+        "base": "2",
+        "a": "base + 1",
+        "b": "a * 2"
+      },
+      "roots": [
+        "base",
+        "a",
+        "b"
+      ],
+      "expect": {
+        "b": 6,
+        "a": 3,
+        "base": 2
+      }
+    },
+    {
+      "name": "three cycle",
+      "nodes": {
+        "a": "b",
+        "b": "c",
+        "c": "a"
+      },
+      "roots": [
+        "c",
+        "b",
+        "a"
+      ],
+      "expect": {
+        "a": {
+          "error": "cycle",
+          "detail": "reference cycle involving 'a'"
+        },
+        "b": {
+          "error": "cycle",
+          "detail": "reference cycle involving 'a'"
+        },
+        "c": {
+          "error": "cycle",
+          "detail": "reference cycle involving 'a'"
+        }
+      }
+    },
+    {
+      "name": "diamond",
+      "nodes": {
+        "d": "4",
+        "a": "d + 1",
+        "c": "d + 2"
+      },
+      "roots": [
+        "a",
+        "c"
+      ],
+      "expect": {
+        "a": 5,
+        "c": 6,
+        "d": 4
+      }
+    },
+    {
+      "name": "unknown node",
+      "nodes": {
+        "a": "zzz + 1"
+      },
+      "roots": [
+        "a"
+      ],
+      "expect": {
+        "a": {
+          "error": "unknown-ref",
+          "detail": "unknown reference 'zzz'"
+        },
+        "zzz": {
+          "error": "unknown-ref",
+          "detail": "unknown reference 'zzz'"
+        }
+      }
+    },
+    {
+      "name": "parse error node",
+      "nodes": {
+        "a": "1 +"
+      },
+      "roots": [
+        "a"
+      ],
+      "expect": {
+        "a": {
+          "error": "parse",
+          "detail": "unexpected end of formula"
+        }
+      }
+    },
+    {
+      "name": "error propagates",
+      "nodes": {
+        "a": "1 / 0",
+        "b": "a + 1"
+      },
+      "roots": [
+        "b"
+      ],
+      "expect": {
+        "a": {
+          "error": "div-zero",
+          "detail": "division by zero ('/')"
+        },
+        "b": {
+          "error": "div-zero",
+          "detail": "division by zero ('/')"
+        }
+      }
+    }
+  ]
+}
