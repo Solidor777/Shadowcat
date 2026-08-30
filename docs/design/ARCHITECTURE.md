@@ -114,8 +114,15 @@ Each item is *designed for* now (the seam exists) and *built* only when its trig
   combat's turn order, round/turn counters, and turn-history log are mutated only by the server's
   own pure `transition` functions, dispatched from a fixed set of typed intents
   (`combat::handle_combat_intent`) and committed as a single command tagged
-  `WriteOrigin::CombatTransition` — a tag the wire protocol has no way to construct, so a client
-  can never forge a combat-clock write by hand-authoring a document `Update`. The per-turn
+  `WriteOrigin::CombatTransition` — a tag the wire protocol has no way to construct. That tag is an
+  EXEMPTION, not a requirement: it lets the server's own transition write documents the acting user
+  could not write directly (one combatant's owner ending their turn recovers every other
+  combatant's resources), by skipping `apply_intent`'s per-op capability floor while every other
+  validation still runs. It is not what makes combat writes legal — a GM's ordinary
+  `WriteOrigin::Client` `Update` of a combat document is accepted on the GM's own access, as any
+  other document write is. What the clock's server-ownership rests on is the authorization inside
+  `combat::handle_combat_intent` plus `CombatEngine::validate`'s structural rules, not on the
+  origin tag being unforgeable. The per-turn
   movement-budget gate this gives the move executor commits in two separate commands: the token's
   position write always commits under `WriteOrigin::Client` (the ordinary ownership check always
   runs), and the combatant's resource decrement commits as a separate command under

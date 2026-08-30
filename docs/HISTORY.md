@@ -1652,10 +1652,26 @@ evaluates `Formula::Text` and skips any effect whose lifecycle or remaining coun
 unresolved, on both the per-boundary tick (`combat::effects::tick`) and lifecycle-policy expiry
 (`combat::effects::expire_by_policy`).
 
+An effect's HOST (the document embedding it) and its `Duration.anchor` (the combatant whose clock
+moves it) are independent axes: `combat::effects::collect_effects` walks the collecting combatant's
+own hosts for unanchored or self-anchored effects AND every other host in the combat for effects
+explicitly anchored to it, deduplicated by `(host, path)`. An effect living on one combatant's actor
+but anchored to another therefore ticks, expires and is captured on the anchor's clock, and is
+claimed by neither combatant twice.
+
 Turn history: `combat-history` (`permissions.default: none`, GM-only egress) records/rewinds/
 fast-forwards a combat's turn boundaries — `combat::history::append_record`/`restore`/
-`fast_forward`, capped at `MAX_TURN_HISTORY` (200) records with oldest-first eviction and
-redo-branch truncation on a new record past the current cursor. A history push always replaces the
+`fast_forward`. A record is captured at EVERY boundary a transition crosses, including the
+auto-resolved intermediate steps (an `Event`'s turn, a hidden combatant's turn under
+`TurnControl::OwnerMayEnd`), so a rewind can land on one of those and replay it; every such capture
+within one transition folds into the single history write that transition emits, never a second
+`Update` against the same document. Each record narrows its combatants to a `CapturedCombatant`
+(identity, placement, permissions, owner, engine, system) rather than a whole `Document`, and
+retention holds TWO independent bounds: `MAX_TURN_HISTORY` (200) records, and a serialized-byte
+ceiling at 90% of `MAX_SYSTEM_BYTES` — a count cap does not bound serialized size, which is the only
+thing `validate_system_size` refuses on, and that refusal would roll the whole transition back and
+wedge the clock. Both evict oldest-first, with redo-branch truncation on a new record past the
+current cursor. A history push always replaces the
 document's whole `/engine` band (`whole_engine_replace`) rather than writing into `records` by
 index — `data::command::set_pointer` can only replace an in-bounds array element, never grow one, so
 an append is structurally a whole-array replace, not a per-index write.
@@ -1667,8 +1683,15 @@ and the resolved chain, gathered in one read), authorizes (GM-unconditional; a n
 `CombatAdvance` under `TurnControl::OwnerMayEnd` as the current turn's non-hidden owner, or for
 `CombatRoll`/`CombatResource` as the owner of every named non-hidden combatant), resolves the
 matching pure `transition` function into one command's ops, and commits them as a single
-server-authored write via `Room::commit_combat` (`WriteOrigin::CombatTransition` — never
-constructible from the wire; every combat-document write not carrying this origin is rejected).
+server-authored write via `Room::commit_combat` under `WriteOrigin::CombatTransition`. That origin
+has no wire representation a client can construct, and its effect is an EXEMPTION rather than a
+requirement: a batch carrying it skips `apply_intent`'s ordinary per-op capability floor (so one
+combatant's owner-authorized `CombatAdvance` may write every other combatant's recoveries and their
+hosts' embedded effects), while every other check — scope, size, engine, containment, singleton,
+one-active-per-scene, immutable-envelope paths, OCC — still runs regardless of origin. No
+combat-document write is refused merely for lacking the origin: a GM's ordinary
+`WriteOrigin::Client` `Intent` writes combat documents freely, because `resolve_access_world`
+already grants it.
 Every refusal renders through `CombatError`'s own `Display`, collapsing every case that could
 disclose a hidden combatant (`NotFound`/`Forbidden`/`NotRunning`/`Data`) to one identical wording.
 
@@ -1678,9 +1701,18 @@ Unified movement cost and the per-turn movement-budget gate: `scene::grid_shape`
 duplicated cost table, so a router preview and the executor can never price a diagonal step
 differently. `Room::execute_move` resolves the scene's active combat and the moving token's
 combatant (`SceneEcs::active_combat_for_scene`/`SceneEcs::combatant_for_token`) under the same ECS
-read guard as every other gate input, enforces `TurnControl`/`Enforcement` (Hard truncates a
-non-turn-owner's budget to zero and a GM is exempt from every gameplay check on this gate exactly
-as on every other), and commits the move in TWO separate commands rather than one: the token's
+read guard as every other gate input. The gate reads `MovementRules` only — `TurnControl` governs
+who may send `CombatAdvance`, never this gate — and decides on two independent axes: under
+`Enforcement::Hard` a non-turn-owner is REFUSED outright (`MoveReject::NotYourTurn`, surfacing as
+the generic `DataError::Forbidden`, never a truncation to zero), while an unresolvable budget (the
+combatant carries no entry for the combat's movement resource, or `Interpretation::PerCell` with no
+scene `grid.distance.per_cell`) refuses independently of enforcement mode
+(`MoveReject::BudgetUnresolvable`), since even `Warn`/`None` still need the number to decrement.
+Under `Hard` an affordable-prefix truncation applies to the turn owner's own move. A GM is exempt
+from all three (refusals and truncation) exactly as on every other gameplay gate, and so is a mover
+the resolved combatant is HIDDEN from — a refusal or truncation there would disclose both the
+combatant's existence and its exact budget. The gate commits the move in TWO separate commands
+rather than one: the token's
 `/engine/x,y` position write lands unconditionally under `WriteOrigin::Client`, and the combatant's
 resource decrement lands as a SEPARATE `WriteOrigin::CombatTransition` commit only after the
 position commit succeeds. This split is itself a fix: an earlier single-commit design that bundled
