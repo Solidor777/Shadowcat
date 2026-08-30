@@ -125,6 +125,21 @@ pub(super) fn event_combatant(
     }
 }
 
+/// A structurally-complete `ActorEngine` body. Every required key is present because `apply`
+/// runs `validate_engine_tree` over every persisted document, exactly as the real repository
+/// does — a fixture body missing a required field is refused there, not silently accepted.
+pub(super) fn actor_body() -> serde_json::Value {
+    json!({
+        "displayName": "Fixture Actor",
+        "visual": { "kind": "image", "asset": "a.png" },
+        "size": { "w": 1.0, "h": 1.0 },
+        "shape": "square",
+        "conditions": [],
+        "prototype": true,
+        "vision": null,
+    })
+}
+
 /// An actor hosting one effect with a resolved lifecycle and a 2-round duration anchored to `anchor`.
 pub(super) fn actor_with_effect(
     id: u128,
@@ -152,7 +167,7 @@ pub(super) fn actor_with_effect(
             ..Default::default()
         }),
     };
-    let mut actor = doc(id, "actor", None, json!({ "vision": null }));
+    let mut actor = doc(id, "actor", None, actor_body());
     actor.embedded.insert(
         "effect".into(),
         vec![doc(
@@ -202,6 +217,33 @@ pub(super) fn snapshot(
     }
 }
 
+/// Runs the two per-document ingress gates `SqliteRepository::apply_intent` applies before
+/// storing anything — `validate_system_size` (per-band byte cap) and `validate_engine_tree`
+/// (typed engine-band shape plus each type's own `validate`) — panicking loudly on a breach,
+/// which is what the real repository would instead reject the whole batch for
+/// (`DataError::TooLarge`/`DataError::BadEngine`, both rendered by `CombatError::Data` as the
+/// same generic "combat rejected" that discloses nothing about WHY the clock stopped).
+///
+/// `validate_engine_tree` takes `&mut Document` and NORMALIZES the band in place, so it runs on
+/// a CLONE: this harness's stored documents must stay exactly what the transition wrote, so a
+/// later assertion reads the transition's own output rather than a normalized rewrite of it.
+fn validate_persisted(doc: &Document) {
+    crate::data::validation::validate_system_size(doc).unwrap_or_else(|e| {
+        panic!(
+            "size violation: {} ({}) exceeds the per-band cap ({e}) — the real repository would \
+             reject this whole batch",
+            doc.id, doc.doc_type
+        )
+    });
+    crate::data::validation::validate_engine_tree(&mut doc.clone()).unwrap_or_else(|e| {
+        panic!(
+            "engine violation: {} ({}) fails engine ingress validation ({e}) — the real \
+             repository would reject this whole batch",
+            doc.id, doc.doc_type
+        )
+    });
+}
+
 /// Apply `ops` to the snapshot's documents (Create/Update/Delete over an id map) and return the
 /// new map — lets a test chain transitions. Mirrors the real repository's own per-doc field
 /// apply (`data::command::apply_field_change`), never re-deriving the mutation semantics.
@@ -216,14 +258,12 @@ pub(super) fn snapshot(
 /// does on its own — that unconditional write is exactly what let a same-batch, same-path
 /// double-write pass this harness undetected before this check existed.
 ///
-/// Also runs `validation::validate_system_size` on every document this batch would persist —
-/// each `Operation::Create`'s document and each `Operation::Update`'s POST-image — mirroring
-/// the per-op size gate `SqliteRepository::apply_intent` applies before storing. A breach
-/// panics loudly here (the real repository rejects the whole batch with `DataError::TooLarge`,
-/// which `CombatError::Data` then renders as the same generic "combat rejected" every other
-/// refusal uses, disclosing nothing about WHY the clock stopped). Without this check a
-/// transition that grows a document past the cap passes every test in this module and fails
-/// only against a real repository.
+/// Also runs `validate_persisted` on every document this batch would persist — each
+/// `Operation::Create`'s document and each `Operation::Update`'s POST-image. Without those
+/// gates a transition that grows a document past the byte cap, or writes a structurally
+/// invalid engine band (a `/engine/turn` naming a combatant absent from `/engine/order`, which
+/// `CombatEngine::validate` refuses), passes every test in this module and fails only against a
+/// real repository.
 pub(super) fn apply(snap: &CombatSnapshot, ops: &[Operation]) -> HashMap<Uuid, Document> {
     let mut docs: HashMap<Uuid, Document> = HashMap::new();
     docs.insert(snap.combat.id, snap.combat.clone());
@@ -240,13 +280,7 @@ pub(super) fn apply(snap: &CombatSnapshot, ops: &[Operation]) -> HashMap<Uuid, D
     for op in ops {
         match op {
             Operation::Create { doc } => {
-                crate::data::validation::validate_system_size(doc).unwrap_or_else(|e| {
-                    panic!(
-                        "size violation: Create of {} ({}) exceeds the per-band cap ({e}) — the \
-                         real repository would reject this whole batch",
-                        doc.id, doc.doc_type
-                    )
-                });
+                validate_persisted(doc);
                 docs.insert(doc.id, doc.clone());
             }
             Operation::Delete { doc } => {
@@ -275,14 +309,7 @@ pub(super) fn apply(snap: &CombatSnapshot, ops: &[Operation]) -> HashMap<Uuid, D
                             .expect("field change applies to a fixture doc");
                     }
                     *d = serde_json::from_value(v).expect("Document round-trips");
-                    crate::data::validation::validate_system_size(d).unwrap_or_else(|e| {
-                        panic!(
-                            "size violation: the post-image of {doc_id} ({}) exceeds the \
-                             per-band cap ({e}) — the real repository would reject this whole \
-                             batch",
-                            d.doc_type
-                        )
-                    });
+                    validate_persisted(d);
                 }
             }
         }

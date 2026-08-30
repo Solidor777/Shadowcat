@@ -1,4 +1,5 @@
 use super::*;
+use crate::combat::effects::EffectRef;
 use crate::data::command::Operation;
 
 #[test]
@@ -59,9 +60,10 @@ fn collect_effects_finds_anchored_effects_on_actor_token_copy_and_transferring_i
 }
 
 /// Host and anchor are independent axes: an effect living on A's host but
-/// anchored to B belongs to B's clock and to NEITHER combatant twice. Before
-/// the cross-host lookup existed such an effect was unreachable from either
-/// side — never ticked, never expired, never captured.
+/// anchored to B belongs to B's clock and to NEITHER combatant twice. An
+/// effect anchored to a combatant that does not host it is reachable only
+/// through the anchor's own pass, so without that pass it would be ticked,
+/// expired and captured by nobody.
 #[test]
 fn an_effect_anchored_to_another_combatant_is_collected_by_the_anchor_not_the_host() {
     let combat = Uuid::from_u128(1);
@@ -75,7 +77,7 @@ fn an_effect_anchored_to_another_combatant_is_collected_by_the_anchor_not_the_ho
         ExpiryPoint::TurnEnd,
         DurationUnit::Turns,
     );
-    let host_b = doc(0x1B, "actor", None, serde_json::json!({ "vision": null }));
+    let host_b = doc(0x1B, "actor", None, actor_body());
     let snap = snapshot(
         combat_engine(vec![a.doc.id, b.doc.id], Some(a.doc.id), 1, true),
         vec![a.clone(), b.clone()],
@@ -96,6 +98,79 @@ fn an_effect_anchored_to_another_combatant_is_collected_by_the_anchor_not_the_ho
     );
 }
 
+/// `walk_any_host`'s TOKEN branch: an effect reachable only through a token's embedded actor
+/// copy is collected by its anchor exactly once, at the SAME `(host, path)` key the token's own
+/// combatant's first pass produces for the same slot. The two must agree, because every
+/// boundary sweep that dedupes across combatants (`transition::run_boundary`,
+/// `transition::end`, `history::capture`) keys on `(host, path)` alone — a token-branch key
+/// shaped differently from pass 1's would let one effect be ticked twice in one sweep.
+#[test]
+fn a_token_hosted_cross_host_anchored_effect_is_collected_once_at_the_pass_one_path() {
+    let combat = Uuid::from_u128(1);
+    let token_id = Uuid::from_u128(0x70);
+    // A is hosted by a TOKEN (only its embedded actor copy carries effects); B merely anchors.
+    let mut a = actor_combatant(10, combat, 0x1A, None, false, (0.0, 30.0));
+    a.engine.kind = CombatantKind::Actor {
+        token_id: Some(token_id),
+        actor_id: None,
+    };
+    a.doc.engine = Some(serde_json::to_value(&a.engine).unwrap());
+    let b = actor_combatant(11, combat, 0x1B, None, false, (0.0, 30.0));
+    let host_b = doc(0x1B, "actor", None, actor_body());
+
+    let token_hosting = |anchor: Option<Uuid>| {
+        let mut token = doc(
+            0x70,
+            "token",
+            Some(SCENE),
+            serde_json::json!({ "x": 0.0, "y": 0.0, "w": 1.0, "h": 1.0, "rotation": 0.0 }),
+        );
+        token.embedded.insert(
+            "actor".into(),
+            vec![actor_with_effect(
+                0xE,
+                anchor,
+                2,
+                ExpiryPoint::TurnEnd,
+                DurationUnit::Turns,
+            )],
+        );
+        token
+    };
+    let keys = |refs: Vec<EffectRef>| -> Vec<(Uuid, String)> {
+        refs.iter().map(|r| (r.host, r.path.clone())).collect()
+    };
+    let expected = vec![(token_id, "/embedded/actor/0/embedded/effect/0".to_string())];
+
+    // Anchored to B: reachable only through B's cross-host pass, which takes the token branch.
+    let snap = snapshot(
+        combat_engine(vec![a.doc.id, b.doc.id], Some(a.doc.id), 1, true),
+        vec![a.clone(), b.clone()],
+        vec![token_hosting(Some(b.doc.id)), host_b.clone()],
+    );
+    assert!(
+        collect_effects(&snap, &a).is_empty(),
+        "the hosting token's own combatant must not claim an effect anchored elsewhere"
+    );
+    assert_eq!(
+        keys(collect_effects(&snap, &b)),
+        expected,
+        "the anchor reaches the token-hosted effect exactly once"
+    );
+
+    // Unanchored: the same slot, reached instead by the token's OWN combatant through pass 1.
+    let snap = snapshot(
+        combat_engine(vec![a.doc.id, b.doc.id], Some(a.doc.id), 1, true),
+        vec![a.clone(), b],
+        vec![token_hosting(None), host_b],
+    );
+    assert_eq!(
+        keys(collect_effects(&snap, &a)),
+        expected,
+        "pass 1 and the cross-host token branch key on the identical (host, path)"
+    );
+}
+
 /// A cross-host anchored effect is on the ANCHOR's clock end to end, not
 /// merely visible to a collector: B's own turn-end boundary ticks it, and A's
 /// does not.
@@ -111,7 +186,7 @@ fn a_cross_host_anchored_effect_ticks_on_the_anchors_own_turn_boundary() {
         ExpiryPoint::TurnEnd,
         DurationUnit::Turns,
     );
-    let host_b = doc(0x1B, "actor", None, serde_json::json!({ "vision": null }));
+    let host_b = doc(0x1B, "actor", None, actor_body());
     let remaining_of = |docs: &HashMap<Uuid, Document>| -> Option<u32> {
         let e: EffectEngine = serde_json::from_value(
             docs[&Uuid::from_u128(0x1A)].embedded["effect"][0]
