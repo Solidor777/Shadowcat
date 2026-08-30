@@ -899,18 +899,27 @@ impl Room {
             }
             // The resource entry and, under PerCell, the per-cell distance scale are required
             // regardless of enforcement mode — the decrement below needs them even when the
-            // gate itself never truncates (Warn/None).
-            let Some(entry) = bg.entry else {
-                tracing::debug!(
-                    combatant = %bg.combatant_id, token = %token, resource = %bg.resource,
-                    reject = ?move_exec::MoveReject::BudgetUnresolvable,
-                    "move rejected: combatant carries no entry for the combat's movement resource"
-                );
-                return Err(DataError::Forbidden);
+            // gate itself never truncates (Warn/None). For a non-GM, either being unresolvable
+            // refuses the move outright (`BudgetUnresolvable`). For a GM, an unresolvable budget
+            // degrades to "move freely, no decrement" instead — the same outcome as a token that
+            // isn't bound to any combatant at all — rather than refusing a GM move, matching the
+            // GM-bypass exemption already applied to the truncation and turn-owner checks above.
+            let entry = match bg.entry {
+                Some(entry) => Some(entry),
+                None if is_gm => None,
+                None => {
+                    tracing::debug!(
+                        combatant = %bg.combatant_id, token = %token, resource = %bg.resource,
+                        reject = ?move_exec::MoveReject::BudgetUnresolvable,
+                        "move rejected: combatant carries no entry for the combat's movement resource"
+                    );
+                    return Err(DataError::Forbidden);
+                }
             };
-            let cost_to_resource = match bg.interpretation {
-                eng::Interpretation::PerCell => match bg.per_cell {
-                    Some(pc) => pc,
+            let cost_to_resource = match (entry, bg.interpretation) {
+                (Some(_), eng::Interpretation::PerCell) => match bg.per_cell {
+                    Some(pc) => Some(pc),
+                    None if is_gm => None,
                     None => {
                         tracing::debug!(
                             combatant = %bg.combatant_id, token = %token,
@@ -920,17 +929,22 @@ impl Room {
                         return Err(DataError::Forbidden);
                     }
                 },
-                eng::Interpretation::Spaces => 1.0,
+                (Some(_), eng::Interpretation::Spaces) => Some(1.0),
+                // GM whose resource entry was already unresolvable above: skip resolution
+                // entirely, same as a token not bound to any combatant.
+                (None, _) => None,
             };
-            if !is_gm && matches!(bg.enforcement, eng::Enforcement::Hard) {
-                move_budget_cells = Some(entry.current / cost_to_resource);
+            if let (Some(entry), Some(cost_to_resource)) = (entry, cost_to_resource) {
+                if !is_gm && matches!(bg.enforcement, eng::Enforcement::Hard) {
+                    move_budget_cells = Some(entry.current / cost_to_resource);
+                }
+                resolved_budget = Some(ResolvedBudget {
+                    combatant_id: bg.combatant_id,
+                    resource: bg.resource.clone(),
+                    current: entry.current,
+                    cost_to_resource,
+                });
             }
-            resolved_budget = Some(ResolvedBudget {
-                combatant_id: bg.combatant_id,
-                resource: bg.resource.clone(),
-                current: entry.current,
-                cost_to_resource,
-            });
         }
 
         // --- Revealed union: fetch explored AFTER dropping the scene read guard ---
@@ -1079,7 +1093,7 @@ impl Room {
         // never touched by movement. `old` is keyed on the authoritative ECS-read `start`
         // (`SceneEcs::token_position`, itself `/engine/x,y`) so the optimistic-concurrency check
         // in `apply_intent` passes as defense-in-depth.
-        let mut ops = vec![Operation::Update {
+        let ops = vec![Operation::Update {
             doc_id: token,
             changes: vec![
                 FieldChange {
@@ -1097,17 +1111,34 @@ impl Room {
             ],
         }];
 
-        // Combat resource decrement: a DIFFERENT document from the token (the combatant), so it
-        // never coalesces with the position Update above — each document gets at most one
-        // Update in this command. Floored at zero (`max(0.0)`); skipped entirely when the walked
-        // distance spent nothing (a zero-progress/zero-cost move, or a combatant this gate never
-        // applied to).
-        let mut decremented = false;
+        // Position write commits ALONE under `WriteOrigin::Client`, UNCONDITIONALLY — never
+        // bundled with the combat decrement below. `apply_intent`'s ownership/capability check
+        // (`origin != WriteOrigin::CombatTransition && !access.has(need)`) is skipped for every
+        // op in a batch whenever ANY op in it carries `CombatTransition`; bundling the two under
+        // one origin let a `CombatTransition`-tagged decrement silently waive the ownership check
+        // on the token-position write in the same batch, so any authenticated non-GM could move
+        // any other player's token by naming their `token_id` once combat is active. Splitting
+        // the commit is the fix: the position write's origin can never be anything but `Client`.
+        self.commit_ops_locked(repo, ctx, ops, ts, WriteOrigin::Client)
+            .await?;
+
+        // Combat resource decrement: a SEPARATE commit against a DIFFERENT document (the
+        // combatant), issued only after the position commit above has succeeded. Floored at zero
+        // (`max(0.0)`); skipped entirely when the walked distance spent nothing (a zero-progress/
+        // zero-cost move, or a combatant this gate never applied to). The pre-image (`old`) is
+        // read from the SAME scene-read-guard snapshot the turn/resource validation used, before
+        // any `.await` — the position commit touches only the token document, never the
+        // combatant, so it cannot have staled this pre-image by the time this second commit
+        // fires. A conflict here (e.g. a genuine concurrent write to the combatant) surfaces as
+        // `DataError::Conflict` and is NOT rolled back into the already-committed position move:
+        // the position write is authoritative once it lands, and failing the whole call over a
+        // decrement conflict would leave the client's token stuck out of sync with what was
+        // actually written.
         if let Some(rb) = &resolved_budget {
             let spent = outcome.cost * rb.cost_to_resource;
             if spent != 0.0 {
                 let new_current = (rb.current - spent).max(0.0);
-                ops.push(Operation::Update {
+                let decrement_ops = vec![Operation::Update {
                     doc_id: rb.combatant_id,
                     changes: vec![FieldChange {
                         remove: false,
@@ -1115,18 +1146,19 @@ impl Room {
                         old: serde_json::json!(rb.current),
                         new: serde_json::json!(new_current),
                     }],
-                });
-                decremented = true;
+                }];
+                if let Err(err) = self
+                    .commit_ops_locked(repo, ctx, decrement_ops, ts, WriteOrigin::CombatTransition)
+                    .await
+                {
+                    tracing::debug!(
+                        combatant = %rb.combatant_id, resource = %rb.resource, ?err,
+                        "movement-budget decrement commit failed after the position move already \
+                         committed; the move stands, the resource spend was not recorded"
+                    );
+                }
             }
         }
-        // A resource decrement is server-computed consumption, not a raw client write.
-        let origin = if decremented {
-            WriteOrigin::CombatTransition
-        } else {
-            WriteOrigin::Client
-        };
-
-        self.commit_ops_locked(repo, ctx, ops, ts, origin).await?;
 
         // Build the wire frame before registering it.
         let frame = Arc::new(wire_move_stream(

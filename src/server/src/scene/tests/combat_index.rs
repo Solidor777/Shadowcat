@@ -113,3 +113,59 @@ fn combatant_lookup_falls_back_to_the_tokens_actor_id() {
         .combatant_for_token(Uuid::from_u128(3), Uuid::from_u128(999))
         .is_none());
 }
+
+#[test]
+fn combatant_lookup_falls_back_to_an_instanced_tokens_embedded_actor_copy() {
+    // INSTANCED token: `engine.actor_id` is absent (never present at all — `token_engine`'s
+    // resolution reads `TokenEngine.actor_id` first and only falls back to the embedded copy's
+    // id when that read is `None`), and the token carries its own `embedded.actor[0]` copy
+    // instead. The combatant's `kind.actor_id` matches that embedded copy's id, not any
+    // `engine.actor_id` field on the token (there isn't one).
+    let mut ecs = SceneEcs::new();
+    let scene = Uuid::from_u128(1);
+    ecs.insert_scene_for_test(
+        scene,
+        json!({ "grid": { "kind": "square", "size": 100 }, "background": null }),
+    );
+    let actor_id = Uuid::from_u128(0xB);
+    let mut actor = entity_doc_top_eng(0xB, "actor", actor_body(json!([])));
+    actor.id = actor_id;
+    let mut token = entity_doc_eng(
+        2,
+        1,
+        "token",
+        json!({ "x": 50.0, "y": 50.0, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+    );
+    token.embedded.insert("actor".into(), vec![actor]);
+    ecs.apply_op(&Operation::Create { doc: token });
+    let combat = entity_doc_top_eng(
+        3,
+        "combat",
+        combat_body(scene, true, vec![Uuid::from_u128(4)]),
+    );
+    ecs.apply_op(&Operation::Create {
+        doc: combat.clone(),
+    });
+    let mut combatant = entity_doc_eng(
+        4,
+        3,
+        "combatant",
+        json!({ "kind": { "type": "actor", "token_id": null, "actor_id": actor_id },
+            "initiative": null, "tiebreak": 0.0, "resources": {} }),
+    );
+    combatant.permissions.default = crate::data::document::DocRole::Observer;
+    ecs.apply_op(&Operation::Create { doc: combatant });
+
+    let (id, ce, hidden, _owner) = ecs
+        .combatant_for_token(Uuid::from_u128(3), Uuid::from_u128(2))
+        .expect("combatant via the token's embedded actor copy");
+    assert_eq!(id, Uuid::from_u128(4));
+    assert!(matches!(
+        ce.kind,
+        eng::CombatantKind::Actor {
+            actor_id: Some(a),
+            ..
+        } if a == actor_id
+    ));
+    assert!(!hidden);
+}

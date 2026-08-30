@@ -32,6 +32,7 @@ struct BudgetHandle {
     /// enforcement mode that DID truncate would fail the assertion against it.
     long_path: Vec<(f64, f64)>,
     gm_token: Uuid,
+    gm_combatant: Uuid,
     long_path_gm: Vec<(f64, f64)>,
     free_token: Uuid,
     free_start: (f64, f64),
@@ -103,6 +104,29 @@ impl BudgetHandle {
                 &self.gm,
                 vec![Operation::Update {
                     doc_id: self.combatant_id,
+                    changes: vec![FieldChange {
+                        remove: true,
+                        path: "/engine/resources/movement".into(),
+                        old: serde_json::json!({ "current": 10.0, "max": 30.0 }),
+                        new: serde_json::Value::Null,
+                    }],
+                }],
+                0,
+                WriteOrigin::Client,
+            )
+            .await
+            .unwrap();
+    }
+
+    /// Removes the GM's own combatant's `movement` resource entry entirely — the GM-exemption
+    /// counterpart to `remove_resource_entry`.
+    async fn remove_gm_resource_entry(&self) {
+        self.room
+            .publish(
+                &self.repo,
+                &self.gm,
+                vec![Operation::Update {
+                    doc_id: self.gm_combatant,
                     changes: vec![FieldChange {
                         remove: true,
                         path: "/engine/resources/movement".into(),
@@ -313,6 +337,7 @@ async fn budget_scene(
         adj3: (350.0, 50.0),
         long_path,
         gm_token,
+        gm_combatant,
         long_path_gm,
         free_token,
         free_start,
@@ -322,7 +347,8 @@ async fn budget_scene(
 }
 
 #[tokio::test]
-async fn hard_enforcement_truncates_the_owner_at_the_budget_and_decrements_in_the_same_command() {
+async fn hard_enforcement_truncates_the_owner_at_the_budget_and_decrements_via_a_separate_command()
+{
     let h = budget_scene("hard", "per_cell", Some(5.0)).await; // 10 ft / 5 ft = 2 cells
     let (mut rx, _) = h.room.subscribe();
     let res = h
@@ -341,8 +367,12 @@ async fn hard_enforcement_truncates_the_owner_at_the_budget_and_decrements_in_th
         .await
         .unwrap();
     assert_eq!(res.stop, h.adj2, "two cells affordable");
-    let ev = next_event(&mut rx).await;
-    let touched: Vec<Uuid> = ev
+
+    // The position write commits FIRST, alone — it must never carry the decrement in the same
+    // command (that bundling is the authorization bypass this fix closes: `apply_intent` skips
+    // the ownership check for every op in a batch whenever any op carries `CombatTransition`).
+    let position_ev = next_event(&mut rx).await;
+    let position_touched: Vec<Uuid> = position_ev
         .command
         .ops
         .iter()
@@ -351,11 +381,86 @@ async fn hard_enforcement_truncates_the_owner_at_the_budget_and_decrements_in_th
             _ => None,
         })
         .collect();
-    assert!(
-        touched.contains(&h.token_id) && touched.contains(&h.combatant_id),
-        "position and decrement share the command"
+    assert_eq!(
+        position_touched,
+        vec![h.token_id],
+        "position write commits alone under Client, never bundled with the decrement"
     );
-    assert_eq!(h.resource_current().await, 0.0);
+
+    // The budget decrement commits SEPARATELY, as its own command, touching only the combatant.
+    let decrement_ev = next_event(&mut rx).await;
+    let decrement_touched: Vec<Uuid> = decrement_ev
+        .command
+        .ops
+        .iter()
+        .filter_map(|o| match o {
+            Operation::Update { doc_id, .. } => Some(*doc_id),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        decrement_touched,
+        vec![h.combatant_id],
+        "decrement commits as its own command, touching only the combatant"
+    );
+    assert!(
+        decrement_ev.command.seq > position_ev.command.seq,
+        "decrement's command sequences strictly after the position commit"
+    );
+
+    assert_eq!(h.resource_current().await, 0.0, "floored at zero");
+    assert_eq!(
+        h.committed_pos(h.token_id).await,
+        h.adj2,
+        "position truncated at the budget ceiling"
+    );
+}
+
+#[tokio::test]
+async fn a_non_owner_cannot_move_another_players_token_during_combat() {
+    let h = budget_scene("hard", "spaces", None).await;
+
+    // A second, unrelated player with no ownership grant on `h.token_id` — the token belongs
+    // exclusively to `h.player` (`token.permissions.users.insert(p, DocRole::Owner)` in
+    // `movement_scene_with_speed`). This player is a plain world member with nothing on it.
+    let intruder_id = h
+        .repo
+        .create_user("intruder", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    h.repo
+        .add_member(h.world_id, intruder_id, WorldRole::Player)
+        .await
+        .unwrap();
+    let intruder = PermissionContext {
+        user_id: intruder_id,
+        world_role: WorldRole::Player,
+    };
+
+    let err = h
+        .room
+        .execute_move(
+            &h.repo,
+            &intruder,
+            crate::ws::room::MoveRequestInputs {
+                scene_id: h.scene_id,
+                token: h.token_id,
+                path: vec![h.start, h.adj],
+                ts: now_millis(),
+                request_id: Uuid::nil(),
+            },
+        )
+        .await;
+    assert!(
+        matches!(err, Err(DataError::Forbidden)),
+        "a non-owner must be refused by the ordinary ownership check during active combat, \
+         exactly as outside of it — regression test for the CombatTransition-bundling bypass"
+    );
+    assert_eq!(
+        h.committed_pos(h.token_id).await,
+        h.start,
+        "the token must not have moved"
+    );
 }
 
 #[tokio::test]
@@ -441,6 +546,65 @@ async fn gm_is_never_truncated_but_is_decremented() {
         .unwrap();
     assert_eq!(res.stop, *h.long_path_gm.last().unwrap());
     assert_eq!(h.gm_resource_current().await, 0.0, "floored at zero");
+}
+
+#[tokio::test]
+async fn gm_with_an_unresolvable_budget_moves_freely_with_no_decrement() {
+    // GM's combatant carries no `movement` resource entry at all — the non-GM equivalent of
+    // this is `missing_per_cell_or_resource_entry_is_refused_with_the_generic_error`'s
+    // `Forbidden`. For a GM this must degrade to "move freely, no decrement" instead.
+    let h = budget_scene("hard", "spaces", None).await;
+    h.remove_gm_resource_entry().await;
+    let res = h
+        .room
+        .execute_move(
+            &h.repo,
+            &h.gm,
+            crate::ws::room::MoveRequestInputs {
+                scene_id: h.scene_id,
+                token: h.gm_token,
+                path: h.long_path_gm.clone(),
+                ts: now_millis(),
+                request_id: Uuid::nil(),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        res.stop,
+        *h.long_path_gm.last().unwrap(),
+        "GM moves the full path — no truncation from an unresolvable budget"
+    );
+
+    // GM's combatant carries `PerCell` interpretation with no `grid.distance` configured — the
+    // non-GM equivalent is the `per_cell`/`None` case in
+    // `missing_per_cell_or_resource_entry_is_refused_with_the_generic_error`.
+    let h2 = budget_scene("hard", "per_cell", None).await;
+    let res2 = h2
+        .room
+        .execute_move(
+            &h2.repo,
+            &h2.gm,
+            crate::ws::room::MoveRequestInputs {
+                scene_id: h2.scene_id,
+                token: h2.gm_token,
+                path: h2.long_path_gm.clone(),
+                ts: now_millis(),
+                request_id: Uuid::nil(),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        res2.stop,
+        *h2.long_path_gm.last().unwrap(),
+        "GM moves the full path — no truncation from an unresolvable per-cell scale"
+    );
+    assert_eq!(
+        h2.gm_resource_current().await,
+        10.0,
+        "no decrement when the budget was unresolvable"
+    );
 }
 
 #[tokio::test]
