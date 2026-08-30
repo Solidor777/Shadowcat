@@ -1061,8 +1061,50 @@ pub fn filter_command<'a>(
                     }
                 }
             }
-            Operation::Move { .. } => {
-                // Fail-closed: a Move is not delivered to any recipient.
+            Operation::Move { doc_id, .. } => {
+                // A Move carries only envelope placement (ids) — no content
+                // band rides it, so redaction reduces to the whole-document
+                // READ conjunction: delivered iff READ at commit AND READ
+                // now, the same two gates the Update arm resolves. No
+                // transition synthesis is needed: `resolve_access_world`
+                // never consults `parent_id`, and a Move changes neither
+                // `permissions` nor `owner`, so its own before/commit halves
+                // are identical by construction — a same-batch permission
+                // change synthesizes through that Update op's own arm.
+                let Some(cur) = current.get(doc_id) else {
+                    continue;
+                };
+                if let Some(commit_seq) = op_snapshot.created_seq_at_commit {
+                    if cur.created_seq != commit_seq {
+                        continue;
+                    }
+                }
+                let commit_doc = Document {
+                    doc_type: op_snapshot.doc_type.clone(),
+                    permissions: op_snapshot
+                        .permissions_at_commit
+                        .clone()
+                        .unwrap_or_default(),
+                    ..cur.doc.clone()
+                };
+                let access_commit = resolve_access_world(
+                    ctx.user_id,
+                    world_role_commit,
+                    &commit_doc,
+                    &world_defaults.grants_for(&commit_doc.doc_type),
+                    op_snapshot.owner_at_commit,
+                );
+                let owner_current = effective_owner_via(&cur.doc, &actor_lookup);
+                let access_current = resolve_access_world(
+                    ctx.user_id,
+                    ctx.world_role,
+                    &cur.doc,
+                    &world_defaults.grants_for(&cur.doc.doc_type),
+                    owner_current,
+                );
+                if access_commit.has(cap::READ) && access_current.has(cap::READ) {
+                    out_ops.push(op.clone());
+                }
             }
             Operation::Delete { doc } => {
                 // Existence check is INVERTED vs Update: a Delete's current doc is EXPECTED to
